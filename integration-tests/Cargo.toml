@@ -26,22 +26,22 @@ zaino-fetch = { path = "../packages/zaino-fetch" }
 zainod = { path = "../packages/zainod" }
 
 # Zingo
-zingo-netutils = { git = "https://github.com/zingolabs/zingo-common.git", rev = "63bf5d9171d36e180acbeb6d9182d9c7a93c57b6", features = ["back_compatible"] }
-zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "37eb567a6fc3746e431426b80c6811c2c456506e", features = [
+zingo-netutils = "5.0.1"
+zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "61418d6ecbc679a88da8268a2be5db3926501fc6", features = [
     "testutils",
 ] }
-zingolib_testutils = { git = "https://github.com/zingolabs/zingolib.git", rev = "37eb567a6fc3746e431426b80c6811c2c456506e" }
-zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", rev = "b8929c4821c18ec7a059fbd6b57bd39795568fa1" }
-zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "b8929c4821c18ec7a059fbd6b57bd39795568fa1" }
+zingolib_testutils = { git = "https://github.com/zingolabs/zingolib.git", rev = "61418d6ecbc679a88da8268a2be5db3926501fc6" }
+zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", tag = "zcash_local_net_v0.6.0" }
+zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", tag = "zcash_local_net_v0.6.0" }
 
 # Librustzcash
-zcash_protocol = { version = "0.8", features = ["local-consensus"] }
-zcash_client_backend = "0.22"
+zcash_protocol = { version = "0.9", features = ["local-consensus"] }
+zcash_client_backend = "0.23"
 
 # Zebra
-zebra-chain = "7.0.0"
-zebra-state = "6.0.0"
-zebra-rpc = "7.0.0"
+zebra-chain = "9.0.0"
+zebra-state = "8.0.0"
+zebra-rpc = "9.0.0"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }

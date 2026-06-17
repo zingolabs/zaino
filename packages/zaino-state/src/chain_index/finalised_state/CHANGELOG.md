@@ -172,7 +172,7 @@ On-disk schema
 
 --------------------------------------------------------------------------------
 DB VERSION v1.2.0 (from v1.1.0)
-Date: 2026-05-10
+Date: 2026-06-11
 --------------------------------------------------------------------------------
 
 Summary
@@ -180,9 +180,14 @@ Summary
 - Add a finalised txout-set accumulator (`tx_out_set_info_accumulator`)
   maintaining the data needed to serve `gettxoutsetinfo` directly from the
   indexer.
-- Backfill both new structures from existing per-block transparent transaction
-  data via a single in-place migration.
-- Add resumable in-place migration progress tracking using a temporary metadata entry.
+- Add a reverse transaction-id index (`txid_location`, `txid -> TxLocation`)
+  so previous-output resolution is an O(log n) point lookup instead of a full
+  scan of the height-keyed `txids` table. This fixes a near-quadratic slowdown
+  in both the migration backfill and clean-sync write path.
+- Backfill the new structures from existing per-block transparent transaction
+  data via a single in-place, two-stage migration.
+- Add resumable in-place migration progress tracking using temporary metadata
+  entries (one per stage).
 
 On-disk schema
 - Layout:
@@ -193,11 +198,17 @@ On-disk schema
     finalised transparent UTXO-set summary
     (LMDB database name: `tx_out_set_info_accumulator_1_2_0`,
     singleton key: ASCII `"tx_out_set_info_accumulator"`).
+  - Added: `txid_location` — reverse transaction-id index mapping each
+    transaction id to its on-chain `TxLocation`
+    (LMDB database name: `txid_location_1_0_0`).
   - Removed: None.
   - Renamed: None.
 - Encoding:
-  - Keys: No changes to `Outpoint` encoding.
+  - Keys: No changes to `Outpoint` encoding. `txid_location` is keyed by the
+    32-byte transaction id (internal byte order).
   - Values: `spent` stores `StoredEntryFixed<TxLocation>` values.
+    `txid_location` stores `StoredEntryFixed<TxLocation>` values
+    (checksum-protected against the txid key).
     `tx_out_set_info_accumulator` stores
     `StoredEntryFixed<FinalisedTxOutSetInfoAccumulator>` whose body is
     `LE(u64) transactions || LE(u64) transaction_outputs ||
@@ -205,11 +216,17 @@ On-disk schema
      LE(u64) total_zatoshis` (64 bytes).
   - Checksums / validation:
     - `spent` entries are checksum-protected using the encoded `Outpoint` key.
+    - `txid_location` entries are checksum-protected using the txid key.
     - The accumulator entry is checksum-protected using its singleton key.
-    - Migration progress is temporarily stored as `StoredEntryFixed<Height>` in the metadata DB under `_migration_spent_progress_1_2_0_next_height`.
+    - Migration progress is temporarily stored as `StoredEntryFixed<Height>` in
+      the metadata DB under `_migration_spent_progress_1_2_0_next_height`
+      (Stage B) and `_migration_txid_location_progress_1_2_0_next_height`
+      (Stage A).
 - Invariants:
   - For every non-null transparent input in finalised-state block data, `spent[Outpoint]` must exist and point to the spending transaction’s `TxLocation`.
-  - Existing `spent` entries encountered during migration must decode, verify, and match the expected `TxLocation`.
+  - For every transaction in finalised-state block data, `txid_location[txid]`
+    must exist and resolve to that transaction’s `TxLocation`.
+  - Existing `spent` / `txid_location` entries encountered during migration must decode, verify, and match the expected `TxLocation`.
   - The accumulator excludes provably-unspendable transparent outputs
     (anything whose `ScriptType` is not `P2PKH` or `P2SH` — matches zcashd's
     `IsUnspendable()` view of the UTXO set: OP_RETURN, oversized scripts,
@@ -241,25 +258,48 @@ API / capabilities
     - Existing spent/outpoint-spender functionality can be backed by the core `spent` table.
 
 Migration
-- Strategy: in-place index backfill (single migration step covers both new
-  structures).
+- Strategy: in-place index backfill, run as two sequential stages with
+  independent progress trackers (single migration step, re-entrant).
 - Backfill:
-  - Iterates existing transparent block data from genesis through the current finalised DB tip.
-  - For each non-null transparent input, writes `Outpoint -> StoredEntryFixed<TxLocation>` to `spent`.
-  - For each block, advances the singleton
-    `tx_out_set_info_accumulator` via the same calculator used by the
-    write path (`calculate_tx_out_set_info_accumulator_after_block`),
+  - Stage A (`txid_location`): scans the existing `txids` table from genesis
+    through the current finalised DB tip and writes
+    `txid -> StoredEntryFixed<TxLocation>`. Runs first because Stage B's
+    previous-output resolution depends on it.
+  - Stage B (`spent` + accumulator): iterates existing transparent block data;
+    for each non-null transparent input writes
+    `Outpoint -> StoredEntryFixed<TxLocation>` to `spent`, and for each block
+    advances the singleton `tx_out_set_info_accumulator` via the same calculator
+    used by the write path (`calculate_tx_out_set_info_accumulator_after_block`),
     skipping NonStandard outputs.
+- 0.4.0-alpha.1 compatibility (temporary):
+  - A cache built by 0.4.0-alpha.1 is recorded at v1.2.0 but has an empty
+    `txid_location` index. On open, a non-empty database at version >= 1.2.0
+    with an empty `txid_location` table has its `spent` table cleared and its
+    recorded version rolled back to 1.1.0 so this migration rebuilds the
+    indices in place (rather than forcing a full rebuild from the validator).
+    This shim is to be removed once 0.4.0 ships.
 - Completion criteria:
-  - All heights through the current finalised DB tip have been processed.
+  - All heights through the current finalised DB tip have been processed by both stages.
   - Migration status reaches `Complete`.
-  - Temporary migration progress key is deleted.
+  - Both temporary migration progress keys are deleted.
   - `DbMetadata.version` is advanced to v1.2.0 and `migration_status` is reset to `Empty`.
 - Failure handling:
-  - Resumes from the temporary metadata progress height.
-  - Spent entries and progress updates for each height are committed in the same LMDB transaction.
-  - Existing matching spent entries are accepted after checksum and `TxLocation` verification.
-  - Existing conflicting or corrupt spent entries fail the migration.
+  - Each stage resumes from its own temporary metadata progress height.
+  - Per height, `spent` entries, the accumulator, and the progress update are committed in the same LMDB transaction; `txid_location` entries and their progress update likewise.
+  - Existing matching `spent` / `txid_location` entries are accepted after checksum and `TxLocation` verification.
+  - Existing conflicting or corrupt entries fail the migration.
+
+Bug Fixes / Optimisations
+- Reverse txid lookups (`find_txid_index_blocking`, and therefore
+  `get_tx_location` / `get_previous_output`) are now O(log n) point lookups on
+  `txid_location` instead of a full cursor scan of `txids`. This removes a
+  near-quadratic cost that made the v1.1.0 -> v1.2.0 migration appear to hang
+  on large caches and progressively slowed clean sync.
+- The v1.1.0 -> v1.2.0 migration now logs per-stage start/completion and
+  periodic progress (height / db tip / elapsed).
+- `write_block` no longer issues two redundant `env.sync(true)` calls around
+  per-block validation; the durable `txn.commit()` already fsyncs, so crash
+  safety is unchanged.
 
 Bug Fixes / Optimisations
 - Avoids a shadow rebuild by deriving the new core `spent` index from existing transparent transaction data.

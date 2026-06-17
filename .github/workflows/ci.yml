@@ -23,6 +23,21 @@ env:
   INSECURE_CACHE: true
 
 jobs:
+  fmt:
+    name: Rustfmt
+    # Runs on a GitHub-hosted runner (not the self-hosted arc-sh-runners) so it
+    # executes on pull requests, unlike the build/test jobs below which are
+    # skipped on PRs until a self-hosted runner is available. cargo fmt
+    # auto-installs the toolchain and rustfmt component pinned in
+    # rust-toolchain.toml on first use.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
   compute-tag:
     uses: ./.github/workflows/compute-tag.yml
 

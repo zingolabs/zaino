@@ -393,6 +393,8 @@ impl DbV1 {
                         continue;
                     }
 
+                    let outpoint = Outpoint::new(*input.prevout_txid(), input.prevout_index());
+
                     // Check addrhist input record
                     let prev_output = self.get_previous_output_blocking(outpoint)?;
                     let addr_bytes =

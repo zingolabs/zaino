@@ -14,6 +14,9 @@ and this library adheres to Rust's notion of
   validator.
 
 ### Added
+- `zainod` gains an `allow_unencrypted_public_json_rpc_bind` build feature that
+  lifts the new private-only JSON-RPC bind restriction for trusted
+  private-network deployments (logs a `WARN` on startup when enabled).
 - `zaino-state::chain_index::source::BlockchainSource` and
   `zaino-state::chain_index::ChainIndex` now expose transparent-address query
   methods for deltas, balances, txids, and UTXOs.
@@ -21,6 +24,11 @@ and this library adheres to Rust's notion of
   `FinalisedTxOutSetInfoAccumulator` with the non-finalised state to produce
   the full `GetTxOutSetInfoResponse`.
 ### Changed
+- The `zainod` JSON-RPC server now refuses to bind to public or unspecified
+  (`0.0.0.0` / `::`) addresses by default; `check_config` enforces the same
+  private/loopback rule already applied to gRPC. The unencrypted JSON-RPC
+  interface is intended for loopback or trusted private networks only (Z-02 /
+  Zellic #48480).
 - Integration tests now use `corez`, with Zcash, Zebra, and Zingo dependencies
   updated to releases and companion branches that no longer depend on the
   yanked `core2` crate.
@@ -33,6 +41,13 @@ and this library adheres to Rust's notion of
   height is not configured.
 ### Removed
 ### Deprecated
+### Fixed
+- Finalised-state DB v1.2.0 migration no longer appears to hang on large caches.
+  A reverse transaction-id index (`txid_location`) makes previous-output
+  resolution an O(log n) lookup instead of a full table scan, removing a
+  near-quadratic cost in both the migration backfill and the clean-sync write
+  path. The v1.1.0 -> v1.2.0 migration is now a re-entrant two-stage backfill
+  with progress logging, and caches built by 0.4.0-alpha.1 self-heal on open.
 
 ## [v0.2.0] - 2026-03-25
 - [808] Adopt lightclient-protocol v0.4.0

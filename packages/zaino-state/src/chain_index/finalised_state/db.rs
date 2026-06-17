@@ -303,6 +303,24 @@ impl DbBackend {
         }
     }
 
+    /// Provides access to the reverse txid-index DB table, required for Migration1_1_0To1_2_0.
+    pub(crate) fn txid_location_db(&self) -> Result<Database, FinalisedStateError> {
+        match self {
+            Self::V1(db) => Ok(db.txid_location_db()),
+            Self::V0(_) => Err(FinalisedStateError::FeatureUnavailable(
+                "v1 txid_location db",
+            )),
+        }
+    }
+
+    /// Provides access to the txids DB table, required for Migration1_1_0To1_2_0.
+    pub(crate) fn txids_db(&self) -> Result<Database, FinalisedStateError> {
+        match self {
+            Self::V1(db) => Ok(db.txids_db()),
+            Self::V0(_) => Err(FinalisedStateError::FeatureUnavailable("v1 txids db")),
+        }
+    }
+
     /// Provides access to the finalised txout-set accumulator DB table.
     pub(crate) fn tx_out_set_info_accumulator_db(&self) -> Result<Database, FinalisedStateError> {
         match self {

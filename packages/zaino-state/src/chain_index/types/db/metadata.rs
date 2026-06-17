@@ -418,17 +418,14 @@ mod tests {
     fn apply_removed_output_on_empty_underflows() {
         let mut acc = FinalisedTxOutSetInfoAccumulator::empty();
         let outpoint = Outpoint::new([0xBB; 32], 0);
-        let out = TxOutCompact::new(1_000, [0x22; 20], 0)
-            .expect("script_type 0 (P2PKH) should be valid");
+        let out =
+            TxOutCompact::new(1_000, [0x22; 20], 0).expect("script_type 0 (P2PKH) should be valid");
 
         let err = acc
             .apply_removed_output(&outpoint, &out)
             .expect_err("remove on empty should underflow");
 
-        assert_eq!(
-            err,
-            AccumulatorDeltaError::Underflow("transaction_outputs")
-        );
+        assert_eq!(err, AccumulatorDeltaError::Underflow("transaction_outputs"));
     }
 
     #[test]
@@ -436,12 +433,12 @@ mod tests {
         let mut acc = FinalisedTxOutSetInfoAccumulator::empty();
 
         let outpoint_a = Outpoint::new([0x01; 32], 0);
-        let out_a = TxOutCompact::new(100, [0x11; 20], 0)
-            .expect("script_type 0 (P2PKH) should be valid");
+        let out_a =
+            TxOutCompact::new(100, [0x11; 20], 0).expect("script_type 0 (P2PKH) should be valid");
 
         let outpoint_b = Outpoint::new([0x02; 32], 1);
-        let out_b = TxOutCompact::new(200, [0x22; 20], 1)
-            .expect("script_type 1 (P2SH) should be valid");
+        let out_b =
+            TxOutCompact::new(200, [0x22; 20], 1).expect("script_type 1 (P2SH) should be valid");
 
         acc.apply_added_output(&outpoint_a, &out_a)
             .expect("add a should succeed");

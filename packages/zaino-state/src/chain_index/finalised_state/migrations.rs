@@ -136,31 +136,43 @@
 //!
 //! ## v1.1.0 → v1.2.0
 //!
-//! `Migration1_1_0To1_2_0` is a **minor in-place index backfill**.
+//! `Migration1_1_0To1_2_0` is a **minor in-place index backfill**, run as two sequential stages.
 //!
 //! Important changes in v1.2.0:
 //! - The `spent` outpoint index is promoted to a core finalised-state table rather than being tied
 //!   to transparent address-history support.
-//! - Existing databases must backfill `spent` from the already-stored transparent transaction data.
+//! - A reverse transaction-id index (`txid_location`, `txid -> TxLocation`) is added so
+//!   previous-output resolution is an O(log n) point lookup instead of a full scan of the
+//!   height-keyed `txids` table.
+//! - Existing databases must backfill both indices from the already-stored transparent transaction
+//!   data.
 //!
 //! Mechanics:
 //! - No shadow database is created.
-//! - The migration reads each block’s `TransparentTxList` through the existing transparent block
-//!   capability.
-//! - For every non-null transparent input, it writes:
-//!   `Outpoint -> StoredEntryFixed<TxLocation>`
-//!   into the `spent` table.
-//! - Progress is stored as a temporary `StoredEntryFixed<Height>` entry in the existing metadata DB
-//!   under `_migration_spent_progress_1_2_0_next_height`.
-//! - The temporary progress entry is removed once the migration reaches `Complete`.
+//! - Stage A builds `txid_location`: it scans the raw `txids` table from genesis to the current
+//!   finalised tip and writes `txid -> StoredEntryFixed<TxLocation>`. It runs first because Stage B
+//!   resolves previous outputs through this index.
+//! - Stage B builds `spent` + the txout-set accumulator: it reads each block's `TransparentTxList`
+//!   through the existing transparent block capability and, for every non-null transparent input,
+//!   writes `Outpoint -> StoredEntryFixed<TxLocation>` into the `spent` table, advancing the
+//!   singleton accumulator per block.
+//! - Each stage tracks its own progress as a temporary `StoredEntryFixed<Height>` entry in the
+//!   metadata DB (`_migration_txid_location_progress_1_2_0_next_height` and
+//!   `_migration_spent_progress_1_2_0_next_height`); both are removed on `Complete`.
+//! - **0.4.0-alpha.1 compatibility (temporary):** a cache built by the alpha is recorded at v1.2.0
+//!   with an empty `txid_location` index. On open, a non-empty database at version >= 1.2.0 whose
+//!   `txid_location` table is empty has its `spent` table cleared and its recorded version rolled
+//!   back to 1.1.0 so this migration rebuilds the indices in place. This shim is removed once 0.4.0
+//!   ships.
 //!
 //! Safety and resumability:
-//! - Deterministic: the `spent` index is derived only from existing transparent block data.
-//! - Crash-resumable: the temporary progress height records the next block height to migrate.
-//! - Crash-safe: spent entries for a height and the progress update are committed in the same LMDB
-//!   write transaction.
-//! - Idempotent on resume: if a spent entry already exists, the migration verifies its checksum and
-//!   `TxLocation`; matching entries are accepted, conflicting entries fail the migration.
+//! - Deterministic: both indices are derived only from existing transparent / txid block data.
+//! - Crash-resumable: each stage resumes from its own temporary progress height.
+//! - Crash-safe: for each height the `spent` entries, accumulator, and progress update are committed
+//!   in one LMDB transaction; `txid_location` entries and their progress likewise.
+//! - Idempotent on resume: an already-present `spent` / `txid_location` entry is verified by checksum
+//!   and `TxLocation`; matching entries are accepted, conflicting entries fail the migration.
+//! - Re-entrant: `migrate` drives itself off the per-stage progress keys, not `migration_status`.
 //! - No unsafe code and no temporary named LMDB database are used.
 
 use super::{
@@ -176,7 +188,7 @@ use crate::{
         finalised_state::{
             capability::{BlockTransparentExt as _, CapabilityRequest, DbMetadata},
             db::v1::{DB_VERSION_V1, TX_OUT_SET_INFO_ACCUMULATOR_KEY},
-            entry::StoredEntryFixed,
+            entry::{StoredEntryFixed, StoredEntryVar},
         },
         source::BlockchainSource,
         types::{db::metadata::FinalisedTxOutSetInfoAccumulator, GENESIS_HEIGHT},
@@ -184,7 +196,7 @@ use crate::{
     config::BlockCacheConfig,
     error::FinalisedStateError,
     BlockHash, BlockMetadata, BlockWithMetadata, ChainWork, Height, IndexedBlock, Outpoint,
-    TransactionHash, TransparentCompactTx, TxLocation, ZainoVersionedSerde as _,
+    TransactionHash, TransparentCompactTx, TxLocation, TxidList, ZainoVersionedSerde as _,
 };
 
 use lmdb::{Transaction, WriteFlags};
@@ -665,6 +677,11 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
         _cfg: BlockCacheConfig,
         _source: T,
     ) -> Result<(), FinalisedStateError> {
+        // Per-stage progress keys. Both are temporary metadata entries removed on completion.
+        // Stage A (`txid_location`) and Stage B (`spent` + accumulator) are tracked independently
+        // so a crash, or a part-built 0.4.0-alpha.1 cache, resumes each stage from its own marker.
+        const MIGRATION_TXID_LOCATION_PROGRESS_KEY: &[u8] =
+            b"_migration_txid_location_progress_1_2_0_next_height";
         const MIGRATION_SPENT_PROGRESS_KEY: &[u8] = b"_migration_spent_progress_1_2_0_next_height";
 
         info!("Starting v1.1.0 → v1.2.0 migration.");
@@ -676,324 +693,430 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
         let backend = router.backend(CapabilityRequest::WriteCore)?;
         let env = backend.env();
         let metadata_db = backend.metadata_db()?;
+        let txids_db = backend.txids_db()?;
         let spent_db = backend.spent_db()?;
+        let txid_location_db = backend.txid_location_db()?;
         let tx_out_set_info_accumulator_db = backend.tx_out_set_info_accumulator_db()?;
 
-        loop {
-            match router.get_metadata().await?.migration_status() {
-                // Create the temporary migration metadata entry and update migration status.
-                MigrationStatus::Empty => {
-                    let mut metadata: DbMetadata = router.get_metadata().await?;
-                    metadata.migration_status = MigrationStatus::PartialBuidInProgress;
-
-                    {
-                        let mut txn = env.begin_rw_txn()?;
-
-                        let next_height_entry =
-                            StoredEntryFixed::new(MIGRATION_SPENT_PROGRESS_KEY, GENESIS_HEIGHT);
-                        let next_height_bytes = next_height_entry.to_bytes()?;
-
-                        txn.put(
-                            metadata_db,
-                            &MIGRATION_SPENT_PROGRESS_KEY,
-                            &next_height_bytes,
-                            WriteFlags::empty(),
-                        )?;
-
-                        let tx_out_set_info_accumulator_entry = StoredEntryFixed::new(
-                            TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-                            FinalisedTxOutSetInfoAccumulator::empty(),
-                        );
-
-                        txn.put(
-                            tx_out_set_info_accumulator_db,
-                            &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-                            &tx_out_set_info_accumulator_entry.to_bytes()?,
-                            WriteFlags::empty(),
-                        )?;
-
-                        let metadata_key = b"metadata";
-                        let metadata_entry_bytes =
-                            StoredEntryFixed::new(metadata_key, metadata).to_bytes()?;
-
-                        txn.put(
-                            metadata_db,
-                            metadata_key,
-                            &metadata_entry_bytes,
-                            WriteFlags::empty(),
-                        )?;
-
-                        txn.commit()?;
-                    }
-                }
-
-                // Read the temporary migration progress entry, build the spent index, update migration status.
-                MigrationStatus::PartialBuidInProgress
-                | MigrationStatus::PartialBuildComplete
-                | MigrationStatus::FinalBuildInProgress => {
-                    // Read next height to migrate.
-                    let mut next_height_to_migrate = {
-                        let txn = env.begin_ro_txn()?;
-
-                        let height_bytes = match txn.get(metadata_db, &MIGRATION_SPENT_PROGRESS_KEY)
-                        {
-                            Ok(height_bytes) => height_bytes,
-                            Err(lmdb::Error::NotFound) => {
-                                return Err(FinalisedStateError::Custom(
-                                    "missing v1.2.0 spent migration progress key".to_string(),
-                                ));
-                            }
-                            Err(error) => return Err(FinalisedStateError::LmdbError(error)),
-                        };
-
-                        let height_entry = StoredEntryFixed::<Height>::from_bytes(height_bytes)
-                            .map_err(|error| {
-                                FinalisedStateError::Custom(format!(
-                                    "corrupt v1.2.0 spent migration progress entry: {error}"
-                                ))
-                            })?;
-
-                        if !height_entry.verify(MIGRATION_SPENT_PROGRESS_KEY) {
-                            return Err(FinalisedStateError::Custom(
-                                "v1.2.0 spent migration progress checksum mismatch".to_string(),
-                            ));
-                        }
-
-                        height_entry.inner().0
-                    };
-
-                    let Some(db_height) = router.db_height().await? else {
-                        let mut metadata: DbMetadata = router.get_metadata().await?;
-                        metadata.migration_status = MigrationStatus::Complete;
-                        router.update_metadata(metadata).await?;
-                        continue;
-                    };
-
-                    let db_height = db_height.0;
-
-                    // Loop: build spent entries from internal trasparent tx data
-                    // and update migration progress.
-                    while next_height_to_migrate <= db_height {
-                        let height = Height::try_from(next_height_to_migrate)
-                            .map_err(|error| FinalisedStateError::Custom(error.to_string()))?;
-
-                        let transparent_tx_list = router
-                            .backend(CapabilityRequest::BlockTransparentExt)?
-                            .get_block_transparent(height)
-                            .await?;
-
-                        let txids = {
-                            let mut txids = Vec::with_capacity(transparent_tx_list.tx().len());
-
-                            for tx_index in 0..transparent_tx_list.tx().len() {
-                                let tx_index = u16::try_from(tx_index).map_err(|_| {
-                                    FinalisedStateError::Custom(format!(
-                                        "transaction index out of range at height {}",
-                                        height.0
-                                    ))
-                                })?;
-
-                                let tx_location = TxLocation::new(height.0, tx_index);
-
-                                let txid = router
-                                    .backend(CapabilityRequest::BlockCoreExt)?
-                                    .get_txid(tx_location)
-                                    .await?;
-
-                                txids.push(txid);
-                            }
-
-                            txids
-                        };
-
-                        let transparent = transparent_tx_list.tx().to_vec();
-
-                        let mut spent_map = std::collections::HashMap::new();
-
-                        for (tx_index, tx_opt) in transparent.iter().enumerate() {
-                            let Some(transparent_tx) = tx_opt else {
-                                continue;
-                            };
-
-                            let tx_index = u16::try_from(tx_index).map_err(|_| {
-                                FinalisedStateError::Custom(format!(
-                                    "transaction index out of range at height {}",
-                                    height.0
-                                ))
-                            })?;
-
-                            let tx_location = TxLocation::new(height.0, tx_index);
-
-                            for input in transparent_tx.inputs() {
-                                if input.is_null_prevout() {
-                                    continue;
-                                }
-
-                                let outpoint =
-                                    Outpoint::new(*input.prevout_txid(), input.prevout_index());
-
-                                if spent_map.insert(outpoint, tx_location).is_some() {
-                                    return Err(FinalisedStateError::Custom(format!(
-                    "duplicate transparent spend for outpoint {:?} at height {}",
-                    outpoint, height.0
-                )));
-                                }
-                            }
-                        }
-
-                        let tx_out_set_info_accumulator = match backend.as_ref() {
-                            DbBackend::V1(database) => {
-                                // Pair `txids` and `transparent` for the accumulator API.
-                                // The structural source-pairing guarantee from `write_block`
-                                // does not apply here — both vectors are populated from two
-                                // different backend lookups keyed by tx_index — but the
-                                // accumulator's input shape is the same paired slice.
-                                let transactions: Vec<(
-                                    TransactionHash,
-                                    Option<TransparentCompactTx>,
-                                )> = txids
-                                    .iter()
-                                    .copied()
-                                    .zip(transparent.iter().cloned())
-                                    .collect();
-
-                                database
-                                    .calculate_tx_out_set_info_accumulator_after_block(
-                                        height,
-                                        &transactions,
-                                        &spent_map,
-                                    )
-                                    .await?
-                            }
-                            DbBackend::V0(_) => {
-                                return Err(FinalisedStateError::FeatureUnavailable(
-                                    "v1 txout-set accumulator migration",
-                                ));
-                            }
-                        };
-
-                        // Write new spent data, txout-set accumulator, and migration progress in the same LMDB
-                        // transaction, ensuring they never drift if migration is stopped due to a system crash.
-                        {
-                            let mut txn = env.begin_rw_txn()?;
-
-                            for (outpoint, tx_location) in &spent_map {
-                                let outpoint_bytes = outpoint.to_bytes()?;
-                                let tx_location_entry_bytes =
-                                    StoredEntryFixed::new(&outpoint_bytes, *tx_location)
-                                        .to_bytes()?;
-
-                                match txn.put(
-                                    spent_db,
-                                    &outpoint_bytes,
-                                    &tx_location_entry_bytes,
-                                    WriteFlags::NO_OVERWRITE,
-                                ) {
-                                    Ok(()) => {}
-
-                                    Err(lmdb::Error::KeyExist) => {
-                                        let existing_bytes = txn
-                                            .get(spent_db, &outpoint_bytes)
-                                            .map_err(FinalisedStateError::LmdbError)?;
-
-                                        let existing_entry =
-                                            StoredEntryFixed::<TxLocation>::from_bytes(
-                                                existing_bytes,
-                                            )
-                                            .map_err(
-                                                |error| {
-                                                    FinalisedStateError::Custom(format!(
-                                    "corrupt existing spent entry for outpoint {:?}: {error}",
-                                    outpoint
-                                ))
-                                                },
-                                            )?;
-
-                                        if !existing_entry.verify(&outpoint_bytes) {
-                                            return Err(FinalisedStateError::Custom(format!(
-                            "existing spent entry checksum mismatch for outpoint {:?}",
-                            outpoint
-                        )));
-                                        }
-
-                                        if existing_entry.inner() != tx_location {
-                                            return Err(FinalisedStateError::Custom(format!(
-                            "conflicting spent entry for outpoint {:?} at height {}",
-                            outpoint, height.0
-                        )));
-                                        }
-                                    }
-
-                                    Err(error) => {
-                                        return Err(FinalisedStateError::LmdbError(error))
-                                    }
-                                }
-                            }
-
-                            let tx_out_set_info_accumulator_entry = StoredEntryFixed::new(
-                                TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-                                tx_out_set_info_accumulator,
-                            );
-
-                            txn.put(
-                                tx_out_set_info_accumulator_db,
-                                &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-                                &tx_out_set_info_accumulator_entry.to_bytes()?,
-                                WriteFlags::empty(),
-                            )?;
-
-                            let next_height = height + 1;
-
-                            let next_height_entry =
-                                StoredEntryFixed::new(MIGRATION_SPENT_PROGRESS_KEY, next_height);
-                            let next_height_bytes = next_height_entry.to_bytes()?;
-
-                            txn.put(
-                                metadata_db,
-                                &MIGRATION_SPENT_PROGRESS_KEY,
-                                &next_height_bytes,
-                                WriteFlags::empty(),
-                            )?;
-
-                            txn.commit()?;
-                        }
-
-                        next_height_to_migrate = height.0 + 1;
-                    }
-
-                    let mut metadata: DbMetadata = router.get_metadata().await?;
-                    metadata.migration_status = MigrationStatus::Complete;
-                    router.update_metadata(metadata).await?;
-                }
-
-                // Delete the temporary migration progress entry, update DB metadata.
-                MigrationStatus::Complete => {
-                    {
-                        let mut txn = env.begin_rw_txn()?;
-
-                        match txn.del(metadata_db, &MIGRATION_SPENT_PROGRESS_KEY, None) {
-                            Ok(()) | Err(lmdb::Error::NotFound) => {}
-                            Err(error) => return Err(FinalisedStateError::LmdbError(error)),
-                        }
-
-                        txn.commit()?;
-                    }
-
-                    let mut metadata: DbMetadata = router.get_metadata().await?;
-
-                    metadata.version = <Self as Migration<T>>::TO_VERSION;
-                    metadata.schema_hash =
-                        crate::chain_index::finalised_state::db::v1::DB_SCHEMA_V1_HASH;
-                    metadata.migration_status = MigrationStatus::Empty;
-
-                    router.update_metadata(metadata).await?;
-
-                    break;
-                }
+        // Record that a migration is in progress (observability only; the migration resumes from
+        // the per-stage progress keys below, not from `migration_status`).
+        {
+            let mut metadata: DbMetadata = router.get_metadata().await?;
+            if metadata.migration_status == MigrationStatus::Empty {
+                metadata.migration_status = MigrationStatus::PartialBuidInProgress;
+                router.update_metadata(metadata).await?;
             }
         }
 
-        // Turn transparent history extension back on now index has been built.
+        // Reads a temporary progress height, returning `None` if the key is absent.
+        let read_progress = |key: &[u8]| -> Result<Option<u32>, FinalisedStateError> {
+            let txn = env.begin_ro_txn()?;
+            match txn.get(metadata_db, &key) {
+                Ok(bytes) => {
+                    let entry = StoredEntryFixed::<Height>::from_bytes(bytes).map_err(|error| {
+                        FinalisedStateError::Custom(format!(
+                            "corrupt v1.2.0 migration progress entry: {error}"
+                        ))
+                    })?;
+                    if !entry.verify(key) {
+                        return Err(FinalisedStateError::Custom(
+                            "v1.2.0 migration progress checksum mismatch".to_string(),
+                        ));
+                    }
+                    Ok(Some(entry.inner().0))
+                }
+                Err(lmdb::Error::NotFound) => Ok(None),
+                Err(error) => Err(FinalisedStateError::LmdbError(error)),
+            }
+        };
+
+        // Nothing to index or backfill on an empty database; fall through to finalisation.
+        if let Some(db_tip) = router.db_height().await? {
+            let db_tip = db_tip.0;
+
+            // ===== Stage A: build the reverse txid index (`txid_location`). =====
+            //
+            // Stage B depends on this index to resolve previous outputs, so it is built in full
+            // first. Resumes from its own progress key, so an interrupted run — or a 0.4.0-alpha.1
+            // cache whose migration never built this index — continues from genesis or the last
+            // committed height.
+            let mut next_height =
+                read_progress(MIGRATION_TXID_LOCATION_PROGRESS_KEY)?.unwrap_or(GENESIS_HEIGHT.0);
+
+            info!(
+                resume_height = next_height,
+                db_tip, "v1.2.0 migration Stage A: building txid_location index"
+            );
+            let stage_a_started = std::time::Instant::now();
+
+            while next_height <= db_tip {
+                let height = Height::try_from(next_height)
+                    .map_err(|error| FinalisedStateError::Custom(error.to_string()))?;
+                let height_bytes = height.to_bytes()?;
+
+                // Read and verify the stored txid list for this height.
+                let txids = {
+                    let txn = env.begin_ro_txn()?;
+                    let raw = txn
+                        .get(txids_db, &height_bytes)
+                        .map_err(FinalisedStateError::LmdbError)?;
+                    let entry = StoredEntryVar::<TxidList>::from_bytes(raw).map_err(|error| {
+                        FinalisedStateError::Custom(format!("txids corrupt data: {error}"))
+                    })?;
+                    if !entry.verify(&height_bytes) {
+                        return Err(FinalisedStateError::Custom(
+                            "txids checksum mismatch".to_string(),
+                        ));
+                    }
+                    entry.inner().txids().to_vec()
+                };
+
+                // Reverse-index entries, sorted by txid so the random-keyed B-tree inserts locally.
+                let mut entries: Vec<([u8; 32], TxLocation)> = Vec::with_capacity(txids.len());
+                for (tx_index, txid) in txids.iter().enumerate() {
+                    let tx_index = u16::try_from(tx_index).map_err(|_| {
+                        FinalisedStateError::Custom(format!(
+                            "transaction index out of range at height {}",
+                            height.0
+                        ))
+                    })?;
+                    entries.push(((*txid).into(), TxLocation::new(height.0, tx_index)));
+                }
+                entries.sort_by_key(|entry| entry.0);
+
+                // Write the height's entries and advance Stage A progress atomically.
+                {
+                    let mut txn = env.begin_rw_txn()?;
+
+                    for (txid_bytes, tx_location) in &entries {
+                        let entry_bytes =
+                            StoredEntryFixed::new(txid_bytes, *tx_location).to_bytes()?;
+
+                        match txn.put(
+                            txid_location_db,
+                            txid_bytes,
+                            &entry_bytes,
+                            WriteFlags::NO_OVERWRITE,
+                        ) {
+                            Ok(()) => {}
+
+                            // Idempotent on resume: an existing entry must match exactly.
+                            Err(lmdb::Error::KeyExist) => {
+                                let existing_bytes = txn
+                                    .get(txid_location_db, txid_bytes)
+                                    .map_err(FinalisedStateError::LmdbError)?;
+                                let existing_entry =
+                                    StoredEntryFixed::<TxLocation>::from_bytes(existing_bytes)
+                                        .map_err(|error| {
+                                            FinalisedStateError::Custom(format!(
+                                                "corrupt existing txid_location entry: {error}"
+                                            ))
+                                        })?;
+                                if !existing_entry.verify(txid_bytes) {
+                                    return Err(FinalisedStateError::Custom(
+                                        "existing txid_location entry checksum mismatch"
+                                            .to_string(),
+                                    ));
+                                }
+                                if existing_entry.inner() != tx_location {
+                                    return Err(FinalisedStateError::Custom(format!(
+                                        "conflicting txid_location entry at height {}",
+                                        height.0
+                                    )));
+                                }
+                            }
+
+                            Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+                        }
+                    }
+
+                    let progress =
+                        StoredEntryFixed::new(MIGRATION_TXID_LOCATION_PROGRESS_KEY, height + 1);
+                    txn.put(
+                        metadata_db,
+                        &MIGRATION_TXID_LOCATION_PROGRESS_KEY,
+                        &progress.to_bytes()?,
+                        WriteFlags::empty(),
+                    )?;
+
+                    txn.commit()?;
+                }
+
+                if next_height % 50_000 == 0 {
+                    info!(
+                        height = next_height,
+                        db_tip,
+                        elapsed = ?stage_a_started.elapsed(),
+                        "v1.2.0 migration Stage A progress"
+                    );
+                }
+
+                next_height = height.0 + 1;
+            }
+
+            info!(
+                db_tip,
+                elapsed = ?stage_a_started.elapsed(),
+                "v1.2.0 migration Stage A complete"
+            );
+
+            // ===== Stage B: backfill `spent` + txout-set accumulator. =====
+            //
+            // Resumes from its own progress key, preserving partial work from an interrupted alpha
+            // migration. If the key is absent (fresh, or a completed alpha cache rolled back to
+            // v1.1.0) it starts at genesis with an empty accumulator.
+            let mut next_height_to_migrate = match read_progress(MIGRATION_SPENT_PROGRESS_KEY)? {
+                Some(height) => height,
+                None => {
+                    let mut txn = env.begin_rw_txn()?;
+
+                    let progress =
+                        StoredEntryFixed::new(MIGRATION_SPENT_PROGRESS_KEY, GENESIS_HEIGHT);
+                    txn.put(
+                        metadata_db,
+                        &MIGRATION_SPENT_PROGRESS_KEY,
+                        &progress.to_bytes()?,
+                        WriteFlags::empty(),
+                    )?;
+
+                    let accumulator = StoredEntryFixed::new(
+                        TX_OUT_SET_INFO_ACCUMULATOR_KEY,
+                        FinalisedTxOutSetInfoAccumulator::empty(),
+                    );
+                    txn.put(
+                        tx_out_set_info_accumulator_db,
+                        &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
+                        &accumulator.to_bytes()?,
+                        WriteFlags::empty(),
+                    )?;
+
+                    txn.commit()?;
+                    GENESIS_HEIGHT.0
+                }
+            };
+
+            // Re-read the tip in case the chain advanced while Stage A was running.
+            let db_tip = router
+                .db_height()
+                .await?
+                .map(|height| height.0)
+                .unwrap_or(db_tip);
+
+            info!(
+                resume_height = next_height_to_migrate,
+                db_tip, "v1.2.0 migration Stage B: backfilling spent index"
+            );
+            let stage_b_started = std::time::Instant::now();
+
+            while next_height_to_migrate <= db_tip {
+                let height = Height::try_from(next_height_to_migrate)
+                    .map_err(|error| FinalisedStateError::Custom(error.to_string()))?;
+
+                let transparent_tx_list = router
+                    .backend(CapabilityRequest::BlockTransparentExt)?
+                    .get_block_transparent(height)
+                    .await?;
+
+                let txids = {
+                    let mut txids = Vec::with_capacity(transparent_tx_list.tx().len());
+
+                    for tx_index in 0..transparent_tx_list.tx().len() {
+                        let tx_index = u16::try_from(tx_index).map_err(|_| {
+                            FinalisedStateError::Custom(format!(
+                                "transaction index out of range at height {}",
+                                height.0
+                            ))
+                        })?;
+
+                        let tx_location = TxLocation::new(height.0, tx_index);
+
+                        let txid = router
+                            .backend(CapabilityRequest::BlockCoreExt)?
+                            .get_txid(tx_location)
+                            .await?;
+
+                        txids.push(txid);
+                    }
+
+                    txids
+                };
+
+                let transparent = transparent_tx_list.tx().to_vec();
+
+                let mut spent_map = std::collections::HashMap::new();
+
+                for (tx_index, tx_opt) in transparent.iter().enumerate() {
+                    let Some(transparent_tx) = tx_opt else {
+                        continue;
+                    };
+
+                    let tx_index = u16::try_from(tx_index).map_err(|_| {
+                        FinalisedStateError::Custom(format!(
+                            "transaction index out of range at height {}",
+                            height.0
+                        ))
+                    })?;
+
+                    let tx_location = TxLocation::new(height.0, tx_index);
+
+                    for input in transparent_tx.inputs() {
+                        if input.is_null_prevout() {
+                            continue;
+                        }
+
+                        let outpoint = Outpoint::new(*input.prevout_txid(), input.prevout_index());
+
+                        if spent_map.insert(outpoint, tx_location).is_some() {
+                            return Err(FinalisedStateError::Custom(format!(
+                                "duplicate transparent spend for outpoint {:?} at height {}",
+                                outpoint, height.0
+                            )));
+                        }
+                    }
+                }
+
+                let tx_out_set_info_accumulator = match backend.as_ref() {
+                    DbBackend::V1(database) => {
+                        // Pair `txids` and `transparent` for the accumulator API.
+                        let transactions: Vec<(TransactionHash, Option<TransparentCompactTx>)> =
+                            txids
+                                .iter()
+                                .copied()
+                                .zip(transparent.iter().cloned())
+                                .collect();
+
+                        database
+                            .calculate_tx_out_set_info_accumulator_after_block(
+                                height,
+                                &transactions,
+                                &spent_map,
+                            )
+                            .await?
+                    }
+                    DbBackend::V0(_) => {
+                        return Err(FinalisedStateError::FeatureUnavailable(
+                            "v1 txout-set accumulator migration",
+                        ));
+                    }
+                };
+
+                // Write spent data, txout-set accumulator, and Stage B progress in the same LMDB
+                // transaction, ensuring they never drift if migration is stopped by a system crash.
+                {
+                    let mut txn = env.begin_rw_txn()?;
+
+                    for (outpoint, tx_location) in &spent_map {
+                        let outpoint_bytes = outpoint.to_bytes()?;
+                        let tx_location_entry_bytes =
+                            StoredEntryFixed::new(&outpoint_bytes, *tx_location).to_bytes()?;
+
+                        match txn.put(
+                            spent_db,
+                            &outpoint_bytes,
+                            &tx_location_entry_bytes,
+                            WriteFlags::NO_OVERWRITE,
+                        ) {
+                            Ok(()) => {}
+
+                            Err(lmdb::Error::KeyExist) => {
+                                let existing_bytes = txn
+                                    .get(spent_db, &outpoint_bytes)
+                                    .map_err(FinalisedStateError::LmdbError)?;
+
+                                let existing_entry =
+                                    StoredEntryFixed::<TxLocation>::from_bytes(existing_bytes)
+                                        .map_err(|error| {
+                                            FinalisedStateError::Custom(format!(
+                                        "corrupt existing spent entry for outpoint {:?}: {error}",
+                                        outpoint
+                                    ))
+                                        })?;
+
+                                if !existing_entry.verify(&outpoint_bytes) {
+                                    return Err(FinalisedStateError::Custom(format!(
+                                        "existing spent entry checksum mismatch for outpoint {:?}",
+                                        outpoint
+                                    )));
+                                }
+
+                                if existing_entry.inner() != tx_location {
+                                    return Err(FinalisedStateError::Custom(format!(
+                                        "conflicting spent entry for outpoint {:?} at height {}",
+                                        outpoint, height.0
+                                    )));
+                                }
+                            }
+
+                            Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+                        }
+                    }
+
+                    let tx_out_set_info_accumulator_entry = StoredEntryFixed::new(
+                        TX_OUT_SET_INFO_ACCUMULATOR_KEY,
+                        tx_out_set_info_accumulator,
+                    );
+
+                    txn.put(
+                        tx_out_set_info_accumulator_db,
+                        &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
+                        &tx_out_set_info_accumulator_entry.to_bytes()?,
+                        WriteFlags::empty(),
+                    )?;
+
+                    let progress = StoredEntryFixed::new(MIGRATION_SPENT_PROGRESS_KEY, height + 1);
+                    txn.put(
+                        metadata_db,
+                        &MIGRATION_SPENT_PROGRESS_KEY,
+                        &progress.to_bytes()?,
+                        WriteFlags::empty(),
+                    )?;
+
+                    txn.commit()?;
+                }
+
+                if next_height_to_migrate % 10_000 == 0 {
+                    info!(
+                        height = next_height_to_migrate,
+                        db_tip,
+                        elapsed = ?stage_b_started.elapsed(),
+                        "v1.2.0 migration Stage B progress"
+                    );
+                }
+
+                next_height_to_migrate = height.0 + 1;
+            }
+
+            info!(
+                db_tip,
+                elapsed = ?stage_b_started.elapsed(),
+                "v1.2.0 migration Stage B complete"
+            );
+        }
+
+        // ===== Finalise: remove both progress keys and advance metadata to v1.2.0. =====
+        {
+            let mut txn = env.begin_rw_txn()?;
+
+            for key in [
+                MIGRATION_TXID_LOCATION_PROGRESS_KEY,
+                MIGRATION_SPENT_PROGRESS_KEY,
+            ] {
+                match txn.del(metadata_db, &key, None) {
+                    Ok(()) | Err(lmdb::Error::NotFound) => {}
+                    Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+                }
+            }
+
+            txn.commit()?;
+        }
+
+        let mut metadata: DbMetadata = router.get_metadata().await?;
+        metadata.version = <Self as Migration<T>>::TO_VERSION;
+        metadata.schema_hash = crate::chain_index::finalised_state::db::v1::DB_SCHEMA_V1_HASH;
+        metadata.migration_status = MigrationStatus::Empty;
+        router.update_metadata(metadata).await?;
+
+        // Turn transparent history extension back on now the indices are built.
         router.extend_primary_caps(Capability::TRANSPARENT_HIST_EXT);
 
         info!("v1.1.0 to v1.2.0 migration complete.");

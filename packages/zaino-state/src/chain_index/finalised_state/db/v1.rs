@@ -125,8 +125,8 @@ pub(crate) const DB_SCHEMA_V1_TEXT: &str = include_str!("db_schema_v1.txt");
 /// This value is compared against the schema hash stored in the metadata record to detect schema
 /// drift without a corresponding version bump.
 pub(crate) const DB_SCHEMA_V1_HASH: [u8; 32] = [
-    0x4d, 0x68, 0xd5, 0x0c, 0x74, 0x77, 0x31, 0x95, 0xa5, 0x0e, 0x24, 0xeb, 0xfe, 0x36, 0xec, 0x39,
-    0xa7, 0xf8, 0xba, 0xef, 0xaa, 0xc2, 0xf1, 0x61, 0x92, 0xb4, 0x4c, 0x7e, 0x21, 0x61, 0x84, 0x3f,
+    0x11, 0xb2, 0x6a, 0x12, 0x08, 0x67, 0xf0, 0x42, 0xf6, 0x31, 0x45, 0xea, 0x87, 0xe7, 0x23, 0x75,
+    0x40, 0x3b, 0xf2, 0x14, 0xaa, 0x2b, 0x00, 0x12, 0xec, 0xa4, 0x4d, 0x00, 0xe9, 0x0b, 0x07, 0x9b,
 ];
 
 /// *Current* database V1 version.
@@ -226,6 +226,12 @@ pub(crate) struct DbV1 {
     ///
     /// Used to check spent status of given outpoints, retuning spending tx.
     spent: Database,
+
+    /// Reverse txid index: `TransactionHash` -> `StoredEntryFixed<TxLocation>`
+    ///
+    /// Maps a transaction id to its on-chain `TxLocation`, giving O(log n) previous-output
+    /// resolution instead of a full scan of the height-keyed `txids` table.
+    txid_location: Database,
 
     /// Finalised txout-set accumulator:
     /// `"tx_out_set_info_accumulator"` -> `StoredEntryFixed<FinalisedTxOutSetInfoAccumulator>`.
@@ -348,6 +354,9 @@ impl DbV1 {
 
         let spent = super::open_or_create_db(&env, "spent_1_0_0", DatabaseFlags::empty()).await?;
 
+        let txid_location =
+            super::open_or_create_db(&env, "txid_location_1_0_0", DatabaseFlags::empty()).await?;
+
         let tx_out_set_info_accumulator = super::open_or_create_db(
             &env,
             TX_OUT_SET_INFO_ACCUMULATOR_DATABASE_NAME,
@@ -380,6 +389,7 @@ impl DbV1 {
                 commitment_tree_data,
                 heights: hashes,
                 spent,
+                txid_location,
                 tx_out_set_info_accumulator,
                 address_history,
                 metadata,
@@ -404,6 +414,7 @@ impl DbV1 {
                 commitment_tree_data,
                 heights: hashes,
                 spent,
+                txid_location,
                 tx_out_set_info_accumulator,
                 metadata,
                 validated_tip: Arc::new(AtomicU32::new(0)),
@@ -417,6 +428,11 @@ impl DbV1 {
 
         // Validate (or initialise) the metadata entry before we touch any tables.
         zaino_db.check_schema_version().await?;
+
+        // Temporary 0.4.0-alpha.1 compatibility: heal a cache whose alpha migration left the
+        // `txid_location` index unbuilt. Runs before the background validator starts so it operates
+        // on a quiescent database.
+        zaino_db.reconcile_alpha_txid_location_index().await?;
 
         // Spawn handler task to perform background validation and trailing tx cleanup.
         zaino_db.spawn_handler().await?;
@@ -445,6 +461,7 @@ impl DbV1 {
             commitment_tree_data: self.commitment_tree_data,
             heights: self.heights,
             spent: self.spent,
+            txid_location: self.txid_location,
             tx_out_set_info_accumulator: self.tx_out_set_info_accumulator,
             #[cfg(feature = "transparent_address_history_experimental")]
             address_history: self.address_history,
@@ -626,6 +643,7 @@ impl DbV1 {
             commitment_tree_data: self.commitment_tree_data,
             heights: self.heights,
             spent: self.spent,
+            txid_location: self.txid_location,
             tx_out_set_info_accumulator: self.tx_out_set_info_accumulator,
             #[cfg(feature = "transparent_address_history_experimental")]
             address_history: self.address_history,
@@ -666,6 +684,118 @@ impl DbV1 {
     /// Provudes access to the spent DB table, required for Migration1_1_0To1_2_0.
     pub(crate) fn spent_db(&self) -> Database {
         self.spent
+    }
+
+    /// Provides access to the reverse txid-index DB table, required for Migration1_1_0To1_2_0
+    /// to backfill `txid_location` before resolving previous outputs.
+    pub(crate) fn txid_location_db(&self) -> Database {
+        self.txid_location
+    }
+
+    /// Provides access to the txids DB table, required for Migration1_1_0To1_2_0 to build the
+    /// reverse txid index directly from stored block data.
+    pub(crate) fn txids_db(&self) -> Database {
+        self.txids
+    }
+
+    /// **Temporary 0.4.0-alpha.1 cache compatibility.**
+    ///
+    /// The 0.4.0-alpha.1 build shipped a v1.1.0 → v1.2.0 migration (and write path) that did not
+    /// populate the new `txid_location` reverse index. A cache that *completed* that migration is
+    /// recorded at version 1.2.0 with an empty `txid_location` table, and the migration manager
+    /// would not re-select any step for it — so the corrected code would fail on its first new
+    /// block write. When a non-empty database is recorded at `>= 1.2.0` but its `txid_location`
+    /// index is empty, we roll the recorded version back to 1.1.0 (status `Empty`) so the corrected
+    /// v1.1.0 → v1.2.0 migration rebuilds the index in place rather than forcing a full rebuild.
+    ///
+    /// TODO: Remove this shim once 0.4.0 is released; from then on no cache can reach this state.
+    async fn reconcile_alpha_txid_location_index(&self) -> Result<(), FinalisedStateError> {
+        tokio::task::block_in_place(|| {
+            let mut txn = self.env.begin_rw_txn()?;
+
+            // A fresh database (no metadata yet) needs no reconciliation.
+            let raw = match txn.get(self.metadata, b"metadata") {
+                Ok(raw) => raw,
+                Err(lmdb::Error::NotFound) => return Ok(()),
+                Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+            };
+            let stored = StoredEntryFixed::<DbMetadata>::from_bytes(raw).map_err(|error| {
+                FinalisedStateError::Custom(format!("corrupt metadata: {error}"))
+            })?;
+            if !stored.verify(b"metadata") {
+                return Err(FinalisedStateError::Custom(
+                    "metadata checksum mismatch".to_string(),
+                ));
+            }
+            let mut metadata = stored.item;
+
+            // Only caches recorded at >= 1.2.0 can be in the broken alpha state.
+            if metadata.version
+                < (DbVersion {
+                    major: 1,
+                    minor: 2,
+                    patch: 0,
+                })
+            {
+                return Ok(());
+            }
+
+            // A genuinely fresh database (no blocks) needs no reconciliation; the write path builds
+            // `txid_location` as it syncs. Under the corrected code a non-empty database always has
+            // a non-empty index, so an empty index on a non-empty database means an alpha cache.
+            let has_blocks = {
+                let mut cursor = txn.open_ro_cursor(self.headers)?;
+                cursor.iter().next().is_some()
+            };
+            let index_empty = {
+                let mut cursor = txn.open_ro_cursor(self.txid_location)?;
+                cursor.iter().next().is_none()
+            };
+            if !has_blocks || !index_empty {
+                return Ok(());
+            }
+
+            warn!(
+                "detected a 0.4.0-alpha.1 cache recorded at v{} with an unbuilt txid_location \
+                 index; rolling the recorded version back to 1.1.0 so the corrected migration \
+                 rebuilds it in place",
+                metadata.version
+            );
+
+            // Clear the `spent` index the alpha migration built: the corrected Stage B rebuilds it
+            // from genesis, and its accumulator forward-check rejects re-adding already-present
+            // spends, so it must start from an empty table. Drop any stale per-stage progress keys
+            // so both stages restart at genesis. (`txid_location` is already empty — that is the
+            // condition that brought us here.)
+            txn.clear_db(self.spent)?;
+            for key in [
+                b"_migration_txid_location_progress_1_2_0_next_height".as_slice(),
+                b"_migration_spent_progress_1_2_0_next_height".as_slice(),
+            ] {
+                match txn.del(self.metadata, &key, None) {
+                    Ok(()) | Err(lmdb::Error::NotFound) => {}
+                    Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+                }
+            }
+
+            metadata.version = DbVersion {
+                major: 1,
+                minor: 1,
+                patch: 0,
+            };
+            metadata.migration_status = MigrationStatus::Empty;
+
+            let entry = StoredEntryFixed::new(b"metadata", metadata);
+            txn.put(
+                self.metadata,
+                b"metadata",
+                &entry.to_bytes()?,
+                WriteFlags::empty(),
+            )?;
+            txn.commit()?;
+
+            Ok(())
+        })
     }
 
     /// Provides access to the finalised txout-set accumulator DB table.
@@ -757,6 +887,9 @@ impl DbV1 {
 
         let spent = super::open_or_create_db(&env, "spent_1_0_0", DatabaseFlags::empty()).await?;
 
+        let txid_location =
+            super::open_or_create_db(&env, "txid_location_1_0_0", DatabaseFlags::empty()).await?;
+
         let tx_out_set_info_accumulator = super::open_or_create_db(
             &env,
             TX_OUT_SET_INFO_ACCUMULATOR_DATABASE_NAME,
@@ -786,6 +919,7 @@ impl DbV1 {
                 commitment_tree_data,
                 heights: hashes,
                 spent,
+                txid_location,
                 tx_out_set_info_accumulator,
                 address_history,
                 metadata,
@@ -809,6 +943,7 @@ impl DbV1 {
                 commitment_tree_data,
                 heights: hashes,
                 spent,
+                txid_location,
                 tx_out_set_info_accumulator,
                 metadata,
                 validated_tip: Arc::new(AtomicU32::new(0)),

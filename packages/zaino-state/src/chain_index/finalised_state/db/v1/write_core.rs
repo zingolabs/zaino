@@ -34,6 +34,9 @@ impl DbV1 {
     /// Writes a given (finalised) [`IndexedBlock`] to ZainoDB.
     ///
     /// NOTE: This method should never leave a block partially written to the database.
+    // `u32::is_multiple_of` is only stable from Rust 1.87; the `% 100 == 0` form below keeps the
+    // crate buildable on our older minimum supported Rust version.
+    #[allow(clippy::manual_is_multiple_of)]
     pub(crate) async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
         self.status.store(StatusType::Syncing);
         let block_hash = block.context.index.hash;
@@ -311,6 +314,22 @@ impl DbV1 {
         let (txids, transparent): (Vec<TransactionHash>, Vec<Option<TransparentCompactTx>>) =
             transactions.into_iter().unzip();
 
+        // Reverse txid index entries (`txid -> TxLocation`). Built before `txids` is moved into
+        // the `TxidList` below, and sorted by txid so the random-keyed `txid_location` B-tree
+        // sees locally-ordered inserts.
+        let mut txid_location_entries: Vec<([u8; 32], TxLocation)> =
+            Vec::with_capacity(txids.len());
+        for (tx_index, txid) in txids.iter().enumerate() {
+            let tx_index = u16::try_from(tx_index).map_err(|_| {
+                FinalisedStateError::Custom(format!(
+                    "transaction index out of range at height {}",
+                    block_height.0
+                ))
+            })?;
+            txid_location_entries.push(((*txid).into(), TxLocation::new(block_height.0, tx_index)));
+        }
+        txid_location_entries.sort_by_key(|entry| entry.0);
+
         let txid_entry = StoredEntryVar::new(&block_height_bytes, TxidList::new(txids));
         let transparent_entry =
             StoredEntryVar::new(&block_height_bytes, TransparentTxList::new(transparent));
@@ -328,6 +347,7 @@ impl DbV1 {
             commitment_tree_data: self.commitment_tree_data,
             heights: self.heights,
             spent: self.spent,
+            txid_location: self.txid_location,
             tx_out_set_info_accumulator: self.tx_out_set_info_accumulator,
             #[cfg(feature = "transparent_address_history_experimental")]
             address_history: self.address_history,
@@ -363,6 +383,17 @@ impl DbV1 {
                 &txid_entry.to_bytes()?,
                 WriteFlags::NO_OVERWRITE,
             )?;
+
+            // Reverse txid index: `txid -> TxLocation`.
+            for (txid_bytes, tx_location) in &txid_location_entries {
+                let entry_bytes = StoredEntryFixed::new(txid_bytes, *tx_location).to_bytes()?;
+                txn.put(
+                    zaino_db.txid_location,
+                    txid_bytes,
+                    &entry_bytes,
+                    WriteFlags::NO_OVERWRITE,
+                )?;
+            }
 
             txn.put(
                 zaino_db.transparent,
@@ -505,11 +536,10 @@ impl DbV1 {
                 }
             }
 
+            // `txn.commit()` is durable: the LMDB env is opened without NO_SYNC, so commit
+            // fsyncs the data and meta pages. Validation below is read-only and observes the
+            // committed state without any further sync, so no explicit `env.sync` is needed here.
             txn.commit()?;
-
-            zaino_db.env.sync(true).map_err(|e| {
-                FinalisedStateError::Custom(format!("LMDB sync failed before validation: {e}"))
-            })?;
 
             zaino_db.validate_block_blocking(block_height, block_hash)?;
 
@@ -535,10 +565,10 @@ impl DbV1 {
 
         match post_result {
             Ok(_) => {
-                tokio::task::block_in_place(|| self.env.sync(true))
-                    .map_err(|e| FinalisedStateError::Custom(format!("LMDB sync failed: {e}")))?;
+                // The block (and its `txid_location` entries) were durably committed inside the
+                // blocking task above; validation succeeded and wrote nothing, so no extra sync.
                 self.status.store(StatusType::Ready);
-                if block.context.index.height.0.is_multiple_of(100) {
+                if block.context.index.height.0 % 100 == 0 {
                     info!(
                         "Successfully committed block {} at height {} to ZainoDB.",
                         &block.context.index.hash, &block.context.index.height
@@ -915,6 +945,12 @@ impl DbV1 {
             .calculate_tx_out_set_info_accumulator_after_delete_block(&transactions, &spent_map)
             .await?;
 
+        // Reverse txid index keys written for this block by `write_block`.
+        let txid_location_keys: Vec<[u8; 32]> = transactions
+            .iter()
+            .map(|(txid, _)| (*txid).into())
+            .collect();
+
         // Delete all block data from db.
         let zaino_db = Self {
             env: Arc::clone(&self.env),
@@ -926,6 +962,7 @@ impl DbV1 {
             commitment_tree_data: self.commitment_tree_data,
             heights: self.heights,
             spent: self.spent,
+            txid_location: self.txid_location,
             tx_out_set_info_accumulator: self.tx_out_set_info_accumulator,
             #[cfg(feature = "transparent_address_history_experimental")]
             address_history: self.address_history,
@@ -962,6 +999,14 @@ impl DbV1 {
                         })?;
 
                 match txn.del(zaino_db.spent, outpoint_bytes, None) {
+                    Ok(()) | Err(lmdb::Error::NotFound) => {}
+                    Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                }
+            }
+
+            // Delete reverse txid index data.
+            for txid_bytes in &txid_location_keys {
+                match txn.del(zaino_db.txid_location, txid_bytes, None) {
                     Ok(()) | Err(lmdb::Error::NotFound) => {}
                     Err(e) => return Err(FinalisedStateError::LmdbError(e)),
                 }

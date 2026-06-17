@@ -129,8 +129,10 @@ fn apply_in_block_transitions(
             }
         }
 
-        let spent_count =
-            spendable_spent_count_by_tx.get(transaction_hash).copied().unwrap_or(0);
+        let spent_count = spendable_spent_count_by_tx
+            .get(transaction_hash)
+            .copied()
+            .unwrap_or(0);
 
         let spendable_count = spendable_counts.get(transaction_hash).copied().unwrap_or(0);
 
@@ -183,8 +185,7 @@ fn apply_entry_deltas(
 fn index_created_outputs(
     transactions: &[(TransactionHash, Option<TransparentCompactTx>)],
 ) -> Result<(HashMap<TransactionHash, u32>, HashMap<TransactionHash, u32>), FinalisedStateError> {
-    let mut total_by_tx: HashMap<TransactionHash, u32> =
-        HashMap::with_capacity(transactions.len());
+    let mut total_by_tx: HashMap<TransactionHash, u32> = HashMap::with_capacity(transactions.len());
     let mut spendable_by_tx: HashMap<TransactionHash, u32> =
         HashMap::with_capacity(transactions.len());
 
@@ -1713,14 +1714,12 @@ mod tests {
             (outpoint(0x02, 1), p2pkh_out(200)),
         ];
 
-        apply_tx_out_set_entries_delta(&mut acc, &entries, true)
-            .expect("add should succeed");
+        apply_tx_out_set_entries_delta(&mut acc, &entries, true).expect("add should succeed");
 
         assert_eq!(acc.total_zatoshis, 300);
         assert_eq!(acc.bytes_serialized, 2 * ZAINO_TXOUTSET_ENTRY_LEN);
 
-        apply_tx_out_set_entries_delta(&mut acc, &entries, false)
-            .expect("remove should succeed");
+        apply_tx_out_set_entries_delta(&mut acc, &entries, false).expect("remove should succeed");
 
         assert_eq!(acc, FinalisedTxOutSetInfoAccumulator::empty());
     }
@@ -1745,12 +1744,10 @@ mod tests {
         acc.transaction_outputs = 1;
 
         let snapshot = acc;
-        apply_tx_out_set_entries_delta(&mut acc, &[], true)
-            .expect("empty add should succeed");
+        apply_tx_out_set_entries_delta(&mut acc, &[], true).expect("empty add should succeed");
         assert_eq!(acc, snapshot);
 
-        apply_tx_out_set_entries_delta(&mut acc, &[], false)
-            .expect("empty remove should succeed");
+        apply_tx_out_set_entries_delta(&mut acc, &[], false).expect("empty remove should succeed");
         assert_eq!(acc, snapshot);
     }
 
@@ -1776,7 +1773,10 @@ mod tests {
         .expect("apply should succeed");
 
         assert_eq!(acc.transaction_outputs, 1, "2 created - 1 spent = 1");
-        assert_eq!(acc.transactions, 1, "tx enters UTXO set: 2 spendable > 1 spent");
+        assert_eq!(
+            acc.transactions, 1,
+            "tx enters UTXO set: 2 spendable > 1 spent"
+        );
     }
 
     #[test]
@@ -1804,8 +1804,14 @@ mod tests {
         )
         .expect("apply should succeed");
 
-        assert_eq!(acc.transaction_outputs, 1, "1 spendable created - 0 spendable spent");
-        assert_eq!(acc.transactions, 1, "tx enters UTXO set: 1 spendable > 0 spent");
+        assert_eq!(
+            acc.transaction_outputs, 1,
+            "1 spendable created - 0 spendable spent"
+        );
+        assert_eq!(
+            acc.transactions, 1,
+            "tx enters UTXO set: 1 spendable > 0 spent"
+        );
     }
 
     #[test]

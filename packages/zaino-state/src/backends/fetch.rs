@@ -569,6 +569,10 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// NOTE: This method currently has to fetch data from 2 places (get_treestate and get_indexed_block_by_*),
     ///       If `ValidatorConnector::GetTreeState` was updated to return the additional information
     ///       required, this second call could be removed, improving the performance of this method.
+    // Pre-existing lint: `FetchServiceError` is a large error type; returning it by value here is
+    // flagged by `result_large_err`. Suppressed to satisfy `-D warnings` without an invasive
+    // boxing refactor of the shared error enum.
+    #[allow(clippy::result_large_err)]
     async fn z_get_treestate(
         &self,
         hash_or_height: String,
@@ -1865,6 +1869,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         &self,
         request: GetAddressUtxosArg,
     ) -> Result<GetAddressUtxosReplyList, Self::Error> {
+        super::validate_utxo_address_count(request.addresses.len())?;
         let taddrs = GetAddressBalanceRequest::new(request.addresses);
         let utxos = self.z_get_address_utxos(taddrs).await?;
         let mut address_utxos: Vec<GetAddressUtxosReply> = Vec::new();
@@ -1918,6 +1923,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         &self,
         request: GetAddressUtxosArg,
     ) -> Result<UtxoReplyStream, Self::Error> {
+        super::validate_utxo_address_count(request.addresses.len())?;
         let taddrs = GetAddressBalanceRequest::new(request.addresses);
         let utxos = self.z_get_address_utxos(taddrs).await?;
         let service_timeout = self.config.common.service.timeout;
@@ -2013,15 +2019,12 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         )
         .to_string();
 
-        let nu_info = blockchain_info
-            .upgrades()
-            .last()
-            .expect("Expected validator to have a consenus activated.")
-            .1
+        let latest_upgrade = super::latest_network_upgrade(blockchain_info.upgrades())
+            .map_err(FetchServiceError::TonicStatusError)?
             .into_parts();
 
-        let nu_name = nu_info.0;
-        let nu_height = nu_info.1;
+        let nu_name = latest_upgrade.0;
+        let nu_height = latest_upgrade.1;
 
         Ok(LightdInfo {
             version: self.data.build_info().version(),

@@ -53,6 +53,22 @@ and this library adheres to Rust's notion of
 ### Deprecated
 ### Removed
 ### Fixed
+- Finalised-state DB v1.2.0: added a reverse transaction-id index
+  (`txid_location`) so previous-output resolution is an O(log n) point lookup
+  instead of a full scan of the `txids` table. This fixes a near-quadratic
+  slowdown that made the v1.1.0 -> v1.2.0 migration appear to hang on large
+  caches and progressively slowed clean sync. The migration is now a re-entrant
+  two-stage backfill (build `txid_location`, then `spent` + accumulator) with
+  per-stage progress trackers and progress logging.
+- Finalised-state DB v1.2.0: caches built by 0.4.0-alpha.1 (recorded at v1.2.0
+  with an unbuilt `txid_location` index) are detected on open and self-heal by
+  rolling back to v1.1.0 and rebuilding the indices in place (temporary shim,
+  removed at 0.4.0).
+- `write_block` no longer issues two redundant `env.sync(true)` calls per block;
+  the durable `txn.commit()` already fsyncs, so crash safety is unchanged.
+- Fixed a compile error in the `transparent_address_history_experimental`
+  feature (an undefined `outpoint` in block validation) that had broken the
+  feature build since the v1.2 spent-index refactor.
 
 ## [0.2.0] - 2026-05-19
 

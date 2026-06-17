@@ -724,7 +724,9 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             }
         };
         let indexed_block = block.to_indexed_block(&prev_block, self).await?;
-        working_snapshot.add_block(indexed_block.clone());
+        working_snapshot
+            .blocks
+            .insert(*indexed_block.hash(), indexed_block.clone());
         Ok(indexed_block)
     }
 }

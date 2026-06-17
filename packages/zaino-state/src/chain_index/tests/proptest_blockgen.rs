@@ -452,6 +452,7 @@ struct ProptestMockchain {
     /// call. Replaces the O(N_blocks × M_txs) linear scan that recomputed
     /// `transaction.hash()` on every iteration — the dominant cost in the
     /// tx-iterating passthrough tests.
+    #[allow(clippy::type_complexity)]
     tx_index: Arc<
         std::sync::OnceLock<
             std::collections::HashMap<

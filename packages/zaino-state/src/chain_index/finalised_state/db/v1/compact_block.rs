@@ -332,6 +332,7 @@ impl DbV1 {
             commitment_tree_data: self.commitment_tree_data,
             heights: self.heights,
             spent: self.spent,
+            txid_location: self.txid_location,
             tx_out_set_info_accumulator: self.tx_out_set_info_accumulator,
             #[cfg(feature = "transparent_address_history_experimental")]
             address_history: self.address_history,

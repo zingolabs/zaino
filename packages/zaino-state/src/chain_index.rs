@@ -20,7 +20,8 @@ use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
 use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalisedStateError};
 use crate::status::Status;
 use crate::{
-    ChainWork, CompactBlockStream, NamedAtomicStatus, NonFinalizedState, StatusType, SyncError, TxOutCompact,
+    ChainWork, CompactBlockStream, NamedAtomicStatus, NonFinalizedState, StatusType, SyncError,
+    TxOutCompact,
 };
 use crate::{IndexedBlock, Outpoint, TransactionHash};
 use std::collections::HashSet;
