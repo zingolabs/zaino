@@ -664,14 +664,15 @@ impl ZainoDB {
                     })
                     .buffered(fetch_lookahead);
 
+            // The consumer is always in exactly one phase; `enter` banks the phase just ending
+            // and stamps the next, so the reporter credits a long in-flight phase (e.g. a
+            // multi-window commit) live rather than only on completion.
+            phase_meter.begin();
             loop {
-                // Time spent blocked here = the consumer starved waiting for a fetched block,
-                // i.e. fetch can't keep up at the current lookahead (the fetch-bound signal).
-                let wait_start = std::time::Instant::now();
+                // Time blocked on `next()` is fetch-wait: the consumer starved for a fetched
+                // block, i.e. fetch can't keep up at the lookahead (the fetch-bound signal).
                 let fetched_block = fetched_blocks.next().await;
-                phase_meter
-                    .fetch_wait_nanos
-                    .fetch_add(wait_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                phase_meter.enter(SyncPhase::Build);
                 let Some(fetched_block) = fetched_block else {
                     break;
                 };
@@ -719,35 +720,25 @@ impl ZainoDB {
                     current_height,
                 )?;
                 record_phase_seconds("zaino.sync.block_build_seconds", build_start);
-                phase_meter
-                    .build_nanos
-                    .fetch_add(build_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 phase_meter.blocks.fetch_add(1, Ordering::Relaxed);
                 parent_chainwork = chain_block.context.chainwork;
 
                 if let Some(batch) = batcher.push(chain_block) {
+                    phase_meter.enter(SyncPhase::Write);
                     let write_start = std::time::Instant::now();
-                    // RAII so the in-flight stamp clears even if the commit await errors (`?`).
-                    let _commit_in_flight =
-                        CommitInFlightGuard::new(&phase_meter.write_in_progress_since_nanos);
                     self.write_blocks_with_fallback(&batch).await?;
                     record_phase_seconds("zaino.sync.block_write_seconds", write_start);
-                    phase_meter
-                        .write_nanos
-                        .fetch_add(write_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 }
+                // Bank the phase just ending (write, or build when no commit fired) and re-enter
+                // fetch-wait for the next `next()`.
+                phase_meter.enter(SyncPhase::FetchWait);
             }
 
             if let Some(batch) = batcher.flush() {
+                phase_meter.enter(SyncPhase::Write);
                 let write_start = std::time::Instant::now();
-                // RAII so the in-flight stamp clears even if the commit await errors (`?`).
-                let _commit_in_flight =
-                    CommitInFlightGuard::new(&phase_meter.write_in_progress_since_nanos);
                 self.write_blocks_with_fallback(&batch).await?;
                 record_phase_seconds("zaino.sync.block_write_seconds", write_start);
-                phase_meter
-                    .write_nanos
-                    .fetch_add(write_start.elapsed().as_nanos() as u64, Ordering::Relaxed);
             }
 
             Ok(())
@@ -870,20 +861,17 @@ impl ZainoDB {
                             per_block_ms(now.getblock_nanos.saturating_sub(prev.getblock_nanos));
                         let treestate_ms =
                             per_block_ms(now.treestate_nanos.saturating_sub(prev.treestate_nanos));
-                        // Live commit indicator: a commit in flight spans windows and only
-                        // registers in `write_nanos` on completion, so without this a long commit
-                        // reads as dead 0% windows. Read the in-progress stamp directly.
-                        let commit_state = match phase_meter
-                            .write_in_progress_since_nanos
-                            .load(Ordering::Relaxed)
-                        {
-                            0 => "commit idle".to_string(),
-                            since => {
-                                let secs = (SYNC_EPOCH.elapsed().as_nanos() as u64)
-                                    .saturating_sub(since) as f64
-                                    / 1.0e9;
-                                format!("⚠ commit {secs:.0}s in flight (height frozen)")
-                            }
+                        // Live commit indicator: the consumer is in the write phase iff a commit
+                        // is in flight. The phase split already credits this in-flight time (via
+                        // `effective_phase_nanos`); this line just names it.
+                        let state = phase_meter.phase_state.load(Ordering::Relaxed);
+                        let commit_state = if state >> PHASE_SHIFT == SyncPhase::Write as u64 {
+                            let secs = (SYNC_EPOCH.elapsed().as_nanos() as u64)
+                                .saturating_sub(state & SINCE_MASK) as f64
+                                / 1.0e9;
+                            format!("⚠ commit {secs:.0}s in flight (height frozen)")
+                        } else {
+                            "commit idle".to_string()
                         };
 
                         tracing::info!(
@@ -900,10 +888,10 @@ impl ZainoDB {
                             pct(write),
                         );
 
-                        // Cumulative phase shares over the whole run. The per-window write is
-                        // spiky (it only registers at commit completion), so amortize it: cum
-                        // write% is the fraction of wall-clock the pipeline is frozen in commits —
-                        // a small, stable value definitively rules out commit-binding.
+                        // Cumulative phase shares over the whole run. Each counter is credited live
+                        // (banked + in-flight slice), so cum write% is the true fraction of
+                        // wall-clock spent committing — it climbs during a long commit instead of
+                        // decaying, so it cannot hide commit-binding even mid-commit.
                         let elapsed_nanos = SYNC_EPOCH.elapsed().as_nanos() as u64;
                         let cum_pct = |total: u64| {
                             if elapsed_nanos > 0 {
@@ -1156,22 +1144,68 @@ fn record_phase_seconds(_name: &'static str, _start: std::time::Instant) {
 static SYNC_EPOCH: std::sync::LazyLock<std::time::Instant> =
     std::sync::LazyLock::new(std::time::Instant::now);
 
-/// RAII stamp for an in-flight commit: records the [`SYNC_EPOCH`] nanos when a commit starts and
-/// clears it on drop, so the reporter's "commit in flight" indicator clears even when the commit
-/// await errors out (the `?` early-return still runs the drop). Pairs with
-/// [`SyncPhaseMeter::write_in_progress_since_nanos`].
-struct CommitInFlightGuard<'a>(&'a AtomicU64);
+/// Bit layout of [`SyncPhaseMeter::phase_state`]: the high bits hold the [`SyncPhase`], the low
+/// `PHASE_SHIFT` bits hold the entry timestamp in [`SYNC_EPOCH`] nanos (62 bits ≈ 146 years).
+const PHASE_SHIFT: u32 = 62;
+const SINCE_MASK: u64 = (1 << PHASE_SHIFT) - 1;
 
-impl<'a> CommitInFlightGuard<'a> {
-    fn new(stamp: &'a AtomicU64) -> Self {
-        stamp.store(SYNC_EPOCH.elapsed().as_nanos() as u64, Ordering::Relaxed);
-        Self(stamp)
-    }
+/// The phase the ordered sync consumer is in. It is always in exactly one.
+#[derive(Clone, Copy)]
+enum SyncPhase {
+    /// Blocked on the next in-order fetched block.
+    FetchWait = 0,
+    /// Building the `IndexedBlock` from a fetched block.
+    Build = 1,
+    /// Committing a batch to the database.
+    Write = 2,
 }
 
-impl Drop for CommitInFlightGuard<'_> {
-    fn drop(&mut self) {
-        self.0.store(0, Ordering::Relaxed);
+impl SyncPhaseMeter {
+    /// Stamp the initial phase (fetch-wait) at loop entry without banking anything.
+    fn begin(&self) {
+        let now = SYNC_EPOCH.elapsed().as_nanos() as u64 & SINCE_MASK;
+        self.phase_state.store(
+            (SyncPhase::FetchWait as u64) << PHASE_SHIFT | now,
+            Ordering::Relaxed,
+        );
+    }
+
+    /// Transition to `phase`: bank the elapsed time of the phase just ending into its counter and
+    /// stamp the new phase. Publishing the new packed word first (`swap`) then banking means a
+    /// concurrent reader can at worst miss the final slice for one tick — never double-count it.
+    /// Called only from the single consumer task.
+    fn enter(&self, phase: SyncPhase) {
+        let now = SYNC_EPOCH.elapsed().as_nanos() as u64 & SINCE_MASK;
+        let prev = self
+            .phase_state
+            .swap((phase as u64) << PHASE_SHIFT | now, Ordering::Relaxed);
+        let elapsed = now.saturating_sub(prev & SINCE_MASK);
+        let banked = match prev >> PHASE_SHIFT {
+            x if x == SyncPhase::FetchWait as u64 => &self.fetch_wait_nanos,
+            x if x == SyncPhase::Build as u64 => &self.build_nanos,
+            _ => &self.write_nanos,
+        };
+        banked.fetch_add(elapsed, Ordering::Relaxed);
+    }
+
+    /// Per-phase nanos = banked time plus the in-flight slice of the phase currently running, so a
+    /// long in-flight phase (notably a multi-window commit) is credited live instead of only on
+    /// completion. Returns `(fetch_wait, build, write)`.
+    fn effective_phase_nanos(&self) -> (u64, u64, u64) {
+        let state = self.phase_state.load(Ordering::Relaxed);
+        let now = SYNC_EPOCH.elapsed().as_nanos() as u64 & SINCE_MASK;
+        let in_flight = now.saturating_sub(state & SINCE_MASK);
+        let phase = state >> PHASE_SHIFT;
+        let credit =
+            |p: SyncPhase, banked: u64| banked + if phase == p as u64 { in_flight } else { 0 };
+        (
+            credit(
+                SyncPhase::FetchWait,
+                self.fetch_wait_nanos.load(Ordering::Relaxed),
+            ),
+            credit(SyncPhase::Build, self.build_nanos.load(Ordering::Relaxed)),
+            credit(SyncPhase::Write, self.write_nanos.load(Ordering::Relaxed)),
+        )
     }
 }
 
@@ -1227,13 +1261,13 @@ struct SyncPhaseMeter {
     treestate_nanos: AtomicU64,
     /// Nanoseconds spent in the serial build (`build_indexed_block`).
     build_nanos: AtomicU64,
-    /// Nanoseconds spent in batched writes/commits (registers on *completion*).
+    /// Nanoseconds banked to completed write/commit phases. The currently-running phase's
+    /// in-flight slice is added by the reporter via [`SyncPhaseMeter::effective_phase_nanos`].
     write_nanos: AtomicU64,
-    /// While a commit is in flight, the [`SYNC_EPOCH`] nanos at which it started (`0` when no
-    /// commit is running). `write_nanos` only registers on completion, so a multi-window commit
-    /// would otherwise read as dead `0%` windows; the reporter reads this to surface a commit
-    /// *as it happens* — closing the periodic-stall blind spot.
-    write_in_progress_since_nanos: AtomicU64,
+    /// Packed `(phase << PHASE_SHIFT) | since_nanos`: which [`SyncPhase`] the consumer is in and
+    /// the [`SYNC_EPOCH`] nanos it entered. A single word so the reporter never reads a torn
+    /// `(phase, since)` pair. Written only by the consumer via [`SyncPhaseMeter::enter`].
+    phase_state: AtomicU64,
     /// Blocks consumed.
     blocks: AtomicU64,
 }
@@ -1252,14 +1286,17 @@ struct PhaseSnapshot {
 
 impl PhaseSnapshot {
     fn capture(meter: &SyncPhaseMeter) -> Self {
+        // Effective (banked + in-flight) so a long in-flight phase is credited live; the
+        // reporter's window deltas and cumulative shares then need no in-progress arithmetic.
+        let (fetch_wait_nanos, build_nanos, write_nanos) = meter.effective_phase_nanos();
         Self {
             captured_at: std::time::Instant::now(),
             blocks: meter.blocks.load(Ordering::Relaxed),
-            fetch_wait_nanos: meter.fetch_wait_nanos.load(Ordering::Relaxed),
+            fetch_wait_nanos,
             getblock_nanos: meter.getblock_nanos.load(Ordering::Relaxed),
             treestate_nanos: meter.treestate_nanos.load(Ordering::Relaxed),
-            build_nanos: meter.build_nanos.load(Ordering::Relaxed),
-            write_nanos: meter.write_nanos.load(Ordering::Relaxed),
+            build_nanos,
+            write_nanos,
         }
     }
 }
