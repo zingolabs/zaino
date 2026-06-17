@@ -46,6 +46,15 @@ use crate::jsonrpsee::{
 
 use super::response::{GetDifficultyResponse, GetNetworkSolPsResponse};
 
+/// Per-request timeout (total: connect excluded, send + full body read).
+///
+/// Sized for the bulk-sync worst case: many large sandblast-era blocks (~hundreds of KiB each)
+/// fetched concurrently and multiplexed over the single h2c connection. A short timeout
+/// guillotines a legitimately large transfer mid-body under that load and surfaces as
+/// "error decoding response body"; the sync loop's retry/give-up ladder remains the backstop for a
+/// genuinely unresponsive validator.
+const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 #[derive(Serialize, Deserialize, Debug)]
 struct RpcRequest<T> {
     jsonrpc: String,
@@ -203,7 +212,7 @@ impl JsonRpSeeConnector {
     ) -> Result<Self, TransportError> {
         let client = ClientBuilder::new()
             .connect_timeout(Duration::from_secs(2))
-            .timeout(Duration::from_secs(5))
+            .timeout(HTTP_REQUEST_TIMEOUT)
             .redirect(reqwest::redirect::Policy::none())
             // HTTP/2 cleartext (h2c) with prior knowledge: zebra's RPC endpoint speaks HTTP/2, so a
             // single TCP connection multiplexes every in-flight request. This removes the HTTP/1.1
@@ -213,6 +222,13 @@ impl JsonRpSeeConnector {
             // NOTE: prior knowledge has no HTTP/1.1 fallback — if the endpoint does not accept h2c,
             // every request fails.
             .http2_prior_knowledge()
+            // Let the HTTP/2 stack size its connection/stream flow-control windows to the
+            // bandwidth-delay product. With the default fixed 64 KiB connection window, N
+            // concurrent large-block fetches (sandblast blocks are ~hundreds of KiB) multiplexed
+            // over the one h2c connection starve on flow control, stall, and trip the request
+            // timeout mid-body — surfacing as "error decoding response body". Adaptive sizing keeps
+            // many large responses in flight at once.
+            .http2_adaptive_window(true)
             .build()
             .map_err(TransportError::ReqwestError)?;
 
@@ -230,11 +246,13 @@ impl JsonRpSeeConnector {
 
         let client = ClientBuilder::new()
             .connect_timeout(Duration::from_secs(2))
-            .timeout(Duration::from_secs(5))
+            .timeout(HTTP_REQUEST_TIMEOUT)
             .redirect(reqwest::redirect::Policy::none())
             .cookie_store(true)
-            // See `new_with_basic_auth` for why HTTP/2 prior knowledge (h2c) is used.
+            // See `new_with_basic_auth` for why HTTP/2 prior knowledge + adaptive flow-control
+            // window are used.
             .http2_prior_knowledge()
+            .http2_adaptive_window(true)
             .build()
             .map_err(TransportError::ReqwestError)?;
 
