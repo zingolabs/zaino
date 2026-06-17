@@ -30,7 +30,7 @@ jobs:
     container:
       image: docker.io/zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: MinIO Cache (cargo + target)
         uses: tespkg/actions-cache@v1
@@ -57,7 +57,7 @@ jobs:
     container:
       image: docker.io/zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: MinIO Cache (cargo + target)
         uses: tespkg/actions-cache@v1
@@ -82,7 +82,7 @@ jobs:
     container:
       image: docker.io/zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: MinIO Cache (cargo + target)
         uses: tespkg/actions-cache@v1
@@ -107,7 +107,7 @@ jobs:
     container:
       image: docker.io/zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: MinIO Cache (cargo + target)
         uses: tespkg/actions-cache@v1
@@ -132,7 +132,7 @@ jobs:
     container:
       image: docker.io/zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Check trailing whitespace
         run: ./tools/scripts/trailing-whitespace.sh reject
@@ -146,7 +146,7 @@ jobs:
     runs-on: arc-sh-runners
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: MinIO Cache (cargo + target)
         uses: tespkg/actions-cache@v1
@@ -181,7 +181,7 @@ jobs:
     runs-on: arc-sh-runners
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: MinIO Cache (cargo + target)
         uses: tespkg/actions-cache@v1

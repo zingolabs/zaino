@@ -654,6 +654,8 @@ impl ZainoDB {
                 };
                 parent_chainwork = chain_block.context.chainwork;
 
+                record_block_throughput(&chain_block);
+
                 self.write_block(chain_block).await?;
             }
 
@@ -971,5 +973,38 @@ impl ZainoDB {
         drop(db);
 
         Self::spawn_with_target_version(cfg, source, target_version).await
+    }
+}
+
+/// Increments the per-block throughput counters — transactions, Sapling outputs,
+/// and Orchard actions — for one indexed block. This is a no-op unless the
+/// `prometheus` feature is enabled, keeping the hot sync loop free of `#[cfg]`.
+///
+/// The counts come from data already materialized in `block` by the preceding
+/// `IndexedBlock::try_from` step, so this adds no I/O or parsing — only a walk
+/// over in-memory vectors and a few integer adds.
+///
+/// These are monotonic counters so `rate(...)` over them yields sync speed measured
+/// in transactions/sec and shielded-actions/sec, which tracks indexing work far more
+/// faithfully than blocks/sec: early-chain blocks are near-empty, while post-NU5
+/// blocks can carry thousands of note commitments per block. Sapling outputs and
+/// Orchard actions are reported separately (sum them in PromQL for total shielded
+/// throughput) rather than conflated under one ambiguous "actions" name.
+#[inline]
+fn record_block_throughput(_block: &IndexedBlock) {
+    #[cfg(feature = "prometheus")]
+    {
+        let transactions = u64::try_from(_block.transactions().len()).unwrap_or(u64::MAX);
+        let mut sapling_outputs: u64 = 0;
+        let mut orchard_actions: u64 = 0;
+        for tx in _block.transactions() {
+            sapling_outputs = sapling_outputs
+                .saturating_add(u64::try_from(tx.sapling().outputs().len()).unwrap_or(u64::MAX));
+            orchard_actions = orchard_actions
+                .saturating_add(u64::try_from(tx.orchard().actions().len()).unwrap_or(u64::MAX));
+        }
+        metrics::counter!("zaino.sync.transactions_total").increment(transactions);
+        metrics::counter!("zaino.sync.sapling_outputs_total").increment(sapling_outputs);
+        metrics::counter!("zaino.sync.orchard_actions_total").increment(orchard_actions);
     }
 }

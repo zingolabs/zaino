@@ -132,7 +132,7 @@ zaino-serve = { path = "packages/zaino-serve", version = "0.2.0" }
 wire_serialized_transaction_test_data = "1.0.0"
 config = { version = "0.15", default-features = false, features = ["toml"] }
 nonempty = "0.11.0"
-proptest = "~1.6"
+proptest = "~1.11"
 zip32 = "0.2.1"
 
 # Patch for vulnerable dependency
