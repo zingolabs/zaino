@@ -834,6 +834,13 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             let mut change_rx = source.subscribe_to_blocks_received();
             let mut consecutive_failures: u32 = 0;
             let mut current_backoff = timings.initial_backoff;
+            // Highest finalised tip observed so far. Used to tell a *stuck* sync loop (the
+            // give-up condition) apart from one that committed batches and then hit a transient
+            // transport error: a long `sync_to_height` can persist tens of thousands of blocks and
+            // still return `Err` on a single dropped connection, which is forward progress, not a
+            // stall. `None` until the db has a tip.
+            let mut last_committed_tip: Option<u32> =
+                fs.db_height().await.ok().flatten().map(|h| h.0);
 
             loop {
                 let source = source.clone();
@@ -915,6 +922,13 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                     Ok(()) => {
                         consecutive_failures = 0;
                         current_backoff = timings.initial_backoff;
+                        last_committed_tip = fs
+                            .db_height()
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|h| h.0)
+                            .or(last_committed_tip);
                         status.store(StatusType::Ready);
                         // Race the post-success wait against cancellation
                         // and a source-change notification. `shutdown()`'s
@@ -934,20 +948,48 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         }
                     }
                     Err(e) => {
-                        consecutive_failures += 1;
-                        if consecutive_failures >= timings.max_consecutive_failures {
-                            tracing::error!(
-                                "Sync loop failed {consecutive_failures} consecutive times, \
-                                 giving up: {e:?}"
+                        // Distinguish a stuck loop from one that committed batches and then hit a
+                        // transient transport error. The give-up counter exists to detect a loop
+                        // making *no* progress; a `sync_to_height` that persisted blocks before the
+                        // error advanced the finalised tip, so it must not count toward the cap.
+                        // Without this, a fast genesis sync over flaky HTTP/1.1 keep-alive
+                        // connections marches the counter to `max_consecutive_failures` and crashes
+                        // while healthily syncing.
+                        let current_tip = fs.db_height().await.ok().flatten().map(|h| h.0);
+                        let made_progress = match (current_tip, last_committed_tip) {
+                            (Some(current), Some(last)) => current > last,
+                            (Some(_), None) => true,
+                            (None, _) => false,
+                        };
+                        last_committed_tip = current_tip.or(last_committed_tip);
+
+                        if made_progress {
+                            // Real forward progress despite the error: reset the counter and the
+                            // backoff ladder, then back off briefly to let the connection layer
+                            // recover before resuming from the new tip.
+                            consecutive_failures = 0;
+                            current_backoff = timings.initial_backoff;
+                            tracing::warn!(
+                                "Sync loop iteration failed but committed progress \
+                                 (finalised tip now {current_tip:?}); resetting failure counter, \
+                                 retrying in {current_backoff:?}: {e:?}"
                             );
-                            status.store(StatusType::CriticalError);
-                            return Err(e);
+                        } else {
+                            consecutive_failures += 1;
+                            if consecutive_failures >= timings.max_consecutive_failures {
+                                tracing::error!(
+                                    "Sync loop failed {consecutive_failures} consecutive times \
+                                     without progress, giving up: {e:?}"
+                                );
+                                status.store(StatusType::CriticalError);
+                                return Err(e);
+                            }
+                            tracing::warn!(
+                                "Sync loop iteration failed ({consecutive_failures}/{}), \
+                                 retrying in {current_backoff:?}: {e:?}",
+                                timings.max_consecutive_failures
+                            );
                         }
-                        tracing::warn!(
-                            "Sync loop iteration failed ({consecutive_failures}/{}), \
-                             retrying in {current_backoff:?}: {e:?}",
-                            timings.max_consecutive_failures
-                        );
                         status.store(StatusType::RecoverableError);
                         // Race the failure-path backoff sleep against
                         // cancellation. Without this, `shutdown()` after
@@ -959,7 +1001,11 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                             _ = cancel_token.cancelled() => return Ok(()),
                             _ = tokio::time::sleep(current_backoff) => {}
                         }
-                        current_backoff = (current_backoff * 2).min(timings.max_backoff);
+                        // Only escalate the backoff when we made no progress; a progressing loop
+                        // already reset it to `initial_backoff` above.
+                        if !made_progress {
+                            current_backoff = (current_backoff * 2).min(timings.max_backoff);
+                        }
                     }
                 }
             }

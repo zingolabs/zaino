@@ -205,6 +205,14 @@ impl JsonRpSeeConnector {
             .connect_timeout(Duration::from_secs(2))
             .timeout(Duration::from_secs(5))
             .redirect(reqwest::redirect::Policy::none())
+            // HTTP/2 cleartext (h2c) with prior knowledge: zebra's RPC endpoint speaks HTTP/2, so a
+            // single TCP connection multiplexes every in-flight request. This removes the HTTP/1.1
+            // connection-per-request churn and the stale-keep-alive reap race (the "error sending
+            // request" / "error decoding response body" class) that the concurrent bulk-sync fetch
+            // pipeline exposed, and lets fetch concurrency scale on one connection.
+            // NOTE: prior knowledge has no HTTP/1.1 fallback — if the endpoint does not accept h2c,
+            // every request fails.
+            .http2_prior_knowledge()
             .build()
             .map_err(TransportError::ReqwestError)?;
 
@@ -225,6 +233,8 @@ impl JsonRpSeeConnector {
             .timeout(Duration::from_secs(5))
             .redirect(reqwest::redirect::Policy::none())
             .cookie_store(true)
+            // See `new_with_basic_auth` for why HTTP/2 prior knowledge (h2c) is used.
+            .http2_prior_knowledge()
             .build()
             .map_err(TransportError::ReqwestError)?;
 
@@ -310,10 +320,22 @@ impl JsonRpSeeConnector {
                 .build_request(method, &params, id)
                 .map_err(RpcRequestError::JsonRpc)?;
 
-            let response = request_builder
-                .send()
-                .await
-                .map_err(|e| RpcRequestError::Transport(TransportError::ReqwestError(e)))?;
+            let response = match request_builder.send().await {
+                Ok(response) => response,
+                Err(e) => {
+                    // A `send` failure is a connection-level error: the request never reached the
+                    // handler (connection refused / reset, a stale pooled connection, or an h2
+                    // GOAWAY when zebra restarts), so retrying is safe for any method, idempotent or
+                    // not. Bounded by `max_attempts` so a genuine outage still surfaces to the caller
+                    // (and the sync loop's give-up ladder). With HTTP/2 prior knowledge this class is
+                    // rare; the retry is defence-in-depth for restarts and transient blips.
+                    if attempts >= max_attempts {
+                        return Err(RpcRequestError::Transport(TransportError::ReqwestError(e)));
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    continue;
+                }
+            };
 
             let status = response.status();
 
