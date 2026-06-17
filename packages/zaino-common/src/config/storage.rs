@@ -95,6 +95,17 @@ pub struct DatabaseConfig {
     /// with it off to serve durably.
     #[serde(default)]
     pub bulk_sync: bool,
+    /// Sync fetch-pipeline depth: how many blocks to fetch concurrently *ahead* of
+    /// build/write during catch-up. Fetch (`getblock` + a per-block treestate) is the sync
+    /// bottleneck, so running this many fetch units concurrently overlaps them with the
+    /// strictly-ordered build/write and lifts throughput toward the build-bound ceiling.
+    /// Larger saturates the validator and hides more latency, but holds that many blocks in
+    /// flight — real memory on fat (sandblast-era) blocks, on top of the write batch — so
+    /// raise it cautiously. Read through
+    /// [`effective_sync_fetch_lookahead`](Self::effective_sync_fetch_lookahead), which floors
+    /// it at 1. Default 8.
+    #[serde(default = "default_sync_fetch_lookahead")]
+    pub sync_fetch_lookahead: usize,
 }
 
 /// Default [`DatabaseConfig::sync_write_batch_bytes`]: 6 GiB of measured RssAnon during
@@ -104,6 +115,23 @@ fn default_sync_write_batch_bytes() -> u64 {
     6 * 1024 * 1024 * 1024
 }
 
+/// Default [`DatabaseConfig::sync_fetch_lookahead`]: 8 fetch units run concurrently ahead of
+/// the strictly-ordered build/write (see the field doc).
+fn default_sync_fetch_lookahead() -> usize {
+    8
+}
+
+impl DatabaseConfig {
+    /// The fetch-pipeline depth the sync loop actually uses: the configured
+    /// [`sync_fetch_lookahead`](Self::sync_fetch_lookahead) floored at 1, so it is always a
+    /// valid (non-zero) concurrent-stream width even if a config sets it to 0. The single
+    /// home for that floor — the sync loop and its tests both read it here rather than
+    /// re-applying `.max(1)`.
+    pub fn effective_sync_fetch_lookahead(&self) -> usize {
+        self.sync_fetch_lookahead.max(1)
+    }
+}
+
 impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
@@ -111,6 +139,7 @@ impl Default for DatabaseConfig {
             size: DatabaseSize::default(),
             sync_write_batch_bytes: default_sync_write_batch_bytes(),
             bulk_sync: false,
+            sync_fetch_lookahead: default_sync_fetch_lookahead(),
         }
     }
 }

@@ -1,25 +1,29 @@
 //! Concurrency tests for the look-ahead fetch pipeline in
 //! [`ZainoDB::sync_to_height`](crate::chain_index::finalised_state::ZainoDB::sync_to_height).
 //!
-//! The pipeline fetches up to `SYNC_FETCH_LOOKAHEAD` blocks concurrently and out of order,
-//! but build+write must stay strictly height-ordered (`parent_chainwork` threads
+//! The pipeline fetches up to `storage.database.sync_fetch_lookahead` blocks concurrently and
+//! out of order, but build+write must stay strictly height-ordered (`parent_chainwork` threads
 //! sequentially and the writer demands height-contiguity). Every test here targets one
 //! question: does out-of-order *fetching* ever leak into out-of-order — or mis-paired —
-//! *building*?
+//! *building*, and is the configured concurrency actually respected?
 //!
 //! The enabling piece is [`FaultInjectingSource`], a thin `BlockchainSource` decorator that
-//! wraps the existing mockchain and injects per-height fetch latency or targeted errors. It
-//! touches no production code.
+//! wraps the existing mockchain and injects per-height fetch latency, targeted errors, and a
+//! live in-flight-fetch counter. It touches no production code.
 //!
-//! Covered here (Tier-1 #2 and Tier-3 #6 of the pipeline test plan):
+//! Covered here:
 //! - [`pipeline_out_of_order_fetch_builds_in_order_db`] — reverse per-height latency makes
 //!   later heights' fetches complete first; the resulting DB must still be byte-equivalent
-//!   to an in-order (golden) sync.
+//!   to an in-order (golden) sync. (Plan Tier-1 #2.)
 //! - [`pipeline_getblock_error_propagates_without_hang`] /
-//!   [`pipeline_treestate_error_propagates_without_hang`] — an injected error on either
-//!   fetch leg must surface as `Err`, must not deadlock, and must not commit past the
-//!   failing height.
+//!   [`pipeline_treestate_error_propagates_without_hang`] — an injected error on either fetch
+//!   leg must surface as `Err`, must not deadlock, and must not commit past the failing
+//!   height. (Plan Tier-3 #6.)
+//! - [`pipeline_respects_configured_lookahead_bound`] — concurrent in-flight fetches never
+//!   exceed `storage.database.sync_fetch_lookahead`, and do exceed one (it really pipelines).
+//! - [`lookahead_of_one_is_serial_and_correct`] — depth 1 degrades to a correct serial sync.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -64,12 +68,40 @@ struct Faults {
     fail_treestate_for_hash: Option<BlockHash>,
 }
 
+/// Live counter of concurrent in-flight `get_block` calls, shared by clones via `Arc`. Lets
+/// the bounded-concurrency test observe the pipeline's actual fetch parallelism.
+#[derive(Default)]
+struct ConcurrencyMeter {
+    in_flight: AtomicUsize,
+    max_in_flight: AtomicUsize,
+}
+
+/// RAII guard: counts one in-flight fetch for its lifetime, decrementing on drop so the count
+/// stays correct even when a fetch returns early with an error. Holds an `Arc` clone so it
+/// carries no borrow of the fetch method's `&self` across the await.
+struct InFlightGuard(Arc<ConcurrencyMeter>);
+
+impl InFlightGuard {
+    fn enter(meter: &Arc<ConcurrencyMeter>) -> Self {
+        let now = meter.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        meter.max_in_flight.fetch_max(now, Ordering::SeqCst);
+        Self(Arc::clone(meter))
+    }
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.0.in_flight.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// Wraps a `BlockchainSource` and injects latency / errors on the two fetch legs the sync
 /// pipeline uses (`get_block`, `get_commitment_tree_roots`); every other method delegates.
 #[derive(Clone)]
 struct FaultInjectingSource<S: BlockchainSource> {
     inner: S,
     faults: Arc<Faults>,
+    meter: Arc<ConcurrencyMeter>,
 }
 
 impl<S: BlockchainSource> FaultInjectingSource<S> {
@@ -77,7 +109,13 @@ impl<S: BlockchainSource> FaultInjectingSource<S> {
         Self {
             inner,
             faults: Arc::new(faults),
+            meter: Arc::new(ConcurrencyMeter::default()),
         }
+    }
+
+    /// Peak number of `get_block` calls that were ever in flight at once.
+    fn max_in_flight(&self) -> usize {
+        self.meter.max_in_flight.load(Ordering::SeqCst)
     }
 
     /// No latency, no errors — the in-order "golden" baseline.
@@ -99,6 +137,19 @@ impl<S: BlockchainSource> FaultInjectingSource<S> {
             inner,
             Faults {
                 block_delay_by_height: Box::new(move |h| unit * top_height.saturating_sub(h)),
+                fail_block_at_height: None,
+                fail_treestate_for_hash: None,
+            },
+        )
+    }
+
+    /// Uniform per-block fetch latency, independent of height. Makes fetches pile up so the
+    /// bounded-concurrency test can observe how many run concurrently.
+    fn with_uniform_delay(inner: S, delay: Duration) -> Self {
+        Self::new(
+            inner,
+            Faults {
+                block_delay_by_height: Box::new(move |_| delay),
                 fail_block_at_height: None,
                 fail_treestate_for_hash: None,
             },
@@ -136,6 +187,7 @@ impl<S: BlockchainSource> BlockchainSource for FaultInjectingSource<S> {
         &self,
         id: HashOrHeight,
     ) -> BlockchainSourceResult<Option<Arc<zebra_chain::block::Block>>> {
+        let _in_flight = InFlightGuard::enter(&self.meter);
         if let HashOrHeight::Height(zebra_chain::block::Height(height)) = id {
             let delay = (self.faults.block_delay_by_height)(height);
             if !delay.is_zero() {
@@ -261,14 +313,19 @@ impl<S: BlockchainSource> BlockchainSource for FaultInjectingSource<S> {
 
 // ***** Helpers *****
 
-/// Spawns a fresh v1 finalised DB over `source`. (`spawn` only touches the source on the
-/// migration path, so injected faults fire only during the explicit `sync_to_height` call.)
-async fn spawn_finalised_db<S: BlockchainSource>(source: S) -> (TempDir, ZainoDB) {
+/// Spawns a fresh v1 finalised DB over `source` with the given fetch-pipeline depth.
+/// (`spawn` only touches the source on the migration path, so injected faults fire only
+/// during the explicit `sync_to_height` call.)
+async fn spawn_finalised_db_with_lookahead<S: BlockchainSource>(
+    source: S,
+    sync_fetch_lookahead: usize,
+) -> (TempDir, ZainoDB) {
     let temp_dir = tempfile::tempdir().unwrap();
     let config = BlockCacheConfig {
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: temp_dir.path().to_path_buf(),
+                sync_fetch_lookahead,
                 ..Default::default()
             },
             ..Default::default()
@@ -278,6 +335,11 @@ async fn spawn_finalised_db<S: BlockchainSource>(source: S) -> (TempDir, ZainoDB
     };
     let db = ZainoDB::spawn(config, source).await.unwrap();
     (temp_dir, db)
+}
+
+/// Spawns a fresh v1 finalised DB over `source` at the default pipeline depth.
+async fn spawn_finalised_db<S: BlockchainSource>(source: S) -> (TempDir, ZainoDB) {
+    spawn_finalised_db_with_lookahead(source, DatabaseConfig::default().sync_fetch_lookahead).await
 }
 
 /// Asserts two finalised DBs are equivalent across the load-bearing invariants: tip height,
@@ -429,4 +491,78 @@ async fn pipeline_treestate_error_propagates_without_hang() {
         committed.is_none_or(|h| h.0 < FAIL_AT),
         "committed tip {committed:?} must stay below the failing height {FAIL_AT}"
     );
+}
+
+// ***** Configurable lookahead *****
+
+/// `storage.database.sync_fetch_lookahead` must actually bound fetch concurrency: with a small
+/// configured depth and a uniform per-block fetch delay (so fetches pile up), the peak number
+/// of concurrent in-flight `get_block` calls must never exceed the configured depth — and must
+/// exceed one, proving the pipeline really runs fetches concurrently rather than serially.
+#[tokio::test(flavor = "multi_thread")]
+async fn pipeline_respects_configured_lookahead_bound() {
+    const LOOKAHEAD: usize = 3;
+
+    let blocks = load_test_vectors().unwrap().blocks;
+    let source = FaultInjectingSource::with_uniform_delay(
+        build_mockchain_source(blocks.clone()),
+        Duration::from_millis(20),
+    );
+    let (_dir, db) = spawn_finalised_db_with_lookahead(source.clone(), LOOKAHEAD).await;
+
+    db.sync_to_height(Height(TIP), &source).await.unwrap();
+    db.wait_until_ready().await;
+
+    let max_in_flight = source.max_in_flight();
+    assert!(
+        max_in_flight <= LOOKAHEAD,
+        "peak in-flight fetches {max_in_flight} exceeded the configured lookahead {LOOKAHEAD}"
+    );
+    assert!(
+        max_in_flight > 1,
+        "fetches never overlapped (peak in-flight {max_in_flight}); the pipeline ran serially"
+    );
+}
+
+/// A configured depth of 1 must degrade to a correct serial sync: no fetch ever overlaps
+/// another, and the resulting DB is byte-equivalent to a default-depth (pipelined) sync.
+#[tokio::test(flavor = "multi_thread")]
+async fn lookahead_of_one_is_serial_and_correct() {
+    let blocks = load_test_vectors().unwrap().blocks;
+    assert!(
+        blocks.len() as u32 > TIP,
+        "need more than {TIP} vector blocks for this test"
+    );
+
+    // Reference: default (pipelined) depth.
+    let reference_source = FaultInjectingSource::no_faults(build_mockchain_source(blocks.clone()));
+    let (_ref_dir, reference_db) = spawn_finalised_db(reference_source.clone()).await;
+    reference_db
+        .sync_to_height(Height(TIP), &reference_source)
+        .await
+        .unwrap();
+    reference_db.wait_until_ready().await;
+
+    // Depth 1: with a uniform fetch delay, a serial pipeline can never hold two fetches at once.
+    let serial_source = FaultInjectingSource::with_uniform_delay(
+        build_mockchain_source(blocks.clone()),
+        Duration::from_millis(5),
+    );
+    let (_serial_dir, serial_db) =
+        spawn_finalised_db_with_lookahead(serial_source.clone(), 1).await;
+    serial_db
+        .sync_to_height(Height(TIP), &serial_source)
+        .await
+        .unwrap();
+    serial_db.wait_until_ready().await;
+
+    assert_eq!(
+        serial_source.max_in_flight(),
+        1,
+        "depth 1 must never run two fetches concurrently"
+    );
+
+    let reference_reader = std::sync::Arc::new(reference_db).to_reader();
+    let serial_reader = std::sync::Arc::new(serial_db).to_reader();
+    assert_finalised_dbs_equivalent(&reference_reader, &serial_reader, TIP).await;
 }

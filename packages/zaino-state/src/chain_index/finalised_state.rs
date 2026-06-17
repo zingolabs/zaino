@@ -638,10 +638,12 @@ impl ZainoDB {
             let nu5_activation_height = self.cfg.network.nu5_activation_height();
 
             // Fetch is the sync bottleneck (getblock + a per-block treestate, both large for
-            // fat blocks); build threads `parent_chainwork` and so must stay ordered. Run up to
-            // `SYNC_FETCH_LOOKAHEAD` fetch units concurrently and consume them in height order —
-            // fetch of later blocks overlaps build+write of earlier ones, and the concurrent
-            // pool keeps the validator saturated. `buffered` preserves submission order.
+            // fat blocks); build threads `parent_chainwork` and so must stay ordered. Running
+            // `fetch_lookahead` fetch units concurrently and consuming them in height order
+            // overlaps fetch of later blocks with build+write of earlier ones and keeps the
+            // validator saturated; `buffered` preserves submission order. Depth is configurable
+            // via `storage.database.sync_fetch_lookahead` (see its field doc).
+            let fetch_lookahead = self.cfg.storage.database.effective_sync_fetch_lookahead();
             let mut fetched_blocks =
                 futures::stream::iter(sync_initial_start_height..=sync_upper_bound.0)
                     .map(|current_height| {
@@ -652,7 +654,7 @@ impl ZainoDB {
                                 .map(|fetched| (current_height, fetched))
                         }
                     })
-                    .buffered(SYNC_FETCH_LOOKAHEAD);
+                    .buffered(fetch_lookahead);
 
             while let Some(fetched_block) = fetched_blocks.next().await {
                 let (current_height, (block, sapling_opt, orchard_opt)) = fetched_block?;
@@ -1032,16 +1034,6 @@ fn record_phase_seconds(_name: &'static str, _start: std::time::Instant) {
     metrics::histogram!(_name).record(_start.elapsed().as_secs_f64());
 }
 
-/// Fetches the best-chain block at `height` from `source`, mapping a missing
-/// block to an unrecoverable [`FinalisedStateError`]. The error names the
-/// height that is actually missing.
-/// How many block "fetch units" (getblock + treestate) [`ZainoDB::sync_to_height`] keeps in
-/// flight at once. Fetch is the sync bottleneck and the validator serves requests
-/// concurrently, so a look-ahead window overlaps fetch with the ordered build+write stage and
-/// keeps the validator saturated. Bounded to cap the memory of buffered (possibly fat) blocks;
-/// raise it if the validator has spare capacity.
-const SYNC_FETCH_LOOKAHEAD: usize = 8;
-
 /// Fetches a block together with its Sapling/Orchard commitment-tree roots — one sync "fetch
 /// unit". Separated from the build/write stage so [`ZainoDB::sync_to_height`] can run many
 /// concurrently: fetch is the bottleneck, while build must stay height-ordered. Shared with
@@ -1097,6 +1089,8 @@ fn build_indexed_block(
     })
 }
 
+/// Fetches the best-chain block at `height` from `source`, mapping a missing block to an
+/// unrecoverable [`FinalisedStateError`]. The error names the height that is actually missing.
 async fn fetch_block_at<T: BlockchainSource>(
     source: &T,
     height: u32,
