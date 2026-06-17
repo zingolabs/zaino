@@ -1397,10 +1397,25 @@ async fn fetch_block_and_roots<T: BlockchainSource>(
 #[cfg(test)]
 static TEST_BUILD_COST_NANOS: AtomicU64 = AtomicU64::new(0);
 
-/// Sets the per-block artificial build cost used by [`inject_test_build_cost`] (test-only).
+/// RAII guard that injects an artificial per-block build cost for its lifetime and clears it on
+/// drop — so the cost can't leak into other tests in the same binary even if an assertion or
+/// `unwrap` panics mid-test (test-only).
 #[cfg(test)]
-pub(crate) fn set_test_build_cost_nanos(nanos: u64) {
-    TEST_BUILD_COST_NANOS.store(nanos, Ordering::Relaxed);
+pub(crate) struct TestBuildCostGuard;
+
+#[cfg(test)]
+impl TestBuildCostGuard {
+    pub(crate) fn set(nanos: u64) -> Self {
+        TEST_BUILD_COST_NANOS.store(nanos, Ordering::Relaxed);
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestBuildCostGuard {
+    fn drop(&mut self) {
+        TEST_BUILD_COST_NANOS.store(0, Ordering::Relaxed);
+    }
 }
 
 /// Burns the configured artificial build cost as a **busy-spin** (not a sleep) so it occupies a

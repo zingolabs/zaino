@@ -111,9 +111,11 @@ pub struct DatabaseConfig {
     /// backend), the serial bottleneck; running this many builds on the blocking pool ahead of
     /// the strictly-ordered write lifts throughput toward the write-bound ceiling. Each build is
     /// independent — chainwork is replayed as a serial prefix sum in the writer — so this is
-    /// decoupled from [`sync_fetch_lookahead`](Self::sync_fetch_lookahead). Size it ≈ CPU cores;
-    /// oversubscribing steals cores from the commit path and can go net-negative when
-    /// write-bound. Read through
+    /// decoupled from [`sync_fetch_lookahead`](Self::sync_fetch_lookahead). Defaults
+    /// conservatively (≈ cores − 2, capped at 8): `buffered` holds this many completed blocks
+    /// ahead of the consumer, so a high value spikes RSS during a commit stall and oversubscribes
+    /// cores against the commit path (net-negative when write-bound). Raise it only after
+    /// measuring build-bound headroom. Read through
     /// [`effective_sync_build_concurrency`](Self::effective_sync_build_concurrency), floored at 1.
     #[serde(default = "default_sync_build_concurrency")]
     pub sync_build_concurrency: usize,
@@ -132,12 +134,18 @@ fn default_sync_fetch_lookahead() -> usize {
     8
 }
 
-/// Default [`DatabaseConfig::sync_build_concurrency`]: the host's available parallelism (CPU
-/// cores), since build is CPU-bound; falls back to 4 if the count cannot be determined.
+/// Default [`DatabaseConfig::sync_build_concurrency`]: conservative on purpose. Leaves ~2 cores
+/// for the commit path and tokio reactor, and hard-caps at 8 — `buffered` couples build
+/// concurrency to the number of *completed* `IndexedBlock`s held ahead of the consumer, so an
+/// unbounded default would let a long commit stall buffer dozens of fat blocks (RSS spike exactly
+/// when the system is already under write pressure) and oversubscribe cores against the commit
+/// path. Operators who measure build-bound headroom raise it explicitly.
 fn default_sync_build_concurrency() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
+        .saturating_sub(2)
+        .clamp(1, 8)
 }
 
 impl DatabaseConfig {

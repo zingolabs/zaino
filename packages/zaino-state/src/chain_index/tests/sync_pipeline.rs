@@ -662,7 +662,8 @@ async fn parallel_build_increases_throughput() {
     );
 
     // Make each build ~2 ms of busy-spin CPU so build dominates the trivial mock fetch/write.
-    crate::chain_index::finalised_state::set_test_build_cost_nanos(2_000_000);
+    // The guard clears the injected cost on drop — panic-safe, so it can't leak into sibling tests.
+    let _build_cost = crate::chain_index::finalised_state::TestBuildCostGuard::set(2_000_000);
 
     let serial_time = {
         let source = FaultInjectingSource::no_faults(build_mockchain_source(blocks.clone()));
@@ -680,9 +681,6 @@ async fn parallel_build_increases_throughput() {
         db.wait_until_ready().await;
         start.elapsed()
     };
-
-    // Reset so other tests sharing the process (cargo test) see no injected cost.
-    crate::chain_index::finalised_state::set_test_build_cost_nanos(0);
 
     // Conservative: 4-way build on >= 2 cores should beat serial by a clear margin even with
     // dispatch overhead and CI noise (ideal is ~min(4, cores)x).
