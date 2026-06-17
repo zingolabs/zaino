@@ -113,6 +113,10 @@ impl BlockchainSource for ValidatorConnector {
         }
     }
 
+    fn fetches_blocks_over_rpc(&self) -> bool {
+        matches!(self, ValidatorConnector::Fetch(_))
+    }
+
     // ********** Transaction methods **********
 
     // Returns the transaction, and the height of the block that transaction is in if on the best chain

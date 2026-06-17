@@ -612,6 +612,7 @@ impl ZainoDB {
         use futures::StreamExt as _;
         let (sync_initial_start_height, mut parent_chainwork) = self.resolve_sync_start().await?;
         let fetch_lookahead = self.cfg.storage.database.effective_sync_fetch_lookahead();
+        maybe_recommend_state_backend(source, sync_initial_start_height, sync_upper_bound.0);
         // Track last time we emitted an info log so we only print every 10s.
         let reported_height = Arc::new(AtomicU32::new(sync_initial_start_height));
         // Per-phase timing shared with the reporter so it can log where the sync wall is.
@@ -726,13 +727,10 @@ impl ZainoDB {
 
                 if let Some(batch) = batcher.push(chain_block) {
                     let write_start = std::time::Instant::now();
-                    phase_meter
-                        .write_in_progress_since_nanos
-                        .store(SYNC_EPOCH.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                    // RAII so the in-flight stamp clears even if the commit await errors (`?`).
+                    let _commit_in_flight =
+                        CommitInFlightGuard::new(&phase_meter.write_in_progress_since_nanos);
                     self.write_blocks_with_fallback(&batch).await?;
-                    phase_meter
-                        .write_in_progress_since_nanos
-                        .store(0, Ordering::Relaxed);
                     record_phase_seconds("zaino.sync.block_write_seconds", write_start);
                     phase_meter
                         .write_nanos
@@ -742,13 +740,10 @@ impl ZainoDB {
 
             if let Some(batch) = batcher.flush() {
                 let write_start = std::time::Instant::now();
-                phase_meter
-                    .write_in_progress_since_nanos
-                    .store(SYNC_EPOCH.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                // RAII so the in-flight stamp clears even if the commit await errors (`?`).
+                let _commit_in_flight =
+                    CommitInFlightGuard::new(&phase_meter.write_in_progress_since_nanos);
                 self.write_blocks_with_fallback(&batch).await?;
-                phase_meter
-                    .write_in_progress_since_nanos
-                    .store(0, Ordering::Relaxed);
                 record_phase_seconds("zaino.sync.block_write_seconds", write_start);
                 phase_meter
                     .write_nanos
@@ -1160,6 +1155,60 @@ fn record_phase_seconds(_name: &'static str, _start: std::time::Instant) {
 /// passing an `Instant` between them.
 static SYNC_EPOCH: std::sync::LazyLock<std::time::Instant> =
     std::sync::LazyLock::new(std::time::Instant::now);
+
+/// RAII stamp for an in-flight commit: records the [`SYNC_EPOCH`] nanos when a commit starts and
+/// clears it on drop, so the reporter's "commit in flight" indicator clears even when the commit
+/// await errors out (the `?` early-return still runs the drop). Pairs with
+/// [`SyncPhaseMeter::write_in_progress_since_nanos`].
+struct CommitInFlightGuard<'a>(&'a AtomicU64);
+
+impl<'a> CommitInFlightGuard<'a> {
+    fn new(stamp: &'a AtomicU64) -> Self {
+        stamp.store(SYNC_EPOCH.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        Self(stamp)
+    }
+}
+
+impl Drop for CommitInFlightGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(0, Ordering::Relaxed);
+    }
+}
+
+/// Blocks-behind above which the finalised-state catch-up is long enough that the per-block
+/// JSON-RPC cost dominates and the in-process `StateService` backend is worth recommending.
+/// ~50k blocks is multiple hours of RPC-bound sync at observed rates.
+const STATE_BACKEND_RECOMMENDATION_GAP: u32 = 50_000;
+
+/// Emits a one-time strong recommendation to switch to the in-process `StateService`
+/// (`ReadStateService`) backend when the finalised-state sync has a large catch-up to do over the
+/// JSON-RPC `FetchService`. The per-block `getblock` + `z_gettreestate` round-trips dominate a
+/// long sync — the validator serves them in single-digit ms but the RPC client path costs
+/// hundreds — which a local `ReadStateService` avoids entirely. No-op for in-process sources
+/// (which return `false` from [`BlockchainSource::fetches_blocks_over_rpc`]) and for short
+/// catch-ups, and logs at most once per process.
+fn maybe_recommend_state_backend<T: BlockchainSource>(source: &T, start: u32, target: u32) {
+    static RECOMMENDED: std::sync::Once = std::sync::Once::new();
+    if !source.fetches_blocks_over_rpc() {
+        return;
+    }
+    let gap = target.saturating_sub(start);
+    if gap < STATE_BACKEND_RECOMMENDATION_GAP {
+        return;
+    }
+    RECOMMENDED.call_once(|| {
+        tracing::warn!(
+            blocks_behind = gap,
+            "finalised-state sync has {gap} blocks to fetch over the JSON-RPC FetchService — each \
+             block is a getblock + z_gettreestate round-trip, and on a sync this large the RPC \
+             client path dominates (the validator serves these in single-digit ms; the client \
+             costs hundreds). If your validator is a gRPC-enabled zebra, the in-process \
+             StateService backend (set `backend = state` and point `validator_grpc_listen_address` \
+             at the zebra gRPC endpoint) reads blocks from the ReadStateService directly and \
+             avoids the per-block RPC entirely."
+        );
+    });
+}
 
 /// Per-phase wall-time accumulators for the ordered sync consumer, shared with the progress
 /// reporter so it can log which stage dominates each window — the signal for where the sync

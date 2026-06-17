@@ -47,6 +47,15 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
         id: HashOrHeight,
     ) -> BlockchainSourceResult<Option<Arc<zebra_chain::block::Block>>>;
 
+    /// Whether per-block fetches (`get_block` / `get_commitment_tree_roots`) go over a JSON-RPC
+    /// round-trip to the validator (the `FetchService` path) rather than an in-process read. When
+    /// true, switching to the in-process `StateService` (`ReadStateService`) backend would
+    /// eliminate the per-block RPC — the dominant cost of a long finalised-state sync. Defaults
+    /// to `false`; only the remote-RPC connector overrides it.
+    fn fetches_blocks_over_rpc(&self) -> bool {
+        false
+    }
+
     // ********** Transaction methods **********
 
     /// Returns the transaction by txid
