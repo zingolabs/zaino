@@ -726,7 +726,13 @@ impl ZainoDB {
 
                 if let Some(batch) = batcher.push(chain_block) {
                     let write_start = std::time::Instant::now();
+                    phase_meter
+                        .write_in_progress_since_nanos
+                        .store(SYNC_EPOCH.elapsed().as_nanos() as u64, Ordering::Relaxed);
                     self.write_blocks_with_fallback(&batch).await?;
+                    phase_meter
+                        .write_in_progress_since_nanos
+                        .store(0, Ordering::Relaxed);
                     record_phase_seconds("zaino.sync.block_write_seconds", write_start);
                     phase_meter
                         .write_nanos
@@ -736,7 +742,13 @@ impl ZainoDB {
 
             if let Some(batch) = batcher.flush() {
                 let write_start = std::time::Instant::now();
+                phase_meter
+                    .write_in_progress_since_nanos
+                    .store(SYNC_EPOCH.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 self.write_blocks_with_fallback(&batch).await?;
+                phase_meter
+                    .write_in_progress_since_nanos
+                    .store(0, Ordering::Relaxed);
                 record_phase_seconds("zaino.sync.block_write_seconds", write_start);
                 phase_meter
                     .write_nanos
@@ -863,18 +875,56 @@ impl ZainoDB {
                             per_block_ms(now.getblock_nanos.saturating_sub(prev.getblock_nanos));
                         let treestate_ms =
                             per_block_ms(now.treestate_nanos.saturating_sub(prev.treestate_nanos));
+                        // Live commit indicator: a commit in flight spans windows and only
+                        // registers in `write_nanos` on completion, so without this a long commit
+                        // reads as dead 0% windows. Read the in-progress stamp directly.
+                        let commit_state = match phase_meter
+                            .write_in_progress_since_nanos
+                            .load(Ordering::Relaxed)
+                        {
+                            0 => "commit idle".to_string(),
+                            since => {
+                                let secs = (SYNC_EPOCH.elapsed().as_nanos() as u64)
+                                    .saturating_sub(since) as f64
+                                    / 1.0e9;
+                                format!("⚠ commit {secs:.0}s in flight (height frozen)")
+                            }
+                        };
 
                         tracing::info!(
                             "sync_to_height: height {current_syncing_height}/{sync_upper_bound} \
                              — {rate:.1} blk/s, K={fetch_lookahead} | consumer phase split (last \
                              {window_secs:.0}s): fetch-wait {:.0}%, build {:.0}%, write {:.0}% \
-                             | fetch RPC/block: getblock {getblock_ms:.0}ms, treestate \
-                             {treestate_ms:.0}ms [high fetch-wait → raise K; treestate-dominated → \
-                             kill it via local frontier; high build & low fetch-wait → build-bound; \
-                             high write → commit-bound] on network = {network:?}",
+                             | {commit_state} | fetch RPC/block: getblock {getblock_ms:.0}ms, \
+                             treestate {treestate_ms:.0}ms [high fetch-wait → raise K; \
+                             treestate-dominated → kill it via local frontier; high build & low \
+                             fetch-wait → build-bound; high write → commit-bound] on network = \
+                             {network:?}",
                             pct(fetch_wait),
                             pct(build),
                             pct(write),
+                        );
+
+                        // Cumulative phase shares over the whole run. The per-window write is
+                        // spiky (it only registers at commit completion), so amortize it: cum
+                        // write% is the fraction of wall-clock the pipeline is frozen in commits —
+                        // a small, stable value definitively rules out commit-binding.
+                        let elapsed_nanos = SYNC_EPOCH.elapsed().as_nanos() as u64;
+                        let cum_pct = |total: u64| {
+                            if elapsed_nanos > 0 {
+                                100.0 * total as f64 / elapsed_nanos as f64
+                            } else {
+                                0.0
+                            }
+                        };
+                        tracing::info!(
+                            "sync_to_height cumulative ({:.0}s): fetch-wait {:.0}%, build {:.0}%, \
+                             write {:.1}% [write% = wall-clock frozen in commits; small & stable ⇒ \
+                             commit-binding ruled out]",
+                            elapsed_nanos as f64 / 1.0e9,
+                            cum_pct(now.fetch_wait_nanos),
+                            cum_pct(now.build_nanos),
+                            cum_pct(now.write_nanos),
                         );
 
                         prev = now;
@@ -1105,6 +1155,12 @@ fn record_phase_seconds(_name: &'static str, _start: std::time::Instant) {
     metrics::histogram!(_name).record(_start.elapsed().as_secs_f64());
 }
 
+/// Monotonic epoch for the sync instrumentation, so the consumer (which stamps when a commit
+/// starts) and the reporter (which reads it from another task) share a comparable clock without
+/// passing an `Instant` between them.
+static SYNC_EPOCH: std::sync::LazyLock<std::time::Instant> =
+    std::sync::LazyLock::new(std::time::Instant::now);
+
 /// Per-phase wall-time accumulators for the ordered sync consumer, shared with the progress
 /// reporter so it can log which stage dominates each window — the signal for where the sync
 /// wall is: high fetch-wait → fetch-bound (raise `sync_fetch_lookahead`); high build with low
@@ -1122,8 +1178,13 @@ struct SyncPhaseMeter {
     treestate_nanos: AtomicU64,
     /// Nanoseconds spent in the serial build (`build_indexed_block`).
     build_nanos: AtomicU64,
-    /// Nanoseconds spent in batched writes/commits.
+    /// Nanoseconds spent in batched writes/commits (registers on *completion*).
     write_nanos: AtomicU64,
+    /// While a commit is in flight, the [`SYNC_EPOCH`] nanos at which it started (`0` when no
+    /// commit is running). `write_nanos` only registers on completion, so a multi-window commit
+    /// would otherwise read as dead `0%` windows; the reporter reads this to surface a commit
+    /// *as it happens* — closing the periodic-stall blind spot.
+    write_in_progress_since_nanos: AtomicU64,
     /// Blocks consumed.
     blocks: AtomicU64,
 }
