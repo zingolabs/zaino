@@ -654,8 +654,9 @@ impl ZainoDB {
                 futures::stream::iter(sync_initial_start_height..=sync_upper_bound.0)
                     .map(|current_height| {
                         let source = (*source).clone();
+                        let phase_meter = Arc::clone(&phase_meter);
                         async move {
-                            fetch_block_and_roots(&source, current_height)
+                            fetch_block_and_roots(&source, current_height, Some(&*phase_meter))
                                 .await
                                 .map(|fetched| (current_height, fetched))
                         }
@@ -841,19 +842,35 @@ impl ZainoDB {
                             .saturating_duration_since(prev.captured_at)
                             .as_secs_f64()
                             .max(f64::EPSILON);
-                        let rate = now.blocks.saturating_sub(prev.blocks) as f64 / window_secs;
+                        let blocks = now.blocks.saturating_sub(prev.blocks);
+                        let rate = blocks as f64 / window_secs;
                         // Attribute the serial consumer's window time across its three phases.
                         let fetch_wait = now.fetch_wait_nanos.saturating_sub(prev.fetch_wait_nanos);
                         let build = now.build_nanos.saturating_sub(prev.build_nanos);
                         let write = now.write_nanos.saturating_sub(prev.write_nanos);
                         let accounted = (fetch_wait + build + write).max(1);
                         let pct = |part: u64| 100.0 * part as f64 / accounted as f64;
+                        // Per-block fetch-RPC latency (sum across concurrent fetches / blocks):
+                        // which RPC owns the per-block fetch cost, independent of K.
+                        let per_block_ms = |nanos: u64| {
+                            if blocks > 0 {
+                                nanos as f64 / blocks as f64 / 1.0e6
+                            } else {
+                                0.0
+                            }
+                        };
+                        let getblock_ms =
+                            per_block_ms(now.getblock_nanos.saturating_sub(prev.getblock_nanos));
+                        let treestate_ms =
+                            per_block_ms(now.treestate_nanos.saturating_sub(prev.treestate_nanos));
 
                         tracing::info!(
                             "sync_to_height: height {current_syncing_height}/{sync_upper_bound} \
                              — {rate:.1} blk/s, K={fetch_lookahead} | consumer phase split (last \
                              {window_secs:.0}s): fetch-wait {:.0}%, build {:.0}%, write {:.0}% \
-                             [high fetch-wait → raise K; high build & low fetch-wait → build-bound; \
+                             | fetch RPC/block: getblock {getblock_ms:.0}ms, treestate \
+                             {treestate_ms:.0}ms [high fetch-wait → raise K; treestate-dominated → \
+                             kill it via local frontier; high build & low fetch-wait → build-bound; \
                              high write → commit-bound] on network = {network:?}",
                             pct(fetch_wait),
                             pct(build),
@@ -1009,7 +1026,8 @@ impl ZainoDB {
         let zebra_network = cfg.network.to_zebra_network();
 
         for height in GENESIS_HEIGHT.0..=tip.0 {
-            let (block, sapling_opt, orchard_opt) = fetch_block_and_roots(&source, height).await?;
+            let (block, sapling_opt, orchard_opt) =
+                fetch_block_and_roots(&source, height, None).await?;
             let block_hash = BlockHash::from(block.hash().0);
 
             // The v1.0.0 fixture source provides every tree root, so (unlike the production
@@ -1096,6 +1114,12 @@ fn record_phase_seconds(_name: &'static str, _start: std::time::Instant) {
 struct SyncPhaseMeter {
     /// Nanoseconds the consumer spent blocked waiting for the next fetched block.
     fetch_wait_nanos: AtomicU64,
+    /// Nanoseconds in the `getblock` RPC, summed across concurrent fetches (so per-block
+    /// average = this / blocks is the real getblock latency regardless of `K`).
+    getblock_nanos: AtomicU64,
+    /// Nanoseconds in the per-block `z_gettreestate` RPC, summed across concurrent fetches —
+    /// the suspected fetch chokepoint post-NU5.
+    treestate_nanos: AtomicU64,
     /// Nanoseconds spent in the serial build (`build_indexed_block`).
     build_nanos: AtomicU64,
     /// Nanoseconds spent in batched writes/commits.
@@ -1110,6 +1134,8 @@ struct PhaseSnapshot {
     captured_at: std::time::Instant,
     blocks: u64,
     fetch_wait_nanos: u64,
+    getblock_nanos: u64,
+    treestate_nanos: u64,
     build_nanos: u64,
     write_nanos: u64,
 }
@@ -1120,6 +1146,8 @@ impl PhaseSnapshot {
             captured_at: std::time::Instant::now(),
             blocks: meter.blocks.load(Ordering::Relaxed),
             fetch_wait_nanos: meter.fetch_wait_nanos.load(Ordering::Relaxed),
+            getblock_nanos: meter.getblock_nanos.load(Ordering::Relaxed),
+            treestate_nanos: meter.treestate_nanos.load(Ordering::Relaxed),
             build_nanos: meter.build_nanos.load(Ordering::Relaxed),
             write_nanos: meter.write_nanos.load(Ordering::Relaxed),
         }
@@ -1134,6 +1162,7 @@ impl PhaseSnapshot {
 async fn fetch_block_and_roots<T: BlockchainSource>(
     source: &T,
     height: u32,
+    phase_meter: Option<&SyncPhaseMeter>,
 ) -> Result<
     (
         Arc<zebra_chain::block::Block>,
@@ -1144,12 +1173,24 @@ async fn fetch_block_and_roots<T: BlockchainSource>(
 > {
     let fetch_start = std::time::Instant::now();
     let block = fetch_block_at(source, height).await?;
+    let getblock_nanos = fetch_start.elapsed().as_nanos() as u64;
     record_phase_seconds("zaino.sync.block_fetch_seconds", fetch_start);
 
     let block_hash = BlockHash::from(block.hash().0);
     let treestate_start = std::time::Instant::now();
     let (sapling_opt, orchard_opt) = source.get_commitment_tree_roots(block_hash).await?;
+    let treestate_nanos = treestate_start.elapsed().as_nanos() as u64;
     record_phase_seconds("zaino.sync.treestate_fetch_seconds", treestate_start);
+
+    // Split the per-block fetch so the reporter can show which RPC owns the latency.
+    if let Some(meter) = phase_meter {
+        meter
+            .getblock_nanos
+            .fetch_add(getblock_nanos, Ordering::Relaxed);
+        meter
+            .treestate_nanos
+            .fetch_add(treestate_nanos, Ordering::Relaxed);
+    }
 
     Ok((block, sapling_opt, orchard_opt))
 }
