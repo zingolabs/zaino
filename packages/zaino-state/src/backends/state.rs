@@ -265,8 +265,7 @@ impl ZcashService for StateService {
             }),
             config.clone().into(),
         )
-        .await
-        .unwrap();
+        .await?;
 
         let state_service = Self {
             chain_tip_change,

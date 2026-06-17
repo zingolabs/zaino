@@ -146,9 +146,7 @@ impl ZcashService for FetchService {
         info!(build = %data.zebra_build(), subversion = %data.zebra_subversion(), "Connected to Zcash node");
 
         let source = ValidatorConnector::Fetch(fetcher.clone());
-        let indexer = NodeBackedChainIndex::new(source, config.clone().into())
-            .await
-            .unwrap();
+        let indexer = NodeBackedChainIndex::new(source, config.clone().into()).await?;
 
         let fetch_service = Self {
             fetcher,

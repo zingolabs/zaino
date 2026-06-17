@@ -42,6 +42,10 @@ pub enum StateServiceError {
     #[error("Chain index error: {0}")]
     ChainIndexError(#[from] ChainIndexError),
 
+    /// Chain index failed to initialize.
+    #[error("Chain index initialization error: {0}")]
+    InitError(#[from] crate::InitError),
+
     /// Error from the block cache.
     #[error("Mempool error: {0}")]
     BlockCacheError(#[from] BlockCacheError),
@@ -135,6 +139,9 @@ impl From<StateServiceError> for tonic::Status {
                     tonic::Status::failed_precondition(err.message)
                 }
             },
+            StateServiceError::InitError(err) => {
+                tonic::Status::internal(format!("Chain index initialization error: {err}"))
+            }
             StateServiceError::BlockCacheError(err) => {
                 tonic::Status::internal(format!("BlockCache error: {err:?}"))
             }
@@ -200,6 +207,10 @@ pub enum FetchServiceError {
     #[error("Chain index error: {0}")]
     ChainIndexError(#[from] ChainIndexError),
 
+    /// Chain index failed to initialize.
+    #[error("Chain index initialization error: {0}")]
+    InitError(#[from] crate::InitError),
+
     /// RPC error in compatibility with zcashd.
     #[error("RPC error: {0:?}")]
     RpcError(#[from] zaino_fetch::jsonrpsee::connector::RpcError),
@@ -229,6 +240,9 @@ impl From<FetchServiceError> for tonic::Status {
                     tonic::Status::failed_precondition(err.message)
                 }
             },
+            FetchServiceError::InitError(err) => {
+                tonic::Status::internal(format!("Chain index initialization error: {err}"))
+            }
             FetchServiceError::RpcError(err) => {
                 tonic::Status::internal(format!("RPC error: {err:?}"))
             }
