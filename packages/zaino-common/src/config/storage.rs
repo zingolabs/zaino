@@ -80,11 +80,29 @@ pub struct DatabaseConfig {
     /// better. Defaults to 4 GiB; raise it on large-RAM hosts.
     #[serde(default = "default_sync_write_batch_bytes")]
     pub sync_write_batch_bytes: u64,
+    /// Number of blocks fetched concurrently during finalised-state bulk sync.
+    ///
+    /// The bulk-sync ingestion loop is fetch-latency-bound: each block requires sequential
+    /// round-trips to the source (block + commitment-tree roots), and a strictly serial loop leaves
+    /// both zaino and the validator idle while it waits on the network. This knob runs up to this
+    /// many block fetches in flight at once (yielded back in strict height order, so the writer is
+    /// unaffected), overlapping the latency and multiplying fetch throughput until the source's RPC
+    /// handler saturates.
+    ///
+    /// Peak fetch memory is roughly this many buffered blocks, so keep it modest. Defaults to 32;
+    /// tune up toward the source's RPC capacity.
+    #[serde(default = "default_sync_fetch_concurrency")]
+    pub sync_fetch_concurrency: usize,
 }
 
 /// Default [`DatabaseConfig::sync_write_batch_bytes`]: 4 GiB.
 fn default_sync_write_batch_bytes() -> u64 {
     4 * 1024 * 1024 * 1024
+}
+
+/// Default [`DatabaseConfig::sync_fetch_concurrency`]: 32 concurrent block fetches.
+fn default_sync_fetch_concurrency() -> usize {
+    32
 }
 
 impl Default for DatabaseConfig {
@@ -93,6 +111,7 @@ impl Default for DatabaseConfig {
             path: resolve_path_with_xdg_cache_defaults("zaino"),
             size: DatabaseSize::default(),
             sync_write_batch_bytes: default_sync_write_batch_bytes(),
+            sync_fetch_concurrency: default_sync_fetch_concurrency(),
         }
     }
 }
