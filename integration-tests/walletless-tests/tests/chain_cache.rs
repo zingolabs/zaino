@@ -46,7 +46,7 @@ mod chain_query_interface {
             source::ValidatorConnector, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
             ShieldedPool,
         },
-        test_dependencies::{chain_index::ChainIndex, BlockCacheConfig},
+        test_dependencies::{chain_index::ChainIndex, ChainIndexConfig},
         FetchService, Height, StateService, StateServiceConfig, ZcashService,
     };
     use zcash_local_net::validator::{zcashd::Zcashd, zebrad::Zebrad};
@@ -66,6 +66,7 @@ mod chain_query_interface {
         chain_cache: Option<std::path::PathBuf>,
         enable_zaino: bool,
         enable_clients: bool,
+        ephemeral: bool,
     ) -> (
         TestManager<C, Service>,
         JsonRpSeeConnector,
@@ -149,12 +150,13 @@ mod chain_query_interface {
                             ..Default::default()
                         },
                     },
+                    false,
                     network.into(),
                     None,
                 ))
                 .await
                 .unwrap();
-                let config = BlockCacheConfig {
+                let config = ChainIndexConfig {
                     storage: StorageConfig {
                         database: DatabaseConfig {
                             path: test_manager
@@ -166,6 +168,7 @@ mod chain_query_interface {
                         },
                         ..Default::default()
                     },
+                    ephemeral,
                     db_version: 1,
                     network: zaino_common::Network::Regtest(ActivationHeights::from(
                         test_manager.local_net.get_activation_heights().await,
@@ -196,7 +199,7 @@ mod chain_query_interface {
                 )
             }
             ValidatorKind::Zcashd => {
-                let config = BlockCacheConfig {
+                let config = ChainIndexConfig {
                     storage: StorageConfig {
                         database: DatabaseConfig {
                             path: test_manager
@@ -208,6 +211,7 @@ mod chain_query_interface {
                         },
                         ..Default::default()
                     },
+                    ephemeral,
                     db_version: 1,
                     network: zaino_common::Network::Regtest(
                         test_manager.local_net.get_activation_heights().await.into(),
@@ -247,7 +251,8 @@ mod chain_query_interface {
         <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
     {
         let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
-            create_test_manager_and_chain_index::<C, Service>(validator, None, false, false).await;
+            create_test_manager_and_chain_index::<C, Service>(validator, None, false, false, false)
+                .await;
 
         test_manager
             .generate_blocks_and_wait_for_tip(5, &indexer)
@@ -264,6 +269,100 @@ mod chain_query_interface {
                 .zcash_deserialize_into::<zebra_chain::block::Block>()
                 .unwrap();
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ephemeral_serves_finalised_blocks_zebrad() {
+        ephemeral_serves_finalised_blocks::<Zebrad, StateService>(&ValidatorKind::Zebrad).await
+    }
+
+    /// Ephemeral mode on regtest: the chain index opens no persistent
+    /// finalised-state database and serves finalised reads straight from the
+    /// validator via the ephemeral passthrough.
+    ///
+    /// In ephemeral mode `db_height` is `0`, so the non-finalised cache retains
+    /// blocks down to `tip - MAX_NFS_DEPTH` (110). We therefore generate well
+    /// past that depth and query a height below `tip - 110`, so the reads are
+    /// genuinely served by the ephemeral *finalised* passthrough rather than the
+    /// non-finalised cache. The test then:
+    /// - fetches a finalised chain (indexed) block by height, re-fetches it by
+    ///   its hash, and asserts the two are identical;
+    /// - streams compact blocks across the finalised / non-finalised boundary;
+    /// - asserts nothing was persisted to disk.
+    async fn ephemeral_serves_finalised_blocks<C, Service>(validator: &ValidatorKind)
+    where
+        C: ValidatorExt,
+        Service: zaino_testutils::TestService,
+        IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+        <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
+    {
+        use zaino_proto::proto::utils::PoolTypeFilter;
+
+        let (test_manager, json_service, _option_state_service, _chain_index, indexer) =
+            create_test_manager_and_chain_index::<C, Service>(validator, None, false, false, true)
+                .await;
+
+        // Generate well past MAX_NFS_DEPTH (110) so low heights are evicted from
+        // the non-finalised cache and served by the ephemeral finalised passthrough.
+        test_manager
+            .generate_blocks_and_wait_for_tip(150, &indexer)
+            .await;
+        let snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
+        let chain_height: u32 = json_service.get_blockchain_info().await.unwrap().blocks.0;
+
+        // `start_height` is below `tip - 110` (evicted from the NFS cache, served
+        // by the passthrough); `end_height` is above `tip - 100` (non-finalised).
+        let start_height: u32 = chain_height - 120;
+        let end_height: u32 = chain_height - 40;
+        let finalised_height = Height::try_from(start_height).unwrap();
+
+        // --- chain (indexed) block: fetch by height, then by its hash ---
+        let block_by_height = indexer
+            .get_indexed_block_by_height(&snapshot, &finalised_height)
+            .await
+            .unwrap()
+            .expect("ephemeral passthrough must serve a finalised chain block by height");
+        let block_by_hash = indexer
+            .get_indexed_block_by_hash(&snapshot, block_by_height.hash())
+            .await
+            .unwrap()
+            .expect("ephemeral passthrough must serve the same chain block by hash");
+        assert_eq!(
+            block_by_height, block_by_hash,
+            "chain block fetched by height and by hash must be the same block"
+        );
+
+        // --- compact block stream across the finalised / non-finalised boundary ---
+        let stream = indexer
+            .get_compact_block_stream(
+                &snapshot,
+                Height::try_from(start_height).unwrap(),
+                Height::try_from(end_height).unwrap(),
+                PoolTypeFilter::includes_all(),
+            )
+            .await
+            .unwrap()
+            .expect("ephemeral mode must serve a compact block stream across the boundary");
+        let streamed = stream.try_collect::<Vec<_>>().await.unwrap();
+
+        let expected_count = (end_height - start_height + 1) as usize;
+        assert_eq!(
+            streamed.len(),
+            expected_count,
+            "stream must cover the full inclusive range across the finalised boundary"
+        );
+        for (offset, compact_block) in streamed.iter().enumerate() {
+            let streamed_height = u32::try_from(compact_block.height).unwrap();
+            assert_eq!(streamed_height, start_height + offset as u32);
+        }
+
+        // Ephemeral mode must persist nothing: no chain-index database directory.
+        let chain_index_db_dir = test_manager.data_dir.as_path().join("chain-index-zaino");
+        assert!(
+            !chain_index_db_dir.exists(),
+            "ephemeral mode must not create a persistent chain-index database at \
+             {chain_index_db_dir:?}"
+        );
     }
 
     #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
@@ -286,7 +385,8 @@ mod chain_query_interface {
         <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
     {
         let (test_manager, json_service, option_state_service, _chain_index, indexer) =
-            create_test_manager_and_chain_index::<C, Service>(validator, None, false, false).await;
+            create_test_manager_and_chain_index::<C, Service>(validator, None, false, false, false)
+                .await;
 
         test_manager
             .generate_blocks_and_wait_for_tip(5, &indexer)
@@ -360,7 +460,8 @@ mod chain_query_interface {
         <Service as ZcashService>::Subscriber: zaino_testutils::PollableTip,
     {
         let (test_manager, json_service, _option_state_service, _chain_index, indexer) =
-            create_test_manager_and_chain_index::<C, Service>(validator, None, false, false).await;
+            create_test_manager_and_chain_index::<C, Service>(validator, None, false, false, false)
+                .await;
 
         test_manager
             .generate_blocks_and_wait_for_tip(5, &indexer)
@@ -468,7 +569,8 @@ mod chain_query_interface {
         use tokio::time::{timeout, Duration};
 
         let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
-            create_test_manager_and_chain_index::<C, Service>(validator, None, false, false).await;
+            create_test_manager_and_chain_index::<C, Service>(validator, None, false, false, false)
+                .await;
 
         test_manager
             .generate_blocks_and_wait_for_tip(5, &indexer)
@@ -523,7 +625,8 @@ mod chain_query_interface {
         use tokio::time::{timeout, Duration};
 
         let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
-            create_test_manager_and_chain_index::<C, Service>(validator, None, false, false).await;
+            create_test_manager_and_chain_index::<C, Service>(validator, None, false, false, false)
+                .await;
 
         test_manager
             .generate_blocks_and_wait_for_tip(5, &indexer)

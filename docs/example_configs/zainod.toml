@@ -14,6 +14,11 @@ backend = 'fetch'
 zebra_db_path = '/home/cupress/.cache/zebra'
 network = 'Testnet'
 
+# Run the finalised state in ephemeral/stateless mode. When true, Zaino opens no
+# persistent finalised-state database and serves finalised reads directly from
+# the backing validator via a stateless passthrough. Default: false.
+ephemeral_finalised_state = false
+
 [grpc_settings]
 listen_address = '127.0.0.1:8137'
 

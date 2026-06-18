@@ -1,4 +1,4 @@
-//! Read-only view onto a running `ZainoDB` (DbReader)
+//! Read-only view onto a running `FinalisedState` (DbReader)
 //!
 //! This file defines [`DbReader`], the **read-only** interface that should be used for *all* chain
 //! data fetches from the finalised database.
@@ -15,7 +15,7 @@
 //! # How routing works
 //!
 //! Each method in `DbReader` requests a specific capability (e.g. `BlockCoreExt`, `TransparentHistExt`).
-//! Internally, `DbReader::db(cap)` calls `ZainoDB::backend_for_cap(cap)`, which consults the router.
+//! Internally, `DbReader::db(cap)` calls `FinalisedState::backend_for_cap(cap)`, which consults the router.
 //!
 //! - If the capability is currently served by the shadow DB (shadow mask contains the bit), the
 //!   query runs against shadow.
@@ -35,14 +35,14 @@
 //! 2. If a new capability is required:
 //!    - add a new `Capability` bit and `CapabilityRequest` variant in `capability.rs`,
 //!    - implement the corresponding extension trait for supported DB versions,
-//!    - delegate through `DbBackend` and route via the router.
+//!    - delegate through `FinalisedSource` and route via the router.
 //! 3. Add the new method on `DbReader` that requests the corresponding `CapabilityRequest` and calls
 //!    into the backend.
 //!
 //! # Usage pattern
 //!
-//! `DbReader` is created from an `Arc<ZainoDB>` using [`ZainoDB::to_reader`](super::ZainoDB::to_reader).
-//! Prefer passing `DbReader` through query layers rather than passing `ZainoDB` directly.
+//! `DbReader` is created from an `Arc<FinalisedState>` using [`FinalisedState::to_reader`](super::FinalisedState::to_reader).
+//! Prefer passing `DbReader` through query layers rather than passing `FinalisedState` directly.
 
 use zaino_proto::proto::utils::PoolTypeFilter;
 
@@ -52,9 +52,9 @@ use crate::{
         types::{db::metadata::FinalisedTxOutSetInfoAccumulator, TransactionHash},
     },
     error::FinalisedStateError,
-    BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream, Height, IndexedBlock,
-    OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList, StatusType,
-    TransparentCompactTx, TransparentTxList, TxLocation, TxOutCompact, TxidList,
+    BlockHash, BlockHeaderData, BlockchainSource, CommitmentTreeData, CompactBlockStream, Height,
+    IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList,
+    StatusType, TransparentCompactTx, TransparentTxList, TxLocation, TxOutCompact, TxidList,
 };
 
 #[cfg(feature = "transparent_address_history_experimental")]
@@ -65,8 +65,8 @@ use super::{
         BlockCoreExt, BlockShieldedExt, BlockTransparentExt, CompactBlockExt, DbMetadata,
         IndexedBlockExt, TransparentHistExt,
     },
-    db::DbBackend,
-    ZainoDB,
+    finalised_source::FinalisedSource,
+    FinalisedState,
 };
 
 use std::sync::Arc;
@@ -80,24 +80,32 @@ use std::sync::Arc;
 ///   [`Router`](super::router::Router).
 ///
 /// ## Cloning and sharing
-/// `DbReader` is cheap to clone; clones share the underlying `Arc<ZainoDB>`.
-pub(crate) struct DbReader {
-    /// Shared handle to the running `ZainoDB` instance.
-    pub(crate) inner: Arc<ZainoDB>,
+/// `DbReader` is cheap to clone; clones share the underlying `Arc<FinalisedState>`.
+pub(crate) struct DbReader<T: BlockchainSource> {
+    /// Shared handle to the running `FinalisedState` instance.
+    pub(crate) inner: Arc<FinalisedState<T>>,
 }
 
-impl DbReader {
+impl<T: BlockchainSource> DbReader<T> {
     /// Resolves the backend that should serve `cap` right now.
     ///
     /// This is the single routing choke-point for all `DbReader` methods. It delegates to
-    /// `ZainoDB::backend_for_cap`, which consults the router’s primary/shadow masks.
+    /// `FinalisedState::backend_for_cap`, which consults the router’s primary/shadow masks.
     ///
     /// # Errors
     /// Returns `FinalisedStateError::FeatureUnavailable(...)` if no currently-open backend
     /// advertises the requested capability.
     #[inline(always)]
-    fn db(&self, cap: CapabilityRequest) -> Result<Arc<DbBackend>, FinalisedStateError> {
+    fn db(&self, cap: CapabilityRequest) -> Result<Arc<FinalisedSource<T>>, FinalisedStateError> {
         self.inner.backend_for_cap(cap)
+    }
+
+    /// Returns `true` if `db_result` is a feature-unavailable routing result.
+    #[inline(always)]
+    fn is_feature_unavailable(
+        db_result: &Result<Arc<FinalisedSource<T>>, FinalisedStateError>,
+    ) -> bool {
+        matches!(db_result, Err(FinalisedStateError::FeatureUnavailable(_)))
     }
 
     // ***** DB Core Read *****
@@ -122,7 +130,7 @@ impl DbReader {
 
     /// Waits until the database reports [`StatusType::Ready`].
     ///
-    /// This is a convenience wrapper around `ZainoDB::wait_until_ready` and should typically be
+    /// This is a convenience wrapper around `FinalisedState::wait_until_ready` and should typically be
     /// awaited once during startup before serving queries.
     pub(crate) async fn wait_until_ready(&self) {
         self.inner.wait_until_ready().await

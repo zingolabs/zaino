@@ -1,4 +1,4 @@
-//! ZainoDB::V1 core write functionality.
+//! FinalisedState::V1 core write functionality.
 
 use super::*;
 
@@ -248,7 +248,7 @@ impl DbV1 {
     //! *** DB write / delete methods ***
     //! **These should only ever be used in a single DB control task.**
 
-    /// Writes a given (finalised) [`IndexedBlock`] to ZainoDB.
+    /// Writes a given (finalised) [`IndexedBlock`] to FinalisedState.
     ///
     /// Single-block append: the txout-set accumulator is maintained incrementally and the written
     /// block is validated before the height advances. Bulk catch-up uses
@@ -289,7 +289,7 @@ impl DbV1 {
         let block_height_bytes = block_height.to_bytes()?;
 
         // Check if this specific block already exists (idempotent write support for shared DB).
-        // This handles the case where multiple processes share the same ZainoDB.
+        // This handles the case where multiple processes share the same FinalisedState.
         let block_already_exists = tokio::task::block_in_place(|| {
             let ro = self.env.begin_ro_txn()?;
 
@@ -381,7 +381,7 @@ impl DbV1 {
         if block_already_exists {
             self.status.store(StatusType::Ready);
             info!(
-                "Block {} at height {} already exists in ZainoDB, skipping write.",
+                "Block {} at height {} already exists in FinalisedState, skipping write.",
                 &block_hash, &block_height.0
             );
             return Ok(());
@@ -652,7 +652,7 @@ impl DbV1 {
             config: self.config.clone(),
         };
         let join_handle = tokio::task::spawn_blocking(move || {
-            // Write block to ZainoDB
+            // Write block to FinalisedState
             let mut txn = zaino_db.env.begin_rw_txn()?;
 
             txn.put(
@@ -715,7 +715,7 @@ impl DbV1 {
                 WriteFlags::NO_OVERWRITE,
             )?;
 
-            // Write spent to ZainoDB
+            // Write spent to FinalisedState
             for (outpoint, tx_location) in spent_map {
                 let outpoint_bytes = &outpoint.to_bytes()?;
                 let tx_location_entry_bytes =
@@ -756,7 +756,7 @@ impl DbV1 {
 
             #[cfg(feature = "transparent_address_history_experimental")]
             {
-                // Write outputs to ZainoDB addrhist
+                // Write outputs to FinalisedState addrhist
                 for (addr_script, records) in addrhist_outputs_map {
                     let addr_bytes = addr_script.to_bytes()?;
 
@@ -784,7 +784,7 @@ impl DbV1 {
                     }
                 }
 
-                // Write inputs to ZainoDB addrhist
+                // Write inputs to FinalisedState addrhist
                 for (addr_script, records) in addrhist_inputs_map {
                     let addr_bytes = addr_script.to_bytes()?;
 
@@ -892,12 +892,12 @@ impl DbV1 {
                 }
                 if block.context.index.height.0 % 100 == 0 {
                     info!(
-                        "Successfully committed block {} at height {} to ZainoDB.",
+                        "Successfully committed block {} at height {} to FinalisedState.",
                         &block.context.index.hash, &block.context.index.height
                     );
                 } else {
                     tracing::debug!(
-                        "Successfully committed block {} at height {} to ZainoDB.",
+                        "Successfully committed block {} at height {} to FinalisedState.",
                         &block.context.index.hash,
                         &block.context.index.height
                     );

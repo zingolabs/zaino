@@ -1,4 +1,4 @@
-//! ZainoDB::V1 shielded block indexing functionality.
+//! FinalisedState::V1 shielded block indexing functionality.
 
 use super::*;
 

@@ -1,6 +1,6 @@
-//! ZainoDB::V1 transparent address history indexing functionality.
+//! FinalisedState::V1 transparent address history indexing functionality.
 
-use crate::chain_index::finalised_state::db::v1::{
+use crate::chain_index::finalised_state::finalised_source::v1::{
     ACCUMULATOR_BUILD_SHARDS, TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY,
     TX_OUT_SET_INFO_ACCUMULATOR_KEY,
 };

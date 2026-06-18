@@ -8,7 +8,30 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- Optional ("ephemeral") finalised state: with `ChainIndexConfig::ephemeral`,
+  no finalised database is opened. Finalised reads are served by an ephemeral
+  passthrough (`finalised_source::ephemeral::EphemeralFinalisedState`) directly
+  from the backing `BlockchainSource`; `sync_to_height` is a no-op and
+  `db_height` reports `0`.
+- Background finalised-state sync and migration: `FinalisedState::sync_to_height`
+  runs inline for small ranges but spawns for large ones, and version migrations
+  run in the background, in both cases serving reads from an ephemeral passthrough
+  meanwhile. Failed background work retries and escalates to `CriticalError`.
+- `FinalisedState::wait_until_synced` — waits for in-progress background
+  sync/migration to reach its target (distinct from `wait_until_ready`, which
+  reflects serving-readiness).
 ### Changed
+- `chain_index::finalised_state` renames (internal, `pub(crate)`):
+  - facade type `ZainoDB` -> `FinalisedState`
+  - module `db` -> `finalised_source`; enum `DbBackend` -> `FinalisedSource`
+    (variant `Stateless` -> `Ephemeral`), reflecting that the backing source is
+    not necessarily a database
+  - stateless impl `StatelessFinalisedState` -> `EphemeralFinalisedState`
+    (`db/stateless.rs` -> `finalised_source/ephemeral.rs`)
+- `chain_index::non_finalised_state` now caps in-memory retention at
+  `MAX_NFS_DEPTH` blocks below the tip, so the cache cannot grow unbounded when
+  the finalised `db_height` lags (background sync) or is pinned at `0`
+  (ephemeral mode).
 ### Deprecated
 ### Removed
 ### Fixed

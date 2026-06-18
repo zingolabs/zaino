@@ -1,4 +1,4 @@
-//! ZainoDB::V1 core read functionality.
+//! FinalisedState::V1 core read functionality.
 
 use super::*;
 
