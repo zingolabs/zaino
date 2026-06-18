@@ -484,7 +484,7 @@ From [ADR 003 §2, "Versioning strategy (SemVer)"](https://github.com/zingolabs/
 
 **ZainoDB versioning**, from the same section:
 
-> - **MAJOR**: Distinct database implementations, providing differing sets of functionality (Currently V1 is the only supported major version. A lightweight V2 database that only holds the minimal set of data required to produce the extra indexes (compared to zebrad) required in Zaino is planned but not yet implemented. V0 is a backwards compatibility layer for the legacy local cache implementation).
+> - **MAJOR**: Distinct database implementations, providing differing sets of functionality (Currently V1 is the only supported major version. A lightweight V2 database that only holds the minimal set of data required to produce the extra indexes (compared to zebrad) required in Zaino is planned but not yet implemented. The legacy V0 local-cache schema has been removed: an on-disk V0 database is no longer opened or migrated — it is rejected with an error directing the operator to resync a V1 database).
 > - **MINOR**: Updates that contain changes to either the public APIs or the on disk schema.
 > - **PATCH**: Internal bug fixes / performance improvements that do not touch the public APIs or on disk schema.
 >

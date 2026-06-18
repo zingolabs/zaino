@@ -1,7 +1,6 @@
 //! Zaino-State ChainIndex Finalised State (FinalisedState) unit tests.
 mod ephemeral;
 mod migrations;
-mod v0;
 pub(crate) mod v1;
 
 use std::future::Future;

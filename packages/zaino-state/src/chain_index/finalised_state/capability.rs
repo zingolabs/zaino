@@ -4,7 +4,7 @@
 //! implementations must conform to.
 //!
 //! The core idea is:
-//! - Each concrete DB major version (e.g. `DbV0`, `DbV1`) implements a common set of traits.
+//! - Each concrete DB major version (e.g. `DbV1`) implements a common set of traits.
 //! - A `Capability` bitmap declares which parts of that trait surface are actually supported.
 //! - The router (`Router`) and reader (`DbReader`) use *single-feature* requests
 //!   (`CapabilityRequest`) to route a call to a backend that is guaranteed to support it.
@@ -50,8 +50,7 @@
 //! # Versioning strategy (practical guidance)
 //!
 //! - `DbVersion::major` is the primary compatibility boundary:
-//!   - v0 is a legacy compact-block streamer.
-//!   - v1 adds richer indices (chain block data + transparent history).
+//!   - v1 is the current schema (chain block data + transparent history).
 //!
 //! - `minor`/`patch` can be used for additive or compatible changes, but only if on-disk encodings
 //!   remain readable and all invariants remain satisfied.
@@ -456,11 +455,6 @@ impl DbVersion {
     /// the router will reject feature requests rather than serving incorrect data.
     pub(crate) fn capability(&self) -> Capability {
         match (self.major, self.minor) {
-            // V0: legacy compact block streamer.
-            (0, _) => {
-                Capability::READ_CORE | Capability::WRITE_CORE | Capability::COMPACT_BLOCK_EXT
-            }
-
             // V1: Adds chainblockv1 and transparent transaction history data.
             #[cfg(feature = "transparent_address_history_experimental")]
             (1, 0) | (1, 1) => {

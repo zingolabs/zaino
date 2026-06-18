@@ -4,7 +4,6 @@
 //! [`FinalisedSource`], a kind-erased enum used throughout the finalised-state subsystem.
 //!
 //! Concrete backing implementations live in:
-//! - [`v0`]: legacy persistent schema (compact-block streamer)
 //! - [`v1`]: current persistent schema (expanded indices and query surface)
 //! - [`ephemeral`]: ephemeral passthrough that serves finalised reads directly from the
 //!   [`BlockchainSource`](crate::chain_index::source::BlockchainSource) and persists nothing
@@ -22,7 +21,6 @@
 //! - the extension trait impls in this file (unsupported methods must return `FeatureUnavailable`).
 //!
 //! In particular:
-//! - v0 supports READ/WRITE core + `CompactBlockExt`.
 //! - v1 supports the full current capability set (`Capability::LATEST`), including:
 //!   - block header/txid/location indexing,
 //!   - transparent + shielded compact tx access,
@@ -58,10 +56,8 @@
 //! `FinalisedStateError::FeatureUnavailable(...)` rather than silently degrading semantics.
 
 pub(crate) mod ephemeral;
-pub(crate) mod v0;
 pub(crate) mod v1;
 
-use v0::DbV0;
 use v1::DbV1;
 use zaino_proto::proto::utils::PoolTypeFilter;
 
@@ -219,7 +215,7 @@ pub(super) const VERSION_DIRS: [&str; 1] = ["v1"];
 /// Version-erased database backend.
 ///
 /// This enum is the central dispatch point for the finalised-state database:
-/// - It is constructed by spawning a concrete backend (for example, v0 or v1).
+/// - It is constructed by spawning a concrete backend (for example, v1).
 /// - It implements the core database traits (`DbCore`, `DbRead`, `DbWrite`).
 /// - It implements capability extension traits by delegating to the concrete implementation, or by
 ///   returning [`FinalisedStateError::FeatureUnavailable`] when unsupported.
@@ -227,11 +223,12 @@ pub(super) const VERSION_DIRS: [&str; 1] = ["v1"];
 /// Capability reporting is provided by [`FinalisedSource::capability`] and must match the methods that
 /// successfully dispatch in the extension trait implementations below.
 pub(crate) enum FinalisedSource<T: BlockchainSource> {
-    /// Legacy schema backend.
-    V0(DbV0),
-
     /// Current schema backend.
-    V1(DbV1),
+    ///
+    /// Boxed: `DbV1` is large and dominates the enum, while `Ephemeral` is small. Boxing keeps
+    /// `FinalisedSource` compact (clippy::large_enum_variant) without affecting the heap-owned,
+    /// `Arc`-wrapped usage.
+    V1(Box<DbV1>),
 
     /// Ephemeral finalised state, DB disabled.
     Ephemeral(EphemeralFinalisedState<T>),
@@ -240,20 +237,12 @@ pub(crate) enum FinalisedSource<T: BlockchainSource> {
 // ***** Core database functionality *****
 
 impl<T: BlockchainSource> FinalisedSource<T> {
-    /// Spawn a v0 database backend.
-    ///
-    /// This constructs and initializes the legacy schema implementation and returns it wrapped in
-    /// [`FinalisedSource::V0`].
-    pub(crate) async fn spawn_v0(cfg: &ChainIndexConfig) -> Result<Self, FinalisedStateError> {
-        Ok(Self::V0(DbV0::spawn(cfg).await?))
-    }
-
     /// Spawn a v1 database backend.
     ///
     /// This constructs and initializes the current schema implementation and returns it wrapped in
     /// [`FinalisedSource::V1`].
     pub(crate) async fn spawn_v1(cfg: &ChainIndexConfig) -> Result<Self, FinalisedStateError> {
-        Ok(Self::V1(DbV1::spawn(cfg).await?))
+        Ok(Self::V1(Box::new(DbV1::spawn(cfg).await?)))
     }
 
     /// Spawns a "ephemeral" finalised state.
@@ -292,7 +281,6 @@ impl<T: BlockchainSource> FinalisedSource<T> {
     /// migration failure after `FinalisedState::spawn` has already returned.
     pub(crate) fn store_status(&self, status: StatusType) {
         match self {
-            Self::V0(database) => database.status_atomic().store(status),
             Self::V1(database) => database.status_atomic().store(status),
             Self::Ephemeral(ephemeral) => ephemeral.store_status(status),
         }
@@ -304,9 +292,6 @@ impl<T: BlockchainSource> FinalisedSource<T> {
     /// with the dispatch behavior in the extension trait implementations below.
     pub(crate) fn capability(&self) -> Capability {
         match self {
-            Self::V0(_) => {
-                Capability::READ_CORE | Capability::WRITE_CORE | Capability::COMPACT_BLOCK_EXT
-            }
             Self::V1(_) => Capability::LATEST,
             Self::Ephemeral(_) => {
                 Capability::READ_CORE
@@ -320,77 +305,59 @@ impl<T: BlockchainSource> FinalisedSource<T> {
         }
     }
 
+    /// Borrow the underlying v1 backend, or return `FeatureUnavailable(feature)` for the ephemeral
+    /// passthrough.
+    ///
+    /// Shared by the v1-only accessors below so each call site is a single line that names the
+    /// feature it requires; `feature` is the message used when the backend is ephemeral.
+    fn require_v1(&self, feature: &'static str) -> Result<&DbV1, FinalisedStateError> {
+        match self {
+            Self::V1(db) => Ok(db.as_ref()),
+            Self::Ephemeral(_) => Err(FinalisedStateError::FeatureUnavailable(feature)),
+        }
+    }
+
     /// Return an arc clone of the underlying LMDB environment, used during some DB migrations.
     pub(crate) fn env(&self) -> Result<Arc<Environment>, FinalisedStateError> {
-        match self {
-            Self::V1(db) => Ok(Arc::clone(db.env())),
-            Self::V0(db) => Ok(Arc::clone(db.env())),
-            Self::Ephemeral(_) => Err(FinalisedStateError::FeatureUnavailable(
-                "no LMDB environment available",
-            )),
-        }
+        Ok(Arc::clone(
+            self.require_v1("no LMDB environment available")?.env(),
+        ))
     }
 
     /// Provides access to the metadata DB table, enabling the migration manager
     /// to use this DB table to store temporary migration metadata.
     pub(crate) fn metadata_db(&self) -> Result<Database, FinalisedStateError> {
-        match self {
-            Self::V1(db) => Ok(db.metadata_db()),
-            Self::V0(_) | Self::Ephemeral(_) => Err(FinalisedStateError::FeatureUnavailable(
-                "v1 metadata db not available",
-            )),
-        }
+        Ok(self
+            .require_v1("v1 metadata db not available")?
+            .metadata_db())
     }
 
     /// Provudes access to the spent DB table, required for Migration1_1_0To1_2_0.
     pub(crate) fn spent_db(&self) -> Result<Database, FinalisedStateError> {
-        match self {
-            Self::V1(db) => Ok(db.spent_db()),
-            Self::V0(_) | Self::Ephemeral(_) => Err(FinalisedStateError::FeatureUnavailable(
-                "v1 spent db not available",
-            )),
-        }
+        Ok(self.require_v1("v1 spent db not available")?.spent_db())
     }
 
     /// Provides access to the reverse txid-index DB table, required for Migration1_1_0To1_2_0.
     pub(crate) fn txid_location_db(&self) -> Result<Database, FinalisedStateError> {
-        match self {
-            Self::V1(db) => Ok(db.txid_location_db()),
-            Self::V0(_) | Self::Ephemeral(_) => Err(FinalisedStateError::FeatureUnavailable(
-                "v1 txid_location db",
-            )),
-        }
+        Ok(self.require_v1("v1 txid_location db")?.txid_location_db())
     }
 
     /// Provides access to the txids DB table, required for Migration1_1_0To1_2_0.
     pub(crate) fn txids_db(&self) -> Result<Database, FinalisedStateError> {
-        match self {
-            Self::V1(db) => Ok(db.txids_db()),
-            Self::V0(_) | Self::Ephemeral(_) => {
-                Err(FinalisedStateError::FeatureUnavailable("v1 txids db"))
-            }
-        }
+        Ok(self.require_v1("v1 txids db")?.txids_db())
     }
 
     /// Provides access to the transparent DB table, required for Migration1_1_0To1_2_0 Stage B to
     /// read block transparent data directly (bypassing per-height block re-validation).
     pub(crate) fn transparent_db(&self) -> Result<Database, FinalisedStateError> {
-        match self {
-            Self::V1(db) => Ok(db.transparent_db()),
-            Self::V0(_) | Self::Ephemeral(_) => {
-                Err(FinalisedStateError::FeatureUnavailable("v1 transparent db"))
-            }
-        }
+        Ok(self.require_v1("v1 transparent db")?.transparent_db())
     }
 
     /// Provides access to the finalised txout-set accumulator DB table.
     pub(crate) fn tx_out_set_info_accumulator_db(&self) -> Result<Database, FinalisedStateError> {
-        match self {
-            Self::V1(database) => Ok(database.tx_out_set_info_accumulator_db()),
-            Self::V0(_) | Self::Ephemeral(_) => Err(FinalisedStateError::FeatureUnavailable(
-                "v1 tx_out_set_info_accumulator db not available",
-            )),
-        }
+        Ok(self
+            .require_v1("v1 tx_out_set_info_accumulator db not available")?
+            .tx_out_set_info_accumulator_db())
     }
 
     /// Bulk-rebuilds the finalised txout-set accumulator to the current tip and persists it (V1
@@ -401,26 +368,16 @@ impl<T: BlockchainSource> FinalisedSource<T> {
     /// accumulator maintenance that dominated sync time at sandblast height; used by
     /// `sync_to_height` after a catch-up run and by the v1.2 migration's accumulator stage.
     pub(crate) async fn rebuild_tx_out_set_accumulator(&self) -> Result<(), FinalisedStateError> {
-        match self {
-            Self::V1(database) => database.rebuild_tx_out_set_accumulator().await,
-            Self::V0(_) | Self::Ephemeral(_) => Err(FinalisedStateError::FeatureUnavailable(
-                "v1 txout-set accumulator builder",
-            )),
-        }
-    }
-}
-
-impl<T: BlockchainSource> From<DbV0> for FinalisedSource<T> {
-    /// Wrap an already-constructed v0 database backend.
-    fn from(value: DbV0) -> Self {
-        Self::V0(value)
+        self.require_v1("v1 txout-set accumulator builder")?
+            .rebuild_tx_out_set_accumulator()
+            .await
     }
 }
 
 impl<T: BlockchainSource> From<DbV1> for FinalisedSource<T> {
     /// Wrap an already-constructed v1 database backend.
     fn from(value: DbV1) -> Self {
-        Self::V1(value)
+        Self::V1(Box::new(value))
     }
 }
 
@@ -438,8 +395,7 @@ impl<T: BlockchainSource> DbCore for FinalisedSource<T> {
     /// This is a thin delegation wrapper over the concrete implementation.
     fn status(&self) -> StatusType {
         match self {
-            Self::V0(db) => DbCore::status(db),
-            Self::V1(db) => DbCore::status(db),
+            Self::V1(db) => DbCore::status(db.as_ref()),
             Self::Ephemeral(ephemeral) => DbCore::status(ephemeral),
         }
     }
@@ -449,8 +405,7 @@ impl<T: BlockchainSource> DbCore for FinalisedSource<T> {
     /// This is a thin delegation wrapper over the concrete implementation.
     async fn shutdown(&self) -> Result<(), FinalisedStateError> {
         match self {
-            Self::V0(db) => DbCore::shutdown(db).await,
-            Self::V1(db) => DbCore::shutdown(db).await,
+            Self::V1(db) => DbCore::shutdown(db.as_ref()).await,
             Self::Ephemeral(ephemeral) => DbCore::shutdown(ephemeral).await,
         }
     }
@@ -463,7 +418,6 @@ impl<T: BlockchainSource> DbRead for FinalisedSource<T> {
     /// This is a thin delegation wrapper over the concrete implementation.
     async fn db_height(&self) -> Result<Option<Height>, FinalisedStateError> {
         match self {
-            Self::V0(db) => db.db_height().await,
             Self::V1(db) => db.db_height().await,
             Self::Ephemeral(ephemeral) => ephemeral.db_height().await,
         }
@@ -477,7 +431,6 @@ impl<T: BlockchainSource> DbRead for FinalisedSource<T> {
         hash: BlockHash,
     ) -> Result<Option<Height>, FinalisedStateError> {
         match self {
-            Self::V0(db) => db.get_block_height(hash).await,
             Self::V1(db) => db.get_block_height(hash).await,
             Self::Ephemeral(ephemeral) => ephemeral.get_block_height(hash).await,
         }
@@ -491,7 +444,6 @@ impl<T: BlockchainSource> DbRead for FinalisedSource<T> {
         height: Height,
     ) -> Result<Option<BlockHash>, FinalisedStateError> {
         match self {
-            Self::V0(db) => db.get_block_hash(height).await,
             Self::V1(db) => db.get_block_hash(height).await,
             Self::Ephemeral(ephemeral) => ephemeral.get_block_hash(height).await,
         }
@@ -503,7 +455,6 @@ impl<T: BlockchainSource> DbRead for FinalisedSource<T> {
     /// compatibility checks.
     async fn get_metadata(&self) -> Result<DbMetadata, FinalisedStateError> {
         match self {
-            Self::V0(db) => db.get_metadata().await,
             Self::V1(db) => db.get_metadata().await,
             Self::Ephemeral(ephemeral) => ephemeral.get_metadata().await,
         }
@@ -517,7 +468,6 @@ impl<T: BlockchainSource> DbWrite for FinalisedSource<T> {
     /// This is a thin delegation wrapper over the concrete implementation.
     async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
         match self {
-            Self::V0(db) => db.write_block(block).await,
             Self::V1(db) => db.write_block(block).await,
             Self::Ephemeral(_ephemeral) => Ok(()),
         }
@@ -530,7 +480,6 @@ impl<T: BlockchainSource> DbWrite for FinalisedSource<T> {
         source: &S,
     ) -> Result<(), FinalisedStateError> {
         match self {
-            Self::V0(db) => db.write_blocks_to_height(height, source).await,
             Self::V1(db) => db.write_blocks_to_height(height, source).await,
             Self::Ephemeral(db) => db.write_blocks_to_height(height, source).await,
         }
@@ -541,7 +490,6 @@ impl<T: BlockchainSource> DbWrite for FinalisedSource<T> {
     /// This is a thin delegation wrapper over the concrete implementation.
     async fn delete_block_at_height(&self, height: Height) -> Result<(), FinalisedStateError> {
         match self {
-            Self::V0(db) => db.delete_block_at_height(height).await,
             Self::V1(db) => db.delete_block_at_height(height).await,
             Self::Ephemeral(_ephemeral) => Ok(()),
         }
@@ -552,7 +500,6 @@ impl<T: BlockchainSource> DbWrite for FinalisedSource<T> {
     /// This is a thin delegation wrapper over the concrete implementation.
     async fn delete_block(&self, block: &IndexedBlock) -> Result<(), FinalisedStateError> {
         match self {
-            Self::V0(db) => db.delete_block(block).await,
             Self::V1(db) => db.delete_block(block).await,
             Self::Ephemeral(_ephemeral) => Ok(()),
         }
@@ -563,7 +510,6 @@ impl<T: BlockchainSource> DbWrite for FinalisedSource<T> {
     /// This is used by migrations and schema management logic.
     async fn update_metadata(&self, metadata: DbMetadata) -> Result<(), FinalisedStateError> {
         match self {
-            Self::V0(db) => db.update_metadata(metadata).await,
             Self::V1(db) => db.update_metadata(metadata).await,
             Self::Ephemeral(_ephemeral) => Ok(()),
         }
@@ -587,7 +533,6 @@ impl<T: BlockchainSource> BlockCoreExt for FinalisedSource<T> {
         match self {
             Self::V1(db) => db.get_block_header(height).await,
             Self::Ephemeral(db) => db.get_block_header(height).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_core")),
         }
     }
 
@@ -599,7 +544,6 @@ impl<T: BlockchainSource> BlockCoreExt for FinalisedSource<T> {
         match self {
             Self::V1(db) => db.get_block_range_headers(start, end).await,
             Self::Ephemeral(db) => db.get_block_range_headers(start, end).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_core")),
         }
     }
 
@@ -607,8 +551,6 @@ impl<T: BlockchainSource> BlockCoreExt for FinalisedSource<T> {
         match self {
             Self::V1(db) => db.get_block_txids(height).await,
             Self::Ephemeral(db) => db.get_block_txids(height).await,
-
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_core")),
         }
     }
 
@@ -620,8 +562,6 @@ impl<T: BlockchainSource> BlockCoreExt for FinalisedSource<T> {
         match self {
             Self::V1(db) => db.get_block_range_txids(start, end).await,
             Self::Ephemeral(db) => db.get_block_range_txids(start, end).await,
-
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_core")),
         }
     }
 
@@ -632,8 +572,6 @@ impl<T: BlockchainSource> BlockCoreExt for FinalisedSource<T> {
         match self {
             Self::V1(db) => db.get_txid(tx_location).await,
             Self::Ephemeral(db) => db.get_txid(tx_location).await,
-
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_core")),
         }
     }
 
@@ -644,8 +582,6 @@ impl<T: BlockchainSource> BlockCoreExt for FinalisedSource<T> {
         match self {
             Self::V1(db) => db.get_tx_location(txid).await,
             Self::Ephemeral(db) => db.get_tx_location(txid).await,
-
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_core")),
         }
     }
 }
@@ -659,8 +595,6 @@ impl<T: BlockchainSource> BlockTransparentExt for FinalisedSource<T> {
         match self {
             Self::V1(db) => db.get_transparent(tx_location).await,
             Self::Ephemeral(db) => db.get_transparent(tx_location).await,
-
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_transparent")),
         }
     }
 
@@ -671,8 +605,6 @@ impl<T: BlockchainSource> BlockTransparentExt for FinalisedSource<T> {
         match self {
             Self::V1(db) => db.get_block_transparent(height).await,
             Self::Ephemeral(db) => db.get_block_transparent(height).await,
-
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_transparent")),
         }
     }
 
@@ -684,8 +616,6 @@ impl<T: BlockchainSource> BlockTransparentExt for FinalisedSource<T> {
         match self {
             Self::V1(db) => db.get_block_range_transparent(start, end).await,
             Self::Ephemeral(db) => db.get_block_range_transparent(start, end).await,
-
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_transparent")),
         }
     }
 
@@ -701,8 +631,6 @@ impl<T: BlockchainSource> BlockTransparentExt for FinalisedSource<T> {
                 )
                 .await
             }
-
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_transparent")),
         }
     }
 }
@@ -716,8 +644,6 @@ impl<T: BlockchainSource> BlockShieldedExt for FinalisedSource<T> {
         match self {
             Self::V1(db) => db.get_sapling(tx_location).await,
             Self::Ephemeral(db) => db.get_sapling(tx_location).await,
-
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_shielded")),
         }
     }
 
@@ -725,8 +651,6 @@ impl<T: BlockchainSource> BlockShieldedExt for FinalisedSource<T> {
         match self {
             Self::V1(db) => db.get_block_sapling(h).await,
             Self::Ephemeral(db) => db.get_block_sapling(h).await,
-
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_shielded")),
         }
     }
 
@@ -738,8 +662,6 @@ impl<T: BlockchainSource> BlockShieldedExt for FinalisedSource<T> {
         match self {
             Self::V1(db) => db.get_block_range_sapling(start, end).await,
             Self::Ephemeral(db) => db.get_block_range_sapling(start, end).await,
-
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_shielded")),
         }
     }
 
@@ -750,8 +672,6 @@ impl<T: BlockchainSource> BlockShieldedExt for FinalisedSource<T> {
         match self {
             Self::V1(db) => db.get_orchard(tx_location).await,
             Self::Ephemeral(db) => db.get_orchard(tx_location).await,
-
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_shielded")),
         }
     }
 
@@ -759,8 +679,6 @@ impl<T: BlockchainSource> BlockShieldedExt for FinalisedSource<T> {
         match self {
             Self::V1(db) => db.get_block_orchard(h).await,
             Self::Ephemeral(db) => db.get_block_orchard(h).await,
-
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_shielded")),
         }
     }
 
@@ -772,8 +690,6 @@ impl<T: BlockchainSource> BlockShieldedExt for FinalisedSource<T> {
         match self {
             Self::V1(db) => db.get_block_range_orchard(start, end).await,
             Self::Ephemeral(db) => db.get_block_range_orchard(start, end).await,
-
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_shielded")),
         }
     }
 
@@ -784,8 +700,6 @@ impl<T: BlockchainSource> BlockShieldedExt for FinalisedSource<T> {
         match self {
             Self::V1(db) => db.get_block_commitment_tree_data(height).await,
             Self::Ephemeral(db) => db.get_block_commitment_tree_data(height).await,
-
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_shielded")),
         }
     }
 
@@ -797,8 +711,6 @@ impl<T: BlockchainSource> BlockShieldedExt for FinalisedSource<T> {
         match self {
             Self::V1(db) => db.get_block_range_commitment_tree_data(start, end).await,
             Self::Ephemeral(db) => db.get_block_range_commitment_tree_data(start, end).await,
-
-            _ => Err(FinalisedStateError::FeatureUnavailable("block_shielded")),
         }
     }
 }
@@ -810,13 +722,9 @@ impl<T: BlockchainSource> CompactBlockExt for FinalisedSource<T> {
         height: Height,
         pool_types: PoolTypeFilter,
     ) -> Result<zaino_proto::proto::compact_formats::CompactBlock, FinalisedStateError> {
-        #[allow(unreachable_patterns)]
         match self {
-            Self::V0(db) => db.get_compact_block(height, pool_types).await,
             Self::V1(db) => db.get_compact_block(height, pool_types).await,
             Self::Ephemeral(db) => db.get_compact_block(height, pool_types).await,
-
-            _ => Err(FinalisedStateError::FeatureUnavailable("compact_block")),
         }
     }
 
@@ -826,12 +734,7 @@ impl<T: BlockchainSource> CompactBlockExt for FinalisedSource<T> {
         end_height: Height,
         pool_types: PoolTypeFilter,
     ) -> Result<CompactBlockStream, FinalisedStateError> {
-        #[allow(unreachable_patterns)]
         match self {
-            Self::V0(db) => {
-                db.get_compact_block_stream(start_height, end_height, pool_types)
-                    .await
-            }
             Self::V1(db) => {
                 db.get_compact_block_stream(start_height, end_height, pool_types)
                     .await
@@ -840,8 +743,6 @@ impl<T: BlockchainSource> CompactBlockExt for FinalisedSource<T> {
                 db.get_compact_block_stream(start_height, end_height, pool_types)
                     .await
             }
-
-            _ => Err(FinalisedStateError::FeatureUnavailable("compact_block")),
         }
     }
 }
@@ -855,8 +756,6 @@ impl<T: BlockchainSource> IndexedBlockExt for FinalisedSource<T> {
         match self {
             Self::V1(db) => db.get_chain_block(height).await,
             Self::Ephemeral(db) => db.get_chain_block(height).await,
-
-            _ => Err(FinalisedStateError::FeatureUnavailable("chain_block")),
         }
     }
 }
@@ -978,14 +877,14 @@ impl<T: BlockchainSource> FinalisedSource<T> {
     /// Used by migration tests to create a historical v1.0.0 database fixture before reopening it
     /// through the current startup / migration path.
     pub(crate) async fn spawn_v1_0_0(cfg: &ChainIndexConfig) -> Result<Self, FinalisedStateError> {
-        Ok(Self::V1(DbV1::spawn_v1_0_0(cfg).await?))
+        Ok(Self::V1(Box::new(DbV1::spawn_v1_0_0(cfg).await?)))
     }
 
-    /// Current contiguous validated-tip height (v1 only; 0 for v0). Test hook.
+    /// Current contiguous validated-tip height (v1 only; 0 for ephemeral). Test hook.
     pub(crate) fn validated_tip_height(&self) -> u32 {
         match self {
             Self::V1(db) => db.validated_tip_height(),
-            Self::V0(_) | Self::Ephemeral(_) => 0,
+            Self::Ephemeral(_) => 0,
         }
     }
 
@@ -996,12 +895,9 @@ impl<T: BlockchainSource> FinalisedSource<T> {
     pub(crate) async fn read_tx_out_set_accumulator_built_height(
         &self,
     ) -> Result<Option<Height>, FinalisedStateError> {
-        match self {
-            Self::V1(database) => database.read_tx_out_set_accumulator_built_height().await,
-            Self::V0(_) | Self::Ephemeral(_) => Err(FinalisedStateError::FeatureUnavailable(
-                "v1 txout-set accumulator builder",
-            )),
-        }
+        self.require_v1("v1 txout-set accumulator builder")?
+            .read_tx_out_set_accumulator_built_height()
+            .await
     }
 
     /// Computes (without persisting) the bulk-built txout-set accumulator to `db_tip` (V1 only).
@@ -1013,12 +909,8 @@ impl<T: BlockchainSource> FinalisedSource<T> {
         db_tip: Height,
         shards: u16,
     ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
-        match self {
-            Self::V1(database) => database.build_tx_out_set_accumulator_blocking(db_tip, shards),
-            Self::V0(_) | Self::Ephemeral(_) => Err(FinalisedStateError::FeatureUnavailable(
-                "v1 txout-set accumulator builder",
-            )),
-        }
+        self.require_v1("v1 txout-set accumulator builder")?
+            .build_tx_out_set_accumulator_blocking(db_tip, shards)
     }
 
     /// Writes a block using the v1.0.0 format.
@@ -1034,7 +926,7 @@ impl<T: BlockchainSource> FinalisedSource<T> {
     ) -> Result<(), FinalisedStateError> {
         match self {
             Self::V1(db) => db.write_block_v1_0_0(block).await,
-            Self::V0(_) | Self::Ephemeral(_) => Err(FinalisedStateError::Custom(
+            Self::Ephemeral(_) => Err(FinalisedStateError::Custom(
                 "v1.0.0 test fixture writer requires a v1 backend".to_string(),
             )),
         }
