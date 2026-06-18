@@ -33,3 +33,21 @@ shard_power = 4
 [storage.database]
 path = '/home/cupress/.cache/zaino'
 size = 128
+
+# Approximate in-memory byte budget for the finalised-state bulk-sync write batch.
+# Bulk sync buffers fetched blocks up to this many bytes, then writes the whole batch in one
+# LMDB transaction with the random-keyed `spent` / `txid_location` entries inserted in sorted
+# key order (a sequential B-tree sweep instead of random faults once the DB exceeds RAM); larger
+# batches mean fewer sweeps. Peak RAM is roughly this budget plus the transaction's dirty pages,
+# and it competes with the OS page cache the sweep relies on — larger is not always better.
+# Defaults to 4 GiB (4294967296); raise it on large-RAM hosts.
+sync_write_batch_bytes = 4294967296
+
+# Number of blocks fetched concurrently during finalised-state bulk sync.
+# The bulk-sync loop is fetch-latency-bound: each block needs sequential round-trips to the
+# validator (block + commitment-tree roots), and a strictly serial loop leaves both zaino and the
+# validator idle while it waits. This runs up to this many fetches in flight at once (yielded back
+# in strict height order, so writes are unaffected), overlapping the latency until the validator's
+# RPC handler saturates. Peak fetch memory is roughly this many buffered blocks, so keep it modest.
+# Defaults to 32; tune up toward the validator's RPC capacity.
+sync_fetch_concurrency = 32

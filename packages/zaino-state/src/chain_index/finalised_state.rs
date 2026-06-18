@@ -195,20 +195,34 @@ use crate::{
 use std::{sync::Arc, time::Duration};
 use tokio::time::{interval, MissedTickBehavior};
 
-/// Fetches the block at `height_int` from `source` and builds its [`IndexedBlock`], threading
-/// `parent_chainwork` into the block metadata.
+/// A block plus its resolved commitment-tree roots, fetched from a [`BlockchainSource`] but **not**
+/// yet assembled into an [`IndexedBlock`].
 ///
-/// Shared by every backend's [`capability::DbWrite::write_blocks_to_height`] ingestion loop so the
-/// fetch + commitment-tree-root + metadata assembly lives in one place regardless of which backend
-/// owns the loop.
-pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
+/// This is the parallelizable half of block ingestion: producing it needs nothing from the previous
+/// height, so the bulk-sync loop fetches many concurrently (see [`fetch_block_data`]). The remaining
+/// sequential step — threading `parent_chainwork` and building the [`IndexedBlock`] — is
+/// [`assemble_indexed_block`].
+pub(crate) struct FetchedBlock {
+    /// Height the block was fetched at; kept for ordered progress logging and assembly errors.
+    pub(crate) height: u32,
+    block: Arc<zebra_chain::block::Block>,
+    /// Sapling `(root, size)`, already gated on the Sapling activation height (defaults below it).
+    sapling: (zebra_chain::sapling::tree::Root, u64),
+    /// Orchard `(root, size)`, already gated on the NU5 activation height (defaults below it).
+    orchard: (zebra_chain::orchard::tree::Root, u64),
+}
+
+/// Fetches the block at `height_int` and its Sapling/Orchard commitment-tree roots from `source`.
+///
+/// This is the fetch-latency-bound, dependency-free half of ingestion (the block at height *h* needs
+/// nothing from *h-1*), so the bulk-sync loop runs many of these concurrently. The sequential
+/// chainwork + [`IndexedBlock`] assembly is split out into [`assemble_indexed_block`].
+pub(crate) async fn fetch_block_data<S: BlockchainSource>(
     source: &S,
-    network: zaino_common::Network,
     sapling_activation_height: zebra_chain::block::Height,
     nu5_activation_height: Option<zebra_chain::block::Height>,
     height_int: u32,
-    parent_chainwork: ChainWork,
-) -> Result<IndexedBlock, FinalisedStateError> {
+) -> Result<FetchedBlock, FinalisedStateError> {
     let block = match source
         .get_block(zebra_state::HashOrHeight::Height(
             zebra_chain::block::Height(height_int),
@@ -233,7 +247,7 @@ pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
     let is_orchard_active = nu5_activation_height
         .is_some_and(|nu5_activation_height| height_int >= nu5_activation_height.0);
 
-    let (sapling_root, sapling_size) = if is_sapling_active {
+    let sapling = if is_sapling_active {
         sapling_opt.ok_or_else(|| {
             FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
                 format!("missing Sapling commitment tree root for block {block_hash}"),
@@ -243,7 +257,7 @@ pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
         (zebra_chain::sapling::tree::Root::default(), 0)
     };
 
-    let (orchard_root, orchard_size) = if is_orchard_active {
+    let orchard = if is_orchard_active {
         orchard_opt.ok_or_else(|| {
             FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
                 format!("missing Orchard commitment tree root for block {block_hash}"),
@@ -252,6 +266,27 @@ pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
     } else {
         (zebra_chain::orchard::tree::Root::default(), 0)
     };
+
+    Ok(FetchedBlock {
+        height: height_int,
+        block,
+        sapling,
+        orchard,
+    })
+}
+
+/// Assembles a [`FetchedBlock`] into an [`IndexedBlock`], threading `parent_chainwork` into the
+/// block metadata.
+///
+/// This is the sequential half of ingestion — chainwork chains off the previous block — and so must
+/// run in strict height order even when [`fetch_block_data`] is parallelized.
+pub(crate) fn assemble_indexed_block(
+    fetched: FetchedBlock,
+    network: zaino_common::Network,
+    parent_chainwork: ChainWork,
+) -> Result<IndexedBlock, FinalisedStateError> {
+    let (sapling_root, sapling_size) = fetched.sapling;
+    let (orchard_root, orchard_size) = fetched.orchard;
 
     let metadata = BlockMetadata::new(
         sapling_root,
@@ -262,12 +297,38 @@ pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
         network.to_zebra_network(),
     );
 
-    let block_with_metadata = BlockWithMetadata::new(block.as_ref(), metadata);
+    let block_with_metadata = BlockWithMetadata::new(fetched.block.as_ref(), metadata);
     IndexedBlock::try_from(block_with_metadata).map_err(|_| {
         FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(format!(
-            "error building block data at height {height_int}"
+            "error building block data at height {}",
+            fetched.height
         )))
     })
+}
+
+/// Fetches the block at `height_int` from `source` and builds its [`IndexedBlock`], threading
+/// `parent_chainwork` into the block metadata.
+///
+/// A thin serial convenience over [`fetch_block_data`] + [`assemble_indexed_block`], used by the
+/// backends whose ingestion loop fetches one block at a time (the v0 backend and the experimental
+/// address-history path). The v1 bulk-sync loop calls the two halves directly so it can pipeline the
+/// fetch.
+pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
+    source: &S,
+    network: zaino_common::Network,
+    sapling_activation_height: zebra_chain::block::Height,
+    nu5_activation_height: Option<zebra_chain::block::Height>,
+    height_int: u32,
+    parent_chainwork: ChainWork,
+) -> Result<IndexedBlock, FinalisedStateError> {
+    let fetched = fetch_block_data(
+        source,
+        sapling_activation_height,
+        nu5_activation_height,
+        height_int,
+    )
+    .await?;
+    assemble_indexed_block(fetched, network, parent_chainwork)
 }
 
 use super::source::BlockchainSource;

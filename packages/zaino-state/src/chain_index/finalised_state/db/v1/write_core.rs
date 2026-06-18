@@ -60,7 +60,12 @@ impl DbWrite for DbV1 {
         height: Height,
         source: &S,
     ) -> Result<(), FinalisedStateError> {
+        #[cfg(feature = "transparent_address_history_experimental")]
         use crate::chain_index::finalised_state::build_indexed_block_from_source;
+        #[cfg(not(feature = "transparent_address_history_experimental"))]
+        use crate::chain_index::finalised_state::{assemble_indexed_block, fetch_block_data};
+        #[cfg(not(feature = "transparent_address_history_experimental"))]
+        use futures::stream::StreamExt as _;
         use zebra_chain::parameters::NetworkUpgrade;
 
         let network = self.config.network;
@@ -119,44 +124,54 @@ impl DbWrite for DbV1 {
         #[cfg(not(feature = "transparent_address_history_experimental"))]
         {
             let batch_budget = self.config.storage.database.sync_write_batch_bytes.max(1);
-            let mut next = start_height;
+            let concurrency = self.config.storage.database.sync_fetch_concurrency.max(1);
+
+            // Pipeline the fetch: a strictly serial loop here is fetch-latency-bound (each block
+            // needs sequential round-trips to the source for the block + its commitment-tree roots,
+            // and nothing else runs while it waits — both zaino and the validator sit idle). The
+            // fetch of height `h` depends on nothing from `h-1`, so we run up to `concurrency`
+            // fetches at once. `buffered` (NOT `buffer_unordered`) yields them back in strict input
+            // (height) order, so the writer below still sees consecutive heights — only the wait is
+            // overlapped. The sequential `parent_chainwork` chaining and the batched write are
+            // unchanged, downstream of the fetch.
+            let mut fetched = futures::stream::iter(start_height..=height.0)
+                .map(|h| {
+                    fetch_block_data(source, sapling_activation_height, nu5_activation_height, h)
+                })
+                .buffered(concurrency);
+
             let mut last_progress_log = std::time::Instant::now();
-            while next <= height.0 {
-                // Fetch blocks (async; an LMDB write txn is `!Send` and cannot be held across the
-                // await) into a buffer, flushing on the *first* of: byte budget, block-count cap, or
-                // time cap. The count/time caps keep the first commit (and progress, and crash-loss
-                // window) prompt even on the tiny early-chain blocks, where the byte budget alone
-                // would buffer a huge number of blocks before committing.
+            loop {
+                // Assemble fetched blocks (in height order) into a buffer, flushing on the *first*
+                // of: byte budget, block-count cap, or time cap. The count/time caps keep the first
+                // commit (and progress, and crash-loss window) prompt even on the tiny early-chain
+                // blocks, where the byte budget alone would buffer a huge number of blocks before
+                // committing.
                 let mut batch: Vec<IndexedBlock> = Vec::new();
                 let mut batch_bytes: u64 = 0;
+                let mut batch_tip_height = 0u32;
                 let batch_started = std::time::Instant::now();
-                while next <= height.0
-                    && batch_bytes < batch_budget
+                while batch_bytes < batch_budget
                     && batch.len() < SYNC_WRITE_BATCH_MAX_BLOCKS
                     && batch_started.elapsed() < SYNC_WRITE_BATCH_MAX_INTERVAL
                 {
-                    let block = build_indexed_block_from_source(
-                        source,
-                        network,
-                        sapling_activation_height,
-                        nu5_activation_height,
-                        next,
-                        parent_chainwork,
-                    )
-                    .await?;
+                    let Some(fetched_block) = fetched.next().await else {
+                        break;
+                    };
+                    let fetched_block = fetched_block?;
+                    // Sequential, ordered: chainwork chains off the previous block.
+                    let block = assemble_indexed_block(fetched_block, network, parent_chainwork)?;
                     parent_chainwork = block.context.chainwork;
+                    batch_tip_height = block.context.index.height.0;
                     batch_bytes = batch_bytes.saturating_add(approx_indexed_block_bytes(&block));
                     batch.push(block);
-                    next += 1;
 
-                    // In-flight progress: the block being fetched, throttled by time. (The committed
-                    // tip is reported by the per-batch commit log below.)
+                    // In-flight progress: the height just assembled, throttled by time. (The
+                    // committed tip is reported by the per-batch commit log below.)
                     if last_progress_log.elapsed() >= SYNC_PROGRESS_LOG_INTERVAL {
                         info!(
                             "write_blocks_to_height: syncing height {} / {} on {:?}",
-                            next - 1,
-                            height.0,
-                            network
+                            batch_tip_height, height.0, network
                         );
                         last_progress_log = std::time::Instant::now();
                     }
@@ -180,7 +195,7 @@ impl DbWrite for DbV1 {
                 self.status.store(StatusType::Ready);
                 info!(
                     "write_blocks_to_height: committed batch to height {} ({} blocks)",
-                    next - 1,
+                    batch_tip_height,
                     batch.len()
                 );
             }
