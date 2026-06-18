@@ -125,8 +125,8 @@ pub(crate) const DB_SCHEMA_V1_TEXT: &str = include_str!("db_schema_v1.txt");
 /// This value is compared against the schema hash stored in the metadata record to detect schema
 /// drift without a corresponding version bump.
 pub(crate) const DB_SCHEMA_V1_HASH: [u8; 32] = [
-    0x4d, 0x68, 0xd5, 0x0c, 0x74, 0x77, 0x31, 0x95, 0xa5, 0x0e, 0x24, 0xeb, 0xfe, 0x36, 0xec, 0x39,
-    0xa7, 0xf8, 0xba, 0xef, 0xaa, 0xc2, 0xf1, 0x61, 0x92, 0xb4, 0x4c, 0x7e, 0x21, 0x61, 0x84, 0x3f,
+    0x11, 0xb2, 0x6a, 0x12, 0x08, 0x67, 0xf0, 0x42, 0xf6, 0x31, 0x45, 0xea, 0x87, 0xe7, 0x23, 0x75,
+    0x40, 0x3b, 0xf2, 0x14, 0xaa, 0x2b, 0x00, 0x12, 0xec, 0xa4, 0x4d, 0x00, 0xe9, 0x0b, 0x07, 0x9b,
 ];
 
 /// *Current* database V1 version.
@@ -142,6 +142,54 @@ pub(crate) const TX_OUT_SET_INFO_ACCUMULATOR_DATABASE_NAME: &str =
 
 /// Singleton key for the finalised txout-set accumulator table.
 pub(crate) const TX_OUT_SET_INFO_ACCUMULATOR_KEY: &[u8] = b"tx_out_set_info_accumulator";
+
+/// Metadata key recording the height the finalised txout-set accumulator currently reflects.
+///
+/// Stored in the `metadata` table as `StoredEntryFixed<Height>`. The accumulator is not maintained
+/// per block on the bulk-sync write path. After a catch-up run it is brought up to the tip either by
+/// a full from-genesis rebuild ([`DbV1::rebuild_tx_out_set_accumulator`], used for the first build /
+/// an unusually large gap) or, in steady state, by applying just the delta for the newly-written
+/// range ([`DbV1::update_tx_out_set_accumulator_for_range`]). Both advance this watermark to the new
+/// tip in the same transaction as the accumulator. It lets the dispatch pick the cheap incremental
+/// path and lets readers detect a *stale* accumulator (watermark `<` db tip) after a sync was
+/// interrupted before the accumulator step ran, rather than serving incorrect `gettxoutsetinfo` data.
+pub(crate) const TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY: &[u8] =
+    b"_tx_out_set_accumulator_built_height";
+
+/// Maximum accumulator staleness (`db_tip - watermark`, in blocks) still updated incrementally.
+///
+/// Below this gap, [`DbV1::write_blocks_to_height`] advances the persisted txout-set accumulator by
+/// applying only the delta for the just-written range — O(range) work, independent of chain length.
+/// At or above it (the first build, or a sync interrupted far behind the on-disk tip) it falls back
+/// to the full from-genesis [`DbV1::rebuild_tx_out_set_accumulator`]. The incremental path does
+/// ~O(range outputs) random `spent`/prev-output lookups (page faults once the DB exceeds RAM), so
+/// this is set conservatively — well under the fixed full-scan cost — while still covering a
+/// multi-hour offline catch-up. It is a performance knob, not a correctness one:
+/// both paths produce the identical accumulator at the tip.
+pub(crate) const ACCUMULATOR_INCREMENTAL_MAX_GAP: u32 = 1_000;
+
+/// Number of txid-prefix shards used by the bulk txout-set accumulator builder.
+///
+/// The builder holds the set of spent outpoints in memory while scanning the block data. Sharding
+/// on the creating-txid's first byte bounds that working set to roughly `1 / shards` of the total
+/// spent index, at the cost of one extra sequential pass over the block data per shard. The
+/// per-shard partials recombine exactly (XOR commitment + additive counters), so the result is
+/// independent of the shard count. `1` is a single optimal pass and is correct on any host with
+/// enough RAM for the full spent set; raise it on memory-constrained deployments.
+pub(crate) const ACCUMULATOR_BUILD_SHARDS: u16 = 1;
+
+/// Number of committed block writes / migration heights between explicit
+/// `env.sync(true)` durability checkpoints.
+///
+/// The LMDB environment is opened with `MDB_NOSYNC` (see [`DbV1::spawn`]), so an individual
+/// `txn.commit()` is *not* flushed to disk. Because the environment does not use `WRITE_MAP`,
+/// LMDB still guarantees ACI on crash — only durability (D) is lost: a crash rolls the database
+/// back to the last on-disk-consistent transaction, it never corrupts it (copy-on-write + dual
+/// meta pages always leave a recoverable committed snapshot). Forcing a sync every
+/// `SYNC_CHECKPOINT_INTERVAL` writes bounds how much committed-but-unflushed tail a crash can
+/// discard. The tail is always safe to re-do: clean sync resumes from the on-disk tip and
+/// re-fetches the missing blocks, and migrations resume idempotently from their progress keys.
+pub(crate) const SYNC_CHECKPOINT_INTERVAL: u32 = 1000;
 
 /// [`DbCore`] capability implementation for [`DbV1`].
 ///
@@ -226,6 +274,12 @@ pub(crate) struct DbV1 {
     ///
     /// Used to check spent status of given outpoints, retuning spending tx.
     spent: Database,
+
+    /// Reverse txid index: `TransactionHash` -> `StoredEntryFixed<TxLocation>`
+    ///
+    /// Maps a transaction id to its on-chain `TxLocation`, giving O(log n) previous-output
+    /// resolution instead of a full scan of the height-keyed `txids` table.
+    txid_location: Database,
 
     /// Finalised txout-set accumulator:
     /// `"tx_out_set_info_accumulator"` -> `StoredEntryFixed<FinalisedTxOutSetInfoAccumulator>`.
@@ -324,11 +378,23 @@ impl DbV1 {
             .expect("max_readers was clamped to fit in u32");
 
         // Open LMDB environment and set environmental details.
+        //
+        // `NO_SYNC`: commits are not fsynced. The core write path now does many random-key
+        // inserts per block (the `spent` and `txid_location` B-trees are keyed by 32-byte
+        // hashes), which made per-commit fsync the dominant sync cost once those trees outgrew
+        // the page cache. Under `NO_SYNC` the OS batches that write-back; we force durability at
+        // explicit checkpoints (`SYNC_CHECKPOINT_INTERVAL`) and on graceful shutdown instead.
+        // `WRITE_MAP` is unset, so a crash never corrupts the database — it only discards the
+        // unflushed tail of recent commits, which clean sync and migrations safely re-do.
         let env = Environment::new()
             .set_max_dbs(15)
             .set_map_size(db_size_bytes)
             .set_max_readers(max_readers)
-            .set_flags(EnvironmentFlags::NO_TLS | EnvironmentFlags::NO_READAHEAD)
+            .set_flags(
+                EnvironmentFlags::NO_TLS
+                    | EnvironmentFlags::NO_READAHEAD
+                    | EnvironmentFlags::NO_SYNC,
+            )
             .open(&db_path)?;
 
         // Open individual LMDB DBs.
@@ -347,6 +413,9 @@ impl DbV1 {
         let hashes = super::open_or_create_db(&env, "hashes_1_0_0", DatabaseFlags::empty()).await?;
 
         let spent = super::open_or_create_db(&env, "spent_1_0_0", DatabaseFlags::empty()).await?;
+
+        let txid_location =
+            super::open_or_create_db(&env, "txid_location_1_0_0", DatabaseFlags::empty()).await?;
 
         let tx_out_set_info_accumulator = super::open_or_create_db(
             &env,
@@ -380,6 +449,7 @@ impl DbV1 {
                 commitment_tree_data,
                 heights: hashes,
                 spent,
+                txid_location,
                 tx_out_set_info_accumulator,
                 address_history,
                 metadata,
@@ -404,6 +474,7 @@ impl DbV1 {
                 commitment_tree_data,
                 heights: hashes,
                 spent,
+                txid_location,
                 tx_out_set_info_accumulator,
                 metadata,
                 validated_tip: Arc::new(AtomicU32::new(0)),
@@ -417,6 +488,11 @@ impl DbV1 {
 
         // Validate (or initialise) the metadata entry before we touch any tables.
         zaino_db.check_schema_version().await?;
+
+        // Temporary 0.4.0-alpha.1 compatibility: heal a cache whose alpha migration left the
+        // `txid_location` index unbuilt. Runs before the background validator starts so it operates
+        // on a quiescent database.
+        zaino_db.reconcile_alpha_txid_location_index().await?;
 
         // Spawn handler task to perform background validation and trailing tx cleanup.
         zaino_db.spawn_handler().await?;
@@ -445,6 +521,7 @@ impl DbV1 {
             commitment_tree_data: self.commitment_tree_data,
             heights: self.heights,
             spent: self.spent,
+            txid_location: self.txid_location,
             tx_out_set_info_accumulator: self.tx_out_set_info_accumulator,
             #[cfg(feature = "transparent_address_history_experimental")]
             address_history: self.address_history,
@@ -614,7 +691,16 @@ impl DbV1 {
         .map_err(|e| FinalisedStateError::Custom(format!("spawn_blocking failed: {e}")))?
     }
 
-    /// Scans the whole finalised chain once at start-up and validates every block by checksum and continuity.
+    /// Scans the whole finalised chain once at start-up and validates every block by checksum and
+    /// continuity.
+    ///
+    /// Iterates the height-keyed `headers` table, which LMDB orders by big-endian height — i.e. in
+    /// **ascending block-height order**. This lets `validated_tip` advance monotonically as each
+    /// height is validated (every height is `validated_tip + 1` in turn), and surfaces any gap
+    /// immediately (the parent-hash continuity check in `validate_block_blocking` fails at the first
+    /// missing height). The previous implementation iterated the hash-keyed `heights` table, which
+    /// validated in pseudo-random height order — thrashing the cache and preventing the tip from
+    /// advancing until the whole set had been validated.
     async fn initial_block_scan(&self) -> Result<(), FinalisedStateError> {
         let zaino_db = Self {
             env: Arc::clone(&self.env),
@@ -626,6 +712,7 @@ impl DbV1 {
             commitment_tree_data: self.commitment_tree_data,
             heights: self.heights,
             spent: self.spent,
+            txid_location: self.txid_location,
             tx_out_set_info_accumulator: self.tx_out_set_info_accumulator,
             #[cfg(feature = "transparent_address_history_experimental")]
             address_history: self.address_history,
@@ -640,13 +727,17 @@ impl DbV1 {
 
         tokio::task::spawn_blocking(move || {
             let ro = zaino_db.env.begin_ro_txn()?;
-            let mut cursor = ro.open_ro_cursor(zaino_db.heights)?;
+            let mut cursor = ro.open_ro_cursor(zaino_db.headers)?;
 
-            for (hash_bytes, height_entry_bytes) in cursor.iter() {
-                let hash = BlockHash::from_bytes(hash_bytes)?;
-                let height = *StoredEntryFixed::<Height>::from_bytes(height_entry_bytes)
-                    .map_err(|e| FinalisedStateError::Custom(format!("corrupt height entry: {e}")))?
-                    .inner();
+            // `headers` is keyed by big-endian height, so the cursor yields blocks in ascending
+            // height order. Both the height and hash are read from the header entry itself.
+            for (height_bytes, header_entry_bytes) in cursor.iter() {
+                let height = Height::from_bytes(height_bytes)?;
+                let header_entry = StoredEntryVar::<BlockHeaderData>::from_bytes(
+                    header_entry_bytes,
+                )
+                .map_err(|e| FinalisedStateError::Custom(format!("corrupt header entry: {e}")))?;
+                let hash = *header_entry.inner().context.hash();
 
                 zaino_db.validate_block_blocking(height, hash)?
             }
@@ -666,6 +757,128 @@ impl DbV1 {
     /// Provudes access to the spent DB table, required for Migration1_1_0To1_2_0.
     pub(crate) fn spent_db(&self) -> Database {
         self.spent
+    }
+
+    /// Provides access to the reverse txid-index DB table, required for Migration1_1_0To1_2_0
+    /// to backfill `txid_location` before resolving previous outputs.
+    pub(crate) fn txid_location_db(&self) -> Database {
+        self.txid_location
+    }
+
+    /// Provides access to the txids DB table, required for Migration1_1_0To1_2_0 to build the
+    /// reverse txid index directly from stored block data.
+    pub(crate) fn txids_db(&self) -> Database {
+        self.txids
+    }
+
+    /// Provides access to the transparent DB table, required for Migration1_1_0To1_2_0 Stage B to
+    /// read stored block transparent data directly. Reading the table raw (rather than via the
+    /// `BlockTransparentExt` accessor) deliberately bypasses `validate_block_blocking`: the
+    /// migration backfills from already-on-disk, already-trusted data, so per-height block
+    /// re-validation (merkle-root recompute + full-payload checksums) is redundant cost. The
+    /// background validator started at spawn is responsible for validating the on-disk chain.
+    pub(crate) fn transparent_db(&self) -> Database {
+        self.transparent
+    }
+
+    /// **Temporary 0.4.0-alpha.1 cache compatibility.**
+    ///
+    /// The 0.4.0-alpha.1 build shipped a v1.1.0 → v1.2.0 migration (and write path) that did not
+    /// populate the new `txid_location` reverse index. A cache that *completed* that migration is
+    /// recorded at version 1.2.0 with an empty `txid_location` table, and the migration manager
+    /// would not re-select any step for it — so the corrected code would fail on its first new
+    /// block write. When a non-empty database is recorded at `>= 1.2.0` but its `txid_location`
+    /// index is empty, we roll the recorded version back to 1.1.0 (status `Empty`) so the corrected
+    /// v1.1.0 → v1.2.0 migration rebuilds the index in place rather than forcing a full rebuild.
+    ///
+    /// TODO: Remove this shim once 0.4.0 is released; from then on no cache can reach this state.
+    async fn reconcile_alpha_txid_location_index(&self) -> Result<(), FinalisedStateError> {
+        tokio::task::block_in_place(|| {
+            let mut txn = self.env.begin_rw_txn()?;
+
+            // A fresh database (no metadata yet) needs no reconciliation.
+            let raw = match txn.get(self.metadata, b"metadata") {
+                Ok(raw) => raw,
+                Err(lmdb::Error::NotFound) => return Ok(()),
+                Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+            };
+            let stored = StoredEntryFixed::<DbMetadata>::from_bytes(raw).map_err(|error| {
+                FinalisedStateError::Custom(format!("corrupt metadata: {error}"))
+            })?;
+            if !stored.verify(b"metadata") {
+                return Err(FinalisedStateError::Custom(
+                    "metadata checksum mismatch".to_string(),
+                ));
+            }
+            let mut metadata = stored.item;
+
+            // Only caches recorded at >= 1.2.0 can be in the broken alpha state.
+            if metadata.version
+                < (DbVersion {
+                    major: 1,
+                    minor: 2,
+                    patch: 0,
+                })
+            {
+                return Ok(());
+            }
+
+            // A genuinely fresh database (no blocks) needs no reconciliation; the write path builds
+            // `txid_location` as it syncs. Under the corrected code a non-empty database always has
+            // a non-empty index, so an empty index on a non-empty database means an alpha cache.
+            let has_blocks = {
+                let mut cursor = txn.open_ro_cursor(self.headers)?;
+                cursor.iter().next().is_some()
+            };
+            let index_empty = {
+                let mut cursor = txn.open_ro_cursor(self.txid_location)?;
+                cursor.iter().next().is_none()
+            };
+            if !has_blocks || !index_empty {
+                return Ok(());
+            }
+
+            warn!(
+                "detected a 0.4.0-alpha.1 cache recorded at v{} with an unbuilt txid_location \
+                 index; rolling the recorded version back to 1.1.0 so the corrected migration \
+                 rebuilds it in place",
+                metadata.version
+            );
+
+            // Clear the `spent` index the alpha migration built: the corrected Stage B rebuilds it
+            // from genesis, and its accumulator forward-check rejects re-adding already-present
+            // spends, so it must start from an empty table. Drop any stale per-stage progress keys
+            // so both stages restart at genesis. (`txid_location` is already empty — that is the
+            // condition that brought us here.)
+            txn.clear_db(self.spent)?;
+            for key in [
+                b"_migration_txid_location_progress_1_2_0_next_height".as_slice(),
+                b"_migration_spent_progress_1_2_0_next_height".as_slice(),
+            ] {
+                match txn.del(self.metadata, &key, None) {
+                    Ok(()) | Err(lmdb::Error::NotFound) => {}
+                    Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+                }
+            }
+
+            metadata.version = DbVersion {
+                major: 1,
+                minor: 1,
+                patch: 0,
+            };
+            metadata.migration_status = MigrationStatus::Empty;
+
+            let entry = StoredEntryFixed::new(b"metadata", metadata);
+            txn.put(
+                self.metadata,
+                b"metadata",
+                &entry.to_bytes()?,
+                WriteFlags::empty(),
+            )?;
+            txn.commit()?;
+
+            Ok(())
+        })
     }
 
     /// Provides access to the finalised txout-set accumulator DB table.
@@ -733,11 +946,23 @@ impl DbV1 {
             .expect("max_readers was clamped to fit in u32");
 
         // Open LMDB environment and set environmental details.
+        //
+        // `NO_SYNC`: commits are not fsynced. The core write path now does many random-key
+        // inserts per block (the `spent` and `txid_location` B-trees are keyed by 32-byte
+        // hashes), which made per-commit fsync the dominant sync cost once those trees outgrew
+        // the page cache. Under `NO_SYNC` the OS batches that write-back; we force durability at
+        // explicit checkpoints (`SYNC_CHECKPOINT_INTERVAL`) and on graceful shutdown instead.
+        // `WRITE_MAP` is unset, so a crash never corrupts the database — it only discards the
+        // unflushed tail of recent commits, which clean sync and migrations safely re-do.
         let env = Environment::new()
             .set_max_dbs(15)
             .set_map_size(db_size_bytes)
             .set_max_readers(max_readers)
-            .set_flags(EnvironmentFlags::NO_TLS | EnvironmentFlags::NO_READAHEAD)
+            .set_flags(
+                EnvironmentFlags::NO_TLS
+                    | EnvironmentFlags::NO_READAHEAD
+                    | EnvironmentFlags::NO_SYNC,
+            )
             .open(&db_path)?;
 
         // Open individual LMDB DBs.
@@ -756,6 +981,9 @@ impl DbV1 {
         let hashes = super::open_or_create_db(&env, "hashes_1_0_0", DatabaseFlags::empty()).await?;
 
         let spent = super::open_or_create_db(&env, "spent_1_0_0", DatabaseFlags::empty()).await?;
+
+        let txid_location =
+            super::open_or_create_db(&env, "txid_location_1_0_0", DatabaseFlags::empty()).await?;
 
         let tx_out_set_info_accumulator = super::open_or_create_db(
             &env,
@@ -786,6 +1014,7 @@ impl DbV1 {
                 commitment_tree_data,
                 heights: hashes,
                 spent,
+                txid_location,
                 tx_out_set_info_accumulator,
                 address_history,
                 metadata,
@@ -809,6 +1038,7 @@ impl DbV1 {
                 commitment_tree_data,
                 heights: hashes,
                 spent,
+                txid_location,
                 tx_out_set_info_accumulator,
                 metadata,
                 validated_tip: Arc::new(AtomicU32::new(0)),

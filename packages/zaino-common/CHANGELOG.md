@@ -13,6 +13,26 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.2.0] - 2026-06-17
+
+### Added
+- `StorageConfig::database.sync_write_batch_bytes` (default 4 GiB) — byte budget
+  for the finalised-state bulk-sync / migration write batch. Larger batches
+  insert the random-keyed `spent` / `txid_location` indexes in bigger sorted
+  sweeps (fewer random B-tree faults once the DB exceeds RAM), at the cost of
+  more RAM; raise it on large-RAM hosts.
+- `ActivationHeights::nu6_2` (serialised as `NU6.2`) and the matching
+  `set_nu6_2` builder, configuring the NU6.2 network-upgrade activation height
+  so regtest / test networks can activate NU6.2.
+### Changed
+- **Breaking** — `ActivationHeights` gains a public `nu6_2` field. The struct is
+  not `#[non_exhaustive]`, so external struct-literal construction must now
+  supply the field (analogous to the `ZainodConfig.donation_address` break in
+  0.3.0).
+### Deprecated
+### Removed
+### Fixed
+
 ## [0.1.1] - 2026-05-19
 
 ### Added

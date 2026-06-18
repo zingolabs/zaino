@@ -360,6 +360,15 @@ fn passthrough_get_block_range() {
     })
 }
 
+// Ignored: this drives the full indexer over `partial_chain_strategy` blocks, whose headers carry
+// arbitrary (invalid) merkle roots. The finalised state now validates blocks on the write path
+// (cheap merkle + parent-continuity checks), so it correctly rejects these blocks once the indexer's
+// finalised-sync reaches them. These proptest chains are not a valid input for the finalised state;
+// MockchainSource-backed tests (chain_index::tests::finalised_state::v1 + migrations) cover the
+// finalised state with valid blocks. Re-enable once the optional-db PR lands, which lets these
+// passthrough proptests run without engaging the finalised state.
+#[ignore = "proptest blocks have invalid merkle roots; finalised state rejects them. \
+            Re-enable when the optional db PR lands. Covered by MockchainSource finalised_state tests."]
 #[test]
 fn make_chain() {
     init_tracing();
@@ -452,6 +461,7 @@ struct ProptestMockchain {
     /// call. Replaces the O(N_blocks × M_txs) linear scan that recomputed
     /// `transaction.hash()` on every iteration — the dominant cost in the
     /// tx-iterating passthrough tests.
+    #[allow(clippy::type_complexity)]
     tx_index: Arc<
         std::sync::OnceLock<
             std::collections::HashMap<

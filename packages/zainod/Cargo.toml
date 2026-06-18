@@ -6,7 +6,7 @@ repository = { workspace = true }
 homepage = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
-version = "0.3.1"
+version = "0.4.0"
 
 [[bin]]
 name = "zainod"
@@ -19,6 +19,12 @@ path = "src/lib.rs"
 [features]
 # Removes network restrictions.
 no_tls_use_unencrypted_traffic = ["zaino-serve/no_tls_use_unencrypted_traffic"]
+
+# Operator build: no TLS + Prometheus metrics endpoint.
+no_tls_with_prometheus = ["no_tls_use_unencrypted_traffic", "prometheus"]
+
+# Prometheus /metrics scrape endpoint.
+prometheus = ["metrics", "metrics-exporter-prometheus", "zaino-state/prometheus"]
 
 # DANGER: allows the JSON-RPC server to bind to a public (non-private,
 # non-loopback) address. The JSON-RPC interface has NO transport encryption and
@@ -63,6 +69,10 @@ tracing-subscriber = { workspace = true, features = ["fmt", "env-filter", "time"
 # Network / RPC
 http = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+
+# Metrics (behind "prometheus" feature)
+metrics = { workspace = true, optional = true }
+metrics-exporter-prometheus = { workspace = true, optional = true }
 
 # Utility
 thiserror = { workspace = true }

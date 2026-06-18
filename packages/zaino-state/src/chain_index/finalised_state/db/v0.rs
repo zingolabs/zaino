@@ -144,6 +144,49 @@ impl DbWrite for DbV0 {
         self.write_block(block).await
     }
 
+    /// Bulk catch-up for the legacy backend: simply loops [`DbWrite::write_block`] over
+    /// `tip+1..=height`. v0 maintains no txout-set accumulator and does not serve chainwork, so the
+    /// chainwork seed is zero (matching the prior `sync_to_height` behaviour). This code path is
+    /// retired with the v0 backend.
+    async fn write_blocks_to_height<S: crate::chain_index::source::BlockchainSource>(
+        &self,
+        height: crate::Height,
+        source: &S,
+    ) -> Result<(), FinalisedStateError> {
+        use crate::chain_index::finalised_state::build_indexed_block_from_source;
+        use zebra_chain::parameters::NetworkUpgrade;
+
+        let network = self.config.network;
+        let zebra_network = network.to_zebra_network();
+        let sapling_activation_height = NetworkUpgrade::Sapling
+            .activation_height(&zebra_network)
+            .expect("Sapling activation height must be set");
+        let nu5_activation_height = NetworkUpgrade::Nu5.activation_height(&zebra_network);
+
+        let start_height = match self.tip_height().await? {
+            None => crate::chain_index::types::GENESIS_HEIGHT.0,
+            Some(tip) => tip.0 + 1,
+        };
+        let mut parent_chainwork = crate::ChainWork::from_u256(0.into());
+
+        for height_int in start_height..=height.0 {
+            let block = build_indexed_block_from_source(
+                source,
+                network,
+                sapling_activation_height,
+                nu5_activation_height,
+                height_int,
+                parent_chainwork,
+            )
+            .await?;
+            parent_chainwork = block.context.chainwork;
+
+            self.write_block(block).await?;
+        }
+
+        Ok(())
+    }
+
     /// Deletes a block at the given height, enforcing that it is the current tip.
     async fn delete_block_at_height(
         &self,

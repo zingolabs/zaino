@@ -1,0 +1,81 @@
+# Dependabot version updates.
+# https://docs.github.com/code-security/dependabot/dependabot-version-updates
+#
+# PRs target the `dev` branch (the repo's integration branch). Minor/patch
+# bumps are grouped per ecosystem to keep PR volume manageable; major bumps
+# come as individual PRs so they can be reviewed in isolation.
+version: 2
+
+updates:
+  # Rust dependencies for the main workspace (root Cargo.toml + packages/*).
+  - package-ecosystem: cargo
+    directory: "/"
+    target-branch: "dev"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "deps"
+      prefix-development: "deps-dev"
+    labels:
+      - dependencies
+      - rust
+    groups:
+      cargo-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  # Rust dependencies for the integration-tests sub-workspace, which is a
+  # separate workspace (excluded from the root one in Cargo.toml).
+  - package-ecosystem: cargo
+    directory: "/integration-tests"
+    target-branch: "dev"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "deps"
+      prefix-development: "deps-dev"
+    labels:
+      - dependencies
+      - rust
+    groups:
+      integration-tests-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  # GitHub Actions used across .github/workflows.
+  - package-ecosystem: github-actions
+    directory: "/"
+    target-branch: "dev"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    labels:
+      - dependencies
+      - github-actions
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  # Base images in the root Dockerfile.
+  - package-ecosystem: docker
+    directory: "/"
+    target-branch: "dev"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "docker"
+    labels:
+      - dependencies
+      - docker

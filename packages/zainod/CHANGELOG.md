@@ -9,6 +9,14 @@ and this crate adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.4.0] - 2026-06-17
+
+### Added
 - New `allow_unencrypted_public_json_rpc_bind` build feature. The JSON-RPC
   interface has no transport encryption and is now restricted to private /
   loopback bind addresses by default; this feature lifts that restriction for
@@ -23,6 +31,11 @@ and this crate adheres to Rust's notion of
   check was applied to the JSON-RPC server, so an operator could expose the
   unencrypted interface on a public address with no warning (Z-02 /
   Zellic #48480).
+- Upgrading a cached database to finalised-state DB v1.2.0 no longer appears to
+  hang on large (e.g. mainnet) caches. The v1.1.0 -> v1.2.0 migration now builds
+  a reverse transaction-id index so previous-output resolution is fast, runs as
+  a re-entrant two-stage backfill, and logs progress. Caches built by
+  0.4.0-alpha.1 are detected and repaired automatically on startup.
 
 ## [0.3.1] - 2026-05-22
 

@@ -121,9 +121,18 @@
 #    DbVersion = LE(u32) major  LE(u32) minor  LE(u32) patch
 #    MigrationStatus = u8 enum (0 = Empty, 1 = InProgress, 2 = Completed, 3 = Failed)
 #
+# 12. txid_location  ―  B (txid)  ->  StoredEntryFixed<TxLocation>
+#    Key : 32-byte transaction id (internal byte order)
+#    Val : 0x01 + TxLocation + [32] checksum
+#           TxLocation = BE(u32) height  BE(u16) tx_index
+#
+#    Reverse index of `txids`: maps a txid to its on-chain location. Provides O(log n)
+#    txid -> TxLocation lookup for previous-output resolution in the write path and the
+#    txout-set accumulator, avoiding a full scan of the height-keyed `txids` table.
+#
 # ─────────────────────────── Environment settings ─────────────────────────────
 #   LMDB page-size:         platform default
-#   max_dbs:                11 (see list above)
+#   max_dbs:                12 (see list above)
 #   Flags:                  MDB_NOTLS | MDB_NORDAHEAD
 #
 #   All Databases are append-only and indexed by height -> LMDB default

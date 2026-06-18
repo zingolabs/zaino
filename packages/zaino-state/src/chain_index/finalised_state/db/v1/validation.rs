@@ -63,7 +63,7 @@ impl DbV1 {
     ///
     /// NOTE:
     /// - This function is intentionally tolerant of races: redundant inserts / removals are benign.
-    fn mark_validated(&self, h: u32) {
+    pub(super) fn mark_validated(&self, h: u32) {
         let mut next = h;
         loop {
             let tip = self.validated_tip.load(Ordering::Acquire);
@@ -393,6 +393,8 @@ impl DbV1 {
                         continue;
                     }
 
+                    let outpoint = Outpoint::new(*input.prevout_txid(), input.prevout_index());
+
                     // Check addrhist input record
                     let prev_output = self.get_previous_output_blocking(outpoint)?;
                     let addr_bytes =
@@ -458,7 +460,7 @@ impl DbV1 {
     /// Behavior:
     /// - Duplicates the final element when the layer width is odd, matching Bitcoin/Zcash merkle rules.
     /// - Uses SHA256d over 64-byte concatenated pairs at each layer.
-    fn calculate_block_merkle_root(txids: &[[u8; 32]]) -> [u8; 32] {
+    pub(super) fn calculate_block_merkle_root(txids: &[[u8; 32]]) -> [u8; 32] {
         assert!(
             !txids.is_empty(),
             "block must contain at least the coinbase"

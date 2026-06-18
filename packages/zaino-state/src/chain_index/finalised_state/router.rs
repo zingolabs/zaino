@@ -353,6 +353,17 @@ impl DbWrite for Router {
             .await
     }
 
+    /// Bulk catch-up ingestion via the backend currently serving `WRITE_CORE`.
+    async fn write_blocks_to_height<S: crate::chain_index::source::BlockchainSource>(
+        &self,
+        height: Height,
+        source: &S,
+    ) -> Result<(), FinalisedStateError> {
+        self.backend(CapabilityRequest::WriteCore)?
+            .write_blocks_to_height(height, source)
+            .await
+    }
+
     /// Deletes the block at height `h` via the backend currently serving `WRITE_CORE`.
     async fn delete_block_at_height(&self, h: Height) -> Result<(), FinalisedStateError> {
         self.backend(CapabilityRequest::WriteCore)?

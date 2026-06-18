@@ -28,21 +28,21 @@ license = "Apache-2.0"
 
 # Zingo
 
-zingo_common_components =  "0.3.0"
+zingo_common_components = "0.3.1"
 
 # Librustzcash
 incrementalmerkletree = "0.8"
-zcash_address = "0.11"
-zcash_keys = "0.13"
-zcash_protocol = "0.8"
-zcash_primitives = "0.27"
-zcash_transparent = "0.7"
-zcash_client_backend = "0.22"
+zcash_address = "0.12"
+zcash_keys = "0.14"
+zcash_protocol = "0.9"
+zcash_primitives = "0.28"
+zcash_transparent = "0.8"
+zcash_client_backend = "0.23"
 
 # Zebra
-zebra-chain = "7.0.0"
-zebra-state = "6.0.0"
-zebra-rpc = "7.0.0"
+zebra-chain = "9.0.0"
+zebra-state = "8.0.0"
+zebra-rpc = "9.0.0"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
@@ -95,6 +95,10 @@ async-stream = "0.3"
 async-trait = "0.1"
 futures = "0.3.30"
 
+# Metrics
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.16", default-features = false, features = ["http-listener"] }
+
 # Utility
 thiserror = "1.0"
 lazy-regex = "3.3"
@@ -120,15 +124,15 @@ bitflags = "2.9"
 portpicker = "0.1"
 tempfile = "3.2"
 zainod = { path = "packages/zainod" }
-zaino-common = { path = "packages/zaino-common", version = "0.1.1" }
-zaino-fetch = { path = "packages/zaino-fetch", version = "0.1.1" }
-zaino-proto = { path = "packages/zaino-proto", version = "0.1.1" }
-zaino-state = { path = "packages/zaino-state", version = "0.2.0" }
-zaino-serve = { path = "packages/zaino-serve", version = "0.2.0" }
+zaino-common = { path = "packages/zaino-common", version = "0.2.0" }
+zaino-fetch = { path = "packages/zaino-fetch", version = "0.2.0" }
+zaino-proto = { path = "packages/zaino-proto", version = "0.1.2" }
+zaino-state = { path = "packages/zaino-state", version = "0.3.0" }
+zaino-serve = { path = "packages/zaino-serve", version = "0.3.0" }
 wire_serialized_transaction_test_data = "1.0.0"
 config = { version = "0.15", default-features = false, features = ["toml"] }
 nonempty = "0.11.0"
-proptest = "~1.6"
+proptest = "~1.11"
 zip32 = "0.2.1"
 
 # Patch for vulnerable dependency

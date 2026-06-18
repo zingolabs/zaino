@@ -13,6 +13,13 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.1.2] - 2026-06-17
+
+### Fixed
+- `compact_block_to_nullifiers` now also clears each transaction's `vin` and
+  `vout`, so the nullifiers-only compact block no longer leaks transparent
+  inputs/outputs — restoring lightwalletd compact-block parity (#1067).
+
 ## [0.1.1] - 2026-05-19
 
 ### Added

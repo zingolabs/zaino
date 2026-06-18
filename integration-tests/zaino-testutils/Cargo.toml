@@ -28,32 +28,26 @@ transparent_address_history_experimental = [
 zaino-state = { workspace = true }
 zaino-serve.workspace = true
 zaino-common.workspace = true
+zaino-proto = { workspace = true }
+zaino-fetch = { workspace = true }
 zainod = { workspace = true }
 
 # Librustzcash
 zcash_protocol = { workspace = true }
-zcash_client_backend = { workspace = true }
 
 # Zebra
 zebra-chain = { workspace = true }
+zebra-state = { workspace = true }
+zebra-rpc = { workspace = true }
 
 # Zingo-infra
 zcash_local_net = { workspace = true }
-zingo_test_vectors = { workspace = true }
-
-# Zingo-common
-zingo-netutils.workspace = true
-
-# ZingoLib
-zingolib = { workspace = true }
-zingolib_testutils.workspace = true
 
 # Miscellaneous
+futures = { workspace = true }
 http = { workspace = true }
 once_cell = { workspace = true }
 portpicker = { workspace = true }
 tokio = { workspace = true }
 tonic.workspace = true
-tempfile = { workspace = true }
 tracing.workspace = true
-zip32 = { workspace = true }

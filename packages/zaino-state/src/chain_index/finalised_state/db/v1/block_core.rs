@@ -307,71 +307,26 @@ impl DbV1 {
         txid: &TransactionHash,
     ) -> Result<Option<TxLocation>, FinalisedStateError> {
         let ro = self.env.begin_ro_txn()?;
-        let mut cursor = ro.open_ro_cursor(self.txids)?;
 
-        let target: [u8; 32] = (*txid).into();
+        // Reverse-index point lookup: `txid_location` maps a txid directly to its
+        // `TxLocation`, replacing the former full scan of the height-keyed `txids` table.
+        let key: [u8; 32] = (*txid).into();
 
-        for (height_bytes, stored_bytes) in cursor.iter() {
-            if let Some(tx_index) =
-                Self::find_txid_position_in_stored_txid_list(&target, stored_bytes)
-            {
-                let height = Height::from_bytes(height_bytes)?;
-                return Ok(Some(TxLocation::new(height.0, tx_index as u16)));
+        match ro.get(self.txid_location, &key) {
+            Ok(stored_bytes) => {
+                let entry =
+                    StoredEntryFixed::<TxLocation>::from_bytes(stored_bytes).map_err(|e| {
+                        FinalisedStateError::Custom(format!("corrupt txid_location entry: {e}"))
+                    })?;
+                if !entry.verify(key) {
+                    return Err(FinalisedStateError::Custom(
+                        "txid_location entry checksum mismatch".to_string(),
+                    ));
+                }
+                Ok(Some(*entry.inner()))
             }
+            Err(lmdb::Error::NotFound) => Ok(None),
+            Err(e) => Err(FinalisedStateError::LmdbError(e)),
         }
-        Ok(None)
-    }
-
-    /// Efficiently scans a raw `StoredEntryVar<TxidList>` buffer to locate the index
-    /// of a given transaction ID without full deserialization.
-    ///
-    /// The format is:
-    /// - 1 byte: StoredEntryVar version
-    /// - CompactSize: length of the item
-    /// - 1 byte: TxidList version
-    /// - CompactSize: number of the item
-    /// - N x (1 byte + 32 bytes): tagged Hash items
-    /// - 32 bytes: checksum
-    ///
-    /// # Arguments
-    /// - `target_txid`: A `[u8; 32]` representing the transaction ID to match.
-    /// - `stored`: Raw LMDB byte slice from a `StoredEntryVar<TxidList>`.
-    ///
-    /// # Returns
-    /// - `Some(index)` if a matching txid is found
-    /// - `None` if the format is invalid or no match
-    #[inline]
-    fn find_txid_position_in_stored_txid_list(
-        target_txid: &[u8; 32],
-        stored: &[u8],
-    ) -> Option<usize> {
-        const CHECKSUM_LEN: usize = 32;
-
-        // Check is at least sotred version + compactsize + checksum
-        // else return none.
-        if stored.len() < TransactionHash::VERSION_TAG_LEN + 8 + CHECKSUM_LEN {
-            return None;
-        }
-
-        let mut cursor = &stored[TransactionHash::VERSION_TAG_LEN..];
-        let item_len = CompactSize::read(&mut cursor).ok()? as usize;
-        if cursor.len() < item_len + CHECKSUM_LEN {
-            return None;
-        }
-
-        let (_record_version, mut remaining) = cursor.split_first()?;
-        let vec_len = CompactSize::read(&mut remaining).ok()? as usize;
-
-        for idx in 0..vec_len {
-            // Each entry is 1-byte tag + 32-byte hash
-            let (_tag, rest) = remaining.split_first()?;
-            let hash_bytes: &[u8; 32] = rest.get(..32)?.try_into().ok()?;
-            if hash_bytes == target_txid {
-                return Some(idx);
-            }
-            remaining = &rest[32..];
-        }
-
-        None
     }
 }

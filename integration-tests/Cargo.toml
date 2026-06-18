@@ -1,8 +1,10 @@
 [workspace]
 members = [
-    ".",
+    "walletless-tests",
     "zaino-testutils",
 ]
+# wallet-tests is its own workspace (zingolib stack, separate Cargo.lock).
+exclude = ["wallet-tests"]
 resolver = "2"
 
 [workspace.package]
@@ -25,23 +27,17 @@ zaino-common = { path = "../packages/zaino-common" }
 zaino-fetch = { path = "../packages/zaino-fetch" }
 zainod = { path = "../packages/zainod" }
 
-# Zingo
-zingo-netutils = { git = "https://github.com/zingolabs/zingo-common.git", rev = "63bf5d9171d36e180acbeb6d9182d9c7a93c57b6", features = ["back_compatible"] }
-zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "37eb567a6fc3746e431426b80c6811c2c456506e", features = [
-    "testutils",
-] }
-zingolib_testutils = { git = "https://github.com/zingolabs/zingolib.git", rev = "37eb567a6fc3746e431426b80c6811c2c456506e" }
-zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", rev = "b8929c4821c18ec7a059fbd6b57bd39795568fa1" }
-zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "b8929c4821c18ec7a059fbd6b57bd39795568fa1" }
+# Zingo-infra (validator launcher; not a wallet dep)
+zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", tag = "zcash_local_net_v0.6.0" }
 
 # Librustzcash
-zcash_protocol = { version = "0.8", features = ["local-consensus"] }
-zcash_client_backend = "0.22"
+zcash_protocol = { version = "0.9", features = ["local-consensus"] }
+zcash_client_backend = "0.23"
 
 # Zebra
-zebra-chain = "7.0.0"
-zebra-state = "6.0.0"
-zebra-rpc = "7.0.0"
+zebra-chain = "9.0.0"
+zebra-state = "8.0.0"
+zebra-rpc = "9.0.0"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
@@ -63,66 +59,6 @@ tempfile = "3.2"
 tracing = "0.1"
 wire_serialized_transaction_test_data = "1.0.0"
 zip32 = "0.2.1"
-
-[package]
-name = "integration-tests"
-description = "Crate containing Zaino's integration-tests."
-publish = false
-
-authors.workspace = true
-repository.workspace = true
-homepage.workspace = true
-edition.workspace = true
-license.workspace = true
-version.workspace = true
-
-[features]
-# **Experimental and alpha features**
-# Exposes the **complete** set of experimental / alpha features currently implemented in Zaino.
-experimental_features = ["transparent_address_history_experimental"]
-
-# Activates transparent address history capability in zaino
-#
-# NOTE: currently this is only implemented in the finalised state.
-transparent_address_history_experimental = [
-    "zaino-state/transparent_address_history_experimental",
-    "zainod/transparent_address_history_experimental",
-    "zaino-testutils/transparent_address_history_experimental"
-]
-
-[dependencies]
-zaino-fetch = { workspace = true }
-zaino-testutils = { workspace = true }
-tracing.workspace = true
-
-[dev-dependencies]
-anyhow = { workspace = true }
-
-# Test utility
-zainod = { workspace = true }
-zaino-testutils = { workspace = true }
-zaino-fetch = { workspace = true }
-zaino-proto = { workspace = true }
-zaino-common = { workspace = true }
-wire_serialized_transaction_test_data = { workspace = true }
-zaino-state = { workspace = true, features = ["test_dependencies"] }
-zebra-chain = { workspace = true }
-zebra-state = { workspace = true }
-zebra-rpc = { workspace = true }
-zip32 = { workspace = true }
-
-corez = { workspace = true }
-serde_json = { workspace = true }
-futures = { workspace = true }
-tempfile = { workspace = true }
-tower = { workspace = true }
-hex = { workspace = true }
-
-# Runtime
-tokio = { workspace = true }
-
-# Zingo-infra
-zcash_local_net = { workspace = true }
 
 [profile.test]
 opt-level = 3

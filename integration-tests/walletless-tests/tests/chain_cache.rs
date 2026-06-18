@@ -1,5 +1,5 @@
 use zaino_common::network::ActivationHeights;
-use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
+use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 use zaino_state::{ZcashIndexer, ZcashService};
 use zaino_testutils::{TestManager, ValidatorExt, ValidatorKind};
 use zainodlib::error::IndexerError;
@@ -30,19 +30,7 @@ where
     .await
     .unwrap();
 
-    let json_service = JsonRpSeeConnector::new_with_basic_auth(
-        test_node_and_return_url(
-            &test_manager.full_node_rpc_listen_address.to_string(),
-            None,
-            Some("xxxxxx".to_string()),
-            Some("xxxxxx".to_string()),
-        )
-        .await
-        .unwrap(),
-        "xxxxxx".to_string(),
-        "xxxxxx".to_string(),
-    )
-    .unwrap();
+    let json_service = test_manager.full_node_jsonrpc_connector().await;
     (test_manager, json_service)
 }
 
@@ -122,6 +110,7 @@ mod chain_query_interface {
                                 nu5: local_net_activation_heights.nu5(),
                                 nu6: local_net_activation_heights.nu6(),
                                 nu6_1: local_net_activation_heights.nu6_1(),
+                                nu6_2: local_net_activation_heights.nu6_2(),
                                 nu7: local_net_activation_heights.nu7(),
                             },
                         ))

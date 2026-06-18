@@ -569,6 +569,10 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// NOTE: This method currently has to fetch data from 2 places (get_treestate and get_indexed_block_by_*),
     ///       If `ValidatorConnector::GetTreeState` was updated to return the additional information
     ///       required, this second call could be removed, improving the performance of this method.
+    // Pre-existing lint: `FetchServiceError` is a large error type; returning it by value here is
+    // flagged by `result_large_err`. Suppressed to satisfy `-D warnings` without an invasive
+    // boxing refactor of the shared error enum.
+    #[allow(clippy::result_large_err)]
     async fn z_get_treestate(
         &self,
         hash_or_height: String,

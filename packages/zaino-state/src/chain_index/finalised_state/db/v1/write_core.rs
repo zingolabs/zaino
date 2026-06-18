@@ -1,6 +1,43 @@
 //! ZainoDB::V1 core write functionality.
 
 use super::*;
+
+/// Cheap heap-size estimate for a buffered [`IndexedBlock`], used only to bound the bulk-sync write
+/// batch in [`DbV1::write_blocks_to_height`]. Exactness is not required — it just keeps the batch's
+/// peak memory roughly within the configured budget.
+#[cfg(not(feature = "transparent_address_history_experimental"))]
+fn approx_indexed_block_bytes(block: &IndexedBlock) -> u64 {
+    block
+        .transactions()
+        .iter()
+        .map(|tx| {
+            let transparent = tx.transparent();
+            let items = transparent.inputs().len()
+                + transparent.outputs().len()
+                + tx.sapling().spends().len()
+                + tx.sapling().outputs().len()
+                + tx.orchard().actions().len();
+            256 + items as u64 * 128
+        })
+        .sum()
+}
+
+/// Maximum number of blocks buffered in a single bulk-sync write batch, regardless of the byte
+/// budget. Early-chain blocks are tiny, so the byte budget alone could buffer an enormous number of
+/// blocks before the first commit — delaying durability/progress and inflating memory. This caps
+/// the time-to-first-commit and the crash-loss window.
+#[cfg(not(feature = "transparent_address_history_experimental"))]
+const SYNC_WRITE_BATCH_MAX_BLOCKS: usize = 100_000;
+
+/// Maximum wall-clock time spent buffering a single bulk-sync write batch before flushing, so
+/// commits (and progress) happen regularly even when block fetches are slow.
+#[cfg(not(feature = "transparent_address_history_experimental"))]
+const SYNC_WRITE_BATCH_MAX_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Interval between in-flight "syncing height" progress logs during bulk sync.
+#[cfg(not(feature = "transparent_address_history_experimental"))]
+const SYNC_PROGRESS_LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
 #[cfg(test)]
 use crate::version;
 
@@ -12,6 +49,186 @@ use crate::version;
 impl DbWrite for DbV1 {
     async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
         self.write_block(block).await
+    }
+
+    /// Bulk catch-up: ingests `tip+1..=height` from `source`, deferring txout-set accumulator
+    /// maintenance across the run and rebuilding it once at the end. Each block is written with
+    /// `update_tx_out_set = false` (deferred) and `validate = false` (the height is marked
+    /// validated directly, since we built the block from the source this session).
+    async fn write_blocks_to_height<S: crate::chain_index::source::BlockchainSource>(
+        &self,
+        height: Height,
+        source: &S,
+    ) -> Result<(), FinalisedStateError> {
+        use crate::chain_index::finalised_state::build_indexed_block_from_source;
+        use zebra_chain::parameters::NetworkUpgrade;
+
+        let network = self.config.network;
+        let zebra_network = network.to_zebra_network();
+        let sapling_activation_height = NetworkUpgrade::Sapling
+            .activation_height(&zebra_network)
+            .expect("Sapling activation height must be set");
+        let nu5_activation_height = NetworkUpgrade::Nu5.activation_height(&zebra_network);
+
+        // Seed `parent_chainwork` from the current tip header (the block before the first one we
+        // write). On an empty database this is genesis with zero chainwork. Read raw rather than via
+        // `get_block_header`, which routes through `resolve_validated_hash_or_height` →
+        // `validate_block_blocking` (a full re-validation for any height above `validated_tip`); the
+        // tip is already on disk and trusted here, exactly as the v1.2 migration reads block data.
+        let (start_height, mut parent_chainwork) = match self.tip_height().await? {
+            None => (GENESIS_HEIGHT.0, crate::ChainWork::from_u256(0.into())),
+            Some(tip) => {
+                let tip_bytes = tip.to_bytes()?;
+                let chainwork = tokio::task::block_in_place(|| {
+                    let ro = self.env.begin_ro_txn()?;
+                    match ro.get(self.headers, &tip_bytes) {
+                        Ok(raw) => {
+                            let entry = StoredEntryVar::<BlockHeaderData>::from_bytes(raw)
+                                .map_err(|e| {
+                                    FinalisedStateError::Custom(format!(
+                                        "tip header decode error: {e}"
+                                    ))
+                                })?;
+                            Ok::<_, FinalisedStateError>(entry.inner().context.chainwork)
+                        }
+                        Err(lmdb::Error::NotFound) => Ok(crate::ChainWork::from_u256(0.into())),
+                        Err(e) => Err(FinalisedStateError::LmdbError(e)),
+                    }
+                })?;
+                (tip.0 + 1, chainwork)
+            }
+        };
+
+        // Nothing to do when the tip already meets the target. Importantly, this means a steady-state
+        // poll (the indexer calls `sync_to_height` repeatedly) does *not* trigger the bulk accumulator
+        // rebuild below when no new blocks finalised.
+        if start_height > height.0 {
+            return Ok(());
+        }
+
+        info!(
+            "write_blocks_to_height: syncing finalised blocks {start_height}..={} on {:?}",
+            height.0, network
+        );
+
+        // Bulk path: buffer blocks up to a byte budget, then write the whole batch in one
+        // transaction with the random-keyed `spent` / `txid_location` indexes inserted in sorted
+        // order (sequential B-tree sweep instead of random faults once the DB exceeds RAM). The
+        // address-history feature can't be batched (its prev-output resolution can't see
+        // earlier-in-batch uncommitted blocks), so it keeps the per-block path.
+        #[cfg(not(feature = "transparent_address_history_experimental"))]
+        {
+            let batch_budget = self.config.storage.database.sync_write_batch_bytes.max(1);
+            let mut next = start_height;
+            let mut last_progress_log = std::time::Instant::now();
+            while next <= height.0 {
+                // Fetch blocks (async; an LMDB write txn is `!Send` and cannot be held across the
+                // await) into a buffer, flushing on the *first* of: byte budget, block-count cap, or
+                // time cap. The count/time caps keep the first commit (and progress, and crash-loss
+                // window) prompt even on the tiny early-chain blocks, where the byte budget alone
+                // would buffer a huge number of blocks before committing.
+                let mut batch: Vec<IndexedBlock> = Vec::new();
+                let mut batch_bytes: u64 = 0;
+                let batch_started = std::time::Instant::now();
+                while next <= height.0
+                    && batch_bytes < batch_budget
+                    && batch.len() < SYNC_WRITE_BATCH_MAX_BLOCKS
+                    && batch_started.elapsed() < SYNC_WRITE_BATCH_MAX_INTERVAL
+                {
+                    let block = build_indexed_block_from_source(
+                        source,
+                        network,
+                        sapling_activation_height,
+                        nu5_activation_height,
+                        next,
+                        parent_chainwork,
+                    )
+                    .await?;
+                    parent_chainwork = block.context.chainwork;
+                    batch_bytes = batch_bytes.saturating_add(approx_indexed_block_bytes(&block));
+                    batch.push(block);
+                    next += 1;
+
+                    // In-flight progress: the block being fetched, throttled by time. (The committed
+                    // tip is reported by the per-batch commit log below.)
+                    if last_progress_log.elapsed() >= SYNC_PROGRESS_LOG_INTERVAL {
+                        info!(
+                            "write_blocks_to_height: syncing height {} / {} on {:?}",
+                            next - 1,
+                            height.0,
+                            network
+                        );
+                        last_progress_log = std::time::Instant::now();
+                    }
+                }
+
+                if batch.is_empty() {
+                    break;
+                }
+
+                // Write + sort + commit the batch atomically, then force durability. The on-disk
+                // `headers` tip never runs ahead of the indexes, so resume is gap-free.
+                tokio::task::block_in_place(|| self.write_block_batch_blocking(&batch))?;
+                tokio::task::block_in_place(|| self.env.sync(true)).map_err(|e| {
+                    FinalisedStateError::Custom(format!("LMDB checkpoint sync failed: {e}"))
+                })?;
+
+                // Only after the batch is committed + synced do we advance the validated tip.
+                for block in &batch {
+                    self.mark_validated(block.context.index.height.0);
+                }
+                self.status.store(StatusType::Ready);
+                info!(
+                    "write_blocks_to_height: committed batch to height {} ({} blocks)",
+                    next - 1,
+                    batch.len()
+                );
+            }
+        }
+        #[cfg(feature = "transparent_address_history_experimental")]
+        {
+            for height_int in start_height..=height.0 {
+                let block = build_indexed_block_from_source(
+                    source,
+                    network,
+                    sapling_activation_height,
+                    nu5_activation_height,
+                    height_int,
+                    parent_chainwork,
+                )
+                .await?;
+                parent_chainwork = block.context.chainwork;
+
+                self.write_block_with_options(block, false).await?;
+            }
+        }
+
+        // Bring the deferred txout-set accumulator up to the new tip. The full from-genesis rebuild
+        // is a fixed chain-length scan, so running it on every catch-up poll stalls the sync loop
+        // once the chain is large. Use it only for the first build or an unusually large gap (e.g. a
+        // sync interrupted far behind the on-disk tip); in steady state apply just the delta for the
+        // blocks we wrote — O(range) work — which produces the identical accumulator at the tip.
+        match self.read_tx_out_set_accumulator_built_height().await? {
+            Some(built) if built.0 >= height.0 => {}
+            Some(built) if height.0.saturating_sub(built.0) <= ACCUMULATOR_INCREMENTAL_MAX_GAP => {
+                info!(
+                    "write_blocks_to_height: updating txout-set accumulator {}..={}",
+                    built.0 + 1,
+                    height.0
+                );
+                self.update_tx_out_set_accumulator_for_range(built, height)
+                    .await?;
+            }
+            _ => {
+                info!(
+                    "write_blocks_to_height: rebuilding txout-set accumulator to height {}",
+                    height.0
+                );
+                self.rebuild_tx_out_set_accumulator().await?;
+            }
+        }
+
+        Ok(())
     }
 
     async fn delete_block_at_height(&self, height: Height) -> Result<(), FinalisedStateError> {
@@ -33,8 +250,38 @@ impl DbV1 {
 
     /// Writes a given (finalised) [`IndexedBlock`] to ZainoDB.
     ///
+    /// Single-block append: the txout-set accumulator is maintained incrementally and the written
+    /// block is validated before the height advances. Bulk catch-up uses
+    /// [`DbV1::write_blocks_to_height`], which defers the accumulator (see
+    /// [`DbV1::write_block_with_options`]) and rebuilds it once at the tip.
+    ///
     /// NOTE: This method should never leave a block partially written to the database.
     pub(crate) async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
+        self.write_block_with_options(block, true).await
+    }
+
+    /// Writes a single finalised [`IndexedBlock`], optionally maintaining the txout-set accumulator.
+    ///
+    /// - `update_tx_out_set`: when `true`, the accumulator is recomputed incrementally for this
+    ///   block and persisted (with its freshness watermark) inside the block's write transaction.
+    ///   When `false`, accumulator maintenance is deferred — the caller is responsible for a bulk
+    ///   rebuild (see [`DbV1::rebuild_tx_out_set_accumulator`]).
+    ///
+    /// Validation is *not* a read-back pass on this path. Two cheap in-memory correctness checks run
+    /// before commit — parent-hash continuity (tip-check) and the header merkle root (vs. the
+    /// block's txids) — after which the height is marked validated directly. The expensive
+    /// [`DbV1::validate_block_blocking`] re-read is reserved for startup, where on-disk data is
+    /// untrusted.
+    ///
+    /// NOTE: This method should never leave a block partially written to the database.
+    // `u32::is_multiple_of` is only stable from Rust 1.87; the `% 100 == 0` form below keeps the
+    // crate buildable on our older minimum supported Rust version.
+    #[allow(clippy::manual_is_multiple_of)]
+    async fn write_block_with_options(
+        &self,
+        block: IndexedBlock,
+        update_tx_out_set: bool,
+    ) -> Result<(), FinalisedStateError> {
         self.status.store(StatusType::Syncing);
         let block_hash = block.context.index.hash;
         let block_hash_bytes = block_hash.to_bytes()?;
@@ -80,7 +327,7 @@ impl DbV1 {
             let cur = ro.open_ro_cursor(self.headers)?;
             match cur.get(None, None, lmdb_sys::MDB_LAST) {
                 // Database already has blocks
-                Ok((last_height_bytes, _last_header_bytes)) => {
+                Ok((last_height_bytes, last_header_bytes)) => {
                     let last_height = Height::from_bytes(
                         last_height_bytes.expect("Height is always some in the finalised state"),
                     )?;
@@ -91,6 +338,30 @@ impl DbV1 {
                             "cannot write block at height {block_height:?}; \
                      current tip is {last_height:?}"
                         )));
+                    }
+
+                    // Parent-hash continuity: the new block must extend the current tip. This is
+                    // one of the two cheap, in-memory correctness checks (the other is the merkle
+                    // root below) that justify marking the block validated after a successful write
+                    // without the expensive post-commit re-read.
+                    let last_entry = StoredEntryVar::<BlockHeaderData>::from_bytes(
+                        last_header_bytes,
+                    )
+                    .map_err(|e| {
+                        FinalisedStateError::Custom(format!(
+                            "tip header decode error during continuity check: {e}"
+                        ))
+                    })?;
+                    if last_entry.inner().context.hash() != block.context.parent_hash() {
+                        return Err(FinalisedStateError::InvalidBlock {
+                            height: block_height.0,
+                            hash: block_hash,
+                            reason: format!(
+                                "parent hash does not extend current tip (tip: {:?}, parent: {:?})",
+                                last_entry.inner().context.hash(),
+                                block.context.parent_hash()
+                            ),
+                        });
                     }
                 }
                 // no block in db, this must be genesis block.
@@ -299,17 +570,57 @@ impl DbV1 {
             }
         }
 
-        let tx_out_set_info_accumulator = self
-            .calculate_tx_out_set_info_accumulator_after_block(
-                block_height,
-                &transactions,
-                &spent_map,
+        // Accumulator maintenance is deferred on the bulk-sync path (`update_tx_out_set == false`)
+        // and rebuilt once at the tip; only the single-block append path maintains it incrementally.
+        let tx_out_set_info_accumulator = if update_tx_out_set {
+            Some(
+                self.calculate_tx_out_set_info_accumulator_after_block(
+                    block_height,
+                    &transactions,
+                    &spent_map,
+                )
+                .await?,
             )
-            .await?;
+        } else {
+            None
+        };
 
         // Split the paired vector into the per-table shapes used for storage.
         let (txids, transparent): (Vec<TransactionHash>, Vec<Option<TransparentCompactTx>>) =
             transactions.into_iter().unzip();
+
+        // Cheap, in-memory correctness check: the block's txids must reproduce the header's merkle
+        // root. Together with the parent-hash continuity check in the tip-check above, this is what
+        // lets us mark the block validated after a successful write without the expensive
+        // post-commit re-read + spent-index cross-check (which only re-verifies on-disk integrity of
+        // bytes we just wrote from memory, and is redundant for our own writes).
+        {
+            let txid_bytes: Vec<[u8; 32]> = txids.iter().map(|txid| txid.0).collect();
+            let computed_merkle_root = Self::calculate_block_merkle_root(&txid_bytes);
+            if &computed_merkle_root != block.data().merkle_root() {
+                return Err(FinalisedStateError::InvalidBlock {
+                    height: block_height.0,
+                    hash: block_hash,
+                    reason: "header merkle root does not match block txids".to_string(),
+                });
+            }
+        }
+
+        // Reverse txid index entries (`txid -> TxLocation`). Built before `txids` is moved into
+        // the `TxidList` below, and sorted by txid so the random-keyed `txid_location` B-tree
+        // sees locally-ordered inserts.
+        let mut txid_location_entries: Vec<([u8; 32], TxLocation)> =
+            Vec::with_capacity(txids.len());
+        for (tx_index, txid) in txids.iter().enumerate() {
+            let tx_index = u16::try_from(tx_index).map_err(|_| {
+                FinalisedStateError::Custom(format!(
+                    "transaction index out of range at height {}",
+                    block_height.0
+                ))
+            })?;
+            txid_location_entries.push(((*txid).into(), TxLocation::new(block_height.0, tx_index)));
+        }
+        txid_location_entries.sort_by_key(|entry| entry.0);
 
         let txid_entry = StoredEntryVar::new(&block_height_bytes, TxidList::new(txids));
         let transparent_entry =
@@ -328,6 +639,7 @@ impl DbV1 {
             commitment_tree_data: self.commitment_tree_data,
             heights: self.heights,
             spent: self.spent,
+            txid_location: self.txid_location,
             tx_out_set_info_accumulator: self.tx_out_set_info_accumulator,
             #[cfg(feature = "transparent_address_history_experimental")]
             address_history: self.address_history,
@@ -363,6 +675,17 @@ impl DbV1 {
                 &txid_entry.to_bytes()?,
                 WriteFlags::NO_OVERWRITE,
             )?;
+
+            // Reverse txid index: `txid -> TxLocation`.
+            for (txid_bytes, tx_location) in &txid_location_entries {
+                let entry_bytes = StoredEntryFixed::new(txid_bytes, *tx_location).to_bytes()?;
+                txn.put(
+                    zaino_db.txid_location,
+                    txid_bytes,
+                    &entry_bytes,
+                    WriteFlags::NO_OVERWRITE,
+                )?;
+            }
 
             txn.put(
                 zaino_db.transparent,
@@ -405,15 +728,31 @@ impl DbV1 {
                 )?;
             }
 
-            let tx_out_set_info_accumulator_entry =
-                StoredEntryFixed::new(TX_OUT_SET_INFO_ACCUMULATOR_KEY, tx_out_set_info_accumulator);
+            // Persist the incrementally-maintained accumulator and advance its freshness watermark
+            // in the same transaction as the block, so the watermark always tracks the height the
+            // accumulator reflects. Skipped on the deferred (bulk-sync) path.
+            if let Some(tx_out_set_info_accumulator) = tx_out_set_info_accumulator {
+                let tx_out_set_info_accumulator_entry = StoredEntryFixed::new(
+                    TX_OUT_SET_INFO_ACCUMULATOR_KEY,
+                    tx_out_set_info_accumulator,
+                );
 
-            txn.put(
-                zaino_db.tx_out_set_info_accumulator,
-                &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-                &tx_out_set_info_accumulator_entry.to_bytes()?,
-                WriteFlags::empty(),
-            )?;
+                txn.put(
+                    zaino_db.tx_out_set_info_accumulator,
+                    &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
+                    &tx_out_set_info_accumulator_entry.to_bytes()?,
+                    WriteFlags::empty(),
+                )?;
+
+                let watermark =
+                    StoredEntryFixed::new(TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY, block_height);
+                txn.put(
+                    zaino_db.metadata,
+                    &TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY,
+                    &watermark.to_bytes()?,
+                    WriteFlags::empty(),
+                )?;
+            }
 
             #[cfg(feature = "transparent_address_history_experimental")]
             {
@@ -505,13 +844,18 @@ impl DbV1 {
                 }
             }
 
+            // `txn.commit()` makes the block visible to subsequent readers (LMDB MVCC), but the
+            // env is opened with `NO_SYNC`, so it is *not* fsynced here. Durability is forced at
+            // `SYNC_CHECKPOINT_INTERVAL` boundaries below and on graceful shutdown.
             txn.commit()?;
 
-            zaino_db.env.sync(true).map_err(|e| {
-                FinalisedStateError::Custom(format!("LMDB sync failed before validation: {e}"))
-            })?;
-
-            zaino_db.validate_block_blocking(block_height, block_hash)?;
+            // Advance the validated tip directly. The block was built from a trusted source this
+            // session and passed the cheap in-memory correctness checks (parent-hash continuity and
+            // merkle root) before commit, so the expensive read-back validation pass is redundant
+            // here — it only re-verifies on-disk integrity of bytes we just wrote. Startup remains
+            // the integrity gate for untrusted on-disk data (`validate_block_blocking` via
+            // `initial_block_scan`). Marking validated keeps reads on the `is_validated` fast path.
+            zaino_db.mark_validated(block_height.0);
 
             Ok::<_, FinalisedStateError>(())
         });
@@ -535,10 +879,18 @@ impl DbV1 {
 
         match post_result {
             Ok(_) => {
-                tokio::task::block_in_place(|| self.env.sync(true))
-                    .map_err(|e| FinalisedStateError::Custom(format!("LMDB sync failed: {e}")))?;
+                // The block was committed inside the blocking task above. Under `NO_SYNC` that
+                // commit is not yet on disk; force a durability checkpoint every
+                // `SYNC_CHECKPOINT_INTERVAL` blocks so a crash can only lose a bounded tail (which
+                // the syncer re-fetches from the on-disk tip). Genesis is checkpointed too so a
+                // brand-new cache has a durable root.
                 self.status.store(StatusType::Ready);
-                if block.context.index.height.0.is_multiple_of(100) {
+                if block_height.0 % SYNC_CHECKPOINT_INTERVAL == 0 {
+                    tokio::task::block_in_place(|| self.env.sync(true)).map_err(|e| {
+                        FinalisedStateError::Custom(format!("LMDB checkpoint sync failed: {e}"))
+                    })?;
+                }
+                if block.context.index.height.0 % 100 == 0 {
                     info!(
                         "Successfully committed block {} at height {} to ZainoDB.",
                         &block.context.index.hash, &block.context.index.height
@@ -665,6 +1017,280 @@ impl DbV1 {
                 })
             }
         }
+    }
+
+    /// Writes a batch of strictly-consecutive blocks in a single LMDB transaction, inserting the
+    /// random-keyed `spent` and `txid_location` entries in **sorted key order**.
+    ///
+    /// Once the DB exceeds RAM, the per-block path's random-key inserts fault a different B-tree
+    /// leaf almost every time. Buffering a batch and inserting its index entries in ascending key
+    /// order turns that into a sequential sweep — each leaf is faulted in once, filled, and written
+    /// once. The height-keyed tables (`headers`/`txids`/`transparent`/`sapling`/`orchard`/
+    /// `commitment_tree_data`) are written per block in ascending height (already sequential).
+    ///
+    /// Crash-safety: the whole batch — every block's height-keyed tables **and** the batch's sorted
+    /// index entries — commits in one transaction, so the `headers` tip never runs ahead of the
+    /// indexes. A crash discards the uncommitted batch (and, under `NO_SYNC`, rolls back to the last
+    /// `env.sync`), leaving a consistent prefix the syncer resumes from. The txout-set accumulator
+    /// is **not** maintained here (deferred; the caller rebuilds it at the tip).
+    ///
+    /// Heights must be strictly consecutive and extend the current tip; this is the bulk-sync path,
+    /// which assumes a single writer. Re-writing identical data on resume is a no-op (idempotent
+    /// puts), so it is safe to re-run after an interrupted sync.
+    ///
+    /// WARNING: blocking — call from a blocking context. Only built when the experimental
+    /// address-history feature is **off**; that feature uses the per-block path (its prev-output
+    /// resolution cannot see earlier-in-batch uncommitted blocks).
+    #[cfg(not(feature = "transparent_address_history_experimental"))]
+    pub(crate) fn write_block_batch_blocking(
+        &self,
+        blocks: &[IndexedBlock],
+    ) -> Result<(), FinalisedStateError> {
+        use lmdb::Transaction as _;
+
+        if blocks.is_empty() {
+            return Ok(());
+        }
+
+        // Idempotent `NO_OVERWRITE` put: a re-seen key whose stored bytes are identical is a no-op
+        // (safe resume); a key with conflicting bytes is a genuine error.
+        fn put_idempotent(
+            txn: &mut lmdb::RwTransaction<'_>,
+            db: Database,
+            key: &[u8],
+            value: &[u8],
+        ) -> Result<(), FinalisedStateError> {
+            match txn.put(db, &key, &value, WriteFlags::NO_OVERWRITE) {
+                Ok(()) => Ok(()),
+                Err(lmdb::Error::KeyExist) => {
+                    let existing = txn.get(db, &key).map_err(FinalisedStateError::LmdbError)?;
+                    if existing == value {
+                        Ok(())
+                    } else {
+                        Err(FinalisedStateError::Custom(
+                            "conflicting existing entry during batched block write".to_string(),
+                        ))
+                    }
+                }
+                Err(e) => Err(FinalisedStateError::LmdbError(e)),
+            }
+        }
+
+        self.status.store(StatusType::Syncing);
+        let mut txn = self.env.begin_rw_txn()?;
+
+        // Seed the continuity chain from the current on-disk tip (genesis if empty).
+        let (mut prev_height, mut prev_hash): (Option<u32>, Option<BlockHash>) = {
+            let cursor = txn.open_ro_cursor(self.headers)?;
+            match cursor.get(None, None, lmdb_sys::MDB_LAST) {
+                Ok((last_height_bytes, last_header_bytes)) => {
+                    let last_height = Height::from_bytes(
+                        last_height_bytes.expect("Height is always some in the finalised state"),
+                    )?;
+                    let last_entry = StoredEntryVar::<BlockHeaderData>::from_bytes(
+                        last_header_bytes,
+                    )
+                    .map_err(|e| {
+                        FinalisedStateError::Custom(format!("tip header decode error: {e}"))
+                    })?;
+                    (
+                        Some(last_height.0),
+                        Some(*last_entry.inner().context.hash()),
+                    )
+                }
+                Err(lmdb::Error::NotFound) => (None, None),
+                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+            }
+        };
+
+        // Batch-level collectors for the random-keyed indexes; sorted before insertion below.
+        let mut spent_batch: Vec<(Vec<u8>, TxLocation)> = Vec::new();
+        let mut txid_location_batch: Vec<([u8; 32], TxLocation)> = Vec::new();
+
+        for block in blocks {
+            let block_hash = block.context.index.hash;
+            let block_hash_bytes = block_hash.to_bytes()?;
+            let block_height = block.context.index.height;
+            let block_height_bytes = block_height.to_bytes()?;
+
+            // Continuity: height = prev + 1 and parent extends the current tip (genesis if empty).
+            match prev_height {
+                Some(tip) => {
+                    if block_height.0 != tip + 1 {
+                        return Err(FinalisedStateError::Custom(format!(
+                            "cannot write block at height {block_height:?}; current tip is {tip}"
+                        )));
+                    }
+                    if Some(*block.context.parent_hash()) != prev_hash {
+                        return Err(FinalisedStateError::InvalidBlock {
+                            height: block_height.0,
+                            hash: block_hash,
+                            reason: "parent hash does not extend current tip".to_string(),
+                        });
+                    }
+                }
+                None => {
+                    if block_height.0 != GENESIS_HEIGHT.0 {
+                        return Err(FinalisedStateError::Custom(format!(
+                            "first block must be height 0, got {block_height:?}"
+                        )));
+                    }
+                }
+            }
+
+            let height_entry = StoredEntryFixed::new(&block_hash_bytes, block_height);
+            let header_entry = StoredEntryVar::new(
+                &block_height_bytes,
+                BlockHeaderData::new(block.context, *block.data()),
+            );
+            let commitment_tree_entry =
+                StoredEntryFixed::new(&block_height_bytes, *block.commitment_tree_data());
+
+            let tx_len = block.transactions().len();
+            let mut txids: Vec<TransactionHash> = Vec::with_capacity(tx_len);
+            let mut txid_set: HashSet<TransactionHash> = HashSet::with_capacity(tx_len);
+            let mut transparent: Vec<Option<TransparentCompactTx>> = Vec::with_capacity(tx_len);
+            let mut sapling = Vec::with_capacity(tx_len);
+            let mut orchard = Vec::with_capacity(tx_len);
+
+            for (tx_index, tx) in block.transactions().iter().enumerate() {
+                let hash = tx.txid();
+                if !txid_set.insert(*hash) {
+                    return Err(FinalisedStateError::InvalidBlock {
+                        height: block_height.0,
+                        hash: block_hash,
+                        reason: format!("duplicate transaction hash in block: {hash:?}"),
+                    });
+                }
+                txids.push(*hash);
+
+                let transparent_data = if tx.transparent().inputs().is_empty()
+                    && tx.transparent().outputs().is_empty()
+                {
+                    None
+                } else {
+                    Some(tx.transparent().clone())
+                };
+                transparent.push(transparent_data);
+
+                let sapling_data =
+                    if tx.sapling().spends().is_empty() && tx.sapling().outputs().is_empty() {
+                        None
+                    } else {
+                        Some(tx.sapling().clone())
+                    };
+                sapling.push(sapling_data);
+
+                let orchard_data = if tx.orchard().actions().is_empty() {
+                    None
+                } else {
+                    Some(tx.orchard().clone())
+                };
+                orchard.push(orchard_data);
+
+                let tx_index =
+                    u16::try_from(tx_index).map_err(|_| FinalisedStateError::InvalidBlock {
+                        height: block_height.0,
+                        hash: block_hash,
+                        reason: format!("transaction index {tx_index} does not fit into u16"),
+                    })?;
+                let tx_location = TxLocation::new(block_height.0, tx_index);
+
+                for input in tx.transparent().inputs().iter() {
+                    if input.is_null_prevout() {
+                        continue;
+                    }
+                    let prev_outpoint = Outpoint::new(*input.prevout_txid(), input.prevout_index());
+                    spent_batch.push((prev_outpoint.to_bytes()?, tx_location));
+                }
+
+                txid_location_batch.push(((*hash).into(), tx_location));
+            }
+
+            // Cheap in-memory correctness check: txids must reproduce the header merkle root.
+            let txid_bytes: Vec<[u8; 32]> = txids.iter().map(|t| t.0).collect();
+            let computed_merkle_root = Self::calculate_block_merkle_root(&txid_bytes);
+            if &computed_merkle_root != block.data().merkle_root() {
+                return Err(FinalisedStateError::InvalidBlock {
+                    height: block_height.0,
+                    hash: block_hash,
+                    reason: "header merkle root does not match block txids".to_string(),
+                });
+            }
+
+            let txid_entry = StoredEntryVar::new(&block_height_bytes, TxidList::new(txids));
+            let transparent_entry =
+                StoredEntryVar::new(&block_height_bytes, TransparentTxList::new(transparent));
+            let sapling_entry =
+                StoredEntryVar::new(&block_height_bytes, SaplingTxList::new(sapling));
+            let orchard_entry =
+                StoredEntryVar::new(&block_height_bytes, OrchardTxList::new(orchard));
+
+            // Height-keyed tables (+ the hash-keyed `heights`, one entry/block) written per block.
+            put_idempotent(
+                &mut txn,
+                self.headers,
+                &block_height_bytes,
+                &header_entry.to_bytes()?,
+            )?;
+            put_idempotent(
+                &mut txn,
+                self.heights,
+                &block_hash_bytes,
+                &height_entry.to_bytes()?,
+            )?;
+            put_idempotent(
+                &mut txn,
+                self.txids,
+                &block_height_bytes,
+                &txid_entry.to_bytes()?,
+            )?;
+            put_idempotent(
+                &mut txn,
+                self.transparent,
+                &block_height_bytes,
+                &transparent_entry.to_bytes()?,
+            )?;
+            put_idempotent(
+                &mut txn,
+                self.sapling,
+                &block_height_bytes,
+                &sapling_entry.to_bytes()?,
+            )?;
+            put_idempotent(
+                &mut txn,
+                self.orchard,
+                &block_height_bytes,
+                &orchard_entry.to_bytes()?,
+            )?;
+            put_idempotent(
+                &mut txn,
+                self.commitment_tree_data,
+                &block_height_bytes,
+                &commitment_tree_entry.to_bytes()?,
+            )?;
+
+            prev_height = Some(block_height.0);
+            prev_hash = Some(block_hash);
+        }
+
+        // Insert the random-keyed indexes in ascending key order so the B-tree is swept
+        // sequentially rather than faulting on scattered leaves. A duplicate key with a
+        // conflicting value (a double-spend / inconsistency) is rejected by `put_idempotent`.
+        spent_batch.sort_by(|a, b| a.0.cmp(&b.0));
+        for (key, tx_location) in &spent_batch {
+            let entry_bytes = StoredEntryFixed::new(key, *tx_location).to_bytes()?;
+            put_idempotent(&mut txn, self.spent, key, &entry_bytes)?;
+        }
+
+        txid_location_batch.sort_by_key(|entry| entry.0);
+        for (key, tx_location) in &txid_location_batch {
+            let entry_bytes = StoredEntryFixed::new(key, *tx_location).to_bytes()?;
+            put_idempotent(&mut txn, self.txid_location, key, &entry_bytes)?;
+        }
+
+        txn.commit()?;
+        Ok(())
     }
 
     /// Deletes a block identified height from every finalised table.
@@ -915,6 +1541,12 @@ impl DbV1 {
             .calculate_tx_out_set_info_accumulator_after_delete_block(&transactions, &spent_map)
             .await?;
 
+        // Reverse txid index keys written for this block by `write_block`.
+        let txid_location_keys: Vec<[u8; 32]> = transactions
+            .iter()
+            .map(|(txid, _)| (*txid).into())
+            .collect();
+
         // Delete all block data from db.
         let zaino_db = Self {
             env: Arc::clone(&self.env),
@@ -926,6 +1558,7 @@ impl DbV1 {
             commitment_tree_data: self.commitment_tree_data,
             heights: self.heights,
             spent: self.spent,
+            txid_location: self.txid_location,
             tx_out_set_info_accumulator: self.tx_out_set_info_accumulator,
             #[cfg(feature = "transparent_address_history_experimental")]
             address_history: self.address_history,
@@ -962,6 +1595,14 @@ impl DbV1 {
                         })?;
 
                 match txn.del(zaino_db.spent, outpoint_bytes, None) {
+                    Ok(()) | Err(lmdb::Error::NotFound) => {}
+                    Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                }
+            }
+
+            // Delete reverse txid index data.
+            for txid_bytes in &txid_location_keys {
+                match txn.del(zaino_db.txid_location, txid_bytes, None) {
                     Ok(()) | Err(lmdb::Error::NotFound) => {}
                     Err(e) => return Err(FinalisedStateError::LmdbError(e)),
                 }
@@ -1126,6 +1767,13 @@ impl DbV1 {
 
 #[cfg(test)]
 impl DbV1 {
+    /// Returns the current contiguous validated-tip height. Test hook for asserting that the write
+    /// path advances the validated tip without relying on the background validator.
+    pub(crate) fn validated_tip_height(&self) -> u32 {
+        self.validated_tip
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
     /// Writes a block using the v1.0.0 format.
     ///
     /// This intentionally writes only the core v1 tables and uses v1 item encodings.

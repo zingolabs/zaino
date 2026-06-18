@@ -303,12 +303,55 @@ impl DbBackend {
         }
     }
 
+    /// Provides access to the reverse txid-index DB table, required for Migration1_1_0To1_2_0.
+    pub(crate) fn txid_location_db(&self) -> Result<Database, FinalisedStateError> {
+        match self {
+            Self::V1(db) => Ok(db.txid_location_db()),
+            Self::V0(_) => Err(FinalisedStateError::FeatureUnavailable(
+                "v1 txid_location db",
+            )),
+        }
+    }
+
+    /// Provides access to the txids DB table, required for Migration1_1_0To1_2_0.
+    pub(crate) fn txids_db(&self) -> Result<Database, FinalisedStateError> {
+        match self {
+            Self::V1(db) => Ok(db.txids_db()),
+            Self::V0(_) => Err(FinalisedStateError::FeatureUnavailable("v1 txids db")),
+        }
+    }
+
+    /// Provides access to the transparent DB table, required for Migration1_1_0To1_2_0 Stage B to
+    /// read block transparent data directly (bypassing per-height block re-validation).
+    pub(crate) fn transparent_db(&self) -> Result<Database, FinalisedStateError> {
+        match self {
+            Self::V1(db) => Ok(db.transparent_db()),
+            Self::V0(_) => Err(FinalisedStateError::FeatureUnavailable("v1 transparent db")),
+        }
+    }
+
     /// Provides access to the finalised txout-set accumulator DB table.
     pub(crate) fn tx_out_set_info_accumulator_db(&self) -> Result<Database, FinalisedStateError> {
         match self {
             Self::V1(database) => Ok(database.tx_out_set_info_accumulator_db()),
             Self::V0(_) => Err(FinalisedStateError::FeatureUnavailable(
                 "v1 tx_out_set_info_accumulator db",
+            )),
+        }
+    }
+
+    /// Bulk-rebuilds the finalised txout-set accumulator to the current tip and persists it (V1
+    /// only).
+    ///
+    /// Recomputes the accumulator from the finalised `transparent` + `spent` tables via sequential
+    /// scans and writes the singleton plus its freshness watermark. Replaces the per-block
+    /// accumulator maintenance that dominated sync time at sandblast height; used by
+    /// `sync_to_height` after a catch-up run and by the v1.2 migration's accumulator stage.
+    pub(crate) async fn rebuild_tx_out_set_accumulator(&self) -> Result<(), FinalisedStateError> {
+        match self {
+            Self::V1(database) => database.rebuild_tx_out_set_accumulator().await,
+            Self::V0(_) => Err(FinalisedStateError::FeatureUnavailable(
+                "v1 txout-set accumulator builder",
             )),
         }
     }
@@ -410,6 +453,18 @@ impl DbWrite for DbBackend {
         match self {
             Self::V0(db) => db.write_block(block).await,
             Self::V1(db) => db.write_block(block).await,
+        }
+    }
+
+    /// Bulk catch-up ingestion, delegated to the concrete backend's strategy.
+    async fn write_blocks_to_height<S: crate::chain_index::source::BlockchainSource>(
+        &self,
+        height: Height,
+        source: &S,
+    ) -> Result<(), FinalisedStateError> {
+        match self {
+            Self::V0(db) => db.write_blocks_to_height(height, source).await,
+            Self::V1(db) => db.write_blocks_to_height(height, source).await,
         }
     }
 
@@ -805,6 +860,46 @@ impl DbBackend {
     /// through the current startup / migration path.
     pub(crate) async fn spawn_v1_0_0(cfg: &BlockCacheConfig) -> Result<Self, FinalisedStateError> {
         Ok(Self::V1(DbV1::spawn_v1_0_0(cfg).await?))
+    }
+
+    /// Current contiguous validated-tip height (v1 only; 0 for v0). Test hook.
+    pub(crate) fn validated_tip_height(&self) -> u32 {
+        match self {
+            Self::V1(db) => db.validated_tip_height(),
+            Self::V0(_) => 0,
+        }
+    }
+
+    /// Reads the height the persisted txout-set accumulator currently reflects (V1 only).
+    ///
+    /// `None` means it has never been built. Test hook for asserting the incremental range-update
+    /// path advances the watermark (and is therefore taken, rather than a silent rebuild fallback).
+    pub(crate) async fn read_tx_out_set_accumulator_built_height(
+        &self,
+    ) -> Result<Option<Height>, FinalisedStateError> {
+        match self {
+            Self::V1(database) => database.read_tx_out_set_accumulator_built_height().await,
+            Self::V0(_) => Err(FinalisedStateError::FeatureUnavailable(
+                "v1 txout-set accumulator builder",
+            )),
+        }
+    }
+
+    /// Computes (without persisting) the bulk-built txout-set accumulator to `db_tip` (V1 only).
+    ///
+    /// Test hook for asserting the sequential bulk builder matches the incrementally-maintained
+    /// accumulator across shard counts.
+    pub(crate) fn build_tx_out_set_accumulator_blocking(
+        &self,
+        db_tip: Height,
+        shards: u16,
+    ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
+        match self {
+            Self::V1(database) => database.build_tx_out_set_accumulator_blocking(db_tip, shards),
+            Self::V0(_) => Err(FinalisedStateError::FeatureUnavailable(
+                "v1 txout-set accumulator builder",
+            )),
+        }
     }
 
     /// Writes a block using the v1.0.0 format.

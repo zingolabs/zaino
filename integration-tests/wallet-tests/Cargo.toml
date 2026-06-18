@@ -1,0 +1,53 @@
+[workspace]
+# Standalone workspace with its own Cargo.lock: the zingolib wallet stack
+# resolves here, kept out of the zingolib-free `integration-tests` workspace.
+members = ["."]
+resolver = "2"
+
+[package]
+name = "wallet-tests"
+description = "Wallet-to-validator integration tests exercising zingolib lightclients against Zaino."
+version = "0.2.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+# Zaino test harness (zingolib-free) + packages
+zaino-testutils = { path = "../zaino-testutils" }
+zaino-state = { path = "../../packages/zaino-state", features = ["test_dependencies"] }
+zaino-common = { path = "../../packages/zaino-common" }
+zaino-fetch = { path = "../../packages/zaino-fetch" }
+zaino-proto = { path = "../../packages/zaino-proto" }
+zainod = { path = "../../packages/zainod" }
+
+# Zingo wallet stack (0.14-compatible revs; this workspace owns its own lock)
+zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "61418d6ecbc679a88da8268a2be5db3926501fc6", features = [
+    "testutils",
+] }
+zingolib_testutils = { git = "https://github.com/zingolabs/zingolib.git", rev = "61418d6ecbc679a88da8268a2be5db3926501fc6" }
+zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", tag = "zcash_local_net_v0.6.0" }
+zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", tag = "zcash_local_net_v0.6.0" }
+
+# Zebra
+zebra-chain = "9.0.0"
+zebra-rpc = "9.0.0"
+zebra-state = "8.0.0"
+
+# Runtime / misc
+tokio = { version = "1.38", features = ["full"] }
+tempfile = "3.2"
+zip32 = "0.2.1"
+# Versions must match zingolib's resolved copies so quick_send's
+# `NonEmpty<TxId>` return type unifies (single versions in Cargo.lock).
+nonempty = "0.11"
+zcash_primitives = "0.28"
+futures = "0.3.30"
+hex = "0.4"
+corez = "0.1"
+tower = { version = "0.4", features = ["buffer", "util"] }
+serde_json = "1.0"
+
+[profile.test]
+opt-level = 3
+debug = true
