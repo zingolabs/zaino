@@ -14,6 +14,12 @@ and this crate adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.4.1] - 2026-06-18
+
+### Changed
+- Bump zaino-proto dependency from 0.1.2 to 0.1.3 (crates.io publish fix;
+  no code changes).
+
 ## [0.4.0] - 2026-06-17
 
 ### Added
