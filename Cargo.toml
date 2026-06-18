@@ -126,7 +126,7 @@ tempfile = "3.2"
 zainod = { path = "packages/zainod" }
 zaino-common = { path = "packages/zaino-common", version = "0.2.0" }
 zaino-fetch = { path = "packages/zaino-fetch", version = "0.2.0" }
-zaino-proto = { path = "packages/zaino-proto", version = "0.1.2" }
+zaino-proto = { path = "packages/zaino-proto", version = "0.1.3" }
 zaino-state = { path = "packages/zaino-state", version = "0.3.0" }
 zaino-serve = { path = "packages/zaino-serve", version = "0.3.0" }
 wire_serialized_transaction_test_data = "1.0.0"
