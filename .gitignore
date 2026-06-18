@@ -1,8 +1,13 @@
 /target
+# Cargo build output in every (sub-)workspace, including nested ones such as
+# integration-tests/wallet-tests/target — the anchored rules below only match
+# specific paths and miss new sub-workspaces.
+target/
 /db
 /docs/cargo_docs/debug
 /.helix
 /integration-tests/Cargo.lock
+/integration-tests/wallet-tests/Cargo.lock
 /integration-tests/chain_cache/*
 /integration-tests/test_binaries/bins/*
 /integration-tests/target/*
@@ -12,3 +17,4 @@
 .local/
 .failed-tests
 **/proptest-regressions/**
+/result

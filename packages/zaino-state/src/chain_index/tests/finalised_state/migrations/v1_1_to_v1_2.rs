@@ -10,18 +10,19 @@ use crate::chain_index::finalised_state::capability::{
     BlockCoreExt as _, BlockTransparentExt as _, CapabilityRequest, DbRead as _, DbVersion,
     MigrationStatus, TransparentHistExt as _,
 };
-use crate::chain_index::finalised_state::db::v1::{
+use crate::chain_index::finalised_state::entry::StoredEntryFixed;
+use crate::chain_index::finalised_state::finalised_source::v1::{
     DB_SCHEMA_V1_HASH, TX_OUT_SET_INFO_ACCUMULATOR_KEY,
 };
-use crate::chain_index::finalised_state::db::DbBackend;
-use crate::chain_index::finalised_state::entry::StoredEntryFixed;
-use crate::chain_index::finalised_state::ZainoDB;
+use crate::chain_index::finalised_state::finalised_source::FinalisedSource;
+use crate::chain_index::finalised_state::FinalisedState;
+use crate::chain_index::source::mockchain_source::MockchainSource;
 use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{
     build_active_mockchain_source, load_test_vectors, TestVectorData,
 };
 use crate::chain_index::types::db::metadata::FinalisedTxOutSetInfoAccumulator;
-use crate::{BlockCacheConfig, Height, Outpoint, TxLocation, ZainoVersionedSerde as _};
+use crate::{ChainIndexConfig, Height, Outpoint, TxLocation, ZainoVersionedSerde as _};
 
 const MIGRATION_SPENT_PROGRESS_KEY: &[u8] = b"_migration_spent_progress_1_2_0_next_height";
 
@@ -41,7 +42,7 @@ fn v1_2_0() -> DbVersion {
     }
 }
 
-async fn assert_v1_2_migration_complete(zaino_database: &ZainoDB) {
+async fn assert_v1_2_migration_complete(zaino_database: &FinalisedState<MockchainSource>) {
     let metadata = zaino_database.get_metadata().await.unwrap();
 
     assert_eq!(metadata.version, v1_2_0());
@@ -60,7 +61,9 @@ async fn assert_v1_2_migration_complete(zaino_database: &ZainoDB) {
 /// Verifies the `txid_location` reverse index round-trips: every transaction's location resolves to
 /// its txid (via `get_txid`), and that txid resolves back to the same location (via
 /// `get_tx_location`, which reads the `txid_location` table).
-async fn assert_txid_location_index_matches_block_data(database_backend: &DbBackend) {
+async fn assert_txid_location_index_matches_block_data(
+    database_backend: &FinalisedSource<MockchainSource>,
+) {
     let database_height = database_backend.db_height().await.unwrap().unwrap();
 
     for height_raw in 0..=database_height.0 {
@@ -87,8 +90,8 @@ async fn assert_txid_location_index_matches_block_data(database_backend: &DbBack
 
 /// Empties the `txid_location` table, simulating a 0.4.0-alpha.1 cache that finished the old
 /// migration without ever building the reverse index.
-fn clear_txid_location_index(database_backend: &DbBackend) {
-    let environment = database_backend.env();
+fn clear_txid_location_index(database_backend: &FinalisedSource<MockchainSource>) {
+    let environment = database_backend.env().expect("v1 finalised-source env");
     let txid_location_database = database_backend.txid_location_db().unwrap();
 
     let keys: Vec<Vec<u8>> = {
@@ -114,10 +117,10 @@ fn clear_txid_location_index(database_backend: &DbBackend) {
 }
 
 async fn simulate_interrupted_v1_1_to_v1_2_spent_index_migration(
-    database_backend: &DbBackend,
+    database_backend: &FinalisedSource<MockchainSource>,
     resume_height: Height,
 ) {
-    let environment = database_backend.env();
+    let environment = database_backend.env().unwrap();
     let metadata_database = database_backend.metadata_db().unwrap();
     let spent_database = database_backend.spent_db().unwrap();
     let tx_out_set_info_accumulator_database =
@@ -218,8 +221,10 @@ async fn simulate_interrupted_v1_1_to_v1_2_spent_index_migration(
     environment.sync(true).unwrap();
 }
 
-async fn assert_spent_index_matches_transparent_data(database_backend: &DbBackend) {
-    let environment = database_backend.env();
+async fn assert_spent_index_matches_transparent_data(
+    database_backend: &FinalisedSource<MockchainSource>,
+) {
+    let environment = database_backend.env().unwrap();
     let spent_database = database_backend.spent_db().unwrap();
 
     let database_height = database_backend.db_height().await.unwrap().unwrap();
@@ -286,10 +291,10 @@ async fn assert_spent_index_matches_transparent_data(database_backend: &DbBacken
 }
 
 async fn expected_tx_out_set_info_accumulator(
-    database_backend: &DbBackend,
+    database_backend: &FinalisedSource<MockchainSource>,
     max_height: Height,
 ) -> FinalisedTxOutSetInfoAccumulator {
-    let environment = database_backend.env();
+    let environment = database_backend.env().unwrap();
     let spent_database = database_backend.spent_db().unwrap();
 
     let mut expected_accumulator = FinalisedTxOutSetInfoAccumulator::empty();
@@ -377,7 +382,9 @@ async fn expected_tx_out_set_info_accumulator(
     expected_accumulator
 }
 
-async fn assert_tx_out_set_info_accumulator_matches_transparent_data(database_backend: &DbBackend) {
+async fn assert_tx_out_set_info_accumulator_matches_transparent_data(
+    database_backend: &FinalisedSource<MockchainSource>,
+) {
     let database_height = database_backend.db_height().await.unwrap().unwrap();
 
     let expected_accumulator =
@@ -405,7 +412,7 @@ async fn v1_1_to_v1_2_spent_index_backfill_from_old_version() {
     let temporary_directory: TempDir = tempfile::tempdir().unwrap();
     let database_path: PathBuf = temporary_directory.path().to_path_buf();
 
-    let database_config = BlockCacheConfig {
+    let database_config = ChainIndexConfig {
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: database_path,
@@ -413,6 +420,7 @@ async fn v1_1_to_v1_2_spent_index_backfill_from_old_version() {
             },
             ..Default::default()
         },
+        ephemeral: false,
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
     };
@@ -420,11 +428,11 @@ async fn v1_1_to_v1_2_spent_index_backfill_from_old_version() {
     let source = build_active_mockchain_source(initial_active_height.0, blocks.clone());
 
     let old_database =
-        ZainoDB::build_db_to_version(database_config.clone(), source.clone(), v1_1_0())
+        FinalisedState::build_db_to_version(database_config.clone(), source.clone(), v1_1_0())
             .await
             .unwrap();
 
-    old_database.wait_until_ready().await;
+    old_database.wait_until_synced().await;
 
     let old_metadata = old_database.get_metadata().await.unwrap();
     assert_eq!(old_metadata.version, v1_1_0());
@@ -437,12 +445,15 @@ async fn v1_1_to_v1_2_spent_index_backfill_from_old_version() {
     old_database.shutdown().await.unwrap();
     drop(old_database);
 
-    let migrated_database =
-        ZainoDB::spawn_with_target_version(database_config.clone(), source.clone(), v1_2_0())
-            .await
-            .unwrap();
+    let migrated_database = FinalisedState::spawn_with_target_version(
+        database_config.clone(),
+        source.clone(),
+        v1_2_0(),
+    )
+    .await
+    .unwrap();
 
-    migrated_database.wait_until_ready().await;
+    migrated_database.wait_until_synced().await;
 
     assert_v1_2_migration_complete(&migrated_database).await;
 
@@ -473,7 +484,7 @@ async fn v1_1_to_v1_2_spent_index_migration_resumes_after_crash() {
     let temporary_directory: TempDir = tempfile::tempdir().unwrap();
     let database_path: PathBuf = temporary_directory.path().to_path_buf();
 
-    let database_config = BlockCacheConfig {
+    let database_config = ChainIndexConfig {
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: database_path,
@@ -481,6 +492,7 @@ async fn v1_1_to_v1_2_spent_index_migration_resumes_after_crash() {
             },
             ..Default::default()
         },
+        ephemeral: false,
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
     };
@@ -488,11 +500,11 @@ async fn v1_1_to_v1_2_spent_index_migration_resumes_after_crash() {
     let source = build_active_mockchain_source(initial_active_height.0, blocks.clone());
 
     let old_database =
-        ZainoDB::build_db_to_version(database_config.clone(), source.clone(), v1_1_0())
+        FinalisedState::build_db_to_version(database_config.clone(), source.clone(), v1_1_0())
             .await
             .unwrap();
 
-    old_database.wait_until_ready().await;
+    old_database.wait_until_synced().await;
 
     let old_metadata = old_database.get_metadata().await.unwrap();
     assert_eq!(old_metadata.version, v1_1_0());
@@ -502,12 +514,15 @@ async fn v1_1_to_v1_2_spent_index_migration_resumes_after_crash() {
     old_database.shutdown().await.unwrap();
     drop(old_database);
 
-    let complete_migration_database =
-        ZainoDB::spawn_with_target_version(database_config.clone(), source.clone(), v1_2_0())
-            .await
-            .unwrap();
+    let complete_migration_database = FinalisedState::spawn_with_target_version(
+        database_config.clone(),
+        source.clone(),
+        v1_2_0(),
+    )
+    .await
+    .unwrap();
 
-    complete_migration_database.wait_until_ready().await;
+    complete_migration_database.wait_until_synced().await;
 
     assert_v1_2_migration_complete(&complete_migration_database).await;
 
@@ -527,12 +542,15 @@ async fn v1_1_to_v1_2_spent_index_migration_resumes_after_crash() {
     complete_migration_database.shutdown().await.unwrap();
     drop(complete_migration_database);
 
-    let resumed_database =
-        ZainoDB::spawn_with_target_version(database_config.clone(), source.clone(), v1_2_0())
-            .await
-            .unwrap();
+    let resumed_database = FinalisedState::spawn_with_target_version(
+        database_config.clone(),
+        source.clone(),
+        v1_2_0(),
+    )
+    .await
+    .unwrap();
 
-    resumed_database.wait_until_ready().await;
+    resumed_database.wait_until_synced().await;
 
     assert_v1_2_migration_complete(&resumed_database).await;
 
@@ -565,7 +583,7 @@ async fn v1_2_0_cache_missing_txid_location_index_is_rebuilt() {
     let temporary_directory: TempDir = tempfile::tempdir().unwrap();
     let database_path: PathBuf = temporary_directory.path().to_path_buf();
 
-    let database_config = BlockCacheConfig {
+    let database_config = ChainIndexConfig {
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: database_path,
@@ -573,6 +591,7 @@ async fn v1_2_0_cache_missing_txid_location_index_is_rebuilt() {
             },
             ..Default::default()
         },
+        ephemeral: false,
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
     };
@@ -581,18 +600,21 @@ async fn v1_2_0_cache_missing_txid_location_index_is_rebuilt() {
 
     // Build a healthy, fully-migrated v1.2.0 cache.
     let old_database =
-        ZainoDB::build_db_to_version(database_config.clone(), source.clone(), v1_1_0())
+        FinalisedState::build_db_to_version(database_config.clone(), source.clone(), v1_1_0())
             .await
             .unwrap();
-    old_database.wait_until_ready().await;
+    old_database.wait_until_synced().await;
     old_database.shutdown().await.unwrap();
     drop(old_database);
 
-    let migrated_database =
-        ZainoDB::spawn_with_target_version(database_config.clone(), source.clone(), v1_2_0())
-            .await
-            .unwrap();
-    migrated_database.wait_until_ready().await;
+    let migrated_database = FinalisedState::spawn_with_target_version(
+        database_config.clone(),
+        source.clone(),
+        v1_2_0(),
+    )
+    .await
+    .unwrap();
+    migrated_database.wait_until_synced().await;
     assert_v1_2_migration_complete(&migrated_database).await;
 
     // Simulate the alpha cache: drop the reverse index but leave the recorded version at v1.2.0.
@@ -607,11 +629,14 @@ async fn v1_2_0_cache_missing_txid_location_index_is_rebuilt() {
     drop(migrated_database);
 
     // Re-open: reconciliation must roll the version back and the migration must rebuild the index.
-    let healed_database =
-        ZainoDB::spawn_with_target_version(database_config.clone(), source.clone(), v1_2_0())
-            .await
-            .unwrap();
-    healed_database.wait_until_ready().await;
+    let healed_database = FinalisedState::spawn_with_target_version(
+        database_config.clone(),
+        source.clone(),
+        v1_2_0(),
+    )
+    .await
+    .unwrap();
+    healed_database.wait_until_synced().await;
 
     assert_v1_2_migration_complete(&healed_database).await;
 

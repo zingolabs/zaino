@@ -342,3 +342,55 @@ Bug Fixes / Optimisations
 --------------------------------------------------------------------------------
 (append new entries below)
 --------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+DB VERSION v1.2.1 (from v1.2.0)
+Date: 2026-06-10
+--------------------------------------------------------------------------------
+
+Summary
+- Metadata-only version marker for the optional ("ephemeral") finalised state and
+  background (non-blocking) finalised-state sync / migration behaviour.
+- No on-disk layout, table, encoding, checksum, or schema-hash change: persisted
+  v1.2.1 databases are byte-for-byte compatible with v1.2.0.
+
+On-disk schema
+- Layout:
+  - No changes.
+- Tables:
+  - Added: None.
+  - Removed: None.
+  - Renamed: None.
+- Encoding:
+  - Keys: No changes.
+  - Values: No changes.
+  - Checksums / validation: No changes (`DB_SCHEMA_V1_HASH` unchanged).
+- Invariants:
+  - No changes.
+
+API / capabilities
+- Capability changes:
+  - Added: None.
+  - Removed: None.
+  - Changed: None.
+- Public surface changes:
+  - The finalised-state backing enum was renamed `DbBackend` -> `FinalisedSource`
+    (variant `Stateless` -> `Ephemeral`) and its module `db` -> `finalised_source`,
+    reflecting that the backing is not necessarily a database (it may be an
+    ephemeral passthrough). The facade type `ZainoDB` was renamed `FinalisedState`.
+    These are internal (`pub(crate)`) renames with no external API impact.
+  - Added: `FinalisedState::wait_until_synced` (waits for background sync/migration
+    to reach its target, distinct from `wait_until_ready`'s serving-readiness).
+
+Migration
+- Strategy: metadata-only (default `Migration` trait implementation), run against
+  the routed primary. No shadow database, no table rebuild.
+- Backfill: None.
+- Completion criteria: `DbMetadata.version` is advanced to v1.2.1 and
+  `migration_status` is reset to `Empty`; the schema checksum is re-stamped unchanged.
+- Failure handling: idempotent; safe to re-run.
+
+Bug Fixes / Optimisations
+- Finalised-state sync and migration no longer block serving: large syncs and
+  version migrations run in the background while an ephemeral passthrough serves
+  finalised reads from the backing source.

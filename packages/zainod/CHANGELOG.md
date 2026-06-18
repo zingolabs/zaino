@@ -22,6 +22,10 @@ and this crate adheres to Rust's notion of
   loopback bind addresses by default; this feature lifts that restriction for
   deployments on trusted private networks where encryption is handled
   externally. It logs a `WARN` on startup when enabled.
+- New `ephemeral_finalised_state` config option (default `false`). When `true`,
+  Zaino runs without a persistent finalised-state database: finalised reads are
+  served directly from the backing validator via an ephemeral passthrough. Useful
+  for disk-constrained or disposable deployments.
 ### Changed
 ### Deprecated
 ### Removed

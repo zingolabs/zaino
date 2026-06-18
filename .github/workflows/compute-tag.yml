@@ -15,7 +15,7 @@ jobs:
       image-tag: ${{ steps.taggen.outputs.tag }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Compute version-based image tag
         id: taggen

@@ -16,7 +16,7 @@
 //!
 //! 3. **Never change structs without proper migration**
 //!    - Implement a new version when changes are needed
-//!    - Update ZainoDB and implement necessary migrations
+//!    - Update FinalisedState and implement necessary migrations
 
 pub mod address;
 pub mod block;

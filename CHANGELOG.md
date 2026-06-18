@@ -30,6 +30,10 @@ and this library adheres to Rust's notion of
 - `ChainIndex::get_tx_out_set_info` — combines the finalised
   `FinalisedTxOutSetInfoAccumulator` with the non-finalised state to produce
   the full `GetTxOutSetInfoResponse`.
+- Optional ("ephemeral") finalised state: `zainod` gains an
+  `ephemeral_finalised_state` config option (default `false`) that runs Zaino
+  without a persistent finalised-state database, serving finalised reads from
+  the backing validator via an ephemeral passthrough.
 ### Changed
 - Finalised-state sync and the v1.1.0 -> v1.2.0 migration are substantially
   faster on large/mainnet caches. The txout-set accumulator is built in bulk at
@@ -38,6 +42,13 @@ and this library adheres to Rust's notion of
   `txid_location` indexes are written in sorted batches — together removing the
   random-fault stall around sandblast height. See the `zaino-state` changelog for
   details; tune the write-batch size with `storage.database.sync_write_batch_bytes`.
+- Finalised-state sync and version migrations are now background, non-blocking
+  operations: large syncs and migrations run while an ephemeral passthrough
+  serves finalised reads, so startup and serving are no longer blocked on
+  persistence. Internally the finalised-state facade `ZainoDB` was renamed
+  `FinalisedState` and its backing `DbBackend`/`db` module became
+  `FinalisedSource`/`finalised_source` (now covering an ephemeral passthrough,
+  not only databases). Bumps the finalised DB version to v1.2.1 (metadata-only).
 - The `zainod` JSON-RPC server now refuses to bind to public or unspecified
   (`0.0.0.0` / `::`) addresses by default; `check_config` enforces the same
   private/loopback rule already applied to gRPC. The unencrypted JSON-RPC

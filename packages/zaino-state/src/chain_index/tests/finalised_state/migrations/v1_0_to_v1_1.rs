@@ -8,12 +8,12 @@ use zaino_common::{DatabaseConfig, Network, StorageConfig};
 use crate::chain_index::finalised_state::capability::{
     DbCore as _, DbRead as _, DbVersion, MigrationStatus,
 };
-use crate::chain_index::finalised_state::ZainoDB;
+use crate::chain_index::finalised_state::FinalisedState;
 use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{
     build_active_mockchain_source, load_test_vectors, TestVectorData,
 };
-use crate::{BlockCacheConfig, Height};
+use crate::{ChainIndexConfig, Height};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn v1_0_to_v1_1_metadata_migration() {
@@ -24,7 +24,7 @@ async fn v1_0_to_v1_1_metadata_migration() {
     let temp_dir: TempDir = tempfile::tempdir().unwrap();
     let db_path: PathBuf = temp_dir.path().to_path_buf();
 
-    let v1_config = BlockCacheConfig {
+    let v1_config = ChainIndexConfig {
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: db_path,
@@ -32,13 +32,14 @@ async fn v1_0_to_v1_1_metadata_migration() {
             },
             ..Default::default()
         },
+        ephemeral: false,
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
     };
 
     let source = build_active_mockchain_source(150, blocks.clone());
 
-    let zaino_db = ZainoDB::build_db_to_version(
+    let zaino_db = FinalisedState::build_db_to_version(
         v1_config,
         source,
         DbVersion {
@@ -65,7 +66,7 @@ async fn v1_0_to_v1_1_metadata_migration() {
     assert_eq!(metadata.migration_status, MigrationStatus::Empty);
     assert_eq!(
         metadata.schema_hash,
-        crate::chain_index::finalised_state::db::v1::DB_SCHEMA_V1_HASH
+        crate::chain_index::finalised_state::finalised_source::v1::DB_SCHEMA_V1_HASH
     );
 
     let db_height = zaino_db.db_height().await.unwrap().unwrap();
@@ -85,7 +86,7 @@ async fn v1_0_to_v1_1_mixed_blockheaderdata_formats() {
     let temp_dir: TempDir = tempfile::tempdir().unwrap();
     let db_path: PathBuf = temp_dir.path().to_path_buf();
 
-    let v1_config = BlockCacheConfig {
+    let v1_config = ChainIndexConfig {
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: db_path,
@@ -93,13 +94,14 @@ async fn v1_0_to_v1_1_mixed_blockheaderdata_formats() {
             },
             ..Default::default()
         },
+        ephemeral: false,
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
     };
 
     let source = build_active_mockchain_source(initial_active_height.0, blocks.clone());
 
-    let old_db = ZainoDB::build_clean_v1_0_0(&v1_config, source.clone())
+    let old_db = FinalisedState::build_clean_v1_0_0(&v1_config, source.clone())
         .await
         .unwrap();
 
@@ -136,9 +138,13 @@ async fn v1_0_to_v1_1_mixed_blockheaderdata_formats() {
         "mock chain source must advance beyond the old v1.0.0 database height"
     );
 
-    let zaino_db = std::sync::Arc::new(ZainoDB::spawn(v1_config, source.clone()).await.unwrap());
+    let zaino_db = std::sync::Arc::new(
+        FinalisedState::spawn(v1_config, source.clone())
+            .await
+            .unwrap(),
+    );
 
-    zaino_db.wait_until_ready().await;
+    zaino_db.wait_until_synced().await;
 
     let migrated_db_height = zaino_db.db_height().await.unwrap().unwrap();
     assert_eq!(
@@ -151,7 +157,7 @@ async fn v1_0_to_v1_1_mixed_blockheaderdata_formats() {
         .await
         .unwrap();
 
-    zaino_db.wait_until_ready().await;
+    zaino_db.wait_until_synced().await;
 
     let synced_db_height = zaino_db.db_height().await.unwrap().unwrap();
     assert_eq!(synced_db_height, target_height);

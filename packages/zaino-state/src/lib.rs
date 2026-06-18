@@ -57,14 +57,14 @@ pub mod test_dependencies {
         pub use crate::chain_index::*;
     }
 
-    pub use crate::BlockCacheConfig;
+    pub use crate::ChainIndexConfig;
 }
 
 pub(crate) mod config;
 
 #[allow(deprecated)]
 pub use config::{
-    BackendConfig, BackendType, BlockCacheConfig, CommonBackendConfig, DonationAddress,
+    BackendConfig, BackendType, ChainIndexConfig, CommonBackendConfig, DonationAddress,
     FetchServiceConfig, StateServiceConfig,
 };
 
