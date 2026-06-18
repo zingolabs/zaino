@@ -7,6 +7,10 @@ and this library adheres to Rust's notion of
 
 ## Unreleased
 
+## [0.4.1] - 2026-06-18
+- Bump zaino-proto 0.1.2 → 0.1.3 and zainod 0.4.0 → 0.4.1 to work around
+  a yanked 0.1.2 slot on crates.io. No code changes.
+
 ## [0.4.0] - 2026-06-17
 - NU6.2 network upgrade is now supported: activation-height configuration
   (`zaino-common`) and Zebra RPC response parsing (`zaino-fetch`) recognise
