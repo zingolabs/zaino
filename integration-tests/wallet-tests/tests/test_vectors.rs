@@ -42,7 +42,11 @@ macro_rules! expected_read_response {
 #[ignore = "Not a test! Used to build test vector data for zaino_state::chain_index unit tests."]
 #[allow(deprecated)]
 async fn create_200_block_regtest_chain_vectors() {
-    let mut test_manager = TestManager::<Zebrad, StateService>::launch(
+    // The committed unit-test vectors encode a mixed-pool chain built by
+    // repeatedly shielding transparent coinbase — mining must stay transparent
+    // so regenerated vectors keep that shape.
+    let mut test_manager = TestManager::<Zebrad, StateService>::launch_mining_to(
+        zaino_testutils::PoolType::Transparent,
         &ValidatorKind::Zebrad,
         None,
         None,
@@ -56,13 +60,7 @@ async fn create_200_block_regtest_chain_vectors() {
 
     let state_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
-    let mut clients = wallet_tests::build_clients(
-        test_manager
-            .zaino_grpc_listen_address
-            .expect("zaino enabled")
-            .port(),
-        wallet_tests::default_heights(&ValidatorKind::Zebrad),
-    );
+    let mut clients = wallet_tests::build_clients_for(&test_manager, &ValidatorKind::Zebrad);
 
     let faucet_taddr = clients.get_faucet_address("transparent").await;
     let faucet_saddr = clients.get_faucet_address("sapling").await;
@@ -74,12 +72,13 @@ async fn create_200_block_regtest_chain_vectors() {
 
     // *** Mine 100 blocks to finalise first block reward, shield it, and mine
     // the shield in ***
-    wallet_tests::fund_faucet_dual(
+    clients.sync_faucet().await;
+    wallet_tests::shield_faucet_rounds(
         &test_manager,
         &mut clients,
-        &ValidatorKind::Zebrad,
         &state_service_subscriber,
         &state_service_subscriber,
+        &[100],
         1,
     )
     .await;

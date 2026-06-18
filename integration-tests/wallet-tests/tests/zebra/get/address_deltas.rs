@@ -59,13 +59,17 @@ async fn setup_chain<V: ValidatorExt>(
     let recipient_taddr = clients.get_recipient_address("transparent").await;
     let faucet_taddr = clients.get_faucet_address("transparent").await;
 
-    // Generate blocks and perform transaction
-    wallet_tests::fund_faucet_dual(
+    // Mature the faucet's transparent coinbase and shield it (block 101): the
+    // shield's debit on the faucet taddr is part of the deltas under test, so
+    // the legacy ritual stays even though funding-only tests now mine straight
+    // to a shielded pool.
+    clients.sync_faucet().await;
+    wallet_tests::shield_faucet_rounds(
         test_manager,
         clients,
-        &ValidatorKind::Zebrad,
         &state_service_subscriber,
         &state_service_subscriber,
+        &[100],
         1,
     )
     .await;
@@ -230,42 +234,44 @@ async fn test_non_existent_address(subscriber: &StateServiceSubscriber) {
 
 #[allow(deprecated)]
 pub(super) async fn main() {
-    let (
-        mut test_manager,
-        _fetch_service,
-        _fetch_service_subscriber,
-        _state_service,
-        state_service_subscriber,
-        mut clients,
-    ) = super::create_test_manager_and_services::<Zebrad>(&ValidatorKind::Zebrad, None, true, None)
-        .await;
+    let (mut services, mut clients) = super::create_test_manager_and_services_mining_to::<Zebrad>(
+        // The deltas under test are the faucet taddr's coinbase credits and
+        // the shield's debit — coinbase must land on the miner taddr.
+        zaino_testutils::PoolType::Transparent,
+        &ValidatorKind::Zebrad,
+        None,
+        true,
+        None,
+    )
+    .await;
 
-    let (recipient_taddr, faucet_taddr) = setup_chain(&mut test_manager, &mut clients).await;
+    let (recipient_taddr, faucet_taddr) =
+        setup_chain(&mut services.test_manager, &mut clients).await;
 
     // ============================================================
     // Test 1: Simple address query (single address, no filters)
     // ============================================================
-    test_simple_query(&state_service_subscriber, &recipient_taddr).await;
+    test_simple_query(&services.state_subscriber, &recipient_taddr).await;
 
     // ============================================================
     // Test 2: Filtered query with start=0 (should return Simple variant)
     // ============================================================
-    test_filtered_start_zero(&state_service_subscriber, &recipient_taddr, &faucet_taddr).await;
+    test_filtered_start_zero(&services.state_subscriber, &recipient_taddr, &faucet_taddr).await;
 
     // ============================================================
     // Test 3: Filtered query with start>0 and chain_info=true
     // ============================================================
-    test_with_chaininfo(&state_service_subscriber, &recipient_taddr, &faucet_taddr).await;
+    test_with_chaininfo(&services.state_subscriber, &recipient_taddr, &faucet_taddr).await;
 
     // ============================================================
     // Test 4: Height clamping (end beyond chain tip)
     // ============================================================
-    test_height_clamping(&state_service_subscriber, &recipient_taddr, &faucet_taddr).await;
+    test_height_clamping(&services.state_subscriber, &recipient_taddr, &faucet_taddr).await;
 
     // ============================================================
     // Test 5: Non-existent address (should return empty deltas)
     // ============================================================
-    test_non_existent_address(&state_service_subscriber).await;
+    test_non_existent_address(&services.state_subscriber).await;
 
-    test_manager.close().await;
+    services.test_manager.close().await;
 }

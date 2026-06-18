@@ -4,14 +4,14 @@ use futures::StreamExt as _;
 use hex::ToHex as _;
 use nonempty::NonEmpty;
 use zaino_proto::proto::service::{
-    AddressList, BlockId, BlockRange, GetAddressUtxosArg, GetMempoolTxRequest, PoolType,
+    AddressList, BlockId, BlockRange, GetAddressUtxosArg, GetMempoolTxRequest,
     TransparentAddressBlockFilter, TxFilter,
 };
 use zaino_state::ChainIndex;
 use zaino_state::FetchServiceSubscriber;
 #[allow(deprecated)]
 use zaino_state::{FetchService, LightWalletIndexer, ZcashIndexer};
-use zaino_testutils::{TestManager, ValidatorExt, ValidatorKind};
+use zaino_testutils::{PollableTip, TestManager, ValidatorExt, ValidatorKind};
 use zcash_primitives::transaction::TxId;
 use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
 use zebra_rpc::methods::{GetAddressBalanceRequest, GetAddressTxIdsRequest};
@@ -26,56 +26,14 @@ async fn create_test_manager_and_fetch_service<V: ValidatorExt>(
     wallet_tests::Clients,
 ) {
     let (test_manager, fetch_service_subscriber) =
-        zaino_testutils::launch_with_fetch_subscriber(validator, chain_cache).await;
-    let clients = wallet_tests::build_clients(
-        test_manager
-            .zaino_grpc_listen_address
-            .expect("zaino enabled")
-            .port(),
-        wallet_tests::default_heights(validator),
-    );
-    (test_manager, fetch_service_subscriber, clients)
-}
-
-/// Sync the faucet; on zebrad, run `shield_rounds` rounds of "mature 100
-/// coinbase blocks, sync, shield" (zebrad can't mine directly to orchard in
-/// this setup), then mine one more block and sync so the shielded funds are
-/// spendable. `shield_rounds` of 1 funds a single send; 2 funds two.
-#[allow(deprecated)]
-async fn fund_faucet<V: ValidatorExt>(
-    test_manager: &TestManager<V, FetchService>,
-    clients: &mut wallet_tests::Clients,
-    validator: &ValidatorKind,
-    fetch_service_subscriber: &FetchServiceSubscriber,
-    shield_rounds: u32,
-) {
-    wallet_tests::fund_faucet_dual(
-        test_manager,
-        clients,
-        validator,
-        fetch_service_subscriber,
-        fetch_service_subscriber,
-        shield_rounds,
-    )
-    .await;
-}
-
-/// Send `amount` from the faucet to `address`, mine a block, and return the
-/// transaction id(s). The standard "send one, mine one" step the mined tests
-/// share; callers that don't need the txid just discard the return.
-#[allow(deprecated)]
-async fn send_and_mine<V: ValidatorExt>(
-    test_manager: &TestManager<V, FetchService>,
-    clients: &mut wallet_tests::Clients,
-    fetch_service_subscriber: &FetchServiceSubscriber,
-    address: &str,
-    amount: u64,
-) -> NonEmpty<TxId> {
-    let tx = clients.send_from_faucet(address, amount).await;
-    test_manager
-        .generate_blocks_and_wait_for_tip(1, fetch_service_subscriber)
+        zaino_testutils::launch_with_fetch_subscriber_mining_to(
+            zaino_testutils::SHIELDED_FUNDING_POOL,
+            validator,
+            chain_cache,
+        )
         .await;
-    tx
+    let clients = wallet_tests::build_clients_for(&test_manager, validator);
+    (test_manager, fetch_service_subscriber, clients)
 }
 
 /// Launch, fund the faucet, and send 250_000 to the recipient's transparent,
@@ -96,50 +54,14 @@ async fn block_range_fixture<V: ValidatorExt>(
     let (test_manager, fetch_service_subscriber, mut clients) =
         create_test_manager_and_fetch_service::<V>(validator, None).await;
 
-    clients.sync_faucet().await;
-
-    if matches!(validator, ValidatorKind::Zebrad) {
-        // Mature one coinbase batch, then spread three shields over
-        // consecutive blocks.
-        wallet_tests::shield_faucet_rounds(
-            &test_manager,
-            &mut clients,
-            &fetch_service_subscriber,
-            &fetch_service_subscriber,
-            &[100, 1, 1],
-            1,
-        )
-        .await;
-    } else {
-        // zcashd
-        wallet_tests::mine_and_sync_faucet(
-            &test_manager,
-            &mut clients,
-            &fetch_service_subscriber,
-            &fetch_service_subscriber,
-            14,
-        )
-        .await;
-    }
-
-    let recipient_transparent = clients.get_recipient_address("transparent").await;
-    let deshielding_txid = clients
-        .send_from_faucet(&recipient_transparent, 250_000)
-        .await
-        .head;
-
-    let recipient_sapling = clients.get_recipient_address("sapling").await;
-    let sapling_txid = clients
-        .send_from_faucet(&recipient_sapling, 250_000)
-        .await
-        .head;
-
-    let recipient_ua = clients.get_recipient_address("unified").await;
-    let orchard_txid = clients.send_from_faucet(&recipient_ua, 250_000).await.head;
-
-    test_manager
-        .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
-        .await;
+    let (deshielding_txid, sapling_txid, orchard_txid) = wallet_tests::fund_and_send_to_all_pools(
+        &test_manager,
+        &mut clients,
+        validator,
+        &fetch_service_subscriber,
+        &fetch_service_subscriber,
+    )
+    .await;
 
     (
         test_manager,
@@ -171,10 +93,11 @@ async fn fund_and_fill_mempool<V: ValidatorExt>(
     test_manager
         .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
         .await;
-    fund_faucet(
+    wallet_tests::fund_faucet_dual(
         &test_manager,
         &mut clients,
         validator,
+        &fetch_service_subscriber,
         &fetch_service_subscriber,
         2,
     )
@@ -197,7 +120,7 @@ async fn fund_and_fill_mempool<V: ValidatorExt>(
     )
 }
 
-/// Launch, fund the faucet (one shield round), and send 250_000 to the
+/// Launch, fund the faucet (one coinbase batch), and send 250_000 to the
 /// recipient's `pool` address, mining it in. Returns the manager, subscriber,
 /// clients, and the send txid — the shared setup for the mined query tests.
 #[allow(deprecated)]
@@ -212,23 +135,17 @@ async fn fund_and_send<V: ValidatorExt>(
 ) {
     let (test_manager, fetch_service_subscriber, mut clients) =
         create_test_manager_and_fetch_service::<V>(validator, None).await;
-    fund_faucet(
+    let (_recipient_taddr, _recipient_ua, txid) = wallet_tests::fund_and_send_dual(
         &test_manager,
         &mut clients,
         validator,
         &fetch_service_subscriber,
-        1,
-    )
-    .await;
-    let recipient = clients.get_recipient_address(pool.address_kind()).await;
-    let tx = send_and_mine(
-        &test_manager,
-        &mut clients,
         &fetch_service_subscriber,
-        &recipient,
-        250_000,
+        1,
+        Some(pool),
     )
     .await;
+    let tx = txid.expect("fund_and_send_dual sends a tx when given Some(pool)");
     (test_manager, fetch_service_subscriber, clients, tx)
 }
 
@@ -427,26 +344,15 @@ async fn fetch_service_get_block_range_returns_all_pools<V: ValidatorExt>(
         orchard_txid,
     ) = block_range_fixture::<V>(validator).await;
 
-    let start_height: u64 = if matches!(validator, ValidatorKind::Zebrad) {
-        100
-    } else {
-        1
-    };
-    let end_height: u64 = if matches!(validator, ValidatorKind::Zebrad) {
-        106
-    } else {
-        17
-    };
+    let start_height: u64 = 1;
+    // The fixture's sends land in the block it mines last — the chain tip.
+    let end_height: u64 = fetch_service_subscriber.tip_height().await;
 
     let fetch_service_get_block_range = zaino_testutils::collect_block_range(
         &fetch_service_subscriber,
         start_height,
         end_height,
-        vec![
-            PoolType::Transparent as i32,
-            PoolType::Sapling as i32,
-            PoolType::Orchard as i32,
-        ],
+        zaino_testutils::all_pools_i32(),
     )
     .await;
 
@@ -482,16 +388,9 @@ async fn fetch_service_get_block_range_no_pools_returns_sapling_orchard<V: Valid
         orchard_txid,
     ) = block_range_fixture::<V>(validator).await;
 
-    let start_height: u64 = if matches!(validator, ValidatorKind::Zebrad) {
-        100
-    } else {
-        10
-    };
-    let end_height: u64 = if matches!(validator, ValidatorKind::Zebrad) {
-        106
-    } else {
-        17
-    };
+    let start_height: u64 = 1;
+    // The fixture's sends land in the block it mines last — the chain tip.
+    let end_height: u64 = fetch_service_subscriber.tip_height().await;
 
     let fetch_service_get_block_range = zaino_testutils::collect_block_range(
         &fetch_service_subscriber,
@@ -505,12 +404,9 @@ async fn fetch_service_get_block_range_no_pools_returns_sapling_orchard<V: Valid
 
     assert_eq!(compact_block.height, end_height);
 
-    let expected_tx_count = if matches!(validator, ValidatorKind::Zebrad) {
-        3
-    } else {
-        4 // zcashd shields coinbase and tx count will be one more than zebra's
-    };
-    assert_eq!(compact_block.vtx.len(), expected_tx_count);
+    // Both validators mine shielded coinbase, so the pool-filtered block
+    // shows the 3 sends plus the coinbase tx.
+    assert_eq!(compact_block.vtx.len(), 4);
 
     // No pools requested: transparent data is omitted, sapling/orchard default in.
     wallet_tests::assert_pool_absent(
@@ -549,10 +445,11 @@ async fn fetch_service_get_transaction_mined<V: ValidatorExt>(validator: &Valida
 async fn fetch_service_get_transaction_mempool<V: ValidatorExt>(validator: &ValidatorKind) {
     let (mut test_manager, fetch_service_subscriber, mut clients) =
         create_test_manager_and_fetch_service::<V>(validator, None).await;
-    fund_faucet(
+    wallet_tests::fund_faucet_dual(
         &test_manager,
         &mut clients,
         validator,
+        &fetch_service_subscriber,
         &fetch_service_subscriber,
         1,
     )
@@ -599,11 +496,7 @@ async fn fetch_service_get_taddress_txids<V: ValidatorExt>(validator: &Validator
                 height: chain_height as u64,
                 hash: Vec::new(),
             }),
-            pool_types: vec![
-                PoolType::Transparent as i32,
-                PoolType::Sapling as i32,
-                PoolType::Orchard as i32,
-            ],
+            pool_types: zaino_testutils::all_pools_i32(),
         }),
     };
 
@@ -719,10 +612,11 @@ async fn fetch_service_get_mempool_stream<V: ValidatorExt>(validator: &Validator
     test_manager
         .generate_blocks_and_wait_for_tip(1, &fetch_service_subscriber)
         .await;
-    fund_faucet(
+    wallet_tests::fund_faucet_dual(
         &test_manager,
         &mut clients,
         validator,
+        &fetch_service_subscriber,
         &fetch_service_subscriber,
         2,
     )

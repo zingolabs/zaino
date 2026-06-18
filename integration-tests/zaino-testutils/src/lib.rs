@@ -36,7 +36,7 @@ pub use zcash_local_net as services;
 use zcash_local_net::validator::zebrad::{Zebrad, ZebradConfig};
 pub use zcash_local_net::validator::Validator;
 use zcash_local_net::validator::ValidatorConfig as _;
-use zcash_local_net::PoolType;
+pub use zcash_local_net::PoolType;
 use zcash_local_net::{
     error::LaunchError,
     validator::zcashd::{Zcashd, ZcashdConfig},
@@ -65,6 +65,24 @@ macro_rules! validator_tests {
             }
         )*
     };
+}
+
+/// All three value pools as the `i32`s a `get_block_range` request carries —
+/// the "request everything" pool filter.
+pub fn all_pools_i32() -> Vec<i32> {
+    use zaino_proto::proto::service::PoolType;
+    vec![
+        PoolType::Transparent as i32,
+        PoolType::Sapling as i32,
+        PoolType::Orchard as i32,
+    ]
+}
+
+/// The shielded pools as request `i32`s — what `get_block_range` defaults to
+/// when a request names no pools.
+pub fn shielded_pools_i32() -> Vec<i32> {
+    use zaino_proto::proto::service::PoolType;
+    vec![PoolType::Sapling as i32, PoolType::Orchard as i32]
 }
 
 /// Collect a `get_block_range` query over heights `[start, end]` for the given
@@ -436,6 +454,34 @@ impl ValidatorExt for Zcashd {
     }
 }
 
+/// The pool that sessions funding wallets from coinbase mine to. Shielded
+/// coinbase carries no 100-confirmation maturity rule (that rule covers only
+/// transparent coinbase outputs), so a test that needs shielded start funds
+/// mines one block per note it will spend instead of running the legacy
+/// "mature 100 transparent blocks, then shield" ritual.
+///
+/// Only sessions that profit from that trade opt in (wallet funding
+/// fixtures): a shielded miner address costs a halo2 proof per block
+/// template (~1–2 s/block), so sessions that fund nothing — or that mine
+/// many blocks for other reasons — stay on [`default_mining_pool`].
+///
+/// This constant is the single upgrade point for shielded funding: when the
+/// next shielded pool (ironwood) becomes minable, only this value changes.
+pub const SHIELDED_FUNDING_POOL: PoolType = PoolType::ORCHARD;
+
+/// The pool a validator mines to when the session doesn't opt into
+/// [`SHIELDED_FUNDING_POOL`]: transparent for zebrad (cheapest block
+/// templates — a shielded miner address would cost a halo2 proof per block),
+/// ORCHARD for zcashd (its historical setting; the cached launch reward
+/// funds wallets without extra mining).
+pub fn default_mining_pool(validator: &ValidatorKind) -> PoolType {
+    if validator == &ValidatorKind::Zebrad {
+        PoolType::Transparent
+    } else {
+        PoolType::ORCHARD
+    }
+}
+
 impl<C, Service> TestManager<C, Service>
 where
     C: ValidatorExt,
@@ -468,9 +514,44 @@ where
             .unwrap()
     }
 
-    /// Launches zcash-local-net<Empty, Validator>.
+    /// Launches zcash-local-net<Empty, Validator> mining to
+    /// [`default_mining_pool`] for the validator. See
+    /// [`Self::launch_mining_to`], which this delegates to, for the parameter
+    /// contract; sessions that fund wallets from coinbase pass
+    /// [`SHIELDED_FUNDING_POOL`] to that method instead, and tests asserting
+    /// on a specific pool's coinbase footprint pin that pool.
+    pub async fn launch(
+        validator: &ValidatorKind,
+        network: Option<NetworkKind>,
+        activation_heights: Option<ActivationHeights>,
+        chain_cache: Option<PathBuf>,
+        enable_zaino: bool,
+        enable_zaino_jsonrpc_server: bool,
+        enable_clients: bool,
+    ) -> Result<Self, std::io::Error> {
+        Self::launch_mining_to(
+            default_mining_pool(validator),
+            validator,
+            network,
+            activation_heights,
+            chain_cache,
+            enable_zaino,
+            enable_zaino_jsonrpc_server,
+            enable_clients,
+        )
+        .await
+    }
+
+    /// Launches zcash-local-net<Empty, Validator> with coinbase paid to
+    /// `mine_to_pool`'s regtest miner address.
     ///
     /// Possible validators: Zcashd, Zebrad.
+    ///
+    /// On zebrad a shielded `mine_to_pool` maps to a unified miner address
+    /// whose receivers zebra tries in order orchard → sapling → transparent
+    /// per block, so with the default regtest activation heights (NU5 at
+    /// height 2) block 1's coinbase lands in the sapling receiver and later
+    /// blocks in the orchard receiver.
     ///
     /// If chain_cache is given a path the chain will be loaded.
     ///
@@ -484,9 +565,10 @@ where
     #[instrument(
         name = "TestManager::launch",
         skip(activation_heights, chain_cache),
-        fields(validator = ?validator, network = ?network, enable_zaino, enable_clients)
+        fields(validator = ?validator, network = ?network, mine_to_pool = ?mine_to_pool, enable_zaino, enable_clients)
     )]
-    pub async fn launch(
+    pub async fn launch_mining_to(
+        mine_to_pool: PoolType,
         validator: &ValidatorKind,
         network: Option<NetworkKind>,
         activation_heights: Option<ActivationHeights>,
@@ -519,15 +601,7 @@ where
         // Launch LocalNet:
 
         let mut config = C::Config::default();
-        config.set_test_parameters(
-            if validator == &ValidatorKind::Zebrad {
-                PoolType::Transparent
-            } else {
-                PoolType::ORCHARD
-            },
-            activation_heights.into(),
-            chain_cache.clone(),
-        );
+        config.set_test_parameters(mine_to_pool, activation_heights.into(), chain_cache.clone());
 
         debug!("[TEST] Launching validator");
         let (local_net, validator_settings) = C::launch_validator_and_return_config(config)
@@ -757,6 +831,47 @@ where
         self.generate_blocks_and_wait_for_tip(0, then_synced).await;
     }
 
+    /// Generate `n` blocks in a single validator call, then wait once for
+    /// each pollable to catch up to the new tip. For large runs where no
+    /// test logic observes intermediate tips (coinbase maturation,
+    /// finalization depth): [`Self::generate_blocks_and_wait_for_tips`]
+    /// costs at least one indexer poll interval per block, this costs one
+    /// per run. The trade: the indexer ingests the run as a burst, and a
+    /// wedged indexer surfaces as a stalled tail wait rather than a
+    /// per-block liveness panic naming the missing height.
+    pub async fn generate_blocks_bulk_and_wait_for_tips<A: PollableTip, B: PollableTip>(
+        &self,
+        n: u32,
+        mined_against: &A,
+        then_synced: &B,
+    ) {
+        self.local_net
+            .generate_blocks(n)
+            .await
+            .expect("validator failed to generate blocks");
+        self.generate_blocks_and_wait_for_tips(0, mined_against, then_synced)
+            .await;
+    }
+
+    /// Mine `n` blocks one at a time and, after each block (once both
+    /// pollables observe the new tip), run `check(i)` with the iteration
+    /// index `i` in `0..n`. The shared loop shape of the "compare
+    /// subscribers after every block" tests; callers with a single
+    /// subscriber pass it as both `mined_against` and `then_synced`.
+    pub async fn generate_blocks_and_check_each<A: PollableTip, B: PollableTip>(
+        &self,
+        n: u32,
+        mined_against: &A,
+        then_synced: &B,
+        mut check: impl AsyncFnMut(u32),
+    ) {
+        for i in 0..n {
+            self.generate_blocks_and_wait_for_tips(1, mined_against, then_synced)
+                .await;
+            check(i).await;
+        }
+    }
+
     /// Build a JSON-RPC connector to the backing validator's RPC port, using
     /// the regtest test cookie credentials. For tests that compare Zaino's
     /// output against the validator's own JSON-RPC.
@@ -784,9 +899,38 @@ where
     }
 }
 
+/// Handles from [`launch_state_and_fetch_services`]: a state-backend
+/// [`TestManager`] plus standalone fetch and state services pointed at the
+/// same validator. The owned services exist only to keep their subscribers
+/// alive — tests interact through the manager and the subscribers.
+#[allow(deprecated)]
+pub struct StateAndFetchServices<V: Validator> {
+    /// The launched validator + Zaino test manager.
+    pub test_manager: TestManager<V, StateService>,
+    /// Owned fetch service; keeps `fetch_subscriber` alive.
+    pub fetch_service: FetchService,
+    /// Subscriber to the standalone fetch service's chain index.
+    pub fetch_subscriber: FetchServiceSubscriber,
+    /// Owned state service; keeps `state_subscriber` alive.
+    pub state_service: StateService,
+    /// Subscriber to the standalone state service's chain index.
+    pub state_subscriber: StateServiceSubscriber,
+}
+
+#[allow(deprecated)]
+impl<V: ValidatorExt> StateAndFetchServices<V> {
+    /// Mine `n` blocks and wait for both the fetch and state subscribers to
+    /// observe the new tip.
+    pub async fn generate_blocks_and_wait_for_tips(&self, n: u32) {
+        self.test_manager
+            .generate_blocks_and_wait_for_tips(n, &self.fetch_subscriber, &self.state_subscriber)
+            .await;
+    }
+}
+
 /// Launch a state-backend [`TestManager`] alongside standalone [`FetchService`]
-/// and [`StateService`] instances pointed at the same validator, returning each
-/// service and its subscriber.
+/// and [`StateService`] instances pointed at the same validator, returning the
+/// services and their subscribers as a [`StateAndFetchServices`] bundle.
 ///
 /// This is the shared core of the `create_test_manager_and_services` test
 /// harness used by both the walletless and wallet integration-test workspaces.
@@ -798,14 +942,31 @@ pub async fn launch_state_and_fetch_services<V: ValidatorExt>(
     chain_cache: Option<PathBuf>,
     enable_zaino: bool,
     network: Option<NetworkKind>,
-) -> (
-    TestManager<V, StateService>,
-    FetchService,
-    FetchServiceSubscriber,
-    StateService,
-    StateServiceSubscriber,
-) {
-    let test_manager = TestManager::<V, StateService>::launch(
+) -> StateAndFetchServices<V> {
+    launch_state_and_fetch_services_mining_to(
+        default_mining_pool(validator),
+        validator,
+        chain_cache,
+        enable_zaino,
+        network,
+    )
+    .await
+}
+
+/// [`launch_state_and_fetch_services`] with the miner's pool chosen by the
+/// caller instead of [`default_mining_pool`]: [`SHIELDED_FUNDING_POOL`] for
+/// sessions funding wallets from coinbase, or a pinned pool for tests whose
+/// subject is the miner's coinbase footprint.
+#[allow(deprecated)]
+pub async fn launch_state_and_fetch_services_mining_to<V: ValidatorExt>(
+    mine_to_pool: PoolType,
+    validator: &ValidatorKind,
+    chain_cache: Option<PathBuf>,
+    enable_zaino: bool,
+    network: Option<NetworkKind>,
+) -> StateAndFetchServices<V> {
+    let test_manager = TestManager::<V, StateService>::launch_mining_to(
+        mine_to_pool,
         validator,
         network,
         None,
@@ -907,13 +1068,13 @@ pub async fn launch_state_and_fetch_services<V: ValidatorExt>(
 
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    (
+    StateAndFetchServices {
         test_manager,
         fetch_service,
         fetch_subscriber,
         state_service,
         state_subscriber,
-    )
+    }
 }
 
 /// Spawn a standalone [`FetchService`] pointed at `rpc_url`, storing its index
@@ -946,21 +1107,46 @@ async fn spawn_fetch_service(
     .unwrap()
 }
 
+/// Handles from [`launch_zcashd_dual_fetch_services`]: a zcashd-backed
+/// [`TestManager`] (JSON-RPC server enabled) plus two standalone fetch
+/// services — one pointed at zcashd directly, one at Zaino's JSON-RPC
+/// server — for tests that compare the two. The owned services exist only to
+/// keep their subscribers alive.
+#[allow(deprecated)]
+pub struct ZcashdDualFetchServices {
+    /// The launched zcashd + Zaino test manager.
+    pub test_manager: TestManager<Zcashd, FetchService>,
+    /// Owned zcashd-direct fetch service; keeps `zcashd_subscriber` alive.
+    pub zcashd_fetch_service: FetchService,
+    /// Subscriber whose answers come from zcashd directly.
+    pub zcashd_subscriber: FetchServiceSubscriber,
+    /// Owned Zaino-pointed fetch service; keeps `zaino_subscriber` alive.
+    pub zaino_fetch_service: FetchService,
+    /// Subscriber whose answers come through Zaino's JSON-RPC server.
+    pub zaino_subscriber: FetchServiceSubscriber,
+}
+
+#[allow(deprecated)]
+impl ZcashdDualFetchServices {
+    /// Mine `n` blocks and wait for both the zaino and zcashd subscribers to
+    /// observe the new tip.
+    pub async fn generate_blocks_and_wait_for_tips(&self, n: u32) {
+        self.test_manager
+            .generate_blocks_and_wait_for_tips(n, &self.zaino_subscriber, &self.zcashd_subscriber)
+            .await;
+    }
+}
+
 /// Launch a zcashd [`TestManager`] (with the JSON-RPC server enabled) alongside
 /// two standalone [`FetchService`] instances — one pointed at zcashd directly,
-/// one at Zaino's JSON-RPC server — for tests that compare the two.
+/// one at Zaino's JSON-RPC server — for tests that compare the two, bundled as
+/// a [`ZcashdDualFetchServices`].
 ///
 /// Shared core of the `create_zcashd_test_manager_and_fetch_services` harness in
 /// both integration-test workspaces. Wallet callers wrap this and additionally
 /// build lightclients from the returned manager's gRPC address.
 #[allow(deprecated)]
-pub async fn launch_zcashd_dual_fetch_services() -> (
-    TestManager<Zcashd, FetchService>,
-    FetchService,
-    FetchServiceSubscriber,
-    FetchService,
-    FetchServiceSubscriber,
-) {
+pub async fn launch_zcashd_dual_fetch_services() -> ZcashdDualFetchServices {
     let test_manager = TestManager::<Zcashd, FetchService>::launch(
         &ValidatorKind::Zcashd,
         None,
@@ -1008,13 +1194,13 @@ pub async fn launch_zcashd_dual_fetch_services() -> (
 
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
-    (
+    ZcashdDualFetchServices {
         test_manager,
         zcashd_fetch_service,
         zcashd_subscriber,
         zaino_fetch_service,
         zaino_subscriber,
-    )
+    }
 }
 
 /// Return a copy of `info` with its final (timestamp) field zeroed, so two
@@ -1062,7 +1248,26 @@ pub async fn launch_with_fetch_subscriber<V: ValidatorExt>(
     validator: &ValidatorKind,
     chain_cache: Option<PathBuf>,
 ) -> (TestManager<V, FetchService>, FetchServiceSubscriber) {
-    let mut test_manager = TestManager::<V, FetchService>::launch(
+    launch_with_fetch_subscriber_mining_to::<V>(
+        default_mining_pool(validator),
+        validator,
+        chain_cache,
+    )
+    .await
+}
+
+/// [`launch_with_fetch_subscriber`] with the miner's pool chosen by the
+/// caller instead of [`default_mining_pool`]: [`SHIELDED_FUNDING_POOL`] for
+/// sessions funding wallets from coinbase, or a pinned pool for tests whose
+/// subject is the miner's coinbase footprint.
+#[allow(deprecated)]
+pub async fn launch_with_fetch_subscriber_mining_to<V: ValidatorExt>(
+    mine_to_pool: PoolType,
+    validator: &ValidatorKind,
+    chain_cache: Option<PathBuf>,
+) -> (TestManager<V, FetchService>, FetchServiceSubscriber) {
+    let mut test_manager = TestManager::<V, FetchService>::launch_mining_to(
+        mine_to_pool,
         validator,
         None,
         None,
@@ -1104,6 +1309,33 @@ mod launch_testmanager {
     #[allow(deprecated)]
     use zaino_state::FetchService;
 
+    /// Launch with no network/heights overrides and the optional servers off —
+    /// the smoke tests' shared launch shape; only the chain cache and the
+    /// zaino toggle vary.
+    async fn launch_minimal<C, Service>(
+        validator: &ValidatorKind,
+        chain_cache: Option<PathBuf>,
+        enable_zaino: bool,
+    ) -> TestManager<C, Service>
+    where
+        C: ValidatorExt,
+        Service: TestService,
+        IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+        <Service as ZcashService>::Subscriber: PollableTip,
+    {
+        TestManager::<C, Service>::launch(
+            validator,
+            None,
+            None,
+            chain_cache,
+            enable_zaino,
+            false,
+            false,
+        )
+        .await
+        .unwrap()
+    }
+
     mod zcashd {
         use zcash_local_net::validator::zcashd::Zcashd;
 
@@ -1112,17 +1344,8 @@ mod launch_testmanager {
         #[tokio::test(flavor = "multi_thread")]
         #[allow(deprecated)]
         pub(crate) async fn basic() {
-            let mut test_manager = TestManager::<Zcashd, FetchService>::launch(
-                &ValidatorKind::Zcashd,
-                None,
-                None,
-                None,
-                false,
-                false,
-                false,
-            )
-            .await
-            .unwrap();
+            let mut test_manager =
+                launch_minimal::<Zcashd, FetchService>(&ValidatorKind::Zcashd, None, false).await;
             assert_eq!(2, (test_manager.local_net.get_chain_height().await));
             test_manager.close().await;
         }
@@ -1130,17 +1353,8 @@ mod launch_testmanager {
         #[tokio::test(flavor = "multi_thread")]
         #[allow(deprecated)]
         pub(crate) async fn generate_blocks() {
-            let mut test_manager = TestManager::<Zcashd, FetchService>::launch(
-                &ValidatorKind::Zcashd,
-                None,
-                None,
-                None,
-                false,
-                false,
-                false,
-            )
-            .await
-            .unwrap();
+            let mut test_manager =
+                launch_minimal::<Zcashd, FetchService>(&ValidatorKind::Zcashd, None, false).await;
             assert_eq!(2, (test_manager.local_net.get_chain_height().await));
             test_manager.local_net.generate_blocks(1).await.unwrap();
             assert_eq!(3, (test_manager.local_net.get_chain_height().await));
@@ -1151,17 +1365,12 @@ mod launch_testmanager {
         #[tokio::test(flavor = "multi_thread")]
         #[allow(deprecated)]
         pub(crate) async fn with_chain() {
-            let mut test_manager = TestManager::<Zcashd, FetchService>::launch(
+            let mut test_manager = launch_minimal::<Zcashd, FetchService>(
                 &ValidatorKind::Zcashd,
-                None,
-                None,
                 ZCASHD_CHAIN_CACHE_DIR.clone(),
                 false,
-                false,
-                false,
             )
-            .await
-            .unwrap();
+            .await;
             assert_eq!(10, (test_manager.local_net.get_chain_height().await));
             test_manager.close().await;
         }
@@ -1169,17 +1378,8 @@ mod launch_testmanager {
         #[tokio::test(flavor = "multi_thread")]
         #[allow(deprecated)]
         pub(crate) async fn zaino() {
-            let mut test_manager = TestManager::<Zcashd, FetchService>::launch(
-                &ValidatorKind::Zcashd,
-                None,
-                None,
-                None,
-                true,
-                false,
-                false,
-            )
-            .await
-            .unwrap();
+            let mut test_manager =
+                launch_minimal::<Zcashd, FetchService>(&ValidatorKind::Zcashd, None, true).await;
 
             let _grpc_client = build_client(test_manager.grpc_socket_to_uri())
                 .await
@@ -1200,17 +1400,9 @@ mod launch_testmanager {
             #[tokio::test(flavor = "multi_thread")]
             #[allow(deprecated)]
             pub(crate) async fn basic() {
-                let mut test_manager = TestManager::<Zebrad, FetchService>::launch(
-                    &ValidatorKind::Zebrad,
-                    None,
-                    None,
-                    None,
-                    false,
-                    false,
-                    false,
-                )
-                .await
-                .unwrap();
+                let mut test_manager =
+                    launch_minimal::<Zebrad, FetchService>(&ValidatorKind::Zebrad, None, false)
+                        .await;
                 assert_eq!(2, (test_manager.local_net.get_chain_height().await));
                 test_manager.close().await;
             }
@@ -1218,17 +1410,9 @@ mod launch_testmanager {
             #[tokio::test(flavor = "multi_thread")]
             #[allow(deprecated)]
             pub(crate) async fn generate_blocks() {
-                let mut test_manager = TestManager::<Zebrad, FetchService>::launch(
-                    &ValidatorKind::Zebrad,
-                    None,
-                    None,
-                    None,
-                    false,
-                    false,
-                    false,
-                )
-                .await
-                .unwrap();
+                let mut test_manager =
+                    launch_minimal::<Zebrad, FetchService>(&ValidatorKind::Zebrad, None, false)
+                        .await;
                 assert_eq!(2, (test_manager.local_net.get_chain_height().await));
                 test_manager.local_net.generate_blocks(1).await.unwrap();
                 assert_eq!(3, (test_manager.local_net.get_chain_height().await));
@@ -1239,17 +1423,12 @@ mod launch_testmanager {
             #[tokio::test(flavor = "multi_thread")]
             #[allow(deprecated)]
             pub(crate) async fn with_chain() {
-                let mut test_manager = TestManager::<Zebrad, FetchService>::launch(
+                let mut test_manager = launch_minimal::<Zebrad, FetchService>(
                     &ValidatorKind::Zebrad,
-                    None,
-                    None,
                     ZEBRAD_CHAIN_CACHE_DIR.clone(),
                     false,
-                    false,
-                    false,
                 )
-                .await
-                .unwrap();
+                .await;
                 assert_eq!(52, (test_manager.local_net.get_chain_height().await));
                 test_manager.close().await;
             }
@@ -1257,17 +1436,9 @@ mod launch_testmanager {
             #[tokio::test(flavor = "multi_thread")]
             #[allow(deprecated)]
             pub(crate) async fn zaino() {
-                let mut test_manager = TestManager::<Zebrad, FetchService>::launch(
-                    &ValidatorKind::Zebrad,
-                    None,
-                    None,
-                    None,
-                    true,
-                    false,
-                    false,
-                )
-                .await
-                .unwrap();
+                let mut test_manager =
+                    launch_minimal::<Zebrad, FetchService>(&ValidatorKind::Zebrad, None, true)
+                        .await;
                 let _grpc_client = build_client(test_manager.grpc_socket_to_uri())
                     .await
                     .unwrap();
@@ -1283,17 +1454,9 @@ mod launch_testmanager {
             #[tokio::test(flavor = "multi_thread")]
             #[allow(deprecated)]
             pub(crate) async fn basic() {
-                let mut test_manager = TestManager::<Zebrad, StateService>::launch(
-                    &ValidatorKind::Zebrad,
-                    None,
-                    None,
-                    None,
-                    false,
-                    false,
-                    false,
-                )
-                .await
-                .unwrap();
+                let mut test_manager =
+                    launch_minimal::<Zebrad, StateService>(&ValidatorKind::Zebrad, None, false)
+                        .await;
                 assert_eq!(2, (test_manager.local_net.get_chain_height().await));
                 test_manager.close().await;
             }
@@ -1301,17 +1464,9 @@ mod launch_testmanager {
             #[tokio::test(flavor = "multi_thread")]
             #[allow(deprecated)]
             pub(crate) async fn generate_blocks() {
-                let mut test_manager = TestManager::<Zebrad, StateService>::launch(
-                    &ValidatorKind::Zebrad,
-                    None,
-                    None,
-                    None,
-                    false,
-                    false,
-                    false,
-                )
-                .await
-                .unwrap();
+                let mut test_manager =
+                    launch_minimal::<Zebrad, StateService>(&ValidatorKind::Zebrad, None, false)
+                        .await;
                 assert_eq!(2, (test_manager.local_net.get_chain_height().await));
                 test_manager.local_net.generate_blocks(1).await.unwrap();
                 assert_eq!(3, (test_manager.local_net.get_chain_height().await));
@@ -1322,17 +1477,12 @@ mod launch_testmanager {
             #[tokio::test(flavor = "multi_thread")]
             #[allow(deprecated)]
             pub(crate) async fn with_chain() {
-                let mut test_manager = TestManager::<Zebrad, StateService>::launch(
+                let mut test_manager = launch_minimal::<Zebrad, StateService>(
                     &ValidatorKind::Zebrad,
-                    None,
-                    None,
                     ZEBRAD_CHAIN_CACHE_DIR.clone(),
                     false,
-                    false,
-                    false,
                 )
-                .await
-                .unwrap();
+                .await;
                 assert_eq!(52, (test_manager.local_net.get_chain_height().await));
                 test_manager.close().await;
             }
@@ -1340,17 +1490,9 @@ mod launch_testmanager {
             #[tokio::test(flavor = "multi_thread")]
             #[allow(deprecated)]
             pub(crate) async fn zaino() {
-                let mut test_manager = TestManager::<Zebrad, StateService>::launch(
-                    &ValidatorKind::Zebrad,
-                    None,
-                    None,
-                    None,
-                    true,
-                    false,
-                    false,
-                )
-                .await
-                .unwrap();
+                let mut test_manager =
+                    launch_minimal::<Zebrad, StateService>(&ValidatorKind::Zebrad, None, true)
+                        .await;
                 let _grpc_client = build_client(test_manager.grpc_socket_to_uri())
                     .await
                     .unwrap();

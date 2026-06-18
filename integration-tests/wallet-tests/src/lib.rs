@@ -225,9 +225,34 @@ pub fn default_heights(validator: &ValidatorKind) -> ActivationHeights {
     }
 }
 
+/// Build faucet/recipient lightclients pointed at `test_manager`'s gRPC
+/// listener (which must have been launched with zaino enabled), using
+/// `validator`'s default activation heights — the shared postlude of every
+/// wallet launch fixture.
+pub fn build_clients_for<C, Service>(
+    test_manager: &TestManager<C, Service>,
+    validator: &ValidatorKind,
+) -> Clients
+where
+    C: ValidatorExt,
+    Service: TestService,
+{
+    build_clients(
+        test_manager
+            .zaino_grpc_listen_address
+            .expect("zaino enabled")
+            .port(),
+        default_heights(validator),
+    )
+}
+
 /// Launch a `TestManager<C, Service>` and build faucet/recipient lightclients
 /// whose view matches the launched chain — the shared "launch + build_clients"
-/// step used by both the smoke tests and the wallet_to_validator tests.
+/// step used by both the smoke tests and the wallet_to_validator tests. Mines
+/// to [`zaino_testutils::SHIELDED_FUNDING_POOL`], the right choice for the
+/// common case of funding the faucet from coinbase; tests that don't profit
+/// from shielded coinbase (large non-funding mines, or a pool-specific miner
+/// footprint under test) pick their pool via [`launch_and_build_mining_to`].
 pub async fn launch_and_build<C, Service>(
     validator: &ValidatorKind,
     network: Option<NetworkKind>,
@@ -239,7 +264,31 @@ where
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     <Service as ZcashService>::Subscriber: PollableTip,
 {
-    let test_manager = TestManager::<C, Service>::launch(
+    launch_and_build_mining_to::<C, Service>(
+        zaino_testutils::SHIELDED_FUNDING_POOL,
+        validator,
+        network,
+        chain_cache,
+    )
+    .await
+}
+
+/// [`launch_and_build`] with the miner's pool chosen by the caller instead of
+/// [`zaino_testutils::SHIELDED_FUNDING_POOL`].
+pub async fn launch_and_build_mining_to<C, Service>(
+    mine_to_pool: zaino_testutils::PoolType,
+    validator: &ValidatorKind,
+    network: Option<NetworkKind>,
+    chain_cache: Option<PathBuf>,
+) -> (TestManager<C, Service>, Clients)
+where
+    C: ValidatorExt,
+    Service: TestService,
+    IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    <Service as ZcashService>::Subscriber: PollableTip,
+{
+    let test_manager = TestManager::<C, Service>::launch_mining_to(
+        mine_to_pool,
         validator,
         network,
         None,
@@ -250,22 +299,20 @@ where
     )
     .await
     .expect("launch TestManager");
-    let clients = build_clients(
-        test_manager
-            .zaino_grpc_listen_address
-            .expect("zaino enabled")
-            .port(),
-        default_heights(validator),
-    );
+    let clients = build_clients_for(&test_manager, validator);
     (test_manager, clients)
 }
 
-/// Mine `blocks` and sync the faucet to the new tip, waiting on
+/// Mine `blocks` in bulk and sync the faucet to the new tip, waiting on
 /// `mined_against` and then `then_synced`. One half of the faucet funding
 /// step; the other half is [`Clients::shield_faucet`]. Callers with a single
-/// subscriber pass it as both `mined_against` and `then_synced`
-/// ([`TestManager::generate_blocks_and_wait_for_tips`] waits on each in turn,
-/// so the repeated wait is a no-op).
+/// subscriber pass it as both `mined_against` and `then_synced` (the
+/// repeated tail wait is a no-op).
+///
+/// Mining is one validator call with a single catch-up wait
+/// ([`TestManager::generate_blocks_bulk_and_wait_for_tips`]) — no funding
+/// caller observes intermediate tips, and per-block settling costs at least
+/// one indexer poll interval per block.
 #[allow(deprecated)]
 pub async fn mine_and_sync_faucet<C, Service, A, B>(
     test_manager: &TestManager<C, Service>,
@@ -282,7 +329,7 @@ pub async fn mine_and_sync_faucet<C, Service, A, B>(
     B: PollableTip,
 {
     test_manager
-        .generate_blocks_and_wait_for_tips(blocks, mined_against, then_synced)
+        .generate_blocks_bulk_and_wait_for_tips(blocks, mined_against, then_synced)
         .await;
     clients.sync_faucet().await;
 }
@@ -292,6 +339,13 @@ pub async fn mine_and_sync_faucet<C, Service, A, B>(
 /// `final_blocks` and sync so the last shield is spendable. `&[100; n]` matures
 /// a fresh coinbase batch before every shield; `&[100, 1, 1]` matures once and
 /// spreads three shields over consecutive blocks.
+///
+/// Presumes the manager mines zebrad coinbase to `PoolType::Transparent` —
+/// the shield is what moves transparent coinbase into orchard, and the 100s
+/// mature it first (transparent coinbase outputs carry a 100-confirmation
+/// maturity rule). Sessions on [`zaino_testutils::SHIELDED_FUNDING_POOL`]
+/// skip all of this: shielded coinbase has no maturity rule, so they fund via
+/// [`fund_faucet_dual`].
 #[allow(deprecated)]
 pub async fn shield_faucet_rounds<C, Service, A, B>(
     test_manager: &TestManager<C, Service>,
@@ -312,16 +366,71 @@ pub async fn shield_faucet_rounds<C, Service, A, B>(
         mine_and_sync_faucet(test_manager, clients, mined_against, then_synced, blocks).await;
         clients.shield_faucet().await;
     }
-    mine_and_sync_faucet(test_manager, clients, mined_against, then_synced, final_blocks).await;
+    mine_and_sync_faucet(
+        test_manager,
+        clients,
+        mined_against,
+        then_synced,
+        final_blocks,
+    )
+    .await;
 }
 
-/// Sync the faucet and, on zebrad, run `shield_rounds` rounds of "mature 100
-/// coinbase blocks, sync, shield", then mine one block and sync — waiting on
-/// both subscribers each time. The dual-subscriber funding preamble shared by
-/// the state_service and json_server tests; zcashd needs no shield, so the
-/// zebrad-only branch is skipped there.
+/// Sync the faucet and, on zebrad, mine `coinbase_batches` blocks and sync —
+/// waiting on both subscribers — so the faucet holds one spendable
+/// shielded-coinbase note per batch. The dual-subscriber funding preamble
+/// shared by the state_service and json_server tests; zcashd's launch reward
+/// is already spendable, so it mines nothing.
+///
+/// Requires the session to mine to [`zaino_testutils::SHIELDED_FUNDING_POOL`]
+/// (the wallet launch fixtures' default): shielded coinbase carries no
+/// 100-confirmation maturity rule — that rule covers only transparent
+/// coinbase outputs — so each mined block is immediately one spendable note.
+/// One note per batch because a caller making `n` sends before mining cannot
+/// chain unconfirmed change. Sessions pinned to transparent mining fund via
+/// [`fund_faucet_dual_via_shield`] instead.
 #[allow(deprecated)]
 pub async fn fund_faucet_dual<C, Service, A, B>(
+    test_manager: &TestManager<C, Service>,
+    clients: &mut Clients,
+    validator: &ValidatorKind,
+    mined_against: &A,
+    then_synced: &B,
+    coinbase_batches: u32,
+) where
+    C: ValidatorExt,
+    Service: TestService,
+    IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    <Service as ZcashService>::Subscriber: PollableTip,
+    A: PollableTip,
+    B: PollableTip,
+{
+    clients.sync_faucet().await;
+    if matches!(validator, ValidatorKind::Zebrad) {
+        mine_and_sync_faucet(
+            test_manager,
+            clients,
+            mined_against,
+            then_synced,
+            coinbase_batches,
+        )
+        .await;
+    }
+}
+
+/// The legacy transparent-coinbase funding ritual: sync the faucet and, on
+/// zebrad, mature one coinbase batch (100 blocks) and shield it, then for
+/// each remaining round mine 1 block — which matures exactly one more
+/// coinbase — and shield that; then mine one block and sync. Leaves
+/// `shield_rounds` spendable orchard notes for `100 + shield_rounds` blocks
+/// (rounds past the first yield single-block-reward notes — still orders of
+/// magnitude above what tests spend). For tests that pin zebrad's miner to
+/// `PoolType::Transparent` (because a large non-funding mine or a
+/// taddr-footprint assertion makes shielded mining a net loss) yet still need
+/// spendable shielded funds. Funding-pool sessions use the much cheaper
+/// [`fund_faucet_dual`].
+#[allow(deprecated)]
+pub async fn fund_faucet_dual_via_shield<C, Service, A, B>(
     test_manager: &TestManager<C, Service>,
     clients: &mut Clients,
     validator: &ValidatorKind,
@@ -338,12 +447,15 @@ pub async fn fund_faucet_dual<C, Service, A, B>(
 {
     clients.sync_faucet().await;
     if matches!(validator, ValidatorKind::Zebrad) {
+        let round_blocks: Vec<u32> = (0..shield_rounds)
+            .map(|round| if round == 0 { 100 } else { 1 })
+            .collect();
         shield_faucet_rounds(
             test_manager,
             clients,
             mined_against,
             then_synced,
-            &vec![100; shield_rounds as usize],
+            &round_blocks,
             1,
         )
         .await;
@@ -362,7 +474,7 @@ pub async fn fund_and_send_dual<C, Service, A, B>(
     validator: &ValidatorKind,
     mined_against: &A,
     then_synced: &B,
-    shield_rounds: u32,
+    coinbase_batches: u32,
     send: Option<Pool>,
 ) -> (String, String, Option<NonEmpty<TxId>>)
 where
@@ -379,7 +491,7 @@ where
         validator,
         mined_against,
         then_synced,
-        shield_rounds,
+        coinbase_batches,
     )
     .await;
     let recipient_taddr = clients.get_recipient_address("transparent").await;
@@ -394,6 +506,61 @@ where
         .generate_blocks_and_wait_for_tips(1, mined_against, then_synced)
         .await;
     (recipient_taddr, recipient_ua, txid)
+}
+
+/// Fund the faucet and send 250_000 to the recipient's transparent, sapling,
+/// and unified addresses (one tx each), then mine the sends in — waiting on
+/// both subscribers — so the block at the chain tip holds all three. Returns
+/// `(transparent_txid, sapling_txid, orchard_txid)`. The shared scenario of
+/// the fetch_service and state_service `get_block_range` pool-filter tests.
+#[allow(deprecated)]
+pub async fn fund_and_send_to_all_pools<C, Service, A, B>(
+    test_manager: &TestManager<C, Service>,
+    clients: &mut Clients,
+    validator: &ValidatorKind,
+    mined_against: &A,
+    then_synced: &B,
+) -> (TxId, TxId, TxId)
+where
+    C: ValidatorExt,
+    Service: TestService,
+    IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    <Service as ZcashService>::Subscriber: PollableTip,
+    A: PollableTip,
+    B: PollableTip,
+{
+    clients.sync_faucet().await;
+
+    // zebrad: 3 blocks yields 3 spendable orchard coinbase notes (one per
+    // send below); shielded coinbase carries no maturity rule. zcashd's
+    // launch reward is already spendable; its historical 14 is unchanged.
+    let blocks = if matches!(validator, ValidatorKind::Zebrad) {
+        3
+    } else {
+        14
+    };
+    mine_and_sync_faucet(test_manager, clients, mined_against, then_synced, blocks).await;
+
+    let recipient_transparent = clients.get_recipient_address("transparent").await;
+    let transparent_txid = clients
+        .send_from_faucet(&recipient_transparent, 250_000)
+        .await
+        .head;
+
+    let recipient_sapling = clients.get_recipient_address("sapling").await;
+    let sapling_txid = clients
+        .send_from_faucet(&recipient_sapling, 250_000)
+        .await
+        .head;
+
+    let recipient_ua = clients.get_recipient_address("unified").await;
+    let orchard_txid = clients.send_from_faucet(&recipient_ua, 250_000).await.head;
+
+    test_manager
+        .generate_blocks_and_wait_for_tips(1, mined_against, then_synced)
+        .await;
+
+    (transparent_txid, sapling_txid, orchard_txid)
 }
 
 /// Smoke tests relocated from `zaino-testutils`: launch a validator + Zaino,
@@ -434,9 +601,12 @@ mod launch_clients {
             chain_cache: Option<PathBuf>,
         );
 
-        /// Assert the faucet received a mining reward, maturing `mature_blocks`
-        /// first (`0` for zcashd, whose launch reward is already spendable).
-        async fn check_received_mining_reward(kind: &ValidatorKind, mature_blocks: u32);
+        /// Assert the faucet received a mining reward, mining `extra_blocks`
+        /// first: `0` for zcashd (its launch reward is already spendable), `1`
+        /// for zebrad (a post-NU5 block, so an orchard coinbase note exists —
+        /// the launch block's coinbase lands in the sapling receiver, which
+        /// the assertion doesn't count).
+        async fn check_received_mining_reward(kind: &ValidatorKind, extra_blocks: u32);
 
         /// Mature a reward, shield it, send to the recipient, and assert receipt.
         async fn check_received_mining_reward_and_send(kind: &ValidatorKind);
@@ -469,14 +639,14 @@ mod launch_clients {
             test_manager.close().await;
         }
 
-        async fn check_received_mining_reward(kind: &ValidatorKind, mature_blocks: u32) {
+        async fn check_received_mining_reward(kind: &ValidatorKind, extra_blocks: u32) {
             let (mut test_manager, mut clients) = Self::launch_and_build(kind, None, None).await;
 
-            if mature_blocks > 0 {
+            if extra_blocks > 0 {
                 clients.sync_faucet().await;
                 dbg!(clients.faucet_balance().await);
                 test_manager
-                    .generate_blocks_and_wait_for_tip(mature_blocks, test_manager.subscriber())
+                    .generate_blocks_and_wait_for_tip(extra_blocks, test_manager.subscriber())
                     .await;
             }
 
@@ -495,7 +665,17 @@ mod launch_clients {
         }
 
         async fn check_received_mining_reward_and_send(kind: &ValidatorKind) {
-            let (mut test_manager, mut clients) = Self::launch_and_build(kind, None, None).await;
+            // The test subject is the miner's transparent coinbase footprint
+            // (mature it, assert the transparent balance, shield, send), so
+            // coinbase must land on the miner taddr regardless of the default
+            // mining pool.
+            let (mut test_manager, mut clients) = super::launch_and_build_mining_to::<C, Service>(
+                zaino_testutils::PoolType::Transparent,
+                kind,
+                None,
+                None,
+            )
+            .await;
 
             super::mine_and_sync_faucet(
                 &test_manager,
@@ -622,7 +802,7 @@ mod launch_clients {
             async fn zaino_clients_receive_mining_reward() {
                 TestManager::<Zebrad, FetchService>::check_received_mining_reward(
                     &ValidatorKind::Zebrad,
-                    100,
+                    1,
                 )
                 .await;
             }
@@ -670,7 +850,7 @@ mod launch_clients {
             async fn zaino_clients_receive_mining_reward() {
                 TestManager::<Zebrad, StateService>::check_received_mining_reward(
                     &ValidatorKind::Zebrad,
-                    100,
+                    1,
                 )
                 .await;
             }
