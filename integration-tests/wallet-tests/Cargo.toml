@@ -30,9 +30,9 @@ zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", 
 zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", tag = "zcash_local_net_v0.6.0" }
 
 # Zebra
-zebra-chain = "9.0.0"
-zebra-rpc = "9.0.0"
-zebra-state = "8.0.0"
+zebra-chain = "10.1"
+zebra-rpc = "10.0"
+zebra-state = "9.0"
 
 # Runtime / misc
 tokio = { version = "1.38", features = ["full"] }
