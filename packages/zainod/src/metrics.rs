@@ -60,4 +60,16 @@ fn describe_metrics() {
         "zaino.sync.orchard_actions_total",
         "Total Orchard actions indexed during sync"
     );
+
+    // Per-block sync-phase timings. Comparing these across height isolates which
+    // phase's latency grows (e.g. block fetch vs. commitment-tree fetch) at a
+    // network-upgrade boundary.
+    metrics::describe_histogram!(
+        "zaino.sync.block_build_seconds",
+        "Seconds to fetch and build one indexed block (fetch + treestate + parse)"
+    );
+    metrics::describe_histogram!(
+        "zaino.sync.block_write_seconds",
+        "Seconds to durably write one batch of blocks to the database"
+    );
 }

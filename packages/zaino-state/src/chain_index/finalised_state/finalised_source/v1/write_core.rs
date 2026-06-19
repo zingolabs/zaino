@@ -60,7 +60,9 @@ impl DbWrite for DbV1 {
         height: Height,
         source: &S,
     ) -> Result<(), FinalisedStateError> {
-        use crate::chain_index::finalised_state::build_indexed_block_from_source;
+        use crate::chain_index::finalised_state::{
+            build_indexed_block_from_source, record_block_throughput, record_phase_seconds,
+        };
         use zebra_chain::parameters::NetworkUpgrade;
 
         let network = self.config.network;
@@ -135,6 +137,7 @@ impl DbWrite for DbV1 {
                     && batch.len() < SYNC_WRITE_BATCH_MAX_BLOCKS
                     && batch_started.elapsed() < SYNC_WRITE_BATCH_MAX_INTERVAL
                 {
+                    let build_start = std::time::Instant::now();
                     let block = build_indexed_block_from_source(
                         source,
                         network,
@@ -144,6 +147,8 @@ impl DbWrite for DbV1 {
                         parent_chainwork,
                     )
                     .await?;
+                    record_phase_seconds("zaino.sync.block_build_seconds", build_start);
+                    record_block_throughput(&block);
                     parent_chainwork = block.context.chainwork;
                     batch_bytes = batch_bytes.saturating_add(approx_indexed_block_bytes(&block));
                     batch.push(block);
@@ -152,6 +157,13 @@ impl DbWrite for DbV1 {
                     // In-flight progress: the block being fetched, throttled by time. (The committed
                     // tip is reported by the per-batch commit log below.)
                     if last_progress_log.elapsed() >= SYNC_PROGRESS_LOG_INTERVAL {
+                        #[cfg(feature = "prometheus")]
+                        {
+                            metrics::gauge!("zaino.sync.finalized_height")
+                                .set((next - 1) as f64);
+                            metrics::gauge!("zaino.sync.target_height")
+                                .set(height.0 as f64);
+                        }
                         info!(
                             "write_blocks_to_height: syncing height {} / {} on {:?}",
                             next - 1,
@@ -168,10 +180,12 @@ impl DbWrite for DbV1 {
 
                 // Write + sort + commit the batch atomically, then force durability. The on-disk
                 // `headers` tip never runs ahead of the indexes, so resume is gap-free.
+                let write_start = std::time::Instant::now();
                 tokio::task::block_in_place(|| self.write_block_batch_blocking(&batch))?;
                 tokio::task::block_in_place(|| self.env.sync(true)).map_err(|e| {
                     FinalisedStateError::Custom(format!("LMDB checkpoint sync failed: {e}"))
                 })?;
+                record_phase_seconds("zaino.sync.block_write_seconds", write_start);
 
                 // Only after the batch is committed + synced do we advance the validated tip.
                 for block in &batch {
@@ -188,6 +202,7 @@ impl DbWrite for DbV1 {
         #[cfg(feature = "transparent_address_history_experimental")]
         {
             for height_int in start_height..=height.0 {
+                let build_start = std::time::Instant::now();
                 let block = build_indexed_block_from_source(
                     source,
                     network,
@@ -197,9 +212,21 @@ impl DbWrite for DbV1 {
                     parent_chainwork,
                 )
                 .await?;
+                record_phase_seconds("zaino.sync.block_build_seconds", build_start);
+                record_block_throughput(&block);
                 parent_chainwork = block.context.chainwork;
 
+                let write_start = std::time::Instant::now();
                 self.write_block_with_options(block, false).await?;
+                record_phase_seconds("zaino.sync.block_write_seconds", write_start);
+
+                #[cfg(feature = "prometheus")]
+                {
+                    metrics::gauge!("zaino.sync.finalized_height")
+                        .set(height_int as f64);
+                    metrics::gauge!("zaino.sync.target_height")
+                        .set(height.0 as f64);
+                }
             }
         }
 

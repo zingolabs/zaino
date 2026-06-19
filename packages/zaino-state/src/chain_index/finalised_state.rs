@@ -317,6 +317,42 @@ pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
     })
 }
 
+/// Records a sync-phase duration (in seconds) as a Prometheus histogram when
+/// the `prometheus` feature is enabled; a no-op otherwise, so the per-block
+/// call sites stay free of `#[cfg]`. The tiny `Instant` reads remain in the
+/// default build but are dwarfed by the per-block work they bracket.
+#[inline]
+pub(crate) fn record_phase_seconds(_name: &'static str, _start: std::time::Instant) {
+    #[cfg(feature = "prometheus")]
+    metrics::histogram!(_name).record(_start.elapsed().as_secs_f64());
+}
+
+/// Increments the per-block throughput counters — transactions, Sapling outputs,
+/// and Orchard actions — for one indexed block. This is a no-op unless the
+/// `prometheus` feature is enabled, keeping the hot sync loop free of `#[cfg]`.
+///
+/// The counts come from data already materialized in `block` by the preceding
+/// `IndexedBlock::try_from` step, so this adds no I/O or parsing — only a walk
+/// over in-memory vectors and a few integer adds.
+#[inline]
+pub(crate) fn record_block_throughput(_block: &IndexedBlock) {
+    #[cfg(feature = "prometheus")]
+    {
+        let transactions = u64::try_from(_block.transactions().len()).unwrap_or(u64::MAX);
+        let mut sapling_outputs: u64 = 0;
+        let mut orchard_actions: u64 = 0;
+        for tx in _block.transactions() {
+            sapling_outputs = sapling_outputs
+                .saturating_add(u64::try_from(tx.sapling().outputs().len()).unwrap_or(u64::MAX));
+            orchard_actions = orchard_actions
+                .saturating_add(u64::try_from(tx.orchard().actions().len()).unwrap_or(u64::MAX));
+        }
+        metrics::counter!("zaino.sync.transactions_total").increment(transactions);
+        metrics::counter!("zaino.sync.sapling_outputs_total").increment(sapling_outputs);
+        metrics::counter!("zaino.sync.orchard_actions_total").increment(orchard_actions);
+    }
+}
+
 use super::source::BlockchainSource;
 
 /// A sync wider than this many blocks runs in the background (with ephemeral
