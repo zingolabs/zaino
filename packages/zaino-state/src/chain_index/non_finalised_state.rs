@@ -1,4 +1,8 @@
-use super::{finalised_state::FinalisedState, source::BlockchainSource, NON_FINALIZED_DEPTH};
+use super::{
+    finalised_state::{reader::DbReader, FinalisedState},
+    source::BlockchainSource,
+    NON_FINALIZED_DEPTH,
+};
 use crate::{
     chain_index::types::{
         self, BlockHash, BlockIndex, BlockMetadata, BlockWithMetadata, Height, TreeRootData,
@@ -354,6 +358,50 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         }
     }
 
+    /// Resolve the non-finalised state's anchor (root) block at `anchor_height`.
+    ///
+    /// Prefers the finalised reader, which serves the block from the persistent DB when the height
+    /// is in range, or from the validator via the ReadOnly ephemeral passthrough while the finalised
+    /// DB is catching up in the background. Falls back to building the block directly from the
+    /// validator source when the reader cannot serve it yet — e.g. the first worker iteration, before
+    /// any passthrough is installed — so the anchor never silently drops to genesis (issue #1261).
+    ///
+    /// The anchor sits below the reorg-possible range, so its chainwork is irrelevant to best-chain
+    /// selection; it is set to zero, matching the ephemeral passthrough's own anchor build.
+    pub(super) async fn resolve_anchor_block(
+        source: &Source,
+        reader: &DbReader<Source>,
+        network: &Network,
+        anchor_height: Height,
+    ) -> Result<IndexedBlock, FinalisedStateError> {
+        if let Some(block) = reader.get_chain_block_by_height(anchor_height).await? {
+            return Ok(block);
+        }
+
+        let block = source
+            .get_block(HashOrHeight::Height(zebra_chain::block::Height(
+                anchor_height.0,
+            )))
+            .await?
+            .ok_or_else(|| {
+                FinalisedStateError::DataUnavailable(format!(
+                    "anchor block {} unavailable from validator",
+                    anchor_height.0
+                ))
+            })?;
+
+        let (sapling, orchard) = source.get_commitment_tree_roots(block.hash().into()).await?;
+        let tree_roots = TreeRootData { sapling, orchard };
+
+        Self::create_indexed_block_with_optional_roots(
+            block.as_ref(),
+            &tree_roots,
+            ChainWork::from(U256::zero()),
+            network.clone(),
+        )
+        .map_err(FinalisedStateError::Custom)
+    }
+
     /// Set up the optional non-finalized change listener
     async fn setup_listener(
         source: &Source,
@@ -388,20 +436,29 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     ) -> Result<(), SyncError> {
         let mut initial_state = self.get_snapshot();
         let local_finalized_tip = finalized_db.to_reader().db_height().await?;
-        if Some(initial_state.best_tip.height) < local_finalized_tip {
+        // Anchor floor: the non-finalised state must never start more than `NON_FINALIZED_DEPTH`
+        // blocks below the chain tip, even when the finalised DB tip lags far behind during
+        // background catch-up. Without this floor a freshly-initialised (or genesis-fallback)
+        // snapshot would try to bridge the entire gap from the finalised tip up to the chain tip one
+        // block at a time — millions of sequential validator fetches that never converge (#1261).
+        // When the floor sits above the finalised tip the anchor block isn't in the persistent DB;
+        // `resolve_anchor_block` serves it via the passthrough or builds it from the validator.
+        let anchor_height = Height(
+            local_finalized_tip
+                .map(|height| height.0)
+                .unwrap_or(0)
+                .max(u32::from(chain_height).saturating_sub(NON_FINALIZED_DEPTH)),
+        );
+        if initial_state.best_tip.height.0 < anchor_height.0 {
+            let anchor_block = Self::resolve_anchor_block(
+                &self.source,
+                &finalized_db.to_reader(),
+                &self.network,
+                anchor_height,
+            )
+            .await?;
             self.current.swap(Arc::new(
-                NonfinalizedBlockCacheSnapshot::from_initial_block(
-                    finalized_db
-                        .to_reader()
-                        .get_chain_block_by_height(
-                            local_finalized_tip.expect("known to be some due to above if"),
-                        )
-                        .await?
-                        .ok_or(FinalisedStateError::DataUnavailable(format!(
-                            "Missing block {}",
-                            local_finalized_tip.unwrap().0
-                        )))?,
-                ),
+                NonfinalizedBlockCacheSnapshot::from_initial_block(anchor_block),
             ));
             initial_state = self.get_snapshot()
         }
