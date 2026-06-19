@@ -41,7 +41,11 @@ use crate::chain_index::encoding::{
     read_vec, version, write_fixed_le, write_i64_le, write_option, write_u16_be, write_u32_be,
     write_u32_le, write_u64_le, write_vec, FixedEncodedLen, ZainoVersionedSerde,
 };
+use crate::chain_index::non_finalised_state::{
+    NonfinalizedBlockCacheSnapshot, ProvisionalCumulativeWork,
+};
 use crate::chain_index::types::BlockContext;
+use crate::chain_index::NonFinalizedSnapshot as _;
 
 use super::commitment::{CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes};
 
@@ -725,33 +729,68 @@ impl FixedEncodedLen for Outpoint {
 /// stored as a **big-endian** 256-bit unsigned integer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
-pub struct ChainWork([u8; 32]);
+pub enum ChainWork {
+    /// Known to be non-zero
+    Indexed([u8; 32]),
+    /// Represented in some contexts as zero, which
+    /// is otherwise an impossible value
+    Provisional,
+}
 
 impl ChainWork {
     ///Returns ChainWork as a U256.
     pub fn to_u256(&self) -> U256 {
-        U256::from_big_endian(&self.0)
+        match self {
+            ChainWork::Indexed(work) => U256::from_big_endian(work),
+            ChainWork::Provisional => U256::zero(),
+        }
     }
 
     /// Builds a ChainWork from a U256.
     pub fn from_u256(value: U256) -> Self {
         let buf: [u8; 32] = value.to_big_endian();
-        ChainWork(buf)
+        if buf == [0; 32] {
+            ChainWork::Provisional
+        } else {
+            ChainWork::Indexed(buf)
+        }
     }
 
     /// Adds 2 ChainWorks.
+    /// Provisional chainwork is like NaN: if added to
+    /// a number it just gives Provisional
     pub fn add(&self, other: &Self) -> Self {
-        Self::from_u256(self.to_u256() + other.to_u256())
+        if self.is_provisional() || other.is_provisional() {
+            ChainWork::Provisional
+        } else {
+            Self::from_u256(self.to_u256() + other.to_u256())
+        }
     }
 
     /// Subtract one ChainWork from another.
+    /// Provisional chainwork is like NaN: if added to
+    /// a number it just gives Provisional
     pub fn sub(&self, other: &Self) -> Self {
-        Self::from_u256(self.to_u256() - other.to_u256())
+        if self.is_provisional() || other.is_provisional() {
+            ChainWork::Provisional
+        } else {
+            Self::from_u256(self.to_u256() - other.to_u256())
+        }
     }
 
     /// Returns ChainWork bytes.
     pub fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
+        match self {
+            ChainWork::Indexed(work) => work,
+            ChainWork::Provisional => &[0; 32],
+        }
+    }
+
+    fn is_provisional(&self) -> bool {
+        match self {
+            ChainWork::Indexed(_) => false,
+            ChainWork::Provisional => true,
+        }
     }
 }
 
@@ -785,12 +824,16 @@ impl ZainoVersionedSerde for ChainWork {
     }
 
     fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        write_fixed_le::<32, _>(w, &self.0)
+        write_fixed_le::<32, _>(w, &self.as_bytes())
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
         let bytes = read_fixed_le::<32, _>(r)?;
-        Ok(ChainWork(bytes))
+        Ok(if bytes == [0; 32] {
+            ChainWork::Provisional
+        } else {
+            ChainWork::Indexed(bytes)
+        })
     }
 }
 
@@ -1168,6 +1211,22 @@ impl IndexedBlock {
     /// Returns the raw work value (targeted work contribution).
     pub fn work(&self) -> U256 {
         self.data.work()
+    }
+
+    /// Cumulative work relative to the seam. Use this — never an absolute
+    /// chainwork — for best-tip selection within the non-finalized window.
+    pub(crate) fn provisional_cumulative_work(
+        &self,
+        snapshot: &NonfinalizedBlockCacheSnapshot,
+    ) -> ProvisionalCumulativeWork {
+        let mut work =
+            ProvisionalCumulativeWork::seam().add_block_work(&ChainWork::from(self.data.work()));
+        let mut parent_hash = self.context.parent_hash;
+        while let Some(prev_block) = snapshot.get_chainblock_by_hash(&parent_hash) {
+            work = work.add_block_work(&ChainWork::from(prev_block.data.work()));
+            parent_hash = prev_block.parent_hash;
+        }
+        work
     }
 
     /// Converts this `IndexedBlock` into a CompactBlock protobuf message using proto v4 format.

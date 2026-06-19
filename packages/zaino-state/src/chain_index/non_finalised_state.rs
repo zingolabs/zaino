@@ -1,30 +1,16 @@
 use super::{finalised_state::ZainoDB, source::BlockchainSource, NON_FINALIZED_DEPTH};
+use crate::{chain_index::finalization_ceiling, IndexedBlock};
 use crate::{
     chain_index::types::{
         self, BlockHash, BlockIndex, BlockMetadata, BlockWithMetadata, Height, TreeRootData,
     },
     error::FinalisedStateError,
-    ChainWork,
-};
-use crate::{
-    chain_index::{
-        finalised_state::capability::{CapabilityRequest, IndexedBlockExt},
-        finalization_ceiling,
-        types::db::{
-            legacy::{compact_block_from_parts, BlockData, CompactTxData},
-            CommitmentTreeData,
-        },
-        NonFinalizedSnapshot,
-    },
-    IndexedBlock,
+    BlockContext, ChainWork,
 };
 use arc_swap::ArcSwap;
 use futures::lock::Mutex;
 use primitive_types::U256;
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 use tokio::sync::mpsc;
 use tracing::{info, instrument, warn};
 use zebra_chain::{parameters::Network, serialization::BytesInDisplayOrder};
@@ -129,7 +115,7 @@ pub(crate) struct NonfinalizedBlockCacheSnapshot {
     /// this includes all blocks on-chain, as well as
     /// all blocks known to have been on-chain before being
     /// removed by a reorg. Blocks reorged away have no height.
-    pub blocks: HashMap<BlockHash, ProvisionalBlock>,
+    pub blocks: HashMap<BlockHash, IndexedBlock>,
     /// hashes indexed by height
     /// Hashes in this map are part of the best chain.
     pub heights_to_hashes: HashMap<Height, BlockHash>,
@@ -167,113 +153,13 @@ impl ProvisionalCumulativeWork {
 
     /// Accumulate one block's own (header-derived) work onto the running
     /// relative total.
+    /// Override the normal Chainwork behaviour of never
+    /// adding 0
     pub(crate) fn add_block_work(&self, block_work: &ChainWork) -> Self {
-        Self(self.0.add(block_work))
-    }
-}
-
-/// A non-finalized block as held by the NFS.
-///
-/// It is deliberately **not** an [`IndexedBlock`]. "Indexed" means the block
-/// has been placed in the validated chain with its *absolute* cumulative
-/// chainwork — and that absolute value is unknowable while the finalized
-/// state has not yet caught up to the seam (the validator does not expose
-/// chainwork, and the finalized DB has not reached the floor). A provisional
-/// block instead carries [`Self::provisional_cumulative_work`]: cumulative
-/// work measured *relative to the seam*, derived from block headers alone.
-///
-/// Relative work is sufficient to choose the best tip within the
-/// non-finalized window: under the assumption that no reorg exceeds
-/// [`NON_FINALIZED_DEPTH`], the seam is a stable common ancestor of every
-/// competing window chain, so ordering by relative work matches ordering by
-/// absolute work.
-///
-/// A provisional block is promoted to an [`IndexedBlock`] only at the
-/// resolution boundary, when the seam's absolute work becomes known
-/// (`absolute = seam_base + provisional_cumulative_work`). The relative value
-/// lives only here and is never written into [`IndexedBlock`]'s absolute
-/// `chainwork` field, so the two cannot be misattributed.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProvisionalBlock {
-    /// Height + hash of this block.
-    pub index: BlockIndex,
-    /// Parent block hash as *claimed by this block's header*.
-    ///
-    /// UNTRUSTED while the snapshot is provisional: the linkage it asserts is
-    /// not validated against the finalized chain until the seam connects, so
-    /// it must not be used for trusted chain-walks (e.g. fork-point recursion)
-    /// during the provisional stage.
-    pub parent_hash: BlockHash,
-    /// This block's individual chainwork
-    chainwork: ChainWork,
-    /// Header and auxiliary block data.
-    pub data: BlockData,
-    /// Compact representations of the block's transactions.
-    pub transactions: Vec<CompactTxData>,
-    /// Commitment tree data for the chain after this block is applied.
-    pub commitment_tree_data: CommitmentTreeData,
-}
-
-impl ProvisionalBlock {
-    /// The block hash.
-    pub(crate) fn hash(&self) -> &BlockHash {
-        &self.index.hash
-    }
-
-    /// The block height.
-    pub(crate) fn height(&self) -> Height {
-        self.index.height
-    }
-
-    /// The parent block hash as claimed by the header. UNTRUSTED while
-    /// provisional — see the field doc; do not use for validated chain-walks.
-    pub(crate) fn parent_hash(&self) -> &BlockHash {
-        &self.parent_hash
-    }
-
-    /// Cumulative work relative to the seam. Use this — never an absolute
-    /// chainwork — for best-tip selection within the non-finalized window.
-    pub(crate) fn provisional_cumulative_work(
-        &self,
-        snapshot: &NonfinalizedBlockCacheSnapshot,
-    ) -> ProvisionalCumulativeWork {
-        let mut work =
-            ProvisionalCumulativeWork::seam().add_block_work(&ChainWork::from(self.data.work()));
-        let mut parent_hash = self.parent_hash;
-        while let Some(prev_block) = snapshot.get_chainblock_by_hash(&parent_hash) {
-            work = work.add_block_work(&ChainWork::from(prev_block.data.work()));
-            parent_hash = prev_block.parent_hash;
+        match self.0 {
+            ChainWork::Indexed(_) => Self(self.0.add(block_work)),
+            ChainWork::Provisional => Self(*block_work),
         }
-        work
-    }
-
-    /// The compact transactions in this block.
-    pub(crate) fn transactions(&self) -> &[CompactTxData] {
-        &self.transactions
-    }
-
-    /// Header and auxiliary block data.
-    pub(crate) fn data(&self) -> &BlockData {
-        &self.data
-    }
-
-    /// Commitment tree data after this block.
-    pub(crate) fn commitment_tree_data(&self) -> &CommitmentTreeData {
-        &self.commitment_tree_data
-    }
-
-    /// The compact-block representation. Compact blocks carry no cumulative
-    /// chainwork, so this is identical to an indexed block's; both delegate to
-    /// [`compact_block_from_parts`].
-    pub(crate) fn to_compact_block(&self) -> zaino_proto::proto::compact_formats::CompactBlock {
-        compact_block_from_parts(
-            self.height(),
-            self.hash(),
-            self.parent_hash(),
-            self.data().time(),
-            self.transactions(),
-            self.commitment_tree_data(),
-        )
     }
 }
 
@@ -390,19 +276,19 @@ impl NonfinalizedBlockCacheSnapshot {
                 "100 blocks below self-reported chaintip height",
             ))?;
 
-        let provisional_block = block_to_provisional_block(&start_block, source, network)
-            .await
-            .map_err(|e| SyncError::ErrorFromSource(Box::new(e)))?;
+        let indexed_block = start_block
+            .to_indexed_block(source, network.clone())
+            .await?;
 
         let mut blocks = HashMap::new();
         let mut heights_to_hashes = HashMap::new();
 
         let block_index = BlockIndex {
-            height: provisional_block.height(),
-            hash: *provisional_block.hash(),
+            height: indexed_block.height(),
+            hash: *indexed_block.hash(),
         };
 
-        blocks.insert(block_index.hash, provisional_block);
+        blocks.insert(block_index.hash, indexed_block);
         heights_to_hashes.insert(block_index.height, block_index.hash);
 
         Ok(Self {
@@ -415,7 +301,7 @@ impl NonfinalizedBlockCacheSnapshot {
         })
     }
 
-    fn add_block_new_chaintip(&mut self, block: ProvisionalBlock) {
+    fn add_block_new_chaintip(&mut self, block: IndexedBlock) {
         self.best_tip = BlockIndex {
             height: block.height(),
             hash: *block.hash(),
@@ -423,10 +309,7 @@ impl NonfinalizedBlockCacheSnapshot {
         self.add_block(block)
     }
 
-    fn get_block_by_hash_bytes_in_serialized_order(
-        &self,
-        hash: [u8; 32],
-    ) -> Option<&ProvisionalBlock> {
+    fn get_block_by_hash_bytes_in_serialized_order(&self, hash: [u8; 32]) -> Option<&IndexedBlock> {
         self.blocks
             .values()
             .find(|block| block.hash_bytes_serialized_order() == hash)
@@ -441,7 +324,7 @@ impl NonfinalizedBlockCacheSnapshot {
             .retain(|height, _hash| height >= &finalized_height);
     }
 
-    fn add_block(&mut self, block: ProvisionalBlock) {
+    fn add_block(&mut self, block: IndexedBlock) {
         self.heights_to_hashes.insert(block.height(), *block.hash());
         self.blocks.insert(*block.hash(), block);
     }
@@ -561,7 +444,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             if parent_hash == working_snapshot.best_tip.hash {
                 // Normal chain progression
                 let chainblock =
-                    block_to_provisional_block(&block, &self.source, self.network.clone()).await?;
+                    block_to_indexed_block(&block, &self.source, self.network.clone()).await?;
                 info!(
                     height = (working_snapshot.best_tip.height + 1).0,
                     hash = %chainblock.hash(),
@@ -599,8 +482,8 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         &self,
         working_snapshot: &mut NonfinalizedBlockCacheSnapshot,
         block: &impl Block,
-    ) -> Result<ProvisionalBlock, SyncError> {
-        match working_snapshot
+    ) -> Result<IndexedBlock, SyncError> {
+        let prev_block = match working_snapshot
             .get_block_by_hash_bytes_in_serialized_order(block.prev_hash_bytes_serialized_order())
             .cloned()
         {
@@ -637,9 +520,11 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 Box::pin(self.handle_reorg(working_snapshot, &*prev_block)).await?
             }
         };
-        let provisional_block = block.to_provisional_block(self).await?;
-        working_snapshot.add_block_new_chaintip(provisional_block.clone());
-        Ok(provisional_block)
+        let indexed_block = block
+            .to_indexed_block(&self.source, self.network.clone())
+            .await?;
+        working_snapshot.add_block_new_chaintip(indexed_block.clone());
+        Ok(indexed_block)
     }
 
     /// Handle non-finalized change listener events
@@ -706,9 +591,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             .heights_to_hashes
             .contains_key(&finalized_height)
         {
-            self.reify(&mut new_snapshot, finalized_db.as_ref())
-                .await
-                .map_err(|e| todo!(""))?;
+            new_snapshot.availability = SnapshotAvailability::Reified;
         }
 
         let seam = match new_snapshot.availability {
@@ -803,7 +686,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         &self,
         working_snapshot: &mut NonfinalizedBlockCacheSnapshot,
         block: &impl Block,
-    ) -> Result<ProvisionalBlock, SyncError> {
+    ) -> Result<IndexedBlock, SyncError> {
         match working_snapshot
             .get_block_by_hash_bytes_in_serialized_order(block.prev_hash_bytes_serialized_order())
             .cloned()
@@ -831,76 +714,76 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 Box::pin(self.add_nonbest_block(working_snapshot, &*prev_block)).await?
             }
         };
-        let provisional_block = block.to_provisional_block(self).await?;
+        let provisional_block = block
+            .to_indexed_block(&self.source, self.network.clone())
+            .await?;
         working_snapshot
             .blocks
             .insert(*provisional_block.hash(), provisional_block.clone());
         Ok(provisional_block)
     }
 
-    async fn reify(
-        &self,
-        new_snapshot: &mut NonfinalizedBlockCacheSnapshot,
+    // async fn reify(
+    //     &self,
+    //     new_snapshot: &mut NonfinalizedBlockCacheSnapshot,
 
-        finalized_db: &ZainoDB,
-    ) -> Result<(), String> {
-        let Some((seam_height, seam_hash)) = new_snapshot
-            .heights_to_hashes
-            .iter()
-            .min_by_key(|(height, _hash)| **height)
-        else {
-            return Err("tried to reify empty snapshot".to_string());
-        };
-        let Some(seam_block) = finalized_db
-            .backend_for_cap(CapabilityRequest::IndexedBlockExt)
-            .map_err(|e| format!("backend can't serve indexed blocks: {e}"))?
-            .get_chain_block(*seam_height)
-            .await
-            .map_err(|e| format!("backend error: {e}"))?
-        else {
-            return Err("backend missing block below known block".to_string());
-        };
+    //     finalized_db: &ZainoDB,
+    // ) -> Result<(), String> {
+    //     let Some((seam_height, seam_hash)) = new_snapshot
+    //         .heights_to_hashes
+    //         .iter()
+    //         .min_by_key(|(height, _hash)| **height)
+    //     else {
+    //         return Err("tried to reify empty snapshot".to_string());
+    //     };
+    //     let Some(seam_block) = finalized_db
+    //         .backend_for_cap(CapabilityRequest::IndexedBlockExt)
+    //         .map_err(|e| format!("backend can't serve indexed blocks: {e}"))?
+    //         .get_chain_block(*seam_height)
+    //         .await
+    //         .map_err(|e| format!("backend error: {e}"))?
+    //     else {
+    //         return Err("backend missing block below known block".to_string());
+    //     };
 
-        let mut reify_children_of = HashSet::new();
-        *new_snapshot.blocks.get_mut(seam_hash).expect("todo") =
-            seam_block.to_provisional_block(&self).await.expect("todo");
-        reify_children_of.insert(*seam_block.hash());
+    //     let mut reify_children_of = HashSet::new();
+    //     *new_snapshot.blocks.get_mut(seam_hash).expect("todo") =
+    //         seam_block.to_provisional_block(&self).await.expect("todo");
+    //     reify_children_of.insert(*seam_block.hash());
 
-        while !reify_children_of.is_empty() {
-            let to_reify: HashMap<BlockHash, ProvisionalBlock> = new_snapshot
-                .blocks
-                .iter()
-                .filter(|(_hash, block)| reify_children_of.contains(block.parent_hash()))
-                .map(|(hash, block)| (*hash, block.clone()))
-                .collect();
-            for (hash, block) in to_reify.iter() {
-                let mut block = block.clone();
-                block.chainwork = block.chainwork.add(
-                    &new_snapshot
-                        .blocks
-                        .get(block.parent_hash())
-                        .expect("todo")
-                        .chainwork,
-                );
-                new_snapshot.blocks.insert(*hash, block);
-            }
-            reify_children_of = to_reify.into_keys().collect();
-        }
+    //     while !reify_children_of.is_empty() {
+    //         let to_reify: HashMap<BlockHash, IndexedBlock> = new_snapshot
+    //             .blocks
+    //             .iter()
+    //             .filter(|(_hash, block)| reify_children_of.contains(block.parent_hash()))
+    //             .map(|(hash, block)| (*hash, block.clone()))
+    //             .collect();
+    //         for (hash, block) in to_reify.iter() {
+    //             let mut block = block.clone();
+    //             block.chainwork = block.chainwork.add(
+    //                 &new_snapshot
+    //                     .blocks
+    //                     .get(block.parent_hash())
+    //                     .expect("todo")
+    //                     .chainwork,
+    //             );
+    //             new_snapshot.blocks.insert(*hash, block);
+    //         }
+    //         reify_children_of = to_reify.into_keys().collect();
+    //     }
 
-        new_snapshot.availability = SnapshotAvailability::Reified;
-        Ok(())
-    }
+    //     new_snapshot.availability = SnapshotAvailability::Reified;
+    //     Ok(())
+    // }
 }
 
-/// Build a [`ProvisionalBlock`] from a source block, accumulating its
-/// header work onto the parent's relative total. Mirrors
-/// [`Self::block_to_chainblock`] but produces a provisional (not indexed)
-/// block: no absolute chainwork is computed or required.
-async fn block_to_provisional_block(
+/// Build an [`IndexedBlock`] from a source block
+/// Chainwork will always be provisional
+async fn block_to_indexed_block(
     block: &zebra_chain::block::Block,
     source: &impl BlockchainSource,
     network: Network,
-) -> Result<ProvisionalBlock, SyncError> {
+) -> Result<IndexedBlock, SyncError> {
     let tree_roots = get_tree_roots_from_source(block.hash().into(), source)
         .await
         .map_err(|e| {
@@ -909,29 +792,23 @@ async fn block_to_provisional_block(
             )))
         })?;
 
-    provisional_block_from_parts(block, &tree_roots, network).map_err(|e| {
+    indexed_block_from_parts(block, &tree_roots, network).map_err(|e| {
         SyncError::ValidatorConnectionError(NodeConnectionError::UnrecoverableError(Box::new(
             InvalidData(e),
         )))
     })
 }
-/// Assemble a [`ProvisionalBlock`] from already-fetched parts. Reuses the
+/// Assemble an [`IndexedBlock`] from already-fetched parts. Reuses the
 /// shared `BlockWithMetadata` extractors (`extract_block_data`,
 /// `extract_transactions`, `create_commitment_tree_data`, `block_work`);
-/// the only divergence from the indexed path is that work is accumulated
-/// *relative to the seam* instead of into an absolute `BlockContext`.
-fn provisional_block_from_parts(
+fn indexed_block_from_parts(
     block: &zebra_chain::block::Block,
     tree_roots: &TreeRootData,
     network: Network,
-) -> Result<ProvisionalBlock, String> {
+) -> Result<IndexedBlock, String> {
     let (sapling_root, sapling_size, orchard_root, orchard_size) =
         tree_roots.clone().extract_with_defaults();
 
-    // `parent_chainwork` is unused for a provisional block (it feeds only
-    // `create_block_context`, which we never call here); a zero placeholder
-    // keeps the throwaway `BlockMetadata` shape without touching absolute
-    // work. The relative total is tracked separately, below.
     let metadata = BlockMetadata::new(
         sapling_root,
         sapling_size as u32,
@@ -945,7 +822,7 @@ fn provisional_block_from_parts(
     let data = block_with_metadata.extract_block_data()?;
     let transactions = block_with_metadata.extract_transactions()?;
     let commitment_tree_data = block_with_metadata.create_commitment_tree_data();
-    let chainwork = block_with_metadata.block_work()?;
+    let chainwork = ChainwChainWork::Provisional;
 
     let hash = BlockHash::from(block.hash());
     let parent_hash = BlockHash::from(block.header.previous_block_hash);
@@ -954,15 +831,18 @@ fn provisional_block_from_parts(
         .map(|height| Height(height.0))
         .ok_or_else(|| String::from("Any valid block has a coinbase height"))?;
 
-    Ok(ProvisionalBlock {
-        index: BlockIndex { height, hash },
-        parent_hash,
-        chainwork,
+    Ok(IndexedBlock {
+        context: BlockContext {
+            index: BlockIndex { height, hash },
+            parent_hash,
+            chainwork,
+        },
         data,
         transactions,
         commitment_tree_data,
     })
 }
+
 /// Get commitment tree roots from the blockchain source
 async fn get_tree_roots_from_source(
     block_hash: BlockHash,
@@ -997,31 +877,12 @@ pub enum UpdateError {
 
 trait Block {
     fn hash_bytes_serialized_order(&self) -> [u8; 32];
+    async fn to_indexed_block<Source: BlockchainSource>(
+        &self,
+        source: &Source,
+        network: Network,
+    ) -> Result<IndexedBlock, SyncError>;
     fn prev_hash_bytes_serialized_order(&self) -> [u8; 32];
-    /// Produce the [`ProvisionalBlock`] for this block.
-    async fn to_provisional_block<Source: BlockchainSource>(
-        &self,
-        nfs: &NonFinalizedState<Source>,
-    ) -> Result<ProvisionalBlock, SyncError>;
-}
-
-impl Block for ProvisionalBlock {
-    fn hash_bytes_serialized_order(&self) -> [u8; 32] {
-        self.hash().0
-    }
-
-    fn prev_hash_bytes_serialized_order(&self) -> [u8; 32] {
-        self.parent_hash().0
-    }
-
-    async fn to_provisional_block<Source: BlockchainSource>(
-        &self,
-        _nfs: &NonFinalizedState<Source>,
-    ) -> Result<ProvisionalBlock, SyncError> {
-        // Identity: a block already in the snapshot keeps the relative work it
-        // was assigned when first added; `parent_work` is irrelevant here.
-        Ok(self.clone())
-    }
 }
 
 impl Block for IndexedBlock {
@@ -1033,21 +894,12 @@ impl Block for IndexedBlock {
         self.context.parent_hash().0
     }
 
-    async fn to_provisional_block<Source: BlockchainSource>(
+    async fn to_indexed_block<Source: BlockchainSource>(
         &self,
-        _nfs: &NonFinalizedState<Source>,
-    ) -> Result<ProvisionalBlock, SyncError> {
-        Ok(ProvisionalBlock {
-            index: BlockIndex {
-                height: self.height(),
-                hash: *self.hash(),
-            },
-            parent_hash: self.context.parent_hash,
-            chainwork: *self.chainwork(),
-            data: self.data,
-            transactions: self.transactions.clone(),
-            commitment_tree_data: self.commitment_tree_data,
-        })
+        _source: &Source,
+        _network: Network,
+    ) -> Result<IndexedBlock, SyncError> {
+        Ok(self.clone())
     }
 }
 
@@ -1059,11 +911,11 @@ impl Block for zebra_chain::block::Block {
     fn prev_hash_bytes_serialized_order(&self) -> [u8; 32] {
         self.header.previous_block_hash.bytes_in_serialized_order()
     }
-
-    async fn to_provisional_block<Source: BlockchainSource>(
+    async fn to_indexed_block<Source: BlockchainSource>(
         &self,
-        nfs: &NonFinalizedState<Source>,
-    ) -> Result<ProvisionalBlock, SyncError> {
-        block_to_provisional_block(self, &nfs.source, nfs.network.clone()).await
+        source: &Source,
+        network: Network,
+    ) -> Result<IndexedBlock, SyncError> {
+        block_to_indexed_block(self, source, network).await
     }
 }
