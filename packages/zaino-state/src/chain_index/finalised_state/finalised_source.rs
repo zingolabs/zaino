@@ -1021,6 +1021,22 @@ impl<T: BlockchainSource> FinalisedSource<T> {
         }
     }
 
+    /// Resolves the accumulator-rebuild shard count for a memory budget (V1 only).
+    ///
+    /// Test hook for asserting the rebuild auto-shards to fit the configured memory budget.
+    #[cfg(test)]
+    pub(crate) fn accumulator_build_shards(
+        &self,
+        budget_bytes: u64,
+    ) -> Result<u16, FinalisedStateError> {
+        match self {
+            Self::V1(database) => database.accumulator_build_shards(budget_bytes),
+            Self::V0(_) | Self::Ephemeral(_) => Err(FinalisedStateError::FeatureUnavailable(
+                "v1 txout-set accumulator builder",
+            )),
+        }
+    }
+
     /// Writes a block using the v1.0.0 format.
     ///
     /// This intentionally writes only the core v1 tables and uses v1 item encodings.

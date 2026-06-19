@@ -38,3 +38,11 @@ shard_power = 4
 [storage.database]
 path = '/home/cupress/.cache/zaino'
 size = 128
+# Approximate in-memory budget (in GiB) for the bulk-sync write batch. Also bounds the per-shard
+# memory of the txout-set accumulator rebuild at chain tip (it auto-shards to fit). Lower this on
+# memory-constrained hosts to bound peak sync/rebuild RAM. Defaults to 32.
+sync_write_batch_size = 32
+# Max wall-clock time (seconds) spent buffering a bulk-sync batch before flushing. Raise it to make
+# sync less reactive but faster on large-RAM hosts where the memory budget is never reached first.
+# Defaults to 300 (5 minutes).
+sync_checkpoint_interval = 300

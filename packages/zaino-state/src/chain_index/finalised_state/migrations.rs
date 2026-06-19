@@ -1017,7 +1017,8 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
             // Buffer spent entries across heights, then flush them in sorted key order so the
             // random-keyed `spent` B-tree fills via a sequential sweep instead of a random fault per
             // insert. Each flush commits the entries together with the progress watermark.
-            let batch_budget = cfg.storage.database.sync_write_batch_bytes.max(1);
+            let batch_budget =
+                (cfg.storage.database.sync_write_batch_size.to_byte_count() as u64).max(1);
             let mut spent_buffer: Vec<(Vec<u8>, TxLocation)> = Vec::new();
             let mut spent_buffer_bytes: u64 = 0;
 

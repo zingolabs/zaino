@@ -8,7 +8,17 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- `StorageConfig::database.sync_checkpoint_interval` (seconds, default 300) — max
+  wall-clock time spent buffering a bulk-sync write batch before flushing. Raise
+  it to make sync less reactive but faster on large-RAM hosts where the memory
+  budget is never reached before the interval.
 ### Changed
+- **Breaking** — `StorageConfig::database.sync_write_batch_bytes` (raw bytes) is
+  renamed to `sync_write_batch_size` and now expressed in **GiB** (new
+  `SyncWriteBatchSize` newtype, mirroring `DatabaseSize`); the default is raised
+  from 4 GiB to 32 GiB. This budget now also bounds the per-shard memory of the
+  finalised-state txout-set accumulator rebuild. Existing TOML configs setting
+  `sync_write_batch_bytes` must switch to `sync_write_batch_size` (in GiB).
 ### Deprecated
 ### Removed
 ### Fixed

@@ -168,15 +168,25 @@ pub(crate) const TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY: &[u8] =
 /// both paths produce the identical accumulator at the tip.
 pub(crate) const ACCUMULATOR_INCREMENTAL_MAX_GAP: u32 = 1_000;
 
-/// Number of txid-prefix shards used by the bulk txout-set accumulator builder.
+/// Maximum number of txid-prefix shards used by the bulk txout-set accumulator builder.
 ///
 /// The builder holds the set of spent outpoints in memory while scanning the block data. Sharding
 /// on the creating-txid's first byte bounds that working set to roughly `1 / shards` of the total
 /// spent index, at the cost of one extra sequential pass over the block data per shard. The
 /// per-shard partials recombine exactly (XOR commitment + additive counters), so the result is
-/// independent of the shard count. `1` is a single optimal pass and is correct on any host with
-/// enough RAM for the full spent set; raise it on memory-constrained deployments.
-pub(crate) const ACCUMULATOR_BUILD_SHARDS: u16 = 1;
+/// independent of the shard count.
+///
+/// The shard count is chosen at rebuild time so the per-shard spent set fits the configured
+/// [`zaino_common::DatabaseConfig::sync_write_batch_size`] budget (see
+/// [`DbV1::rebuild_tx_out_set_accumulator`]): a single optimal pass on hosts with enough RAM for
+/// the full spent set, scaling up on memory-constrained deployments. Sharding partitions on the
+/// creating-txid's first byte (256 distinct values), so the count is capped here.
+pub(crate) const ACCUMULATOR_BUILD_MAX_SHARDS: u16 = 256;
+
+/// Conservative per-entry RAM estimate for the rebuild's in-memory spent set, used only to size the
+/// shard count. Each entry is a boxed `spent` key (~37 bytes) plus `HashSet` bucket overhead; an
+/// over-estimate just adds shards (less memory), never under-bounds.
+pub(crate) const SPENT_SET_ENTRY_BYTES_ESTIMATE: u64 = 128;
 
 /// Number of committed block writes / migration heights between explicit
 /// `env.sync(true)` durability checkpoints.

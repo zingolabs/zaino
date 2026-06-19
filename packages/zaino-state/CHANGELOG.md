@@ -32,9 +32,19 @@ and this library adheres to Rust's notion of
   `MAX_NFS_DEPTH` blocks below the tip, so the cache cannot grow unbounded when
   the finalised `db_height` lags (background sync) or is pinned at `0`
   (ephemeral mode).
+- The finalised-state bulk-sync write-batch flush interval is now configurable
+  via `storage.database.sync_checkpoint_interval` (was a fixed 60s; default now
+  300s). Raise it to make sync less reactive but faster on large-RAM hosts where
+  the memory budget is never reached before the interval.
 ### Deprecated
 ### Removed
 ### Fixed
+- The finalised-state txout-set accumulator rebuild at chain tip no longer
+  OOM-crashes on memory-constrained hosts. The rebuild now auto-shards its
+  in-memory spent set to fit the configured
+  `storage.database.sync_write_batch_size` budget (a single optimal pass when the
+  whole set fits in RAM, scaling up otherwise); the result is independent of the
+  shard count.
 
 ## [0.3.0] - 2026-06-17
 

@@ -17,7 +17,9 @@ pub use net::{resolve_socket_addr, try_resolve_address, AddressResolution};
 // This allows existing code using `use zaino_common::Network` to continue working.
 pub use config::network::{ActivationHeights, Network, ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS};
 pub use config::service::ServiceConfig;
-pub use config::storage::{CacheConfig, DatabaseConfig, DatabaseSize, StorageConfig};
+pub use config::storage::{
+    CacheConfig, DatabaseConfig, DatabaseSize, StorageConfig, SyncWriteBatchSize,
+};
 pub use config::validator::ValidatorConfig;
 
 // Keep submodule access available for more specific imports if needed

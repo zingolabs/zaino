@@ -9,10 +9,20 @@ and this crate adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- `[storage.database]` config gains `sync_checkpoint_interval` (seconds, default
+  300) — the bulk-sync write-batch flush interval.
 ### Changed
+- **Breaking** — `[storage.database] sync_write_batch_bytes` (bytes) is renamed
+  to `sync_write_batch_size` and is now given in **GiB** (default raised from
+  4 GiB to 32 GiB). Lowering it bounds peak sync RAM and the txout-set
+  accumulator rebuild's per-shard memory on memory-constrained hosts. See the
+  `zaino-common` changelog.
 ### Deprecated
 ### Removed
 ### Fixed
+- Zaino no longer OOM-crashes during the txout-set accumulator rebuild when it
+  reaches mainnet chain tip on memory-constrained hosts (e.g. a 16 GiB pod); the
+  rebuild auto-shards to fit the configured `sync_write_batch_size` budget.
 
 ## [0.4.1] - 2026-06-18
 

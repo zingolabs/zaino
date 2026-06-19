@@ -1,8 +1,8 @@
 //! FinalisedState::V1 transparent address history indexing functionality.
 
 use crate::chain_index::finalised_state::finalised_source::v1::{
-    ACCUMULATOR_BUILD_SHARDS, TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY,
-    TX_OUT_SET_INFO_ACCUMULATOR_KEY,
+    ACCUMULATOR_BUILD_MAX_SHARDS, SPENT_SET_ENTRY_BYTES_ESTIMATE,
+    TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY, TX_OUT_SET_INFO_ACCUMULATOR_KEY,
 };
 use crate::chain_index::types::db::metadata::{
     is_unspendable_tx_out, tx_out_set_entry_digest, FinalisedTxOutSetInfoAccumulator,
@@ -1715,9 +1715,18 @@ impl DbV1 {
             return Ok(());
         };
 
+        // Bound the rebuild's peak RAM to the configured sync batch budget by sharding the in-memory
+        // spent set; on hosts where the whole set fits this resolves to a single optimal pass.
+        let budget =
+            (self.config.storage.database.sync_write_batch_size.to_byte_count() as u64).max(1);
+        let shards = self.accumulator_build_shards(budget)?;
+        info!(
+            "rebuilding txout-set accumulator to height {} ({shards} shard(s), ~{budget} byte budget)",
+            db_tip.0
+        );
+
         tokio::task::block_in_place(|| {
-            let accumulator =
-                self.build_tx_out_set_accumulator_blocking(db_tip, ACCUMULATOR_BUILD_SHARDS)?;
+            let accumulator = self.build_tx_out_set_accumulator_blocking(db_tip, shards)?;
 
             let mut txn = self.env.begin_rw_txn()?;
 
@@ -1742,6 +1751,53 @@ impl DbV1 {
             self.env.sync(true)?;
 
             Ok::<_, FinalisedStateError>(())
+        })
+    }
+
+    /// Chooses the number of [`DbV1::build_tx_out_set_accumulator_blocking`] shards so the per-shard
+    /// in-memory spent set stays within `budget_bytes`.
+    ///
+    /// `shards = ceil(estimated_spent_set_bytes / budget)`, clamped to
+    /// `1..=ACCUMULATOR_BUILD_MAX_SHARDS`. Hosts with enough RAM for the whole spent set get a
+    /// single optimal pass; constrained hosts scale up. The estimate over-counting only adds shards
+    /// (less memory), never under-bounds, so the rebuild cannot OOM within the budget.
+    pub(crate) fn accumulator_build_shards(
+        &self,
+        budget_bytes: u64,
+    ) -> Result<u16, FinalisedStateError> {
+        let budget = budget_bytes.max(1);
+        // Only count the spent set up to the point where we'd hit the shard cap anyway — past it
+        // the exact size cannot change the decision, so the count pass is itself bounded.
+        let max_useful_entries = (ACCUMULATOR_BUILD_MAX_SHARDS as u64)
+            .saturating_mul(budget)
+            / SPENT_SET_ENTRY_BYTES_ESTIMATE.max(1);
+        let needed = self
+            .estimate_spent_set_bytes(max_useful_entries)?
+            .div_ceil(budget);
+        Ok(needed.clamp(1, ACCUMULATOR_BUILD_MAX_SHARDS as u64) as u16)
+    }
+
+    /// Estimates the in-RAM bytes the rebuild's single-shard spent set would occupy: the `spent`
+    /// table's entry count times [`SPENT_SET_ENTRY_BYTES_ESTIMATE`].
+    ///
+    /// Counts via a sequential cursor scan (the safe `lmdb` API exposes no per-sub-DB stat), stopping
+    /// early once `max_useful_entries` is reached. The rebuild already scans `spent` once per shard,
+    /// so this extra bounded pass is marginal.
+    fn estimate_spent_set_bytes(
+        &self,
+        max_useful_entries: u64,
+    ) -> Result<u64, FinalisedStateError> {
+        tokio::task::block_in_place(|| {
+            let txn = self.env.begin_ro_txn()?;
+            let mut cursor = txn.open_ro_cursor(self.spent)?;
+            let mut count: u64 = 0;
+            for _ in cursor.iter() {
+                count += 1;
+                if count >= max_useful_entries {
+                    break;
+                }
+            }
+            Ok(count.saturating_mul(SPENT_SET_ENTRY_BYTES_ESTIMATE))
         })
     }
 
