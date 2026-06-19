@@ -1,4 +1,5 @@
-//! Zaino-State ChainIndex Finalised State (ZainoDB) unit tests.
+//! Zaino-State ChainIndex Finalised State (FinalisedState) unit tests.
+mod ephemeral;
 mod migrations;
 mod v0;
 pub(crate) mod v1;
@@ -6,21 +7,23 @@ pub(crate) mod v1;
 use std::future::Future;
 use tempfile::TempDir;
 
-use crate::chain_index::finalised_state::ZainoDB;
+use crate::chain_index::finalised_state::FinalisedState;
 use crate::chain_index::source::mockchain_source::MockchainSource;
 use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{build_mockchain_source, load_test_vectors};
 use crate::error::FinalisedStateError;
+use crate::BlockchainSource;
 
 /// Regression helper for zingolabs/zaino#1032.
 ///
-/// Spawns a `ZainoDB` with the provided version-specific spawner, waits for
+/// Spawns a `FinalisedState` with the provided version-specific spawner, waits for
 /// ready, then asserts that `shutdown()` returns in well under 5 s — i.e. the
 /// background handle is awaited, not padded with an unconditional sleep.
-async fn assert_shutdown_returns_promptly<F, Fut>(version_label: &str, spawn_fn: F)
+async fn assert_shutdown_returns_promptly<F, Fut, T>(version_label: &str, spawn_fn: F)
 where
     F: FnOnce(MockchainSource) -> Fut,
-    Fut: Future<Output = Result<(TempDir, ZainoDB), FinalisedStateError>>,
+    Fut: Future<Output = Result<(TempDir, FinalisedState<T>), FinalisedStateError>>,
+    T: BlockchainSource,
 {
     init_tracing();
 

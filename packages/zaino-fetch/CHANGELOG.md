@@ -8,12 +8,27 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.2.0] - 2026-06-17
+
+### Added
 - `JsonRpSeeConnector::get_tx_out_set_info` — JSON-RPC client method for the
   upstream `gettxoutsetinfo` call.
 - `jsonrpsee::response::GetTxOutSetInfoResponse` (`Info` | `Empty` untagged
   enum), `GetTxOutSetInfo` and `EmptyTxOutSetInfo` types covering both the
   populated and stats-collection-failed shapes returned by zcashd.
+- `JsonRpSeeConnector::get_chain_tips`, `get_tx_out`, and `get_spent_info` —
+  JSON-RPC client methods for the upstream `getchaintips`, `gettxout`, and
+  `getspentinfo` calls.
+- `jsonrpsee::response::{GetChainTipsResponse, ChainTip, ChainTipStatus}` —
+  types modelling the `getchaintips` response.
 ### Changed
+- NU6.2 network-upgrade variant added to Zebra RPC response parsing, so
+  activation-height responses that include `NU6.2` are recognised.
 ### Deprecated
 ### Removed
 ### Fixed

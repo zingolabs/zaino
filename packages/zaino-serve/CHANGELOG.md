@@ -13,6 +13,25 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.3.0] - 2026-06-17
+
+### Added
+- JSON-RPC service gains `get_tx_out_set_info`, `get_chain_tips`, `get_tx_out`,
+  and `get_spent_info` handlers, each delegating to the corresponding
+  `zaino_fetch::JsonRpSeeConnector` method.
+- `grpc_routes` — assembles the tonic router for the gRPC service, split out of
+  server spawn so the routes can be built independently of binding a listener.
+### Changed
+- **Breaking** — the JSON-RPC `#[rpc(server)]` trait gains four required methods
+  (`get_tx_out_set_info`, `get_chain_tips`, `get_tx_out`, `get_spent_info`) with
+  no default body; downstream implementors of the trait must add them.
+- **Breaking** — `Server::spawn` no longer takes the
+  `<Indexer: ZcashIndexer + LightWalletIndexer>` type parameters (they moved to
+  `grpc_routes`) and now binds its `TcpIncoming` listener internally.
+### Deprecated
+### Removed
+### Fixed
+
 ## [0.2.0] - 2026-05-19
 
 ### Added

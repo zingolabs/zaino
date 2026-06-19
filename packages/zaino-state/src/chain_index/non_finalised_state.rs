@@ -1,5 +1,6 @@
-use super::{finalised_state::ZainoDB, source::BlockchainSource, NON_FINALIZED_DEPTH};
+use super::{finalised_state::FinalisedState, source::BlockchainSource, NON_FINALIZED_DEPTH};
 use crate::{chain_index::finalization_ceiling, IndexedBlock};
+
 use crate::{
     chain_index::types::{
         self, BlockHash, BlockIndex, BlockMetadata, BlockWithMetadata, Height, TreeRootData,
@@ -15,6 +16,15 @@ use tokio::sync::mpsc;
 use tracing::{info, instrument, warn};
 use zebra_chain::{parameters::Network, serialization::BytesInDisplayOrder};
 use zebra_state::HashOrHeight;
+
+/// Hard cap on how many blocks below the tip the non-finalised state retains in memory.
+///
+/// [`NonFinalizedState::update`] normally trims everything below the finalised database height,
+/// but that height can lag far behind the tip while the finalised DB syncs in the background, and
+/// is pinned at `0` in ephemeral mode. Without an independent floor the snapshot would grow by one
+/// block per new block indefinitely. This caps retention to a fixed window regardless, a small
+/// margin above [`NON_FINALIZED_DEPTH`] so it never trims inside the reorg-possible range.
+const MAX_NFS_DEPTH: u32 = NON_FINALIZED_DEPTH + 10;
 
 /// Holds the block cache
 #[derive(Debug)]
@@ -316,12 +326,24 @@ impl NonfinalizedBlockCacheSnapshot {
     }
 
     fn remove_finalized_blocks(&mut self, finalized_height: Height) {
+        let top_block_hash = match self
+            .heights_to_hashes
+            .iter()
+            .max_by_key(|(height, _hash)| *height)
+        {
+            Some((_height, hash)) => *hash,
+            // We have no blocks. There's nothing to remove
+            None => return,
+        };
         // Keep the last finalized block. This means we don't have to check
         // the finalized state when the entire non-finalized state is reorged away.
-        self.blocks
-            .retain(|_hash, block| block.height() >= finalized_height);
+        // If all blocks are below the finalized height, keep the highest anyway,
+        // so we don't need to re-connect the the finalized state to get chainwork, etc.
+        self.blocks.retain(|_hash, block| {
+            block.height() >= finalized_height || block.hash() == &top_block_hash
+        });
         self.heights_to_hashes
-            .retain(|height, _hash| height >= &finalized_height);
+            .retain(|height, hash| height >= &finalized_height || hash == &top_block_hash);
     }
 
     fn add_block(&mut self, block: IndexedBlock) {
@@ -384,7 +406,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     #[instrument(name = "NonFinalizedState::sync", skip(self, finalized_db))]
     pub(super) async fn sync(
         &self,
-        finalized_db: Arc<ZainoDB>,
+        finalized_db: Arc<FinalisedState<Source>>,
         chain_height: Height,
     ) -> Result<(), SyncError> {
         // The NFS is validator-sourced and *leads* the finalized DB: it holds
@@ -452,7 +474,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 );
                 working_snapshot.add_block_new_chaintip(chainblock);
             } else {
-                self.handle_reorg(&mut working_snapshot, block.as_ref())
+                self.handle_reorg(&mut working_snapshot, block.as_ref(), 0)
                     .await?;
                 // There's been a reorg. The fresh block is the new chaintip
                 // we need to work backwards from it and update heights_to_hashes
@@ -482,7 +504,16 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         &self,
         working_snapshot: &mut NonfinalizedBlockCacheSnapshot,
         block: &impl Block,
+        recursion_count: u8,
     ) -> Result<IndexedBlock, SyncError> {
+        // We should never recurse back more than ~100 blocks, assuming
+        // a complete reorg of the entire nonfinalized state.
+        // 110 adds a likely unneeded safety margin
+        if recursion_count > 110 {
+            return Err(SyncError::ReorgFailure(
+                "reorg handling recursed beyond reason".to_string(),
+            ));
+        }
         let prev_block = match working_snapshot
             .get_block_by_hash_bytes_in_serialized_order(block.prev_hash_bytes_serialized_order())
             .cloned()
@@ -493,7 +524,8 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                     .values()
                     .any(|hash| hash == prev_block.hash())
                 {
-                    Box::pin(self.handle_reorg(working_snapshot, &prev_block)).await?
+                    Box::pin(self.handle_reorg(working_snapshot, &prev_block, recursion_count + 1))
+                        .await?
                 } else {
                     prev_block
                 }
@@ -517,7 +549,8 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                             "zebrad missing block in best chain".to_string(),
                         ))),
                     ))?;
-                Box::pin(self.handle_reorg(working_snapshot, &*prev_block)).await?
+                Box::pin(self.handle_reorg(working_snapshot, &*prev_block, recursion_count + 1))
+                    .await?
             }
         };
         let indexed_block = block
@@ -576,7 +609,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     /// Add all blocks from the staging area, and save a new cache snapshot, trimming block below the finalised tip.
     pub(super) async fn update(
         &self,
-        finalized_db: Arc<ZainoDB>,
+        finalized_db: Arc<FinalisedState<Source>>,
         initial_state: Arc<NonfinalizedBlockCacheSnapshot>,
         mut new_snapshot: NonfinalizedBlockCacheSnapshot,
     ) -> Result<(), UpdateError> {
@@ -611,7 +644,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             .max_by_key(|block| block.provisional_cumulative_work(&new_snapshot))
             .cloned()
             .expect("empty snapshot impossible");
-        self.handle_reorg(&mut new_snapshot, best_block)
+        self.handle_reorg(&mut new_snapshot, best_block, 0)
             .await
             .map_err(|_e| UpdateError::DatabaseHole)?;
 

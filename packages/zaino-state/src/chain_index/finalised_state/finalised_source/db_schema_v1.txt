@@ -1,0 +1,140 @@
+# ────────────────────────────────────────────────────────────────────────────────
+#  Zaino – Finalised State Database, on-disk layout (Schema v1.2, 2026-13-05)
+# ────────────────────────────────────────────────────────────────────────────────
+#
+#  Any change to this file is a **breaking** change.  Bump the schema version,
+#  place the new description in a *new* file (`db_schema_v{N}.txt`), compute the
+#  new 32-byte BLAKE2b digest and update the constant in `schema.rs`.
+#
+#  Abbreviations
+#  ─────────────
+#      H      = block Height  (u32)        |  B = [u8;32] block/tx hash
+#      LE(uN) = unsigned integer of N bits |  BE = big-endian
+#      CS     = CompactSize length prefix
+#      U256 = 32-byte little-endian unsigned integer
+#
+#  Conventions
+#  ───────────
+#  • All records are encoded with Zaino’s versioned-serialize framework:
+#       <u8 version_tag>  <body bytes defined below>
+#  • All fixed-width integral fields are little-endian unless explicitly noted.
+#  • Variable-length collections are length-prefixed with Bitcoin/Zcash
+#    CompactSize.
+#  • `Option<T>` is encoded as: 0x00 (None) | 0x01 (Some) <encoded T>.
+#  • `StoredEntryFixed<T>`  -> fixed length metadata wrapper around `T`
+#       V1 body = <u8 version_tag> <encoded T> < [u8; 32] check_hash>
+#  • `StoredEntryVar<T>`  -> variable metadata wrapper around `T`
+#       V1 body = <u8 version_tag> <CS encoded T len> <encoded T> < [u8; 32] check_hash>
+#
+# ─────────────────────────── Logical databases ────────────────────────────────
+#
+# 1. headers  ―  H  ->  StoredEntryVar<BlockHeaderData>
+#    Key : BE height
+#    Val : 0x01/0x02 + BlockHeaderData
+#           BlockHeaderData V1 body  =
+#              BlockIndex V1  +  BlockData
+#
+#           BlockHeaderData V2 body  =
+#              BlockIndex V2  +  BlockData
+#
+#              BlockIndex V2 body =  B hash  B parent_hash  U256 chain_work  H height
+#              BlockIndex V1 body =  B hash  B parent_hash  U256 chain_work  Option<H> height
+#
+#              BlockData   =  LE(u32) version
+#                             LE(i64) unix_time
+#                             LE(u32) bits
+#                             [32] nonce
+#
+#
+# 2. txids  ―  H  ->  StoredEntryVar<TxidList>
+#    Val : 0x01 + CS count + count × B txid
+#
+# 3. transparent  ―  H  ->  StoredEntryVar<Vec<TransparentTxList>>
+#    Val : 0x01 + CS blk_tx_count + each TransparentTxList
+#           TransparentTxList = CS tx_count + tx_count × Option<TransparentCompactTx>
+#
+# 4. sapling  ―  H  ->  StoredEntryVar<SaplingTxList>
+#    Key : BE height
+#    Val : 0x01 + CS tx_count + tx_count × Option<SaplingCompactTx>
+#           SaplingCompactTx =
+#              Option<i64> value_balance
+#              spends  = CS n + n × CompactSaplingSpend
+#                         CompactSaplingSpend  = 32-byte nullifier
+#              outputs = CS m + m × CompactSaplingOutput
+#                         CompactSaplingOutput = 32-byte cmu  32-byte epk  52-byte ciphertext
+#
+# 5. orchard  ―  H  ->  StoredEntryVar<OrchardTxList>
+#    Key : BE height
+#    Val : 0x01 + CS tx_count + tx_count × Option<OrchardCompactTx>
+#           OrchardCompactTx =
+#              Option<i64> value_balance
+#              actions = CS n + n × CompactOrchardAction
+#                         CompactOrchardAction = 32-byte nullifier  32-byte cmx  32-byte epk  52-byte ciphertext
+#
+# 6. commitment_tree_data  ―  H  ->  StoredEntryFixed<Vec<CommitmentTreeData>>
+#    Key : BE height
+#    Val : 0x01 + CS n + n × CommitmentTreeData
+#           CommitmentTreeData V1 body  =
+#              CommitmentTreeRoots  +  CommitmentTreeSizes
+#              CommitmentTreeRoots  = 32-byte sapling_root  32-byte orchard_root
+#              CommitmentTreeSizes  = LE(u32) sapling_total  LE(u32) orchard_total
+#
+# 7. heights  ―  B (block hash)  ->  StoredEntryFixed<Height>
+#    Key : 32-byte block hash (internal byte order)
+#    Val : 0x01 + BE height
+#
+# 8. spent  ―  Outpoint  ->  StoredEntryFixed<Vec<TxLocation>>
+#    Key : 0x01 + Outpoint
+#           Outpoint = B prev_txid  LE(u32) prev_index
+#    Val : 0x01 + CS n + n × TxLocation
+#           TxLocation = LE(u32) height  LE(u32) tx_index
+#
+# 9. tx_out_set_info_accumulator  ―  "tx_out_set_info_accumulator" (ASCII)
+#       ->  StoredEntryFixed<FinalisedTxOutSetInfoAccumulator>  (singleton)
+#    Val : 0x01 + FinalisedTxOutSetInfoAccumulator V1 body + [32] checksum
+#    FinalisedTxOutSetInfoAccumulator V1 body =
+#        LE(u64) transactions
+#        LE(u64) transaction_outputs
+#        LE(u64) bytes_serialized
+#        [32]   hash_serialized
+#        LE(u64) total_zatoshis
+#
+#    `hash_serialized` is Zaino's XOR-of-BLAKE2b-256 multiset commitment over
+#    every currently-unspent transparent output. Per-output digest =
+#    BLAKE2b-256(b"ZcashTxOutSet___" || prev_txid[32] || LE(u32) prev_index
+#                || LE(u64) value || script_hash[20] || u8 script_type).
+#    The 65-byte canonical entry is also what `bytes_serialized` counts:
+#    bytes_serialized == transaction_outputs * 65.
+#
+# 10. address_history  ―  AddrScript  ->  StoredEntryFixed<AddrEventBytes>
+#    Key : 0x01 + AddrScript
+#           AddrScript = [20] hash  u8 script_type
+#    Val : 0x01 + CS len + raw event bytes  (multiple entries may share the key)
+#
+# 11. metadata  ―  "metadata" (ASCII)  ->  StoredEntryFixed<DbMetadata>  (singleton)
+#    Val : 0x01 + DbMetadata V1 body + [32] checksum
+#    DbMetadata V1 body =
+#        DbVersion version
+#        32-byte schema_hash
+#        MigrationStatus migration_status
+#
+#    DbVersion = LE(u32) major  LE(u32) minor  LE(u32) patch
+#    MigrationStatus = u8 enum (0 = Empty, 1 = InProgress, 2 = Completed, 3 = Failed)
+#
+# 12. txid_location  ―  B (txid)  ->  StoredEntryFixed<TxLocation>
+#    Key : 32-byte transaction id (internal byte order)
+#    Val : 0x01 + TxLocation + [32] checksum
+#           TxLocation = BE(u32) height  BE(u16) tx_index
+#
+#    Reverse index of `txids`: maps a txid to its on-chain location. Provides O(log n)
+#    txid -> TxLocation lookup for previous-output resolution in the write path and the
+#    txout-set accumulator, avoiding a full scan of the height-keyed `txids` table.
+#
+# ─────────────────────────── Environment settings ─────────────────────────────
+#   LMDB page-size:         platform default
+#   max_dbs:                12 (see list above)
+#   Flags:                  MDB_NOTLS | MDB_NORDAHEAD
+#
+#   All Databases are append-only and indexed by height -> LMDB default
+#
+# ───────────────────────────── END OF FILE ────────────────────────────────────

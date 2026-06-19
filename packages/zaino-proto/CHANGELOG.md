@@ -13,6 +13,19 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.1.3] - 2026-06-18
+
+### Changed
+- Version bump from 0.1.2 to 0.1.3: the 0.1.2 slot on crates.io was
+  consumed by a premature publish in August 2025 and subsequently yanked.
+
+## [0.1.2] - 2026-06-17
+
+### Fixed
+- `compact_block_to_nullifiers` now also clears each transaction's `vin` and
+  `vout`, so the nullifiers-only compact block no longer leaks transparent
+  inputs/outputs — restoring lightwalletd compact-block parity (#1067).
+
 ## [0.1.1] - 2026-05-19
 
 ### Added
