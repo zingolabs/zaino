@@ -1,6 +1,6 @@
 //! Capability model, versioned metadata, and DB trait surface
 //!
-//! This file defines the **capability- and version-aware interface** that all `ZainoDB` database
+//! This file defines the **capability- and version-aware interface** that all `FinalisedState` database
 //! implementations must conform to.
 //!
 //! The core idea is:
@@ -119,6 +119,9 @@ bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Hash, Default)]
     pub(crate) struct Capability: u32 {
         /* ------ core database functionality ------ */
+
+        /// Backend advertises no supported capability bits.
+        const NONE                  = 0;
 
         /// Backend implements [`DbRead`].
         ///
@@ -696,6 +699,20 @@ pub trait DbWrite: Send + Sync {
     ///
     /// Invariant: `block` must be the next height after the current tip (no gaps, no rewrites).
     async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError>;
+
+    /// Ingests blocks from `source`, writing every height from the current tip up to and including
+    /// `height` in order.
+    ///
+    /// This is the bulk catch-up path. Implementations own the ingestion loop so they can choose an
+    /// efficient strategy: the v1 backend defers expensive secondary-index maintenance (the
+    /// txout-set accumulator) across the run and rebuilds it once at the tip, whereas legacy
+    /// backends may simply loop [`DbWrite::write_block`]. A no-op is valid when the tip already
+    /// meets or exceeds `height`.
+    async fn write_blocks_to_height<S: crate::chain_index::source::BlockchainSource>(
+        &self,
+        height: Height,
+        source: &S,
+    ) -> Result<(), FinalisedStateError>;
 
     /// Deletes the tip block identified by `height` from every finalised table.
     ///

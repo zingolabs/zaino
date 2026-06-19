@@ -23,6 +23,10 @@ WORKDIR /app
 # Toggle to build without TLS feature if needed
 ARG NO_TLS=false
 
+# Extra cargo features to enable (comma-separated, e.g. "prometheus,no_tls_with_prometheus").
+# Takes precedence over NO_TLS when set.
+ARG CARGO_FEATURES=""
+
 # Build deps incl. protoc for prost-build
 # Versions pinned (DL3008) for reproducibility / supply-chain hygiene. Pins
 # match the candidate versions in docker.io/library/rust:1.95.0-bookworm; bump
@@ -45,7 +49,9 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
-    if [ "${NO_TLS}" = "true" ]; then \
+    if [ -n "${CARGO_FEATURES}" ]; then \
+      cargo install --locked --path packages/zainod --bin zainod --root /out --features "${CARGO_FEATURES}"; \
+    elif [ "${NO_TLS}" = "true" ]; then \
       cargo install --locked --path packages/zainod --bin zainod --root /out --features no_tls_use_unencrypted_traffic; \
     else \
       cargo install --locked --path packages/zainod --bin zainod --root /out; \

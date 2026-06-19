@@ -68,6 +68,23 @@ pub struct DatabaseConfig {
     /// Database size limit. Defaults to 128 GB.
     #[serde(default)]
     pub size: DatabaseSize,
+    /// Approximate in-memory byte budget for the finalised-state bulk-sync write batch.
+    ///
+    /// Bulk sync buffers fetched blocks up to this many bytes, then writes the whole batch in one
+    /// LMDB transaction with the random-keyed `spent` / `txid_location` entries inserted in **sorted**
+    /// key order. Sorting turns the random B-tree leaf faults (which dominate once the DB exceeds
+    /// RAM) into a sequential sweep; larger batches mean fewer sweeps.
+    ///
+    /// NOTE: peak RAM is roughly this budget (buffered blocks) plus the transaction's dirty pages,
+    /// and it competes with the OS page cache the sorted sweep relies on — larger is not always
+    /// better. Defaults to 4 GiB; raise it on large-RAM hosts.
+    #[serde(default = "default_sync_write_batch_bytes")]
+    pub sync_write_batch_bytes: u64,
+}
+
+/// Default [`DatabaseConfig::sync_write_batch_bytes`]: 4 GiB.
+fn default_sync_write_batch_bytes() -> u64 {
+    4 * 1024 * 1024 * 1024
 }
 
 impl Default for DatabaseConfig {
@@ -75,6 +92,7 @@ impl Default for DatabaseConfig {
         Self {
             path: resolve_path_with_xdg_cache_defaults("zaino"),
             size: DatabaseSize::default(),
+            sync_write_batch_bytes: default_sync_write_batch_bytes(),
         }
     }
 }

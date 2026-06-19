@@ -10,9 +10,9 @@ use zaino_common::{DatabaseConfig, Network, StorageConfig};
 use zaino_proto::proto::utils::{compact_block_with_pool_types, PoolTypeFilter};
 
 use crate::chain_index::finalised_state::capability::IndexedBlockExt;
-use crate::chain_index::finalised_state::db::DbBackend;
+use crate::chain_index::finalised_state::finalised_source::FinalisedSource;
 use crate::chain_index::finalised_state::reader::DbReader;
-use crate::chain_index::finalised_state::ZainoDB;
+use crate::chain_index::finalised_state::FinalisedState;
 use crate::chain_index::source::mockchain_source::MockchainSource;
 use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{
@@ -24,17 +24,17 @@ use crate::chain_index::types::TransactionHash;
 
 use crate::chain_index::types::db::metadata::FinalisedTxOutSetInfoAccumulator;
 use crate::error::FinalisedStateError;
-use crate::{BlockCacheConfig, BlockMetadata, BlockWithMetadata, ChainWork, Height, IndexedBlock};
+use crate::{BlockMetadata, BlockWithMetadata, ChainIndexConfig, ChainWork, Height, IndexedBlock};
 
 use crate::{AddrScript, Outpoint};
 
 pub(crate) async fn spawn_v1_zaino_db(
     source: MockchainSource,
-) -> Result<(TempDir, ZainoDB), FinalisedStateError> {
+) -> Result<(TempDir, FinalisedState<MockchainSource>), FinalisedStateError> {
     let temp_dir: TempDir = tempfile::tempdir().unwrap();
     let db_path: PathBuf = temp_dir.path().to_path_buf();
 
-    let config = BlockCacheConfig {
+    let config = ChainIndexConfig {
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: db_path,
@@ -42,17 +42,18 @@ pub(crate) async fn spawn_v1_zaino_db(
             },
             ..Default::default()
         },
+        ephemeral: false,
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
     };
 
-    let zaino_db = ZainoDB::spawn(config, source).await.unwrap();
+    let zaino_db = FinalisedState::spawn(config, source).await.unwrap();
 
     Ok((temp_dir, zaino_db))
 }
 
 pub(crate) async fn load_vectors_and_spawn_and_sync_v1_zaino_db(
-) -> (TestVectorData, TempDir, ZainoDB) {
+) -> (TestVectorData, TempDir, FinalisedState<MockchainSource>) {
     let test_vector_data = load_test_vectors().unwrap();
     let blocks = test_vector_data.blocks.clone();
 
@@ -68,8 +69,12 @@ pub(crate) async fn load_vectors_and_spawn_and_sync_v1_zaino_db(
     (test_vector_data, db_dir, zaino_db)
 }
 
-pub(crate) async fn load_vectors_v1db_and_reader(
-) -> (TestVectorData, TempDir, std::sync::Arc<ZainoDB>, DbReader) {
+pub(crate) async fn load_vectors_v1db_and_reader() -> (
+    TestVectorData,
+    TempDir,
+    std::sync::Arc<FinalisedState<MockchainSource>>,
+    DbReader<MockchainSource>,
+) {
     let (test_vector_data, db_dir, zaino_db) = load_vectors_and_spawn_and_sync_v1_zaino_db().await;
 
     let zaino_db = std::sync::Arc::new(zaino_db);
@@ -84,7 +89,7 @@ pub(crate) async fn load_vectors_v1db_and_reader(
     (test_vector_data, db_dir, zaino_db, db_reader)
 }
 
-// *** ZainoDB Tests ***
+// *** FinalisedState Tests ***
 
 #[tokio::test(flavor = "multi_thread")]
 async fn shutdown_returns_promptly() {
@@ -103,7 +108,7 @@ async fn sync_to_height() {
 
     zaino_db.sync_to_height(Height(200), &source).await.unwrap();
 
-    zaino_db.wait_until_ready().await;
+    zaino_db.wait_until_synced().await;
     dbg!(zaino_db.status());
     let built_db_height = dbg!(zaino_db.db_height().await.unwrap()).unwrap();
 
@@ -149,7 +154,7 @@ async fn save_db_to_file_and_reload() {
 
     let temp_dir: TempDir = tempfile::tempdir().unwrap();
     let db_path: PathBuf = temp_dir.path().to_path_buf();
-    let config = BlockCacheConfig {
+    let config = ChainIndexConfig {
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: db_path,
@@ -157,6 +162,7 @@ async fn save_db_to_file_and_reload() {
             },
             ..Default::default()
         },
+        ephemeral: false,
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
     };
@@ -168,7 +174,7 @@ async fn save_db_to_file_and_reload() {
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async move {
-            let zaino_db = ZainoDB::spawn(config_clone, source).await.unwrap();
+            let zaino_db = FinalisedState::spawn(config_clone, source).await.unwrap();
 
             crate::chain_index::tests::vectors::sync_db_with_blockdata(
                 zaino_db.router(),
@@ -198,7 +204,7 @@ async fn save_db_to_file_and_reload() {
                 .read_dir()
                 .unwrap()
                 .collect::<Vec<_>>());
-            let zaino_db_2 = ZainoDB::spawn(config, source_clone).await.unwrap();
+            let zaino_db_2 = FinalisedState::spawn(config, source_clone).await.unwrap();
 
             zaino_db_2.wait_until_ready().await;
             dbg!(zaino_db_2.status());
@@ -227,7 +233,7 @@ async fn load_db_backend_from_file() {
     let db_path = temp_dir.path().join("v1_test_db");
     copy_dir_recursive(&fixture_db_path, &db_path).unwrap();
 
-    let config = BlockCacheConfig {
+    let config = ChainIndexConfig {
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: db_path.clone(),
@@ -235,10 +241,12 @@ async fn load_db_backend_from_file() {
             },
             ..Default::default()
         },
+        ephemeral: false,
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
     };
-    let finalized_state_backend = DbBackend::spawn_v1(&config).await.unwrap();
+    let finalized_state_backend: FinalisedSource<MockchainSource> =
+        FinalisedSource::spawn_v1(&config).await.unwrap();
 
     let mut prev_hash = None;
     for height in 0..=100 {
@@ -919,7 +927,7 @@ async fn check_recipient_spent_map() {
 async fn tx_out_set_info_accumulator_updates_on_write() {
     init_tracing();
 
-    // Load the regtest vectors, write every vector block into ZainoDB, and wait until the
+    // Load the regtest vectors, write every vector block into FinalisedState, and wait until the
     // finalised state has finished its startup/background validation.
     let (TestVectorData { blocks, .. }, _db_dir, zaino_db) =
         load_vectors_and_spawn_and_sync_v1_zaino_db().await;
@@ -1023,6 +1031,220 @@ async fn tx_out_set_info_accumulator_updates_on_write() {
     let actual_accumulator = db_reader.get_tx_out_set_info_accumulator().await.unwrap();
 
     assert_eq!(expected_accumulator, actual_accumulator);
+}
+
+/// The bulk sequential accumulator builder must produce exactly the accumulator that the
+/// per-block incremental write path maintained, for every shard count. Sharding partitions the
+/// work by creating-txid prefix and recombines the partials; the result must be shard-count
+/// independent.
+#[tokio::test(flavor = "multi_thread")]
+async fn bulk_tx_out_set_accumulator_builder_matches_incremental() {
+    init_tracing();
+
+    let (_data, _db_dir, zaino_db) = load_vectors_and_spawn_and_sync_v1_zaino_db().await;
+    zaino_db.wait_until_ready().await;
+
+    use crate::chain_index::finalised_state::capability::{
+        CapabilityRequest, DbRead, TransparentHistExt,
+    };
+
+    let backend = zaino_db
+        .backend_for_cap(CapabilityRequest::WriteCore)
+        .unwrap();
+
+    let db_tip = backend.db_height().await.unwrap().unwrap();
+    let incremental = backend.get_tx_out_set_info_accumulator().await.unwrap();
+
+    // 1 = single optimal pass; >1 exercises the sharded multi-pass recombination; 256 = one
+    // first-byte value per shard (maximal sharding).
+    for shards in [1u16, 2, 4, 256] {
+        let built = tokio::task::block_in_place(|| {
+            backend.build_tx_out_set_accumulator_blocking(db_tip, shards)
+        })
+        .unwrap();
+
+        assert_eq!(
+            built, incremental,
+            "bulk builder (shards={shards}) must equal the incrementally-maintained accumulator"
+        );
+    }
+}
+
+/// The write path must advance the validated tip itself (via the cheap in-memory parent + merkle
+/// checks), so reads never fall back to the expensive read-back validation. This must hold right
+/// after a sync completes, independent of the background validator.
+#[tokio::test(flavor = "multi_thread")]
+async fn write_path_advances_validated_tip() {
+    init_tracing();
+
+    let (_data, _db_dir, zaino_db) = load_vectors_and_spawn_and_sync_v1_zaino_db().await;
+
+    // Intentionally do NOT call `wait_until_ready` (which would let the background validator run):
+    // the bulk write path should have marked every synced height validated by the time
+    // `sync_to_height` returned.
+    let backend = zaino_db
+        .backend_for_cap(
+            crate::chain_index::finalised_state::capability::CapabilityRequest::WriteCore,
+        )
+        .unwrap();
+
+    use crate::chain_index::finalised_state::capability::DbRead;
+    let db_tip = backend.db_height().await.unwrap().unwrap();
+
+    assert_eq!(
+        backend.validated_tip_height(),
+        db_tip.0,
+        "write path must advance validated_tip to the synced tip"
+    );
+}
+
+/// Syncs the vector chain to height 200 with the given bulk-write batch budget and returns the
+/// resulting `(db tip, validated tip, txout-set accumulator)`.
+async fn sync_with_batch_budget(
+    blocks: Vec<TestVectorBlockData>,
+    sync_write_batch_bytes: u64,
+) -> (Height, u32, FinalisedTxOutSetInfoAccumulator) {
+    use crate::chain_index::finalised_state::capability::{
+        CapabilityRequest, DbRead, TransparentHistExt,
+    };
+
+    let source = build_mockchain_source(blocks);
+    let temp_dir: TempDir = tempfile::tempdir().unwrap();
+    let config = ChainIndexConfig {
+        storage: StorageConfig {
+            database: DatabaseConfig {
+                path: temp_dir.path().to_path_buf(),
+                sync_write_batch_bytes,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ephemeral: false,
+        db_version: 1,
+        network: Network::Regtest(ActivationHeights::default()),
+    };
+
+    let zaino_db = FinalisedState::spawn(config, source.clone()).await.unwrap();
+    zaino_db.sync_to_height(Height(200), &source).await.unwrap();
+    // Catch-up of >LONG_RUNNING_SYNC_THRESHOLD blocks runs in the background; wait for the
+    // persistent DB to actually reach the tip before reading it back.
+    zaino_db.wait_until_synced().await;
+
+    let backend = zaino_db
+        .backend_for_cap(CapabilityRequest::WriteCore)
+        .unwrap();
+    let db_tip = backend.db_height().await.unwrap().unwrap();
+    let validated_tip = backend.validated_tip_height();
+    let accumulator = backend.get_tx_out_set_info_accumulator().await.unwrap();
+
+    (db_tip, validated_tip, accumulator)
+}
+
+/// The bulk-sync result must be independent of the write-batch budget: a single huge batch and a
+/// one-block-per-batch sync of the same chain must produce an identical db tip, validated tip, and
+/// txout-set accumulator. This exercises the cross-batch continuity chaining, per-batch
+/// `validated_tip` advance, and sorted-insert flush boundaries that a single-batch sync does not.
+#[tokio::test(flavor = "multi_thread")]
+async fn batched_sync_is_batch_size_independent() {
+    init_tracing();
+
+    let blocks = load_test_vectors().unwrap().blocks;
+
+    // u64::MAX => the whole sync is one batch; 1 => every block exceeds the budget => one block per
+    // batch (a flush + commit + fsync after each block).
+    let single_batch = sync_with_batch_budget(blocks.clone(), u64::MAX).await;
+    let per_block_batches = sync_with_batch_budget(blocks, 1).await;
+
+    assert_eq!(single_batch.0, per_block_batches.0, "db tip must match");
+    assert_eq!(
+        single_batch.1, per_block_batches.1,
+        "validated tip must match"
+    );
+    assert_eq!(
+        single_batch.2, per_block_batches.2,
+        "txout-set accumulator must be independent of the write-batch budget"
+    );
+}
+
+/// The incremental range-update path — taken when a catch-up advances an already-built accumulator
+/// by a small range (`write_blocks_to_height`'s steady-state branch) — must produce exactly the
+/// accumulator a full from-genesis rebuild produces at the same tip, for all five fields. This is
+/// the correctness gate for `update_tx_out_set_accumulator_for_range`: with regtest coinbase
+/// maturity of 100, splitting the sync at height 100 guarantees the second segment spends outputs
+/// created in the first (exercising the `transactions` "Set B" decrement) as well as outputs both
+/// created and spent within the range (the XOR-cancel case).
+#[tokio::test(flavor = "multi_thread")]
+async fn incremental_accumulator_update_matches_full_rebuild() {
+    init_tracing();
+
+    use crate::chain_index::finalised_state::capability::{
+        CapabilityRequest, DbRead, TransparentHistExt,
+    };
+
+    let blocks = load_test_vectors().unwrap().blocks;
+    let source = build_mockchain_source(blocks);
+    let temp_dir: TempDir = tempfile::tempdir().unwrap();
+    let config = ChainIndexConfig {
+        storage: StorageConfig {
+            database: DatabaseConfig {
+                path: temp_dir.path().to_path_buf(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ephemeral: false,
+        db_version: 1,
+        network: Network::Regtest(ActivationHeights::default()),
+    };
+
+    let zaino_db = FinalisedState::spawn(config, source.clone()).await.unwrap();
+
+    // First segment builds the accumulator to height 100 (no watermark yet => full rebuild),
+    // the second advances it by a 100-block range => the incremental update path under test.
+    zaino_db.sync_to_height(Height(100), &source).await.unwrap();
+    // Background catch-up (>LONG_RUNNING_SYNC_THRESHOLD); wait for the persistent build + watermark.
+    zaino_db.wait_until_synced().await;
+
+    let backend = zaino_db
+        .backend_for_cap(CapabilityRequest::WriteCore)
+        .unwrap();
+
+    // The watermark must sit at 100 here: that (together with gap 100 <= the incremental cap)
+    // pins the next sync to the incremental branch rather than a silent rebuild fallback that
+    // would make the comparison below trivial.
+    assert_eq!(
+        backend
+            .read_tx_out_set_accumulator_built_height()
+            .await
+            .unwrap(),
+        Some(Height(100)),
+        "first segment must leave the accumulator watermark at the synced tip"
+    );
+
+    zaino_db.sync_to_height(Height(200), &source).await.unwrap();
+    // Background catch-up; wait for the incremental accumulator update to advance the watermark.
+    zaino_db.wait_until_synced().await;
+
+    let db_tip = backend.db_height().await.unwrap().unwrap();
+    assert_eq!(db_tip, Height(200), "both segments must have been synced");
+    assert_eq!(
+        backend
+            .read_tx_out_set_accumulator_built_height()
+            .await
+            .unwrap(),
+        Some(Height(200)),
+        "incremental update must advance the watermark to the new tip"
+    );
+
+    let incremental = backend.get_tx_out_set_info_accumulator().await.unwrap();
+    let from_genesis =
+        tokio::task::block_in_place(|| backend.build_tx_out_set_accumulator_blocking(db_tip, 1))
+            .unwrap();
+
+    assert_eq!(
+        incremental, from_genesis,
+        "incremental range-update accumulator must equal the from-genesis rebuild at the tip"
+    );
 }
 
 /// Computes the canonical [`FinalisedTxOutSetInfoAccumulator`] for a fully-resolved UTXO set,
