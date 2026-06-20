@@ -6,16 +6,12 @@ use tempfile::TempDir;
 use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, Network, StorageConfig};
 
-#[cfg(feature = "gettxoutsetinfo")]
-use crate::chain_index::finalised_state::capability::TransparentHistExt as _;
 use crate::chain_index::finalised_state::capability::{
     BlockCoreExt as _, BlockTransparentExt as _, CapabilityRequest, DbRead as _, DbVersion,
     MigrationStatus,
 };
 use crate::chain_index::finalised_state::entry::StoredEntryFixed;
 use crate::chain_index::finalised_state::finalised_source::v1::DB_SCHEMA_V1_HASH;
-#[cfg(feature = "gettxoutsetinfo")]
-use crate::chain_index::finalised_state::finalised_source::v1::TX_OUT_SET_INFO_ACCUMULATOR_KEY;
 use crate::chain_index::finalised_state::finalised_source::FinalisedSource;
 use crate::chain_index::finalised_state::FinalisedState;
 use crate::chain_index::source::mockchain_source::MockchainSource;
@@ -24,7 +20,12 @@ use crate::chain_index::tests::vectors::{
     build_active_mockchain_source, load_test_vectors, TestVectorData,
 };
 #[cfg(feature = "gettxoutsetinfo")]
-use crate::chain_index::types::db::metadata::FinalisedTxOutSetInfoAccumulator;
+use crate::chain_index::{
+    finalised_state::{
+        capability::TransparentHistExt as _, finalised_source::v1::TX_OUT_SET_INFO_ACCUMULATOR_KEY,
+    },
+    types::db::metadata::FinalisedTxOutSetInfoAccumulator,
+};
 use crate::{ChainIndexConfig, Height, Outpoint, TxLocation, ZainoVersionedSerde as _};
 
 const MIGRATION_SPENT_PROGRESS_KEY: &[u8] = b"_migration_spent_progress_1_2_0_next_height";
@@ -127,12 +128,10 @@ async fn simulate_interrupted_v1_1_to_v1_2_spent_index_migration(
     let metadata_database = database_backend.metadata_db().unwrap();
     let spent_database = database_backend.spent_db().unwrap();
     #[cfg(feature = "gettxoutsetinfo")]
-    let tx_out_set_info_accumulator_database =
-        database_backend.tx_out_set_info_accumulator_db().unwrap();
-
-    #[cfg(feature = "gettxoutsetinfo")]
-    let expected_resume_accumulator =
-        expected_tx_out_set_info_accumulator(database_backend, resume_height - 1).await;
+    let (tx_out_set_info_accumulator_database, expected_resume_accumulator) = (
+        database_backend.tx_out_set_info_accumulator_db().unwrap(),
+        expected_tx_out_set_info_accumulator(database_backend, resume_height - 1).await,
+    );
 
     let spent_keys_to_delete: Vec<Vec<u8>> = {
         let transaction = environment.begin_ro_txn().unwrap();
