@@ -60,6 +60,7 @@ zebra-state = "8.0.0"
 # Runtime / misc
 tokio = { version = "1.38", features = ["full"] }
 zcash_primitives = "0.28"
+zcash_protocol = "0.9"
 futures = "0.3.30"
 hex = "0.4"
 corez = "0.1"

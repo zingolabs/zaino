@@ -28,6 +28,7 @@ use wallet_tests::devtool::DevtoolClients;
 use zaino_state::{ChainIndex, FetchService, ZcashIndexer};
 use zaino_testutils::{TestManager, ValidatorKind, ZcashdDualFetchServices};
 use zcash_local_net::validator::zcashd::Zcashd;
+use zcash_protocol::value::Zatoshis;
 use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
 use zebra_rpc::client::GetAddressBalanceRequest;
 use zebra_rpc::methods::GetAddressTxIdsRequest;
@@ -71,7 +72,7 @@ async fn launch_zcashd_and_build_clients() -> (TestManager<Zcashd, FetchService>
 async fn launch_and_fund_zcashd_faucet(
     orchard_notes: u32,
 ) -> (TestManager<Zcashd, FetchService>, DevtoolClients) {
-    let (test_manager, mut clients) = launch_zcashd_and_build_clients().await;
+    let (test_manager, clients) = launch_zcashd_and_build_clients().await;
     test_manager
         .generate_blocks_and_wait_for_tip(orchard_notes + 1, test_manager.subscriber())
         .await;
@@ -85,7 +86,7 @@ async fn launch_and_fund_zcashd_faucet(
 /// faucet sees zcashd's orchard coinbase.
 #[tokio::test(flavor = "multi_thread")]
 async fn faucet_receives_zcashd_orchard_reward() {
-    let (mut test_manager, mut clients) = launch_zcashd_and_build_clients().await;
+    let (mut test_manager, clients) = launch_zcashd_and_build_clients().await;
 
     // Two orchard coinbase notes for the abandon-art faucet.
     test_manager
@@ -96,7 +97,7 @@ async fn faucet_receives_zcashd_orchard_reward() {
     let balance = clients.faucet_balance().await;
     dbg!(&balance);
     assert!(
-        balance.orchard_spendable > 0,
+        balance.orchard > Zatoshis::ZERO,
         "devtool faucet should see zcashd's orchard coinbase"
     );
 
@@ -446,7 +447,7 @@ mod json_server {
 /// zcashd analogue of devtool.rs's `send_to_pool`: the faucet sends 250_000 to
 /// the recipient's `pool` address and the recipient sees it.
 async fn send_to_pool(pool: wallet_tests::Pool) {
-    let (mut test_manager, mut clients) = launch_and_fund_zcashd_faucet(1).await;
+    let (mut test_manager, clients) = launch_and_fund_zcashd_faucet(1).await;
 
     let recipient = clients.get_recipient_address(pool.address_kind()).await;
     let txid = clients.send_from_faucet(&recipient, 250_000).await;
@@ -458,8 +459,8 @@ async fn send_to_pool(pool: wallet_tests::Pool) {
     clients.sync_recipient().await;
 
     assert_eq!(
-        pool.spendable_balance(&clients.recipient_balance().await),
-        250_000
+        clients.recipient_balance().await.spendable(pool),
+        Zatoshis::const_from_u64(250_000)
     );
 
     test_manager.close().await;
@@ -469,7 +470,7 @@ async fn send_to_pool(pool: wallet_tests::Pool) {
 /// receives a transparent send, then shields it into orchard (235_000 after the
 /// ZIP-317 shielding fee).
 async fn shield_for_validator() {
-    let (mut test_manager, mut clients) = launch_and_fund_zcashd_faucet(1).await;
+    let (mut test_manager, clients) = launch_and_fund_zcashd_faucet(1).await;
 
     let recipient_taddr = clients.get_recipient_address("transparent").await;
     clients.send_from_faucet(&recipient_taddr, 250_000).await;
@@ -479,8 +480,8 @@ async fn shield_for_validator() {
     clients.sync_recipient().await;
 
     assert_eq!(
-        wallet_tests::Pool::Transparent.spendable_balance(&clients.recipient_balance().await),
-        250_000
+        clients.recipient_balance().await.spendable(wallet_tests::Pool::Transparent),
+        Zatoshis::const_from_u64(250_000)
     );
 
     clients.shield_recipient().await;
@@ -490,8 +491,8 @@ async fn shield_for_validator() {
     clients.sync_recipient().await;
 
     assert_eq!(
-        wallet_tests::Pool::Orchard.spendable_balance(&clients.recipient_balance().await),
-        235_000
+        clients.recipient_balance().await.spendable(wallet_tests::Pool::Orchard),
+        Zatoshis::const_from_u64(235_000)
     );
 
     test_manager.close().await;
@@ -507,9 +508,11 @@ mod wallet_to_validator {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn connect_to_node_get_info() {
+        use zcash_local_net::client::Client as _;
+
         let (mut test_manager, clients) = launch_zcashd_and_build_clients().await;
-        clients.get_info_faucet().await;
-        clients.get_info_recipient().await;
+        clients.faucet.get_info().await.unwrap_or_else(|e| panic!("get_info faucet: {e:?}"));
+        clients.recipient.get_info().await.unwrap_or_else(|e| panic!("get_info recipient: {e:?}"));
         test_manager.close().await;
     }
 
@@ -541,7 +544,7 @@ mod wallet_to_validator {
     #[tokio::test(flavor = "multi_thread")]
     #[cfg_attr(not(feature = "devtool-incompatible"), ignore = "heavy: 99-block orchard advance (~99 halo2 proofs); un-ignore + transparent filler when round-3 P2 lands")]
     async fn send_to_transparent_finalization() {
-        let (mut test_manager, mut clients) = launch_and_fund_zcashd_faucet(1).await;
+        let (mut test_manager, clients) = launch_and_fund_zcashd_faucet(1).await;
 
         let recipient_taddr = clients.get_recipient_address("transparent").await;
         clients.send_from_faucet(&recipient_taddr, 250_000).await;
@@ -571,8 +574,8 @@ mod wallet_to_validator {
 
         clients.sync_recipient().await;
         assert_eq!(
-            wallet_tests::Pool::Transparent.spendable_balance(&clients.recipient_balance().await),
-            250_000
+            clients.recipient_balance().await.spendable(wallet_tests::Pool::Transparent),
+            Zatoshis::const_from_u64(250_000)
         );
         assert_eq!(unfinalised_transactions, finalised_transactions);
 
@@ -589,7 +592,7 @@ mod wallet_to_validator {
     #[tokio::test(flavor = "multi_thread")]
     #[cfg_attr(not(feature = "devtool-incompatible"), ignore = "heavy: 100-block orchard advance (~100 halo2 proofs); re-port light or un-ignore with transparent filler (round-3 P2)")]
     async fn send_to_all() {
-        let (mut test_manager, mut clients) = launch_and_fund_zcashd_faucet(3).await;
+        let (mut test_manager, clients) = launch_and_fund_zcashd_faucet(3).await;
 
         let recipient_ua = clients.get_recipient_address("unified").await;
         let recipient_zaddr = clients.get_recipient_address("sapling").await;
@@ -609,16 +612,16 @@ mod wallet_to_validator {
 
         let balance = clients.recipient_balance().await;
         assert_eq!(
-            wallet_tests::Pool::Orchard.spendable_balance(&balance),
-            250_000
+            balance.spendable(wallet_tests::Pool::Orchard),
+            Zatoshis::const_from_u64(250_000)
         );
         assert_eq!(
-            wallet_tests::Pool::Sapling.spendable_balance(&balance),
-            250_000
+            balance.spendable(wallet_tests::Pool::Sapling),
+            Zatoshis::const_from_u64(250_000)
         );
         assert_eq!(
-            wallet_tests::Pool::Transparent.spendable_balance(&balance),
-            250_000
+            balance.spendable(wallet_tests::Pool::Transparent),
+            Zatoshis::const_from_u64(250_000)
         );
 
         test_manager.close().await;
@@ -630,7 +633,7 @@ mod wallet_to_validator {
     #[tokio::test(flavor = "multi_thread")]
     #[cfg_attr(not(feature = "devtool-incompatible"), ignore = "devtool WalletBalance has no unconfirmed_*/confirmed_* fields; balance asserts commented out — restore + un-ignore when devtool surfaces unconfirmed balances")]
     async fn monitor_unverified_mempool() {
-        let (mut test_manager, mut clients) = launch_and_fund_zcashd_faucet(2).await;
+        let (mut test_manager, clients) = launch_and_fund_zcashd_faucet(2).await;
 
         let recipient_ua = clients.get_recipient_address("unified").await;
         let txid_1 = clients.send_from_faucet(&recipient_ua, 250_000).await;

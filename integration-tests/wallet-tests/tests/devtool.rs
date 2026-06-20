@@ -48,6 +48,8 @@ use zaino_state::{LightWalletIndexer, ZcashIndexer, ZcashService};
 use zaino_testutils::{PollableTip, TestManager, TestService, ValidatorKind};
 use zainodlib::error::IndexerError;
 use zcash_local_net::validator::zebrad::Zebrad;
+use zcash_primitives::transaction::TxId;
+use zcash_protocol::value::Zatoshis;
 use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
 use zebra_rpc::methods::{GetAddressBalanceRequest, GetAddressTxIdsRequest};
 
@@ -80,7 +82,7 @@ where
     .await
     .expect("launch TestManager");
 
-    let mut clients = wallet_tests::devtool::build_clients(
+    let clients = wallet_tests::devtool::build_clients(
         test_manager
             .zaino_grpc_listen_address
             .expect("zaino enabled")
@@ -139,10 +141,12 @@ where
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     <Service as ZcashService>::Subscriber: PollableTip,
 {
+    use zcash_local_net::client::Client as _;
+
     let (mut test_manager, clients) = launch_and_build_clients::<Service>().await;
 
-    clients.get_info_faucet().await;
-    clients.get_info_recipient().await;
+    clients.faucet.get_info().await.unwrap_or_else(|e| panic!("get_info faucet: {e:?}"));
+    clients.recipient.get_info().await.unwrap_or_else(|e| panic!("get_info recipient: {e:?}"));
 
     test_manager.close().await;
 }
@@ -159,7 +163,7 @@ where
 
     let faucet_balance = dbg!(clients.faucet_balance().await);
     assert!(
-        faucet_balance.orchard_spendable > 0,
+        faucet_balance.orchard > Zatoshis::ZERO,
         "faucet should hold a spendable orchard coinbase note, got {faucet_balance:?}"
     );
 
@@ -181,7 +185,7 @@ where
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     <Service as ZcashService>::Subscriber: PollableTip,
 {
-    let (mut test_manager, mut clients) = launch_and_fund_faucet::<Service>(1).await;
+    let (mut test_manager, clients) = launch_and_fund_faucet::<Service>(1).await;
 
     let recipient = clients.get_recipient_address(pool.address_kind()).await;
     let txid = clients.send_from_faucet(&recipient, 250_000).await;
@@ -193,8 +197,8 @@ where
     clients.sync_recipient().await;
 
     assert_eq!(
-        pool.spendable_balance(&clients.recipient_balance().await),
-        250_000
+        clients.recipient_balance().await.spendable(pool),
+        Zatoshis::const_from_u64(250_000)
     );
 
     test_manager.close().await;
@@ -217,7 +221,7 @@ where
     <Service as ZcashService>::Subscriber: PollableTip,
 {
     // Three orchard notes — one per send (devtool will not chain unconfirmed change).
-    let (mut test_manager, mut clients) = launch_and_fund_faucet::<Service>(3).await;
+    let (mut test_manager, clients) = launch_and_fund_faucet::<Service>(3).await;
 
     let recipient_ua = clients.get_recipient_address("unified").await;
     let recipient_zaddr = clients.get_recipient_address("sapling").await;
@@ -233,16 +237,16 @@ where
 
     let balance = clients.recipient_balance().await;
     assert_eq!(
-        wallet_tests::Pool::Orchard.spendable_balance(&balance),
-        250_000
+        balance.spendable(wallet_tests::Pool::Orchard),
+        Zatoshis::const_from_u64(250_000)
     );
     assert_eq!(
-        wallet_tests::Pool::Sapling.spendable_balance(&balance),
-        250_000
+        balance.spendable(wallet_tests::Pool::Sapling),
+        Zatoshis::const_from_u64(250_000)
     );
     assert_eq!(
-        wallet_tests::Pool::Transparent.spendable_balance(&balance),
-        250_000
+        balance.spendable(wallet_tests::Pool::Transparent),
+        Zatoshis::const_from_u64(250_000)
     );
 
     test_manager.close().await;
@@ -260,7 +264,7 @@ where
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     <Service as ZcashService>::Subscriber: PollableTip,
 {
-    let (mut test_manager, mut clients) = launch_and_fund_faucet::<Service>(1).await;
+    let (mut test_manager, clients) = launch_and_fund_faucet::<Service>(1).await;
 
     let recipient_taddr = clients.get_recipient_address("transparent").await;
     clients.send_from_faucet(&recipient_taddr, 250_000).await;
@@ -270,8 +274,8 @@ where
     clients.sync_recipient().await;
 
     assert_eq!(
-        wallet_tests::Pool::Transparent.spendable_balance(&clients.recipient_balance().await),
-        250_000
+        clients.recipient_balance().await.spendable(wallet_tests::Pool::Transparent),
+        Zatoshis::const_from_u64(250_000)
     );
 
     clients.shield_recipient().await;
@@ -281,8 +285,8 @@ where
     clients.sync_recipient().await;
 
     assert_eq!(
-        wallet_tests::Pool::Orchard.spendable_balance(&clients.recipient_balance().await),
-        235_000
+        clients.recipient_balance().await.spendable(wallet_tests::Pool::Orchard),
+        Zatoshis::const_from_u64(235_000)
     );
 
     test_manager.close().await;
@@ -299,7 +303,7 @@ where
     <Service as ZcashService>::Subscriber: PollableTip,
 {
     // Two orchard notes — one per unmined send.
-    let (test_manager, mut clients) = launch_and_fund_faucet::<Service>(2).await;
+    let (test_manager, clients) = launch_and_fund_faucet::<Service>(2).await;
 
     let recipient_taddr = clients.get_recipient_address("transparent").await;
     let recipient_ua = clients.get_recipient_address("unified").await;
@@ -325,7 +329,7 @@ where
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     <Service as ZcashService>::Subscriber: PollableTip,
 {
-    let (test_manager, mut clients) = launch_and_fund_faucet::<Service>(1).await;
+    let (test_manager, clients) = launch_and_fund_faucet::<Service>(1).await;
 
     let recipient = clients.get_recipient_address(pool.address_kind()).await;
     let txid_hex = clients.send_from_faucet(&recipient, 250_000).await;
@@ -597,12 +601,10 @@ where
 
     let (mut test_manager, transparent_txid, unified_txid) = fund_and_fill_mempool::<Service>().await;
 
-    let to_bytes = |hex: &str| -> [u8; 32] {
-        wallet_tests::devtool::txid_internal_bytes(hex)
-            .try_into()
-            .expect("txid is 32 bytes")
-    };
-    let mut sorted_txids = [to_bytes(&transparent_txid), to_bytes(&unified_txid)];
+    let mut sorted_txids = [
+        *wallet_tests::devtool::txid_from_devtool(&transparent_txid).as_ref(),
+        *wallet_tests::devtool::txid_from_devtool(&unified_txid).as_ref(),
+    ];
     sorted_txids.sort();
 
     let subscriber = test_manager.subscriber().clone();
@@ -650,7 +652,7 @@ where
     use futures::StreamExt as _;
 
     // Two orchard notes — one per unmined send.
-    let (mut test_manager, mut clients) = launch_and_fund_faucet::<Service>(2).await;
+    let (mut test_manager, clients) = launch_and_fund_faucet::<Service>(2).await;
 
     // Subscribe before the sends so the stream observes them entering the mempool.
     let subscriber = test_manager.subscriber().clone();
@@ -686,17 +688,16 @@ where
 }
 
 /// Fund the faucet, send 250_000 to the recipient's unified address, and mine
-/// it in. Returns the manager and the broadcast txid in zaino's internal byte
-/// order. The devtool analogue of `fund_and_send(Pool::Orchard)`; the wallet
-/// clients are dropped once the transaction is mined (the queries below hit
-/// zaino, not the wallet).
-async fn fund_and_send_orchard<Service>() -> (TestManager<Zebrad, Service>, Vec<u8>)
+/// it in. Returns the manager and the broadcast [`TxId`]. The devtool
+/// analogue of `fund_and_send(Pool::Orchard)`; the wallet clients are dropped
+/// once the transaction is mined (the queries below hit zaino, not the wallet).
+async fn fund_and_send_orchard<Service>() -> (TestManager<Zebrad, Service>, TxId)
 where
     Service: TestService,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     <Service as ZcashService>::Subscriber: PollableTip,
 {
-    let (test_manager, mut clients) = launch_and_fund_faucet::<Service>(1).await;
+    let (test_manager, clients) = launch_and_fund_faucet::<Service>(1).await;
 
     let recipient_ua = clients.get_recipient_address("unified").await;
     let txid_hex = clients.send_from_faucet(&recipient_ua, 250_000).await;
@@ -705,24 +706,24 @@ where
         .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
         .await;
 
-    (test_manager, wallet_tests::devtool::txid_internal_bytes(&txid_hex))
+    (test_manager, wallet_tests::devtool::txid_from_devtool(&txid_hex))
 }
 
 /// Port of `fetch_service_get_transaction_mined` (zebrad): the indexer serves
 /// `get_transaction` for the mined orchard send, keyed by its txid. Also
-/// confirms `txid_internal_bytes` yields the order the indexer matches on.
+/// confirms `txid_from_devtool` yields the order the indexer matches on.
 async fn get_transaction_mined<Service>()
 where
     Service: TestService,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     <Service as ZcashService>::Subscriber: PollableTip + LightWalletIndexer,
 {
-    let (mut test_manager, txid_bytes) = fund_and_send_orchard::<Service>().await;
+    let (mut test_manager, txid) = fund_and_send_orchard::<Service>().await;
 
     let tx_filter = TxFilter {
         block: None,
         index: 0,
-        hash: txid_bytes,
+        hash: txid.as_ref().to_vec(),
     };
     let raw_transaction = test_manager
         .subscriber()
@@ -743,14 +744,14 @@ where
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     <Service as ZcashService>::Subscriber: PollableTip + LightWalletIndexer,
 {
-    let (mut test_manager, mut clients) = launch_and_fund_faucet::<Service>(1).await;
+    let (mut test_manager, clients) = launch_and_fund_faucet::<Service>(1).await;
 
     let recipient_ua = clients.get_recipient_address("unified").await;
     let txid_hex = clients.send_from_faucet(&recipient_ua, 250_000).await;
     let tx_filter = TxFilter {
         block: None,
         index: 0,
-        hash: wallet_tests::devtool::txid_internal_bytes(&txid_hex),
+        hash: wallet_tests::devtool::txid_from_devtool(&txid_hex).as_ref().to_vec(),
     };
 
     // Let the broadcaster and the indexer observe the unmined transaction.
@@ -782,7 +783,7 @@ async fn block_range_returns_default_pools() {
     )
     .await;
 
-    let mut clients = wallet_tests::devtool::build_clients(
+    let clients = wallet_tests::devtool::build_clients(
         svc.test_manager
             .zaino_grpc_listen_address
             .expect("zaino enabled")
@@ -873,7 +874,7 @@ async fn block_range_returns_all_pools() {
     )
     .await;
 
-    let mut clients = wallet_tests::devtool::build_clients(
+    let clients = wallet_tests::devtool::build_clients(
         svc.test_manager
             .zaino_grpc_listen_address
             .expect("zaino enabled")
@@ -1011,7 +1012,7 @@ async fn fund_and_send_dual(
     )
     .await;
 
-    let mut clients = wallet_tests::devtool::build_clients(
+    let clients = wallet_tests::devtool::build_clients(
         svc.test_manager
             .zaino_grpc_listen_address
             .expect("zaino enabled")
@@ -1160,7 +1161,7 @@ async fn fund_and_fill_mempool_dual() -> zaino_testutils::StateAndFetchServices<
     )
     .await;
 
-    let mut clients = wallet_tests::devtool::build_clients(
+    let clients = wallet_tests::devtool::build_clients(
         svc.test_manager
             .zaino_grpc_listen_address
             .expect("zaino enabled")
@@ -1594,7 +1595,7 @@ where
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     <Service as ZcashService>::Subscriber: PollableTip,
 {
-    let (mut test_manager, mut clients) = launch_and_fund_faucet::<Service>(1).await;
+    let (mut test_manager, clients) = launch_and_fund_faucet::<Service>(1).await;
 
     let recipient_taddr = clients.get_recipient_address("transparent").await;
     clients.send_from_faucet(&recipient_taddr, 250_000).await;
@@ -1626,8 +1627,8 @@ where
 
     clients.sync_recipient().await;
     assert_eq!(
-        wallet_tests::Pool::Transparent.spendable_balance(&clients.recipient_balance().await),
-        250_000
+        clients.recipient_balance().await.spendable(wallet_tests::Pool::Transparent),
+        Zatoshis::const_from_u64(250_000)
     );
     assert_eq!(unfinalised_transactions, finalised_transactions);
 
@@ -1667,7 +1668,7 @@ async fn address_deltas() {
         Some(zebra_chain::parameters::NetworkKind::Regtest),
     )
     .await;
-    let mut clients = wallet_tests::devtool::build_clients(
+    let clients = wallet_tests::devtool::build_clients(
         svc.test_manager
             .zaino_grpc_listen_address
             .expect("zaino enabled")
@@ -1794,7 +1795,7 @@ async fn address_deltas() {
 /// `WalletBalance::{unconfirmed,confirmed}_*_balance`, fields devtool's
 /// `WalletBalance` does not have (it surfaces only `*_spendable`, and devtool
 /// sync is block-based so it never scans the mempool). Restore the assertions
-/// (using `Pool::spendable_balance` for the confirmed ones) and un-ignore when
+/// (using `WalletPoolBalances::spendable` for the confirmed ones) and un-ignore when
 /// devtool surfaces unconfirmed balances.
 async fn monitor_unverified_mempool<Service>()
 where
@@ -1802,7 +1803,7 @@ where
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
     <Service as ZcashService>::Subscriber: PollableTip,
 {
-    let (mut test_manager, mut clients) = launch_and_fund_faucet::<Service>(2).await;
+    let (mut test_manager, clients) = launch_and_fund_faucet::<Service>(2).await;
 
     let recipient_ua = clients.get_recipient_address("unified").await;
     let txid_1 = clients.send_from_faucet(&recipient_ua, 250_000).await;
@@ -1859,8 +1860,8 @@ where
     // Confirmed balances — original asserts WalletBalance::confirmed_orchard_balance,
     // also absent on devtool. Restore as e.g.:
     // assert_eq!(
-    //     wallet_tests::Pool::Orchard.spendable_balance(&clients.recipient_balance().await),
-    //     250_000
+    //     clients.recipient_balance().await.spendable(wallet_tests::Pool::Orchard),
+    //     Zatoshis::const_from_u64(250_000)
     // );
 
     test_manager.close().await;
