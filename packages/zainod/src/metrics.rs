@@ -23,6 +23,7 @@ pub fn init(endpoint: SocketAddr) -> Result<(), IndexerError> {
         })?;
 
     describe_metrics();
+    set_build_info();
 
     info!(%endpoint, "Prometheus metrics endpoint started");
     Ok(())
@@ -72,4 +73,20 @@ fn describe_metrics() {
         "zaino.sync.block_write_seconds",
         "Seconds to durably write one batch of blocks to the database"
     );
+
+    metrics::describe_gauge!(
+        "zainod.build_info",
+        "Static build metadata; always 1. Version exposed as a label."
+    );
+}
+
+/// Emit a constant gauge `zainod_build_info{version="x.y.z"} 1` so the
+/// deployed binary version is queryable in PromQL / Grafana, matching the
+/// pattern Zebra uses with `zebrad_build_info`.
+fn set_build_info() {
+    metrics::gauge!(
+        "zainod.build_info",
+        "version" => env!("CARGO_PKG_VERSION"),
+    )
+    .set(1.0);
 }
