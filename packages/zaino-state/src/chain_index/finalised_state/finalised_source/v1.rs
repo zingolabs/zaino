@@ -500,18 +500,11 @@ impl DbV1 {
         Ok(zaino_db)
     }
 
-    // *** Internal Control Methods ***
-
-    /// Spawns the background validator / maintenance task.
-    ///
-    /// The task runs:
-    /// - **Startup:** full validation passes (`initial_spent_scan`, `initial_address_history_scan`,
-    ///   `initial_block_scan`).
-    /// - **Steady state:** periodically attempts to validate the next height after `validated_tip`.
-    ///   Separately, it performs periodic trailing-reader cleanup via `clean_trailing()`.
-    async fn spawn_handler(&mut self) -> Result<(), FinalisedStateError> {
-        // Clone everything the task needs so we can move it into the async block.
-        let zaino_db = Self {
+    /// A detached handle-copy of this DB for moving into a `spawn` / `spawn_blocking`
+    /// task: shares the env and atomics (`Arc`), copies the `Database` handles (they are
+    /// `Copy`), and resets `db_handler` — the copy is not the background-task lifecycle owner.
+    fn detached_handle(&self) -> Self {
+        Self {
             env: Arc::clone(&self.env),
             headers: self.headers,
             txids: self.txids,
@@ -532,7 +525,21 @@ impl DbV1 {
             cancel_token: self.cancel_token.clone(),
             status: self.status.clone(),
             config: self.config.clone(),
-        };
+        }
+    }
+
+    // *** Internal Control Methods ***
+
+    /// Spawns the background validator / maintenance task.
+    ///
+    /// The task runs:
+    /// - **Startup:** full validation passes (`initial_spent_scan`, `initial_address_history_scan`,
+    ///   `initial_block_scan`).
+    /// - **Steady state:** periodically attempts to validate the next height after `validated_tip`.
+    ///   Separately, it performs periodic trailing-reader cleanup via `clean_trailing()`.
+    async fn spawn_handler(&mut self) -> Result<(), FinalisedStateError> {
+        // Clone everything the task needs so we can move it into the async block.
+        let zaino_db = self.detached_handle();
 
         let handle = tokio::spawn({
             let zaino_db = zaino_db;
@@ -702,28 +709,7 @@ impl DbV1 {
     /// validated in pseudo-random height order — thrashing the cache and preventing the tip from
     /// advancing until the whole set had been validated.
     async fn initial_block_scan(&self) -> Result<(), FinalisedStateError> {
-        let zaino_db = Self {
-            env: Arc::clone(&self.env),
-            headers: self.headers,
-            txids: self.txids,
-            transparent: self.transparent,
-            sapling: self.sapling,
-            orchard: self.orchard,
-            commitment_tree_data: self.commitment_tree_data,
-            heights: self.heights,
-            spent: self.spent,
-            txid_location: self.txid_location,
-            tx_out_set_info_accumulator: self.tx_out_set_info_accumulator,
-            #[cfg(feature = "transparent_address_history_experimental")]
-            address_history: self.address_history,
-            metadata: self.metadata,
-            validated_tip: Arc::clone(&self.validated_tip),
-            validated_set: self.validated_set.clone(),
-            db_handler: std::sync::Mutex::new(None),
-            cancel_token: self.cancel_token.clone(),
-            status: self.status.clone(),
-            config: self.config.clone(),
-        };
+        let zaino_db = self.detached_handle();
 
         tokio::task::spawn_blocking(move || {
             let ro = zaino_db.env.begin_ro_txn()?;
