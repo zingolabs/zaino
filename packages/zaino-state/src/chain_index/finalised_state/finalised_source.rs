@@ -354,6 +354,7 @@ impl<T: BlockchainSource> FinalisedSource<T> {
     }
 
     /// Provides access to the finalised txout-set accumulator DB table.
+    #[cfg(feature = "gettxoutsetinfo")]
     pub(crate) fn tx_out_set_info_accumulator_db(&self) -> Result<Database, FinalisedStateError> {
         Ok(self
             .require_v1("v1 tx_out_set_info_accumulator db not available")?
@@ -367,6 +368,7 @@ impl<T: BlockchainSource> FinalisedSource<T> {
     /// scans and writes the singleton plus its freshness watermark. Replaces the per-block
     /// accumulator maintenance that dominated sync time at sandblast height; used by
     /// `sync_to_height` after a catch-up run and by the v1.2 migration's accumulator stage.
+    #[cfg(feature = "gettxoutsetinfo")]
     pub(crate) async fn rebuild_tx_out_set_accumulator(&self) -> Result<(), FinalisedStateError> {
         self.require_v1("v1 txout-set accumulator builder")?
             .rebuild_tx_out_set_accumulator()
@@ -862,10 +864,9 @@ impl<T: BlockchainSource> TransparentHistExt for FinalisedSource<T> {
         &self,
     ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
         match self {
+            #[cfg(feature = "gettxoutsetinfo")]
             Self::V1(database) => database.get_tx_out_set_info_accumulator().await,
-            _ => Err(FinalisedStateError::FeatureUnavailable(
-                "transparent_history",
-            )),
+            _ => Err(FinalisedStateError::FeatureUnavailable("gettxoutsetinfo")),
         }
     }
 }
@@ -892,6 +893,7 @@ impl<T: BlockchainSource> FinalisedSource<T> {
     ///
     /// `None` means it has never been built. Test hook for asserting the incremental range-update
     /// path advances the watermark (and is therefore taken, rather than a silent rebuild fallback).
+    #[cfg(feature = "gettxoutsetinfo")]
     pub(crate) async fn read_tx_out_set_accumulator_built_height(
         &self,
     ) -> Result<Option<Height>, FinalisedStateError> {
@@ -904,6 +906,7 @@ impl<T: BlockchainSource> FinalisedSource<T> {
     ///
     /// Test hook for asserting the sequential bulk builder matches the incrementally-maintained
     /// accumulator across shard counts.
+    #[cfg(feature = "gettxoutsetinfo")]
     pub(crate) fn build_tx_out_set_accumulator_blocking(
         &self,
         db_tip: Height,

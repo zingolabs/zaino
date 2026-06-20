@@ -286,6 +286,7 @@ pub(crate) struct DbV1 {
     ///
     /// Stores the finalised-state portion of `gettxoutsetinfo` that can be maintained cheaply
     /// without adding per-UTXO storage.
+    #[cfg(feature = "gettxoutsetinfo")]
     tx_out_set_info_accumulator: Database,
 
     /// Transparent address history: `AddrScript` -> duplicate values of `StoredEntryFixed<AddrEventBytes>`.
@@ -437,13 +438,6 @@ impl DbV1 {
         let txid_location =
             super::open_or_create_db(&env, "txid_location_1_0_0", DatabaseFlags::empty()).await?;
 
-        let tx_out_set_info_accumulator = super::open_or_create_db(
-            &env,
-            TX_OUT_SET_INFO_ACCUMULATOR_DATABASE_NAME,
-            DatabaseFlags::empty(),
-        )
-        .await?;
-
         let metadata = super::open_or_create_db(&env, "metadata", DatabaseFlags::empty()).await?;
 
         #[cfg(feature = "transparent_address_history_experimental")]
@@ -455,6 +449,16 @@ impl DbV1 {
         .await?;
 
         Ok(Self {
+            // Opened inline here, before `env` is moved into its `Arc` below (struct fields are
+            // evaluated top-to-bottom), so the gated accumulator table needs a single `#[cfg]`
+            // rather than a separate gated `let` plus a gated field-init.
+            #[cfg(feature = "gettxoutsetinfo")]
+            tx_out_set_info_accumulator: super::open_or_create_db(
+                &env,
+                TX_OUT_SET_INFO_ACCUMULATOR_DATABASE_NAME,
+                DatabaseFlags::empty(),
+            )
+            .await?,
             env: Arc::new(env),
             headers,
             txids,
@@ -465,7 +469,6 @@ impl DbV1 {
             heights: hashes,
             spent,
             txid_location,
-            tx_out_set_info_accumulator,
             #[cfg(feature = "transparent_address_history_experimental")]
             address_history,
             metadata,
@@ -493,6 +496,7 @@ impl DbV1 {
             heights: self.heights,
             spent: self.spent,
             txid_location: self.txid_location,
+            #[cfg(feature = "gettxoutsetinfo")]
             tx_out_set_info_accumulator: self.tx_out_set_info_accumulator,
             #[cfg(feature = "transparent_address_history_experimental")]
             address_history: self.address_history,
@@ -846,6 +850,7 @@ impl DbV1 {
     }
 
     /// Provides access to the finalised txout-set accumulator DB table.
+    #[cfg(feature = "gettxoutsetinfo")]
     pub(crate) fn tx_out_set_info_accumulator_db(&self) -> Database {
         self.tx_out_set_info_accumulator
     }

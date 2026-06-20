@@ -1,5 +1,6 @@
 //! FinalisedState::V1 transparent address history indexing functionality.
 
+#[cfg(feature = "gettxoutsetinfo")]
 use crate::chain_index::finalised_state::finalised_source::v1::{
     ACCUMULATOR_BUILD_SHARDS, TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY,
     TX_OUT_SET_INFO_ACCUMULATOR_KEY,
@@ -341,7 +342,14 @@ impl TransparentHistExt for DbV1 {
     async fn get_tx_out_set_info_accumulator(
         &self,
     ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
-        self.get_tx_out_set_info_accumulator().await
+        #[cfg(feature = "gettxoutsetinfo")]
+        {
+            self.get_tx_out_set_info_accumulator().await
+        }
+        #[cfg(not(feature = "gettxoutsetinfo"))]
+        {
+            Err(FinalisedStateError::FeatureUnavailable("gettxoutsetinfo"))
+        }
     }
 }
 
@@ -732,47 +740,6 @@ impl DbV1 {
                     }
                 })
                 .collect()
-        })
-    }
-
-    /// Returns the finalised-state txout-set accumulator.
-    ///
-    /// This reads the singleton accumulator entry. It does not compute or repair the accumulator;
-    /// accumulator creation, backfill, and updates are handled by migrations and write paths.
-    async fn get_tx_out_set_info_accumulator(
-        &self,
-    ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
-        tokio::task::block_in_place(|| {
-            let transaction = self.env.begin_ro_txn()?;
-
-            let raw_accumulator = match transaction.get(
-                self.tx_out_set_info_accumulator,
-                &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-            ) {
-                Ok(value) => value,
-                Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "finalised txout-set accumulator missing from database".to_string(),
-                    ));
-                }
-                Err(error) => return Err(FinalisedStateError::LmdbError(error)),
-            };
-
-            let accumulator_entry =
-                StoredEntryFixed::<FinalisedTxOutSetInfoAccumulator>::from_bytes(raw_accumulator)
-                    .map_err(|error| {
-                    FinalisedStateError::Custom(format!(
-                        "txout-set accumulator decode error: {error}"
-                    ))
-                })?;
-
-            if !accumulator_entry.verify(TX_OUT_SET_INFO_ACCUMULATOR_KEY) {
-                return Err(FinalisedStateError::Custom(
-                    "txout-set accumulator checksum mismatch".to_string(),
-                ));
-            }
-
-            Ok(accumulator_entry.item)
         })
     }
 
@@ -1514,6 +1481,55 @@ impl DbV1 {
 
         Ok((created_entries, spent_entries, spendable_spent_count_by_tx))
     }
+}
+
+/// Read, maintenance, and bulk (re)build of the finalised txout-set accumulator (schema table #9).
+///
+/// Gathered into one `impl` block so the entire `gettxoutsetinfo` capability is a single `#[cfg]`
+/// unit. This grouping is the natural structure for these methods regardless of the gate — they are
+/// exactly the accumulator's read / write-path-delta / rebuild surface and nothing else.
+#[cfg(feature = "gettxoutsetinfo")]
+impl DbV1 {
+    /// Returns the finalised-state txout-set accumulator.
+    ///
+    /// This reads the singleton accumulator entry. It does not compute or repair the accumulator;
+    /// accumulator creation, backfill, and updates are handled by migrations and write paths.
+    async fn get_tx_out_set_info_accumulator(
+        &self,
+    ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
+        tokio::task::block_in_place(|| {
+            let transaction = self.env.begin_ro_txn()?;
+
+            let raw_accumulator = match transaction.get(
+                self.tx_out_set_info_accumulator,
+                &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
+            ) {
+                Ok(value) => value,
+                Err(lmdb::Error::NotFound) => {
+                    return Err(FinalisedStateError::DataUnavailable(
+                        "finalised txout-set accumulator missing from database".to_string(),
+                    ));
+                }
+                Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+            };
+
+            let accumulator_entry =
+                StoredEntryFixed::<FinalisedTxOutSetInfoAccumulator>::from_bytes(raw_accumulator)
+                    .map_err(|error| {
+                    FinalisedStateError::Custom(format!(
+                        "txout-set accumulator decode error: {error}"
+                    ))
+                })?;
+
+            if !accumulator_entry.verify(TX_OUT_SET_INFO_ACCUMULATOR_KEY) {
+                return Err(FinalisedStateError::Custom(
+                    "txout-set accumulator checksum mismatch".to_string(),
+                ));
+            }
+
+            Ok(accumulator_entry.item)
+        })
+    }
 
     /// Calculates the finalised txout-set accumulator after applying the block currently being written.
     ///
@@ -1692,16 +1708,14 @@ impl DbV1 {
 
         Ok(accumulator)
     }
-}
 
-impl DbV1 {
-    //! *** Bulk txout-set accumulator builder ***
-    //!
-    //! Replaces the per-block, random-read accumulator maintenance that dominated sync time at
-    //! sandblast height. The accumulator over the UTXO set at the current tip is recomputed from
-    //! scratch with (almost entirely) sequential scans, exploiting the fact that the
-    //! `hash_serialized` field is an XOR multiset commitment: an output created and later spent is
-    //! XORed in then out and cancels, so the live set is exactly the created-and-not-spent outputs.
+    // *** Bulk txout-set accumulator builder ***
+    //
+    // Replaces the per-block, random-read accumulator maintenance that dominated sync time at
+    // sandblast height. The accumulator over the UTXO set at the current tip is recomputed from
+    // scratch with (almost entirely) sequential scans, exploiting the fact that the
+    // `hash_serialized` field is an XOR multiset commitment: an output created and later spent is
+    // XORed in then out and cancels, so the live set is exactly the created-and-not-spent outputs.
 
     /// Rebuilds the finalised txout-set accumulator to the current db tip and persists it.
     ///
