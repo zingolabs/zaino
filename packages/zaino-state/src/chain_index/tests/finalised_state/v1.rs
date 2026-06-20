@@ -1,8 +1,10 @@
 //! Holds tests for the V1 database.
 
 use hex::ToHex;
+#[cfg(feature = "gettxoutsetinfo")]
 use std::collections::HashMap;
 use std::path::PathBuf;
+#[cfg(feature = "gettxoutsetinfo")]
 use std::sync::Arc;
 use tempfile::TempDir;
 use zaino_common::network::ActivationHeights;
@@ -22,6 +24,7 @@ use crate::chain_index::tests::vectors::{
 
 use crate::chain_index::types::TransactionHash;
 
+#[cfg(feature = "gettxoutsetinfo")]
 use crate::chain_index::types::db::metadata::FinalisedTxOutSetInfoAccumulator;
 use crate::error::FinalisedStateError;
 use crate::{BlockMetadata, BlockWithMetadata, ChainIndexConfig, ChainWork, Height, IndexedBlock};
@@ -923,6 +926,7 @@ async fn check_recipient_spent_map() {
     }
 }
 
+#[cfg(feature = "gettxoutsetinfo")]
 #[tokio::test(flavor = "multi_thread")]
 async fn tx_out_set_info_accumulator_updates_on_write() {
     init_tracing();
@@ -1037,6 +1041,7 @@ async fn tx_out_set_info_accumulator_updates_on_write() {
 /// per-block incremental write path maintained, for every shard count. Sharding partitions the
 /// work by creating-txid prefix and recombines the partials; the result must be shard-count
 /// independent.
+#[cfg(feature = "gettxoutsetinfo")]
 #[tokio::test(flavor = "multi_thread")]
 async fn bulk_tx_out_set_accumulator_builder_matches_incremental() {
     init_tracing();
@@ -1100,6 +1105,7 @@ async fn write_path_advances_validated_tip() {
 
 /// Syncs the vector chain to height 200 with the given bulk-write batch budget and returns the
 /// resulting `(db tip, validated tip, txout-set accumulator)`.
+#[cfg(feature = "gettxoutsetinfo")]
 async fn sync_with_batch_budget(
     blocks: Vec<TestVectorBlockData>,
     sync_write_batch_bytes: u64,
@@ -1144,6 +1150,7 @@ async fn sync_with_batch_budget(
 /// one-block-per-batch sync of the same chain must produce an identical db tip, validated tip, and
 /// txout-set accumulator. This exercises the cross-batch continuity chaining, per-batch
 /// `validated_tip` advance, and sorted-insert flush boundaries that a single-batch sync does not.
+#[cfg(feature = "gettxoutsetinfo")]
 #[tokio::test(flavor = "multi_thread")]
 async fn batched_sync_is_batch_size_independent() {
     init_tracing();
@@ -1173,6 +1180,7 @@ async fn batched_sync_is_batch_size_independent() {
 /// maturity of 100, splitting the sync at height 100 guarantees the second segment spends outputs
 /// created in the first (exercising the `transactions` "Set B" decrement) as well as outputs both
 /// created and spent within the range (the XOR-cancel case).
+#[cfg(feature = "gettxoutsetinfo")]
 #[tokio::test(flavor = "multi_thread")]
 async fn incremental_accumulator_update_matches_full_rebuild() {
     init_tracing();
@@ -1249,6 +1257,7 @@ async fn incremental_accumulator_update_matches_full_rebuild() {
 
 /// Computes the canonical [`FinalisedTxOutSetInfoAccumulator`] for a fully-resolved UTXO set,
 /// used as the source of truth by the write/delete accumulator tests.
+#[cfg(feature = "gettxoutsetinfo")]
 fn accumulator_from_unspent_map(
     unspent: &HashMap<TransactionHash, HashMap<u32, crate::TxOutCompact>>,
 ) -> FinalisedTxOutSetInfoAccumulator {
@@ -1282,6 +1291,7 @@ fn accumulator_from_unspent_map(
     }
 }
 
+#[cfg(feature = "gettxoutsetinfo")]
 #[tokio::test(flavor = "multi_thread")]
 async fn tx_out_set_info_accumulator_updates_on_delete() {
     init_tracing();

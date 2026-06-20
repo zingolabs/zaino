@@ -19,6 +19,10 @@ zcashd_support = ["zaino-fetch/zcashd_support", "zaino-state/zcashd_support"]
 # Removes network restrictions.
 no_tls_use_unencrypted_traffic = ["tonic/tls-native-roots"]
 
+# gettxoutsetinfo RPC + finalised txout-set accumulator (non-default). Re-exports
+# the zaino-state gate. See docs/adr/0002-gettxoutsetinfo-behind-non-default-feature.md.
+gettxoutsetinfo = ["zaino-state/gettxoutsetinfo"]
+
 # **Experimental and alpha features**
 # Exposes the **complete** set of experimental / alpha features currently implemented in Zaino.
 experimental_features = ["transparent_address_history_experimental"]

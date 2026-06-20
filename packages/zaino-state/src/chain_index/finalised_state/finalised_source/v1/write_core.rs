@@ -208,6 +208,7 @@ impl DbWrite for DbV1 {
         // once the chain is large. Use it only for the first build or an unusually large gap (e.g. a
         // sync interrupted far behind the on-disk tip); in steady state apply just the delta for the
         // blocks we wrote — O(range) work — which produces the identical accumulator at the tip.
+        #[cfg(feature = "gettxoutsetinfo")]
         match self.read_tx_out_set_accumulator_built_height().await? {
             Some(built) if built.0 >= height.0 => {}
             Some(built) if height.0.saturating_sub(built.0) <= ACCUMULATOR_INCREMENTAL_MAX_GAP => {
@@ -280,6 +281,9 @@ impl DbV1 {
     async fn write_block_with_options(
         &self,
         block: IndexedBlock,
+        // Only consulted on the accumulator path; without that feature the bulk/append distinction
+        // it controls has no observable effect.
+        #[cfg_attr(not(feature = "gettxoutsetinfo"), allow(unused_variables))]
         update_tx_out_set: bool,
     ) -> Result<(), FinalisedStateError> {
         self.status.store(StatusType::Syncing);
@@ -572,6 +576,7 @@ impl DbV1 {
 
         // Accumulator maintenance is deferred on the bulk-sync path (`update_tx_out_set == false`)
         // and rebuilt once at the tip; only the single-block append path maintains it incrementally.
+        #[cfg(feature = "gettxoutsetinfo")]
         let tx_out_set_info_accumulator = if update_tx_out_set {
             Some(
                 self.calculate_tx_out_set_info_accumulator_after_block(
@@ -710,6 +715,7 @@ impl DbV1 {
             // Persist the incrementally-maintained accumulator and advance its freshness watermark
             // in the same transaction as the block, so the watermark always tracks the height the
             // accumulator reflects. Skipped on the deferred (bulk-sync) path.
+            #[cfg(feature = "gettxoutsetinfo")]
             if let Some(tx_out_set_info_accumulator) = tx_out_set_info_accumulator {
                 let tx_out_set_info_accumulator_entry = StoredEntryFixed::new(
                     TX_OUT_SET_INFO_ACCUMULATOR_KEY,
@@ -1516,6 +1522,7 @@ impl DbV1 {
             }
         }
 
+        #[cfg(feature = "gettxoutsetinfo")]
         let tx_out_set_info_accumulator = self
             .calculate_tx_out_set_info_accumulator_after_delete_block(&transactions, &spent_map)
             .await?;
@@ -1531,15 +1538,20 @@ impl DbV1 {
         tokio::task::spawn_blocking(move || {
             let mut txn = zaino_db.env.begin_rw_txn()?;
 
-            let tx_out_set_info_accumulator_entry =
-                StoredEntryFixed::new(TX_OUT_SET_INFO_ACCUMULATOR_KEY, tx_out_set_info_accumulator);
+            #[cfg(feature = "gettxoutsetinfo")]
+            {
+                let tx_out_set_info_accumulator_entry = StoredEntryFixed::new(
+                    TX_OUT_SET_INFO_ACCUMULATOR_KEY,
+                    tx_out_set_info_accumulator,
+                );
 
-            txn.put(
-                zaino_db.tx_out_set_info_accumulator,
-                &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-                &tx_out_set_info_accumulator_entry.to_bytes()?,
-                WriteFlags::empty(),
-            )?;
+                txn.put(
+                    zaino_db.tx_out_set_info_accumulator,
+                    &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
+                    &tx_out_set_info_accumulator_entry.to_bytes()?,
+                    WriteFlags::empty(),
+                )?;
+            }
 
             // Delete spent data
             for outpoint in spent_map.keys() {
