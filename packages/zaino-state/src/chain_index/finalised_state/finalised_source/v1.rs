@@ -89,6 +89,9 @@ pub(crate) mod indexed_block;
 
 pub(crate) mod transparent_address_history;
 
+#[cfg(feature = "gettxoutsetinfo")]
+pub(crate) mod tx_out_set_accumulator;
+
 // ───────────────────────── Schema v1 constants ─────────────────────────
 
 /// Full V1 schema text file.
