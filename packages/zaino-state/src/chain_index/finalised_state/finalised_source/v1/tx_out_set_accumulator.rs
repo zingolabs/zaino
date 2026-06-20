@@ -687,6 +687,70 @@ impl DbV1 {
         Ok(accumulator)
     }
 
+    /// Persists the txout-set accumulator singleton (schema table #9) into `txn`; the caller
+    /// commits and syncs. The single encoder of the singleton — shared by the write/delete paths
+    /// and the bulk-rebuild / incremental-update builders so the on-disk encoding lives in one
+    /// place.
+    pub(super) fn put_tx_out_set_accumulator(
+        &self,
+        txn: &mut lmdb::RwTransaction,
+        accumulator: FinalisedTxOutSetInfoAccumulator,
+    ) -> Result<(), FinalisedStateError> {
+        let entry = StoredEntryFixed::new(TX_OUT_SET_INFO_ACCUMULATOR_KEY, accumulator);
+        txn.put(
+            self.tx_out_set_info_accumulator,
+            &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
+            &entry.to_bytes()?,
+            WriteFlags::empty(),
+        )?;
+        Ok(())
+    }
+
+    /// Advances the accumulator freshness watermark to `height` in `txn`; the caller commits.
+    pub(super) fn put_tx_out_set_accumulator_watermark(
+        &self,
+        txn: &mut lmdb::RwTransaction,
+        height: Height,
+    ) -> Result<(), FinalisedStateError> {
+        let watermark = StoredEntryFixed::new(TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY, height);
+        txn.put(
+            self.metadata,
+            &TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY,
+            &watermark.to_bytes()?,
+            WriteFlags::empty(),
+        )?;
+        Ok(())
+    }
+
+    /// Brings the deferred txout-set accumulator up to `height` after a bulk write run: the cheap
+    /// incremental delta when the watermark is within [`ACCUMULATOR_INCREMENTAL_MAX_GAP`] of the
+    /// tip, otherwise a full from-genesis rebuild. Extracted from `write_blocks_to_height`.
+    pub(super) async fn advance_tx_out_set_accumulator_to_tip(
+        &self,
+        height: Height,
+    ) -> Result<(), FinalisedStateError> {
+        match self.read_tx_out_set_accumulator_built_height().await? {
+            Some(built) if built.0 >= height.0 => {}
+            Some(built) if height.0.saturating_sub(built.0) <= ACCUMULATOR_INCREMENTAL_MAX_GAP => {
+                info!(
+                    "write_blocks_to_height: updating txout-set accumulator {}..={}",
+                    built.0 + 1,
+                    height.0
+                );
+                self.update_tx_out_set_accumulator_for_range(built, height)
+                    .await?;
+            }
+            _ => {
+                info!(
+                    "write_blocks_to_height: rebuilding txout-set accumulator to height {}",
+                    height.0
+                );
+                self.rebuild_tx_out_set_accumulator().await?;
+            }
+        }
+        Ok(())
+    }
+
     // *** Bulk txout-set accumulator builder ***
     //
     // Replaces the per-block, random-read accumulator maintenance that dominated sync time at
@@ -713,22 +777,8 @@ impl DbV1 {
 
             let mut txn = self.env.begin_rw_txn()?;
 
-            let accumulator_entry =
-                StoredEntryFixed::new(TX_OUT_SET_INFO_ACCUMULATOR_KEY, accumulator);
-            txn.put(
-                self.tx_out_set_info_accumulator,
-                &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-                &accumulator_entry.to_bytes()?,
-                WriteFlags::empty(),
-            )?;
-
-            let watermark = StoredEntryFixed::new(TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY, db_tip);
-            txn.put(
-                self.metadata,
-                &TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY,
-                &watermark.to_bytes()?,
-                WriteFlags::empty(),
-            )?;
+            self.put_tx_out_set_accumulator(&mut txn, accumulator)?;
+            self.put_tx_out_set_accumulator_watermark(&mut txn, db_tip)?;
 
             txn.commit()?;
             self.env.sync(true)?;
@@ -1187,22 +1237,8 @@ impl DbV1 {
         tokio::task::block_in_place(|| {
             let mut txn = self.env.begin_rw_txn()?;
 
-            let accumulator_entry =
-                StoredEntryFixed::new(TX_OUT_SET_INFO_ACCUMULATOR_KEY, accumulator);
-            txn.put(
-                self.tx_out_set_info_accumulator,
-                &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-                &accumulator_entry.to_bytes()?,
-                WriteFlags::empty(),
-            )?;
-
-            let watermark = StoredEntryFixed::new(TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY, tip);
-            txn.put(
-                self.metadata,
-                &TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY,
-                &watermark.to_bytes()?,
-                WriteFlags::empty(),
-            )?;
+            self.put_tx_out_set_accumulator(&mut txn, accumulator)?;
+            self.put_tx_out_set_accumulator_watermark(&mut txn, tip)?;
 
             txn.commit()?;
             self.env.sync(true)?;

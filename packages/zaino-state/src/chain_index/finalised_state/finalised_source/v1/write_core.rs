@@ -209,25 +209,7 @@ impl DbWrite for DbV1 {
         // sync interrupted far behind the on-disk tip); in steady state apply just the delta for the
         // blocks we wrote — O(range) work — which produces the identical accumulator at the tip.
         #[cfg(feature = "gettxoutsetinfo")]
-        match self.read_tx_out_set_accumulator_built_height().await? {
-            Some(built) if built.0 >= height.0 => {}
-            Some(built) if height.0.saturating_sub(built.0) <= ACCUMULATOR_INCREMENTAL_MAX_GAP => {
-                info!(
-                    "write_blocks_to_height: updating txout-set accumulator {}..={}",
-                    built.0 + 1,
-                    height.0
-                );
-                self.update_tx_out_set_accumulator_for_range(built, height)
-                    .await?;
-            }
-            _ => {
-                info!(
-                    "write_blocks_to_height: rebuilding txout-set accumulator to height {}",
-                    height.0
-                );
-                self.rebuild_tx_out_set_accumulator().await?;
-            }
-        }
+        self.advance_tx_out_set_accumulator_to_tip(height).await?;
 
         Ok(())
     }
@@ -717,26 +699,8 @@ impl DbV1 {
             // accumulator reflects. Skipped on the deferred (bulk-sync) path.
             #[cfg(feature = "gettxoutsetinfo")]
             if let Some(tx_out_set_info_accumulator) = tx_out_set_info_accumulator {
-                let tx_out_set_info_accumulator_entry = StoredEntryFixed::new(
-                    TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-                    tx_out_set_info_accumulator,
-                );
-
-                txn.put(
-                    zaino_db.tx_out_set_info_accumulator,
-                    &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-                    &tx_out_set_info_accumulator_entry.to_bytes()?,
-                    WriteFlags::empty(),
-                )?;
-
-                let watermark =
-                    StoredEntryFixed::new(TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY, block_height);
-                txn.put(
-                    zaino_db.metadata,
-                    &TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY,
-                    &watermark.to_bytes()?,
-                    WriteFlags::empty(),
-                )?;
+                zaino_db.put_tx_out_set_accumulator(&mut txn, tx_out_set_info_accumulator)?;
+                zaino_db.put_tx_out_set_accumulator_watermark(&mut txn, block_height)?;
             }
 
             #[cfg(feature = "transparent_address_history_experimental")]
@@ -1539,19 +1503,7 @@ impl DbV1 {
             let mut txn = zaino_db.env.begin_rw_txn()?;
 
             #[cfg(feature = "gettxoutsetinfo")]
-            {
-                let tx_out_set_info_accumulator_entry = StoredEntryFixed::new(
-                    TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-                    tx_out_set_info_accumulator,
-                );
-
-                txn.put(
-                    zaino_db.tx_out_set_info_accumulator,
-                    &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-                    &tx_out_set_info_accumulator_entry.to_bytes()?,
-                    WriteFlags::empty(),
-                )?;
-            }
+            zaino_db.put_tx_out_set_accumulator(&mut txn, tx_out_set_info_accumulator)?;
 
             // Delete spent data
             for outpoint in spent_map.keys() {
