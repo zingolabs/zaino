@@ -32,6 +32,15 @@ and this library adheres to Rust's notion of
   `MAX_NFS_DEPTH` blocks below the tip, so the cache cannot grow unbounded when
   the finalised `db_height` lags (background sync) or is pinned at `0`
   (ephemeral mode).
+- **Breaking:** the finalised txout-set accumulator (schema table #9,
+  `tx_out_set_info_accumulator`) and `get_tx_out_set_info` are now behind a
+  non-default `gettxoutsetinfo` feature. Without it the accumulator table is never
+  created, no from-genesis accumulator build or write-path maintenance runs, and
+  the capability-dispatch method returns `FinalisedStateError::FeatureUnavailable`.
+  The table stays *described* in `db_schema_v1.txt`, so the schema hash is
+  unchanged and feature-on/off databases remain mutually openable (no
+  rebuild-and-cutover interaction). See
+  `docs/adr/0002-gettxoutsetinfo-behind-non-default-feature.md`.
 ### Deprecated
 ### Removed
 ### Fixed

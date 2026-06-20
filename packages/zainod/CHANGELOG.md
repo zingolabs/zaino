@@ -10,6 +10,12 @@ and this crate adheres to Rust's notion of
 
 ### Added
 ### Changed
+- **Breaking:** `gettxoutsetinfo` is now behind a non-default `gettxoutsetinfo`
+  build feature and is **off by default**. The default `zainod` binary no longer
+  serves the `gettxoutsetinfo` JSON-RPC; calls return a typed "unsupported in this
+  build" error. Build with `--features gettxoutsetinfo` to restore it — this also
+  re-enables the finalised txout-set accumulator and its from-genesis build cost.
+  Rationale and trade-offs: see `docs/adr/0002-gettxoutsetinfo-behind-non-default-feature.md`.
 ### Deprecated
 ### Removed
 ### Fixed

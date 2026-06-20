@@ -9,6 +9,11 @@ and this library adheres to Rust's notion of
 
 ### Added
 ### Changed
+- **Breaking:** the `get_tx_out_set_info` JSON-RPC handler now requires the
+  non-default `gettxoutsetinfo` feature (re-exported from `zaino-state`). Without
+  it the handler stays registered but returns a typed error backed by
+  `FinalisedStateError::FeatureUnavailable` instead of computing a result. See
+  `docs/adr/0002-gettxoutsetinfo-behind-non-default-feature.md`.
 ### Deprecated
 ### Removed
 ### Fixed
