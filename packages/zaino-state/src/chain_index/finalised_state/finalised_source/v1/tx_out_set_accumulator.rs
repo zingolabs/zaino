@@ -7,6 +7,8 @@ use crate::chain_index::finalised_state::finalised_source::v1::{
     ACCUMULATOR_BUILD_SHARDS, TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY,
     TX_OUT_SET_INFO_ACCUMULATOR_KEY,
 };
+use crate::chain_index::finalised_state::finalised_source::FinalisedSource;
+use crate::chain_index::source::BlockchainSource;
 use crate::chain_index::types::db::metadata::{
     is_unspendable_tx_out, tx_out_set_entry_digest, FinalisedTxOutSetInfoAccumulator,
     ZAINO_TXOUTSET_ENTRY_LEN,
@@ -1336,6 +1338,31 @@ impl DbV1 {
             .get(location.tx_index() as usize)
             .cloned()
             .flatten())
+    }
+}
+
+/// `FinalisedSource` dispatch for the accumulator capability, co-located with the V1
+/// implementation it forwards to. V1-only; ephemeral backends have no accumulator. The whole
+/// module is feature-gated, so these need no per-method `#[cfg]`.
+impl<T: BlockchainSource> FinalisedSource<T> {
+    /// Provides access to the finalised txout-set accumulator DB table.
+    pub(crate) fn tx_out_set_info_accumulator_db(&self) -> Result<Database, FinalisedStateError> {
+        Ok(self
+            .require_v1("v1 tx_out_set_info_accumulator db not available")?
+            .tx_out_set_info_accumulator_db())
+    }
+
+    /// Bulk-rebuilds the finalised txout-set accumulator to the current tip and persists it (V1
+    /// only).
+    ///
+    /// Recomputes the accumulator from the finalised `transparent` + `spent` tables via sequential
+    /// scans and writes the singleton plus its freshness watermark. Replaces the per-block
+    /// accumulator maintenance that dominated sync time at sandblast height; used by
+    /// `sync_to_height` after a catch-up run and by the v1.2 migration's accumulator stage.
+    pub(crate) async fn rebuild_tx_out_set_accumulator(&self) -> Result<(), FinalisedStateError> {
+        self.require_v1("v1 txout-set accumulator builder")?
+            .rebuild_tx_out_set_accumulator()
+            .await
     }
 }
 

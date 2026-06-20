@@ -354,31 +354,6 @@ impl<T: BlockchainSource> FinalisedSource<T> {
     }
 }
 
-/// V1-only finalised txout-set accumulator dispatch, grouped so the whole `gettxoutsetinfo`
-/// capability is a single `#[cfg]` unit.
-#[cfg(feature = "gettxoutsetinfo")]
-impl<T: BlockchainSource> FinalisedSource<T> {
-    /// Provides access to the finalised txout-set accumulator DB table.
-    pub(crate) fn tx_out_set_info_accumulator_db(&self) -> Result<Database, FinalisedStateError> {
-        Ok(self
-            .require_v1("v1 tx_out_set_info_accumulator db not available")?
-            .tx_out_set_info_accumulator_db())
-    }
-
-    /// Bulk-rebuilds the finalised txout-set accumulator to the current tip and persists it (V1
-    /// only).
-    ///
-    /// Recomputes the accumulator from the finalised `transparent` + `spent` tables via sequential
-    /// scans and writes the singleton plus its freshness watermark. Replaces the per-block
-    /// accumulator maintenance that dominated sync time at sandblast height; used by
-    /// `sync_to_height` after a catch-up run and by the v1.2 migration's accumulator stage.
-    pub(crate) async fn rebuild_tx_out_set_accumulator(&self) -> Result<(), FinalisedStateError> {
-        self.require_v1("v1 txout-set accumulator builder")?
-            .rebuild_tx_out_set_accumulator()
-            .await
-    }
-}
-
 impl<T: BlockchainSource> From<DbV1> for FinalisedSource<T> {
     /// Wrap an already-constructed v1 database backend.
     fn from(value: DbV1) -> Self {
