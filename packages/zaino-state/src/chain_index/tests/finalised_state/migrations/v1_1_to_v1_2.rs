@@ -6,14 +6,16 @@ use tempfile::TempDir;
 use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, Network, StorageConfig};
 
+#[cfg(feature = "gettxoutsetinfo")]
+use crate::chain_index::finalised_state::capability::TransparentHistExt as _;
 use crate::chain_index::finalised_state::capability::{
     BlockCoreExt as _, BlockTransparentExt as _, CapabilityRequest, DbRead as _, DbVersion,
-    MigrationStatus, TransparentHistExt as _,
+    MigrationStatus,
 };
 use crate::chain_index::finalised_state::entry::StoredEntryFixed;
-use crate::chain_index::finalised_state::finalised_source::v1::{
-    DB_SCHEMA_V1_HASH, TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-};
+use crate::chain_index::finalised_state::finalised_source::v1::DB_SCHEMA_V1_HASH;
+#[cfg(feature = "gettxoutsetinfo")]
+use crate::chain_index::finalised_state::finalised_source::v1::TX_OUT_SET_INFO_ACCUMULATOR_KEY;
 use crate::chain_index::finalised_state::finalised_source::FinalisedSource;
 use crate::chain_index::finalised_state::FinalisedState;
 use crate::chain_index::source::mockchain_source::MockchainSource;
@@ -21,6 +23,7 @@ use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{
     build_active_mockchain_source, load_test_vectors, TestVectorData,
 };
+#[cfg(feature = "gettxoutsetinfo")]
 use crate::chain_index::types::db::metadata::FinalisedTxOutSetInfoAccumulator;
 use crate::{ChainIndexConfig, Height, Outpoint, TxLocation, ZainoVersionedSerde as _};
 
@@ -123,9 +126,11 @@ async fn simulate_interrupted_v1_1_to_v1_2_spent_index_migration(
     let environment = database_backend.env().unwrap();
     let metadata_database = database_backend.metadata_db().unwrap();
     let spent_database = database_backend.spent_db().unwrap();
+    #[cfg(feature = "gettxoutsetinfo")]
     let tx_out_set_info_accumulator_database =
         database_backend.tx_out_set_info_accumulator_db().unwrap();
 
+    #[cfg(feature = "gettxoutsetinfo")]
     let expected_resume_accumulator =
         expected_tx_out_set_info_accumulator(database_backend, resume_height - 1).await;
 
@@ -177,17 +182,20 @@ async fn simulate_interrupted_v1_1_to_v1_2_spent_index_migration(
             transaction.del(spent_database, &spent_key, None).unwrap();
         }
 
-        let tx_out_set_info_accumulator_entry =
-            StoredEntryFixed::new(TX_OUT_SET_INFO_ACCUMULATOR_KEY, expected_resume_accumulator);
+        #[cfg(feature = "gettxoutsetinfo")]
+        {
+            let tx_out_set_info_accumulator_entry =
+                StoredEntryFixed::new(TX_OUT_SET_INFO_ACCUMULATOR_KEY, expected_resume_accumulator);
 
-        transaction
-            .put(
-                tx_out_set_info_accumulator_database,
-                &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-                &tx_out_set_info_accumulator_entry.to_bytes().unwrap(),
-                WriteFlags::empty(),
-            )
-            .unwrap();
+            transaction
+                .put(
+                    tx_out_set_info_accumulator_database,
+                    &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
+                    &tx_out_set_info_accumulator_entry.to_bytes().unwrap(),
+                    WriteFlags::empty(),
+                )
+                .unwrap();
+        }
 
         let progress_entry = StoredEntryFixed::new(MIGRATION_SPENT_PROGRESS_KEY, resume_height);
         let progress_bytes = progress_entry.to_bytes().unwrap();
@@ -290,6 +298,7 @@ async fn assert_spent_index_matches_transparent_data(
     }
 }
 
+#[cfg(feature = "gettxoutsetinfo")]
 async fn expected_tx_out_set_info_accumulator(
     database_backend: &FinalisedSource<MockchainSource>,
     max_height: Height,
@@ -382,6 +391,7 @@ async fn expected_tx_out_set_info_accumulator(
     expected_accumulator
 }
 
+#[cfg(feature = "gettxoutsetinfo")]
 async fn assert_tx_out_set_info_accumulator_matches_transparent_data(
     database_backend: &FinalisedSource<MockchainSource>,
 ) {
@@ -467,6 +477,7 @@ async fn v1_1_to_v1_2_spent_index_backfill_from_old_version() {
 
     assert_txid_location_index_matches_block_data(&migrated_backend).await;
     assert_spent_index_matches_transparent_data(&migrated_backend).await;
+    #[cfg(feature = "gettxoutsetinfo")]
     assert_tx_out_set_info_accumulator_matches_transparent_data(&migrated_backend).await;
 
     migrated_database.shutdown().await.unwrap();
@@ -564,6 +575,7 @@ async fn v1_1_to_v1_2_spent_index_migration_resumes_after_crash() {
 
     assert_txid_location_index_matches_block_data(&resumed_backend).await;
     assert_spent_index_matches_transparent_data(&resumed_backend).await;
+    #[cfg(feature = "gettxoutsetinfo")]
     assert_tx_out_set_info_accumulator_matches_transparent_data(&resumed_backend).await;
 
     resumed_database.shutdown().await.unwrap();
@@ -650,6 +662,7 @@ async fn v1_2_0_cache_missing_txid_location_index_is_rebuilt() {
 
     assert_txid_location_index_matches_block_data(&healed_backend).await;
     assert_spent_index_matches_transparent_data(&healed_backend).await;
+    #[cfg(feature = "gettxoutsetinfo")]
     assert_tx_out_set_info_accumulator_matches_transparent_data(&healed_backend).await;
 
     healed_database.shutdown().await.unwrap();
