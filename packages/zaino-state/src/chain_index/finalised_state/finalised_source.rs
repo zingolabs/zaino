@@ -352,9 +352,13 @@ impl<T: BlockchainSource> FinalisedSource<T> {
     pub(crate) fn transparent_db(&self) -> Result<Database, FinalisedStateError> {
         Ok(self.require_v1("v1 transparent db")?.transparent_db())
     }
+}
 
+/// V1-only finalised txout-set accumulator dispatch, grouped so the whole `gettxoutsetinfo`
+/// capability is a single `#[cfg]` unit.
+#[cfg(feature = "gettxoutsetinfo")]
+impl<T: BlockchainSource> FinalisedSource<T> {
     /// Provides access to the finalised txout-set accumulator DB table.
-    #[cfg(feature = "gettxoutsetinfo")]
     pub(crate) fn tx_out_set_info_accumulator_db(&self) -> Result<Database, FinalisedStateError> {
         Ok(self
             .require_v1("v1 tx_out_set_info_accumulator db not available")?
@@ -368,7 +372,6 @@ impl<T: BlockchainSource> FinalisedSource<T> {
     /// scans and writes the singleton plus its freshness watermark. Replaces the per-block
     /// accumulator maintenance that dominated sync time at sandblast height; used by
     /// `sync_to_height` after a catch-up run and by the v1.2 migration's accumulator stage.
-    #[cfg(feature = "gettxoutsetinfo")]
     pub(crate) async fn rebuild_tx_out_set_accumulator(&self) -> Result<(), FinalisedStateError> {
         self.require_v1("v1 txout-set accumulator builder")?
             .rebuild_tx_out_set_accumulator()
@@ -889,33 +892,6 @@ impl<T: BlockchainSource> FinalisedSource<T> {
         }
     }
 
-    /// Reads the height the persisted txout-set accumulator currently reflects (V1 only).
-    ///
-    /// `None` means it has never been built. Test hook for asserting the incremental range-update
-    /// path advances the watermark (and is therefore taken, rather than a silent rebuild fallback).
-    #[cfg(feature = "gettxoutsetinfo")]
-    pub(crate) async fn read_tx_out_set_accumulator_built_height(
-        &self,
-    ) -> Result<Option<Height>, FinalisedStateError> {
-        self.require_v1("v1 txout-set accumulator builder")?
-            .read_tx_out_set_accumulator_built_height()
-            .await
-    }
-
-    /// Computes (without persisting) the bulk-built txout-set accumulator to `db_tip` (V1 only).
-    ///
-    /// Test hook for asserting the sequential bulk builder matches the incrementally-maintained
-    /// accumulator across shard counts.
-    #[cfg(feature = "gettxoutsetinfo")]
-    pub(crate) fn build_tx_out_set_accumulator_blocking(
-        &self,
-        db_tip: Height,
-        shards: u16,
-    ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
-        self.require_v1("v1 txout-set accumulator builder")?
-            .build_tx_out_set_accumulator_blocking(db_tip, shards)
-    }
-
     /// Writes a block using the v1.0.0 format.
     ///
     /// This intentionally writes only the core v1 tables and uses v1 item encodings.
@@ -933,6 +909,36 @@ impl<T: BlockchainSource> FinalisedSource<T> {
                 "v1.0.0 test fixture writer requires a v1 backend".to_string(),
             )),
         }
+    }
+}
+
+/// Accumulator test hooks, grouped so the whole `gettxoutsetinfo` test surface is a single
+/// `#[cfg]` unit (the enclosing `cfg(test)` is folded in via `cfg(all(...))`).
+#[cfg(all(test, feature = "gettxoutsetinfo"))]
+impl<T: BlockchainSource> FinalisedSource<T> {
+    /// Reads the height the persisted txout-set accumulator currently reflects (V1 only).
+    ///
+    /// `None` means it has never been built. Test hook for asserting the incremental range-update
+    /// path advances the watermark (and is therefore taken, rather than a silent rebuild fallback).
+    pub(crate) async fn read_tx_out_set_accumulator_built_height(
+        &self,
+    ) -> Result<Option<Height>, FinalisedStateError> {
+        self.require_v1("v1 txout-set accumulator builder")?
+            .read_tx_out_set_accumulator_built_height()
+            .await
+    }
+
+    /// Computes (without persisting) the bulk-built txout-set accumulator to `db_tip` (V1 only).
+    ///
+    /// Test hook for asserting the sequential bulk builder matches the incrementally-maintained
+    /// accumulator across shard counts.
+    pub(crate) fn build_tx_out_set_accumulator_blocking(
+        &self,
+        db_tip: Height,
+        shards: u16,
+    ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
+        self.require_v1("v1 txout-set accumulator builder")?
+            .build_tx_out_set_accumulator_blocking(db_tip, shards)
     }
 }
 
