@@ -8,7 +8,7 @@
 //! `FinalisedState` is a facade over a `FinalisedSource` — the
 //! backing implementation that actually serves finalised data. That backing is **not necessarily a
 //! database**: it is one of
-//! - a versioned, LMDB-backed persistent database (`V0` / `V1`), or
+//! - a versioned, LMDB-backed persistent database (`V1`), or
 //! - an **ephemeral** passthrough that serves finalised reads directly from the upstream
 //!   [`BlockchainSource`](crate::chain_index::source::BlockchainSource) and persists nothing
 //!   (selected by `ChainIndexConfig::ephemeral`).
@@ -38,7 +38,7 @@
 //!
 //! - `finalised_source`
 //!   - Houses the concrete backing implementations: persistent databases by **major** version
-//!     (`finalised_source::v0`, `finalised_source::v1`), the ephemeral passthrough
+//!     (`finalised_source::v1`), the ephemeral passthrough
 //!     (`finalised_source::ephemeral`), and the version-and-mode-erased facade enum
 //!     `finalised_source::FinalisedSource` that implements the capability traits.
 //!
@@ -65,8 +65,7 @@
 //! ```text
 //! FinalisedState (facade; owns config; exposes simple methods)
 //!   └─ Router (capability routing; primary + optional shadow + optional ephemeral passthrough)
-//!       └─ FinalisedSource (enum; V0 / V1 / Ephemeral; implements core + extension traits)
-//!           ├─ finalised_source::v0::DbV0 (legacy persistent schema; compact-block streamer)
+//!       └─ FinalisedSource (enum; V1 / Ephemeral; implements core + extension traits)
 //!           ├─ finalised_source::v1::DbV1 (current persistent schema; full indices incl. transparent history)
 //!           └─ finalised_source::ephemeral::EphemeralFinalisedState (passthrough to the BlockchainSource)
 //! ```
@@ -130,7 +129,9 @@
 //! The current logic recognises two layouts:
 //!
 //! - **Legacy v0 layout:** network directories `live/`, `test/`, `local/` containing LMDB
-//!   `data.mdb` + `lock.mdb`.
+//!   `data.mdb` + `lock.mdb`. This layout is still *detected* so that `spawn` can return a clear
+//!   error — v0 is no longer supported, so an on-disk v0 database is rejected rather than opened or
+//!   migrated. The operator must remove the directory and resync a v1 database.
 //! - **Versioned v1+ layout:** network directories `mainnet/`, `testnet/`, `regtest/` containing
 //!   version subdirectories enumerated by `finalised_source::VERSION_DIRS` (e.g. `v1/`).
 //!
@@ -384,9 +385,8 @@ impl<T: BlockchainSource> FinalisedState<T> {
     ///    runs migrations using `migrations::MigrationManager`.
     ///
     /// ## Version selection rules
-    /// - `cfg.db_version == 0` targets `DbVersion { 0, 0, 0 }` (legacy layout).
     /// - `cfg.db_version == 1` targets the latest v1 DB version (`DB_VERSION_V1`)..
-    /// - Any other value returns an error.
+    /// - Any other value (including the legacy `0`) returns an error.
     ///
     /// ## Migrations
     /// Migrations are invoked only when a database already exists on disk and the opened database
@@ -419,11 +419,6 @@ impl<T: BlockchainSource> FinalisedState<T> {
             let version_opt = Self::try_find_current_db_version(&cfg).await;
 
             let target_version = match cfg.db_version {
-                0 => DbVersion {
-                    major: 0,
-                    minor: 0,
-                    patch: 0,
-                },
                 1 => DB_VERSION_V1,
                 x => {
                     return Err(FinalisedStateError::Custom(format!(
@@ -436,7 +431,13 @@ impl<T: BlockchainSource> FinalisedState<T> {
                 Some(version) => {
                     info!(version, "Opening FinalisedState from file");
                     match version {
-                        0 => FinalisedSource::spawn_v0(&cfg).await?,
+                        0 => {
+                            return Err(FinalisedStateError::Custom(format!(
+                                "legacy v0 database detected at {}; v0 is no longer supported. \
+                                 Remove the directory and restart to resync a v1 database from genesis.",
+                                cfg.storage.database.path.display()
+                            )));
+                        }
                         1 => FinalisedSource::spawn_v1(&cfg).await?,
                         _ => {
                             return Err(FinalisedStateError::Custom(format!(
@@ -448,7 +449,6 @@ impl<T: BlockchainSource> FinalisedState<T> {
                 None => {
                     info!(version = %target_version, "Creating new FinalisedState");
                     match target_version.major() {
-                        0 => FinalisedSource::spawn_v0(&cfg).await?,
                         1 => FinalisedSource::spawn_v1(&cfg).await?,
                         _ => {
                             return Err(FinalisedStateError::Custom(format!(
@@ -590,7 +590,9 @@ impl<T: BlockchainSource> FinalisedState<T> {
     /// - **Legacy v0 layout**
     ///   - Network directories: `live/`, `test/`, `local/`
     ///   - Presence check: both `data.mdb` and `lock.mdb` exist
-    ///   - Reported version: `Some(0)`
+    ///   - Reported version: `Some(0)`. v0 is no longer supported, so `spawn` rejects this with a
+    ///     clear error rather than opening or migrating it; detection exists only to produce that
+    ///     error.
     ///
     /// - **Versioned v1+ layout**
     ///   - Network directories: `mainnet/`, `testnet/`, `regtest/`
@@ -948,7 +950,6 @@ impl<T: BlockchainSource> FinalisedState<T> {
             Some(version) => {
                 info!(version, "Opening FinalisedState from file");
                 match version {
-                    0 => FinalisedSource::spawn_v0(&cfg).await?,
                     1 => FinalisedSource::spawn_v1(&cfg).await?,
                     _ => {
                         return Err(FinalisedStateError::Custom(format!(

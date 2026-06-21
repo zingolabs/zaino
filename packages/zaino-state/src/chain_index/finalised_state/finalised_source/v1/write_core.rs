@@ -208,25 +208,8 @@ impl DbWrite for DbV1 {
         // once the chain is large. Use it only for the first build or an unusually large gap (e.g. a
         // sync interrupted far behind the on-disk tip); in steady state apply just the delta for the
         // blocks we wrote — O(range) work — which produces the identical accumulator at the tip.
-        match self.read_tx_out_set_accumulator_built_height().await? {
-            Some(built) if built.0 >= height.0 => {}
-            Some(built) if height.0.saturating_sub(built.0) <= ACCUMULATOR_INCREMENTAL_MAX_GAP => {
-                info!(
-                    "write_blocks_to_height: updating txout-set accumulator {}..={}",
-                    built.0 + 1,
-                    height.0
-                );
-                self.update_tx_out_set_accumulator_for_range(built, height)
-                    .await?;
-            }
-            _ => {
-                info!(
-                    "write_blocks_to_height: rebuilding txout-set accumulator to height {}",
-                    height.0
-                );
-                self.rebuild_tx_out_set_accumulator().await?;
-            }
-        }
+        #[cfg(feature = "gettxoutsetinfo")]
+        self.advance_tx_out_set_accumulator_to_tip(height).await?;
 
         Ok(())
     }
@@ -280,6 +263,9 @@ impl DbV1 {
     async fn write_block_with_options(
         &self,
         block: IndexedBlock,
+        // Only consulted on the accumulator path; without that feature the bulk/append distinction
+        // it controls has no observable effect.
+        #[cfg_attr(not(feature = "gettxoutsetinfo"), allow(unused_variables))]
         update_tx_out_set: bool,
     ) -> Result<(), FinalisedStateError> {
         self.status.store(StatusType::Syncing);
@@ -572,18 +558,15 @@ impl DbV1 {
 
         // Accumulator maintenance is deferred on the bulk-sync path (`update_tx_out_set == false`)
         // and rebuilt once at the tip; only the single-block append path maintains it incrementally.
-        let tx_out_set_info_accumulator = if update_tx_out_set {
-            Some(
-                self.calculate_tx_out_set_info_accumulator_after_block(
-                    block_height,
-                    &transactions,
-                    &spent_map,
-                )
-                .await?,
+        #[cfg(feature = "gettxoutsetinfo")]
+        let tx_out_set_info_accumulator = self
+            .maybe_calculate_tx_out_set_info_accumulator_after_block(
+                update_tx_out_set,
+                block_height,
+                &transactions,
+                &spent_map,
             )
-        } else {
-            None
-        };
+            .await?;
 
         // Split the paired vector into the per-table shapes used for storage.
         let (txids, transparent): (Vec<TransactionHash>, Vec<Option<TransparentCompactTx>>) =
@@ -629,28 +612,7 @@ impl DbV1 {
         let orchard_entry = StoredEntryVar::new(&block_height_bytes, OrchardTxList::new(orchard));
 
         // if any database writes fail, or block validation fails, remove block from database and return err.
-        let zaino_db = Self {
-            env: Arc::clone(&self.env),
-            headers: self.headers,
-            txids: self.txids,
-            transparent: self.transparent,
-            sapling: self.sapling,
-            orchard: self.orchard,
-            commitment_tree_data: self.commitment_tree_data,
-            heights: self.heights,
-            spent: self.spent,
-            txid_location: self.txid_location,
-            tx_out_set_info_accumulator: self.tx_out_set_info_accumulator,
-            #[cfg(feature = "transparent_address_history_experimental")]
-            address_history: self.address_history,
-            metadata: self.metadata,
-            validated_tip: Arc::clone(&self.validated_tip),
-            validated_set: self.validated_set.clone(),
-            db_handler: std::sync::Mutex::new(None),
-            cancel_token: self.cancel_token.clone(),
-            status: self.status.clone(),
-            config: self.config.clone(),
-        };
+        let zaino_db = self.detached_handle();
         let join_handle = tokio::task::spawn_blocking(move || {
             // Write block to FinalisedState
             let mut txn = zaino_db.env.begin_rw_txn()?;
@@ -731,28 +693,12 @@ impl DbV1 {
             // Persist the incrementally-maintained accumulator and advance its freshness watermark
             // in the same transaction as the block, so the watermark always tracks the height the
             // accumulator reflects. Skipped on the deferred (bulk-sync) path.
-            if let Some(tx_out_set_info_accumulator) = tx_out_set_info_accumulator {
-                let tx_out_set_info_accumulator_entry = StoredEntryFixed::new(
-                    TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-                    tx_out_set_info_accumulator,
-                );
-
-                txn.put(
-                    zaino_db.tx_out_set_info_accumulator,
-                    &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-                    &tx_out_set_info_accumulator_entry.to_bytes()?,
-                    WriteFlags::empty(),
-                )?;
-
-                let watermark =
-                    StoredEntryFixed::new(TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY, block_height);
-                txn.put(
-                    zaino_db.metadata,
-                    &TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY,
-                    &watermark.to_bytes()?,
-                    WriteFlags::empty(),
-                )?;
-            }
+            #[cfg(feature = "gettxoutsetinfo")]
+            zaino_db.put_maintained_tx_out_set_accumulator(
+                &mut txn,
+                tx_out_set_info_accumulator,
+                block_height,
+            )?;
 
             #[cfg(feature = "transparent_address_history_experimental")]
             {
@@ -1537,6 +1483,7 @@ impl DbV1 {
             }
         }
 
+        #[cfg(feature = "gettxoutsetinfo")]
         let tx_out_set_info_accumulator = self
             .calculate_tx_out_set_info_accumulator_after_delete_block(&transactions, &spent_map)
             .await?;
@@ -1548,40 +1495,12 @@ impl DbV1 {
             .collect();
 
         // Delete all block data from db.
-        let zaino_db = Self {
-            env: Arc::clone(&self.env),
-            headers: self.headers,
-            txids: self.txids,
-            transparent: self.transparent,
-            sapling: self.sapling,
-            orchard: self.orchard,
-            commitment_tree_data: self.commitment_tree_data,
-            heights: self.heights,
-            spent: self.spent,
-            txid_location: self.txid_location,
-            tx_out_set_info_accumulator: self.tx_out_set_info_accumulator,
-            #[cfg(feature = "transparent_address_history_experimental")]
-            address_history: self.address_history,
-            metadata: self.metadata,
-            validated_tip: Arc::clone(&self.validated_tip),
-            validated_set: self.validated_set.clone(),
-            db_handler: std::sync::Mutex::new(None),
-            cancel_token: self.cancel_token.clone(),
-            status: self.status.clone(),
-            config: self.config.clone(),
-        };
+        let zaino_db = self.detached_handle();
         tokio::task::spawn_blocking(move || {
             let mut txn = zaino_db.env.begin_rw_txn()?;
 
-            let tx_out_set_info_accumulator_entry =
-                StoredEntryFixed::new(TX_OUT_SET_INFO_ACCUMULATOR_KEY, tx_out_set_info_accumulator);
-
-            txn.put(
-                zaino_db.tx_out_set_info_accumulator,
-                &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-                &tx_out_set_info_accumulator_entry.to_bytes()?,
-                WriteFlags::empty(),
-            )?;
+            #[cfg(feature = "gettxoutsetinfo")]
+            zaino_db.put_tx_out_set_accumulator(&mut txn, tx_out_set_info_accumulator)?;
 
             // Delete spent data
             for outpoint in spent_map.keys() {
