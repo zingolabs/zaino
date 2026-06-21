@@ -1468,6 +1468,28 @@ pub(crate) async fn expected_tx_out_set_info_accumulator(
     expected_accumulator
 }
 
+/// Test assertion: the backend's maintained accumulator equals the independently recomputed
+/// [`expected_tx_out_set_info_accumulator`]. Used by the v1.1->v1.2 migration tests.
+#[cfg(test)]
+pub(crate) async fn assert_tx_out_set_info_accumulator_matches_transparent_data(
+    database_backend: &FinalisedSource<MockchainSource>,
+) {
+    let database_height = database_backend.db_height().await.unwrap().unwrap();
+
+    let expected_accumulator =
+        expected_tx_out_set_info_accumulator(database_backend, database_height).await;
+
+    let actual_accumulator = database_backend
+        .get_tx_out_set_info_accumulator()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        actual_accumulator, expected_accumulator,
+        "txout-set accumulator does not match transparent data and spent index"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

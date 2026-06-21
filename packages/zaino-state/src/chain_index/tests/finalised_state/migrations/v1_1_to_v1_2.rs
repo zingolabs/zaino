@@ -12,12 +12,10 @@ use crate::chain_index::finalised_state::capability::{
 };
 use crate::chain_index::finalised_state::entry::StoredEntryFixed;
 use crate::chain_index::finalised_state::finalised_source::v1::DB_SCHEMA_V1_HASH;
+#[cfg(feature = "gettxoutsetinfo")]
+use crate::chain_index::finalised_state::finalised_source::v1::TX_OUT_SET_INFO_ACCUMULATOR_KEY;
 use crate::chain_index::finalised_state::finalised_source::FinalisedSource;
 use crate::chain_index::finalised_state::FinalisedState;
-#[cfg(feature = "gettxoutsetinfo")]
-use crate::chain_index::finalised_state::{
-    capability::TransparentHistExt as _, finalised_source::v1::TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-};
 use crate::chain_index::source::mockchain_source::MockchainSource;
 use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{
@@ -294,26 +292,6 @@ async fn assert_spent_index_matches_transparent_data(
     }
 }
 
-#[cfg(feature = "gettxoutsetinfo")]
-async fn assert_tx_out_set_info_accumulator_matches_transparent_data(
-    database_backend: &FinalisedSource<MockchainSource>,
-) {
-    let database_height = database_backend.db_height().await.unwrap().unwrap();
-
-    let expected_accumulator =
-        crate::chain_index::finalised_state::finalised_source::v1::tx_out_set_accumulator::expected_tx_out_set_info_accumulator(database_backend, database_height).await;
-
-    let actual_accumulator = database_backend
-        .get_tx_out_set_info_accumulator()
-        .await
-        .unwrap();
-
-    assert_eq!(
-        actual_accumulator, expected_accumulator,
-        "txout-set accumulator does not match transparent data and spent index"
-    );
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn v1_1_to_v1_2_spent_index_backfill_from_old_version() {
     init_tracing();
@@ -381,7 +359,7 @@ async fn v1_1_to_v1_2_spent_index_backfill_from_old_version() {
     assert_txid_location_index_matches_block_data(&migrated_backend).await;
     assert_spent_index_matches_transparent_data(&migrated_backend).await;
     #[cfg(feature = "gettxoutsetinfo")]
-    assert_tx_out_set_info_accumulator_matches_transparent_data(&migrated_backend).await;
+    crate::chain_index::finalised_state::finalised_source::v1::tx_out_set_accumulator::assert_tx_out_set_info_accumulator_matches_transparent_data(&migrated_backend).await;
 
     migrated_database.shutdown().await.unwrap();
 }
@@ -479,7 +457,7 @@ async fn v1_1_to_v1_2_spent_index_migration_resumes_after_crash() {
     assert_txid_location_index_matches_block_data(&resumed_backend).await;
     assert_spent_index_matches_transparent_data(&resumed_backend).await;
     #[cfg(feature = "gettxoutsetinfo")]
-    assert_tx_out_set_info_accumulator_matches_transparent_data(&resumed_backend).await;
+    crate::chain_index::finalised_state::finalised_source::v1::tx_out_set_accumulator::assert_tx_out_set_info_accumulator_matches_transparent_data(&resumed_backend).await;
 
     resumed_database.shutdown().await.unwrap();
 }
@@ -566,7 +544,7 @@ async fn v1_2_0_cache_missing_txid_location_index_is_rebuilt() {
     assert_txid_location_index_matches_block_data(&healed_backend).await;
     assert_spent_index_matches_transparent_data(&healed_backend).await;
     #[cfg(feature = "gettxoutsetinfo")]
-    assert_tx_out_set_info_accumulator_matches_transparent_data(&healed_backend).await;
+    crate::chain_index::finalised_state::finalised_source::v1::tx_out_set_accumulator::assert_tx_out_set_info_accumulator_matches_transparent_data(&healed_backend).await;
 
     healed_database.shutdown().await.unwrap();
 }
