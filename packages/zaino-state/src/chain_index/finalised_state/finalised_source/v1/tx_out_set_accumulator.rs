@@ -1410,6 +1410,29 @@ impl<T: BlockchainSource> FinalisedSource<T> {
             .rebuild_tx_out_set_accumulator()
             .await
     }
+
+    /// Runs the v1.2.0 migration's Stage C: bulk-rebuilds the txout-set accumulator from the
+    /// finalised `transparent` + `spent` tables built by Stage B. Idempotent — it never trusts an
+    /// existing accumulator, so a stale per-block value from an interrupted prior run is discarded
+    /// and replaced. Emits the stage's start / elapsed-on-complete logs; `db_tip` is the height
+    /// being built to.
+    pub(crate) async fn run_v1_2_migration_accumulator_stage(
+        &self,
+        db_tip: u32,
+    ) -> Result<(), FinalisedStateError> {
+        let stage_started = std::time::Instant::now();
+        info!(
+            db_tip,
+            "v1.2.0 migration Stage C: building txout-set accumulator"
+        );
+        self.rebuild_tx_out_set_accumulator().await?;
+        info!(
+            db_tip,
+            elapsed = ?stage_started.elapsed(),
+            "v1.2.0 migration Stage C complete"
+        );
+        Ok(())
+    }
 }
 
 /// Test oracle: recomputes the expected accumulator independently from the backend's
