@@ -117,10 +117,16 @@ impl DbWrite for DbV1 {
             // the `batch_bytes < batch_budget` check on the first iteration (`0 < 0`), buffer no
             // blocks, and stall the sync. A 1-byte floor still guarantees forward progress
             // (worst case, one block per batch).
-            let batch_budget =
-                (self.config.storage.database.sync_write_batch_size.to_byte_count() as u64).max(1);
-            let batch_interval =
-                std::time::Duration::from_secs(self.config.storage.database.sync_checkpoint_interval);
+            let batch_budget = (self
+                .config
+                .storage
+                .database
+                .sync_write_batch_size
+                .to_byte_count() as u64)
+                .max(1);
+            let batch_interval = std::time::Duration::from_secs(
+                self.config.storage.database.sync_checkpoint_interval,
+            );
             let mut next = start_height;
             let mut last_progress_log = std::time::Instant::now();
             while next <= height.0 {

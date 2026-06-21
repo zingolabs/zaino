@@ -1100,7 +1100,9 @@ async fn accumulator_build_shards_scale_to_memory_budget() {
     zaino_db.wait_until_ready().await;
 
     let backend = zaino_db
-        .backend_for_cap(crate::chain_index::finalised_state::capability::CapabilityRequest::WriteCore)
+        .backend_for_cap(
+            crate::chain_index::finalised_state::capability::CapabilityRequest::WriteCore,
+        )
         .unwrap();
 
     // A budget far larger than the (tiny regtest) spent set => the whole set fits in one shard.

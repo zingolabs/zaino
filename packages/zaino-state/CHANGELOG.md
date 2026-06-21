@@ -34,17 +34,31 @@ and this library adheres to Rust's notion of
   (ephemeral mode).
 - The finalised-state bulk-sync write-batch flush interval is now configurable
   via `storage.database.sync_checkpoint_interval` (was a fixed 60s; default now
-  300s). Raise it to make sync less reactive but faster on large-RAM hosts where
-  the memory budget is never reached before the interval.
+  120s). Under `NO_SYNC` this also bounds the window of unflushed writes at risk
+  on a hard kill / eviction; lower it to shrink that window.
+- The txout-set accumulator rebuild now sizes its in-memory spent set from a
+  dedicated `storage.database.accumulator_rebuild_memory_size` budget instead of
+  reusing `sync_write_batch_size`, so the bulk-sync block buffer and the rebuild
+  can no longer inflate each other's peak memory.
 ### Deprecated
 ### Removed
 ### Fixed
 - The finalised-state txout-set accumulator rebuild at chain tip no longer
-  OOM-crashes on memory-constrained hosts. The rebuild now auto-shards its
-  in-memory spent set to fit the configured
-  `storage.database.sync_write_batch_size` budget (a single optimal pass when the
-  whole set fits in RAM, scaling up otherwise); the result is independent of the
-  shard count.
+  OOM-crashes on memory-constrained hosts. It auto-shards its in-memory spent set
+  by creating-txid prefix and now enforces the per-shard budget *strictly*: each
+  shard is loaded with a hard outpoint cap (range-seeking only that shard's
+  contiguous key range rather than scanning the whole `spent` table), and any
+  shard that would exceed the cap is bisected and retried — down to single-byte
+  shards, at which point it fails with an actionable error rather than OOM-ing.
+  The result is independent of the shard count.
+- Startup `spent`-table integrity failures now report the offending entry's key,
+  value length, and leading value bytes plus a wipe-and-re-index hint (previously
+  a bare "corrupt spent entry" / "version tag N"), and the integrity and rebuild
+  scans walk the cursor explicitly so a real LMDB error propagates instead of
+  being swallowed (release) or `debug_assert!`-panicking (debug).
+- Corrected documentation that claimed `NO_SYNC` "never corrupts the database": on
+  storage that does not preserve write order (NFS, overlay filesystems, hard pod
+  eviction) a crash can leave torn pages; the recovery is to wipe and re-index.
 
 ## [0.3.0] - 2026-06-17
 

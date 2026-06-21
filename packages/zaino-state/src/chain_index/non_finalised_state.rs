@@ -390,7 +390,9 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 ))
             })?;
 
-        let (sapling, orchard) = source.get_commitment_tree_roots(block.hash().into()).await?;
+        let (sapling, orchard) = source
+            .get_commitment_tree_roots(block.hash().into())
+            .await?;
         let tree_roots = TreeRootData { sapling, orchard };
 
         Self::create_indexed_block_with_optional_roots(

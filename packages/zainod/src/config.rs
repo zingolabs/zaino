@@ -1024,8 +1024,7 @@ sync_write_batch_bytes = 2147483648
 listen_address = "127.0.0.1:8137"
 "#;
 
-        let config_path =
-            create_test_config_file(&temp_dir, toml_content, "stale_batch_key.toml");
+        let config_path = create_test_config_file(&temp_dir, toml_content, "stale_batch_key.toml");
         assert!(
             load_config(&config_path).is_err(),
             "stale `sync_write_batch_bytes` key must be rejected by deny_unknown_fields"

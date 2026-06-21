@@ -205,7 +205,10 @@ mod tests {
 
     #[test]
     fn budget_byte_counts_saturate_instead_of_overflowing() {
-        assert_eq!(SyncWriteBatchSize(8).to_byte_count(), 8 * 1024 * 1024 * 1024);
+        assert_eq!(
+            SyncWriteBatchSize(8).to_byte_count(),
+            8 * 1024 * 1024 * 1024
+        );
         assert_eq!(
             AccumulatorRebuildMemorySize(8).to_byte_count(),
             8 * 1024 * 1024 * 1024

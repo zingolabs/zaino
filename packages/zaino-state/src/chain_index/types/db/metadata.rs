@@ -226,7 +226,11 @@ impl FinalisedTxOutSetInfoAccumulator {
     /// both commutative and associative, the recombined result is independent of the shard count and
     /// of the order shards are folded in.
     pub fn combine(&mut self, other: &Self) -> Result<(), AccumulatorDeltaError> {
-        for (dst, src) in self.hash_serialized.iter_mut().zip(other.hash_serialized.iter()) {
+        for (dst, src) in self
+            .hash_serialized
+            .iter_mut()
+            .zip(other.hash_serialized.iter())
+        {
             *dst ^= *src;
         }
         self.transactions = self
@@ -395,7 +399,10 @@ mod tests {
         let mut ba = b;
         ba.combine(&a).expect("no overflow");
 
-        assert_eq!(ab, ba, "XOR + addition are commutative, so combine must be order-independent");
+        assert_eq!(
+            ab, ba,
+            "XOR + addition are commutative, so combine must be order-independent"
+        );
     }
 
     #[test]
@@ -426,17 +433,23 @@ mod tests {
 
         let mut whole = FinalisedTxOutSetInfoAccumulator::empty();
         for (outpoint, out) in &outputs {
-            whole.apply_added_output(outpoint, out).expect("no overflow");
+            whole
+                .apply_added_output(outpoint, out)
+                .expect("no overflow");
         }
 
         // Split into two arbitrary disjoint groups, accumulate each, and recombine.
         let mut part_a = FinalisedTxOutSetInfoAccumulator::empty();
         for (outpoint, out) in &outputs[..2] {
-            part_a.apply_added_output(outpoint, out).expect("no overflow");
+            part_a
+                .apply_added_output(outpoint, out)
+                .expect("no overflow");
         }
         let mut part_b = FinalisedTxOutSetInfoAccumulator::empty();
         for (outpoint, out) in &outputs[2..] {
-            part_b.apply_added_output(outpoint, out).expect("no overflow");
+            part_b
+                .apply_added_output(outpoint, out)
+                .expect("no overflow");
         }
 
         let mut combined = part_a;

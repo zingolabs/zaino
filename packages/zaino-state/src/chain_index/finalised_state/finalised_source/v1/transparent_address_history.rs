@@ -1793,8 +1793,7 @@ impl DbV1 {
         let budget = budget_bytes.max(1);
         // Only count the spent set up to the point where we'd hit the shard cap anyway — past it
         // the exact size cannot change the decision, so the count pass is itself bounded.
-        let max_useful_entries = (ACCUMULATOR_BUILD_MAX_SHARDS as u64)
-            .saturating_mul(budget)
+        let max_useful_entries = (ACCUMULATOR_BUILD_MAX_SHARDS as u64).saturating_mul(budget)
             / SPENT_SET_ENTRY_BYTES_ESTIMATE.max(1);
         let needed = self
             .estimate_spent_set_bytes(max_useful_entries)?
