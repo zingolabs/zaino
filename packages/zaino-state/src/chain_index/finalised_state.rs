@@ -708,6 +708,27 @@ impl<T: BlockchainSource> FinalisedState<T> {
         let source = source.clone();
 
         if sync_is_long_running {
+            // Re-entry guard: only one background backfill may run at a time.
+            //
+            // The ChainIndex sync loop calls `sync_to_height` on every iteration, and with
+            // `LONG_RUNNING_SYNC_THRESHOLD == 10` any gap larger than ten blocks takes this
+            // background path, which spawns a detached task and returns immediately. During a
+            // from-genesis (or far-behind) catch-up the gap stays large for the whole sync, so
+            // without this check every loop iteration spawns *another* backfill task. Multiple
+            // concurrent backfills then race the single LMDB writer and the ephemeral-reference
+            // swap below, producing out-of-order writes ("cannot write block at height X; current
+            // tip is Y" with Y > X), exhausting the retry budget into `CriticalError`, and
+            // ultimately a SIGSEGV inside LMDB (the environment is opened without `WRITE_MAP` and
+            // with `MDB_NOTLS`, so concurrent writers corrupt its dirty-page bookkeeping).
+            //
+            // `begin_background_op` only increments a counter for `wait_until_synced`; it does not
+            // gate re-entry. Bail out early when a background op is already in flight — the sync
+            // loop simply re-checks on its next iteration and the existing task keeps making
+            // progress. Near-tip syncs (gap <= threshold) take the inline path and are unaffected.
+            if router.has_background_ops() {
+                return Ok(());
+            }
+
             // Register the background sync in the foreground, before spawning, so `wait_until_synced`
             // cannot observe a "no work in progress" state between this method returning and the
             // spawned task starting. The guard is moved into the task and drops when it completes.
