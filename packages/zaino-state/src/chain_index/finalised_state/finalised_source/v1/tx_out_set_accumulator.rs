@@ -8,6 +8,8 @@ use crate::chain_index::finalised_state::finalised_source::v1::{
     TX_OUT_SET_INFO_ACCUMULATOR_KEY,
 };
 use crate::chain_index::finalised_state::finalised_source::FinalisedSource;
+#[cfg(test)]
+use crate::chain_index::source::mockchain_source::MockchainSource;
 use crate::chain_index::source::BlockchainSource;
 use crate::chain_index::types::db::metadata::{
     is_unspendable_tx_out, tx_out_set_entry_digest, FinalisedTxOutSetInfoAccumulator,
@@ -1369,6 +1371,101 @@ impl<T: BlockchainSource> FinalisedSource<T> {
             .rebuild_tx_out_set_accumulator()
             .await
     }
+}
+
+/// Test oracle: recomputes the expected accumulator independently from the backend's
+/// `transparent` + `spent` tables, for assertions in the v1.1->v1.2 migration tests.
+#[cfg(test)]
+pub(crate) async fn expected_tx_out_set_info_accumulator(
+    database_backend: &FinalisedSource<MockchainSource>,
+    max_height: Height,
+) -> FinalisedTxOutSetInfoAccumulator {
+    let environment = database_backend.env().unwrap();
+    let spent_database = database_backend.spent_db().unwrap();
+
+    let mut expected_accumulator = FinalisedTxOutSetInfoAccumulator::empty();
+
+    for height_raw in 0..=max_height.0 {
+        let height = Height(height_raw);
+
+        let transparent_transaction_list = database_backend
+            .get_block_transparent(height)
+            .await
+            .unwrap();
+
+        for (transaction_index, transparent_transaction_opt) in
+            transparent_transaction_list.tx().iter().enumerate()
+        {
+            let Some(transparent_transaction) = transparent_transaction_opt else {
+                continue;
+            };
+
+            if transparent_transaction.outputs().is_empty() {
+                continue;
+            }
+
+            let transaction_index = u16::try_from(transaction_index).unwrap();
+            let transaction_location = TxLocation::new(height.0, transaction_index);
+
+            let transaction_hash = database_backend
+                .get_txid(transaction_location)
+                .await
+                .unwrap();
+
+            let mut unspent_outputs_for_transaction = 0u64;
+
+            let transaction = environment.begin_ro_txn().unwrap();
+
+            for (output_index, output) in transparent_transaction.outputs().iter().enumerate() {
+                // The accumulator excludes NonStandard (unspendable) outputs from every field —
+                // see `is_unspendable_tx_out`. The migration oracle must skip them too,
+                // otherwise it overcounts compared to the on-disk accumulator value the
+                // migration backfilled.
+                if crate::chain_index::types::db::metadata::is_unspendable_tx_out(output) {
+                    continue;
+                }
+
+                let output_index = u32::try_from(output_index).unwrap();
+                let outpoint = Outpoint::new(transaction_hash.0, output_index);
+                let outpoint_bytes = outpoint.to_bytes().unwrap();
+
+                let still_unspent = match transaction.get(spent_database, &outpoint_bytes) {
+                    Ok(spent_bytes) => {
+                        let spent_entry =
+                            StoredEntryFixed::<TxLocation>::from_bytes(spent_bytes).unwrap();
+
+                        assert!(
+                            spent_entry.verify(&outpoint_bytes),
+                            "spent checksum mismatch for outpoint {:?}",
+                            outpoint
+                        );
+
+                        spent_entry.inner().block_height() > max_height.0
+                    }
+
+                    Err(lmdb::Error::NotFound) => true,
+
+                    Err(error) => panic!(
+                        "failed to read spent entry for outpoint {:?}: {error}",
+                        outpoint
+                    ),
+                };
+
+                if still_unspent {
+                    unspent_outputs_for_transaction += 1;
+                    expected_accumulator
+                        .apply_added_output(&outpoint, output)
+                        .unwrap();
+                }
+            }
+
+            if unspent_outputs_for_transaction > 0 {
+                expected_accumulator.transactions += 1;
+            }
+        }
+    }
+
+    expected_accumulator
 }
 
 #[cfg(test)]
