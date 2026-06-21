@@ -851,12 +851,6 @@ impl DbV1 {
             Ok(())
         })
     }
-
-    /// Provides access to the finalised txout-set accumulator DB table.
-    #[cfg(feature = "gettxoutsetinfo")]
-    pub(crate) fn tx_out_set_info_accumulator_db(&self) -> Database {
-        self.tx_out_set_info_accumulator
-    }
 }
 
 impl Drop for DbV1 {

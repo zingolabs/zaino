@@ -470,6 +470,11 @@ impl DbV1 {
 
         Ok((created_entries, spent_entries, spendable_spent_count_by_tx))
     }
+    /// Provides access to the finalised txout-set accumulator DB table.
+    pub(crate) fn tx_out_set_info_accumulator_db(&self) -> Database {
+        self.tx_out_set_info_accumulator
+    }
+
     /// Returns the finalised-state txout-set accumulator.
     ///
     /// This reads the singleton accumulator entry. It does not compute or repair the accumulator;
