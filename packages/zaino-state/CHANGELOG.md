@@ -35,6 +35,14 @@ and this library adheres to Rust's notion of
 ### Deprecated
 ### Removed
 ### Fixed
+- `FinalisedState::sync_to_height` no longer re-spawns a background backfill on
+  every poll. The ChainIndex sync loop calls it on each iteration; for ranges
+  past `LONG_RUNNING_SYNC_THRESHOLD` it spawns a detached task, so without a
+  re-entry guard a far-behind catch-up piled up concurrent backfills that raced
+  the single LMDB writer (the env is opened without `WRITE_MAP`, with
+  `MDB_NOTLS`), producing out-of-order writes and ultimately a SIGSEGV before any
+  batch committed durably. The long-running path now bails out when a background
+  op is already in flight, so a single backfill runs to completion (issue #1261).
 
 ## [0.3.0] - 2026-06-17
 
