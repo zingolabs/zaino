@@ -559,18 +559,14 @@ impl DbV1 {
         // Accumulator maintenance is deferred on the bulk-sync path (`update_tx_out_set == false`)
         // and rebuilt once at the tip; only the single-block append path maintains it incrementally.
         #[cfg(feature = "gettxoutsetinfo")]
-        let tx_out_set_info_accumulator = if update_tx_out_set {
-            Some(
-                self.calculate_tx_out_set_info_accumulator_after_block(
-                    block_height,
-                    &transactions,
-                    &spent_map,
-                )
-                .await?,
+        let tx_out_set_info_accumulator = self
+            .maybe_calculate_tx_out_set_info_accumulator_after_block(
+                update_tx_out_set,
+                block_height,
+                &transactions,
+                &spent_map,
             )
-        } else {
-            None
-        };
+            .await?;
 
         // Split the paired vector into the per-table shapes used for storage.
         let (txids, transparent): (Vec<TransactionHash>, Vec<Option<TransparentCompactTx>>) =
@@ -698,10 +694,11 @@ impl DbV1 {
             // in the same transaction as the block, so the watermark always tracks the height the
             // accumulator reflects. Skipped on the deferred (bulk-sync) path.
             #[cfg(feature = "gettxoutsetinfo")]
-            if let Some(tx_out_set_info_accumulator) = tx_out_set_info_accumulator {
-                zaino_db.put_tx_out_set_accumulator(&mut txn, tx_out_set_info_accumulator)?;
-                zaino_db.put_tx_out_set_accumulator_watermark(&mut txn, block_height)?;
-            }
+            zaino_db.put_maintained_tx_out_set_accumulator(
+                &mut txn,
+                tx_out_set_info_accumulator,
+                block_height,
+            )?;
 
             #[cfg(feature = "transparent_address_history_experimental")]
             {

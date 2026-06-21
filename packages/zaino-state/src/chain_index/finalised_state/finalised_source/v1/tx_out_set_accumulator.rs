@@ -731,6 +731,45 @@ impl DbV1 {
         Ok(())
     }
 
+    /// Computes the accumulator delta for a just-written block — but only on the single-block
+    /// append path (`update_tx_out_set`); the bulk-sync path defers maintenance and rebuilds once
+    /// at the tip. `None` means "not maintained on this write".
+    pub(super) async fn maybe_calculate_tx_out_set_info_accumulator_after_block(
+        &self,
+        update_tx_out_set: bool,
+        block_height: Height,
+        transactions: &[(TransactionHash, Option<TransparentCompactTx>)],
+        spent_map: &HashMap<Outpoint, TxLocation>,
+    ) -> Result<Option<FinalisedTxOutSetInfoAccumulator>, FinalisedStateError> {
+        if update_tx_out_set {
+            Ok(Some(
+                self.calculate_tx_out_set_info_accumulator_after_block(
+                    block_height,
+                    transactions,
+                    spent_map,
+                )
+                .await?,
+            ))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Persists a maintained accumulator and advances its freshness watermark to `height` in `txn`,
+    /// if one was computed on this write (the single-block append path). A no-op for `None`.
+    pub(super) fn put_maintained_tx_out_set_accumulator(
+        &self,
+        txn: &mut lmdb::RwTransaction,
+        accumulator: Option<FinalisedTxOutSetInfoAccumulator>,
+        height: Height,
+    ) -> Result<(), FinalisedStateError> {
+        if let Some(accumulator) = accumulator {
+            self.put_tx_out_set_accumulator(txn, accumulator)?;
+            self.put_tx_out_set_accumulator_watermark(txn, height)?;
+        }
+        Ok(())
+    }
+
     /// Brings the deferred txout-set accumulator up to `height` after a bulk write run: the cheap
     /// incremental delta when the watermark is within [`ACCUMULATOR_INCREMENTAL_MAX_GAP`] of the
     /// tip, otherwise a full from-genesis rebuild. Extracted from `write_blocks_to_height`.
