@@ -1715,10 +1715,17 @@ impl DbV1 {
             return Ok(());
         };
 
-        // Bound the rebuild's peak RAM to the configured sync batch budget by sharding the in-memory
-        // spent set; on hosts where the whole set fits this resolves to a single optimal pass.
-        let budget =
-            (self.config.storage.database.sync_write_batch_size.to_byte_count() as u64).max(1);
+        // Bound the rebuild's peak RAM to the dedicated accumulator-rebuild budget by sharding the
+        // in-memory spent set; on hosts where the whole set fits this resolves to a single optimal
+        // pass. This budget is intentionally *separate* from the bulk-sync write-batch budget so the
+        // two operations cannot inflate each other's peak memory.
+        let budget = (self
+            .config
+            .storage
+            .database
+            .accumulator_rebuild_memory_size
+            .to_byte_count() as u64)
+            .max(1);
         let shards = self.accumulator_build_shards(budget)?;
         info!(
             "rebuilding txout-set accumulator to height {} ({shards} shard(s), ~{budget} byte budget)",

@@ -177,7 +177,7 @@ pub(crate) const ACCUMULATOR_INCREMENTAL_MAX_GAP: u32 = 1_000;
 /// independent of the shard count.
 ///
 /// The shard count is chosen at rebuild time so the per-shard spent set fits the configured
-/// [`zaino_common::DatabaseConfig::sync_write_batch_size`] budget (see
+/// [`zaino_common::DatabaseConfig::accumulator_rebuild_memory_size`] budget (see
 /// [`DbV1::rebuild_tx_out_set_accumulator`]): a single optimal pass on hosts with enough RAM for
 /// the full spent set, scaling up on memory-constrained deployments. Sharding partitions on the
 /// creating-txid's first byte (256 distinct values), so the count is capped here.

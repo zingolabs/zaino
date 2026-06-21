@@ -18,7 +18,8 @@ pub use net::{resolve_socket_addr, try_resolve_address, AddressResolution};
 pub use config::network::{ActivationHeights, Network, ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS};
 pub use config::service::ServiceConfig;
 pub use config::storage::{
-    CacheConfig, DatabaseConfig, DatabaseSize, StorageConfig, SyncWriteBatchSize,
+    AccumulatorRebuildMemorySize, CacheConfig, DatabaseConfig, DatabaseSize, StorageConfig,
+    SyncWriteBatchSize,
 };
 pub use config::validator::ValidatorConfig;
 

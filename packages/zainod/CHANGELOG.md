@@ -10,19 +10,26 @@ and this crate adheres to Rust's notion of
 
 ### Added
 - `[storage.database]` config gains `sync_checkpoint_interval` (seconds, default
-  300) — the bulk-sync write-batch flush interval.
+  120) — the bulk-sync write-batch flush interval, which also bounds the window of
+  unflushed (`NO_SYNC`) writes at risk on a hard kill / eviction.
+- `[storage.database]` config gains `accumulator_rebuild_memory_size` (GiB,
+  default 8) — a dedicated heap budget for the txout-set accumulator rebuild,
+  separate from `sync_write_batch_size`.
 ### Changed
 - **Breaking** — `[storage.database] sync_write_batch_bytes` (bytes) is renamed
-  to `sync_write_batch_size` and is now given in **GiB** (default raised from
-  4 GiB to 32 GiB). Lowering it bounds peak sync RAM and the txout-set
-  accumulator rebuild's per-shard memory on memory-constrained hosts. See the
-  `zaino-common` changelog.
+  to `sync_write_batch_size` and is now given in **GiB** (default 8). It now
+  budgets only the bulk-sync block buffer; the accumulator rebuild uses the new
+  `accumulator_rebuild_memory_size`. See the `zaino-common` changelog.
+- **Breaking** — unknown keys under `[storage.database]` now fail config parsing
+  loudly (e.g. a stale `sync_write_batch_bytes`) instead of being silently ignored
+  and falling back to the default budget.
 ### Deprecated
 ### Removed
 ### Fixed
-- Zaino no longer OOM-crashes during the txout-set accumulator rebuild when it
-  reaches mainnet chain tip on memory-constrained hosts (e.g. a 16 GiB pod); the
-  rebuild auto-shards to fit the configured `sync_write_batch_size` budget.
+- Zaino no longer silently falls back to a large default write/rebuild budget when
+  an old `[storage.database]` key is present — the silent fallback to the (former
+  32 GiB) default is what OOM-killed nodes at mainnet chain tip (e.g. a 16 GiB
+  pod), and the kill, under `NO_SYNC`, then corrupted the on-disk database.
 
 ## [0.4.1] - 2026-06-18
 
