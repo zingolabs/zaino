@@ -77,14 +77,14 @@ pub struct DatabaseConfig {
     ///
     /// NOTE: peak RAM is roughly this budget (buffered blocks) plus the transaction's dirty pages,
     /// and it competes with the OS page cache the sorted sweep relies on — larger is not always
-    /// better. Defaults to 4 GiB; raise it on large-RAM hosts.
+    /// better. Defaults to 128 MiB; raise it on large-RAM hosts.
     #[serde(default = "default_sync_write_batch_bytes")]
     pub sync_write_batch_bytes: u64,
 }
 
-/// Default [`DatabaseConfig::sync_write_batch_bytes`]: 4 GiB.
+/// Default [`DatabaseConfig::sync_write_batch_bytes`]: 128 MiB.
 fn default_sync_write_batch_bytes() -> u64 {
-    4 * 1024 * 1024 * 1024
+    128 * 1024 * 1024
 }
 
 impl Default for DatabaseConfig {
