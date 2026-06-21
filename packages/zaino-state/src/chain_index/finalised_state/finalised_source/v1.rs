@@ -184,9 +184,14 @@ pub(crate) const ACCUMULATOR_INCREMENTAL_MAX_GAP: u32 = 1_000;
 pub(crate) const ACCUMULATOR_BUILD_MAX_SHARDS: u16 = 256;
 
 /// Conservative per-entry RAM estimate for the rebuild's in-memory spent set, used only to size the
-/// shard count. Each entry is a boxed `spent` key (~37 bytes) plus `HashSet` bucket overhead; an
-/// over-estimate just adds shards (less memory), never under-bounds.
-pub(crate) const SPENT_SET_ENTRY_BYTES_ESTIMATE: u64 = 128;
+/// shard count.
+///
+/// Each entry is a 37-byte `spent` key heap-allocated as a `Box<[u8]>` (rounded up by the
+/// allocator), a 16-byte fat pointer stored in the `HashSet` table, plus hashbrown control bytes and
+/// load-factor slack — realistically ~120 bytes, but allocator behaviour varies. Set deliberately
+/// *above* that so the chosen shard count over-provisions: the per-shard set then stays within the
+/// budget, and over-counting only adds shards (less memory per shard), it never under-bounds.
+pub(crate) const SPENT_SET_ENTRY_BYTES_ESTIMATE: u64 = 256;
 
 /// Number of committed block writes / migration heights between explicit
 /// `env.sync(true)` durability checkpoints.

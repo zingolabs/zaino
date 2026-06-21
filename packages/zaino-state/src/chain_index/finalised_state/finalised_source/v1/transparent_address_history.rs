@@ -1726,14 +1726,27 @@ impl DbV1 {
             .accumulator_rebuild_memory_size
             .to_byte_count() as u64)
             .max(1);
-        let shards = self.accumulator_build_shards(budget)?;
+        // Logged before any cursor work: choosing the initial shard count scans the `spent` table,
+        // and a native LMDB abort there (a torn DB) is otherwise an unattributable stderr-only crash.
         info!(
-            "rebuilding txout-set accumulator to height {} ({shards} shard(s), ~{budget} byte budget)",
+            "txout-set accumulator rebuild to height {}: sizing shards (~{budget} byte budget)",
+            db_tip.0
+        );
+        // `shards` is the *initial* partition (a good first guess from the memory estimate);
+        // `max_spent_entries` is the *hard* per-shard cap the builder enforces during the spent
+        // load, bisecting any shard that would exceed it. So the estimate only affects how many
+        // passes we make, never whether we stay within budget.
+        let shards = self.accumulator_build_shards(budget)?;
+        let max_spent_entries = (budget / SPENT_SET_ENTRY_BYTES_ESTIMATE).max(1);
+        info!(
+            "txout-set accumulator rebuild to height {}: {shards} initial shard(s), \
+             ≤{max_spent_entries} spent outpoints/shard, ~{budget} byte budget",
             db_tip.0
         );
 
         tokio::task::block_in_place(|| {
-            let accumulator = self.build_tx_out_set_accumulator_blocking(db_tip, shards)?;
+            let accumulator =
+                self.build_tx_out_set_accumulator_blocking(db_tip, shards, max_spent_entries)?;
 
             let mut txn = self.env.begin_rw_txn()?;
 
@@ -1766,8 +1779,13 @@ impl DbV1 {
     ///
     /// `shards = ceil(estimated_spent_set_bytes / budget)`, clamped to
     /// `1..=ACCUMULATOR_BUILD_MAX_SHARDS`. Hosts with enough RAM for the whole spent set get a
-    /// single optimal pass; constrained hosts scale up. The estimate over-counting only adds shards
-    /// (less memory), never under-bounds, so the rebuild cannot OOM within the budget.
+    /// single optimal pass; constrained hosts scale up.
+    ///
+    /// This is only the *initial* partition handed to
+    /// [`DbV1::build_tx_out_set_accumulator_blocking`] — a good first guess that minimises passes.
+    /// The actual memory bound is enforced separately and strictly by that builder (it bisects any
+    /// shard whose spent set would exceed the cap), so an inaccurate estimate here only changes how
+    /// many passes are made, never whether the rebuild stays within budget.
     pub(crate) fn accumulator_build_shards(
         &self,
         budget_bytes: u64,
@@ -1788,33 +1806,56 @@ impl DbV1 {
     /// table's entry count times [`SPENT_SET_ENTRY_BYTES_ESTIMATE`].
     ///
     /// Counts via a sequential cursor scan (the safe `lmdb` API exposes no per-sub-DB stat), stopping
-    /// early once `max_useful_entries` is reached. The rebuild already scans `spent` once per shard,
-    /// so this extra bounded pass is marginal.
+    /// early once `max_useful_entries` is reached. The builder's per-shard loads are range-seeks that
+    /// together touch `spent` once in total, so this single extra count pass roughly doubles the
+    /// spent-table reads — bounded, and dwarfed by the chain-length block scans.
     fn estimate_spent_set_bytes(
         &self,
         max_useful_entries: u64,
     ) -> Result<u64, FinalisedStateError> {
         tokio::task::block_in_place(|| {
             let txn = self.env.begin_ro_txn()?;
-            let mut cursor = txn.open_ro_cursor(self.spent)?;
+            let cursor = txn.open_ro_cursor(self.spent)?;
+
+            // Explicit cursor walk rather than `Cursor::iter`: that iterator `debug_assert!`-panics
+            // on any non-`NotFound` LMDB error in debug builds and silently ends the scan in release
+            // (truncating the count). Here a real LMDB error propagates cleanly and the count is only
+            // ever ended by a genuine end-of-table `NotFound`. Counting allocates nothing (the cursor
+            // yields references into the mmap), so this is O(1) heap regardless of table size.
             let mut count: u64 = 0;
-            for _ in cursor.iter() {
-                count += 1;
-                if count >= max_useful_entries {
-                    break;
+            let mut op = lmdb_sys::MDB_FIRST;
+            loop {
+                match cursor.get(None, None, op) {
+                    Ok(_) => {
+                        count += 1;
+                        if count >= max_useful_entries {
+                            break;
+                        }
+                    }
+                    Err(lmdb::Error::NotFound) => break,
+                    Err(error) => return Err(FinalisedStateError::LmdbError(error)),
                 }
+                op = lmdb_sys::MDB_NEXT;
             }
+
             Ok(count.saturating_mul(SPENT_SET_ENTRY_BYTES_ESTIMATE))
         })
     }
 
     /// Computes the finalised txout-set accumulator over the UTXO set at `db_tip`.
     ///
-    /// Strategy (per shard): scan the `spent` table once to collect the spent outpoints whose
-    /// creating txid falls in the shard, then scan the block `transparent` + `txids` tables in
-    /// ascending height order, adding every spendable output that is not in that spent set. The
-    /// `transactions` count is derived locally per transaction (all of a tx's outputs live in one
-    /// height entry). Sharding bounds the in-memory spent set; partials recombine exactly.
+    /// Strategy (per shard): **range-seek** the `spent` table over the shard's contiguous key range
+    /// to collect the spent outpoints whose creating txid falls in the shard, then scan the block
+    /// `transparent` + `txids` tables in ascending height order, adding every spendable output that
+    /// is not in that spent set. The `transactions` count is derived locally per transaction (all of
+    /// a tx's outputs live in one height entry). Sharding bounds the in-memory spent set; partials
+    /// recombine exactly.
+    ///
+    /// The range-seek matters: `spent` keys are sorted and the version tag is constant, so a shard's
+    /// first-byte range `[lo, hi)` is one contiguous key range. Seeking to it (rather than scanning
+    /// the whole table and filtering) makes the total spent-table work O(N) across all shards instead
+    /// of O(shards·N) — at maximal sharding (256) that is the difference between one sweep and 256
+    /// full-table sweeps, which on a cgroup-limited host is also a page-cache pressure / OOM risk.
     ///
     /// WARNING: blocking — call from a blocking context. Builds to `db_tip` only (the spent table
     /// is assumed to cover spends up to the same tip).
@@ -1822,170 +1863,217 @@ impl DbV1 {
         &self,
         db_tip: Height,
         shards: u16,
+        max_spent_entries: u64,
     ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
         let shards = shards.max(1) as usize;
+        let max_spent_entries = max_spent_entries.max(1);
         let mut total = FinalisedTxOutSetInfoAccumulator::empty();
 
-        for shard in 0..shards {
-            // First-byte range [lo, hi) of the creating-txid assigned to this shard.
-            let lo = (shard * 256 / shards) as u16;
-            let hi = ((shard + 1) * 256 / shards) as u16;
-            let in_shard = |first_byte: u8| -> bool {
-                let b = first_byte as u16;
-                b >= lo && b < hi
-            };
+        // Work-list of creating-txid first-byte ranges `[lo, hi)` still to process, seeded with
+        // `shards` equal ranges (the memory estimate's initial partition — a good first guess that
+        // avoids splitting down from the whole space). A range whose spent set would exceed
+        // `max_spent_entries` is bisected and retried, so every shard actually loaded holds a *hard*
+        // ≤ `max_spent_entries` outpoints — the bound holds regardless of the estimate's accuracy or
+        // the txid distribution. The ranges stay a disjoint cover of `[0, 256)`, and XOR/sum
+        // recombination is order-independent, so the result is identical for any partition.
+        let mut pending: Vec<(u16, u16)> = (0..shards)
+            .map(|shard| {
+                (
+                    (shard * 256 / shards) as u16,
+                    ((shard + 1) * 256 / shards) as u16,
+                )
+            })
+            .collect();
 
-            // One read snapshot for the whole shard pass (subsumes the per-lookup RO-txn churn the
-            // old per-block path incurred).
-            let txn = self.env.begin_ro_txn()?;
-
-            // (1) Spent outpoints in this shard. The `spent` key is `Outpoint::to_bytes()` =
-            //     `[version tag][32-byte prev_txid][4-byte index]`, so the prev-txid's first byte
-            //     (which equals the creating txid's first byte) is at index 1.
-            let mut spent_set: HashSet<Box<[u8]>> = HashSet::new();
-            {
-                let mut cursor = txn.open_ro_cursor(self.spent)?;
-                for (key_bytes, _value) in cursor.iter() {
-                    if key_bytes.len() < 2 || !in_shard(key_bytes[1]) {
-                        continue;
+        while let Some((lo, hi)) = pending.pop() {
+            match self.accumulate_tx_out_set_shard_blocking(db_tip, lo, hi, max_spent_entries)? {
+                Some(shard_acc) => total
+                    .combine(&shard_acc)
+                    .map_err(|error| FinalisedStateError::Custom(error.to_string()))?,
+                None => {
+                    if hi - lo <= 1 {
+                        // A single creating-txid first-byte value cannot be split further. Fail with
+                        // an actionable error rather than OOM-ing: the spent outpoints sharing this
+                        // first byte do not fit the configured budget.
+                        return Err(FinalisedStateError::Custom(format!(
+                            "txout-set accumulator: spent shard for creating-txid first-byte {lo} \
+                             exceeds the per-shard budget ({max_spent_entries} outpoints) and cannot \
+                             be split further; raise accumulator_rebuild_memory_size"
+                        )));
                     }
-                    spent_set.insert(Box::from(key_bytes));
+                    let mid = lo + (hi - lo) / 2;
+                    pending.push((lo, mid));
+                    pending.push((mid, hi));
                 }
             }
-
-            // (2) Sequential pass over block transparent data, height-ascending.
-            let mut shard_acc = FinalisedTxOutSetInfoAccumulator::empty();
-            let mut height = GENESIS_HEIGHT.0;
-            while height <= db_tip.0 {
-                let block_height = Height::try_from(height)
-                    .map_err(|error| FinalisedStateError::Custom(error.to_string()))?;
-                let height_bytes = block_height.to_bytes()?;
-
-                let transparent_tx_list = {
-                    let raw = txn
-                        .get(self.transparent, &height_bytes)
-                        .map_err(FinalisedStateError::LmdbError)?;
-                    let entry =
-                        StoredEntryVar::<TransparentTxList>::from_bytes(raw).map_err(|error| {
-                            FinalisedStateError::Custom(format!(
-                                "transparent corrupt data: {error}"
-                            ))
-                        })?;
-                    if !entry.verify(&height_bytes) {
-                        return Err(FinalisedStateError::Custom(
-                            "transparent checksum mismatch".to_string(),
-                        ));
-                    }
-                    entry.inner().clone()
-                };
-
-                let txids = {
-                    let raw = txn
-                        .get(self.txids, &height_bytes)
-                        .map_err(FinalisedStateError::LmdbError)?;
-                    let entry = StoredEntryVar::<TxidList>::from_bytes(raw).map_err(|error| {
-                        FinalisedStateError::Custom(format!("txids corrupt data: {error}"))
-                    })?;
-                    if !entry.verify(&height_bytes) {
-                        return Err(FinalisedStateError::Custom(
-                            "txids checksum mismatch".to_string(),
-                        ));
-                    }
-                    entry.inner().txids().to_vec()
-                };
-
-                for (tx_index, tx_opt) in transparent_tx_list.tx().iter().enumerate() {
-                    let txid = txids.get(tx_index).ok_or_else(|| {
-                        FinalisedStateError::Custom(format!(
-                            "txid/transparent length mismatch at height {height}"
-                        ))
-                    })?;
-
-                    // A tx's outputs are removed by spends keyed under the same txid, so the whole
-                    // tx belongs to exactly one shard.
-                    if !in_shard(txid.0[0]) {
-                        continue;
-                    }
-
-                    let Some(transparent_tx) = tx_opt else {
-                        continue;
-                    };
-
-                    let mut tx_has_unspent = false;
-                    for (out_index, output) in transparent_tx.outputs().iter().enumerate() {
-                        if is_unspendable_tx_out(output) {
-                            continue;
-                        }
-
-                        let outpoint = Outpoint::new(txid.0, out_index as u32);
-                        let outpoint_key = outpoint.to_bytes()?;
-                        if spent_set.contains(outpoint_key.as_slice()) {
-                            // Created then spent at/below the tip: cancels out of the live set.
-                            continue;
-                        }
-
-                        shard_acc
-                            .apply_added_output(&outpoint, output)
-                            .map_err(|error| FinalisedStateError::Custom(error.to_string()))?;
-                        tx_has_unspent = true;
-                    }
-
-                    if tx_has_unspent {
-                        shard_acc.transactions =
-                            shard_acc.transactions.checked_add(1).ok_or_else(|| {
-                                FinalisedStateError::Custom(
-                                    "txout-set accumulator transactions overflow".to_string(),
-                                )
-                            })?;
-                    }
-                }
-
-                height += 1;
-            }
-
-            // Recombine: XOR the multiset commitments, sum the additive counters.
-            for (dst, src) in total
-                .hash_serialized
-                .iter_mut()
-                .zip(shard_acc.hash_serialized.iter())
-            {
-                *dst ^= *src;
-            }
-            total.transactions = total
-                .transactions
-                .checked_add(shard_acc.transactions)
-                .ok_or_else(|| {
-                    FinalisedStateError::Custom(
-                        "txout-set accumulator transactions overflow".to_string(),
-                    )
-                })?;
-            total.transaction_outputs = total
-                .transaction_outputs
-                .checked_add(shard_acc.transaction_outputs)
-                .ok_or_else(|| {
-                    FinalisedStateError::Custom(
-                        "txout-set accumulator transaction_outputs overflow".to_string(),
-                    )
-                })?;
-            total.bytes_serialized = total
-                .bytes_serialized
-                .checked_add(shard_acc.bytes_serialized)
-                .ok_or_else(|| {
-                    FinalisedStateError::Custom(
-                        "txout-set accumulator bytes_serialized overflow".to_string(),
-                    )
-                })?;
-            total.total_zatoshis = total
-                .total_zatoshis
-                .checked_add(shard_acc.total_zatoshis)
-                .ok_or_else(|| {
-                    FinalisedStateError::Custom(
-                        "txout-set accumulator total_zatoshis overflow".to_string(),
-                    )
-                })?;
         }
 
         Ok(total)
+    }
+
+    /// Builds the accumulator partial for the creating-txid first-byte range `[lo, hi)`, or returns
+    /// `Ok(None)` if the shard's in-memory spent set would exceed `max_spent_entries` outpoints —
+    /// the signal for the caller to bisect the range and retry.
+    ///
+    /// Aborting *during* the spent load (before the limit is exceeded, dropping the partial set) is
+    /// what makes the per-shard memory a hard cap rather than an estimate. An aborted shard does no
+    /// block-table work, so a split wastes only a bounded partial spent scan.
+    fn accumulate_tx_out_set_shard_blocking(
+        &self,
+        db_tip: Height,
+        lo: u16,
+        hi: u16,
+        max_spent_entries: u64,
+    ) -> Result<Option<FinalisedTxOutSetInfoAccumulator>, FinalisedStateError> {
+        let in_shard = |first_byte: u8| -> bool {
+            let b = first_byte as u16;
+            b >= lo && b < hi
+        };
+
+        // One read snapshot for the whole shard pass (subsumes the per-lookup RO-txn churn the old
+        // per-block path incurred).
+        let txn = self.env.begin_ro_txn()?;
+
+        // (1) Spent outpoints in this shard. The `spent` key is `Outpoint::to_bytes()` =
+        //     `[version tag][32-byte prev_txid][4-byte index]`, so the prev-txid's first byte
+        //     (which equals the creating txid's first byte) is at index 1. Because the keys are
+        //     sorted and the version tag is constant, the shard's keys form one contiguous range;
+        //     seek to its start and stop once we pass `hi` rather than scanning the whole table.
+        let mut spent_set: HashSet<Box<[u8]>> = HashSet::new();
+        {
+            let mut shard_start_outpoint = [0u8; 32];
+            shard_start_outpoint[0] = lo as u8;
+            let shard_lower_bound = Outpoint::new(shard_start_outpoint, 0).to_bytes()?;
+
+            // Seek to the first spent key >= the shard's lower bound, then walk forward with
+            // `MDB_NEXT` until the first byte leaves `[lo, hi)`. `MDB_SET_RANGE` returns `NotFound`
+            // when no key is at/after the bound (empty table, or a shard past the largest key) —
+            // that is simply an empty shard. (`Cursor::iter_from` is unusable here: it `unwrap()`s
+            // that `NotFound` and would panic.)
+            let cursor = txn.open_ro_cursor(self.spent)?;
+            let mut next = match cursor.get(
+                Some(shard_lower_bound.as_slice()),
+                None,
+                lmdb_sys::MDB_SET_RANGE,
+            ) {
+                Ok((key, _value)) => key,
+                Err(lmdb::Error::NotFound) => None,
+                Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+            };
+            while let Some(key_bytes) = next {
+                if key_bytes.len() >= 2 {
+                    // Sorted keys: once the first byte reaches `hi` we are past this shard.
+                    if key_bytes[1] as u16 >= hi {
+                        break;
+                    }
+                    // The seek guarantees `>= lo` for well-formed keys; re-check defensively so a
+                    // stray shorter/foreign key can never leak into the wrong shard.
+                    if in_shard(key_bytes[1]) {
+                        // Hard cap: bail out before the set can exceed the budget; the caller splits
+                        // this range and retries the (smaller) halves.
+                        if spent_set.len() as u64 >= max_spent_entries {
+                            return Ok(None);
+                        }
+                        spent_set.insert(Box::from(key_bytes));
+                    }
+                }
+                next = match cursor.get(None, None, lmdb_sys::MDB_NEXT) {
+                    Ok((key, _value)) => key,
+                    Err(lmdb::Error::NotFound) => None,
+                    Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+                };
+            }
+        }
+
+        // (2) Sequential pass over block transparent data, height-ascending.
+        let mut shard_acc = FinalisedTxOutSetInfoAccumulator::empty();
+        let mut height = GENESIS_HEIGHT.0;
+        while height <= db_tip.0 {
+            let block_height = Height::try_from(height)
+                .map_err(|error| FinalisedStateError::Custom(error.to_string()))?;
+            let height_bytes = block_height.to_bytes()?;
+
+            let transparent_tx_list = {
+                let raw = txn
+                    .get(self.transparent, &height_bytes)
+                    .map_err(FinalisedStateError::LmdbError)?;
+                let entry =
+                    StoredEntryVar::<TransparentTxList>::from_bytes(raw).map_err(|error| {
+                        FinalisedStateError::Custom(format!("transparent corrupt data: {error}"))
+                    })?;
+                if !entry.verify(&height_bytes) {
+                    return Err(FinalisedStateError::Custom(
+                        "transparent checksum mismatch".to_string(),
+                    ));
+                }
+                entry.inner().clone()
+            };
+
+            let txids = {
+                let raw = txn
+                    .get(self.txids, &height_bytes)
+                    .map_err(FinalisedStateError::LmdbError)?;
+                let entry = StoredEntryVar::<TxidList>::from_bytes(raw).map_err(|error| {
+                    FinalisedStateError::Custom(format!("txids corrupt data: {error}"))
+                })?;
+                if !entry.verify(&height_bytes) {
+                    return Err(FinalisedStateError::Custom(
+                        "txids checksum mismatch".to_string(),
+                    ));
+                }
+                entry.inner().txids().to_vec()
+            };
+
+            for (tx_index, tx_opt) in transparent_tx_list.tx().iter().enumerate() {
+                let txid = txids.get(tx_index).ok_or_else(|| {
+                    FinalisedStateError::Custom(format!(
+                        "txid/transparent length mismatch at height {height}"
+                    ))
+                })?;
+
+                // A tx's outputs are removed by spends keyed under the same txid, so the whole
+                // tx belongs to exactly one shard.
+                if !in_shard(txid.0[0]) {
+                    continue;
+                }
+
+                let Some(transparent_tx) = tx_opt else {
+                    continue;
+                };
+
+                let mut tx_has_unspent = false;
+                for (out_index, output) in transparent_tx.outputs().iter().enumerate() {
+                    if is_unspendable_tx_out(output) {
+                        continue;
+                    }
+
+                    let outpoint = Outpoint::new(txid.0, out_index as u32);
+                    let outpoint_key = outpoint.to_bytes()?;
+                    if spent_set.contains(outpoint_key.as_slice()) {
+                        // Created then spent at/below the tip: cancels out of the live set.
+                        continue;
+                    }
+
+                    shard_acc
+                        .apply_added_output(&outpoint, output)
+                        .map_err(|error| FinalisedStateError::Custom(error.to_string()))?;
+                    tx_has_unspent = true;
+                }
+
+                if tx_has_unspent {
+                    shard_acc.transactions =
+                        shard_acc.transactions.checked_add(1).ok_or_else(|| {
+                            FinalisedStateError::Custom(
+                                "txout-set accumulator transactions overflow".to_string(),
+                            )
+                        })?;
+                }
+            }
+
+            height += 1;
+        }
+
+        Ok(Some(shard_acc))
     }
 
     /// Reads the height the persisted txout-set accumulator currently reflects, or `None` if it has

@@ -1058,8 +1058,9 @@ async fn bulk_tx_out_set_accumulator_builder_matches_incremental() {
     // 1 = single optimal pass; >1 exercises the sharded multi-pass recombination; 256 = one
     // first-byte value per shard (maximal sharding).
     for shards in [1u16, 2, 4, 256] {
+        // Cap = u64::MAX: the initial partition is used verbatim (no bisection).
         let built = tokio::task::block_in_place(|| {
-            backend.build_tx_out_set_accumulator_blocking(db_tip, shards)
+            backend.build_tx_out_set_accumulator_blocking(db_tip, shards, u64::MAX)
         })
         .unwrap();
 
@@ -1067,6 +1068,23 @@ async fn bulk_tx_out_set_accumulator_builder_matches_incremental() {
             built, incremental,
             "bulk builder (shards={shards}) must equal the incrementally-maintained accumulator"
         );
+
+        // Tiny per-shard caps force the strict memory bound to bisect the initial ranges to varying
+        // depths. Whenever the build succeeds it must still equal the incremental accumulator (the
+        // bisected ranges remain a disjoint cover of the first-byte space, and recombination is
+        // order-independent); if a single first-byte bucket genuinely exceeds the cap the builder
+        // fails fast by design (the strict bound), which is also acceptable here.
+        for max_spent_entries in [16u64, 8, 4, 2, 1] {
+            if let Ok(built_capped) = tokio::task::block_in_place(|| {
+                backend.build_tx_out_set_accumulator_blocking(db_tip, shards, max_spent_entries)
+            }) {
+                assert_eq!(
+                    built_capped, incremental,
+                    "strict-capped bulk builder (shards={shards}, cap={max_spent_entries}) must \
+                     equal the incremental accumulator"
+                );
+            }
+        }
     }
 }
 
@@ -1268,9 +1286,10 @@ async fn incremental_accumulator_update_matches_full_rebuild() {
     );
 
     let incremental = backend.get_tx_out_set_info_accumulator().await.unwrap();
-    let from_genesis =
-        tokio::task::block_in_place(|| backend.build_tx_out_set_accumulator_blocking(db_tip, 1))
-            .unwrap();
+    let from_genesis = tokio::task::block_in_place(|| {
+        backend.build_tx_out_set_accumulator_blocking(db_tip, 1, u64::MAX)
+    })
+    .unwrap();
 
     assert_eq!(
         incremental, from_genesis,
