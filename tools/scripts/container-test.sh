@@ -49,7 +49,7 @@ podman run --rm \
   -w /home/container_user/zaino \
   -u container_user \
   "${IMAGE_NAME}:$TAG" \
-  cargo nextest run "$@" &
+  cargo nextest run ${CARGO_FEATURES:+--features "$CARGO_FEATURES"} ${NEXTEST_FILTER:+-E "$NEXTEST_FILTER"} "$@" &
 
 # Capture the background job PID
 PODMAN_PID=$!
