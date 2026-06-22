@@ -30,6 +30,11 @@ zaino-testutils = { workspace = true }
 # The lib's z_validate helper calls `ZcashIndexer::z_validate_address`.
 zaino-state = { workspace = true, features = ["test_dependencies"] }
 tracing.workspace = true
+# Constraint-only pin (pulled transitively via reqwest -> cookie, not used directly): time 0.3.50
+# fails to build against time-macros 0.2.29 (the `timestamp` macro moved out of the macro crate's
+# root). This workspace commits no lock, so a fresh resolve would otherwise pick 0.3.50; 0.3.49
+# matches the root workspace's locked, working pair.
+time = "=0.3.49"
 
 [dev-dependencies]
 anyhow = { workspace = true }
