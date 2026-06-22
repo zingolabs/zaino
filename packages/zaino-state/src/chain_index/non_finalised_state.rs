@@ -350,8 +350,75 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     ) -> Result<IndexedBlock, InitError> {
         match start_block {
             Some(block) => Ok(block),
-            None => Self::get_genesis_indexed_block(source, network).await,
+            // No anchor supplied — the production case where the finalised DB has
+            // not yet reached the seam, so the caller's seam lookup returned `None`.
+            // Seed the seam block from the *source* at the finalization ceiling, not
+            // genesis (#1261).
+            None => Self::get_seam_indexed_block(source, network).await,
         }
+    }
+
+    /// Seed block for an NFS with no provided anchor: the block at the finalization
+    /// ceiling (`chain_tip − NON_FINALIZED_DEPTH`), fetched from the source.
+    ///
+    /// Taken from the source — not the finalised DB — so the NFS never waits for the
+    /// finalised DB to catch up and never drops to genesis while it lags far behind
+    /// the tip (which forced a one-block-at-a-time crawl of the whole chain, #1261).
+    /// Mirrors the seam-from-source seeding of `init_from_blockchain_source` from the
+    /// `reify_NFS_when_FS_synced` draft (<https://github.com/zingolabs/zaino/pull/1208>);
+    /// converge with it on merge. When the chain is shorter than `NON_FINALIZED_DEPTH`
+    /// the ceiling is 0, i.e. genesis, and this degrades to
+    /// [`Self::get_genesis_indexed_block`].
+    async fn get_seam_indexed_block(
+        source: &Source,
+        network: &Network,
+    ) -> Result<IndexedBlock, InitError> {
+        let tip = source
+            .get_best_block_height()
+            .await
+            .map_err(|e| InitError::InvalidNodeData(Box::new(e)))?
+            .ok_or_else(|| {
+                InitError::InvalidNodeData(Box::new(InvalidData(
+                    "node returned no best block height".to_string(),
+                )))
+            })?;
+        let seam_height = super::finalized_height_floor(tip.0);
+        if seam_height.0 == 0 {
+            return Self::get_genesis_indexed_block(source, network).await;
+        }
+
+        let seam_block = source
+            .get_block(HashOrHeight::Height(zebra_chain::block::Height(
+                seam_height.0,
+            )))
+            .await
+            .map_err(|e| InitError::InvalidNodeData(Box::new(e)))?
+            .ok_or_else(|| {
+                InitError::InvalidNodeData(Box::new(InvalidData(format!(
+                    "source missing seam block at finalization ceiling height {}",
+                    seam_height.0,
+                ))))
+            })?;
+
+        let (sapling_root_and_len, orchard_root_and_len) = source
+            .get_commitment_tree_roots(seam_block.hash().into())
+            .await
+            .map_err(|e| InitError::InvalidNodeData(Box::new(e)))?;
+        let tree_roots = TreeRootData {
+            sapling: sapling_root_and_len,
+            orchard: orchard_root_and_len,
+        };
+
+        // The seam sits below the reorg-possible range, so its absolute chainwork is
+        // irrelevant to best-chain selection within the NFS window; seed it at zero
+        // (the anchor is a baseline, not a cumulative total).
+        Self::create_indexed_block_with_optional_roots(
+            seam_block.as_ref(),
+            &tree_roots,
+            ChainWork::from(U256::zero()),
+            network.clone(),
+        )
+        .map_err(|e| InitError::InvalidNodeData(Box::new(InvalidData(e))))
     }
 
     /// Set up the optional non-finalized change listener
@@ -386,24 +453,25 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         finalized_db: Arc<FinalisedState<Source>>,
         chain_height: Height,
     ) -> Result<(), SyncError> {
+        // The NFS is validator-sourced and *leads* the finalised DB: it holds only the
+        // non-finalised window `[ceiling, tip]`, anchored at the finalization ceiling
+        // (`chain_height − NON_FINALIZED_DEPTH`). Whenever the current floor sits below
+        // the ceiling — a cold start seeded low, or a deep rollback — re-anchor at the
+        // ceiling so the NFS never walks up from a lagging finalised tip (or genesis),
+        // which forced a one-block-at-a-time crawl of the whole chain (#1261). The seam
+        // block is taken from the *source*, so the NFS never waits for the finalised DB
+        // to catch up. Mirrors `reify_NFS_when_FS_synced`
+        // (<https://github.com/zingolabs/zaino/pull/1208>); converge with it on merge.
         let mut initial_state = self.get_snapshot();
-        let local_finalized_tip = finalized_db.to_reader().db_height().await?;
-        if Some(initial_state.best_tip.height) < local_finalized_tip {
+        let anchor_height = super::finalized_height_floor(chain_height.0);
+        if initial_state.best_tip.height < anchor_height {
+            let seam = Self::get_seam_indexed_block(&self.source, &self.network)
+                .await
+                .map_err(|e| SyncError::ErrorFromSource(Box::new(e)))?;
             self.current.swap(Arc::new(
-                NonfinalizedBlockCacheSnapshot::from_initial_block(
-                    finalized_db
-                        .to_reader()
-                        .get_chain_block_by_height(
-                            local_finalized_tip.expect("known to be some due to above if"),
-                        )
-                        .await?
-                        .ok_or(FinalisedStateError::DataUnavailable(format!(
-                            "Missing block {}",
-                            local_finalized_tip.unwrap().0
-                        )))?,
-                ),
+                NonfinalizedBlockCacheSnapshot::from_initial_block(seam),
             ));
-            initial_state = self.get_snapshot()
+            initial_state = self.get_snapshot();
         }
         let mut working_snapshot = initial_state.as_ref().clone();
 

@@ -20,10 +20,13 @@
 //! omitted: that variant is being eliminated, and pinning its shape
 //! would create immediate test churn at the refactor PR.
 
+use super::vectors::{build_mockchain_source, load_test_vectors};
 use super::{load_test_vectors_and_sync_chain_index, poll::poll_until, MockchainMode};
 use crate::chain_index::{finalized_height_floor, ChainIndex};
+use crate::NonFinalizedState;
 use std::time::Duration;
 use tokio::time::sleep;
+use zaino_common::{network::ActivationHeights, Network};
 
 /// **B**: After the chain index has finished its first sync iteration,
 /// the lowest-height block in the NFS snapshot is the same block the
@@ -284,5 +287,43 @@ async fn race_pre_mine_finalized_height_block_is_evicted_when_source_advances_mi
          source advances mid-iter; published NFS overshoots its iter-committed \
          seam (#1126)",
         pre_mine_finalized_height.0,
+    );
+}
+
+/// Regression for the catch-up half of #1261: when the non-finalised state is
+/// seeded with **no** anchor block — the production case where the finalised DB
+/// has not yet reached the finalization ceiling, so the seam lookup returns
+/// `None` — it must seed the seam block from the *source* at the finalization
+/// ceiling (`chain_tip − NON_FINALIZED_DEPTH`), NOT fall back to genesis.
+/// Anchoring at genesis is what made the NFS crawl the whole chain one block at
+/// a time and never converge.
+///
+/// Narrowly scoped on purpose: it drives only `initialize(.., None)` against a
+/// mock source — no finalised DB, no sync loop — and mirrors the seam-from-source
+/// seeding of `reify_NFS_when_FS_synced`'s `init_from_blockchain_source`.
+#[tokio::test]
+async fn nfs_seeded_without_block_anchors_at_ceiling_not_genesis() {
+    let source = build_mockchain_source(load_test_vectors().unwrap().blocks);
+    let network = Network::Regtest(ActivationHeights::default()).to_zebra_network();
+
+    let expected_anchor = finalized_height_floor(source.active_height());
+    assert_ne!(
+        expected_anchor.0, 0,
+        "test setup: vectors must be taller than NON_FINALIZED_DEPTH for the \
+         ceiling to differ from genesis",
+    );
+
+    let nfs = NonFinalizedState::initialize(source.clone(), network, None)
+        .await
+        .expect("initialize NFS from mock source");
+    let anchor = nfs.get_snapshot().best_tip.height;
+
+    assert_eq!(
+        anchor,
+        expected_anchor,
+        "NFS seeded with no anchor block must anchor at the finalization ceiling \
+         {} (chain tip {} − NON_FINALIZED_DEPTH), not genesis (height 0)",
+        expected_anchor.0,
+        source.active_height(),
     );
 }

@@ -43,6 +43,12 @@ and this library adheres to Rust's notion of
   `MDB_NOTLS`), producing out-of-order writes and ultimately a SIGSEGV before any
   batch committed durably. The long-running path now bails out when a background
   op is already in flight, so a single backfill runs to completion (issue #1261).
+- The non-finalised state no longer seeds (or re-anchors) from genesis or the
+  lagging finalised tip. When the finalised DB has not reached the finalization
+  ceiling (`chain_tip − NON_FINALIZED_DEPTH`) — at cold start or after a deep
+  rollback — both the init path and `sync()` now seed the seam block from the
+  *source* at the ceiling, so the NFS holds only the reorg window instead of
+  crawling the whole chain one block at a time toward the tip (issue #1261).
 
 ## [0.3.0] - 2026-06-17
 
