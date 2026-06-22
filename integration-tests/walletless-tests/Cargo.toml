@@ -11,6 +11,11 @@ license.workspace = true
 version.workspace = true
 
 [features]
+# gettxoutsetinfo RPC + its finalised txout-set accumulator (non-default in zaino-state).
+# Feature-on, the gettxoutsetinfo fetch test asserts zcashd parity; the default (gated-off) build
+# instead asserts the RPC reports the feature unavailable.
+gettxoutsetinfo = ["zaino-state/gettxoutsetinfo"]
+
 # **Experimental and alpha features**
 # Exposes the **complete** set of experimental / alpha features currently implemented in Zaino.
 experimental_features = ["transparent_address_history_experimental"]
