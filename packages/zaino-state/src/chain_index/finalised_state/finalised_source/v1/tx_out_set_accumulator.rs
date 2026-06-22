@@ -2076,6 +2076,36 @@ mod tests {
         }
     }
 
+    /// The accumulator rebuild auto-shards to keep the per-shard in-memory spent set within the
+    /// configured memory budget: a generous budget yields a single optimal pass, a budget smaller
+    /// than the spent set forces multiple shards (capped at 256). The OOM guard for #1260.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn accumulator_build_shards_scale_to_memory_budget() {
+        use crate::chain_index::finalised_state::capability::CapabilityRequest;
+
+        init_tracing();
+        let (_data, _db_dir, zaino_db) = load_vectors_and_spawn_and_sync_v1_zaino_db().await;
+        zaino_db.wait_until_ready().await;
+        let backend = zaino_db
+            .backend_for_cap(CapabilityRequest::WriteCore)
+            .unwrap();
+        let db = backend.require_v1("accumulator_build_shards test").unwrap();
+
+        // A budget far larger than the (tiny regtest) spent set => the whole set fits in one shard.
+        assert_eq!(
+            db.accumulator_build_shards(u64::MAX).unwrap(),
+            1,
+            "a budget exceeding the spent set must use a single pass"
+        );
+
+        // A 1-byte budget => the spent set far exceeds it => more than one shard, never above the cap.
+        let constrained = db.accumulator_build_shards(1).unwrap();
+        assert!(
+            constrained > 1 && constrained <= 256,
+            "a 1-byte budget must force multiple shards (capped at 256), got {constrained}"
+        );
+    }
+
     /// Syncs the vector chain to height 200 with the given bulk-write batch budget and returns the
     /// resulting `(db tip, validated tip, txout-set accumulator)`.
     async fn sync_with_batch_budget(
