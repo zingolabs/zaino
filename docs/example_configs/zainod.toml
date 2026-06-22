@@ -38,3 +38,7 @@ shard_power = 4
 [storage.database]
 path = '/home/cupress/.cache/zaino'
 size = 128
+# Heap budget (GiB) for the txout-set accumulator rebuild's in-RAM spent set. The rebuild
+# auto-shards to stay within this budget; lower it for less peak RAM (more, smaller passes).
+# Default 8.
+# accumulator_rebuild_memory_size = 8

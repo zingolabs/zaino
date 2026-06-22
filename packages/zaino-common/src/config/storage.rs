@@ -89,11 +89,43 @@ pub struct DatabaseConfig {
     /// better. Defaults to 128 MiB; raise it on large-RAM hosts.
     #[serde(default = "default_sync_write_batch_bytes")]
     pub sync_write_batch_bytes: u64,
+    /// Heap budget (in GiB) for the from-genesis txout-set accumulator rebuild's in-RAM spent
+    /// set. The rebuild auto-shards the spent set to keep each pass within this budget, so lowering
+    /// it trades more, smaller passes for lower peak RAM. Defaults to 8 GiB.
+    ///
+    /// EVIDENCE PENDING: 8 GiB is parity with zingolabs/zaino#1263 (idky137), an unmeasured
+    /// default — confirm against a feature-on long-sync (see the doc-claim audit).
+    #[serde(default)]
+    pub accumulator_rebuild_memory_size: AccumulatorRebuildMemorySize,
 }
 
 /// Default [`DatabaseConfig::sync_write_batch_bytes`]: 128 MiB.
 fn default_sync_write_batch_bytes() -> u64 {
     128 * 1024 * 1024
+}
+
+/// Memory budget (in gibibytes) for the from-genesis txout-set accumulator rebuild's in-RAM
+/// spent set.
+///
+/// Kept separate from [`DatabaseConfig::sync_write_batch_bytes`]: the accumulator rebuild and the
+/// bulk-sync write batch are different operations with different peak-memory shapes, so coupling
+/// their budgets would let one silently mis-size the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(transparent)]
+pub struct AccumulatorRebuildMemorySize(pub usize);
+
+impl Default for AccumulatorRebuildMemorySize {
+    fn default() -> Self {
+        // 8 GiB. EVIDENCE PENDING — parity with #1263, not a measured value.
+        AccumulatorRebuildMemorySize(8)
+    }
+}
+
+impl AccumulatorRebuildMemorySize {
+    /// Convert to bytes, saturating instead of overflowing on an absurd configured value.
+    pub fn to_byte_count(&self) -> usize {
+        self.0.saturating_mul(1024 * 1024 * 1024)
+    }
 }
 
 impl Default for DatabaseConfig {
@@ -102,6 +134,7 @@ impl Default for DatabaseConfig {
             path: resolve_path_with_xdg_cache_defaults("zaino"),
             size: DatabaseSize::default(),
             sync_write_batch_bytes: default_sync_write_batch_bytes(),
+            accumulator_rebuild_memory_size: AccumulatorRebuildMemorySize::default(),
         }
     }
 }
@@ -135,5 +168,15 @@ mod database_config {
             DatabaseConfig::default().sync_write_batch_bytes,
             128 * 1024 * 1024,
         );
+    }
+
+    /// Pins the accumulator-rebuild budget default at 8 GiB. Value guard only.
+    /// EVIDENCE PENDING: 8 GiB is parity with zingolabs/zaino#1263, not a measured value;
+    /// it bounds per-shard rebuild RAM. Confirm against a feature-on long-sync.
+    #[test]
+    fn accumulator_rebuild_memory_default_is_8_gib() {
+        let budget = DatabaseConfig::default().accumulator_rebuild_memory_size;
+        assert_eq!(budget.0, 8);
+        assert_eq!(budget.to_byte_count(), 8 * 1024 * 1024 * 1024);
     }
 }
