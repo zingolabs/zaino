@@ -6,6 +6,12 @@ and this library adheres to Rust's notion of
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
+### Changed
+- **BREAKING:** `gettxoutsetinfo` and the finalised txout-set accumulator that backs it are now
+  behind a non-default `gettxoutsetinfo` Cargo feature (re-exported through `zaino-serve` and
+  `zainod`). The default build neither builds nor stores the accumulator — whose from-genesis
+  rebuild is OOM-prone — and answers `gettxoutsetinfo` with `FeatureUnavailable`. Build with
+  `--features gettxoutsetinfo` to enable it.
 
 ## [0.4.1] - 2026-06-18
 - Bump zaino-proto 0.1.2 → 0.1.3 and zainod 0.4.0 → 0.4.1 to work around

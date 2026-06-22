@@ -9,6 +9,10 @@ and this library adheres to Rust's notion of
 
 ### Added
 ### Changed
+- No change to the `gettxoutsetinfo` types here: `GetTxOutSetInfoResponse` and
+  `JsonRpSeeConnector::get_tx_out_set_info` remain available in every build. Serving
+  `gettxoutsetinfo` from the indexer is now behind `zaino-state`'s non-default `gettxoutsetinfo`
+  feature, so the default build returns `FeatureUnavailable` rather than a populated response.
 ### Deprecated
 ### Removed
 ### Fixed

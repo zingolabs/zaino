@@ -179,7 +179,10 @@ Summary
 - Promote the `spent` outpoint index to core finalised-state data.
 - Add a finalised txout-set accumulator (`tx_out_set_info_accumulator`)
   maintaining the data needed to serve `gettxoutsetinfo` directly from the
-  indexer.
+  indexer. NOTE: this table is built and maintained only in builds with the
+  non-default `gettxoutsetinfo` Cargo feature; the on-disk schema below is
+  identical either way — the table is simply left unmaintained when the feature
+  is off.
 - Add a reverse transaction-id index (`txid_location`, `txid -> TxLocation`)
   so previous-output resolution is an O(log n) point lookup instead of a full
   scan of the height-keyed `txids` table. This fixes a near-quadratic slowdown

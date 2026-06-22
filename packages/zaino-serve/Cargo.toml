@@ -13,7 +13,7 @@ version = "0.4.0"
 no_tls_use_unencrypted_traffic = ["tonic/tls-native-roots"]
 
 # gettxoutsetinfo RPC + finalised txout-set accumulator (non-default). Re-exports
-# the zaino-state gate. See docs/adr/0002-gettxoutsetinfo-behind-non-default-feature.md.
+# the zaino-state gate.
 gettxoutsetinfo = ["zaino-state/gettxoutsetinfo"]
 
 # **Experimental and alpha features**

@@ -21,7 +21,7 @@ path = "src/lib.rs"
 no_tls_use_unencrypted_traffic = ["zaino-serve/no_tls_use_unencrypted_traffic"]
 
 # gettxoutsetinfo RPC + finalised txout-set accumulator (non-default). Re-exports
-# the gate through both crates. See docs/adr/0002-gettxoutsetinfo-behind-non-default-feature.md.
+# the gate through both crates.
 gettxoutsetinfo = ["zaino-state/gettxoutsetinfo", "zaino-serve/gettxoutsetinfo"]
 
 # Operator build: no TLS + Prometheus metrics endpoint.

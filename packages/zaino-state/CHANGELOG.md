@@ -21,6 +21,11 @@ and this library adheres to Rust's notion of
   sync/migration to reach its target (distinct from `wait_until_ready`, which
   reflects serving-readiness).
 ### Changed
+- **BREAKING:** `gettxoutsetinfo` and its finalised txout-set accumulator are now behind a
+  non-default `gettxoutsetinfo` Cargo feature. The default build does not build or store the
+  accumulator and returns `FeatureUnavailable` from `get_tx_out_set_info` (the RPC stays
+  registered); enable with `--features gettxoutsetinfo`. The on-disk schema is unchanged — the
+  accumulator table still exists, it is simply not maintained when the feature is off.
 - `chain_index::finalised_state` renames (internal, `pub(crate)`):
   - facade type `ZainoDB` -> `FinalisedState`
   - module `db` -> `finalised_source`; enum `DbBackend` -> `FinalisedSource`
