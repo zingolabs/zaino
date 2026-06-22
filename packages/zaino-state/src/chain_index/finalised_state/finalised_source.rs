@@ -912,8 +912,10 @@ impl<T: BlockchainSource> FinalisedSource<T> {
         db_tip: Height,
         shards: u16,
     ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
+        // Test hook: disable the per-shard hard cap (`u64::MAX`) so this asserts pure shard-count
+        // correctness, independent of the budget-driven bisection.
         self.require_v1("v1 txout-set accumulator builder")?
-            .build_tx_out_set_accumulator_blocking(db_tip, shards)
+            .build_tx_out_set_accumulator_blocking(db_tip, shards, u64::MAX)
     }
 }
 

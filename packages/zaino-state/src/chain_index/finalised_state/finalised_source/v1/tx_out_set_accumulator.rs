@@ -867,13 +867,18 @@ impl DbV1 {
             .accumulator_rebuild_memory_size
             .to_byte_count() as u64;
         let shards = self.accumulator_build_shards(budget)?;
+        // `shards` is the initial partition; `max_spent_entries` is the *hard* per-shard cap the
+        // builder enforces during the spent scan, bisecting any range that would exceed it. A bad
+        // estimate only changes how many passes we make, never whether we stay within budget.
+        let max_spent_entries = (budget / SPENT_SET_ENTRY_BYTES_ESTIMATE).max(1);
         info!(
             height = db_tip.0,
-            shards, budget, "rebuilding txout-set accumulator"
+            shards, max_spent_entries, budget, "rebuilding txout-set accumulator"
         );
 
         tokio::task::block_in_place(|| {
-            let accumulator = self.build_tx_out_set_accumulator_blocking(db_tip, shards)?;
+            let accumulator =
+                self.build_tx_out_set_accumulator_blocking(db_tip, shards, max_spent_entries)?;
 
             let mut txn = self.env.begin_rw_txn()?;
 
@@ -957,14 +962,28 @@ impl DbV1 {
         &self,
         db_tip: Height,
         shards: u16,
+        max_spent_entries: u64,
     ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
         let shards = shards.max(1) as usize;
+        let max_spent_entries = max_spent_entries.max(1);
         let mut total = FinalisedTxOutSetInfoAccumulator::empty();
 
-        for shard in 0..shards {
-            // First-byte range [lo, hi) of the creating-txid assigned to this shard.
-            let lo = (shard * 256 / shards) as u16;
-            let hi = ((shard + 1) * 256 / shards) as u16;
+        // Work-list of creating-txid first-byte ranges `[lo, hi)`, seeded with `shards` equal ranges
+        // (the memory estimate's initial partition). A range whose spent set would exceed
+        // `max_spent_entries` is bisected and retried, so every shard actually completed holds a
+        // *hard* ≤ `max_spent_entries` outpoints regardless of the estimate's accuracy or the txid
+        // distribution. The ranges stay a disjoint cover of `[0, 256)`, and XOR/sum recombination is
+        // order-independent, so the result is identical for any partition.
+        let mut pending: Vec<(u16, u16)> = (0..shards)
+            .map(|shard| {
+                (
+                    (shard * 256 / shards) as u16,
+                    ((shard + 1) * 256 / shards) as u16,
+                )
+            })
+            .collect();
+
+        while let Some((lo, hi)) = pending.pop() {
             let in_shard = |first_byte: u8| -> bool {
                 let b = first_byte as u16;
                 b >= lo && b < hi
@@ -976,16 +995,64 @@ impl DbV1 {
 
             // (1) Spent outpoints in this shard. The `spent` key is `Outpoint::to_bytes()` =
             //     `[version tag][32-byte prev_txid][4-byte index]`, so the prev-txid's first byte
-            //     (which equals the creating txid's first byte) is at index 1.
+            //     (which equals the creating txid's first byte) is at index 1. Keys are sorted and the
+            //     version tag is constant, so the shard's keys form one contiguous range: seek to its
+            //     start and stop once we pass `hi`, rather than scanning the whole table. Bail the
+            //     moment the set would exceed `max_spent_entries` so the caller can bisect and retry.
             let mut spent_set: HashSet<Box<[u8]>> = HashSet::new();
+            let mut over_budget = false;
             {
-                let mut cursor = txn.open_ro_cursor(self.spent)?;
-                for (key_bytes, _value) in cursor.iter() {
-                    if key_bytes.len() < 2 || !in_shard(key_bytes[1]) {
-                        continue;
+                let mut shard_start_outpoint = [0u8; 32];
+                shard_start_outpoint[0] = lo as u8;
+                let shard_lower_bound = Outpoint::new(shard_start_outpoint, 0).to_bytes()?;
+
+                let cursor = txn.open_ro_cursor(self.spent)?;
+                let mut next = match cursor.get(
+                    Some(shard_lower_bound.as_slice()),
+                    None,
+                    lmdb_sys::MDB_SET_RANGE,
+                ) {
+                    Ok((key, _value)) => key,
+                    Err(lmdb::Error::NotFound) => None,
+                    Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+                };
+                while let Some(key_bytes) = next {
+                    if key_bytes.len() >= 2 {
+                        if key_bytes[1] as u16 >= hi {
+                            break;
+                        }
+                        if in_shard(key_bytes[1]) {
+                            if spent_set.len() as u64 >= max_spent_entries {
+                                over_budget = true;
+                                break;
+                            }
+                            spent_set.insert(Box::from(key_bytes));
+                        }
                     }
-                    spent_set.insert(Box::from(key_bytes));
+                    next = match cursor.get(None, None, lmdb_sys::MDB_NEXT) {
+                        Ok((key, _value)) => key,
+                        Err(lmdb::Error::NotFound) => None,
+                        Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+                    };
                 }
+            }
+
+            // Over the per-shard hard cap: drop the partial set, bisect this range, retry the halves.
+            // A single first-byte value cannot be split further — fail with an actionable error
+            // rather than OOM-ing.
+            if over_budget {
+                drop(txn);
+                if hi - lo <= 1 {
+                    return Err(FinalisedStateError::Custom(format!(
+                        "txout-set accumulator: spent shard for creating-txid first-byte {lo} \
+                         exceeds the per-shard budget ({max_spent_entries} outpoints) and cannot be \
+                         split further; raise accumulator_rebuild_memory_size"
+                    )));
+                }
+                let mid = lo + (hi - lo) / 2;
+                pending.push((lo, mid));
+                pending.push((mid, hi));
+                continue;
             }
 
             // (2) Sequential pass over block transparent data, height-ascending.
