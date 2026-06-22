@@ -43,7 +43,7 @@ zcash_protocol = { version = "0.9", features = ["local-consensus"] }
 zcash_client_backend = "0.23"
 
 # Zebra
-zebra-chain = "9.0.0"
+zebra-chain = "10.1.0"
 zebra-state = "8.0.0"
 zebra-rpc = "9.0.0"
 
