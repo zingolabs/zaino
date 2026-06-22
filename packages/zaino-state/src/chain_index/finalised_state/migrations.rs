@@ -936,7 +936,7 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
             // migration is discarded and replaced with a correct value. It is idempotent, so a crash
             // mid-Stage-C is recovered by simply re-running the (skipped) earlier stages and
             // rebuilding again.
-            #[cfg(feature = "gettxoutsetinfo")]
+            #[cfg(not(feature = "test_only_skip_txout_set_accumulator"))]
             backend.run_v1_2_migration_accumulator_stage(db_tip).await?;
         }
 

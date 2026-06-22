@@ -77,11 +77,11 @@ impl TransparentHistExt for DbV1 {
     async fn get_tx_out_set_info_accumulator(
         &self,
     ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
-        #[cfg(feature = "gettxoutsetinfo")]
+        #[cfg(not(feature = "test_only_skip_txout_set_accumulator"))]
         {
             self.get_tx_out_set_info_accumulator().await
         }
-        #[cfg(not(feature = "gettxoutsetinfo"))]
+        #[cfg(feature = "test_only_skip_txout_set_accumulator")]
         {
             Err(FinalisedStateError::FeatureUnavailable("gettxoutsetinfo"))
         }

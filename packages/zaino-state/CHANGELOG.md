@@ -21,11 +21,13 @@ and this library adheres to Rust's notion of
   sync/migration to reach its target (distinct from `wait_until_ready`, which
   reflects serving-readiness).
 ### Changed
-- **BREAKING:** `gettxoutsetinfo` and its finalised txout-set accumulator are now behind a
-  non-default `gettxoutsetinfo` Cargo feature. The default build does not build or store the
-  accumulator and returns `FeatureUnavailable` from `get_tx_out_set_info` (the RPC stays
-  registered); enable with `--features gettxoutsetinfo`. The on-disk schema is unchanged — the
-  accumulator table still exists, it is simply not maintained when the feature is off.
+- **BREAKING:** `gettxoutsetinfo` and its finalised txout-set accumulator are built and served by
+  default. They sit behind a **test-only, subtractive** Cargo feature,
+  `test_only_skip_txout_set_accumulator`: enabling it *removes* the accumulator build and makes
+  `get_tx_out_set_info` return `FeatureUnavailable` (the RPC stays registered). The feature exists
+  only so tests can skip the from-genesis accumulator build — never enable it in production. The
+  on-disk schema is unchanged either way — with the feature on the accumulator table simply is not
+  maintained.
 - `chain_index::finalised_state` renames (internal, `pub(crate)`):
   - facade type `ZainoDB` -> `FinalisedState`
   - module `db` -> `finalised_source`; enum `DbBackend` -> `FinalisedSource`
