@@ -382,7 +382,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                     "node returned no best block height".to_string(),
                 )))
             })?;
-        let seam_height = super::finalized_height_floor(tip.0);
+        let seam_height = super::finalization_ceiling(tip.0);
         if seam_height.0 == 0 {
             return Self::get_genesis_indexed_block(source, network).await;
         }
@@ -463,7 +463,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         // to catch up. Mirrors `reify_NFS_when_FS_synced`
         // (<https://github.com/zingolabs/zaino/pull/1208>); converge with it on merge.
         let mut initial_state = self.get_snapshot();
-        let anchor_height = super::finalized_height_floor(chain_height.0);
+        let anchor_height = super::finalization_ceiling(chain_height.0);
         if initial_state.best_tip.height < anchor_height {
             let seam = Self::get_seam_indexed_block(&self.source, &self.network)
                 .await

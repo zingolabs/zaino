@@ -22,7 +22,7 @@
 
 use super::vectors::{build_mockchain_source, load_test_vectors};
 use super::{load_test_vectors_and_sync_chain_index, poll::poll_until, MockchainMode};
-use crate::chain_index::{finalized_height_floor, ChainIndex};
+use crate::chain_index::{finalization_ceiling, ChainIndex};
 use crate::NonFinalizedState;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -42,7 +42,7 @@ async fn nfs_lowest_block_matches_finalized_db_tip() {
         .get_nfs_snapshot()
         .expect("NFS exists after harness completes finalized sync");
 
-    let seam_height = finalized_height_floor(mockchain.active_height());
+    let seam_height = finalization_ceiling(mockchain.active_height());
     let nfs_seam_hash = nfs
         .heights_to_hashes
         .get(&seam_height)
@@ -73,7 +73,7 @@ async fn block_is_evicted_from_nfs_when_finalized_advances_past_it() {
     let (_blocks, _indexer, index_reader, mockchain) =
         load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
 
-    let initial_seam_height = finalized_height_floor(mockchain.active_height());
+    let initial_seam_height = finalization_ceiling(mockchain.active_height());
 
     let initial_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
     let initial_nfs = initial_snapshot
@@ -214,12 +214,12 @@ async fn shutdown_terminates_sync_loop_cleanly() {
 /// *first* time the worker requests `get_block(Height(_))`, which is the
 /// first call inside iter N's NFS-sync while loop *after* iter N has already
 /// committed to `chain_height = initial_active` and called
-/// `fs.sync_to_height(finalized_height_floor(initial_active))` as a no-op.
+/// `fs.sync_to_height(finalization_ceiling(initial_active))` as a no-op.
 /// From inside the hook the test mines 20 blocks; the same `get_block` call
 /// then reads the *new* `active_chain_height = initial_active + 20` and
 /// returns block `initial_active + 1`, which the worker's loop happily
 /// extends past the iter's commitment all the way to `initial_active + 20`.
-/// The iter's `update` step uses `finalized_height_floor(initial_active)`
+/// The iter's `update` step uses `finalization_ceiling(initial_active)`
 /// for the trim and publishes a snapshot whose lowest height is *below* the
 /// post-mine seam.
 ///
@@ -237,7 +237,7 @@ async fn race_pre_mine_finalized_height_block_is_evicted_when_source_advances_mi
         load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
 
     let initial_active = mockchain.active_height();
-    let pre_mine_finalized_height = finalized_height_floor(initial_active);
+    let pre_mine_finalized_height = finalization_ceiling(initial_active);
 
     let initial_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
     let initial_nfs = initial_snapshot
@@ -306,7 +306,7 @@ async fn nfs_seeded_without_block_anchors_at_ceiling_not_genesis() {
     let source = build_mockchain_source(load_test_vectors().unwrap().blocks);
     let network = Network::Regtest(ActivationHeights::default()).to_zebra_network();
 
-    let expected_anchor = finalized_height_floor(source.active_height());
+    let expected_anchor = finalization_ceiling(source.active_height());
     assert_ne!(
         expected_anchor.0, 0,
         "test setup: vectors must be taller than NON_FINALIZED_DEPTH for the \

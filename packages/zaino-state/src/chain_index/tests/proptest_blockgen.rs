@@ -27,7 +27,7 @@ use zebra_state::{FromDisk, HashOrHeight, IntoDisk as _};
 
 use crate::{
     chain_index::{
-        finalized_height_floor,
+        finalization_ceiling,
         non_finalised_state::ChainIndexSnapshot,
         source::{BlockchainSourceResult, GetTransactionLocation},
         tests::{init_tracing, poll::poll_until, proptest_blockgen::proptest_helpers::add_segment},
@@ -262,7 +262,7 @@ fn passthrough_best_chaintip() {
                 .last()
                 .unwrap()
                 .coinbase_height()
-                .map(|h| finalized_height_floor(h.0).0)
+                .map(|h| finalization_ceiling(h.0).0)
                 .unwrap()
         );
     })

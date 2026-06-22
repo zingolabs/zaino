@@ -75,16 +75,24 @@ mod tests;
 /// zingolabs/zaino#1130.
 pub(crate) const NON_FINALIZED_DEPTH: u32 = zebra_state::MAX_BLOCK_REORG_HEIGHT + 1;
 
-/// Lower bound on zaino's finalized-DB tip, derived from the current
-/// best-known chain tip.
+/// The ceiling of the finalized (immutable) chain for a given chain tip:
+/// `NON_FINALIZED_DEPTH` below `best_tip`. A block is finalized — and therefore
+/// reorg-safe to fetch from the validator by height — exactly when its height is
+/// at or below this value; above it is the reorg-mutable non-finalized window.
+/// It is also the floor of the non-finalised state and the finalised DB's sync
+/// target.
 ///
-/// After a chain-shortening reorg this floor can move backwards while
-/// the on-disk `finalized_height` does not — finalized blocks are
-/// never evicted. Callers comparing this floor against
-/// `finalized_height` should account for the asymmetry
-/// (see zingolabs/zaino#1128).
-pub(crate) fn finalized_height_floor(chain_tip: u32) -> crate::Height {
-    crate::Height(chain_tip.saturating_sub(NON_FINALIZED_DEPTH))
+/// NOT monotonic: it tracks `best_tip`, so a chain-shortening reorg moves it
+/// backwards while the on-disk `finalized_height` does not — finalized blocks are
+/// never evicted. Callers comparing it against `finalized_height` must account
+/// for that asymmetry (see zingolabs/zaino#1128).
+//
+// Named to match `reify_NFS_when_FS_synced` (zingolabs/zaino#1208) for merge
+// convergence. NB: that draft's doc claims the ceiling "monotonically increases
+// and is unaffected by reorgs" — that is wrong (see the reorg note above); fix it
+// there on merge rather than adopting it.
+pub(crate) fn finalization_ceiling(best_tip: u32) -> crate::Height {
+    crate::Height(best_tip.saturating_sub(NON_FINALIZED_DEPTH))
 }
 
 /// Builds a zcashd-compatible `getchaintips` response from the local non-finalized snapshot.
@@ -874,7 +882,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         })?;
                     #[cfg(feature = "prometheus")]
                     metrics::gauge!("zaino.chain.tip_height").set(chain_height.0 as f64);
-                    let finalised_height = finalized_height_floor(chain_height.0);
+                    let finalised_height = finalization_ceiling(chain_height.0);
 
                     fs.sync_to_height(finalised_height, &source)
                         .await
@@ -1327,7 +1335,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                         "validator has no best block",
                         None,
                     ))?;
-                let validator_finalized_height = finalized_height_floor(height.0);
+                let validator_finalized_height = finalization_ceiling(height.0);
                 Ok(ChainIndexSnapshot::StillSyncingFinalizedState {
                     validator_finalized_height,
                 })
