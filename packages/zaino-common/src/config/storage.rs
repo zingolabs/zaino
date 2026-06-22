@@ -60,8 +60,17 @@ impl DatabaseSize {
 ///
 /// Configures the file path and size limits for persistent storage
 /// used by Zaino services.
+///
+/// `deny_unknown_fields`: an unrecognized key under `[storage.database]` is a hard
+/// error, not silently ignored. In particular the `sync_write_batch_size` key (the
+/// GiB-newtype variant from zingolabs/zaino#1263, which this build does not adopt) is
+/// rejected rather than dropped — otherwise an operator who set it would have it
+/// silently ignored while `sync_write_batch_bytes` quietly kept its default, with no
+/// signal the key was discarded. Failing loudly surfaces the key mismatch. (On this
+/// build the silent fallback is to the conservative 128 MiB default, so the unflagged
+/// failure mode is an under-budgeted / slower sync, not an OOM.)
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DatabaseConfig {
     /// Database file path.
     pub path: PathBuf,
@@ -107,4 +116,24 @@ pub struct StorageConfig {
     pub cache: CacheConfig,
     /// Database configuration
     pub database: DatabaseConfig,
+}
+
+#[cfg(test)]
+mod database_config {
+    use super::DatabaseConfig;
+
+    /// Pins the conservative 128 MiB default chosen in `29ae2e52` (down from 4 GiB) so a
+    /// refactor or a #1263-style config merge can't silently revert it. This is a *value*
+    /// guard only — it runs no sync and observes no memory, so it does NOT establish that
+    /// 128 MiB prevents (or 4 GiB causes) an OOM. The documented OOM root causes were the
+    /// accumulator rebuild's in-RAM spent set (>16 GiB, #1260) and concurrent-backfill
+    /// pileup (#1261), both fixed separately; 128 MiB is a precautionary bound per the
+    /// "peak RAM ≈ budget + dirty pages" model (29ae2e52), not a measured threshold.
+    #[test]
+    fn sync_write_batch_default_is_128_mib() {
+        assert_eq!(
+            DatabaseConfig::default().sync_write_batch_bytes,
+            128 * 1024 * 1024,
+        );
+    }
 }
