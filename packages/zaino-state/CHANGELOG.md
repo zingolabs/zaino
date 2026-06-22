@@ -59,6 +59,15 @@ and this library adheres to Rust's notion of
 - Corrected documentation that claimed `NO_SYNC` "never corrupts the database": on
   storage that does not preserve write order (NFS, overlay filesystems, hard pod
   eviction) a crash can leave torn pages; the recovery is to wipe and re-index.
+- The non-finalised state no longer overflows the worker stack when caching a
+  side-chain block. `add_nonbest_block` walked a delivered block's ancestry via
+  `source.get_block` with no depth bound; on the `state` backend `get_block`
+  serves any block by hash (including finalised blocks below the non-finalised
+  window), so a side chain rooted below the anchor recursed down to genesis and
+  crashed the process. The walk is now capped at `MAX_NFS_DEPTH` (matching
+  `handle_reorg`); a side chain that doesn't anchor within the window is skipped
+  (best-effort — zaino does not guarantee knowledge of all sidechain data) rather
+  than crashing or failing the sync.
 
 ## [0.3.0] - 2026-06-17
 

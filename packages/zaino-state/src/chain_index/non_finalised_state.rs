@@ -26,6 +26,12 @@ use zebra_state::HashOrHeight;
 /// is pinned at `0` in ephemeral mode. Without an independent floor the snapshot would grow by one
 /// block per new block indefinitely. This caps retention to a fixed window regardless, a small
 /// margin above [`NON_FINALIZED_DEPTH`] so it never trims inside the reorg-possible range.
+///
+/// It also bounds the non-finalised ancestry walkers ([`NonFinalizedState::handle_reorg`] and
+/// [`NonFinalizedState::add_nonbest_block`]): neither should recurse further back than the window
+/// they maintain. The bound is load-bearing for `add_nonbest_block` on the state backend, where
+/// `source.get_block` serves *any* block by hash (including finalised blocks below the window), so
+/// without it a side chain rooted below the anchor would recurse to genesis and overflow the stack.
 const MAX_NFS_DEPTH: u32 = NON_FINALIZED_DEPTH + 10;
 
 /// Holds the block cache
@@ -551,10 +557,9 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         block: &impl Block,
         recursion_count: u8,
     ) -> Result<IndexedBlock, SyncError> {
-        // We should never recurse back more than ~100 blocks, assuming
-        // a complete reorg of the entire nonfinalized state.
-        // 110 adds a likely unneeded safety margin
-        if recursion_count > 110 {
+        // We should never recurse back more than the non-finalised window, assuming a complete
+        // reorg of the entire nonfinalized state. `MAX_NFS_DEPTH` adds a small safety margin.
+        if u32::from(recursion_count) > MAX_NFS_DEPTH {
             return Err(SyncError::ReorgFailure(
                 "reorg handling recursed beyond reason".to_string(),
             ));
@@ -626,7 +631,9 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                         .blocks
                         .contains_key(&types::BlockHash(hash.0))
                     {
-                        self.add_nonbest_block(working_snapshot, &*block).await?;
+                        // Best-effort: a skipped side block (`Ok(None)`) is fine, it just isn't
+                        // cached; only a hard error fails the sync.
+                        self.add_nonbest_block(working_snapshot, &*block, 0).await?;
                     }
                 }
                 Err(mpsc::error::TryRecvError::Empty) => break,
@@ -793,11 +800,29 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         IndexedBlock::try_from(block_with_metadata)
     }
 
+    /// Cache a non-best (side-chain) block, recursively resolving any ancestors not already in the
+    /// working snapshot.
+    ///
+    /// Returns `Ok(None)` when the block cannot be placed within the non-finalised window: the walk
+    /// back to a known ancestor exceeded [`MAX_NFS_DEPTH`], so the side chain is rooted in finalised
+    /// history. Skipping it is safe and intentional — zaino does not guarantee knowledge of all
+    /// sidechain data (see `ChainIndexReader::find_fork_point`). Without this bound the walk would
+    /// follow `source.get_block` down into finalised history (on the state backend `get_block`
+    /// serves any block by hash) and overflow the worker stack.
     async fn add_nonbest_block(
         &self,
         working_snapshot: &mut NonfinalizedBlockCacheSnapshot,
         block: &impl Block,
-    ) -> Result<IndexedBlock, SyncError> {
+        recursion_count: u8,
+    ) -> Result<Option<IndexedBlock>, SyncError> {
+        if u32::from(recursion_count) > MAX_NFS_DEPTH {
+            warn!(
+                depth = recursion_count,
+                "non-best block ancestry walk exceeded the non-finalised window; \
+                 skipping side chain rooted in finalised history"
+            );
+            return Ok(None);
+        }
         let prev_block = match working_snapshot
             .get_block_by_hash_bytes_in_serialized_order(block.prev_hash_bytes_serialized_order())
             .cloned()
@@ -822,14 +847,25 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                             "zebrad missing block".to_string(),
                         ))),
                     ))?;
-                Box::pin(self.add_nonbest_block(working_snapshot, &*prev_block)).await?
+                match Box::pin(self.add_nonbest_block(
+                    working_snapshot,
+                    &*prev_block,
+                    recursion_count + 1,
+                ))
+                .await?
+                {
+                    Some(prev_block) => prev_block,
+                    // The parent could not be resolved within the window, so this block can't be
+                    // placed either. Skip it (best-effort), matching the ancestor's decision.
+                    None => return Ok(None),
+                }
             }
         };
         let indexed_block = block.to_indexed_block(&prev_block, self).await?;
         working_snapshot
             .blocks
             .insert(*indexed_block.hash(), indexed_block.clone());
-        Ok(indexed_block)
+        Ok(Some(indexed_block))
     }
 }
 
