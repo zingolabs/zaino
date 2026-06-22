@@ -11,10 +11,11 @@ license.workspace = true
 version.workspace = true
 
 [features]
-# gettxoutsetinfo RPC + its finalised txout-set accumulator (non-default in zaino-state).
-# Feature-on, the gettxoutsetinfo fetch test asserts zcashd parity; the default (gated-off) build
+# TEST-ONLY, SUBTRACTIVE gate (removes the finalised txout-set accumulator in
+# zaino-state). The default build keeps the accumulator: the gettxoutsetinfo
+# fetch test asserts zcashd parity. Feature-on (accumulator removed), the test
 # instead asserts the RPC reports the feature unavailable.
-gettxoutsetinfo = ["zaino-state/gettxoutsetinfo"]
+test_only_skip_txout_set_accumulator = ["zaino-state/test_only_skip_txout_set_accumulator"]
 
 # **Experimental and alpha features**
 # Exposes the **complete** set of experimental / alpha features currently implemented in Zaino.

@@ -20,9 +20,10 @@ path = "src/lib.rs"
 # Removes network restrictions.
 no_tls_use_unencrypted_traffic = ["zaino-serve/no_tls_use_unencrypted_traffic"]
 
-# gettxoutsetinfo RPC + finalised txout-set accumulator (non-default). Re-exports
-# the gate through both crates.
-gettxoutsetinfo = ["zaino-state/gettxoutsetinfo", "zaino-serve/gettxoutsetinfo"]
+# TEST-ONLY, SUBTRACTIVE. Re-exports the gate through both crates: enabling it
+# REMOVES the finalised txout-set accumulator build (and the gettxoutsetinfo
+# RPC). Never enable in production.
+test_only_skip_txout_set_accumulator = ["zaino-state/test_only_skip_txout_set_accumulator", "zaino-serve/test_only_skip_txout_set_accumulator"]
 
 # Operator build: no TLS + Prometheus metrics endpoint.
 no_tls_with_prometheus = ["no_tls_use_unencrypted_traffic", "prometheus"]

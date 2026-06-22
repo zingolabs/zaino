@@ -89,7 +89,7 @@ pub(crate) mod indexed_block;
 
 pub(crate) mod transparent_address_history;
 
-#[cfg(feature = "gettxoutsetinfo")]
+#[cfg(not(feature = "test_only_skip_txout_set_accumulator"))]
 pub(crate) mod tx_out_set_accumulator;
 
 // ───────────────────────── Schema v1 constants ─────────────────────────
@@ -254,7 +254,7 @@ pub(crate) struct DbV1 {
     ///
     /// Stores the finalised-state portion of `gettxoutsetinfo` that can be maintained cheaply
     /// without adding per-UTXO storage.
-    #[cfg(feature = "gettxoutsetinfo")]
+    #[cfg(not(feature = "test_only_skip_txout_set_accumulator"))]
     tx_out_set_info_accumulator: Database,
 
     /// Transparent address history: `AddrScript` -> duplicate values of `StoredEntryFixed<AddrEventBytes>`.
@@ -420,7 +420,7 @@ impl DbV1 {
             // Opened inline here, before `env` is moved into its `Arc` below (struct fields are
             // evaluated top-to-bottom), so the gated accumulator table needs a single `#[cfg]`
             // rather than a separate gated `let` plus a gated field-init.
-            #[cfg(feature = "gettxoutsetinfo")]
+            #[cfg(not(feature = "test_only_skip_txout_set_accumulator"))]
             tx_out_set_info_accumulator: super::open_or_create_db(
                 &env,
                 TX_OUT_SET_INFO_ACCUMULATOR_DATABASE_NAME,
@@ -464,7 +464,7 @@ impl DbV1 {
             heights: self.heights,
             spent: self.spent,
             txid_location: self.txid_location,
-            #[cfg(feature = "gettxoutsetinfo")]
+            #[cfg(not(feature = "test_only_skip_txout_set_accumulator"))]
             tx_out_set_info_accumulator: self.tx_out_set_info_accumulator,
             #[cfg(feature = "transparent_address_history_experimental")]
             address_history: self.address_history,

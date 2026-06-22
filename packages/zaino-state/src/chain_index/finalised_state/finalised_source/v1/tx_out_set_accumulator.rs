@@ -1,6 +1,8 @@
 //! Finalised txout-set accumulator (schema table #9): the finalised-state portion of
-//! `gettxoutsetinfo`. The whole module is gated by `#[cfg(feature = "gettxoutsetinfo")]`
-//! on its `mod` declaration in `v1.rs`, so no item inside needs its own feature cfg.
+//! `gettxoutsetinfo`. The whole module is gated by
+//! `#[cfg(not(feature = "test_only_skip_txout_set_accumulator"))]` on its `mod` declaration in
+//! `v1.rs`, so no item inside needs its own feature cfg. The accumulator is built by default;
+//! the test-only `test_only_skip_txout_set_accumulator` feature subtracts it.
 
 use super::*;
 use crate::chain_index::finalised_state::finalised_source::v1::TX_OUT_SET_INFO_ACCUMULATOR_KEY;
@@ -315,7 +317,7 @@ fn index_spent_outpoints(
 
 /// Read, maintenance, and bulk (re)build of the finalised txout-set accumulator (schema table #9).
 ///
-/// Gathered into one `impl` block so the entire `gettxoutsetinfo` capability is a single `#[cfg]`
+/// Gathered into one `impl` block so the entire accumulator capability is a single `#[cfg]`
 /// unit. This grouping is the natural structure for these methods regardless of the gate — they are
 /// exactly the accumulator's read / write-path-delta / rebuild surface and nothing else.
 impl DbV1 {
