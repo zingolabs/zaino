@@ -3,10 +3,7 @@
 //! on its `mod` declaration in `v1.rs`, so no item inside needs its own feature cfg.
 
 use super::*;
-use crate::chain_index::finalised_state::finalised_source::v1::{
-    ACCUMULATOR_BUILD_SHARDS, TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY,
-    TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-};
+use crate::chain_index::finalised_state::finalised_source::v1::TX_OUT_SET_INFO_ACCUMULATOR_KEY;
 use crate::chain_index::finalised_state::finalised_source::FinalisedSource;
 #[cfg(test)]
 use crate::chain_index::source::mockchain_source::MockchainSource;
@@ -15,6 +12,49 @@ use crate::chain_index::types::db::metadata::{
     is_unspendable_tx_out, tx_out_set_entry_digest, FinalisedTxOutSetInfoAccumulator,
     ZAINO_TXOUTSET_ENTRY_LEN,
 };
+
+/// Maximum number of txid-prefix shards the bulk accumulator builder may use.
+///
+/// The shard count is chosen at rebuild time so the per-shard spent set fits the configured
+/// [`zaino_common::DatabaseConfig::accumulator_rebuild_memory_size`] budget (see
+/// [`DbV1::rebuild_tx_out_set_accumulator`]): a single optimal pass on hosts with enough RAM for
+/// the full spent set, scaling up on memory-constrained deployments. Sharding partitions on the
+/// creating-txid's first byte (256 distinct values), so the count is capped here.
+const ACCUMULATOR_BUILD_MAX_SHARDS: u16 = 256;
+
+/// Conservative per-entry RAM estimate for the rebuild's in-memory spent set, used only to size the
+/// shard count.
+///
+/// Each entry is a 37-byte `spent` key heap-allocated as a `Box<[u8]>` (rounded up by the
+/// allocator), a 16-byte fat pointer stored in the `HashSet` table, plus hashbrown control bytes and
+/// load-factor slack — realistically ~120 bytes, but allocator behaviour varies. Set deliberately
+/// *above* that so the chosen shard count over-provisions: the per-shard set then stays within the
+/// budget, and over-counting only adds shards (less memory per shard), it never under-bounds.
+const SPENT_SET_ENTRY_BYTES_ESTIMATE: u64 = 256;
+
+/// Maximum accumulator staleness (`db_tip - watermark`, in blocks) still updated incrementally.
+///
+/// Below this gap, [`DbV1::write_blocks_to_height`] advances the persisted txout-set accumulator by
+/// applying only the delta for the just-written range — O(range) work, independent of chain length.
+/// At or above it (the first build, or a sync interrupted far behind the on-disk tip) it falls back
+/// to the full from-genesis [`DbV1::rebuild_tx_out_set_accumulator`]. The incremental path does
+/// ~O(range outputs) random `spent`/prev-output lookups (page faults once the DB exceeds RAM), so
+/// this is set conservatively — well under the fixed full-scan cost — while still covering a
+/// multi-hour offline catch-up. It is a performance knob, not a correctness one:
+/// both paths produce the identical accumulator at the tip.
+const ACCUMULATOR_INCREMENTAL_MAX_GAP: u32 = 1_000;
+
+/// Metadata key recording the height the finalised txout-set accumulator currently reflects.
+///
+/// Stored in the `metadata` table as `StoredEntryFixed<Height>`. The accumulator is not maintained
+/// per block on the bulk-sync write path. After a catch-up run it is brought up to the tip either by
+/// a full from-genesis rebuild ([`DbV1::rebuild_tx_out_set_accumulator`], used for the first build /
+/// an unusually large gap) or, in steady state, by applying just the delta for the newly-written
+/// range ([`DbV1::update_tx_out_set_accumulator_for_range`]). Both advance this watermark to the new
+/// tip in the same transaction as the accumulator. It lets the dispatch pick the cheap incremental
+/// path and lets readers detect a *stale* accumulator (watermark `<` db tip) after a sync was
+/// interrupted before the accumulator step ran, rather than serving incorrect `gettxoutsetinfo` data.
+const TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY: &[u8] = b"_tx_out_set_accumulator_built_height";
 
 /// Direction of an accumulator update.
 ///
@@ -819,9 +859,21 @@ impl DbV1 {
             return Ok(());
         };
 
+        // Bound the rebuild's peak RAM to the configured budget by sharding the in-memory spent set.
+        let budget = self
+            .config
+            .storage
+            .database
+            .accumulator_rebuild_memory_size
+            .to_byte_count() as u64;
+        let shards = self.accumulator_build_shards(budget)?;
+        info!(
+            height = db_tip.0,
+            shards, budget, "rebuilding txout-set accumulator"
+        );
+
         tokio::task::block_in_place(|| {
-            let accumulator =
-                self.build_tx_out_set_accumulator_blocking(db_tip, ACCUMULATOR_BUILD_SHARDS)?;
+            let accumulator = self.build_tx_out_set_accumulator_blocking(db_tip, shards)?;
 
             let mut txn = self.env.begin_rw_txn()?;
 
@@ -832,6 +884,62 @@ impl DbV1 {
             self.env.sync(true)?;
 
             Ok::<_, FinalisedStateError>(())
+        })
+    }
+
+    /// Chooses the number of [`Self::build_tx_out_set_accumulator_blocking`] shards so the per-shard
+    /// in-memory spent set stays within `budget_bytes`.
+    ///
+    /// `shards = ceil(estimated_spent_set_bytes / budget)`, clamped to
+    /// `1..=ACCUMULATOR_BUILD_MAX_SHARDS`. Hosts with enough RAM for the whole spent set get a single
+    /// optimal pass; constrained hosts scale up. The estimate over-counts (never under-bounds), so
+    /// within the shard cap the rebuild cannot exceed the budget.
+    fn accumulator_build_shards(&self, budget_bytes: u64) -> Result<u16, FinalisedStateError> {
+        let budget = budget_bytes.max(1);
+        // Only count the spent set up to the point where we'd hit the shard cap anyway — past it the
+        // exact size cannot change the decision, so the count pass is itself bounded.
+        let max_useful_entries = (ACCUMULATOR_BUILD_MAX_SHARDS as u64).saturating_mul(budget)
+            / SPENT_SET_ENTRY_BYTES_ESTIMATE.max(1);
+        let needed = self
+            .estimate_spent_set_bytes(max_useful_entries)?
+            .div_ceil(budget);
+        Ok(needed.clamp(1, ACCUMULATOR_BUILD_MAX_SHARDS as u64) as u16)
+    }
+
+    /// Estimates the in-RAM bytes a single-shard spent set would occupy: the `spent` table's entry
+    /// count times [`SPENT_SET_ENTRY_BYTES_ESTIMATE`].
+    ///
+    /// Counts via a sequential cursor scan (the safe `lmdb` API exposes no per-sub-DB stat), stopping
+    /// early once `max_useful_entries` is reached. Counting allocates nothing (the cursor yields
+    /// references into the mmap), so this is O(1) heap regardless of table size.
+    fn estimate_spent_set_bytes(
+        &self,
+        max_useful_entries: u64,
+    ) -> Result<u64, FinalisedStateError> {
+        tokio::task::block_in_place(|| {
+            let txn = self.env.begin_ro_txn()?;
+            let cursor = txn.open_ro_cursor(self.spent)?;
+
+            // Explicit cursor walk rather than `Cursor::iter`, whose iterator `debug_assert!`-panics
+            // on a non-`NotFound` LMDB error in debug and silently truncates in release. Here a real
+            // error propagates and the scan ends only on a genuine end-of-table `NotFound`.
+            let mut count: u64 = 0;
+            let mut op = lmdb_sys::MDB_FIRST;
+            loop {
+                match cursor.get(None, None, op) {
+                    Ok(_) => {
+                        count += 1;
+                        if count >= max_useful_entries {
+                            break;
+                        }
+                    }
+                    Err(lmdb::Error::NotFound) => break,
+                    Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+                }
+                op = lmdb_sys::MDB_NEXT;
+            }
+
+            Ok(count.saturating_mul(SPENT_SET_ENTRY_BYTES_ESTIMATE))
         })
     }
 
