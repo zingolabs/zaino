@@ -220,58 +220,73 @@ async fn get_tx_out_set_info_inner() {
 
     services.generate_blocks_and_wait_for_tips(1).await;
 
-    let zcashd_txoutset_info = services
-        .zcashd_subscriber
-        .get_tx_out_set_info()
-        .await
-        .unwrap();
-    let zaino_txoutset_info = services
-        .zaino_subscriber
-        .get_tx_out_set_info()
-        .await
-        .unwrap();
+    let zcashd_result = services.zcashd_subscriber.get_tx_out_set_info().await;
+    let zaino_result = services.zaino_subscriber.get_tx_out_set_info().await;
 
-    // Structural parity with zcashd: height, bestblock, transactions, txouts and total_amount
-    // must match. `bytes_serialized` and `hash_serialized` are Zaino-defined and intentionally
-    // diverge from zcashd; only Zaino-internal invariants are asserted on those fields.
-    use zaino_fetch::jsonrpsee::response::GetTxOutSetInfoResponse;
-    let (zaino, zcashd) = match (zaino_txoutset_info, zcashd_txoutset_info) {
-        (GetTxOutSetInfoResponse::Info(z), GetTxOutSetInfoResponse::Info(r)) => (z, r),
-        other => panic!("expected non-empty gettxoutsetinfo from both sides, got {other:?}"),
-    };
+    // The finalised txout-set accumulator that backs `gettxoutsetinfo` is built by default; the
+    // test-only `test_only_skip_txout_set_accumulator` feature subtracts it. With the accumulator
+    // removed, both indexer-fronted subscribers must report the feature unavailable; the default
+    // build serves real data and is checked for zcashd parity.
+    #[cfg(feature = "test_only_skip_txout_set_accumulator")]
+    {
+        for result in [zcashd_result, zaino_result] {
+            let error = result.expect_err(
+                "accumulator-skipped build must report the txout-set accumulator unavailable",
+            );
+            assert!(
+                format!("{error:?}").contains("feature unavailable: gettxoutsetinfo"),
+                "expected a gettxoutsetinfo-unavailable error, got: {error:?}"
+            );
+        }
+    }
 
-    assert_eq!(zaino.height, zcashd.height, "`height` differs from zcashd");
-    assert_eq!(
-        zaino.best_block, zcashd.best_block,
-        "`bestblock` differs from zcashd"
-    );
-    assert_eq!(
-        zaino.transactions, zcashd.transactions,
-        "`transactions` count differs from zcashd"
-    );
-    assert_eq!(zaino.txouts, zcashd.txouts, "`txouts` differs from zcashd");
-    assert!(
-        (zaino.total_amount - zcashd.total_amount).abs() < 1e-8,
-        "`total_amount` differs from zcashd: zaino={} zcashd={}",
-        zaino.total_amount,
-        zcashd.total_amount
-    );
+    #[cfg(not(feature = "test_only_skip_txout_set_accumulator"))]
+    {
+        let zcashd_txoutset_info = zcashd_result.unwrap();
+        let zaino_txoutset_info = zaino_result.unwrap();
 
-    assert_eq!(
-        zaino.bytes_serialized,
-        zaino.txouts * 65,
-        "`bytes_serialized` must equal txouts * 65 under Zaino's UTXO entry encoding"
-    );
-    assert_eq!(
-        zaino.hash_serialized.len(),
-        64,
-        "`hash_serialized` must be 64 lowercase hex chars"
-    );
-    assert!(
-        zaino.hash_serialized.chars().all(|c| c.is_ascii_hexdigit()),
-        "`hash_serialized` must be hex: got {}",
-        zaino.hash_serialized
-    );
+        // Structural parity with zcashd: height, bestblock, transactions, txouts and total_amount
+        // must match. `bytes_serialized` and `hash_serialized` are Zaino-defined and intentionally
+        // diverge from zcashd; only Zaino-internal invariants are asserted on those fields.
+        use zaino_fetch::jsonrpsee::response::GetTxOutSetInfoResponse;
+        let (zaino, zcashd) = match (zaino_txoutset_info, zcashd_txoutset_info) {
+            (GetTxOutSetInfoResponse::Info(z), GetTxOutSetInfoResponse::Info(r)) => (z, r),
+            other => panic!("expected non-empty gettxoutsetinfo from both sides, got {other:?}"),
+        };
+
+        assert_eq!(zaino.height, zcashd.height, "`height` differs from zcashd");
+        assert_eq!(
+            zaino.best_block, zcashd.best_block,
+            "`bestblock` differs from zcashd"
+        );
+        assert_eq!(
+            zaino.transactions, zcashd.transactions,
+            "`transactions` count differs from zcashd"
+        );
+        assert_eq!(zaino.txouts, zcashd.txouts, "`txouts` differs from zcashd");
+        assert!(
+            (zaino.total_amount - zcashd.total_amount).abs() < 1e-8,
+            "`total_amount` differs from zcashd: zaino={} zcashd={}",
+            zaino.total_amount,
+            zcashd.total_amount
+        );
+
+        assert_eq!(
+            zaino.bytes_serialized,
+            zaino.txouts * 65,
+            "`bytes_serialized` must equal txouts * 65 under Zaino's UTXO entry encoding"
+        );
+        assert_eq!(
+            zaino.hash_serialized.len(),
+            64,
+            "`hash_serialized` must be 64 lowercase hex chars"
+        );
+        assert!(
+            zaino.hash_serialized.chars().all(|c| c.is_ascii_hexdigit()),
+            "`hash_serialized` must be hex: got {}",
+            zaino.hash_serialized
+        );
+    }
 
     services.test_manager.close().await;
 }
