@@ -74,17 +74,14 @@ impl TransparentHistExt for DbV1 {
         self.get_outpoint_spenders(outpoints).await
     }
 
+    // Skip build: this override is removed and the trait's default (FeatureUnavailable) applies.
+    // The accumulator dispatch in `finalised_source.rs` also drops its `Self::V1` arm under skip,
+    // so this method is never actually reached then — the override exists only for the default build.
+    #[cfg(not(feature = "test_only_skip_txout_set_accumulator"))]
     async fn get_tx_out_set_info_accumulator(
         &self,
     ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
-        #[cfg(not(feature = "test_only_skip_txout_set_accumulator"))]
-        {
-            self.get_tx_out_set_info_accumulator().await
-        }
-        #[cfg(feature = "test_only_skip_txout_set_accumulator")]
-        {
-            Err(FinalisedStateError::FeatureUnavailable("gettxoutsetinfo"))
-        }
+        self.get_tx_out_set_info_accumulator().await
     }
 }
 
