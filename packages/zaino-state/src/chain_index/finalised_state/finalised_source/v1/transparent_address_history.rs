@@ -1,5 +1,7 @@
 //! FinalisedState::V1 transparent address history indexing functionality.
 
+// Only the `unstable` build keeps the txout-set accumulator override that names this type.
+#[cfg(feature = "unstable")]
 use crate::chain_index::types::db::metadata::FinalisedTxOutSetInfoAccumulator;
 
 use super::*;
@@ -77,7 +79,7 @@ impl TransparentHistExt for DbV1 {
     // Skip build: this override is removed and the trait's default (FeatureUnavailable) applies.
     // The accumulator dispatch in `finalised_source.rs` also drops its `Self::V1` arm under skip,
     // so this method is never actually reached then — the override exists only for the default build.
-    #[cfg(not(feature = "test_only_skip_txout_set_accumulator"))]
+    #[cfg(feature = "unstable")]
     async fn get_tx_out_set_info_accumulator(
         &self,
     ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {

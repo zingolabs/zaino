@@ -141,21 +141,22 @@ async fn assert_fetch_service_gettxoutsetinfo_matches_rpc<V: ValidatorExt>(
     let fetch_service_txoutset_info = fetch_service_subscriber.get_tx_out_set_info().await;
 
     // The finalised txout-set accumulator that backs `gettxoutsetinfo` is built by default; the
-    // test-only `test_only_skip_txout_set_accumulator` feature subtracts it. With the accumulator
+    // test-only `unstable` feature subtracts it. With the accumulator
     // removed, the RPC must report the feature unavailable (the gate's contract); the default build
     // serves real data and is checked for zcashd parity.
-    #[cfg(feature = "test_only_skip_txout_set_accumulator")]
+    #[cfg(not(feature = "unstable"))]
     {
         let _ = &test_manager;
-        let error = fetch_service_txoutset_info
-            .expect_err("accumulator-skipped build must report the txout-set accumulator unavailable");
+        let error = fetch_service_txoutset_info.expect_err(
+            "accumulator-skipped build must report the txout-set accumulator unavailable",
+        );
         assert!(
             format!("{error:?}").contains("feature unavailable: gettxoutsetinfo"),
             "expected a gettxoutsetinfo-unavailable error, got: {error:?}"
         );
     }
 
-    #[cfg(not(feature = "test_only_skip_txout_set_accumulator"))]
+    #[cfg(feature = "unstable")]
     {
         let fetch_service_txoutset_info = fetch_service_txoutset_info.unwrap();
 

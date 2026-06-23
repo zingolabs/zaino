@@ -15,7 +15,7 @@ no_tls_use_unencrypted_traffic = ["tonic/tls-native-roots"]
 # TEST-ONLY, SUBTRACTIVE. Re-exports the zaino-state gate: enabling it REMOVES
 # the finalised txout-set accumulator build (and the gettxoutsetinfo RPC).
 # Never enable in production.
-test_only_skip_txout_set_accumulator = ["zaino-state/test_only_skip_txout_set_accumulator"]
+unstable = ["zaino-state/unstable"]
 
 # **Experimental and alpha features**
 # Exposes the **complete** set of experimental / alpha features currently implemented in Zaino.

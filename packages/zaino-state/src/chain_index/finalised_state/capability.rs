@@ -1067,7 +1067,7 @@ pub trait TransparentHistExt: Send + Sync {
     ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
         // Default: no finalised txout-set accumulator is maintained, so the finalised portion of
         // `gettxoutsetinfo` is unavailable. Implementors that maintain the accumulator override
-        // this; the test-only `test_only_skip_txout_set_accumulator` build removes that override,
+        // this; the test-only `unstable` build removes that override,
         // leaving this fallback (purely subtractive — the skip feature only deletes the override).
         Err(FinalisedStateError::FeatureUnavailable("gettxoutsetinfo"))
     }

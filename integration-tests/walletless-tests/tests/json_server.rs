@@ -224,10 +224,10 @@ async fn get_tx_out_set_info_inner() {
     let zaino_result = services.zaino_subscriber.get_tx_out_set_info().await;
 
     // The finalised txout-set accumulator that backs `gettxoutsetinfo` is built by default; the
-    // test-only `test_only_skip_txout_set_accumulator` feature subtracts it. With the accumulator
+    // test-only `unstable` feature subtracts it. With the accumulator
     // removed, both indexer-fronted subscribers must report the feature unavailable; the default
     // build serves real data and is checked for zcashd parity.
-    #[cfg(feature = "test_only_skip_txout_set_accumulator")]
+    #[cfg(not(feature = "unstable"))]
     {
         for result in [zcashd_result, zaino_result] {
             let error = result.expect_err(
@@ -240,7 +240,7 @@ async fn get_tx_out_set_info_inner() {
         }
     }
 
-    #[cfg(not(feature = "test_only_skip_txout_set_accumulator"))]
+    #[cfg(feature = "unstable")]
     {
         let zcashd_txoutset_info = zcashd_result.unwrap();
         let zaino_txoutset_info = zaino_result.unwrap();

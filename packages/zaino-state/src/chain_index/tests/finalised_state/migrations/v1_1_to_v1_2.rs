@@ -12,7 +12,7 @@ use crate::chain_index::finalised_state::capability::{
 };
 use crate::chain_index::finalised_state::entry::StoredEntryFixed;
 use crate::chain_index::finalised_state::finalised_source::v1::DB_SCHEMA_V1_HASH;
-#[cfg(not(feature = "test_only_skip_txout_set_accumulator"))]
+#[cfg(feature = "unstable")]
 use crate::chain_index::finalised_state::finalised_source::v1::TX_OUT_SET_INFO_ACCUMULATOR_KEY;
 use crate::chain_index::finalised_state::finalised_source::FinalisedSource;
 use crate::chain_index::finalised_state::FinalisedState;
@@ -122,7 +122,7 @@ async fn simulate_interrupted_v1_1_to_v1_2_spent_index_migration(
     let environment = database_backend.env().unwrap();
     let metadata_database = database_backend.metadata_db().unwrap();
     let spent_database = database_backend.spent_db().unwrap();
-    #[cfg(not(feature = "test_only_skip_txout_set_accumulator"))]
+    #[cfg(feature = "unstable")]
     let (tx_out_set_info_accumulator_database, expected_resume_accumulator) = (
         database_backend.tx_out_set_info_accumulator_db().unwrap(),
         crate::chain_index::finalised_state::finalised_source::v1::tx_out_set_accumulator::expected_tx_out_set_info_accumulator(database_backend, resume_height - 1).await,
@@ -176,7 +176,7 @@ async fn simulate_interrupted_v1_1_to_v1_2_spent_index_migration(
             transaction.del(spent_database, &spent_key, None).unwrap();
         }
 
-        #[cfg(not(feature = "test_only_skip_txout_set_accumulator"))]
+        #[cfg(feature = "unstable")]
         {
             let tx_out_set_info_accumulator_entry =
                 StoredEntryFixed::new(TX_OUT_SET_INFO_ACCUMULATOR_KEY, expected_resume_accumulator);
@@ -358,7 +358,7 @@ async fn v1_1_to_v1_2_spent_index_backfill_from_old_version() {
 
     assert_txid_location_index_matches_block_data(&migrated_backend).await;
     assert_spent_index_matches_transparent_data(&migrated_backend).await;
-    #[cfg(not(feature = "test_only_skip_txout_set_accumulator"))]
+    #[cfg(feature = "unstable")]
     crate::chain_index::finalised_state::finalised_source::v1::tx_out_set_accumulator::assert_tx_out_set_info_accumulator_matches_transparent_data(&migrated_backend).await;
 
     migrated_database.shutdown().await.unwrap();
@@ -456,7 +456,7 @@ async fn v1_1_to_v1_2_spent_index_migration_resumes_after_crash() {
 
     assert_txid_location_index_matches_block_data(&resumed_backend).await;
     assert_spent_index_matches_transparent_data(&resumed_backend).await;
-    #[cfg(not(feature = "test_only_skip_txout_set_accumulator"))]
+    #[cfg(feature = "unstable")]
     crate::chain_index::finalised_state::finalised_source::v1::tx_out_set_accumulator::assert_tx_out_set_info_accumulator_matches_transparent_data(&resumed_backend).await;
 
     resumed_database.shutdown().await.unwrap();
@@ -543,7 +543,7 @@ async fn v1_2_0_cache_missing_txid_location_index_is_rebuilt() {
 
     assert_txid_location_index_matches_block_data(&healed_backend).await;
     assert_spent_index_matches_transparent_data(&healed_backend).await;
-    #[cfg(not(feature = "test_only_skip_txout_set_accumulator"))]
+    #[cfg(feature = "unstable")]
     crate::chain_index::finalised_state::finalised_source::v1::tx_out_set_accumulator::assert_tx_out_set_info_accumulator_matches_transparent_data(&healed_backend).await;
 
     healed_database.shutdown().await.unwrap();

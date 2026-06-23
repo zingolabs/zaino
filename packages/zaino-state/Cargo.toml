@@ -16,7 +16,7 @@ default = []
 # Enabling this feature REMOVES the accumulator build (and serves the
 # gettxoutsetinfo RPC with FeatureUnavailable), letting tests skip the
 # from-genesis accumulator build. Never enable in production.
-test_only_skip_txout_set_accumulator = []
+unstable = []
 
 # Prometheus metrics emission (gauge! calls in sync paths).
 prometheus = ["metrics"]

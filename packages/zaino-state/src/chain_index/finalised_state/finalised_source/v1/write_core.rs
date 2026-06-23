@@ -208,7 +208,7 @@ impl DbWrite for DbV1 {
         // once the chain is large. Use it only for the first build or an unusually large gap (e.g. a
         // sync interrupted far behind the on-disk tip); in steady state apply just the delta for the
         // blocks we wrote — O(range) work — which produces the identical accumulator at the tip.
-        #[cfg(not(feature = "test_only_skip_txout_set_accumulator"))]
+        #[cfg(feature = "unstable")]
         self.advance_tx_out_set_accumulator_to_tip(height).await?;
 
         Ok(())
@@ -265,8 +265,7 @@ impl DbV1 {
         block: IndexedBlock,
         // Only consulted on the accumulator path; with the accumulator skipped the bulk/append
         // distinction it controls has no observable effect.
-        #[cfg_attr(feature = "test_only_skip_txout_set_accumulator", allow(unused_variables))]
-        update_tx_out_set: bool,
+        #[cfg_attr(not(feature = "unstable"), allow(unused_variables))] update_tx_out_set: bool,
     ) -> Result<(), FinalisedStateError> {
         self.status.store(StatusType::Syncing);
         let block_hash = block.context.index.hash;
@@ -558,7 +557,7 @@ impl DbV1 {
 
         // Accumulator maintenance is deferred on the bulk-sync path (`update_tx_out_set == false`)
         // and rebuilt once at the tip; only the single-block append path maintains it incrementally.
-        #[cfg(not(feature = "test_only_skip_txout_set_accumulator"))]
+        #[cfg(feature = "unstable")]
         let tx_out_set_info_accumulator = self
             .maybe_calculate_tx_out_set_info_accumulator_after_block(
                 update_tx_out_set,
@@ -693,7 +692,7 @@ impl DbV1 {
             // Persist the incrementally-maintained accumulator and advance its freshness watermark
             // in the same transaction as the block, so the watermark always tracks the height the
             // accumulator reflects. Skipped on the deferred (bulk-sync) path.
-            #[cfg(not(feature = "test_only_skip_txout_set_accumulator"))]
+            #[cfg(feature = "unstable")]
             zaino_db.put_maintained_tx_out_set_accumulator(
                 &mut txn,
                 tx_out_set_info_accumulator,
@@ -1483,7 +1482,7 @@ impl DbV1 {
             }
         }
 
-        #[cfg(not(feature = "test_only_skip_txout_set_accumulator"))]
+        #[cfg(feature = "unstable")]
         let tx_out_set_info_accumulator = self
             .calculate_tx_out_set_info_accumulator_after_delete_block(&transactions, &spent_map)
             .await?;
@@ -1499,7 +1498,7 @@ impl DbV1 {
         tokio::task::spawn_blocking(move || {
             let mut txn = zaino_db.env.begin_rw_txn()?;
 
-            #[cfg(not(feature = "test_only_skip_txout_set_accumulator"))]
+            #[cfg(feature = "unstable")]
             zaino_db.put_tx_out_set_accumulator(&mut txn, tx_out_set_info_accumulator)?;
 
             // Delete spent data
