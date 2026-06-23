@@ -1,6 +1,5 @@
 //! Finalised txout-set accumulator (schema table #9): the finalised-state portion of
-//! `gettxoutsetinfo`. The whole module is gated by `#[cfg(feature = "gettxoutsetinfo")]`
-//! on its `mod` declaration in `v1.rs`, so no item inside needs its own feature cfg.
+//! `gettxoutsetinfo`.
 
 use super::*;
 use crate::chain_index::finalised_state::finalised_source::v1::{
@@ -275,9 +274,7 @@ fn index_spent_outpoints(
 
 /// Read, maintenance, and bulk (re)build of the finalised txout-set accumulator (schema table #9).
 ///
-/// Gathered into one `impl` block so the entire `gettxoutsetinfo` capability is a single `#[cfg]`
-/// unit. This grouping is the natural structure for these methods regardless of the gate — they are
-/// exactly the accumulator's read / write-path-delta / rebuild surface and nothing else.
+/// Groups the accumulator's read / write-path-delta / rebuild surface.
 impl DbV1 {
     /// Resolves each spent outpoint to its previous [`TxOutCompact`].
     ///
@@ -1388,8 +1385,7 @@ impl DbV1 {
 }
 
 /// `FinalisedSource` dispatch for the accumulator capability, co-located with the V1
-/// implementation it forwards to. V1-only; ephemeral backends have no accumulator. The whole
-/// module is feature-gated, so these need no per-method `#[cfg]`.
+/// implementation it forwards to. V1-only; ephemeral backends have no accumulator.
 impl<T: BlockchainSource> FinalisedSource<T> {
     /// Provides access to the finalised txout-set accumulator DB table.
     pub(crate) fn tx_out_set_info_accumulator_db(&self) -> Result<Database, FinalisedStateError> {

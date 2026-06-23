@@ -11,12 +11,6 @@ version = "0.4.0"
 [features]
 default = []
 
-# gettxoutsetinfo RPC + the finalised txout-set accumulator it is the sole
-# consumer of. Non-default: the default build neither stores nor builds the
-# accumulator (whose from-genesis build is OOM-prone) and answers the RPC with
-# FeatureUnavailable. See docs/adr/0002-gettxoutsetinfo-behind-non-default-feature.md.
-gettxoutsetinfo = []
-
 # Prometheus metrics emission (gauge! calls in sync paths).
 prometheus = ["metrics"]
 
