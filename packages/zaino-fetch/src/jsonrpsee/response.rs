@@ -548,12 +548,11 @@ mod get_tx_out_set_info_tests {
         }"#;
 
         let parsed: GetBlockchainInfoResponse = serde_json::from_str(json).unwrap();
-        let (name, activation_height, status) = parsed
+        let (name, activation_height, status) = (*parsed
             .upgrades
             .values()
             .next()
-            .unwrap()
-            .clone()
+            .unwrap())
             .into_parts();
 
         assert_eq!(name, zebra_chain::parameters::NetworkUpgrade::Nu6_2);
