@@ -842,7 +842,6 @@ impl<T: BlockchainSource> TransparentHistExt for FinalisedSource<T> {
         &self,
     ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
         match self {
-            #[cfg(feature = "gettxoutsetinfo")]
             Self::V1(database) => database.get_tx_out_set_info_accumulator().await,
             _ => Err(FinalisedStateError::FeatureUnavailable("gettxoutsetinfo")),
         }
@@ -887,9 +886,8 @@ impl<T: BlockchainSource> FinalisedSource<T> {
     }
 }
 
-/// Accumulator test hooks, grouped so the whole `gettxoutsetinfo` test surface is a single
-/// `#[cfg]` unit (the enclosing `cfg(test)` is folded in via `cfg(all(...))`).
-#[cfg(all(test, feature = "gettxoutsetinfo"))]
+/// Accumulator test hooks.
+#[cfg(test)]
 impl<T: BlockchainSource> FinalisedSource<T> {
     /// Reads the height the persisted txout-set accumulator currently reflects (V1 only).
     ///
