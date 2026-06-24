@@ -1035,7 +1035,7 @@ impl DbV1 {
                         }
                     }
                 } else if val.len() != StoredEntryFixed::<AddrEventBytes>::VERSIONED_LEN {
-                    tracing::warn!("bad addrhist dup (len={})", val.len());
+                    tracing::warn!(len = val.len(), "bad addrhist dup");
                 }
 
                 // step backwards through duplicates

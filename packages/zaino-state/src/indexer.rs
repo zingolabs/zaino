@@ -792,7 +792,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                             .z_get_block(subtree.end_height.0.to_string(), Some(1))
                             .await
                         {
-                            Ok(GetBlock::Object (block_object)) => {
+                            Ok(GetBlock::Object(block_object)) => {
                                 let checked_height = match block_object.height() {
                                     Some(h) => h.0 as u64,
                                     None => {
@@ -805,8 +805,8 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                                             Ok(_) => break,
                                             Err(e) => {
                                                 warn!(
-                                                    "GetSubtreeRoots channel closed unexpectedly: {}",
-                                                    e
+                                                    %e,
+                                                    "GetSubtreeRoots channel closed unexpectedly"
                                                 );
                                                 break;
                                             }
@@ -825,8 +825,8 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                                             Ok(_) => break,
                                             Err(e) => {
                                                 warn!(
-                                                    "GetSubtreeRoots channel closed unexpectedly: {}",
-                                                    e
+                                                    %e,
+                                                    "GetSubtreeRoots channel closed unexpectedly"
                                                 );
                                                 break;
                                             }
@@ -836,7 +836,8 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                                 if channel_tx
                                     .send(Ok(SubtreeRoot {
                                         root_hash: checked_root_hash,
-                                        completing_block_hash: block_object.hash()
+                                        completing_block_hash: block_object
+                                            .hash()
                                             .bytes_in_display_order()
                                             .to_vec(),
                                         completing_block_height: checked_height,
