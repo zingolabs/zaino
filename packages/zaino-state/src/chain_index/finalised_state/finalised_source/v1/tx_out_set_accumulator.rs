@@ -7,6 +7,10 @@ use crate::chain_index::finalised_state::finalised_source::v1::{
     ACCUMULATOR_BUILD_SHARDS, TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY,
     TX_OUT_SET_INFO_ACCUMULATOR_KEY,
 };
+use crate::chain_index::finalised_state::finalised_source::FinalisedSource;
+#[cfg(test)]
+use crate::chain_index::source::mockchain_source::MockchainSource;
+use crate::chain_index::source::BlockchainSource;
 use crate::chain_index::types::db::metadata::{
     is_unspendable_tx_out, tx_out_set_entry_digest, FinalisedTxOutSetInfoAccumulator,
     ZAINO_TXOUTSET_ENTRY_LEN,
@@ -468,6 +472,11 @@ impl DbV1 {
 
         Ok((created_entries, spent_entries, spendable_spent_count_by_tx))
     }
+    /// Provides access to the finalised txout-set accumulator DB table.
+    pub(crate) fn tx_out_set_info_accumulator_db(&self) -> Database {
+        self.tx_out_set_info_accumulator
+    }
+
     /// Returns the finalised-state txout-set accumulator.
     ///
     /// This reads the singleton accumulator entry. It does not compute or repair the accumulator;
@@ -719,6 +728,45 @@ impl DbV1 {
             &watermark.to_bytes()?,
             WriteFlags::empty(),
         )?;
+        Ok(())
+    }
+
+    /// Computes the accumulator delta for a just-written block — but only on the single-block
+    /// append path (`update_tx_out_set`); the bulk-sync path defers maintenance and rebuilds once
+    /// at the tip. `None` means "not maintained on this write".
+    pub(super) async fn maybe_calculate_tx_out_set_info_accumulator_after_block(
+        &self,
+        update_tx_out_set: bool,
+        block_height: Height,
+        transactions: &[(TransactionHash, Option<TransparentCompactTx>)],
+        spent_map: &HashMap<Outpoint, TxLocation>,
+    ) -> Result<Option<FinalisedTxOutSetInfoAccumulator>, FinalisedStateError> {
+        if update_tx_out_set {
+            Ok(Some(
+                self.calculate_tx_out_set_info_accumulator_after_block(
+                    block_height,
+                    transactions,
+                    spent_map,
+                )
+                .await?,
+            ))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Persists a maintained accumulator and advances its freshness watermark to `height` in `txn`,
+    /// if one was computed on this write (the single-block append path). A no-op for `None`.
+    pub(super) fn put_maintained_tx_out_set_accumulator(
+        &self,
+        txn: &mut lmdb::RwTransaction,
+        accumulator: Option<FinalisedTxOutSetInfoAccumulator>,
+        height: Height,
+    ) -> Result<(), FinalisedStateError> {
+        if let Some(accumulator) = accumulator {
+            self.put_tx_out_set_accumulator(txn, accumulator)?;
+            self.put_tx_out_set_accumulator_watermark(txn, height)?;
+        }
         Ok(())
     }
 
@@ -1337,6 +1385,171 @@ impl DbV1 {
             .cloned()
             .flatten())
     }
+}
+
+/// `FinalisedSource` dispatch for the accumulator capability, co-located with the V1
+/// implementation it forwards to. V1-only; ephemeral backends have no accumulator. The whole
+/// module is feature-gated, so these need no per-method `#[cfg]`.
+impl<T: BlockchainSource> FinalisedSource<T> {
+    /// Provides access to the finalised txout-set accumulator DB table.
+    pub(crate) fn tx_out_set_info_accumulator_db(&self) -> Result<Database, FinalisedStateError> {
+        Ok(self
+            .require_v1("v1 tx_out_set_info_accumulator db not available")?
+            .tx_out_set_info_accumulator_db())
+    }
+
+    /// Bulk-rebuilds the finalised txout-set accumulator to the current tip and persists it (V1
+    /// only).
+    ///
+    /// Recomputes the accumulator from the finalised `transparent` + `spent` tables via sequential
+    /// scans and writes the singleton plus its freshness watermark. Replaces the per-block
+    /// accumulator maintenance that dominated sync time at sandblast height; used by
+    /// `sync_to_height` after a catch-up run and by the v1.2 migration's accumulator stage.
+    pub(crate) async fn rebuild_tx_out_set_accumulator(&self) -> Result<(), FinalisedStateError> {
+        self.require_v1("v1 txout-set accumulator builder")?
+            .rebuild_tx_out_set_accumulator()
+            .await
+    }
+
+    /// Runs the v1.2.0 migration's Stage C: bulk-rebuilds the txout-set accumulator from the
+    /// finalised `transparent` + `spent` tables built by Stage B. Idempotent — it never trusts an
+    /// existing accumulator, so a stale per-block value from an interrupted prior run is discarded
+    /// and replaced. Emits the stage's start / elapsed-on-complete logs; `db_tip` is the height
+    /// being built to.
+    pub(crate) async fn run_v1_2_migration_accumulator_stage(
+        &self,
+        db_tip: u32,
+    ) -> Result<(), FinalisedStateError> {
+        let stage_started = std::time::Instant::now();
+        info!(
+            db_tip,
+            "v1.2.0 migration Stage C: building txout-set accumulator"
+        );
+        self.rebuild_tx_out_set_accumulator().await?;
+        info!(
+            db_tip,
+            elapsed = ?stage_started.elapsed(),
+            "v1.2.0 migration Stage C complete"
+        );
+        Ok(())
+    }
+}
+
+/// Test oracle: recomputes the expected accumulator independently from the backend's
+/// `transparent` + `spent` tables, for assertions in the v1.1->v1.2 migration tests.
+#[cfg(test)]
+pub(crate) async fn expected_tx_out_set_info_accumulator(
+    database_backend: &FinalisedSource<MockchainSource>,
+    max_height: Height,
+) -> FinalisedTxOutSetInfoAccumulator {
+    let environment = database_backend.env().unwrap();
+    let spent_database = database_backend.spent_db().unwrap();
+
+    let mut expected_accumulator = FinalisedTxOutSetInfoAccumulator::empty();
+
+    for height_raw in 0..=max_height.0 {
+        let height = Height(height_raw);
+
+        let transparent_transaction_list = database_backend
+            .get_block_transparent(height)
+            .await
+            .unwrap();
+
+        for (transaction_index, transparent_transaction_opt) in
+            transparent_transaction_list.tx().iter().enumerate()
+        {
+            let Some(transparent_transaction) = transparent_transaction_opt else {
+                continue;
+            };
+
+            if transparent_transaction.outputs().is_empty() {
+                continue;
+            }
+
+            let transaction_index = u16::try_from(transaction_index).unwrap();
+            let transaction_location = TxLocation::new(height.0, transaction_index);
+
+            let transaction_hash = database_backend
+                .get_txid(transaction_location)
+                .await
+                .unwrap();
+
+            let mut unspent_outputs_for_transaction = 0u64;
+
+            let transaction = environment.begin_ro_txn().unwrap();
+
+            for (output_index, output) in transparent_transaction.outputs().iter().enumerate() {
+                // The accumulator excludes NonStandard (unspendable) outputs from every field —
+                // see `is_unspendable_tx_out`. The migration oracle must skip them too,
+                // otherwise it overcounts compared to the on-disk accumulator value the
+                // migration backfilled.
+                if crate::chain_index::types::db::metadata::is_unspendable_tx_out(output) {
+                    continue;
+                }
+
+                let output_index = u32::try_from(output_index).unwrap();
+                let outpoint = Outpoint::new(transaction_hash.0, output_index);
+                let outpoint_bytes = outpoint.to_bytes().unwrap();
+
+                let still_unspent = match transaction.get(spent_database, &outpoint_bytes) {
+                    Ok(spent_bytes) => {
+                        let spent_entry =
+                            StoredEntryFixed::<TxLocation>::from_bytes(spent_bytes).unwrap();
+
+                        assert!(
+                            spent_entry.verify(&outpoint_bytes),
+                            "spent checksum mismatch for outpoint {:?}",
+                            outpoint
+                        );
+
+                        spent_entry.inner().block_height() > max_height.0
+                    }
+
+                    Err(lmdb::Error::NotFound) => true,
+
+                    Err(error) => panic!(
+                        "failed to read spent entry for outpoint {:?}: {error}",
+                        outpoint
+                    ),
+                };
+
+                if still_unspent {
+                    unspent_outputs_for_transaction += 1;
+                    expected_accumulator
+                        .apply_added_output(&outpoint, output)
+                        .unwrap();
+                }
+            }
+
+            if unspent_outputs_for_transaction > 0 {
+                expected_accumulator.transactions += 1;
+            }
+        }
+    }
+
+    expected_accumulator
+}
+
+/// Test assertion: the backend's maintained accumulator equals the independently recomputed
+/// [`expected_tx_out_set_info_accumulator`]. Used by the v1.1->v1.2 migration tests.
+#[cfg(test)]
+pub(crate) async fn assert_tx_out_set_info_accumulator_matches_transparent_data(
+    database_backend: &FinalisedSource<MockchainSource>,
+) {
+    let database_height = database_backend.db_height().await.unwrap().unwrap();
+
+    let expected_accumulator =
+        expected_tx_out_set_info_accumulator(database_backend, database_height).await;
+
+    let actual_accumulator = database_backend
+        .get_tx_out_set_info_accumulator()
+        .await
+        .unwrap();
+
+    assert_eq!(
+        actual_accumulator, expected_accumulator,
+        "txout-set accumulator does not match transparent data and spent index"
+    );
 }
 
 #[cfg(test)]
