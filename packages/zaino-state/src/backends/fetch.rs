@@ -633,6 +633,15 @@ impl ZcashIndexer for FetchServiceSubscriber {
             return Ok(response);
         }
 
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        if !self
+            .indexer
+            .hash_or_height_known_for_treestate(&snapshot, &fallback_hash_or_height)
+            .await?
+        {
+            return local_result;
+        }
+
         self.fetcher
             .get_treestate(fallback_hash_or_height)
             .await

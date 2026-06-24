@@ -1439,6 +1439,15 @@ impl ZcashIndexer for StateServiceSubscriber {
             return Ok(response);
         }
 
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        if !self
+            .indexer
+            .hash_or_height_known_for_treestate(&snapshot, &fallback_hash_or_height)
+            .await?
+        {
+            return local_result;
+        }
+
         self.rpc_client
             .get_treestate(fallback_hash_or_height)
             .await

@@ -25,6 +25,7 @@ use crate::{
 };
 use crate::{IndexedBlock, Outpoint, TransactionHash};
 use std::collections::HashSet;
+use std::str::FromStr;
 use std::{sync::Arc, time::Duration};
 
 use arc_swap::ArcSwapOption;
@@ -482,14 +483,13 @@ pub trait ChainIndex {
         hash: &types::BlockHash,
     ) -> impl std::future::Future<Output = Result<Option<(types::BlockHash, types::Height)>, Self::Error>>;
 
-    /// Returns the block commitment tree data by hash
+    /// Returns the block commitment tree data by hash.
+    ///
+    /// The hash must exist in the non-finalized snapshot or finalized database
+    /// before the request is proxied to the backing validator.
     #[allow(clippy::type_complexity)]
     fn get_treestate(
         &self,
-        // snapshot: &Self::Snapshot,
-        // currently not implemented internally, fetches data from validator.
-        //
-        // NOTE: Should this check blockhash exists in snapshot and db before proxying call?
         hash: &types::BlockHash,
     ) -> impl std::future::Future<Output = Result<(Option<Vec<u8>>, Option<Vec<u8>>), Self::Error>>;
 
@@ -1284,6 +1284,75 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
                 Ok(None)
             }
             Err(e) => Err(ChainIndexError::backing_validator(e)),
+        }
+    }
+
+    /// Returns true when the block hash is present in the local chain index.
+    ///
+    /// During finalized-state sync, a hash is considered known when it is in
+    /// the finalized database or the backing validator can serve it as a
+    /// finalized block.
+    pub(crate) async fn block_hash_known_for_treestate(
+        &self,
+        snapshot: &ChainIndexSnapshot,
+        hash: &types::BlockHash,
+    ) -> Result<bool, ChainIndexError> {
+        match snapshot {
+            ChainIndexSnapshot::NonFinalizedStateExists {
+                non_finalized_snapshot,
+            } => {
+                if non_finalized_snapshot.blocks.contains_key(hash) {
+                    return Ok(true);
+                }
+                Ok(self
+                    .finalized_state
+                    .get_block_height(*hash)
+                    .await?
+                    .is_some())
+            }
+            ChainIndexSnapshot::StillSyncingFinalizedState {
+                validator_finalized_height,
+            } => {
+                if self
+                    .finalized_state
+                    .get_block_height(*hash)
+                    .await?
+                    .is_some()
+                {
+                    return Ok(true);
+                }
+                Ok(self
+                    .get_block_height_passthrough(validator_finalized_height, *hash)
+                    .await?
+                    .is_some())
+            }
+        }
+    }
+
+    /// Returns true when the hash-or-height string refers to a block known to
+    /// the local chain index.
+    pub(crate) async fn hash_or_height_known_for_treestate(
+        &self,
+        snapshot: &ChainIndexSnapshot,
+        hash_or_height: &str,
+    ) -> Result<bool, ChainIndexError> {
+        let hash_or_height = HashOrHeight::from_str(hash_or_height).map_err(|error| {
+            ChainIndexError::internal(format!("invalid hash or height: {error}"))
+        })?;
+        match hash_or_height {
+            HashOrHeight::Hash(hash) => {
+                self.block_hash_known_for_treestate(snapshot, &types::BlockHash::from(hash))
+                    .await
+            }
+            HashOrHeight::Height(height) => {
+                match self
+                    .get_block_hash(snapshot, types::Height::from(height))
+                    .await?
+                {
+                    Some(hash) => self.block_hash_known_for_treestate(snapshot, &hash).await,
+                    None => Ok(false),
+                }
+            }
         }
     }
 
@@ -2245,15 +2314,18 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         }
     }
 
-    /// Returns the block commitment tree data by hash
+    /// Returns the block commitment tree data by hash.
     async fn get_treestate(
         &self,
-        // currently not implemented internally, fetches data from validator.
-        // as this looks up the block by hash, and cares not if the
-        // block is on the main chain or not, this is safe to pass through
-        // even if the target block is non-finalized
         hash: &types::BlockHash,
     ) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>), Self::Error> {
+        let snapshot = self.snapshot_nonfinalized_state().await?;
+        if !self.block_hash_known_for_treestate(&snapshot, hash).await? {
+            return Err(ChainIndexError::internal(format!(
+                "block hash {hash} not found in local chain index"
+            )));
+        }
+
         match self.source().get_treestate(*hash).await {
             Ok(resp) => Ok(resp),
             Err(e) => Err(ChainIndexError {
