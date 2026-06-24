@@ -33,9 +33,6 @@ use crate::{BlockContext, BlockMetadata, BlockWithMetadata, ChainWork, NamedAtom
 
 use zaino_proto::proto::utils::{compact_block_with_pool_types, PoolTypeFilter};
 
-#[cfg(feature = "transparent_address_history_experimental")]
-use crate::{chain_index::types::AddrEventBytes, AddrScript};
-
 const EPHEMERAL_FINALISED_STATE_STATUS_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Source-backed finalised-state backend used when persistent finalised-state storage is not
