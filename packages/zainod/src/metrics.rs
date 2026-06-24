@@ -72,6 +72,92 @@ fn describe_metrics() {
         "zainod.build_info",
         "Static build metadata; always 1. Version exposed as a label."
     );
+
+    // Sync lifecycle
+    metrics::describe_gauge!(
+        "zaino.sync.has_reached_tip",
+        "Whether the indexer has ever reached the chain tip (0 or 1, never resets)"
+    );
+    metrics::describe_gauge!(
+        "zaino.sync.reached_tip_at",
+        "Unix timestamp of the first time the indexer reached the chain tip"
+    );
+    metrics::describe_gauge!(
+        "zaino.sync.lag_blocks",
+        "Number of blocks between chain tip and finalized height"
+    );
+    metrics::describe_counter!(
+        "zaino.sync.iterations_total",
+        "Total sync loop iterations completed"
+    );
+    metrics::describe_histogram!(
+        "zaino.sync.iteration_duration_seconds",
+        "Wall-clock duration of each sync loop iteration"
+    );
+    metrics::describe_counter!(
+        "zaino.sync.errors_total",
+        "Total sync loop errors by severity (recoverable or critical)"
+    );
+    metrics::describe_counter!(
+        "zaino.sync.reorg_total",
+        "Total chain reorganization events detected in the non-finalized state"
+    );
+    metrics::describe_histogram!(
+        "zaino.sync.reorg_depth",
+        "Depth of chain reorganizations in blocks (0 for same-height reorgs)"
+    );
+
+    // DB
+    metrics::describe_gauge!(
+        "zaino.db.tip_height",
+        "Height of the last block committed to the finalized database"
+    );
+    metrics::describe_gauge!(
+        "zaino.sync.last_block_written_at",
+        "Unix timestamp of the last block written to the finalized database"
+    );
+
+    // Inbound gRPC
+    metrics::describe_counter!(
+        "zaino.grpc.requests_total",
+        "Total inbound gRPC requests by method"
+    );
+    metrics::describe_histogram!(
+        "zaino.grpc.request_duration_seconds",
+        "Duration of inbound gRPC requests by method"
+    );
+    metrics::describe_counter!(
+        "zaino.grpc.errors_total",
+        "Total inbound gRPC errors by method and status code"
+    );
+
+    // Outbound JSON-RPC
+    metrics::describe_counter!(
+        "zaino.rpc.outbound.requests_total",
+        "Total outbound JSON-RPC requests by method"
+    );
+    metrics::describe_histogram!(
+        "zaino.rpc.outbound.request_duration_seconds",
+        "Duration of outbound JSON-RPC requests by method"
+    );
+    metrics::describe_counter!(
+        "zaino.rpc.outbound.errors_total",
+        "Total outbound JSON-RPC errors by method"
+    );
+    metrics::describe_counter!(
+        "zaino.rpc.outbound.retries_total",
+        "Total outbound JSON-RPC retries due to work queue depth exceeded"
+    );
+
+    // Mempool
+    metrics::describe_gauge!(
+        "zaino.mempool.transactions",
+        "Current number of transactions in the mempool"
+    );
+    metrics::describe_counter!(
+        "zaino.mempool.tip_changes_total",
+        "Total mempool resets due to chain tip changes"
+    );
 }
 
 /// Emit a constant gauge `zainod_build_info{version="x.y.z"} 1` so the

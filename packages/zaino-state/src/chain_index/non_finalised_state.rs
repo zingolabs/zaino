@@ -611,6 +611,21 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                         "Non-finalized tip rollback"
                     );
                 }
+
+                #[cfg(feature = "prometheus")]
+                {
+                    if new_best_tip.height == stale_best_tip.height
+                        && new_best_tip.hash != stale_best_tip.hash
+                    {
+                        metrics::counter!("zaino.sync.reorg_total").increment(1);
+                        metrics::histogram!("zaino.sync.reorg_depth").record(0.0);
+                    } else if new_best_tip.height < stale_best_tip.height {
+                        metrics::counter!("zaino.sync.reorg_total").increment(1);
+                        metrics::histogram!("zaino.sync.reorg_depth").record(
+                            (stale_best_tip.height.0 - new_best_tip.height.0) as f64,
+                        );
+                    }
+                }
             }
             Ok(())
         } else {

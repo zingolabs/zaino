@@ -111,12 +111,31 @@ macro_rules! implement_client_methods {
             {
                 info!(method = stringify!($method_name), "[TEST] received call");
                 Box::pin(async {
-                    Ok(
-                        // here we pass in pinbox, to optionally add
-                        // Box::pin to the returned response type for
-                        // streaming
-                        client_method_helper!($($streaming)? self __input $method_name)
-                    )
+                    #[cfg(feature = "prometheus")]
+                    let _grpc_start = std::time::Instant::now();
+
+                    let _grpc_result: std::result::Result<tonic::Response<$return>, tonic::Status> = async {
+                        Ok(client_method_helper!($($streaming)? self __input $method_name))
+                    }.await;
+
+                    #[cfg(feature = "prometheus")]
+                    {
+                        let _method: &str = stringify!($method_name);
+                        metrics::counter!("zaino.grpc.requests_total", "method" => _method)
+                            .increment(1);
+                        metrics::histogram!("zaino.grpc.request_duration_seconds", "method" => _method)
+                            .record(_grpc_start.elapsed().as_secs_f64());
+                        if let Err(ref _status) = _grpc_result {
+                            metrics::counter!(
+                                "zaino.grpc.errors_total",
+                                "method" => _method,
+                                "code" => _status.code().description(),
+                            )
+                            .increment(1);
+                        }
+                    }
+
+                    _grpc_result
                 })
             }
         )+
@@ -229,8 +248,11 @@ where
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        info!("[TEST] Received call of get_taddress_balance_stream.");
+        info!(method = "get_taddress_balance_stream", "[TEST] received call");
         Box::pin(async {
+            #[cfg(feature = "prometheus")]
+            let _grpc_start = std::time::Instant::now();
+
             let (channel_tx, channel_rx) =
                 tokio::sync::mpsc::channel::<Result<Address, tonic::Status>>(32);
             let mut request_stream = request.into_inner();
@@ -245,13 +267,34 @@ where
             });
             let address_stream = AddressStream::new(channel_rx);
 
-            Ok(tonic::Response::new(
-                self.service_subscriber
-                    .inner_ref()
-                    .get_taddress_balance_stream(address_stream)
-                    .await
-                    .map_err(Into::into)?,
-            ))
+            let _grpc_result: Result<tonic::Response<Balance>, tonic::Status> = async {
+                Ok(tonic::Response::new(
+                    self.service_subscriber
+                        .inner_ref()
+                        .get_taddress_balance_stream(address_stream)
+                        .await
+                        .map_err(Into::into)?,
+                ))
+            }
+            .await;
+
+            #[cfg(feature = "prometheus")]
+            {
+                metrics::counter!("zaino.grpc.requests_total", "method" => "get_taddress_balance_stream")
+                    .increment(1);
+                metrics::histogram!("zaino.grpc.request_duration_seconds", "method" => "get_taddress_balance_stream")
+                    .record(_grpc_start.elapsed().as_secs_f64());
+                if let Err(ref _status) = _grpc_result {
+                    metrics::counter!(
+                        "zaino.grpc.errors_total",
+                        "method" => "get_taddress_balance_stream",
+                        "code" => _status.code().description(),
+                    )
+                    .increment(1);
+                }
+            }
+
+            _grpc_result
         })
     }
 

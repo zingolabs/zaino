@@ -5563,6 +5563,7 @@ dependencies = [
  "http",
  "indexmap 2.14.0",
  "jsonrpsee-types",
+ "metrics",
  "prost",
  "reqwest",
  "serde",
@@ -5599,6 +5600,7 @@ version = "0.3.0"
 dependencies = [
  "futures",
  "jsonrpsee",
+ "metrics",
  "serde",
  "thiserror 1.0.69",
  "tokio",

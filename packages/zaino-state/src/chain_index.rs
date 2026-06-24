@@ -834,6 +834,8 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             let mut change_rx = source.subscribe_to_blocks_received();
             let mut consecutive_failures: u32 = 0;
             let mut current_backoff = timings.initial_backoff;
+            #[cfg(feature = "prometheus")]
+            let mut has_reached_tip = false;
 
             loop {
                 let source = source.clone();
@@ -843,6 +845,8 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                 }
 
                 status.store(StatusType::Syncing);
+                #[cfg(feature = "prometheus")]
+                let iteration_start = std::time::Instant::now();
 
                 // Race the iter body against cancellation: any await inside
                 // — `source.get_best_block_height`, `fs.sync_to_height`,
@@ -873,7 +877,12 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                             ))
                         })?;
                     #[cfg(feature = "prometheus")]
-                    metrics::gauge!("zaino.chain.tip_height").set(chain_height.0 as f64);
+                    {
+                        metrics::gauge!("zaino.chain.tip_height").set(chain_height.0 as f64);
+                        let finalised_height_val = finalized_height_floor(chain_height.0);
+                        metrics::gauge!("zaino.sync.lag_blocks")
+                            .set((chain_height.0 - finalised_height_val.0) as f64);
+                    }
                     let finalised_height = finalized_height_floor(chain_height.0);
 
                     fs.sync_to_height(finalised_height, &source)
@@ -918,6 +927,22 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         consecutive_failures = 0;
                         current_backoff = timings.initial_backoff;
                         status.store(StatusType::Ready);
+                        #[cfg(feature = "prometheus")]
+                        {
+                            metrics::counter!("zaino.sync.iterations_total").increment(1);
+                            metrics::histogram!("zaino.sync.iteration_duration_seconds")
+                                .record(iteration_start.elapsed().as_secs_f64());
+                            if !has_reached_tip {
+                                has_reached_tip = true;
+                                metrics::gauge!("zaino.sync.has_reached_tip").set(1.0);
+                                metrics::gauge!("zaino.sync.reached_tip_at").set(
+                                    std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.as_secs_f64())
+                                        .unwrap_or(0.0),
+                                );
+                            }
+                        }
                         // Race the post-success wait against cancellation
                         // and a source-change notification. `shutdown()`'s
                         // `cancel_token.cancel()` releases this immediately
@@ -937,7 +962,16 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                     }
                     Err(e) => {
                         consecutive_failures += 1;
+                        #[cfg(feature = "prometheus")]
+                        {
+                            metrics::counter!("zaino.sync.iterations_total").increment(1);
+                            metrics::histogram!("zaino.sync.iteration_duration_seconds")
+                                .record(iteration_start.elapsed().as_secs_f64());
+                        }
                         if consecutive_failures >= timings.max_consecutive_failures {
+                            #[cfg(feature = "prometheus")]
+                            metrics::counter!("zaino.sync.errors_total", "severity" => "critical")
+                                .increment(1);
                             tracing::error!(
                                 consecutive_failures,
                                 ?e,
@@ -954,6 +988,9 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                             "sync loop iteration failed, retrying"
                         );
                         status.store(StatusType::RecoverableError);
+                        #[cfg(feature = "prometheus")]
+                        metrics::counter!("zaino.sync.errors_total", "severity" => "recoverable")
+                            .increment(1);
                         // Race the failure-path backoff sleep against
                         // cancellation. Without this, `shutdown()` after
                         // `fs.shutdown()` would force the worker through

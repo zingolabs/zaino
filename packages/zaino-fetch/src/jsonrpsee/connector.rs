@@ -300,6 +300,8 @@ impl JsonRpSeeConnector {
         R::RpcError: Send + Sync + 'static,
     {
         let id = self.id_counter.fetch_add(1, Ordering::SeqCst);
+        #[cfg(feature = "prometheus")]
+        let _rpc_start = std::time::Instant::now();
 
         let max_attempts = 5;
         let mut attempts = 0;
@@ -326,14 +328,28 @@ impl JsonRpSeeConnector {
 
             if body_str.contains("Work queue depth exceeded") {
                 if attempts >= max_attempts {
+                    #[cfg(feature = "prometheus")]
+                    {
+                        let m = method.to_owned();
+                        metrics::counter!("zaino.rpc.outbound.requests_total", "method" => m.clone())
+                            .increment(1);
+                        metrics::histogram!("zaino.rpc.outbound.request_duration_seconds", "method" => m.clone())
+                            .record(_rpc_start.elapsed().as_secs_f64());
+                        metrics::counter!("zaino.rpc.outbound.errors_total", "method" => m)
+                            .increment(1);
+                    }
                     return Err(RpcRequestError::ServerWorkQueueFull);
                 }
+                #[cfg(feature = "prometheus")]
+                metrics::counter!("zaino.rpc.outbound.retries_total", "method" => method.to_owned())
+                    .increment(1);
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 continue;
             }
 
             let code = status.as_u16();
-            return match code {
+            #[allow(unused_variables)]
+            let rpc_result = match code {
                 // Invalid
                 ..100 | 600.. => Err(RpcRequestError::Transport(
                     TransportError::InvalidStatusCode(code),
@@ -369,6 +385,21 @@ impl JsonRpSeeConnector {
                     code,
                 ))),
             };
+
+            #[cfg(feature = "prometheus")]
+            {
+                let m = method.to_owned();
+                metrics::counter!("zaino.rpc.outbound.requests_total", "method" => m.clone())
+                    .increment(1);
+                metrics::histogram!("zaino.rpc.outbound.request_duration_seconds", "method" => m.clone())
+                    .record(_rpc_start.elapsed().as_secs_f64());
+                if rpc_result.is_err() {
+                    metrics::counter!("zaino.rpc.outbound.errors_total", "method" => m)
+                        .increment(1);
+                }
+            }
+
+            return rpc_result;
         }
     }
 

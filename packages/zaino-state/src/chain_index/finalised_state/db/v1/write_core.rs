@@ -204,6 +204,16 @@ impl DbWrite for DbV1 {
                     blocks = batch.len(),
                     "write_blocks_to_height: committed batch"
                 );
+                #[cfg(feature = "prometheus")]
+                {
+                    metrics::gauge!("zaino.db.tip_height").set((next - 1) as f64);
+                    metrics::gauge!("zaino.sync.last_block_written_at").set(
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs_f64())
+                            .unwrap_or(0.0),
+                    );
+                }
             }
         }
         #[cfg(feature = "transparent_address_history_experimental")]

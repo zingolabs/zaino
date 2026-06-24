@@ -201,6 +201,11 @@ impl<T: BlockchainSource> Mempool<T> {
                     status.store(StatusType::Syncing);
                     state.notify(status.load());
                     state.clear();
+                    #[cfg(feature = "prometheus")]
+                    {
+                        metrics::counter!("zaino.mempool.tip_changes_total").increment(1);
+                        metrics::gauge!("zaino.mempool.transactions").set(0.0);
+                    }
 
                     mempool
                         .mempool_chain_tip
@@ -215,6 +220,9 @@ impl<T: BlockchainSource> Mempool<T> {
                     Ok(mempool_transactions) => {
                         status.store(StatusType::Ready);
                         state.insert_filtered_set(mempool_transactions, status.load());
+                        #[cfg(feature = "prometheus")]
+                        metrics::gauge!("zaino.mempool.transactions")
+                            .set(state.len() as f64);
                     }
                     Err(e) => {
                         status.store(StatusType::RecoverableError);
