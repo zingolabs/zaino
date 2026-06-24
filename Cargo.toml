@@ -80,7 +80,7 @@ serde = "1.0"
 serde_json = "1.0"
 jsonrpsee-core = "0.24"
 jsonrpsee-types = "0.24"
-jsonrpsee = { version = "0.24", features = ["server", "macros"] }
+jsonrpsee = { version = "0.26", features = ["server", "macros"] }
 hyper = "1.6"
 
 # Hashmaps, channels, DBs
