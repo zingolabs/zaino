@@ -18,6 +18,8 @@ use crate::chain_index::types::helpers::{BlockMetadata, BlockWithMetadata, TreeR
 use crate::chain_index::types::BlockIndex;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
 use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalisedStateError};
+#[cfg(feature = "prometheus")]
+use crate::metric_names::*;
 use crate::status::Status;
 use crate::{
     ChainWork, CompactBlockStream, NamedAtomicStatus, NonFinalizedState, StatusType, SyncError,
@@ -85,6 +87,17 @@ pub(crate) const NON_FINALIZED_DEPTH: u32 = zebra_state::MAX_BLOCK_REORG_HEIGHT 
 /// (see zingolabs/zaino#1128).
 pub(crate) fn finalized_height_floor(chain_tip: u32) -> crate::Height {
     crate::Height(chain_tip.saturating_sub(NON_FINALIZED_DEPTH))
+}
+
+/// Current wall-clock time as a Unix timestamp in fractional seconds, for
+/// "event happened at" gauges. Falls back to `0.0` if the clock is before the
+/// Unix epoch (never in practice).
+#[cfg(feature = "prometheus")]
+pub(crate) fn unix_now_secs() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
 }
 
 /// Builds a zcashd-compatible `getchaintips` response from the local non-finalized snapshot.
@@ -876,14 +889,13 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                                 "node returned no best block height",
                             ))
                         })?;
+                    let finalised_height = finalized_height_floor(chain_height.0);
                     #[cfg(feature = "prometheus")]
                     {
-                        metrics::gauge!("zaino.chain.tip_height").set(chain_height.0 as f64);
-                        let finalised_height_val = finalized_height_floor(chain_height.0);
-                        metrics::gauge!("zaino.sync.lag_blocks")
-                            .set((chain_height.0 - finalised_height_val.0) as f64);
+                        metrics::gauge!(CHAIN_TIP_HEIGHT).set(chain_height.0 as f64);
+                        metrics::gauge!(SYNC_LAG_BLOCKS)
+                            .set((chain_height.0 - finalised_height.0) as f64);
                     }
-                    let finalised_height = finalized_height_floor(chain_height.0);
 
                     fs.sync_to_height(finalised_height, &source)
                         .await
@@ -929,18 +941,13 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         status.store(StatusType::Ready);
                         #[cfg(feature = "prometheus")]
                         {
-                            metrics::counter!("zaino.sync.iterations_total").increment(1);
-                            metrics::histogram!("zaino.sync.iteration_duration_seconds")
+                            metrics::counter!(SYNC_ITERATIONS_TOTAL).increment(1);
+                            metrics::histogram!(SYNC_ITERATION_DURATION_SECONDS)
                                 .record(iteration_start.elapsed().as_secs_f64());
                             if !has_reached_tip {
                                 has_reached_tip = true;
-                                metrics::gauge!("zaino.sync.has_reached_tip").set(1.0);
-                                metrics::gauge!("zaino.sync.reached_tip_at").set(
-                                    std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .map(|d| d.as_secs_f64())
-                                        .unwrap_or(0.0),
-                                );
+                                metrics::gauge!(SYNC_HAS_REACHED_TIP).set(1.0);
+                                metrics::gauge!(SYNC_REACHED_TIP_AT).set(unix_now_secs());
                             }
                         }
                         // Race the post-success wait against cancellation
@@ -964,13 +971,13 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         consecutive_failures += 1;
                         #[cfg(feature = "prometheus")]
                         {
-                            metrics::counter!("zaino.sync.iterations_total").increment(1);
-                            metrics::histogram!("zaino.sync.iteration_duration_seconds")
+                            metrics::counter!(SYNC_ITERATIONS_TOTAL).increment(1);
+                            metrics::histogram!(SYNC_ITERATION_DURATION_SECONDS)
                                 .record(iteration_start.elapsed().as_secs_f64());
                         }
                         if consecutive_failures >= timings.max_consecutive_failures {
                             #[cfg(feature = "prometheus")]
-                            metrics::counter!("zaino.sync.errors_total", "severity" => "critical")
+                            metrics::counter!(SYNC_ERRORS_TOTAL, "severity" => "critical")
                                 .increment(1);
                             tracing::error!(
                                 consecutive_failures,
@@ -989,7 +996,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         );
                         status.store(StatusType::RecoverableError);
                         #[cfg(feature = "prometheus")]
-                        metrics::counter!("zaino.sync.errors_total", "severity" => "recoverable")
+                        metrics::counter!(SYNC_ERRORS_TOTAL, "severity" => "recoverable")
                             .increment(1);
                         // Race the failure-path backoff sleep against
                         // cancellation. Without this, `shutdown()` after

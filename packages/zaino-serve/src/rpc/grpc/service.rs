@@ -112,34 +112,48 @@ macro_rules! implement_client_methods {
                 info!(method = stringify!($method_name), "[TEST] received call");
                 Box::pin(async {
                     #[cfg(feature = "prometheus")]
-                    let _grpc_start = std::time::Instant::now();
+                    let grpc_start = std::time::Instant::now();
 
-                    let _grpc_result: std::result::Result<tonic::Response<$return>, tonic::Status> = async {
+                    // The inner `async {}.await` contains the `?` from
+                    // `client_method_helper!`, so an error is captured into
+                    // `grpc_result` (for metrics) rather than early-returning
+                    // from this outer future.
+                    let grpc_result: std::result::Result<tonic::Response<$return>, tonic::Status> = async {
                         Ok(client_method_helper!($($streaming)? self __input $method_name))
                     }.await;
 
                     #[cfg(feature = "prometheus")]
-                    {
-                        let _method: &str = stringify!($method_name);
-                        metrics::counter!("zaino.grpc.requests_total", "method" => _method)
-                            .increment(1);
-                        metrics::histogram!("zaino.grpc.request_duration_seconds", "method" => _method)
-                            .record(_grpc_start.elapsed().as_secs_f64());
-                        if let Err(ref _status) = _grpc_result {
-                            metrics::counter!(
-                                "zaino.grpc.errors_total",
-                                "method" => _method,
-                                "code" => _status.code().description(),
-                            )
-                            .increment(1);
-                        }
-                    }
+                    record_grpc_metrics(stringify!($method_name), grpc_start, &grpc_result);
 
-                    _grpc_result
+                    grpc_result
                 })
             }
         )+
     };
+}
+
+/// Emit the standard inbound-gRPC metric triple for one handler invocation:
+/// request count, request duration, and — on error — an error count keyed by
+/// status code. Shared by `implement_client_methods!` and the hand-written
+/// streaming handlers so the emission lives in exactly one place.
+#[cfg(feature = "prometheus")]
+fn record_grpc_metrics<T>(
+    method: &'static str,
+    start: std::time::Instant,
+    result: &Result<tonic::Response<T>, tonic::Status>,
+) {
+    use crate::metric_names::*;
+    metrics::counter!(GRPC_REQUESTS_TOTAL, "method" => method).increment(1);
+    metrics::histogram!(GRPC_REQUEST_DURATION_SECONDS, "method" => method)
+        .record(start.elapsed().as_secs_f64());
+    if let Err(status) = result {
+        metrics::counter!(
+            GRPC_ERRORS_TOTAL,
+            "method" => method,
+            "code" => status.code().description(),
+        )
+        .increment(1);
+    }
 }
 
 impl<Indexer: ZcashIndexer + LightWalletIndexer> CompactTxStreamer for GrpcClient<Indexer>
@@ -248,10 +262,13 @@ where
         'life0: 'async_trait,
         Self: 'async_trait,
     {
-        info!(method = "get_taddress_balance_stream", "[TEST] received call");
+        info!(
+            method = "get_taddress_balance_stream",
+            "[TEST] received call"
+        );
         Box::pin(async {
             #[cfg(feature = "prometheus")]
-            let _grpc_start = std::time::Instant::now();
+            let grpc_start = std::time::Instant::now();
 
             let (channel_tx, channel_rx) =
                 tokio::sync::mpsc::channel::<Result<Address, tonic::Status>>(32);
@@ -267,7 +284,7 @@ where
             });
             let address_stream = AddressStream::new(channel_rx);
 
-            let _grpc_result: Result<tonic::Response<Balance>, tonic::Status> = async {
+            let grpc_result: Result<tonic::Response<Balance>, tonic::Status> = async {
                 Ok(tonic::Response::new(
                     self.service_subscriber
                         .inner_ref()
@@ -279,22 +296,9 @@ where
             .await;
 
             #[cfg(feature = "prometheus")]
-            {
-                metrics::counter!("zaino.grpc.requests_total", "method" => "get_taddress_balance_stream")
-                    .increment(1);
-                metrics::histogram!("zaino.grpc.request_duration_seconds", "method" => "get_taddress_balance_stream")
-                    .record(_grpc_start.elapsed().as_secs_f64());
-                if let Err(ref _status) = _grpc_result {
-                    metrics::counter!(
-                        "zaino.grpc.errors_total",
-                        "method" => "get_taddress_balance_stream",
-                        "code" => _status.code().description(),
-                    )
-                    .increment(1);
-                }
-            }
+            record_grpc_metrics("get_taddress_balance_stream", grpc_start, &grpc_result);
 
-            _grpc_result
+            grpc_result
         })
     }
 

@@ -1,4 +1,6 @@
 use super::{finalised_state::ZainoDB, source::BlockchainSource, NON_FINALIZED_DEPTH};
+#[cfg(feature = "prometheus")]
+use crate::metric_names::*;
 use crate::{
     chain_index::types::{
         self, BlockHash, BlockIndex, BlockMetadata, BlockWithMetadata, Height, TreeRootData,
@@ -617,13 +619,12 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                     if new_best_tip.height == stale_best_tip.height
                         && new_best_tip.hash != stale_best_tip.hash
                     {
-                        metrics::counter!("zaino.sync.reorg_total").increment(1);
-                        metrics::histogram!("zaino.sync.reorg_depth").record(0.0);
+                        metrics::counter!(SYNC_REORG_TOTAL).increment(1);
+                        metrics::histogram!(SYNC_REORG_DEPTH).record(0.0);
                     } else if new_best_tip.height < stale_best_tip.height {
-                        metrics::counter!("zaino.sync.reorg_total").increment(1);
-                        metrics::histogram!("zaino.sync.reorg_depth").record(
-                            (stale_best_tip.height.0 - new_best_tip.height.0) as f64,
-                        );
+                        metrics::counter!(SYNC_REORG_TOTAL).increment(1);
+                        metrics::histogram!(SYNC_REORG_DEPTH)
+                            .record((stale_best_tip.height.0 - new_best_tip.height.0) as f64);
                     }
                 }
             }

@@ -46,6 +46,9 @@ use crate::jsonrpsee::{
 
 use super::response::{GetDifficultyResponse, GetNetworkSolPsResponse};
 
+#[cfg(feature = "prometheus")]
+use crate::metric_names::*;
+
 #[derive(Serialize, Deserialize, Debug)]
 struct RpcRequest<T> {
     jsonrpc: String,
@@ -194,6 +197,19 @@ pub struct JsonRpSeeConnector {
     auth_method: AuthMethod,
 }
 
+/// Emit the standard outbound-JSON-RPC metric triple for one completed request:
+/// request count, request duration, and — when `is_err` — an error count. Keyed
+/// by method so the emission lives in exactly one place.
+#[cfg(feature = "prometheus")]
+fn record_outbound_rpc_metrics(method: &'static str, start: std::time::Instant, is_err: bool) {
+    metrics::counter!(RPC_OUTBOUND_REQUESTS_TOTAL, "method" => method).increment(1);
+    metrics::histogram!(RPC_OUTBOUND_REQUEST_DURATION_SECONDS, "method" => method)
+        .record(start.elapsed().as_secs_f64());
+    if is_err {
+        metrics::counter!(RPC_OUTBOUND_ERRORS_TOTAL, "method" => method).increment(1);
+    }
+}
+
 impl JsonRpSeeConnector {
     /// Creates a new JsonRpSeeConnector with Basic Authentication.
     pub fn new_with_basic_auth(
@@ -293,7 +309,7 @@ impl JsonRpSeeConnector {
         R: std::fmt::Debug + for<'de> Deserialize<'de> + ResponseToError,
     >(
         &self,
-        method: &str,
+        method: &'static str,
         params: T,
     ) -> Result<R, RpcRequestError<R::RpcError>>
     where
@@ -301,7 +317,7 @@ impl JsonRpSeeConnector {
     {
         let id = self.id_counter.fetch_add(1, Ordering::SeqCst);
         #[cfg(feature = "prometheus")]
-        let _rpc_start = std::time::Instant::now();
+        let rpc_start = std::time::Instant::now();
 
         let max_attempts = 5;
         let mut attempts = 0;
@@ -329,26 +345,16 @@ impl JsonRpSeeConnector {
             if body_str.contains("Work queue depth exceeded") {
                 if attempts >= max_attempts {
                     #[cfg(feature = "prometheus")]
-                    {
-                        let m = method.to_owned();
-                        metrics::counter!("zaino.rpc.outbound.requests_total", "method" => m.clone())
-                            .increment(1);
-                        metrics::histogram!("zaino.rpc.outbound.request_duration_seconds", "method" => m.clone())
-                            .record(_rpc_start.elapsed().as_secs_f64());
-                        metrics::counter!("zaino.rpc.outbound.errors_total", "method" => m)
-                            .increment(1);
-                    }
+                    record_outbound_rpc_metrics(method, rpc_start, true);
                     return Err(RpcRequestError::ServerWorkQueueFull);
                 }
                 #[cfg(feature = "prometheus")]
-                metrics::counter!("zaino.rpc.outbound.retries_total", "method" => method.to_owned())
-                    .increment(1);
+                metrics::counter!(RPC_OUTBOUND_RETRIES_TOTAL, "method" => method).increment(1);
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 continue;
             }
 
             let code = status.as_u16();
-            #[allow(unused_variables)]
             let rpc_result = match code {
                 // Invalid
                 ..100 | 600.. => Err(RpcRequestError::Transport(
@@ -387,17 +393,7 @@ impl JsonRpSeeConnector {
             };
 
             #[cfg(feature = "prometheus")]
-            {
-                let m = method.to_owned();
-                metrics::counter!("zaino.rpc.outbound.requests_total", "method" => m.clone())
-                    .increment(1);
-                metrics::histogram!("zaino.rpc.outbound.request_duration_seconds", "method" => m.clone())
-                    .record(_rpc_start.elapsed().as_secs_f64());
-                if rpc_result.is_err() {
-                    metrics::counter!("zaino.rpc.outbound.errors_total", "method" => m)
-                        .increment(1);
-                }
-            }
+            record_outbound_rpc_metrics(method, rpc_start, rpc_result.is_err());
 
             return rpc_result;
         }

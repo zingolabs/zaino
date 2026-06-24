@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[cfg(feature = "prometheus")]
+use crate::metric_names::*;
+
 /// Cheap heap-size estimate for a buffered [`IndexedBlock`], used only to bound the bulk-sync write
 /// batch in [`DbV1::write_blocks_to_height`]. Exactness is not required — it just keeps the batch's
 /// peak memory roughly within the configured budget.
@@ -149,7 +152,7 @@ impl DbWrite for DbV1 {
                     )
                     .await?;
                     #[cfg(feature = "prometheus")]
-                    metrics::histogram!("zaino.sync.block_build_seconds")
+                    metrics::histogram!(SYNC_BLOCK_BUILD_SECONDS)
                         .record(build_start.elapsed().as_secs_f64());
                     parent_chainwork = block.context.chainwork;
                     batch_bytes = batch_bytes.saturating_add(approx_indexed_block_bytes(&block));
@@ -161,10 +164,8 @@ impl DbWrite for DbV1 {
                     if last_progress_log.elapsed() >= SYNC_PROGRESS_LOG_INTERVAL {
                         #[cfg(feature = "prometheus")]
                         {
-                            metrics::gauge!("zaino.sync.finalized_height")
-                                .set((next - 1) as f64);
-                            metrics::gauge!("zaino.sync.target_height")
-                                .set(height.0 as f64);
+                            metrics::gauge!(SYNC_FINALIZED_HEIGHT).set((next - 1) as f64);
+                            metrics::gauge!(SYNC_TARGET_HEIGHT).set(height.0 as f64);
                         }
                         info!(
                             current = next - 1,
@@ -189,7 +190,7 @@ impl DbWrite for DbV1 {
                     FinalisedStateError::Custom(format!("LMDB checkpoint sync failed: {e}"))
                 })?;
                 #[cfg(feature = "prometheus")]
-                metrics::histogram!("zaino.sync.block_write_seconds")
+                metrics::histogram!(SYNC_BLOCK_WRITE_SECONDS)
                     .record(write_start.elapsed().as_secs_f64());
 
                 // Only after the batch is committed + synced do we advance the validated tip.
@@ -206,13 +207,9 @@ impl DbWrite for DbV1 {
                 );
                 #[cfg(feature = "prometheus")]
                 {
-                    metrics::gauge!("zaino.db.tip_height").set((next - 1) as f64);
-                    metrics::gauge!("zaino.sync.last_block_written_at").set(
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_secs_f64())
-                            .unwrap_or(0.0),
-                    );
+                    metrics::gauge!(DB_TIP_HEIGHT).set((next - 1) as f64);
+                    metrics::gauge!(SYNC_LAST_BLOCK_WRITTEN_AT)
+                        .set(crate::chain_index::unix_now_secs());
                 }
             }
         }
@@ -1983,7 +1980,7 @@ fn record_block_throughput(block: &IndexedBlock) {
         sapling_outputs = sapling_outputs.saturating_add(tx.sapling().outputs().len() as u64);
         orchard_actions = orchard_actions.saturating_add(tx.orchard().actions().len() as u64);
     }
-    metrics::counter!("zaino.sync.transactions_total").increment(transactions);
-    metrics::counter!("zaino.sync.sapling_outputs_total").increment(sapling_outputs);
-    metrics::counter!("zaino.sync.orchard_actions_total").increment(orchard_actions);
+    metrics::counter!(SYNC_TRANSACTIONS_TOTAL).increment(transactions);
+    metrics::counter!(SYNC_SAPLING_OUTPUTS_TOTAL).increment(sapling_outputs);
+    metrics::counter!(SYNC_ORCHARD_ACTIONS_TOTAL).increment(orchard_actions);
 }
