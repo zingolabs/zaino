@@ -135,6 +135,8 @@ impl DbWrite for DbV1 {
                     && batch.len() < SYNC_WRITE_BATCH_MAX_BLOCKS
                     && batch_started.elapsed() < SYNC_WRITE_BATCH_MAX_INTERVAL
                 {
+                    #[cfg(feature = "prometheus")]
+                    let build_start = std::time::Instant::now();
                     let block = build_indexed_block_from_source(
                         source,
                         network,
@@ -144,6 +146,9 @@ impl DbWrite for DbV1 {
                         parent_chainwork,
                     )
                     .await?;
+                    #[cfg(feature = "prometheus")]
+                    metrics::histogram!("zaino.sync.block_build_seconds")
+                        .record(build_start.elapsed().as_secs_f64());
                     parent_chainwork = block.context.chainwork;
                     batch_bytes = batch_bytes.saturating_add(approx_indexed_block_bytes(&block));
                     batch.push(block);
@@ -152,6 +157,13 @@ impl DbWrite for DbV1 {
                     // In-flight progress: the block being fetched, throttled by time. (The committed
                     // tip is reported by the per-batch commit log below.)
                     if last_progress_log.elapsed() >= SYNC_PROGRESS_LOG_INTERVAL {
+                        #[cfg(feature = "prometheus")]
+                        {
+                            metrics::gauge!("zaino.sync.finalized_height")
+                                .set((next - 1) as f64);
+                            metrics::gauge!("zaino.sync.target_height")
+                                .set(height.0 as f64);
+                        }
                         info!(
                             "write_blocks_to_height: syncing height {} / {} on {:?}",
                             next - 1,
@@ -168,14 +180,21 @@ impl DbWrite for DbV1 {
 
                 // Write + sort + commit the batch atomically, then force durability. The on-disk
                 // `headers` tip never runs ahead of the indexes, so resume is gap-free.
+                #[cfg(feature = "prometheus")]
+                let write_start = std::time::Instant::now();
                 tokio::task::block_in_place(|| self.write_block_batch_blocking(&batch))?;
                 tokio::task::block_in_place(|| self.env.sync(true)).map_err(|e| {
                     FinalisedStateError::Custom(format!("LMDB checkpoint sync failed: {e}"))
                 })?;
+                #[cfg(feature = "prometheus")]
+                metrics::histogram!("zaino.sync.block_write_seconds")
+                    .record(write_start.elapsed().as_secs_f64());
 
                 // Only after the batch is committed + synced do we advance the validated tip.
                 for block in &batch {
                     self.mark_validated(block.context.index.height.0);
+                    #[cfg(feature = "prometheus")]
+                    record_block_throughput(block);
                 }
                 self.status.store(StatusType::Ready);
                 info!(
@@ -1934,4 +1953,20 @@ impl DbV1 {
         self.status.store(StatusType::Ready);
         Ok(())
     }
+}
+
+/// Increments per-block throughput counters (transactions, Sapling outputs,
+/// Orchard actions). Only compiled when the `prometheus` feature is enabled.
+#[cfg(feature = "prometheus")]
+fn record_block_throughput(block: &IndexedBlock) {
+    let transactions = block.transactions().len() as u64;
+    let mut sapling_outputs: u64 = 0;
+    let mut orchard_actions: u64 = 0;
+    for tx in block.transactions() {
+        sapling_outputs = sapling_outputs.saturating_add(tx.sapling().outputs().len() as u64);
+        orchard_actions = orchard_actions.saturating_add(tx.orchard().actions().len() as u64);
+    }
+    metrics::counter!("zaino.sync.transactions_total").increment(transactions);
+    metrics::counter!("zaino.sync.sapling_outputs_total").increment(sapling_outputs);
+    metrics::counter!("zaino.sync.orchard_actions_total").increment(orchard_actions);
 }

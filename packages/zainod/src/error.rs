@@ -34,6 +34,10 @@ pub enum IndexerError {
     /// Custom indexor errors.
     #[error("Misc indexer error: {0}")]
     MiscIndexerError(String),
+    /// Metrics endpoint errors.
+    #[cfg(feature = "prometheus")]
+    #[error("Metrics error: {0}")]
+    MetricsError(String),
     /// Zaino restart signal.
     #[error("Restart Zaino")]
     Restart,

@@ -11,6 +11,9 @@ version = "0.3.0"
 [features]
 default = []
 
+# Prometheus metrics emission (gauge! calls in sync paths).
+prometheus = ["metrics"]
+
 # test_dependencies - Exposes internal functionality for testing.
 test_dependencies = []
 
@@ -44,6 +47,9 @@ zebra-rpc = { workspace = true }
 
 # Tracing
 tracing = { workspace = true }
+
+# Metrics
+metrics = { workspace = true, optional = true }
 
 # Documentation
 simple-mermaid = "0.2.0"
