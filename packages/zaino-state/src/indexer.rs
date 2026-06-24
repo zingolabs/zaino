@@ -805,8 +805,8 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                                             Ok(_) => break,
                                             Err(e) => {
                                                 warn!(
-                                                    "GetSubtreeRoots channel closed unexpectedly: {}",
-                                                    e
+                                                    %e,
+                                                    "GetSubtreeRoots channel closed unexpectedly"
                                                 );
                                                 break;
                                             }
@@ -825,8 +825,8 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                                             Ok(_) => break,
                                             Err(e) => {
                                                 warn!(
-                                                    "GetSubtreeRoots channel closed unexpectedly: {}",
-                                                    e
+                                                    %e,
+                                                    "GetSubtreeRoots channel closed unexpectedly"
                                                 );
                                                 break;
                                             }

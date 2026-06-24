@@ -747,10 +747,9 @@ impl DbV1 {
                     //       so we do not return an error here. Maybe we can improve this?
                     if meta.schema_hash != DB_SCHEMA_V1_HASH {
                         warn!(
-                            "schema hash mismatch: db_schema_v1.txt has likely changed \
-                         without bumping version; expected 0x{:02x?}, found 0x{:02x?}",
-                            &DB_SCHEMA_V1_HASH[..4],
-                            &meta.schema_hash[..4],
+                            expected = ?&DB_SCHEMA_V1_HASH[..4],
+                            found = ?&meta.schema_hash[..4],
+                            "schema hash mismatch: db_schema_v1.txt likely changed without version bump"
                         );
                     }
                 }

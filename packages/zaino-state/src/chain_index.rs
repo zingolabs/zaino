@@ -939,16 +939,19 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         consecutive_failures += 1;
                         if consecutive_failures >= timings.max_consecutive_failures {
                             tracing::error!(
-                                "Sync loop failed {consecutive_failures} consecutive times, \
-                                 giving up: {e:?}"
+                                consecutive_failures,
+                                ?e,
+                                "sync loop failed, giving up"
                             );
                             status.store(StatusType::CriticalError);
                             return Err(e);
                         }
                         tracing::warn!(
-                            "Sync loop iteration failed ({consecutive_failures}/{}), \
-                             retrying in {current_backoff:?}: {e:?}",
-                            timings.max_consecutive_failures
+                            consecutive_failures,
+                            max = timings.max_consecutive_failures,
+                            backoff = ?current_backoff,
+                            ?e,
+                            "sync loop iteration failed, retrying"
                         );
                         status.store(StatusType::RecoverableError);
                         // Race the failure-path backoff sleep against

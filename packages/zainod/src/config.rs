@@ -150,8 +150,8 @@ impl ZainodConfig {
             }
             AddressResolution::UnresolvedHostname { ref address, .. } => {
                 info!(
-                    "Validator address '{}' cannot be resolved at config time.",
-                    address
+                    %address,
+                    "validator address cannot be resolved at config time"
                 );
             }
             AddressResolution::InvalidFormat { address, reason } => {
@@ -348,8 +348,8 @@ pub fn load_config_with_env(
 
     parsed_config.check_config()?;
     info!(
-        "Successfully loaded and validated config. Base TOML file checked: '{}'",
-        file_path.display()
+        path = %file_path.display(),
+        "config loaded and validated"
     );
     Ok(parsed_config)
 }

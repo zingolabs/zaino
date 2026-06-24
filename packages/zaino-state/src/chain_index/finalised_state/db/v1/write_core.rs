@@ -107,8 +107,10 @@ impl DbWrite for DbV1 {
         }
 
         info!(
-            "write_blocks_to_height: syncing finalised blocks {start_height}..={} on {:?}",
-            height.0, network
+            start_height,
+            target = height.0,
+            ?network,
+            "write_blocks_to_height: syncing finalised blocks"
         );
 
         // Bulk path: buffer blocks up to a byte budget, then write the whole batch in one
@@ -165,10 +167,10 @@ impl DbWrite for DbV1 {
                                 .set(height.0 as f64);
                         }
                         info!(
-                            "write_blocks_to_height: syncing height {} / {} on {:?}",
-                            next - 1,
-                            height.0,
-                            network
+                            current = next - 1,
+                            target = height.0,
+                            ?network,
+                            "write_blocks_to_height: syncing"
                         );
                         last_progress_log = std::time::Instant::now();
                     }
@@ -198,9 +200,9 @@ impl DbWrite for DbV1 {
                 }
                 self.status.store(StatusType::Ready);
                 info!(
-                    "write_blocks_to_height: committed batch to height {} ({} blocks)",
-                    next - 1,
-                    batch.len()
+                    height = next - 1,
+                    blocks = batch.len(),
+                    "write_blocks_to_height: committed batch"
                 );
             }
         }
@@ -231,17 +233,17 @@ impl DbWrite for DbV1 {
             Some(built) if built.0 >= height.0 => {}
             Some(built) if height.0.saturating_sub(built.0) <= ACCUMULATOR_INCREMENTAL_MAX_GAP => {
                 info!(
-                    "write_blocks_to_height: updating txout-set accumulator {}..={}",
-                    built.0 + 1,
-                    height.0
+                    from = built.0 + 1,
+                    to = height.0,
+                    "write_blocks_to_height: updating txout-set accumulator"
                 );
                 self.update_tx_out_set_accumulator_for_range(built, height)
                     .await?;
             }
             _ => {
                 info!(
-                    "write_blocks_to_height: rebuilding txout-set accumulator to height {}",
-                    height.0
+                    height = height.0,
+                    "write_blocks_to_height: rebuilding txout-set accumulator"
                 );
                 self.rebuild_tx_out_set_accumulator().await?;
             }
@@ -400,8 +402,9 @@ impl DbV1 {
         if block_already_exists {
             self.status.store(StatusType::Ready);
             info!(
-                "Block {} at height {} already exists in ZainoDB, skipping write.",
-                &block_hash, &block_height.0
+                %block_hash,
+                height = block_height.0,
+                "block already exists in ZainoDB, skipping write"
             );
             return Ok(());
         }
@@ -884,7 +887,7 @@ impl DbV1 {
         let post_result = match join_handle.await {
             Ok(inner_res) => inner_res,
             Err(join_err) => {
-                warn!("Tokio task error (spawn_blocking join error): {}", join_err);
+                warn!(%join_err, "tokio spawn_blocking join error");
 
                 // Best-effort delete of partially written block; ignore delete result.
                 let _ = self.delete_block(&block).await;
@@ -911,14 +914,15 @@ impl DbV1 {
                 }
                 if block.context.index.height.0 % 100 == 0 {
                     info!(
-                        "Successfully committed block {} at height {} to ZainoDB.",
-                        &block.context.index.hash, &block.context.index.height
+                        hash = %block.context.index.hash,
+                        height = ?block.context.index.height,
+                        "committed block to ZainoDB"
                     );
                 } else {
                     tracing::debug!(
-                        "Successfully committed block {} at height {} to ZainoDB.",
-                        &block.context.index.hash,
-                        &block.context.index.height
+                        hash = %block.context.index.hash,
+                        height = ?block.context.index.height,
+                        "committed block to ZainoDB"
                     );
                 }
 
@@ -981,16 +985,18 @@ impl DbV1 {
                         // Block was already written correctly by another process
                         self.status.store(StatusType::Ready);
                         info!(
-                            "Block {} at height {} was already written by another process, skipping.",
-                            &block_hash, &block_height.0
+                            %block_hash,
+                            height = block_height.0,
+                            "block already written by another process, skipping"
                         );
                         Ok(())
                     }
                     Err(e) => {
-                        warn!("Error writing block to DB: {e}");
+                        warn!(%e, "error writing block to DB");
                         warn!(
-                            "Deleting corrupt block from DB at height: {} with hash: {:?}",
-                            block_height.0, block_hash.0
+                            height = block_height.0,
+                            hash = ?block_hash.0,
+                            "deleting corrupt block from DB"
                         );
 
                         let _ = self.delete_block(&block).await;
@@ -1008,10 +1014,11 @@ impl DbV1 {
                 }
             }
             Err(e) => {
-                warn!("Error writing block to DB: {e}");
+                warn!(%e, "error writing block to DB");
                 warn!(
-                    "Deleting corrupt block from DB at height: {} with hash: {:?}",
-                    block_height.0, block_hash.0
+                    height = block_height.0,
+                    hash = ?block_hash.0,
+                    "deleting corrupt block from DB"
                 );
 
                 let _ = self.delete_block(&block).await;
