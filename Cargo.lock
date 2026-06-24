@@ -2147,7 +2147,7 @@ dependencies = [
  "jsonrpsee-core",
  "jsonrpsee-proc-macros",
  "jsonrpsee-server",
- "jsonrpsee-types",
+ "jsonrpsee-types 0.24.11",
  "tokio",
  "tracing",
 ]
@@ -2164,7 +2164,7 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
- "jsonrpsee-types",
+ "jsonrpsee-types 0.24.11",
  "parking_lot",
  "rand 0.8.6",
  "rustc-hash 2.1.2",
@@ -2201,7 +2201,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "jsonrpsee-core",
- "jsonrpsee-types",
+ "jsonrpsee-types 0.24.11",
  "pin-project",
  "route-recognizer",
  "serde",
@@ -2225,6 +2225,18 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "jsonrpsee-types"
+version = "0.26.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc88ff4688e43cc3fa9883a8a95c6fa27aa2e76c96e610b737b6554d650d7fd5"
+dependencies = [
+ "http",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -5559,7 +5571,7 @@ dependencies = [
  "hex",
  "http",
  "indexmap 2.14.0",
- "jsonrpsee-types",
+ "jsonrpsee-types 0.26.0",
  "prost",
  "reqwest",
  "serde",
@@ -6038,7 +6050,7 @@ version = "8.0.0"
 source = "git+https://github.com/ZcashFoundation/zebra.git?rev=9a27f886a5bfb143f65d1712e912cef252426800#9a27f886a5bfb143f65d1712e912cef252426800"
 dependencies = [
  "color-eyre",
- "jsonrpsee-types",
+ "jsonrpsee-types 0.24.11",
  "reqwest",
  "serde",
  "serde_json",
@@ -6064,7 +6076,7 @@ dependencies = [
  "indexmap 2.14.0",
  "jsonrpsee",
  "jsonrpsee-proc-macros",
- "jsonrpsee-types",
+ "jsonrpsee-types 0.24.11",
  "lazy_static",
  "metrics",
  "nix",
