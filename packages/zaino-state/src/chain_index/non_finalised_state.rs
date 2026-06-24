@@ -17,15 +17,6 @@ use tracing::{info, instrument, warn};
 use zebra_chain::{parameters::Network, serialization::BytesInDisplayOrder};
 use zebra_state::HashOrHeight;
 
-/// Hard cap on how many blocks below the tip the non-finalised state retains in memory.
-///
-/// [`NonFinalizedState::update`] normally trims everything below the finalised database height,
-/// but that height can lag far behind the tip while the finalised DB syncs in the background, and
-/// is pinned at `0` in ephemeral mode. Without an independent floor the snapshot would grow by one
-/// block per new block indefinitely. This caps retention to a fixed window regardless, a small
-/// margin above [`NON_FINALIZED_DEPTH`] so it never trims inside the reorg-possible range.
-const MAX_NFS_DEPTH: u32 = NON_FINALIZED_DEPTH + 10;
-
 /// Holds the block cache
 #[derive(Debug)]
 pub struct NonFinalizedState<Source: BlockchainSource> {
@@ -514,7 +505,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 "reorg handling recursed beyond reason".to_string(),
             ));
         }
-        let prev_block = match working_snapshot
+        match working_snapshot
             .get_block_by_hash_bytes_in_serialized_order(block.prev_hash_bytes_serialized_order())
             .cloned()
         {

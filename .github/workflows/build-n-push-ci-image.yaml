@@ -38,7 +38,7 @@ jobs:
       run: |
         source .env.testing-artifacts
         RUST_VERSION=$(./tools/scripts/get-rust-version.sh)
-        export RUST_VERSION ZCASH_VERSION ZEBRA_VERSION
+        export RUST_VERSION ZCASH_VERSION ZEBRA_VERSION DEVTOOL_VERSION
         TAG=$(./tools/scripts/get-ci-image-tag.sh)
         echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
@@ -53,6 +53,7 @@ jobs:
         echo "RUST_VERSION=$RUST_VERSION" >> "$GITHUB_ENV"
         echo "ZCASH_VERSION=$ZCASH_VERSION" >> "$GITHUB_ENV"
         echo "ZEBRA_VERSION=$ZEBRA_VERSION" >> "$GITHUB_ENV"
+        echo "DEVTOOL_VERSION=$DEVTOOL_VERSION" >> "$GITHUB_ENV"
 
     - name: Define build target
       id: target
@@ -78,3 +79,4 @@ jobs:
           RUST_VERSION=${{ env.RUST_VERSION }}
           ZCASH_VERSION=${{ env.ZCASH_VERSION }}
           ZEBRA_VERSION=${{ env.ZEBRA_VERSION }}
+          DEVTOOL_VERSION=${{ env.DEVTOOL_VERSION }}

@@ -1169,10 +1169,22 @@ impl ZcashdDualFetchServices {
 #[cfg(feature = "zcashd_support")]
 #[allow(deprecated)]
 pub async fn launch_zcashd_dual_fetch_services() -> ZcashdDualFetchServices {
+    launch_zcashd_dual_fetch_services_at(ActivationHeights::default()).await
+}
+
+/// [`launch_zcashd_dual_fetch_services`] with the zcashd chain and both fetch
+/// services pinned to `activation_heights`, for wallet clients (e.g. the devtool
+/// wallet) whose compiled-in regtest heights differ from zcashd's defaults and
+/// must be matched by the validator.
+#[cfg(feature = "zcashd_support")]
+#[allow(deprecated)]
+pub async fn launch_zcashd_dual_fetch_services_at(
+    activation_heights: ActivationHeights,
+) -> ZcashdDualFetchServices {
     let test_manager = TestManager::<Zcashd, FetchService>::launch(
         &ValidatorKind::Zcashd,
         None,
-        None,
+        Some(activation_heights),
         None,
         true,
         true,
@@ -1191,7 +1203,7 @@ pub async fn launch_zcashd_dual_fetch_services() -> ZcashdDualFetchServices {
             .data_dir()
             .path()
             .join("zcashd-fetch-service-zaino"),
-        Network::Regtest(ActivationHeights::default()),
+        Network::Regtest(activation_heights),
     )
     .await;
     let zcashd_subscriber = zcashd_fetch_service.get_subscriber().inner();
@@ -1209,7 +1221,7 @@ pub async fn launch_zcashd_dual_fetch_services() -> ZcashdDualFetchServices {
             .data_dir()
             .path()
             .join("zaino-fetch-service-zaino"),
-        Network::Regtest(ActivationHeights::default()),
+        Network::Regtest(activation_heights),
     )
     .await;
     let zaino_subscriber = zaino_fetch_service.get_subscriber().inner();

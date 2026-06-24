@@ -1,12 +1,12 @@
 [workspace]
-# Standalone workspace with its own Cargo.lock: the zingolib wallet stack
-# resolves here, kept out of the zingolib-free `integration-tests` workspace.
+# Standalone workspace with its own Cargo.lock for the devtool wallet-client
+# stack (zcash_local_net), kept out of the `integration-tests` workspace.
 members = ["."]
 resolver = "2"
 
 [package]
 name = "wallet-tests"
-description = "Wallet-to-validator integration tests exercising zingolib lightclients against Zaino."
+description = "Wallet-to-validator integration tests exercising the zcash-devtool wallet client against Zaino."
 version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
@@ -25,6 +25,14 @@ zcashd_support = [
     "zainod/zcashd_support",
 ]
 
+# Single non-default gate for every devtool-incompatible / heavy test (the
+# finalization heavies, send_to_all, monitor_unverified_mempool, the
+# test-vector builder, address_deltas). They compile by default but are
+# `#[ignore]`'d unless this feature is on; run them with
+# `--features devtool-incompatible`. Each gated test's doc comment explains
+# why it's here.
+devtool-incompatible = []
+
 [dependencies]
 # Zaino test harness (zingolib-free) + packages. default-features = false so
 # `zcashd_support` can be dropped via --no-default-features; re-enabled by
@@ -36,26 +44,21 @@ zaino-fetch = { path = "../../packages/zaino-fetch", default-features = false }
 zaino-proto = { path = "../../packages/zaino-proto" }
 zainod = { path = "../../packages/zainod", default-features = false }
 
-# Zingo wallet stack (0.14-compatible revs; this workspace owns its own lock)
-zingolib = { git = "https://github.com/zingolabs/zingolib.git", rev = "61418d6ecbc679a88da8268a2be5db3926501fc6", features = [
-    "testutils",
-] }
-zingolib_testutils = { git = "https://github.com/zingolabs/zingolib.git", rev = "61418d6ecbc679a88da8268a2be5db3926501fc6" }
-zingo_test_vectors = { git = "https://github.com/zingolabs/infrastructure.git", tag = "zcash_local_net_v0.6.0" }
-zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", tag = "zcash_local_net_v0.6.0" }
+# zcash_local_net drives the zcash-devtool wallet client.
+# TEMPORARY (zingolabs/infrastructure#269): pinned to an exact commit on the
+# `add_client_support` branch (not the branch itself) so every machine resolves
+# the same code — the Cargo.lock files are gitignored, and a moving branch ref
+# otherwise resolves differently per cargo cache. Bump this rev as the
+# coordinated work advances; restore the release tag once tagged upstream.
+zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "0cc7dab7d12dd906c23deddd4e1fc3c42cf0f083" }
 
 # Zebra
-zebra-chain = "9.0.0"
-zebra-rpc = "9.0.0"
-zebra-state = "8.0.0"
+zebra-chain = "10.0.0"
+zebra-rpc = "10.0.0"
+zebra-state = "9.0.0"
 
 # Runtime / misc
 tokio = { version = "1.38", features = ["full"] }
-tempfile = "3.2"
-zip32 = "0.2.1"
-# Versions must match zingolib's resolved copies so quick_send's
-# `NonEmpty<TxId>` return type unifies (single versions in Cargo.lock).
-nonempty = "0.11"
 zcash_primitives = "0.28"
 futures = "0.3.30"
 hex = "0.4"

@@ -24,6 +24,7 @@ use crate::{
     SyncError, TransactionHash, TxOutCompact,
 };
 use std::collections::HashSet;
+use std::str::FromStr;
 use std::{sync::Arc, time::Duration};
 
 use futures::{FutureExt, Stream};
@@ -71,11 +72,27 @@ mod tests;
 /// preserves the original literal-`100` behavior; deriving the
 /// depth from an explicit wider-consensus reference is tracked in
 /// zingolabs/zaino#1130.
+#[cfg(not(test))]
 pub(crate) const NON_FINALIZED_DEPTH: u32 = zebra_state::MAX_BLOCK_REORG_HEIGHT + 1;
 
 /// The ceiling of the finalized (immutable) chain for a given chain tip:
 /// `NON_FINALIZED_DEPTH` below `best_tip`. A block is finalized — and therefore
 /// reorg-safe — exactly when its height is at or below this value.
+/// In-crate unit tests pin the depth at the pre-zebra-10 value (`100`).
+///
+/// Zebra 10 raised `MAX_BLOCK_REORG_HEIGHT` from 99 to 1000, so the
+/// production depth is now 1001. The 201-block mock-chain test vector is
+/// far shorter than that, so at the production depth `finalized_height_floor`
+/// saturates to genesis for the whole fixture: the finalized seam never moves
+/// off block 0 and the eviction/seam invariants become untestable (see
+/// zingolabs/zaino#1288). The eviction and seam invariants are scale-free, so
+/// exercising them at a tractable depth is sound; the production depth is
+/// covered by the integration suite, which reaches real chain heights.
+#[cfg(test)]
+pub(crate) const NON_FINALIZED_DEPTH: u32 = 100;
+
+/// Lower bound on zaino's finalized-DB tip, derived from the current
+/// best-known chain tip.
 ///
 /// Reorg-safety and finality are the same notion: a reorg is bounded to the
 /// non-finalized window and can never evict a finalized block, so the ceiling
@@ -109,7 +126,7 @@ pub(crate) fn chain_tips_from_nonfinalized_snapshot(
     let parent_hashes = snapshot
         .blocks
         .values()
-        .map(|block| *block.parent_hash())
+        .map(|block| *block.context.parent_hash())
         .collect::<HashSet<_>>();
 
     let mut tip_hashes = snapshot
@@ -168,7 +185,7 @@ fn branch_len_to_active_chain(
 
         branch_len += 1;
 
-        let parent_hash = current.parent_hash();
+        let parent_hash = current.context.parent_hash();
         let Some(parent) = snapshot.blocks.get(parent_hash) else {
             return branch_len;
         };
@@ -521,14 +538,13 @@ pub trait ChainIndex {
         hash: &types::BlockHash,
     ) -> impl std::future::Future<Output = Result<Option<(types::BlockHash, types::Height)>, Self::Error>>;
 
-    /// Returns the block commitment tree data by hash
+    /// Returns the block commitment tree data by hash.
+    ///
+    /// The hash must exist in the non-finalized snapshot or finalized database
+    /// before the request is proxied to the backing validator.
     #[allow(clippy::type_complexity)]
     fn get_treestate(
         &self,
-        // snapshot: &Self::Snapshot,
-        // currently not implemented internally, fetches data from validator.
-        //
-        // NOTE: Should this check blockhash exists in snapshot and db before proxying call?
         hash: &types::BlockHash,
     ) -> impl std::future::Future<Output = Result<(Option<Vec<u8>>, Option<Vec<u8>>), Self::Error>>;
 
@@ -1269,6 +1285,53 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
             });
         Ok(finalized_blocks_containing_transaction
             .chain(non_finalized_blocks_containing_transaction))
+    }
+
+    /// Returns true when the block hash is present in the local chain index.
+    ///
+    /// During finalized-state sync, a hash is considered known when it is in
+    /// the finalized database or the backing validator can serve it as a
+    /// finalized block.
+    pub(crate) async fn block_hash_known_for_treestate(
+        &self,
+        snapshot: &ChainIndexSnapshot,
+        hash: &types::BlockHash,
+    ) -> Result<bool, ChainIndexError> {
+        if snapshot.get_nfs_snapshot().blocks.contains_key(hash) {
+            return Ok(true);
+        }
+        Ok(self
+            .finalized_state
+            .get_block_height(*hash)
+            .await?
+            .is_some())
+    }
+
+    /// Returns true when the hash-or-height string refers to a block known to
+    /// the local chain index.
+    pub(crate) async fn hash_or_height_known_for_treestate(
+        &self,
+        snapshot: &ChainIndexSnapshot,
+        hash_or_height: &str,
+    ) -> Result<bool, ChainIndexError> {
+        let hash_or_height = HashOrHeight::from_str(hash_or_height).map_err(|error| {
+            ChainIndexError::internal(format!("invalid hash or height: {error}"))
+        })?;
+        match hash_or_height {
+            HashOrHeight::Hash(hash) => {
+                self.block_hash_known_for_treestate(snapshot, &types::BlockHash::from(hash))
+                    .await
+            }
+            HashOrHeight::Height(height) => {
+                match self
+                    .get_block_hash(snapshot, types::Height::from(height))
+                    .await?
+                {
+                    Some(hash) => self.block_hash_known_for_treestate(snapshot, &hash).await,
+                    None => Ok(false),
+                }
+            }
+        }
     }
 
     // Get the height of the mempool
@@ -2205,15 +2268,18 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         }
     }
 
-    /// Returns the block commitment tree data by hash
+    /// Returns the block commitment tree data by hash.
     async fn get_treestate(
         &self,
-        // currently not implemented internally, fetches data from validator.
-        // as this looks up the block by hash, and cares not if the
-        // block is on the main chain or not, this is safe to pass through
-        // even if the target block is non-finalized
         hash: &types::BlockHash,
     ) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>), Self::Error> {
+        let snapshot = self.snapshot_nonfinalized_state().await?;
+        if !self.block_hash_known_for_treestate(&snapshot, hash).await? {
+            return Err(ChainIndexError::internal(format!(
+                "block hash {hash} not found in local chain index"
+            )));
+        }
+
         match self.source().get_treestate(*hash).await {
             Ok(resp) => Ok(resp),
             Err(e) => Err(ChainIndexError {

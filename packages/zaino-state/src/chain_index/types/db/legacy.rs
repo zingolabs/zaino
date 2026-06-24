@@ -1224,7 +1224,7 @@ impl IndexedBlock {
         let mut parent_hash = self.context.parent_hash;
         while let Some(prev_block) = snapshot.get_chainblock_by_hash(&parent_hash) {
             work = work.add_block_work(&ChainWork::from(prev_block.data.work()));
-            parent_hash = prev_block.parent_hash;
+            parent_hash = prev_block.context.parent_hash;
         }
         work
     }
