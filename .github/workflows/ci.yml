@@ -40,7 +40,7 @@ jobs:
           docker run --rm -v "$PWD:/repo" -w /repo \
             --entrypoint hadolint \
             hadolint/hadolint:v2.14.0@sha256:27086352fd5e1907ea2b934eb1023f217c5ae087992eb59fde121dce9c9ff21e \
-            Dockerfile integration-tests/test_environment/Containerfile
+            Dockerfile live-tests/test_environment/Containerfile
 
   fmt:
     name: Rustfmt
@@ -196,7 +196,7 @@ jobs:
 
       - name: Run Tests (Nextest)
         env:
-          TEST_BINARIES_DIR: ${{ github.workspace }}/integration-tests/test_binaries/bins
+          TEST_BINARIES_DIR: ${{ github.workspace }}/live-tests/test_binaries/bins
         run: |
           cargo nextest run --verbose --profile ${{ inputs.nextest-profile || 'quick' }} --retries 2 --no-tests fail --archive-file nextest-archive.tar.zst \
             --workspace-remap ./ --filterset "binary_id(${{ matrix.partition }})" ${{ env.NEXTEST-FLAGS }}

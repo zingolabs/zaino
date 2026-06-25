@@ -24,7 +24,7 @@
 #![cfg(feature = "zcashd_support")]
 #![allow(deprecated)] // FetchService is a deprecated re-export.
 
-use wallet_tests::devtool::DevtoolClients;
+use e2e::devtool::DevtoolClients;
 use zaino_state::{ChainIndex, FetchService, ZcashIndexer};
 use zaino_testutils::{TestManager, ValidatorKind, ZcashdDualFetchServices};
 use zcash_local_net::validator::zcashd::Zcashd;
@@ -53,7 +53,7 @@ async fn launch_zcashd_and_build_clients() -> (TestManager<Zcashd, FetchService>
     .await
     .expect("launch zcashd TestManager");
 
-    let clients = wallet_tests::devtool::build_clients(
+    let clients = e2e::devtool::build_clients(
         test_manager
             .zaino_grpc_listen_address
             .expect("zaino enabled")
@@ -113,7 +113,7 @@ async fn create_zcashd_devtool_services() -> (ZcashdDualFetchServices, DevtoolCl
         zaino_common::network::ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS,
     )
     .await;
-    let clients = wallet_tests::devtool::build_clients(
+    let clients = e2e::devtool::build_clients(
         services
             .test_manager
             .zaino_grpc_listen_address
@@ -132,7 +132,7 @@ async fn create_zcashd_devtool_services() -> (ZcashdDualFetchServices, DevtoolCl
 async fn jsonrpc_fund(
     services: &ZcashdDualFetchServices,
     clients: &mut DevtoolClients,
-    send: Option<wallet_tests::Pool>,
+    send: Option<e2e::Pool>,
 ) -> (String, String, Option<String>) {
     // At nu5=2 the height-1 coinbase is sapling and orchard notes only accrue
     // from height 2, so mine one block more than the orchard notes needed (1 per
@@ -171,7 +171,7 @@ mod json_server {
         let (recipient_taddr, _recipient_ua, _txid) = jsonrpc_fund(
             &services,
             &mut clients,
-            Some(wallet_tests::Pool::Transparent),
+            Some(e2e::Pool::Transparent),
         )
         .await;
 
@@ -243,7 +243,7 @@ mod json_server {
     async fn z_get_treestate() {
         let (mut services, mut clients) = create_zcashd_devtool_services().await;
 
-        jsonrpc_fund(&services, &mut clients, Some(wallet_tests::Pool::Orchard)).await;
+        jsonrpc_fund(&services, &mut clients, Some(e2e::Pool::Orchard)).await;
 
         let chain_height = dbg!(services.zaino_subscriber.chain_height().await.unwrap()).0;
 
@@ -267,7 +267,7 @@ mod json_server {
     async fn z_get_subtrees_by_index() {
         let (mut services, mut clients) = create_zcashd_devtool_services().await;
 
-        jsonrpc_fund(&services, &mut clients, Some(wallet_tests::Pool::Orchard)).await;
+        jsonrpc_fund(&services, &mut clients, Some(e2e::Pool::Orchard)).await;
 
         let zcashd_subtrees = dbg!(services
             .zcashd_subscriber
@@ -290,7 +290,7 @@ mod json_server {
         let (mut services, mut clients) = create_zcashd_devtool_services().await;
 
         let (_recipient_taddr, _recipient_ua, tx) =
-            jsonrpc_fund(&services, &mut clients, Some(wallet_tests::Pool::Orchard)).await;
+            jsonrpc_fund(&services, &mut clients, Some(e2e::Pool::Orchard)).await;
         let tx = tx.expect("jsonrpc_fund sends a tx when given Some(pool)");
 
         let zcashd_transaction = dbg!(services
@@ -316,7 +316,7 @@ mod json_server {
         let (recipient_taddr, _recipient_ua, _txid) = jsonrpc_fund(
             &services,
             &mut clients,
-            Some(wallet_tests::Pool::Transparent),
+            Some(e2e::Pool::Transparent),
         )
         .await;
 
@@ -363,7 +363,7 @@ mod json_server {
         let (recipient_taddr, _recipient_ua, tx) = jsonrpc_fund(
             &services,
             &mut clients,
-            Some(wallet_tests::Pool::Transparent),
+            Some(e2e::Pool::Transparent),
         )
         .await;
         let tx = tx.expect("jsonrpc_fund sends a tx when given Some(pool)");
@@ -411,7 +411,7 @@ mod json_server {
         let (recipient_taddr, _recipient_ua, txid_1) = jsonrpc_fund(
             &services,
             &mut clients,
-            Some(wallet_tests::Pool::Transparent),
+            Some(e2e::Pool::Transparent),
         )
         .await;
         let txid_1 = txid_1.expect("jsonrpc_fund sends a tx when given Some(pool)");
@@ -445,7 +445,7 @@ mod json_server {
 
 /// zcashd analogue of devtool.rs's `send_to_pool`: the faucet sends 250_000 to
 /// the recipient's `pool` address and the recipient sees it.
-async fn send_to_pool(pool: wallet_tests::Pool) {
+async fn send_to_pool(pool: e2e::Pool) {
     let (mut test_manager, mut clients) = launch_and_fund_zcashd_faucet(1).await;
 
     let recipient = clients.get_recipient_address(pool.address_kind()).await;
@@ -479,7 +479,7 @@ async fn shield_for_validator() {
     clients.sync_recipient().await;
 
     assert_eq!(
-        wallet_tests::Pool::Transparent.spendable_balance(&clients.recipient_balance().await),
+        e2e::Pool::Transparent.spendable_balance(&clients.recipient_balance().await),
         250_000
     );
 
@@ -490,7 +490,7 @@ async fn shield_for_validator() {
     clients.sync_recipient().await;
 
     assert_eq!(
-        wallet_tests::Pool::Orchard.spendable_balance(&clients.recipient_balance().await),
+        e2e::Pool::Orchard.spendable_balance(&clients.recipient_balance().await),
         235_000
     );
 
@@ -515,17 +515,17 @@ mod wallet_to_validator {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn send_to_orchard() {
-        send_to_pool(wallet_tests::Pool::Orchard).await;
+        send_to_pool(e2e::Pool::Orchard).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn send_to_sapling() {
-        send_to_pool(wallet_tests::Pool::Sapling).await;
+        send_to_pool(e2e::Pool::Sapling).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn send_to_transparent() {
-        send_to_pool(wallet_tests::Pool::Transparent).await;
+        send_to_pool(e2e::Pool::Transparent).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -571,7 +571,7 @@ mod wallet_to_validator {
 
         clients.sync_recipient().await;
         assert_eq!(
-            wallet_tests::Pool::Transparent.spendable_balance(&clients.recipient_balance().await),
+            e2e::Pool::Transparent.spendable_balance(&clients.recipient_balance().await),
             250_000
         );
         assert_eq!(unfinalised_transactions, finalised_transactions);
@@ -609,15 +609,15 @@ mod wallet_to_validator {
 
         let balance = clients.recipient_balance().await;
         assert_eq!(
-            wallet_tests::Pool::Orchard.spendable_balance(&balance),
+            e2e::Pool::Orchard.spendable_balance(&balance),
             250_000
         );
         assert_eq!(
-            wallet_tests::Pool::Sapling.spendable_balance(&balance),
+            e2e::Pool::Sapling.spendable_balance(&balance),
             250_000
         );
         assert_eq!(
-            wallet_tests::Pool::Transparent.spendable_balance(&balance),
+            e2e::Pool::Transparent.spendable_balance(&balance),
             250_000
         );
 

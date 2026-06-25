@@ -10,12 +10,12 @@ set -euo pipefail
 info "🔧 Updating CI workflow matrix to match nextest targets..."
 
 # Extract nextest targets with non-empty testcases.
-# The `ci` profile lives in integration-tests/.config/nextest.toml, so use
+# The `ci` profile lives in live-tests/.config/nextest.toml, so use
 # --manifest-path.
 info "Extracting current nextest targets..."
 NEXTEST_TARGETS=$(mktemp)
 cargo nextest list \
-  --manifest-path integration-tests/Cargo.toml \
+  --manifest-path live-tests/Cargo.toml \
   --profile ci -T json-pretty \
   | jq -r '
       .["rust-suites"]
@@ -57,7 +57,7 @@ echo ""
 info "Changes made:"
 git diff --no-index /dev/null .github/workflows/ci.yml 2>/dev/null \
   | grep -e "^[+-].*partition" \
-         -e "^[+-].*integration-tests" \
+         -e "^[+-].*live-tests" \
          -e "^[+-].*zaino" \
          -e "^[+-].*zainod" \
   || git diff .github/workflows/ci.yml \

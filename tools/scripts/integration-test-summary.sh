@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Run both integration-test workspaces and print a combined pass/fail summary.
 #
-# Used as the script of the `integration-test` task. Runs walletless-tests then
-# wallet-tests (each in its own CI container via its own makers task), tees each
+# Used as the script of the `integration-test` task. Runs integration then
+# e2e (each in its own CI container via its own makers task), tees each
 # run's output, parses the nextest summary line, and aggregates the totals.
 #
 # Unlike a cargo-make `dependencies` list (which is fail-fast), this runs BOTH
@@ -39,11 +39,11 @@ WL_LOG=$(mktemp)
 WT_LOG=$(mktemp)
 trap 'rm -f "$WL_LOG" "$WT_LOG"' EXIT
 
-echo ">>> integration-test: running walletless-tests workspace"
+echo ">>> integration-test: running integration workspace"
 makers walletless-integration-test 2>&1 | tee "$WL_LOG"
 wl_rc=${PIPESTATUS[0]}
 
-echo ">>> integration-test: running wallet-tests workspace"
+echo ">>> integration-test: running e2e workspace"
 makers wallet-integration-test 2>&1 | tee "$WT_LOG"
 wt_rc=${PIPESTATUS[0]}
 
@@ -52,8 +52,8 @@ read -r wt_run wt_pass wt_fail wt_skip <<<"$(parse_summary "$WT_LOG")"
 
 echo ""
 echo "================== integration-test summary =================="
-printf '  %-18s %4s run, %4s passed, %4s failed, %4s skipped\n' "walletless-tests:" "$wl_run" "$wl_pass" "$wl_fail" "$wl_skip"
-printf '  %-18s %4s run, %4s passed, %4s failed, %4s skipped\n' "wallet-tests:" "$wt_run" "$wt_pass" "$wt_fail" "$wt_skip"
+printf '  %-18s %4s run, %4s passed, %4s failed, %4s skipped\n' "integration:" "$wl_run" "$wl_pass" "$wl_fail" "$wl_skip"
+printf '  %-18s %4s run, %4s passed, %4s failed, %4s skipped\n' "e2e:" "$wt_run" "$wt_pass" "$wt_fail" "$wt_skip"
 printf '  %-18s %4s run, %4s passed, %4s failed, %4s skipped\n' "TOTAL:" \
     "$((wl_run + wt_run))" "$((wl_pass + wt_pass))" "$((wl_fail + wt_fail))" "$((wl_skip + wt_skip))"
 echo "=============================================================="
@@ -61,10 +61,10 @@ echo "=============================================================="
 # A workspace that errored without producing a summary line likely failed to
 # build; call it out so the zeros above aren't read as "all clear".
 if [ "$wl_rc" -ne 0 ] && [ "$wl_run" -eq 0 ]; then
-    echo "  warning: walletless-tests produced no nextest summary (build failure?) — see output above."
+    echo "  warning: integration produced no nextest summary (build failure?) — see output above."
 fi
 if [ "$wt_rc" -ne 0 ] && [ "$wt_run" -eq 0 ]; then
-    echo "  warning: wallet-tests produced no nextest summary (build failure?) — see output above."
+    echo "  warning: e2e produced no nextest summary (build failure?) — see output above."
 fi
 
 # Fail the umbrella task if either workspace failed.

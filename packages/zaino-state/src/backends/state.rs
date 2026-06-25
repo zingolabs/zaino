@@ -2901,7 +2901,7 @@ mod tests {
         use zcash_keys::address::Address;
         use zcash_protocol::consensus::NetworkType;
 
-        // Canonical source: integration-tests/src/lib.rs::rpc::json_rpc
+        // Canonical source: live-tests/integration/src/lib.rs::rpc::json_rpc
         // Tracked for DRY consolidation: https://github.com/zingolabs/zaino/issues/988
         const SAPLING_ADDRESS: &str = "zregtestsapling1jalqhycwumq3unfxlzyzcktq3n478n82k2wacvl8gwfxk6ahshkxmtp2034qj28n7gl92ka5wca";
         const EXPECTED_DIVERSIFIER: &str = "977e0b930ee6c11e4d26f8";

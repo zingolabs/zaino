@@ -2,10 +2,10 @@
 # Run integration tests using the local image.
 #
 # Runs tests inside the container built from
-# integration-tests/test_environment. The container's entrypoint.sh sets up
+# live-tests/test_environment. The container's entrypoint.sh sets up
 # test binaries (zcashd, zebrad, zcash-cli) by symlinking
 # /home/container_user/artifacts to the expected
-# integration-tests/test_binaries/bins location.
+# live-tests/test_binaries/bins location.
 #
 # Sourced as the script.main of the `container-test` task (extends
 # `base-script`); TAG, IMAGE_NAME, TEST_BINARIES_DIR, info, and the cleanup

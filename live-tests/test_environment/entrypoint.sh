@@ -25,8 +25,8 @@ ZCASH_CLI_PATH="${4:-/home/container_user/artifacts/zcash-cli}"
 DEVTOOL_PATH="${5:-/home/container_user/artifacts/zcash-devtool}"
 
 
-# Check if integration-tests/test_binaries/bins directory exists and create symlinks if binaries are missing
-BINS_DIR="${REPO_ROOT}/integration-tests/test_binaries/bins"
+# Check if live-tests/test_binaries/bins directory exists and create symlinks if binaries are missing
+BINS_DIR="${REPO_ROOT}/live-tests/test_binaries/bins"
 
 # Create the bins directory if it doesn't exist
 if [ ! -d "$BINS_DIR" ]; then

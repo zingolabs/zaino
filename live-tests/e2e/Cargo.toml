@@ -1,12 +1,12 @@
 [workspace]
 # Standalone workspace with its own Cargo.lock for the devtool wallet-client
-# stack (zcash_local_net), kept out of the `integration-tests` workspace.
+# stack (zcash_local_net), kept out of the `live-tests` workspace.
 members = ["."]
 resolver = "2"
 
 [package]
-name = "wallet-tests"
-description = "Wallet-to-validator integration tests exercising the zcash-devtool wallet client against Zaino."
+name = "e2e"
+description = "End-to-end live tests: a zcash-devtool wallet client driving Zaino through its gRPC surface to a live validator."
 version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"

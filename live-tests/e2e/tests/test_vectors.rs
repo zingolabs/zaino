@@ -59,7 +59,7 @@ async fn create_200_block_regtest_chain_vectors() {
 
     let state_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
-    let mut clients = wallet_tests::devtool::build_clients(
+    let mut clients = e2e::devtool::build_clients(
         test_manager
             .zaino_grpc_listen_address
             .expect("zaino enabled")

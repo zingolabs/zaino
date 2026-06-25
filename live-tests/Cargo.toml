@@ -1,10 +1,10 @@
 [workspace]
 members = [
-    "walletless-tests",
+    "integration",
     "zaino-testutils",
 ]
-# wallet-tests is its own workspace (devtool wallet-client stack, separate Cargo.lock).
-exclude = ["wallet-tests"]
+# e2e is its own workspace (devtool wallet-client stack, separate Cargo.lock).
+exclude = ["e2e"]
 resolver = "2"
 
 [workspace.package]

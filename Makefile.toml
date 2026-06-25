@@ -73,7 +73,7 @@ script.main = 'source "./tools/scripts/pull-ci-image.sh"'
 
 [tasks.build-image]
 description = "Build the container image for testing artifacts"
-# Note: This task builds the container image from the integration-tests/test_environment
+# Note: This task builds the container image from the live-tests/test_environment
 # directory, which contains the Containerfile and entrypoint.sh for the CI/test environment.
 script_runner = "bash"
 extend = "base-script"
@@ -94,9 +94,9 @@ script.main = 'source "./tools/scripts/push-image.sh"'
 [tasks.container-test]
 clear = true
 description = "Run integration tests using the local image (zcashd_support OFF by default; pass --with-zcashd to include the zcashd-backed suite)"
-# This task runs tests inside the container built from integration-tests/test_environment.
+# This task runs tests inside the container built from live-tests/test_environment.
 # The entrypoint.sh script in the container sets up test binaries (zcashd, zebrad, zcash-cli)
-# by creating symlinks from /home/container_user/artifacts to the expected integration-tests/test_binaries/bins location.
+# by creating symlinks from /home/container_user/artifacts to the expected live-tests/test_binaries/bins location.
 dependencies = ["init-podman-volumes", "ensure-image-exists"]
 script_runner = "bash"
 extend = "base-script"
@@ -106,8 +106,8 @@ script.post = "makers notify"
 # -------------------------------------------------------------------
 
 [tasks.walletless-integration-test]
-description = "Run the walletless-tests workspace inside the CI container (forwards extra args to `cargo nextest run`)"
-env = { WORKSPACE_MANIFEST = "integration-tests/Cargo.toml", WORKSPACE_DESC = "walletless-tests workspace" }
+description = "Run the integration workspace inside the CI container (forwards extra args to `cargo nextest run`)"
+env = { WORKSPACE_MANIFEST = "live-tests/Cargo.toml", WORKSPACE_DESC = "integration workspace" }
 script_runner = "bash"
 extend = "base-script"
 script.main = 'source "./tools/scripts/container-nextest-workspace.sh"'
@@ -115,8 +115,8 @@ script.main = 'source "./tools/scripts/container-nextest-workspace.sh"'
 # -------------------------------------------------------------------
 
 [tasks.wallet-integration-test]
-description = "Run the wallet-tests workspace inside the CI container (forwards extra args to `cargo nextest run`)"
-env = { WORKSPACE_MANIFEST = "integration-tests/wallet-tests/Cargo.toml", WORKSPACE_DESC = "wallet-tests workspace" }
+description = "Run the e2e workspace inside the CI container (forwards extra args to `cargo nextest run`)"
+env = { WORKSPACE_MANIFEST = "live-tests/e2e/Cargo.toml", WORKSPACE_DESC = "e2e workspace" }
 script_runner = "bash"
 extend = "base-script"
 script.main = 'source "./tools/scripts/container-nextest-workspace.sh"'
@@ -124,7 +124,7 @@ script.main = 'source "./tools/scripts/container-nextest-workspace.sh"'
 # -------------------------------------------------------------------
 
 [tasks.integration-test]
-description = "Run both integration-test workspaces (walletless-tests then wallet-tests) and print a combined pass/fail summary (pass --with-zcashd to include zcashd-backed tests)"
+description = "Run both integration-test workspaces (integration then e2e) and print a combined pass/fail summary (pass --with-zcashd to include zcashd-backed tests)"
 script_runner = "bash"
 script = 'source "./tools/scripts/integration-test-summary.sh"'
 
@@ -207,16 +207,16 @@ command = "cargo"
 args = ["check", "--workspace", "--all-targets", "--no-default-features"]
 
 [tasks.check-no-zcashd-walletless]
-description = "cargo check --no-default-features for the integration-tests workspace (zcashd_support off)"
+description = "cargo check --no-default-features for the live-tests workspace (zcashd_support off)"
 command = "cargo"
 args = ["check", "--workspace", "--all-targets", "--no-default-features"]
-cwd = "integration-tests"
+cwd = "live-tests"
 
 [tasks.check-no-zcashd-wallet]
-description = "cargo check --no-default-features for the wallet-tests workspace (zcashd_support off)"
+description = "cargo check --no-default-features for the e2e workspace (zcashd_support off)"
 command = "cargo"
 args = ["check", "--all-targets", "--no-default-features"]
-cwd = "integration-tests/wallet-tests"
+cwd = "live-tests/e2e"
 
 [tasks.check-zaino-proto-heavy]
 description = "Guard: zaino-proto `heavy` must stay enabled under --no-default-features (else the no-zcashd test build silently loses zebra-state/zebra-chain/which)"

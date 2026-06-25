@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Run one test workspace inside the CI container, forwarding extra args to
 # `cargo nextest run`. The workspace is selected by its manifest so this works
-# for both the integration-tests workspace and the standalone wallet-tests
+# for both the live-tests workspace and the standalone e2e
 # workspace (the zingolib wallet stack lives there, kept out of the
-# zingolib-free integration-tests workspace).
+# zingolib-free live-tests workspace).
 #
 # Parameterised by the consuming task's [env]:
 #   WORKSPACE_MANIFEST - path to the workspace Cargo.toml (required)

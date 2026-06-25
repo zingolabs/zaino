@@ -1,6 +1,6 @@
 //! Devtool-backed ports of the wallet-to-validator tests, run against a Zaino
 //! launched by `TestManager`. As the zcash-devtool client
-//! ([`wallet_tests::devtool`]) reaches capability parity with the zingolib
+//! ([`e2e::devtool`]) reaches capability parity with the zingolib
 //! `Clients`, the matching tests in `wallet_to_validator.rs` migrate here and
 //! the zingolib versions are eventually retired (zingolabs/infrastructure#269).
 //!
@@ -40,7 +40,7 @@
 //! Requires a `zcash-devtool` binary built with `--features regtest_support`
 //! in `TEST_BINARIES_DIR`/`PATH`, alongside the usual validator binaries.
 
-use wallet_tests::devtool::DevtoolClients;
+use e2e::devtool::DevtoolClients;
 use zaino_proto::proto::service::{
     AddressList, BlockId, BlockRange, GetAddressUtxosArg, TransparentAddressBlockFilter, TxFilter,
 };
@@ -80,7 +80,7 @@ where
     .await
     .expect("launch TestManager");
 
-    let mut clients = wallet_tests::devtool::build_clients(
+    let mut clients = e2e::devtool::build_clients(
         test_manager
             .zaino_grpc_listen_address
             .expect("zaino enabled")
@@ -118,7 +118,7 @@ where
     .await
     .expect("launch TestManager");
 
-    let clients = wallet_tests::devtool::build_clients(
+    let clients = e2e::devtool::build_clients(
         test_manager
             .zaino_grpc_listen_address
             .expect("zaino enabled")
@@ -175,7 +175,7 @@ where
 /// `send_to_transparent` additionally mines across the finalization boundary
 /// under transparent mining; that variant is deferred, as it exercises the
 /// transparent-coinbase detection path devtool has not yet been run against.)
-async fn send_to_pool<Service>(pool: wallet_tests::Pool)
+async fn send_to_pool<Service>(pool: e2e::Pool)
 where
     Service: TestService,
     IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
@@ -233,15 +233,15 @@ where
 
     let balance = clients.recipient_balance().await;
     assert_eq!(
-        wallet_tests::Pool::Orchard.spendable_balance(&balance),
+        e2e::Pool::Orchard.spendable_balance(&balance),
         250_000
     );
     assert_eq!(
-        wallet_tests::Pool::Sapling.spendable_balance(&balance),
+        e2e::Pool::Sapling.spendable_balance(&balance),
         250_000
     );
     assert_eq!(
-        wallet_tests::Pool::Transparent.spendable_balance(&balance),
+        e2e::Pool::Transparent.spendable_balance(&balance),
         250_000
     );
 
@@ -270,7 +270,7 @@ where
     clients.sync_recipient().await;
 
     assert_eq!(
-        wallet_tests::Pool::Transparent.spendable_balance(&clients.recipient_balance().await),
+        e2e::Pool::Transparent.spendable_balance(&clients.recipient_balance().await),
         250_000
     );
 
@@ -281,7 +281,7 @@ where
     clients.sync_recipient().await;
 
     assert_eq!(
-        wallet_tests::Pool::Orchard.spendable_balance(&clients.recipient_balance().await),
+        e2e::Pool::Orchard.spendable_balance(&clients.recipient_balance().await),
         235_000
     );
 
@@ -318,7 +318,7 @@ where
 /// way, which matches the txid strings zaino's address queries return, so no
 /// conversion is needed for those comparisons.
 async fn fund_and_send_to<Service>(
-    pool: wallet_tests::Pool,
+    pool: e2e::Pool,
 ) -> (TestManager<Zebrad, Service>, DevtoolClients, String)
 where
     Service: TestService,
@@ -347,7 +347,7 @@ where
     <Service as ZcashService>::Subscriber: PollableTip + LightWalletIndexer,
 {
     let (mut test_manager, clients, txid_hex) =
-        fund_and_send_to::<Service>(wallet_tests::Pool::Transparent).await;
+        fund_and_send_to::<Service>(e2e::Pool::Transparent).await;
     let recipient_taddr = clients.get_recipient_address("transparent").await;
 
     // A range start a couple of blocks below the tip, covering the send block.
@@ -378,7 +378,7 @@ where
     <Service as ZcashService>::Subscriber: PollableTip + LightWalletIndexer,
 {
     let (mut test_manager, clients, txid_hex) =
-        fund_and_send_to::<Service>(wallet_tests::Pool::Transparent).await;
+        fund_and_send_to::<Service>(e2e::Pool::Transparent).await;
     let recipient_taddr = clients.get_recipient_address("transparent").await;
 
     let utxos = test_manager
@@ -403,7 +403,7 @@ where
     <Service as ZcashService>::Subscriber: PollableTip + LightWalletIndexer,
 {
     let (mut test_manager, _clients, _txid_hex) =
-        fund_and_send_to::<Service>(wallet_tests::Pool::Orchard).await;
+        fund_and_send_to::<Service>(e2e::Pool::Orchard).await;
 
     let tip = test_manager.subscriber().tip_height().await;
     dbg!(test_manager
@@ -424,7 +424,7 @@ where
     <Service as ZcashService>::Subscriber: PollableTip + LightWalletIndexer,
 {
     let (mut test_manager, _clients, _txid_hex) =
-        fund_and_send_to::<Service>(wallet_tests::Pool::Orchard).await;
+        fund_and_send_to::<Service>(e2e::Pool::Orchard).await;
 
     dbg!(test_manager
         .subscriber()
@@ -444,7 +444,7 @@ where
     <Service as ZcashService>::Subscriber: PollableTip + LightWalletIndexer,
 {
     let (mut test_manager, _clients, txid_hex) =
-        fund_and_send_to::<Service>(wallet_tests::Pool::Orchard).await;
+        fund_and_send_to::<Service>(e2e::Pool::Orchard).await;
 
     dbg!(test_manager
         .subscriber()
@@ -467,7 +467,7 @@ where
     use futures::StreamExt as _;
 
     let (mut test_manager, clients, _txid_hex) =
-        fund_and_send_to::<Service>(wallet_tests::Pool::Transparent).await;
+        fund_and_send_to::<Service>(e2e::Pool::Transparent).await;
     let recipient_taddr = clients.get_recipient_address("transparent").await;
 
     let tip = test_manager.subscriber().tip_height().await;
@@ -508,7 +508,7 @@ where
     <Service as ZcashService>::Subscriber: PollableTip + LightWalletIndexer,
 {
     let (mut test_manager, clients, _txid_hex) =
-        fund_and_send_to::<Service>(wallet_tests::Pool::Transparent).await;
+        fund_and_send_to::<Service>(e2e::Pool::Transparent).await;
     let recipient_taddr = clients.get_recipient_address("transparent").await;
 
     let utxos_arg = GetAddressUtxosArg {
@@ -536,7 +536,7 @@ where
     use futures::StreamExt as _;
 
     let (mut test_manager, clients, _txid_hex) =
-        fund_and_send_to::<Service>(wallet_tests::Pool::Transparent).await;
+        fund_and_send_to::<Service>(e2e::Pool::Transparent).await;
     let recipient_taddr = clients.get_recipient_address("transparent").await;
 
     let utxos_arg = GetAddressUtxosArg {
@@ -598,7 +598,7 @@ where
     let (mut test_manager, transparent_txid, unified_txid) = fund_and_fill_mempool::<Service>().await;
 
     let to_bytes = |hex: &str| -> [u8; 32] {
-        wallet_tests::devtool::txid_internal_bytes(hex)
+        e2e::devtool::txid_internal_bytes(hex)
             .try_into()
             .expect("txid is 32 bytes")
     };
@@ -705,7 +705,7 @@ where
         .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
         .await;
 
-    (test_manager, wallet_tests::devtool::txid_internal_bytes(&txid_hex))
+    (test_manager, e2e::devtool::txid_internal_bytes(&txid_hex))
 }
 
 /// Port of `fetch_service_get_transaction_mined` (zebrad): the indexer serves
@@ -750,7 +750,7 @@ where
     let tx_filter = TxFilter {
         block: None,
         index: 0,
-        hash: wallet_tests::devtool::txid_internal_bytes(&txid_hex),
+        hash: e2e::devtool::txid_internal_bytes(&txid_hex),
     };
 
     // Let the broadcaster and the indexer observe the unmined transaction.
@@ -782,7 +782,7 @@ async fn block_range_returns_default_pools() {
     )
     .await;
 
-    let mut clients = wallet_tests::devtool::build_clients(
+    let mut clients = e2e::devtool::build_clients(
         svc.test_manager
             .zaino_grpc_listen_address
             .expect("zaino enabled")
@@ -873,7 +873,7 @@ async fn block_range_returns_all_pools() {
     )
     .await;
 
-    let mut clients = wallet_tests::devtool::build_clients(
+    let mut clients = e2e::devtool::build_clients(
         svc.test_manager
             .zaino_grpc_listen_address
             .expect("zaino enabled")
@@ -920,20 +920,20 @@ async fn block_range_returns_all_pools() {
     // coinbase + the three sends
     assert_eq!(compact_block.vtx.len(), 4);
 
-    wallet_tests::assert_pool_present(
+    e2e::assert_pool_present(
         compact_block,
-        &wallet_tests::devtool::txid_from_devtool(&deshielding_txid),
-        wallet_tests::Pool::Transparent,
+        &e2e::devtool::txid_from_devtool(&deshielding_txid),
+        e2e::Pool::Transparent,
     );
-    wallet_tests::assert_pool_present(
+    e2e::assert_pool_present(
         compact_block,
-        &wallet_tests::devtool::txid_from_devtool(&sapling_txid),
-        wallet_tests::Pool::Sapling,
+        &e2e::devtool::txid_from_devtool(&sapling_txid),
+        e2e::Pool::Sapling,
     );
-    wallet_tests::assert_pool_present(
+    e2e::assert_pool_present(
         compact_block,
-        &wallet_tests::devtool::txid_from_devtool(&orchard_txid),
-        wallet_tests::Pool::Orchard,
+        &e2e::devtool::txid_from_devtool(&orchard_txid),
+        e2e::Pool::Orchard,
     );
 
     svc.test_manager.close().await;
@@ -954,7 +954,7 @@ where
     <Service as ZcashService>::Subscriber: PollableTip + LightWalletIndexer,
 {
     let (mut test_manager, clients, _txid_hex) =
-        fund_and_send_to::<Service>(wallet_tests::Pool::Transparent).await;
+        fund_and_send_to::<Service>(e2e::Pool::Transparent).await;
     let recipient_taddr = clients.get_recipient_address("transparent").await;
 
     let balance = test_manager
@@ -980,7 +980,7 @@ where
     <Service as ZcashService>::Subscriber: PollableTip + LightWalletIndexer,
 {
     let (mut test_manager, clients, _txid_hex) =
-        fund_and_send_to::<Service>(wallet_tests::Pool::Transparent).await;
+        fund_and_send_to::<Service>(e2e::Pool::Transparent).await;
     let recipient_taddr = clients.get_recipient_address("transparent").await;
 
     let address_list = AddressList {
@@ -1000,7 +1000,7 @@ where
 }
 
 async fn fund_and_send_dual(
-    pool: wallet_tests::Pool,
+    pool: e2e::Pool,
 ) -> (zaino_testutils::StateAndFetchServices<Zebrad>, String, String) {
     let svc = zaino_testutils::launch_state_and_fetch_services_mining_to::<Zebrad>(
         zaino_testutils::SHIELDED_FUNDING_POOL,
@@ -1011,7 +1011,7 @@ async fn fund_and_send_dual(
     )
     .await;
 
-    let mut clients = wallet_tests::devtool::build_clients(
+    let mut clients = e2e::devtool::build_clients(
         svc.test_manager
             .zaino_grpc_listen_address
             .expect("zaino enabled")
@@ -1031,7 +1031,7 @@ async fn fund_and_send_dual(
 /// Port of `state_service_z_get_treestate` (zebrad): the fetch and state
 /// indexers agree on `z_get_treestate` at the tip.
 async fn z_get_treestate_fetch_vs_state() {
-    let (mut svc, _txid_hex, _addr) = fund_and_send_dual(wallet_tests::Pool::Orchard).await;
+    let (mut svc, _txid_hex, _addr) = fund_and_send_dual(e2e::Pool::Orchard).await;
 
     let tip = svc.fetch_subscriber.tip_height().await;
     let fetch = svc
@@ -1052,7 +1052,7 @@ async fn z_get_treestate_fetch_vs_state() {
 /// Port of `state_service_z_get_subtrees_by_index` (zebrad): the fetch and
 /// state indexers agree on `z_get_subtrees_by_index` for orchard.
 async fn z_get_subtrees_by_index_fetch_vs_state() {
-    let (mut svc, _txid_hex, _addr) = fund_and_send_dual(wallet_tests::Pool::Orchard).await;
+    let (mut svc, _txid_hex, _addr) = fund_and_send_dual(e2e::Pool::Orchard).await;
 
     let fetch = svc
         .fetch_subscriber
@@ -1072,7 +1072,7 @@ async fn z_get_subtrees_by_index_fetch_vs_state() {
 /// Port of `state_service_get_raw_transaction` (zebrad): the fetch and state
 /// indexers agree on `get_raw_transaction` for the orchard send's txid.
 async fn get_raw_transaction_fetch_vs_state() {
-    let (mut svc, txid_hex, _addr) = fund_and_send_dual(wallet_tests::Pool::Orchard).await;
+    let (mut svc, txid_hex, _addr) = fund_and_send_dual(e2e::Pool::Orchard).await;
     let txid = txid_hex.trim().to_string();
 
     let fetch = svc
@@ -1095,7 +1095,7 @@ async fn get_raw_transaction_fetch_vs_state() {
 /// indexers agree.
 async fn get_address_tx_ids_fetch_vs_state() {
     let (mut svc, txid_hex, recipient_taddr) =
-        fund_and_send_dual(wallet_tests::Pool::Transparent).await;
+        fund_and_send_dual(e2e::Pool::Transparent).await;
 
     let tip = svc.fetch_subscriber.tip_height().await;
     let start = Some((tip - 2) as u32);
@@ -1125,7 +1125,7 @@ async fn get_address_tx_ids_fetch_vs_state() {
 /// indexers agree on it.
 async fn get_address_utxos_fetch_vs_state() {
     let (mut svc, txid_hex, recipient_taddr) =
-        fund_and_send_dual(wallet_tests::Pool::Transparent).await;
+        fund_and_send_dual(e2e::Pool::Transparent).await;
 
     let fetch_utxos = svc
         .fetch_subscriber
@@ -1160,7 +1160,7 @@ async fn fund_and_fill_mempool_dual() -> zaino_testutils::StateAndFetchServices<
     )
     .await;
 
-    let mut clients = wallet_tests::devtool::build_clients(
+    let mut clients = e2e::devtool::build_clients(
         svc.test_manager
             .zaino_grpc_listen_address
             .expect("zaino enabled")
@@ -1209,7 +1209,7 @@ async fn get_address_transactions_regtest() {
     use futures::StreamExt as _;
 
     let (mut svc, _txid_hex, recipient_taddr) =
-        fund_and_send_dual(wallet_tests::Pool::Transparent).await;
+        fund_and_send_dual(e2e::Pool::Transparent).await;
 
     let chain_height = svc.fetch_subscriber.tip_height().await;
     dbg!(&chain_height);
@@ -1294,7 +1294,7 @@ async fn transparent_data_in_compact_block() {
 /// reports the 250_000 send, and the fetch and state indexers agree.
 async fn get_address_balance_fetch_vs_state() {
     let (mut svc, _txid_hex, recipient_taddr) =
-        fund_and_send_dual(wallet_tests::Pool::Transparent).await;
+        fund_and_send_dual(e2e::Pool::Transparent).await;
 
     let fetch = svc
         .fetch_subscriber
@@ -1337,7 +1337,7 @@ async fn launch_transparent_and_faucet_taddr(
     )
     .await;
 
-    let clients = wallet_tests::devtool::build_clients(
+    let clients = e2e::devtool::build_clients(
         svc.test_manager
             .zaino_grpc_listen_address
             .expect("zaino enabled")
@@ -1626,7 +1626,7 @@ where
 
     clients.sync_recipient().await;
     assert_eq!(
-        wallet_tests::Pool::Transparent.spendable_balance(&clients.recipient_balance().await),
+        e2e::Pool::Transparent.spendable_balance(&clients.recipient_balance().await),
         250_000
     );
     assert_eq!(unfinalised_transactions, finalised_transactions);
@@ -1667,7 +1667,7 @@ async fn address_deltas() {
         Some(zebra_chain::parameters::NetworkKind::Regtest),
     )
     .await;
-    let mut clients = wallet_tests::devtool::build_clients(
+    let mut clients = e2e::devtool::build_clients(
         svc.test_manager
             .zaino_grpc_listen_address
             .expect("zaino enabled")
@@ -1859,7 +1859,7 @@ where
     // Confirmed balances — original asserts WalletBalance::confirmed_orchard_balance,
     // also absent on devtool. Restore as e.g.:
     // assert_eq!(
-    //     wallet_tests::Pool::Orchard.spendable_balance(&clients.recipient_balance().await),
+    //     e2e::Pool::Orchard.spendable_balance(&clients.recipient_balance().await),
     //     250_000
     // );
 
@@ -1950,17 +1950,17 @@ mod zebrad {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn send_to_orchard() {
-            crate::send_to_pool::<FetchService>(wallet_tests::Pool::Orchard).await;
+            crate::send_to_pool::<FetchService>(e2e::Pool::Orchard).await;
         }
 
         #[tokio::test(flavor = "multi_thread")]
         async fn send_to_sapling() {
-            crate::send_to_pool::<FetchService>(wallet_tests::Pool::Sapling).await;
+            crate::send_to_pool::<FetchService>(e2e::Pool::Sapling).await;
         }
 
         #[tokio::test(flavor = "multi_thread")]
         async fn send_to_transparent() {
-            crate::send_to_pool::<FetchService>(wallet_tests::Pool::Transparent).await;
+            crate::send_to_pool::<FetchService>(e2e::Pool::Transparent).await;
         }
 
         #[tokio::test(flavor = "multi_thread")]
@@ -2175,17 +2175,17 @@ mod zebrad {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn send_to_orchard() {
-            crate::send_to_pool::<StateService>(wallet_tests::Pool::Orchard).await;
+            crate::send_to_pool::<StateService>(e2e::Pool::Orchard).await;
         }
 
         #[tokio::test(flavor = "multi_thread")]
         async fn send_to_sapling() {
-            crate::send_to_pool::<StateService>(wallet_tests::Pool::Sapling).await;
+            crate::send_to_pool::<StateService>(e2e::Pool::Sapling).await;
         }
 
         #[tokio::test(flavor = "multi_thread")]
         async fn send_to_transparent() {
-            crate::send_to_pool::<StateService>(wallet_tests::Pool::Transparent).await;
+            crate::send_to_pool::<StateService>(e2e::Pool::Transparent).await;
         }
 
         #[tokio::test(flavor = "multi_thread")]

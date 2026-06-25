@@ -37,7 +37,7 @@ def main() -> None:
     ap.add_argument(
         "--nextest-toml",
         type=Path,
-        default=Path("integration-tests/.config/nextest.toml"),
+        default=Path("live-tests/.config/nextest.toml"),
     )
     ap.add_argument("--failing", type=Path, default=Path("failing_tests.txt"))
     ap.add_argument(

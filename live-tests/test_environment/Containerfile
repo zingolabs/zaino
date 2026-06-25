@@ -101,7 +101,7 @@ WORKDIR /devtool
 # Single RUN (DL3059): clone, checkout, build, and stage the binary. The
 # image's default toolchain builds it (the source tree's
 # rust-toolchain.toml is removed so rustup does not fetch another one).
-# `regtest_support` is the feature wallet-tests' regtest clients require.
+# `regtest_support` is the feature e2e' regtest clients require.
 # Checking out the resolved SHA (falling back to the branch) makes this layer
 # rebuild whenever DEVTOOL_REV changes.
 RUN git clone https://github.com/zingolabs/zcash-devtool . \

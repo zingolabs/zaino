@@ -430,9 +430,9 @@ mod zcashd {
         async fn z_validate_address() {
             let mut services = zaino_testutils::launch_zcashd_dual_fetch_services().await;
 
-            walletless_tests::rpc::z_validate_address::run_z_validate_for(
+            integration::rpc::z_validate_address::run_z_validate_for(
                 &services.zcashd_subscriber,
-                walletless_tests::rpc::z_validate_address::SaplingSuite::Standard,
+                integration::rpc::z_validate_address::SaplingSuite::Standard,
             )
             .await;
 

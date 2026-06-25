@@ -1,18 +1,18 @@
 /target
 # Cargo build output in every (sub-)workspace, including nested ones such as
-# integration-tests/wallet-tests/target — the anchored rules below only match
+# live-tests/e2e/target — the anchored rules below only match
 # specific paths and miss new sub-workspaces.
 target/
 /db
 /docs/cargo_docs/debug
 /.helix
-/integration-tests/Cargo.lock
-/integration-tests/wallet-tests/Cargo.lock
-/integration-tests/chain_cache/*
-/integration-tests/test_binaries/bins/*
-/integration-tests/target/*
-!/integration-tests/chain_cache/testnet_get_subtree_roots_sapling
-!/integration-tests/chain_cache/testnet_get_subtree_roots_orchard
+/live-tests/Cargo.lock
+/live-tests/e2e/Cargo.lock
+/live-tests/chain_cache/*
+/live-tests/test_binaries/bins/*
+/live-tests/target/*
+!/live-tests/chain_cache/testnet_get_subtree_roots_sapling
+!/live-tests/chain_cache/testnet_get_subtree_roots_orchard
 .cargo
 .local/
 build/

@@ -348,14 +348,14 @@ pub static ZAINOD_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| binary_path("zainod"
 pub static ZCASHD_CHAIN_CACHE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
     let mut workspace_root_path = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     workspace_root_path.pop();
-    Some(workspace_root_path.join("integration-tests/chain_cache/client_rpc_tests"))
+    Some(workspace_root_path.join("live-tests/chain_cache/client_rpc_tests"))
 });
 
 /// Path for zebrad chain cache.
 pub static ZEBRAD_CHAIN_CACHE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
     let mut workspace_root_path = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     workspace_root_path.pop();
-    Some(workspace_root_path.join("integration-tests/chain_cache/client_rpc_tests_large"))
+    Some(workspace_root_path.join("live-tests/chain_cache/client_rpc_tests_large"))
 });
 
 /// Path for the Zebra chain cache in the user's home directory.
@@ -577,7 +577,7 @@ where
     /// If chain_cache is given a path the chain will be loaded.
     ///
     /// `enable_clients` must be `false`: zaino-testutils carries no zingolib, so
-    /// wallet lightclients are built by the separate wallet-tests workspace from
+    /// wallet lightclients are built by the separate e2e workspace from
     /// the returned `TestManager`'s gRPC address. Passing `true` returns an error.
     ///
     /// TODO: Add TestManagerConfig struct and constructor methods of common test setups.
@@ -708,14 +708,14 @@ where
         } else {
             (None, None, None, None, None)
         };
-        // Wallet lightclients are built by the separate wallet-tests workspace,
+        // Wallet lightclients are built by the separate e2e workspace,
         // not here — zaino-testutils carries no zingolib. Tests that need a
         // faucet/recipient launch with `enable_clients: false` and build the
         // clients themselves from `TestManager`'s gRPC address.
         if enable_clients {
             return Err(std::io::Error::other(
                 "enable_clients is unsupported in zaino-testutils: build lightclients in the \
-                 wallet-tests workspace from TestManager's gRPC address instead.",
+                 e2e workspace from TestManager's gRPC address instead.",
             ));
         }
         let test_manager = Self {

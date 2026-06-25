@@ -10,12 +10,12 @@ set -euo pipefail
 info "🔍 Validating test targets between nextest and CI workflow..."
 
 # Extract nextest targets with non-empty testcases.
-# The `ci` profile lives in integration-tests/.config/nextest.toml, so use
+# The `ci` profile lives in live-tests/.config/nextest.toml, so use
 # --manifest-path.
 info "Extracting targets from nextest..."
 NEXTEST_TARGETS=$(mktemp)
 cargo nextest list \
-  --manifest-path integration-tests/Cargo.toml \
+  --manifest-path live-tests/Cargo.toml \
   --profile ci -T json-pretty \
   | jq -r '
       .["rust-suites"]

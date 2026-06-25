@@ -1,6 +1,6 @@
 [package]
-name = "walletless-tests"
-description = "Zaino integration tests that exercise the indexer's query surface directly (no wallet)."
+name = "integration"
+description = "Integration live tests: exercise Zaino's service layer directly against a live validator (no wallet client)."
 publish = false
 
 authors.workspace = true

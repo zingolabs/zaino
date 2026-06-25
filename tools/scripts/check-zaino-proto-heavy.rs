@@ -20,8 +20,8 @@ use std::process::Command;
 // Workspaces whose test suites run with --no-default-features, by manifest path.
 const WORKSPACES: &[(&str, &str)] = &[
     ("production", "Cargo.toml"),
-    ("integration-tests", "integration-tests/Cargo.toml"),
-    ("wallet-tests", "integration-tests/wallet-tests/Cargo.toml"),
+    ("live-tests", "live-tests/Cargo.toml"),
+    ("e2e", "live-tests/e2e/Cargo.toml"),
 ];
 
 // The feature node `cargo tree -e features` prints when `heavy` is enabled.

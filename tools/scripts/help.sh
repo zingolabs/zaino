@@ -21,7 +21,7 @@ echo "Available commands:"
 echo ""
 echo "  container-test             Run integration tests using the local \
 image"
-echo "  integration-test           Run integration-tests sub-workspace \
+echo "  integration-test           Run live-tests sub-workspace \
 (forwards flags to nextest)"
 echo "  container-test-save-failures    Run tests, save failures to \
 .failed-tests"
@@ -77,7 +77,7 @@ echo "  RUST_VERSION                  Derived from rust-toolchain.toml"
 echo "                                via tools/scripts/get-rust-version.sh"
 echo ""
 echo "Build Context:"
-echo "  integration-tests/test_environment/   Directory containing the \
+echo "  live-tests/test_environment/   Directory containing the \
 container build environment"
 echo "    ├── Containerfile                 Containerfile for CI/test \
 container"

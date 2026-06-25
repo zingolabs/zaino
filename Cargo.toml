@@ -9,7 +9,7 @@ members = [
     "packages/zaino-proto",
 ]
 exclude = [
-    "integration-tests",
+    "live-tests",
     "zaino-testutils",
 ]
 
