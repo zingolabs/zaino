@@ -42,7 +42,7 @@ fn main() -> io::Result<()> {
     println!("cargo:rustc-env=BUILD_DATE={}", build_date);
 
     // Set the build user
-    let build_user = whoami::username();
+    let build_user = whoami::username().unwrap_or_default();
     println!("cargo:rustc-env=BUILD_USER={build_user}");
 
     Ok(())
