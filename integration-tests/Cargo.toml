@@ -71,3 +71,14 @@ zip32 = "0.2.1"
 [profile.test]
 opt-level = 3
 debug = true
+
+# Mirror of root Cargo.toml [patch.crates-io]: pins zebra to an unreleased rev
+# that makes ReadRequest::NonFinalizedBlocksListener a struct variant carrying
+# `known_chain_tips`. All workspaces that build zaino-state must carry the
+# identical patch (zaino-state is a path dep — it compiles against the host
+# workspace's patched zebra). See docs/updating_zebra_crates.md. Tracking:
+# zaino#<TODO-revert-zebra-fork>.
+[patch.crates-io]
+zebra-chain = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "9a27f886a5bfb143f65d1712e912cef252426800" }
+zebra-rpc = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "9a27f886a5bfb143f65d1712e912cef252426800" }
+zebra-state = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "9a27f886a5bfb143f65d1712e912cef252426800" }

@@ -160,6 +160,16 @@ debug = true
 #zcash_protocol = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
 #zcash_transparent = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
 
+# TEMPORARY: zebra is pinned to an unreleased ZcashFoundation/zebra rev whose
+# ReadRequest::NonFinalizedBlocksListener is a struct variant carrying
+# `known_chain_tips` (its Cargo version is 9.0.1, but it is NOT the published
+# crates.io 9.0.1 — that one is still a unit variant). Revert to a plain
+# version requirement once the change is released. This patch MUST be mirrored
+# in every workspace that builds zaino-state — integration-tests/Cargo.toml and
+# integration-tests/wallet-tests/Cargo.toml — because zaino-state is a path
+# dependency and compiles against the host workspace's patched zebra; any skew
+# compiles it against the crates.io unit variant and fails with E0559. See
+# docs/updating_zebra_crates.md. Tracking: zaino#<TODO-revert-zebra-fork>.
 zebra-chain = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "9a27f886a5bfb143f65d1712e912cef252426800" }
 zebra-rpc = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "9a27f886a5bfb143f65d1712e912cef252426800" }
 zebra-state = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "9a27f886a5bfb143f65d1712e912cef252426800" }
