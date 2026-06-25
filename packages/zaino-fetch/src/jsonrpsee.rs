@@ -2,4 +2,5 @@
 
 pub mod connector;
 pub mod error;
+pub mod raw_transaction;
 pub mod response;
