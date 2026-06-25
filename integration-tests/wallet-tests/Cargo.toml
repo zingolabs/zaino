@@ -53,9 +53,9 @@ zainod = { path = "../../packages/zainod", default-features = false }
 zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "0cc7dab7d12dd906c23deddd4e1fc3c42cf0f083" }
 
 # Zebra
-zebra-chain = "9.0.0"
-zebra-rpc = "9.0.0"
-zebra-state = "8.0.0"
+zebra-chain = "10.0.0"
+zebra-rpc = "10.0.0"
+zebra-state = "9.0.0"
 
 # Runtime / misc
 tokio = { version = "1.38", features = ["full"] }
