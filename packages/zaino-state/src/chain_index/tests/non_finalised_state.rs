@@ -234,7 +234,7 @@ async fn race_pre_mine_finalized_height_block_is_evicted_when_source_advances_mi
         load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
 
     let initial_active = mockchain.active_height();
-    let pre_mine_finalized_height = finalized_height_floor(initial_active);
+    let pre_mine_finalized_height = dbg!(finalized_height_floor(initial_active));
 
     let initial_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
     let initial_nfs = initial_snapshot

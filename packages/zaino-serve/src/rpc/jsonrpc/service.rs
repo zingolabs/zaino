@@ -479,6 +479,18 @@ pub trait ZcashIndexerRpc {
 // Currently all errors are hidden from downstream client, a full fix should be implemented. this is a temporary fix to
 // get zaino working, propagating a 500 error code to "block not found". This is still not the full correct behaviour
 // but fixes the current bugs in zaino and gets tests running.
+fn rpc_error_from_error_source<'a>(
+    error_source: &'a (dyn std::error::Error + 'static),
+) -> Option<&'a zaino_fetch::jsonrpsee::connector::RpcError> {
+    error_source.downcast_ref::<zaino_fetch::jsonrpsee::connector::RpcError>()
+}
+
+fn error_object_from_rpc_error(
+    rpc_error: &zaino_fetch::jsonrpsee::connector::RpcError,
+) -> ErrorObjectOwned {
+    ErrorObjectOwned::owned(rpc_error.code as i32, rpc_error.message.clone(), None::<()>)
+}
+
 fn getblock_error_object_from_indexer_error<Error>(error: Error) -> ErrorObjectOwned
 where
     Error: std::error::Error + 'static,
@@ -498,6 +510,27 @@ where
                 "block not found",
                 None::<()>,
             );
+        }
+
+        current_error = error_source.source();
+    }
+
+    ErrorObjectOwned::owned(
+        ErrorCode::InternalError.code(),
+        "Internal server error",
+        Some(error.to_string()),
+    )
+}
+
+fn sendrawtransaction_error_object_from_indexer_error<Error>(error: Error) -> ErrorObjectOwned
+where
+    Error: std::error::Error + 'static,
+{
+    let mut current_error: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+
+    while let Some(error_source) = current_error {
+        if let Some(rpc_error) = rpc_error_from_error_source(error_source) {
+            return error_object_from_rpc_error(rpc_error);
         }
 
         current_error = error_source.source();
@@ -743,13 +776,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .send_raw_transaction(raw_transaction_hex)
             .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InvalidParams.code(),
-                    "Internal server error",
-                    Some(e.to_string()),
-                )
-            })
+            .map_err(sendrawtransaction_error_object_from_indexer_error)
     }
 
     async fn z_get_block(

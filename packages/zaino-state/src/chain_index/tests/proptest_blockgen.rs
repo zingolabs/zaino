@@ -32,7 +32,7 @@ use crate::{
         source::{BlockchainSourceResult, GetTransactionLocation},
         tests::{init_tracing, poll::poll_until, proptest_blockgen::proptest_helpers::add_segment},
         types::BestChainLocation,
-        NonFinalizedSnapshot,
+        NonFinalizedSnapshot, NON_FINALIZED_DEPTH,
     },
     BlockHash, BlockchainSource, ChainIndex, ChainIndexConfig, NodeBackedChainIndex,
     NodeBackedChainIndexSubscriber, TransactionHash,
@@ -53,7 +53,7 @@ fn passthrough_test(
     init_tracing();
     let network = Network::Regtest(ActivationHeights::default());
     // Long enough to have some finalized blocks to play with
-    let segment_length = 120;
+    let segment_length = NON_FINALIZED_DEPTH as usize + 20;
     // No need to worry about non-best chains for this test
     let branch_count = 1;
 
@@ -94,8 +94,12 @@ fn passthrough_test(
                 .await
                 .unwrap();
             let index_reader = indexer.subscriber();
-            // 101 instead of 100 as heights are 0-indexed
-            let expected_max_serviceable_height = (2 * segment_length) - 101;
+            // The best chain is `2 * segment_length` blocks (genesis segment +
+            // one branch), so its tip height is `2 * segment_length - 1`. The
+            // serviceable cutoff is the finalized floor at that tip — mirror
+            // production's `finalized_height_floor` exactly.
+            let tip_height = (2 * segment_length - 1) as u32;
+            let expected_max_serviceable_height = finalized_height_floor(tip_height).0 as usize;
             // Poll rather than sleeping a fixed 5 s: the indexer discovers the
             // chain topology as soon as the sync task has walked enough of the
             // source to identify the finalized-state cutoff. With a 1 s
