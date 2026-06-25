@@ -241,12 +241,24 @@ impl NonfinalizedBlockCacheSnapshot {
     }
 
     fn remove_finalized_blocks(&mut self, finalized_height: Height) {
+        let top_block_hash = match self
+            .heights_to_hashes
+            .iter()
+            .max_by_key(|(height, _hash)| *height)
+        {
+            Some((_height, hash)) => *hash,
+            // We have no blocks. There's nothing to remove
+            None => return,
+        };
         // Keep the last finalized block. This means we don't have to check
         // the finalized state when the entire non-finalized state is reorged away.
-        self.blocks
-            .retain(|_hash, block| block.height() >= finalized_height);
+        // If all blocks are below the finalized height, keep the highest anyway,
+        // so we don't need to re-connect the the finalized state to get chainwork, etc.
+        self.blocks.retain(|_hash, block| {
+            block.height() >= finalized_height || block.hash() == &top_block_hash
+        });
         self.heights_to_hashes
-            .retain(|height, _hash| height >= &finalized_height);
+            .retain(|height, hash| height >= &finalized_height || hash == &top_block_hash);
     }
 
     fn add_block(&mut self, block: IndexedBlock) {
@@ -448,7 +460,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 );
                 working_snapshot.add_block_new_chaintip(chainblock);
             } else {
-                self.handle_reorg(&mut working_snapshot, block.as_ref())
+                self.handle_reorg(&mut working_snapshot, block.as_ref(), 0)
                     .await?;
                 // There's been a reorg. The fresh block is the new chaintip
                 // we need to work backwards from it and update heights_to_hashes
@@ -480,7 +492,16 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         &self,
         working_snapshot: &mut NonfinalizedBlockCacheSnapshot,
         block: &impl Block,
+        recursion_count: u8,
     ) -> Result<IndexedBlock, SyncError> {
+        // We should never recurse back more than ~100 blocks, assuming
+        // a complete reorg of the entire nonfinalized state.
+        // 110 adds a likely unneeded safety margin
+        if recursion_count > 110 {
+            return Err(SyncError::ReorgFailure(
+                "reorg handling recursed beyond reason".to_string(),
+            ));
+        }
         let prev_block = match working_snapshot
             .get_block_by_hash_bytes_in_serialized_order(block.prev_hash_bytes_serialized_order())
             .cloned()
@@ -491,7 +512,8 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                     .values()
                     .any(|hash| hash == prev_block.hash())
                 {
-                    Box::pin(self.handle_reorg(working_snapshot, &prev_block)).await?
+                    Box::pin(self.handle_reorg(working_snapshot, &prev_block, recursion_count + 1))
+                        .await?
                 } else {
                     prev_block
                 }
@@ -515,7 +537,8 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                             "zebrad missing block in best chain".to_string(),
                         ))),
                     ))?;
-                Box::pin(self.handle_reorg(working_snapshot, &*prev_block)).await?
+                Box::pin(self.handle_reorg(working_snapshot, &*prev_block, recursion_count + 1))
+                    .await?
             }
         };
         let indexed_block = block.to_indexed_block(&prev_block, self).await?;
@@ -624,7 +647,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             .max_by_key(|block| block.chainwork())
             .cloned()
             .expect("empty snapshot impossible");
-        self.handle_reorg(&mut new_snapshot, best_block)
+        self.handle_reorg(&mut new_snapshot, best_block, 0)
             .await
             .map_err(|_e| UpdateError::DatabaseHole)?;
 

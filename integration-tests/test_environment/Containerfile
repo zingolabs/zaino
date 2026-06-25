@@ -7,6 +7,7 @@
 ARG RUST_VERSION
 ARG ZCASH_VERSION
 ARG ZEBRA_VERSION
+ARG DEVTOOL_VERSION
 ARG UID=1000
 ARG GID=${UID}
 ARG USER=container_user
@@ -77,6 +78,38 @@ RUN git clone --depth 1 --branch "v${ZCASH_VERSION}" \
     && ./zcutil/build.sh -j"$(nproc)" \
     && cp src/zcashd src/zcash-cli /tmp/
 
+FROM docker.io/library/rust:${RUST_VERSION}-trixie AS devtool-builder
+
+ARG DEVTOOL_VERSION
+# Resolved commit SHA of DEVTOOL_VERSION (a branch, hence moving). It seeds
+# the cache key of the build RUN below: a branch name alone never changes, so
+# without this the layer is reused even after the branch advances, baking a
+# stale binary. build-image.sh resolves it via `git ls-remote`; empty (e.g.
+# DEVTOOL_VERSION already a SHA) falls back to checking out DEVTOOL_VERSION.
+ARG DEVTOOL_REV
+# Versions pinned (DL3008) to the candidates in rust:1.95.0-trixie; bump
+# together with the base image (query with `apt-cache policy <pkg>`).
+# git/pkg-config/libssl-dev as for zebra-builder; protobuf-compiler for
+# tonic-build; libsqlite3-dev for the zcash_client_sqlite wallet database.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git=1:2.47.3-0+deb13u1 \
+    pkg-config=1.8.1-4 \
+    libssl-dev=3.5.6-1~deb13u1 \
+    protobuf-compiler=3.21.12-11 \
+    libsqlite3-dev=3.46.1-7+deb13u1
+WORKDIR /devtool
+# Single RUN (DL3059): clone, checkout, build, and stage the binary. The
+# image's default toolchain builds it (the source tree's
+# rust-toolchain.toml is removed so rustup does not fetch another one).
+# `regtest_support` is the feature wallet-tests' regtest clients require.
+# Checking out the resolved SHA (falling back to the branch) makes this layer
+# rebuild whenever DEVTOOL_REV changes.
+RUN git clone https://github.com/zingolabs/zcash-devtool . \
+    && git checkout "${DEVTOOL_REV:-$DEVTOOL_VERSION}" \
+    && rm -f rust-toolchain.toml \
+    && cargo build --release --features regtest_support \
+    && cp target/release/zcash-devtool /tmp/zcash-devtool
+
 ########################
 # === BASE RUNTIME IMAGE ===
 ########################
@@ -144,11 +177,14 @@ USER ${USER}
 FROM base AS final-prebuilt
 ARG ZCASH_VERSION
 ARG ZEBRA_VERSION
+ARG DEVTOOL_VERSION
 LABEL org.zaino.test-artifacts.versions.zcashd="${ZCASH_VERSION}"
 LABEL org.zaino.test-artifacts.versions.zebra="${ZEBRA_VERSION}"
+LABEL org.zaino.test-artifacts.versions.devtool="${DEVTOOL_VERSION}"
 COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-downloader /usr/bin/zcashd /home/container_user/artifacts/
 COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-downloader /usr/bin/zcash-cli /home/container_user/artifacts/
 COPY --chown=container_user:container_user --chmod=0755 --from=zebra-downloader /usr/local/bin/zebrad /home/container_user/artifacts/
+COPY --chown=container_user:container_user --chmod=0755 --from=devtool-builder /tmp/zcash-devtool /home/container_user/artifacts/
 RUN cargo install cargo-nextest --locked --verbose --root "${CARGO_HOME}" && \
     cargo install rust-script --locked --verbose --root "${CARGO_HOME}"
 
@@ -158,11 +194,14 @@ CMD ["/bin/bash"]
 FROM base AS final-zcashd-source
 ARG ZCASH_VERSION
 ARG ZEBRA_VERSION
+ARG DEVTOOL_VERSION
 LABEL org.zaino.test-artifacts.versions.zcashd="${ZCASH_VERSION}"
 LABEL org.zaino.test-artifacts.versions.zebra="${ZEBRA_VERSION}"
+LABEL org.zaino.test-artifacts.versions.devtool="${DEVTOOL_VERSION}"
 COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-builder /tmp/zcashd /home/container_user/artifacts/
 COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-builder /tmp/zcash-cli /home/container_user/artifacts/
 COPY --chown=container_user:container_user --chmod=0755 --from=zebra-downloader /usr/local/bin/zebrad /home/container_user/artifacts/
+COPY --chown=container_user:container_user --chmod=0755 --from=devtool-builder /tmp/zcash-devtool /home/container_user/artifacts/
 RUN cargo install cargo-nextest --locked --verbose --root "${CARGO_HOME}" && \
     cargo install rust-script --locked --verbose --root "${CARGO_HOME}"
 
@@ -172,11 +211,14 @@ CMD ["/bin/bash"]
 FROM base AS final-zebrad-source
 ARG ZCASH_VERSION
 ARG ZEBRA_VERSION
+ARG DEVTOOL_VERSION
 LABEL org.zaino.test-artifacts.versions.zcashd="${ZCASH_VERSION}"
 LABEL org.zaino.test-artifacts.versions.zebra="${ZEBRA_VERSION}"
+LABEL org.zaino.test-artifacts.versions.devtool="${DEVTOOL_VERSION}"
 COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-downloader /usr/bin/zcashd /home/container_user/artifacts/
 COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-downloader /usr/bin/zcash-cli /home/container_user/artifacts/
 COPY --chown=container_user:container_user --chmod=0755 --from=zebra-builder /tmp/zebrad /home/container_user/artifacts/
+COPY --chown=container_user:container_user --chmod=0755 --from=devtool-builder /tmp/zcash-devtool /home/container_user/artifacts/
 RUN cargo install cargo-nextest --locked --verbose --root "${CARGO_HOME}" && \
     cargo install rust-script --locked --verbose --root "${CARGO_HOME}"
 
@@ -186,11 +228,14 @@ CMD ["/bin/bash"]
 FROM base AS final-all-source
 ARG ZCASH_VERSION
 ARG ZEBRA_VERSION
+ARG DEVTOOL_VERSION
 LABEL org.zaino.test-artifacts.versions.zcashd="${ZCASH_VERSION}"
 LABEL org.zaino.test-artifacts.versions.zebra="${ZEBRA_VERSION}"
+LABEL org.zaino.test-artifacts.versions.devtool="${DEVTOOL_VERSION}"
 COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-builder /tmp/zcashd /home/container_user/artifacts/
 COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-builder /tmp/zcash-cli /home/container_user/artifacts/
 COPY --chown=container_user:container_user --chmod=0755 --from=zebra-builder /tmp/zebrad /home/container_user/artifacts/
+COPY --chown=container_user:container_user --chmod=0755 --from=devtool-builder /tmp/zcash-devtool /home/container_user/artifacts/
 RUN cargo install cargo-nextest --locked --verbose --root "${CARGO_HOME}" && \
     cargo install rust-script --locked --verbose --root "${CARGO_HOME}"
 

@@ -6,7 +6,7 @@ repository = { workspace = true }
 homepage = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
-version = "0.4.0"
+version = "0.4.1"
 
 [[bin]]
 name = "zainod"
@@ -17,6 +17,18 @@ name = "zainodlib"
 path = "src/lib.rs"
 
 [features]
+default = ["zcashd_support"]
+
+# Support for connecting to a zcashd validator node. Default-on; being
+# deprecated. Forwards to the zaino libs. Build with `--no-default-features`
+# to compile zcashd out end-to-end. See
+# docs/adr/0001-zcashd-support-feature-gate.md.
+zcashd_support = [
+  "zaino-fetch/zcashd_support",
+  "zaino-state/zcashd_support",
+  "zaino-serve/zcashd_support",
+]
+
 # Removes network restrictions.
 no_tls_use_unencrypted_traffic = ["zaino-serve/no_tls_use_unencrypted_traffic"]
 
@@ -48,9 +60,9 @@ transparent_address_history_experimental = [
 
 [dependencies]
 zaino-common = { workspace = true }
-zaino-fetch = { workspace = true }
-zaino-state = { workspace = true }
-zaino-serve = { workspace = true }
+zaino-fetch = { workspace = true, default-features = false }
+zaino-state = { workspace = true, default-features = false }
+zaino-serve = { workspace = true, default-features = false }
 
 # Zebra
 zebra-chain = { workspace = true }

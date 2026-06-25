@@ -60,6 +60,38 @@ jobs:
   compute-tag:
     uses: ./.github/workflows/compute-tag.yml
 
+  no-zcashd-build:
+    name: No-zcashd build (--no-default-features)
+    # The default-on `zcashd_support` feature is being deprecated; its OFF
+    # state must keep compiling or the deprecation path bit-rots. Runs in the
+    # CI container (toolchain + git deps + cargo cache) like the build job, so
+    # it is skipped on PRs until a self-hosted runner is available — same as the
+    # other compiling jobs. See docs/adr/0001-zcashd-support-feature-gate.md.
+    needs: compute-tag
+    container:
+      image: docker.io/zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
+    runs-on: arc-sh-runners
+    if: github.event_name != 'pull_request' && github.event.pull_request.draft == false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Restore cargo dependencies
+        uses: tespkg/actions-cache/restore@v1
+        with:
+          endpoint: ${{ env.CACHE_ENDPOINT }}
+          port: ${{ env.CACHE_PORT }}
+          bucket: ${{ env.CACHE_BUCKET }}
+          insecure: ${{ env.INSECURE_CACHE }}
+          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-deps-
+          path: |
+            ~/.cargo
+            target/debug/deps
+
+      - name: Check no-zcashd build across all three workspaces
+        run: makers check-no-zcashd
+
   build-test-artifacts:
     name: Build test artifacts
     needs: compute-tag

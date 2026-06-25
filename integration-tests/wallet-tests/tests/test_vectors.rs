@@ -9,7 +9,6 @@ use std::io::BufWriter;
 use std::path::Path;
 use std::sync::Arc;
 use tower::{Service, ServiceExt as _};
-use wallet_tests::from_inputs;
 use zaino_state::read_u32_le;
 use zaino_state::read_u64_le;
 use zaino_state::write_u32_le;
@@ -39,7 +38,7 @@ macro_rules! expected_read_response {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "Not a test! Used to build test vector data for zaino_state::chain_index unit tests."]
+#[cfg_attr(not(feature = "devtool-incompatible"), ignore = "Not a test: builds test-vector data for zaino_state::chain_index unit tests. Also funds via transparent-coinbase shielding (round-2 P1) — un-ignore to regenerate vectors once devtool can shield its own transparent coinbase (tracked by tests/devtool.rs's address_deltas).")]
 #[allow(deprecated)]
 async fn create_200_block_regtest_chain_vectors() {
     // The committed unit-test vectors encode a mixed-pool chain built by
@@ -60,7 +59,13 @@ async fn create_200_block_regtest_chain_vectors() {
 
     let state_service_subscriber = test_manager.service_subscriber.take().unwrap();
 
-    let mut clients = wallet_tests::build_clients_for(&test_manager, &ValidatorKind::Zebrad);
+    let mut clients = wallet_tests::devtool::build_clients(
+        test_manager
+            .zaino_grpc_listen_address
+            .expect("zaino enabled")
+            .port(),
+    )
+    .await;
 
     let faucet_taddr = clients.get_faucet_address("transparent").await;
     let faucet_saddr = clients.get_faucet_address("sapling").await;
@@ -70,18 +75,20 @@ async fn create_200_block_regtest_chain_vectors() {
     let recipient_saddr = clients.get_recipient_address("sapling").await;
     let recipient_uaddr = clients.get_recipient_address("unified").await;
 
-    // *** Mine 100 blocks to finalise first block reward, shield it, and mine
-    // the shield in ***
+    // *** Mine past coinbase maturity, shield the first reward, and mine it in ***
+    // Mature the faucet's transparent coinbase (100-block maturity) and shield
+    // it. Devtool analogue of `shield_faucet_rounds`; requires the devtool wallet
+    // to spend its own transparent coinbase (round-2 P1, see #[ignore]). Mine
+    // generously (150) so the earliest coinbase — a few blocks past genesis — is
+    // comfortably mature before the shield, regardless of startup height.
+    test_manager
+        .generate_blocks_and_wait_for_tip(150, &state_service_subscriber)
+        .await;
     clients.sync_faucet().await;
-    wallet_tests::shield_faucet_rounds(
-        &test_manager,
-        &mut clients,
-        &state_service_subscriber,
-        &state_service_subscriber,
-        &[100],
-        1,
-    )
-    .await;
+    clients.shield_faucet().await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(1, &state_service_subscriber)
+        .await;
 
     // *** Build 100 block chain holding transparent, sapling, and orchard transactions ***
     // create transactions
@@ -109,12 +116,7 @@ async fn create_200_block_regtest_chain_vectors() {
         .send_from_faucet(recipient_uaddr.as_str(), 250_000)
         .await;
 
-    from_inputs::quick_send(
-        &mut clients.recipient,
-        vec![(faucet_taddr.as_str(), 200_000, None)],
-    )
-    .await
-    .unwrap();
+    clients.send_from_recipient(faucet_taddr.as_str(), 200_000).await;
 
     // Generate block
     test_manager
@@ -136,12 +138,7 @@ async fn create_200_block_regtest_chain_vectors() {
         .send_from_faucet(recipient_uaddr.as_str(), 250_000)
         .await;
 
-    from_inputs::quick_send(
-        &mut clients.recipient,
-        vec![(faucet_taddr.as_str(), 250_000, None)],
-    )
-    .await
-    .unwrap();
+    clients.send_from_recipient(faucet_taddr.as_str(), 250_000).await;
 
     // Generate block
     test_manager
@@ -170,18 +167,8 @@ async fn create_200_block_regtest_chain_vectors() {
             .send_from_faucet(recipient_uaddr.as_str(), 250_000)
             .await;
 
-        from_inputs::quick_send(
-            &mut clients.recipient,
-            vec![(faucet_taddr.as_str(), 200_000, None)],
-        )
-        .await
-        .unwrap();
-        from_inputs::quick_send(
-            &mut clients.recipient,
-            vec![(faucet_uaddr.as_str(), 200_000, None)],
-        )
-        .await
-        .unwrap();
+        clients.send_from_recipient(faucet_taddr.as_str(), 200_000).await;
+        clients.send_from_recipient(faucet_uaddr.as_str(), 200_000).await;
 
         // Generate block
         test_manager
@@ -212,18 +199,8 @@ async fn create_200_block_regtest_chain_vectors() {
             .send_from_faucet(recipient_uaddr.as_str(), 250_000)
             .await;
 
-        from_inputs::quick_send(
-            &mut clients.recipient,
-            vec![(faucet_taddr.as_str(), 250_000, None)],
-        )
-        .await
-        .unwrap();
-        from_inputs::quick_send(
-            &mut clients.recipient,
-            vec![(faucet_saddr.as_str(), 250_000, None)],
-        )
-        .await
-        .unwrap();
+        clients.send_from_recipient(faucet_taddr.as_str(), 250_000).await;
+        clients.send_from_recipient(faucet_saddr.as_str(), 250_000).await;
 
         // Generate block
         test_manager

@@ -8,6 +8,15 @@ edition = { workspace = true }
 license = { workspace = true }
 version = "0.2.0"
 
+[features]
+default = ["zcashd_support"]
+
+# Support for connecting to a zcashd validator node. Default-on; being
+# deprecated. Gates the zcashd-shaped getpeerinfo parsing. Dropping it
+# (`--no-default-features`) compiles zcashd parsing out. See
+# docs/adr/0001-zcashd-support-feature-gate.md.
+zcashd_support = []
+
 [dependencies]
 zaino-common = { workspace = true }
 zaino-proto = { workspace = true }

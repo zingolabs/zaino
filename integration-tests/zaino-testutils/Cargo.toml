@@ -10,6 +10,20 @@ version = { workspace = true }
 publish = false
 
 [features]
+default = ["zcashd_support"]
+
+# Support for the zcashd test validator. Default-on; being deprecated. Gates
+# the zcashd-specific test infra (ValidatorKind::Zcashd, the Zcashd validator
+# launchers, ZcashdDualFetchServices, the zcashd smoke-test module) and
+# forwards to the zaino libs. See
+# docs/adr/0001-zcashd-support-feature-gate.md.
+zcashd_support = [
+    "zaino-fetch/zcashd_support",
+    "zaino-state/zcashd_support",
+    "zaino-serve/zcashd_support",
+    "zainod/zcashd_support",
+]
+
 # **Experimental and alpha features**
 # Exposes the **complete** set of experimental / alpha features currently implemented in Zaino.
 experimental_features = ["transparent_address_history_experimental"]

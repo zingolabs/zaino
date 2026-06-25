@@ -153,18 +153,36 @@ async fn load_with_settings(
     // floor — the sync loop only initialises NFS after `sync_to_height`
     // succeeds — so this condition subsumes the old one.
     let expected_nfs_tip = source.active_height();
-    loop {
-        let nfs_ready = match index_reader.snapshot_nonfinalized_state().await {
-            Ok(snap) => snap
-                .get_nfs_snapshot()
-                .is_some_and(|nfs| nfs.best_tip.height.0 == expected_nfs_tip),
-            Err(_) => false,
-        };
-        if nfs_ready {
-            break;
+    // Bound the readiness wait so a sync worker that never signals NFS-ready
+    // (a starvation / missed-notification hang in chain-index sync, observed on
+    // this helper under full-suite parallelism) fails loud here instead of
+    // hanging the whole test indefinitely. The seed copy normally satisfies the
+    // condition on the first probe (~0.5s), so 10s is ~20x the expected margin
+    // — only a genuine hang trips it.
+    const NFS_READY_BUDGET: Duration = Duration::from_secs(10);
+    tokio::time::timeout(NFS_READY_BUDGET, async {
+        loop {
+            let nfs_ready = match index_reader.snapshot_nonfinalized_state().await {
+                Ok(snap) => snap
+                    .get_nfs_snapshot()
+                    .is_some_and(|nfs| nfs.best_tip.height.0 == expected_nfs_tip),
+                Err(_) => false,
+            };
+            if nfs_ready {
+                break;
+            }
+            tokio::time::sleep(setup_poll_interval).await;
         }
-        tokio::time::sleep(setup_poll_interval).await;
-    }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "chain-index sync worker did not bring non-finalised state to the \
+             expected tip (height {expected_nfs_tip}) within {NFS_READY_BUDGET:?}; \
+             the worker likely deadlocked or missed its readiness notification \
+             under load (chain index integration)"
+        )
+    });
 
     (blocks, indexer, index_reader, source)
 }

@@ -9,6 +9,13 @@ license = { workspace = true }
 version = "0.3.0"
 
 [features]
+default = ["zcashd_support"]
+
+# Support for connecting to a zcashd validator node. Default-on; being
+# deprecated. Forwards to zaino-fetch and zaino-state. See
+# docs/adr/0001-zcashd-support-feature-gate.md.
+zcashd_support = ["zaino-fetch/zcashd_support", "zaino-state/zcashd_support"]
+
 # Removes network restrictions.
 no_tls_use_unencrypted_traffic = ["tonic/tls-native-roots"]
 
@@ -23,8 +30,8 @@ transparent_address_history_experimental = ["zaino-state/transparent_address_his
 
 [dependencies]
 zaino-proto = { workspace = true }
-zaino-fetch = { workspace = true }
-zaino-state = { workspace = true }
+zaino-fetch = { workspace = true, default-features = false }
+zaino-state = { workspace = true, default-features = false }
 
 # Zebra
 zebra-chain = { workspace = true }

@@ -131,6 +131,7 @@ async fn assert_fetch_service_mininginfo_matches_rpc<V: ValidatorExt>(validator:
     .await;
 }
 
+#[cfg(feature = "zcashd_support")]
 #[allow(deprecated)]
 async fn assert_fetch_service_gettxoutsetinfo_matches_rpc<V: ValidatorExt>(
     validator: &ValidatorKind,
@@ -582,6 +583,7 @@ async fn assert_fetch_service_getnetworksols_matches_rpc<V: ValidatorExt>(
     .await;
 }
 
+#[cfg(feature = "zcashd_support")]
 #[allow(deprecated)]
 async fn fetch_service_get_block_deltas<V: ValidatorExt>(validator: &ValidatorKind) {
     let (test_manager, fetch_service_subscriber) =
@@ -610,6 +612,7 @@ async fn fetch_service_get_block_deltas<V: ValidatorExt>(validator: &ValidatorKi
     assert_eq!(fetch_service_block_deltas, rpc_block_deltas);
 }
 
+#[cfg(feature = "zcashd_support")]
 mod zcashd {
 
     use super::*;

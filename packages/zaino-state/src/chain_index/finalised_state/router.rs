@@ -475,7 +475,7 @@ impl<T: BlockchainSource> Router<T> {
                     FinalisedSource::Ephemeral(ephemeral_backend) => {
                         ephemeral_backend.update_db_height(db_height)?;
                     }
-                    FinalisedSource::V0(_) | FinalisedSource::V1(_) => {
+                    FinalisedSource::V1(_) => {
                         self.decrement_ephemeral_reference_count(mode);
 
                         return Err(FinalisedStateError::Custom(
@@ -601,7 +601,7 @@ impl<T: BlockchainSource> Router<T> {
 
         match ephemeral.as_ref() {
             FinalisedSource::Ephemeral(ephemeral) => ephemeral.update_db_height(db_height),
-            FinalisedSource::V0(_) | FinalisedSource::V1(_) => Err(FinalisedStateError::Custom(
+            FinalisedSource::V1(_) => Err(FinalisedStateError::Custom(
                 "router ephemeral slot contained a persistent database backend".to_string(),
             )),
         }

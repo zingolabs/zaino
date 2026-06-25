@@ -29,6 +29,7 @@ use zaino_fetch::{
     chain::{transaction::FullTransaction, utils::ParseFromSlice},
     jsonrpsee::{
         connector::{JsonRpSeeConnector, RpcError},
+        raw_transaction::validate_raw_transaction_hex,
         response::{
             address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
             block_deltas::{BlockDelta, BlockDeltas, InputDelta, OutputDelta},
@@ -220,21 +221,27 @@ impl ZcashService for StateService {
 
         info!("Chain syncer launched");
 
-        // Wait for ReadStateService to catch up to primary database:
+        // Wait for ReadStateService to catch up to the validator's best chain tip.
+        // Height alone is insufficient during reorgs: the same height can refer to
+        // different blocks until JSON-RPC and ReadStateService agree on tip hash.
         loop {
-            let server_height = rpc_client.get_blockchain_info().await?.blocks;
+            let blockchain_info = rpc_client.get_blockchain_info().await?;
+            let server_height = blockchain_info.blocks;
+            let server_tip_hash = blockchain_info.best_block_hash;
 
             let syncer_response = read_state_service
                 .ready()
                 .and_then(|service| service.call(ReadRequest::Tip))
                 .await?;
-            let (syncer_height, _) = expected_read_response!(syncer_response, Tip).ok_or(
-                RpcError::new_from_legacycode(LegacyCode::Misc, "no blocks in chain"),
-            )?;
+            let (syncer_height, syncer_tip_hash) =
+                expected_read_response!(syncer_response, Tip).ok_or(
+                    RpcError::new_from_legacycode(LegacyCode::Misc, "no blocks in chain"),
+                )?;
 
-            if server_height.0 == syncer_height.0 {
+            if server_height == syncer_height && server_tip_hash == syncer_tip_hash {
                 info!(
                     height = syncer_height.0,
+                    tip_hash = %syncer_tip_hash,
                     "ReadStateService synced with Zebra"
                 );
                 break;
@@ -242,6 +249,8 @@ impl ZcashService for StateService {
                 info!(
                     syncer_height = syncer_height.0,
                     validator_height = server_height.0,
+                    syncer_tip_hash = %syncer_tip_hash,
+                    validator_tip_hash = %server_tip_hash,
                     "ReadStateService syncing with Zebra"
                 );
                 tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
@@ -1195,6 +1204,7 @@ impl ZcashIndexer for StateServiceSubscriber {
         &self,
         raw_transaction_hex: String,
     ) -> Result<SentTransactionHash, Self::Error> {
+        validate_raw_transaction_hex(&raw_transaction_hex).map_err(StateServiceError::RpcError)?;
         // Offload to the json rpc connector, as ReadStateService
         // doesn't yet interface with the mempool
         self.rpc_client
@@ -1427,6 +1437,15 @@ impl ZcashIndexer for StateServiceSubscriber {
 
         if let Ok(response) = local_result {
             return Ok(response);
+        }
+
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        if !self
+            .indexer
+            .hash_or_height_known_for_treestate(&snapshot, &fallback_hash_or_height)
+            .await?
+        {
+            return local_result;
         }
 
         self.rpc_client

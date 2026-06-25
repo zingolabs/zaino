@@ -3,7 +3,7 @@ members = [
     "walletless-tests",
     "zaino-testutils",
 ]
-# wallet-tests is its own workspace (zingolib stack, separate Cargo.lock).
+# wallet-tests is its own workspace (devtool wallet-client stack, separate Cargo.lock).
 exclude = ["wallet-tests"]
 resolver = "2"
 
@@ -17,27 +17,35 @@ version = "0.2.0"
 
 [workspace.dependencies]
 # Workspace members
-zaino-testutils = { path = "zaino-testutils" }
+# default-features = false so the default-on `zcashd_support` feature can be
+# dropped via `--no-default-features`; consumers re-enable it by forwarding
+# `zcashd_support`. See docs/adr/0001-zcashd-support-feature-gate.md.
+zaino-testutils = { path = "zaino-testutils", default-features = false }
 
 # Non-member path deps (from parent workspace)
 zaino-proto = { path = "../packages/zaino-proto" }
-zaino-state = { path = "../packages/zaino-state" }
-zaino-serve = { path = "../packages/zaino-serve" }
+zaino-state = { path = "../packages/zaino-state", default-features = false }
+zaino-serve = { path = "../packages/zaino-serve", default-features = false }
 zaino-common = { path = "../packages/zaino-common" }
-zaino-fetch = { path = "../packages/zaino-fetch" }
-zainod = { path = "../packages/zainod" }
+zaino-fetch = { path = "../packages/zaino-fetch", default-features = false }
+zainod = { path = "../packages/zainod", default-features = false }
 
 # Zingo-infra (validator launcher; not a wallet dep)
-zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", tag = "zcash_local_net_v0.6.0" }
+# TEMPORARY (zingolabs/infrastructure#269): pinned to a specific commit on the
+# `add_client_support` branch (not the branch itself) so every machine
+# resolves the same code — the Cargo.lock files are gitignored, and a moving
+# branch ref otherwise resolves differently per cargo cache. Bump this rev as
+# the coordinated work advances; restore the release tag once tagged upstream.
+zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "0cc7dab7d12dd906c23deddd4e1fc3c42cf0f083" }
 
 # Librustzcash
 zcash_protocol = { version = "0.9", features = ["local-consensus"] }
 zcash_client_backend = "0.23"
 
 # Zebra
-zebra-chain = "9.0.0"
-zebra-state = "8.0.0"
-zebra-rpc = "9.0.0"
+zebra-chain = "10.0.0"
+zebra-state = "9.0.0"
+zebra-rpc = "10.0.0"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
