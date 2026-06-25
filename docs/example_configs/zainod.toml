@@ -17,7 +17,7 @@ network = 'Testnet'
 # Run the finalised state in ephemeral/stateless mode. When true, Zaino opens no
 # persistent finalised-state database and serves finalised reads directly from
 # the backing validator via a stateless passthrough. Default: false.
-ephemeral_finalised_state = false
+ephemeral_finalised_state = true
 
 [grpc_settings]
 listen_address = '127.0.0.1:8137'
