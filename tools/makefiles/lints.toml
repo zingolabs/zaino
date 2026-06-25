@@ -61,9 +61,20 @@ script = [
     '''
 ]
 
+[tasks.lint-shell]
+description = "Lint all shell scripts with shellcheck"
+script_runner = "bash"
+script = 'source "./tools/scripts/lint-shell.sh"'
+
 [tasks.lint]
 description = "Run all lints. Use as a pre-commit hook."
-dependencies = ["fmt", "clippy", "doc", "lint-boundary-conversions"]
+dependencies = [
+    "fmt",
+    "clippy",
+    "doc",
+    "lint-boundary-conversions",
+    "lint-shell",
+]
 
 [tasks.toggle-hooks]
 description = "Toggles the git config for core.hooksPath"

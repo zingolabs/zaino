@@ -6,10 +6,18 @@ repository = { workspace = true }
 homepage = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
-version = "0.1.0"
+version = "0.3.0"
 
 [features]
-default = []
+default = ["zcashd_support"]
+
+# Support for connecting to a zcashd validator node. Default-on; being
+# deprecated. Forwards to zaino-fetch. See
+# docs/adr/0001-zcashd-support-feature-gate.md.
+zcashd_support = ["zaino-fetch/zcashd_support"]
+
+# Prometheus metrics emission (gauge! calls in sync paths).
+prometheus = ["metrics"]
 
 # test_dependencies - Exposes internal functionality for testing.
 test_dependencies = []
@@ -25,7 +33,7 @@ transparent_address_history_experimental = []
 
 [dependencies]
 zaino-common = { workspace = true }
-zaino-fetch = { workspace = true }
+zaino-fetch = { workspace = true, default-features = false }
 zaino-proto = { workspace = true }
 
 # LibRustZcash
@@ -35,7 +43,7 @@ zcash_keys = { workspace = true, features = ["sapling"] }
 zcash_primitives = { workspace = true }
 zcash_protocol = { workspace = true }
 zcash_transparent = { workspace = true }
-sapling-crypto = "0.5.0"
+sapling-crypto = "0.7"
 
 # Zebra
 zebra-chain = { workspace = true }
@@ -44,6 +52,9 @@ zebra-rpc = { workspace = true }
 
 # Tracing
 tracing = { workspace = true }
+
+# Metrics
+metrics = { workspace = true, optional = true }
 
 # Documentation
 simple-mermaid = "0.2.0"

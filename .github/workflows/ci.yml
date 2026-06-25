@@ -23,8 +23,74 @@ env:
   INSECURE_CACHE: true
 
 jobs:
+  hadolint:
+    name: Hadolint
+    # Runs on a GitHub-hosted runner (not the self-hosted arc-sh-runners) so it
+    # executes on pull requests, unlike the build/test jobs below which are
+    # skipped on PRs until a self-hosted runner is available. The hadolint
+    # image is pinned by digest for supply-chain integrity; .hadolint.yaml at
+    # the repo root sets the policy (DL3008 apt-version pinning is enforced).
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Lint Dockerfiles
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo \
+            --entrypoint hadolint \
+            hadolint/hadolint:v2.14.0@sha256:27086352fd5e1907ea2b934eb1023f217c5ae087992eb59fde121dce9c9ff21e \
+            Dockerfile integration-tests/test_environment/Containerfile
+
+  fmt:
+    name: Rustfmt
+    # Runs on a GitHub-hosted runner (not the self-hosted arc-sh-runners) so it
+    # executes on pull requests, unlike the build/test jobs below which are
+    # skipped on PRs until a self-hosted runner is available. cargo fmt
+    # auto-installs the toolchain and rustfmt component pinned in
+    # rust-toolchain.toml on first use.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+        
   compute-tag:
     uses: ./.github/workflows/compute-tag.yml
+
+  no-zcashd-build:
+    name: No-zcashd build (--no-default-features)
+    # The default-on `zcashd_support` feature is being deprecated; its OFF
+    # state must keep compiling or the deprecation path bit-rots. Runs in the
+    # CI container (toolchain + git deps + cargo cache) like the build job, so
+    # it is skipped on PRs until a self-hosted runner is available — same as the
+    # other compiling jobs. See docs/adr/0001-zcashd-support-feature-gate.md.
+    needs: compute-tag
+    container:
+      image: docker.io/zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
+    runs-on: arc-sh-runners
+    if: github.event_name != 'pull_request' && github.event.pull_request.draft == false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Restore cargo dependencies
+        uses: tespkg/actions-cache/restore@v1
+        with:
+          endpoint: ${{ env.CACHE_ENDPOINT }}
+          port: ${{ env.CACHE_PORT }}
+          bucket: ${{ env.CACHE_BUCKET }}
+          insecure: ${{ env.INSECURE_CACHE }}
+          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-deps-
+          path: |
+            ~/.cargo
+            target/debug/deps
+
+      - name: Check no-zcashd build across all three workspaces
+        run: makers check-no-zcashd
 
   build-test-artifacts:
     name: Build test artifacts
@@ -36,7 +102,7 @@ jobs:
     if: github.event_name != 'pull_request' && github.event.pull_request.draft == false
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Restore cargo dependencies
         id: restore-cargo
@@ -98,7 +164,7 @@ jobs:
           - "zaino-state"
           - "zaino-testutils"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Restore cargo dependencies
         uses: tespkg/actions-cache/restore@v1

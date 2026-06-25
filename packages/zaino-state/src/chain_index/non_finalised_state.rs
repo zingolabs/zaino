@@ -1,4 +1,4 @@
-use super::{finalised_state::ZainoDB, source::BlockchainSource};
+use super::{finalised_state::FinalisedState, source::BlockchainSource, NON_FINALIZED_DEPTH};
 use crate::{
     chain_index::types::{
         self, BlockHash, BlockIndex, BlockMetadata, BlockWithMetadata, Height, TreeRootData,
@@ -14,6 +14,15 @@ use tokio::sync::mpsc;
 use tracing::{info, instrument, warn};
 use zebra_chain::{parameters::Network, serialization::BytesInDisplayOrder};
 use zebra_state::HashOrHeight;
+
+/// Hard cap on how many blocks below the tip the non-finalised state retains in memory.
+///
+/// [`NonFinalizedState::update`] normally trims everything below the finalised database height,
+/// but that height can lag far behind the tip while the finalised DB syncs in the background, and
+/// is pinned at `0` in ephemeral mode. Without an independent floor the snapshot would grow by one
+/// block per new block indefinitely. This caps retention to a fixed window regardless, a small
+/// margin above [`NON_FINALIZED_DEPTH`] so it never trims inside the reorg-possible range.
+const MAX_NFS_DEPTH: u32 = NON_FINALIZED_DEPTH + 10;
 
 /// Holds the block cache
 #[derive(Debug)]
@@ -232,12 +241,24 @@ impl NonfinalizedBlockCacheSnapshot {
     }
 
     fn remove_finalized_blocks(&mut self, finalized_height: Height) {
+        let top_block_hash = match self
+            .heights_to_hashes
+            .iter()
+            .max_by_key(|(height, _hash)| *height)
+        {
+            Some((_height, hash)) => *hash,
+            // We have no blocks. There's nothing to remove
+            None => return,
+        };
         // Keep the last finalized block. This means we don't have to check
         // the finalized state when the entire non-finalized state is reorged away.
-        self.blocks
-            .retain(|_hash, block| block.height() >= finalized_height);
+        // If all blocks are below the finalized height, keep the highest anyway,
+        // so we don't need to re-connect the the finalized state to get chainwork, etc.
+        self.blocks.retain(|_hash, block| {
+            block.height() >= finalized_height || block.hash() == &top_block_hash
+        });
         self.heights_to_hashes
-            .retain(|height, _hash| height >= &finalized_height);
+            .retain(|height, hash| height >= &finalized_height || hash == &top_block_hash);
     }
 
     fn add_block(&mut self, block: IndexedBlock) {
@@ -349,9 +370,22 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             .map(Mutex::new)
     }
 
-    /// sync to the top of the chain, trimming to the finalised tip.
+    /// Sync to the iter-committed `chain_height`, trimming to the finalised
+    /// tip.
+    ///
+    /// `chain_height` is the worker's snapshot of the source's best block
+    /// height at the start of this iter (the same value `fs.sync_to_height`
+    /// was called against). NFS extension is bounded by that height, so a
+    /// source advance mid-iter — the validator producing new blocks while
+    /// the worker's NFS-sync loop is still running — is deferred to iter
+    /// N+1, which will read a fresh `chain_height` and trim the published
+    /// snapshot with the correct finalised floor. Closes #1126.
     #[instrument(name = "NonFinalizedState::sync", skip(self, finalized_db))]
-    pub(super) async fn sync(&self, finalized_db: Arc<ZainoDB>) -> Result<(), SyncError> {
+    pub(super) async fn sync(
+        &self,
+        finalized_db: Arc<FinalisedState<Source>>,
+        chain_height: Height,
+    ) -> Result<(), SyncError> {
         let mut initial_state = self.get_snapshot();
         let local_finalized_tip = finalized_db.to_reader().db_height().await?;
         if Some(initial_state.best_tip.height) < local_finalized_tip {
@@ -392,6 +426,15 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 ))
             })?
         {
+            // Bail before applying any block that lies above the iter's
+            // committed `chain_height`. The speculative `get_block` above
+            // can return a block that wasn't yet on the source when the
+            // worker committed (the mid-iter source-advance race in
+            // #1126); applying it would silently widen this iter's
+            // publish past its iter-start `fs.sync_to_height` floor.
+            if u32::from(working_snapshot.best_tip.height) + 1 > u32::from(chain_height) {
+                break;
+            }
             let parent_hash = BlockHash::from(block.header.previous_block_hash);
             if parent_hash == working_snapshot.best_tip.hash {
                 // Normal chain progression
@@ -417,13 +460,15 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 );
                 working_snapshot.add_block_new_chaintip(chainblock);
             } else {
-                self.handle_reorg(&mut working_snapshot, block.as_ref())
+                self.handle_reorg(&mut working_snapshot, block.as_ref(), 0)
                     .await?;
                 // There's been a reorg. The fresh block is the new chaintip
                 // we need to work backwards from it and update heights_to_hashes
                 // with it and all its parents.
             }
-            if initial_state.best_tip.height + 100 < working_snapshot.best_tip.height {
+            if initial_state.best_tip.height + NON_FINALIZED_DEPTH
+                < working_snapshot.best_tip.height
+            {
                 self.update(finalized_db.clone(), initial_state, working_snapshot)
                     .await?;
                 initial_state = self.current.load_full();
@@ -445,7 +490,16 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         &self,
         working_snapshot: &mut NonfinalizedBlockCacheSnapshot,
         block: &impl Block,
+        recursion_count: u8,
     ) -> Result<IndexedBlock, SyncError> {
+        // We should never recurse back more than ~100 blocks, assuming
+        // a complete reorg of the entire nonfinalized state.
+        // 110 adds a likely unneeded safety margin
+        if recursion_count > 110 {
+            return Err(SyncError::ReorgFailure(
+                "reorg handling recursed beyond reason".to_string(),
+            ));
+        }
         let prev_block = match working_snapshot
             .get_block_by_hash_bytes_in_serialized_order(block.prev_hash_bytes_serialized_order())
             .cloned()
@@ -456,7 +510,8 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                     .values()
                     .any(|hash| hash == prev_block.hash())
                 {
-                    Box::pin(self.handle_reorg(working_snapshot, &prev_block)).await?
+                    Box::pin(self.handle_reorg(working_snapshot, &prev_block, recursion_count + 1))
+                        .await?
                 } else {
                     prev_block
                 }
@@ -480,7 +535,8 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                             "zebrad missing block in best chain".to_string(),
                         ))),
                     ))?;
-                Box::pin(self.handle_reorg(working_snapshot, &*prev_block)).await?
+                Box::pin(self.handle_reorg(working_snapshot, &*prev_block, recursion_count + 1))
+                    .await?
             }
         };
         let indexed_block = block.to_indexed_block(&prev_block, self).await?;
@@ -528,7 +584,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     /// Add all blocks from the staging area, and save a new cache snapshot, trimming block below the finalised tip.
     pub(super) async fn update(
         &self,
-        finalized_db: Arc<ZainoDB>,
+        finalized_db: Arc<FinalisedState<Source>>,
         initial_state: Arc<NonfinalizedBlockCacheSnapshot>,
         mut new_snapshot: NonfinalizedBlockCacheSnapshot,
     ) -> Result<(), UpdateError> {
@@ -539,14 +595,25 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             .map_err(|_e| UpdateError::FinalizedStateCorruption)?
             .unwrap_or(Height(0));
 
-        new_snapshot.remove_finalized_blocks(finalized_height);
+        // Trim below the finalised height, but never retain more than `MAX_NFS_DEPTH` blocks below
+        // the tip even when `db_height` under-reports (background sync) or is `0` (ephemeral mode).
+        // This bounds NFS memory to a fixed window; the `max` keeps the normal finalised-height
+        // floor in healthy operation, where it sits above the tip-relative cap.
+        let tip_height = new_snapshot.best_tip.height.0;
+        let trim_height = Height(
+            finalized_height
+                .0
+                .max(tip_height.saturating_sub(MAX_NFS_DEPTH)),
+        );
+
+        new_snapshot.remove_finalized_blocks(trim_height);
         let best_block = &new_snapshot
             .blocks
             .values()
             .max_by_key(|block| block.chainwork())
             .cloned()
             .expect("empty snapshot impossible");
-        self.handle_reorg(&mut new_snapshot, best_block)
+        self.handle_reorg(&mut new_snapshot, best_block, 0)
             .await
             .map_err(|_e| UpdateError::DatabaseHole)?;
 
@@ -700,7 +767,9 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             }
         };
         let indexed_block = block.to_indexed_block(&prev_block, self).await?;
-        working_snapshot.add_block(indexed_block.clone());
+        working_snapshot
+            .blocks
+            .insert(*indexed_block.hash(), indexed_block.clone());
         Ok(indexed_block)
     }
 }

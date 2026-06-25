@@ -26,17 +26,20 @@ use zaino_fetch::{
     chain::{transaction::FullTransaction, utils::ParseFromSlice},
     jsonrpsee::{
         connector::{JsonRpSeeConnector, RpcError},
+        raw_transaction::validate_raw_transaction_hex,
         response::{
             address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
             block_deltas::BlockDeltas,
             block_header::GetBlockHeader,
             block_subsidy::GetBlockSubsidy,
+            chain_tips::GetChainTipsResponse,
             mining_info::GetMiningInfoWire,
             peer_info::GetPeerInfo,
             z_validate_address::{
                 ZValidateAddressResponse, DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION,
             },
-            GetMempoolInfoResponse, GetNetworkSolPsResponse,
+            GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSpentInfoRequest,
+            GetSpentInfoResponse, GetTxOutResponse, GetTxOutSetInfoResponse,
         },
     },
 };
@@ -55,12 +58,9 @@ use zaino_proto::proto::{
     },
 };
 
-use crate::{
-    chain_index::{non_finalised_state::ChainIndexSnapshot, NonFinalizedSnapshot},
-    ChainIndex, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
-};
 #[allow(deprecated)]
 use crate::{
+    chain_index::chain_tips_from_nonfinalized_snapshot,
     chain_index::{source::ValidatorConnector, types},
     config::{DonationAddress, FetchServiceConfig},
     error::FetchServiceError,
@@ -74,6 +74,10 @@ use crate::{
     },
     utils::{get_build_info, ServiceMetadata},
     BackendType,
+};
+use crate::{
+    chain_index::{non_finalised_state::ChainIndexSnapshot, NonFinalizedSnapshot},
+    ChainIndex, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
 };
 
 /// Chain fetch service backed by Zcashd's JsonRPC engine.
@@ -388,6 +392,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
         &self,
         raw_transaction_hex: String,
     ) -> Result<SentTransactionHash, Self::Error> {
+        validate_raw_transaction_hex(&raw_transaction_hex)?;
         Ok(self
             .fetcher
             .send_raw_transaction(raw_transaction_hex)
@@ -454,6 +459,15 @@ impl ZcashIndexer for FetchServiceSubscriber {
         Ok(self.fetcher.get_mining_info().await?)
     }
 
+    /// Returns statistics about the unspent transaction output set.
+    ///
+    /// zcashd reference: [`gettxoutsetinfo`](https://zcash.github.io/rpc/gettxoutsetinfo.html)
+    /// method: post
+    /// tags: blockchain
+    async fn get_tx_out_set_info(&self) -> Result<GetTxOutSetInfoResponse, Self::Error> {
+        Ok(self.indexer.get_tx_out_set_info().await?)
+    }
+
     /// Returns the hash of the best block (tip) of the longest chain.
     /// online zcashd reference: [`getbestblockhash`](https://zcash.github.io/rpc/getbestblockhash.html)
     /// The zcashd doc reference above says there are no parameters and the result is a "hex" (string) of the block hash hex encoded.
@@ -484,6 +498,17 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// tags: blockchain
     async fn get_block_count(&self) -> Result<Height, Self::Error> {
         Ok(self.fetcher.get_block_count().await?.into())
+    }
+
+    async fn get_chain_tips(&self) -> Result<GetChainTipsResponse, Self::Error> {
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+            return Ok(self.fetcher.get_chain_tips().await?);
+        };
+
+        Ok(chain_tips_from_nonfinalized_snapshot(
+            non_finalized_snapshot,
+        ))
     }
 
     /// Return information about the given Zcash address.
@@ -546,55 +571,79 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// NOTE: This method currently has to fetch data from 2 places (get_treestate and get_indexed_block_by_*),
     ///       If `ValidatorConnector::GetTreeState` was updated to return the additional information
     ///       required, this second call could be removed, improving the performance of this method.
+    // Pre-existing lint: `FetchServiceError` is a large error type; returning it by value here is
+    // flagged by `result_large_err`. Suppressed to satisfy `-D warnings` without an invasive
+    // boxing refactor of the shared error enum.
+    #[allow(clippy::result_large_err)]
     async fn z_get_treestate(
         &self,
         hash_or_height: String,
     ) -> Result<GetTreestateResponse, Self::Error> {
-        let hash_or_height_struct: HashOrHeight = HashOrHeight::from_str(&hash_or_height)?;
+        let fallback_hash_or_height = hash_or_height.clone();
+        let local_result: Result<GetTreestateResponse, Self::Error> = async {
+            let hash_or_height_struct: HashOrHeight = HashOrHeight::from_str(&hash_or_height)?;
+            let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+
+            let block_data = match hash_or_height_struct {
+                HashOrHeight::Hash(hash) => self
+                    .indexer
+                    .get_indexed_block_by_hash(&snapshot, &hash.into())
+                    .await?
+                    .ok_or(
+                        #[allow(deprecated)]
+                        FetchServiceError::RpcError(RpcError::new_from_legacycode(
+                            zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                            "Failed to fetch block data.",
+                        )),
+                    )?,
+                HashOrHeight::Height(height) => self
+                    .indexer
+                    .get_indexed_block_by_height(&snapshot, &height.into())
+                    .await?
+                    .ok_or(
+                        #[allow(deprecated)]
+                        FetchServiceError::RpcError(RpcError::new_from_legacycode(
+                            zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                            "Failed to fetch block data.",
+                        )),
+                    )?,
+            };
+
+            let (sapling, orchard) = self.indexer.get_treestate(block_data.hash()).await?;
+            let time: u32 = block_data.data().time().try_into().map_err(|_error| {
+                #[allow(deprecated)]
+                FetchServiceError::RpcError(RpcError::new_from_legacycode(
+                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                    "Block time is out of range for u32.",
+                ))
+            })?;
+
+            #[allow(deprecated)]
+            Ok(GetTreestateResponse::from_parts(
+                (*block_data.hash()).into(),
+                block_data.height().into(),
+                time,
+                sapling,
+                orchard,
+            ))
+        }
+        .await;
+
+        if let Ok(response) = local_result {
+            return Ok(response);
+        }
+
         let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
-
-        let block_data = match hash_or_height_struct {
-            HashOrHeight::Hash(hash) => self
-                .indexer
-                .get_indexed_block_by_hash(&snapshot, &hash.into())
-                .await
-                .map_err(|_error| {
-                    #[allow(deprecated)]
-                    FetchServiceError::RpcError(RpcError::new_from_legacycode(
-                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                        "Failed to fetch block data.",
-                    ))
-                })?
-                .ok_or(
-                    #[allow(deprecated)]
-                    FetchServiceError::RpcError(RpcError::new_from_legacycode(
-                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                        "Failed to fetch block data.",
-                    )),
-                )?,
-            HashOrHeight::Height(height) => self
-                .indexer
-                .get_indexed_block_by_height(&snapshot, &height.into())
-                .await
-                .map_err(|_error| {
-                    #[allow(deprecated)]
-                    FetchServiceError::RpcError(RpcError::new_from_legacycode(
-                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                        "Failed to fetch block data.",
-                    ))
-                })?
-                .ok_or(
-                    #[allow(deprecated)]
-                    FetchServiceError::RpcError(RpcError::new_from_legacycode(
-                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                        "Failed to fetch block data.",
-                    )),
-                )?,
-        };
-
-        let (sapling, orchard) = self
+        if !self
             .indexer
-            .get_treestate(block_data.hash())
+            .hash_or_height_known_for_treestate(&snapshot, &fallback_hash_or_height)
+            .await?
+        {
+            return local_result;
+        }
+
+        self.fetcher
+            .get_treestate(fallback_hash_or_height)
             .await
             .map_err(|_error| {
                 #[allow(deprecated)]
@@ -602,23 +651,16 @@ impl ZcashIndexer for FetchServiceSubscriber {
                     zebra_rpc::server::error::LegacyCode::InvalidParameter,
                     "Failed to fetch treestate.",
                 ))
-            })?;
-        let time: u32 = block_data.data().time().try_into().map_err(|_error| {
-            #[allow(deprecated)]
-            FetchServiceError::RpcError(RpcError::new_from_legacycode(
-                zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                "Block time is out of range for u32.",
-            ))
-        })?;
-
-        #[allow(deprecated)]
-        Ok(GetTreestateResponse::from_parts(
-            (*block_data.hash()).into(),
-            block_data.height().into(),
-            time,
-            sapling,
-            orchard,
-        ))
+            })
+            .and_then(|treestate| {
+                treestate.try_into().map_err(|_error| {
+                    #[allow(deprecated)]
+                    FetchServiceError::RpcError(RpcError::new_from_legacycode(
+                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                        "Failed to parse treestate.",
+                    ))
+                })
+            })
     }
 
     /// Returns information about a range of Sapling or Orchard subtrees.
@@ -748,6 +790,27 @@ impl ZcashIndexer for FetchServiceSubscriber {
                 zebra_chain::transaction::Hash::from(txid),
             ),
         )))
+    }
+
+    /// Returns details about an unspent transaction output.
+    ///
+    /// zcashd reference: [`gettxout`](https://zcash.github.io/rpc/gettxout.html)
+    /// method: post
+    /// tags: transaction
+    async fn get_tx_out(
+        &self,
+        txid: String,
+        n: u32,
+        include_mempool: Option<bool>,
+    ) -> Result<GetTxOutResponse, Self::Error> {
+        Ok(self.fetcher.get_tx_out(txid, n, include_mempool).await?)
+    }
+
+    async fn get_spent_info(
+        &self,
+        request: GetSpentInfoRequest,
+    ) -> Result<GetSpentInfoResponse, Self::Error> {
+        Ok(self.fetcher.get_spent_info(request).await?)
     }
 
     async fn chain_height(&self) -> Result<Height, Self::Error> {
@@ -888,7 +951,11 @@ impl LightWalletIndexer for FetchServiceSubscriber {
 
         match self
             .indexer
-            .get_compact_block(&snapshot, types::Height(height), PoolTypeFilter::default())
+            .get_compact_block(
+                &snapshot,
+                types::Height(height),
+                PoolTypeFilter::includes_all(),
+            )
             .await
         {
             Ok(Some(block)) => Ok(block),
@@ -963,7 +1030,11 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         };
         match self
             .indexer
-            .get_compact_block(&snapshot, types::Height(height), PoolTypeFilter::default())
+            .get_compact_block(
+                &snapshot,
+                types::Height(height),
+                PoolTypeFilter::includes_all(),
+            )
             .await
         {
             Ok(Some(block)) => Ok(compact_block_to_nullifiers(block)),
@@ -1809,6 +1880,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         &self,
         request: GetAddressUtxosArg,
     ) -> Result<GetAddressUtxosReplyList, Self::Error> {
+        super::validate_utxo_address_count(request.addresses.len())?;
         let taddrs = GetAddressBalanceRequest::new(request.addresses);
         let utxos = self.z_get_address_utxos(taddrs).await?;
         let mut address_utxos: Vec<GetAddressUtxosReply> = Vec::new();
@@ -1862,6 +1934,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         &self,
         request: GetAddressUtxosArg,
     ) -> Result<UtxoReplyStream, Self::Error> {
+        super::validate_utxo_address_count(request.addresses.len())?;
         let taddrs = GetAddressBalanceRequest::new(request.addresses);
         let utxos = self.z_get_address_utxos(taddrs).await?;
         let service_timeout = self.config.common.service.timeout;
@@ -1957,15 +2030,12 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         )
         .to_string();
 
-        let nu_info = blockchain_info
-            .upgrades()
-            .last()
-            .expect("Expected validator to have a consenus activated.")
-            .1
+        let latest_upgrade = super::latest_network_upgrade(blockchain_info.upgrades())
+            .map_err(FetchServiceError::TonicStatusError)?
             .into_parts();
 
-        let nu_name = nu_info.0;
-        let nu_height = nu_info.1;
+        let nu_name = latest_upgrade.0;
+        let nu_height = latest_upgrade.1;
 
         Ok(LightdInfo {
             version: self.data.build_info().version(),

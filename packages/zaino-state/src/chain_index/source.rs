@@ -202,6 +202,47 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
         >,
         Box<dyn Error + Send + Sync>,
     >;
+
+    /// Subscribe to "blocks received at the source" notifications.
+    ///
+    /// Returns a `tokio::sync::watch::Receiver<()>` — the idiomatic Tokio
+    /// "wake-on-change" primitive. The transport coalesces by construction:
+    /// any number of `send_replace(())` calls on the sender side between
+    /// two `changed().await` calls on the receiver side collapse into a
+    /// single wake. Subscribers re-read source state on each wake, so the
+    /// consumer cares only about *whether* new blocks arrived, not *how
+    /// many* events fired.
+    ///
+    /// Sync loops typically call this once at startup and `select!`
+    /// `changed()` against their fixed-cadence timer, falling through to
+    /// the timer when no push notification arrives.
+    ///
+    /// Default returns `None` — poll-only sources (real validators) pace
+    /// themselves on the timer alone. Push-capable sources (test
+    /// mockchains) override to provide a live receiver.
+    fn subscribe_to_blocks_received(&self) -> Option<tokio::sync::watch::Receiver<()>> {
+        None
+    }
+}
+
+/// Sleep up to `duration`, but return early if `change_rx` resolves first.
+///
+/// Sync loops in this module pace themselves on a fixed-cadence timer and
+/// want to wake immediately when the source signals new state. The two-arm
+/// `tokio::select!` is identical at every call site; this helper is the
+/// single home for the pattern. Pass `None` for poll-only sources — the
+/// helper degrades to a plain sleep.
+pub(super) async fn wait_or_source_change(
+    change_rx: Option<&mut tokio::sync::watch::Receiver<()>>,
+    duration: std::time::Duration,
+) {
+    match change_rx {
+        Some(rx) => tokio::select! {
+            _ = tokio::time::sleep(duration) => {}
+            _ = rx.changed() => {}
+        },
+        None => tokio::time::sleep(duration).await,
+    }
 }
 
 // ********** Error / data types + helper methods **********

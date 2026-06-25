@@ -22,13 +22,13 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v6
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      uses: docker/setup-buildx-action@v4
 
     - name: Log in to DockerHub
-      uses: docker/login-action@v2
+      uses: docker/login-action@v4
       with:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_ACCESS_TOKEN }}
@@ -38,7 +38,7 @@ jobs:
       run: |
         source .env.testing-artifacts
         RUST_VERSION=$(./tools/scripts/get-rust-version.sh)
-        export RUST_VERSION ZCASH_VERSION ZEBRA_VERSION
+        export RUST_VERSION ZCASH_VERSION ZEBRA_VERSION DEVTOOL_VERSION
         TAG=$(./tools/scripts/get-ci-image-tag.sh)
         echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
@@ -53,6 +53,7 @@ jobs:
         echo "RUST_VERSION=$RUST_VERSION" >> "$GITHUB_ENV"
         echo "ZCASH_VERSION=$ZCASH_VERSION" >> "$GITHUB_ENV"
         echo "ZEBRA_VERSION=$ZEBRA_VERSION" >> "$GITHUB_ENV"
+        echo "DEVTOOL_VERSION=$DEVTOOL_VERSION" >> "$GITHUB_ENV"
 
     - name: Define build target
       id: target
@@ -63,7 +64,7 @@ jobs:
         echo "target=$TARGET" >> "$GITHUB_OUTPUT"
 
     - name: Build and Push Docker Image
-      uses: docker/build-push-action@v5
+      uses: docker/build-push-action@v7
       with:
         context: integration-tests/test_environment
         file: integration-tests/test_environment/Containerfile
@@ -78,3 +79,4 @@ jobs:
           RUST_VERSION=${{ env.RUST_VERSION }}
           ZCASH_VERSION=${{ env.ZCASH_VERSION }}
           ZEBRA_VERSION=${{ env.ZEBRA_VERSION }}
+          DEVTOOL_VERSION=${{ env.DEVTOOL_VERSION }}

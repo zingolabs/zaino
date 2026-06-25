@@ -3,8 +3,15 @@ use std::io;
 use std::process::Command;
 
 fn git(args: &[&str]) -> String {
-    let out = Command::new("git").args(args).output().expect("git failed").stdout;
-    String::from_utf8(out).expect("git output not UTF-8").trim().to_string()
+    let out = Command::new("git")
+        .args(args)
+        .output()
+        .expect("git failed")
+        .stdout;
+    String::from_utf8(out)
+        .expect("git output not UTF-8")
+        .trim()
+        .to_string()
 }
 
 fn main() -> io::Result<()> {
@@ -14,12 +21,16 @@ fn main() -> io::Result<()> {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
+    println!("cargo:rerun-if-env-changed=ZAINO_GIT_COMMIT_ID");
+    println!("cargo:rerun-if-env-changed=ZAINO_GIT_BRANCH");
 
-    println!("cargo:rustc-env=GIT_COMMIT={}", git(&["rev-parse", "HEAD"]));
-    println!(
-        "cargo:rustc-env=BRANCH={}",
-        git(&["rev-parse", "--abbrev-ref", "HEAD"])
-    );
+    let git_commit =
+        env::var("ZAINO_GIT_COMMIT_ID").unwrap_or_else(|_| git(&["rev-parse", "HEAD"]));
+    let branch = env::var("ZAINO_GIT_BRANCH")
+        .unwrap_or_else(|_| git(&["rev-parse", "--abbrev-ref", "HEAD"]));
+
+    println!("cargo:rustc-env=GIT_COMMIT={git_commit}");
+    println!("cargo:rustc-env=BRANCH={branch}");
 
     // BUILD_DATE: SOURCE_DATE_EPOCH if set
     // (https://reproducible-builds.org/docs/source-date-epoch/), otherwise

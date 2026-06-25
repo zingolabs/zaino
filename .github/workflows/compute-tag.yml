@@ -15,14 +15,14 @@ jobs:
       image-tag: ${{ steps.taggen.outputs.tag }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Compute version-based image tag
         id: taggen
         run: |
           source .env.testing-artifacts
           RUST_VERSION=$(./tools/scripts/get-rust-version.sh)
-          export RUST_VERSION ZCASH_VERSION ZEBRA_VERSION DOCKER_DIR_HASH
+          export RUST_VERSION ZCASH_VERSION ZEBRA_VERSION DEVTOOL_VERSION DOCKER_DIR_HASH
           TAG=$(./tools/scripts/get-ci-image-tag.sh)
           echo "TAG=$TAG"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"

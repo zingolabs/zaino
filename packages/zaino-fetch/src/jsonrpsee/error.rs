@@ -55,10 +55,6 @@ pub enum TransportError {
         Box<dyn std::error::Error + Send + Sync + 'static>,
         &'static str,
     ),
-
-    /// Validator returned empty response body
-    #[error("no response body")]
-    EmptyResponseBody,
 }
 
 impl TransportError {

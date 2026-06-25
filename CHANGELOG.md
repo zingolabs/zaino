@@ -6,22 +6,121 @@ and this library adheres to Rust's notion of
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
+
+## [0.4.1] - 2026-06-18
+- Bump zaino-proto 0.1.2 → 0.1.3 and zainod 0.4.0 → 0.4.1 to work around
+  a yanked 0.1.2 slot on crates.io. No code changes.
+
+## [0.4.0] - 2026-06-17
+- NU6.2 network upgrade is now supported: activation-height configuration
+  (`zaino-common`) and Zebra RPC response parsing (`zaino-fetch`) recognise
+  NU6.2.
 - [943] Zallet regtest fixes
 - [1065] Move functionality to BlockChainSource: t-address rpcs
+- `gettxoutsetinfo` is now served indexer-side. Both `FetchService` and
+  `StateService` compute the response from Zaino's own UTXO-set accumulator
+  (finalised state + non-finalised state) instead of forwarding to the backing
+  validator.
 
 ### Added
+- `storage.database.sync_write_batch_bytes` config (default 4 GiB) tunes the
+  finalised-state bulk-sync / migration write-batch size.
+- `zainod` gains an `allow_unencrypted_public_json_rpc_bind` build feature that
+  lifts the new private-only JSON-RPC bind restriction for trusted
+  private-network deployments (logs a `WARN` on startup when enabled).
 - `zaino-state::chain_index::source::BlockchainSource` and
   `zaino-state::chain_index::ChainIndex` now expose transparent-address query
   methods for deltas, balances, txids, and UTXOs.
+- `ChainIndex::get_tx_out_set_info` — combines the finalised
+  `FinalisedTxOutSetInfoAccumulator` with the non-finalised state to produce
+  the full `GetTxOutSetInfoResponse`.
+- Optional ("ephemeral") finalised state: `zainod` gains an
+  `ephemeral_finalised_state` config option (default `false`) that runs Zaino
+  without a persistent finalised-state database, serving finalised reads from
+  the backing validator via an ephemeral passthrough.
 ### Changed
+- Finalised-state sync and the v1.1.0 -> v1.2.0 migration are substantially
+  faster on large/mainnet caches. The txout-set accumulator is built in bulk at
+  the tip instead of per block (removing an unbounded fan-out of random reads),
+  block validation is off the write path, and the random-keyed `spent` /
+  `txid_location` indexes are written in sorted batches — together removing the
+  random-fault stall around sandblast height. See the `zaino-state` changelog for
+  details; tune the write-batch size with `storage.database.sync_write_batch_bytes`.
+- Finalised-state sync and version migrations are now background, non-blocking
+  operations: large syncs and migrations run while an ephemeral passthrough
+  serves finalised reads, so startup and serving are no longer blocked on
+  persistence. Internally the finalised-state facade `ZainoDB` was renamed
+  `FinalisedState` and its backing `DbBackend`/`db` module became
+  `FinalisedSource`/`finalised_source` (now covering an ephemeral passthrough,
+  not only databases). Bumps the finalised DB version to v1.2.1 (metadata-only).
+- The `zainod` JSON-RPC server now refuses to bind to public or unspecified
+  (`0.0.0.0` / `::`) addresses by default; `check_config` enforces the same
+  private/loopback rule already applied to gRPC. The unencrypted JSON-RPC
+  interface is intended for loopback or trusted private networks only (Z-02 /
+  Zellic #48480).
+- `get_address_utxos` now bounds the number of addresses fanned out per request,
+  preventing an unbounded multi-address query from amplifying backend load
+  (#974).
+- Integration tests now use `corez`, with Zcash, Zebra, and Zingo dependencies
+  updated to releases and companion branches that no longer depend on the
+  yanked `core2` crate.
+- Integration tests now follow the companion Zingo corez migration branches and
+  use `zcash_client_backend` 0.22, with deprecated nullifier-range client calls
+  allowed locally until they are replaced.
 - `JsonRpSeeConnector::get_tree_state` now returns a `GetTreestateResponse`
   whose `sapling` and `orchard` fields are optional. In regtest mode, these
   fields may be omitted when the corresponding network upgrade activation
   height is not configured.
 ### Removed
 ### Deprecated
+### Fixed
+- Finalised-state DB v1.2.0 migration no longer appears to hang on large caches.
+  A reverse transaction-id index (`txid_location`) makes previous-output
+  resolution an O(log n) lookup instead of a full table scan, removing a
+  near-quadratic cost in both the migration backfill and the clean-sync write
+  path. The v1.1.0 -> v1.2.0 migration is now a re-entrant two-stage backfill
+  with progress logging, and caches built by 0.4.0-alpha.1 self-heal on open.
+- Nullifiers-only compact blocks (`compact_block_to_nullifiers`) no longer leak
+  transparent `vin` / `vout`, restoring lightwalletd compact-block parity
+  (#1067).
 
-## [v0.2.0] - 2026-03-25
+## [0.3.1] - 2026-05-25
+
+Re-release of 0.3.0 to publish the `zainod` binary's container image under the
+new `zainod` Docker Hub repository alongside the legacy `zaino` repository
+(#1133, #1134). No functional changes to any crate since 0.3.0.
+
+## [0.3.0] - 2026-05-22
+
+### Added
+- Transparent-address queries on the `zaino-state` `ChainIndex` trait —
+  `get_address_balance`, `get_address_deltas`, `get_address_txids`,
+  `get_address_utxos` (#1065) — plus block lookups (#1000) and subtree-root
+  reporting (#853).
+- `zaino-state` shared `CommonBackendConfig` payload carrying an
+  `indexer_version` field, and a `DonationAddress` type (#1008).
+- `zainodlib::config::ZainodConfig` gains an optional `donation_address` field;
+  0.2.0 TOML configs continue to load (the field defaults to absent) (#1008).
+- `z_validateaddress` JSON-RPC passthrough across `zaino-fetch` and the
+  `zaino-serve` `ZcashIndexerRpc` trait, shipped pre-deprecated (#389).
+- `zaino-common` `logging` module — the initial structured-logging surface for
+  the Zaino crates (#888).
+- `zaino-proto` Cargo features `heavy` (default) and `grpc_proxy_server`; build
+  wiring moved to `tonic-prost` / `tonic-prost-build` 0.14.
+
+### Changed
+- **Breaking** — the `ChainIndex` (`zaino-state`) and `ZcashIndexerRpc`
+  (`zaino-serve`) traits gain required methods with no default body, so
+  downstream implementers must add them; adding `donation_address` to
+  `ZainodConfig` is likewise breaking for struct-literal construction (#1008).
+- `LightdInfo.version` now reports the running `zainod` binary version rather
+  than the `zaino-state` library version (#1061).
+
+### Fixed
+- Restart path no longer crashes when the validator's readiness signal arrives
+  before the indexer's status is observed (#962).
+
+## [0.2.0] - 2026-03-25
 - [808] Adopt lightclient-protocol v0.4.0
 
 ### Added
@@ -34,36 +133,6 @@ and this library adheres to Rust's notion of
 ### Deprecated
 - `zaino-fetch::chain:to_compact` in favor of `to_compact_tx` which takes an
   optional height and a `PoolTypeFilter` (see zaino-proto changes)
--
-## [v0.4.0] - 2025-12-03
-
-### Added
-- `compact_formats.CompactTxIn`
-- `compact_formats.TxOut`
-- `service.PoolType`
-- `service.LightdInfo` has added fields `upgradeName`, `upgradeHeight`, and
-  `lightwalletProtocolVersion`
-- `compact_formats.CompactTx` has added fields `vin` and `vout`,
-  which may be used to represent transparent transaction input and output data.
-- `service.BlockRange` has added field `poolTypes`, which allows
-  the caller of service methods that take this type as input to cause returned
-  data to be filtered to include information only for the specified protocols.
-  For backwards compatibility, when this field is set the default (empty) value,
-  servers should return Sapling and Orchard data. This field is to be ignored
-  when the type is used as part of a `service.TransparentAddressBlockFilter`.
-
-### Changed
-- The `hash` field of `compact_formats.CompactTx` has been renamed to `txid`.
-  This is a serialization-compatible clarification, as the index of this field
-  in the .proto type does not change.
-- `service.Exclude` has been renamed to `service.GetMempoolTxRequest` and has
-  an added `poolTypes` field, which allows the caller of this method to specify
-  which pools the resulting `CompactTx` values should contain data for.
-
-### Deprecated
-- `service.CompactTxStreamer`:
-    - The `GetBlockNullifiers` and `GetBlockRangeNullifiers` methods are
-      deprecated.
 - `zaino_fetch::FullTransaction::to_compact` deprecated in favor of `to_compact_tx` which includes
   an optional for index to explicitly specify that the transaction is in the mempool and has no
   index and `Vec<PoolType>` to filter pool types according to the transparent data changes of
@@ -75,135 +144,13 @@ and this library adheres to Rust's notion of
   to specify `PoolTypFilter` to filter pools that are included into the compact transaction according
   to lightclient-protocol v0.4.0.
 
-## [v0.3.6] - 2025-05-20
+---
 
-### Added
-- `service.LightdInfo` has added field `donationAddress`
-- `service.CompactTxStreamer.GetTaddressTransactions`. This duplicates
-  the `GetTaddressTxids` method, but is more accurately named.
+This file tracks **Zaino workspace** releases only. Two related histories live
+elsewhere:
 
-### Deprecated
-- `service.CompactTxStreamer.GetTaddressTxids`. Use `GetTaddressTransactions`
-  instead.
-
-## [v0.3.5] - 2023-07-03
-
-### Added
-- `compact_formats.ChainMetadata`
-- `service.ShieldedProtocol`
-- `service.GetSubtreeRootsArg`
-- `service.SubtreeRoot`
-- `service.CompactTxStreamer.GetBlockNullifiers`
-- `service.CompactTxStreamer.GetBlockRangeNullifiers`
-- `service.CompactTxStreamer.SubtreeRoots`
-
-### Changed
-- `compact_formats.CompactBlock` has added field `chainMetadata`
-- `compact_formats.CompactSaplingOutput.epk` has been renamed to `ephemeralKey`
-
-## [v0.3.4] - UNKNOWN
-
-### Added
-- `service.CompactTxStreamer.GetLatestTreeState`
-
-## [v0.3.3] - 2022-04-02
-
-### Added
-- `service.TreeState` has added field `orchardTree`
-
-### Changed
-- `service.TreeState.tree` has been renamed to `saplingTree`
-
-## [v0.3.2] - 2021-12-09
-
-### Changed
-- `compact_formats.CompactOrchardAction.encCiphertext` has been renamed to
-  `CompactOrchardAction.ciphertext`
-
-## [v0.3.1] - 2021-12-09
-
-### Added
-- `compact_formats.CompactOrchardAction`
-- `service.CompactTxStreamer.GetMempoolTx` (removed in 0.3.0) has been reintroduced.
-- `service.Exclude` (removed in 0.3.0) has been reintroduced.
-
-### Changed
-- `compact_formats.CompactSpend` has been renamed `CompactSaplingSpend`
-- `compact_formats.CompactOutput` has been renamed `CompactSaplingOutput`
-
-## [v0.3.0] - 2021-07-23
-
-### Added
-- `service.CompactTxStreamer.GetMempoolStream`
-
-### Removed
-- `service.CompactTxStreamer.GetMempoolTx` has been replaced by `GetMempoolStream`
-- `service.Exclude` has been removed as it is now unused.
-
-## [v0.2.4] - 2021-01-14
-
-### Changed
-- `service.GetAddressUtxosArg.address` has been replaced by the
-  repeated field `addresses`. This is a [conditionally-safe](https://protobuf.dev/programming-guides/proto3/#conditionally-safe-changes)
-  format change.
-- `service.GetAddressUtxosReply` has added field `address`
-
-## [v0.2.3] - 2021-01-14
-
-### Added
-- `service.LightdInfo` has added fields:
-  - `estimatedHeight`
-  - `zcashdBuild`
-  - `zcashdSubversion`
-
-## [v0.2.2] - 2020-10-22
-
-### Added
-- `service.TreeState`
-- `service.GetAddressUtxosArg`
-- `service.GetAddressUtxosReply`
-- `service.GetAddressUtxosReplyList`
-- `service.CompactTxStreamer.GetTreeState`
-- `service.CompactTxStreamer.GetAddressUtxos`
-- `service.CompactTxStreamer.GetAddressUtxosStream`
-
-## [v0.2.1] - 2020-10-06
-
-### Added
-- `service.Address`
-- `service.AddressList`
-- `service.Balance`
-- `service.Exclude`
-- `service.CompactTxStreamer.GetTaddressBalance`
-- `service.CompactTxStreamer.GetTaddressBalanceStream`
-- `service.CompactTxStreamer.GetMempoolTx`
-- `service.LightdInfo` has added fields:
-  - `gitCommit`
-  - `branch`
-  - `buildDate`
-  - `buildUser`
-
-## [v0.2.0] - 2020-04-24
-
-### Added
-- `service.Duration`
-- `service.PingResponse`
-- `service.CompactTxStreamer.Ping`
-
-### Removed
-- `service.TransparentAddress` was removed (it was unused in any service API).
-
-## [v0.1.1] - 2019-11-27
-
-### Added
-- `service.Empty`
-- `service.LightdInfo`
-- `service.TransparentAddress`
-- `service.TransparentAddressBlockFilter`
-- `service.CompactTxStreamer.GetTaddressTxids`
-- `service.CompactTxStreamer.GetLightdInfo`
-- `service.RawTransaction` has added field `height`
-
-## [v0.1.0] - 2019-09-19
-
-Initial release
+- The lightwallet / `walletrpc` **protocol** changelog (proto-definition version
+  history, v0.1.0 → v0.4.0) is at
+  `packages/zaino-proto/lightwallet-protocol/CHANGELOG.md`.
+- The `zaino-proto` **Rust crate** changelog is at
+  `packages/zaino-proto/CHANGELOG.md`.

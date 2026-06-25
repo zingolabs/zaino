@@ -1,0 +1,33 @@
+# Nextest configuration for the wallet-tests workspace.
+#
+# wallet-tests is a standalone workspace and does NOT inherit
+# integration-tests/.config/nextest.toml. Each test launches a full validator
+# (zebrad/zcashd) + Zaino; the heavy zebrad cases (send/shield/mempool) are
+# flaky under naive `num-cpus` parallelism — concurrent validators saturate the
+# host, RPC calls slow and retry, and the retry surfaces as
+# "transaction already exists in mempool". Capping the thread count and allowing
+# a couple of retries keeps the suite reliable.
+#
+# Test-name note: these paths are specific to this workspace —
+# `launch_clients::…` for the lib smoke tests and `wallet_to_validator`'s
+# `zcashd::…` / `zebrad::…` for the integration tests. They differ from the
+# `launch_testmanager::…` names in integration-tests/.config/nextest.toml, so
+# filters are not copy-compatible between the two configs.
+
+[profile.default]
+fail-fast = false
+test-threads = 6
+retries = 2
+slow-timeout = { period = "60s", terminate-after = "10" }
+
+[profile.ci]
+fail-fast = false
+test-threads = 6
+retries = 2
+slow-timeout = { period = "60s", terminate-after = "10" }
+# `zaino_testnet` needs a fully synced testnet cache (already #[ignore]d);
+# exclude by name as belt-and-suspenders for any --run-ignored run.
+default-filter = "not test(testnet)"
+
+[profile.ci.junit]
+path = "junit.xml"

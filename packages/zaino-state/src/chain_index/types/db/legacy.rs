@@ -9,7 +9,7 @@
 //!   the stringent version rules outlined in that trait.
 //!
 //! - structs in this module must never be changed without implementing a new version
-//!   and implementing the necessary ZainoDB updates and migrations.
+//!   and implementing the necessary FinalisedState updates and migrations.
 //!
 //! This module is currently in transition from a large monolithic file to well-organized
 //! submodules. The organized types have been moved to focused modules:
@@ -1194,7 +1194,7 @@ impl IndexedBlock {
         let orchard_commitment_tree_size = self.commitment_tree_data().sizes().orchard();
 
         zaino_proto::proto::compact_formats::CompactBlock {
-            proto_version: 4,
+            proto_version: 0,
             height,
             hash,
             prev_hash,
