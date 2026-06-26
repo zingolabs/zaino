@@ -87,7 +87,7 @@ pub(in crate::chain_index::tests) fn copy_dir_recursive(
 /// each call site picks its own consumption strategy (by-value iteration,
 /// collection, accumulator updates, etc.) without duplicating the metadata
 /// boilerplate.
-pub(in crate::chain_index::tests) fn indexed_block_chain(
+pub(crate) fn indexed_block_chain(
     blocks: &[TestVectorBlockData],
 ) -> impl Iterator<Item = IndexedBlock> + '_ {
     let mut parent_chain_work = ChainWork::from_u256(0.into());

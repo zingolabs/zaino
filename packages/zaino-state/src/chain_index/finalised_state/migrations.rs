@@ -936,17 +936,7 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
             // migration is discarded and replaced with a correct value. It is idempotent, so a crash
             // mid-Stage-C is recovered by simply re-running the (skipped) earlier stages and
             // rebuilding again.
-            let stage_c_started = std::time::Instant::now();
-            info!(
-                db_tip,
-                "v1.2.0 migration Stage C: building txout-set accumulator"
-            );
-            backend.rebuild_tx_out_set_accumulator().await?;
-            info!(
-                db_tip,
-                elapsed = ?stage_c_started.elapsed(),
-                "v1.2.0 migration Stage C complete"
-            );
+            backend.run_v1_2_migration_accumulator_stage(db_tip).await?;
         }
 
         // ===== Finalise: advance metadata to v1.2.0, then remove the progress keys. =====
