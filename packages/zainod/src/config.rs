@@ -76,6 +76,11 @@ pub struct ZainodConfig {
     pub zebra_db_path: PathBuf,
     /// Network to connect to (Mainnet, Testnet, or Regtest).
     pub network: Network,
+    /// Prometheus metrics endpoint listen address.
+    ///
+    /// Set to enable the `/metrics` scrape endpoint. Disabled when `None`.
+    /// Requires the `prometheus` feature; ignored without it.
+    pub metrics_endpoint: Option<SocketAddr>,
 
     // Table sections
     /// JSON-RPC server settings. Set to enable Zaino's JSON-RPC interface.
@@ -145,8 +150,8 @@ impl ZainodConfig {
             }
             AddressResolution::UnresolvedHostname { ref address, .. } => {
                 info!(
-                    "Validator address '{}' cannot be resolved at config time.",
-                    address
+                    %address,
+                    "validator address cannot be resolved at config time"
                 );
             }
             AddressResolution::InvalidFormat { address, reason } => {
@@ -220,6 +225,7 @@ impl Default for ZainodConfig {
     fn default() -> Self {
         Self {
             backend: BackendType::default(),
+            metrics_endpoint: None,
             json_server_settings: None,
             grpc_settings: GrpcServerConfig {
                 listen_address: "127.0.0.1:8137".parse().unwrap(),
@@ -342,8 +348,8 @@ pub fn load_config_with_env(
 
     parsed_config.check_config()?;
     info!(
-        "Successfully loaded and validated config. Base TOML file checked: '{}'",
-        file_path.display()
+        path = %file_path.display(),
+        "config loaded and validated"
     );
     Ok(parsed_config)
 }

@@ -95,6 +95,10 @@ async-stream = "0.3"
 async-trait = "0.1"
 futures = "0.3.30"
 
+# Metrics
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.16", default-features = false, features = ["http-listener"] }
+
 # Utility
 thiserror = "1.0"
 lazy-regex = "3.3"
@@ -121,10 +125,10 @@ portpicker = "0.1"
 tempfile = "3.2"
 zainod = { path = "packages/zainod" }
 zaino-common = { path = "packages/zaino-common", version = "0.2.0" }
-zaino-fetch = { path = "packages/zaino-fetch", version = "0.2.0" }
+zaino-fetch = { path = "packages/zaino-fetch", version = "0.2.1-rc.1" }
 zaino-proto = { path = "packages/zaino-proto", version = "0.1.3" }
-zaino-state = { path = "packages/zaino-state", version = "0.3.0" }
-zaino-serve = { path = "packages/zaino-serve", version = "0.3.0" }
+zaino-state = { path = "packages/zaino-state", version = "0.3.1-rc.1" }
+zaino-serve = { path = "packages/zaino-serve", version = "0.3.1-rc.1" }
 wire_serialized_transaction_test_data = "1.0.0"
 config = { version = "0.15", default-features = false, features = ["toml"] }
 nonempty = "0.11.0"

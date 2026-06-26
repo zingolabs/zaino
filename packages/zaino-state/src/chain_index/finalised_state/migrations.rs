@@ -281,9 +281,9 @@ pub trait Migration<T: BlockchainSource> {
         _source: T,
     ) -> Result<(), FinalisedStateError> {
         info!(
-            "Starting metadata-only migration from {} to {}.",
-            Self::CURRENT_VERSION,
-            Self::TO_VERSION,
+            from = %Self::CURRENT_VERSION,
+            to = %Self::TO_VERSION,
+            "starting metadata-only migration"
         );
 
         let mut metadata: DbMetadata = router.get_metadata().await?;
@@ -295,9 +295,9 @@ pub trait Migration<T: BlockchainSource> {
         router.update_metadata(metadata).await?;
 
         info!(
-            "Metadata-only migration from {} to {} complete.",
-            Self::CURRENT_VERSION,
-            Self::TO_VERSION,
+            from = %Self::CURRENT_VERSION,
+            to = %Self::TO_VERSION,
+            "metadata-only migration complete"
         );
 
         Ok(())
@@ -494,8 +494,9 @@ impl<T: BlockchainSource> Migration<T> for Migration0To1 {
                 let mut primary_db_height = router.db_height().await?.unwrap_or(GENESIS_HEIGHT);
 
                 info!(
-                    "Starting shadow database build, current database tips: v0:{} v1:{}",
-                    primary_db_height, shadow_db_height
+                    v0_tip = ?primary_db_height,
+                    v1_tip = ?shadow_db_height,
+                    "starting shadow database build"
                 );
 
                 loop {
@@ -593,7 +594,7 @@ impl<T: BlockchainSource> Migration<T> for Migration0To1 {
 
             // shutdown database
             if let Err(e) = db_v0.shutdown().await {
-                tracing::warn!("Old primary shutdown failed: {e}");
+                tracing::warn!(%e, "old primary shutdown failed");
             }
 
             // Now safe to delete old database files
@@ -607,11 +608,11 @@ impl<T: BlockchainSource> Migration<T> for Migration0To1 {
             info!("Wiping v0 database from disk.");
 
             match tokio::fs::remove_dir_all(&db_path).await {
-                Ok(_) => tracing::info!("Deleted old database at {}", db_path.display()),
+                Ok(_) => tracing::info!(path = %db_path.display(), "deleted old database"),
                 Err(e) => tracing::error!(
-                    "Failed to delete old database at {}: {}",
-                    db_path.display(),
-                    e
+                    path = %db_path.display(),
+                    %e,
+                    "failed to delete old database"
                 ),
             }
         });

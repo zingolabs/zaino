@@ -554,7 +554,7 @@ impl DbV1 {
                         ("block scan", r3),
                     ] {
                         if let Err(e) = result {
-                            error!("initial {desc} failed: {e}");
+                            error!(%e, desc, "initial validation failed");
                             zaino_db.status.store(StatusType::CriticalError);
                             // TODO: Handle error better? - Return invalid block error from validate?
                             return;
@@ -568,7 +568,7 @@ impl DbV1 {
 
                     for (desc, result) in [("spent scan", r1), ("block scan", r2)] {
                         if let Err(e) = result {
-                            error!("initial {desc} failed: {e}");
+                            error!(%e, desc, "initial validation failed");
                             zaino_db.status.store(StatusType::CriticalError);
                             // TODO: Handle error better? - Return invalid block error from validate?
                             return;
@@ -577,8 +577,8 @@ impl DbV1 {
                 }
 
                 info!(
-                    "initial validation complete – tip={}",
-                    zaino_db.validated_tip.load(Ordering::Relaxed)
+                    tip = zaino_db.validated_tip.load(Ordering::Relaxed),
+                    "initial validation complete"
                 );
                 zaino_db.status.store(StatusType::Ready);
 
@@ -605,7 +605,7 @@ impl DbV1 {
                     let hkey = match next_height.to_bytes() {
                         Ok(bytes) => bytes,
                         Err(e) => {
-                            warn!("Failed to serialize height {}: {}", next_height, e);
+                            warn!(height = ?next_height, %e, "failed to serialize height");
                             zaino_db.zaino_db_handler_sleep(&mut maintenance).await;
                             continue;
                         }
@@ -620,7 +620,7 @@ impl DbV1 {
 
                     if let Some(hash) = hash_opt {
                         if let Err(e) = zaino_db.validate_block_blocking(next_height, hash) {
-                            warn!("{e}");
+                            warn!(%e, "block validation failed");
                         }
                         // Immediately loop – maybe the chain has more blocks ready.
                         continue;
@@ -839,10 +839,9 @@ impl DbV1 {
             }
 
             warn!(
-                "detected a 0.4.0-alpha.1 cache recorded at v{} with an unbuilt txid_location \
-                 index; rolling the recorded version back to 1.1.0 so the corrected migration \
-                 rebuilds it in place",
-                metadata.version
+                version = %metadata.version,
+                "detected 0.4.0-alpha.1 cache with unbuilt txid_location index; \
+                 rolling version back to 1.1.0 for corrected migration"
             );
 
             // Clear the `spent` index the alpha migration built: the corrected Stage B rebuilds it

@@ -118,7 +118,7 @@ impl JsonRpcServer {
 
         if let Some(dir) = &self.cookie_dir {
             if let Err(e) = remove_from_disk(dir) {
-                warn!("Error removing cookie: {e}");
+                warn!(%e, "error removing cookie");
             }
         }
 

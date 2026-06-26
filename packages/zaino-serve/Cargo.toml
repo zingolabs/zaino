@@ -6,11 +6,14 @@ repository = { workspace = true }
 homepage = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
-version = "0.3.0"
+version = "0.3.1-rc.1"
 
 [features]
 # Removes network restrictions.
 no_tls_use_unencrypted_traffic = ["tonic/tls-native-roots"]
+
+# Prometheus metrics emission (request counting / latency in gRPC handlers).
+prometheus = ["metrics"]
 
 # **Experimental and alpha features**
 # Exposes the **complete** set of experimental / alpha features currently implemented in Zaino.
@@ -32,6 +35,9 @@ zebra-rpc = { workspace = true }
 
 # Tracing
 tracing = { workspace = true }
+
+# Metrics
+metrics = { workspace = true, optional = true }
 
 # Miscellaneous Workspace
 tokio = { workspace = true, features = ["full"] }
