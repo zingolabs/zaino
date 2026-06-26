@@ -101,6 +101,21 @@ Do not expose it to untrusted networks, and only enable
 `allow_unencrypted_public_json_rpc_bind` when an external layer secures the
 connection.
 
+## Running tests
+
+The test suites run inside a **podman** container via `makers` (cargo-make):
+
+```sh
+makers container-test     # root-workspace (packages/*) tests
+makers integration-test   # both integration-test workspaces + combined summary
+```
+
+zcashd-backed tests are **off by default**; add `--with-zcashd` (or set
+`CONTAINER_TEST_WITH_ZCASHD=1`) to include them. On lower-resource machines you
+may hit occasional contention flakes under full parallelism — re-run, or lower
+`test-threads` in the nextest config. See [docs/testing.md](./docs/testing.md)
+for full instructions.
+
 ## Documentation
 - [Use Cases](./docs/use_cases.md): Holds instructions and example use cases.
 - [Testing](./docs/testing.md): Holds instructions for running tests.
