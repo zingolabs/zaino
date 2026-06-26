@@ -5554,7 +5554,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-fetch"
-version = "0.2.0"
+version = "0.2.1-rc.1"
 dependencies = [
  "base64",
  "byteorder",
@@ -5596,7 +5596,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-serve"
-version = "0.3.0"
+version = "0.3.1-rc.1"
 dependencies = [
  "futures",
  "jsonrpsee",
@@ -5616,7 +5616,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-state"
-version = "0.3.0"
+version = "0.3.1-rc.1"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -5671,7 +5671,7 @@ dependencies = [
 
 [[package]]
 name = "zainod"
-version = "0.4.1"
+version = "0.4.2-rc.1"
 dependencies = [
  "clap",
  "config",
