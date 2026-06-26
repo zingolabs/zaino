@@ -168,12 +168,8 @@ mod json_server {
     async fn z_get_address_balance() {
         let (mut services, mut clients) = create_zcashd_devtool_services().await;
 
-        let (recipient_taddr, _recipient_ua, _txid) = jsonrpc_fund(
-            &services,
-            &mut clients,
-            Some(e2e::Pool::Transparent),
-        )
-        .await;
+        let (recipient_taddr, _recipient_ua, _txid) =
+            jsonrpc_fund(&services, &mut clients, Some(e2e::Pool::Transparent)).await;
 
         let zcashd_service_balance = services
             .zcashd_subscriber
@@ -313,12 +309,8 @@ mod json_server {
     async fn get_tx_out() {
         let (mut services, mut clients) = create_zcashd_devtool_services().await;
 
-        let (recipient_taddr, _recipient_ua, _txid) = jsonrpc_fund(
-            &services,
-            &mut clients,
-            Some(e2e::Pool::Transparent),
-        )
-        .await;
+        let (recipient_taddr, _recipient_ua, _txid) =
+            jsonrpc_fund(&services, &mut clients, Some(e2e::Pool::Transparent)).await;
 
         let zcashd_utxos = services
             .zcashd_subscriber
@@ -360,12 +352,8 @@ mod json_server {
     async fn get_address_tx_ids() {
         let (mut services, mut clients) = create_zcashd_devtool_services().await;
 
-        let (recipient_taddr, _recipient_ua, tx) = jsonrpc_fund(
-            &services,
-            &mut clients,
-            Some(e2e::Pool::Transparent),
-        )
-        .await;
+        let (recipient_taddr, _recipient_ua, tx) =
+            jsonrpc_fund(&services, &mut clients, Some(e2e::Pool::Transparent)).await;
         let tx = tx.expect("jsonrpc_fund sends a tx when given Some(pool)");
 
         let chain_height: u32 = {
@@ -408,12 +396,8 @@ mod json_server {
     async fn z_get_address_utxos() {
         let (mut services, mut clients) = create_zcashd_devtool_services().await;
 
-        let (recipient_taddr, _recipient_ua, txid_1) = jsonrpc_fund(
-            &services,
-            &mut clients,
-            Some(e2e::Pool::Transparent),
-        )
-        .await;
+        let (recipient_taddr, _recipient_ua, txid_1) =
+            jsonrpc_fund(&services, &mut clients, Some(e2e::Pool::Transparent)).await;
         let txid_1 = txid_1.expect("jsonrpc_fund sends a tx when given Some(pool)");
 
         clients.sync_faucet().await;
@@ -539,7 +523,10 @@ mod wallet_to_validator {
     /// for the same reason — the advance mines orchard coinbase (~99 halo2
     /// proofs) until per-call cheap filler mining (round-3 P2) lands.
     #[tokio::test(flavor = "multi_thread")]
-    #[cfg_attr(not(feature = "devtool-incompatible"), ignore = "heavy: 99-block orchard advance (~99 halo2 proofs); un-ignore + transparent filler when round-3 P2 lands")]
+    #[cfg_attr(
+        not(feature = "devtool-incompatible"),
+        ignore = "heavy: 99-block orchard advance (~99 halo2 proofs); un-ignore + transparent filler when round-3 P2 lands"
+    )]
     async fn send_to_transparent_finalization() {
         let (mut test_manager, mut clients) = launch_and_fund_zcashd_faucet(1).await;
 
@@ -587,7 +574,10 @@ mod wallet_to_validator {
     /// block), so this could be re-ported light (like the zebrad `send_to_all`)
     /// instead of gated, if preferred.
     #[tokio::test(flavor = "multi_thread")]
-    #[cfg_attr(not(feature = "devtool-incompatible"), ignore = "heavy: 100-block orchard advance (~100 halo2 proofs); re-port light or un-ignore with transparent filler (round-3 P2)")]
+    #[cfg_attr(
+        not(feature = "devtool-incompatible"),
+        ignore = "heavy: 100-block orchard advance (~100 halo2 proofs); re-port light or un-ignore with transparent filler (round-3 P2)"
+    )]
     async fn send_to_all() {
         let (mut test_manager, mut clients) = launch_and_fund_zcashd_faucet(3).await;
 
@@ -608,18 +598,9 @@ mod wallet_to_validator {
         clients.sync_recipient().await;
 
         let balance = clients.recipient_balance().await;
-        assert_eq!(
-            e2e::Pool::Orchard.spendable_balance(&balance),
-            250_000
-        );
-        assert_eq!(
-            e2e::Pool::Sapling.spendable_balance(&balance),
-            250_000
-        );
-        assert_eq!(
-            e2e::Pool::Transparent.spendable_balance(&balance),
-            250_000
-        );
+        assert_eq!(e2e::Pool::Orchard.spendable_balance(&balance), 250_000);
+        assert_eq!(e2e::Pool::Sapling.spendable_balance(&balance), 250_000);
+        assert_eq!(e2e::Pool::Transparent.spendable_balance(&balance), 250_000);
 
         test_manager.close().await;
     }
@@ -628,7 +609,10 @@ mod wallet_to_validator {
     /// with the balance assertions commented out — devtool's WalletBalance has
     /// no unconfirmed_*/confirmed_* fields (block-based sync, no mempool scan).
     #[tokio::test(flavor = "multi_thread")]
-    #[cfg_attr(not(feature = "devtool-incompatible"), ignore = "devtool WalletBalance has no unconfirmed_*/confirmed_* fields; balance asserts commented out — restore + un-ignore when devtool surfaces unconfirmed balances")]
+    #[cfg_attr(
+        not(feature = "devtool-incompatible"),
+        ignore = "devtool WalletBalance has no unconfirmed_*/confirmed_* fields; balance asserts commented out — restore + un-ignore when devtool surfaces unconfirmed balances"
+    )]
     async fn monitor_unverified_mempool() {
         let (mut test_manager, mut clients) = launch_and_fund_zcashd_faucet(2).await;
 

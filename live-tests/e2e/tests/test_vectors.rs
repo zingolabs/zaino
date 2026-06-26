@@ -38,7 +38,10 @@ macro_rules! expected_read_response {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-#[cfg_attr(not(feature = "devtool-incompatible"), ignore = "Not a test: builds test-vector data for zaino_state::chain_index unit tests. Also funds via transparent-coinbase shielding (round-2 P1) — un-ignore to regenerate vectors once devtool can shield its own transparent coinbase (tracked by tests/devtool.rs's address_deltas).")]
+#[cfg_attr(
+    not(feature = "devtool-incompatible"),
+    ignore = "Not a test: builds test-vector data for zaino_state::chain_index unit tests. Also funds via transparent-coinbase shielding (round-2 P1) — un-ignore to regenerate vectors once devtool can shield its own transparent coinbase (tracked by tests/devtool.rs's address_deltas)."
+)]
 #[allow(deprecated)]
 async fn create_200_block_regtest_chain_vectors() {
     // The committed unit-test vectors encode a mixed-pool chain built by
@@ -116,7 +119,9 @@ async fn create_200_block_regtest_chain_vectors() {
         .send_from_faucet(recipient_uaddr.as_str(), 250_000)
         .await;
 
-    clients.send_from_recipient(faucet_taddr.as_str(), 200_000).await;
+    clients
+        .send_from_recipient(faucet_taddr.as_str(), 200_000)
+        .await;
 
     // Generate block
     test_manager
@@ -138,7 +143,9 @@ async fn create_200_block_regtest_chain_vectors() {
         .send_from_faucet(recipient_uaddr.as_str(), 250_000)
         .await;
 
-    clients.send_from_recipient(faucet_taddr.as_str(), 250_000).await;
+    clients
+        .send_from_recipient(faucet_taddr.as_str(), 250_000)
+        .await;
 
     // Generate block
     test_manager
@@ -167,8 +174,12 @@ async fn create_200_block_regtest_chain_vectors() {
             .send_from_faucet(recipient_uaddr.as_str(), 250_000)
             .await;
 
-        clients.send_from_recipient(faucet_taddr.as_str(), 200_000).await;
-        clients.send_from_recipient(faucet_uaddr.as_str(), 200_000).await;
+        clients
+            .send_from_recipient(faucet_taddr.as_str(), 200_000)
+            .await;
+        clients
+            .send_from_recipient(faucet_uaddr.as_str(), 200_000)
+            .await;
 
         // Generate block
         test_manager
@@ -199,8 +210,12 @@ async fn create_200_block_regtest_chain_vectors() {
             .send_from_faucet(recipient_uaddr.as_str(), 250_000)
             .await;
 
-        clients.send_from_recipient(faucet_taddr.as_str(), 250_000).await;
-        clients.send_from_recipient(faucet_saddr.as_str(), 250_000).await;
+        clients
+            .send_from_recipient(faucet_taddr.as_str(), 250_000)
+            .await;
+        clients
+            .send_from_recipient(faucet_saddr.as_str(), 250_000)
+            .await;
 
         // Generate block
         test_manager

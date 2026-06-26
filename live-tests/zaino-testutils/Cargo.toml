@@ -6,7 +6,7 @@ repository = { workspace = true }
 homepage = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
-version = { workspace = true }
+version = "0.2.0"
 publish = false
 
 [features]
@@ -46,8 +46,9 @@ zaino-proto = { workspace = true }
 zaino-fetch = { workspace = true }
 zainod = { workspace = true }
 
-# Librustzcash
-zcash_protocol = { workspace = true }
+# Librustzcash. local-consensus is test-only (regtest params); kept off the
+# root workspace entry so prod resolution is unchanged.
+zcash_protocol = { workspace = true, features = ["local-consensus"] }
 
 # Zebra
 zebra-chain = { workspace = true }

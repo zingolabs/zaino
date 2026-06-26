@@ -1,13 +1,11 @@
 /target
-# Cargo build output in every (sub-)workspace, including nested ones such as
-# live-tests/e2e/target — the anchored rules below only match
-# specific paths and miss new sub-workspaces.
+# Cargo build output. The live-test crates are now members of the root
+# workspace (single committed Cargo.lock), so there are no nested workspaces or
+# per-workspace lockfiles to ignore.
 target/
 /db
 /docs/cargo_docs/debug
 /.helix
-/live-tests/Cargo.lock
-/live-tests/e2e/Cargo.lock
 /live-tests/chain_cache/*
 /live-tests/test_binaries/bins/*
 /live-tests/target/*

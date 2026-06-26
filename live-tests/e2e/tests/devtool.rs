@@ -232,18 +232,9 @@ where
     clients.sync_recipient().await;
 
     let balance = clients.recipient_balance().await;
-    assert_eq!(
-        e2e::Pool::Orchard.spendable_balance(&balance),
-        250_000
-    );
-    assert_eq!(
-        e2e::Pool::Sapling.spendable_balance(&balance),
-        250_000
-    );
-    assert_eq!(
-        e2e::Pool::Transparent.spendable_balance(&balance),
-        250_000
-    );
+    assert_eq!(e2e::Pool::Orchard.spendable_balance(&balance), 250_000);
+    assert_eq!(e2e::Pool::Sapling.spendable_balance(&balance), 250_000);
+    assert_eq!(e2e::Pool::Transparent.spendable_balance(&balance), 250_000);
 
     test_manager.close().await;
 }
@@ -595,7 +586,8 @@ where
     use futures::StreamExt as _;
     use zaino_proto::proto::service::GetMempoolTxRequest;
 
-    let (mut test_manager, transparent_txid, unified_txid) = fund_and_fill_mempool::<Service>().await;
+    let (mut test_manager, transparent_txid, unified_txid) =
+        fund_and_fill_mempool::<Service>().await;
 
     let to_bytes = |hex: &str| -> [u8; 32] {
         e2e::devtool::txid_internal_bytes(hex)
@@ -609,7 +601,12 @@ where
     let collect = |req: GetMempoolTxRequest| {
         let subscriber = subscriber.clone();
         async move {
-            let stream_items: Vec<_> = subscriber.get_mempool_tx(req).await.unwrap().collect().await;
+            let stream_items: Vec<_> = subscriber
+                .get_mempool_tx(req)
+                .await
+                .unwrap()
+                .collect()
+                .await;
             let mut txs: Vec<_> = stream_items.into_iter().filter_map(|r| r.ok()).collect();
             txs.sort_by_key(|tx| tx.txid.clone());
             txs
@@ -1001,7 +998,11 @@ where
 
 async fn fund_and_send_dual(
     pool: e2e::Pool,
-) -> (zaino_testutils::StateAndFetchServices<Zebrad>, String, String) {
+) -> (
+    zaino_testutils::StateAndFetchServices<Zebrad>,
+    String,
+    String,
+) {
     let svc = zaino_testutils::launch_state_and_fetch_services_mining_to::<Zebrad>(
         zaino_testutils::SHIELDED_FUNDING_POOL,
         &ValidatorKind::Zebrad,
@@ -1094,8 +1095,7 @@ async fn get_raw_transaction_fetch_vs_state() {
 /// over the recipient's taddr returns the send's txid, and the fetch and state
 /// indexers agree.
 async fn get_address_tx_ids_fetch_vs_state() {
-    let (mut svc, txid_hex, recipient_taddr) =
-        fund_and_send_dual(e2e::Pool::Transparent).await;
+    let (mut svc, txid_hex, recipient_taddr) = fund_and_send_dual(e2e::Pool::Transparent).await;
 
     let tip = svc.fetch_subscriber.tip_height().await;
     let start = Some((tip - 2) as u32);
@@ -1111,7 +1111,11 @@ async fn get_address_tx_ids_fetch_vs_state() {
         .unwrap();
     let state = svc
         .state_subscriber
-        .get_address_tx_ids(GetAddressTxIdsRequest::new(vec![recipient_taddr], start, end))
+        .get_address_tx_ids(GetAddressTxIdsRequest::new(
+            vec![recipient_taddr],
+            start,
+            end,
+        ))
         .await
         .unwrap();
     assert_eq!(txid_hex.trim(), fetch[0]);
@@ -1124,8 +1128,7 @@ async fn get_address_tx_ids_fetch_vs_state() {
 /// over the recipient's taddr returns the send's txid, and the fetch and state
 /// indexers agree on it.
 async fn get_address_utxos_fetch_vs_state() {
-    let (mut svc, txid_hex, recipient_taddr) =
-        fund_and_send_dual(e2e::Pool::Transparent).await;
+    let (mut svc, txid_hex, recipient_taddr) = fund_and_send_dual(e2e::Pool::Transparent).await;
 
     let fetch_utxos = svc
         .fetch_subscriber
@@ -1208,8 +1211,7 @@ async fn get_raw_mempool_fetch_vs_state() {
 async fn get_address_transactions_regtest() {
     use futures::StreamExt as _;
 
-    let (mut svc, _txid_hex, recipient_taddr) =
-        fund_and_send_dual(e2e::Pool::Transparent).await;
+    let (mut svc, _txid_hex, recipient_taddr) = fund_and_send_dual(e2e::Pool::Transparent).await;
 
     let chain_height = svc.fetch_subscriber.tip_height().await;
     dbg!(&chain_height);
@@ -1293,8 +1295,7 @@ async fn transparent_data_in_compact_block() {
 /// Port of `state_service_get_address_balance` (zebrad): the recipient taddr
 /// reports the 250_000 send, and the fetch and state indexers agree.
 async fn get_address_balance_fetch_vs_state() {
-    let (mut svc, _txid_hex, recipient_taddr) =
-        fund_and_send_dual(e2e::Pool::Transparent).await;
+    let (mut svc, _txid_hex, recipient_taddr) = fund_and_send_dual(e2e::Pool::Transparent).await;
 
     let fetch = svc
         .fetch_subscriber
@@ -1498,7 +1499,8 @@ async fn launch_transparent_to_height_100() -> zaino_testutils::StateAndFetchSer
         .await
         .unwrap()
         .height as u32;
-    svc.generate_blocks_and_wait_for_tips(100 - chain_height).await;
+    svc.generate_blocks_and_wait_for_tips(100 - chain_height)
+        .await;
 
     svc
 }
@@ -1782,7 +1784,10 @@ async fn address_deltas() {
     let GetAddressDeltasResponse::WithChainInfo { deltas, .. } = response else {
         panic!("Expected WithChainInfo variant");
     };
-    assert!(deltas.is_empty(), "Non-existent address should have no deltas");
+    assert!(
+        deltas.is_empty(),
+        "Non-existent address should have no deltas"
+    );
 
     svc.test_manager.close().await;
 }
@@ -1974,7 +1979,10 @@ mod zebrad {
         }
 
         #[tokio::test(flavor = "multi_thread")]
-        #[cfg_attr(not(feature = "devtool-incompatible"), ignore = "heavy: 99-block orchard advance (~99 halo2 proofs); un-ignore + transparent filler when round-3 P2 lands")]
+        #[cfg_attr(
+            not(feature = "devtool-incompatible"),
+            ignore = "heavy: 99-block orchard advance (~99 halo2 proofs); un-ignore + transparent filler when round-3 P2 lands"
+        )]
         async fn send_to_transparent_finalization() {
             crate::send_to_transparent_finalization::<FetchService>().await;
         }
@@ -2005,7 +2013,10 @@ mod zebrad {
         }
 
         #[tokio::test(flavor = "multi_thread")]
-        #[cfg_attr(not(feature = "devtool-incompatible"), ignore = "devtool WalletBalance has no unconfirmed_*/confirmed_* fields; balance asserts are commented out — restore + un-ignore when devtool surfaces unconfirmed balances")]
+        #[cfg_attr(
+            not(feature = "devtool-incompatible"),
+            ignore = "devtool WalletBalance has no unconfirmed_*/confirmed_* fields; balance asserts are commented out — restore + un-ignore when devtool surfaces unconfirmed balances"
+        )]
         async fn monitor_unverified_mempool() {
             crate::monitor_unverified_mempool::<FetchService>().await;
         }
@@ -2139,7 +2150,10 @@ mod zebrad {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    #[cfg_attr(not(feature = "devtool-incompatible"), ignore = "devtool `shield` drains all transparent funds, so it always includes the freshly-mined tip-99 coinbase; devtool computes coinbase maturity against the target height (tip+1) while zebra's mempool enforces it against the current tip, so that coinbase is immature by one block and the shield is rejected — un-ignore when devtool fixes the coinbase-maturity off-by-one")]
+    #[cfg_attr(
+        not(feature = "devtool-incompatible"),
+        ignore = "devtool `shield` drains all transparent funds, so it always includes the freshly-mined tip-99 coinbase; devtool computes coinbase maturity against the target height (tip+1) while zebra's mempool enforces it against the current tip, so that coinbase is immature by one block and the shield is rejected — un-ignore when devtool fixes the coinbase-maturity off-by-one"
+    )]
     async fn address_deltas() {
         crate::address_deltas().await;
     }
@@ -2199,7 +2213,10 @@ mod zebrad {
         }
 
         #[tokio::test(flavor = "multi_thread")]
-        #[cfg_attr(not(feature = "devtool-incompatible"), ignore = "heavy: 99-block orchard advance (~99 halo2 proofs); un-ignore + transparent filler when round-3 P2 lands")]
+        #[cfg_attr(
+            not(feature = "devtool-incompatible"),
+            ignore = "heavy: 99-block orchard advance (~99 halo2 proofs); un-ignore + transparent filler when round-3 P2 lands"
+        )]
         async fn send_to_transparent_finalization() {
             crate::send_to_transparent_finalization::<StateService>().await;
         }
@@ -2220,7 +2237,10 @@ mod zebrad {
         }
 
         #[tokio::test(flavor = "multi_thread")]
-        #[cfg_attr(not(feature = "devtool-incompatible"), ignore = "devtool WalletBalance has no unconfirmed_*/confirmed_* fields; balance asserts are commented out — restore + un-ignore when devtool surfaces unconfirmed balances")]
+        #[cfg_attr(
+            not(feature = "devtool-incompatible"),
+            ignore = "devtool WalletBalance has no unconfirmed_*/confirmed_* fields; balance asserts are commented out — restore + un-ignore when devtool surfaces unconfirmed balances"
+        )]
         async fn monitor_unverified_mempool() {
             crate::monitor_unverified_mempool::<StateService>().await;
         }
