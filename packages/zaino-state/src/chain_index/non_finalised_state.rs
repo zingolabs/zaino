@@ -552,6 +552,13 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         // Callers should provide None. Used for self-recursion case only
         height_to_recurse_to: Option<Height>,
     ) -> Result<(), SyncError> {
+        if height_to_recurse_to
+            .is_some_and(|height| height + 100 < working_snapshot.best_tip.height)
+        {
+            return Err(SyncError::ReorgFailure(
+                "reorg detection recursed beyond reason".to_string(),
+            ));
+        }
         let target_height = height_to_recurse_to.unwrap_or(working_snapshot.best_tip.height);
         match self
             .source
@@ -567,7 +574,8 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             })? {
             Some(block) => {
                 if block.hash() != working_snapshot.best_tip.hash {
-                    self.handle_reorg(working_snapshot, block.as_ref()).await?;
+                    self.handle_reorg(working_snapshot, block.as_ref(), 0)
+                        .await?;
                 }
                 Ok(())
             }
