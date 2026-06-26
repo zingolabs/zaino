@@ -15,8 +15,8 @@
 # zcashd is being deprecated, so this runs `cargo nextest run` with
 # `--no-default-features` (the default-on `zcashd_support` feature OFF): the
 # zcashd-backed tests are compiled out and the suite exercises the zebrad-only
-# world. All downstream tasks (walletless-/wallet-integration-test,
-# integration-test) run through this script and inherit the default. To run the
+# world. All downstream tasks (live-integration / live-e2e, live) run through
+# this script and inherit the default. To run the
 # zcashd-backed suite, pass `--with-zcashd` (or set CONTAINER_TEST_WITH_ZCASHD=1).
 # See docs/adr/0001-zcashd-support-feature-gate.md.
 

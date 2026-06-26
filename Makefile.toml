@@ -105,38 +105,38 @@ script.post = "makers notify"
 
 # -------------------------------------------------------------------
 
-[tasks.walletless-integration-test]
-description = "Run the integration workspace inside the CI container (forwards extra args to `cargo nextest run`)"
-env = { WORKSPACE_MANIFEST = "live-tests/Cargo.toml", WORKSPACE_DESC = "integration workspace" }
+[tasks.live-integration]
+description = "Run the `integration` live-test partition inside the CI container (forwards extra args to `cargo nextest run`)"
+env = { PACKAGE = "integration", PACKAGE_DESC = "integration partition" }
 script_runner = "bash"
 extend = "base-script"
 script.main = 'source "./tools/scripts/container-nextest-workspace.sh"'
 
 # -------------------------------------------------------------------
 
-[tasks.wallet-integration-test]
-description = "Run the e2e workspace inside the CI container (forwards extra args to `cargo nextest run`)"
-env = { WORKSPACE_MANIFEST = "live-tests/e2e/Cargo.toml", WORKSPACE_DESC = "e2e workspace" }
+[tasks.live-e2e]
+description = "Run the `e2e` live-test partition inside the CI container (forwards extra args to `cargo nextest run`)"
+env = { PACKAGE = "e2e", PACKAGE_DESC = "e2e partition" }
 script_runner = "bash"
 extend = "base-script"
 script.main = 'source "./tools/scripts/container-nextest-workspace.sh"'
 
 # -------------------------------------------------------------------
 
-[tasks.integration-test]
-description = "Run both integration-test workspaces (integration then e2e) and print a combined pass/fail summary (pass --with-zcashd to include zcashd-backed tests)"
+[tasks.live]
+description = "Run both live-test partitions (integration then e2e) and print a combined pass/fail summary (pass --with-zcashd to include zcashd-backed tests)"
 script_runner = "bash"
 script = 'source "./tools/scripts/integration-test-summary.sh"'
 
 # -------------------------------------------------------------------
 
 [tasks.zcashd_test]
-description = "Convenience: run container-test + integration-test with --with-zcashd (equivalent to running each with the flag)"
+description = "Convenience: run container-test + live with --with-zcashd (equivalent to running each with the flag)"
 # Shorthand for running the full suite with zcashd compiled in.
 # Sets CONTAINER_TEST_WITH_ZCASHD=1, which the scripts honour alongside
 # the --with-zcashd CLI flag.
 env = { CONTAINER_TEST_WITH_ZCASHD = "1" }
-run_task = { name = ["container-test", "integration-test"] }
+run_task = { name = ["container-test", "live"] }
 
 # -------------------------------------------------------------------
 
@@ -198,25 +198,13 @@ script = 'source "./tools/scripts/verify-all.sh"'
 # -------------------------------------------------------------------
 
 # Verify the no-zcashd build compiles: the default-on `zcashd_support` feature
-# is being deprecated, so its OFF state must stay green or it bit-rots. Each
-# of the three workspaces is checked with --no-default-features. See
-# docs/adr/0001-zcashd-support-feature-gate.md.
+# is being deprecated, so its OFF state must stay green or it bit-rots. The
+# reunified workspace (production + live-test crates) is now checked in a single
+# pass with --no-default-features. See docs/adr/0001-zcashd-support-feature-gate.md.
 [tasks.check-no-zcashd-packages]
-description = "cargo check --no-default-features for the production workspace (zcashd_support off)"
+description = "cargo check --no-default-features across the whole workspace (zcashd_support off)"
 command = "cargo"
 args = ["check", "--workspace", "--all-targets", "--no-default-features"]
-
-[tasks.check-no-zcashd-walletless]
-description = "cargo check --no-default-features for the live-tests workspace (zcashd_support off)"
-command = "cargo"
-args = ["check", "--workspace", "--all-targets", "--no-default-features"]
-cwd = "live-tests"
-
-[tasks.check-no-zcashd-wallet]
-description = "cargo check --no-default-features for the e2e workspace (zcashd_support off)"
-command = "cargo"
-args = ["check", "--all-targets", "--no-default-features"]
-cwd = "live-tests/e2e"
 
 [tasks.check-zaino-proto-heavy]
 description = "Guard: zaino-proto `heavy` must stay enabled under --no-default-features (else the no-zcashd test build silently loses zebra-state/zebra-chain/which)"
@@ -224,10 +212,8 @@ script_runner = "@rust"
 script = { file = "tools/scripts/check-zaino-proto-heavy.rs" }
 
 [tasks.check-no-zcashd]
-description = "Verify the no-zcashd (--no-default-features) build compiles across all three workspaces, and that zaino-proto `heavy` survives it"
+description = "Verify the no-zcashd (--no-default-features) build compiles across the workspace, and that zaino-proto `heavy` survives it"
 dependencies = [
   "check-zaino-proto-heavy",
   "check-no-zcashd-packages",
-  "check-no-zcashd-walletless",
-  "check-no-zcashd-wallet",
 ]

@@ -21,7 +21,11 @@ echo "Available commands:"
 echo ""
 echo "  container-test             Run integration tests using the local \
 image"
-echo "  integration-test           Run live-tests sub-workspace \
+echo "  live                       Run both live-test partitions (integration \
++ e2e) with a combined summary"
+echo "  live-integration           Run the integration live-test partition \
+(forwards flags to nextest)"
+echo "  live-e2e                   Run the e2e live-test partition \
 (forwards flags to nextest)"
 echo "  container-test-save-failures    Run tests, save failures to \
 .failed-tests"

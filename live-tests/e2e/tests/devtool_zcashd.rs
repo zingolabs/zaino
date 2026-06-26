@@ -20,7 +20,7 @@
 
 // The entire zcashd matrix depends on the zcashd validator + its zaino-testutils
 // launchers, all gated behind `zcashd_support`. Gate the whole binary so it
-// compiles out under `--no-default-features` (mirrors walletless json_server.rs).
+// compiles out under `--no-default-features` (mirrors the integration partition's json_server.rs).
 #![cfg(feature = "zcashd_support")]
 #![allow(deprecated)] // FetchService is a deprecated re-export.
 

@@ -972,7 +972,7 @@ impl<V: ValidatorExt> StateAndFetchServices<V> {
 /// services and their subscribers as a [`StateAndFetchServices`] bundle.
 ///
 /// This is the shared core of the `create_test_manager_and_services` test
-/// harness used by both the walletless and wallet integration-test workspaces.
+/// harness used by both the integration and e2e live-test partitions.
 /// Wallet callers wrap this and additionally build lightclients from the
 /// returned manager's gRPC address.
 #[allow(deprecated)]

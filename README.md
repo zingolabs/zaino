@@ -38,10 +38,10 @@ packages/                          Cargo workspace member crates
   zaino-serve/                       gRPC server (CompactTxStreamer)
   zainod/                            Daemon binary
 
-integration-tests/                 Separate workspace — runs against zcashd/zebrad
-  src/                               Library helpers exposed to test files
-  tests/                             Integration test files
-  zaino-testutils/                   Test harness and utilities
+live-tests/                        Live-test suite — root-workspace members, run against zcashd/zebrad
+  e2e/                               End-to-end partition (wallet client -> Zaino -> validator)
+  integration/                       Integration partition (Zaino services -> live validator, no client)
+  zaino-testutils/                   Shared test harness and utilities
   test_binaries/                     Symlinked zcashd/zebrad/zcash-cli binaries
   test_environment/                  Container build context
     Containerfile                      CI/test container image definition

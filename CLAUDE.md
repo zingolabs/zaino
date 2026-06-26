@@ -172,15 +172,13 @@ Reach for `grep` only as a fallback — when the server is genuinely
 unavailable, still indexing, or the target isn't code it understands — and
 say so when you do.
 
-**Multi-workspace caveat (this repo):** the tree has three *separate* Cargo
-workspaces — `Cargo.toml` (root, `packages/*` production), `integration-tests/Cargo.toml`
-(walletless tests), and `integration-tests/wallet-tests/Cargo.toml` (wallet
-tests). rust-analyzer is scoped (in `.helix/languages.toml`) to **one
-integration-test workspace at a time** — indexing more than one wedges the
-server, and the production workspace is intentionally never indexed (we only
-need LSP on test code; production crates still resolve as path dependencies, so
-go-to-def into them works). To switch which test workspace is analyzed, swap the
-active `linkedProjects` entry in `.helix/languages.toml` (comment one, uncomment
-the other) and reload the LSP (`:lsp-restart`). Because only one workspace is
-loaded at a time, an empty LSP result usually means "the other workspace isn't
-loaded," not "no references" — confirm which workspace is active first.
+**Single-workspace note (this repo):** the tree is one Cargo workspace. The
+root `Cargo.toml` holds the `packages/*` production crates **and** the live-test
+crates (`live-tests/{e2e,integration,zaino-testutils}`) as members (see
+docs/adr/0002, docs/adr/0003). `default-members` is the production set, so a
+bare `cargo` / `cargo nextest run` builds and tests only those and excludes the
+heavy live-test crates; the live suite is selected explicitly with `-p e2e` /
+`-p integration` (the `makers live` task family). rust-analyzer indexes the
+single workspace, so go-to-def / find-references resolve across production and
+test code in one pass — no linked-project swapping, and an empty result means
+"no references," not "the other workspace isn't loaded."
