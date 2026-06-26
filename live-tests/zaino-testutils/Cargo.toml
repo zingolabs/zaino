@@ -44,7 +44,9 @@ zaino-serve.workspace = true
 zaino-common.workspace = true
 zaino-proto = { workspace = true }
 zaino-fetch = { workspace = true }
-zainod = { workspace = true }
+# test_dependencies enables Indexer::launch_inner_with_listeners (and forwards
+# zaino-serve/test_dependencies) so the harness can serve on pre-bound sockets.
+zainod = { workspace = true, features = ["test_dependencies"] }
 
 # Librustzcash. local-consensus is test-only (regtest params); kept off the
 # root workspace entry so prod resolution is unchanged.
@@ -62,7 +64,6 @@ zcash_local_net = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
 once_cell = { workspace = true }
-portpicker = { workspace = true }
 tokio = { workspace = true }
 tonic.workspace = true
 tracing.workspace = true

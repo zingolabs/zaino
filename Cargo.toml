@@ -134,7 +134,6 @@ bs58 = "0.5"
 bitflags = "2.9"
 
 # Test
-portpicker = "0.1"
 tempfile = "3.2"
 # default-features = false (zcashd_support drop) — only the live-test crates
 # depend on zainod, so this is scoped to them. See docs/adr/0001.

@@ -19,6 +19,11 @@ path = "src/lib.rs"
 [features]
 default = ["zcashd_support"]
 
+# Test-only seam: `Indexer::launch_inner_with_listeners`, which threads
+# pre-bound listeners through to the gRPC/JSON-RPC servers. Forwards to
+# zaino-serve.
+test_dependencies = ["zaino-serve/test_dependencies"]
+
 # Support for connecting to a zcashd validator node. Default-on; being
 # deprecated. Forwards to the zaino libs. Build with `--no-default-features`
 # to compile zcashd out end-to-end. See

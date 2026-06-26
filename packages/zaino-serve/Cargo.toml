@@ -11,6 +11,11 @@ version = "0.3.0"
 [features]
 default = ["zcashd_support"]
 
+# Test-only seam: the server `spawn_from_listener` methods, which serve on a
+# pre-bound TcpListener so the test harness can bind 127.0.0.1:0 and hand the
+# open socket over race-free. Not part of the production API.
+test_dependencies = []
+
 # Support for connecting to a zcashd validator node. Default-on; being
 # deprecated. Forwards to zaino-fetch and zaino-state. See
 # docs/adr/0001-zcashd-support-feature-gate.md.

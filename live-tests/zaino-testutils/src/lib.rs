@@ -164,7 +164,7 @@ fn binary_path(binary_name: &str) -> Option<PathBuf> {
 }
 
 /// Create local URI from port.
-pub fn make_uri(indexer_port: portpicker::Port) -> http::Uri {
+pub fn make_uri(indexer_port: u16) -> http::Uri {
     format!("http://127.0.0.1:{indexer_port}")
         .try_into()
         .unwrap()
@@ -648,12 +648,29 @@ where
             zaino_json_listen_address,
             zaino_json_server_cookie_dir,
         ) = if enable_zaino {
-            let zaino_grpc_listen_port = portpicker::pick_unused_port().expect("No ports free");
-            let zaino_grpc_listen_address =
-                SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), zaino_grpc_listen_port);
-            let zaino_json_listen_port = portpicker::pick_unused_port().expect("No ports free");
-            let zaino_json_listen_address =
-                SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), zaino_json_listen_port);
+            // Bind the indexer's listeners on 127.0.0.1:0 up-front and read the
+            // OS-assigned ports. Holding the open sockets until they are handed
+            // to the server (via launch_inner_with_listeners) closes the
+            // pick-a-port / bind-later race that portpicker left open.
+            let zaino_grpc_listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+                .expect("failed to bind Zaino gRPC listener on 127.0.0.1:0");
+            let zaino_grpc_listen_address = zaino_grpc_listener
+                .local_addr()
+                .expect("local_addr on a bound listener is infallible");
+            let zaino_json_listener = if enable_zaino_jsonrpc_server {
+                Some(
+                    std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+                        .expect("failed to bind Zaino JSON-RPC listener on 127.0.0.1:0"),
+                )
+            } else {
+                None
+            };
+            let zaino_json_listen_address = match &zaino_json_listener {
+                Some(listener) => listener
+                    .local_addr()
+                    .expect("local_addr on a bound listener is infallible"),
+                None => SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            };
             debug!(
                 grpc_address = %zaino_grpc_listen_address,
                 json_address = %zaino_json_listen_address,
@@ -690,10 +707,12 @@ where
                 metrics_endpoint: None,
             };
 
-            let (handle, service_subscriber) = Indexer::<Service>::launch_inner(
+            let (handle, service_subscriber) = Indexer::<Service>::launch_inner_with_listeners(
                 Service::Config::try_from(indexer_config.clone())
                     .expect("Failed to convert ZainodConfig to service config"),
                 indexer_config,
+                zaino_grpc_listener,
+                zaino_json_listener,
             )
             .await
             .unwrap();
