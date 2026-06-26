@@ -33,7 +33,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Lint Dockerfiles
         run: |
@@ -52,7 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -74,7 +74,7 @@ jobs:
     if: github.event_name != 'pull_request' && github.event.pull_request.draft == false
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Restore cargo dependencies
         uses: tespkg/actions-cache/restore@v1
@@ -102,7 +102,7 @@ jobs:
     if: github.event_name != 'pull_request' && github.event.pull_request.draft == false
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Restore cargo dependencies
         id: restore-cargo
@@ -164,7 +164,7 @@ jobs:
           - "zaino-state"
           - "zaino-testutils"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Restore cargo dependencies
         uses: tespkg/actions-cache/restore@v1
