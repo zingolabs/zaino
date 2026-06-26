@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tempfile::TempDir;
 use zaino_common::network::ActivationHeights;
-use zaino_common::{DatabaseConfig, Network, StorageConfig};
+use zaino_common::{DatabaseConfig, Network, StorageConfig, SyncWriteBatchSize};
 use zaino_proto::proto::utils::{compact_block_with_pool_types, PoolTypeFilter};
 
 use crate::chain_index::finalised_state::capability::IndexedBlockExt;
@@ -1058,8 +1058,9 @@ async fn bulk_tx_out_set_accumulator_builder_matches_incremental() {
     // 1 = single optimal pass; >1 exercises the sharded multi-pass recombination; 256 = one
     // first-byte value per shard (maximal sharding).
     for shards in [1u16, 2, 4, 256] {
+        // Cap = u64::MAX: the initial partition is used verbatim (no bisection).
         let built = tokio::task::block_in_place(|| {
-            backend.build_tx_out_set_accumulator_blocking(db_tip, shards)
+            backend.build_tx_out_set_accumulator_blocking(db_tip, shards, u64::MAX)
         })
         .unwrap();
 
@@ -1067,7 +1068,56 @@ async fn bulk_tx_out_set_accumulator_builder_matches_incremental() {
             built, incremental,
             "bulk builder (shards={shards}) must equal the incrementally-maintained accumulator"
         );
+
+        // Tiny per-shard caps force the strict memory bound to bisect the initial ranges to varying
+        // depths. Whenever the build succeeds it must still equal the incremental accumulator (the
+        // bisected ranges remain a disjoint cover of the first-byte space, and recombination is
+        // order-independent); if a single first-byte bucket genuinely exceeds the cap the builder
+        // fails fast by design (the strict bound), which is also acceptable here.
+        for max_spent_entries in [16u64, 8, 4, 2, 1] {
+            if let Ok(built_capped) = tokio::task::block_in_place(|| {
+                backend.build_tx_out_set_accumulator_blocking(db_tip, shards, max_spent_entries)
+            }) {
+                assert_eq!(
+                    built_capped, incremental,
+                    "strict-capped bulk builder (shards={shards}, cap={max_spent_entries}) must \
+                     equal the incremental accumulator"
+                );
+            }
+        }
     }
+}
+
+/// The accumulator rebuild auto-shards to keep the per-shard in-memory spent set within the
+/// configured memory budget: a generous budget yields a single optimal pass, while a budget smaller
+/// than the spent set forces multiple shards (capped at 256). This is the OOM guard for
+/// memory-constrained hosts.
+#[tokio::test(flavor = "multi_thread")]
+async fn accumulator_build_shards_scale_to_memory_budget() {
+    init_tracing();
+
+    let (_data, _db_dir, zaino_db) = load_vectors_and_spawn_and_sync_v1_zaino_db().await;
+    zaino_db.wait_until_ready().await;
+
+    let backend = zaino_db
+        .backend_for_cap(
+            crate::chain_index::finalised_state::capability::CapabilityRequest::WriteCore,
+        )
+        .unwrap();
+
+    // A budget far larger than the (tiny regtest) spent set => the whole set fits in one shard.
+    assert_eq!(
+        backend.accumulator_build_shards(u64::MAX).unwrap(),
+        1,
+        "a budget exceeding the spent set must use a single pass"
+    );
+
+    // A 1-byte budget => the spent set far exceeds it => more than one shard, never above the cap.
+    let constrained = backend.accumulator_build_shards(1).unwrap();
+    assert!(
+        constrained > 1 && constrained <= 256,
+        "a 1-byte budget must force multiple shards (capped at 256), got {constrained}"
+    );
 }
 
 /// The write path must advance the validated tip itself (via the cheap in-memory parent + merkle
@@ -1102,7 +1152,7 @@ async fn write_path_advances_validated_tip() {
 /// resulting `(db tip, validated tip, txout-set accumulator)`.
 async fn sync_with_batch_budget(
     blocks: Vec<TestVectorBlockData>,
-    sync_write_batch_bytes: u64,
+    sync_write_batch_size: SyncWriteBatchSize,
 ) -> (Height, u32, FinalisedTxOutSetInfoAccumulator) {
     use crate::chain_index::finalised_state::capability::{
         CapabilityRequest, DbRead, TransparentHistExt,
@@ -1114,7 +1164,7 @@ async fn sync_with_batch_budget(
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: temp_dir.path().to_path_buf(),
-                sync_write_batch_bytes,
+                sync_write_batch_size,
                 ..Default::default()
             },
             ..Default::default()
@@ -1150,10 +1200,11 @@ async fn batched_sync_is_batch_size_independent() {
 
     let blocks = load_test_vectors().unwrap().blocks;
 
-    // u64::MAX => the whole sync is one batch; 1 => every block exceeds the budget => one block per
-    // batch (a flush + commit + fsync after each block).
-    let single_batch = sync_with_batch_budget(blocks.clone(), u64::MAX).await;
-    let per_block_batches = sync_with_batch_budget(blocks, 1).await;
+    // 1 GiB ≫ the tiny regtest test chain => the whole sync is one batch; 0 GiB => the `.max(1)`
+    // floor makes the effective budget 1 byte, so every block exceeds it => one block per batch (a
+    // flush + commit + fsync after each block).
+    let single_batch = sync_with_batch_budget(blocks.clone(), SyncWriteBatchSize(1)).await;
+    let per_block_batches = sync_with_batch_budget(blocks, SyncWriteBatchSize(0)).await;
 
     assert_eq!(single_batch.0, per_block_batches.0, "db tip must match");
     assert_eq!(
@@ -1237,9 +1288,10 @@ async fn incremental_accumulator_update_matches_full_rebuild() {
     );
 
     let incremental = backend.get_tx_out_set_info_accumulator().await.unwrap();
-    let from_genesis =
-        tokio::task::block_in_place(|| backend.build_tx_out_set_accumulator_blocking(db_tip, 1))
-            .unwrap();
+    let from_genesis = tokio::task::block_in_place(|| {
+        backend.build_tx_out_set_accumulator_blocking(db_tip, 1, u64::MAX)
+    })
+    .unwrap();
 
     assert_eq!(
         incremental, from_genesis,
