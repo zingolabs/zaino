@@ -11,11 +11,8 @@
 //! - BlockMetadata - Block metadata for construction
 //! - BlockWithMetadata - Block with associated metadata
 
-use primitive_types::U256;
-
 use super::db::legacy::*;
-use crate::chain_index::types::BlockContext;
-use crate::ChainWork;
+use crate::chain_index::types::{BlockContext, ChainWork, CompactDifficulty};
 
 /// The location of a transaction in the best chain
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -134,11 +131,16 @@ impl<'a> BlockWithMetadata<'a> {
         let block = self.block;
         let network = &self.metadata.network;
 
+        let bits_raw =
+            u32::from_be_bytes(block.header.difficulty_threshold.bytes_in_display_order());
+        let bits = CompactDifficulty::try_from_bits(bits_raw)
+            .map_err(|e| format!("invalid nBits: {e}"))?;
+
         Ok(BlockData {
             version: block.header.version,
             time: block.header.time.timestamp(),
             merkle_root: block.header.merkle_root.0,
-            bits: u32::from_be_bytes(block.header.difficulty_threshold.bytes_in_display_order()),
+            bits,
             block_commitments: BlockData::commitment_to_bytes(
                 block
                     .commitment(network)
@@ -278,13 +280,15 @@ impl<'a> BlockWithMetadata<'a> {
             .map(|height| Height(height.0))
             .ok_or_else(|| String::from("Any valid block has a coinbase height"))?;
 
-        let block_work = block.header.difficulty_threshold.to_work().ok_or_else(|| {
-            "Failed to calculate block work from difficulty threshold".to_string()
-        })?;
+        let bits_raw =
+            u32::from_be_bytes(block.header.difficulty_threshold.bytes_in_display_order());
+        let bits = CompactDifficulty::try_from_bits(bits_raw)
+            .map_err(|e| format!("invalid nBits: {e}"))?;
         let chainwork = self
             .metadata
             .parent_chainwork
-            .add(&ChainWork::from(U256::from(block_work.as_u128())));
+            .add(&bits.to_work())
+            .map_err(|e| format!("chainwork overflow: {e}"))?;
 
         Ok(BlockContext::new(hash, parent_hash, chainwork, height))
     }

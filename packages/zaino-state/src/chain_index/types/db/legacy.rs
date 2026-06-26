@@ -41,7 +41,7 @@ use crate::chain_index::encoding::{
     read_vec, version, write_fixed_le, write_i64_le, write_option, write_u16_be, write_u32_be,
     write_u32_le, write_u64_le, write_vec, FixedEncodedLen, ZainoVersionedSerde,
 };
-use crate::chain_index::types::BlockContext;
+use crate::chain_index::types::{BlockContext, ChainWork, CompactDifficulty};
 
 use super::commitment::{CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes};
 
@@ -721,85 +721,6 @@ impl FixedEncodedLen for Outpoint {
 
 // *** Block Level Objects ***
 
-/// Cumulative proof-of-work of the chain,
-/// stored as a **big-endian** 256-bit unsigned integer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
-pub struct ChainWork([u8; 32]);
-
-impl ChainWork {
-    ///Returns ChainWork as a U256.
-    pub fn to_u256(&self) -> U256 {
-        U256::from_big_endian(&self.0)
-    }
-
-    /// Builds a ChainWork from a U256.
-    pub fn from_u256(value: U256) -> Self {
-        let buf: [u8; 32] = value.to_big_endian();
-        ChainWork(buf)
-    }
-
-    /// Adds 2 ChainWorks.
-    pub fn add(&self, other: &Self) -> Self {
-        Self::from_u256(self.to_u256() + other.to_u256())
-    }
-
-    /// Subtract one ChainWork from another.
-    pub fn sub(&self, other: &Self) -> Self {
-        Self::from_u256(self.to_u256() - other.to_u256())
-    }
-
-    /// Returns ChainWork bytes.
-    pub fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-}
-
-impl From<U256> for ChainWork {
-    fn from(value: U256) -> Self {
-        Self::from_u256(value)
-    }
-}
-
-impl From<ChainWork> for U256 {
-    fn from(value: ChainWork) -> Self {
-        value.to_u256()
-    }
-}
-
-impl fmt::Display for ChainWork {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.to_u256().fmt(f)
-    }
-}
-
-impl ZainoVersionedSerde for ChainWork {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        write_fixed_le::<32, _>(w, &self.0)
-    }
-
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
-        let bytes = read_fixed_le::<32, _>(r)?;
-        Ok(ChainWork(bytes))
-    }
-}
-
-/// 32 byte body.
-impl FixedEncodedLen for ChainWork {
-    /// 32 bytes, LE
-    const ENCODED_LEN: usize = 32;
-}
-
 /// Essential block header fields required for chain validation and serving block header data.
 ///
 /// NOTE: Optional fields may be added for:
@@ -818,8 +739,8 @@ pub struct BlockData {
     /// - < V4: `hashFinalSaplingRoot` - Sapling note commitment tree root.
     /// - => V4: `hashBlockCommitments` - digest over hashLightClientRoot and hashAuthDataRoot.``
     pub block_commitments: [u8; 32],
-    /// Compact difficulty target used for proof-of-work and difficulty calculation.
-    pub bits: u32,
+    /// Validated compact difficulty target for proof-of-work.
+    pub bits: CompactDifficulty,
     /// Equihash nonse.
     pub nonce: [u8; 32],
     /// Equihash solution
@@ -834,7 +755,7 @@ impl BlockData {
         time: i64,
         merkle_root: [u8; 32],
         block_commitments: [u8; 32],
-        bits: u32,
+        bits: CompactDifficulty,
         nonse: [u8; 32],
         solution: EquihashSolution,
     ) -> Self {
@@ -884,52 +805,9 @@ impl BlockData {
         &self.block_commitments
     }
 
-    /// Returns nbits.
-    pub fn bits(&self) -> u32 {
-        self.bits
-    }
-
-    /// Converts compact bits field into the full target as a 256-bit integer.
-    pub fn target(&self) -> U256 {
-        Self::compact_to_target_u256(self.bits)
-    }
-
-    /// Returns the block work as 2^256 / (target + 1)
-    pub fn work(&self) -> U256 {
-        let target = self.target();
-        if target.is_zero() {
-            U256::zero()
-        } else {
-            (U256::one() << 256) / (target + 1)
-        }
-    }
-
-    /// Returns difficulty as ratio of the genesis target to this block's target.
-    pub fn difficulty(&self) -> f64 {
-        let max_target = Self::compact_to_target_u256(0x1d00ffff); // Zcash genesis
-        let target = self.target();
-        Self::u256_to_f64(max_target) / Self::u256_to_f64(target)
-    }
-
-    /// Used to convert bits to target.
-    fn compact_to_target_u256(bits: u32) -> U256 {
-        let exponent = (bits >> 24) as usize;
-        let mantissa = bits & 0x007fffff;
-
-        if exponent <= 3 {
-            U256::from(mantissa) >> (8 * (3 - exponent))
-        } else {
-            U256::from(mantissa) << (8 * (exponent - 3))
-        }
-    }
-
-    /// Converts a `U256` to `f64` lossily (sufficient for difficulty comparison).
-    fn u256_to_f64(value: U256) -> f64 {
-        let mut result = 0.0f64;
-        for (i, word) in value.0.iter().enumerate() {
-            result += (*word as f64) * 2f64.powi(64 * i as i32);
-        }
-        result
+    /// Returns the validated compact difficulty.
+    pub fn bits(&self) -> &CompactDifficulty {
+        &self.bits
     }
 
     /// Returns Equihash Nonse.
@@ -963,7 +841,7 @@ impl ZainoVersionedSerde for BlockData {
         write_fixed_le::<32, _>(&mut w, &self.merkle_root)?;
         write_fixed_le::<32, _>(&mut w, &self.block_commitments)?;
 
-        write_u32_le(&mut w, self.bits)?;
+        write_u32_le(&mut w, self.bits.as_bits())?;
         write_fixed_le::<32, _>(&mut w, &self.nonce)?;
 
         self.solution.serialize_with_version(&mut w, 1)
@@ -978,7 +856,10 @@ impl ZainoVersionedSerde for BlockData {
         let merkle_root = read_fixed_le::<32, _>(&mut r)?;
         let block_commitments = read_fixed_le::<32, _>(&mut r)?;
 
-        let bits = read_u32_le(&mut r)?;
+        let bits_raw = read_u32_le(&mut r)?;
+        let bits = CompactDifficulty::try_from_bits(bits_raw).map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, e)
+        })?;
         let nonse = read_fixed_le::<32, _>(&mut r)?;
 
         let solution = EquihashSolution::deserialize(&mut r)?;
@@ -1165,9 +1046,9 @@ impl IndexedBlock {
         self.context.chainwork()
     }
 
-    /// Returns the raw work value (targeted work contribution).
-    pub fn work(&self) -> U256 {
-        self.data.work()
+    /// Returns the single-block proof-of-work contribution.
+    pub fn work(&self) -> ChainWork {
+        self.data.bits.to_work()
     }
 
     /// Converts this `IndexedBlock` into a CompactBlock protobuf message using proto v4 format.
@@ -1231,7 +1112,7 @@ impl ZainoVersionedSerde for IndexedBlock {
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
         let mut r = r;
-        let context = PersistentBlockContext::deserialize(&mut r)?.into_business();
+        let context = PersistentBlockContext::deserialize(&mut r)?.into_business()?;
         let data = BlockData::deserialize(&mut r)?;
         let tx = read_vec(&mut r, |r| CompactTxData::deserialize(r))?;
         let ctd = CommitmentTreeData::deserialize(&mut r)?;
@@ -1309,7 +1190,13 @@ impl
         if n_bits_bytes.len() != 4 {
             return Err("nBits must be 4 bytes".to_string());
         }
-        let bits = u32::from_le_bytes(n_bits_bytes.try_into().unwrap());
+        let bits_raw = u32::from_le_bytes(
+            n_bits_bytes
+                .try_into()
+                .map_err(|_| "nBits must be 4 bytes".to_string())?,
+        );
+        let bits = CompactDifficulty::try_from_bits(bits_raw)
+            .map_err(|e| format!("invalid nBits: {e}"))?;
 
         let nonse: [u8; 32] = header
             .nonce()
@@ -1363,7 +1250,9 @@ impl
             solution,
         );
 
-        let chainwork = parent_chainwork.add(&ChainWork::from(block_data.work()));
+        let chainwork = parent_chainwork
+            .add(&block_data.bits.to_work())
+            .map_err(|e| format!("chainwork overflow: {e}"))?;
 
         // --- Final block-context and block data ---
         let context = BlockContext::new(

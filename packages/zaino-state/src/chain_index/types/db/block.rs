@@ -15,12 +15,121 @@
 //! The `From` conversions between `BlockContext` and
 //! `PersistentBlockContext` are defined here, alongside PBC.
 
+use std::num::NonZeroU128;
+
 use corez::io::{self, Read, Write};
 
 use crate::chain_index::{
-    encoding::{read_option, version, write_option, ZainoVersionedSerde},
-    types::{BlockContext, BlockHash, BlockIndex, ChainWork, Height},
+    encoding::{
+        read_fixed_le, read_option, read_u32_le, version, write_fixed_le, write_option,
+        write_u32_le, FixedEncodedLen, ZainoVersionedSerde,
+    },
+    types::{
+        BlockContext, BlockHash, BlockIndex, ChainWork, CompactDifficulty,
+        CompactDifficultyError, Height,
+    },
 };
+
+/// Database-adjacent persistence shape for [`ChainWork`].
+///
+/// On disk the value is stored as a 32-byte little-endian unsigned integer
+/// (the original U256 format). On the way back to the business layer the
+/// upper 16 bytes must be zero (the value must fit in `u128`) and the lower
+/// 16 bytes must be nonzero.
+#[derive(Debug)]
+pub(super) struct PersistentChainWork([u8; 32]);
+
+impl PersistentChainWork {
+    pub(super) fn from_business(cw: &ChainWork) -> Self {
+        let mut buf = [0u8; 32];
+        buf[..16].copy_from_slice(&cw.as_non_zero_u128().get().to_le_bytes());
+        Self(buf)
+    }
+
+    pub(super) fn into_business(self) -> io::Result<ChainWork> {
+        // Upper 16 bytes must be zero (value must fit in u128).
+        if self.0[16..] != [0u8; 16] {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "chainwork exceeds u128 range",
+            ));
+        }
+        let mut le_bytes = [0u8; 16];
+        le_bytes.copy_from_slice(&self.0[..16]);
+        let value = u128::from_le_bytes(le_bytes);
+        NonZeroU128::new(value)
+            .map(ChainWork::new)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "chainwork is zero"))
+    }
+}
+
+impl ZainoVersionedSerde for PersistentChainWork {
+    const VERSION: u8 = version::V1;
+
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
+    }
+
+    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
+        Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        write_fixed_le::<32, _>(w, &self.0)
+    }
+
+    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+        let bytes = read_fixed_le::<32, _>(r)?;
+        Ok(Self(bytes))
+    }
+}
+
+impl FixedEncodedLen for PersistentChainWork {
+    const ENCODED_LEN: usize = 32;
+}
+
+/// Database-adjacent persistence shape for [`CompactDifficulty`].
+///
+/// Stores the raw `u32` nBits value. Validation happens in `into_business`.
+#[derive(Debug)]
+pub(super) struct PersistentCompactDifficulty(u32);
+
+impl PersistentCompactDifficulty {
+    pub(super) fn from_business(cd: &CompactDifficulty) -> Self {
+        Self(cd.as_bits())
+    }
+
+    pub(super) fn into_business(self) -> io::Result<CompactDifficulty> {
+        CompactDifficulty::try_from_bits(self.0).map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, e)
+        })
+    }
+}
+
+impl ZainoVersionedSerde for PersistentCompactDifficulty {
+    const VERSION: u8 = version::V1;
+
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
+    }
+
+    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
+        Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        write_u32_le(w, self.0)
+    }
+
+    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+        let bits = read_u32_le(r)?;
+        Ok(Self(bits))
+    }
+}
+
+impl FixedEncodedLen for PersistentCompactDifficulty {
+    const ENCODED_LEN: usize = 4;
+}
 
 /// Database-adjacent persistence shape for [`BlockContext`].
 ///
@@ -36,42 +145,29 @@ use crate::chain_index::{
 pub(super) struct PersistentBlockContext {
     pub(super) hash: BlockHash,
     pub(super) parent_hash: BlockHash,
-    pub(super) chainwork: ChainWork,
+    pub(super) chainwork: PersistentChainWork,
     pub(super) height: Height,
 }
 
 impl PersistentBlockContext {
-    /// Build a `PersistentBlockContext` from a business-layer `BlockContext`,
-    /// flattening the nested `(height, hash)` primitive into the
-    /// persistence-shape fields.
-    ///
-    /// Replaces `impl From<&BlockContext>`. The named method makes the
-    /// direction (business → persistence) and the boundary it crosses
-    /// unambiguous at every call site.
     pub(super) fn from_business(context: &BlockContext) -> Self {
         Self {
             hash: context.index.hash,
             parent_hash: context.parent_hash,
-            chainwork: context.chainwork,
+            chainwork: PersistentChainWork::from_business(&context.chainwork),
             height: context.height(),
         }
     }
 
-    /// Consume this `PersistentBlockContext` and produce the business-layer
-    /// `BlockContext`. This conversion is the on-disk → business validation
-    /// boundary — any check that must hold for a `BlockContext` to exist
-    /// should live here.
-    ///
-    /// Replaces `impl From<PersistentBlockContext> for BlockContext`.
-    pub(super) fn into_business(self) -> BlockContext {
-        BlockContext {
+    pub(super) fn into_business(self) -> io::Result<BlockContext> {
+        Ok(BlockContext {
             index: BlockIndex {
                 height: self.height,
                 hash: self.hash,
             },
             parent_hash: self.parent_hash,
-            chainwork: self.chainwork,
-        }
+            chainwork: self.chainwork.into_business()?,
+        })
     }
 }
 
@@ -110,7 +206,7 @@ impl ZainoVersionedSerde for PersistentBlockContext {
         let mut r = r;
         let hash = BlockHash::deserialize(&mut r)?;
         let parent_hash = BlockHash::deserialize(&mut r)?;
-        let chainwork = ChainWork::deserialize(&mut r)?;
+        let chainwork = PersistentChainWork::deserialize(&mut r)?;
         let height =
             read_option(&mut r, |r| Height::deserialize(r))?.expect("blocks always have height");
         Ok(Self {
@@ -125,7 +221,7 @@ impl ZainoVersionedSerde for PersistentBlockContext {
         let mut r = r;
         let hash = BlockHash::deserialize(&mut r)?;
         let parent_hash = BlockHash::deserialize(&mut r)?;
-        let chainwork = ChainWork::deserialize(&mut r)?;
+        let chainwork = PersistentChainWork::deserialize(&mut r)?;
         let height = Height::deserialize(&mut r)?;
         Ok(Self {
             hash,
@@ -143,6 +239,8 @@ mod tests {
     //! `PersistentBlockContext` is module-private by design, so these tests
     //! live alongside its definition.
 
+    use std::num::NonZeroU128;
+
     use super::{BlockContext, PersistentBlockContext};
     use crate::chain_index::tests::types::{canonical_blockheaderdata, expected_v2_bytes};
     use crate::chain_index::types::{BlockHash, BlockIndex, ChainWork, Height};
@@ -158,11 +256,11 @@ mod tests {
         let bctx = BlockContext::new(
             BlockHash::from([0x11; 32]),
             BlockHash::from([0x22; 32]),
-            ChainWork::from_u256(0x0123_4567u64.into()),
+            ChainWork::new(NonZeroU128::new(0x0123_4567u128).expect("nonzero")),
             Height(0x0dec_0de0),
         );
         let persisted = PersistentBlockContext::from_business(&bctx);
-        let back = persisted.into_business();
+        let back = persisted.into_business().expect("valid chainwork");
         assert_eq!(bctx, back);
     }
 
