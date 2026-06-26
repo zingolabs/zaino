@@ -28,7 +28,6 @@ use wallet_tests::devtool::DevtoolClients;
 use zaino_state::{ChainIndex, FetchService, ZcashIndexer};
 use zaino_testutils::{TestManager, ValidatorKind, ZcashdDualFetchServices};
 use zcash_local_net::validator::zcashd::Zcashd;
-use zcash_protocol::value::Zatoshis;
 use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
 use zebra_rpc::client::GetAddressBalanceRequest;
 use zebra_rpc::methods::GetAddressTxIdsRequest;
@@ -97,7 +96,7 @@ async fn faucet_receives_zcashd_orchard_reward() {
     let balance = clients.faucet_balance().await;
     dbg!(&balance);
     assert!(
-        balance.orchard > Zatoshis::ZERO,
+        balance.orchard > 0,
         "devtool faucet should see zcashd's orchard coinbase"
     );
 
@@ -460,7 +459,7 @@ async fn send_to_pool(pool: wallet_tests::Pool) {
 
     assert_eq!(
         clients.recipient_balance().await.spendable(pool),
-        Zatoshis::const_from_u64(250_000)
+        250_000
     );
 
     test_manager.close().await;
@@ -481,7 +480,7 @@ async fn shield_for_validator() {
 
     assert_eq!(
         clients.recipient_balance().await.spendable(wallet_tests::Pool::Transparent),
-        Zatoshis::const_from_u64(250_000)
+        250_000
     );
 
     clients.shield_recipient().await;
@@ -492,7 +491,7 @@ async fn shield_for_validator() {
 
     assert_eq!(
         clients.recipient_balance().await.spendable(wallet_tests::Pool::Orchard),
-        Zatoshis::const_from_u64(235_000)
+        235_000
     );
 
     test_manager.close().await;
@@ -575,7 +574,7 @@ mod wallet_to_validator {
         clients.sync_recipient().await;
         assert_eq!(
             clients.recipient_balance().await.spendable(wallet_tests::Pool::Transparent),
-            Zatoshis::const_from_u64(250_000)
+            250_000
         );
         assert_eq!(unfinalised_transactions, finalised_transactions);
 
@@ -613,15 +612,15 @@ mod wallet_to_validator {
         let balance = clients.recipient_balance().await;
         assert_eq!(
             balance.spendable(wallet_tests::Pool::Orchard),
-            Zatoshis::const_from_u64(250_000)
+            250_000
         );
         assert_eq!(
             balance.spendable(wallet_tests::Pool::Sapling),
-            Zatoshis::const_from_u64(250_000)
+            250_000
         );
         assert_eq!(
             balance.spendable(wallet_tests::Pool::Transparent),
-            Zatoshis::const_from_u64(250_000)
+            250_000
         );
 
         test_manager.close().await;

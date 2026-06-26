@@ -14,7 +14,6 @@
 
 #![forbid(unsafe_code)]
 
-use zcash_protocol::value::Zatoshis;
 use zaino_proto::proto::compact_formats::CompactBlock;
 use zcash_primitives::transaction::TxId;
 
@@ -47,18 +46,18 @@ impl Pool {
 
 /// Backend-agnostic per-pool balance snapshot.
 ///
-/// Each field is the spendable balance in its pool, as [`Zatoshis`].
+/// Each field is the spendable balance in its pool, in zatoshis.
 /// Backends populate this from their native balance type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WalletPoolBalances {
-    pub orchard: Zatoshis,
-    pub sapling: Zatoshis,
-    pub transparent: Zatoshis,
+    pub orchard: u64,
+    pub sapling: u64,
+    pub transparent: u64,
 }
 
 impl WalletPoolBalances {
     /// The spendable balance in the given pool.
-    pub fn spendable(self, pool: Pool) -> Zatoshis {
+    pub fn spendable(self, pool: Pool) -> u64 {
         match pool {
             Pool::Orchard => self.orchard,
             Pool::Sapling => self.sapling,

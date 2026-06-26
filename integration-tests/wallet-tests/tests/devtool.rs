@@ -49,7 +49,6 @@ use zaino_testutils::{PollableTip, TestManager, TestService, ValidatorKind};
 use zainodlib::error::IndexerError;
 use zcash_local_net::validator::zebrad::Zebrad;
 use zcash_primitives::transaction::TxId;
-use zcash_protocol::value::Zatoshis;
 use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
 use zebra_rpc::methods::{GetAddressBalanceRequest, GetAddressTxIdsRequest};
 
@@ -163,7 +162,7 @@ where
 
     let faucet_balance = dbg!(clients.faucet_balance().await);
     assert!(
-        faucet_balance.orchard > Zatoshis::ZERO,
+        faucet_balance.orchard > 0,
         "faucet should hold a spendable orchard coinbase note, got {faucet_balance:?}"
     );
 
@@ -198,7 +197,7 @@ where
 
     assert_eq!(
         clients.recipient_balance().await.spendable(pool),
-        Zatoshis::const_from_u64(250_000)
+        250_000
     );
 
     test_manager.close().await;
@@ -238,15 +237,15 @@ where
     let balance = clients.recipient_balance().await;
     assert_eq!(
         balance.spendable(wallet_tests::Pool::Orchard),
-        Zatoshis::const_from_u64(250_000)
+        250_000
     );
     assert_eq!(
         balance.spendable(wallet_tests::Pool::Sapling),
-        Zatoshis::const_from_u64(250_000)
+        250_000
     );
     assert_eq!(
         balance.spendable(wallet_tests::Pool::Transparent),
-        Zatoshis::const_from_u64(250_000)
+        250_000
     );
 
     test_manager.close().await;
@@ -275,7 +274,7 @@ where
 
     assert_eq!(
         clients.recipient_balance().await.spendable(wallet_tests::Pool::Transparent),
-        Zatoshis::const_from_u64(250_000)
+        250_000
     );
 
     clients.shield_recipient().await;
@@ -286,7 +285,7 @@ where
 
     assert_eq!(
         clients.recipient_balance().await.spendable(wallet_tests::Pool::Orchard),
-        Zatoshis::const_from_u64(235_000)
+        235_000
     );
 
     test_manager.close().await;
@@ -1628,7 +1627,7 @@ where
     clients.sync_recipient().await;
     assert_eq!(
         clients.recipient_balance().await.spendable(wallet_tests::Pool::Transparent),
-        Zatoshis::const_from_u64(250_000)
+        250_000
     );
     assert_eq!(unfinalised_transactions, finalised_transactions);
 
@@ -1861,7 +1860,7 @@ where
     // also absent on devtool. Restore as e.g.:
     // assert_eq!(
     //     clients.recipient_balance().await.spendable(wallet_tests::Pool::Orchard),
-    //     Zatoshis::const_from_u64(250_000)
+    //     250_000
     // );
 
     test_manager.close().await;

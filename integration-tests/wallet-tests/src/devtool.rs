@@ -24,7 +24,6 @@ use zcash_local_net::client::{
     AddressReceiver, Client,
 };
 use zcash_primitives::transaction::TxId;
-use zcash_protocol::value::Zatoshis;
 
 use crate::{TestClients, TestWallet, WalletPoolBalances};
 
@@ -87,12 +86,9 @@ impl TestWallet for ZcashDevtool {
             .await
             .unwrap_or_else(|e| panic!("balance: {e:?}"));
         WalletPoolBalances {
-            orchard: Zatoshis::from_u64(b.orchard_spendable)
-                .expect("orchard balance in valid range"),
-            sapling: Zatoshis::from_u64(b.sapling_spendable)
-                .expect("sapling balance in valid range"),
-            transparent: Zatoshis::from_u64(b.transparent_spendable)
-                .expect("transparent balance in valid range"),
+            orchard: b.orchard_spendable,
+            sapling: b.sapling_spendable,
+            transparent: b.transparent_spendable,
         }
     }
 
