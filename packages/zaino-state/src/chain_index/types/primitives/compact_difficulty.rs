@@ -22,12 +22,17 @@ use super::ChainWork;
 pub struct CompactDifficulty(zebra_chain::work::difficulty::CompactDifficulty);
 
 /// Errors that can occur when constructing a [`CompactDifficulty`].
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum CompactDifficultyError {
     /// The nBits value does not decode to a valid PoW target (negative,
     /// zero, or overflow according to the Zcash specification §7.7.4).
-    #[error("nBits value {0:#010x} does not encode a valid target")]
-    InvalidEncoding(u32),
+    #[error("nBits value {bits:#010x} does not encode a valid target: {source}")]
+    InvalidEncoding {
+        /// The raw nBits value that failed validation.
+        bits: u32,
+        /// The underlying error from the validation layer.
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
 }
 
 impl CompactDifficulty {
@@ -48,7 +53,7 @@ impl CompactDifficulty {
         let bits = u32::from_be_bytes(bytes);
         let zebra =
             zebra_chain::work::difficulty::CompactDifficulty::from_bytes_in_display_order(&bytes)
-                .map_err(|_| CompactDifficultyError::InvalidEncoding(bits))?;
+                .map_err(|source| CompactDifficultyError::InvalidEncoding { bits, source })?;
         Ok(Self(zebra))
     }
 
