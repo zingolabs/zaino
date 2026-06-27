@@ -31,15 +31,24 @@ pub enum CompactDifficultyError {
 }
 
 impl CompactDifficulty {
-    /// Try to build a `CompactDifficulty` from a raw `u32`.
+    /// Try to build a `CompactDifficulty` from a raw `u32` (native byte order).
     ///
     /// Returns an error if the value cannot be expanded to a valid,
     /// non-negative, non-zero PoW target.
     pub fn try_from_bits(bits: u32) -> Result<Self, CompactDifficultyError> {
-        let zebra = zebra_chain::work::difficulty::CompactDifficulty::from_bytes_in_display_order(
-            &bits.to_be_bytes(),
-        )
-        .map_err(|_| CompactDifficultyError::InvalidEncoding(bits))?;
+        Self::try_from_be_bytes(bits.to_be_bytes())
+    }
+
+    /// Try to build a `CompactDifficulty` from big-endian bytes.
+    ///
+    /// This matches the byte order returned by Zebra's
+    /// `bytes_in_display_order()`, avoiding a manual byte-order
+    /// conversion at call sites that already have the display bytes.
+    pub fn try_from_be_bytes(bytes: [u8; 4]) -> Result<Self, CompactDifficultyError> {
+        let bits = u32::from_be_bytes(bytes);
+        let zebra =
+            zebra_chain::work::difficulty::CompactDifficulty::from_bytes_in_display_order(&bytes)
+                .map_err(|_| CompactDifficultyError::InvalidEncoding(bits))?;
         Ok(Self(zebra))
     }
 

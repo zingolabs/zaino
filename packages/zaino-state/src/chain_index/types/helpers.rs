@@ -84,8 +84,8 @@ pub struct BlockMetadata {
     pub orchard_root: zebra_chain::orchard::tree::Root,
     /// Orchard tree size
     pub orchard_size: u32,
-    /// Parent block's chainwork
-    pub parent_chainwork: ChainWork,
+    /// Parent block's chainwork (`None` for genesis).
+    pub parent_chainwork: Option<ChainWork>,
     /// Network for block validation
     pub network: zebra_chain::parameters::Network,
 }
@@ -97,7 +97,7 @@ impl BlockMetadata {
         sapling_size: u32,
         orchard_root: zebra_chain::orchard::tree::Root,
         orchard_size: u32,
-        parent_chainwork: ChainWork,
+        parent_chainwork: Option<ChainWork>,
         network: zebra_chain::parameters::Network,
     ) -> Self {
         Self {
@@ -131,10 +131,10 @@ impl<'a> BlockWithMetadata<'a> {
         let block = self.block;
         let network = &self.metadata.network;
 
-        let bits_raw =
-            u32::from_be_bytes(block.header.difficulty_threshold.bytes_in_display_order());
-        let bits = CompactDifficulty::try_from_bits(bits_raw)
-            .map_err(|e| format!("invalid nBits: {e}"))?;
+        let bits = CompactDifficulty::try_from_be_bytes(
+            block.header.difficulty_threshold.bytes_in_display_order(),
+        )
+        .map_err(|e| format!("invalid nBits: {e}"))?;
 
         Ok(BlockData {
             version: block.header.version,
@@ -280,15 +280,17 @@ impl<'a> BlockWithMetadata<'a> {
             .map(|height| Height(height.0))
             .ok_or_else(|| String::from("Any valid block has a coinbase height"))?;
 
-        let bits_raw =
-            u32::from_be_bytes(block.header.difficulty_threshold.bytes_in_display_order());
-        let bits = CompactDifficulty::try_from_bits(bits_raw)
-            .map_err(|e| format!("invalid nBits: {e}"))?;
-        let chainwork = self
-            .metadata
-            .parent_chainwork
-            .add(&bits.to_work())
-            .map_err(|e| format!("chainwork overflow: {e}"))?;
+        let bits = CompactDifficulty::try_from_be_bytes(
+            block.header.difficulty_threshold.bytes_in_display_order(),
+        )
+        .map_err(|e| format!("invalid nBits: {e}"))?;
+        let block_work = bits.to_work();
+        let chainwork = match self.metadata.parent_chainwork {
+            Some(parent) => parent
+                .add(&block_work)
+                .map_err(|e| format!("chainwork overflow: {e}"))?,
+            None => block_work,
+        };
 
         Ok(BlockContext::new(hash, parent_hash, chainwork, height))
     }

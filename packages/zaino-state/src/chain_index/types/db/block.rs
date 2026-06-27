@@ -25,8 +25,7 @@ use crate::chain_index::{
         write_u32_le, FixedEncodedLen, ZainoVersionedSerde,
     },
     types::{
-        BlockContext, BlockHash, BlockIndex, ChainWork, CompactDifficulty,
-        CompactDifficultyError, Height,
+        BlockContext, BlockHash, BlockIndex, ChainWork, CompactDifficulty, Height,
     },
 };
 

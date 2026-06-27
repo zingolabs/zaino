@@ -31,7 +31,6 @@
 
 use corez::io::{self, Read, Write};
 use hex::{FromHex, ToHex};
-use primitive_types::U256;
 use std::{fmt, io::Cursor};
 use zebra_chain::serialization::BytesInDisplayOrder as _;
 
@@ -2697,7 +2696,7 @@ impl ZainoVersionedSerde for BlockHeaderData {
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
-        let context = PersistentBlockContext::deserialize(&mut *r)?.into_business();
+        let context = PersistentBlockContext::deserialize(&mut *r)?.into_business()?;
         let data = BlockData::deserialize(r)?;
         Ok(BlockHeaderData::new(context, data))
     }

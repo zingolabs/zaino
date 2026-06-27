@@ -8,7 +8,6 @@ use crate::{
 };
 use arc_swap::ArcSwap;
 use futures::lock::Mutex;
-use primitive_types::U256;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::mpsc;
 use tracing::{info, instrument, warn};
@@ -319,24 +318,12 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             orchard: orchard_root_and_len,
         };
 
-        // For genesis block, chainwork is just the block's own work (no previous blocks)
-        let genesis_work = ChainWork::from(U256::from(
-            genesis_block
-                .header
-                .difficulty_threshold
-                .to_work()
-                .ok_or_else(|| {
-                    InitError::InvalidNodeData(Box::new(InvalidData(
-                        "Invalid work field of genesis block".to_string(),
-                    )))
-                })?
-                .as_u128(),
-        ));
-
+        // Genesis has no parent — pass None so create_block_context computes
+        // chainwork as just the genesis block's own work.
         Self::create_indexed_block_with_optional_roots(
             genesis_block.as_ref(),
             &tree_roots,
-            genesis_work,
+            None,
             network.clone(),
         )
         .map_err(|e| InitError::InvalidNodeData(Box::new(InvalidData(e))))
@@ -683,7 +670,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         Self::create_indexed_block_with_optional_roots(
             block,
             &tree_roots,
-            *prev_block.chainwork(),
+            Some(*prev_block.chainwork()),
             self.network.clone(),
         )
         .map_err(|e| {
@@ -715,7 +702,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     fn create_indexed_block_with_optional_roots(
         block: &zebra_chain::block::Block,
         tree_roots: &TreeRootData,
-        parent_chainwork: ChainWork,
+        parent_chainwork: Option<ChainWork>,
         network: Network,
     ) -> Result<IndexedBlock, String> {
         let (sapling_root, sapling_size, orchard_root, orchard_size) =
