@@ -19,19 +19,20 @@ use super::ChainWork;
 /// non-zero target that can be expanded to a full 256-bit threshold and
 /// converted to a work value without error.
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
 pub struct CompactDifficulty(zebra_chain::work::difficulty::CompactDifficulty);
 
 /// Errors that can occur when constructing a [`CompactDifficulty`].
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum CompactDifficultyError {
     /// The nBits value does not decode to a valid PoW target (negative,
     /// zero, or overflow according to the Zcash specification §7.7.4).
-    #[error("nBits value {bits:#010x} does not encode a valid target: {source}")]
+    #[error("nBits value {bits:#010x} does not encode a valid target: {reason}")]
     InvalidEncoding {
         /// The raw nBits value that failed validation.
         bits: u32,
-        /// The underlying error from the validation layer.
-        source: Box<dyn std::error::Error + Send + Sync>,
+        /// The upstream validation error message.
+        reason: String,
     },
 }
 
@@ -53,7 +54,10 @@ impl CompactDifficulty {
         let bits = u32::from_be_bytes(bytes);
         let zebra =
             zebra_chain::work::difficulty::CompactDifficulty::from_bytes_in_display_order(&bytes)
-                .map_err(|source| CompactDifficultyError::InvalidEncoding { bits, source })?;
+                .map_err(|e| CompactDifficultyError::InvalidEncoding {
+                    bits,
+                    reason: e.to_string(),
+                })?;
         Ok(Self(zebra))
     }
 
@@ -108,11 +112,15 @@ impl fmt::Display for CompactDifficulty {
 mod tests {
     use super::*;
 
+    /// A valid nBits value for use in tests. This value passes zebra's
+    /// compact difficulty validation (non-negative, non-zero, no overflow)
+    /// but does not correspond to any specific real-world block.
+    const TEST_VALID_NBITS: u32 = 0x2007_ffff;
+
     #[test]
-    fn valid_genesis_bits() {
-        let cd = CompactDifficulty::try_from_bits(0x2007_ffff);
-        assert!(cd.is_ok());
-        assert_eq!(cd.as_ref().map(CompactDifficulty::as_bits), Ok(0x2007_ffff));
+    fn valid_bits_accepted() {
+        let cd = CompactDifficulty::try_from_bits(TEST_VALID_NBITS).expect("valid");
+        assert_eq!(cd.as_bits(), TEST_VALID_NBITS);
     }
 
     #[test]
@@ -132,14 +140,38 @@ mod tests {
 
     #[test]
     fn round_trip_bits() {
-        let original: u32 = 0x2007_ffff;
-        let cd = CompactDifficulty::try_from_bits(original).expect("valid");
-        assert_eq!(cd.as_bits(), original);
+        let cd = CompactDifficulty::try_from_bits(TEST_VALID_NBITS).expect("valid");
+        assert_eq!(cd.as_bits(), TEST_VALID_NBITS);
     }
 
     #[test]
     fn to_work_is_nonzero() {
-        let cd = CompactDifficulty::try_from_bits(0x2007_ffff).expect("valid");
+        let cd = CompactDifficulty::try_from_bits(TEST_VALID_NBITS).expect("valid");
         assert!(cd.to_work().as_non_zero_u128().get() > 0);
+    }
+
+    /// Full pipeline: on-disk u32 → CompactDifficulty → ChainWork → accumulate.
+    ///
+    /// Exercises the complete conversion chain that block indexing performs,
+    /// without needing real block data.
+    #[test]
+    fn on_disk_bits_to_accumulated_chainwork() {
+        // Simulate two blocks with the same difficulty arriving from disk.
+        let bits = CompactDifficulty::try_from_bits(TEST_VALID_NBITS).expect("valid");
+        let block_work = bits.to_work();
+
+        // Genesis: chainwork = block's own work.
+        let genesis_chainwork = block_work;
+        assert!(genesis_chainwork.as_non_zero_u128().get() > 0);
+
+        // Block 1: parent chainwork + block work.
+        let block1_chainwork = genesis_chainwork.add(&block_work).expect("no overflow");
+        assert!(block1_chainwork > genesis_chainwork);
+
+        // The accumulated value is exactly 2x the single-block work.
+        assert_eq!(
+            block1_chainwork.as_non_zero_u128().get(),
+            2 * block_work.as_non_zero_u128().get(),
+        );
     }
 }

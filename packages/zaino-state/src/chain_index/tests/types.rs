@@ -8,6 +8,10 @@ use crate::{
     ZainoVersionedSerde as _,
 };
 
+/// A valid nBits value for test fixtures. Passes zebra's compact difficulty
+/// validation but does not correspond to any specific real-world block.
+const TEST_VALID_NBITS: u32 = 0x2007_ffff;
+
 /// Canonical [`BlockHeaderData`] used by the serde tests in this module
 /// and by cross-boundary tests that start from its encoded bytes.
 ///
@@ -17,12 +21,10 @@ use crate::{
 pub(crate) fn canonical_blockheaderdata() -> BlockHeaderData {
     let hash = crate::BlockHash::from([1u8; 32]);
     let parent_hash = crate::BlockHash::from([2u8; 32]);
-    // Use a nonzero chainwork (ChainWork cannot be zero).
     let chainwork = ChainWork::new(NonZeroU128::new(0x42).expect("nonzero"));
     let height = crate::Height(42);
     let solution = EquihashSolution::Standard([6u8; 1344]);
-    // Use the Zcash mainnet genesis nBits (a valid compact difficulty).
-    let bits = CompactDifficulty::try_from_bits(0x2007_ffff).expect("valid nBits");
+    let bits = CompactDifficulty::try_from_bits(TEST_VALID_NBITS).expect("valid nBits");
 
     let bctx = BlockContext::new(hash, parent_hash, chainwork, height);
     let bdata = BlockData::new(1, 2, [3u8; 32], [4u8; 32], bits, [5u8; 32], solution);
