@@ -62,8 +62,8 @@ fi
 
 # Run podman in foreground with proper signal handling.
 #
-# `--pids-limit=-1` removes the default 2048-process cgroup cap. With
-# `--profile stable` (test-threads = num-cpus) each integration test
+# `--pids-limit=-1` removes the default 2048-process cgroup cap. Under a
+# num-cpus profile (e.g. `quick`) each integration test
 # spawns a full zebrad whose rayon pool itself sizes to num-cpus, so
 # peak task count scales ~num_cpus^2. On developer hosts with many
 # cores the default cap is breached and `clone()` returns EAGAIN,

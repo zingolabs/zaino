@@ -9,14 +9,13 @@ set -euo pipefail
 
 info "🔧 Updating CI workflow matrix to match nextest targets..."
 
-# Extract nextest targets with non-empty testcases.
-# The `ci` profile lives in live-tests/.config/nextest.toml, so use
-# --manifest-path.
+# Extract nextest targets with non-empty testcases from the unified workspace.
+# The `targets` profile lives in the root .config/nextest.toml.
 info "Extracting current nextest targets..."
 NEXTEST_TARGETS=$(mktemp)
 cargo nextest list \
-  --manifest-path live-tests/Cargo.toml \
-  --profile ci -T json-pretty \
+  --workspace --all-features \
+  --profile targets -T json-pretty \
   | jq -r '
       .["rust-suites"]
       | to_entries[]
