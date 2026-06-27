@@ -352,26 +352,6 @@ impl<T: BlockchainSource> FinalisedSource<T> {
     pub(crate) fn transparent_db(&self) -> Result<Database, FinalisedStateError> {
         Ok(self.require_v1("v1 transparent db")?.transparent_db())
     }
-
-    /// Provides access to the finalised txout-set accumulator DB table.
-    pub(crate) fn tx_out_set_info_accumulator_db(&self) -> Result<Database, FinalisedStateError> {
-        Ok(self
-            .require_v1("v1 tx_out_set_info_accumulator db not available")?
-            .tx_out_set_info_accumulator_db())
-    }
-
-    /// Bulk-rebuilds the finalised txout-set accumulator to the current tip and persists it (V1
-    /// only).
-    ///
-    /// Recomputes the accumulator from the finalised `transparent` + `spent` tables via sequential
-    /// scans and writes the singleton plus its freshness watermark. Replaces the per-block
-    /// accumulator maintenance that dominated sync time at sandblast height; used by
-    /// `sync_to_height` after a catch-up run and by the v1.2 migration's accumulator stage.
-    pub(crate) async fn rebuild_tx_out_set_accumulator(&self) -> Result<(), FinalisedStateError> {
-        self.require_v1("v1 txout-set accumulator builder")?
-            .rebuild_tx_out_set_accumulator()
-            .await
-    }
 }
 
 impl<T: BlockchainSource> From<DbV1> for FinalisedSource<T> {
@@ -863,9 +843,7 @@ impl<T: BlockchainSource> TransparentHistExt for FinalisedSource<T> {
     ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
         match self {
             Self::V1(database) => database.get_tx_out_set_info_accumulator().await,
-            _ => Err(FinalisedStateError::FeatureUnavailable(
-                "transparent_history",
-            )),
+            _ => Err(FinalisedStateError::FeatureUnavailable("gettxoutsetinfo")),
         }
     }
 }
@@ -888,6 +866,29 @@ impl<T: BlockchainSource> FinalisedSource<T> {
         }
     }
 
+    /// Writes a block using the v1.0.0 format.
+    ///
+    /// This intentionally writes only the core v1 tables and uses v1 item encodings.
+    ///
+    /// This method does not perform safety checks and must not be used in production code.
+    ///
+    /// Used for migration tests.
+    pub(crate) async fn write_block_v1_0_0(
+        &self,
+        block: IndexedBlock,
+    ) -> Result<(), FinalisedStateError> {
+        match self {
+            Self::V1(db) => db.write_block_v1_0_0(block).await,
+            Self::Ephemeral(_) => Err(FinalisedStateError::Custom(
+                "v1.0.0 test fixture writer requires a v1 backend".to_string(),
+            )),
+        }
+    }
+}
+
+/// Accumulator test hooks.
+#[cfg(test)]
+impl<T: BlockchainSource> FinalisedSource<T> {
     /// Reads the height the persisted txout-set accumulator currently reflects (V1 only).
     ///
     /// `None` means it has never been built. Test hook for asserting the incremental range-update
@@ -911,25 +912,6 @@ impl<T: BlockchainSource> FinalisedSource<T> {
     ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
         self.require_v1("v1 txout-set accumulator builder")?
             .build_tx_out_set_accumulator_blocking(db_tip, shards)
-    }
-
-    /// Writes a block using the v1.0.0 format.
-    ///
-    /// This intentionally writes only the core v1 tables and uses v1 item encodings.
-    ///
-    /// This method does not perform safety checks and must not be used in production code.
-    ///
-    /// Used for migration tests.
-    pub(crate) async fn write_block_v1_0_0(
-        &self,
-        block: IndexedBlock,
-    ) -> Result<(), FinalisedStateError> {
-        match self {
-            Self::V1(db) => db.write_block_v1_0_0(block).await,
-            Self::Ephemeral(_) => Err(FinalisedStateError::Custom(
-                "v1.0.0 test fixture writer requires a v1 backend".to_string(),
-            )),
-        }
     }
 }
 

@@ -462,6 +462,8 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 working_snapshot = initial_state.as_ref().clone();
             }
         }
+        self.check_for_nonhigher_reorgs(&mut working_snapshot, None)
+            .await?;
         // Handle non-finalized change listener
         self.handle_nfs_change_listener(&mut working_snapshot)
             .await?;
@@ -529,6 +531,46 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         let indexed_block = block.to_indexed_block(&prev_block, self).await?;
         working_snapshot.add_block_new_chaintip(indexed_block.clone());
         Ok(indexed_block)
+    }
+
+    async fn check_for_nonhigher_reorgs(
+        &self,
+        working_snapshot: &mut NonfinalizedBlockCacheSnapshot,
+        // Callers should provide None. Used for self-recursion case only
+        height_to_recurse_to: Option<Height>,
+    ) -> Result<(), SyncError> {
+        if height_to_recurse_to
+            .is_some_and(|height| height + 100 < working_snapshot.best_tip.height)
+        {
+            return Err(SyncError::ReorgFailure(
+                "reorg detection recursed beyond reason".to_string(),
+            ));
+        }
+        let target_height = height_to_recurse_to.unwrap_or(working_snapshot.best_tip.height);
+        match self
+            .source
+            .get_block(HashOrHeight::Height(zebra_chain::block::Height(u32::from(
+                target_height,
+            ))))
+            .await
+            .map_err(|e| {
+                // TODO: Check error. Determine what kind of error to return, this may be recoverable
+                SyncError::ValidatorConnectionError(NodeConnectionError::UnrecoverableError(
+                    Box::new(e),
+                ))
+            })? {
+            Some(block) => {
+                if block.hash() != working_snapshot.best_tip.hash {
+                    self.handle_reorg(working_snapshot, block.as_ref(), 0)
+                        .await?;
+                }
+                Ok(())
+            }
+            None => {
+                Box::pin(self.check_for_nonhigher_reorgs(working_snapshot, Some(target_height - 1)))
+                    .await
+            }
+        }
     }
 
     /// Handle non-finalized change listener events
