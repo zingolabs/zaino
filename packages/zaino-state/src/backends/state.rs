@@ -1837,64 +1837,6 @@ impl ZcashIndexer for StateServiceSubscriber {
         )?;
         Ok(chain_height)
     }
-
-    /// Helper function, to get the list of taddresses that have sends or reciepts
-    /// within a given block range
-    async fn get_taddress_txids_helper(
-        &self,
-        request: TransparentAddressBlockFilter,
-    ) -> Result<Vec<String>, Self::Error> {
-        let chain_height = self.chain_height().await?;
-        let (start, end) = match request.range {
-            Some(range) => {
-                let start = if let Some(start) = range.start {
-                    match u32::try_from(start.height) {
-                        Ok(height) => Some(height.min(chain_height.0)),
-                        Err(_) => {
-                            return Err(Self::Error::from(tonic::Status::invalid_argument(
-                                "Error: Start height out of range. Failed to convert to u32.",
-                            )))
-                        }
-                    }
-                } else {
-                    None
-                };
-                let end = if let Some(end) = range.end {
-                    match u32::try_from(end.height) {
-                        Ok(height) => Some(height.min(chain_height.0)),
-                        Err(_) => {
-                            return Err(Self::Error::from(tonic::Status::invalid_argument(
-                                "Error: End height out of range. Failed to convert to u32.",
-                            )))
-                        }
-                    }
-                } else {
-                    None
-                };
-                match (start, end) {
-                    (Some(start), Some(end)) => {
-                        if start > end {
-                            (Some(end), Some(start))
-                        } else {
-                            (Some(start), Some(end))
-                        }
-                    }
-                    _ => (start, end),
-                }
-            }
-            None => {
-                return Err(Self::Error::from(tonic::Status::invalid_argument(
-                    "Error: No block range given.",
-                )))
-            }
-        };
-        self.get_address_tx_ids(GetAddressTxIdsRequest::new(
-            vec![request.address],
-            start,
-            end,
-        ))
-        .await
-    }
 }
 
 // #[allow(deprecated)]
