@@ -5,7 +5,6 @@ use super::*;
 /// [`IndexedBlockExt`] capability implementation for [`DbV1`].
 ///
 /// Exposes reconstructed [`IndexedBlock`] values from stored per-height entries.
-#[async_trait]
 impl IndexedBlockExt for DbV1 {
     async fn get_chain_block(
         &self,

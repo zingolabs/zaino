@@ -98,7 +98,6 @@ use tokio::{
     sync::mpsc,
     time::{self, timeout},
 };
-use tonic::async_trait;
 use tower::{Service, ServiceExt};
 use tracing::{info, instrument, warn};
 
@@ -172,7 +171,6 @@ impl Status for StateService {
     }
 }
 
-#[async_trait]
 // #[allow(deprecated)]
 impl ZcashService for StateService {
     const BACKEND_TYPE: BackendType = BackendType::State;
@@ -972,7 +970,6 @@ fn sapling_key_bytes(s: &sapling_crypto::PaymentAddress) -> ([u8; 11], [u8; 32])
     (diversifier, pk_d)
 }
 
-#[async_trait]
 // #[allow(deprecated)]
 impl ZcashIndexer for StateServiceSubscriber {
     type Error = StateServiceError;
@@ -1900,7 +1897,6 @@ impl ZcashIndexer for StateServiceSubscriber {
     }
 }
 
-#[async_trait]
 // #[allow(deprecated)]
 impl LightWalletIndexer for StateServiceSubscriber {
     /// Return the height of the tip of the best chain

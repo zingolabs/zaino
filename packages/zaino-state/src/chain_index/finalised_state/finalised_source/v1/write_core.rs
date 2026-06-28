@@ -45,7 +45,6 @@ use crate::version;
 ///
 /// This trait represents the mutating surface (append / delete tip / update metadata). Writes are
 /// performed via LMDB write transactions and validated before becoming visible as “known-good”.
-#[async_trait]
 impl DbWrite for DbV1 {
     async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
         self.write_block(block).await

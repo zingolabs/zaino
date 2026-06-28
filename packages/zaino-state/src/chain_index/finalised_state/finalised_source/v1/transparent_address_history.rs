@@ -8,7 +8,6 @@ use super::*;
 ///
 /// Provides address history queries built over the LMDB `DUP_SORT`/`DUP_FIXED` address-history
 /// database.
-#[async_trait]
 impl TransparentHistExt for DbV1 {
     #[cfg(feature = "transparent_address_history_experimental")]
     async fn addr_records(

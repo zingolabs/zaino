@@ -76,6 +76,7 @@
 
 use core::fmt;
 
+use crate::SendFut;
 use crate::{
     chain_index::types::{db::metadata::FinalisedTxOutSetInfoAccumulator, TransactionHash},
     error::FinalisedStateError,
@@ -89,7 +90,6 @@ use crate::{
 #[cfg(feature = "transparent_address_history_experimental")]
 use crate::{chain_index::types::AddrEventBytes, AddrScript};
 
-use async_trait::async_trait;
 use bitflags::bitflags;
 use corez::io::{self, Read, Write};
 use zaino_proto::proto::utils::PoolTypeFilter;
@@ -646,38 +646,37 @@ impl FixedEncodedLen for MigrationStatus {
 /// - and reading the persisted schema metadata.
 ///
 /// All methods must be consistent with the database’s *finalised* chain view.
-#[async_trait]
 pub trait DbRead: Send + Sync {
     /// Returns the highest block height stored, or `None` if the database is empty.
     ///
     /// Implementations must treat the stored height as the authoritative tip for all other core
     /// lookups.
-    async fn db_height(&self) -> Result<Option<Height>, FinalisedStateError>;
+    fn db_height(&self) -> impl SendFut<Result<Option<Height>, FinalisedStateError>>;
 
     /// Returns the height for `hash` if present.
     ///
     /// Returns:
     /// - `Ok(Some(height))` if indexed,
     /// - `Ok(None)` if not present (not an error).
-    async fn get_block_height(
+    fn get_block_height(
         &self,
         hash: BlockHash,
-    ) -> Result<Option<Height>, FinalisedStateError>;
+    ) -> impl SendFut<Result<Option<Height>, FinalisedStateError>>;
 
     /// Returns the hash for `height` if present.
     ///
     /// Returns:
     /// - `Ok(Some(hash))` if indexed,
     /// - `Ok(None)` if not present (not an error).
-    async fn get_block_hash(
+    fn get_block_hash(
         &self,
         height: Height,
-    ) -> Result<Option<BlockHash>, FinalisedStateError>;
+    ) -> impl SendFut<Result<Option<BlockHash>, FinalisedStateError>>;
 
     /// Returns the persisted metadata singleton.
     ///
     /// This must reflect the schema actually used by the backend instance.
-    async fn get_metadata(&self) -> Result<DbMetadata, FinalisedStateError>;
+    fn get_metadata(&self) -> impl SendFut<Result<DbMetadata, FinalisedStateError>>;
 }
 
 /// Core write operations that *every* database schema version must support.
@@ -687,12 +686,11 @@ pub trait DbRead: Send + Sync {
 /// - and removed only from the tip (`delete_block_at_height` / `delete_block`).
 ///
 /// Implementations must keep all secondary indices internally consistent with these operations.
-#[async_trait]
 pub trait DbWrite: Send + Sync {
     /// Appends a fully-validated block to the database.
     ///
     /// Invariant: `block` must be the next height after the current tip (no gaps, no rewrites).
-    async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError>;
+    fn write_block(&self, block: IndexedBlock) -> impl SendFut<Result<(), FinalisedStateError>>;
 
     /// Ingests blocks from `source`, writing every height from the current tip up to and including
     /// `height` in order.
@@ -702,16 +700,19 @@ pub trait DbWrite: Send + Sync {
     /// txout-set accumulator) across the run and rebuilds it once at the tip, whereas legacy
     /// backends may simply loop [`DbWrite::write_block`]. A no-op is valid when the tip already
     /// meets or exceeds `height`.
-    async fn write_blocks_to_height<S: crate::chain_index::source::BlockchainSource>(
+    fn write_blocks_to_height<S: crate::chain_index::source::BlockchainSource>(
         &self,
         height: Height,
         source: &S,
-    ) -> Result<(), FinalisedStateError>;
+    ) -> impl SendFut<Result<(), FinalisedStateError>>;
 
     /// Deletes the tip block identified by `height` from every finalised table.
     ///
     /// Invariant: `height` must be the current database tip height.
-    async fn delete_block_at_height(&self, height: Height) -> Result<(), FinalisedStateError>;
+    fn delete_block_at_height(
+        &self,
+        height: Height,
+    ) -> impl SendFut<Result<(), FinalisedStateError>>;
 
     /// Deletes the provided tip block from every finalised table.
     ///
@@ -720,13 +721,16 @@ pub trait DbWrite: Send + Sync {
     /// height alone is not possible.
     ///
     /// Invariant: `block` must be the current database tip block.
-    async fn delete_block(&self, block: &IndexedBlock) -> Result<(), FinalisedStateError>;
+    fn delete_block(&self, block: &IndexedBlock) -> impl SendFut<Result<(), FinalisedStateError>>;
 
     /// Replaces the persisted metadata singleton with `metadata`.
     ///
     /// Implementations must ensure this update is atomic with respect to readers (within the
     /// backend’s concurrency model).
-    async fn update_metadata(&self, metadata: DbMetadata) -> Result<(), FinalisedStateError>;
+    fn update_metadata(
+        &self,
+        metadata: DbMetadata,
+    ) -> impl SendFut<Result<(), FinalisedStateError>>;
 }
 
 /// Core runtime surface implemented by every backend instance.
@@ -737,13 +741,12 @@ pub trait DbWrite: Send + Sync {
 ///
 /// In practice, [`crate::chain_index::finalised_state::router::Router`] implements this by
 /// delegating to the currently routed core backend(s).
-#[async_trait]
 pub trait DbCore: DbRead + DbWrite + Send + Sync {
     /// Returns the current runtime status (`Starting`, `Syncing`, `Ready`, …).
     fn status(&self) -> StatusType;
 
     /// Initiates a graceful shutdown of background tasks and closes database resources.
-    async fn shutdown(&self) -> Result<(), FinalisedStateError>;
+    fn shutdown(&self) -> impl SendFut<Result<(), FinalisedStateError>>;
 }
 
 // ***** Database Extension traits *****
@@ -754,42 +757,44 @@ pub trait DbCore: DbRead + DbWrite + Send + Sync {
 ///
 /// Capability gating:
 /// - Backends must only be routed for this surface if they advertise [`Capability::BLOCK_CORE_EXT`].
-#[async_trait]
 pub trait BlockCoreExt: Send + Sync {
     /// Return block header data by height.
-    async fn get_block_header(
+    fn get_block_header(
         &self,
         height: Height,
-    ) -> Result<BlockHeaderData, FinalisedStateError>;
+    ) -> impl SendFut<Result<BlockHeaderData, FinalisedStateError>>;
 
     /// Returns block headers for the inclusive range `[start, end]`.
     ///
     /// Callers should ensure `start <= end`.
-    async fn get_block_range_headers(
+    fn get_block_range_headers(
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<BlockHeaderData>, FinalisedStateError>;
+    ) -> impl SendFut<Result<Vec<BlockHeaderData>, FinalisedStateError>>;
 
     /// Return block txids by height.
-    async fn get_block_txids(&self, height: Height) -> Result<TxidList, FinalisedStateError>;
+    fn get_block_txids(
+        &self,
+        height: Height,
+    ) -> impl SendFut<Result<TxidList, FinalisedStateError>>;
 
     /// Return block txids for the given height range.
     ///
     /// Callers should ensure `start <= end`.
-    async fn get_block_range_txids(
+    fn get_block_range_txids(
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<TxidList>, FinalisedStateError>;
+    ) -> impl SendFut<Result<Vec<TxidList>, FinalisedStateError>>;
 
     /// Returns the transaction hash for the given [`TxLocation`].
     ///
     /// `TxLocation` is the internal transaction index key used by the database.
-    async fn get_txid(
+    fn get_txid(
         &self,
         tx_location: TxLocation,
-    ) -> Result<TransactionHash, FinalisedStateError>;
+    ) -> impl SendFut<Result<TransactionHash, FinalisedStateError>>;
 
     /// Returns the [`TxLocation`] for `txid` if the transaction is indexed.
     ///
@@ -798,10 +803,10 @@ pub trait BlockCoreExt: Send + Sync {
     /// - `Ok(None)` if not present (not an error).
     ///
     /// NOTE: transaction data is indexed by TxLocation internally.
-    async fn get_tx_location(
+    fn get_tx_location(
         &self,
         txid: &TransactionHash,
-    ) -> Result<Option<TxLocation>, FinalisedStateError>;
+    ) -> impl SendFut<Result<Option<TxLocation>, FinalisedStateError>>;
 }
 
 /// Transparent transaction indexing extension.
@@ -809,40 +814,39 @@ pub trait BlockCoreExt: Send + Sync {
 /// Capability gating:
 /// - Backends must only be routed for this surface if they advertise
 ///   [`Capability::BLOCK_TRANSPARENT_EXT`].
-#[async_trait]
 pub trait BlockTransparentExt: Send + Sync {
     /// Returns the serialized [`TransparentCompactTx`] for `tx_location`, if present.
     ///
     /// Returns:
     /// - `Ok(Some(tx))` if present,
     /// - `Ok(None)` if not present (not an error).
-    async fn get_transparent(
+    fn get_transparent(
         &self,
         tx_location: TxLocation,
-    ) -> Result<Option<TransparentCompactTx>, FinalisedStateError>;
+    ) -> impl SendFut<Result<Option<TransparentCompactTx>, FinalisedStateError>>;
 
     /// Fetch block transparent transaction data for given block height.
-    async fn get_block_transparent(
+    fn get_block_transparent(
         &self,
         height: Height,
-    ) -> Result<TransparentTxList, FinalisedStateError>;
+    ) -> impl SendFut<Result<TransparentTxList, FinalisedStateError>>;
 
     /// Returns transparent transaction tx data for the inclusive block height range `[start, end]`.
-    async fn get_block_range_transparent(
+    fn get_block_range_transparent(
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<TransparentTxList>, FinalisedStateError>;
+    ) -> impl SendFut<Result<Vec<TransparentTxList>, FinalisedStateError>>;
 
     /// Returns the [`TxOutCompact`] referenced by `outpoint`, looking up the previous
     /// transaction's transparent data via the txid index and the transparent block table.
     ///
     /// Returns an error if the previous transaction is not indexed by the finalised state
     /// or the requested output index is out of range.
-    async fn get_previous_output(
+    fn get_previous_output(
         &self,
         outpoint: Outpoint,
-    ) -> Result<TxOutCompact, FinalisedStateError>;
+    ) -> impl SendFut<Result<TxOutCompact, FinalisedStateError>>;
 }
 
 /// Shielded transaction indexing extension (Sapling + Orchard + commitment tree data).
@@ -850,54 +854,57 @@ pub trait BlockTransparentExt: Send + Sync {
 /// Capability gating:
 /// - Backends must only be routed for this surface if they advertise
 ///   [`Capability::BLOCK_SHIELDED_EXT`].
-#[async_trait]
 pub trait BlockShieldedExt: Send + Sync {
     /// Fetch the serialized SaplingCompactTx for the given TxLocation, if present.
-    async fn get_sapling(
+    fn get_sapling(
         &self,
         tx_location: TxLocation,
-    ) -> Result<Option<SaplingCompactTx>, FinalisedStateError>;
+    ) -> impl SendFut<Result<Option<SaplingCompactTx>, FinalisedStateError>>;
 
     /// Fetch block sapling transaction data by height.
-    async fn get_block_sapling(&self, height: Height)
-        -> Result<SaplingTxList, FinalisedStateError>;
-
-    /// Fetches block sapling tx data for the given (inclusive) height range.
-    async fn get_block_range_sapling(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> Result<Vec<SaplingTxList>, FinalisedStateError>;
-
-    /// Fetch the serialized OrchardCompactTx for the given TxLocation, if present.
-    async fn get_orchard(
-        &self,
-        tx_location: TxLocation,
-    ) -> Result<Option<OrchardCompactTx>, FinalisedStateError>;
-
-    /// Fetch block orchard transaction data by height.
-    async fn get_block_orchard(&self, height: Height)
-        -> Result<OrchardTxList, FinalisedStateError>;
-
-    /// Fetches block orchard tx data for the given (inclusive) height range.
-    async fn get_block_range_orchard(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> Result<Vec<OrchardTxList>, FinalisedStateError>;
-
-    /// Fetch block commitment tree data by height.
-    async fn get_block_commitment_tree_data(
+    fn get_block_sapling(
         &self,
         height: Height,
-    ) -> Result<CommitmentTreeData, FinalisedStateError>;
+    ) -> impl SendFut<Result<SaplingTxList, FinalisedStateError>>;
 
-    /// Fetches block commitment tree data for the given (inclusive) height range.
-    async fn get_block_range_commitment_tree_data(
+    /// Fetches block sapling tx data for the given (inclusive) height range.
+    fn get_block_range_sapling(
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<CommitmentTreeData>, FinalisedStateError>;
+    ) -> impl SendFut<Result<Vec<SaplingTxList>, FinalisedStateError>>;
+
+    /// Fetch the serialized OrchardCompactTx for the given TxLocation, if present.
+    fn get_orchard(
+        &self,
+        tx_location: TxLocation,
+    ) -> impl SendFut<Result<Option<OrchardCompactTx>, FinalisedStateError>>;
+
+    /// Fetch block orchard transaction data by height.
+    fn get_block_orchard(
+        &self,
+        height: Height,
+    ) -> impl SendFut<Result<OrchardTxList, FinalisedStateError>>;
+
+    /// Fetches block orchard tx data for the given (inclusive) height range.
+    fn get_block_range_orchard(
+        &self,
+        start: Height,
+        end: Height,
+    ) -> impl SendFut<Result<Vec<OrchardTxList>, FinalisedStateError>>;
+
+    /// Fetch block commitment tree data by height.
+    fn get_block_commitment_tree_data(
+        &self,
+        height: Height,
+    ) -> impl SendFut<Result<CommitmentTreeData, FinalisedStateError>>;
+
+    /// Fetches block commitment tree data for the given (inclusive) height range.
+    fn get_block_range_commitment_tree_data(
+        &self,
+        start: Height,
+        end: Height,
+    ) -> impl SendFut<Result<Vec<CommitmentTreeData>, FinalisedStateError>>;
 }
 
 /// CompactBlock materialization extension.
@@ -905,21 +912,20 @@ pub trait BlockShieldedExt: Send + Sync {
 /// Capability gating:
 /// - Backends must only be routed for this surface if they advertise
 ///   [`Capability::COMPACT_BLOCK_EXT`].
-#[async_trait]
 pub trait CompactBlockExt: Send + Sync {
     /// Returns the CompactBlock for the given Height.
-    async fn get_compact_block(
+    fn get_compact_block(
         &self,
         height: Height,
         pool_types: PoolTypeFilter,
-    ) -> Result<zaino_proto::proto::compact_formats::CompactBlock, FinalisedStateError>;
+    ) -> impl SendFut<Result<zaino_proto::proto::compact_formats::CompactBlock, FinalisedStateError>>;
 
-    async fn get_compact_block_stream(
+    fn get_compact_block_stream(
         &self,
         start_height: Height,
         end_height: Height,
         pool_types: PoolTypeFilter,
-    ) -> Result<CompactBlockStream, FinalisedStateError>;
+    ) -> impl SendFut<Result<CompactBlockStream, FinalisedStateError>>;
 }
 
 /// `IndexedBlock` materialization extension.
@@ -927,7 +933,6 @@ pub trait CompactBlockExt: Send + Sync {
 /// Capability gating:
 /// - Backends must only be routed for this surface if they advertise
 ///   [`Capability::CHAIN_BLOCK_EXT`].
-#[async_trait]
 pub trait IndexedBlockExt: Send + Sync {
     /// Returns the [`IndexedBlock`] for `height`, if present.
     ///
@@ -936,10 +941,10 @@ pub trait IndexedBlockExt: Send + Sync {
     /// - `Ok(None)` if not present (not an error).
     ///
     /// TODO: Add separate range fetch method as this method is slow for fetching large ranges!
-    async fn get_chain_block(
+    fn get_chain_block(
         &self,
         height: Height,
-    ) -> Result<Option<IndexedBlock>, FinalisedStateError>;
+    ) -> impl SendFut<Result<Option<IndexedBlock>, FinalisedStateError>>;
 }
 
 /// Transparent address history indexing extension.
@@ -954,7 +959,6 @@ pub trait IndexedBlockExt: Send + Sync {
 /// Range semantics:
 /// - Methods that accept `start_height` and `end_height` interpret the range as inclusive:
 ///   `[start_height, end_height]`
-#[async_trait]
 pub trait TransparentHistExt: Send + Sync {
     /// Fetch all address history records for a given transparent address.
     ///
@@ -963,10 +967,10 @@ pub trait TransparentHistExt: Send + Sync {
     /// - `Ok(None)` if no records exist (not an error),
     /// - `Err(...)` if any decoding or DB error occurs.
     #[cfg(feature = "transparent_address_history_experimental")]
-    async fn addr_records(
+    fn addr_records(
         &self,
         addr_script: AddrScript,
-    ) -> Result<Option<Vec<AddrEventBytes>>, FinalisedStateError>;
+    ) -> impl SendFut<Result<Option<Vec<AddrEventBytes>>, FinalisedStateError>>;
 
     /// Fetch all address history records for a given address and TxLocation.
     ///
@@ -975,11 +979,11 @@ pub trait TransparentHistExt: Send + Sync {
     /// - `Ok(None)` if no matching records exist (not an error),
     /// - `Err(...)` on decode or DB failure.
     #[cfg(feature = "transparent_address_history_experimental")]
-    async fn addr_and_index_records(
+    fn addr_and_index_records(
         &self,
         addr_script: AddrScript,
         tx_location: TxLocation,
-    ) -> Result<Option<Vec<AddrEventBytes>>, FinalisedStateError>;
+    ) -> impl SendFut<Result<Option<Vec<AddrEventBytes>>, FinalisedStateError>>;
 
     /// Fetch all distinct `TxLocation` values for `addr_script` within the
     /// height range `[start_height, end_height]` (inclusive).
@@ -989,12 +993,12 @@ pub trait TransparentHistExt: Send + Sync {
     /// - `Ok(None)` if no matches found (not an error),
     /// - `Err(...)` on decode or DB failure.
     #[cfg(feature = "transparent_address_history_experimental")]
-    async fn addr_tx_locations_by_range(
+    fn addr_tx_locations_by_range(
         &self,
         addr_script: AddrScript,
         start_height: Height,
         end_height: Height,
-    ) -> Result<Option<Vec<TxLocation>>, FinalisedStateError>;
+    ) -> impl SendFut<Result<Option<Vec<TxLocation>>, FinalisedStateError>>;
 
     /// Fetch all UTXOs (unspent mined outputs) for `addr_script` within the
     /// height range `[start_height, end_height]` (inclusive).
@@ -1006,12 +1010,12 @@ pub trait TransparentHistExt: Send + Sync {
     /// - `Ok(None)` if none found (not an error),
     /// - `Err(...)` on decode or DB failure.
     #[cfg(feature = "transparent_address_history_experimental")]
-    async fn addr_utxos_by_range(
+    fn addr_utxos_by_range(
         &self,
         addr_script: AddrScript,
         start_height: Height,
         end_height: Height,
-    ) -> Result<Option<Vec<(TxLocation, u16, u64)>>, FinalisedStateError>;
+    ) -> impl SendFut<Result<Option<Vec<(TxLocation, u16, u64)>>, FinalisedStateError>>;
 
     /// Computes the transparent balance change for `addr_script` over the
     /// height range `[start_height, end_height]` (inclusive).
@@ -1022,12 +1026,12 @@ pub trait TransparentHistExt: Send + Sync {
     ///
     /// Returns the signed net value as `i64`, or error on failure.
     #[cfg(feature = "transparent_address_history_experimental")]
-    async fn addr_balance_by_range(
+    fn addr_balance_by_range(
         &self,
         addr_script: AddrScript,
         start_height: Height,
         end_height: Height,
-    ) -> Result<i64, FinalisedStateError>;
+    ) -> impl SendFut<Result<i64, FinalisedStateError>>;
 
     // TODO: Add addr_deltas_by_range method!
 
@@ -1037,10 +1041,10 @@ pub trait TransparentHistExt: Send + Sync {
     /// - `Ok(Some(TxLocation))` if the outpoint is spent.
     /// - `Ok(None)` if no entry exists (not spent or not known).
     /// - `Err(...)` on deserialization or DB error.
-    async fn get_outpoint_spender(
+    fn get_outpoint_spender(
         &self,
         outpoint: Outpoint,
-    ) -> Result<Option<TxLocation>, FinalisedStateError>;
+    ) -> impl SendFut<Result<Option<TxLocation>, FinalisedStateError>>;
 
     /// Fetch the `TxLocation` entries for a batch of outpoints.
     ///
@@ -1048,10 +1052,10 @@ pub trait TransparentHistExt: Send + Sync {
     /// - Returns `Some(TxLocation)` if spent,
     /// - `None` if not found,
     /// - or returns `Err` immediately if any DB or decode error occurs.
-    async fn get_outpoint_spenders(
+    fn get_outpoint_spenders(
         &self,
         outpoints: Vec<Outpoint>,
-    ) -> Result<Vec<Option<TxLocation>>, FinalisedStateError>;
+    ) -> impl SendFut<Result<Vec<Option<TxLocation>>, FinalisedStateError>>;
 
     /// Returns the finalised-state txout-set accumulator.
     ///
@@ -1062,7 +1066,7 @@ pub trait TransparentHistExt: Send + Sync {
     ///
     /// Full RPC assembly, including non-finalised state and RPC-only fields, belongs above the
     /// finalised database layer.
-    async fn get_tx_out_set_info_accumulator(
+    fn get_tx_out_set_info_accumulator(
         &self,
-    ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError>;
+    ) -> impl SendFut<Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError>>;
 }
