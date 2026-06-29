@@ -68,7 +68,14 @@ is scoped to exactly one of them:
 | Collator | impure, single-writer | the LMDB write txn | sorted-merge → `MDB_APPEND` → store |
 
 The extractor walks each transaction's inputs and emits `(prevout_outpoint,
-this_txid)`, skipping coinbase null prevouts. Its read-freedom is enforced by its
+this_txid)`, skipping inputs whose prevout is **null** (`is_null_prevout()`).
+The only such input is the coinbase transaction's, which mints the block
+subsidy and references no prior output — emitting a record for it would key a
+bogus entry on the all-zeros/`u32::MAX` sentinel. Spends *of* coinbase outputs
+are ordinary outpoint spends and **are** indexed; only the coinbase *input* is
+skipped. (Consensus forbids null prevouts in non-coinbase transactions, so the
+null-prevout test identifies exactly the coinbase input without needing to
+recognise a coinbase transaction structurally.) Its read-freedom is enforced by its
 **signature**: a free function handed only `&[IndexedBlock]`, with no `&self`, no
 `Database`, no source handle in scope — so a DB or validator lookup is
 unrepresentable, not merely discouraged. zaino's compact representation already
