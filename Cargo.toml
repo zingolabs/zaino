@@ -79,7 +79,7 @@ tonic-build = "0.14"
 prost = "0.14"
 serde = "1.0"
 serde_json = "1.0"
-jsonrpsee-core = "0.24"
+jsonrpsee-core = "0.26"
 jsonrpsee-types = "0.24"
 jsonrpsee = { version = "0.24", features = ["server", "macros"] }
 hyper = "1.6"
