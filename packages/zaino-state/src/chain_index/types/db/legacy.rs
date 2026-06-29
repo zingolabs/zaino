@@ -1134,7 +1134,7 @@ impl ZainoVersionedSerde for IndexedBlock {
 impl
     TryFrom<(
         zaino_fetch::chain::block::FullBlock,
-        ChainWork,
+        Option<ChainWork>,
         [u8; 32],
         [u8; 32],
         u32,
@@ -1153,7 +1153,7 @@ impl
             parent_orchard_size,
         ): (
             zaino_fetch::chain::block::FullBlock,
-            ChainWork,
+            Option<ChainWork>,
             [u8; 32],
             [u8; 32],
             u32,
@@ -1248,9 +1248,13 @@ impl
             solution,
         );
 
-        let chainwork = parent_chainwork
-            .add(&block_data.bits.to_work())
-            .map_err(|e| format!("chainwork overflow: {e}"))?;
+        let block_work = block_data.bits.to_work();
+        let chainwork = match parent_chainwork {
+            Some(parent) => parent
+                .add(&block_work)
+                .map_err(|e| format!("chainwork overflow: {e}"))?,
+            None => block_work,
+        };
 
         // --- Final block-context and block data ---
         let context = BlockContext::new(
