@@ -32,3 +32,24 @@ blocks.
 ## Eviction
 Removal of a block from the NFS once the finalized floor rises past its
 height. A block is evicted when it passes below the seam.
+
+## Transparent outpoint
+A reference to exactly one transparent transaction output: the ordered pair
+(creating txid, output index). The index is the output's position in the
+creating transaction's output vector. An outpoint therefore already names its
+creating transaction. Within a transaction an outpoint appears only as the
+prevout field of an *input* — naming the earlier output that input spends.
+Outputs are referenced by outpoints but do not themselves carry one. So the
+transaction that *contains* an outpoint (as an input field) is its spending
+transaction, never its creating transaction.
+
+## Creating transaction
+The transaction that produced a given transparent output. Its txid is the
+first component of that output's outpoint.
+
+## Spending transaction
+The transaction that consumes a given transparent output as one of its
+inputs. Its txid — the *spending txid* — is distinct from the outpoint's
+creating txid. On a single chain an outpoint has at most one spending
+transaction; an unspent outpoint has none. "The txid that spends an outpoint,
+if it exists" names this and only this.
