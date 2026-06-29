@@ -98,7 +98,7 @@ futures = "0.3.30"
 
 # Metrics
 metrics = "0.24"
-metrics-exporter-prometheus = { version = "0.16", default-features = false, features = ["http-listener"] }
+metrics-exporter-prometheus = { version = "0.18", default-features = false, features = ["http-listener"] }
 
 # Utility
 thiserror = "2.0"
