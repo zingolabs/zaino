@@ -140,7 +140,7 @@ raised in #1326's validation-model note.
 
 The struct, its impl, the run loop, extractor, and collator live together in a
 **single self-contained module-and-file**, gated by a new default-off Cargo
-feature `spend_index_experimental` (grouped under `experimental_features`,
+feature `outp_to_spend_index` (grouped under `experimental_features`,
 mirroring `transparent_address_history_experimental`). Visibility is minimized to
 `pub(super)` toward the module's sole owner. The exact placement (which parent
 module makes `pub(super)` sufficient) is an implementation detail resolved in the
