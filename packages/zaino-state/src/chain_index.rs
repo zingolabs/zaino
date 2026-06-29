@@ -2534,12 +2534,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                 }
 
                 // Spent prev outputs leave the UTXO set.
-                for input in transparent.inputs() {
-                    if input.is_null_prevout() {
-                        continue;
-                    }
-
-                    let outpoint = Outpoint::new(*input.prevout_txid(), input.prevout_index());
+                for outpoint in transparent.spent_outpoints() {
                     let prev_txid = TransactionHash::from(*outpoint.prev_txid());
 
                     let prev_out_from_nfs = nfs_created.remove(&outpoint);

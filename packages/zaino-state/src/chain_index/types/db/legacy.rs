@@ -1719,6 +1719,18 @@ impl TransparentCompactTx {
         &self.vout
     }
 
+    /// The outpoints this transaction spends — its non-coinbase prevouts.
+    ///
+    /// Coinbase inputs carry a null prevout (they reference no prior output) and
+    /// are skipped, so every yielded outpoint names a real previously-created
+    /// output.
+    pub(crate) fn spent_outpoints(&self) -> impl Iterator<Item = Outpoint> + '_ {
+        self.inputs()
+            .iter()
+            .filter(|input| !input.is_null_prevout())
+            .map(|input| Outpoint::new(*input.prevout_txid(), input.prevout_index()))
+    }
+
     /// Returns Proto CompactTxIn values, omitting the null prevout used by coinbase.
     pub fn compact_vin(&self) -> Vec<zaino_proto::proto::compact_formats::CompactTxIn> {
         self.inputs()
