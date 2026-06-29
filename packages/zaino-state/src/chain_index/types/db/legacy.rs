@@ -856,9 +856,8 @@ impl ZainoVersionedSerde for BlockData {
         let block_commitments = read_fixed_le::<32, _>(&mut r)?;
 
         let bits_raw = read_u32_le(&mut r)?;
-        let bits = CompactDifficulty::try_from_bits(bits_raw).map_err(|e| {
-            io::Error::new(io::ErrorKind::InvalidData, e)
-        })?;
+        let bits = CompactDifficulty::try_from_bits(bits_raw)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let nonse = read_fixed_le::<32, _>(&mut r)?;
 
         let solution = EquihashSolution::deserialize(&mut r)?;

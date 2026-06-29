@@ -90,9 +90,7 @@ impl DbWrite for DbV1 {
                                             "tip header decode error: {e}"
                                         ))
                                     })?;
-                                Ok::<_, FinalisedStateError>(Some(
-                                    entry.inner().context.chainwork,
-                                ))
+                                Ok::<_, FinalisedStateError>(Some(entry.inner().context.chainwork))
                             }
                             Err(lmdb::Error::NotFound) => Ok(None),
                             Err(e) => Err(FinalisedStateError::LmdbError(e)),
@@ -200,7 +198,7 @@ impl DbWrite for DbV1 {
                     parent_chainwork,
                 )
                 .await?;
-                parent_chainwork = block.context.chainwork;
+                parent_chainwork = Some(block.context.chainwork);
 
                 self.write_block_with_options(block, false).await?;
             }

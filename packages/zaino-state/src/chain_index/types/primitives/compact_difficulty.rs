@@ -55,9 +55,9 @@ impl CompactDifficulty {
         let zebra =
             zebra_chain::work::difficulty::CompactDifficulty::from_bytes_in_display_order(&bytes)
                 .map_err(|e| CompactDifficultyError::InvalidEncoding {
-                    bits,
-                    reason: e.to_string(),
-                })?;
+                bits,
+                reason: e.to_string(),
+            })?;
         Ok(Self(zebra))
     }
 

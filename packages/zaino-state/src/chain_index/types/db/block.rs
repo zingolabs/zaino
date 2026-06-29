@@ -24,9 +24,7 @@ use crate::chain_index::{
         read_fixed_le, read_option, read_u32_le, version, write_fixed_le, write_option,
         write_u32_le, FixedEncodedLen, ZainoVersionedSerde,
     },
-    types::{
-        BlockContext, BlockHash, BlockIndex, ChainWork, CompactDifficulty, Height,
-    },
+    types::{BlockContext, BlockHash, BlockIndex, ChainWork, CompactDifficulty, Height},
 };
 
 /// Database-adjacent persistence shape for [`ChainWork`].
@@ -93,15 +91,15 @@ impl FixedEncodedLen for PersistentChainWork {
 #[derive(Debug)]
 pub(super) struct PersistentCompactDifficulty(u32);
 
+#[expect(dead_code, reason = "will be used by versioned DB schema types")]
 impl PersistentCompactDifficulty {
     pub(super) fn from_business(cd: &CompactDifficulty) -> Self {
         Self(cd.as_bits())
     }
 
     pub(super) fn into_business(self) -> io::Result<CompactDifficulty> {
-        CompactDifficulty::try_from_bits(self.0).map_err(|e| {
-            io::Error::new(io::ErrorKind::InvalidData, e)
-        })
+        CompactDifficulty::try_from_bits(self.0)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }
 }
 

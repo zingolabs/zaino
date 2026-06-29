@@ -21,7 +21,7 @@ use crate::chain_index::tests::vectors::{
 use crate::chain_index::types::TransactionHash;
 
 use crate::error::FinalisedStateError;
-use crate::{BlockMetadata, BlockWithMetadata, ChainIndexConfig, ChainWork, Height, IndexedBlock};
+use crate::{BlockMetadata, BlockWithMetadata, ChainIndexConfig, Height, IndexedBlock};
 
 use crate::{AddrScript, Outpoint};
 
