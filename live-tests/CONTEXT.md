@@ -35,3 +35,13 @@ clientless partitions. A standalone crate, not part of either partition; it
 owns shared fixtures and the feature-forwarding surface (`zcashd_support`,
 `transparent_address_history_experimental`).
 _Avoid_: test helpers, testlib.
+
+**offline (test set)**:
+The complement of the live suite: the `packages/*` production-crate tests that
+require **no** live validator, running self-contained against fixtures, mocks,
+and in-memory data. The workspace `default-members`, exercised by bare
+`cargo nextest run` and the `offline-tests` task. The defining contrast to
+`live` (which requires a live validator). Developer task surface:
+`offline-tests`, `live-tests`, and the omnibus `all-tests`.
+_Avoid_: unit test (the set includes crate-level integration tests), container
+test (names the run mechanism, which the live suite shares).

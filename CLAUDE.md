@@ -178,7 +178,7 @@ crates (`live-tests/{e2e,integration,zaino-testutils}`) as members (see
 docs/adr/0002, docs/adr/0003). `default-members` is the production set, so a
 bare `cargo` / `cargo nextest run` builds and tests only those and excludes the
 heavy live-test crates; the live suite is selected explicitly with `-p e2e` /
-`-p integration` (the `makers live` task family). rust-analyzer indexes the
+`-p integration` (the `makers live-tests` front door). rust-analyzer indexes the
 single workspace, so go-to-def / find-references resolve across production and
 test code in one pass — no linked-project swapping, and an empty result means
 "no references," not "the other workspace isn't loaded."

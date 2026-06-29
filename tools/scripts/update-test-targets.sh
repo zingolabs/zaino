@@ -14,7 +14,7 @@ info "🔧 Updating CI workflow matrix to match nextest targets..."
 info "Extracting current nextest targets..."
 NEXTEST_TARGETS=$(mktemp)
 cargo nextest list \
-  --workspace --all-features \
+  --workspace --no-default-features \
   --profile targets -T json-pretty \
   | jq -r '
       .["rust-suites"]

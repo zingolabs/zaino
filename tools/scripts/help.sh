@@ -10,7 +10,9 @@ echo "Zaino CI Image Tasks"
 echo "---------------------"
 echo ""
 echo "Common usage:"
-echo "  makers container-test"
+echo "  makers offline-tests   # packages/* tests, no live validator"
+echo "  makers live-tests      # both live partitions + combined summary"
+echo "  makers all-tests       # everything"
 echo ""
 echo "If you modify '.env.testing-artifacts', the test command will \
 automatically:"
@@ -19,13 +21,17 @@ echo "  - Build a new local container image if needed"
 echo ""
 echo "Available commands:"
 echo ""
-echo "  container-test             Run integration tests using the local \
-image"
-echo "  live                       Run both live-test partitions (integration \
-+ e2e) with a combined summary"
-echo "  live-integration           Run the integration live-test partition \
-(forwards flags to nextest)"
-echo "  live-e2e                   Run the e2e live-test partition \
+echo "  offline-tests             Run the offline suite: packages/* tests, no \
+live validator (front door)"
+echo "  live-tests                 Run the live suite: both partitions \
+(integration + e2e) with a combined summary (front door)"
+echo "  all-tests                  Run everything: offline then live (front \
+door)"
+echo "  container-test             Engine: run nextest in the container \
+(used by the front doors; invoke directly to forward engine flags)"
+echo "  live-integration           Engine: run the integration live-test \
+partition (forwards flags to nextest)"
+echo "  live-e2e                   Engine: run the e2e live-test partition \
 (forwards flags to nextest)"
 echo "  container-test-save-failures    Run tests, save failures to \
 .failed-tests"

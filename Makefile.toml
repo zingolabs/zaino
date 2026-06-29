@@ -93,7 +93,7 @@ script.main = 'source "./tools/scripts/push-image.sh"'
 
 [tasks.container-test]
 clear = true
-description = "Run integration tests using the local image (zcashd_support OFF by default; pass --with-zcashd to include the zcashd-backed suite)"
+description = "Engine: run nextest in the local CI container, forwarding args (zcashd_support OFF by default; --with-zcashd adds it). Devs use offline-tests / live-tests / all-tests; live-integration / live-e2e and the front doors call this."
 # This task runs tests inside the container built from live-tests/test_environment.
 # The entrypoint.sh script in the container sets up test binaries (zcashd, zebrad, zcash-cli)
 # by creating symlinks from /home/container_user/artifacts to the expected live-tests/test_binaries/bins location.
@@ -123,20 +123,52 @@ script.main = 'source "./tools/scripts/container-nextest-workspace.sh"'
 
 # -------------------------------------------------------------------
 
-[tasks.live]
-description = "Run both live-test partitions (integration then e2e) and print a combined pass/fail summary (pass --with-zcashd to include zcashd-backed tests)"
+# ===================================================================
+# Developer-facing test entry points.
+#
+# These three are the front doors devs invoke. Internals stay DRY: each
+# delegates to an existing engine rather than re-implementing a run.
+#   offline  — packages/* tests that need no live validator (the `container-test`
+#              engine with no partition, so workspace default-members run).
+#   live     — both live partitions against a live validator (`live-integration`
+#              / `live-e2e`, aggregated by live-tests-summary.rs).
+# See "offline" / "live" in live-tests/CONTEXT.md. `--with-zcashd` (handled by
+# the engines) adds the zcashd-backed tests to any of them.
+# ===================================================================
+
+[tasks.offline-tests]
+description = "Run the offline suite: packages/* tests that need no live validator (pass --with-zcashd for the zcashd-backed subset)"
+# Delegates to the container-test engine with no partition: the workspace
+# default-members (production crates) run; the live crates are excluded.
 script_runner = "bash"
-script = 'source "./tools/scripts/integration-test-summary.sh"'
+script = 'exec makers container-test "${@}"'
+
+[tasks.live-tests]
+description = "Run the live suite: both partitions (integration then e2e) against a live validator, with a combined summary (pass --with-zcashd to include zcashd-backed tests)"
+script_runner = "bash"
+script = 'exec ./tools/scripts/live-tests-summary.rs "${@}"'
+
+[tasks.all-tests]
+description = "Run the entire suite: offline then live (pass --with-zcashd to include zcashd-backed tests)"
+# Delegates to both front doors; runs both even if the first fails, then fails
+# if either did, so the omnibus reflects the whole suite.
+script_runner = "bash"
+script = '''
+set -uo pipefail
+rc=0
+makers offline-tests "${@}" || rc=1
+makers live-tests "${@}" || rc=1
+exit "$rc"
+'''
 
 # -------------------------------------------------------------------
 
 [tasks.zcashd_test]
-description = "Convenience: run container-test + live with --with-zcashd (equivalent to running each with the flag)"
-# Shorthand for running the full suite with zcashd compiled in.
-# Sets CONTAINER_TEST_WITH_ZCASHD=1, which the scripts honour alongside
-# the --with-zcashd CLI flag.
+description = "Convenience: all-tests with the zcashd-backed suite compiled in (equivalent to all-tests --with-zcashd)"
+# Sets CONTAINER_TEST_WITH_ZCASHD=1 (honoured by the engines alongside the
+# --with-zcashd CLI flag) and delegates to the all-tests front door.
 env = { CONTAINER_TEST_WITH_ZCASHD = "1" }
-run_task = { name = ["container-test", "live"] }
+run_task = "all-tests"
 
 # -------------------------------------------------------------------
 

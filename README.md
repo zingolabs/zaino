@@ -106,8 +106,9 @@ connection.
 The test suites run inside a **podman** container via `makers` (cargo-make):
 
 ```sh
-makers container-test     # root-workspace (packages/*) tests
-makers integration-test   # both integration-test workspaces + combined summary
+makers offline-tests   # packages/* tests that need no live validator
+makers live-tests      # both live partitions (integration + e2e) + combined summary
+makers all-tests       # everything: offline then live
 ```
 
 zcashd-backed tests are **off by default**; add `--with-zcashd` (or set

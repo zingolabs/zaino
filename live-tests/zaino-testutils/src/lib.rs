@@ -1184,8 +1184,9 @@ impl ZcashdDualFetchServices {
 /// a [`ZcashdDualFetchServices`].
 ///
 /// Shared core of the `create_zcashd_test_manager_and_fetch_services` harness in
-/// both integration-test workspaces. Wallet callers wrap this and additionally
-/// build lightclients from the returned manager's gRPC address.
+/// both live-test partitions (`integration` and `e2e`). The `e2e` partition
+/// wraps this and additionally builds lightclients from the returned manager's
+/// gRPC address.
 #[cfg(feature = "zcashd_support")]
 #[allow(deprecated)]
 pub async fn launch_zcashd_dual_fetch_services() -> ZcashdDualFetchServices {
@@ -1295,8 +1296,9 @@ pub fn get_info_with_zeroed_timestamp(info: GetInfo) -> GetInfo {
 
 /// Launch a fetch-backend [`TestManager`] and return it together with its own
 /// service subscriber — the shared core of the `create_test_manager_and_fetch_service`
-/// harness in both integration-test workspaces. Wallet callers wrap this and
-/// build lightclients from the returned manager's gRPC address.
+/// harness in both live-test partitions (`integration` and `e2e`). The `e2e`
+/// partition wraps this and builds lightclients from the returned manager's
+/// gRPC address.
 #[allow(deprecated)]
 pub async fn launch_with_fetch_subscriber<V: ValidatorExt>(
     validator: &ValidatorKind,

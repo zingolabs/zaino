@@ -26,10 +26,15 @@ The `makers` tasks below build and run the test suites inside a **podman**
 container, so you don't need the validator binaries on your host `$PATH`. The
 container image is built or pulled automatically on first run.
 
-- `makers container-test` — runs the root-workspace (`packages/*`) test suite.
-- `makers integration-test` — runs both integration-test workspaces (the
-  walletless `integration-tests`, then the `wallet-tests` workspace) and prints
-  a combined pass/fail summary.
+- `makers offline-tests` — runs the **offline** suite: the `packages/*`
+  production-crate tests that need no live validator.
+- `makers live-tests` — runs the **live** suite: both partitions (`integration`
+  then `e2e`) against a live validator, and prints a combined pass/fail summary.
+- `makers all-tests` — runs the whole suite: offline then live.
+
+(`container-test`, `live-integration`, and `live-e2e` are the internal engines
+the front doors delegate to; invoke them directly only when you need a single
+partition or to forward engine flags.)
 
 ### zcashd-backed tests are OFF by default
 
@@ -38,11 +43,11 @@ zcashd is being deprecated, so the suites compile with `--no-default-features`
 tests are compiled out. To include them, turn the feature back on in any of
 these equivalent ways:
 
-- pass the flag: `makers container-test --with-zcashd` or
-  `makers integration-test --with-zcashd`
-- set the env var: `CONTAINER_TEST_WITH_ZCASHD=1 makers integration-test`
-- use the convenience task: `makers zcashd_test` (runs `container-test` and
-  `integration-test` with zcashd on)
+- pass the flag: `makers offline-tests --with-zcashd`,
+  `makers live-tests --with-zcashd`, or `makers all-tests --with-zcashd`
+- set the env var: `CONTAINER_TEST_WITH_ZCASHD=1 makers all-tests`
+- use the convenience task: `makers zcashd_test` (equivalent to
+  `makers all-tests --with-zcashd`)
 
 See `docs/adr/0001-zcashd-support-feature-gate.md` for the rationale.
 
@@ -52,8 +57,8 @@ The suites run at full parallelism (one test thread per CPU), and each
 integration test can spawn its own validator. On machines with fewer cores or
 less RAM this can surface as occasional flaky failures caused by contention
 rather than real regressions — re-running usually passes. To make runs more
-reliable, lower the parallelism by reducing `test-threads` in the relevant
-nextest config (`.config/nextest.toml` for `container-test`,
-`integration-tests/.config/nextest.toml` for the integration suites). For a
-one-off run you can instead forward a nextest flag through the per-workspace
-tasks, e.g. `makers container-test --test-threads 6`.
+reliable, lower the parallelism by reducing `test-threads` in the single root
+nextest config (`.config/nextest.toml`; the live tests are additionally capped
+to 6 concurrent validators via the `live-validators` test-group). For a one-off
+run you can instead forward a nextest flag through any front door, e.g.
+`makers offline-tests --test-threads 6`.
