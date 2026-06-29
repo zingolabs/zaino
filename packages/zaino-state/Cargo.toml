@@ -32,12 +32,20 @@ test_dependencies = []
 
 # **Experimental and alpha features**
 # Exposes the **complete** set of experimental / alpha features currently implemented in Zaino.
-experimental_features = ["transparent_address_history_experimental"]
+experimental_features = [
+    "transparent_address_history_experimental",
+    "outp_to_spend_index",
+]
 
 # Activates transparent address history capability in zaino
 #
 # NOTE: currently this is only implemented in the finalised state.
 transparent_address_history_experimental = []
+
+# Standalone, parallel-buildable finalised spend index
+# (transparent_outpoint -> spending_txid). Proof of concept; off by default.
+# See docs/adr/0002-finalised-spend-index-parallel-build.md.
+outp_to_spend_index = []
 
 [dependencies]
 zaino-common = { workspace = true }
