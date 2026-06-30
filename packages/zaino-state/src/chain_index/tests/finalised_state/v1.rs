@@ -21,7 +21,7 @@ use crate::chain_index::tests::vectors::{
 use crate::chain_index::types::TransactionHash;
 
 use crate::error::FinalisedStateError;
-use crate::{BlockMetadata, BlockWithMetadata, ChainIndexConfig, ChainWork, Height, IndexedBlock};
+use crate::{BlockMetadata, BlockWithMetadata, ChainIndexConfig, Height, IndexedBlock};
 
 use crate::{AddrScript, Outpoint};
 
@@ -287,14 +287,12 @@ async fn try_write_invalid_block() {
         ..
     } = blocks.last().unwrap().clone();
 
-    // NOTE: Currently using default here.
-    let parent_chain_work = ChainWork::from_u256(0.into());
     let metadata = BlockMetadata::new(
         sapling_root,
         sapling_tree_size as u32,
         orchard_root,
         orchard_tree_size as u32,
-        parent_chain_work,
+        None, // no parent chainwork for this test
         zaino_common::Network::Regtest(ActivationHeights::default()).to_zebra_network(),
     );
 

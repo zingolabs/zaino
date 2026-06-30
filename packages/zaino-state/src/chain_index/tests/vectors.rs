@@ -90,7 +90,7 @@ pub(in crate::chain_index::tests) fn copy_dir_recursive(
 pub(crate) fn indexed_block_chain(
     blocks: &[TestVectorBlockData],
 ) -> impl Iterator<Item = IndexedBlock> + '_ {
-    let mut parent_chain_work = ChainWork::from_u256(0.into());
+    let mut parent_chain_work: Option<ChainWork> = None;
     blocks.iter().map(move |vector| {
         let metadata = BlockMetadata::new(
             vector.sapling_root,
@@ -118,7 +118,7 @@ pub(crate) fn indexed_block_chain(
         );
         let chain_block =
             IndexedBlock::try_from(BlockWithMetadata::new(&vector.zebra_block, metadata)).unwrap();
-        parent_chain_work = chain_block.context.chainwork;
+        parent_chain_work = Some(chain_block.context.chainwork);
         chain_block
     })
 }
