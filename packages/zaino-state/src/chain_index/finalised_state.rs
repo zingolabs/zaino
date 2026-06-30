@@ -690,6 +690,20 @@ impl<T: BlockchainSource> FinalisedState<T> {
             return Ok(());
         }
 
+        // Single-flight: if a background sync (or migration) is already in progress, this poll is a
+        // no-op. The indexer worker calls this method on every poll, so without this guard a
+        // long-running background sync would be re-spawned on each iteration, piling up concurrent
+        // `write_blocks_to_height` runs that contend on the single LMDB writer and multiply memory
+        // until the process is OOM-killed before any batch commits durably — leaving restarts to
+        // resume from the snapshot baseline rather than the last synced height (see issue #1261).
+        // `has_background_ops` is the union of sync and migration; migrations are already excluded
+        // above via `has_full_ephemeral_reference`, so the only thing this observes here is an
+        // in-flight sync. The running task syncs to the height it was spawned with; if the chain has
+        // advanced past it, the next poll after it completes spawns a fresh sync to the new target.
+        if self.db.has_background_ops() {
+            return Ok(());
+        }
+
         let primary = self.db.primary_backend();
         let db_height_opt = primary.db_height().await?;
 

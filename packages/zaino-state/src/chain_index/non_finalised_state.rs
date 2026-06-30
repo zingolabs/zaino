@@ -1,4 +1,8 @@
-use super::{finalised_state::FinalisedState, source::BlockchainSource, NON_FINALIZED_DEPTH};
+use super::{
+    finalised_state::{reader::DbReader, FinalisedState},
+    source::BlockchainSource,
+    NON_FINALIZED_DEPTH,
+};
 use crate::{
     chain_index::types::{
         self, BlockHash, BlockIndex, BlockMetadata, BlockWithMetadata, Height, TreeRootData,
@@ -21,6 +25,12 @@ use zebra_state::HashOrHeight;
 /// is pinned at `0` in ephemeral mode. Without an independent floor the snapshot would grow by one
 /// block per new block indefinitely. This caps retention to a fixed window regardless, a small
 /// margin above [`NON_FINALIZED_DEPTH`] so it never trims inside the reorg-possible range.
+///
+/// It also bounds the non-finalised ancestry walkers ([`NonFinalizedState::handle_reorg`] and
+/// [`NonFinalizedState::add_nonbest_block`]): neither should recurse further back than the window
+/// they maintain. The bound is load-bearing for `add_nonbest_block` on the state backend, where
+/// `source.get_block` serves *any* block by hash (including finalised blocks below the window), so
+/// without it a side chain rooted below the anchor would recurse to genesis and overflow the stack.
 const MAX_NFS_DEPTH: u32 = NON_FINALIZED_DEPTH + 10;
 
 /// Holds the block cache
@@ -341,6 +351,52 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         }
     }
 
+    /// Resolve the non-finalised state's anchor (root) block at `anchor_height`.
+    ///
+    /// Prefers the finalised reader, which serves the block from the persistent DB when the height
+    /// is in range, or from the validator via the ReadOnly ephemeral passthrough while the finalised
+    /// DB is catching up in the background. Falls back to building the block directly from the
+    /// validator source when the reader cannot serve it yet — e.g. the first worker iteration, before
+    /// any passthrough is installed — so the anchor never silently drops to genesis (issue #1261).
+    ///
+    /// The anchor sits below the reorg-possible range, so its chainwork is irrelevant to best-chain
+    /// selection; it is set to zero, matching the ephemeral passthrough's own anchor build.
+    pub(super) async fn resolve_anchor_block(
+        source: &Source,
+        reader: &DbReader<Source>,
+        network: &Network,
+        anchor_height: Height,
+    ) -> Result<IndexedBlock, FinalisedStateError> {
+        if let Some(block) = reader.get_chain_block_by_height(anchor_height).await? {
+            return Ok(block);
+        }
+
+        let block = source
+            .get_block(HashOrHeight::Height(zebra_chain::block::Height(
+                anchor_height.0,
+            )))
+            .await?
+            .ok_or_else(|| {
+                FinalisedStateError::DataUnavailable(format!(
+                    "anchor block {} unavailable from validator",
+                    anchor_height.0
+                ))
+            })?;
+
+        let (sapling, orchard) = source
+            .get_commitment_tree_roots(block.hash().into())
+            .await?;
+        let tree_roots = TreeRootData { sapling, orchard };
+
+        Self::create_indexed_block_with_optional_roots(
+            block.as_ref(),
+            &tree_roots,
+            ChainWork::from(U256::zero()),
+            network.clone(),
+        )
+        .map_err(FinalisedStateError::Custom)
+    }
+
     /// Set up the optional non-finalized change listener
     async fn setup_listener(
         source: &Source,
@@ -375,20 +431,29 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     ) -> Result<(), SyncError> {
         let mut initial_state = self.get_snapshot();
         let local_finalized_tip = finalized_db.to_reader().db_height().await?;
-        if Some(initial_state.best_tip.height) < local_finalized_tip {
+        // Anchor floor: the non-finalised state must never start more than `NON_FINALIZED_DEPTH`
+        // blocks below the chain tip, even when the finalised DB tip lags far behind during
+        // background catch-up. Without this floor a freshly-initialised (or genesis-fallback)
+        // snapshot would try to bridge the entire gap from the finalised tip up to the chain tip one
+        // block at a time — millions of sequential validator fetches that never converge (#1261).
+        // When the floor sits above the finalised tip the anchor block isn't in the persistent DB;
+        // `resolve_anchor_block` serves it via the passthrough or builds it from the validator.
+        let anchor_height = Height(
+            local_finalized_tip
+                .map(|height| height.0)
+                .unwrap_or(0)
+                .max(u32::from(chain_height).saturating_sub(NON_FINALIZED_DEPTH)),
+        );
+        if initial_state.best_tip.height.0 < anchor_height.0 {
+            let anchor_block = Self::resolve_anchor_block(
+                &self.source,
+                &finalized_db.to_reader(),
+                &self.network,
+                anchor_height,
+            )
+            .await?;
             self.current.swap(Arc::new(
-                NonfinalizedBlockCacheSnapshot::from_initial_block(
-                    finalized_db
-                        .to_reader()
-                        .get_chain_block_by_height(
-                            local_finalized_tip.expect("known to be some due to above if"),
-                        )
-                        .await?
-                        .ok_or(FinalisedStateError::DataUnavailable(format!(
-                            "Missing block {}",
-                            local_finalized_tip.unwrap().0
-                        )))?,
-                ),
+                NonfinalizedBlockCacheSnapshot::from_initial_block(anchor_block),
             ));
             initial_state = self.get_snapshot()
         }
@@ -481,10 +546,9 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         block: &impl Block,
         recursion_count: u8,
     ) -> Result<IndexedBlock, SyncError> {
-        // We should never recurse back more than ~100 blocks, assuming
-        // a complete reorg of the entire nonfinalized state.
-        // 110 adds a likely unneeded safety margin
-        if recursion_count > 110 {
+        // We should never recurse back more than the non-finalised window, assuming a complete
+        // reorg of the entire nonfinalized state. `MAX_NFS_DEPTH` adds a small safety margin.
+        if u32::from(recursion_count) > MAX_NFS_DEPTH {
             return Err(SyncError::ReorgFailure(
                 "reorg handling recursed beyond reason".to_string(),
             ));
@@ -596,7 +660,9 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                         .blocks
                         .contains_key(&types::BlockHash(hash.0))
                     {
-                        self.add_nonbest_block(working_snapshot, &*block).await?;
+                        // Best-effort: a skipped side block (`Ok(None)`) is fine, it just isn't
+                        // cached; only a hard error fails the sync.
+                        self.add_nonbest_block(working_snapshot, &*block, 0).await?;
                     }
                 }
                 Err(mpsc::error::TryRecvError::Empty) => break,
@@ -763,11 +829,29 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         IndexedBlock::try_from(block_with_metadata)
     }
 
+    /// Cache a non-best (side-chain) block, recursively resolving any ancestors not already in the
+    /// working snapshot.
+    ///
+    /// Returns `Ok(None)` when the block cannot be placed within the non-finalised window: the walk
+    /// back to a known ancestor exceeded [`MAX_NFS_DEPTH`], so the side chain is rooted in finalised
+    /// history. Skipping it is safe and intentional — zaino does not guarantee knowledge of all
+    /// sidechain data (see `ChainIndexReader::find_fork_point`). Without this bound the walk would
+    /// follow `source.get_block` down into finalised history (on the state backend `get_block`
+    /// serves any block by hash) and overflow the worker stack.
     async fn add_nonbest_block(
         &self,
         working_snapshot: &mut NonfinalizedBlockCacheSnapshot,
         block: &impl Block,
-    ) -> Result<IndexedBlock, SyncError> {
+        recursion_count: u8,
+    ) -> Result<Option<IndexedBlock>, SyncError> {
+        if u32::from(recursion_count) > MAX_NFS_DEPTH {
+            warn!(
+                depth = recursion_count,
+                "non-best block ancestry walk exceeded the non-finalised window; \
+                 skipping side chain rooted in finalised history"
+            );
+            return Ok(None);
+        }
         let prev_block = match working_snapshot
             .get_block_by_hash_bytes_in_serialized_order(block.prev_hash_bytes_serialized_order())
             .cloned()
@@ -792,14 +876,25 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                             "zebrad missing block".to_string(),
                         ))),
                     ))?;
-                Box::pin(self.add_nonbest_block(working_snapshot, &*prev_block)).await?
+                match Box::pin(self.add_nonbest_block(
+                    working_snapshot,
+                    &*prev_block,
+                    recursion_count + 1,
+                ))
+                .await?
+                {
+                    Some(prev_block) => prev_block,
+                    // The parent could not be resolved within the window, so this block can't be
+                    // placed either. Skip it (best-effort), matching the ancestor's decision.
+                    None => return Ok(None),
+                }
             }
         };
         let indexed_block = block.to_indexed_block(&prev_block, self).await?;
         working_snapshot
             .blocks
             .insert(*indexed_block.hash(), indexed_block.clone());
-        Ok(indexed_block)
+        Ok(Some(indexed_block))
     }
 }
 

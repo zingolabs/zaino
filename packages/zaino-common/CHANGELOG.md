@@ -8,7 +8,26 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- `StorageConfig::database.sync_checkpoint_interval` (seconds, default 120) — max
+  wall-clock time spent buffering a bulk-sync write batch before flushing. Under
+  the env's `NO_SYNC` mode this also bounds the window of unflushed writes at risk
+  on a hard kill / eviction; lower it to shrink that window.
+- `StorageConfig::database.accumulator_rebuild_memory_size` (GiB, default 8, new
+  `AccumulatorRebuildMemorySize` newtype) — dedicated heap budget for the
+  from-genesis txout-set accumulator rebuild's spent set, kept **separate** from
+  `sync_write_batch_size` so the two operations cannot inflate each other's peak
+  memory.
 ### Changed
+- **Breaking** — `StorageConfig::database.sync_write_batch_bytes` (raw bytes) is
+  renamed to `sync_write_batch_size` and now expressed in **GiB** (new
+  `SyncWriteBatchSize` newtype, mirroring `DatabaseSize`); the default is 8 GiB.
+  It is now a heap budget for buffered blocks only — the accumulator rebuild uses
+  the separate `accumulator_rebuild_memory_size`. Existing TOML configs setting
+  `sync_write_batch_bytes` must switch to `sync_write_batch_size` (in GiB).
+- **Breaking** — `DatabaseConfig` now uses `#[serde(deny_unknown_fields)]`: an
+  unrecognized key under `[storage.database]` (e.g. a stale `sync_write_batch_bytes`)
+  is a hard parse error instead of being silently ignored and falling back to the
+  default budget — the silent fallback previously OOM-killed nodes.
 ### Deprecated
 ### Removed
 ### Fixed

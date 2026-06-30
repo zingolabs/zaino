@@ -35,11 +35,14 @@ podman_cleanup() {
 Cleaning up..."
     fi
 
-    # Kill all child processes
+    # Kill all child processes. Avoid `mapfile` (bash 4+) so this works under
+    # the bash 3.2 that macOS ships as /bin/bash; PIDs are numeric, so the
+    # unquoted word-split on `$pids` is safe.
     local pids
-    mapfile -t pids < <(jobs -pr)
-    if [ "${#pids[@]}" -gt 0 ]; then
-        kill "${pids[@]}" 2>/dev/null || true
+    pids=$(jobs -pr)
+    if [ -n "$pids" ]; then
+        # shellcheck disable=SC2086
+        kill $pids 2>/dev/null || true
     fi
 
     # Stop any containers started by this script
