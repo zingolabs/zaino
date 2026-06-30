@@ -63,7 +63,6 @@ simple-mermaid = "0.2.0"
 tokio = { workspace = true, features = ["full"] }
 thiserror = { workspace = true }
 tower = { workspace = true, features = ["buffer", "util"] }
-async-trait = { workspace = true }
 chrono = { workspace = true }
 indexmap = { workspace = true }
 hex = { workspace = true, features = ["serde"] }

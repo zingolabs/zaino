@@ -6,7 +6,6 @@ use super::*;
 ///
 /// Exposes `zcash_client_backend`-compatible compact blocks derived from stored header + shielded
 /// transaction data.
-#[async_trait]
 impl CompactBlockExt for DbV1 {
     async fn get_compact_block(
         &self,

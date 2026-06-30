@@ -61,6 +61,8 @@ pub(crate) mod v1;
 use v1::DbV1;
 use zaino_proto::proto::utils::PoolTypeFilter;
 
+use crate::SendFut;
+
 use crate::{
     chain_index::{
         finalised_state::{
@@ -83,7 +85,6 @@ use crate::{
 #[cfg(feature = "transparent_address_history_experimental")]
 use crate::AddrScript;
 
-use async_trait::async_trait;
 use lmdb::{Database, DatabaseFlags, Environment};
 use std::{
     sync::{Arc, Mutex},
@@ -108,7 +109,6 @@ use super::capability::Capability;
 /// Note: This trait ties any DB version that uses it to Lmdb.
 /// In the future we may want to support alternative DB backends.
 /// When this happens, we will have to lean away from this trait to some extent.
-#[async_trait]
 pub(super) trait LmdbLifecycle: Sync {
     fn env(&self) -> &Arc<Environment>;
     fn db_handler_slot(&self) -> &Mutex<Option<JoinHandle<()>>>;
@@ -119,68 +119,76 @@ pub(super) trait LmdbLifecycle: Sync {
         self.status_atomic().load()
     }
 
-    async fn wait_until_ready(&self) {
-        let mut ticker = interval(Duration::from_millis(100));
-        ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        loop {
-            ticker.tick().await;
-            if self.status_atomic().load() == StatusType::Ready {
-                break;
-            }
-        }
-    }
-
-    async fn clean_trailing(&self) -> Result<(), FinalisedStateError> {
-        let txn = self.env().begin_ro_txn()?;
-        drop(txn);
-        Ok(())
-    }
-
-    async fn zaino_db_handler_sleep(&self, maintenance: &mut tokio::time::Interval) {
-        tokio::select! {
-            _ = sleep(Duration::from_secs(5)) => {},
-            _ = maintenance.tick() => {
-                if let Err(e) = self.clean_trailing().await {
-                    warn!("clean_trailing failed: {}", e);
+    fn wait_until_ready(&self) -> impl SendFut<()> {
+        async move {
+            let mut ticker = interval(Duration::from_millis(100));
+            ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                if self.status_atomic().load() == StatusType::Ready {
+                    break;
                 }
             }
-            _ = self.cancel_token().cancelled() => {},
         }
     }
 
-    async fn shutdown(&self) -> Result<(), FinalisedStateError> {
-        self.status_atomic().store(StatusType::Closing);
-        self.cancel_token().cancel();
+    fn clean_trailing(&self) -> impl SendFut<Result<(), FinalisedStateError>> {
+        async move {
+            let txn = self.env().begin_ro_txn()?;
+            drop(txn);
+            Ok(())
+        }
+    }
 
-        let taken = self
-            .db_handler_slot()
-            .lock()
-            .expect("db_handler mutex poisoned")
-            .take();
-        if let Some(mut handle) = taken {
-            let timeout = sleep(Duration::from_secs(5));
-            tokio::pin!(timeout);
-
+    fn zaino_db_handler_sleep(&self, maintenance: &mut tokio::time::Interval) -> impl SendFut<()> {
+        async move {
             tokio::select! {
-                res = &mut handle => {
-                    match res {
-                        Ok(_) => {}
-                        Err(e) if e.is_cancelled() => {}
-                        Err(e) => warn!("background task ended with error: {e:?}"),
+                _ = sleep(Duration::from_secs(5)) => {},
+                _ = maintenance.tick() => {
+                    if let Err(e) = self.clean_trailing().await {
+                        warn!("clean_trailing failed: {}", e);
                     }
                 }
-                _ = &mut timeout => {
-                    warn!("background task didn't exit in time – aborting");
-                    handle.abort();
-                }
+                _ = self.cancel_token().cancelled() => {},
             }
         }
+    }
 
-        let _ = self.clean_trailing().await;
-        if let Err(e) = self.env().sync(true) {
-            warn!("LMDB fsync before close failed: {e}");
+    fn shutdown(&self) -> impl SendFut<Result<(), FinalisedStateError>> {
+        async move {
+            self.status_atomic().store(StatusType::Closing);
+            self.cancel_token().cancel();
+
+            let taken = self
+                .db_handler_slot()
+                .lock()
+                .expect("db_handler mutex poisoned")
+                .take();
+            if let Some(mut handle) = taken {
+                let timeout = sleep(Duration::from_secs(5));
+                tokio::pin!(timeout);
+
+                tokio::select! {
+                    res = &mut handle => {
+                        match res {
+                            Ok(_) => {}
+                            Err(e) if e.is_cancelled() => {}
+                            Err(e) => warn!("background task ended with error: {e:?}"),
+                        }
+                    }
+                    _ = &mut timeout => {
+                        warn!("background task didn't exit in time – aborting");
+                        handle.abort();
+                    }
+                }
+            }
+
+            let _ = self.clean_trailing().await;
+            if let Err(e) = self.env().sync(true) {
+                warn!("LMDB fsync before close failed: {e}");
+            }
+            Ok(())
         }
-        Ok(())
     }
 }
 
@@ -368,7 +376,6 @@ impl<T: BlockchainSource> From<EphemeralFinalisedState<T>> for FinalisedSource<T
     }
 }
 
-#[async_trait]
 impl<T: BlockchainSource> DbCore for FinalisedSource<T> {
     /// Return the current status of the backend.
     ///
@@ -391,7 +398,6 @@ impl<T: BlockchainSource> DbCore for FinalisedSource<T> {
     }
 }
 
-#[async_trait]
 impl<T: BlockchainSource> DbRead for FinalisedSource<T> {
     /// Return the highest stored height in the database, if present.
     ///
@@ -441,7 +447,6 @@ impl<T: BlockchainSource> DbRead for FinalisedSource<T> {
     }
 }
 
-#[async_trait]
 impl<T: BlockchainSource> DbWrite for FinalisedSource<T> {
     /// Write a fully-indexed block into the database.
     ///
@@ -504,7 +509,6 @@ impl<T: BlockchainSource> DbWrite for FinalisedSource<T> {
 //
 // These names must remain consistent with the capability wiring in `capability.rs`.
 
-#[async_trait]
 impl<T: BlockchainSource> BlockCoreExt for FinalisedSource<T> {
     async fn get_block_header(
         &self,
@@ -566,7 +570,6 @@ impl<T: BlockchainSource> BlockCoreExt for FinalisedSource<T> {
     }
 }
 
-#[async_trait]
 impl<T: BlockchainSource> BlockTransparentExt for FinalisedSource<T> {
     async fn get_transparent(
         &self,
@@ -615,7 +618,6 @@ impl<T: BlockchainSource> BlockTransparentExt for FinalisedSource<T> {
     }
 }
 
-#[async_trait]
 impl<T: BlockchainSource> BlockShieldedExt for FinalisedSource<T> {
     async fn get_sapling(
         &self,
@@ -695,7 +697,6 @@ impl<T: BlockchainSource> BlockShieldedExt for FinalisedSource<T> {
     }
 }
 
-#[async_trait]
 impl<T: BlockchainSource> CompactBlockExt for FinalisedSource<T> {
     async fn get_compact_block(
         &self,
@@ -727,7 +728,6 @@ impl<T: BlockchainSource> CompactBlockExt for FinalisedSource<T> {
     }
 }
 
-#[async_trait]
 impl<T: BlockchainSource> IndexedBlockExt for FinalisedSource<T> {
     async fn get_chain_block(
         &self,
@@ -740,7 +740,6 @@ impl<T: BlockchainSource> IndexedBlockExt for FinalisedSource<T> {
     }
 }
 
-#[async_trait]
 impl<T: BlockchainSource> TransparentHistExt for FinalisedSource<T> {
     #[cfg(feature = "transparent_address_history_experimental")]
     async fn addr_records(

@@ -4,7 +4,6 @@ use futures::StreamExt;
 use hex::FromHex;
 use std::{io::Cursor, str::FromStr, time};
 use tokio::{sync::mpsc, time::timeout};
-use tonic::async_trait;
 use tracing::{info, instrument, warn};
 use zebra_state::HashOrHeight;
 
@@ -112,7 +111,6 @@ impl Status for FetchService {
     }
 }
 
-#[async_trait]
 #[allow(deprecated)]
 impl ZcashService for FetchService {
     const BACKEND_TYPE: BackendType = BackendType::Fetch;
@@ -242,7 +240,6 @@ impl FetchServiceSubscriber {
     }
 }
 
-#[async_trait]
 impl ZcashIndexer for FetchServiceSubscriber {
     #[allow(deprecated)]
     type Error = FetchServiceError;
@@ -895,7 +892,6 @@ impl ZcashIndexer for FetchServiceSubscriber {
     }
 }
 
-#[async_trait]
 #[allow(deprecated)]
 impl LightWalletIndexer for FetchServiceSubscriber {
     /// Return the height of the tip of the best chain

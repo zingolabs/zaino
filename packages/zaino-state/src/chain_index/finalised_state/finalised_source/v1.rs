@@ -54,7 +54,6 @@ use zebra_state::HashOrHeight;
 
 use super::LmdbLifecycle;
 
-use async_trait::async_trait;
 use corez::io::{self, Read};
 use dashmap::DashSet;
 use lmdb::{
@@ -250,7 +249,6 @@ fn spent_corruption_detail(
 /// [`DbCore`] capability implementation for [`DbV1`].
 ///
 /// This trait exposes lifecycle operations and a high-level status indicator.
-#[async_trait]
 impl DbCore for DbV1 {
     fn status(&self) -> StatusType {
         LmdbLifecycle::status(self)

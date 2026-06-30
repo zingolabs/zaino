@@ -9,6 +9,16 @@
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
+use std::future::Future;
+
+/// A [`Future`] that is [`Send`] and resolves to `T`.
+///
+/// Written as `impl SendFut<T>` in trait method return positions so the `Send`
+/// bound the `async-trait` macro previously supplied implicitly is stated
+/// explicitly per method. See `docs/adr/0002-native-afit-over-async-trait.md`.
+pub trait SendFut<T>: Future<Output = T> + Send {}
+impl<T, F: Future<Output = T> + Send> SendFut<T> for F {}
+
 // Zaino's Indexer library frontend.
 pub(crate) mod indexer;
 
