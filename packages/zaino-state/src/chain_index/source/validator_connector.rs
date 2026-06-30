@@ -1077,3 +1077,60 @@ impl BlockchainSource for ValidatorConnector {
         }
     }
 }
+
+/// A compile-time **StateService-only** view of a validator source.
+///
+/// Wraps the zebra [`State`] connector — never the JSON-RPC `Fetch` backend — so
+/// a source can be *statically* known to be backed by zebra's `ReadStateService`.
+/// The finalised spend-index POC builds only from this (or a test mockchain),
+/// never `FetchService`; binding the loop to a `SpendIndexSource` that excludes
+/// the `Fetch` path makes that a compile-time guarantee.
+///
+/// It reuses the tested [`ValidatorConnector::State`] dispatch by wrapping a
+/// cheap `State` clone per call (that dispatch already clones the service per
+/// call). Gated with the `outp_to_spend_index` feature.
+#[cfg(feature = "outp_to_spend_index")]
+#[derive(Clone, Debug)]
+pub(crate) struct StateSource(pub(crate) State);
+
+/// Generates [`StateSource`]'s `BlockchainSource` impl: one forwarder per listed
+/// method, each delegating to the tested `ValidatorConnector::State` dispatch.
+///
+/// A declarative macro rather than a `fn` because the forwarders span N distinct
+/// `async` signatures — a pattern a function cannot capture (per the repo's
+/// "macros only where `fn` cannot express it" rule). The macro emits the whole
+/// `#[async_trait] impl` so `async_trait` transforms concrete `async fn`s after
+/// expansion, and the `ValidatorConnector::State(self.0.clone())` construction
+/// appears exactly once — here.
+#[cfg(feature = "outp_to_spend_index")]
+macro_rules! impl_state_source_forwarders {
+    ( $( fn $method:ident ( $( $arg:ident : $arg_ty:ty ),* ) -> $ret:ty; )+ ) => {
+        #[async_trait]
+        impl BlockchainSource for StateSource {
+            $(
+                async fn $method(&self, $( $arg : $arg_ty ),*) -> $ret {
+                    ValidatorConnector::State(self.0.clone())
+                        .$method($( $arg ),*)
+                        .await
+                }
+            )+
+        }
+    };
+}
+
+#[cfg(feature = "outp_to_spend_index")]
+impl_state_source_forwarders! {
+    fn get_block(id: HashOrHeight) -> BlockchainSourceResult<Option<Arc<zebra_chain::block::Block>>>;
+    fn get_transaction(txid: TransactionHash) -> BlockchainSourceResult<Option<(Arc<zebra_chain::transaction::Transaction>, GetTransactionLocation)>>;
+    fn get_mempool_txids() -> BlockchainSourceResult<Option<Vec<zebra_chain::transaction::Hash>>>;
+    fn get_best_block_hash() -> BlockchainSourceResult<Option<zebra_chain::block::Hash>>;
+    fn get_best_block_height() -> BlockchainSourceResult<Option<zebra_chain::block::Height>>;
+    fn get_treestate(id: BlockHash) -> BlockchainSourceResult<(Option<Vec<u8>>, Option<Vec<u8>>)>;
+    fn get_subtree_roots(pool: ShieldedPool, start_index: u16, max_entries: Option<u16>) -> BlockchainSourceResult<Vec<([u8; 32], u32)>>;
+    fn get_commitment_tree_roots(id: BlockHash) -> BlockchainSourceResult<(Option<(zebra_chain::sapling::tree::Root, u64)>, Option<(zebra_chain::orchard::tree::Root, u64)>)>;
+    fn get_address_deltas(params: GetAddressDeltasParams) -> BlockchainSourceResult<GetAddressDeltasResponse>;
+    fn get_address_balance(address_strings: GetAddressBalanceRequest) -> BlockchainSourceResult<AddressBalance>;
+    fn get_address_txids(request: GetAddressTxIdsRequest) -> BlockchainSourceResult<Vec<TransactionHash>>;
+    fn get_address_utxos(address_strings: GetAddressBalanceRequest) -> BlockchainSourceResult<Vec<GetAddressUtxos>>;
+    fn nonfinalized_listener() -> Result<Option<tokio::sync::mpsc::Receiver<(zebra_chain::block::Hash, Arc<zebra_chain::block::Block>)>>, Box<dyn Error + Send + Sync>>;
+}

@@ -14,9 +14,15 @@ use std::path::Path;
 
 use lmdb::{Database, DatabaseFlags, Environment, EnvironmentFlags, Transaction as _, WriteFlags};
 
+use crate::chain_index::finalised_state::build_indexed_block_from_source;
+use crate::chain_index::source::validator_connector::{StateSource, ValidatorConnector};
+use crate::chain_index::source::BlockchainSource;
 use crate::chain_index::types::TransactionHash;
+use crate::chain_index::NON_FINALIZED_DEPTH;
 use crate::error::FinalisedStateError;
-use crate::{IndexedBlock, Outpoint, TransparentCompactTx, ZainoVersionedSerde as _};
+use crate::{ChainWork, IndexedBlock, Outpoint, TransparentCompactTx, ZainoVersionedSerde as _};
+use zaino_common::Network;
+use zebra_chain::parameters::NetworkUpgrade;
 
 /// One transparent spend: the consumed outpoint paired with the txid of the
 /// transaction that consumed it.
@@ -172,6 +178,115 @@ impl SpendIndexDb {
             }
             Err(lmdb::Error::NotFound) => Ok(None),
             Err(error) => Err(error.into()),
+        }
+    }
+}
+
+// ── Sync loop ────────────────────────────────────────────────────────────────
+
+/// The sources the spend-index POC may build from: zebra's StateService
+/// ([`StateSource`]) and the test mockchain — **never** the JSON-RPC/zcashd
+/// `FetchService`. Binding [`SpendIndexSync`] to `S: SpendIndexSource` makes
+/// "never FetchService" a compile-time fact: the `Fetch` path does not
+/// implement this trait.
+pub(super) trait SpendIndexSource: BlockchainSource {}
+
+impl SpendIndexSource for StateSource {}
+
+#[cfg(test)]
+impl SpendIndexSource for crate::chain_index::source::mockchain_source::MockchainSource {}
+
+/// The independent, single-run builder for the spend index.
+///
+/// Move-only (`!Clone`) with a private constructor and a `self`-consuming
+/// [`run`](Self::run): the type system makes a second concurrent build
+/// unrepresentable — "only one loop at a time" without a runtime guard. POC
+/// build model: re-stream `start_height` → finalised tip from `source`, extract
+/// every spend, collate once, and bulk-load the index in a single `MDB_APPEND`
+/// pass.
+pub(super) struct SpendIndexSync<S: SpendIndexSource> {
+    source: S,
+    db: SpendIndexDb,
+    network: Network,
+    /// First height to index, inclusive. Genesis (`0`) for a full index, or a
+    /// higher height — e.g. a network-upgrade activation — to cover only spends
+    /// occurring from that epoch onward.
+    start_height: u32,
+}
+
+impl<S: SpendIndexSource> SpendIndexSync<S> {
+    /// Private mint: production enters via [`SpendIndexSync::from_state`]
+    /// (StateService only); tests construct directly with a `MockchainSource`.
+    fn new(source: S, db: SpendIndexDb, network: Network, start_height: u32) -> Self {
+        Self {
+            source,
+            db,
+            network,
+            start_height,
+        }
+    }
+
+    /// Builds the spend index from its start height to the finalised tip, consuming the
+    /// handle. One-shot (POC): no resume, no batching — a single global
+    /// `collate` + `MDB_APPEND`.
+    pub(super) async fn run(self) -> Result<(), FinalisedStateError> {
+        let Some(best) = self.source.get_best_block_height().await.map_err(|error| {
+            FinalisedStateError::Custom(format!("spend index: fetch best height: {error:?}"))
+        })?
+        else {
+            return Ok(()); // empty chain — nothing finalised to index
+        };
+
+        // Finalised tip: below the reorg-possible window, clamped at genesis.
+        let finalised_tip = best.0.saturating_sub(NON_FINALIZED_DEPTH);
+
+        let zebra_network = self.network.to_zebra_network();
+        let sapling_activation = NetworkUpgrade::Sapling
+            .activation_height(&zebra_network)
+            .expect("Sapling activation height is set for every network");
+        let nu5_activation = NetworkUpgrade::Nu5.activation_height(&zebra_network);
+
+        // Stream finalised blocks, extracting spends and dropping each block;
+        // only the (smaller) spend records are retained for the one-shot sort.
+        // Chainwork is irrelevant to spend extraction, so a zero parent is fine.
+        let mut spends: Vec<SpendRecord> = Vec::new();
+        for height in self.start_height..=finalised_tip {
+            let block = build_indexed_block_from_source(
+                &self.source,
+                self.network,
+                sapling_activation,
+                nu5_activation,
+                height,
+                ChainWork::from_u256(0.into()),
+            )
+            .await?;
+            spends.extend(extract_spends(std::slice::from_ref(&block)));
+        }
+
+        let collated = collate(&spends)?;
+        tokio::task::block_in_place(|| self.db.bulk_load(&collated))?;
+        Ok(())
+    }
+}
+
+impl SpendIndexSync<StateSource> {
+    /// Production constructor — **StateService only**. The `Fetch`
+    /// (JSON-RPC/zcashd) backend is rejected here, the one place the concrete
+    /// `ValidatorConnector` variant is visible; the `S: SpendIndexSource` bound
+    /// already keeps a `Fetch` source from compiling elsewhere.
+    pub(super) fn from_state(
+        connector: ValidatorConnector,
+        db: SpendIndexDb,
+        network: Network,
+        start_height: u32,
+    ) -> Result<Self, FinalisedStateError> {
+        match connector {
+            ValidatorConnector::State(state) => {
+                Ok(Self::new(StateSource(state), db, network, start_height))
+            }
+            ValidatorConnector::Fetch(_) => Err(FinalisedStateError::Custom(
+                "spend-index POC requires the StateService backend, not FetchService".to_string(),
+            )),
         }
     }
 }
