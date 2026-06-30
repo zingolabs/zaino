@@ -458,13 +458,7 @@ impl DbV1 {
             let tx_location = TxLocation::new(block_height.into(), tx_index);
 
             // Transparent Inputs: Build Spent Outpoints Index
-            for input in tx.transparent().inputs().iter() {
-                if input.is_null_prevout() {
-                    continue;
-                }
-
-                let prev_outpoint = Outpoint::new(*input.prevout_txid(), input.prevout_index());
-
+            for prev_outpoint in tx.transparent().spent_outpoints() {
                 if spent_map.insert(prev_outpoint, tx_location).is_some() {
                     return Err(FinalisedStateError::InvalidBlock {
                         height: block_height.0,
@@ -1137,11 +1131,7 @@ impl DbV1 {
                     })?;
                 let tx_location = TxLocation::new(block_height.0, tx_index);
 
-                for input in tx.transparent().inputs().iter() {
-                    if input.is_null_prevout() {
-                        continue;
-                    }
-                    let prev_outpoint = Outpoint::new(*input.prevout_txid(), input.prevout_index());
+                for prev_outpoint in tx.transparent().spent_outpoints() {
                     spent_batch.push((prev_outpoint.to_bytes()?, tx_location));
                 }
 
@@ -1373,13 +1363,7 @@ impl DbV1 {
             let tx_location = TxLocation::new(block_height.into(), _tx_index as u16);
 
             // Build Spent Outpoints Index
-            for input in tx.transparent().inputs().iter() {
-                if input.is_null_prevout() {
-                    continue;
-                }
-
-                let prev_outpoint = Outpoint::new(*input.prevout_txid(), input.prevout_index());
-
+            for prev_outpoint in tx.transparent().spent_outpoints() {
                 if spent_map.insert(prev_outpoint, tx_location).is_some() {
                     return Err(FinalisedStateError::InvalidBlock {
                         height: block_height.0,

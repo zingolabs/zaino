@@ -320,14 +320,8 @@ impl DbV1 {
                 let Some(tx) = tx_opt else { continue };
 
                 // Inputs: check spent + addrhist input record
-                for input in tx.inputs().iter() {
-                    // Continue if coinbase.
-                    if input.is_null_prevout() {
-                        continue;
-                    }
-
+                for outpoint in tx.spent_outpoints() {
                     // Check spent record
-                    let outpoint = Outpoint::new(*input.prevout_txid(), input.prevout_index());
                     let outpoint_bytes = outpoint.to_bytes()?;
                     let val = ro.get(self.spent, &outpoint_bytes).map_err(|_| {
                         fail(&format!("missing spent index for outpoint {outpoint:?}"))
