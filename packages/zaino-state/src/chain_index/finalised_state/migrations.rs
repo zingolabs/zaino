@@ -160,7 +160,7 @@ use crate::{
     },
     config::ChainIndexConfig,
     error::FinalisedStateError,
-    Height, Outpoint, TransparentTxList, TxLocation, TxidList, ZainoVersionedSerde as _,
+    Height, TransparentTxList, TxLocation, TxidList, ZainoVersionedSerde as _,
 };
 
 use lmdb::{Transaction, WriteFlags};
@@ -855,13 +855,7 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
 
                     let tx_location = TxLocation::new(height.0, tx_index);
 
-                    for input in transparent_tx.inputs() {
-                        if input.is_null_prevout() {
-                            continue;
-                        }
-
-                        let outpoint = Outpoint::new(*input.prevout_txid(), input.prevout_index());
-
+                    for outpoint in transparent_tx.spent_outpoints() {
                         if spent_map.insert(outpoint, tx_location).is_some() {
                             return Err(FinalisedStateError::Custom(format!(
                                 "duplicate transparent spend for outpoint {:?} at height {}",
