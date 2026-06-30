@@ -555,9 +555,7 @@ pub trait ChainIndex {
         snapshot: &Self::Snapshot,
         outpoints: Vec<types::Outpoint>,
         scope: types::ChainScope,
-    ) -> impl std::future::Future<
-        Output = Result<Vec<Option<types::TransactionHash>>, Self::Error>,
-    >;
+    ) -> impl std::future::Future<Output = Result<Vec<Option<types::TransactionHash>>, Self::Error>>;
 
     // ********** Metadata methods **********
 
@@ -2503,8 +2501,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                         if input.is_null_prevout() {
                             continue;
                         }
-                        let outpoint =
-                            Outpoint::new(*input.prevout_txid(), input.prevout_index());
+                        let outpoint = Outpoint::new(*input.prevout_txid(), input.prevout_index());
                         nfs_spenders.insert(outpoint, txid);
                     }
                 }

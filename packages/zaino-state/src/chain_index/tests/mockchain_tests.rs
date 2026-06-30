@@ -854,8 +854,7 @@ async fn get_outpoint_spenders() {
     }
 
     // Outpoints that were created but never spent must report `None`.
-    let spent_set: std::collections::HashSet<Outpoint> =
-        spends.iter().map(|(op, _)| *op).collect();
+    let spent_set: std::collections::HashSet<Outpoint> = spends.iter().map(|(op, _)| *op).collect();
     let unspent: Vec<Outpoint> = created
         .into_iter()
         .filter(|op| !spent_set.contains(op))
@@ -895,9 +894,11 @@ async fn get_outpoint_spenders_empty_and_single() {
     );
 
     // ...and a length-1 query for an unspent outpoint returns `None`.
-    let spent_set: std::collections::HashSet<Outpoint> =
-        spends.iter().map(|(op, _)| *op).collect();
-    let unspent = created.into_iter().find(|op| !spent_set.contains(op)).unwrap();
+    let spent_set: std::collections::HashSet<Outpoint> = spends.iter().map(|(op, _)| *op).collect();
+    let unspent = created
+        .into_iter()
+        .find(|op| !spent_set.contains(op))
+        .unwrap();
     assert_eq!(
         index_reader
             .get_outpoint_spenders(&snapshot, vec![unspent], ChainScope::FullChain)
