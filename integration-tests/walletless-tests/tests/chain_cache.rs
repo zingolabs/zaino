@@ -49,7 +49,9 @@ mod chain_query_interface {
         test_dependencies::{chain_index::ChainIndex, ChainIndexConfig},
         FetchService, Height, StateService, StateServiceConfig, ZcashService,
     };
-    use zcash_local_net::validator::{zcashd::Zcashd, zebrad::Zebrad};
+    #[cfg(feature = "zcashd_support")]
+    use zcash_local_net::validator::zcashd::Zcashd;
+    use zcash_local_net::validator::zebrad::Zebrad;
     use zebra_chain::{
         parameters::{
             testnet::{ConfiguredActivationHeights, RegtestParameters},
@@ -198,6 +200,7 @@ mod chain_query_interface {
                     index_reader,
                 )
             }
+            #[cfg(feature = "zcashd_support")]
             ValidatorKind::Zcashd => {
                 let config = ChainIndexConfig {
                     storage: StorageConfig {
@@ -237,6 +240,7 @@ mod chain_query_interface {
         get_block_range::<Zebrad, StateService>(&ValidatorKind::Zebrad).await
     }
 
+    #[cfg(feature = "zcashd_support")]
     #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_block_range_zcashd() {
@@ -371,6 +375,7 @@ mod chain_query_interface {
         sync_large_chain::<Zebrad, StateService>(&ValidatorKind::Zebrad).await
     }
 
+    #[cfg(feature = "zcashd_support")]
     #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn sync_large_chain_zcashd() {
@@ -446,6 +451,7 @@ mod chain_query_interface {
         get_subtree_roots::<Zebrad, StateService>(&ValidatorKind::Zebrad).await
     }
 
+    #[cfg(feature = "zcashd_support")]
     #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_subtree_roots_zcashd() {
@@ -551,6 +557,7 @@ mod chain_query_interface {
             .await
     }
 
+    #[cfg(feature = "zcashd_support")]
     #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_mempool_stream_fresh_snapshot_repeated_zcashd() {
@@ -608,6 +615,7 @@ mod chain_query_interface {
         zallet_like_steady_state_loop::<Zebrad, FetchService>(&ValidatorKind::Zebrad).await
     }
 
+    #[cfg(feature = "zcashd_support")]
     #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn zallet_like_steady_state_loop_zcashd() {

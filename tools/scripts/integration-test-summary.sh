@@ -11,6 +11,13 @@
 
 set -uo pipefail
 
+# Parse --with-zcashd and export it so child `makers` calls inherit the setting.
+for arg in "$@"; do
+  if [ "$arg" = "--with-zcashd" ]; then
+    export CONTAINER_TEST_WITH_ZCASHD=1
+  fi
+done
+
 # parse_summary <logfile> -> echoes "run passed failed skipped" (zeros if absent).
 # nextest prints e.g.:
 #   Summary [ 73.207s] 8 tests run: 8 passed (2 slow), 2 skipped

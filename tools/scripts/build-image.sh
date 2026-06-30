@@ -11,6 +11,11 @@
 
 set -euo pipefail
 
+# Shared with get-ci-image-tag.sh so the tag's devtool SHA and this build's
+# checkout SHA are resolved identically.
+# shellcheck source=tools/scripts/functions.sh
+source ./tools/scripts/functions.sh
+
 # Create target directory with correct ownership before podman creates it as
 # root.
 mkdir -p target
@@ -29,11 +34,19 @@ info "Current directory: $(pwd)"
 # shellcheck disable=SC2012
 info "Files in tools/scripts/: $(ls -la tools/scripts/ | head -5)"
 
+# Resolve DEVTOOL_VERSION (a moving branch) to its current commit SHA so the
+# devtool build layer's cache key tracks the branch HEAD. Same resolution the
+# tag uses, so the build-arg SHA and the tag's embedded SHA match.
+DEVTOOL_REV=$(resolve_devtool_rev "$DEVTOOL_VERSION")
+info "Resolved DEVTOOL_VERSION=$DEVTOOL_VERSION to DEVTOOL_REV=$DEVTOOL_REV"
+
 cd integration-tests/test_environment && \
 podman build -f Containerfile \
   --target "$TARGET" \
   --build-arg "ZCASH_VERSION=$ZCASH_VERSION" \
   --build-arg "ZEBRA_VERSION=$ZEBRA_VERSION" \
+  --build-arg "DEVTOOL_VERSION=$DEVTOOL_VERSION" \
+  --build-arg "DEVTOOL_REV=$DEVTOOL_REV" \
   --build-arg "RUST_VERSION=$RUST_VERSION" \
   --build-arg "UID=$(id -u)" \
   --build-arg "GID=$(id -g)" \

@@ -1,4 +1,9 @@
 //! Tests that compare the output of both `zcashd` and `zainod` through `FetchService`.
+//!
+//! Entirely gated on `zcashd_support`: every test here launches the
+//! zcashd-backed dual fetch services. See
+//! docs/adr/0001-zcashd-support-feature-gate.md.
+#![cfg(feature = "zcashd_support")]
 
 #[allow(deprecated)]
 use zaino_state::{FetchService, FetchServiceSubscriber, ZcashIndexer};

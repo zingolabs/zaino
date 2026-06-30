@@ -24,23 +24,23 @@ use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConne
 use zaino_proto::proto::compact_formats::CompactBlock;
 use zaino_proto::proto::service::{BlockId, BlockRange};
 use zaino_serve::server::config::{GrpcServerConfig, JsonRpcServerConfig};
+#[cfg(feature = "zcashd_support")]
+use zaino_state::BackendType;
 use zaino_state::{
-    BackendType, BlockchainSource, ChainIndex, FetchServiceSubscriber, LightWalletIndexer,
-    LightWalletService, NodeBackedChainIndexSubscriber, StateServiceSubscriber, ZcashIndexer,
-    ZcashService,
+    BlockchainSource, ChainIndex, FetchServiceSubscriber, LightWalletIndexer, LightWalletService,
+    NodeBackedChainIndexSubscriber, StateServiceSubscriber, ZcashIndexer, ZcashService,
 };
 #[allow(deprecated)]
 use zaino_state::{FetchService, FetchServiceConfig, StateService, StateServiceConfig};
 use zainodlib::{config::ZainodConfig, error::IndexerError, indexer::Indexer};
 pub use zcash_local_net as services;
+use zcash_local_net::error::LaunchError;
+#[cfg(feature = "zcashd_support")]
+use zcash_local_net::validator::zcashd::{Zcashd, ZcashdConfig};
 use zcash_local_net::validator::zebrad::{Zebrad, ZebradConfig};
 pub use zcash_local_net::validator::Validator;
 use zcash_local_net::validator::ValidatorConfig as _;
 pub use zcash_local_net::PoolType;
-use zcash_local_net::{
-    error::LaunchError,
-    validator::zcashd::{Zcashd, ZcashdConfig},
-};
 use zcash_local_net::{logs::LogsToStdoutAndStderr, process::Process};
 use zebra_chain::parameters::NetworkKind;
 use zebra_rpc::methods::GetInfo;
@@ -327,9 +327,11 @@ pub fn local_network_from_activation_heights(
 }
 
 /// Path for zcashd binary.
+#[cfg(feature = "zcashd_support")]
 pub static ZCASHD_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| binary_path("zcashd"));
 
 /// Path for zcash-cli binary.
+#[cfg(feature = "zcashd_support")]
 pub static ZCASH_CLI_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| binary_path("zcash-cli"));
 
 /// Path for zebrad binary.
@@ -342,6 +344,7 @@ pub static LIGHTWALLETD_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| binary_path("l
 pub static ZAINOD_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| binary_path("zainod"));
 
 /// Path for zcashd chain cache.
+#[cfg(feature = "zcashd_support")]
 pub static ZCASHD_CHAIN_CACHE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
     let mut workspace_root_path = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     workspace_root_path.pop();
@@ -365,14 +368,31 @@ pub static ZEBRAD_TESTNET_CACHE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
 /// Represents the type of validator to launch.
 pub enum ValidatorKind {
     /// Zcashd.
+    #[cfg(feature = "zcashd_support")]
     Zcashd,
     /// Zebrad.
     Zebrad,
 }
 
+impl ValidatorKind {
+    /// Default regtest activation heights for this validator kind.
+    ///
+    /// Centralises the per-kind selection so the choice (and its
+    /// `zcashd_support` gating) lives in one place instead of being matched at
+    /// every call site.
+    pub fn default_activation_heights(self) -> ActivationHeights {
+        match self {
+            #[cfg(feature = "zcashd_support")]
+            ValidatorKind::Zcashd => ActivationHeights::default(),
+            ValidatorKind::Zebrad => ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS,
+        }
+    }
+}
+
 /// Config for validators.
 pub enum ValidatorTestConfig {
     /// Zcashd Config.
+    #[cfg(feature = "zcashd_support")]
     ZcashdConfig(ZcashdConfig),
     /// Zebrad Config.
     ZebradConfig(zcash_local_net::validator::zebrad::ZebradConfig),
@@ -438,6 +458,7 @@ impl ValidatorExt for Zebrad {
     }
 }
 
+#[cfg(feature = "zcashd_support")]
 impl ValidatorExt for Zcashd {
     async fn launch_validator_and_return_config(
         config: Self::Config,
@@ -577,6 +598,7 @@ where
         enable_zaino_jsonrpc_server: bool,
         enable_clients: bool,
     ) -> Result<Self, std::io::Error> {
+        #[cfg(feature = "zcashd_support")]
         if (validator == &ValidatorKind::Zcashd) && (Service::BACKEND_TYPE == BackendType::State) {
             return Err(std::io::Error::other(
                 "Cannot use state backend with zcashd.",
@@ -584,10 +606,8 @@ where
         }
         zaino_common::logging::try_init();
 
-        let activation_heights = activation_heights.unwrap_or_else(|| match validator {
-            ValidatorKind::Zcashd => ActivationHeights::default(),
-            ValidatorKind::Zebrad => ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS,
-        });
+        let activation_heights =
+            activation_heights.unwrap_or_else(|| validator.default_activation_heights());
         let network_kind = network.unwrap_or(NetworkKind::Regtest);
         let zaino_network_kind =
             Network::from_network_kind_and_activation_heights(&network_kind, &activation_heights);
@@ -1112,6 +1132,7 @@ async fn spawn_fetch_service(
 /// services — one pointed at zcashd directly, one at Zaino's JSON-RPC
 /// server — for tests that compare the two. The owned services exist only to
 /// keep their subscribers alive.
+#[cfg(feature = "zcashd_support")]
 #[allow(deprecated)]
 pub struct ZcashdDualFetchServices {
     /// The launched zcashd + Zaino test manager.
@@ -1126,6 +1147,7 @@ pub struct ZcashdDualFetchServices {
     pub zaino_subscriber: FetchServiceSubscriber,
 }
 
+#[cfg(feature = "zcashd_support")]
 #[allow(deprecated)]
 impl ZcashdDualFetchServices {
     /// Mine `n` blocks and wait for both the zaino and zcashd subscribers to
@@ -1145,12 +1167,25 @@ impl ZcashdDualFetchServices {
 /// Shared core of the `create_zcashd_test_manager_and_fetch_services` harness in
 /// both integration-test workspaces. Wallet callers wrap this and additionally
 /// build lightclients from the returned manager's gRPC address.
+#[cfg(feature = "zcashd_support")]
 #[allow(deprecated)]
 pub async fn launch_zcashd_dual_fetch_services() -> ZcashdDualFetchServices {
+    launch_zcashd_dual_fetch_services_at(ActivationHeights::default()).await
+}
+
+/// [`launch_zcashd_dual_fetch_services`] with the zcashd chain and both fetch
+/// services pinned to `activation_heights`, for wallet clients (e.g. the devtool
+/// wallet) whose compiled-in regtest heights differ from zcashd's defaults and
+/// must be matched by the validator.
+#[cfg(feature = "zcashd_support")]
+#[allow(deprecated)]
+pub async fn launch_zcashd_dual_fetch_services_at(
+    activation_heights: ActivationHeights,
+) -> ZcashdDualFetchServices {
     let test_manager = TestManager::<Zcashd, FetchService>::launch(
         &ValidatorKind::Zcashd,
         None,
-        None,
+        Some(activation_heights),
         None,
         true,
         true,
@@ -1169,7 +1204,7 @@ pub async fn launch_zcashd_dual_fetch_services() -> ZcashdDualFetchServices {
             .data_dir()
             .path()
             .join("zcashd-fetch-service-zaino"),
-        Network::Regtest(ActivationHeights::default()),
+        Network::Regtest(activation_heights),
     )
     .await;
     let zcashd_subscriber = zcashd_fetch_service.get_subscriber().inner();
@@ -1187,7 +1222,7 @@ pub async fn launch_zcashd_dual_fetch_services() -> ZcashdDualFetchServices {
             .data_dir()
             .path()
             .join("zaino-fetch-service-zaino"),
-        Network::Regtest(ActivationHeights::default()),
+        Network::Regtest(activation_heights),
     )
     .await;
     let zaino_subscriber = zaino_fetch_service.get_subscriber().inner();
@@ -1336,6 +1371,7 @@ mod launch_testmanager {
         .unwrap()
     }
 
+    #[cfg(feature = "zcashd_support")]
     mod zcashd {
         use zcash_local_net::validator::zcashd::Zcashd;
 
