@@ -413,3 +413,99 @@ mod spend_index_db {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+
+#[cfg(test)]
+mod spend_index_sync {
+    use super::*;
+    use crate::chain_index::source::mockchain_source::MockchainSource;
+    use crate::chain_index::tests::vectors::{
+        build_active_mockchain_source, indexed_block_chain, load_test_vectors, TestVectorBlockData,
+    };
+
+    fn fixture_blocks() -> Vec<TestVectorBlockData> {
+        load_test_vectors().expect("load test vectors").blocks
+    }
+
+    /// Builds the spend index from `mock` into a fresh temp dir, returning a
+    /// reader handle to what was persisted plus the dir to clean up. `run`
+    /// consumes its writer handle, so the db is reopened for reading.
+    ///
+    /// `multi_thread` is required of the callers: `run` uses
+    /// `tokio::task::block_in_place` for the LMDB write, which panics on a
+    /// current-thread runtime. The network only drives the block builder's
+    /// commitment-root activation checks (the mockchain supplies roots
+    /// regardless) and is irrelevant to transparent-spend extraction.
+    async fn build_index(mock: MockchainSource, tag: &str) -> (SpendIndexDb, std::path::PathBuf) {
+        let dir =
+            std::env::temp_dir().join(format!("outp_to_spend_index_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let db = SpendIndexDb::open(&dir, 1 << 24).expect("open spend index");
+        SpendIndexSync::new(mock, db, Network::Mainnet, 0)
+            .run()
+            .await
+            .expect("spend-index build runs");
+        (
+            SpendIndexDb::open(&dir, 1 << 24).expect("reopen spend index"),
+            dir,
+        )
+    }
+
+    /// `run` must index *exactly* the transparent spends in the finalised range
+    /// `0..=finalised_tip`: every finalised spend mapped to its spender, every
+    /// non-finalised spend absent.
+    ///
+    /// Coverage note: the 201-block fixture caps `get_best_block_height` at 200
+    /// (the mockchain reveals loaded blocks, it cannot mint new ones), so at the
+    /// `#[cfg(test)]` depth of 100 the finalised tip is pinned at 100. Regtest
+    /// coinbase maturity (100 blocks) puts every fixture spend at height ≥101, so
+    /// the finalised range holds no spends and this test exercises the exclusion
+    /// direction end to end (fetch → finalised boundary → empty collate → LMDB →
+    /// read-back). Finalised-spend *mapping* with real records is covered by the
+    /// `spend_index_db` round-trip test; an end-to-end presence check needs a
+    /// longer synthetic chain (tracked in zingolabs/zaino#1334).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_indexes_exactly_the_finalised_spends() {
+        let blocks = fixture_blocks();
+        let chain_top = blocks.last().expect("non-empty chain").height;
+        // No mining: the mock's tip is its max loaded height, so this matches
+        // `run`'s own `best - NON_FINALIZED_DEPTH`.
+        let finalised_tip = chain_top - NON_FINALIZED_DEPTH;
+
+        let mock = build_active_mockchain_source(chain_top, blocks.clone());
+        let (db, dir) = build_index(mock, "run").await;
+
+        let mut saw_non_finalised_spend = false;
+        for block in indexed_block_chain(&blocks) {
+            let finalised = block.context.index.height.0 <= finalised_tip;
+            for (outpoint, spending_txid) in extract_spends(std::slice::from_ref(&block)) {
+                let indexed = db.spending_txid(&outpoint).expect("read spend");
+                if finalised {
+                    assert_eq!(
+                        indexed,
+                        Some(spending_txid),
+                        "finalised spend {outpoint:?} must be indexed to its spender",
+                    );
+                } else {
+                    saw_non_finalised_spend = true;
+                    assert_eq!(
+                        indexed, None,
+                        "non-finalised spend {outpoint:?} must not be indexed",
+                    );
+                }
+            }
+        }
+        assert!(
+            saw_non_finalised_spend,
+            "fixture should contain spends above the seam to exercise exclusion",
+        );
+
+        // A never-spent outpoint reads back as unspent.
+        assert_eq!(
+            db.spending_txid(&Outpoint::new([0xff; 32], u32::MAX))
+                .expect("read unspent"),
+            None,
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
