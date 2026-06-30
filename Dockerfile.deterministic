@@ -11,7 +11,7 @@ ARG HOME=/home/container_user
 ############################
 # Dependencies 
 ############################
-FROM stagex/pallet-rust:1.95.0@sha256:e484fa5ab3b6e89954c98ff202ff24200a215adaa2c33b18781e84389cbe50ea AS pallet-rust
+FROM stagex/pallet-rust:1.96.0@sha256:abe9b95c93a5afa271f69fcd5eb18c8cd405fe5df6491a63c9418e3a170573dc AS pallet-rust
 FROM stagex/pallet-clang@sha256:15cce53f7f94e6eefb67587bb62b2ae5b8a82d043e2b6ef800647b30f4320928 AS pallet-clang
 FROM stagex/user-protobuf:35.0@sha256:e93f664067dd9f61c4abe04630a8422ee1bdefa8f466efc2eaeea15d7ee4e67c AS protobuf
 FROM stagex/user-abseil-cpp:20260107.1@sha256:411fd1a6a20daae3d931c43928fad8a816e96e5333437cb13c6c81e451f46542 AS abseil-cpp
