@@ -1107,14 +1107,13 @@ pub(crate) struct StateSource(pub(crate) State);
 ///
 /// A declarative macro rather than a `fn` because the forwarders span N distinct
 /// `async` signatures — a pattern a function cannot capture (per the repo's
-/// "macros only where `fn` cannot express it" rule). The macro emits the whole
-/// `#[async_trait] impl` so `async_trait` transforms concrete `async fn`s after
-/// expansion, and the `ValidatorConnector::State(self.0.clone())` construction
-/// appears exactly once — here.
+/// "macros only where `fn` cannot express it" rule). Each generated `async fn`
+/// satisfies the trait's native `-> impl SendFut<_>` method, and the
+/// `ValidatorConnector::State(self.0.clone())` construction appears exactly
+/// once — here.
 #[cfg(feature = "outp_to_spend_index")]
 macro_rules! impl_state_source_forwarders {
     ( $( fn $method:ident ( $( $arg:ident : $arg_ty:ty ),* ) -> $ret:ty; )+ ) => {
-        #[async_trait]
         impl BlockchainSource for StateSource {
             $(
                 async fn $method(&self, $( $arg : $arg_ty ),*) -> $ret {

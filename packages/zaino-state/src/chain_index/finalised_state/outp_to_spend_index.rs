@@ -24,7 +24,7 @@ use crate::chain_index::types::TransactionHash;
 use crate::chain_index::NON_FINALIZED_DEPTH;
 use crate::config::ChainIndexConfig;
 use crate::error::FinalisedStateError;
-use crate::{ChainWork, IndexedBlock, Outpoint, TransparentCompactTx, ZainoVersionedSerde as _};
+use crate::{IndexedBlock, Outpoint, TransparentCompactTx, ZainoVersionedSerde as _};
 use zaino_common::Network;
 use zebra_chain::parameters::NetworkUpgrade;
 
@@ -254,7 +254,7 @@ impl<S: SpendIndexSource> SpendIndexSync<S> {
 
         // Stream finalised blocks, extracting spends and dropping each block;
         // only the (smaller) spend records are retained for the one-shot sort.
-        // Chainwork is irrelevant to spend extraction, so a zero parent is fine.
+        // Chainwork is irrelevant to spend extraction, so a `None` parent is fine.
         let mut spends: Vec<SpendRecord> = Vec::new();
         for height in self.start_height..=finalised_tip {
             let block = build_indexed_block_from_source(
@@ -263,7 +263,7 @@ impl<S: SpendIndexSource> SpendIndexSync<S> {
                 sapling_activation,
                 nu5_activation,
                 height,
-                ChainWork::from_u256(0.into()),
+                None,
             )
             .await?;
             spends.extend(extract_spends(std::slice::from_ref(&block)));
