@@ -908,9 +908,21 @@ impl<T: BlockchainSource> FinalisedSource<T> {
         &self,
         db_tip: Height,
         shards: u16,
+        max_spent_entries: u64,
     ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
         self.require_v1("v1 txout-set accumulator builder")?
-            .build_tx_out_set_accumulator_blocking(db_tip, shards)
+            .build_tx_out_set_accumulator_blocking(db_tip, shards, max_spent_entries)
+    }
+
+    /// Resolves the accumulator-rebuild shard count for a memory budget (V1 only).
+    ///
+    /// Test hook for asserting the rebuild auto-shards to fit the configured memory budget.
+    pub(crate) fn accumulator_build_shards(
+        &self,
+        budget_bytes: u64,
+    ) -> Result<u16, FinalisedStateError> {
+        self.require_v1("v1 txout-set accumulator builder")?
+            .accumulator_build_shards(budget_bytes)
     }
 }
 
