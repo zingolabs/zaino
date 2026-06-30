@@ -34,6 +34,42 @@ impl TonicServer {
         routes: Routes,
         server_config: GrpcServerConfig,
     ) -> Result<Self, ServerError> {
+        // Bind synchronously so EADDRINUSE / EACCES propagate to the caller
+        // instead of being swallowed inside the spawned serve task. See
+        // zingolabs/zaino#1081.
+        let tcp_incoming = TcpIncoming::bind(server_config.listen_address)
+            .map_err(|e| ServerError::ServerConfigError(format!("gRPC bind failed: {e}")))?;
+        Self::spawn_inner(routes, server_config, tcp_incoming).await
+    }
+
+    /// Starts the gRPC service on a pre-bound listener.
+    ///
+    /// Lets a test harness bind `127.0.0.1:0`, read the OS-assigned port, and
+    /// hand the still-open socket here — closing the pick-a-port / bind-later
+    /// race. `TcpIncoming::from` applies the same nodelay/keepalive defaults as
+    /// `TcpIncoming::bind`, so the served socket is identical to the production
+    /// path.
+    #[cfg(feature = "test_dependencies")]
+    pub async fn spawn_from_listener(
+        routes: Routes,
+        server_config: GrpcServerConfig,
+        listener: std::net::TcpListener,
+    ) -> Result<Self, ServerError> {
+        listener.set_nonblocking(true).map_err(|e| {
+            ServerError::ServerConfigError(format!("gRPC listener set_nonblocking failed: {e}"))
+        })?;
+        let tcp_incoming =
+            TcpIncoming::from(tokio::net::TcpListener::from_std(listener).map_err(|e| {
+                ServerError::ServerConfigError(format!("gRPC from_std failed: {e}"))
+            })?);
+        Self::spawn_inner(routes, server_config, tcp_incoming).await
+    }
+
+    async fn spawn_inner(
+        routes: Routes,
+        server_config: GrpcServerConfig,
+        tcp_incoming: TcpIncoming,
+    ) -> Result<Self, ServerError> {
         let status = NamedAtomicStatus::new("gRPC", StatusType::Spawning);
 
         let mut server_builder = Server::builder();
@@ -42,12 +78,6 @@ impl TonicServer {
                 ServerError::ServerConfigError(format!("TLS configuration error: {e}"))
             })?;
         }
-
-        // Bind synchronously so EADDRINUSE / EACCES propagate to the caller
-        // instead of being swallowed inside the spawned serve task. See
-        // zingolabs/zaino#1081.
-        let tcp_incoming = TcpIncoming::bind(server_config.listen_address)
-            .map_err(|e| ServerError::ServerConfigError(format!("gRPC bind failed: {e}")))?;
 
         let shutdown_check_status = status.clone();
         let mut shutdown_check_interval = interval(Duration::from_millis(100));

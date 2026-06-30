@@ -35,29 +35,26 @@ Find out which dependencies use `zebra-*` crates by running
 Make sure you build and run the project with `all-features` in
 order to catch any posible compile errors early.
 
-## Keep the zebra pin in sync across all three workspaces
+## Keep the zebra pin in the single root workspace
 
-This repo is **three separate Cargo workspaces**, each with its own
-`Cargo.lock`:
+This repo is **one Cargo workspace** with a single `Cargo.lock`: the live-test
+crates were folded into the root workspace (see docs/adr/0002, docs/adr/0003).
+The zebra version requirements live once in the root `Cargo.toml`
+`[workspace.dependencies]`, and any unreleased pin lives once in the root
+`[patch.crates-io]`. Every member — the `packages/*` production crates and the
+`live-tests/{e2e,clientless,zaino-testutils}` crates alike — inherits them via
+`zebra-* = { workspace = true }`.
 
-- `Cargo.toml` — the root/production workspace (`packages/*`).
-- `integration-tests/Cargo.toml` — the walletless-tests workspace.
-- `integration-tests/wallet-tests/Cargo.toml` — the wallet-tests workspace.
+Consequence: a zebra change — a version bump or a git-rev pin — is applied in
+**one place** (the root `Cargo.toml`) and reaches every member through workspace
+inheritance and the single lock. Cargo honours `[patch.crates-io]` only from the
+workspace root, so member manifests must **not** carry their own patch sections
+(they would be silently ignored).
 
-The production crates (notably `zaino-state`) are consumed by both
-integration-test workspaces as **path dependencies**. A path dependency
-is compiled against the **host workspace's** dependency resolution — not
-the root's. So a `[patch.crates-io]` (or version bump) applied only to the
-root `Cargo.toml` does **not** reach `zaino-state` when it is built inside
-an integration-test workspace; that workspace resolves whatever the plain
-version requirement points at (a crates.io release).
-
-Consequence: any change to the zebra pin — a version bump, or pinning to a
-git rev — **must be applied identically in all three manifests**. If they
-drift, the same `zaino-state` source compiles against two different zebra
-versions and you get errors like `E0559` (a field/variant that exists on
-one zebra version but not the other), typically surfacing first in a
-container test run rather than in `cargo check` at the root.
+(Historically this repo was three separate workspaces, each with its own lock,
+so the pin had to be mirrored across all three manifests or the same
+`zaino-state` source compiled against two zebra versions — `E0559`-style errors.
+The reunification removed that footgun.)
 
 ## Pinning to an unreleased zebra (git rev)
 

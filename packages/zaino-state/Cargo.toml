@@ -9,9 +9,9 @@ license = { workspace = true }
 version = "0.3.1"
 
 [features]
-default = ["zcashd_support"]
+default = []
 
-# Support for connecting to a zcashd validator node. Default-on; being
+# Support for connecting to a zcashd validator node. Opt-in (default off, docs/adr/0005); being
 # deprecated. Forwards to zaino-fetch. See
 # docs/adr/0001-zcashd-support-feature-gate.md.
 zcashd_support = ["zaino-fetch/zcashd_support"]
@@ -33,7 +33,7 @@ transparent_address_history_experimental = []
 
 [dependencies]
 zaino-common = { workspace = true }
-zaino-fetch = { workspace = true, default-features = false }
+zaino-fetch = { workspace = true }
 zaino-proto = { workspace = true }
 
 # LibRustZcash

@@ -9,12 +9,12 @@ license = { workspace = true }
 version = "0.2.1"
 
 [features]
-default = ["zcashd_support"]
+default = []
 
 # Prometheus metrics emission (outbound RPC request counting / latency).
 prometheus = ["metrics"]
 
-# Support for connecting to a zcashd validator node. Default-on; being
+# Support for connecting to a zcashd validator node. Opt-in (default off, docs/adr/0005); being
 # deprecated. Gates the zcashd-shaped getpeerinfo parsing. Dropping it
 # (`--no-default-features`) compiles zcashd parsing out. See
 # docs/adr/0001-zcashd-support-feature-gate.md.

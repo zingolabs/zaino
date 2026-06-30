@@ -87,7 +87,7 @@ pub(crate) const NON_FINALIZED_DEPTH: u32 = zebra_state::MAX_BLOCK_REORG_HEIGHT 
 /// off block 0 and the eviction/seam invariants become untestable (see
 /// zingolabs/zaino#1288). The eviction and seam invariants are scale-free, so
 /// exercising them at a tractable depth is sound; the production depth is
-/// covered by the integration suite, which reaches real chain heights.
+/// covered by the clientless suite, which reaches real chain heights.
 #[cfg(test)]
 pub(crate) const NON_FINALIZED_DEPTH: u32 = 100;
 
