@@ -170,28 +170,82 @@ pub(crate) const TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY: &[u8] =
 /// both paths produce the identical accumulator at the tip.
 pub(crate) const ACCUMULATOR_INCREMENTAL_MAX_GAP: u32 = 1_000;
 
-/// Number of txid-prefix shards used by the bulk txout-set accumulator builder.
+/// Maximum number of txid-prefix shards used by the bulk txout-set accumulator builder.
 ///
 /// The builder holds the set of spent outpoints in memory while scanning the block data. Sharding
 /// on the creating-txid's first byte bounds that working set to roughly `1 / shards` of the total
 /// spent index, at the cost of one extra sequential pass over the block data per shard. The
 /// per-shard partials recombine exactly (XOR commitment + additive counters), so the result is
-/// independent of the shard count. `1` is a single optimal pass and is correct on any host with
-/// enough RAM for the full spent set; raise it on memory-constrained deployments.
-pub(crate) const ACCUMULATOR_BUILD_SHARDS: u16 = 1;
+/// independent of the shard count.
+///
+/// The shard count is chosen at rebuild time so the per-shard spent set fits the configured
+/// [`zaino_common::DatabaseConfig::accumulator_rebuild_memory_size`] budget (see
+/// [`DbV1::rebuild_tx_out_set_accumulator`]): a single optimal pass on hosts with enough RAM for
+/// the full spent set, scaling up on memory-constrained deployments. Sharding partitions on the
+/// creating-txid's first byte (256 distinct values), so the count is capped here.
+pub(crate) const ACCUMULATOR_BUILD_MAX_SHARDS: u16 = 256;
+
+/// Conservative per-entry RAM estimate for the rebuild's in-memory spent set, used only to size the
+/// shard count.
+///
+/// Each entry is a 37-byte `spent` key heap-allocated as a `Box<[u8]>` (rounded up by the
+/// allocator), a 16-byte fat pointer stored in the `HashSet` table, plus hashbrown control bytes and
+/// load-factor slack — realistically ~120 bytes, but allocator behaviour varies. Set deliberately
+/// *above* that so the chosen shard count over-provisions: the per-shard set then stays within the
+/// budget, and over-counting only adds shards (less memory per shard), it never under-bounds.
+pub(crate) const SPENT_SET_ENTRY_BYTES_ESTIMATE: u64 = 256;
 
 /// Number of committed block writes / migration heights between explicit
 /// `env.sync(true)` durability checkpoints.
 ///
+/// This governs the durability-sync cadence of the **per-block steady-state append**
+/// ([`DbWrite::write_block`]) and the **migration backfill scan**: both commit frequently but, under
+/// `MDB_NOSYNC`, force an `env.sync(true)` only every `SYNC_CHECKPOINT_INTERVAL` committed
+/// writes/heights. (The separate **bulk catch-up** path batches differently — by the
+/// `sync_write_batch_size` byte budget, a block-count cap, and the wall-clock
+/// `DatabaseConfig::sync_checkpoint_interval` — and fsyncs once per committed batch, so it does not
+/// use this constant.)
+///
 /// The LMDB environment is opened with `MDB_NOSYNC` (see [`DbV1::spawn`]), so an individual
-/// `txn.commit()` is *not* flushed to disk. Because the environment does not use `WRITE_MAP`,
-/// LMDB still guarantees ACI on crash — only durability (D) is lost: a crash rolls the database
-/// back to the last on-disk-consistent transaction, it never corrupts it (copy-on-write + dual
-/// meta pages always leave a recoverable committed snapshot). Forcing a sync every
-/// `SYNC_CHECKPOINT_INTERVAL` writes bounds how much committed-but-unflushed tail a crash can
-/// discard. The tail is always safe to re-do: clean sync resumes from the on-disk tip and
-/// re-fetches the missing blocks, and migrations resume idempotently from their progress keys.
+/// `txn.commit()` is *not* flushed to disk. On a **write-order-preserving local filesystem** this
+/// only costs durability (D): LMDB's copy-on-write + dual meta pages mean a crash rolls back to the
+/// last fully-flushed transaction without corrupting the database, and the checkpoint cadence bounds
+/// how much committed-but-unflushed tail a crash can discard. The tail is always safe to re-do:
+/// clean sync resumes from the on-disk tip and re-fetches the missing blocks, and migrations resume
+/// idempotently from their progress keys.
+///
+/// CAVEAT: that integrity guarantee relies on the filesystem preserving write order. On networked
+/// storage (NFS), overlay filesystems, or a container/pod hard-eviction that drops the unflushed
+/// page cache, write order is *not* guaranteed and a crash under `MDB_NOSYNC` **can** leave torn
+/// pages — surfacing later as an LMDB cursor assertion or a checksum/decode failure on the affected
+/// table. The recovery is to wipe the finalised-state DB and re-index (its tables are all
+/// re-derivable from the validator). A shorter checkpoint interval shrinks, but does not eliminate,
+/// this window.
 pub(crate) const SYNC_CHECKPOINT_INTERVAL: u32 = 1000;
+
+/// Formats a one-line corruption report for a malformed `spent` entry: its position in the table,
+/// the key (hex), the value length, and the value's leading bytes (hex), plus the re-index hint.
+///
+/// The leading bytes are the diagnostic that distinguishes failure modes: a value that should begin
+/// with the `StoredEntryFixed` version tag but starts with arbitrary bytes (e.g. `0xfd`) is a torn
+/// write, whereas a recognisable-but-old structure would indicate a format problem.
+fn spent_corruption_detail(
+    entry_index: u64,
+    key_bytes: &[u8],
+    val_bytes: &[u8],
+    reason: &str,
+) -> String {
+    /// Cap on value bytes included in the report — enough to identify the framing, not the whole row.
+    const VALUE_HEAD_BYTES: usize = 16;
+    let value_head = hex::encode(&val_bytes[..val_bytes.len().min(VALUE_HEAD_BYTES)]);
+    format!(
+        "corrupt spent entry #{entry_index} ({reason}): key=0x{key}, value_len={value_len}, \
+         value_head=0x{value_head}; the finalised-state spent table is damaged — wipe the database \
+         and re-index",
+        key = hex::encode(key_bytes),
+        value_len = val_bytes.len(),
+    )
+}
 
 /// [`DbCore`] capability implementation for [`DbV1`].
 ///
@@ -406,8 +460,11 @@ impl DbV1 {
         // hashes), which made per-commit fsync the dominant sync cost once those trees outgrew
         // the page cache. Under `NO_SYNC` the OS batches that write-back; we force durability at
         // explicit checkpoints (`SYNC_CHECKPOINT_INTERVAL`) and on graceful shutdown instead.
-        // `WRITE_MAP` is unset, so a crash never corrupts the database — it only discards the
-        // unflushed tail of recent commits, which clean sync and migrations safely re-do.
+        // `WRITE_MAP` is unset, so on a write-order-preserving local filesystem a crash does not
+        // corrupt the database — it only discards the unflushed tail of recent commits, which clean
+        // sync and migrations safely re-do. (On NFS / overlay filesystems or a hard pod eviction that
+        // drops the unflushed page cache, write order is not guaranteed and a crash *can* leave torn
+        // pages; the recovery there is to wipe and re-index. See `SYNC_CHECKPOINT_INTERVAL`.)
         let env = Environment::new()
             .set_max_dbs(15)
             .set_map_size(db_size_bytes)
@@ -623,26 +680,62 @@ impl DbV1 {
     }
 
     /// Validates every stored spent-outpoint entry (`Outpoint` -> `TxLocation`) by checksum.
+    ///
+    /// On the first malformed entry the error dumps the offending key, the value length, and the
+    /// value's leading bytes (hex). This is deliberately specific: a "version tag 253"-style failure
+    /// here means the on-disk `spent` table is damaged (almost always a torn write from an unclean
+    /// exit under `NO_SYNC` on networked/evicted storage — see [`SYNC_CHECKPOINT_INTERVAL`]), and the
+    /// dumped bytes let an operator confirm torn-page corruption vs. a genuine format problem. The
+    /// recovery is to wipe the finalised-state database and re-index.
     async fn initial_spent_scan(&self) -> Result<(), FinalisedStateError> {
         let env = self.env.clone();
         let spent = self.spent;
 
         tokio::task::spawn_blocking(move || {
+            // Logged before the scan so that a native LMDB abort while walking a torn `spent` B-tree
+            // (which bypasses Rust error handling) is still attributable to this startup phase.
+            info!("validating finalised-state spent table integrity");
             let ro = env.begin_ro_txn()?;
-            let mut cursor = ro.open_ro_cursor(spent)?;
+            let cursor = ro.open_ro_cursor(spent)?;
 
-            for (key_bytes, val_bytes) in cursor.iter() {
-                let entry = StoredEntryFixed::<TxLocation>::from_bytes(val_bytes).map_err(|e| {
-                    FinalisedStateError::Custom(format!("corrupt spent entry: {e}"))
-                })?;
+            // Explicit cursor walk rather than `Cursor::iter` (which `debug_assert!`-panics on a
+            // non-`NotFound` LMDB error in debug and silently ends the scan in release): a real LMDB
+            // error propagates cleanly and the scan only ends on a genuine end-of-table `NotFound`.
+            let mut entry_index: u64 = 0;
+            let mut op = lmdb_sys::MDB_FIRST;
+            loop {
+                let (key_bytes, val_bytes) = match cursor.get(None, None, op) {
+                    Ok((Some(key), value)) => (key, value),
+                    // `MDB_FIRST`/`MDB_NEXT` always report the key; treat a missing key as end-of-data.
+                    Ok((None, _)) => break,
+                    Err(lmdb::Error::NotFound) => break,
+                    Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+                };
+                op = lmdb_sys::MDB_NEXT;
+
+                let entry =
+                    StoredEntryFixed::<TxLocation>::from_bytes(val_bytes).map_err(|error| {
+                        FinalisedStateError::Custom(spent_corruption_detail(
+                            entry_index,
+                            key_bytes,
+                            val_bytes,
+                            &error.to_string(),
+                        ))
+                    })?;
 
                 if !entry.verify(key_bytes) {
-                    return Err(FinalisedStateError::Custom(
-                        "spent record checksum mismatch".into(),
-                    ));
+                    return Err(FinalisedStateError::Custom(spent_corruption_detail(
+                        entry_index,
+                        key_bytes,
+                        val_bytes,
+                        "checksum mismatch",
+                    )));
                 }
+
+                entry_index += 1;
             }
 
+            info!("finalised-state spent table integrity check passed ({entry_index} entries)");
             Ok(())
         })
         .await
@@ -925,5 +1018,106 @@ impl DbV1 {
 
             Ok::<(), FinalisedStateError>(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn spent_corruption_detail_reports_key_length_and_value_head() {
+        // A torn `spent` value whose framing byte is 0xfd (the "version tag 253" report) plus extra
+        // padding so the value length is clearly wrong for a `StoredEntryFixed<TxLocation>` (40 B).
+        let key = [0xab_u8; 37];
+        let value = [0xfd_u8; 50];
+
+        let detail = spent_corruption_detail(7, &key, &value, "unsupported Zaino version tag 253");
+
+        assert!(detail.contains("corrupt spent entry #7"), "{detail}");
+        assert!(
+            detail.contains("unsupported Zaino version tag 253"),
+            "{detail}"
+        );
+        assert!(
+            detail.contains(&format!("key=0x{}", hex::encode(key))),
+            "{detail}"
+        );
+        assert!(detail.contains("value_len=50"), "{detail}");
+        // Only the leading 16 bytes of the value are dumped.
+        assert!(
+            detail.contains(&format!("value_head=0x{}", "fd".repeat(16))),
+            "{detail}"
+        );
+        assert!(
+            detail.contains("wipe the database and re-index"),
+            "{detail}"
+        );
+    }
+
+    #[test]
+    fn spent_corruption_detail_handles_short_values() {
+        // A value shorter than the dump cap must not panic on the slice.
+        let detail = spent_corruption_detail(0, &[0x01, 0x02], &[0x09], "checksum mismatch");
+
+        assert!(detail.contains("value_len=1"), "{detail}");
+        assert!(detail.contains("value_head=0x09"), "{detail}");
+    }
+
+    /// End-to-end: a malformed value in the `spent` table makes the startup integrity scan return
+    /// the actionable diagnostic (key / length / value bytes + re-index hint), not a bare error or a
+    /// silent pass.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn initial_spent_scan_reports_corrupt_value() {
+        use lmdb::{Transaction as _, WriteFlags};
+        use zaino_common::network::ActivationHeights;
+        use zaino_common::{DatabaseConfig, Network, StorageConfig};
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let config = ChainIndexConfig {
+            storage: StorageConfig {
+                database: DatabaseConfig {
+                    path: temp_dir.path().to_path_buf(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ephemeral: false,
+            db_version: 1,
+            network: Network::Regtest(ActivationHeights::default()),
+        };
+
+        let db = DbV1::spawn(&config).await.expect("spawn empty v1 db");
+
+        // Inject a malformed value under a valid outpoint key: a `StoredEntryFixed<TxLocation>` is 40
+        // bytes beginning with a version tag of 1; this is 50 bytes of 0xfd (the "version tag 253"
+        // torn-write shape).
+        let key = Outpoint::new([0x11; 32], 0)
+            .to_bytes()
+            .expect("encode outpoint");
+        let garbage = [0xfd_u8; 50];
+        {
+            let mut txn = db.env.begin_rw_txn().expect("rw txn");
+            txn.put(db.spent, &key, &garbage, WriteFlags::empty())
+                .expect("put garbage spent value");
+            txn.commit().expect("commit");
+        }
+
+        let error = db
+            .initial_spent_scan()
+            .await
+            .expect_err("a malformed spent value must be rejected");
+        let message = error.to_string();
+
+        assert!(message.contains("corrupt spent entry"), "{message}");
+        assert!(message.contains("value_len=50"), "{message}");
+        assert!(
+            message.contains(&format!("key=0x{}", hex::encode(&key))),
+            "{message}"
+        );
+        assert!(
+            message.contains("wipe the database and re-index"),
+            "{message}"
+        );
     }
 }

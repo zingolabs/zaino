@@ -1719,6 +1719,18 @@ impl TransparentCompactTx {
         &self.vout
     }
 
+    /// The outpoints this transaction spends — its non-coinbase prevouts.
+    ///
+    /// Coinbase inputs carry a null prevout (they reference no prior output) and
+    /// are skipped, so every yielded outpoint names a real previously-created
+    /// output.
+    pub(crate) fn spent_outpoints(&self) -> impl Iterator<Item = Outpoint> + '_ {
+        self.inputs()
+            .iter()
+            .filter(|input| !input.is_null_prevout())
+            .map(|input| Outpoint::new(*input.prevout_txid(), input.prevout_index()))
+    }
+
     /// Returns Proto CompactTxIn values, omitting the null prevout used by coinbase.
     pub fn compact_vin(&self) -> Vec<zaino_proto::proto::compact_formats::CompactTxIn> {
         self.inputs()
@@ -3117,5 +3129,33 @@ pub mod serde_arrays {
         let v: &[u8] = Deserialize::deserialize(d)?;
         v.try_into()
             .map_err(|_| serde::de::Error::custom(format!("invalid length for [u8; {N}]")))
+    }
+}
+
+#[cfg(test)]
+mod spent_outpoints {
+    use super::*;
+
+    #[test]
+    fn skips_null_prevout_and_maps_each_input() {
+        let tx = TransparentCompactTx::new(
+            vec![
+                TxInCompact::null_prevout(),    // coinbase input → skipped
+                TxInCompact::new([7u8; 32], 3), // spends output 3 of txid 0x07..
+                TxInCompact::new([8u8; 32], 0), // spends output 0 of txid 0x08..
+            ],
+            vec![],
+        );
+
+        assert_eq!(
+            tx.spent_outpoints().collect::<Vec<_>>(),
+            vec![Outpoint::new([7u8; 32], 3), Outpoint::new([8u8; 32], 0)],
+        );
+    }
+
+    #[test]
+    fn coinbase_only_transaction_yields_no_outpoints() {
+        let tx = TransparentCompactTx::new(vec![TxInCompact::null_prevout()], vec![]);
+        assert_eq!(tx.spent_outpoints().count(), 0);
     }
 }
