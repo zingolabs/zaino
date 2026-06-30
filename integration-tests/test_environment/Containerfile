@@ -145,8 +145,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     protobuf-compiler=3.21.12-11 \
     && rm -rf /var/lib/apt/lists/*
 
-# Create container_user
-RUN groupadd --gid ${GID} ${USER} && \
+# Create container_user. The GID may already belong to a base-image group
+# (e.g. on macOS hosts the caller's primary group is `staff`, GID 20, which
+# collides with Debian's `dialout`); `--non-unique` lets the `container_user`
+# group share that GID so later `--chown=container_user:container_user` COPYs
+# still resolve the group by name.
+RUN groupadd --non-unique --gid ${GID} ${USER} && \
     useradd --uid ${UID} --gid ${GID} --home-dir ${HOME} --create-home ${USER}
 
 # Install the toolchain under the same channel name rust-toolchain.toml asks

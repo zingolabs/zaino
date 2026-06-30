@@ -898,17 +898,23 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                     let non_finalized_state = match *intermediate_nfs_for_scoping {
                         Some(ref nfs) => nfs,
                         None => {
+                            // Anchor the non-finalised state at `finalised_height`
+                            // (= chain tip − NON_FINALIZED_DEPTH), never at genesis: a missing
+                            // anchor used to fall through to genesis and then re-anchor up to the
+                            // lagging finalised tip, grinding millions of blocks one at a time
+                            // (#1261). `resolve_anchor_block` serves the anchor from the finalised
+                            // DB / passthrough or builds it from the validator.
+                            let anchor = NonFinalizedState::resolve_anchor_block(
+                                &source,
+                                &fs.to_reader(),
+                                &network,
+                                finalised_height,
+                            )
+                            .await?;
                             nfs.store(Some(Arc::new(
-                                NonFinalizedState::initialize(
-                                    source,
-                                    network,
-                                    fs.to_reader()
-                                        .get_chain_block_by_height(finalised_height)
-                                        .await
-                                        .expect("todo"),
-                                )
-                                .await
-                                .expect("todo"),
+                                NonFinalizedState::initialize(source, network, Some(anchor))
+                                    .await
+                                    .map_err(source_error)?,
                             )));
                             &nfs.load_full().expect("just set to Some")
                         }
@@ -2534,12 +2540,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                 }
 
                 // Spent prev outputs leave the UTXO set.
-                for input in transparent.inputs() {
-                    if input.is_null_prevout() {
-                        continue;
-                    }
-
-                    let outpoint = Outpoint::new(*input.prevout_txid(), input.prevout_index());
+                for outpoint in transparent.spent_outpoints() {
                     let prev_txid = TransactionHash::from(*outpoint.prev_txid());
 
                     let prev_out_from_nfs = nfs_created.remove(&outpoint);

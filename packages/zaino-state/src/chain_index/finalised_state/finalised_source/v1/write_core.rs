@@ -29,11 +29,6 @@ fn approx_indexed_block_bytes(block: &IndexedBlock) -> u64 {
 #[cfg(not(feature = "transparent_address_history_experimental"))]
 const SYNC_WRITE_BATCH_MAX_BLOCKS: usize = 100_000;
 
-/// Maximum wall-clock time spent buffering a single bulk-sync write batch before flushing, so
-/// commits (and progress) happen regularly even when block fetches are slow.
-#[cfg(not(feature = "transparent_address_history_experimental"))]
-const SYNC_WRITE_BATCH_MAX_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
-
 /// Interval between in-flight "syncing height" progress logs during bulk sync.
 #[cfg(not(feature = "transparent_address_history_experimental"))]
 const SYNC_PROGRESS_LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
@@ -118,7 +113,20 @@ impl DbWrite for DbV1 {
         // earlier-in-batch uncommitted blocks), so it keeps the per-block path.
         #[cfg(not(feature = "transparent_address_history_experimental"))]
         {
-            let batch_budget = self.config.storage.database.sync_write_batch_bytes.max(1);
+            // `.max(1)` guards a misconfigured `sync_write_batch_size = 0`: a 0 budget would fail
+            // the `batch_bytes < batch_budget` check on the first iteration (`0 < 0`), buffer no
+            // blocks, and stall the sync. A 1-byte floor still guarantees forward progress
+            // (worst case, one block per batch).
+            let batch_budget = (self
+                .config
+                .storage
+                .database
+                .sync_write_batch_size
+                .to_byte_count() as u64)
+                .max(1);
+            let batch_interval = std::time::Duration::from_secs(
+                self.config.storage.database.sync_checkpoint_interval,
+            );
             let mut next = start_height;
             let mut last_progress_log = std::time::Instant::now();
             while next <= height.0 {
@@ -133,7 +141,7 @@ impl DbWrite for DbV1 {
                 while next <= height.0
                     && batch_bytes < batch_budget
                     && batch.len() < SYNC_WRITE_BATCH_MAX_BLOCKS
-                    && batch_started.elapsed() < SYNC_WRITE_BATCH_MAX_INTERVAL
+                    && batch_started.elapsed() < batch_interval
                 {
                     let block = build_indexed_block_from_source(
                         source,
@@ -457,13 +465,7 @@ impl DbV1 {
             let tx_location = TxLocation::new(block_height.into(), tx_index);
 
             // Transparent Inputs: Build Spent Outpoints Index
-            for input in tx.transparent().inputs().iter() {
-                if input.is_null_prevout() {
-                    continue;
-                }
-
-                let prev_outpoint = Outpoint::new(*input.prevout_txid(), input.prevout_index());
-
+            for prev_outpoint in tx.transparent().spent_outpoints() {
                 if spent_map.insert(prev_outpoint, tx_location).is_some() {
                     return Err(FinalisedStateError::InvalidBlock {
                         height: block_height.0,
@@ -1136,11 +1138,7 @@ impl DbV1 {
                     })?;
                 let tx_location = TxLocation::new(block_height.0, tx_index);
 
-                for input in tx.transparent().inputs().iter() {
-                    if input.is_null_prevout() {
-                        continue;
-                    }
-                    let prev_outpoint = Outpoint::new(*input.prevout_txid(), input.prevout_index());
+                for prev_outpoint in tx.transparent().spent_outpoints() {
                     spent_batch.push((prev_outpoint.to_bytes()?, tx_location));
                 }
 
@@ -1372,13 +1370,7 @@ impl DbV1 {
             let tx_location = TxLocation::new(block_height.into(), _tx_index as u16);
 
             // Build Spent Outpoints Index
-            for input in tx.transparent().inputs().iter() {
-                if input.is_null_prevout() {
-                    continue;
-                }
-
-                let prev_outpoint = Outpoint::new(*input.prevout_txid(), input.prevout_index());
-
+            for prev_outpoint in tx.transparent().spent_outpoints() {
                 if spent_map.insert(prev_outpoint, tx_location).is_some() {
                     return Err(FinalisedStateError::InvalidBlock {
                         height: block_height.0,
