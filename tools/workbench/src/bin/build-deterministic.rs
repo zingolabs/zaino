@@ -1,21 +1,18 @@
-#!/usr/bin/env rust-script
 //! Build the zainod OCI image and extract its binary reproducibly.
 //!
-//! Ported from the former `utils/build_deterministic.sh`. Runs two container
-//! builds against `Dockerfile.deterministic` with a pinned platform and
-//! `SOURCE_DATE_EPOCH`, forwarding any extra arguments to both builds.
+//! Runs two container builds against `Dockerfile.deterministic` with a pinned
+//! platform and `SOURCE_DATE_EPOCH`, forwarding any extra arguments to both.
 //!
 //! Engine selection: honours `CONTAINER_ENGINE=docker|podman` when set,
 //! otherwise auto-detects, preferring `podman` and falling back to `docker`.
 //! Both engines yield the same two artifacts:
 //!   * `build/oci/zainod.tar` — the runtime image as an OCI archive named `zainod`
 //!   * `build/zainod`         — the static binary from the `export` stage
-#![forbid(unsafe_code)]
 
 use std::env;
-use std::error::Error;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
+use workbench::{repo_root, run};
 
 const PLATFORM: &str = "linux/amd64";
 /// Local tag podman builds the runtime image under before `podman save`.
@@ -27,7 +24,11 @@ enum Engine {
     Podman,
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() {
+    run("build-deterministic", build, |()| {})
+}
+
+fn build() -> Result<(), Vec<String>> {
     let repo_root = repo_root()?;
     let dockerfile = repo_root.join("Dockerfile.deterministic");
     let oci_output = repo_root.join("build/oci");
@@ -36,18 +37,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Extra arguments are forwarded verbatim to both builds.
     let forwarded: Vec<String> = env::args().skip(1).collect();
 
-    std::fs::create_dir_all(&oci_output)?;
+    std::fs::create_dir_all(&oci_output)
+        .map_err(|e| vec![format!("cannot create {}: {e}", oci_output.display())])?;
 
-    // Build runtime image for `docker run` / `podman run`.
     println!("Building runtime image with {}...", engine.binary());
     let oci_tar = oci_output.join("zainod.tar");
     engine.build_runtime_oci(&dockerfile, &repo_root, &oci_tar, &forwarded)?;
 
-    // Extract binary locally from the export stage.
     println!("Extracting binary with {}...", engine.binary());
-    engine.build_export(&dockerfile, &repo_root, &forwarded)?;
-
-    Ok(())
+    engine.build_export(&dockerfile, &repo_root, &forwarded)
 }
 
 impl Engine {
@@ -66,7 +64,7 @@ impl Engine {
         repo_root: &Path,
         oci_tar: &Path,
         forwarded: &[String],
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<(), Vec<String>> {
         match self {
             Engine::Docker => {
                 let output = format!(
@@ -105,9 +103,10 @@ impl Engine {
                     .args(["save", "--format", "oci-archive", "--output"])
                     .arg(oci_tar)
                     .arg(IMAGE_REF)
-                    .status()?;
+                    .status()
+                    .map_err(|e| vec![format!("failed to run podman save: {e}")])?;
                 if !status.success() {
-                    return Err(format!("podman save failed: {status}").into());
+                    return Err(vec![format!("podman save failed: {status}")]);
                 }
                 Ok(())
             }
@@ -122,7 +121,7 @@ impl Engine {
         dockerfile: &Path,
         repo_root: &Path,
         forwarded: &[String],
-    ) -> Result<(), Box<dyn Error>> {
+    ) -> Result<(), Vec<String>> {
         let local_dest = format!("type=local,dest={}/build", repo_root.display());
         run_build(
             self,
@@ -142,7 +141,7 @@ fn run_build(
     repo_root: &Path,
     per_build: &[&str],
     forwarded: &[String],
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), Vec<String>> {
     let mut cmd = Command::new(engine.binary());
     cmd.arg("build")
         .arg("-f")
@@ -152,8 +151,6 @@ fn run_build(
         .arg(PLATFORM)
         .args(per_build)
         .args(forwarded)
-        // Set per-command rather than mutating the process environment, which
-        // would require `unsafe` under the 2024 edition.
         .env("SOURCE_DATE_EPOCH", "1");
     match engine {
         // BuildKit is docker-specific; podman builds with buildah natively.
@@ -167,24 +164,25 @@ fn run_build(
         }
     }
 
-    let status = cmd.status()?;
+    let status = cmd
+        .status()
+        .map_err(|e| vec![format!("failed to run {} build: {e}", engine.binary())])?;
     if !status.success() {
-        return Err(format!("{} build failed: {status}", engine.binary()).into());
+        return Err(vec![format!("{} build failed: {status}", engine.binary())]);
     }
     Ok(())
 }
 
 /// Pick the container engine: `CONTAINER_ENGINE` if set, else the first of
 /// `podman`, `docker` found on `PATH`.
-fn select_engine() -> Result<Engine, Box<dyn Error>> {
+fn select_engine() -> Result<Engine, Vec<String>> {
     if let Ok(name) = env::var("CONTAINER_ENGINE") {
         return match name.trim() {
             "docker" => Ok(Engine::Docker),
             "podman" => Ok(Engine::Podman),
-            other => Err(format!(
+            other => Err(vec![format!(
                 "unsupported CONTAINER_ENGINE={other:?}; expected `docker` or `podman`"
-            )
-            .into()),
+            )]),
         };
     }
     if on_path("podman") {
@@ -192,7 +190,10 @@ fn select_engine() -> Result<Engine, Box<dyn Error>> {
     } else if on_path("docker") {
         Ok(Engine::Docker)
     } else {
-        Err("no container engine found: install podman or docker, or set CONTAINER_ENGINE".into())
+        Err(vec![
+            "no container engine found: install podman or docker, or set CONTAINER_ENGINE"
+                .to_string(),
+        ])
     }
 }
 
@@ -201,16 +202,4 @@ fn on_path(bin: &str) -> bool {
     env::var_os("PATH")
         .map(|paths| env::split_paths(&paths).any(|dir| dir.join(bin).is_file()))
         .unwrap_or(false)
-}
-
-/// Resolve the repository root via `git rev-parse --show-toplevel`.
-fn repo_root() -> Result<PathBuf, Box<dyn Error>> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .output()?;
-    if !output.status.success() {
-        return Err("`git rev-parse --show-toplevel` failed (not a git repository?)".into());
-    }
-    let path = String::from_utf8(output.stdout)?;
-    Ok(PathBuf::from(path.trim()))
 }

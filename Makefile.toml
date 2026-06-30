@@ -12,10 +12,10 @@ default_to_workspace = false
 IMAGE_NAME = "zingodevops/zaino-ci"
 TEST_BINARIES_DIR = "/home/container_user/artifacts"
 CONTAINERS_CONF_OVERRIDE = "${CARGO_MAKE_WORKING_DIRECTORY}/.config/containers.conf"
-# Single source of truth: rust-toolchain.toml's `channel`, extracted via
-# tools/scripts/get-rust-version.sh. Replaces RUST_VERSION in
+# Single source of truth: rust-toolchain.toml's `channel`, extracted via the
+# workbench `get-rust-version` binary. Replaces RUST_VERSION in
 # .env.testing-artifacts.
-RUST_VERSION = { script = ["./tools/scripts/get-rust-version.sh"] }
+RUST_VERSION = { script = ["cargo run -q --manifest-path tools/workbench/Cargo.toml --bin get-rust-version"] }
 
 [tasks.help]
 description = "List available commands and usage notes"

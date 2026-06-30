@@ -61,15 +61,31 @@ script = [
     '''
 ]
 
+[tasks.workbench-fmt]
+command = "cargo"
+args = ["fmt", "--manifest-path", "tools/workbench/Cargo.toml", "--", "--check"]
+
+[tasks.workbench-clippy]
+command = "cargo"
+args = ["clippy", "--manifest-path", "tools/workbench/Cargo.toml", "--all-targets", "--", "-D", "warnings"]
+
+[tasks.workbench-test]
+command = "cargo"
+args = ["test", "--manifest-path", "tools/workbench/Cargo.toml"]
+
+[tasks.lint-workbench]
+description = "Format-check, clippy, and test the workbench tooling crate (its own workspace, so the root --workspace lints/tests don't cover it)."
+dependencies = ["workbench-fmt", "workbench-clippy", "workbench-test"]
+
 [tasks.lint-toolchain-pin]
 description = "Assert Dockerfile.deterministic's stagex/pallet-rust tag matches rust-toolchain.toml's channel (guards against rustc skew between the canonical toolchain and the deterministic build's base image)."
-command = "rust-script"
-args = ["tools/scripts/check-toolchain-pin.rs"]
+command = "cargo"
+args = ["run", "-q", "--manifest-path", "tools/workbench/Cargo.toml", "--bin", "check-toolchain-pin"]
 
 [tasks.lint-no-openssl-apt]
 description = "Fail if any Dockerfile installs a libssl*/openssl* apt package. TLS is rustls; the system-package companion to deny.toml's openssl crate ban."
-command = "rust-script"
-args = ["tools/scripts/check-no-openssl-apt.rs"]
+command = "cargo"
+args = ["run", "-q", "--manifest-path", "tools/workbench/Cargo.toml", "--bin", "check-no-openssl-apt"]
 
 [tasks.deny]
 description = "Enforce deny.toml's crate bans (openssl/openssl-sys/boring*). Scoped to `bans`: advisories/licenses have pre-existing failures (e.g. RUSTSEC-2022-0001 lmdb) tracked separately."
@@ -88,6 +104,7 @@ dependencies = [
     "clippy",
     "doc",
     "lint-boundary-conversions",
+    "lint-workbench",
     "lint-toolchain-pin",
     "lint-no-openssl-apt",
     "deny",

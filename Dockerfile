@@ -4,7 +4,7 @@
 # Global build args
 ############################
 # RUST_VERSION must be supplied via --build-arg. Canonical source is
-# rust-toolchain.toml's `channel`, surfaced by tools/scripts/get-rust-version.sh
+# rust-toolchain.toml's `channel`, surfaced by the workbench get-rust-version bin
 # — no default is set so a stale literal cannot drift from the workspace's
 # pinned toolchain. See README for the recommended build invocation.
 ARG RUST_VERSION

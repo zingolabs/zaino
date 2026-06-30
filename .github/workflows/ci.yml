@@ -21,7 +21,6 @@ env:
   CACHE_PORT: 9000
   CACHE_BUCKET: gha-cache-bucket
   INSECURE_CACHE: true
-  RUST_SCRIPT_VERSION: "0.35.0"
 
 jobs:
   hadolint:
@@ -60,30 +59,26 @@ jobs:
 
   repo-guards:
     name: Repo guards
-    # GitHub-hosted runner so it runs on pull requests. Runs the rust-script
+    # GitHub-hosted runner so it runs on pull requests. Runs the workbench
     # repo guards: the rustc-pin check (Dockerfile.deterministic's pallet-rust
-    # tag == rust-toolchain.toml channel) and the no-OpenSSL-apt check.
+    # tag == rust-toolchain.toml channel) and the no-OpenSSL-apt check, plus the
+    # crate's own fmt/clippy/tests.
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Cache rust-script
-        id: cache-rust-script
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/bin/rust-script
-          key: rust-script-${{ runner.os }}-${{ env.RUST_SCRIPT_VERSION }}
-
-      - name: Install rust-script
-        if: steps.cache-rust-script.outputs.cache-hit != 'true'
-        run: cargo install rust-script --version ${{ env.RUST_SCRIPT_VERSION }} --locked
+      - name: Lint and test the workbench crate
+        run: |
+          cargo fmt --manifest-path tools/workbench/Cargo.toml -- --check
+          cargo clippy --manifest-path tools/workbench/Cargo.toml --all-targets -- -D warnings
+          cargo test --manifest-path tools/workbench/Cargo.toml
 
       - name: Check toolchain pin
-        run: rust-script tools/scripts/check-toolchain-pin.rs
+        run: cargo run -q --manifest-path tools/workbench/Cargo.toml --bin check-toolchain-pin
 
       - name: Check no OpenSSL apt packages
-        run: rust-script tools/scripts/check-no-openssl-apt.rs
+        run: cargo run -q --manifest-path tools/workbench/Cargo.toml --bin check-no-openssl-apt
 
   cargo-deny:
     name: cargo-deny
