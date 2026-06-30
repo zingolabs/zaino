@@ -537,3 +537,151 @@ mod spend_index_sync {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+
+/// End-to-end **presence** test: `run` must build a *non-empty* index when the
+/// finalised range contains transparent spends. The 201-block fixture can't
+/// exercise this (coinbase maturity puts its spends above the depth-100 seam),
+/// so this synthesises a chain with zebra's block generator, which — with
+/// `allow_all_transparent_coinbase_spends` — produces transparent spends that
+/// can land below the seam. Tracks zingolabs/zaino#1334.
+#[cfg(test)]
+mod spend_index_presence {
+    use super::*;
+    use crate::chain_index::source::mockchain_source::MockchainSource;
+    use proptest::prelude::{Arbitrary, Strategy};
+    use proptest::strategy::ValueTree;
+    use proptest::test_runner::TestRunner;
+    use std::sync::Arc;
+    use zebra_chain::block::arbitrary::{
+        allow_all_transparent_coinbase_spends, LedgerStateOverride,
+    };
+    use zebra_chain::block::{Block, Height};
+    use zebra_chain::parameters::{Network as ZebraNetwork, GENESIS_PREVIOUS_BLOCK_HASH};
+    use zebra_chain::transparent::Input;
+    use zebra_chain::LedgerState;
+
+    // Long enough that the depth-100 seam leaves room for finalised spends.
+    const CHAIN_LEN: usize = 200;
+    // Generate-until-found budget — a chain with a finalised transparent spend
+    // is overwhelmingly likely within a couple of tries.
+    const MAX_GEN_ATTEMPTS: usize = 40;
+
+    fn build_mock(blocks: Vec<Arc<Block>>) -> MockchainSource {
+        let hashes = blocks
+            .iter()
+            .map(|block| crate::BlockHash::from(block.hash()))
+            .collect();
+        // Synthetic blocks carry no commitment roots/treestates; with a
+        // non-regtest network the block builder falls back to default roots, and
+        // spends are root-independent anyway.
+        let roots = vec![(None, None); blocks.len()];
+        let treestates = vec![(Vec::new(), Vec::new()); blocks.len()];
+        MockchainSource::new(blocks, roots, treestates, hashes)
+    }
+
+    /// True if a non-coinbase transparent input (a spend) occurs at or below
+    /// `finalised_tip`. Block index equals height for a genesis-rooted chain.
+    fn has_finalised_spend(blocks: &[Arc<Block>], finalised_tip: u32) -> bool {
+        blocks.iter().take(finalised_tip as usize + 1).any(|block| {
+            block.transactions.iter().any(|tx| {
+                tx.inputs()
+                    .iter()
+                    .any(|i| matches!(i, Input::PrevOut { .. }))
+            })
+        })
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_builds_a_nonempty_index_from_a_synthetic_chain() {
+        let strategy = LedgerState::arbitrary_with(LedgerStateOverride {
+            height_override: Some(Height(0)),
+            previous_block_hash_override: Some(GENESIS_PREVIOUS_BLOCK_HASH),
+            network_upgrade_override: None,
+            transaction_version_override: None,
+            transaction_has_valid_network_upgrade: true,
+            always_has_coinbase: true,
+            network_override: Some(ZebraNetwork::Mainnet),
+        })
+        .prop_flat_map(|ledger| {
+            Block::partial_chain_strategy(
+                ledger,
+                CHAIN_LEN,
+                allow_all_transparent_coinbase_spends,
+                true,
+            )
+        });
+        let mut runner = TestRunner::deterministic();
+
+        // Deterministically search for a generated chain with a finalised spend,
+        // so the presence direction is genuinely exercised.
+        let mut found = None;
+        for _ in 0..MAX_GEN_ATTEMPTS {
+            let blocks = strategy
+                .new_tree(&mut runner)
+                .expect("generate chain")
+                .current()
+                .0;
+            let finalised_tip = (blocks.len() as u32 - 1).saturating_sub(NON_FINALIZED_DEPTH);
+            if has_finalised_spend(&blocks, finalised_tip) {
+                found = Some((blocks, finalised_tip));
+                break;
+            }
+        }
+        let (blocks, finalised_tip) =
+            found.expect("a synthetic chain with a finalised transparent spend within budget");
+
+        let mock = build_mock(blocks);
+
+        // Reference: the spends in the finalised range, built the way `run`
+        // builds blocks (so this checks fetch + boundary + collate + LMDB
+        // round-trip; the extractor is unit-tested above).
+        let zebra_network = Network::Mainnet.to_zebra_network();
+        let sapling = NetworkUpgrade::Sapling
+            .activation_height(&zebra_network)
+            .expect("Sapling activation height");
+        let nu5 = NetworkUpgrade::Nu5.activation_height(&zebra_network);
+        let mut finalised_blocks = Vec::new();
+        for height in 0..=finalised_tip {
+            finalised_blocks.push(
+                build_indexed_block_from_source(
+                    &mock,
+                    Network::Mainnet,
+                    sapling,
+                    nu5,
+                    height,
+                    None,
+                )
+                .await
+                .expect("build finalised block"),
+            );
+        }
+        let expected = extract_spends(&finalised_blocks);
+        assert!(
+            !expected.is_empty(),
+            "the chosen chain must contain finalised transparent spends",
+        );
+
+        // Build the index from genesis and read it back.
+        let dir = std::env::temp_dir().join(format!(
+            "outp_to_spend_index_synthetic_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let db = SpendIndexDb::open(&dir, 1 << 24).expect("open spend index");
+        SpendIndexSync::new(mock, db, Network::Mainnet, 0)
+            .run()
+            .await
+            .expect("spend-index build runs");
+        let db = SpendIndexDb::open(&dir, 1 << 24).expect("reopen spend index");
+
+        for (outpoint, spending_txid) in &expected {
+            assert_eq!(
+                db.spending_txid(outpoint).expect("read finalised spend"),
+                Some(*spending_txid),
+                "finalised spend {outpoint:?} must be indexed to its spender",
+            );
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
