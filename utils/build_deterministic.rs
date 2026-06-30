@@ -6,7 +6,7 @@
 //! `SOURCE_DATE_EPOCH`, forwarding any extra arguments to both builds.
 //!
 //! Engine selection: honours `CONTAINER_ENGINE=docker|podman` when set,
-//! otherwise auto-detects, preferring `docker` and falling back to `podman`.
+//! otherwise auto-detects, preferring `podman` and falling back to `docker`.
 //! Both engines yield the same two artifacts:
 //!   * `build/oci/zainod.tar` — the runtime image as an OCI archive named `zainod`
 //!   * `build/zainod`         — the static binary from the `export` stage
@@ -175,7 +175,7 @@ fn run_build(
 }
 
 /// Pick the container engine: `CONTAINER_ENGINE` if set, else the first of
-/// `docker`, `podman` found on `PATH`.
+/// `podman`, `docker` found on `PATH`.
 fn select_engine() -> Result<Engine, Box<dyn Error>> {
     if let Ok(name) = env::var("CONTAINER_ENGINE") {
         return match name.trim() {
@@ -187,12 +187,12 @@ fn select_engine() -> Result<Engine, Box<dyn Error>> {
             .into()),
         };
     }
-    if on_path("docker") {
-        Ok(Engine::Docker)
-    } else if on_path("podman") {
+    if on_path("podman") {
         Ok(Engine::Podman)
+    } else if on_path("docker") {
+        Ok(Engine::Docker)
     } else {
-        Err("no container engine found: install docker or podman, or set CONTAINER_ENGINE".into())
+        Err("no container engine found: install podman or docker, or set CONTAINER_ENGINE".into())
     }
 }
 
