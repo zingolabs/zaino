@@ -142,8 +142,8 @@ impl StateServiceConfig {
         donation_address: Option<DonationAddress>,
     ) -> Self {
         tracing::trace!(
-            "State service expecting NU activations:\n{:?}",
-            network.to_zebra_network().full_activation_list()
+            activations = ?network.to_zebra_network().full_activation_list(),
+            "state service expecting NU activations"
         );
         StateServiceConfig {
             common: CommonBackendConfig {

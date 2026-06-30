@@ -49,7 +49,7 @@ pub async fn spawn_indexer(
         "Checking connection with node"
     );
     if let Some(donation_address) = &config.donation_address {
-        info!("Instance donation address: {}", donation_address);
+        info!(%donation_address, "instance donation address");
     }
     let zebrad_uri = test_node_and_return_url(
         &config.validator_settings.validator_jsonrpc_listen_address,
@@ -305,18 +305,11 @@ where
             None => StatusType::Offline,
         };
 
-        let service_status_symbol = service_status.get_status_symbol();
-        let json_server_status_symbol = json_server_status.get_status_symbol();
-        let grpc_server_status_symbol = grpc_server_status.get_status_symbol();
-
         info!(
-            "Zaino status check - ChainState Service:{}{} JsonRPC Server:{}{} gRPC Server:{}{}",
-            service_status_symbol,
-            service_status,
-            json_server_status_symbol,
-            json_server_status,
-            grpc_server_status_symbol,
-            grpc_server_status
+            chain_state = %service_status,
+            json_rpc = %json_server_status,
+            grpc = %grpc_server_status,
+            "Zaino status check"
         );
     }
 }

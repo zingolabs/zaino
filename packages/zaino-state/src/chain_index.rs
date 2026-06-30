@@ -18,6 +18,8 @@ use crate::chain_index::types::helpers::{BlockMetadata, BlockWithMetadata, TreeR
 use crate::chain_index::types::BlockIndex;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
 use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalisedStateError};
+#[cfg(feature = "prometheus")]
+use crate::metric_names::*;
 use crate::status::Status;
 use crate::{
     CompactBlockStream, NamedAtomicStatus, NonFinalizedState, StatusType, SyncError, TxOutCompact,
@@ -99,6 +101,17 @@ pub(crate) const NON_FINALIZED_DEPTH: u32 = 100;
 /// (see zingolabs/zaino#1128).
 pub(crate) fn finalized_height_floor(chain_tip: u32) -> crate::Height {
     crate::Height(chain_tip.saturating_sub(NON_FINALIZED_DEPTH))
+}
+
+/// Current wall-clock time as a Unix timestamp in fractional seconds, for
+/// "event happened at" gauges. Falls back to `0.0` if the clock is before the
+/// Unix epoch (never in practice).
+#[cfg(feature = "prometheus")]
+pub(crate) fn unix_now_secs() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
 }
 
 /// Builds a zcashd-compatible `getchaintips` response from the local non-finalized snapshot.
@@ -847,6 +860,8 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             let mut change_rx = source.subscribe_to_blocks_received();
             let mut consecutive_failures: u32 = 0;
             let mut current_backoff = timings.initial_backoff;
+            #[cfg(feature = "prometheus")]
+            let mut has_reached_tip = false;
 
             loop {
                 let source = source.clone();
@@ -856,6 +871,8 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                 }
 
                 status.store(StatusType::Syncing);
+                #[cfg(feature = "prometheus")]
+                let iteration_start = std::time::Instant::now();
 
                 // Race the iter body against cancellation: any await inside
                 // — `source.get_best_block_height`, `fs.sync_to_height`,
@@ -888,6 +905,12 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                     #[cfg(feature = "prometheus")]
                     metrics::gauge!("zaino.chain.tip_height").set(chain_height.0 as f64);
                     let finalised_height = finalized_height_floor(chain_height.0);
+                    #[cfg(feature = "prometheus")]
+                    {
+                        metrics::gauge!(CHAIN_TIP_HEIGHT).set(chain_height.0 as f64);
+                        metrics::gauge!(SYNC_LAG_BLOCKS)
+                            .set((chain_height.0 - finalised_height.0) as f64);
+                    }
 
                     fs.sync_to_height(finalised_height, &source)
                         .await
@@ -937,6 +960,17 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         consecutive_failures = 0;
                         current_backoff = timings.initial_backoff;
                         status.store(StatusType::Ready);
+                        #[cfg(feature = "prometheus")]
+                        {
+                            metrics::counter!(SYNC_ITERATIONS_TOTAL).increment(1);
+                            metrics::histogram!(SYNC_ITERATION_DURATION_SECONDS)
+                                .record(iteration_start.elapsed().as_secs_f64());
+                            if !has_reached_tip {
+                                has_reached_tip = true;
+                                metrics::gauge!(SYNC_HAS_REACHED_TIP).set(1.0);
+                                metrics::gauge!(SYNC_REACHED_TIP_AT).set(unix_now_secs());
+                            }
+                        }
                         // Race the post-success wait against cancellation
                         // and a source-change notification. `shutdown()`'s
                         // `cancel_token.cancel()` releases this immediately
@@ -956,20 +990,35 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                     }
                     Err(e) => {
                         consecutive_failures += 1;
+                        #[cfg(feature = "prometheus")]
+                        {
+                            metrics::counter!(SYNC_ITERATIONS_TOTAL).increment(1);
+                            metrics::histogram!(SYNC_ITERATION_DURATION_SECONDS)
+                                .record(iteration_start.elapsed().as_secs_f64());
+                        }
                         if consecutive_failures >= timings.max_consecutive_failures {
+                            #[cfg(feature = "prometheus")]
+                            metrics::counter!(SYNC_ERRORS_TOTAL, "severity" => "critical")
+                                .increment(1);
                             tracing::error!(
-                                "Sync loop failed {consecutive_failures} consecutive times, \
-                                 giving up: {e:?}"
+                                consecutive_failures,
+                                ?e,
+                                "sync loop failed, giving up"
                             );
                             status.store(StatusType::CriticalError);
                             return Err(e);
                         }
                         tracing::warn!(
-                            "Sync loop iteration failed ({consecutive_failures}/{}), \
-                             retrying in {current_backoff:?}: {e:?}",
-                            timings.max_consecutive_failures
+                            consecutive_failures,
+                            max = timings.max_consecutive_failures,
+                            backoff = ?current_backoff,
+                            ?e,
+                            "sync loop iteration failed, retrying"
                         );
                         status.store(StatusType::RecoverableError);
+                        #[cfg(feature = "prometheus")]
+                        metrics::counter!(SYNC_ERRORS_TOTAL, "severity" => "recoverable")
+                            .increment(1);
                         // Race the failure-path backoff sleep against
                         // cancellation. Without this, `shutdown()` after
                         // `fs.shutdown()` would force the worker through

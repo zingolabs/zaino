@@ -257,9 +257,9 @@ pub trait Migration<T: BlockchainSource> {
     ) -> impl SendFut<Result<(), FinalisedStateError>> {
         async move {
             info!(
-                "Starting metadata-only migration from {} to {}.",
-                Self::CURRENT_VERSION,
-                Self::TO_VERSION,
+                from = %Self::CURRENT_VERSION,
+                to = %Self::TO_VERSION,
+                "starting metadata-only migration"
             );
 
             let mut metadata: DbMetadata = router.get_metadata().await?;
@@ -272,9 +272,9 @@ pub trait Migration<T: BlockchainSource> {
             router.update_metadata(metadata).await?;
 
             info!(
-                "Metadata-only migration from {} to {} complete.",
-                Self::CURRENT_VERSION,
-                Self::TO_VERSION,
+                from = %Self::CURRENT_VERSION,
+                to = %Self::TO_VERSION,
+                "metadata-only migration complete"
             );
 
             Ok(())

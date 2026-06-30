@@ -146,7 +146,7 @@ pub(super) trait LmdbLifecycle: Sync {
                 _ = sleep(Duration::from_secs(5)) => {},
                 _ = maintenance.tick() => {
                     if let Err(e) = self.clean_trailing().await {
-                        warn!("clean_trailing failed: {}", e);
+                        warn!(%e, "clean_trailing failed");
                     }
                 }
                 _ = self.cancel_token().cancelled() => {},
@@ -173,7 +173,7 @@ pub(super) trait LmdbLifecycle: Sync {
                         match res {
                             Ok(_) => {}
                             Err(e) if e.is_cancelled() => {}
-                            Err(e) => warn!("background task ended with error: {e:?}"),
+                            Err(e) => warn!(?e, "background task ended with error"),
                         }
                     }
                     _ = &mut timeout => {
@@ -185,7 +185,7 @@ pub(super) trait LmdbLifecycle: Sync {
 
             let _ = self.clean_trailing().await;
             if let Err(e) = self.env().sync(true) {
-                warn!("LMDB fsync before close failed: {e}");
+                warn!(%e, "LMDB fsync before close failed");
             }
             Ok(())
         }
