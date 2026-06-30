@@ -189,8 +189,7 @@ COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-downloader
 COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-downloader /usr/bin/zcash-cli /home/container_user/artifacts/
 COPY --chown=container_user:container_user --chmod=0755 --from=zebra-downloader /usr/local/bin/zebrad /home/container_user/artifacts/
 COPY --chown=container_user:container_user --chmod=0755 --from=devtool-builder /tmp/zcash-devtool /home/container_user/artifacts/
-RUN cargo install cargo-nextest --locked --verbose --root "${CARGO_HOME}" && \
-    cargo install rust-script --locked --verbose --root "${CARGO_HOME}"
+RUN cargo install cargo-nextest --locked --verbose --root "${CARGO_HOME}"
 
 ENTRYPOINT ["/home/container_user/bin/entrypoint.sh"]
 CMD ["/bin/bash"]
@@ -206,8 +205,7 @@ COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-builder /t
 COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-builder /tmp/zcash-cli /home/container_user/artifacts/
 COPY --chown=container_user:container_user --chmod=0755 --from=zebra-downloader /usr/local/bin/zebrad /home/container_user/artifacts/
 COPY --chown=container_user:container_user --chmod=0755 --from=devtool-builder /tmp/zcash-devtool /home/container_user/artifacts/
-RUN cargo install cargo-nextest --locked --verbose --root "${CARGO_HOME}" && \
-    cargo install rust-script --locked --verbose --root "${CARGO_HOME}"
+RUN cargo install cargo-nextest --locked --verbose --root "${CARGO_HOME}"
 
 ENTRYPOINT ["/home/container_user/bin/entrypoint.sh"]
 CMD ["/bin/bash"]
@@ -223,8 +221,7 @@ COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-downloader
 COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-downloader /usr/bin/zcash-cli /home/container_user/artifacts/
 COPY --chown=container_user:container_user --chmod=0755 --from=zebra-builder /tmp/zebrad /home/container_user/artifacts/
 COPY --chown=container_user:container_user --chmod=0755 --from=devtool-builder /tmp/zcash-devtool /home/container_user/artifacts/
-RUN cargo install cargo-nextest --locked --verbose --root "${CARGO_HOME}" && \
-    cargo install rust-script --locked --verbose --root "${CARGO_HOME}"
+RUN cargo install cargo-nextest --locked --verbose --root "${CARGO_HOME}"
 
 ENTRYPOINT ["/home/container_user/bin/entrypoint.sh"]
 CMD ["/bin/bash"]
@@ -240,8 +237,7 @@ COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-builder /t
 COPY --chown=container_user:container_user --chmod=0755 --from=zcashd-builder /tmp/zcash-cli /home/container_user/artifacts/
 COPY --chown=container_user:container_user --chmod=0755 --from=zebra-builder /tmp/zebrad /home/container_user/artifacts/
 COPY --chown=container_user:container_user --chmod=0755 --from=devtool-builder /tmp/zcash-devtool /home/container_user/artifacts/
-RUN cargo install cargo-nextest --locked --verbose --root "${CARGO_HOME}" && \
-    cargo install rust-script --locked --verbose --root "${CARGO_HOME}"
+RUN cargo install cargo-nextest --locked --verbose --root "${CARGO_HOME}"
 
 ENTRYPOINT ["/home/container_user/bin/entrypoint.sh"]
 CMD ["/bin/bash"]
