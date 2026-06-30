@@ -294,8 +294,8 @@ fn spend_index_dir(cfg: &ChainIndexConfig) -> std::path::PathBuf {
 /// The build streams `[Sapling activation, finalised tip]` from `source` — the
 /// zebra StateService, supplied by
 /// [`BlockchainSource::finalised_spend_index_source`] — into the index's own
-/// LMDB env. The task logs its outcome. The caller currently detaches the
-/// handle (POC); production should track it for shutdown/cancellation.
+/// LMDB env. The task logs its outcome; the owning `ChainIndex` holds the
+/// returned handle and aborts it on shutdown/drop.
 pub(crate) fn spawn_build(
     source: StateSource,
     cfg: &ChainIndexConfig,
