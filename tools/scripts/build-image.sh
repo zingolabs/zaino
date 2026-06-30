@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the container image for testing artifacts.
 #
-# Builds from integration-tests/test_environment, which contains the
+# Builds from live-tests/test_environment, which contains the
 # Containerfile and entrypoint.sh for the CI/test environment.
 #
 # Sourced as the script.main of the `build-image` task (extends
@@ -40,7 +40,7 @@ info "Files in tools/scripts/: $(ls -la tools/scripts/ | head -5)"
 DEVTOOL_REV=$(resolve_devtool_rev "$DEVTOOL_VERSION")
 info "Resolved DEVTOOL_VERSION=$DEVTOOL_VERSION to DEVTOOL_REV=$DEVTOOL_REV"
 
-cd integration-tests/test_environment && \
+cd live-tests/test_environment && \
 podman build -f Containerfile \
   --target "$TARGET" \
   --build-arg "ZCASH_VERSION=$ZCASH_VERSION" \

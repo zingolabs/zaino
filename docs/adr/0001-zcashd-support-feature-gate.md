@@ -2,7 +2,10 @@
 
 ## Status
 
-accepted
+accepted — the **default-on** choice is superseded by
+[ADR-0005](0005-zcashd-support-default-off.md): `zcashd_support` is now
+**opt-in** (`default = []`). The feature, its additive semantics, its name, and
+what it gates (below) all still stand; only its default membership changed.
 
 ## Context and decision
 

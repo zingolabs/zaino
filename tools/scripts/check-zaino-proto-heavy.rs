@@ -1,9 +1,9 @@
 // Guard: `zaino-proto`'s `heavy` feature must stay enabled when a workspace is
 // built with `--no-default-features`.
 //
-// `makers container-test` / `integration-test` run the suite with
-// `--no-default-features` to drop the deprecated, default-on `zcashd_support`
-// feature. `heavy` is a *separate* default feature, on `zaino-proto` only, that
+// The test suite runs with `--no-default-features` (the zcashd-off world;
+// `zcashd_support` is opt-in and deprecating, docs/adr/0005). `heavy` is a
+// *separate* default feature, on `zaino-proto` only, that
 // pulls in zebra-state / zebra-chain / which. It survives `--no-default-features`
 // only because every dependent pulls `zaino-proto` with default features (no
 // `default-features = false` on those edges). If someone adds
@@ -20,8 +20,8 @@ use std::process::Command;
 // Workspaces whose test suites run with --no-default-features, by manifest path.
 const WORKSPACES: &[(&str, &str)] = &[
     ("production", "Cargo.toml"),
-    ("integration-tests", "integration-tests/Cargo.toml"),
-    ("wallet-tests", "integration-tests/wallet-tests/Cargo.toml"),
+    ("live-tests", "live-tests/Cargo.toml"),
+    ("e2e", "live-tests/e2e/Cargo.toml"),
 ];
 
 // The feature node `cargo tree -e features` prints when `heavy` is enabled.
@@ -63,7 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "[{label}] FAIL: zaino-proto `heavy` is NOT enabled under --no-default-features.\n\
                  A `zaino-proto` dependency likely sets `default-features = false`, which strips\n\
                  `heavy` (zebra-state / zebra-chain / which) from the no-zcashd test build that\n\
-                 `makers container-test` / `integration-test` use. Remove that\n\
+                 `makers container-test` / `live` use. Remove that\n\
                  `default-features = false`. See docs/adr/0001-zcashd-support-feature-gate.md.\n\
                  --- cargo tree output ---\n{stdout}"
             );

@@ -5,7 +5,7 @@ on:
     inputs:
       nextest-profile:
         type: string
-        default: 'quick'
+        default: 'default'
   workflow_dispatch:
   push:
     tags:
@@ -40,7 +40,7 @@ jobs:
           docker run --rm -v "$PWD:/repo" -w /repo \
             --entrypoint hadolint \
             hadolint/hadolint:v2.14.0@sha256:27086352fd5e1907ea2b934eb1023f217c5ae087992eb59fde121dce9c9ff21e \
-            Dockerfile integration-tests/test_environment/Containerfile
+            Dockerfile live-tests/test_environment/Containerfile
 
   fmt:
     name: Rustfmt
@@ -119,7 +119,20 @@ jobs:
             target/debug/deps
 
       - name: Build and archive tests
-        run: cargo nextest archive --verbose --workspace --all-features --archive-file nextest-archive.tar.zst
+        # --no-default-features, NOT --all-features: enable only what the CI test
+        # machinery needs. `test_dependencies` (the launch_inner_with_listeners
+        # harness path) and zcash_protocol/local-consensus are pulled in by the
+        # test crates' own dependency declarations and survive feature
+        # unification, so the harness still functions. This deliberately omits
+        # the product features `--all-features` was speculatively enabling:
+        #   - zcashd_support (opt-in; docs/adr/0001, 0005): zcashd is being
+        #     deprecated; zcashd-backed tests cfg out and are not executed in CI.
+        #   - experimental_features / transparent_address_history_experimental:
+        #     not shipped on by default; CI should not gate on a non-release combo.
+        #   - prometheus.
+        # This also matches what local `makers container-test` runs by default, so
+        # CI and local exercise the same feature set.
+        run: cargo nextest archive --verbose --workspace --no-default-features --archive-file nextest-archive.tar.zst
 
       - name: Save cargo dependencies
         if: steps.restore-cargo.outputs.cache-hit != 'true'
@@ -154,12 +167,18 @@ jobs:
       fail-fast: false
       matrix:
         partition:
-          # - "integration-tests::chain_cache" FIXME: this must be reintroduced when the chain index test hangs are debugged
-          - "integration-tests::fetch_service"
-          - "integration-tests::json_server"
-          - "integration-tests::state_service"
-          - "integration-tests::test_vectors"
-          - "integration-tests::wallet_to_validator"
+          # - "clientless::chain_cache"  # disabled: timeouts/hangs pending chain-index
+          #   integration; re-enable per https://github.com/zingolabs/zaino/issues/1312
+          - "clientless::fetch_service"
+          - "clientless::json_server"
+          - "clientless::state_service"
+          - "clientless::test_vectors"
+          # NOTE: the e2e partition (e2e::devtool, e2e::devtool_zcashd,
+          # e2e::test_vectors) now lives in the unified --workspace archive and
+          # is compiled every run, but is intentionally NOT executed here —
+          # adding the validator-heavy e2e suite to this job is a CI-capacity
+          # decision tracked in https://github.com/zingolabs/zaino/issues/1308.
+          # When added, regenerate this matrix with `makers update-test-targets`.
           - "zainod"
           - "zaino-state"
           - "zaino-testutils"
@@ -196,12 +215,18 @@ jobs:
 
       - name: Run Tests (Nextest)
         env:
-          TEST_BINARIES_DIR: ${{ github.workspace }}/integration-tests/test_binaries/bins
+          TEST_BINARIES_DIR: ${{ github.workspace }}/live-tests/test_binaries/bins
         run: |
-          cargo nextest run --verbose --profile ${{ inputs.nextest-profile || 'quick' }} --retries 2 --no-tests fail --archive-file nextest-archive.tar.zst \
-            --workspace-remap ./ --filterset "binary_id(${{ matrix.partition }})" ${{ env.NEXTEST-FLAGS }}
+          # Retries are NOT set here: the `default` profile scopes retries = 2 to
+          # the live packages (e2e/clientless) and keeps production unit partitions
+          # at retries = 0. A global `--retries` flag would blanket the unit tests too.
+          #
+          # `--no-tests fail` guards against a mistyped partition (binary_id matching
+          # nothing).
+          cargo nextest run --verbose --profile ${{ inputs.nextest-profile || 'default' }} --no-tests fail --archive-file nextest-archive.tar.zst \
+            --workspace-remap ./ --filterset "binary_id(${{ matrix.partition }})"
 
       - name: Test Summary
         uses: test-summary/action@v2
         with:
-          paths: "target/nextest/${{ inputs.nextest-profile || 'quick' }}/junit.xml"
+          paths: "target/nextest/${{ inputs.nextest-profile || 'default' }}/junit.xml"

@@ -82,7 +82,6 @@ The Zaino repo consists of several crates that collectively provide an indexing 
 - toml
 
 **Test:**
-- portpicker
 - tempfile
 
 
