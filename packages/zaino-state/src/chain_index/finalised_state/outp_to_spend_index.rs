@@ -151,4 +151,28 @@ mod collate {
         let records = [record(1, 0), record(1, 0)];
         assert!(super::collate(&records).is_err());
     }
+
+    #[test]
+    fn little_endian_index_tie_break_matches_byte_order() {
+        // Same creating txid, two output indices. The index is LE-encoded, so
+        // 256 (bytes `00 01 00 00`) sorts before 1 (`01 00 00 00`) under memcmp
+        // — exactly the order LMDB's default comparator (and thus MDB_APPEND)
+        // requires. collate must reproduce that, not a numeric ordering.
+        let encoded =
+            super::collate(&[record(7, 1), record(7, 256)]).expect("disjoint keys collate cleanly");
+
+        assert!(
+            encoded[0].0 < encoded[1].0,
+            "keys must be strictly ascending for MDB_APPEND",
+        );
+        // The trailing LE u32 of each key shows index 256 precedes index 1.
+        assert_eq!(
+            &encoded[0].0[encoded[0].0.len() - 4..],
+            &256u32.to_le_bytes()[..]
+        );
+        assert_eq!(
+            &encoded[1].0[encoded[1].0.len() - 4..],
+            &1u32.to_le_bytes()[..]
+        );
+    }
 }
