@@ -106,6 +106,27 @@ impl AccumulatorRebuildMemorySize {
     }
 }
 
+/// Retention policy for a *previous* major's database directory after a major switch/promotion.
+///
+/// Major database directories may coexist on disk (e.g. `mainnet/v1/` and `mainnet/v2/`). After a
+/// successful major migration promotes a new major to primary, this controls what happens to the old
+/// major's directory:
+/// - [`OldDbRetention::Keep`] leaves it on disk so switching back to that major is instant (no
+///   rebuild), at the cost of disk space.
+/// - [`OldDbRetention::Delete`] removes it to reclaim disk; switching back later triggers a fresh
+///   build.
+///
+/// Defaults to [`OldDbRetention::Keep`] (the safe, no-data-loss choice).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OldDbRetention {
+    /// Keep the old major's directory after promotion (instant switch-back; uses more disk).
+    #[default]
+    Keep,
+    /// Delete the old major's directory after promotion (reclaims disk; switching back rebuilds).
+    Delete,
+}
+
 /// Database configuration.
 ///
 /// Configures the file path and size limits for persistent storage
@@ -157,6 +178,13 @@ pub struct DatabaseConfig {
     /// crash-loss / corruption window. Defaults to 120 seconds (2 minutes).
     #[serde(default = "default_sync_checkpoint_interval")]
     pub sync_checkpoint_interval: u64,
+
+    /// Retention policy for a previous major's database directory after a major switch.
+    ///
+    /// See [`OldDbRetention`]. Defaults to [`OldDbRetention::Keep`]. Read at the chain-index layer
+    /// during major migrations; not yet surfaced in higher-layer (e.g. `zainod`) config.
+    #[serde(default)]
+    pub old_db_retention: OldDbRetention,
 }
 
 /// Default [`DatabaseConfig::sync_checkpoint_interval`]: 120 seconds (2 minutes).
@@ -172,6 +200,7 @@ impl Default for DatabaseConfig {
             sync_write_batch_size: SyncWriteBatchSize::default(),
             accumulator_rebuild_memory_size: AccumulatorRebuildMemorySize::default(),
             sync_checkpoint_interval: default_sync_checkpoint_interval(),
+            old_db_retention: OldDbRetention::default(),
         }
     }
 }
@@ -201,6 +230,12 @@ mod tests {
             AccumulatorRebuildMemorySize(8)
         );
         assert_eq!(database.sync_checkpoint_interval, 120);
+    }
+
+    #[test]
+    fn default_old_db_retention_is_keep() {
+        assert_eq!(OldDbRetention::default(), OldDbRetention::Keep);
+        assert_eq!(DatabaseConfig::default().old_db_retention, OldDbRetention::Keep);
     }
 
     #[test]

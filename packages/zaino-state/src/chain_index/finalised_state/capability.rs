@@ -574,6 +574,15 @@ pub(crate) enum MigrationStatus {
 
     /// Migration work is complete and the database is ready for promotion/steady-state operation.
     Complete,
+
+    /// A new major's database directory is being built from scratch and has not yet been promoted.
+    ///
+    /// Stamped by the major build-and-promote helper before any data is written, and cleared (the
+    /// metadata set to the target version with status `Empty`) only at the completion gate. A
+    /// directory in this state is classified as an incomplete build at startup and is never opened as
+    /// the serving primary (ADR 0002, C7). Patch/minor migrations never set it, so a primary that
+    /// crashed mid-patch or mid-minor stays authoritative.
+    MajorBuildInProgress,
 }
 
 /// Human-readable migration status for logs and diagnostics.
@@ -585,6 +594,7 @@ impl fmt::Display for MigrationStatus {
             MigrationStatus::PartialBuildComplete => "Partial build complete",
             MigrationStatus::FinalBuildInProgress => "Final build in progress",
             MigrationStatus::Complete => "Complete",
+            MigrationStatus::MajorBuildInProgress => "Major build in progress",
         };
         write!(f, "{status_str}")
     }
@@ -612,6 +622,7 @@ impl ZainoVersionedSerde for MigrationStatus {
             MigrationStatus::PartialBuildComplete => 2,
             MigrationStatus::FinalBuildInProgress => 3,
             MigrationStatus::Complete => 4,
+            MigrationStatus::MajorBuildInProgress => 5,
         };
         write_u8(w, tag)
     }
@@ -623,6 +634,7 @@ impl ZainoVersionedSerde for MigrationStatus {
             2 => Ok(MigrationStatus::PartialBuildComplete),
             3 => Ok(MigrationStatus::FinalBuildInProgress),
             4 => Ok(MigrationStatus::Complete),
+            5 => Ok(MigrationStatus::MajorBuildInProgress),
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("invalid MigrationStatus tag: {other}"),

@@ -122,9 +122,13 @@
 //!
 //! # On-disk layout and version detection
 //!
-//! Database discovery is intentionally conservative: `try_find_current_db_version` returns the
-//! **oldest** detected version, because the process may have been terminated mid-migration, leaving
-//! multiple version directories on disk.
+//! Startup honours the configured target major (`cfg.db_version`) even when several majors coexist on
+//! disk. `detect_major_dirs` probes which major directories are present, and `select_primary` opens
+//! the serving primary per ADR 0002 (C7): open the requested major if it is authoritative; otherwise
+//! serve from the best older authoritative major while the requested major is (re)built; otherwise
+//! build the requested major fresh. A half-built major target (classified from its metadata via
+//! `is_authoritative`) is never opened as primary, so a major migration interrupted mid-build resumes
+//! from the older database rather than serving partial data.
 //!
 //! The current logic recognises two layouts:
 //!
@@ -365,6 +369,29 @@ pub(crate) struct FinalisedState<T: BlockchainSource> {
     cfg: ChainIndexConfig,
 }
 
+/// The newest supported [`DbVersion`] for a given major, or `None` if the major is unsupported.
+///
+/// Single source of truth for "latest version per major", used by both startup target selection
+/// ([`FinalisedState::spawn`]) and the default major migration (which builds a new major directly to
+/// its newest version).
+fn latest_version_for_major(major: u32) -> Option<DbVersion> {
+    match major {
+        1 => Some(DB_VERSION_V1),
+        _ => None,
+    }
+}
+
+/// Classifies an opened major directory from its persisted metadata (ADR 0002, C7).
+///
+/// A directory is *authoritative* — eligible to be opened as the serving primary — unless it is a
+/// half-built major target, which the build-and-promote helper marks with
+/// [`MigrationStatus::MajorBuildInProgress`]. Every other readable metadata is authoritative,
+/// **including** a primary that crashed mid-patch or mid-minor (whose data is complete at the old
+/// version and is merely being transformed in place); such a database must never be refused.
+fn is_authoritative(metadata: &DbMetadata) -> bool {
+    metadata.migration_status() != MigrationStatus::MajorBuildInProgress
+}
+
 /// Lifecycle, migration control, and core read/write API for the finalised database.
 ///
 /// This `impl` intentionally stays small and policy heavy:
@@ -377,16 +404,20 @@ impl<T: BlockchainSource> FinalisedState<T> {
     /// Spawns a `FinalisedState` instance.
     ///
     /// This method:
-    /// 1. Detects the on-disk database version (if any) using [`FinalisedState::try_find_current_db_version`].
-    /// 2. Selects a target schema version from `cfg.db_version`.
-    /// 3. Opens the existing database at the detected version, or creates a new database at the
-    ///    target version.
-    /// 4. If an existing database is older than the target (`current_version < target_version`),
-    ///    runs migrations using `migrations::MigrationManager`.
+    /// 1. Selects a target major from `cfg.db_version` and its latest version via
+    ///    [`latest_version_for_major`].
+    /// 2. Detects the major directories present on disk ([`FinalisedState::detect_major_dirs`]) and
+    ///    opens the serving primary per the ADR 0002 selection rules
+    ///    ([`FinalisedState::select_primary`]).
+    /// 3. If the opened primary is older than the target (`current_version < target_version`), runs
+    ///    migrations in the background using `migrations::MigrationManager`.
     ///
     /// ## Version selection rules
-    /// - `cfg.db_version == 1` targets the latest v1 DB version (`DB_VERSION_V1`)..
-    /// - Any other value (including the legacy `0`) returns an error.
+    /// - `cfg.db_version` selects the target major; its latest version comes from
+    ///   [`latest_version_for_major`]. An unsupported major (or the legacy `0` layout) returns an
+    ///   error.
+    /// - The configured major is honoured even when multiple majors coexist on disk; a half-built
+    ///   major target is never opened as primary.
     ///
     /// ## Migrations
     /// Migrations are invoked only when a database already exists on disk and the opened database
@@ -416,53 +447,34 @@ impl<T: BlockchainSource> FinalisedState<T> {
                 cfg,
             });
         } else {
-            let version_opt = Self::try_find_current_db_version(&cfg).await;
+            // Legacy v0 is detected only to reject it: v0 is no longer supported.
+            if Self::legacy_v0_present(&cfg) {
+                return Err(FinalisedStateError::Custom(format!(
+                    "legacy v0 database detected at {}; v0 is no longer supported. \
+                     Remove the directory and restart to resync a v1 database from genesis.",
+                    cfg.storage.database.path.display()
+                )));
+            }
 
-            let target_version = match cfg.db_version {
-                1 => DB_VERSION_V1,
-                x => {
-                    return Err(FinalisedStateError::Custom(format!(
-                        "unsupported database version: DbV{x}"
-                    )));
-                }
-            };
+            let target_major = cfg.db_version;
+            let target_version = latest_version_for_major(target_major).ok_or_else(|| {
+                FinalisedStateError::Custom(format!("unsupported database version: DbV{target_major}"))
+            })?;
 
-            let backend = match version_opt {
-                Some(version) => {
-                    info!(version, "Opening FinalisedState from file");
-                    match version {
-                        0 => {
-                            return Err(FinalisedStateError::Custom(format!(
-                                "legacy v0 database detected at {}; v0 is no longer supported. \
-                                 Remove the directory and restart to resync a v1 database from genesis.",
-                                cfg.storage.database.path.display()
-                            )));
-                        }
-                        1 => FinalisedSource::spawn_v1(&cfg).await?,
-                        _ => {
-                            return Err(FinalisedStateError::Custom(format!(
-                                "unsupported database version: DbV{version}"
-                            )));
-                        }
-                    }
-                }
-                None => {
-                    info!(version = %target_version, "Creating new FinalisedState");
-                    match target_version.major() {
-                        1 => FinalisedSource::spawn_v1(&cfg).await?,
-                        _ => {
-                            return Err(FinalisedStateError::Custom(format!(
-                                "unsupported database version: DbV{target_version}"
-                            )));
-                        }
-                    }
-                }
-            };
+            // Open the serving primary per the ADR 0002 selection rules, honouring the configured
+            // major even when several majors coexist on disk.
+            let present_majors = Self::detect_major_dirs(&cfg);
+            let backend = Self::select_primary(&cfg, target_major, &present_majors).await?;
+
             let current_version = backend.get_metadata().await?.version();
 
             let router = Arc::new(Router::new(Arc::new(backend)));
 
-            if version_opt.is_some() && current_version < target_version {
+            // Migrate when the opened primary is behind the target. A freshly created database is
+            // initialised at its major's latest version (so `current_version == target_version` and
+            // this is skipped); an older on-disk major triggers the forward path — minor/patch within
+            // the major, or a major build-and-promote when the configured major is newer.
+            if current_version < target_version {
                 info!(
                     from_version = %current_version,
                     to_version = %target_version,
@@ -579,60 +591,136 @@ impl<T: BlockchainSource> FinalisedState<T> {
         }
     }
 
-    /// Attempts to detect the current on-disk database version from the filesystem layout.
+    /// Returns `true` if a legacy v0 database directory is present on disk.
     ///
-    /// The detection is intentionally conservative: it returns the **oldest** detected version,
-    /// because the process may have been terminated mid-migration, leaving both an older primary
-    /// and a newer shadow directory on disk.
-    ///
-    /// ## Recognised layouts
-    ///
-    /// - **Legacy v0 layout**
-    ///   - Network directories: `live/`, `test/`, `local/`
-    ///   - Presence check: both `data.mdb` and `lock.mdb` exist
-    ///   - Reported version: `Some(0)`. v0 is no longer supported, so `spawn` rejects this with a
-    ///     clear error rather than opening or migrating it; detection exists only to produce that
-    ///     error.
-    ///
-    /// - **Versioned v1+ layout**
-    ///   - Network directories: `mainnet/`, `testnet/`, `regtest/`
-    ///   - Version subdirectories: enumerated by `finalised_source::VERSION_DIRS` (e.g. `"v1"`)
-    ///   - Presence check: both `data.mdb` and `lock.mdb` exist within a version directory
-    ///   - Reported version: `Some(i + 1)` where `i` is the index in `VERSION_DIRS`
-    ///
-    /// Returns:
-    /// - `Some(version)` if a compatible database directory is found,
-    /// - `None` if no database is detected (fresh DB creation case).
-    async fn try_find_current_db_version(cfg: &ChainIndexConfig) -> Option<u32> {
+    /// v0 is no longer supported: detection exists only so `spawn` can reject it with a clear error.
+    /// The legacy layout uses the network directories `live/` (mainnet), `test/` (testnet),
+    /// `local/` (regtest) holding LMDB `data.mdb` + `lock.mdb`.
+    fn legacy_v0_present(cfg: &ChainIndexConfig) -> bool {
         let legacy_dir = match cfg.network.to_zebra_network().kind() {
             NetworkKind::Mainnet => "live",
             NetworkKind::Testnet => "test",
             NetworkKind::Regtest => "local",
         };
         let legacy_path = cfg.storage.database.path.join(legacy_dir);
-        if legacy_path.join("data.mdb").exists() && legacy_path.join("lock.mdb").exists() {
-            return Some(0);
-        }
+        legacy_path.join("data.mdb").exists() && legacy_path.join("lock.mdb").exists()
+    }
 
+    /// Detects which major database directories physically exist on disk.
+    ///
+    /// Returns the set of present majors. The versioned layout stores each major under a per-network
+    /// directory (`mainnet/`, `testnet/`, `regtest/`) in a subdirectory enumerated by
+    /// `finalised_source::VERSION_DIRS` — `VERSION_DIRS[i]` is major `i + 1`. Presence is "both
+    /// `data.mdb` and `lock.mdb` exist". This is a cheap filesystem probe; classification
+    /// (authoritative vs incomplete build) is done by reading each candidate's metadata after opening
+    /// it (see [`FinalisedState::select_primary`]).
+    fn detect_major_dirs(cfg: &ChainIndexConfig) -> std::collections::BTreeSet<u32> {
         let net_dir = match cfg.network.to_zebra_network().kind() {
             NetworkKind::Mainnet => "mainnet",
             NetworkKind::Testnet => "testnet",
             NetworkKind::Regtest => "regtest",
         };
         let net_path = cfg.storage.database.path.join(net_dir);
-        if net_path.exists() && net_path.is_dir() {
+
+        let mut majors = std::collections::BTreeSet::new();
+        if net_path.is_dir() {
             for (i, version_dir) in VERSION_DIRS.iter().enumerate() {
                 let db_path = net_path.join(version_dir);
-                let data_file = db_path.join("data.mdb");
-                let lock_file = db_path.join("lock.mdb");
-                if data_file.exists() && lock_file.exists() {
-                    let version = (i + 1) as u32;
-                    return Some(version);
+                if db_path.join("data.mdb").exists() && db_path.join("lock.mdb").exists() {
+                    majors.insert((i + 1) as u32);
+                }
+            }
+        }
+        majors
+    }
+
+    /// Opens the backend for a specific major version.
+    ///
+    /// Maps a major to its concrete `FinalisedSource` backend. (Step 5 promotes this to
+    /// `FinalisedSource::spawn_major` and adds further majors, e.g. DbV2.)
+    async fn open_major_backend(
+        cfg: &ChainIndexConfig,
+        major: u32,
+    ) -> Result<FinalisedSource<T>, FinalisedStateError> {
+        match major {
+            1 => FinalisedSource::spawn_v1(cfg).await,
+            other => Err(FinalisedStateError::Custom(format!(
+                "unsupported database version: DbV{other}"
+            ))),
+        }
+    }
+
+    /// Selects and opens the serving primary backend per the ADR 0002 (C7) selection rules, honouring
+    /// the configured `target_major` even when several majors coexist on disk.
+    ///
+    /// 1. **Requested major present and authoritative** → open and serve it; the planner resumes any
+    ///    in-flight patch/minor and migrates it forward to that major's latest version.
+    /// 2. **Requested major absent or an incomplete build** → open the best *authoritative older*
+    ///    major to keep serving; the background migration then builds the requested major and promotes
+    ///    it. A half-built target is never served as primary — this is the "stopped a major migration
+    ///    then restarted" case.
+    /// 3. **No authoritative database** → build the requested major fresh from genesis.
+    async fn select_primary(
+        cfg: &ChainIndexConfig,
+        target_major: u32,
+        present_majors: &std::collections::BTreeSet<u32>,
+    ) -> Result<FinalisedSource<T>, FinalisedStateError> {
+        // Rule 1: requested major present and authoritative.
+        if present_majors.contains(&target_major) {
+            let backend = Self::open_major_backend(cfg, target_major).await?;
+            match backend.get_metadata().await {
+                Ok(metadata) if is_authoritative(&metadata) => {
+                    info!(
+                        major = target_major,
+                        version = %metadata.version(),
+                        "Opening requested major as primary"
+                    );
+                    return Ok(backend);
+                }
+                Ok(_incomplete) => {
+                    // A half-built major target: do not serve from it (ADR C7). Shut it down and
+                    // fall through to rebuilding it from an older authoritative major, or fresh.
+                    info!(
+                        major = target_major,
+                        "Requested major is an incomplete build; will rebuild and promote"
+                    );
+                    backend.shutdown().await?;
+                }
+                Err(error) => {
+                    // Unreadable metadata: treat as an incomplete build and rebuild.
+                    info!(
+                        major = target_major,
+                        %error, "Requested major metadata is unreadable; will rebuild and promote"
+                    );
+                    backend.shutdown().await?;
                 }
             }
         }
 
-        None
+        // Rule 2: an older authoritative major exists -> open it to keep serving while the requested
+        // major is built and promoted by the background migration.
+        for &older_major in present_majors.iter().rev().filter(|&&m| m < target_major) {
+            let backend = Self::open_major_backend(cfg, older_major).await?;
+            match backend.get_metadata().await {
+                Ok(metadata) if is_authoritative(&metadata) => {
+                    info!(
+                        serving_major = older_major,
+                        target_major, "Opening older major as primary; will build requested major"
+                    );
+                    return Ok(backend);
+                }
+                _ => {
+                    backend.shutdown().await?;
+                }
+            }
+        }
+
+        // Rule 3: no authoritative database -> build the requested major fresh from genesis.
+        info!(
+            major = target_major,
+            "No existing database for requested major; creating it fresh"
+        );
+        Self::open_major_backend(cfg, target_major).await
     }
 
     /// Returns the database backend that should serve the requested capability.
@@ -958,26 +1046,14 @@ impl<T: BlockchainSource> FinalisedState<T> {
             )));
         }
 
-        let version_opt = Self::try_find_current_db_version(&cfg).await;
-
-        let backend = match version_opt {
-            Some(version) => {
-                info!(version, "Opening FinalisedState from file");
-                match version {
-                    1 => FinalisedSource::spawn_v1(&cfg).await?,
-                    _ => {
-                        return Err(FinalisedStateError::Custom(format!(
-                            "unsupported database version: DbV{version}"
-                        )));
-                    }
-                }
-            }
-            None => {
-                return Err(FinalisedStateError::Custom(
-                    "expected existing v1.0.0 migration-test database, found no database"
-                        .to_string(),
-                ));
-            }
+        let present_majors = Self::detect_major_dirs(&cfg);
+        let backend = if present_majors.contains(&1) {
+            info!("Opening FinalisedState from file");
+            FinalisedSource::spawn_v1(&cfg).await?
+        } else {
+            return Err(FinalisedStateError::Custom(
+                "expected existing v1.0.0 migration-test database, found no database".to_string(),
+            ));
         };
         let current_version = backend.get_metadata().await?.version();
 
@@ -1120,5 +1196,40 @@ impl<T: BlockchainSource> FinalisedState<T> {
         drop(db);
 
         Self::spawn_with_target_version(cfg, source, target_version).await
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+
+    fn metadata_with(status: MigrationStatus) -> DbMetadata {
+        DbMetadata::new(DB_VERSION_V1, [0u8; 32], status)
+    }
+
+    #[test]
+    fn latest_version_for_major_maps_known_majors_only() {
+        assert_eq!(latest_version_for_major(1), Some(DB_VERSION_V1));
+        assert_eq!(latest_version_for_major(2), None);
+        assert_eq!(latest_version_for_major(0), None);
+    }
+
+    #[test]
+    fn major_build_in_progress_is_the_only_non_authoritative_state() {
+        // A half-built major target must never be served as primary (ADR 0002, C7).
+        assert!(!is_authoritative(&metadata_with(
+            MigrationStatus::MajorBuildInProgress
+        )));
+
+        // Every other readable metadata is authoritative — including a primary that crashed
+        // mid-patch / mid-minor, which must always remain openable.
+        assert!(is_authoritative(&metadata_with(MigrationStatus::Empty)));
+        assert!(is_authoritative(&metadata_with(
+            MigrationStatus::PartialBuidInProgress
+        )));
+        assert!(is_authoritative(&metadata_with(
+            MigrationStatus::FinalBuildInProgress
+        )));
+        assert!(is_authoritative(&metadata_with(MigrationStatus::Complete)));
     }
 }
