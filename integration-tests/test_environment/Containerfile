@@ -136,12 +136,12 @@ LABEL org.zaino.test-artifacts.versions.rust="${RUST_VERSION}"
 # Versions pinned (DL3008) to the candidates in rust:1.95.0-trixie; bump
 # together with the base image (query with `apt-cache policy <pkg>`).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libssl-dev=3.5.6-1~deb13u2 \
+    libssl-dev=3.5.6-1~deb13u1 \
     curl=8.14.1-2+deb13u3 \
     libclang-dev=1:19.0-63 \
     build-essential=12.12 \
     cmake=3.31.6-2 \
-    librocksdb-dev=9.10.0-1 \
+    librocksdb-dev=9.10.0-1+b1 \
     protobuf-compiler=3.21.12-11 \
     && rm -rf /var/lib/apt/lists/*
 
