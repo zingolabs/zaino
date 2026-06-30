@@ -4,10 +4,15 @@
 //! Proof of concept, gated behind the `outp_to_spend_index` feature. See
 //! `docs/adr/0002-finalised-spend-index-parallel-build.md`.
 //!
-//! Pure, read-free build stages live here: **extract** spends from a block
-//! batch and **collate** them into LMDB key order. The `MDB_APPEND` write and
-//! the independent sync loop that drives these land in later slices. (Table-
-//! level integrity over the entries is deferred; it is not MVP.)
+//! The build stages live here: **extract** spends from a block batch,
+//! **collate** them into LMDB key order, and bulk-load them into the index's
+//! own LMDB store via `MDB_APPEND` ([`SpendIndexDb`]). The independent sync
+//! loop that drives these (a genesis re-stream from zebra) lands in a later
+//! slice. (Table-level integrity over the entries is deferred; it is not MVP.)
+
+use std::path::Path;
+
+use lmdb::{Database, DatabaseFlags, Environment, EnvironmentFlags, Transaction as _, WriteFlags};
 
 use crate::chain_index::types::TransactionHash;
 use crate::error::FinalisedStateError;
@@ -70,9 +75,7 @@ fn spends_in_transaction(
 pub(super) fn collate(records: &[SpendRecord]) -> Result<Vec<EncodedSpend>, FinalisedStateError> {
     let mut encoded = records
         .iter()
-        .map(|(outpoint, spending_txid)| {
-            Ok((outpoint.to_bytes()?, <[u8; 32]>::from(*spending_txid)))
-        })
+        .map(|(outpoint, spending_txid)| Ok((outpoint.to_bytes()?, <[u8; 32]>::from(*spending_txid))))
         .collect::<Result<Vec<EncodedSpend>, FinalisedStateError>>()?;
 
     encoded.sort_by(|a, b| a.0.cmp(&b.0));
@@ -85,6 +88,92 @@ pub(super) fn collate(records: &[SpendRecord]) -> Result<Vec<EncodedSpend>, Fina
     }
 
     Ok(encoded)
+}
+
+// ── Store ────────────────────────────────────────────────────────────────────
+
+/// LMDB database name for the spend index (versioned, mirroring the
+/// finalised-state naming convention).
+const SPEND_DB_NAME: &str = "outp_to_spend_index_1_0_0";
+
+/// The spend index's **own** LMDB store: a single database keyed by the encoded
+/// outpoint, valued by the bare 32-byte spending txid. Standalone — its own
+/// `Environment`, independent of the finalised-state monolith's database.
+pub(super) struct SpendIndexDb {
+    env: Environment,
+    spend: Database,
+}
+
+impl SpendIndexDb {
+    /// Opens (creating if absent) the spend index at `path` with the given LMDB
+    /// `map_size`. Mirrors the finalised-state environment: **no `WRITE_MAP`**
+    /// (a crash discards uncommitted data rather than corrupting), with
+    /// reader-friendly flags. `path` is a directory, created if missing.
+    pub(super) fn open(path: &Path, map_size: usize) -> Result<Self, FinalisedStateError> {
+        std::fs::create_dir_all(path).map_err(|error| {
+            FinalisedStateError::Custom(format!(
+                "spend index: create dir {}: {error}",
+                path.display()
+            ))
+        })?;
+        let env = Environment::new()
+            .set_max_dbs(1)
+            .set_map_size(map_size)
+            .set_flags(EnvironmentFlags::NO_TLS | EnvironmentFlags::NO_READAHEAD)
+            .open(path)?;
+        let spend = env.create_db(Some(SPEND_DB_NAME), DatabaseFlags::empty())?;
+        Ok(Self { env, spend })
+    }
+
+    /// Bulk-loads collated (sorted, disjoint-key) entries with `MDB_APPEND` — a
+    /// sequential B-tree fill — in one transaction, then forces durability.
+    /// `entries` must be in ascending key order (see [`collate`]); a key out of
+    /// order or already present makes LMDB reject the append.
+    pub(super) fn bulk_load(&self, entries: &[EncodedSpend]) -> Result<(), FinalisedStateError> {
+        // One-shot / global-order contract: `entries` must be strictly ascending
+        // by key — `collate`'s output for *all* spends at once. `MDB_APPEND`
+        // requires every key to exceed the current maximum, so there is no
+        // re-sort across calls: a second `bulk_load` would need every key to
+        // exceed the first call's maximum. LMDB self-checks this at runtime (it
+        // rejects a non-increasing key with `KeyExist`); this assert fails earlier
+        // and with a clearer message in debug builds if a caller hands over an
+        // unsorted, duplicate, or per-batch (not globally sorted) input.
+        debug_assert!(
+            entries.windows(2).all(|pair| pair[0].0 < pair[1].0),
+            "bulk_load: entries must be strictly ascending, globally-sorted keys \
+             (MDB_APPEND is one-shot — feed all spends through a single collate)",
+        );
+        let mut txn = self.env.begin_rw_txn()?;
+        for (key, value) in entries {
+            txn.put(self.spend, key, value, WriteFlags::APPEND)?;
+        }
+        txn.commit()?;
+        self.env.sync(true)?;
+        Ok(())
+    }
+
+    /// The txid that consumed `outpoint`, or `None` if it is unspent in
+    /// finalised state. A single point lookup; the caller unions this with the
+    /// non-finalised window at serve time (the deferred seam union).
+    pub(super) fn spending_txid(
+        &self,
+        outpoint: &Outpoint,
+    ) -> Result<Option<TransactionHash>, FinalisedStateError> {
+        let key = outpoint.to_bytes()?;
+        let ro = self.env.begin_ro_txn()?;
+        match ro.get(self.spend, &key) {
+            Ok(bytes) => {
+                let array: [u8; 32] = bytes.try_into().map_err(|_| {
+                    FinalisedStateError::Custom(
+                        "spend index: stored value is not a 32-byte txid".to_string(),
+                    )
+                })?;
+                Ok(Some(TransactionHash::from(array)))
+            }
+            Err(lmdb::Error::NotFound) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -166,13 +255,37 @@ mod collate {
             "keys must be strictly ascending for MDB_APPEND",
         );
         // The trailing LE u32 of each key shows index 256 precedes index 1.
-        assert_eq!(
-            &encoded[0].0[encoded[0].0.len() - 4..],
-            &256u32.to_le_bytes()[..]
-        );
-        assert_eq!(
-            &encoded[1].0[encoded[1].0.len() - 4..],
-            &1u32.to_le_bytes()[..]
-        );
+        assert_eq!(&encoded[0].0[encoded[0].0.len() - 4..], &256u32.to_le_bytes()[..]);
+        assert_eq!(&encoded[1].0[encoded[1].0.len() - 4..], &1u32.to_le_bytes()[..]);
+    }
+}
+
+#[cfg(test)]
+mod spend_index_db {
+    use super::*;
+
+    #[test]
+    fn bulk_load_then_point_read_round_trips() {
+        let dir =
+            std::env::temp_dir().join(format!("outp_to_spend_index_roundtrip_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let db = SpendIndexDb::open(&dir, 1 << 20).expect("open spend index");
+
+        let spent_a = Outpoint::new([1u8; 32], 0);
+        let spent_b = Outpoint::new([2u8; 32], 7);
+        let spender = TransactionHash::from([9u8; 32]);
+
+        let collated =
+            super::collate(&[(spent_a, spender), (spent_b, spender)]).expect("collate");
+        db.bulk_load(&collated).expect("bulk load");
+
+        assert_eq!(db.spending_txid(&spent_a).expect("read a"), Some(spender));
+        assert_eq!(db.spending_txid(&spent_b).expect("read b"), Some(spender));
+        // An outpoint with no recorded spend reads back as unspent.
+        let unspent = Outpoint::new([3u8; 32], 0);
+        assert_eq!(db.spending_txid(&unspent).expect("read unspent"), None);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
