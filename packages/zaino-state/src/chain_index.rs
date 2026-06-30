@@ -62,6 +62,8 @@ pub mod mempool;
 pub mod non_finalised_state;
 /// BlockchainSource
 pub mod source;
+/// Tip-proximity sync-progress snapshot for readiness checks.
+pub mod sync_progress;
 /// Common types used by the rest of this module
 pub mod types;
 
@@ -688,6 +690,9 @@ pub struct NodeBackedChainIndex<Source: BlockchainSource = ValidatorConnector> {
     finalized_db: std::sync::Arc<finalised_state::FinalisedState<Source>>,
     sync_loop_handle: Option<tokio::task::JoinHandle<Result<(), SyncError>>>,
     status: NamedAtomicStatus,
+    /// Tip-proximity progress, shared with the sync loop and handed to
+    /// subscribers for readiness checks.
+    sync_progress: sync_progress::SyncProgress,
     network: ZebraNetwork,
     source: Source,
     sync_timings: SyncTimings,
@@ -784,6 +789,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             finalized_db,
             sync_loop_handle: None,
             status: NamedAtomicStatus::new("ChainIndex", StatusType::Spawning),
+            sync_progress: sync_progress::SyncProgress::new(),
             network: config.network.to_zebra_network(),
             source,
             sync_timings,
@@ -802,6 +808,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             non_finalized_state: self.non_finalized_state.clone(),
             finalized_state: self.finalized_db.to_reader(),
             status: self.status.clone(),
+            sync_progress: self.sync_progress.clone(),
             network: self.network.clone(),
             source: self.source.clone(),
         }
@@ -846,6 +853,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         let nfs = self.non_finalized_state.clone();
         let fs = self.finalized_db.clone();
         let status = self.status.clone();
+        let sync_progress = self.sync_progress.clone();
         let source = self.source.clone();
         let network = self.network.clone();
         let timings = self.sync_timings;
@@ -866,6 +874,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             loop {
                 let source = source.clone();
                 let network = network.clone();
+                let sync_progress = sync_progress.clone();
                 if cancel_token.is_cancelled() {
                     return Ok(());
                 }
@@ -904,6 +913,10 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         })?;
                     #[cfg(feature = "prometheus")]
                     metrics::gauge!("zaino.chain.tip_height").set(chain_height.0 as f64);
+                    // Record the observed network tip up front so a readiness
+                    // probe sees the growing gap *during* a catch-up, not only
+                    // after it completes.
+                    sync_progress.record_network_tip(chain_height.0);
                     let finalised_height = finalized_height_floor(chain_height.0);
                     #[cfg(feature = "prometheus")]
                     {
@@ -950,6 +963,11 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         .sync(fs.clone(), chain_height.into())
                         .await?;
                     std::mem::drop(intermediate_nfs_for_scoping);
+
+                    // Reaching here means both finalized and non-finalized
+                    // state are synced up to `chain_height`; refresh the local
+                    // tip and tip-age clock for readiness.
+                    sync_progress.record_synced(chain_height.0);
 
                     Ok(())
                     } => r,
@@ -1065,6 +1083,7 @@ pub struct NodeBackedChainIndexSubscriber<Source: BlockchainSource = ValidatorCo
     non_finalized_state: Arc<ArcSwapOption<crate::NonFinalizedState<Source>>>,
     finalized_state: finalised_state::reader::DbReader<Source>,
     status: NamedAtomicStatus,
+    sync_progress: sync_progress::SyncProgress,
     network: ZebraNetwork,
     source: Source,
 }
@@ -1157,6 +1176,14 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
             .combine(mempool_status);
         self.status.store(combined_status);
         combined_status
+    }
+
+    /// Returns a clone of the shared [`SyncProgress`] handle for tip-proximity
+    /// readiness checks.
+    ///
+    /// [`SyncProgress`]: crate::chain_index::sync_progress::SyncProgress
+    pub fn sync_progress(&self) -> sync_progress::SyncProgress {
+        self.sync_progress.clone()
     }
 
     /// Returns the number of transparent outputs of `txid` that are currently unspent in the

@@ -13,6 +13,7 @@ use tracing::{error, info};
 pub mod cli;
 pub mod config;
 pub mod error;
+pub mod health;
 pub mod indexer;
 #[cfg(feature = "prometheus")]
 pub mod metrics;

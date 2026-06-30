@@ -95,6 +95,8 @@ jsonrpsee-core = "0.24"
 jsonrpsee-types = "0.24"
 jsonrpsee = { version = "0.24", features = ["server", "macros"] }
 hyper = "1.6"
+hyper-util = "0.1"
+http-body-util = "0.1"
 
 # Hashmaps, channels, DBs
 indexmap = "2.2.6"

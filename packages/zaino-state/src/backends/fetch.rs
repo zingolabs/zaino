@@ -149,27 +149,17 @@ impl ZcashService for FetchService {
             .await
             .unwrap();
 
+        // `NodeBackedChainIndex::new` has already started the sync in a
+        // background task; the service is returned immediately (status
+        // `Syncing`) so callers can expose a health endpoint during the
+        // initial scan. The wait-until-`Ready` gate now lives in the indexer
+        // launch path (`Indexer::launch_inner`), after the health server is up.
         let fetch_service = Self {
             fetcher,
             indexer,
             data,
             config,
         };
-
-        // wait for sync to complete, return error on sync fail.
-        loop {
-            match fetch_service.status() {
-                StatusType::Ready | StatusType::Closing => break,
-                StatusType::CriticalError => {
-                    return Err(FetchServiceError::Critical(
-                        "ChainIndex initial sync failed, check full log for details.".to_string(),
-                    ));
-                }
-                _ => {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                }
-            }
-        }
 
         Ok(fetch_service)
     }
@@ -223,6 +213,12 @@ pub struct FetchServiceSubscriber {
 impl Status for FetchServiceSubscriber {
     fn status(&self) -> StatusType {
         self.indexer.status()
+    }
+}
+
+impl crate::chain_index::sync_progress::ChainSyncProgress for FetchServiceSubscriber {
+    fn sync_progress(&self) -> crate::chain_index::sync_progress::SyncProgress {
+        self.indexer.sync_progress()
     }
 }
 

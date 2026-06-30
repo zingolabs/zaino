@@ -68,6 +68,8 @@ pub mod chain_index;
 
 // Core ChainIndex trait and implementations
 pub use chain_index::{ChainIndex, NodeBackedChainIndex, NodeBackedChainIndexSubscriber};
+// Tip-proximity sync-progress signal for readiness checks
+pub use chain_index::sync_progress::{ChainSyncProgress, SyncProgress};
 // Source types for ChainIndex backends
 pub use chain_index::source::{BlockchainSource, State, ValidatorConnector};
 // Supporting types
