@@ -391,7 +391,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         Self::create_indexed_block_with_optional_roots(
             block.as_ref(),
             &tree_roots,
-            ChainWork::from(U256::zero()),
+            None,
             network.clone(),
         )
         .map_err(FinalisedStateError::Custom)
