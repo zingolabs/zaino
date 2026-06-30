@@ -6,7 +6,7 @@ repository = { workspace = true }
 homepage = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
-version = "0.4.1"
+version = "0.4.2"
 
 [[bin]]
 name = "zainod"
@@ -36,7 +36,7 @@ no_tls_use_unencrypted_traffic = ["zaino-serve/no_tls_use_unencrypted_traffic"]
 no_tls_with_prometheus = ["no_tls_use_unencrypted_traffic", "prometheus"]
 
 # Prometheus /metrics scrape endpoint.
-prometheus = ["metrics", "metrics-exporter-prometheus", "zaino-state/prometheus"]
+prometheus = ["metrics", "metrics-exporter-prometheus", "zaino-state/prometheus", "zaino-serve/prometheus", "zaino-fetch/prometheus"]
 
 # DANGER: allows the JSON-RPC server to bind to a public (non-private,
 # non-loopback) address. The JSON-RPC interface has NO transport encryption and

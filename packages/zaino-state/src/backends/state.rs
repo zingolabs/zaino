@@ -632,7 +632,7 @@ impl StateServiceSubscriber {
                         {
                             Ok(_) => {}
                             Err(e) => {
-                                warn!("GetBlockRange channel closed unexpectedly: {}", e);
+                                warn!(%e, "GetBlockRange channel closed unexpectedly");
                             }
                         }
                     }
@@ -650,7 +650,7 @@ impl StateServiceSubscriber {
                             {
                                 Ok(_) => {}
                                 Err(e) => {
-                                    warn!("GetBlockRange channel closed unexpectedly: {}", e);
+                                    warn!(%e, "GetBlockRange channel closed unexpectedly");
                                 }
                             }
                         } else {
@@ -660,7 +660,7 @@ impl StateServiceSubscriber {
                                 .await
                                 .is_err()
                             {
-                                warn!("GetBlockRangeStream closed unexpectedly: {}", e);
+                                warn!(%e, "GetBlockRangeStream closed unexpectedly");
                             }
                         }
                     }
@@ -2356,7 +2356,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
                     {
                         Ok(stream) => stream,
                         Err(e) => {
-                            warn!("Error fetching stream from mempool: {:?}", e);
+                            warn!(?e, "error fetching mempool stream");
                             channel_tx
                                 .send(Err(tonic::Status::internal("Error getting mempool stream")))
                                 .await

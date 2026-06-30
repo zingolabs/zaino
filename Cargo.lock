@@ -5840,7 +5840,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-fetch"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64",
  "byteorder",
@@ -5849,6 +5849,7 @@ dependencies = [
  "http",
  "indexmap 2.14.0",
  "jsonrpsee-types",
+ "metrics",
  "prost",
  "reqwest 0.13.1",
  "serde",
@@ -5881,10 +5882,11 @@ dependencies = [
 
 [[package]]
 name = "zaino-serve"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "futures",
  "jsonrpsee",
+ "metrics",
  "serde",
  "thiserror 2.0.18",
  "tokio",
@@ -5900,7 +5902,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-state"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "arc-swap",
  "bitflags 2.13.0",
@@ -5954,7 +5956,7 @@ dependencies = [
 
 [[package]]
 name = "zainod"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "clap",
  "config",

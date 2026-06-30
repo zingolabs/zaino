@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[cfg(feature = "prometheus")]
+use crate::metric_names::*;
+
 /// Cheap heap-size estimate for a buffered [`IndexedBlock`], used only to bound the bulk-sync write
 /// batch in [`DbV1::write_blocks_to_height`]. Exactness is not required — it just keeps the batch's
 /// peak memory roughly within the configured budget.
@@ -102,8 +105,10 @@ impl DbWrite for DbV1 {
         }
 
         info!(
-            "write_blocks_to_height: syncing finalised blocks {start_height}..={} on {:?}",
-            height.0, network
+            start_height,
+            target = height.0,
+            ?network,
+            "write_blocks_to_height: syncing finalised blocks"
         );
 
         // Bulk path: buffer blocks up to a byte budget, then write the whole batch in one
@@ -143,6 +148,8 @@ impl DbWrite for DbV1 {
                     && batch.len() < SYNC_WRITE_BATCH_MAX_BLOCKS
                     && batch_started.elapsed() < batch_interval
                 {
+                    #[cfg(feature = "prometheus")]
+                    let build_start = std::time::Instant::now();
                     let block = build_indexed_block_from_source(
                         source,
                         network,
@@ -152,6 +159,9 @@ impl DbWrite for DbV1 {
                         parent_chainwork,
                     )
                     .await?;
+                    #[cfg(feature = "prometheus")]
+                    metrics::histogram!(SYNC_BLOCK_BUILD_SECONDS)
+                        .record(build_start.elapsed().as_secs_f64());
                     parent_chainwork = Some(block.context.chainwork);
                     batch_bytes = batch_bytes.saturating_add(approx_indexed_block_bytes(&block));
                     batch.push(block);
@@ -160,11 +170,16 @@ impl DbWrite for DbV1 {
                     // In-flight progress: the block being fetched, throttled by time. (The committed
                     // tip is reported by the per-batch commit log below.)
                     if last_progress_log.elapsed() >= SYNC_PROGRESS_LOG_INTERVAL {
+                        #[cfg(feature = "prometheus")]
+                        {
+                            metrics::gauge!(SYNC_FINALIZED_HEIGHT).set((next - 1) as f64);
+                            metrics::gauge!(SYNC_TARGET_HEIGHT).set(height.0 as f64);
+                        }
                         info!(
-                            "write_blocks_to_height: syncing height {} / {} on {:?}",
-                            next - 1,
-                            height.0,
-                            network
+                            current = next - 1,
+                            target = height.0,
+                            ?network,
+                            "write_blocks_to_height: syncing"
                         );
                         last_progress_log = std::time::Instant::now();
                     }
@@ -176,21 +191,34 @@ impl DbWrite for DbV1 {
 
                 // Write + sort + commit the batch atomically, then force durability. The on-disk
                 // `headers` tip never runs ahead of the indexes, so resume is gap-free.
+                #[cfg(feature = "prometheus")]
+                let write_start = std::time::Instant::now();
                 tokio::task::block_in_place(|| self.write_block_batch_blocking(&batch))?;
                 tokio::task::block_in_place(|| self.env.sync(true)).map_err(|e| {
                     FinalisedStateError::Custom(format!("LMDB checkpoint sync failed: {e}"))
                 })?;
+                #[cfg(feature = "prometheus")]
+                metrics::histogram!(SYNC_BLOCK_WRITE_SECONDS)
+                    .record(write_start.elapsed().as_secs_f64());
 
                 // Only after the batch is committed + synced do we advance the validated tip.
                 for block in &batch {
                     self.mark_validated(block.context.index.height.0);
+                    #[cfg(feature = "prometheus")]
+                    record_block_throughput(block);
                 }
                 self.status.store(StatusType::Ready);
                 info!(
-                    "write_blocks_to_height: committed batch to height {} ({} blocks)",
-                    next - 1,
-                    batch.len()
+                    height = next - 1,
+                    blocks = batch.len(),
+                    "write_blocks_to_height: committed batch"
                 );
+                #[cfg(feature = "prometheus")]
+                {
+                    metrics::gauge!(DB_TIP_HEIGHT).set((next - 1) as f64);
+                    metrics::gauge!(SYNC_LAST_BLOCK_WRITTEN_AT)
+                        .set(crate::chain_index::unix_now_secs());
+                }
             }
         }
         #[cfg(feature = "transparent_address_history_experimental")]
@@ -371,8 +399,9 @@ impl DbV1 {
         if block_already_exists {
             self.status.store(StatusType::Ready);
             info!(
-                "Block {} at height {} already exists in FinalisedState, skipping write.",
-                &block_hash, &block_height.0
+                %block_hash,
+                height = block_height.0,
+                "block already exists in FinalisedState, skipping write"
             );
             return Ok(());
         }
@@ -807,7 +836,7 @@ impl DbV1 {
         let post_result = match join_handle.await {
             Ok(inner_res) => inner_res,
             Err(join_err) => {
-                warn!("Tokio task error (spawn_blocking join error): {}", join_err);
+                warn!(%join_err, "tokio spawn_blocking join error");
 
                 // Best-effort delete of partially written block; ignore delete result.
                 let _ = self.delete_block(&block).await;
@@ -834,14 +863,15 @@ impl DbV1 {
                 }
                 if block.context.index.height.0 % 100 == 0 {
                     info!(
-                        "Successfully committed block {} at height {} to FinalisedState.",
-                        &block.context.index.hash, &block.context.index.height
+                        hash = %block.context.index.hash,
+                        height = ?block.context.index.height,
+                        "committed block to FinalisedState"
                     );
                 } else {
                     tracing::debug!(
-                        "Successfully committed block {} at height {} to FinalisedState.",
-                        &block.context.index.hash,
-                        &block.context.index.height
+                        hash = %block.context.index.hash,
+                        height = ?block.context.index.height,
+                        "committed block to FinalisedState"
                     );
                 }
 
@@ -904,16 +934,18 @@ impl DbV1 {
                         // Block was already written correctly by another process
                         self.status.store(StatusType::Ready);
                         info!(
-                            "Block {} at height {} was already written by another process, skipping.",
-                            &block_hash, &block_height.0
+                            %block_hash,
+                            height = block_height.0,
+                            "block already written by another process, skipping"
                         );
                         Ok(())
                     }
                     Err(e) => {
-                        warn!("Error writing block to DB: {e}");
+                        warn!(%e, "error writing block to DB");
                         warn!(
-                            "Deleting corrupt block from DB at height: {} with hash: {:?}",
-                            block_height.0, block_hash.0
+                            height = block_height.0,
+                            hash = ?block_hash.0,
+                            "deleting corrupt block from DB"
                         );
 
                         let _ = self.delete_block(&block).await;
@@ -931,10 +963,11 @@ impl DbV1 {
                 }
             }
             Err(e) => {
-                warn!("Error writing block to DB: {e}");
+                warn!(%e, "error writing block to DB");
                 warn!(
-                    "Deleting corrupt block from DB at height: {} with hash: {:?}",
-                    block_height.0, block_hash.0
+                    height = block_height.0,
+                    hash = ?block_hash.0,
+                    "deleting corrupt block from DB"
                 );
 
                 let _ = self.delete_block(&block).await;
@@ -1837,4 +1870,20 @@ impl DbV1 {
         self.status.store(StatusType::Ready);
         Ok(())
     }
+}
+
+/// Increments per-block throughput counters (transactions, Sapling outputs,
+/// Orchard actions). Only compiled when the `prometheus` feature is enabled.
+#[cfg(feature = "prometheus")]
+fn record_block_throughput(block: &IndexedBlock) {
+    let transactions = block.transactions().len() as u64;
+    let mut sapling_outputs: u64 = 0;
+    let mut orchard_actions: u64 = 0;
+    for tx in block.transactions() {
+        sapling_outputs = sapling_outputs.saturating_add(tx.sapling().outputs().len() as u64);
+        orchard_actions = orchard_actions.saturating_add(tx.orchard().actions().len() as u64);
+    }
+    metrics::counter!(SYNC_TRANSACTIONS_TOTAL).increment(transactions);
+    metrics::counter!(SYNC_SAPLING_OUTPUTS_TOTAL).increment(sapling_outputs);
+    metrics::counter!(SYNC_ORCHARD_ACTIONS_TOTAL).increment(orchard_actions);
 }
