@@ -58,12 +58,11 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-  toolchain-pin:
-    name: Toolchain pin
-    # GitHub-hosted runner so it runs on pull requests. Asserts the
-    # deterministic build's stagex/pallet-rust tag matches rust-toolchain.toml's
-    # channel, so the two rustc authorities cannot drift (see
-    # tools/scripts/check-toolchain-pin.rs).
+  repo-guards:
+    name: Repo guards
+    # GitHub-hosted runner so it runs on pull requests. Runs the rust-script
+    # repo guards: the rustc-pin check (Dockerfile.deterministic's pallet-rust
+    # tag == rust-toolchain.toml channel) and the no-OpenSSL-apt check.
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -82,6 +81,27 @@ jobs:
 
       - name: Check toolchain pin
         run: rust-script tools/scripts/check-toolchain-pin.rs
+
+      - name: Check no OpenSSL apt packages
+        run: rust-script tools/scripts/check-no-openssl-apt.rs
+
+  cargo-deny:
+    name: cargo-deny
+    # Enforces deny.toml — including the openssl / openssl-sys / boring* crate
+    # bans. The policy already existed but ran only in the nix dev shell; this
+    # executes it on pull requests so a forbidden crate fails CI.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: cargo-deny check bans
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          # Scoped to `bans` (the openssl/boring* crate prohibition). Full
+          # `check` also runs advisories/licenses, which have pre-existing
+          # failures (e.g. RUSTSEC-2022-0001 lmdb) handled separately.
+          command: check bans
 
   compute-tag:
     uses: ./.github/workflows/compute-tag.yml

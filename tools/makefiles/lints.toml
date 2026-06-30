@@ -66,6 +66,16 @@ description = "Assert Dockerfile.deterministic's stagex/pallet-rust tag matches 
 command = "rust-script"
 args = ["tools/scripts/check-toolchain-pin.rs"]
 
+[tasks.lint-no-openssl-apt]
+description = "Fail if any Dockerfile installs a libssl*/openssl* apt package. TLS is rustls; the system-package companion to deny.toml's openssl crate ban."
+command = "rust-script"
+args = ["tools/scripts/check-no-openssl-apt.rs"]
+
+[tasks.deny]
+description = "Enforce deny.toml's crate bans (openssl/openssl-sys/boring*). Scoped to `bans`: advisories/licenses have pre-existing failures (e.g. RUSTSEC-2022-0001 lmdb) tracked separately."
+command = "cargo"
+args = ["deny", "check", "bans"]
+
 [tasks.lint-shell]
 description = "Lint all shell scripts with shellcheck"
 script_runner = "bash"
@@ -79,6 +89,8 @@ dependencies = [
     "doc",
     "lint-boundary-conversions",
     "lint-toolchain-pin",
+    "lint-no-openssl-apt",
+    "deny",
     "lint-shell",
 ]
 
