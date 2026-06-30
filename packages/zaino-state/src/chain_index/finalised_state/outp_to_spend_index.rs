@@ -6,19 +6,23 @@
 //!
 //! The build stages live here: **extract** spends from a block batch,
 //! **collate** them into LMDB key order, and bulk-load them into the index's
-//! own LMDB store via `MDB_APPEND` ([`SpendIndexDb`]). The independent sync
-//! loop that drives these (a genesis re-stream from zebra) lands in a later
-//! slice. (Table-level integrity over the entries is deferred; it is not MVP.)
+//! own LMDB store via `MDB_APPEND` ([`SpendIndexDb`]). The independent,
+//! move-only sync loop ([`SpendIndexSync`]) drives these in one shot over
+//! `[start_height, finalised_tip]` streamed from a [`SpendIndexSource`], and
+//! [`spawn_build`] wires it onto the owning `ChainIndex` (StateService only,
+//! from the Sapling activation height). (Table-level integrity over the entries
+//! is deferred; it is not MVP.)
 
 use std::path::Path;
 
 use lmdb::{Database, DatabaseFlags, Environment, EnvironmentFlags, Transaction as _, WriteFlags};
 
 use crate::chain_index::finalised_state::build_indexed_block_from_source;
-use crate::chain_index::source::validator_connector::{StateSource, ValidatorConnector};
+use crate::chain_index::source::validator_connector::StateSource;
 use crate::chain_index::source::BlockchainSource;
 use crate::chain_index::types::TransactionHash;
 use crate::chain_index::NON_FINALIZED_DEPTH;
+use crate::config::ChainIndexConfig;
 use crate::error::FinalisedStateError;
 use crate::{ChainWork, IndexedBlock, Outpoint, TransparentCompactTx, ZainoVersionedSerde as _};
 use zaino_common::Network;
@@ -271,26 +275,50 @@ impl<S: SpendIndexSource> SpendIndexSync<S> {
     }
 }
 
-impl SpendIndexSync<StateSource> {
-    /// Production constructor — **StateService only**. The `Fetch`
-    /// (JSON-RPC/zcashd) backend is rejected here, the one place the concrete
-    /// `ValidatorConnector` variant is visible; the `S: SpendIndexSource` bound
-    /// already keeps a `Fetch` source from compiling elsewhere.
-    pub(super) fn from_state(
-        connector: ValidatorConnector,
-        db: SpendIndexDb,
-        network: Network,
-        start_height: u32,
-    ) -> Result<Self, FinalisedStateError> {
-        match connector {
-            ValidatorConnector::State(state) => {
-                Ok(Self::new(StateSource(state), db, network, start_height))
-            }
-            ValidatorConnector::Fetch(_) => Err(FinalisedStateError::Custom(
-                "spend-index POC requires the StateService backend, not FetchService".to_string(),
-            )),
-        }
+/// Map size for the spend index's own LMDB env. LMDB grows the file lazily (no
+/// `WRITE_MAP` here), so this is an upper bound, not a preallocation.
+const SPEND_INDEX_MAP_SIZE: usize = 32 * 1024 * 1024 * 1024;
+
+/// The spend index's on-disk location: a sibling of the configured chain-index
+/// database directory.
+fn spend_index_dir(cfg: &ChainIndexConfig) -> std::path::PathBuf {
+    let main = &cfg.storage.database.path;
+    match main.parent() {
+        Some(parent) => parent.join("outp_to_spend_index"),
+        None => main.join("outp_to_spend_index"),
     }
+}
+
+/// Spawns the one-shot finalised spend-index build as a background task.
+///
+/// The build streams `[Sapling activation, finalised tip]` from `source` — the
+/// zebra StateService, supplied by
+/// [`BlockchainSource::finalised_spend_index_source`] — into the index's own
+/// LMDB env. The task logs its outcome. The caller currently detaches the
+/// handle (POC); production should track it for shutdown/cancellation.
+pub(crate) fn spawn_build(
+    source: StateSource,
+    cfg: &ChainIndexConfig,
+) -> tokio::task::JoinHandle<Result<(), FinalisedStateError>> {
+    let network = cfg.network.clone();
+    let dir = spend_index_dir(cfg);
+    tokio::spawn(async move {
+        let start_height = NetworkUpgrade::Sapling
+            .activation_height(&network.to_zebra_network())
+            .ok_or_else(|| {
+                FinalisedStateError::Custom("network has no Sapling activation height".to_string())
+            })?
+            .0;
+        let db = SpendIndexDb::open(&dir, SPEND_INDEX_MAP_SIZE)?;
+        let result = SpendIndexSync::new(source, db, network, start_height)
+            .run()
+            .await;
+        match &result {
+            Ok(()) => tracing::info!("finalised spend-index build complete"),
+            Err(error) => tracing::error!("finalised spend-index build failed: {error}"),
+        }
+        result
+    })
 }
 
 #[cfg(test)]

@@ -229,6 +229,18 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     fn subscribe_to_blocks_received(&self) -> Option<tokio::sync::watch::Receiver<()>> {
         None
     }
+
+    /// The source from which a finalised spend index may be built, if this
+    /// backend supports one. Returns `None` for backends that must not build it
+    /// (the JSON-RPC `Fetch` path) and by default for those that don't; the
+    /// zebra StateService yields a [`StateSource`](validator_connector::StateSource).
+    // `StateSource` is intentionally `pub(crate)`; this is internal wiring on a
+    // `pub` trait, so exposing the more-private return type is expected.
+    #[cfg(feature = "outp_to_spend_index")]
+    #[allow(private_interfaces)]
+    fn finalised_spend_index_source(&self) -> Option<validator_connector::StateSource> {
+        None
+    }
 }
 
 /// Sleep up to `duration`, but return early if `change_rx` resolves first.

@@ -1076,6 +1076,15 @@ impl BlockchainSource for ValidatorConnector {
             ValidatorConnector::Fetch(_fetch) => Ok(None),
         }
     }
+
+    #[cfg(feature = "outp_to_spend_index")]
+    #[allow(private_interfaces)]
+    fn finalised_spend_index_source(&self) -> Option<StateSource> {
+        match self {
+            ValidatorConnector::State(state) => Some(StateSource(state.clone())),
+            ValidatorConnector::Fetch(_) => None,
+        }
+    }
 }
 
 /// A compile-time **StateService-only** view of a validator source.

@@ -219,7 +219,7 @@ pub(crate) mod entry;
 pub(crate) mod finalised_source;
 pub(crate) mod migrations;
 #[cfg(feature = "outp_to_spend_index")]
-mod outp_to_spend_index;
+pub(crate) mod outp_to_spend_index;
 pub(crate) mod reader;
 pub(crate) mod router;
 

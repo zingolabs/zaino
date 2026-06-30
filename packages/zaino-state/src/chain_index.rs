@@ -807,6 +807,12 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         };
         chain_index.sync_loop_handle = Some(chain_index.start_sync_loop());
 
+        #[cfg(feature = "outp_to_spend_index")]
+        if let Some(spend_index_source) = chain_index.source.finalised_spend_index_source() {
+            let _build =
+                finalised_state::outp_to_spend_index::spawn_build(spend_index_source, &config);
+        }
+
         Ok(chain_index)
     }
 
