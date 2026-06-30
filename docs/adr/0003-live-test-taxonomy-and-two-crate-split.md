@@ -2,7 +2,9 @@
 
 ## Status
 
-accepted
+accepted — naming (`integration` → `clientless`) and the three-front-door task
+surface are superseded by [ADR-0004](0004-rename-integration-partition-to-clientless.md);
+the two-crate split and the `live` umbrella still stand.
 
 ## Context and decision
 
@@ -56,9 +58,12 @@ both depend on.
   intentional: at the leaf it precisely denotes the no-client partition, and the
   `e2e` sibling disambiguates it — the overload that sank "integration" as the
   *umbrella* is resolved by the contrast.
-- The task family is renamed: `integration-test → live`,
-  `wallet-integration-test → live-e2e`, `walletless-integration-test →
-  live-integration`; partition selection is `-p e2e` / `-p integration`.
+- The developer task surface is three front doors — `offline-tests` (the
+  `packages/*` set needing no live validator), `live-tests` (both live
+  partitions, aggregated), and `all-tests` (both) — delegating to the engines
+  `container-test`, `live-integration`, and `live-e2e` (partition selection
+  `-p e2e` / `-p integration`). "offline" is the glossary contrast to "live"
+  (see `live-tests/CONTEXT.md`).
 - Per-crate manifest boilerplate is the only duplication, and it is minimized by
   `[workspace.package]` inheritance, `[workspace.dependencies]`, a root
   `[profile.test]`, and a single root `.config/nextest.toml`.

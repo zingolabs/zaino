@@ -40,15 +40,13 @@ packages/                          Cargo workspace member crates
 
 live-tests/                        Live-test suite — root-workspace members, run against zcashd/zebrad
   e2e/                               End-to-end partition (wallet client -> Zaino -> validator)
-  integration/                       Integration partition (Zaino services -> live validator, no client)
+  clientless/                        Clientless partition (Zaino services -> live validator, no client)
   zaino-testutils/                   Shared test harness and utilities
   test_binaries/                     Symlinked zcashd/zebrad/zcash-cli binaries
   test_environment/                  Container build context
     Containerfile                      CI/test container image definition
     entrypoint.sh                      Container entrypoint (binary symlink setup)
     test-container-permissions.sh      Container permission / volume-mount tests
-  .config/nextest.toml               Nextest configuration for integration tests
-  Cargo.toml                         Integration-tests workspace manifest
 
 docs/                              Architecture diagrams, specs, and usage guides
 tools/                             Development tools, shell helpers, makefiles
@@ -106,8 +104,9 @@ connection.
 The test suites run inside a **podman** container via `makers` (cargo-make):
 
 ```sh
-makers container-test     # root-workspace (packages/*) tests
-makers integration-test   # both integration-test workspaces + combined summary
+makers test            # packages/* tests that need no live validator (default)
+makers test live       # both live partitions (clientless + e2e) + combined summary
+makers test all        # everything: package then live
 ```
 
 zcashd-backed tests are **off by default**; add `--with-zcashd` (or set

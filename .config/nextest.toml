@@ -1,10 +1,10 @@
 # Nextest configuration for the reunified Zaino workspace.
 #
-# The production crates and the live-test crates (e2e, integration,
+# The production crates and the live-test crates (e2e, clientless,
 # zaino-testutils) are all members of one workspace, so nextest reads only this
 # root config. It was merged from the former per-workspace configs
 # (live-tests/.config and live-tests/e2e/.config, now deleted); see
-# docs/adr/0002, docs/adr/0003.
+# docs/adr/0002, docs/adr/0003, docs/adr/0004.
 #
 # Profiles:
 #   default  bare `cargo nextest run` (production units) plus the local
@@ -35,7 +35,7 @@ live-validators = { max-threads = 6 }
 # validator startup, and retries to absorb RPC-timing flakiness. Scoped to the
 # live packages so production unit tests keep retries = 0 and no slow-timeout.
 [[profile.default.overrides]]
-filter = 'package(e2e) | package(integration)'
+filter = 'package(e2e) | package(clientless)'
 test-group = "live-validators"
 slow-timeout = { period = "60s", terminate-after = "10" }
 retries = 2
@@ -185,5 +185,5 @@ path = "junit.xml"
 # lives in the profile, not as a `cargo nextest run --retries` CLI flag, so the
 # policy is uniform across CI and local runs.
 [[profile.quick.overrides]]
-filter = 'package(e2e) | package(integration)'
+filter = 'package(e2e) | package(clientless)'
 retries = 2

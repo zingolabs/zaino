@@ -14,7 +14,7 @@ info "🔍 Validating test targets between nextest and CI workflow..."
 info "Extracting targets from nextest..."
 NEXTEST_TARGETS=$(mktemp)
 cargo nextest list \
-  --workspace --all-features \
+  --workspace --no-default-features \
   --profile targets -T json-pretty \
   | jq -r '
       .["rust-suites"]

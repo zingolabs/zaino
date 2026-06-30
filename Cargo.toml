@@ -7,15 +7,15 @@ members = [
     "packages/zaino-state",
     "packages/zaino-fetch",
     "packages/zaino-proto",
-    # Live-test suite (docs/adr/0002, docs/adr/0003). zaino-testutils first:
-    # the e2e/integration partitions depend on it.
+    # Live-test suite (docs/adr/0002, docs/adr/0003, docs/adr/0004).
+    # zaino-testutils first: the e2e/clientless partitions depend on it.
     "live-tests/zaino-testutils",
-    "live-tests/integration",
+    "live-tests/clientless",
     "live-tests/e2e",
 ]
 # `container-test` runs a bare `cargo nextest run`, which operates on
 # default-members — so the heavy live-test crates are built and tested only
-# when selected explicitly (`-p e2e` / `-p integration`). See docs/adr/0002.
+# when selected explicitly (`-p e2e` / `-p clientless`). See docs/adr/0002.
 default-members = [
     "packages/zaino-common",
     "packages/zainod",
@@ -185,12 +185,12 @@ debug = true
 # ReadRequest::NonFinalizedBlocksListener is a struct variant carrying
 # `known_chain_tips` (its Cargo version is 9.0.1, but it is NOT the published
 # crates.io 9.0.1 — that one is still a unit variant). Revert to a plain
-# version requirement once the change is released. This patch MUST be mirrored
-# in every workspace that builds zaino-state — integration-tests/Cargo.toml and
-# integration-tests/wallet-tests/Cargo.toml — because zaino-state is a path
-# dependency and compiles against the host workspace's patched zebra; any skew
-# compiles it against the crates.io unit variant and fails with E0559. See
-# docs/updating_zebra_crates.md. Tracking: zaino#<TODO-revert-zebra-fork>.
+# version requirement once the change is released. This is the single root
+# workspace (the live-test crates were folded in; see docs/adr/0002), so the
+# patch lives here once and every member — production and live-test alike —
+# inherits it through the single lock; Cargo honours `[patch.crates-io]` only
+# from the workspace root. See docs/updating_zebra_crates.md.
+# Tracking: zaino#<TODO-revert-zebra-fork>.
 zebra-chain = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "9a27f886a5bfb143f65d1712e912cef252426800" }
 zebra-rpc = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "9a27f886a5bfb143f65d1712e912cef252426800" }
 zebra-state = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "9a27f886a5bfb143f65d1712e912cef252426800" }

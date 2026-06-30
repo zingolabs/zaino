@@ -167,12 +167,12 @@ jobs:
       fail-fast: false
       matrix:
         partition:
-          # - "integration::chain_cache"  # disabled: timeouts/hangs pending chain-index
+          # - "clientless::chain_cache"  # disabled: timeouts/hangs pending chain-index
           #   integration; re-enable per https://github.com/zingolabs/zaino/issues/1312
-          - "integration::fetch_service"
-          - "integration::json_server"
-          - "integration::state_service"
-          - "integration::test_vectors"
+          - "clientless::fetch_service"
+          - "clientless::json_server"
+          - "clientless::state_service"
+          - "clientless::test_vectors"
           # NOTE: the e2e partition (e2e::devtool, e2e::devtool_zcashd,
           # e2e::test_vectors) now lives in the unified --workspace archive and
           # is compiled every run, but is intentionally NOT executed here —
@@ -218,7 +218,7 @@ jobs:
           TEST_BINARIES_DIR: ${{ github.workspace }}/live-tests/test_binaries/bins
         run: |
           # Retries are NOT set here: the `quick` profile scopes retries = 2 to the
-          # live packages (e2e/integration) and keeps production unit partitions at
+          # live packages (e2e/clientless) and keeps production unit partitions at
           # retries = 0. A global `--retries` flag would blanket the unit tests too.
           #
           # `--no-tests fail` guards against a mistyped partition (binary_id matching

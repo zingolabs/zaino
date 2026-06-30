@@ -698,6 +698,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
+name = "clientless"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "corez",
+ "futures",
+ "hex",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tower 0.4.13",
+ "tracing",
+ "wire_serialized_transaction_test_data",
+ "zaino-common",
+ "zaino-fetch",
+ "zaino-proto",
+ "zaino-state",
+ "zaino-testutils",
+ "zainod",
+ "zcash_local_net",
+ "zebra-chain 10.1.0",
+ "zebra-rpc 10.0.1",
+ "zebra-state 9.0.1",
+ "zip32",
+]
+
+[[package]]
 name = "cmake"
 version = "0.1.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2196,33 +2223,6 @@ dependencies = [
  "once_cell",
  "similar",
  "tempfile",
-]
-
-[[package]]
-name = "integration"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "corez",
- "futures",
- "hex",
- "serde_json",
- "tempfile",
- "tokio",
- "tower 0.4.13",
- "tracing",
- "wire_serialized_transaction_test_data",
- "zaino-common",
- "zaino-fetch",
- "zaino-proto",
- "zaino-state",
- "zaino-testutils",
- "zainod",
- "zcash_local_net",
- "zebra-chain 10.1.0",
- "zebra-rpc 10.0.1",
- "zebra-state 9.0.1",
- "zip32",
 ]
 
 [[package]]

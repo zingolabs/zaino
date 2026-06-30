@@ -1,6 +1,6 @@
 [package]
-name = "integration"
-description = "Integration live tests: exercise Zaino's service layer directly against a live validator (no wallet client)."
+name = "clientless"
+description = "Clientless live tests: exercise Zaino's service layer directly against a live validator (no wallet client)."
 publish = false
 
 authors.workspace = true

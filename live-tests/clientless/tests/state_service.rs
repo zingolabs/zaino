@@ -576,9 +576,9 @@ mod zebra {
                 )
                 .await;
 
-                integration::rpc::z_validate_address::run_z_validate_for(
+                clientless::rpc::z_validate_address::run_z_validate_for(
                     &services.state_subscriber,
-                    integration::rpc::z_validate_address::SaplingSuite::Standard,
+                    clientless::rpc::z_validate_address::SaplingSuite::Standard,
                 )
                 .await;
 

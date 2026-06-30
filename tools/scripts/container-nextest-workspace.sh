@@ -5,10 +5,10 @@
 # separate workspace manifest.
 #
 # Parameterised by the consuming task's [env]:
-#   PACKAGE      - the partition crate to test (`integration` or `e2e`) (required)
+#   PACKAGE      - the partition crate to test (`clientless` or `e2e`) (required)
 #   PACKAGE_DESC - human label for the info line (required)
 #
-# Sourced as the script.main of the `live-integration` / `live-e2e` tasks (both
+# Sourced as the script.main of the `live-clientless` / `live-e2e` tasks (both
 # extend `base-script`); info comes from the base-script pre-script
 # (tools/scripts/base-script-pre.sh).
 

@@ -174,11 +174,12 @@ say so when you do.
 
 **Single-workspace note (this repo):** the tree is one Cargo workspace. The
 root `Cargo.toml` holds the `packages/*` production crates **and** the live-test
-crates (`live-tests/{e2e,integration,zaino-testutils}`) as members (see
-docs/adr/0002, docs/adr/0003). `default-members` is the production set, so a
-bare `cargo` / `cargo nextest run` builds and tests only those and excludes the
-heavy live-test crates; the live suite is selected explicitly with `-p e2e` /
-`-p integration` (the `makers live` task family). rust-analyzer indexes the
+crates (`live-tests/{e2e,clientless,zaino-testutils}`) as members (see
+docs/adr/0002, docs/adr/0003, docs/adr/0004). `default-members` is the
+production set, so a bare `cargo` / `cargo nextest run` builds and tests only
+those and excludes the heavy live-test crates; the live suite is selected
+explicitly with `-p e2e` / `-p clientless` (the `makers test` front door).
+rust-analyzer indexes the
 single workspace, so go-to-def / find-references resolve across production and
 test code in one pass — no linked-project swapping, and an empty result means
 "no references," not "the other workspace isn't loaded."

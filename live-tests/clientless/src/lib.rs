@@ -1,4 +1,4 @@
-//! Helpers for the `integration` partition of the live tests go here.
+//! Helpers for the `clientless` partition of the live tests go here.
 //!
 //! This crate also exposes test-vectors.
 

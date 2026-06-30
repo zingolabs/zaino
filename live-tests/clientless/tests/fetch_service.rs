@@ -1,7 +1,7 @@
 //! These tests compare the output of `FetchService` with the output of `JsonRpcConnector`.
 
+use clientless::rpc::z_validate_address::{run_z_validate_for, SaplingSuite};
 use futures::StreamExt as _;
-use integration::rpc::z_validate_address::{run_z_validate_for, SaplingSuite};
 use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 use zaino_proto::proto::compact_formats::CompactBlock;
 use zaino_proto::proto::service::{BlockId, BlockRange, GetSubtreeRootsArg};
