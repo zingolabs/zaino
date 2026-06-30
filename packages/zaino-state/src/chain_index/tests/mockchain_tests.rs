@@ -4,12 +4,12 @@ use crate::{
         source::mockchain_source::MockchainSource,
         tests::{
             poll::poll_until,
-            vectors::{load_test_vectors, TestVectorBlockData},
+            vectors::{indexed_block_chain, load_test_vectors, TestVectorBlockData},
         },
-        types::{BestChainLocation, TransactionHash},
+        types::{BestChainLocation, ChainScope, TransactionHash},
         ChainIndex, NodeBackedChainIndexSubscriber,
     },
-    BlockchainSource as _,
+    BlockchainSource as _, Outpoint,
 };
 use tokio::time::{sleep, Duration};
 use tokio_stream::StreamExt as _;
@@ -795,4 +795,114 @@ async fn get_address_utxos() {
         .await;
 
     assert!(invalid_address_result.is_err());
+}
+
+/// Walks zaino's own indexed view of the test-vector chain and derives, for every
+/// non-coinbase transparent input, the `(outpoint, spending txid)` it represents, plus
+/// every transparent outpoint created on the chain.
+///
+/// Ground truth is built from `CompactTxData` — the exact representation
+/// `get_outpoint_spenders` scans — so the assertions also confirm the outpoint byte order
+/// matches between an indexed input and the looked-up key.
+fn outpoint_spend_ground_truth(
+    blocks: &[TestVectorBlockData],
+) -> (Vec<(Outpoint, TransactionHash)>, Vec<Outpoint>) {
+    let mut spends = Vec::new();
+    let mut created = Vec::new();
+    for block in indexed_block_chain(blocks) {
+        for tx in block.transactions() {
+            let txid = *tx.txid();
+            let transparent = tx.transparent();
+            for output_index in 0..transparent.outputs().len() {
+                created.push(Outpoint::new(txid.0, output_index as u32));
+            }
+            for input in transparent.inputs() {
+                if input.is_null_prevout() {
+                    continue;
+                }
+                spends.push((
+                    Outpoint::new(*input.prevout_txid(), input.prevout_index()),
+                    txid,
+                ));
+            }
+        }
+    }
+    (spends, created)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn get_outpoint_spenders() {
+    let (blocks, _indexer, index_reader, _mockchain) =
+        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
+    let snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
+
+    let (spends, created) = outpoint_spend_ground_truth(&blocks);
+    assert!(
+        !spends.is_empty(),
+        "test vectors must contain transparent spends"
+    );
+
+    // Every spent outpoint resolves to its spending txid, index-aligned with the input.
+    let outpoints: Vec<Outpoint> = spends.iter().map(|(op, _)| *op).collect();
+    let result = index_reader
+        .get_outpoint_spenders(&snapshot, outpoints, ChainScope::FullChain)
+        .await
+        .unwrap();
+    assert_eq!(result.len(), spends.len());
+    for ((outpoint, expected_txid), got) in spends.iter().zip(result) {
+        assert_eq!(got, Some(*expected_txid), "wrong spender for {outpoint:?}");
+    }
+
+    // Outpoints that were created but never spent must report `None`.
+    let spent_set: std::collections::HashSet<Outpoint> =
+        spends.iter().map(|(op, _)| *op).collect();
+    let unspent: Vec<Outpoint> = created
+        .into_iter()
+        .filter(|op| !spent_set.contains(op))
+        .collect();
+    assert!(!unspent.is_empty(), "expected some unspent outputs");
+    let unspent_result = index_reader
+        .get_outpoint_spenders(&snapshot, unspent.clone(), ChainScope::FullChain)
+        .await
+        .unwrap();
+    assert_eq!(unspent_result.len(), unspent.len());
+    assert!(unspent_result.iter().all(Option::is_none));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn get_outpoint_spenders_empty_and_single() {
+    let (blocks, _indexer, index_reader, _mockchain) =
+        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
+    let snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
+
+    // Empty input -> empty output.
+    assert!(index_reader
+        .get_outpoint_spenders(&snapshot, Vec::new(), ChainScope::FullChain)
+        .await
+        .unwrap()
+        .is_empty());
+
+    let (spends, created) = outpoint_spend_ground_truth(&blocks);
+
+    // Length-1 query (the "single request" path) returns the expected spender.
+    let (op, txid) = spends.first().unwrap();
+    assert_eq!(
+        index_reader
+            .get_outpoint_spenders(&snapshot, vec![*op], ChainScope::FullChain)
+            .await
+            .unwrap(),
+        vec![Some(*txid)],
+    );
+
+    // ...and a length-1 query for an unspent outpoint returns `None`.
+    let spent_set: std::collections::HashSet<Outpoint> =
+        spends.iter().map(|(op, _)| *op).collect();
+    let unspent = created.into_iter().find(|op| !spent_set.contains(op)).unwrap();
+    assert_eq!(
+        index_reader
+            .get_outpoint_spenders(&snapshot, vec![unspent], ChainScope::FullChain)
+            .await
+            .unwrap(),
+        vec![None],
+    );
 }

@@ -1958,6 +1958,177 @@ async fn get_block_deltas_coinbase_only_block_has_no_inputs() {
     svc.test_manager.close().await;
 }
 
+/// The recipient's sole transparent outpoint, read from the chain index. Each
+/// phase of [`get_outpoint_spenders_fetch_vs_state`] drains the recipient's
+/// transparent funds (by shielding) before funding it again, so at the call
+/// site exactly one UTXO — the funding under test — sits at `recipient_taddr`
+/// (the miner pays coinbase to the shielded pool, never this address).
+async fn sole_recipient_outpoint(
+    indexer: &zaino_state::NodeBackedChainIndexSubscriber,
+    recipient_taddr: &str,
+) -> zaino_state::chain_index::types::Outpoint {
+    use zaino_state::ChainIndex as _;
+
+    let utxos = indexer
+        .get_address_utxos(GetAddressBalanceRequest::new(vec![recipient_taddr.to_string()]))
+        .await
+        .unwrap();
+    assert_eq!(
+        utxos.len(),
+        1,
+        "recipient taddr should hold exactly one funding UTXO"
+    );
+    let (_, txid, output_index, ..) = utxos[0].into_parts();
+    zaino_state::chain_index::types::Outpoint::new(txid.0, output_index.index())
+}
+
+/// The single transaction touching `recipient_taddr` at `height` — the shield
+/// that spent the funding outpoint (the credit landed in an earlier block).
+/// Zebra's address index records a tx against an address when the address is an
+/// input *or* an output, so the shield's spend of the recipient's UTXO appears
+/// here. This is the independent ground truth for the expected spender txid,
+/// in the same `TransactionHash` type `get_outpoint_spenders` returns.
+async fn sole_spender_at(
+    indexer: &zaino_state::NodeBackedChainIndexSubscriber,
+    recipient_taddr: &str,
+    height: u32,
+) -> zaino_state::chain_index::types::TransactionHash {
+    use zaino_state::ChainIndex as _;
+
+    let txids = indexer
+        .get_address_txids(GetAddressTxIdsRequest::new(
+            vec![recipient_taddr.to_string()],
+            Some(height),
+            Some(height),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        txids.len(),
+        1,
+        "exactly one tx (the shield) should touch the taddr at the spend height"
+    );
+    txids[0]
+}
+
+/// Rewrite of `zebra::get::chain_cache::get_outpoint_spenders` (retired with the
+/// zingolib wallet harness) for the devtool wallet + `StateAndFetchServices`
+/// structure. End-to-end check of `ChainIndex::get_outpoint_spenders` and its
+/// `ChainScope` against a real regtest chain, driven through both backends.
+///
+/// Builds three transparent outpoints at the recipient address — one spent and
+/// buried past the finalised floor, one spent but left in the non-finalised
+/// window, and one left unspent — then asserts both `ChainScope`s resolve each
+/// correctly: `FullChain` sees both spends, `Finalised` sees only the buried
+/// one. Asserting the fetch and state indexers return the same result also
+/// covers the `*_fetch_vs_state` agreement. This is the only place the
+/// finalised `TxLocation -> txid` resolution runs end-to-end (the in-tree
+/// mockchain vectors spend nothing below the floor, and proptest blocks can't
+/// be finalised).
+///
+/// Each spend is a `shield_recipient` of the recipient's *received* transparent
+/// output (the non-ignored `shield_for_validator` path), not a faucet-coinbase
+/// shield, so it sidesteps the devtool coinbase-maturity bug that gates
+/// `address_deltas`. The shield drains all transparent funds, so the recipient
+/// holds exactly one UTXO per phase and the spent outpoint is unambiguous.
+async fn get_outpoint_spenders_fetch_vs_state() {
+    use zaino_state::chain_index::types::ChainScope;
+    use zaino_state::ChainIndex as _;
+
+    // `NON_FINALIZED_DEPTH` is 100; mining this many blocks past a spend buries
+    // it under the finalised floor so `ChainScope::Finalised` can resolve it.
+    // A small margin above 100 keeps the boundary unambiguous.
+    const FINALITY_DEPTH: u32 = 105;
+    const FUNDING_AMOUNT: u64 = 250_000;
+
+    let mut svc = zaino_testutils::launch_state_and_fetch_services_mining_to::<Zebrad>(
+        zaino_testutils::SHIELDED_FUNDING_POOL,
+        &ValidatorKind::Zebrad,
+        None,
+        true,
+        Some(zebra_chain::parameters::NetworkKind::Regtest),
+    )
+    .await;
+    let mut clients = e2e::devtool::build_clients(
+        svc.test_manager
+            .zaino_grpc_listen_address
+            .expect("zaino enabled")
+            .port(),
+    )
+    .await;
+
+    let recipient_taddr = clients.get_recipient_address("transparent").await;
+
+    // ---- Phase 1: an outpoint that is SPENT and FINALISED ----
+    clients.sync_faucet().await;
+    clients.send_from_faucet(&recipient_taddr, FUNDING_AMOUNT).await;
+    svc.generate_blocks_and_wait_for_tips(1).await;
+    clients.sync_recipient().await;
+    let outpoint_finalised = sole_recipient_outpoint(&svc.fetch_subscriber.indexer, &recipient_taddr).await;
+
+    clients.shield_recipient().await;
+    svc.generate_blocks_and_wait_for_tips(1).await;
+    let spend_height = svc.fetch_subscriber.tip_height().await as u32;
+    let spender_finalised =
+        sole_spender_at(&svc.fetch_subscriber.indexer, &recipient_taddr, spend_height).await;
+
+    // Bury the spend below the finalised floor.
+    svc.generate_blocks_and_wait_for_tips(FINALITY_DEPTH).await;
+
+    // ---- Phase 2: an outpoint that is SPENT but stays NON-FINALISED ----
+    clients.sync_faucet().await;
+    clients.send_from_faucet(&recipient_taddr, FUNDING_AMOUNT).await;
+    svc.generate_blocks_and_wait_for_tips(1).await;
+    clients.sync_recipient().await;
+    let outpoint_nonfinalised =
+        sole_recipient_outpoint(&svc.fetch_subscriber.indexer, &recipient_taddr).await;
+
+    clients.shield_recipient().await;
+    svc.generate_blocks_and_wait_for_tips(1).await;
+    let spend_height = svc.fetch_subscriber.tip_height().await as u32;
+    let spender_nonfinalised =
+        sole_spender_at(&svc.fetch_subscriber.indexer, &recipient_taddr, spend_height).await;
+
+    // ---- Phase 3: an outpoint that is created but left UNSPENT ----
+    clients.sync_faucet().await;
+    clients.send_from_faucet(&recipient_taddr, FUNDING_AMOUNT).await;
+    svc.generate_blocks_and_wait_for_tips(1).await;
+    clients.sync_recipient().await;
+    let outpoint_unspent =
+        sole_recipient_outpoint(&svc.fetch_subscriber.indexer, &recipient_taddr).await;
+
+    let outpoints = vec![outpoint_finalised, outpoint_nonfinalised, outpoint_unspent];
+
+    // Both backends must agree and resolve each scope correctly.
+    for indexer in [&svc.fetch_subscriber.indexer, &svc.state_subscriber.indexer] {
+        let snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
+
+        // FullChain resolves both the finalised and the non-finalised spend.
+        let full = indexer
+            .get_outpoint_spenders(&snapshot, outpoints.clone(), ChainScope::FullChain)
+            .await
+            .unwrap();
+        assert_eq!(
+            full,
+            vec![Some(spender_finalised), Some(spender_nonfinalised), None],
+            "FullChain must see both spends and leave the unspent outpoint as None"
+        );
+
+        // Finalised resolves only the buried spend.
+        let finalised = indexer
+            .get_outpoint_spenders(&snapshot, outpoints.clone(), ChainScope::Finalised)
+            .await
+            .unwrap();
+        assert_eq!(
+            finalised,
+            vec![Some(spender_finalised), None, None],
+            "Finalised must see only the buried spend"
+        );
+    }
+
+    svc.test_manager.close().await;
+}
+
 /// Port of `monitor_unverified_mempool` (wallet_to_validator): broadcast two
 /// unmined sends, observe them in the validator mempool, then mine them in.
 ///
@@ -2332,6 +2503,12 @@ mod zebrad {
     #[tokio::test(flavor = "multi_thread")]
     async fn get_block_deltas_coinbase_only_block_has_no_inputs() {
         crate::get_block_deltas_coinbase_only_block_has_no_inputs().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[cfg_attr(not(feature = "devtool-incompatible"), ignore = "heavy: mines ~110 orchard-coinbase blocks (~110 halo2 proofs) to bury a finalised spend below NON_FINALIZED_DEPTH; un-ignore for manual / dedicated CI")]
+    async fn get_outpoint_spenders_fetch_vs_state() {
+        crate::get_outpoint_spenders_fetch_vs_state().await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
