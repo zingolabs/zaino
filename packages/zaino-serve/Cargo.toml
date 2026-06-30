@@ -35,8 +35,8 @@ transparent_address_history_experimental = ["zaino-state/transparent_address_his
 
 [dependencies]
 zaino-proto = { workspace = true }
-zaino-fetch = { workspace = true, default-features = false }
-zaino-state = { workspace = true, default-features = false }
+zaino-fetch = { workspace = true }
+zaino-state = { workspace = true }
 
 # Zebra
 zebra-chain = { workspace = true }
