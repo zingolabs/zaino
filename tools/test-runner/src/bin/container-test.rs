@@ -1,9 +1,8 @@
-#!/usr/bin/env rust-script
-//! Run the test suite inside the local CI container via podman.
+//! `container-test` — run the test suite inside the local CI container via podman.
 //!
-//! Ported from the former container-test.sh. Invoked as the `script.main` of the
-//! `container-test` task (Makefile.toml). The container's entrypoint.sh sets up
-//! the validator binaries (zcashd, zebrad, zcash-cli) by symlinking
+//! Invoked from the `container-test` task (Makefile.toml) as
+//! `cargo run --bin container-test -- <args>`. The container's entrypoint.sh sets
+//! up the validator binaries (zcashd, zebrad, zcash-cli) by symlinking
 //! `$TEST_BINARIES_DIR` into the expected location.
 //!
 //! Inputs from the environment (the Makefile `[env]` block exports the first

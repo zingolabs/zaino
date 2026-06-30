@@ -100,11 +100,12 @@ description = "Engine: run nextest in the local CI container, forwarding args (z
 dependencies = ["init-podman-volumes", "ensure-image-exists"]
 script_runner = "bash"
 extend = "base-script"
-# container-test.rs owns the podman run; `set -e` makes a test failure abort the
-# script (so `script.post = notify` is skipped on failure, as before).
+# The container-test binary (tools/test-runner, a std-only cargo crate — no
+# rust-script needed) owns the podman run; `set -e` makes a test failure abort
+# the script (so `script.post = notify` is skipped on failure, as before).
 script.main = '''
 set -euo pipefail
-./tools/scripts/container-test.rs "${@}"
+cargo run -q --manifest-path tools/test-runner/Cargo.toml --bin container-test -- "${@}"
 '''
 script.post = "makers notify"
 
@@ -178,13 +179,13 @@ case "$set" in
   package)    exec makers container-test "$@" ;;
   e2e)        exec makers live-e2e "$@" ;;
   clientless) exec makers live-clientless "$@" ;;
-  live)       exec ./tools/scripts/live-tests-summary.rs "$@" ;;
+  live)       exec cargo run -q --manifest-path tools/test-runner/Cargo.toml --bin live-summary -- "$@" ;;
   all)
     # Run both even if the first fails, then fail if either did, so the
     # omnibus reflects the whole suite.
     rc=0
     makers container-test "$@" || rc=1
-    ./tools/scripts/live-tests-summary.rs "$@" || rc=1
+    cargo run -q --manifest-path tools/test-runner/Cargo.toml --bin live-summary -- "$@" || rc=1
     exit "$rc" ;;
 esac
 '''

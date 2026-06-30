@@ -1,0 +1,19 @@
+# Host-side launchers for the zaino test suite, as a real cargo crate (built by
+# the toolchain you already have — no `rust-script` install needed).
+#
+# This is its OWN workspace (note the empty `[workspace]` below), deliberately
+# NOT a member of the root workspace: building these launchers must not resolve
+# the root's git/zebra dependencies. With zero dependencies it compiles in
+# seconds against std alone, on any host that can run `cargo`.
+#
+# Two binaries, invoked from Makefile.toml:
+#   container-test  — run nextest inside the local CI container via podman
+#   live-summary    — run both live partitions and print a combined summary
+[workspace]
+
+[package]
+name = "test-runner"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Host-side launchers for the zaino test suite (container-test, live-summary)."

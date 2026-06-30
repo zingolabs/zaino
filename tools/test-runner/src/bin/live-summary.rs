@@ -1,10 +1,10 @@
-#!/usr/bin/env rust-script
-//! Run both live-test partitions and print a combined pass/fail summary.
+//! `live-summary` — run both live-test partitions and print a combined summary.
 //!
-//! Used by `makers test live` (and `makers test all`). Runs the `clientless`
-//! then `e2e` partition (each in its own CI container via its own `makers`
-//! task), streams each run's output while capturing it, parses the nextest
-//! summary line, and aggregates the totals.
+//! Invoked from `makers test live` (and `makers test all`) as
+//! `cargo run --bin live-summary -- <args>`. Runs the `clientless` then `e2e`
+//! partition (each in its own CI container via its own `makers` task), streams
+//! each run's output while capturing it, parses the nextest summary line, and
+//! aggregates the totals.
 //!
 //! Unlike a cargo-make `dependencies` list (which is fail-fast), this runs BOTH
 //! partitions even when the first fails, so the summary reflects the whole
@@ -13,18 +13,11 @@
 //!
 //! `--with-zcashd` is forwarded as a flag to the child `makers` calls so the
 //! zcashd-backed tests are included; otherwise nothing enables them.
-//!
-//! ```cargo
-//! [dependencies]
-//! regex = "1"
-//! ```
 #![forbid(unsafe_code)]
 
 use std::error::Error;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
-
-use regex::Regex;
 
 /// One nextest run's tallies, zero where the summary line was absent.
 #[derive(Default)]
@@ -75,6 +68,42 @@ fn run_partition(task: &str, with_zcashd: bool) -> Result<(i32, String), Box<dyn
     Ok((code, captured))
 }
 
+/// Remove ANSI CSI escape sequences (`ESC [ … <final byte>`) so the digits in a
+/// summary line aren't split by colour codes.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                // Consume up to and including the final byte (0x40..=0x7E).
+                while let Some(&n) = chars.peek() {
+                    chars.next();
+                    if ('@'..='~').contains(&n) {
+                        break;
+                    }
+                }
+            }
+            // A lone ESC with no '[' is just dropped.
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The integer immediately preceding `marker` (after optional spaces), or 0 if
+/// `marker` is absent. e.g. `count_before("... 8 passed", "passed") == 8`.
+fn count_before(line: &str, marker: &str) -> u64 {
+    let Some(idx) = line.find(marker) else {
+        return 0;
+    };
+    let head = line[..idx].trim_end();
+    let digit_count = head.chars().rev().take_while(|c| c.is_ascii_digit()).count();
+    head[head.len() - digit_count..].parse().unwrap_or(0)
+}
+
 /// Parse the last nextest summary line out of a captured run.
 ///
 /// nextest prints e.g.:
@@ -82,32 +111,20 @@ fn run_partition(task: &str, with_zcashd: bool) -> Result<(i32, String), Box<dyn
 ///   Summary [510.718s] 29 tests run: 23 passed (14 slow), 6 failed, 2 skipped
 ///   Summary [  1.795s] 1 test run: 0 passed, 1 failed, 114 skipped   (singular)
 fn parse_summary(log: &str) -> Summary {
-    let ansi = Regex::new(r"\x1b\[[0-9;]*m").expect("static ANSI-escape regex compiles");
-    let run_re = Regex::new(r"(\d+) tests? run:").expect("static run-count regex compiles");
-    let passed_re = Regex::new(r"(\d+) passed").expect("static passed-count regex compiles");
-    let failed_re = Regex::new(r"(\d+) failed").expect("static failed-count regex compiles");
-    let skipped_re = Regex::new(r"(\d+) skipped").expect("static skipped-count regex compiles");
-
     // Strip ANSI, then take the last "N test(s) run:" line nextest emitted.
     let line = log
         .lines()
-        .map(|l| ansi.replace_all(l, "").into_owned())
-        .filter(|l| run_re.is_match(l))
+        .map(strip_ansi)
+        .filter(|l| l.contains("run:") && l.contains("test"))
         .last()
         .unwrap_or_default();
 
-    let field = |re: &Regex| -> u64 {
-        re.captures(&line)
-            .and_then(|c| c.get(1))
-            .and_then(|m| m.as_str().parse().ok())
-            .unwrap_or(0)
-    };
-
     Summary {
-        run: field(&run_re),
-        passed: field(&passed_re),
-        failed: field(&failed_re),
-        skipped: field(&skipped_re),
+        // The run count is the integer before the word "test" ("N tests run:").
+        run: count_before(&line, "test"),
+        passed: count_before(&line, "passed"),
+        failed: count_before(&line, "failed"),
+        skipped: count_before(&line, "skipped"),
     }
 }
 
@@ -151,4 +168,50 @@ fn main() -> Result<(), Box<dyn Error>> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod parse_summary {
+    use super::*;
+
+    fn check(line: &str, run: u64, passed: u64, failed: u64, skipped: u64) {
+        let s = parse_summary(line);
+        assert_eq!((s.run, s.passed, s.failed, s.skipped), (run, passed, failed, skipped));
+    }
+
+    #[test]
+    fn plural_no_failures() {
+        check("Summary [ 73.207s] 8 tests run: 8 passed (2 slow), 2 skipped", 8, 8, 0, 2);
+    }
+
+    #[test]
+    fn plural_with_failures() {
+        check(
+            "Summary [510.718s] 29 tests run: 23 passed (14 slow), 6 failed, 2 skipped",
+            29, 23, 6, 2,
+        );
+    }
+
+    #[test]
+    fn singular() {
+        check("Summary [  1.795s] 1 test run: 0 passed, 1 failed, 114 skipped", 1, 0, 1, 114);
+    }
+
+    #[test]
+    fn strips_ansi_color_codes() {
+        let colored = "\x1b[1m\x1b[32mSummary\x1b[0m [73s] \x1b[1m8\x1b[0m tests run: 8 passed, 2 skipped";
+        check(colored, 8, 8, 0, 2);
+    }
+
+    #[test]
+    fn missing_summary_is_all_zero() {
+        check("no summary line here", 0, 0, 0, 0);
+    }
+
+    #[test]
+    fn takes_the_last_summary_line() {
+        let log = "Summary [1s] 1 test run: 1 passed, 0 skipped\n\
+                   Summary [2s] 9 tests run: 7 passed, 1 failed, 1 skipped";
+        check(log, 9, 7, 1, 1);
+    }
 }
