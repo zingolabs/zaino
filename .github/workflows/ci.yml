@@ -21,6 +21,7 @@ env:
   CACHE_PORT: 9000
   CACHE_BUCKET: gha-cache-bucket
   INSECURE_CACHE: true
+  RUST_SCRIPT_VERSION: "0.35.0"
 
 jobs:
   hadolint:
@@ -56,7 +57,32 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all -- --check
-        
+
+  toolchain-pin:
+    name: Toolchain pin
+    # GitHub-hosted runner so it runs on pull requests. Asserts the
+    # deterministic build's stagex/pallet-rust tag matches rust-toolchain.toml's
+    # channel, so the two rustc authorities cannot drift (see
+    # tools/scripts/check-toolchain-pin.rs).
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Cache rust-script
+        id: cache-rust-script
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/rust-script
+          key: rust-script-${{ runner.os }}-${{ env.RUST_SCRIPT_VERSION }}
+
+      - name: Install rust-script
+        if: steps.cache-rust-script.outputs.cache-hit != 'true'
+        run: cargo install rust-script --version ${{ env.RUST_SCRIPT_VERSION }} --locked
+
+      - name: Check toolchain pin
+        run: rust-script tools/scripts/check-toolchain-pin.rs
+
   compute-tag:
     uses: ./.github/workflows/compute-tag.yml
 

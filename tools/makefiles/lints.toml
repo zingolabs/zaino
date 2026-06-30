@@ -61,6 +61,11 @@ script = [
     '''
 ]
 
+[tasks.lint-toolchain-pin]
+description = "Assert Dockerfile.deterministic's stagex/pallet-rust tag matches rust-toolchain.toml's channel (guards against rustc skew between the canonical toolchain and the deterministic build's base image)."
+command = "rust-script"
+args = ["tools/scripts/check-toolchain-pin.rs"]
+
 [tasks.lint-shell]
 description = "Lint all shell scripts with shellcheck"
 script_runner = "bash"
@@ -73,6 +78,7 @@ dependencies = [
     "clippy",
     "doc",
     "lint-boundary-conversions",
+    "lint-toolchain-pin",
     "lint-shell",
 ]
 
