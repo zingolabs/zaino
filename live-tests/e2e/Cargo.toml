@@ -10,9 +10,9 @@ license.workspace = true
 publish = false
 
 [features]
-default = ["zcashd_support"]
+default = []
 
-# Support for the zcashd test validator. Default-on; being deprecated. Gates
+# Support for the zcashd test validator. Opt-in (default off, docs/adr/0005); being deprecated. Gates
 # the zcashd-backed wallet tests and forwards to the zaino crates. See
 # docs/adr/0001-zcashd-support-feature-gate.md.
 zcashd_support = [

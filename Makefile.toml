@@ -93,14 +93,19 @@ script.main = 'source "./tools/scripts/push-image.sh"'
 
 [tasks.container-test]
 clear = true
-description = "Engine: run nextest in the local CI container, forwarding args (zcashd_support OFF by default; --with-zcashd adds it). Devs use `makers test [package|e2e|clientless|live|all]`; live-clientless / live-e2e and the `test` front door call this."
+description = "Engine: run nextest in the local CI container, forwarding args (zcashd_support OFF by default; --with-zcashd adds --features zcashd_support). Devs use `makers test [package|e2e|clientless|live|all]`; live-clientless / live-e2e and the `test` front door call this."
 # This task runs tests inside the container built from live-tests/test_environment.
 # The entrypoint.sh script in the container sets up test binaries (zcashd, zebrad, zcash-cli)
 # by creating symlinks from /home/container_user/artifacts to the expected live-tests/test_binaries/bins location.
 dependencies = ["init-podman-volumes", "ensure-image-exists"]
 script_runner = "bash"
 extend = "base-script"
-script.main = 'source "./tools/scripts/container-test.sh"'
+# container-test.rs owns the podman run; `set -e` makes a test failure abort the
+# script (so `script.post = notify` is skipped on failure, as before).
+script.main = '''
+set -euo pipefail
+./tools/scripts/container-test.rs "${@}"
+'''
 script.post = "makers notify"
 
 # -------------------------------------------------------------------
@@ -187,12 +192,11 @@ esac
 # -------------------------------------------------------------------
 
 [tasks.zcashd_test]
-description = "Convenience: `makers test all` with the zcashd-backed suite compiled in (equivalent to `makers test all --with-zcashd`)"
-# Sets CONTAINER_TEST_WITH_ZCASHD=1 (honoured by the engines alongside the
-# --with-zcashd CLI flag) and delegates to the `test all` front door.
-env = { CONTAINER_TEST_WITH_ZCASHD = "1" }
+description = "Convenience: the whole suite with the zcashd-backed tests (`makers test all --with-zcashd`)"
+# Delegates to the `test all` front door with the explicit flag — there is no
+# implicit/env-var path to enable zcashd (docs/adr/0005).
 script_runner = "bash"
-script = 'exec makers test all'
+script = 'exec makers test all --with-zcashd'
 
 # -------------------------------------------------------------------
 
@@ -253,10 +257,10 @@ script = 'source "./tools/scripts/verify-all.sh"'
 
 # -------------------------------------------------------------------
 
-# Verify the no-zcashd build compiles: the default-on `zcashd_support` feature
-# is being deprecated, so its OFF state must stay green or it bit-rots. The
-# reunified workspace (production + live-test crates) is now checked in a single
-# pass with --no-default-features. See docs/adr/0001-zcashd-support-feature-gate.md.
+# Verify the no-zcashd build compiles: `zcashd_support` is opt-in and being
+# deprecated (docs/adr/0001, 0005), so the default --no-default-features build
+# must stay green or it bit-rots. The reunified workspace (production +
+# live-test crates) is checked in a single pass.
 [tasks.check-no-zcashd-packages]
 description = "cargo check --no-default-features across the whole workspace (zcashd_support off)"
 command = "cargo"

@@ -41,18 +41,18 @@ forward engine flags.)
 
 ### zcashd-backed tests are OFF by default
 
-zcashd is being deprecated, so the suites compile with `--no-default-features`
-(the default-on `zcashd_support` feature turned OFF), and the zcashd-backed
-tests are compiled out. To include them, turn the feature back on in any of
-these equivalent ways:
+zcashd is being deprecated, so `zcashd_support` is **opt-in, not a default**
+feature (docs/adr/0005): every test path runs `--no-default-features`, so the
+zcashd-backed tests are compiled out. There is **no implicit or env-var path**
+to enable them — only the explicit flag:
 
 - pass the flag: `makers test --with-zcashd`, `makers test live --with-zcashd`,
-  or `makers test all --with-zcashd`
-- set the env var: `CONTAINER_TEST_WITH_ZCASHD=1 makers test all`
+  or `makers test all --with-zcashd` (it adds `--features zcashd_support`)
 - use the convenience task: `makers zcashd_test` (equivalent to
   `makers test all --with-zcashd`)
 
-See `docs/adr/0001-zcashd-support-feature-gate.md` for the rationale.
+See `docs/adr/0001-zcashd-support-feature-gate.md` (and `0005` for the
+default-off revision) for the rationale.
 
 ### Test contention on lower-resource machines
 

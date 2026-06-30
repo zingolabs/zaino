@@ -10,9 +10,9 @@ version = "0.2.0"
 publish = false
 
 [features]
-default = ["zcashd_support"]
+default = []
 
-# Support for the zcashd test validator. Default-on; being deprecated. Gates
+# Support for the zcashd test validator. Opt-in (default off, docs/adr/0005); being deprecated. Gates
 # the zcashd-specific test infra (ValidatorKind::Zcashd, the Zcashd validator
 # launchers, ZcashdDualFetchServices, the zcashd smoke-test module) and
 # forwards to the zaino libs. See

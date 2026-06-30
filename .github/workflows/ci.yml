@@ -125,8 +125,8 @@ jobs:
         # test crates' own dependency declarations and survive feature
         # unification, so the harness still functions. This deliberately omits
         # the product features `--all-features` was speculatively enabling:
-        #   - zcashd_support (default): zcashd is being deprecated (docs/adr/0001);
-        #     zcashd-backed tests cfg out and are not executed in CI.
+        #   - zcashd_support (opt-in; docs/adr/0001, 0005): zcashd is being
+        #     deprecated; zcashd-backed tests cfg out and are not executed in CI.
         #   - experimental_features / transparent_address_history_experimental:
         #     not shipped on by default; CI should not gate on a non-release combo.
         #   - prometheus.

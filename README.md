@@ -109,8 +109,8 @@ makers test live       # both live partitions (clientless + e2e) + combined summ
 makers test all        # everything: package then live
 ```
 
-zcashd-backed tests are **off by default**; add `--with-zcashd` (or set
-`CONTAINER_TEST_WITH_ZCASHD=1`) to include them. On lower-resource machines you
+zcashd-backed tests are **off by default**; add `--with-zcashd` to include them
+(there is no implicit or env-var path — see docs/adr/0005). On lower-resource machines you
 may hit occasional contention flakes under full parallelism — re-run, or lower
 `test-threads` in the nextest config. See [docs/testing.md](./docs/testing.md)
 for full instructions.

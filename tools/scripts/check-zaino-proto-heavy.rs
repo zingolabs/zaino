@@ -1,9 +1,9 @@
 // Guard: `zaino-proto`'s `heavy` feature must stay enabled when a workspace is
 // built with `--no-default-features`.
 //
-// `makers container-test` / `live` run the suite with
-// `--no-default-features` to drop the deprecated, default-on `zcashd_support`
-// feature. `heavy` is a *separate* default feature, on `zaino-proto` only, that
+// The test suite runs with `--no-default-features` (the zcashd-off world;
+// `zcashd_support` is opt-in and deprecating, docs/adr/0005). `heavy` is a
+// *separate* default feature, on `zaino-proto` only, that
 // pulls in zebra-state / zebra-chain / which. It survives `--no-default-features`
 // only because every dependent pulls `zaino-proto` with default features (no
 // `default-features = false` on those edges). If someone adds

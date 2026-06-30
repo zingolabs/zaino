@@ -11,9 +11,8 @@
 //! suite. It then exits non-zero if either partition failed, so CI still
 //! catches it.
 //!
-//! `--with-zcashd` is forwarded to the child `makers` calls (as the
-//! `CONTAINER_TEST_WITH_ZCASHD` env var the engines honour) so the zcashd-backed
-//! tests are included.
+//! `--with-zcashd` is forwarded as a flag to the child `makers` calls so the
+//! zcashd-backed tests are included; otherwise nothing enables them.
 //!
 //! ```cargo
 //! [dependencies]
@@ -53,10 +52,11 @@ fn run_partition(task: &str, with_zcashd: bool) -> Result<(i32, String), Box<dyn
     // `bash -c '... 2>&1'` merges stderr into stdout so the single captured
     // stream carries the nextest summary line wherever nextest emits it.
     let mut cmd = Command::new("bash");
-    cmd.arg("-c").arg(format!("makers {task} 2>&1"));
-    if with_zcashd {
-        cmd.env("CONTAINER_TEST_WITH_ZCASHD", "1");
-    }
+    // Forward `--with-zcashd` as an explicit flag (no implicit env var): the
+    // partition task passes it through to `container-test`, which adds
+    // `--features zcashd_support`.
+    let zcashd_flag = if with_zcashd { " --with-zcashd" } else { "" };
+    cmd.arg("-c").arg(format!("makers {task}{zcashd_flag} 2>&1"));
     let mut child = cmd.stdout(Stdio::piped()).spawn()?;
 
     let stdout = child
