@@ -219,6 +219,8 @@ pub trait Migration<T: BlockchainSource> {
     const TO_VERSION: DbVersion;
 
     /// Returns the version this step migrates *from*.
+    // `from_version` is a getter for the source version (per ADR 0002), not a constructor.
+    #[allow(clippy::wrong_self_convention)]
     fn from_version(&self) -> DbVersion {
         Self::CURRENT_VERSION
     }
@@ -228,61 +230,94 @@ pub trait Migration<T: BlockchainSource> {
         Self::TO_VERSION
     }
 
-    /// Returns the routing/lifecycle category for this migration.
+    /// Returns the routing/lifecycle category for this migration, which selects both the manager's
+    /// plumbing (see [`MigrationManager::migrate`]) and the default [`Migration::migrate`] body:
     ///
-    /// Patch migrations run directly against the current routed primary state and use the default
-    /// metadata-only migration implementation.
-    ///
-    /// Minor and major migrations are run while the migration manager holds a full-mode ephemeral
-    /// reference. During that time normal service capabilities route to ephemeral and migration code
-    /// must use direct maintenance access to the persistent backend or replacement backend.
+    /// - **Patch** — runs directly against the primary; the default `migrate` advances `DbMetadata`
+    ///   only.
+    /// - **Minor** — runs while the manager holds a full-mode ephemeral reference (reads served from
+    ///   the validator while the primary is rebuilt in place); the migration **must** override
+    ///   `migrate`.
+    /// - **Major** — the default `migrate` builds the new major from the validator and promotes it
+    ///   (see [`build_and_promote_major`]); the old primary keeps serving until the swap, so the
+    ///   manager installs no full-duration ephemeral.
     fn migration_type(&self) -> MigrationType {
         MigrationType::Patch
     }
 
     /// Performs the migration step.
     ///
-    /// Implementations may:
-    /// - spawn a shadow backend,
-    /// - build or rebuild indices,
-    /// - update metadata and migration status,
-    /// - and promote the shadow backend to primary via the router.
+    /// The default dispatches on [`Migration::migration_type`]:
+    /// - **Patch** → a metadata-only advance of the recorded version ([`migrate_metadata_only`]).
+    /// - **Major** → the generic build-and-promote helper ([`build_and_promote_major`]), targeting
+    ///   `TO_VERSION` (the newest version of the new major).
+    /// - **Minor** → fails fast: a minor migration carries bespoke in-place rebuild logic and **must**
+    ///   override this method. A compile-time check is not expressible against the runtime
+    ///   `migration_type` discriminant, so this is a fail-fast guard (covered by a registry test).
     ///
     /// # Errors
     /// Returns `FinalisedStateError` if the migration cannot proceed safely or deterministically.
-    ///
-    /// **Default**: Metadata-only migration.
-    ///
-    /// Use this for migrations where no LMDB data layout changes are required.
     async fn migrate(
         &self,
         router: Arc<Router<T>>,
-        _cfg: ChainIndexConfig,
-        _source: T,
+        cfg: ChainIndexConfig,
+        source: T,
     ) -> Result<(), FinalisedStateError> {
-        info!(
-            "Starting metadata-only migration from {} to {}.",
-            Self::CURRENT_VERSION,
-            Self::TO_VERSION,
-        );
-
-        let mut metadata: DbMetadata = router.get_metadata().await?;
-
-        metadata.version = Self::TO_VERSION;
-        metadata.schema_hash =
-            crate::chain_index::finalised_state::finalised_source::v1::DB_SCHEMA_V1_HASH;
-        metadata.migration_status = MigrationStatus::Empty;
-
-        router.update_metadata(metadata).await?;
-
-        info!(
-            "Metadata-only migration from {} to {} complete.",
-            Self::CURRENT_VERSION,
-            Self::TO_VERSION,
-        );
-
-        Ok(())
+        match self.migration_type() {
+            MigrationType::Patch => {
+                migrate_metadata_only::<T>(router, Self::CURRENT_VERSION, Self::TO_VERSION).await
+            }
+            MigrationType::Major => {
+                build_and_promote_major::<T>(router, cfg, source, Self::TO_VERSION).await
+            }
+            MigrationType::Minor => Err(FinalisedStateError::Custom(format!(
+                "minor migration {} -> {} must override migrate()",
+                Self::CURRENT_VERSION,
+                Self::TO_VERSION,
+            ))),
+        }
     }
+}
+
+/// Metadata-only migration: advances the recorded `DbMetadata::version` (and re-stamps the schema
+/// checksum), touching no table data. This is the default behaviour of a **patch** migration.
+async fn migrate_metadata_only<T: BlockchainSource>(
+    router: Arc<Router<T>>,
+    from: DbVersion,
+    to: DbVersion,
+) -> Result<(), FinalisedStateError> {
+    info!("Starting metadata-only migration from {from} to {to}.");
+
+    let mut metadata: DbMetadata = router.get_metadata().await?;
+    metadata.version = to;
+    metadata.schema_hash =
+        crate::chain_index::finalised_state::finalised_source::v1::DB_SCHEMA_V1_HASH;
+    metadata.migration_status = MigrationStatus::Empty;
+    router.update_metadata(metadata).await?;
+
+    info!("Metadata-only migration from {from} to {to} complete.");
+    Ok(())
+}
+
+/// Generic **major** migration: builds the target major from the backing validator and promotes it.
+///
+/// This is the default behaviour of a major migration (overridable for a bespoke major). The old
+/// primary keeps serving read+write while the new backend is built in its own directory; a brief
+/// ephemeral freeze covers the final catch-up and the atomic primary swap; the old directory is then
+/// kept or deleted per the retention policy. `target` is the newest version of the new major.
+///
+/// Implemented in a later step (it depends on `FinalisedSource::spawn_major`, the retention config,
+/// and `Router::replace_primary`). No major migration is registered yet, so this path is currently
+/// unreachable.
+async fn build_and_promote_major<T: BlockchainSource>(
+    _router: Arc<Router<T>>,
+    _cfg: ChainIndexConfig,
+    _source: T,
+    target: DbVersion,
+) -> Result<(), FinalisedStateError> {
+    Err(FinalisedStateError::Custom(format!(
+        "major build-and-promote to {target} is not yet implemented"
+    )))
 }
 
 /// Orchestrates a sequence of migration steps until `target_version` is reached.
@@ -328,6 +363,7 @@ impl<T: BlockchainSource> MigrationManager<T> {
 
         for step in plan {
             match step.migration_type::<T>() {
+                // Patch: metadata-only, runs directly against the primary.
                 MigrationType::Patch => {
                     step.migrate(
                         Arc::clone(&self.router),
@@ -337,7 +373,10 @@ impl<T: BlockchainSource> MigrationManager<T> {
                     .await?;
                 }
 
-                MigrationType::Minor | MigrationType::Major => {
+                // Minor: in-place rebuild of the one primary. Hold a full-mode ephemeral reference
+                // for the duration so reads are served from the validator while the primary is
+                // rewritten.
+                MigrationType::Minor => {
                     let primary = self.router.primary_backend();
                     let db_height = primary.db_height().await?;
 
@@ -351,6 +390,18 @@ impl<T: BlockchainSource> MigrationManager<T> {
                         )
                         .await?;
 
+                    step.migrate(
+                        Arc::clone(&self.router),
+                        self.cfg.clone(),
+                        self.source.clone(),
+                    )
+                    .await?;
+                }
+
+                // Major: the old primary keeps serving while a new major is built in its own
+                // directory; the build-and-promote helper installs its own brief ephemeral freeze
+                // for the swap, so the manager holds no full-duration ephemeral here.
+                MigrationType::Major => {
                     step.migrate(
                         Arc::clone(&self.router),
                         self.cfg.clone(),
@@ -397,6 +448,9 @@ macro_rules! migrations {
             }
 
             /// The exact on-disk version this step migrates *from*.
+            // Getters for the source/target versions (per ADR 0002), not constructors; the
+            // `from_*`/`to_*` self-convention lints don't apply.
+            #[allow(clippy::wrong_self_convention)]
             fn from_version<T: BlockchainSource>(&self) -> DbVersion {
                 match self {
                     $(MigrationStep::$step(_) => <$step as Migration<T>>::CURRENT_VERSION,)*
@@ -404,6 +458,7 @@ macro_rules! migrations {
             }
 
             /// The exact on-disk version this step migrates *to*.
+            #[allow(clippy::wrong_self_convention)]
             fn to_version<T: BlockchainSource>(&self) -> DbVersion {
                 match self {
                     $(MigrationStep::$step(_) => <$step as Migration<T>>::TO_VERSION,)*
