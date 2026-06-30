@@ -5,7 +5,7 @@ on:
     inputs:
       nextest-profile:
         type: string
-        default: 'quick'
+        default: 'default'
   workflow_dispatch:
   push:
     tags:
@@ -217,18 +217,16 @@ jobs:
         env:
           TEST_BINARIES_DIR: ${{ github.workspace }}/live-tests/test_binaries/bins
         run: |
-          # Retries are NOT set here: the `quick` profile scopes retries = 2 to the
-          # live packages (e2e/clientless) and keeps production unit partitions at
-          # retries = 0. A global `--retries` flag would blanket the unit tests too.
+          # Retries are NOT set here: the `default` profile scopes retries = 2 to
+          # the live packages (e2e/clientless) and keeps production unit partitions
+          # at retries = 0. A global `--retries` flag would blanket the unit tests too.
           #
           # `--no-tests fail` guards against a mistyped partition (binary_id matching
-          # nothing). Note it also fires if every test in a partition is excluded by
-          # the `quick` default-filter (the flaky/slow denylist): a "no tests run"
-          # failure here means check that list, not just the matrix name.
-          cargo nextest run --verbose --profile ${{ inputs.nextest-profile || 'quick' }} --no-tests fail --archive-file nextest-archive.tar.zst \
+          # nothing).
+          cargo nextest run --verbose --profile ${{ inputs.nextest-profile || 'default' }} --no-tests fail --archive-file nextest-archive.tar.zst \
             --workspace-remap ./ --filterset "binary_id(${{ matrix.partition }})"
 
       - name: Test Summary
         uses: test-summary/action@v2
         with:
-          paths: "target/nextest/${{ inputs.nextest-profile || 'quick' }}/junit.xml"
+          paths: "target/nextest/${{ inputs.nextest-profile || 'default' }}/junit.xml"

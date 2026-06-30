@@ -69,8 +69,9 @@ both depend on.
   `[profile.test]`, and a single root `.config/nextest.toml`.
 - The `e2e` partition is **compiled but not executed in CI**: it is part of the
   `cargo nextest archive --workspace` build (so compilation regressions are
-  caught), but it is absent from the CI test matrix and excluded by the `quick`
-  profile (`not package(e2e)`). Adding the validator-heavy e2e suite to CI is a
+  caught), but it is absent from the CI test matrix (the per-partition
+  `binary_id` selection in `ci.yml` simply never names an `e2e` binary). Adding
+  the validator-heavy e2e suite to CI is a
   capacity decision deferred to
   [#1308](https://github.com/zingolabs/zaino/issues/1308); until then, e2e
   *runtime* regressions are ungated. This is a logged trade-off, not an oversight.
