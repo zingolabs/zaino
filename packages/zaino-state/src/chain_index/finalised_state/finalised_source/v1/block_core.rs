@@ -5,7 +5,6 @@ use super::*;
 /// [`BlockCoreExt`] capability implementation for [`DbV1`].
 ///
 /// Provides access to block headers, txid lists, and transaction location mapping.
-#[async_trait]
 impl BlockCoreExt for DbV1 {
     async fn get_block_header(
         &self,

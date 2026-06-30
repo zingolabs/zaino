@@ -6041,7 +6041,6 @@ name = "zaino-state"
 version = "0.3.0"
 dependencies = [
  "arc-swap",
- "async-trait",
  "bitflags 2.13.0",
  "blake2",
  "bs58",

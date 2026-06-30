@@ -165,7 +165,8 @@ use crate::{
 
 use lmdb::{Transaction, WriteFlags};
 
-use async_trait::async_trait;
+use crate::SendFut;
+
 use std::sync::Arc;
 use tracing::info;
 
@@ -205,7 +206,6 @@ pub enum MigrationType {
 /// - and [`MigrationStatus`] in `DbMetadata` as an explicit progress marker.
 ///
 /// Implementations must never promote a partially-correct database to primary.
-#[async_trait]
 pub trait Migration<T: BlockchainSource> {
     /// The exact on-disk version this step migrates *from*.
     const CURRENT_VERSION: DbVersion;
@@ -249,34 +249,36 @@ pub trait Migration<T: BlockchainSource> {
     /// **Default**: Metadata-only migration.
     ///
     /// Use this for migrations where no LMDB data layout changes are required.
-    async fn migrate(
+    fn migrate(
         &self,
         router: Arc<Router<T>>,
         _cfg: ChainIndexConfig,
         _source: T,
-    ) -> Result<(), FinalisedStateError> {
-        info!(
-            "Starting metadata-only migration from {} to {}.",
-            Self::CURRENT_VERSION,
-            Self::TO_VERSION,
-        );
+    ) -> impl SendFut<Result<(), FinalisedStateError>> {
+        async move {
+            info!(
+                "Starting metadata-only migration from {} to {}.",
+                Self::CURRENT_VERSION,
+                Self::TO_VERSION,
+            );
 
-        let mut metadata: DbMetadata = router.get_metadata().await?;
+            let mut metadata: DbMetadata = router.get_metadata().await?;
 
-        metadata.version = Self::TO_VERSION;
-        metadata.schema_hash =
-            crate::chain_index::finalised_state::finalised_source::v1::DB_SCHEMA_V1_HASH;
-        metadata.migration_status = MigrationStatus::Empty;
+            metadata.version = Self::TO_VERSION;
+            metadata.schema_hash =
+                crate::chain_index::finalised_state::finalised_source::v1::DB_SCHEMA_V1_HASH;
+            metadata.migration_status = MigrationStatus::Empty;
 
-        router.update_metadata(metadata).await?;
+            router.update_metadata(metadata).await?;
 
-        info!(
-            "Metadata-only migration from {} to {} complete.",
-            Self::CURRENT_VERSION,
-            Self::TO_VERSION,
-        );
+            info!(
+                "Metadata-only migration from {} to {} complete.",
+                Self::CURRENT_VERSION,
+                Self::TO_VERSION,
+            );
 
-        Ok(())
+            Ok(())
+        }
     }
 }
 
@@ -455,7 +457,6 @@ impl MigrationStep {
 /// - Clears any stale in-progress migration status.
 struct Migration1_0_0To1_1_0;
 
-#[async_trait]
 impl<T: BlockchainSource> Migration<T> for Migration1_0_0To1_1_0 {
     const CURRENT_VERSION: DbVersion = DbVersion {
         major: 1,
@@ -537,7 +538,6 @@ fn flush_migration_spent_batch(
     Ok(())
 }
 
-#[async_trait]
 impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
     const CURRENT_VERSION: DbVersion = DbVersion {
         major: 1,
@@ -991,7 +991,6 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
 /// unchanged schema checksum). It is idempotent, builds no shadow database, and rebuilds no indices.
 struct Migration1_2_0To1_2_1;
 
-#[async_trait]
 impl<T: BlockchainSource> Migration<T> for Migration1_2_0To1_2_1 {
     const CURRENT_VERSION: DbVersion = DbVersion {
         major: 1,

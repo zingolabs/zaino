@@ -50,7 +50,6 @@ pub enum ValidatorConnector {
     Fetch(JsonRpSeeConnector),
 }
 
-#[async_trait]
 impl BlockchainSource for ValidatorConnector {
     // ********** Block methods **********
 
