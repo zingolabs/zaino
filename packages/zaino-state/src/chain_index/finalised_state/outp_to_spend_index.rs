@@ -81,7 +81,9 @@ fn spends_in_transaction(
 pub(super) fn collate(records: &[SpendRecord]) -> Result<Vec<EncodedSpend>, FinalisedStateError> {
     let mut encoded = records
         .iter()
-        .map(|(outpoint, spending_txid)| Ok((outpoint.to_bytes()?, <[u8; 32]>::from(*spending_txid))))
+        .map(|(outpoint, spending_txid)| {
+            Ok((outpoint.to_bytes()?, <[u8; 32]>::from(*spending_txid)))
+        })
         .collect::<Result<Vec<EncodedSpend>, FinalisedStateError>>()?;
 
     encoded.sort_by(|a, b| a.0.cmp(&b.0));
@@ -370,8 +372,14 @@ mod collate {
             "keys must be strictly ascending for MDB_APPEND",
         );
         // The trailing LE u32 of each key shows index 256 precedes index 1.
-        assert_eq!(&encoded[0].0[encoded[0].0.len() - 4..], &256u32.to_le_bytes()[..]);
-        assert_eq!(&encoded[1].0[encoded[1].0.len() - 4..], &1u32.to_le_bytes()[..]);
+        assert_eq!(
+            &encoded[0].0[encoded[0].0.len() - 4..],
+            &256u32.to_le_bytes()[..]
+        );
+        assert_eq!(
+            &encoded[1].0[encoded[1].0.len() - 4..],
+            &1u32.to_le_bytes()[..]
+        );
     }
 }
 
@@ -381,8 +389,10 @@ mod spend_index_db {
 
     #[test]
     fn bulk_load_then_point_read_round_trips() {
-        let dir =
-            std::env::temp_dir().join(format!("outp_to_spend_index_roundtrip_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "outp_to_spend_index_roundtrip_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
 
         let db = SpendIndexDb::open(&dir, 1 << 20).expect("open spend index");
@@ -391,8 +401,7 @@ mod spend_index_db {
         let spent_b = Outpoint::new([2u8; 32], 7);
         let spender = TransactionHash::from([9u8; 32]);
 
-        let collated =
-            super::collate(&[(spent_a, spender), (spent_b, spender)]).expect("collate");
+        let collated = super::collate(&[(spent_a, spender), (spent_b, spender)]).expect("collate");
         db.bulk_load(&collated).expect("bulk load");
 
         assert_eq!(db.spending_txid(&spent_a).expect("read a"), Some(spender));
