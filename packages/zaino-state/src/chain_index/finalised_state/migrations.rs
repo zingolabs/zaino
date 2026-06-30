@@ -17,11 +17,15 @@
 //!
 //! - [`MigrationManager<T>`]:
 //!   - holds the router, config, current and target versions, and a `BlockchainSource`,
-//!   - repeatedly selects and runs the next migration via `get_migration()`.
+//!   - plans a path over the version graph via [`plan_migrations`] and runs each step in order.
 //!
-//! - [`MigrationStep`]:
-//!   - enum-based dispatch wrapper used by `MigrationManager` to select between multiple concrete
-//!     `Migration<T>` implementations (Rust cannot return different `impl Trait` types from a `match`).
+//! - [`MigrationStep`] and the [`migrations!`] macro:
+//!   - the macro generates the `MigrationStep` dispatch enum (static, no `dyn`) and the
+//!     `MigrationStep::all` registry from a single authored list; [`plan_migrations`] walks that
+//!     registry as a graph (nodes = `DbVersion`, edges = steps) to find the path to the target.
+//!
+//! The authoritative spec for this module is ADR 0002
+//! (`docs/adr/0002-persistent-finalised-state-migrations.md`).
 //!
 //! - [`capability::MigrationStatus`]:
 //!   - stored in `DbMetadata` and used to resume work safely after shutdown.
@@ -77,17 +81,18 @@
 //!
 //! # Development: adding a new migration step
 //!
-//! 1. Introduce a new `struct MigrationX_Y_ZToA_B_C;` and implement `Migration<T>`.
-//! 2. Add a new `MigrationStep` variant and register it in `MigrationManager::get_migration()` by
-//!    matching on the *current* version.
-//! 3. Ensure the migration is:
-//!    - deterministic,
-//!    - resumable (use `DbMetadata::migration_status` and/or shadow tip),
-//!    - crash-safe (never leaves a partially promoted DB).
-//! 4. Add tests/fixtures for:
-//!    - starting from the old version,
-//!    - resuming mid-build if applicable,
-//!    - validating the promoted DB serves required capabilities.
+//! See ADR 0002's "Engineer / dev guide" for the full recipe. In short:
+//!
+//! 1. Introduce a new `#[derive(Clone, Copy)] struct MigrationX_Y_ZToA_B_C;` and implement
+//!    `Migration<T>` (set `CURRENT_VERSION` / `TO_VERSION`, and `migration_type()` for non-patch).
+//! 2. Add its name to the `migrations! { .. }` list — that registers it for the planner; there is no
+//!    strict `(major, minor, patch)` match to edit.
+//! 3. Update the version constants in the versions module so the registry edge and
+//!    `latest_version_for_major` agree.
+//! 4. Ensure the migration is deterministic, resumable (`DbMetadata::migration_status` and/or the
+//!    target backend's own tip), and crash-safe (never leaves a partially promoted DB).
+//! 5. Add tests/fixtures: starting from the old version, resuming mid-build if applicable, and
+//!    validating the resulting DB serves the required capabilities.
 //!
 //! # Implemented migrations
 //!
@@ -177,8 +182,8 @@ use tracing::info;
 /// - **Major**: capability or schema changes that require rebuilding indices from the backing validator,
 ///   typically using the router’s primary/shadow model.
 ///
-/// Note: this enum is not currently used to dispatch behaviour in this file; concrete steps are
-/// selected by [`MigrationManager::get_migration`].
+/// Note: concrete steps are selected by [`plan_migrations`] from the [`migrations!`] registry; this
+/// enum drives the per-type lifecycle in [`MigrationManager::migrate`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MigrationType {
     /// Patch-level changes: no schema change; metadata updates only.
@@ -214,7 +219,7 @@ pub trait Migration<T: BlockchainSource> {
     const TO_VERSION: DbVersion;
 
     /// Returns the version this step migrates *from*.
-    fn current_version(&self) -> DbVersion {
+    fn from_version(&self) -> DbVersion {
         Self::CURRENT_VERSION
     }
 
@@ -309,28 +314,27 @@ pub(super) struct MigrationManager<T: BlockchainSource> {
 }
 
 impl<T: BlockchainSource> MigrationManager<T> {
-    /// Iteratively performs each migration step from current version to target version.
+    /// Plans a path from `current_version` to `target_version` over the migration version graph,
+    /// then performs each step in order.
     ///
-    /// The manager applies steps in order, where each step maps one specific `DbVersion` to the next.
-    /// The loop terminates once `current_version >= target_version`.
+    /// The plan is computed once via [`plan_migrations`]; each step maps one specific `DbVersion`
+    /// to the next, and `current_version` is advanced to each step's `to_version` as it completes.
     ///
     /// # Errors
-    /// Returns an error if a migration step is missing for the current version, or if any migration
-    /// step fails.
+    /// Returns an error if no path exists from the current version to the target, or if any
+    /// migration step fails.
     pub(super) async fn migrate(&mut self) -> Result<(), FinalisedStateError> {
-        while self.current_version < self.target_version {
-            let migration = self.get_migration()?;
-            let migration_type = migration.migration_type::<T>();
+        let plan = plan_migrations::<T>(self.current_version, self.target_version)?;
 
-            match migration_type {
+        for step in plan {
+            match step.migration_type::<T>() {
                 MigrationType::Patch => {
-                    migration
-                        .migrate(
-                            Arc::clone(&self.router),
-                            self.cfg.clone(),
-                            self.source.clone(),
-                        )
-                        .await?;
+                    step.migrate(
+                        Arc::clone(&self.router),
+                        self.cfg.clone(),
+                        self.source.clone(),
+                    )
+                    .await?;
                 }
 
                 MigrationType::Minor | MigrationType::Major => {
@@ -347,95 +351,163 @@ impl<T: BlockchainSource> MigrationManager<T> {
                         )
                         .await?;
 
-                    migration
-                        .migrate(
-                            Arc::clone(&self.router),
-                            self.cfg.clone(),
-                            self.source.clone(),
-                        )
-                        .await?;
+                    step.migrate(
+                        Arc::clone(&self.router),
+                        self.cfg.clone(),
+                        self.source.clone(),
+                    )
+                    .await?;
                 }
             }
 
-            self.current_version = migration.to_version::<T>();
+            self.current_version = step.to_version::<T>();
         }
 
         Ok(())
     }
-
-    /// Returns the next migration step for the current on-disk version.
-    ///
-    /// This must be updated whenever a new supported DB version is introduced. The match is strict:
-    /// if a step is missing, migration is aborted rather than attempting an unsafe fallback.
-    fn get_migration(&self) -> Result<MigrationStep, FinalisedStateError> {
-        match (
-            self.current_version.major,
-            self.current_version.minor,
-            self.current_version.patch,
-        ) {
-            (1, 0, 0) => Ok(MigrationStep::Migration1_0_0To1_1_0(Migration1_0_0To1_1_0)),
-            (1, 1, 0) => Ok(MigrationStep::Migration1_1_0To1_2_0(Migration1_1_0To1_2_0)),
-            (1, 2, 0) => Ok(MigrationStep::Migration1_2_0To1_2_1(Migration1_2_0To1_2_1)),
-            (_, _, _) => Err(FinalisedStateError::Custom(format!(
-                "Missing migration from version {}",
-                self.current_version
-            ))),
-        }
-    }
 }
 
-/// Concrete migration step selector.
+/// Generates the [`MigrationStep`] dispatch enum and the planner's registry from a single authored
+/// list of migration types.
 ///
-/// Rust cannot return `impl Migration<T>` from a `match` that selects between multiple concrete
-/// migration types. `MigrationStep` is the enum-based dispatch wrapper used by [`MigrationManager`]
-/// to select a step and call `migrate(...)`, and to read the step’s `TO_VERSION`.
-enum MigrationStep {
-    Migration1_0_0To1_1_0(Migration1_0_0To1_1_0),
-    Migration1_1_0To1_2_0(Migration1_1_0To1_2_0),
-    Migration1_2_0To1_2_1(Migration1_2_0To1_2_1),
+/// Each listed type is a unit struct implementing [`Migration<T>`]. The macro generates:
+/// - the `MigrationStep` enum (one variant per type),
+/// - static dispatch for `from_version` / `to_version` / `migration_type` / `migrate` (no `dyn`),
+/// - `MigrationStep::all`, the registry [`plan_migrations`] walks to build the version graph.
+///
+/// Adding a migration is therefore: implement `Migration<T>` for a new unit struct, then add its
+/// name to the `migrations! { .. }` list below. A `fn` cannot generate enum variants or match arms,
+/// so a macro is the minimal tool for this (per the repo's DRY guideline).
+macro_rules! migrations {
+    ($($step:ident),* $(,)?) => {
+        /// Concrete migration step selector (generated by [`migrations!`]).
+        ///
+        /// Rust cannot return `impl Migration<T>` from a `match` that selects between multiple
+        /// concrete migration types, so this enum provides the static dispatch over them.
+        #[derive(Clone, Copy)]
+        enum MigrationStep {
+            $($step($step),)*
+        }
+
+        impl MigrationStep {
+            /// Every registered migration step, in registry order. The planner builds the version
+            /// graph (nodes = `DbVersion`, edges = these steps) from this list.
+            fn all() -> Vec<MigrationStep> {
+                vec![$(MigrationStep::$step($step),)*]
+            }
+
+            /// The exact on-disk version this step migrates *from*.
+            fn from_version<T: BlockchainSource>(&self) -> DbVersion {
+                match self {
+                    $(MigrationStep::$step(_) => <$step as Migration<T>>::CURRENT_VERSION,)*
+                }
+            }
+
+            /// The exact on-disk version this step migrates *to*.
+            fn to_version<T: BlockchainSource>(&self) -> DbVersion {
+                match self {
+                    $(MigrationStep::$step(_) => <$step as Migration<T>>::TO_VERSION,)*
+                }
+            }
+
+            /// The routing/lifecycle category for this step.
+            fn migration_type<T: BlockchainSource>(&self) -> MigrationType {
+                match self {
+                    $(MigrationStep::$step(step) => <$step as Migration<T>>::migration_type(step),)*
+                }
+            }
+
+            /// Runs this step.
+            async fn migrate<T: BlockchainSource>(
+                &self,
+                router: Arc<Router<T>>,
+                cfg: ChainIndexConfig,
+                source: T,
+            ) -> Result<(), FinalisedStateError> {
+                match self {
+                    $(MigrationStep::$step(step) => step.migrate(router, cfg, source).await,)*
+                }
+            }
+        }
+    };
 }
 
-impl MigrationStep {
-    fn to_version<T: BlockchainSource>(&self) -> DbVersion {
-        match self {
-            MigrationStep::Migration1_0_0To1_1_0(_step) => {
-                <Migration1_0_0To1_1_0 as Migration<T>>::TO_VERSION
-            }
-            MigrationStep::Migration1_1_0To1_2_0(_step) => {
-                <Migration1_1_0To1_2_0 as Migration<T>>::TO_VERSION
-            }
-            MigrationStep::Migration1_2_0To1_2_1(_step) => {
-                <Migration1_2_0To1_2_1 as Migration<T>>::TO_VERSION
+migrations! {
+    Migration1_0_0To1_1_0,
+    Migration1_1_0To1_2_0,
+    Migration1_2_0To1_2_1,
+}
+
+/// Computes the ordered sequence of migration steps from `current` to `target` over the version
+/// graph formed by the registered migrations (nodes = `DbVersion`, edges = `MigrationStep`s).
+///
+/// The path is the shortest one found by breadth-first search; ties are broken by registry order,
+/// so the result is deterministic. Returns an empty plan when `current == target`.
+///
+/// # Errors
+/// Returns [`FinalisedStateError::Custom`] if no path exists from `current` to `target`.
+fn plan_migrations<T: BlockchainSource>(
+    current: DbVersion,
+    target: DbVersion,
+) -> Result<Vec<MigrationStep>, FinalisedStateError> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+
+    if current == target {
+        return Ok(Vec::new());
+    }
+
+    let steps = MigrationStep::all();
+
+    // Adjacency by source version, preserving registry order so ties break deterministically.
+    let mut adjacency: HashMap<DbVersion, Vec<usize>> = HashMap::new();
+    for (index, step) in steps.iter().enumerate() {
+        adjacency
+            .entry(step.from_version::<T>())
+            .or_default()
+            .push(index);
+    }
+
+    // BFS from `current`, recording the predecessor edge for each newly reached version.
+    let mut predecessor: HashMap<DbVersion, (DbVersion, usize)> = HashMap::new();
+    let mut visited: HashSet<DbVersion> = HashSet::from([current]);
+    let mut queue: VecDeque<DbVersion> = VecDeque::from([current]);
+
+    while let Some(version) = queue.pop_front() {
+        if version == target {
+            break;
+        }
+        if let Some(indices) = adjacency.get(&version) {
+            for &index in indices {
+                let next = steps[index].to_version::<T>();
+                if visited.insert(next) {
+                    predecessor.insert(next, (version, index));
+                    queue.push_back(next);
+                }
             }
         }
     }
 
-    fn migration_type<T: BlockchainSource>(&self) -> MigrationType {
-        match self {
-            MigrationStep::Migration1_0_0To1_1_0(step) => {
-                <Migration1_0_0To1_1_0 as Migration<T>>::migration_type(step)
-            }
-            MigrationStep::Migration1_1_0To1_2_0(step) => {
-                <Migration1_1_0To1_2_0 as Migration<T>>::migration_type(step)
-            }
-            MigrationStep::Migration1_2_0To1_2_1(step) => {
-                <Migration1_2_0To1_2_1 as Migration<T>>::migration_type(step)
-            }
-        }
+    if !visited.contains(&target) {
+        return Err(FinalisedStateError::Custom(format!(
+            "no migration path from {current} to {target}"
+        )));
     }
 
-    async fn migrate<T: BlockchainSource>(
-        &self,
-        router: Arc<Router<T>>,
-        cfg: ChainIndexConfig,
-        source: T,
-    ) -> Result<(), FinalisedStateError> {
-        match self {
-            MigrationStep::Migration1_0_0To1_1_0(step) => step.migrate(router, cfg, source).await,
-            MigrationStep::Migration1_1_0To1_2_0(step) => step.migrate(router, cfg, source).await,
-            MigrationStep::Migration1_2_0To1_2_1(step) => step.migrate(router, cfg, source).await,
-        }
+    // Walk predecessors back from `target` to `current`, then reverse into forward order.
+    let mut plan = Vec::new();
+    let mut cursor = target;
+    while cursor != current {
+        let (previous, index) = *predecessor.get(&cursor).ok_or_else(|| {
+            FinalisedStateError::Custom(
+                "internal error: incomplete migration path reconstruction".to_string(),
+            )
+        })?;
+        plan.push(steps[index]);
+        cursor = previous;
     }
+    plan.reverse();
+
+    Ok(plan)
 }
 
 // ***** Migrations *****
@@ -453,6 +525,7 @@ impl MigrationStep {
 /// - Idempotent: if run more than once, it will re-write the same metadata.
 /// - No shadow database and no table rebuild.
 /// - Clears any stale in-progress migration status.
+#[derive(Clone, Copy)]
 struct Migration1_0_0To1_1_0;
 
 #[async_trait]
@@ -479,6 +552,7 @@ impl<T: BlockchainSource> Migration<T> for Migration1_0_0To1_1_0 {
 /// - Crash-safe: each block's spent entries, txout-set accumulator, and progress update are
 ///   committed in the same LMDB transaction.
 /// - No shadow database.
+#[derive(Clone, Copy)]
 struct Migration1_1_0To1_2_0;
 
 /// Flushes a buffered batch of `spent` index entries in sorted key order, then commits them
@@ -989,6 +1063,7 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
 /// Because there is no data change, it uses the trait's default `migration_type` ([`MigrationType::Patch`])
 /// and default `migrate` implementation, which only advances `DbMetadata::version` (and re-stamps the
 /// unchanged schema checksum). It is idempotent, builds no shadow database, and rebuilds no indices.
+#[derive(Clone, Copy)]
 struct Migration1_2_0To1_2_1;
 
 #[async_trait]
@@ -1004,4 +1079,74 @@ impl<T: BlockchainSource> Migration<T> for Migration1_2_0To1_2_1 {
         minor: 2,
         patch: 1,
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::chain_index::source::mockchain_source::MockchainSource;
+
+    // Type witness: `plan_migrations` only reads the version constants, which are identical for
+    // every `BlockchainSource`, so any concrete source type works to instantiate it.
+    type Source = MockchainSource;
+
+    fn v(major: u32, minor: u32, patch: u32) -> DbVersion {
+        DbVersion::new(major, minor, patch)
+    }
+
+    /// Flattens a plan into its `(from, to)` edges for assertion.
+    fn edges(plan: &[MigrationStep]) -> Vec<(DbVersion, DbVersion)> {
+        plan.iter()
+            .map(|step| (step.from_version::<Source>(), step.to_version::<Source>()))
+            .collect()
+    }
+
+    #[test]
+    fn registry_edges_match_authored_list() {
+        assert_eq!(
+            edges(&MigrationStep::all()),
+            vec![
+                (v(1, 0, 0), v(1, 1, 0)),
+                (v(1, 1, 0), v(1, 2, 0)),
+                (v(1, 2, 0), v(1, 2, 1)),
+            ],
+        );
+    }
+
+    #[test]
+    fn plans_full_linear_path() {
+        let plan = plan_migrations::<Source>(v(1, 0, 0), v(1, 2, 1)).expect("path exists");
+        assert_eq!(
+            edges(&plan),
+            vec![
+                (v(1, 0, 0), v(1, 1, 0)),
+                (v(1, 1, 0), v(1, 2, 0)),
+                (v(1, 2, 0), v(1, 2, 1)),
+            ],
+        );
+    }
+
+    #[test]
+    fn plans_partial_path() {
+        let plan = plan_migrations::<Source>(v(1, 1, 0), v(1, 2, 0)).expect("path exists");
+        assert_eq!(edges(&plan), vec![(v(1, 1, 0), v(1, 2, 0))]);
+    }
+
+    #[test]
+    fn plan_for_equal_versions_is_empty() {
+        let plan = plan_migrations::<Source>(v(1, 2, 1), v(1, 2, 1)).expect("trivially reachable");
+        assert!(plan.is_empty());
+    }
+
+    #[test]
+    fn no_path_to_unregistered_target_errors() {
+        // No edge reaches a 2.x major yet, so the target is unreachable.
+        assert!(plan_migrations::<Source>(v(1, 0, 0), v(2, 0, 0)).is_err());
+    }
+
+    #[test]
+    fn no_path_from_unregistered_source_errors() {
+        // No edge departs from 0.0.0 (legacy v0 is rejected, not migrated).
+        assert!(plan_migrations::<Source>(v(0, 0, 0), v(1, 1, 0)).is_err());
+    }
 }
