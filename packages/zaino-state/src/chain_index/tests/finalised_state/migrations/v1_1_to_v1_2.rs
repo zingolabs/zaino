@@ -20,7 +20,7 @@ use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{
     build_active_mockchain_source, load_test_vectors, TestVectorData,
 };
-use crate::{ChainIndexConfig, Height, Outpoint, TxLocation, ZainoVersionedSerde as _};
+use crate::{ChainIndexConfig, Height, TxLocation, ZainoVersionedSerde as _};
 
 const MIGRATION_SPENT_PROGRESS_KEY: &[u8] = b"_migration_spent_progress_1_2_0_next_height";
 
@@ -246,12 +246,7 @@ async fn assert_spent_index_matches_transparent_data(
 
             let expected_transaction_location = TxLocation::new(height.0, transaction_index as u16);
 
-            for input in transparent_transaction.inputs() {
-                if input.is_null_prevout() {
-                    continue;
-                }
-
-                let outpoint = Outpoint::new(*input.prevout_txid(), input.prevout_index());
+            for outpoint in transparent_transaction.spent_outpoints() {
                 let outpoint_bytes = outpoint.to_bytes().unwrap();
 
                 let spent_bytes = transaction

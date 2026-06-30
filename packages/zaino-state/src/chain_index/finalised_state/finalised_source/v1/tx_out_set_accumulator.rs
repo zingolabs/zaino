@@ -1175,12 +1175,7 @@ impl DbV1 {
                             .push(outpoint);
                     }
 
-                    for input in transparent_tx.inputs().iter() {
-                        if input.is_null_prevout() {
-                            continue;
-                        }
-                        spends.push(Outpoint::new(*input.prevout_txid(), input.prevout_index()));
-                    }
+                    spends.extend(transparent_tx.spent_outpoints());
                 }
 
                 height += 1;
@@ -1780,12 +1775,8 @@ mod tests {
         for chain_block in indexed_block_chain(&blocks) {
             for transaction in chain_block.transactions() {
                 // First apply spends, removing spent transparent outputs from the expected UTXO set.
-                for input in transaction.transparent().inputs() {
-                    if input.is_null_prevout() {
-                        continue;
-                    }
-
-                    let previous_transaction_hash = TransactionHash::from(*input.prevout_txid());
+                for outpoint in transaction.transparent().spent_outpoints() {
+                    let previous_transaction_hash = TransactionHash::from(*outpoint.prev_txid());
 
                     let unspent_output_indices = unspent_output_indices_by_transaction_hash
                         .get_mut(&previous_transaction_hash)
@@ -1797,11 +1788,11 @@ mod tests {
 
                     assert!(
                         unspent_output_indices
-                            .remove(&input.prevout_index())
+                            .remove(&outpoint.prev_index())
                             .is_some(),
                         "test vectors spend unknown output: transaction {:?}, output {}",
                         previous_transaction_hash,
-                        input.prevout_index()
+                        outpoint.prev_index()
                     );
 
                     // If a transaction has no remaining unspent outputs, it should no longer
@@ -2116,12 +2107,8 @@ mod tests {
         for chain_block in indexed_block_chain(&blocks[..blocks.len() - 1]) {
             for transaction in chain_block.transactions() {
                 // Remove any transparent outputs spent by this transaction.
-                for input in transaction.transparent().inputs() {
-                    if input.is_null_prevout() {
-                        continue;
-                    }
-
-                    let previous_transaction_hash = TransactionHash::from(*input.prevout_txid());
+                for outpoint in transaction.transparent().spent_outpoints() {
+                    let previous_transaction_hash = TransactionHash::from(*outpoint.prev_txid());
 
                     let unspent_output_indices = unspent_output_indices_by_transaction_hash
                         .get_mut(&previous_transaction_hash)
@@ -2133,11 +2120,11 @@ mod tests {
 
                     assert!(
                         unspent_output_indices
-                            .remove(&input.prevout_index())
+                            .remove(&outpoint.prev_index())
                             .is_some(),
                         "test vectors spend unknown output: transaction {:?}, output {}",
                         previous_transaction_hash,
-                        input.prevout_index()
+                        outpoint.prev_index()
                     );
 
                     if unspent_output_indices.is_empty() {
