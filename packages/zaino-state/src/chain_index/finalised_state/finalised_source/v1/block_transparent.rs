@@ -6,7 +6,6 @@ use super::*;
 ///
 /// Provides access to transparent compact transaction data at both per-transaction and per-block
 /// granularity.
-#[async_trait]
 impl BlockTransparentExt for DbV1 {
     async fn get_transparent(
         &self,

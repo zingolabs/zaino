@@ -7,6 +7,19 @@ and this library adheres to Rust's notion of
 
 ## Unreleased
 
+### Changed
+- **Breaking** — config: `storage.database.sync_write_batch_bytes` (bytes) is
+  renamed to `sync_write_batch_size` and given in **GiB** (default raised from
+  4 GiB to 32 GiB); this budget now also bounds the txout-set accumulator
+  rebuild's per-shard memory. New `storage.database.sync_checkpoint_interval`
+  (seconds, default 300) makes the bulk-sync flush interval configurable (was a
+  fixed 60s).
+
+### Fixed
+- Zaino no longer OOM-crashes during the txout-set accumulator rebuild when it
+  reaches mainnet chain tip on memory-constrained hosts; the rebuild auto-shards
+  its in-memory spent set to fit the configured `sync_write_batch_size` budget.
+
 ## [0.4.1] - 2026-06-18
 - Bump zaino-proto 0.1.2 → 0.1.3 and zainod 0.4.0 → 0.4.1 to work around
   a yanked 0.1.2 slot on crates.io. No code changes.

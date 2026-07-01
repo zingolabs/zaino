@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[cfg(feature = "prometheus")]
+use crate::metric_names::*;
+
 /// Cheap heap-size estimate for a buffered [`IndexedBlock`], used only to bound the bulk-sync write
 /// batch in [`DbV1::write_blocks_to_height`]. Exactness is not required — it just keeps the batch's
 /// peak memory roughly within the configured budget.
@@ -29,11 +32,6 @@ fn approx_indexed_block_bytes(block: &IndexedBlock) -> u64 {
 #[cfg(not(feature = "transparent_address_history_experimental"))]
 const SYNC_WRITE_BATCH_MAX_BLOCKS: usize = 100_000;
 
-/// Maximum wall-clock time spent buffering a single bulk-sync write batch before flushing, so
-/// commits (and progress) happen regularly even when block fetches are slow.
-#[cfg(not(feature = "transparent_address_history_experimental"))]
-const SYNC_WRITE_BATCH_MAX_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
-
 /// Interval between in-flight "syncing height" progress logs during bulk sync.
 #[cfg(not(feature = "transparent_address_history_experimental"))]
 const SYNC_PROGRESS_LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
@@ -45,7 +43,6 @@ use crate::version;
 ///
 /// This trait represents the mutating surface (append / delete tip / update metadata). Writes are
 /// performed via LMDB write transactions and validated before becoming visible as “known-good”.
-#[async_trait]
 impl DbWrite for DbV1 {
     async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
         self.write_block(block).await
@@ -75,29 +72,30 @@ impl DbWrite for DbV1 {
         // `get_block_header`, which routes through `resolve_validated_hash_or_height` →
         // `validate_block_blocking` (a full re-validation for any height above `validated_tip`); the
         // tip is already on disk and trusted here, exactly as the v1.2 migration reads block data.
-        let (start_height, mut parent_chainwork) = match self.tip_height().await? {
-            None => (GENESIS_HEIGHT.0, crate::ChainWork::from_u256(0.into())),
-            Some(tip) => {
-                let tip_bytes = tip.to_bytes()?;
-                let chainwork = tokio::task::block_in_place(|| {
-                    let ro = self.env.begin_ro_txn()?;
-                    match ro.get(self.headers, &tip_bytes) {
-                        Ok(raw) => {
-                            let entry = StoredEntryVar::<BlockHeaderData>::from_bytes(raw)
-                                .map_err(|e| {
-                                    FinalisedStateError::Custom(format!(
-                                        "tip header decode error: {e}"
-                                    ))
-                                })?;
-                            Ok::<_, FinalisedStateError>(entry.inner().context.chainwork)
+        let (start_height, mut parent_chainwork): (u32, Option<crate::ChainWork>) =
+            match self.tip_height().await? {
+                None => (GENESIS_HEIGHT.0, None),
+                Some(tip) => {
+                    let tip_bytes = tip.to_bytes()?;
+                    let chainwork = tokio::task::block_in_place(|| {
+                        let ro = self.env.begin_ro_txn()?;
+                        match ro.get(self.headers, &tip_bytes) {
+                            Ok(raw) => {
+                                let entry = StoredEntryVar::<BlockHeaderData>::from_bytes(raw)
+                                    .map_err(|e| {
+                                        FinalisedStateError::Custom(format!(
+                                            "tip header decode error: {e}"
+                                        ))
+                                    })?;
+                                Ok::<_, FinalisedStateError>(Some(entry.inner().context.chainwork))
+                            }
+                            Err(lmdb::Error::NotFound) => Ok(None),
+                            Err(e) => Err(FinalisedStateError::LmdbError(e)),
                         }
-                        Err(lmdb::Error::NotFound) => Ok(crate::ChainWork::from_u256(0.into())),
-                        Err(e) => Err(FinalisedStateError::LmdbError(e)),
-                    }
-                })?;
-                (tip.0 + 1, chainwork)
-            }
-        };
+                    })?;
+                    (tip.0 + 1, chainwork)
+                }
+            };
 
         // Nothing to do when the tip already meets the target. Importantly, this means a steady-state
         // poll (the indexer calls `sync_to_height` repeatedly) does *not* trigger the bulk accumulator
@@ -107,8 +105,10 @@ impl DbWrite for DbV1 {
         }
 
         info!(
-            "write_blocks_to_height: syncing finalised blocks {start_height}..={} on {:?}",
-            height.0, network
+            start_height,
+            target = height.0,
+            ?network,
+            "write_blocks_to_height: syncing finalised blocks"
         );
 
         // Bulk path: buffer blocks up to a byte budget, then write the whole batch in one
@@ -118,7 +118,20 @@ impl DbWrite for DbV1 {
         // earlier-in-batch uncommitted blocks), so it keeps the per-block path.
         #[cfg(not(feature = "transparent_address_history_experimental"))]
         {
-            let batch_budget = self.config.storage.database.sync_write_batch_bytes.max(1);
+            // `.max(1)` guards a misconfigured `sync_write_batch_size = 0`: a 0 budget would fail
+            // the `batch_bytes < batch_budget` check on the first iteration (`0 < 0`), buffer no
+            // blocks, and stall the sync. A 1-byte floor still guarantees forward progress
+            // (worst case, one block per batch).
+            let batch_budget = (self
+                .config
+                .storage
+                .database
+                .sync_write_batch_size
+                .to_byte_count() as u64)
+                .max(1);
+            let batch_interval = std::time::Duration::from_secs(
+                self.config.storage.database.sync_checkpoint_interval,
+            );
             let mut next = start_height;
             let mut last_progress_log = std::time::Instant::now();
             while next <= height.0 {
@@ -133,8 +146,10 @@ impl DbWrite for DbV1 {
                 while next <= height.0
                     && batch_bytes < batch_budget
                     && batch.len() < SYNC_WRITE_BATCH_MAX_BLOCKS
-                    && batch_started.elapsed() < SYNC_WRITE_BATCH_MAX_INTERVAL
+                    && batch_started.elapsed() < batch_interval
                 {
+                    #[cfg(feature = "prometheus")]
+                    let build_start = std::time::Instant::now();
                     let block = build_indexed_block_from_source(
                         source,
                         network,
@@ -144,7 +159,10 @@ impl DbWrite for DbV1 {
                         parent_chainwork,
                     )
                     .await?;
-                    parent_chainwork = block.context.chainwork;
+                    #[cfg(feature = "prometheus")]
+                    metrics::histogram!(SYNC_BLOCK_BUILD_SECONDS)
+                        .record(build_start.elapsed().as_secs_f64());
+                    parent_chainwork = Some(block.context.chainwork);
                     batch_bytes = batch_bytes.saturating_add(approx_indexed_block_bytes(&block));
                     batch.push(block);
                     next += 1;
@@ -152,11 +170,16 @@ impl DbWrite for DbV1 {
                     // In-flight progress: the block being fetched, throttled by time. (The committed
                     // tip is reported by the per-batch commit log below.)
                     if last_progress_log.elapsed() >= SYNC_PROGRESS_LOG_INTERVAL {
+                        #[cfg(feature = "prometheus")]
+                        {
+                            metrics::gauge!(SYNC_FINALIZED_HEIGHT).set((next - 1) as f64);
+                            metrics::gauge!(SYNC_TARGET_HEIGHT).set(height.0 as f64);
+                        }
                         info!(
-                            "write_blocks_to_height: syncing height {} / {} on {:?}",
-                            next - 1,
-                            height.0,
-                            network
+                            current = next - 1,
+                            target = height.0,
+                            ?network,
+                            "write_blocks_to_height: syncing"
                         );
                         last_progress_log = std::time::Instant::now();
                     }
@@ -168,21 +191,34 @@ impl DbWrite for DbV1 {
 
                 // Write + sort + commit the batch atomically, then force durability. The on-disk
                 // `headers` tip never runs ahead of the indexes, so resume is gap-free.
+                #[cfg(feature = "prometheus")]
+                let write_start = std::time::Instant::now();
                 tokio::task::block_in_place(|| self.write_block_batch_blocking(&batch))?;
                 tokio::task::block_in_place(|| self.env.sync(true)).map_err(|e| {
                     FinalisedStateError::Custom(format!("LMDB checkpoint sync failed: {e}"))
                 })?;
+                #[cfg(feature = "prometheus")]
+                metrics::histogram!(SYNC_BLOCK_WRITE_SECONDS)
+                    .record(write_start.elapsed().as_secs_f64());
 
                 // Only after the batch is committed + synced do we advance the validated tip.
                 for block in &batch {
                     self.mark_validated(block.context.index.height.0);
+                    #[cfg(feature = "prometheus")]
+                    record_block_throughput(block);
                 }
                 self.status.store(StatusType::Ready);
                 info!(
-                    "write_blocks_to_height: committed batch to height {} ({} blocks)",
-                    next - 1,
-                    batch.len()
+                    height = next - 1,
+                    blocks = batch.len(),
+                    "write_blocks_to_height: committed batch"
                 );
+                #[cfg(feature = "prometheus")]
+                {
+                    metrics::gauge!(DB_TIP_HEIGHT).set((next - 1) as f64);
+                    metrics::gauge!(SYNC_LAST_BLOCK_WRITTEN_AT)
+                        .set(crate::chain_index::unix_now_secs());
+                }
             }
         }
         #[cfg(feature = "transparent_address_history_experimental")]
@@ -197,7 +233,7 @@ impl DbWrite for DbV1 {
                     parent_chainwork,
                 )
                 .await?;
-                parent_chainwork = block.context.chainwork;
+                parent_chainwork = Some(block.context.chainwork);
 
                 self.write_block_with_options(block, false).await?;
             }
@@ -208,25 +244,7 @@ impl DbWrite for DbV1 {
         // once the chain is large. Use it only for the first build or an unusually large gap (e.g. a
         // sync interrupted far behind the on-disk tip); in steady state apply just the delta for the
         // blocks we wrote — O(range) work — which produces the identical accumulator at the tip.
-        match self.read_tx_out_set_accumulator_built_height().await? {
-            Some(built) if built.0 >= height.0 => {}
-            Some(built) if height.0.saturating_sub(built.0) <= ACCUMULATOR_INCREMENTAL_MAX_GAP => {
-                info!(
-                    "write_blocks_to_height: updating txout-set accumulator {}..={}",
-                    built.0 + 1,
-                    height.0
-                );
-                self.update_tx_out_set_accumulator_for_range(built, height)
-                    .await?;
-            }
-            _ => {
-                info!(
-                    "write_blocks_to_height: rebuilding txout-set accumulator to height {}",
-                    height.0
-                );
-                self.rebuild_tx_out_set_accumulator().await?;
-            }
-        }
+        self.advance_tx_out_set_accumulator_to_tip(height).await?;
 
         Ok(())
     }
@@ -381,8 +399,9 @@ impl DbV1 {
         if block_already_exists {
             self.status.store(StatusType::Ready);
             info!(
-                "Block {} at height {} already exists in FinalisedState, skipping write.",
-                &block_hash, &block_height.0
+                %block_hash,
+                height = block_height.0,
+                "block already exists in FinalisedState, skipping write"
             );
             return Ok(());
         }
@@ -475,13 +494,7 @@ impl DbV1 {
             let tx_location = TxLocation::new(block_height.into(), tx_index);
 
             // Transparent Inputs: Build Spent Outpoints Index
-            for input in tx.transparent().inputs().iter() {
-                if input.is_null_prevout() {
-                    continue;
-                }
-
-                let prev_outpoint = Outpoint::new(*input.prevout_txid(), input.prevout_index());
-
+            for prev_outpoint in tx.transparent().spent_outpoints() {
                 if spent_map.insert(prev_outpoint, tx_location).is_some() {
                     return Err(FinalisedStateError::InvalidBlock {
                         height: block_height.0,
@@ -572,18 +585,14 @@ impl DbV1 {
 
         // Accumulator maintenance is deferred on the bulk-sync path (`update_tx_out_set == false`)
         // and rebuilt once at the tip; only the single-block append path maintains it incrementally.
-        let tx_out_set_info_accumulator = if update_tx_out_set {
-            Some(
-                self.calculate_tx_out_set_info_accumulator_after_block(
-                    block_height,
-                    &transactions,
-                    &spent_map,
-                )
-                .await?,
+        let tx_out_set_info_accumulator = self
+            .maybe_calculate_tx_out_set_info_accumulator_after_block(
+                update_tx_out_set,
+                block_height,
+                &transactions,
+                &spent_map,
             )
-        } else {
-            None
-        };
+            .await?;
 
         // Split the paired vector into the per-table shapes used for storage.
         let (txids, transparent): (Vec<TransactionHash>, Vec<Option<TransparentCompactTx>>) =
@@ -629,28 +638,7 @@ impl DbV1 {
         let orchard_entry = StoredEntryVar::new(&block_height_bytes, OrchardTxList::new(orchard));
 
         // if any database writes fail, or block validation fails, remove block from database and return err.
-        let zaino_db = Self {
-            env: Arc::clone(&self.env),
-            headers: self.headers,
-            txids: self.txids,
-            transparent: self.transparent,
-            sapling: self.sapling,
-            orchard: self.orchard,
-            commitment_tree_data: self.commitment_tree_data,
-            heights: self.heights,
-            spent: self.spent,
-            txid_location: self.txid_location,
-            tx_out_set_info_accumulator: self.tx_out_set_info_accumulator,
-            #[cfg(feature = "transparent_address_history_experimental")]
-            address_history: self.address_history,
-            metadata: self.metadata,
-            validated_tip: Arc::clone(&self.validated_tip),
-            validated_set: self.validated_set.clone(),
-            db_handler: std::sync::Mutex::new(None),
-            cancel_token: self.cancel_token.clone(),
-            status: self.status.clone(),
-            config: self.config.clone(),
-        };
+        let zaino_db = self.detached_handle();
         let join_handle = tokio::task::spawn_blocking(move || {
             // Write block to FinalisedState
             let mut txn = zaino_db.env.begin_rw_txn()?;
@@ -731,28 +719,11 @@ impl DbV1 {
             // Persist the incrementally-maintained accumulator and advance its freshness watermark
             // in the same transaction as the block, so the watermark always tracks the height the
             // accumulator reflects. Skipped on the deferred (bulk-sync) path.
-            if let Some(tx_out_set_info_accumulator) = tx_out_set_info_accumulator {
-                let tx_out_set_info_accumulator_entry = StoredEntryFixed::new(
-                    TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-                    tx_out_set_info_accumulator,
-                );
-
-                txn.put(
-                    zaino_db.tx_out_set_info_accumulator,
-                    &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-                    &tx_out_set_info_accumulator_entry.to_bytes()?,
-                    WriteFlags::empty(),
-                )?;
-
-                let watermark =
-                    StoredEntryFixed::new(TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY, block_height);
-                txn.put(
-                    zaino_db.metadata,
-                    &TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY,
-                    &watermark.to_bytes()?,
-                    WriteFlags::empty(),
-                )?;
-            }
+            zaino_db.put_maintained_tx_out_set_accumulator(
+                &mut txn,
+                tx_out_set_info_accumulator,
+                block_height,
+            )?;
 
             #[cfg(feature = "transparent_address_history_experimental")]
             {
@@ -865,7 +836,7 @@ impl DbV1 {
         let post_result = match join_handle.await {
             Ok(inner_res) => inner_res,
             Err(join_err) => {
-                warn!("Tokio task error (spawn_blocking join error): {}", join_err);
+                warn!(%join_err, "tokio spawn_blocking join error");
 
                 // Best-effort delete of partially written block; ignore delete result.
                 let _ = self.delete_block(&block).await;
@@ -892,14 +863,15 @@ impl DbV1 {
                 }
                 if block.context.index.height.0 % 100 == 0 {
                     info!(
-                        "Successfully committed block {} at height {} to FinalisedState.",
-                        &block.context.index.hash, &block.context.index.height
+                        hash = %block.context.index.hash,
+                        height = ?block.context.index.height,
+                        "committed block to FinalisedState"
                     );
                 } else {
                     tracing::debug!(
-                        "Successfully committed block {} at height {} to FinalisedState.",
-                        &block.context.index.hash,
-                        &block.context.index.height
+                        hash = %block.context.index.hash,
+                        height = ?block.context.index.height,
+                        "committed block to FinalisedState"
                     );
                 }
 
@@ -962,16 +934,18 @@ impl DbV1 {
                         // Block was already written correctly by another process
                         self.status.store(StatusType::Ready);
                         info!(
-                            "Block {} at height {} was already written by another process, skipping.",
-                            &block_hash, &block_height.0
+                            %block_hash,
+                            height = block_height.0,
+                            "block already written by another process, skipping"
                         );
                         Ok(())
                     }
                     Err(e) => {
-                        warn!("Error writing block to DB: {e}");
+                        warn!(%e, "error writing block to DB");
                         warn!(
-                            "Deleting corrupt block from DB at height: {} with hash: {:?}",
-                            block_height.0, block_hash.0
+                            height = block_height.0,
+                            hash = ?block_hash.0,
+                            "deleting corrupt block from DB"
                         );
 
                         let _ = self.delete_block(&block).await;
@@ -989,10 +963,11 @@ impl DbV1 {
                 }
             }
             Err(e) => {
-                warn!("Error writing block to DB: {e}");
+                warn!(%e, "error writing block to DB");
                 warn!(
-                    "Deleting corrupt block from DB at height: {} with hash: {:?}",
-                    block_height.0, block_hash.0
+                    height = block_height.0,
+                    hash = ?block_hash.0,
+                    "deleting corrupt block from DB"
                 );
 
                 let _ = self.delete_block(&block).await;
@@ -1196,11 +1171,7 @@ impl DbV1 {
                     })?;
                 let tx_location = TxLocation::new(block_height.0, tx_index);
 
-                for input in tx.transparent().inputs().iter() {
-                    if input.is_null_prevout() {
-                        continue;
-                    }
-                    let prev_outpoint = Outpoint::new(*input.prevout_txid(), input.prevout_index());
+                for prev_outpoint in tx.transparent().spent_outpoints() {
                     spent_batch.push((prev_outpoint.to_bytes()?, tx_location));
                 }
 
@@ -1432,13 +1403,7 @@ impl DbV1 {
             let tx_location = TxLocation::new(block_height.into(), _tx_index as u16);
 
             // Build Spent Outpoints Index
-            for input in tx.transparent().inputs().iter() {
-                if input.is_null_prevout() {
-                    continue;
-                }
-
-                let prev_outpoint = Outpoint::new(*input.prevout_txid(), input.prevout_index());
-
+            for prev_outpoint in tx.transparent().spent_outpoints() {
                 if spent_map.insert(prev_outpoint, tx_location).is_some() {
                     return Err(FinalisedStateError::InvalidBlock {
                         height: block_height.0,
@@ -1548,40 +1513,11 @@ impl DbV1 {
             .collect();
 
         // Delete all block data from db.
-        let zaino_db = Self {
-            env: Arc::clone(&self.env),
-            headers: self.headers,
-            txids: self.txids,
-            transparent: self.transparent,
-            sapling: self.sapling,
-            orchard: self.orchard,
-            commitment_tree_data: self.commitment_tree_data,
-            heights: self.heights,
-            spent: self.spent,
-            txid_location: self.txid_location,
-            tx_out_set_info_accumulator: self.tx_out_set_info_accumulator,
-            #[cfg(feature = "transparent_address_history_experimental")]
-            address_history: self.address_history,
-            metadata: self.metadata,
-            validated_tip: Arc::clone(&self.validated_tip),
-            validated_set: self.validated_set.clone(),
-            db_handler: std::sync::Mutex::new(None),
-            cancel_token: self.cancel_token.clone(),
-            status: self.status.clone(),
-            config: self.config.clone(),
-        };
+        let zaino_db = self.detached_handle();
         tokio::task::spawn_blocking(move || {
             let mut txn = zaino_db.env.begin_rw_txn()?;
 
-            let tx_out_set_info_accumulator_entry =
-                StoredEntryFixed::new(TX_OUT_SET_INFO_ACCUMULATOR_KEY, tx_out_set_info_accumulator);
-
-            txn.put(
-                zaino_db.tx_out_set_info_accumulator,
-                &TX_OUT_SET_INFO_ACCUMULATOR_KEY,
-                &tx_out_set_info_accumulator_entry.to_bytes()?,
-                WriteFlags::empty(),
-            )?;
+            zaino_db.put_tx_out_set_accumulator(&mut txn, tx_out_set_info_accumulator)?;
 
             // Delete spent data
             for outpoint in spent_map.keys() {
@@ -1934,4 +1870,20 @@ impl DbV1 {
         self.status.store(StatusType::Ready);
         Ok(())
     }
+}
+
+/// Increments per-block throughput counters (transactions, Sapling outputs,
+/// Orchard actions). Only compiled when the `prometheus` feature is enabled.
+#[cfg(feature = "prometheus")]
+fn record_block_throughput(block: &IndexedBlock) {
+    let transactions = block.transactions().len() as u64;
+    let mut sapling_outputs: u64 = 0;
+    let mut orchard_actions: u64 = 0;
+    for tx in block.transactions() {
+        sapling_outputs = sapling_outputs.saturating_add(tx.sapling().outputs().len() as u64);
+        orchard_actions = orchard_actions.saturating_add(tx.orchard().actions().len() as u64);
+    }
+    metrics::counter!(SYNC_TRANSACTIONS_TOTAL).increment(transactions);
+    metrics::counter!(SYNC_SAPLING_OUTPUTS_TOTAL).increment(sapling_outputs);
+    metrics::counter!(SYNC_ORCHARD_ACTIONS_TOTAL).increment(orchard_actions);
 }

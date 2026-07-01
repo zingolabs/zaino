@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "-v", "zaino-cargo-git:/usr/local/cargo/git:U",
             "-v", "zaino-cargo-registry:/usr/local/cargo/registry:U",
             "-e", "TEST_BINARIES_DIR=/home/container_user/zaino/\
-                   integration-tests/test_binaries/bins",
+                   live-tests/test_binaries/bins",
             "-w", "/home/container_user/zaino",
             "-u", "container_user",
             &format!("{}:{}", image_name, tag),

@@ -6,7 +6,6 @@ use super::*;
 ///
 /// This trait is the read-only surface used by higher layers. Methods typically delegate to
 /// inherent async helpers that enforce validated reads where required.
-#[async_trait]
 impl DbRead for DbV1 {
     async fn db_height(&self) -> Result<Option<Height>, FinalisedStateError> {
         self.tip_height().await

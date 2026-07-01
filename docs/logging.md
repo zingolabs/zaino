@@ -64,16 +64,16 @@ The test environment passes logging variables through to containers:
 
 ```bash
 # Default (stream format)
-makers container-test
+makers test
 
 # Tree format in tests
-ZAINOLOG_FORMAT=tree makers container-test
+ZAINOLOG_FORMAT=tree makers test
 
 # Debug logging in tests
-RUST_LOG=debug ZAINOLOG_FORMAT=tree makers container-test
+RUST_LOG=debug ZAINOLOG_FORMAT=tree makers test
 
 # JSON output for parsing test logs
-ZAINOLOG_FORMAT=json makers container-test 2>&1 | jq .
+ZAINOLOG_FORMAT=json makers test 2>&1 | jq .
 ```
 
 ### Production

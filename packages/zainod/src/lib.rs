@@ -25,7 +25,7 @@ pub mod metrics;
 pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
     zaino_common::logging::try_init();
 
-    info!("zainod v{}", env!("CARGO_PKG_VERSION"));
+    info!(version = env!("CARGO_PKG_VERSION"), "zainod started");
     let config = load_config(&config_path)?;
 
     #[cfg(feature = "prometheus")]
@@ -48,18 +48,18 @@ pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
                             continue;
                         }
                         Err(e) => {
-                            error!("Exiting Zaino with error: {}", e);
+                            error!(%e, "exiting Zaino with error");
                             return Err(e);
                         }
                     },
                     Err(e) => {
-                        error!("Zaino exited early with error: {}", e);
+                        error!(%e, "Zaino exited early with error");
                         return Err(e.into());
                     }
                 }
             }
             Err(e) => {
-                error!("Zaino failed to start with error: {}", e);
+                error!(%e, "Zaino failed to start");
                 return Err(e);
             }
         }

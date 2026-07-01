@@ -4,7 +4,6 @@ use futures::StreamExt;
 use hex::FromHex;
 use std::{io::Cursor, str::FromStr, time};
 use tokio::{sync::mpsc, time::timeout};
-use tonic::async_trait;
 use tracing::{info, instrument, warn};
 use zebra_state::HashOrHeight;
 
@@ -112,7 +111,6 @@ impl Status for FetchService {
     }
 }
 
-#[async_trait]
 #[allow(deprecated)]
 impl ZcashService for FetchService {
     const BACKEND_TYPE: BackendType = BackendType::Fetch;
@@ -242,7 +240,6 @@ impl FetchServiceSubscriber {
     }
 }
 
-#[async_trait]
 impl ZcashIndexer for FetchServiceSubscriber {
     #[allow(deprecated)]
     type Error = FetchServiceError;
@@ -895,7 +892,6 @@ impl ZcashIndexer for FetchServiceSubscriber {
     }
 }
 
-#[async_trait]
 #[allow(deprecated)]
 impl LightWalletIndexer for FetchServiceSubscriber {
     /// Return the height of the tip of the best chain
@@ -1133,7 +1129,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                             )))
                             .await
                         {
-                            warn!("GetBlockRange channel closed unexpectedly: {}", e);
+                            warn!(%e, "GetBlockRange channel closed unexpectedly");
                         };
                         return;
                     };
@@ -1171,7 +1167,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                             {
                                 Ok(_) => {}
                                 Err(e) => {
-                                    warn!("GetBlockRange channel closed unexpectedly: {}", e);
+                                    warn!(%e, "GetBlockRange channel closed unexpectedly");
                                 }
                             }
                         }
@@ -1192,7 +1188,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                                 {
                                     Ok(_) => {}
                                     Err(e) => {
-                                        warn!("GetBlockRange channel closed unexpectedly: {}", e);
+                                        warn!(%e, "GetBlockRange channel closed unexpectedly");
                                     }
                                 }
                             } else {
@@ -1202,7 +1198,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                                     .await
                                     .is_err()
                                 {
-                                    warn!("GetBlockRangeStream closed unexpectedly: {}", e);
+                                    warn!(%e, "GetBlockRangeStream closed unexpectedly");
                                 }
                             }
                         }
@@ -1266,7 +1262,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                             )))
                             .await
                         {
-                            warn!("GetBlockRangeNullifiers channel closed unexpectedly: {}", e);
+                            warn!(%e, "GetBlockRangeNullifiers channel closed unexpectedly");
                         };
                         return;
                     };
@@ -1318,7 +1314,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                             {
                                 Ok(_) => {}
                                 Err(e) => {
-                                    warn!("GetBlockRange channel closed unexpectedly: {}", e);
+                                    warn!(%e, "GetBlockRange channel closed unexpectedly");
                                 }
                             }
                         }
@@ -1340,7 +1336,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                                 {
                                     Ok(_) => {}
                                     Err(e) => {
-                                        warn!("GetBlockRange channel closed unexpectedly: {}", e);
+                                        warn!(%e, "GetBlockRange channel closed unexpectedly");
                                     }
                                 }
                             } else {
@@ -1351,7 +1347,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                                     .await
                                     .is_err()
                                 {
-                                    warn!("GetBlockRangeStream closed unexpectedly: {}", e);
+                                    warn!(%e, "GetBlockRangeStream closed unexpectedly");
                                 }
                             }
                         }
@@ -1759,7 +1755,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                             )))
                             .await
                         {
-                            warn!("GetMempoolStream channel closed unexpectedly: {}", e);
+                            warn!(%e, "GetMempoolStream channel closed unexpectedly");
                         };
                         return;
                     };

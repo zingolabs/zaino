@@ -98,7 +98,6 @@ use tokio::{
     sync::mpsc,
     time::{self, timeout},
 };
-use tonic::async_trait;
 use tower::{Service, ServiceExt};
 use tracing::{info, instrument, warn};
 
@@ -172,7 +171,6 @@ impl Status for StateService {
     }
 }
 
-#[async_trait]
 // #[allow(deprecated)]
 impl ZcashService for StateService {
     const BACKEND_TYPE: BackendType = BackendType::State;
@@ -634,7 +632,7 @@ impl StateServiceSubscriber {
                         {
                             Ok(_) => {}
                             Err(e) => {
-                                warn!("GetBlockRange channel closed unexpectedly: {}", e);
+                                warn!(%e, "GetBlockRange channel closed unexpectedly");
                             }
                         }
                     }
@@ -652,7 +650,7 @@ impl StateServiceSubscriber {
                             {
                                 Ok(_) => {}
                                 Err(e) => {
-                                    warn!("GetBlockRange channel closed unexpectedly: {}", e);
+                                    warn!(%e, "GetBlockRange channel closed unexpectedly");
                                 }
                             }
                         } else {
@@ -662,7 +660,7 @@ impl StateServiceSubscriber {
                                 .await
                                 .is_err()
                             {
-                                warn!("GetBlockRangeStream closed unexpectedly: {}", e);
+                                warn!(%e, "GetBlockRangeStream closed unexpectedly");
                             }
                         }
                     }
@@ -972,7 +970,6 @@ fn sapling_key_bytes(s: &sapling_crypto::PaymentAddress) -> ([u8; 11], [u8; 32])
     (diversifier, pk_d)
 }
 
-#[async_trait]
 // #[allow(deprecated)]
 impl ZcashIndexer for StateServiceSubscriber {
     type Error = StateServiceError;
@@ -1840,67 +1837,8 @@ impl ZcashIndexer for StateServiceSubscriber {
         )?;
         Ok(chain_height)
     }
-
-    /// Helper function, to get the list of taddresses that have sends or reciepts
-    /// within a given block range
-    async fn get_taddress_txids_helper(
-        &self,
-        request: TransparentAddressBlockFilter,
-    ) -> Result<Vec<String>, Self::Error> {
-        let chain_height = self.chain_height().await?;
-        let (start, end) = match request.range {
-            Some(range) => {
-                let start = if let Some(start) = range.start {
-                    match u32::try_from(start.height) {
-                        Ok(height) => Some(height.min(chain_height.0)),
-                        Err(_) => {
-                            return Err(Self::Error::from(tonic::Status::invalid_argument(
-                                "Error: Start height out of range. Failed to convert to u32.",
-                            )))
-                        }
-                    }
-                } else {
-                    None
-                };
-                let end = if let Some(end) = range.end {
-                    match u32::try_from(end.height) {
-                        Ok(height) => Some(height.min(chain_height.0)),
-                        Err(_) => {
-                            return Err(Self::Error::from(tonic::Status::invalid_argument(
-                                "Error: End height out of range. Failed to convert to u32.",
-                            )))
-                        }
-                    }
-                } else {
-                    None
-                };
-                match (start, end) {
-                    (Some(start), Some(end)) => {
-                        if start > end {
-                            (Some(end), Some(start))
-                        } else {
-                            (Some(start), Some(end))
-                        }
-                    }
-                    _ => (start, end),
-                }
-            }
-            None => {
-                return Err(Self::Error::from(tonic::Status::invalid_argument(
-                    "Error: No block range given.",
-                )))
-            }
-        };
-        self.get_address_tx_ids(GetAddressTxIdsRequest::new(
-            vec![request.address],
-            start,
-            end,
-        ))
-        .await
-    }
 }
 
-#[async_trait]
 // #[allow(deprecated)]
 impl LightWalletIndexer for StateServiceSubscriber {
     /// Return the height of the tip of the best chain
@@ -2418,7 +2356,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
                     {
                         Ok(stream) => stream,
                         Err(e) => {
-                            warn!("Error fetching stream from mempool: {:?}", e);
+                            warn!(?e, "error fetching mempool stream");
                             channel_tx
                                 .send(Err(tonic::Status::internal("Error getting mempool stream")))
                                 .await
@@ -2901,7 +2839,7 @@ mod tests {
         use zcash_keys::address::Address;
         use zcash_protocol::consensus::NetworkType;
 
-        // Canonical source: integration-tests/src/lib.rs::rpc::json_rpc
+        // Canonical source: live-tests/clientless/src/lib.rs::rpc::json_rpc
         // Tracked for DRY consolidation: https://github.com/zingolabs/zaino/issues/988
         const SAPLING_ADDRESS: &str = "zregtestsapling1jalqhycwumq3unfxlzyzcktq3n478n82k2wacvl8gwfxk6ahshkxmtp2034qj28n7gl92ka5wca";
         const EXPECTED_DIVERSIFIER: &str = "977e0b930ee6c11e4d26f8";

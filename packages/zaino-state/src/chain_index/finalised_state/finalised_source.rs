@@ -61,6 +61,8 @@ pub(crate) mod v1;
 use v1::DbV1;
 use zaino_proto::proto::utils::PoolTypeFilter;
 
+use crate::SendFut;
+
 use crate::{
     chain_index::{
         finalised_state::{
@@ -83,7 +85,6 @@ use crate::{
 #[cfg(feature = "transparent_address_history_experimental")]
 use crate::AddrScript;
 
-use async_trait::async_trait;
 use lmdb::{Database, DatabaseFlags, Environment};
 use std::{
     sync::{Arc, Mutex},
@@ -108,7 +109,6 @@ use super::capability::Capability;
 /// Note: This trait ties any DB version that uses it to Lmdb.
 /// In the future we may want to support alternative DB backends.
 /// When this happens, we will have to lean away from this trait to some extent.
-#[async_trait]
 pub(super) trait LmdbLifecycle: Sync {
     fn env(&self) -> &Arc<Environment>;
     fn db_handler_slot(&self) -> &Mutex<Option<JoinHandle<()>>>;
@@ -119,68 +119,76 @@ pub(super) trait LmdbLifecycle: Sync {
         self.status_atomic().load()
     }
 
-    async fn wait_until_ready(&self) {
-        let mut ticker = interval(Duration::from_millis(100));
-        ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        loop {
-            ticker.tick().await;
-            if self.status_atomic().load() == StatusType::Ready {
-                break;
-            }
-        }
-    }
-
-    async fn clean_trailing(&self) -> Result<(), FinalisedStateError> {
-        let txn = self.env().begin_ro_txn()?;
-        drop(txn);
-        Ok(())
-    }
-
-    async fn zaino_db_handler_sleep(&self, maintenance: &mut tokio::time::Interval) {
-        tokio::select! {
-            _ = sleep(Duration::from_secs(5)) => {},
-            _ = maintenance.tick() => {
-                if let Err(e) = self.clean_trailing().await {
-                    warn!("clean_trailing failed: {}", e);
+    fn wait_until_ready(&self) -> impl SendFut<()> {
+        async move {
+            let mut ticker = interval(Duration::from_millis(100));
+            ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                if self.status_atomic().load() == StatusType::Ready {
+                    break;
                 }
             }
-            _ = self.cancel_token().cancelled() => {},
         }
     }
 
-    async fn shutdown(&self) -> Result<(), FinalisedStateError> {
-        self.status_atomic().store(StatusType::Closing);
-        self.cancel_token().cancel();
+    fn clean_trailing(&self) -> impl SendFut<Result<(), FinalisedStateError>> {
+        async move {
+            let txn = self.env().begin_ro_txn()?;
+            drop(txn);
+            Ok(())
+        }
+    }
 
-        let taken = self
-            .db_handler_slot()
-            .lock()
-            .expect("db_handler mutex poisoned")
-            .take();
-        if let Some(mut handle) = taken {
-            let timeout = sleep(Duration::from_secs(5));
-            tokio::pin!(timeout);
-
+    fn zaino_db_handler_sleep(&self, maintenance: &mut tokio::time::Interval) -> impl SendFut<()> {
+        async move {
             tokio::select! {
-                res = &mut handle => {
-                    match res {
-                        Ok(_) => {}
-                        Err(e) if e.is_cancelled() => {}
-                        Err(e) => warn!("background task ended with error: {e:?}"),
+                _ = sleep(Duration::from_secs(5)) => {},
+                _ = maintenance.tick() => {
+                    if let Err(e) = self.clean_trailing().await {
+                        warn!(%e, "clean_trailing failed");
                     }
                 }
-                _ = &mut timeout => {
-                    warn!("background task didn't exit in time – aborting");
-                    handle.abort();
-                }
+                _ = self.cancel_token().cancelled() => {},
             }
         }
+    }
 
-        let _ = self.clean_trailing().await;
-        if let Err(e) = self.env().sync(true) {
-            warn!("LMDB fsync before close failed: {e}");
+    fn shutdown(&self) -> impl SendFut<Result<(), FinalisedStateError>> {
+        async move {
+            self.status_atomic().store(StatusType::Closing);
+            self.cancel_token().cancel();
+
+            let taken = self
+                .db_handler_slot()
+                .lock()
+                .expect("db_handler mutex poisoned")
+                .take();
+            if let Some(mut handle) = taken {
+                let timeout = sleep(Duration::from_secs(5));
+                tokio::pin!(timeout);
+
+                tokio::select! {
+                    res = &mut handle => {
+                        match res {
+                            Ok(_) => {}
+                            Err(e) if e.is_cancelled() => {}
+                            Err(e) => warn!(?e, "background task ended with error"),
+                        }
+                    }
+                    _ = &mut timeout => {
+                        warn!("background task didn't exit in time – aborting");
+                        handle.abort();
+                    }
+                }
+            }
+
+            let _ = self.clean_trailing().await;
+            if let Err(e) = self.env().sync(true) {
+                warn!(%e, "LMDB fsync before close failed");
+            }
+            Ok(())
         }
-        Ok(())
     }
 }
 
@@ -352,26 +360,6 @@ impl<T: BlockchainSource> FinalisedSource<T> {
     pub(crate) fn transparent_db(&self) -> Result<Database, FinalisedStateError> {
         Ok(self.require_v1("v1 transparent db")?.transparent_db())
     }
-
-    /// Provides access to the finalised txout-set accumulator DB table.
-    pub(crate) fn tx_out_set_info_accumulator_db(&self) -> Result<Database, FinalisedStateError> {
-        Ok(self
-            .require_v1("v1 tx_out_set_info_accumulator db not available")?
-            .tx_out_set_info_accumulator_db())
-    }
-
-    /// Bulk-rebuilds the finalised txout-set accumulator to the current tip and persists it (V1
-    /// only).
-    ///
-    /// Recomputes the accumulator from the finalised `transparent` + `spent` tables via sequential
-    /// scans and writes the singleton plus its freshness watermark. Replaces the per-block
-    /// accumulator maintenance that dominated sync time at sandblast height; used by
-    /// `sync_to_height` after a catch-up run and by the v1.2 migration's accumulator stage.
-    pub(crate) async fn rebuild_tx_out_set_accumulator(&self) -> Result<(), FinalisedStateError> {
-        self.require_v1("v1 txout-set accumulator builder")?
-            .rebuild_tx_out_set_accumulator()
-            .await
-    }
 }
 
 impl<T: BlockchainSource> From<DbV1> for FinalisedSource<T> {
@@ -388,7 +376,6 @@ impl<T: BlockchainSource> From<EphemeralFinalisedState<T>> for FinalisedSource<T
     }
 }
 
-#[async_trait]
 impl<T: BlockchainSource> DbCore for FinalisedSource<T> {
     /// Return the current status of the backend.
     ///
@@ -411,7 +398,6 @@ impl<T: BlockchainSource> DbCore for FinalisedSource<T> {
     }
 }
 
-#[async_trait]
 impl<T: BlockchainSource> DbRead for FinalisedSource<T> {
     /// Return the highest stored height in the database, if present.
     ///
@@ -461,7 +447,6 @@ impl<T: BlockchainSource> DbRead for FinalisedSource<T> {
     }
 }
 
-#[async_trait]
 impl<T: BlockchainSource> DbWrite for FinalisedSource<T> {
     /// Write a fully-indexed block into the database.
     ///
@@ -524,7 +509,6 @@ impl<T: BlockchainSource> DbWrite for FinalisedSource<T> {
 //
 // These names must remain consistent with the capability wiring in `capability.rs`.
 
-#[async_trait]
 impl<T: BlockchainSource> BlockCoreExt for FinalisedSource<T> {
     async fn get_block_header(
         &self,
@@ -586,7 +570,6 @@ impl<T: BlockchainSource> BlockCoreExt for FinalisedSource<T> {
     }
 }
 
-#[async_trait]
 impl<T: BlockchainSource> BlockTransparentExt for FinalisedSource<T> {
     async fn get_transparent(
         &self,
@@ -635,7 +618,6 @@ impl<T: BlockchainSource> BlockTransparentExt for FinalisedSource<T> {
     }
 }
 
-#[async_trait]
 impl<T: BlockchainSource> BlockShieldedExt for FinalisedSource<T> {
     async fn get_sapling(
         &self,
@@ -715,7 +697,6 @@ impl<T: BlockchainSource> BlockShieldedExt for FinalisedSource<T> {
     }
 }
 
-#[async_trait]
 impl<T: BlockchainSource> CompactBlockExt for FinalisedSource<T> {
     async fn get_compact_block(
         &self,
@@ -747,7 +728,6 @@ impl<T: BlockchainSource> CompactBlockExt for FinalisedSource<T> {
     }
 }
 
-#[async_trait]
 impl<T: BlockchainSource> IndexedBlockExt for FinalisedSource<T> {
     async fn get_chain_block(
         &self,
@@ -760,7 +740,6 @@ impl<T: BlockchainSource> IndexedBlockExt for FinalisedSource<T> {
     }
 }
 
-#[async_trait]
 impl<T: BlockchainSource> TransparentHistExt for FinalisedSource<T> {
     #[cfg(feature = "transparent_address_history_experimental")]
     async fn addr_records(
@@ -863,9 +842,7 @@ impl<T: BlockchainSource> TransparentHistExt for FinalisedSource<T> {
     ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
         match self {
             Self::V1(database) => database.get_tx_out_set_info_accumulator().await,
-            _ => Err(FinalisedStateError::FeatureUnavailable(
-                "transparent_history",
-            )),
+            _ => Err(FinalisedStateError::FeatureUnavailable("gettxoutsetinfo")),
         }
     }
 }
@@ -888,6 +865,29 @@ impl<T: BlockchainSource> FinalisedSource<T> {
         }
     }
 
+    /// Writes a block using the v1.0.0 format.
+    ///
+    /// This intentionally writes only the core v1 tables and uses v1 item encodings.
+    ///
+    /// This method does not perform safety checks and must not be used in production code.
+    ///
+    /// Used for migration tests.
+    pub(crate) async fn write_block_v1_0_0(
+        &self,
+        block: IndexedBlock,
+    ) -> Result<(), FinalisedStateError> {
+        match self {
+            Self::V1(db) => db.write_block_v1_0_0(block).await,
+            Self::Ephemeral(_) => Err(FinalisedStateError::Custom(
+                "v1.0.0 test fixture writer requires a v1 backend".to_string(),
+            )),
+        }
+    }
+}
+
+/// Accumulator test hooks.
+#[cfg(test)]
+impl<T: BlockchainSource> FinalisedSource<T> {
     /// Reads the height the persisted txout-set accumulator currently reflects (V1 only).
     ///
     /// `None` means it has never been built. Test hook for asserting the incremental range-update
@@ -908,28 +908,21 @@ impl<T: BlockchainSource> FinalisedSource<T> {
         &self,
         db_tip: Height,
         shards: u16,
+        max_spent_entries: u64,
     ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
         self.require_v1("v1 txout-set accumulator builder")?
-            .build_tx_out_set_accumulator_blocking(db_tip, shards)
+            .build_tx_out_set_accumulator_blocking(db_tip, shards, max_spent_entries)
     }
 
-    /// Writes a block using the v1.0.0 format.
+    /// Resolves the accumulator-rebuild shard count for a memory budget (V1 only).
     ///
-    /// This intentionally writes only the core v1 tables and uses v1 item encodings.
-    ///
-    /// This method does not perform safety checks and must not be used in production code.
-    ///
-    /// Used for migration tests.
-    pub(crate) async fn write_block_v1_0_0(
+    /// Test hook for asserting the rebuild auto-shards to fit the configured memory budget.
+    pub(crate) fn accumulator_build_shards(
         &self,
-        block: IndexedBlock,
-    ) -> Result<(), FinalisedStateError> {
-        match self {
-            Self::V1(db) => db.write_block_v1_0_0(block).await,
-            Self::Ephemeral(_) => Err(FinalisedStateError::Custom(
-                "v1.0.0 test fixture writer requires a v1 backend".to_string(),
-            )),
-        }
+        budget_bytes: u64,
+    ) -> Result<u16, FinalisedStateError> {
+        self.require_v1("v1 txout-set accumulator builder")?
+            .accumulator_build_shards(budget_bytes)
     }
 }
 
