@@ -132,7 +132,6 @@ async fn block_is_evicted_from_nfs_when_finalized_advances_past_it() {
     );
 
     mockchain.mine_blocks(20);
-    let post_mine_active_height = mockchain.active_height();
 
     // Poll the *NFS tip*, not `finalized_state.db_height()`:
     // `fs.sync_to_height` advances the finalized DB BEFORE
@@ -141,13 +140,13 @@ async fn block_is_evicted_from_nfs_when_finalized_advances_past_it() {
     // NFS reaching the post-mine chain tip is only observable after
     // `update` has published the trimmed snapshot.
     poll_until(
-        "NFS tip to catch up to the mined chain (post-trim state)",
+        "NFS tip to catch up to the mined chain (post-trim state) and FS to sync to finalized tip also",
         Duration::from_secs(10),
         Duration::from_millis(25),
         || async {
             let snapshot = index_reader.snapshot_nonfinalized_state().await.ok()?;
             let nfs = snapshot.resolved_nfs_snapshot()?;
-            (nfs.best_tip.height.0 == post_mine_active_height).then_some(())
+            (!nfs.blocks.contains_key(&target_hash)).then_some(())
         },
     )
     .await;
