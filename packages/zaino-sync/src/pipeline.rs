@@ -49,7 +49,7 @@
 
 use crate::bridge::BridgeDispatch;
 use crate::descriptor::Descriptor;
-use crate::traits::{ExtractError, IndexDef, WriteOp};
+use crate::traits::{ExtractError, IndexDef, ProvideContext, WriteOp};
 
 /// Errors during pipeline operations.
 #[derive(Debug, thiserror::Error)]
@@ -105,19 +105,30 @@ pub trait IndexPipeline<Ctx>: Send + Sync {
 /// requires. Index authors never implement it by hand.
 ///
 /// [`BridgeDispatch`]: crate::bridge::BridgeDispatch
-pub trait IntoIndexPipeline<Ctx: Send + Sync + 'static>: IndexDef<Context = Ctx> {
-    /// Produce a boxed pipeline for this index.
+/// Capstone trait: a fully-defined index that can produce its own pipeline.
+///
+/// `Ctx` is the set-wide block context. The index's [`BlockContext`] may
+/// differ — the bridge inserts a [`ProvideContext`] projection. Index
+/// authors never implement this trait by hand; the blanket impl below
+/// derives it from the (Scope, Composition) marker pair.
+///
+/// [`BlockContext`]: IndexDef::BlockContext
+/// [`ProvideContext`]: crate::traits::ProvideContext
+pub trait IntoIndexPipeline<Ctx: Send + Sync + 'static>: IndexDef {
+    /// Produce a boxed pipeline for this index over set-wide context `Ctx`.
     fn into_pipeline() -> Box<dyn IndexPipeline<Ctx>>;
 }
 
 /// Blanket impl: any index whose (Scope, Composition) pair has a
-/// [`BridgeDispatch`] impl gets `IntoIndexPipeline` for free.
-impl<I> IntoIndexPipeline<I::Context> for I
+/// [`BridgeDispatch`] impl gets `IntoIndexPipeline` for free, for any
+/// `Ctx` that can [`ProvideContext`] the index's [`BlockContext`].
+impl<I, Ctx> IntoIndexPipeline<Ctx> for I
 where
     I: IndexDef,
-    (I::Scope, I::Composition): BridgeDispatch<I>,
+    Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
+    (I::Scope, I::Composition): BridgeDispatch<I, Ctx>,
 {
-    fn into_pipeline() -> Box<dyn IndexPipeline<I::Context>> {
-        <(I::Scope, I::Composition) as BridgeDispatch<I>>::dispatch()
+    fn into_pipeline() -> Box<dyn IndexPipeline<Ctx>> {
+        <(I::Scope, I::Composition) as BridgeDispatch<I, Ctx>>::dispatch()
     }
 }

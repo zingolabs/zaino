@@ -13,6 +13,40 @@ use crate::descriptor::{
 use crate::primitives::IndexId;
 
 // ---------------------------------------------------------------------------
+// ProvideContext — projection from set-wide context to index block context
+// ---------------------------------------------------------------------------
+
+/// Projection from a set-wide block context to an index's block context.
+///
+/// The provisioner produces one context (`Ctx`) per block for the whole
+/// index set. Each index declares its own [`BlockContext`] — the subset
+/// of block data it needs. `ProvideContext<T>` lets the set-wide context
+/// narrow to a `&T` before the bridge passes it to extraction.
+///
+/// The identity blanket impl covers the common case where the index's
+/// block context *is* the set-wide context. For richer set-wide contexts,
+/// implement this trait for each projection:
+///
+/// ```text
+/// impl ProvideContext<BlockData> for FullBlockContext {
+///     fn context(&self) -> &BlockData { &self.block }
+/// }
+/// ```
+///
+/// [`BlockContext`]: IndexDef::BlockContext
+pub trait ProvideContext<T: ?Sized> {
+    /// Borrow the block context of type `T`.
+    fn context(&self) -> &T;
+}
+
+/// Identity projection: any type provides itself.
+impl<T> ProvideContext<T> for T {
+    fn context(&self) -> &T {
+        self
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Placeholder types — will be fleshed out in their own modules
 // ---------------------------------------------------------------------------
 
@@ -61,8 +95,12 @@ pub trait IndexDef: Send + Sync + 'static {
     /// The per-block contribution produced by extraction.
     type Delta: Send + Sync;
 
-    /// The block context type (matches the provisioner's output).
-    type Context: Send + Sync;
+    /// The block context this index needs for extraction.
+    ///
+    /// This is the index's view of a block — just the data it cares about.
+    /// The set-wide context (what the provisioner produces) narrows to this
+    /// type via [`ProvideContext`].
+    type BlockContext: Send + Sync;
 
     /// The full declarative descriptor.
     fn descriptor() -> Descriptor;
@@ -81,7 +119,7 @@ pub trait IndexDef: Send + Sync + 'static {
 /// full parallelism across blocks.
 pub trait ExtractLocal: IndexDef<Scope = BlockLocal> {
     /// Produce this block's delta from the block context alone.
-    fn extract(ctx: &Self::Context) -> Result<Self::Delta, ExtractError>;
+    fn extract(ctx: &Self::BlockContext) -> Result<Self::Delta, ExtractError>;
 }
 
 /// Extraction for self-cumulative indexes.
@@ -98,7 +136,7 @@ pub trait ExtractCumulative: IndexDef<Scope = SelfCumulative> {
     /// Produce this block's delta given the block context and this index's
     /// own committed state up to (but not including) this block.
     fn extract(
-        ctx: &Self::Context,
+        ctx: &Self::BlockContext,
         prior: &Self::PriorState,
     ) -> Result<Self::Delta, ExtractError>;
 }
@@ -111,7 +149,7 @@ pub trait ExtractCumulative: IndexDef<Scope = SelfCumulative> {
 pub trait ExtractCross: IndexDef<Scope = CrossIndex> {
     /// Produce this block's delta given the block context and committed
     /// state from dependency indexes.
-    fn extract(ctx: &Self::Context, deps: &DepsReader) -> Result<Self::Delta, ExtractError>;
+    fn extract(ctx: &Self::BlockContext, deps: &DepsReader) -> Result<Self::Delta, ExtractError>;
 }
 
 // ===========================================================================

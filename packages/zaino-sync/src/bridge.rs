@@ -57,7 +57,8 @@ use std::marker::PhantomData;
 use crate::descriptor::{Append, BlockLocal, Descriptor, Fold, Monoidal};
 use crate::pipeline::{IndexPipeline, PipelineError};
 use crate::traits::{
-    DepsReader, ExtractLocal, IndexDef, MergeAppend, MergeFold, MergeMonoidal, WriteOp,
+    DepsReader, ExtractLocal, IndexDef, MergeAppend, MergeFold, MergeMonoidal, ProvideContext,
+    WriteOp,
 };
 
 // ===========================================================================
@@ -75,10 +76,14 @@ mod sealed {
 /// [`crate::pipeline`] delegates to this trait, so index authors never
 /// need to write `IntoIndexPipeline` by hand.
 ///
+/// `I` is the index type, `Ctx` is the set-wide block context. The bridge
+/// requires `Ctx: ProvideContext<I::BlockContext>` to project the set-wide
+/// context down to what the index needs.
+///
 /// [`IntoIndexPipeline`]: crate::pipeline::IntoIndexPipeline
-pub trait BridgeDispatch<I: IndexDef>: sealed::Sealed {
-    /// Produce the boxed pipeline for index `I`.
-    fn dispatch() -> Box<dyn IndexPipeline<I::Context>>;
+pub trait BridgeDispatch<I: IndexDef, Ctx>: sealed::Sealed {
+    /// Produce the boxed pipeline for index `I` over set-wide context `Ctx`.
+    fn dispatch() -> Box<dyn IndexPipeline<Ctx>>;
 }
 
 // Seal the marker pairs.
@@ -86,30 +91,33 @@ impl sealed::Sealed for (BlockLocal, Append) {}
 impl sealed::Sealed for (BlockLocal, Monoidal) {}
 impl sealed::Sealed for (BlockLocal, Fold) {}
 
-impl<I> BridgeDispatch<I> for (BlockLocal, Append)
+impl<I, Ctx> BridgeDispatch<I, Ctx> for (BlockLocal, Append)
 where
     I: ExtractLocal + MergeAppend + IndexDef<Scope = BlockLocal, Composition = Append>,
+    Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
 {
-    fn dispatch() -> Box<dyn IndexPipeline<I::Context>> {
-        local_append::<I, _>()
+    fn dispatch() -> Box<dyn IndexPipeline<Ctx>> {
+        local_append::<I, Ctx>()
     }
 }
 
-impl<I> BridgeDispatch<I> for (BlockLocal, Monoidal)
+impl<I, Ctx> BridgeDispatch<I, Ctx> for (BlockLocal, Monoidal)
 where
     I: ExtractLocal + MergeMonoidal + IndexDef<Scope = BlockLocal, Composition = Monoidal>,
+    Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
 {
-    fn dispatch() -> Box<dyn IndexPipeline<I::Context>> {
-        local_monoidal::<I, _>()
+    fn dispatch() -> Box<dyn IndexPipeline<Ctx>> {
+        local_monoidal::<I, Ctx>()
     }
 }
 
-impl<I> BridgeDispatch<I> for (BlockLocal, Fold)
+impl<I, Ctx> BridgeDispatch<I, Ctx> for (BlockLocal, Fold)
 where
     I: ExtractLocal + MergeFold + IndexDef<Scope = BlockLocal, Composition = Fold>,
+    Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
 {
-    fn dispatch() -> Box<dyn IndexPipeline<I::Context>> {
-        local_fold::<I, _>()
+    fn dispatch() -> Box<dyn IndexPipeline<Ctx>> {
+        local_fold::<I, Ctx>()
     }
 }
 
@@ -142,8 +150,8 @@ impl<I: IndexDef> LocalAppendBridge<I> {
 
 impl<Ctx, I> IndexPipeline<Ctx> for LocalAppendBridge<I>
 where
-    I: ExtractLocal + MergeAppend + IndexDef<Context = Ctx>,
-    Ctx: Send + Sync + 'static,
+    I: ExtractLocal + MergeAppend,
+    Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
 {
     fn descriptor(&self) -> &Descriptor {
         &self.descriptor
@@ -156,7 +164,7 @@ where
     ) -> Result<Vec<WriteOp>, PipelineError> {
         let mut all_ops = Vec::new();
         for ctx in blocks {
-            let delta = I::extract(ctx)?;
+            let delta = I::extract(ctx.context())?;
             all_ops.extend(I::to_write_ops(delta));
         }
         Ok(all_ops)
@@ -166,8 +174,8 @@ where
 /// Register a BlockLocal × Append index into the pipeline.
 pub fn local_append<I, Ctx>() -> Box<dyn IndexPipeline<Ctx>>
 where
-    I: ExtractLocal + MergeAppend + IndexDef<Context = Ctx>,
-    Ctx: Send + Sync + 'static,
+    I: ExtractLocal + MergeAppend,
+    Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
 {
     Box::new(LocalAppendBridge::<I>::new())
 }
@@ -201,8 +209,8 @@ impl<I: IndexDef> LocalMonoidalBridge<I> {
 
 impl<Ctx, I> IndexPipeline<Ctx> for LocalMonoidalBridge<I>
 where
-    I: ExtractLocal + MergeMonoidal + IndexDef<Context = Ctx>,
-    Ctx: Send + Sync + 'static,
+    I: ExtractLocal + MergeMonoidal,
+    Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
 {
     fn descriptor(&self) -> &Descriptor {
         &self.descriptor
@@ -215,7 +223,7 @@ where
     ) -> Result<Vec<WriteOp>, PipelineError> {
         let mut acc = I::identity();
         for ctx in blocks {
-            let delta = I::extract(ctx)?;
+            let delta = I::extract(ctx.context())?;
             acc = I::combine(acc, I::lift(delta));
         }
         Ok(I::to_write_ops(acc))
@@ -225,8 +233,8 @@ where
 /// Register a BlockLocal × Monoidal index into the pipeline.
 pub fn local_monoidal<I, Ctx>() -> Box<dyn IndexPipeline<Ctx>>
 where
-    I: ExtractLocal + MergeMonoidal + IndexDef<Context = Ctx>,
-    Ctx: Send + Sync + 'static,
+    I: ExtractLocal + MergeMonoidal,
+    Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
 {
     Box::new(LocalMonoidalBridge::<I>::new())
 }
@@ -260,8 +268,8 @@ impl<I: IndexDef> LocalFoldBridge<I> {
 
 impl<Ctx, I> IndexPipeline<Ctx> for LocalFoldBridge<I>
 where
-    I: ExtractLocal + MergeFold + IndexDef<Context = Ctx>,
-    Ctx: Send + Sync + 'static,
+    I: ExtractLocal + MergeFold,
+    Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
 {
     fn descriptor(&self) -> &Descriptor {
         &self.descriptor
@@ -274,7 +282,7 @@ where
     ) -> Result<Vec<WriteOp>, PipelineError> {
         let mut state = I::initial_state();
         for ctx in blocks {
-            let delta = I::extract(ctx)?;
+            let delta = I::extract(ctx.context())?;
             I::fold(&mut state, delta);
         }
         Ok(I::to_write_ops(state))
@@ -284,8 +292,8 @@ where
 /// Register a BlockLocal × Fold index into the pipeline.
 pub fn local_fold<I, Ctx>() -> Box<dyn IndexPipeline<Ctx>>
 where
-    I: ExtractLocal + MergeFold + IndexDef<Context = Ctx>,
-    Ctx: Send + Sync + 'static,
+    I: ExtractLocal + MergeFold,
+    Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
 {
     Box::new(LocalFoldBridge::<I>::new())
 }

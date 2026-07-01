@@ -27,8 +27,8 @@ pub enum ProvisionError {
 /// where the provisioner pushes contexts through a bounded channel as
 /// they become ready, enabling pipelined extraction.
 pub trait Provisioner: Send + Sync {
-    /// Opaque block context type. Matches `IndexDef::Context` for all
-    /// registered indexes.
+    /// Opaque block context type. Each index's `IndexDef::BlockContext`
+    /// is projected from this type via `ProvideContext`.
     type BlockContext: Send + Sync;
 
     /// Configure which source data to fetch, based on the union of all

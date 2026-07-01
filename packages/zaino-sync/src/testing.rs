@@ -172,7 +172,7 @@ impl IndexDef for ValueIndex {
     type Scope = BlockLocal;
     type Composition = Append;
     type Delta = Vec<(Vec<u8>, Vec<u8>)>;
-    type Context = TestBlockContext;
+    type BlockContext = TestBlockContext;
 
     fn descriptor() -> Descriptor {
         Descriptor {
@@ -217,7 +217,7 @@ impl IndexDef for CountIndex {
     type Scope = BlockLocal;
     type Composition = Monoidal;
     type Delta = u64;
-    type Context = TestBlockContext;
+    type BlockContext = TestBlockContext;
 
     fn descriptor() -> Descriptor {
         Descriptor {
@@ -270,7 +270,7 @@ impl IndexDef for RunningSumIndex {
     type Scope = BlockLocal;
     type Composition = Fold;
     type Delta = u64;
-    type Context = TestBlockContext;
+    type BlockContext = TestBlockContext;
 
     fn descriptor() -> Descriptor {
         Descriptor {
