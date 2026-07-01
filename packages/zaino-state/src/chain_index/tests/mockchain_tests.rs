@@ -816,14 +816,11 @@ fn outpoint_spend_ground_truth(
             for output_index in 0..transparent.outputs().len() {
                 created.push(Outpoint::new(txid.0, output_index as u32));
             }
-            for input in transparent.inputs() {
-                if input.is_null_prevout() {
-                    continue;
-                }
-                spends.push((
-                    Outpoint::new(*input.prevout_txid(), input.prevout_index()),
-                    txid,
-                ));
+            // Spend-walking goes through the canonical `spent_outpoints` helper (#1332),
+            // whose null-prevout filtering and outpoint construction are pinned by its own
+            // unit tests; here we only pair each spent outpoint with its spending txid.
+            for outpoint in transparent.spent_outpoints() {
+                spends.push((outpoint, txid));
             }
         }
     }

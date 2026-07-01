@@ -2496,12 +2496,9 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                 };
                 for tx in block.transactions() {
                     let txid = *tx.txid();
-                    for input in tx.transparent().inputs() {
-                        // Coinbase inputs do not spend a real outpoint.
-                        if input.is_null_prevout() {
-                            continue;
-                        }
-                        let outpoint = Outpoint::new(*input.prevout_txid(), input.prevout_index());
+                    // `spent_outpoints` already skips coinbase null prevouts and builds each
+                    // `Outpoint`, keeping the construction in one place (see #1332).
+                    for outpoint in tx.transparent().spent_outpoints() {
                         nfs_spenders.insert(outpoint, txid);
                     }
                 }
