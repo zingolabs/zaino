@@ -10,7 +10,7 @@ pub mod backend;
 pub mod dag;
 pub mod descriptor;
 pub mod engine;
-pub mod erased;
+pub mod pipeline;
 pub mod progress;
 pub mod provisioner;
 pub mod traits;

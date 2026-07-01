@@ -6,7 +6,7 @@
 
 use crate::backend::Backend;
 use crate::dag::DependencyDag;
-use crate::erased::ErasedIndex;
+use crate::pipeline::IndexPipeline;
 
 /// Configuration for the sync engine.
 #[derive(Debug, Clone)]
@@ -19,20 +19,26 @@ pub struct EngineConfig {
 
 /// The sync engine.
 ///
-/// Generic over the backend. Holds the DAG, the registered (erased) indexes,
-/// and drives the pipeline.
-pub struct SyncEngine<B: Backend> {
+/// Generic over:
+/// - `Ctx`: the provisioner's block context type (concrete, shared across
+///   all indexes — no type erasure).
+/// - `B`: the storage backend.
+///
+/// Holds the DAG and a heterogeneous collection of indexes via
+/// `dyn IndexPipeline<Ctx>`. Delta types stay inside each index's
+/// pipeline — the engine only sees `Ctx` in and `Vec<WriteOp>` out.
+pub struct SyncEngine<Ctx, B: Backend> {
     dag: DependencyDag,
-    indexes: Vec<Box<dyn ErasedIndex>>,
+    indexes: Vec<Box<dyn IndexPipeline<Ctx>>>,
     backend: B,
     config: EngineConfig,
 }
 
-impl<B: Backend> SyncEngine<B> {
+impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     /// Create a new engine from a built DAG, registered indexes, and backend.
     pub fn new(
         dag: DependencyDag,
-        indexes: Vec<Box<dyn ErasedIndex>>,
+        indexes: Vec<Box<dyn IndexPipeline<Ctx>>>,
         backend: B,
         config: EngineConfig,
     ) -> Self {
@@ -43,16 +49,4 @@ impl<B: Backend> SyncEngine<B> {
             config,
         }
     }
-
-    // NOTE: the main `sync_range` / `sync_to_height` method is omitted
-    // from this initial sketch. It will orchestrate:
-    //
-    // 1. Configure provisioner with union of SourceRequirements.
-    // 2. Spawn provisioner task (streams BlockContexts).
-    // 3. Per phase:
-    //    a. Spawn extraction workers (respecting scope constraints).
-    //    b. Accumulate deltas in bounded channel.
-    //    c. On batch boundary: merge → commit → flush → advance watermark.
-    //    d. Signal downstream phases via phase gate.
-    // 4. On completion: final flush, report progress.
 }
