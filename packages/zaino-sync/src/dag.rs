@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use crate::descriptor::{CompositionType, Descriptor, InputScope};
+use crate::primitives::IndexId;
 
 /// A node in the dependency DAG, holding the descriptor and computed
 /// scheduling metadata.
@@ -21,17 +22,17 @@ pub struct DagNode {
 /// scheduling.
 #[derive(Debug)]
 pub struct DependencyDag {
-    nodes: HashMap<&'static str, DagNode>,
+    nodes: HashMap<IndexId, DagNode>,
     edges: Vec<DagEdge>,
 }
 
 /// A directed edge in the DAG: `from` must commit before `to` can extract.
 #[derive(Debug)]
 pub struct DagEdge {
-    /// Name of the dependency (upstream index).
-    pub from: &'static str,
-    /// Name of the dependent (downstream index).
-    pub to: &'static str,
+    /// The dependency (upstream index).
+    pub from: IndexId,
+    /// The dependent (downstream index).
+    pub to: IndexId,
     /// Scheduling rule derived from the dependency's composition type
     /// and the dependent's read pattern.
     pub firing: FiringRule,
@@ -53,19 +54,19 @@ pub enum FiringRule {
 /// Errors during DAG construction.
 #[derive(Debug, thiserror::Error)]
 pub enum DagError {
-    /// A dependency references an index name that was not registered.
+    /// A dependency references an index that was not registered.
     #[error("unknown dependency: {from} -> {to}")]
     UnknownDependency {
         /// The index that declared the dependency.
-        from: &'static str,
-        /// The dependency name that was not found.
-        to: &'static str,
+        from: IndexId,
+        /// The dependency that was not found.
+        to: IndexId,
     },
     /// The dependency graph contains a cycle.
     #[error("cycle detected involving: {participants:?}")]
     CycleDetected {
-        /// The index names involved in the cycle.
-        participants: Vec<&'static str>,
+        /// The indexes involved in the cycle.
+        participants: Vec<IndexId>,
     },
 }
 
@@ -83,7 +84,7 @@ impl DependencyDag {
     }
 
     /// Return the firing rule for the edge between two indexes.
-    pub fn firing_rule(&self, _from: &str, _to: &str) -> Option<FiringRule> {
+    pub fn firing_rule(&self, _from: IndexId, _to: IndexId) -> Option<FiringRule> {
         todo!()
     }
 

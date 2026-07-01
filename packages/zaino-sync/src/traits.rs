@@ -10,6 +10,7 @@ use crate::descriptor::{
     Append, BlockLocal, Composition, CrossIndex, Descriptor, Fold, Monoidal, Scope,
     SelfCumulative,
 };
+use crate::primitives::IndexId;
 
 // ---------------------------------------------------------------------------
 // Placeholder types — will be fleshed out in their own modules
@@ -26,8 +27,8 @@ pub struct SourceHandle;
 pub enum WriteOp {
     /// Insert or overwrite a key-value pair.
     Put {
-        /// Index (table) name.
-        index: &'static str,
+        /// Target index.
+        index: IndexId,
         /// Serialised key.
         key: Vec<u8>,
         /// Serialised value.
@@ -35,8 +36,8 @@ pub enum WriteOp {
     },
     /// Remove a key.
     Delete {
-        /// Index (table) name.
-        index: &'static str,
+        /// Target index.
+        index: IndexId,
         /// Serialised key.
         key: Vec<u8>,
     },

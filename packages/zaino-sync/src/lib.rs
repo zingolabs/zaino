@@ -11,6 +11,7 @@ pub mod dag;
 pub mod descriptor;
 pub mod engine;
 pub mod pipeline;
+pub mod primitives;
 pub mod progress;
 pub mod provisioner;
 pub mod traits;

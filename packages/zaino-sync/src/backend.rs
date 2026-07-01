@@ -58,6 +58,6 @@ pub trait BackendWriter: Send {
 /// Read handle. Used by [`DepsReader`](crate::traits::DepsReader) and
 /// the engine's progress tracking.
 pub trait BackendReader: Send {
-    /// Read a single key from a named index.
-    fn get(&self, index_name: &str, key: &[u8]) -> Result<Option<Vec<u8>>, BackendError>;
+    /// Read a single key from the given index.
+    fn get(&self, index: crate::primitives::IndexId, key: &[u8]) -> Result<Option<Vec<u8>>, BackendError>;
 }

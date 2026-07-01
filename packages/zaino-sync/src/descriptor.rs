@@ -2,6 +2,8 @@
 
 use bitflags::bitflags;
 
+use crate::primitives::IndexId;
+
 // ---------------------------------------------------------------------------
 // Sealed marker traits — one per axis.
 // Implementors live only in this module; downstream code selects but cannot
@@ -151,13 +153,13 @@ bitflags! {
 #[derive(Debug, Clone)]
 pub struct Descriptor {
     /// Unique name, used as the key in the DAG and in WriteOps.
-    pub name: &'static str,
+    pub name: IndexId,
     /// What data the extractor needs beyond the block.
     pub scope: InputScope,
     /// How per-block deltas are merged.
     pub composition: CompositionType,
-    /// Names of indexes this one depends on (must form a DAG).
-    pub dependencies: &'static [&'static str],
+    /// Indexes this one depends on (must form a DAG).
+    pub dependencies: &'static [IndexId],
     /// What the provisioner must fetch for this index.
     pub requirements: SourceRequirements,
     /// Whether extraction may reach the source for non-local data.
