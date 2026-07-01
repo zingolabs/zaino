@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use primitive_types::U256;
 use tokio::sync::Mutex;
 use zaino_common::status::StatusType;
 use zaino_proto::proto::compact_formats::CompactBlock;
@@ -27,7 +28,7 @@ use crate::{
     SaplingTxList, TransactionHash, TransparentCompactTx, TransparentTxList, TxLocation,
     TxOutCompact, TxidList,
 };
-use crate::{BlockMetadata, BlockWithMetadata, NamedAtomicStatus};
+use crate::{BlockContext, BlockMetadata, BlockWithMetadata, ChainWork, NamedAtomicStatus};
 
 use zaino_proto::proto::utils::{compact_block_with_pool_types, PoolTypeFilter};
 
@@ -291,15 +292,21 @@ impl<T: BlockchainSource> EphemeralFinalisedState<T> {
             sapling_size,
             orchard_root,
             orchard_size,
-            None, // ephemeral store does not track chainwork
+            ChainWork::from(U256::zero()),
             self.network.clone(),
         );
         let block_with_metadata = BlockWithMetadata::new(block.as_ref(), block_metadata);
-        let indexed_block = IndexedBlock::try_from(block_with_metadata).map_err(|error| {
+        let mut indexed_block = IndexedBlock::try_from(block_with_metadata).map_err(|error| {
             FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
                 format!("could not build indexed block from validator block: {error}"),
             ))
         })?;
+        indexed_block.context = BlockContext::new(
+            *indexed_block.hash(),
+            *indexed_block.context.parent_hash(),
+            ChainWork::from(U256::zero()),
+            indexed_block.height(),
+        );
 
         Ok(indexed_block)
     }

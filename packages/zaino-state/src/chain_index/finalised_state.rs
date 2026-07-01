@@ -255,7 +255,7 @@ pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
     sapling_activation_height: zebra_chain::block::Height,
     nu5_activation_height: Option<zebra_chain::block::Height>,
     height_int: u32,
-    parent_chainwork: Option<ChainWork>,
+    parent_chainwork: ChainWork,
 ) -> Result<IndexedBlock, FinalisedStateError> {
     let block = match source
         .get_block(zebra_state::HashOrHeight::Height(
@@ -1039,7 +1039,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
         })?;
         let tip = Height::from(tip);
 
-        let mut parent_chainwork: Option<ChainWork> = None;
+        let mut parent_chainwork = ChainWork::from_u256(0.into());
 
         for height in crate::chain_index::types::GENESIS_HEIGHT.0..=tip.0 {
             let block = source
@@ -1082,7 +1082,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
                     format!("error building block data at height {height}"),
                 ))
             })?;
-            parent_chainwork = Some(chain_block.context.chainwork);
+            parent_chainwork = chain_block.context.chainwork;
 
             db.write_block_v1_0_0(chain_block).await?;
         }

@@ -22,7 +22,8 @@ use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalisedStateError};
 use crate::metric_names::*;
 use crate::status::Status;
 use crate::{
-    CompactBlockStream, NamedAtomicStatus, NonFinalizedState, StatusType, SyncError, TxOutCompact,
+    ChainWork, CompactBlockStream, NamedAtomicStatus, NonFinalizedState, StatusType, SyncError,
+    TxOutCompact,
 };
 use crate::{IndexedBlock, Outpoint, TransactionHash};
 use std::collections::HashSet;
@@ -1124,7 +1125,8 @@ async fn compact_block_from_source<Source: BlockchainSource>(
                 "orchard commitment tree size overflow",
             ))
         })?,
-        None, // parent chainwork unknown — single-block construction
+        // TODO: Define an empty value https://github.com/zingolabs/zaino/issues/1158
+        ChainWork::from_u256(0.into()),
         network,
     );
     let indexed_block =

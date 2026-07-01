@@ -230,7 +230,7 @@ async fn create_200_block_regtest_chain_vectors() {
     //fetch  and build block data
     let block_data = {
         let mut data = Vec::new();
-        let mut parent_chain_work: Option<ChainWork> = None;
+        let mut parent_chain_work = ChainWork::from_u256(0.into());
         let mut parent_block_sapling_tree_size: u32 = 0;
         let mut parent_block_orchard_tree_size: u32 = 0;
 
@@ -399,7 +399,7 @@ async fn create_200_block_regtest_chain_vectors() {
             // Update parent block
             parent_block_sapling_tree_size = chain_block.commitment_tree_data().sizes().sapling();
             parent_block_orchard_tree_size = chain_block.commitment_tree_data().sizes().orchard();
-            parent_chain_work = Some(*chain_block.chainwork());
+            parent_chain_work = *chain_block.chainwork();
 
             data.push((height, zebra_block, block_roots, block_treestate));
         }

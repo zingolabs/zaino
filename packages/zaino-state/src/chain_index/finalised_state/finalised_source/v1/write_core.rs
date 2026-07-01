@@ -72,30 +72,29 @@ impl DbWrite for DbV1 {
         // `get_block_header`, which routes through `resolve_validated_hash_or_height` →
         // `validate_block_blocking` (a full re-validation for any height above `validated_tip`); the
         // tip is already on disk and trusted here, exactly as the v1.2 migration reads block data.
-        let (start_height, mut parent_chainwork): (u32, Option<crate::ChainWork>) =
-            match self.tip_height().await? {
-                None => (GENESIS_HEIGHT.0, None),
-                Some(tip) => {
-                    let tip_bytes = tip.to_bytes()?;
-                    let chainwork = tokio::task::block_in_place(|| {
-                        let ro = self.env.begin_ro_txn()?;
-                        match ro.get(self.headers, &tip_bytes) {
-                            Ok(raw) => {
-                                let entry = StoredEntryVar::<BlockHeaderData>::from_bytes(raw)
-                                    .map_err(|e| {
-                                        FinalisedStateError::Custom(format!(
-                                            "tip header decode error: {e}"
-                                        ))
-                                    })?;
-                                Ok::<_, FinalisedStateError>(Some(entry.inner().context.chainwork))
-                            }
-                            Err(lmdb::Error::NotFound) => Ok(None),
-                            Err(e) => Err(FinalisedStateError::LmdbError(e)),
+        let (start_height, mut parent_chainwork) = match self.tip_height().await? {
+            None => (GENESIS_HEIGHT.0, crate::ChainWork::from_u256(0.into())),
+            Some(tip) => {
+                let tip_bytes = tip.to_bytes()?;
+                let chainwork = tokio::task::block_in_place(|| {
+                    let ro = self.env.begin_ro_txn()?;
+                    match ro.get(self.headers, &tip_bytes) {
+                        Ok(raw) => {
+                            let entry = StoredEntryVar::<BlockHeaderData>::from_bytes(raw)
+                                .map_err(|e| {
+                                    FinalisedStateError::Custom(format!(
+                                        "tip header decode error: {e}"
+                                    ))
+                                })?;
+                            Ok::<_, FinalisedStateError>(entry.inner().context.chainwork)
                         }
-                    })?;
-                    (tip.0 + 1, chainwork)
-                }
-            };
+                        Err(lmdb::Error::NotFound) => Ok(crate::ChainWork::from_u256(0.into())),
+                        Err(e) => Err(FinalisedStateError::LmdbError(e)),
+                    }
+                })?;
+                (tip.0 + 1, chainwork)
+            }
+        };
 
         // Nothing to do when the tip already meets the target. Importantly, this means a steady-state
         // poll (the indexer calls `sync_to_height` repeatedly) does *not* trigger the bulk accumulator
@@ -162,7 +161,7 @@ impl DbWrite for DbV1 {
                     #[cfg(feature = "prometheus")]
                     metrics::histogram!(SYNC_BLOCK_BUILD_SECONDS)
                         .record(build_start.elapsed().as_secs_f64());
-                    parent_chainwork = Some(block.context.chainwork);
+                    parent_chainwork = block.context.chainwork;
                     batch_bytes = batch_bytes.saturating_add(approx_indexed_block_bytes(&block));
                     batch.push(block);
                     next += 1;
@@ -233,7 +232,7 @@ impl DbWrite for DbV1 {
                     parent_chainwork,
                 )
                 .await?;
-                parent_chainwork = Some(block.context.chainwork);
+                parent_chainwork = block.context.chainwork;
 
                 self.write_block_with_options(block, false).await?;
             }

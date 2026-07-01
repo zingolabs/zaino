@@ -434,7 +434,7 @@ fn make_chain() {
                 .unwrap();
             for (hash, block) in &non_finalized_snapshot.blocks {
                 if hash != &best_tip_hash {
-                    assert!(block.chainwork() <= best_tip_block.chainwork());
+                    assert!(block.chainwork().to_u256() <= best_tip_block.chainwork().to_u256());
                     if non_finalized_snapshot.heights_to_hashes.get(&block.height()) == Some(block.hash()) {
                         assert_eq!(index_reader.find_fork_point(&snapshot, hash).await.unwrap().unwrap().0, *hash);
                     } else {
