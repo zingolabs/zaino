@@ -68,28 +68,25 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 
-/// Distance (in blocks) between the best-known chain tip and the
-/// highest block that zaino treats as part of the finalized DB.
+/// Distance (in blocks) between the best-known chain tip and the highest block that
+/// zaino treats as part of the finalised DB — the finalised / non-finalised seam.
 ///
-/// Sourced from Zebra's protocol-derived reorg bound. The `+ 1`
-/// preserves the original literal-`100` behavior; deriving the
-/// depth from an explicit wider-consensus reference is tracked in
-/// zingolabs/zaino#1130.
+/// Sourced from the workspace's single source of truth,
+/// [`zaino_common::consensus`]. Production uses the real
+/// [`MAX_NONFINALISED_DEPTH`]. In-crate unit tests select the tractable
+/// [`FAST_TEST_MAX_NONFINALISED_DEPTH`] (= depth / 10) so the short mock-chain
+/// fixtures still exercise a *moving* finalised seam — at the real depth
+/// `finalized_height_floor` would saturate to genesis for the whole fixture and the
+/// eviction/seam invariants become untestable (see zingolabs/zaino#1288). Both arms
+/// derive from the same upstream reorg bound, so neither is a hard-coded literal.
+///
+/// [`MAX_NONFINALISED_DEPTH`]: zaino_common::consensus::MAX_NONFINALISED_DEPTH
+/// [`FAST_TEST_MAX_NONFINALISED_DEPTH`]: zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH
 #[cfg(not(test))]
-pub(crate) const NON_FINALIZED_DEPTH: u32 = zebra_state::MAX_BLOCK_REORG_HEIGHT + 1;
-
-/// In-crate unit tests pin the depth at the pre-zebra-10 value (`100`).
-///
-/// Zebra 10 raised `MAX_BLOCK_REORG_HEIGHT` from 99 to 1000, so the
-/// production depth is now 1001. The 201-block mock-chain test vector is
-/// far shorter than that, so at the production depth `finalized_height_floor`
-/// saturates to genesis for the whole fixture: the finalized seam never moves
-/// off block 0 and the eviction/seam invariants become untestable (see
-/// zingolabs/zaino#1288). The eviction and seam invariants are scale-free, so
-/// exercising them at a tractable depth is sound; the production depth is
-/// covered by the clientless suite, which reaches real chain heights.
+pub(crate) const NON_FINALIZED_DEPTH: u32 = zaino_common::consensus::MAX_NONFINALISED_DEPTH;
 #[cfg(test)]
-pub(crate) const NON_FINALIZED_DEPTH: u32 = 100;
+pub(crate) const NON_FINALIZED_DEPTH: u32 =
+    zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
 
 /// Lower bound on zaino's finalized-DB tip, derived from the current
 /// best-known chain tip.
