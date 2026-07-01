@@ -1828,7 +1828,7 @@ async fn get_block_deltas_resolves_transparent_spend() {
         Some(zebra_chain::parameters::NetworkKind::Regtest),
     )
     .await;
-    let mut clients = wallet_tests::devtool::build_clients(
+    let mut clients = e2e::devtool::build_clients(
         svc.test_manager
             .zaino_grpc_listen_address
             .expect("zaino enabled")
