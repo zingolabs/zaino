@@ -25,10 +25,10 @@ own; a wallet builds spend witnesses against the tree of the note's pool.
 _Avoid_: commitment tree (ambiguous across pools), Merkle tree
 
 **Ironwood**:
-A shielded pool introduced at the NU7 network upgrade. It reuses the Orchard
+A shielded pool introduced at the NU6.3 network upgrade. It reuses the Orchard
 protocol — its actions have fields identical to Orchard actions — but maintains
 its own separate note commitment tree.
-_Avoid_: NU7 (that names the upgrade, not the pool), "Orchard V3 pool"
+_Avoid_: NU6.3 (that names the upgrade, not the pool), "Orchard V3 pool"
 
 **Ironwood action**:
 An action belonging to the Ironwood pool. Compact-encoding-identical to an
@@ -36,9 +36,8 @@ Orchard action (the protocol reuses `CompactOrchardAction`), but it commits to
 the Ironwood note commitment tree, not Orchard's.
 _Avoid_: Orchard action (different pool and tree)
 
-**NU7**:
-The Zcash network upgrade that activates the Ironwood pool; zaino tracks its
-activation height in `ActivationHeights` under the `nu7` key, aligned with
-Zebra's `NetworkUpgrade::Nu7`.
-_Avoid_: NU6.3 (an external roadmap's name for the same milestone), Ironwood
-(the pool, not the upgrade)
+**NU6.3**:
+The Zcash network upgrade that activates the Ironwood pool (activation
+2026-07-21).
+_Avoid_: NU7 (a separate, later network upgrade — months out — unrelated to
+Ironwood; do not conflate the two), Ironwood (the pool, not the upgrade)
