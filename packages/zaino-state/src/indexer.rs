@@ -1,7 +1,7 @@
 //! Holds the Indexer trait containing the zcash RPC definitions served by zaino
 //! and generic wrapper structs for the various backend options available.
 
-use async_trait::async_trait;
+use crate::SendFut;
 use tokio::{sync::mpsc, time::timeout};
 use tracing::warn;
 use zaino_fetch::jsonrpsee::response::{
@@ -86,7 +86,6 @@ where
 ///
 /// Implementors automatically gain [`Liveness`](zaino_common::probing::Liveness) and
 /// [`Readiness`](zaino_common::probing::Readiness) via the [`Status`] supertrait.
-#[async_trait]
 pub trait ZcashService: Sized + Status {
     /// Backend type. Read state or fetch service.
     const BACKEND_TYPE: BackendType;
@@ -98,8 +97,9 @@ pub trait ZcashService: Sized + Status {
     type Config: Clone;
 
     /// Spawns a [`ZcashIndexer`].
-    async fn spawn(config: Self::Config)
-        -> Result<Self, <Self::Subscriber as ZcashIndexer>::Error>;
+    fn spawn(
+        config: Self::Config,
+    ) -> impl SendFut<Result<Self, <Self::Subscriber as ZcashIndexer>::Error>>;
 
     /// Returns a [`IndexerSubscriber`].
     fn get_subscriber(&self) -> IndexerSubscriber<Self::Subscriber>;
@@ -145,7 +145,6 @@ where
 /// Zcash RPC method signatures.
 ///
 /// Doc comments taken from Zebra for consistency.
-#[async_trait]
 pub trait ZcashIndexer: Send + Sync + 'static {
     /// Uses underlying error type of implementer.
     type Error: std::error::Error
@@ -169,7 +168,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// Some fields from the zcashd reference are missing from Zebra's [`GetInfo`]. It only contains the fields
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L91-L95)
-    async fn get_info(&self) -> Result<GetInfo, Self::Error>;
+    fn get_info(&self) -> impl SendFut<Result<GetInfo, Self::Error>>;
 
     /// Returns all changes for an address.
     ///
@@ -186,10 +185,10 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// zcashd reference: [`getaddressdeltas`](https://zcash.github.io/rpc/getaddressdeltas.html)
     /// method: post
     /// tags: address
-    async fn get_address_deltas(
+    fn get_address_deltas(
         &self,
         params: GetAddressDeltasParams,
-    ) -> Result<GetAddressDeltasResponse, Self::Error>;
+    ) -> impl SendFut<Result<GetAddressDeltasResponse, Self::Error>>;
 
     /// Returns blockchain state information, as a [`GetBlockchainInfoResponse`] JSON struct.
     ///
@@ -201,14 +200,14 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// Some fields from the zcashd reference are missing from Zebra's [`GetBlockchainInfoResponse`]. It only contains the fields
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L72-L89)
-    async fn get_blockchain_info(&self) -> Result<GetBlockchainInfoResponse, Self::Error>;
+    fn get_blockchain_info(&self) -> impl SendFut<Result<GetBlockchainInfoResponse, Self::Error>>;
 
     /// Returns the proof-of-work difficulty as a multiple of the minimum difficulty.
     ///
     /// zcashd reference: [`getdifficulty`](https://zcash.github.io/rpc/getdifficulty.html)
     /// method: post
     /// tags: blockchain
-    async fn get_difficulty(&self) -> Result<f64, Self::Error>;
+    fn get_difficulty(&self) -> impl SendFut<Result<f64, Self::Error>>;
 
     /// Returns block subsidy reward, taking into account the mining slow start and the founders reward, of block at index provided.
     ///
@@ -219,7 +218,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// # Parameters
     ///
     /// - `height`: (number, optional) The block height. If not provided, defaults to the current height of the chain.
-    async fn get_block_subsidy(&self, height: u32) -> Result<GetBlockSubsidy, Self::Error>;
+    fn get_block_subsidy(&self, height: u32) -> impl SendFut<Result<GetBlockSubsidy, Self::Error>>;
 
     /// Returns details on the active state of the TX memory pool.
     ///
@@ -228,7 +227,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// tags: mempool
     ///
     /// Original implementation: [`getmempoolinfo`](https://github.com/zcash/zcash/blob/18238d90cd0b810f5b07d5aaa1338126aa128c06/src/rpc/blockchain.cpp#L1555)
-    async fn get_mempool_info(&self) -> Result<GetMempoolInfoResponse, Self::Error>;
+    fn get_mempool_info(&self) -> impl SendFut<Result<GetMempoolInfoResponse, Self::Error>>;
 
     /// Returns data about each connected network node as a json array of objects.
     ///
@@ -236,7 +235,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// tags: network
     ///
     /// Current `zebrad` does not include the same fields as `zcashd`.
-    async fn get_peer_info(&self) -> Result<GetPeerInfo, Self::Error>;
+    fn get_peer_info(&self) -> impl SendFut<Result<GetPeerInfo, Self::Error>>;
 
     /// Returns the total balance of a provided `addresses` in an [`AddressBalance`] instance.
     ///
@@ -260,10 +259,10 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// The RPC documentation says that the returned object has a string `balance` field, but
     /// zcashd actually [returns an
     /// integer](https://github.com/zcash/lightwalletd/blob/bdaac63f3ee0dbef62bde04f6817a9f90d483b00/common/common.go#L128-L130).
-    async fn z_get_address_balance(
+    fn z_get_address_balance(
         &self,
         address_strings: GetAddressBalanceRequest,
-    ) -> Result<AddressBalance, Self::Error>;
+    ) -> impl SendFut<Result<AddressBalance, Self::Error>>;
 
     /// Sends the raw bytes of a signed transaction to the local node's mempool, if the transaction is valid.
     /// Returns the [`SentTransactionHash`] for the transaction, as a JSON string.
@@ -280,10 +279,10 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// zcashd accepts an optional `allowhighfees` parameter. Zebra doesn't support this parameter,
     /// because lightwalletd doesn't use it.
-    async fn send_raw_transaction(
+    fn send_raw_transaction(
         &self,
         raw_transaction_hex: String,
-    ) -> Result<SentTransactionHash, Self::Error>;
+    ) -> impl SendFut<Result<SentTransactionHash, Self::Error>>;
 
     /// If verbose is false, returns a string that is serialized, hex-encoded data for blockheader `hash`.
     /// If verbose is true, returns an Object with information about blockheader `hash`.
@@ -296,11 +295,11 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// zcashd reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
     /// method: post
     /// tags: blockchain
-    async fn get_block_header(
+    fn get_block_header(
         &self,
         hash: String,
         verbose: bool,
-    ) -> Result<GetBlockHeader, Self::Error>;
+    ) -> impl SendFut<Result<GetBlockHeader, Self::Error>>;
 
     /// Returns the requested block by hash or height, as a [`GetBlock`] JSON string.
     /// If the block is not in Zebra's state, returns
@@ -326,25 +325,25 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// use verbosity=3.
     ///
     /// The undocumented `chainwork` field is not returned.
-    async fn z_get_block(
+    fn z_get_block(
         &self,
         hash_or_height: String,
         verbosity: Option<u8>,
-    ) -> Result<GetBlock, Self::Error>;
+    ) -> impl SendFut<Result<GetBlock, Self::Error>>;
 
     /// Returns information about the given block and its transactions.
     ///
     /// zcashd reference: [`getblockdeltas`](https://zcash.github.io/rpc/getblockdeltas.html)
     /// method: post
     /// tags: blockchain
-    async fn get_block_deltas(&self, hash: String) -> Result<BlockDeltas, Self::Error>;
+    fn get_block_deltas(&self, hash: String) -> impl SendFut<Result<BlockDeltas, Self::Error>>;
 
     /// Returns the current block count in the best valid block chain.
     ///
     /// zcashd reference: [`getblockcount`](https://zcash.github.io/rpc/getblockcount.html)
     /// method: post
     /// tags: blockchain
-    async fn get_block_count(&self) -> Result<Height, Self::Error>;
+    fn get_block_count(&self) -> impl SendFut<Result<Height, Self::Error>>;
 
     /// Returns information about all known tips in the block tree.
     ///
@@ -355,7 +354,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// zcashd builds the response from all block-index leaves, always includes the active
     /// tip, sorts by descending height, and classifies leaves as `invalid`, `headers-only`,
     /// `valid-headers`, `valid-fork`, `active`, or `unknown`.
-    async fn get_chain_tips(&self) -> Result<GetChainTipsResponse, Self::Error>;
+    fn get_chain_tips(&self) -> impl SendFut<Result<GetChainTipsResponse, Self::Error>>;
 
     /// Return information about the given Zcash address.
     ///
@@ -365,10 +364,10 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// zcashd reference: [`validateaddress`](https://zcash.github.io/rpc/validateaddress.html)
     /// method: post
     /// tags: util
-    async fn validate_address(
+    fn validate_address(
         &self,
         address: String,
-    ) -> Result<ValidateAddressResponse, Self::Error>;
+    ) -> impl SendFut<Result<ValidateAddressResponse, Self::Error>>;
 
     /// Return information about the given address.
     ///
@@ -383,10 +382,10 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// method: post
     /// tags: util
     #[deprecated(note = "https://github.com/zingolabs/zaino/issues/992#issuecomment-4245596178")]
-    async fn z_validate_address(
+    fn z_validate_address(
         &self,
         address: String,
-    ) -> Result<ZValidateAddressResponse, Self::Error>;
+    ) -> impl SendFut<Result<ZValidateAddressResponse, Self::Error>>;
 
     /// Returns the hash of the best block (tip) of the longest chain.
     /// online zcashd reference: [`getbestblockhash`](https://zcash.github.io/rpc/getbestblockhash.html)
@@ -397,14 +396,14 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// [In the rpc definition](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/common.h#L48) there are no required params, or optional params.
     /// [The function in rpc/blockchain.cpp](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L325)
     /// where `return chainActive.Tip()->GetBlockHash().GetHex();` is the [return expression](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L339) returning a `std::string`
-    async fn get_best_blockhash(&self) -> Result<GetBlockHash, Self::Error>;
+    fn get_best_blockhash(&self) -> impl SendFut<Result<GetBlockHash, Self::Error>>;
 
     /// Returns all transaction ids in the memory pool, as a JSON array.
     ///
     /// zcashd reference: [`getrawmempool`](https://zcash.github.io/rpc/getrawmempool.html)
     /// method: post
     /// tags: blockchain
-    async fn get_raw_mempool(&self) -> Result<Vec<String>, Self::Error>;
+    fn get_raw_mempool(&self) -> impl SendFut<Result<Vec<String>, Self::Error>>;
 
     /// Returns information about the given block's Sapling & Orchard tree state.
     ///
@@ -422,10 +421,10 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// negative where -1 is the last known valid block". On the other hand,
     /// `lightwalletd` only uses positive heights, so Zebra does not support
     /// negative heights.
-    async fn z_get_treestate(
+    fn z_get_treestate(
         &self,
         hash_or_height: String,
-    ) -> Result<GetTreestateResponse, Self::Error>;
+    ) -> impl SendFut<Result<GetTreestateResponse, Self::Error>>;
 
     /// Returns information about a range of Sapling or Orchard subtrees.
     ///
@@ -445,12 +444,12 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// starting at the chain tip. This RPC will return an empty list if the `start_index` subtree
     /// exists, but has not been rebuilt yet. This matches `zcashd`'s behaviour when subtrees aren't
     /// available yet. (But `zcashd` does its rebuild before syncing any blocks.)
-    async fn z_get_subtrees_by_index(
+    fn z_get_subtrees_by_index(
         &self,
         pool: String,
         start_index: NoteCommitmentSubtreeIndex,
         limit: Option<NoteCommitmentSubtreeIndex>,
-    ) -> Result<GetSubtreesByIndexResponse, Self::Error>;
+    ) -> impl SendFut<Result<GetSubtreesByIndexResponse, Self::Error>>;
 
     /// Returns the raw transaction data, as a [`GetRawTransaction`] JSON string or structure.
     ///
@@ -471,11 +470,11 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// In verbose mode, we only expose the `hex` and `height` fields since
     /// lightwalletd uses only those:
     /// <https://github.com/zcash/lightwalletd/blob/631bb16404e3d8b045e74a7c5489db626790b2f6/common/common.go#L119>
-    async fn get_raw_transaction(
+    fn get_raw_transaction(
         &self,
         txid_hex: String,
         verbose: Option<u8>,
-    ) -> Result<GetRawTransaction, Self::Error>;
+    ) -> impl SendFut<Result<GetRawTransaction, Self::Error>>;
 
     /// Returns details about an unspent transaction output.
     ///
@@ -488,12 +487,12 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// - `txid`: (string, required) The transaction ID that contains the output.
     /// - `n`: (number, required) The output index number.
     /// - `include_mempool`: (bool, optional, default=true) Whether to include the mempool in the search.
-    async fn get_tx_out(
+    fn get_tx_out(
         &self,
         txid: String,
         n: u32,
         include_mempool: Option<bool>,
-    ) -> Result<zaino_fetch::jsonrpsee::response::GetTxOutResponse, Self::Error>;
+    ) -> impl SendFut<Result<zaino_fetch::jsonrpsee::response::GetTxOutResponse, Self::Error>>;
 
     /// Returns the txid, input index, and block height where an output is spent.
     ///
@@ -509,10 +508,10 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// zcashd 6.12.2 returns an undocumented `height` field in addition to
     /// the documented `txid` and `index` fields.
-    async fn get_spent_info(
+    fn get_spent_info(
         &self,
         request: GetSpentInfoRequest,
-    ) -> Result<GetSpentInfoResponse, Self::Error>;
+    ) -> impl SendFut<Result<GetSpentInfoResponse, Self::Error>>;
 
     /// Returns the transaction ids made by the provided transparent addresses.
     ///
@@ -531,10 +530,10 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// Only the multi-argument format is used by lightwalletd and this is what we currently support:
     /// <https://github.com/zcash/lightwalletd/blob/631bb16404e3d8b045e74a7c5489db626790b2f6/common/common.go#L97-L102>
-    async fn get_address_tx_ids(
+    fn get_address_tx_ids(
         &self,
         request: GetAddressTxIdsRequest,
-    ) -> Result<Vec<String>, Self::Error>;
+    ) -> impl SendFut<Result<Vec<String>, Self::Error>>;
 
     /// Returns all unspent outputs for a list of addresses.
     ///
@@ -550,22 +549,22 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// lightwalletd always uses the multi-address request, without chaininfo:
     /// <https://github.com/zcash/lightwalletd/blob/master/frontend/service.go#L402>
-    async fn z_get_address_utxos(
+    fn z_get_address_utxos(
         &self,
         address_strings: GetAddressBalanceRequest,
-    ) -> Result<Vec<GetAddressUtxos>, Self::Error>;
+    ) -> impl SendFut<Result<Vec<GetAddressUtxos>, Self::Error>>;
 
     /// Returns a json object containing mining-related information.
     ///
     /// `zcashd` reference (may be outdated): [`getmininginfo`](https://zcash.github.io/rpc/getmininginfo.html)
-    async fn get_mining_info(&self) -> Result<GetMiningInfoWire, Self::Error>;
+    fn get_mining_info(&self) -> impl SendFut<Result<GetMiningInfoWire, Self::Error>>;
 
     /// Returns statistics about the unspent transaction output set.
     ///
     /// zcashd reference: [`gettxoutsetinfo`](https://zcash.github.io/rpc/gettxoutsetinfo.html)
     /// method: post
     /// tags: blockchain
-    async fn get_tx_out_set_info(&self) -> Result<GetTxOutSetInfoResponse, Self::Error>;
+    fn get_tx_out_set_info(&self) -> impl SendFut<Result<GetTxOutSetInfoResponse, Self::Error>>;
 
     /// Returns the estimated network solutions per second based on the last n blocks.
     ///
@@ -580,71 +579,73 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// - `blocks`: (number, optional, default=120) Number of blocks, or -1 for blocks over difficulty averaging window.
     /// - `height`: (number, optional, default=-1) To estimate network speed at the time of a specific block height.
-    async fn get_network_sol_ps(
+    fn get_network_sol_ps(
         &self,
         blocks: Option<i32>,
         height: Option<i32>,
-    ) -> Result<GetNetworkSolPsResponse, Self::Error>;
+    ) -> impl SendFut<Result<GetNetworkSolPsResponse, Self::Error>>;
 
     /// Helper function to get the chain height
-    async fn chain_height(&self) -> Result<Height, Self::Error>;
+    fn chain_height(&self) -> impl SendFut<Result<Height, Self::Error>>;
 
     /// Helper function, to get the list of taddresses that have sends or reciepts
     /// within a given block range
-    async fn get_taddress_txids_helper(
+    fn get_taddress_txids_helper(
         &self,
         request: TransparentAddressBlockFilter,
-    ) -> Result<Vec<String>, Self::Error> {
-        let chain_height = self.chain_height().await?;
-        let (start, end) = match request.range {
-            Some(range) => {
-                let start = if let Some(start) = range.start {
-                    match u32::try_from(start.height) {
-                        Ok(height) => Some(height.min(chain_height.0)),
-                        Err(_) => {
-                            return Err(Self::Error::from(tonic::Status::invalid_argument(
-                                "Error: Start height out of range. Failed to convert to u32.",
-                            )))
+    ) -> impl SendFut<Result<Vec<String>, Self::Error>> {
+        async move {
+            let chain_height = self.chain_height().await?;
+            let (start, end) = match request.range {
+                Some(range) => {
+                    let start = if let Some(start) = range.start {
+                        match u32::try_from(start.height) {
+                            Ok(height) => Some(height.min(chain_height.0)),
+                            Err(_) => {
+                                return Err(Self::Error::from(tonic::Status::invalid_argument(
+                                    "Error: Start height out of range. Failed to convert to u32.",
+                                )))
+                            }
                         }
-                    }
-                } else {
-                    None
-                };
-                let end = if let Some(end) = range.end {
-                    match u32::try_from(end.height) {
-                        Ok(height) => Some(height.min(chain_height.0)),
-                        Err(_) => {
-                            return Err(Self::Error::from(tonic::Status::invalid_argument(
-                                "Error: End height out of range. Failed to convert to u32.",
-                            )))
+                    } else {
+                        None
+                    };
+                    let end = if let Some(end) = range.end {
+                        match u32::try_from(end.height) {
+                            Ok(height) => Some(height.min(chain_height.0)),
+                            Err(_) => {
+                                return Err(Self::Error::from(tonic::Status::invalid_argument(
+                                    "Error: End height out of range. Failed to convert to u32.",
+                                )))
+                            }
                         }
-                    }
-                } else {
-                    None
-                };
-                match (start, end) {
-                    (Some(start), Some(end)) => {
-                        if start > end {
-                            (Some(end), Some(start))
-                        } else {
-                            (Some(start), Some(end))
+                    } else {
+                        None
+                    };
+                    match (start, end) {
+                        (Some(start), Some(end)) => {
+                            if start > end {
+                                (Some(end), Some(start))
+                            } else {
+                                (Some(start), Some(end))
+                            }
                         }
+                        _ => (start, end),
                     }
-                    _ => (start, end),
                 }
-            }
-            None => {
-                return Err(Self::Error::from(tonic::Status::invalid_argument(
-                    "Error: No block range given.",
-                )))
-            }
-        };
-        self.get_address_tx_ids(GetAddressTxIdsRequest::new(
-            vec![request.address],
-            start,
-            end,
-        ))
-        .await
+                None => {
+                    return Err(Self::Error::from(tonic::Status::invalid_argument(
+                        "Error: No block range given.",
+                    )))
+                }
+            };
+            self.get_address_tx_ids(GetAddressTxIdsRequest::new(
+                vec![request.address],
+                start,
+                end,
+            ))
+            .await
+        }
     }
 }
 
@@ -652,57 +653,70 @@ pub trait ZcashIndexer: Send + Sync + 'static {
 /// For more information, see [the lightwallet protocol](https://github.com/zcash/lightwallet-protocol/blob/180717dfa21f3cbf063b8a1ad7697ccba7f5b054/walletrpc/service.proto#L181).
 ///
 /// Doc comments taken from Zaino-Proto for consistency.
-#[async_trait]
 pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
     /// Return the height of the tip of the best chain
-    async fn get_latest_block(&self) -> Result<BlockId, Self::Error>;
+    fn get_latest_block(&self) -> impl SendFut<Result<BlockId, Self::Error>>;
 
     /// Return the compact block corresponding to the given block identifier
-    async fn get_block(&self, request: BlockId) -> Result<CompactBlock, Self::Error>;
+    fn get_block(&self, request: BlockId) -> impl SendFut<Result<CompactBlock, Self::Error>>;
 
     /// Same as GetBlock except actions contain only nullifiers
-    async fn get_block_nullifiers(&self, request: BlockId) -> Result<CompactBlock, Self::Error>;
+    fn get_block_nullifiers(
+        &self,
+        request: BlockId,
+    ) -> impl SendFut<Result<CompactBlock, Self::Error>>;
 
     /// Return a list of consecutive compact blocks
-    async fn get_block_range(&self, request: BlockRange)
-        -> Result<CompactBlockStream, Self::Error>;
-
-    /// Same as GetBlockRange except actions contain only nullifiers
-    async fn get_block_range_nullifiers(
+    fn get_block_range(
         &self,
         request: BlockRange,
-    ) -> Result<CompactBlockStream, Self::Error>;
+    ) -> impl SendFut<Result<CompactBlockStream, Self::Error>>;
+
+    /// Same as GetBlockRange except actions contain only nullifiers
+    fn get_block_range_nullifiers(
+        &self,
+        request: BlockRange,
+    ) -> impl SendFut<Result<CompactBlockStream, Self::Error>>;
 
     /// Return the requested full (not compact) transaction (as from zcashd)
-    async fn get_transaction(&self, request: TxFilter) -> Result<RawTransaction, Self::Error>;
+    fn get_transaction(
+        &self,
+        request: TxFilter,
+    ) -> impl SendFut<Result<RawTransaction, Self::Error>>;
 
     /// Submit the given transaction to the Zcash network
-    async fn send_transaction(&self, request: RawTransaction) -> Result<SendResponse, Self::Error>;
+    fn send_transaction(
+        &self,
+        request: RawTransaction,
+    ) -> impl SendFut<Result<SendResponse, Self::Error>>;
 
     /// Return the transactions corresponding to the given t-address within the given block range
-    async fn get_taddress_transactions(
+    fn get_taddress_transactions(
         &self,
         request: TransparentAddressBlockFilter,
-    ) -> Result<RawTransactionStream, Self::Error>;
+    ) -> impl SendFut<Result<RawTransactionStream, Self::Error>>;
 
     /// Return the txids corresponding to the given t-address within the given block range
     /// Note: This function is misnamed, it returns complete `RawTransaction` values, not TxIds.
     /// Note: this method is deprecated, please use GetTaddressTransactions instead.
-    async fn get_taddress_txids(
+    fn get_taddress_txids(
         &self,
         request: TransparentAddressBlockFilter,
-    ) -> Result<RawTransactionStream, Self::Error>;
+    ) -> impl SendFut<Result<RawTransactionStream, Self::Error>>;
 
     /// Returns the total balance for a list of taddrs
-    async fn get_taddress_balance(&self, request: AddressList) -> Result<Balance, Self::Error>;
+    fn get_taddress_balance(
+        &self,
+        request: AddressList,
+    ) -> impl SendFut<Result<Balance, Self::Error>>;
 
     /// Returns the total balance for a list of taddrs
     ///
     /// TODO: Update input type.
-    async fn get_taddress_balance_stream(
+    fn get_taddress_balance_stream(
         &self,
         request: AddressStream,
-    ) -> Result<Balance, Self::Error>;
+    ) -> impl SendFut<Result<Balance, Self::Error>>;
 
     /// Returns a stream of the compact transaction representation for transactions
     /// currently in the mempool. The results of this operation may be a few
@@ -716,75 +730,78 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
     /// txid suffix, none of the matching transactions are excluded. Txid
     /// suffixes in the exclude list that don't match any transactions in the
     /// mempool are ignored.
-    async fn get_mempool_tx(
+    fn get_mempool_tx(
         &self,
         request: GetMempoolTxRequest,
-    ) -> Result<CompactTransactionStream, Self::Error>;
+    ) -> impl SendFut<Result<CompactTransactionStream, Self::Error>>;
 
     /// Return a stream of current Mempool transactions. This will keep the output stream open while
     /// there are mempool transactions. It will close the returned stream when a new block is mined.
-    async fn get_mempool_stream(&self) -> Result<RawTransactionStream, Self::Error>;
+    fn get_mempool_stream(&self) -> impl SendFut<Result<RawTransactionStream, Self::Error>>;
 
     /// GetTreeState returns the note commitment tree state corresponding to the given block.
     /// See section 3.7 of the Zcash protocol specification. It returns several other useful
     /// values also (even though they can be obtained using GetBlock).
     /// The block can be specified by either height or hash.
-    async fn get_tree_state(&self, request: BlockId) -> Result<TreeState, Self::Error>;
+    fn get_tree_state(&self, request: BlockId) -> impl SendFut<Result<TreeState, Self::Error>>;
 
     /// GetLatestTreeState returns the note commitment tree state corresponding to the chain tip.
-    async fn get_latest_tree_state(&self) -> Result<TreeState, Self::Error>;
+    fn get_latest_tree_state(&self) -> impl SendFut<Result<TreeState, Self::Error>>;
 
     /// Helper function to get timeout and channel size from config
     fn timeout_channel_size(&self) -> (u32, u32);
 
     /// Returns a stream of information about roots of subtrees of the Sapling and Orchard
     /// note commitment trees.
-    async fn get_subtree_roots(
+    fn get_subtree_roots(
         &self,
         request: GetSubtreeRootsArg,
-    ) -> Result<SubtreeRootReplyStream, <Self as ZcashIndexer>::Error> {
-        let pool = match ShieldedProtocol::try_from(request.shielded_protocol) {
-            Ok(protocol) => protocol.as_str_name(),
-            Err(_) => {
-                return Err(<Self as ZcashIndexer>::Error::from(
-                    tonic::Status::invalid_argument("Error: Invalid shielded protocol value."),
-                ))
-            }
-        };
-        let start_index = match u16::try_from(request.start_index) {
-            Ok(value) => value,
-            Err(_) => {
-                return Err(<Self as ZcashIndexer>::Error::from(
-                    tonic::Status::invalid_argument("Error: start_index value exceeds u16 range."),
-                ))
-            }
-        };
-        let limit = if request.max_entries == 0 {
-            None
-        } else {
-            match u16::try_from(request.max_entries) {
-                Ok(value) => Some(value),
+    ) -> impl SendFut<Result<SubtreeRootReplyStream, <Self as ZcashIndexer>::Error>> {
+        async move {
+            let pool = match ShieldedProtocol::try_from(request.shielded_protocol) {
+                Ok(protocol) => protocol.as_str_name(),
+                Err(_) => {
+                    return Err(<Self as ZcashIndexer>::Error::from(
+                        tonic::Status::invalid_argument("Error: Invalid shielded protocol value."),
+                    ))
+                }
+            };
+            let start_index = match u16::try_from(request.start_index) {
+                Ok(value) => value,
                 Err(_) => {
                     return Err(<Self as ZcashIndexer>::Error::from(
                         tonic::Status::invalid_argument(
-                            "Error: max_entries value exceeds u16 range.",
+                            "Error: start_index value exceeds u16 range.",
                         ),
                     ))
                 }
-            }
-        };
-        let service_clone = self.clone();
-        let subtrees = service_clone
-            .z_get_subtrees_by_index(
-                pool.to_string(),
-                NoteCommitmentSubtreeIndex(start_index),
-                limit.map(NoteCommitmentSubtreeIndex),
-            )
-            .await?;
-        let (service_timeout, service_channel_size) = self.timeout_channel_size();
-        let (channel_tx, channel_rx) = mpsc::channel(service_channel_size as usize);
-        tokio::spawn(async move {
-            let timeout = timeout(
+            };
+            let limit = if request.max_entries == 0 {
+                None
+            } else {
+                match u16::try_from(request.max_entries) {
+                    Ok(value) => Some(value),
+                    Err(_) => {
+                        return Err(<Self as ZcashIndexer>::Error::from(
+                            tonic::Status::invalid_argument(
+                                "Error: max_entries value exceeds u16 range.",
+                            ),
+                        ))
+                    }
+                }
+            };
+            let service_clone = self.clone();
+            let subtrees = service_clone
+                .z_get_subtrees_by_index(
+                    pool.to_string(),
+                    NoteCommitmentSubtreeIndex(start_index),
+                    limit.map(NoteCommitmentSubtreeIndex),
+                )
+                .await?;
+            let (service_timeout, service_channel_size) = self.timeout_channel_size();
+            let (channel_tx, channel_rx) = mpsc::channel(service_channel_size as usize);
+            tokio::spawn(async move {
+                let timeout = timeout(
                 std::time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
                     for subtree in subtrees.subtrees() {
@@ -792,7 +809,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                             .z_get_block(subtree.end_height.0.to_string(), Some(1))
                             .await
                         {
-                            Ok(GetBlock::Object (block_object)) => {
+                            Ok(GetBlock::Object(block_object)) => {
                                 let checked_height = match block_object.height() {
                                     Some(h) => h.0 as u64,
                                     None => {
@@ -805,8 +822,8 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                                             Ok(_) => break,
                                             Err(e) => {
                                                 warn!(
-                                                    "GetSubtreeRoots channel closed unexpectedly: {}",
-                                                    e
+                                                    %e,
+                                                    "GetSubtreeRoots channel closed unexpectedly"
                                                 );
                                                 break;
                                             }
@@ -825,8 +842,8 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                                             Ok(_) => break,
                                             Err(e) => {
                                                 warn!(
-                                                    "GetSubtreeRoots channel closed unexpectedly: {}",
-                                                    e
+                                                    %e,
+                                                    "GetSubtreeRoots channel closed unexpectedly"
                                                 );
                                                 break;
                                             }
@@ -836,7 +853,8 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                                 if channel_tx
                                     .send(Ok(SubtreeRoot {
                                         root_hash: checked_root_hash,
-                                        completing_block_hash: block_object.hash()
+                                        completing_block_hash: block_object
+                                            .hash()
                                             .bytes_in_display_order()
                                             .to_vec(),
                                         completing_block_height: checked_height,
@@ -877,19 +895,20 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                 },
             )
             .await;
-            match timeout {
-                Ok(_) => {}
-                Err(_) => {
-                    channel_tx
-                        .send(Err(tonic::Status::deadline_exceeded(
-                            "Error: get_mempool_stream gRPC request timed out",
-                        )))
-                        .await
-                        .ok();
+                match timeout {
+                    Ok(_) => {}
+                    Err(_) => {
+                        channel_tx
+                            .send(Err(tonic::Status::deadline_exceeded(
+                                "Error: get_mempool_stream gRPC request timed out",
+                            )))
+                            .await
+                            .ok();
+                    }
                 }
-            }
-        });
-        Ok(SubtreeRootReplyStream::new(channel_rx))
+            });
+            Ok(SubtreeRootReplyStream::new(channel_rx))
+        }
     }
 
     /// Returns all unspent outputs for a list of addresses.
@@ -899,10 +918,10 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
     /// max_entries bounds the response size, not the backend work; the address list is
     /// capped server-side to bound backend fan-out (see UTXO_MAX_ADDRESSES in backends).
     /// Utxos are collected and returned as a single Vec.
-    async fn get_address_utxos(
+    fn get_address_utxos(
         &self,
         request: GetAddressUtxosArg,
-    ) -> Result<GetAddressUtxosReplyList, Self::Error>;
+    ) -> impl SendFut<Result<GetAddressUtxosReplyList, Self::Error>>;
 
     /// Returns all unspent outputs for a list of addresses.
     ///
@@ -911,22 +930,21 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
     /// max_entries bounds the response size, not the backend work; the address list is
     /// capped server-side to bound backend fan-out (see UTXO_MAX_ADDRESSES in backends).
     /// Utxos are returned in a stream.
-    async fn get_address_utxos_stream(
+    fn get_address_utxos_stream(
         &self,
         request: GetAddressUtxosArg,
-    ) -> Result<UtxoReplyStream, Self::Error>;
+    ) -> impl SendFut<Result<UtxoReplyStream, Self::Error>>;
 
     /// Return information about this lightwalletd instance and the blockchain
-    async fn get_lightd_info(&self) -> Result<LightdInfo, Self::Error>;
+    fn get_lightd_info(&self) -> impl SendFut<Result<LightdInfo, Self::Error>>;
 
     /// Testing-only, requires lightwalletd --ping-very-insecure (do not enable in production)
     ///
     /// NOTE: Currently unimplemented in Zaino.
-    async fn ping(&self, request: Duration) -> Result<PingResponse, Self::Error>;
+    fn ping(&self, request: Duration) -> impl SendFut<Result<PingResponse, Self::Error>>;
 }
 
 /// Zcash Service functionality.
-#[async_trait]
 pub trait LightWalletService: Sized + ZcashService<Subscriber: LightWalletIndexer> {}
 
 impl<T> LightWalletService for T where T: ZcashService {}

@@ -38,17 +38,15 @@ packages/                          Cargo workspace member crates
   zaino-serve/                       gRPC server (CompactTxStreamer)
   zainod/                            Daemon binary
 
-integration-tests/                 Separate workspace — runs against zcashd/zebrad
-  src/                               Library helpers exposed to test files
-  tests/                             Integration test files
-  zaino-testutils/                   Test harness and utilities
+live-tests/                        Live-test suite — root-workspace members, run against zcashd/zebrad
+  e2e/                               End-to-end partition (wallet client -> Zaino -> validator)
+  clientless/                        Clientless partition (Zaino services -> live validator, no client)
+  zaino-testutils/                   Shared test harness and utilities
   test_binaries/                     Symlinked zcashd/zebrad/zcash-cli binaries
   test_environment/                  Container build context
     Containerfile                      CI/test container image definition
     entrypoint.sh                      Container entrypoint (binary symlink setup)
     test-container-permissions.sh      Container permission / volume-mount tests
-  .config/nextest.toml               Nextest configuration for integration tests
-  Cargo.toml                         Integration-tests workspace manifest
 
 docs/                              Architecture diagrams, specs, and usage guides
 tools/                             Development tools, shell helpers, makefiles
@@ -100,6 +98,22 @@ security:
 Do not expose it to untrusted networks, and only enable
 `allow_unencrypted_public_json_rpc_bind` when an external layer secures the
 connection.
+
+## Running tests
+
+The test suites run inside a **podman** container via `makers` (cargo-make):
+
+```sh
+makers test            # packages/* tests that need no live validator (default)
+makers test live       # both live partitions (clientless + e2e) + combined summary
+makers test all        # everything: package then live
+```
+
+zcashd-backed tests are **off by default**; add `--with-zcashd` to include them
+(there is no implicit or env-var path — see docs/adr/0005). On lower-resource machines you
+may hit occasional contention flakes under full parallelism — re-run, or lower
+`test-threads` in the nextest config. See [docs/testing.md](./docs/testing.md)
+for full instructions.
 
 ## Documentation
 - [Use Cases](./docs/use_cases.md): Holds instructions and example use cases.

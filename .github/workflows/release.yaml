@@ -20,7 +20,7 @@ jobs:
       # Push only on tag-push events, or when workflow_dispatch with input.push=true.
       PUSH_IMAGES: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -104,7 +104,7 @@ jobs:
     # workflow_dispatch (e.g. for verification on a feature branch) skips this.
     if: startsWith(github.ref, 'refs/tags/')
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 

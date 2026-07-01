@@ -158,8 +158,8 @@ impl ZainodConfig {
             }
             AddressResolution::UnresolvedHostname { ref address, .. } => {
                 info!(
-                    "Validator address '{}' cannot be resolved at config time.",
-                    address
+                    %address,
+                    "validator address cannot be resolved at config time"
                 );
             }
             AddressResolution::InvalidFormat { address, reason } => {
@@ -357,8 +357,8 @@ pub fn load_config_with_env(
 
     parsed_config.check_config()?;
     info!(
-        "Successfully loaded and validated config. Base TOML file checked: '{}'",
-        file_path.display()
+        path = %file_path.display(),
+        "config loaded and validated"
     );
     Ok(parsed_config)
 }
@@ -1002,6 +1002,61 @@ listen_address = "127.0.0.1:8137"
         let config_path = create_test_config_file(&temp_dir, toml_content, "unknown_fields.toml");
         let result = load_config(&config_path);
         assert!(result.is_err());
+    }
+
+    /// Regression guard: the old `[storage.database] sync_write_batch_bytes` key (renamed to
+    /// `sync_write_batch_size` and re-unitised to GiB) must now fail loudly. Silently ignoring it
+    /// and falling back to the default budget is what OOM-killed nodes at mainnet chain tip.
+    #[test]
+    fn stale_sync_write_batch_bytes_key_is_rejected() {
+        let _guard = EnvGuard::new();
+        let temp_dir = TempDir::new().unwrap();
+
+        let toml_content = r#"
+[validator_settings]
+validator_jsonrpc_listen_address = "127.0.0.1:18232"
+
+[storage.database]
+path = "/zaino/db"
+sync_write_batch_bytes = 2147483648
+
+[grpc_settings]
+listen_address = "127.0.0.1:8137"
+"#;
+
+        let config_path = create_test_config_file(&temp_dir, toml_content, "stale_batch_key.toml");
+        assert!(
+            load_config(&config_path).is_err(),
+            "stale `sync_write_batch_bytes` key must be rejected by deny_unknown_fields"
+        );
+    }
+
+    /// The current `[storage.database]` budget keys parse and bind as expected.
+    #[test]
+    fn current_database_budget_keys_parse() {
+        let _guard = EnvGuard::new();
+        let temp_dir = TempDir::new().unwrap();
+
+        let toml_content = r#"
+[validator_settings]
+validator_jsonrpc_listen_address = "127.0.0.1:18232"
+
+[storage.database]
+path = "/zaino/db"
+sync_write_batch_size = 2
+accumulator_rebuild_memory_size = 1
+sync_checkpoint_interval = 30
+
+[grpc_settings]
+listen_address = "127.0.0.1:8137"
+"#;
+
+        let config_path =
+            create_test_config_file(&temp_dir, toml_content, "current_budget_keys.toml");
+        let config = load_config(&config_path).expect("current budget keys must parse");
+        assert_eq!(config.storage.database.sync_write_batch_size.0, 2);
+        assert_eq!(config.storage.database.accumulator_rebuild_memory_size.0, 1);
+        assert_eq!(config.storage.database.sync_checkpoint_interval, 30);
     }
 
     /// Verifies that `generate_default_config()` produces valid TOML.

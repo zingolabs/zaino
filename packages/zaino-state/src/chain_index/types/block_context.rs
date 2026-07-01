@@ -17,7 +17,7 @@ pub struct BlockContext {
     pub parent_hash: BlockHash,
     /// The cumulative proof-of-work of the blockchain up to this block,
     /// used for chain selection.
-    pub chainwork: ChainWork,
+    pub chainwork: Option<ChainWork>,
 }
 
 impl BlockContext {
@@ -26,7 +26,7 @@ impl BlockContext {
     pub fn new(
         hash: BlockHash,
         parent_hash: BlockHash,
-        chainwork: ChainWork,
+        chainwork: Option<ChainWork>,
         height: Height,
     ) -> Self {
         Self {
@@ -47,7 +47,7 @@ impl BlockContext {
     }
 
     /// Returns the cumulative chainwork up to this block.
-    pub fn chainwork(&self) -> &ChainWork {
+    pub fn chainwork(&self) -> &Option<ChainWork> {
         &self.chainwork
     }
 

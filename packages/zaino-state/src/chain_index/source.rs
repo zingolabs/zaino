@@ -6,7 +6,7 @@ use crate::chain_index::{
     types::{BlockHash, TransactionHash},
     ShieldedPool,
 };
-use async_trait::async_trait;
+use crate::SendFut;
 use futures::{future::join, TryFutureExt as _};
 use incrementalmerkletree::frontier::CommitmentTree;
 use tower::{Service, ServiceExt as _};
@@ -34,71 +34,82 @@ pub(crate) mod mockchain_source;
 pub mod validator_connector;
 pub use validator_connector::*;
 
+/// Serialized sapling and orchard treestates `(sapling, orchard)`, each `None`
+/// when the pool has no treestate at the queried block.
+pub(crate) type TreestateBytes = (Option<Vec<u8>>, Option<Vec<u8>>);
+
+/// Sapling and orchard note-commitment tree roots `(sapling, orchard)`, each
+/// paired with its tree size; `None` when the pool has no root at the block.
+pub(crate) type ShieldedTreeRoots = (
+    Option<(zebra_chain::sapling::tree::Root, u64)>,
+    Option<(zebra_chain::orchard::tree::Root, u64)>,
+);
+
+/// Receiver for newly observed nonfinalized blocks, delivered as `(hash, block)`.
+pub(crate) type NonfinalizedBlockReceiver =
+    tokio::sync::mpsc::Receiver<(zebra_chain::block::Hash, Arc<zebra_chain::block::Block>)>;
+
 /// A trait for accessing blockchain data from different backends.
 ///
 /// TODO: Explore whether this should be split into separate capability based traits.
-#[async_trait]
 pub trait BlockchainSource: Clone + Send + Sync + 'static {
     // ********** Block methods **********
 
     /// Returns a best-chain block by hash or height
-    async fn get_block(
+    fn get_block(
         &self,
         id: HashOrHeight,
-    ) -> BlockchainSourceResult<Option<Arc<zebra_chain::block::Block>>>;
+    ) -> impl SendFut<BlockchainSourceResult<Option<Arc<zebra_chain::block::Block>>>>;
 
     // ********** Transaction methods **********
 
     /// Returns the transaction by txid
-    async fn get_transaction(
+    fn get_transaction(
         &self,
         txid: TransactionHash,
-    ) -> BlockchainSourceResult<
-        Option<(
-            Arc<zebra_chain::transaction::Transaction>,
-            GetTransactionLocation,
-        )>,
+    ) -> impl SendFut<
+        BlockchainSourceResult<
+            Option<(
+                Arc<zebra_chain::transaction::Transaction>,
+                GetTransactionLocation,
+            )>,
+        >,
     >;
 
     /// Returns the complete list of txids currently in the mempool.
-    async fn get_mempool_txids(
+    fn get_mempool_txids(
         &self,
-    ) -> BlockchainSourceResult<Option<Vec<zebra_chain::transaction::Hash>>>;
+    ) -> impl SendFut<BlockchainSourceResult<Option<Vec<zebra_chain::transaction::Hash>>>>;
 
     // ********** Chain methods **********
 
     /// Returns the hash of the block at the tip of the best chain.
-    async fn get_best_block_hash(&self)
-        -> BlockchainSourceResult<Option<zebra_chain::block::Hash>>;
+    fn get_best_block_hash(
+        &self,
+    ) -> impl SendFut<BlockchainSourceResult<Option<zebra_chain::block::Hash>>>;
 
     /// Returns the height of the block at the tip of the best chain.
-    async fn get_best_block_height(
+    fn get_best_block_height(
         &self,
-    ) -> BlockchainSourceResult<Option<zebra_chain::block::Height>>;
+    ) -> impl SendFut<BlockchainSourceResult<Option<zebra_chain::block::Height>>>;
 
     /// Returns the sapling and orchard treestate by hash
-    async fn get_treestate(
-        &self,
-        id: BlockHash,
-    ) -> BlockchainSourceResult<(Option<Vec<u8>>, Option<Vec<u8>>)>;
+    fn get_treestate(&self, id: BlockHash) -> impl SendFut<BlockchainSourceResult<TreestateBytes>>;
 
     /// Gets the subtree roots of a given pool and the end heights of each root,
     /// starting at the provided index, up to an optional maximum number of roots.
-    async fn get_subtree_roots(
+    fn get_subtree_roots(
         &self,
         pool: ShieldedPool,
         start_index: u16,
         max_entries: Option<u16>,
-    ) -> BlockchainSourceResult<Vec<([u8; 32], u32)>>;
+    ) -> impl SendFut<BlockchainSourceResult<Vec<([u8; 32], u32)>>>;
 
     /// Returns the block commitment tree data by hash
-    async fn get_commitment_tree_roots(
+    fn get_commitment_tree_roots(
         &self,
         id: BlockHash,
-    ) -> BlockchainSourceResult<(
-        Option<(zebra_chain::sapling::tree::Root, u64)>,
-        Option<(zebra_chain::orchard::tree::Root, u64)>,
-    )>;
+    ) -> impl SendFut<BlockchainSourceResult<ShieldedTreeRoots>>;
 
     // ********** Transparent address methods **********
 
@@ -117,10 +128,10 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     /// zcashd reference: [`getaddressdeltas`](https://zcash.github.io/rpc/getaddressdeltas.html)
     /// method: post
     /// tags: address
-    async fn get_address_deltas(
+    fn get_address_deltas(
         &self,
         params: GetAddressDeltasParams,
-    ) -> BlockchainSourceResult<GetAddressDeltasResponse>;
+    ) -> impl SendFut<BlockchainSourceResult<GetAddressDeltasResponse>>;
 
     /// Returns the total balance of a provided `addresses` in an [`AddressBalance`] instance.
     ///
@@ -144,10 +155,10 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     /// The RPC documentation says that the returned object has a string `balance` field, but
     /// zcashd actually [returns an
     /// integer](https://github.com/zcash/lightwalletd/blob/bdaac63f3ee0dbef62bde04f6817a9f90d483b00/common/common.go#L128-L130).
-    async fn get_address_balance(
+    fn get_address_balance(
         &self,
         address_strings: GetAddressBalanceRequest,
-    ) -> BlockchainSourceResult<AddressBalance>;
+    ) -> impl SendFut<BlockchainSourceResult<AddressBalance>>;
 
     /// Returns the transaction ids made by the provided transparent addresses.
     ///
@@ -166,10 +177,10 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     ///
     /// Only the multi-argument format is used by lightwalletd and this is what we currently support:
     /// <https://github.com/zcash/lightwalletd/blob/631bb16404e3d8b045e74a7c5489db626790b2f6/common/common.go#L97-L102>
-    async fn get_address_txids(
+    fn get_address_txids(
         &self,
         request: GetAddressTxIdsRequest,
-    ) -> BlockchainSourceResult<Vec<TransactionHash>>;
+    ) -> impl SendFut<BlockchainSourceResult<Vec<TransactionHash>>>;
 
     /// Returns all unspent outputs for a list of addresses.
     ///
@@ -185,23 +196,18 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     ///
     /// lightwalletd always uses the multi-address request, without chaininfo:
     /// <https://github.com/zcash/lightwalletd/blob/master/frontend/service.go#L402>
-    async fn get_address_utxos(
+    fn get_address_utxos(
         &self,
         address_strings: GetAddressBalanceRequest,
-    ) -> BlockchainSourceResult<Vec<GetAddressUtxos>>;
+    ) -> impl SendFut<BlockchainSourceResult<Vec<GetAddressUtxos>>>;
 
     // ********** Utility methods **********
 
     /// Get a listener for new nonfinalized blocks,
     /// if supported
-    async fn nonfinalized_listener(
+    fn nonfinalized_listener(
         &self,
-    ) -> Result<
-        Option<
-            tokio::sync::mpsc::Receiver<(zebra_chain::block::Hash, Arc<zebra_chain::block::Block>)>,
-        >,
-        Box<dyn Error + Send + Sync>,
-    >;
+    ) -> impl SendFut<Result<Option<NonfinalizedBlockReceiver>, Box<dyn Error + Send + Sync>>>;
 
     /// Subscribe to "blocks received at the source" notifications.
     ///

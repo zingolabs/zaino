@@ -1,16 +1,18 @@
 use super::{finalised_state::FinalisedState, source::BlockchainSource, NON_FINALIZED_DEPTH};
-use crate::{chain_index::finalization_ceiling, IndexedBlock};
-
+#[cfg(feature = "prometheus")]
+use crate::metric_names::*;
 use crate::{
-    chain_index::types::{
-        self, BlockHash, BlockIndex, BlockMetadata, BlockWithMetadata, Height, TreeRootData,
+    chain_index::{
+        finalization_ceiling,
+        types::{
+            self, BlockHash, BlockIndex, BlockMetadata, BlockWithMetadata, Height, TreeRootData,
+        },
     },
     error::FinalisedStateError,
-    BlockContext, ChainWork,
+    BlockContext, ChainWork, ChainWorkError, IndexedBlock,
 };
 use arc_swap::ArcSwap;
 use futures::lock::Mutex;
-use primitive_types::U256;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::mpsc;
 use tracing::{info, instrument, warn};
@@ -147,20 +149,15 @@ pub(crate) struct NonfinalizedBlockCacheSnapshot {
 pub(crate) struct ProvisionalCumulativeWork(ChainWork);
 
 impl ProvisionalCumulativeWork {
-    /// Relative work at the seam: zero by definition (the seam is the base).
-    pub(crate) fn seam() -> Self {
-        Self(ChainWork::from_u256(U256::zero()))
+    pub(crate) fn new(&work: &ChainWork) -> Self {
+        Self(work)
     }
-
     /// Accumulate one block's own (header-derived) work onto the running
     /// relative total.
     /// Override the normal Chainwork behaviour of never
     /// adding 0
-    pub(crate) fn add_block_work(&self, block_work: &ChainWork) -> Self {
-        match self.0 {
-            ChainWork::Indexed(_) => Self(self.0.add(block_work)),
-            ChainWork::Provisional => Self(*block_work),
-        }
+    pub(crate) fn add_block_work(&self, block_work: &ChainWork) -> Result<Self, ChainWorkError> {
+        Ok(Self(self.0.add(block_work)?))
     }
 }
 
@@ -480,6 +477,8 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 working_snapshot = initial_state.as_ref().clone();
             }
         }
+        self.check_for_nonhigher_reorgs(&mut working_snapshot, None)
+            .await?;
         // Handle non-finalized change listener
         self.handle_nfs_change_listener(&mut working_snapshot)
             .await?;
@@ -497,10 +496,9 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         block: &impl Block,
         recursion_count: u8,
     ) -> Result<IndexedBlock, SyncError> {
-        // We should never recurse back more than ~100 blocks, assuming
-        // a complete reorg of the entire nonfinalized state.
-        // 110 adds a likely unneeded safety margin
-        if recursion_count > 110 {
+        // We should never recurse back more than the non-finalised window, assuming a complete
+        // reorg of the entire nonfinalized state. `MAX_NFS_DEPTH` adds a small safety margin.
+        if u32::from(recursion_count) > NON_FINALIZED_DEPTH {
             return Err(SyncError::ReorgFailure(
                 "reorg handling recursed beyond reason".to_string(),
             ));
@@ -551,6 +549,46 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         Ok(indexed_block)
     }
 
+    async fn check_for_nonhigher_reorgs(
+        &self,
+        working_snapshot: &mut NonfinalizedBlockCacheSnapshot,
+        // Callers should provide None. Used for self-recursion case only
+        height_to_recurse_to: Option<Height>,
+    ) -> Result<(), SyncError> {
+        if height_to_recurse_to
+            .is_some_and(|height| height + 100 < working_snapshot.best_tip.height)
+        {
+            return Err(SyncError::ReorgFailure(
+                "reorg detection recursed beyond reason".to_string(),
+            ));
+        }
+        let target_height = height_to_recurse_to.unwrap_or(working_snapshot.best_tip.height);
+        match self
+            .source
+            .get_block(HashOrHeight::Height(zebra_chain::block::Height(u32::from(
+                target_height,
+            ))))
+            .await
+            .map_err(|e| {
+                // TODO: Check error. Determine what kind of error to return, this may be recoverable
+                SyncError::ValidatorConnectionError(NodeConnectionError::UnrecoverableError(
+                    Box::new(e),
+                ))
+            })? {
+            Some(block) => {
+                if block.hash() != working_snapshot.best_tip.hash {
+                    self.handle_reorg(working_snapshot, block.as_ref(), 0)
+                        .await?;
+                }
+                Ok(())
+            }
+            None => {
+                Box::pin(self.check_for_nonhigher_reorgs(working_snapshot, Some(target_height - 1)))
+                    .await
+            }
+        }
+    }
+
     /// Handle non-finalized change listener events
     async fn handle_nfs_change_listener(
         &self,
@@ -583,7 +621,9 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                         .blocks
                         .contains_key(&types::BlockHash(hash.0))
                     {
-                        self.add_nonbest_block(working_snapshot, &*block).await?;
+                        // Best-effort: a skipped side block (`Ok(None)`) is fine, it just isn't
+                        // cached; only a hard error fails the sync.
+                        self.add_nonbest_block(working_snapshot, &*block, 0).await?;
                     }
                 }
                 Err(mpsc::error::TryRecvError::Empty) => break,
@@ -694,6 +734,20 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                         "Non-finalized tip rollback"
                     );
                 }
+
+                #[cfg(feature = "prometheus")]
+                {
+                    if new_best_tip.height == stale_best_tip.height
+                        && new_best_tip.hash != stale_best_tip.hash
+                    {
+                        metrics::counter!(SYNC_REORG_TOTAL).increment(1);
+                        metrics::histogram!(SYNC_REORG_DEPTH).record(0.0);
+                    } else if new_best_tip.height < stale_best_tip.height {
+                        metrics::counter!(SYNC_REORG_TOTAL).increment(1);
+                        metrics::histogram!(SYNC_REORG_DEPTH)
+                            .record((stale_best_tip.height.0 - new_best_tip.height.0) as f64);
+                    }
+                }
             }
             Ok(())
         } else {
@@ -710,95 +764,54 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         &self,
         working_snapshot: &mut NonfinalizedBlockCacheSnapshot,
         block: &impl Block,
-    ) -> Result<IndexedBlock, SyncError> {
-        match working_snapshot
+        recursion_count: u8,
+    ) -> Result<Option<IndexedBlock>, SyncError> {
+        if u32::from(recursion_count) > NON_FINALIZED_DEPTH {
+            warn!(
+                depth = recursion_count,
+                "non-best block ancestry walk exceeded the non-finalised window; \
+                 skipping side chain rooted in finalised history"
+            );
+            return Ok(None);
+        }
+        if working_snapshot
             .get_block_by_hash_bytes_in_serialized_order(block.prev_hash_bytes_serialized_order())
             .cloned()
+            .is_none()
         {
-            Some(block) => block,
-            None => {
-                let prev_block = self
-                    .source
-                    .get_block(HashOrHeight::Hash(
-                        zebra_chain::block::Hash::from_bytes_in_serialized_order(
-                            block.prev_hash_bytes_serialized_order(),
-                        ),
+            let prev_block = self
+                .source
+                .get_block(HashOrHeight::Hash(
+                    zebra_chain::block::Hash::from_bytes_in_serialized_order(
+                        block.prev_hash_bytes_serialized_order(),
+                    ),
+                ))
+                .await
+                .map_err(|e| {
+                    SyncError::ValidatorConnectionError(NodeConnectionError::UnrecoverableError(
+                        Box::new(e),
                     ))
-                    .await
-                    .map_err(|e| {
-                        SyncError::ValidatorConnectionError(
-                            NodeConnectionError::UnrecoverableError(Box::new(e)),
-                        )
-                    })?
-                    .ok_or(SyncError::ValidatorConnectionError(
-                        NodeConnectionError::UnrecoverableError(Box::new(MissingBlockError(
-                            "zebrad missing block".to_string(),
-                        ))),
-                    ))?;
-                Box::pin(self.add_nonbest_block(working_snapshot, &*prev_block)).await?
+                })?
+                .ok_or(SyncError::ValidatorConnectionError(
+                    NodeConnectionError::UnrecoverableError(Box::new(MissingBlockError(
+                        "zebrad missing block".to_string(),
+                    ))),
+                ))?;
+            if Box::pin(self.add_nonbest_block(working_snapshot, &*prev_block, recursion_count + 1))
+                .await?
+                .is_none()
+            {
+                return Ok(None);
             }
         };
-        let provisional_block = block
+        let indexed_block = block
             .to_indexed_block(&self.source, self.network.clone())
             .await?;
         working_snapshot
             .blocks
-            .insert(*provisional_block.hash(), provisional_block.clone());
-        Ok(provisional_block)
+            .insert(*indexed_block.hash(), indexed_block.clone());
+        Ok(Some(indexed_block))
     }
-
-    // async fn reify(
-    //     &self,
-    //     new_snapshot: &mut NonfinalizedBlockCacheSnapshot,
-
-    //     finalized_db: &ZainoDB,
-    // ) -> Result<(), String> {
-    //     let Some((seam_height, seam_hash)) = new_snapshot
-    //         .heights_to_hashes
-    //         .iter()
-    //         .min_by_key(|(height, _hash)| **height)
-    //     else {
-    //         return Err("tried to reify empty snapshot".to_string());
-    //     };
-    //     let Some(seam_block) = finalized_db
-    //         .backend_for_cap(CapabilityRequest::IndexedBlockExt)
-    //         .map_err(|e| format!("backend can't serve indexed blocks: {e}"))?
-    //         .get_chain_block(*seam_height)
-    //         .await
-    //         .map_err(|e| format!("backend error: {e}"))?
-    //     else {
-    //         return Err("backend missing block below known block".to_string());
-    //     };
-
-    //     let mut reify_children_of = HashSet::new();
-    //     *new_snapshot.blocks.get_mut(seam_hash).expect("todo") =
-    //         seam_block.to_provisional_block(&self).await.expect("todo");
-    //     reify_children_of.insert(*seam_block.hash());
-
-    //     while !reify_children_of.is_empty() {
-    //         let to_reify: HashMap<BlockHash, IndexedBlock> = new_snapshot
-    //             .blocks
-    //             .iter()
-    //             .filter(|(_hash, block)| reify_children_of.contains(block.parent_hash()))
-    //             .map(|(hash, block)| (*hash, block.clone()))
-    //             .collect();
-    //         for (hash, block) in to_reify.iter() {
-    //             let mut block = block.clone();
-    //             block.chainwork = block.chainwork.add(
-    //                 &new_snapshot
-    //                     .blocks
-    //                     .get(block.parent_hash())
-    //                     .expect("todo")
-    //                     .chainwork,
-    //             );
-    //             new_snapshot.blocks.insert(*hash, block);
-    //         }
-    //         reify_children_of = to_reify.into_keys().collect();
-    //     }
-
-    //     new_snapshot.availability = SnapshotAvailability::Reified;
-    //     Ok(())
-    // }
 }
 
 /// Build an [`IndexedBlock`] from a source block
@@ -838,7 +851,7 @@ fn indexed_block_from_parts(
         sapling_size as u32,
         orchard_root,
         orchard_size as u32,
-        ChainWork::from_u256(U256::zero()),
+        None,
         network,
     );
     let block_with_metadata = BlockWithMetadata::new(block, metadata);
@@ -846,7 +859,7 @@ fn indexed_block_from_parts(
     let data = block_with_metadata.extract_block_data()?;
     let transactions = block_with_metadata.extract_transactions()?;
     let commitment_tree_data = block_with_metadata.create_commitment_tree_data();
-    let chainwork = ChainWork::Provisional;
+    let chainwork = None;
 
     let hash = BlockHash::from(block.hash());
     let parent_hash = BlockHash::from(block.header.previous_block_hash);

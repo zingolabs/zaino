@@ -31,7 +31,6 @@
 
 use corez::io::{self, Read, Write};
 use hex::{FromHex, ToHex};
-use primitive_types::U256;
 use std::{fmt, io::Cursor};
 use zebra_chain::serialization::BytesInDisplayOrder as _;
 
@@ -44,7 +43,7 @@ use crate::chain_index::encoding::{
 use crate::chain_index::non_finalised_state::{
     NonfinalizedBlockCacheSnapshot, ProvisionalCumulativeWork,
 };
-use crate::chain_index::types::BlockContext;
+use crate::chain_index::types::{BlockContext, ChainWork, CompactDifficulty};
 use crate::chain_index::NonFinalizedSnapshot as _;
 
 use super::commitment::{CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes};
@@ -723,126 +722,6 @@ impl FixedEncodedLen for Outpoint {
     const ENCODED_LEN: usize = 32 + 4;
 }
 
-// *** Block Level Objects ***
-
-/// Cumulative proof-of-work of the chain,
-/// stored as a **big-endian** 256-bit unsigned integer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
-pub enum ChainWork {
-    /// Known to be non-zero
-    Indexed([u8; 32]),
-    /// Represented in some contexts as zero, which
-    /// is otherwise an impossible value
-    Provisional,
-}
-
-impl ChainWork {
-    ///Returns ChainWork as a U256.
-    pub fn to_u256(&self) -> U256 {
-        match self {
-            ChainWork::Indexed(work) => U256::from_big_endian(work),
-            ChainWork::Provisional => U256::zero(),
-        }
-    }
-
-    /// Builds a ChainWork from a U256.
-    pub fn from_u256(value: U256) -> Self {
-        let buf: [u8; 32] = value.to_big_endian();
-        if buf == [0; 32] {
-            ChainWork::Provisional
-        } else {
-            ChainWork::Indexed(buf)
-        }
-    }
-
-    /// Adds 2 ChainWorks.
-    /// Provisional chainwork is like NaN: if added to
-    /// a number it just gives Provisional
-    pub fn add(&self, other: &Self) -> Self {
-        if self.is_provisional() || other.is_provisional() {
-            ChainWork::Provisional
-        } else {
-            Self::from_u256(self.to_u256() + other.to_u256())
-        }
-    }
-
-    /// Subtract one ChainWork from another.
-    /// Provisional chainwork is like NaN: if added to
-    /// a number it just gives Provisional
-    pub fn sub(&self, other: &Self) -> Self {
-        if self.is_provisional() || other.is_provisional() {
-            ChainWork::Provisional
-        } else {
-            Self::from_u256(self.to_u256() - other.to_u256())
-        }
-    }
-
-    /// Returns ChainWork bytes.
-    pub fn as_bytes(&self) -> &[u8; 32] {
-        match self {
-            ChainWork::Indexed(work) => work,
-            ChainWork::Provisional => &[0; 32],
-        }
-    }
-
-    fn is_provisional(&self) -> bool {
-        match self {
-            ChainWork::Indexed(_) => false,
-            ChainWork::Provisional => true,
-        }
-    }
-}
-
-impl From<U256> for ChainWork {
-    fn from(value: U256) -> Self {
-        Self::from_u256(value)
-    }
-}
-
-impl From<ChainWork> for U256 {
-    fn from(value: ChainWork) -> Self {
-        value.to_u256()
-    }
-}
-
-impl fmt::Display for ChainWork {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.to_u256().fmt(f)
-    }
-}
-
-impl ZainoVersionedSerde for ChainWork {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        write_fixed_le::<32, _>(w, &self.as_bytes())
-    }
-
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
-        let bytes = read_fixed_le::<32, _>(r)?;
-        Ok(if bytes == [0; 32] {
-            ChainWork::Provisional
-        } else {
-            ChainWork::Indexed(bytes)
-        })
-    }
-}
-
-/// 32 byte body.
-impl FixedEncodedLen for ChainWork {
-    /// 32 bytes, LE
-    const ENCODED_LEN: usize = 32;
-}
-
 /// Essential block header fields required for chain validation and serving block header data.
 ///
 /// NOTE: Optional fields may be added for:
@@ -861,8 +740,8 @@ pub struct BlockData {
     /// - < V4: `hashFinalSaplingRoot` - Sapling note commitment tree root.
     /// - => V4: `hashBlockCommitments` - digest over hashLightClientRoot and hashAuthDataRoot.``
     pub block_commitments: [u8; 32],
-    /// Compact difficulty target used for proof-of-work and difficulty calculation.
-    pub bits: u32,
+    /// Validated compact difficulty target for proof-of-work.
+    pub bits: CompactDifficulty,
     /// Equihash nonse.
     pub nonce: [u8; 32],
     /// Equihash solution
@@ -877,7 +756,7 @@ impl BlockData {
         time: i64,
         merkle_root: [u8; 32],
         block_commitments: [u8; 32],
-        bits: u32,
+        bits: CompactDifficulty,
         nonse: [u8; 32],
         solution: EquihashSolution,
     ) -> Self {
@@ -927,52 +806,9 @@ impl BlockData {
         &self.block_commitments
     }
 
-    /// Returns nbits.
-    pub fn bits(&self) -> u32 {
-        self.bits
-    }
-
-    /// Converts compact bits field into the full target as a 256-bit integer.
-    pub fn target(&self) -> U256 {
-        Self::compact_to_target_u256(self.bits)
-    }
-
-    /// Returns the block work as 2^256 / (target + 1)
-    pub fn work(&self) -> U256 {
-        let target = self.target();
-        if target.is_zero() {
-            U256::zero()
-        } else {
-            (U256::one() << 256) / (target + 1)
-        }
-    }
-
-    /// Returns difficulty as ratio of the genesis target to this block's target.
-    pub fn difficulty(&self) -> f64 {
-        let max_target = Self::compact_to_target_u256(0x1d00ffff); // Zcash genesis
-        let target = self.target();
-        Self::u256_to_f64(max_target) / Self::u256_to_f64(target)
-    }
-
-    /// Used to convert bits to target.
-    fn compact_to_target_u256(bits: u32) -> U256 {
-        let exponent = (bits >> 24) as usize;
-        let mantissa = bits & 0x007fffff;
-
-        if exponent <= 3 {
-            U256::from(mantissa) >> (8 * (3 - exponent))
-        } else {
-            U256::from(mantissa) << (8 * (exponent - 3))
-        }
-    }
-
-    /// Converts a `U256` to `f64` lossily (sufficient for difficulty comparison).
-    fn u256_to_f64(value: U256) -> f64 {
-        let mut result = 0.0f64;
-        for (i, word) in value.0.iter().enumerate() {
-            result += (*word as f64) * 2f64.powi(64 * i as i32);
-        }
-        result
+    /// Returns the validated compact difficulty.
+    pub fn bits(&self) -> &CompactDifficulty {
+        &self.bits
     }
 
     /// Returns Equihash Nonse.
@@ -1006,7 +842,7 @@ impl ZainoVersionedSerde for BlockData {
         write_fixed_le::<32, _>(&mut w, &self.merkle_root)?;
         write_fixed_le::<32, _>(&mut w, &self.block_commitments)?;
 
-        write_u32_le(&mut w, self.bits)?;
+        write_u32_le(&mut w, self.bits.as_bits())?;
         write_fixed_le::<32, _>(&mut w, &self.nonce)?;
 
         self.solution.serialize_with_version(&mut w, 1)
@@ -1021,7 +857,9 @@ impl ZainoVersionedSerde for BlockData {
         let merkle_root = read_fixed_le::<32, _>(&mut r)?;
         let block_commitments = read_fixed_le::<32, _>(&mut r)?;
 
-        let bits = read_u32_le(&mut r)?;
+        let bits_raw = read_u32_le(&mut r)?;
+        let bits = CompactDifficulty::try_from_bits(bits_raw)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let nonse = read_fixed_le::<32, _>(&mut r)?;
 
         let solution = EquihashSolution::deserialize(&mut r)?;
@@ -1204,13 +1042,13 @@ impl IndexedBlock {
     }
 
     /// Returns the cumulative chainwork.
-    pub fn chainwork(&self) -> &ChainWork {
+    pub fn chainwork(&self) -> &Option<ChainWork> {
         self.context.chainwork()
     }
 
-    /// Returns the raw work value (targeted work contribution).
-    pub fn work(&self) -> U256 {
-        self.data.work()
+    /// Returns the single-block proof-of-work contribution.
+    pub fn work(&self) -> ChainWork {
+        self.data.bits.to_work()
     }
 
     /// Cumulative work relative to the seam. Use this — never an absolute
@@ -1219,11 +1057,12 @@ impl IndexedBlock {
         &self,
         snapshot: &NonfinalizedBlockCacheSnapshot,
     ) -> ProvisionalCumulativeWork {
-        let mut work =
-            ProvisionalCumulativeWork::seam().add_block_work(&ChainWork::from(self.data.work()));
+        let mut work = ProvisionalCumulativeWork::new(&ChainWork::from(self.data.bits.to_work()));
         let mut parent_hash = self.context.parent_hash;
         while let Some(prev_block) = snapshot.get_chainblock_by_hash(&parent_hash) {
-            work = work.add_block_work(&ChainWork::from(prev_block.data.work()));
+            work = work
+                .add_block_work(&ChainWork::from(prev_block.data.bits.to_work()))
+                .expect("chainwork integer overflow");
             parent_hash = prev_block.context.parent_hash;
         }
         work
@@ -1310,7 +1149,7 @@ impl ZainoVersionedSerde for IndexedBlock {
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
         let mut r = r;
-        let context = PersistentBlockContext::deserialize(&mut r)?.into_business();
+        let context = PersistentBlockContext::deserialize(&mut r)?.into_business()?;
         let data = BlockData::deserialize(&mut r)?;
         let tx = read_vec(&mut r, |r| CompactTxData::deserialize(r))?;
         let ctd = CommitmentTreeData::deserialize(&mut r)?;
@@ -1334,7 +1173,7 @@ impl ZainoVersionedSerde for IndexedBlock {
 impl
     TryFrom<(
         zaino_fetch::chain::block::FullBlock,
-        ChainWork,
+        Option<ChainWork>,
         [u8; 32],
         [u8; 32],
         u32,
@@ -1353,7 +1192,7 @@ impl
             parent_orchard_size,
         ): (
             zaino_fetch::chain::block::FullBlock,
-            ChainWork,
+            Option<ChainWork>,
             [u8; 32],
             [u8; 32],
             u32,
@@ -1388,7 +1227,13 @@ impl
         if n_bits_bytes.len() != 4 {
             return Err("nBits must be 4 bytes".to_string());
         }
-        let bits = u32::from_le_bytes(n_bits_bytes.try_into().unwrap());
+        let bits_raw = u32::from_le_bytes(
+            n_bits_bytes
+                .try_into()
+                .map_err(|_| "nBits must be 4 bytes".to_string())?,
+        );
+        let bits = CompactDifficulty::try_from_bits(bits_raw)
+            .map_err(|e| format!("invalid nBits: {e}"))?;
 
         let nonse: [u8; 32] = header
             .nonce()
@@ -1442,13 +1287,19 @@ impl
             solution,
         );
 
-        let chainwork = parent_chainwork.add(&ChainWork::from(block_data.work()));
+        let block_work = block_data.bits.to_work();
+        let chainwork = match parent_chainwork {
+            Some(parent) => parent
+                .add(&block_work)
+                .map_err(|e| format!("chainwork overflow: {e}"))?,
+            None => block_work,
+        };
 
         // --- Final block-context and block data ---
         let context = BlockContext::new(
             BlockHash::from(hash),
             BlockHash::from(parent_hash),
-            chainwork,
+            Some(chainwork),
             height,
         );
 
@@ -1796,6 +1647,18 @@ impl TransparentCompactTx {
     /// Returns transparent outputs.
     pub fn outputs(&self) -> &[TxOutCompact] {
         &self.vout
+    }
+
+    /// The outpoints this transaction spends — its non-coinbase prevouts.
+    ///
+    /// Coinbase inputs carry a null prevout (they reference no prior output) and
+    /// are skipped, so every yielded outpoint names a real previously-created
+    /// output.
+    pub(crate) fn spent_outpoints(&self) -> impl Iterator<Item = Outpoint> + '_ {
+        self.inputs()
+            .iter()
+            .filter(|input| !input.is_null_prevout())
+            .map(|input| Outpoint::new(*input.prevout_txid(), input.prevout_index()))
     }
 
     /// Returns Proto CompactTxIn values, omitting the null prevout used by coinbase.
@@ -2887,7 +2750,7 @@ impl ZainoVersionedSerde for BlockHeaderData {
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
-        let context = PersistentBlockContext::deserialize(&mut *r)?.into_business();
+        let context = PersistentBlockContext::deserialize(&mut *r)?.into_business()?;
         let data = BlockData::deserialize(r)?;
         Ok(BlockHeaderData::new(context, data))
     }
@@ -3196,5 +3059,33 @@ pub mod serde_arrays {
         let v: &[u8] = Deserialize::deserialize(d)?;
         v.try_into()
             .map_err(|_| serde::de::Error::custom(format!("invalid length for [u8; {N}]")))
+    }
+}
+
+#[cfg(test)]
+mod spent_outpoints {
+    use super::*;
+
+    #[test]
+    fn skips_null_prevout_and_maps_each_input() {
+        let tx = TransparentCompactTx::new(
+            vec![
+                TxInCompact::null_prevout(),    // coinbase input → skipped
+                TxInCompact::new([7u8; 32], 3), // spends output 3 of txid 0x07..
+                TxInCompact::new([8u8; 32], 0), // spends output 0 of txid 0x08..
+            ],
+            vec![],
+        );
+
+        assert_eq!(
+            tx.spent_outpoints().collect::<Vec<_>>(),
+            vec![Outpoint::new([7u8; 32], 3), Outpoint::new([8u8; 32], 0)],
+        );
+    }
+
+    #[test]
+    fn coinbase_only_transaction_yields_no_outpoints() {
+        let tx = TransparentCompactTx::new(vec![TxInCompact::null_prevout()], vec![]);
+        assert_eq!(tx.spent_outpoints().count(), 0);
     }
 }

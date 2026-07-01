@@ -14,7 +14,7 @@ on:
       - '.env.testing-artifacts'
       - 'rust-toolchain.toml'
       - 'tools/scripts/get-rust-version.sh'
-      - 'integration-tests/test_environment/*'
+      - 'live-tests/test_environment/*'
 
 jobs:
   build-and-push:
@@ -22,7 +22,7 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v6
+      uses: actions/checkout@v7
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v4
@@ -66,8 +66,8 @@ jobs:
     - name: Build and Push Docker Image
       uses: docker/build-push-action@v7
       with:
-        context: integration-tests/test_environment
-        file: integration-tests/test_environment/Containerfile
+        context: live-tests/test_environment
+        file: live-tests/test_environment/Containerfile
         platforms: linux/amd64
         target: ${{ steps.target.outputs.target }}
         tags: |

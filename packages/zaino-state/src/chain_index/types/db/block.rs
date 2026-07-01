@@ -15,12 +15,123 @@
 //! The `From` conversions between `BlockContext` and
 //! `PersistentBlockContext` are defined here, alongside PBC.
 
+use std::num::NonZeroU128;
+
 use corez::io::{self, Read, Write};
 
 use crate::chain_index::{
-    encoding::{read_option, version, write_option, ZainoVersionedSerde},
-    types::{BlockContext, BlockHash, BlockIndex, ChainWork, Height},
+    encoding::{
+        read_fixed_le, read_option, read_u32_le, version, write_fixed_le, write_option,
+        write_u32_le, FixedEncodedLen, ZainoVersionedSerde,
+    },
+    types::{BlockContext, BlockHash, BlockIndex, ChainWork, CompactDifficulty, Height},
 };
+
+/// Database-adjacent persistence shape for [`ChainWork`].
+///
+/// On disk the value is a 32-byte **big-endian** unsigned integer — the format
+/// established by the original `ChainWork([u8; 32])`, which serialized through
+/// `U256::to_big_endian`/`from_big_endian`. The byte order must match that
+/// format exactly to stay compatible with existing v1 databases.
+///
+/// Coming back to the business layer the value must fit in `u128`, so the
+/// **high-order** 16 bytes (`[..16]`, big-endian most-significant) must be zero
+/// and the **low-order** 16 bytes (`[16..]`) hold the nonzero `u128`.
+#[derive(Debug)]
+pub(super) struct PersistentChainWork([u8; 32]);
+
+impl PersistentChainWork {
+    pub(super) fn from_business(cw: &Option<ChainWork>) -> Self {
+        let mut buf = [0u8; 32];
+        if let Some(work) = cw {
+            // Big-endian: the value occupies the low-order (last) 16 bytes.
+            buf[16..].copy_from_slice(&work.as_non_zero_u128().get().to_be_bytes());
+        }
+        Self(buf)
+    }
+
+    pub(super) fn into_business(self) -> io::Result<Option<ChainWork>> {
+        // Big-endian: the high-order 16 bytes must be zero for the value to fit u128.
+        if self.0[..16] != [0u8; 16] {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "chainwork exceeds u128 range",
+            ));
+        }
+        let mut be_bytes = [0u8; 16];
+        be_bytes.copy_from_slice(&self.0[16..]);
+        let value = u128::from_be_bytes(be_bytes);
+        Ok(NonZeroU128::new(value).map(ChainWork::new))
+    }
+}
+
+impl ZainoVersionedSerde for PersistentChainWork {
+    const VERSION: u8 = version::V1;
+
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
+    }
+
+    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
+        Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        write_fixed_le::<32, _>(w, &self.0)
+    }
+
+    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+        let bytes = read_fixed_le::<32, _>(r)?;
+        Ok(Self(bytes))
+    }
+}
+
+impl FixedEncodedLen for PersistentChainWork {
+    const ENCODED_LEN: usize = 32;
+}
+
+/// Database-adjacent persistence shape for [`CompactDifficulty`].
+///
+/// Stores the raw `u32` nBits value. Validation happens in `into_business`.
+#[derive(Debug)]
+pub(super) struct PersistentCompactDifficulty(u32);
+
+#[expect(dead_code, reason = "will be used by versioned DB schema types")]
+impl PersistentCompactDifficulty {
+    pub(super) fn from_business(cd: &CompactDifficulty) -> Self {
+        Self(cd.as_bits())
+    }
+
+    pub(super) fn into_business(self) -> io::Result<CompactDifficulty> {
+        CompactDifficulty::try_from_bits(self.0)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+}
+
+impl ZainoVersionedSerde for PersistentCompactDifficulty {
+    const VERSION: u8 = version::V1;
+
+    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        Self::encode_v1(self, w)
+    }
+
+    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
+        Self::decode_v1(r)
+    }
+
+    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        write_u32_le(w, self.0)
+    }
+
+    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
+        let bits = read_u32_le(r)?;
+        Ok(Self(bits))
+    }
+}
+
+impl FixedEncodedLen for PersistentCompactDifficulty {
+    const ENCODED_LEN: usize = 4;
+}
 
 /// Database-adjacent persistence shape for [`BlockContext`].
 ///
@@ -36,42 +147,29 @@ use crate::chain_index::{
 pub(super) struct PersistentBlockContext {
     pub(super) hash: BlockHash,
     pub(super) parent_hash: BlockHash,
-    pub(super) chainwork: ChainWork,
+    pub(super) chainwork: PersistentChainWork,
     pub(super) height: Height,
 }
 
 impl PersistentBlockContext {
-    /// Build a `PersistentBlockContext` from a business-layer `BlockContext`,
-    /// flattening the nested `(height, hash)` primitive into the
-    /// persistence-shape fields.
-    ///
-    /// Replaces `impl From<&BlockContext>`. The named method makes the
-    /// direction (business → persistence) and the boundary it crosses
-    /// unambiguous at every call site.
     pub(super) fn from_business(context: &BlockContext) -> Self {
         Self {
             hash: context.index.hash,
             parent_hash: context.parent_hash,
-            chainwork: context.chainwork,
+            chainwork: PersistentChainWork::from_business(&context.chainwork),
             height: context.height(),
         }
     }
 
-    /// Consume this `PersistentBlockContext` and produce the business-layer
-    /// `BlockContext`. This conversion is the on-disk → business validation
-    /// boundary — any check that must hold for a `BlockContext` to exist
-    /// should live here.
-    ///
-    /// Replaces `impl From<PersistentBlockContext> for BlockContext`.
-    pub(super) fn into_business(self) -> BlockContext {
-        BlockContext {
+    pub(super) fn into_business(self) -> io::Result<BlockContext> {
+        Ok(BlockContext {
             index: BlockIndex {
                 height: self.height,
                 hash: self.hash,
             },
             parent_hash: self.parent_hash,
-            chainwork: self.chainwork,
-        }
+            chainwork: self.chainwork.into_business()?,
+        })
     }
 }
 
@@ -110,7 +208,7 @@ impl ZainoVersionedSerde for PersistentBlockContext {
         let mut r = r;
         let hash = BlockHash::deserialize(&mut r)?;
         let parent_hash = BlockHash::deserialize(&mut r)?;
-        let chainwork = ChainWork::deserialize(&mut r)?;
+        let chainwork = PersistentChainWork::deserialize(&mut r)?;
         let height =
             read_option(&mut r, |r| Height::deserialize(r))?.expect("blocks always have height");
         Ok(Self {
@@ -125,7 +223,7 @@ impl ZainoVersionedSerde for PersistentBlockContext {
         let mut r = r;
         let hash = BlockHash::deserialize(&mut r)?;
         let parent_hash = BlockHash::deserialize(&mut r)?;
-        let chainwork = ChainWork::deserialize(&mut r)?;
+        let chainwork = PersistentChainWork::deserialize(&mut r)?;
         let height = Height::deserialize(&mut r)?;
         Ok(Self {
             hash,
@@ -143,7 +241,9 @@ mod tests {
     //! `PersistentBlockContext` is module-private by design, so these tests
     //! live alongside its definition.
 
-    use super::{BlockContext, PersistentBlockContext};
+    use std::num::NonZeroU128;
+
+    use super::{BlockContext, PersistentBlockContext, PersistentChainWork};
     use crate::chain_index::tests::types::{canonical_blockheaderdata, expected_v2_bytes};
     use crate::chain_index::types::{BlockHash, BlockIndex, ChainWork, Height};
     use crate::{BlockHeaderData, ZainoVersionedSerde as _};
@@ -158,12 +258,140 @@ mod tests {
         let bctx = BlockContext::new(
             BlockHash::from([0x11; 32]),
             BlockHash::from([0x22; 32]),
-            ChainWork::from_u256(0x0123_4567u64.into()),
+            Some(ChainWork::new(
+                NonZeroU128::new(0x0123_4567u128).expect("nonzero"),
+            )),
             Height(0x0dec_0de0),
         );
         let persisted = PersistentBlockContext::from_business(&bctx);
-        let back = persisted.into_business();
+        let back = persisted.into_business().expect("valid chainwork");
         assert_eq!(bctx, back);
+    }
+
+    /// Regression for the byte-order bug that broke `load_db_backend_from_file`
+    /// and every existing v1 DB: the on-disk chainwork format is 32-byte
+    /// **big-endian** (the original `ChainWork([u8; 32])` via
+    /// `U256::to_big_endian`). Decoding it little-endian pushes a small value's
+    /// bytes into the high half and spuriously rejects it as ">u128".
+    ///
+    /// These are the *exact* bytes in the committed `v1_test_db` fixture: a
+    /// regtest cumulative chainwork of 17.
+    #[test]
+    fn decodes_original_big_endian_chainwork() {
+        let mut on_disk = [0u8; 32];
+        on_disk[31] = 0x11; // big-endian 17: value in the least-significant byte
+        let cw = PersistentChainWork(on_disk)
+            .into_business()
+            .expect("big-endian on-disk chainwork must decode");
+        assert_eq!(cw.unwrap().as_non_zero_u128().get(), 17);
+    }
+
+    /// Verbatim recovery of the pre-#1313 on-disk `ChainWork` encoder — the
+    /// authority for the v1 **big-endian** byte order. Extracted with
+    /// `git show 5e4dae4a^:packages/zaino-state/src/chain_index/types/db/legacy.rs`
+    /// (5e4dae4a is the #1313 commit that deleted it), kept so the current
+    /// `PersistentChainWork` is diffed against the real original rather than a
+    /// hand-reconstruction. Only the encoder surface is retained; `U256` is
+    /// fully qualified rather than imported.
+    mod legacy_chainwork_reference {
+        /// Cumulative proof-of-work of the chain,
+        /// stored as a **big-endian** 256-bit unsigned integer.
+        //
+        // DOCUMENTATION BUG — the likely root of #1313: this struct doc correctly
+        // says *big-endian*, but the original's `impl FixedEncodedLen for ChainWork`
+        // was annotated `/// 32 bytes, LE`, and the serializer it uses is named
+        // `write_fixed_le`. That "LE" label over big-endian bytes is what plausibly
+        // led #1313 to re-encode the field little-endian.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub(super) struct ChainWork([u8; 32]);
+
+        impl ChainWork {
+            /// Returns ChainWork as a U256.
+            pub(super) fn to_u256(&self) -> primitive_types::U256 {
+                primitive_types::U256::from_big_endian(&self.0)
+            }
+
+            /// Builds a ChainWork from a U256.
+            pub(super) fn from_u256(value: primitive_types::U256) -> Self {
+                let buf: [u8; 32] = value.to_big_endian();
+                ChainWork(buf)
+            }
+
+            /// Returns ChainWork bytes.
+            pub(super) fn as_bytes(&self) -> &[u8; 32] {
+                &self.0
+            }
+        }
+    }
+
+    /// Both directions of the cross-encoder equivalence for one value: the
+    /// current encoder reproduces the recovered original's big-endian on-disk
+    /// bytes, and the current decoder reads those original bytes back to the
+    /// same value.
+    fn assert_encoders_agree(value: u128) {
+        let cw = ChainWork::new(NonZeroU128::new(value).expect("nonzero"));
+        let original =
+            legacy_chainwork_reference::ChainWork::from_u256(primitive_types::U256::from(value));
+        let original_bytes = *original.as_bytes();
+
+        // Encode: the current encoder reproduces the original's big-endian bytes.
+        assert_eq!(
+            PersistentChainWork::from_business(&Some(cw)).0,
+            original_bytes,
+            "encode mismatch at {value:#034x}",
+        );
+        // Decode both ways agree with the encoding: the current decoder reads the
+        // original bytes back to `value`, and the recovered original decoder
+        // (`to_u256`) reads its own bytes back to the same value.
+        assert_eq!(
+            PersistentChainWork(original_bytes)
+                .into_business()
+                .expect("original on-disk bytes must decode"),
+            Some(cw),
+            "decode mismatch at {value:#034x}",
+        );
+        assert_eq!(original.to_u256(), primitive_types::U256::from(value));
+    }
+
+    /// Cross-encoder equivalence across the whole domain where the two encoders
+    /// are *intended* to match — every nonzero value the `u128` `ChainWork` can
+    /// hold. This is the check #1313 lacked: red against its little-endian
+    /// encoder, green only when the byte order matches the established
+    /// big-endian format.
+    ///
+    /// Deterministic coverage of every structurally-distinct case — the
+    /// extremes, each power of two, each byte position fully set, and cumulative
+    /// low-byte fills — so any per-byte transposition or width error is caught.
+    #[test]
+    fn new_encoder_matches_recovered_original_exhaustively() {
+        assert_encoders_agree(1); // minimum nonzero
+        assert_encoders_agree(17); // the v1_test_db fixture value
+        assert_encoders_agree(u128::MAX); // maximum
+        for bit in 0..128 {
+            assert_encoders_agree(1u128 << bit);
+        }
+        for byte in 0..16 {
+            assert_encoders_agree(0xffu128 << (8 * byte));
+            assert_encoders_agree(u128::MAX >> (8 * byte));
+        }
+    }
+
+    proptest::proptest! {
+        /// Random coverage across the whole nonzero `u128` range, complementing
+        /// the deterministic boundary cases.
+        #[test]
+        fn new_encoder_matches_recovered_original(value in 1u128..=u128::MAX) {
+            assert_encoders_agree(value);
+        }
+    }
+
+    /// A value with any high-order (big-endian) byte set exceeds `u128` and is
+    /// rejected. `[15]` is the `2^128` position — the first bit above the range.
+    #[test]
+    fn rejects_chainwork_exceeding_u128() {
+        let mut on_disk = [0u8; 32];
+        on_disk[15] = 0x01;
+        assert!(PersistentChainWork(on_disk).into_business().is_err());
     }
 
     /// Cross-boundary tour for the `(height, hash)` slice:

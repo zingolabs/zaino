@@ -6,12 +6,12 @@ repository = { workspace = true }
 homepage = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
-version = "0.3.0"
+version = "0.3.1"
 
 [features]
-default = ["zcashd_support"]
+default = []
 
-# Support for connecting to a zcashd validator node. Default-on; being
+# Support for connecting to a zcashd validator node. Opt-in (default off, docs/adr/0005); being
 # deprecated. Forwards to zaino-fetch. See
 # docs/adr/0001-zcashd-support-feature-gate.md.
 zcashd_support = ["zaino-fetch/zcashd_support"]
@@ -33,7 +33,7 @@ transparent_address_history_experimental = []
 
 [dependencies]
 zaino-common = { workspace = true }
-zaino-fetch = { workspace = true, default-features = false }
+zaino-fetch = { workspace = true }
 zaino-proto = { workspace = true }
 
 # LibRustZcash
@@ -63,7 +63,6 @@ simple-mermaid = "0.2.0"
 tokio = { workspace = true, features = ["full"] }
 thiserror = { workspace = true }
 tower = { workspace = true, features = ["buffer", "util"] }
-async-trait = { workspace = true }
 chrono = { workspace = true }
 indexmap = { workspace = true }
 hex = { workspace = true, features = ["serde"] }
@@ -95,7 +94,7 @@ once_cell = { workspace = true }
 zebra-chain = { workspace = true, features = ["proptest-impl"] }
 proptest.workspace = true
 incrementalmerkletree = "0.8.2"
-rand = "0.9.4"
+rand = "0.10.1"
 
 [build-dependencies]
 whoami = { workspace = true }

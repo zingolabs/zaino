@@ -11,11 +11,8 @@
 //! - BlockMetadata - Block metadata for construction
 //! - BlockWithMetadata - Block with associated metadata
 
-use primitive_types::U256;
-
 use super::db::legacy::*;
-use crate::chain_index::types::BlockContext;
-use crate::ChainWork;
+use crate::chain_index::types::{BlockContext, ChainWork, CompactDifficulty};
 
 /// The location of a transaction in the best chain
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -87,8 +84,8 @@ pub struct BlockMetadata {
     pub orchard_root: zebra_chain::orchard::tree::Root,
     /// Orchard tree size
     pub orchard_size: u32,
-    /// Parent block's chainwork
-    pub parent_chainwork: ChainWork,
+    /// Parent block's chainwork (`None` for genesis).
+    pub parent_chainwork: Option<ChainWork>,
     /// Network for block validation
     pub network: zebra_chain::parameters::Network,
 }
@@ -100,7 +97,7 @@ impl BlockMetadata {
         sapling_size: u32,
         orchard_root: zebra_chain::orchard::tree::Root,
         orchard_size: u32,
-        parent_chainwork: ChainWork,
+        parent_chainwork: Option<ChainWork>,
         network: zebra_chain::parameters::Network,
     ) -> Self {
         Self {
@@ -129,31 +126,21 @@ impl<'a> BlockWithMetadata<'a> {
         Self { block, metadata }
     }
 
-    /// This block's own work, derived from its header difficulty target.
-    /// Header-only, so it is shared by both absolute chainwork accumulation
-    /// (`create_block_context`) and relative/provisional accumulation.
-    pub(crate) fn block_work(&self) -> Result<ChainWork, String> {
-        let work = self
-            .block
-            .header
-            .difficulty_threshold
-            .to_work()
-            .ok_or_else(|| {
-                "Failed to calculate block work from difficulty threshold".to_string()
-            })?;
-        Ok(ChainWork::from(U256::from(work.as_u128())))
-    }
-
     /// Extract block header data
     pub(crate) fn extract_block_data(&self) -> Result<BlockData, String> {
         let block = self.block;
         let network = &self.metadata.network;
 
+        let bits = CompactDifficulty::try_from_be_bytes(
+            block.header.difficulty_threshold.bytes_in_display_order(),
+        )
+        .map_err(|e| format!("invalid nBits: {e}"))?;
+
         Ok(BlockData {
             version: block.header.version,
             time: block.header.time.timestamp(),
             merkle_root: block.header.merkle_root.0,
-            bits: u32::from_be_bytes(block.header.difficulty_threshold.bytes_in_display_order()),
+            bits,
             block_commitments: BlockData::commitment_to_bytes(
                 block
                     .commitment(network)
@@ -293,9 +280,24 @@ impl<'a> BlockWithMetadata<'a> {
             .map(|height| Height(height.0))
             .ok_or_else(|| String::from("Any valid block has a coinbase height"))?;
 
-        let chainwork = self.metadata.parent_chainwork.add(&self.block_work()?);
+        let bits = CompactDifficulty::try_from_be_bytes(
+            block.header.difficulty_threshold.bytes_in_display_order(),
+        )
+        .map_err(|e| format!("invalid nBits: {e}"))?;
+        let block_work = bits.to_work();
+        let chainwork = match self.metadata.parent_chainwork {
+            Some(parent) => parent
+                .add(&block_work)
+                .map_err(|e| format!("chainwork overflow: {e}"))?,
+            None => block_work,
+        };
 
-        Ok(BlockContext::new(hash, parent_hash, chainwork, height))
+        Ok(BlockContext::new(
+            hash,
+            parent_hash,
+            Some(chainwork),
+            height,
+        ))
     }
 
     /// Create commitment tree data from metadata

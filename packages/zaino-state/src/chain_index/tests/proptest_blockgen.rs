@@ -7,7 +7,6 @@ use proptest::{
 };
 use rand::seq::IndexedRandom;
 use tokio_stream::StreamExt as _;
-use tonic::async_trait;
 use zaino_common::{network::ActivationHeights, DatabaseConfig, Network, StorageConfig};
 use zaino_fetch::jsonrpsee::response::address_deltas::{
     GetAddressDeltasParams, GetAddressDeltasResponse,
@@ -625,7 +624,6 @@ impl ProptestMockchain {
     }
 }
 
-#[async_trait]
 impl BlockchainSource for ProptestMockchain {
     /// Returns the block by hash or height
     async fn get_block(

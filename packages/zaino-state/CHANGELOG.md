@@ -45,10 +45,43 @@ and this library adheres to Rust's notion of
   `MAX_NFS_DEPTH` blocks below the tip, so the cache cannot grow unbounded when
   the finalised `db_height` lags (background sync) or is pinned at `0`
   (ephemeral mode).
+- The finalised-state bulk-sync write-batch flush interval is now configurable
+  via `storage.database.sync_checkpoint_interval` (was a fixed 60s; default now
+  120s). Under `NO_SYNC` this also bounds the window of unflushed writes at risk
+  on a hard kill / eviction; lower it to shrink that window.
+- The txout-set accumulator rebuild now sizes its in-memory spent set from a
+  dedicated `storage.database.accumulator_rebuild_memory_size` budget instead of
+  reusing `sync_write_batch_size`, so the bulk-sync block buffer and the rebuild
+  can no longer inflate each other's peak memory.
 ### Deprecated
 ### Removed
 - `NonFinalizedSnapshot::max_serviceable_height`
 ### Fixed
+- The finalised-state txout-set accumulator rebuild at chain tip no longer
+  OOM-crashes on memory-constrained hosts. It auto-shards its in-memory spent set
+  by creating-txid prefix and now enforces the per-shard budget *strictly*: each
+  shard is loaded with a hard outpoint cap (range-seeking only that shard's
+  contiguous key range rather than scanning the whole `spent` table), and any
+  shard that would exceed the cap is bisected and retried — down to single-byte
+  shards, at which point it fails with an actionable error rather than OOM-ing.
+  The result is independent of the shard count.
+- Startup `spent`-table integrity failures now report the offending entry's key,
+  value length, and leading value bytes plus a wipe-and-re-index hint (previously
+  a bare "corrupt spent entry" / "version tag N"), and the integrity and rebuild
+  scans walk the cursor explicitly so a real LMDB error propagates instead of
+  being swallowed (release) or `debug_assert!`-panicking (debug).
+- Corrected documentation that claimed `NO_SYNC` "never corrupts the database": on
+  storage that does not preserve write order (NFS, overlay filesystems, hard pod
+  eviction) a crash can leave torn pages; the recovery is to wipe and re-index.
+- The non-finalised state no longer overflows the worker stack when caching a
+  side-chain block. `add_nonbest_block` walked a delivered block's ancestry via
+  `source.get_block` with no depth bound; on the `state` backend `get_block`
+  serves any block by hash (including finalised blocks below the non-finalised
+  window), so a side chain rooted below the anchor recursed down to genesis and
+  crashed the process. The walk is now capped at `MAX_NFS_DEPTH` (matching
+  `handle_reorg`); a side chain that doesn't anchor within the window is skipped
+  (best-effort — zaino does not guarantee knowledge of all sidechain data) rather
+  than crashing or failing the sync.
 
 ## [0.3.0] - 2026-06-17
 

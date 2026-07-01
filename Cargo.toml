@@ -7,10 +7,22 @@ members = [
     "packages/zaino-state",
     "packages/zaino-fetch",
     "packages/zaino-proto",
+    # Live-test suite (docs/adr/0002, docs/adr/0003, docs/adr/0004).
+    # zaino-testutils first: the e2e/clientless partitions depend on it.
+    "live-tests/zaino-testutils",
+    "live-tests/clientless",
+    "live-tests/e2e",
 ]
-exclude = [
-    "integration-tests",
-    "zaino-testutils",
+# `container-test` runs a bare `cargo nextest run`, which operates on
+# default-members — so the heavy live-test crates are built and tested only
+# when selected explicitly (`-p e2e` / `-p clientless`). See docs/adr/0002.
+default-members = [
+    "packages/zaino-common",
+    "packages/zainod",
+    "packages/zaino-serve",
+    "packages/zaino-state",
+    "packages/zaino-fetch",
+    "packages/zaino-proto",
 ]
 
 # Use the edition 2021 dependency resolver in the workspace, to match the crates
@@ -40,9 +52,9 @@ zcash_transparent = "0.8"
 zcash_client_backend = "0.23"
 
 # Zebra
-zebra-chain = "10.0.0"
-zebra-state = "9.0.0"
-zebra-rpc = "10.0.0"
+zebra-chain = "10.0"
+zebra-state = "9.0"
+zebra-rpc = "10.0"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
@@ -68,9 +80,10 @@ time = { version = "0.3", features = ["macros", "formatting"] }
 # Network / RPC
 http = "1.1"
 url = "2.5"
-reqwest = { version = "0.12", default-features = false, features = [
+reqwest = { version = "0.13", default-features = false, features = [
     "cookies",
-    "rustls-tls",
+    "rustls",
+    "webpki-roots",
 ] }
 tower = { version = "0.4", features = ["buffer", "util"] }
 tonic = { version = "0.14" }
@@ -92,7 +105,6 @@ lmdb-sys = "0.8"
 
 # Async
 async-stream = "0.3"
-async-trait = "0.1"
 futures = "0.3.30"
 
 # Metrics
@@ -100,13 +112,13 @@ metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.16", default-features = false, features = ["http-listener"] }
 
 # Utility
-thiserror = "1.0"
+thiserror = "2.0"
 lazy-regex = "3.3"
 once_cell = "1.20"
 ctrlc = "3.4"
 chrono = "0.4"
-which = "4"
-whoami = "1.5"
+which = "8"
+whoami = "2.1"
 corez = "0.1"
 
 # Formats
@@ -115,28 +127,37 @@ byteorder = "1.5"
 sha2 = "0.10"
 blake2 = "0.10"
 hex = "0.4"
-toml = "0.5"
+toml = "1.1"
 primitive-types = "0.13"
 bs58 = "0.5"
 bitflags = "2.9"
 
 # Test
-portpicker = "0.1"
 tempfile = "3.2"
+# `zcashd_support` is opt-in, not a default (docs/adr/0005), so these path deps
+# no longer need `default-features = false` to drop it: their default feature
+# set is already empty. Enable zcashd end-to-end with `--features zcashd_support`.
 zainod = { path = "packages/zainod" }
 zaino-common = { path = "packages/zaino-common", version = "0.2.0" }
 # default-features = false so the default-on `zcashd_support` feature can be
 # dropped end-to-end via `--no-default-features`; each consumer re-enables it
 # by forwarding `zcashd_support` in its own `default`. See
 # docs/adr/0001-zcashd-support-feature-gate.md.
-zaino-fetch = { path = "packages/zaino-fetch", version = "0.2.0", default-features = false }
+zaino-fetch = { path = "packages/zaino-fetch", version = "0.2.1", default-features = false }
 zaino-proto = { path = "packages/zaino-proto", version = "0.1.3" }
-zaino-state = { path = "packages/zaino-state", version = "0.3.0", default-features = false }
-zaino-serve = { path = "packages/zaino-serve", version = "0.3.0", default-features = false }
+zaino-state = { path = "packages/zaino-state", version = "0.3.1", default-features = false }
+zaino-serve = { path = "packages/zaino-serve", version = "0.3.1", default-features = false }
+zaino-testutils = { path = "live-tests/zaino-testutils" }
+
+# Zingo-infra (validator launcher driving the live tests; not a prod dep).
+# TEMPORARY (zingolabs/infrastructure#269): pinned to an exact commit on the
+# `add_client_support` branch so every machine resolves the same code; restore
+# the release tag once tagged upstream.
+zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "0cc7dab7d12dd906c23deddd4e1fc3c42cf0f083" }
 
 wire_serialized_transaction_test_data = "1.0.0"
 config = { version = "0.15", default-features = false, features = ["toml"] }
-nonempty = "0.11.0"
+nonempty = "0.12.0"
 proptest = "~1.11"
 zip32 = "0.2.1"
 
@@ -148,6 +169,11 @@ cargo-lock = "10.1.0"
 derive_more = "2.0.1"
 lazy_static = "1.5.0"
 
+[profile.test]
+opt-level = 3
+debug = true
+
+[patch.crates-io]
 #zcash_client_backend = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
 #zcash_address = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
 #zcash_keys = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
@@ -155,6 +181,16 @@ lazy_static = "1.5.0"
 #zcash_protocol = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
 #zcash_transparent = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
 
-[profile.test]
-opt-level = 3
-debug = true
+# TEMPORARY: zebra is pinned to an unreleased ZcashFoundation/zebra rev whose
+# ReadRequest::NonFinalizedBlocksListener is a struct variant carrying
+# `known_chain_tips` (its Cargo version is 9.0.1, but it is NOT the published
+# crates.io 9.0.1 — that one is still a unit variant). Revert to a plain
+# version requirement once the change is released. This is the single root
+# workspace (the live-test crates were folded in; see docs/adr/0002), so the
+# patch lives here once and every member — production and live-test alike —
+# inherits it through the single lock; Cargo honours `[patch.crates-io]` only
+# from the workspace root. See docs/updating_zebra_crates.md.
+# Tracking: zaino#<TODO-revert-zebra-fork>.
+zebra-chain = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "9a27f886a5bfb143f65d1712e912cef252426800" }
+zebra-rpc = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "9a27f886a5bfb143f65d1712e912cef252426800" }
+zebra-state = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "9a27f886a5bfb143f65d1712e912cef252426800" }
