@@ -21,7 +21,7 @@
 //!
 //! Deferred, with the capability each waits on:
 //! - `send_to_transparent` (heavy / finalization) — runnable now via orchard
-//!   funding, but the load-bearing 99-block advance across the finalized /
+//!   funding, but the load-bearing seam-deep advance across the finalized /
 //!   non-finalized boundary costs a halo2 proof per block; waits on cheap
 //!   filler-block mining (round-3 spec P2).
 //! - `monitor_unverified_mempool` — unconfirmed (mempool) wallet balances;
@@ -1579,13 +1579,13 @@ async fn get_block_range_out_of_range_lower_bound() {
 /// Port of `send_to_transparent` (wallet_to_validator, heavy/finalization,
 /// zebrad): a transparent send to the recipient returns the same address txids
 /// whether served from the non-finalized chain (just mined) or after the
-/// 99-block advance pushes the send past the finalization boundary
+/// seam-deep advance pushes the send past the finalization boundary
 /// (the seam depth `FAST_TEST_MAX_NONFINALISED_DEPTH` under `fast-test-seam`).
 ///
-/// `#[ignore]`d (gated): the load-bearing 99-block advance mines orchard
+/// `#[ignore]`d (gated): the load-bearing seam-deep advance mines orchard
 /// coinbase here — the devtool faucet funds via orchard, since the original's
 /// transparent-mine + shield path needs devtool transparent-coinbase shielding
-/// (round-2 P1) — so it costs ~99 halo2 proofs, against the net-speedup
+/// (round-2 P1) — so it costs ~100 halo2 proofs, against the net-speedup
 /// criterion. The miner pool is fixed at launch and `generate_blocks` has no
 /// per-call override, so the advance can't be cheap transparent filler until
 /// per-call filler mining (round-3 P2) lands; un-ignore and mine the advance to
@@ -1616,7 +1616,9 @@ where
     // here (see #[ignore] rationale).
     test_manager
         .generate_blocks_bulk_and_wait_for_tips(
-            99,
+            // Advance past the seam so the send crosses the finalised floor
+            // (`tip - seam`); a small margin above it keeps the boundary unambiguous.
+            zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH + 5,
             test_manager.subscriber(),
             test_manager.subscriber(),
         )
@@ -2332,7 +2334,7 @@ mod zebrad {
         #[tokio::test(flavor = "multi_thread")]
         #[cfg_attr(
             not(feature = "devtool-incompatible"),
-            ignore = "heavy: 99-block orchard advance (~99 halo2 proofs); un-ignore + transparent filler when round-3 P2 lands"
+            ignore = "heavy: seam-deep orchard advance (~100 halo2 proofs); un-ignore + transparent filler when round-3 P2 lands"
         )]
         async fn send_to_transparent_finalization() {
             crate::send_to_transparent_finalization::<FetchService>().await;
@@ -2585,7 +2587,7 @@ mod zebrad {
         #[tokio::test(flavor = "multi_thread")]
         #[cfg_attr(
             not(feature = "devtool-incompatible"),
-            ignore = "heavy: 99-block orchard advance (~99 halo2 proofs); un-ignore + transparent filler when round-3 P2 lands"
+            ignore = "heavy: seam-deep orchard advance (~100 halo2 proofs); un-ignore + transparent filler when round-3 P2 lands"
         )]
         async fn send_to_transparent_finalization() {
             crate::send_to_transparent_finalization::<StateService>().await;
