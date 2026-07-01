@@ -14,6 +14,19 @@
 use super::db::legacy::*;
 use crate::chain_index::types::{BlockContext, ChainWork, CompactDifficulty};
 
+/// Selects how far [`ChainIndex::get_outpoint_spenders`] searches for a spend.
+///
+/// [`ChainIndex::get_outpoint_spenders`]: crate::chain_index::ChainIndex::get_outpoint_spenders
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChainScope {
+    /// Finalised DB only. Reorg-stable: never reports a spend that lives only in a
+    /// non-finalised block.
+    Finalised,
+    /// Non-finalised best chain first, then the finalised DB. Reports the latest known
+    /// spend but may include spends that a reorg could roll back.
+    FullChain,
+}
+
 /// The location of a transaction in the best chain
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub enum BestChainLocation {

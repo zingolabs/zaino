@@ -283,7 +283,12 @@ impl From<CapabilityRequest> for Capability {
 /// - one versioned [`MigrationStatus`].
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Hash, Default)]
 #[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
-pub(crate) struct DbMetadata {
+// `pub` (not `pub(crate)`) so it matches the visibility of the `pub` capability
+// traits in this module that expose it (e.g. `DbRead::get_metadata`). The
+// `capability` module is itself `pub(crate)`, so this does not widen the type
+// beyond the crate; it only resolves the rustc-1.96 E0446 private-in-public
+// check on `DbRead::get_metadata`'s signature.
+pub struct DbMetadata {
     /// Schema version triple for the on-disk database.
     pub(crate) version: DbVersion,
 

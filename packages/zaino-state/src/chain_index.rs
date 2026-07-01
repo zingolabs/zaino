@@ -552,6 +552,24 @@ pub trait ChainIndex {
         address_strings: GetAddressBalanceRequest,
     ) -> impl std::future::Future<Output = Result<Vec<GetAddressUtxos>, Self::Error>>;
 
+    /// For each outpoint, returns the txid of the transaction that spent it on the best
+    /// chain, or `None` if the outpoint is unspent or unknown.
+    ///
+    /// The output is aligned with the input by index: `result[i]` corresponds to
+    /// `outpoints[i]`. An outpoint is spent at most once on the best chain. `scope` selects
+    /// how far the search reaches: [`ChainScope::FullChain`] searches the non-finalised best
+    /// chain first then the finalised index; [`ChainScope::Finalised`] searches only the
+    /// finalised index, yielding reorg-stable results.
+    ///
+    /// [`ChainScope::FullChain`]: types::ChainScope::FullChain
+    /// [`ChainScope::Finalised`]: types::ChainScope::Finalised
+    fn get_outpoint_spenders(
+        &self,
+        snapshot: &Self::Snapshot,
+        outpoints: Vec<types::Outpoint>,
+        scope: types::ChainScope,
+    ) -> impl std::future::Future<Output = Result<Vec<Option<types::TransactionHash>>, Self::Error>>;
+
     // ********** Metadata methods **********
 
     /// Returns Information about the mempool state:
@@ -2345,6 +2363,84 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
             .get_address_utxos(address_strings)
             .await
             .map_err(ChainIndexError::backing_validator)
+    }
+
+    async fn get_outpoint_spenders(
+        &self,
+        snapshot: &Self::Snapshot,
+        outpoints: Vec<types::Outpoint>,
+        scope: types::ChainScope,
+    ) -> Result<Vec<Option<types::TransactionHash>>, Self::Error> {
+        use std::collections::HashMap;
+
+        let mut result: Vec<Option<TransactionHash>> = vec![None; outpoints.len()];
+
+        // 1) Non-finalised best chain (FullChain scope only). Scan only the blocks reachable
+        //    via `heights_to_hashes` (the `blocks` map also holds reorged-away blocks, which
+        //    must not count). One pass builds an outpoint -> spending-txid map regardless of
+        //    how many outpoints we look up. Under `Finalised` scope this is skipped so results
+        //    are reorg-stable.
+        if let (
+            types::ChainScope::FullChain,
+            ChainIndexSnapshot::NonFinalizedStateExists {
+                non_finalized_snapshot,
+            },
+        ) = (scope, snapshot)
+        {
+            let mut nfs_spenders: HashMap<Outpoint, TransactionHash> = HashMap::new();
+            for hash in non_finalized_snapshot.heights_to_hashes.values() {
+                let Some(block) = non_finalized_snapshot.blocks.get(hash) else {
+                    continue;
+                };
+                for tx in block.transactions() {
+                    let txid = *tx.txid();
+                    // `spent_outpoints` already skips coinbase null prevouts and builds each
+                    // `Outpoint`, keeping the construction in one place (see #1332).
+                    for outpoint in tx.transparent().spent_outpoints() {
+                        nfs_spenders.insert(outpoint, txid);
+                    }
+                }
+            }
+            for (i, outpoint) in outpoints.iter().enumerate() {
+                if let Some(txid) = nfs_spenders.get(outpoint) {
+                    result[i] = Some(*txid);
+                }
+            }
+        }
+
+        // 2) Finalised lookup for the still-unresolved outpoints, batched into one DB call.
+        let unresolved_indices: Vec<usize> = result
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| r.is_none().then_some(i))
+            .collect();
+        if unresolved_indices.is_empty() {
+            return Ok(result);
+        }
+        let unresolved_outpoints: Vec<Outpoint> =
+            unresolved_indices.iter().map(|&i| outpoints[i]).collect();
+        let locations = self
+            .finalized_state
+            .get_outpoint_spenders(unresolved_outpoints)
+            .await?;
+
+        // 3) Resolve each finalised `TxLocation` to a txid. Dedup identical locations so a
+        //    block spending several queried outpoints is only fetched once. `get_txid` is a
+        //    single keyed lookup, far cheaper than reconstructing the whole block.
+        let mut slots_by_location: HashMap<types::TxLocation, Vec<usize>> = HashMap::new();
+        for (slot, location) in unresolved_indices.into_iter().zip(locations) {
+            if let Some(location) = location {
+                slots_by_location.entry(location).or_default().push(slot);
+            }
+        }
+        for (location, slots) in slots_by_location {
+            let txid = self.finalized_state.get_txid(location).await?;
+            for slot in slots {
+                result[slot] = Some(txid);
+            }
+        }
+
+        Ok(result)
     }
 
     // ********** Metadata methods **********
