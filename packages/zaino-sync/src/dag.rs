@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::descriptor::{CompositionType, Descriptor, InputScope};
-use crate::primitives::IndexId;
+use crate::primitives::{IndexId, PhaseIndex};
 
 /// A node in the dependency DAG, holding the descriptor and computed
 /// scheduling metadata.
@@ -12,7 +12,7 @@ pub struct DagNode {
     /// The index's declarative descriptor.
     pub descriptor: Descriptor,
     /// Topological phase (layer in the DAG). Phase 0 has no dependencies.
-    pub phase: u32,
+    pub phase: PhaseIndex,
 }
 
 /// The dependency DAG over registered indexes.

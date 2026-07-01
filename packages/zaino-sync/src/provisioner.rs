@@ -33,9 +33,6 @@ pub trait Provisioner: Send + Sync {
     /// registered indexes.
     type BlockContext: Send + Sync;
 
-    /// Height type.
-    type Height: Copy + Ord + Send + Sync;
-
     /// Configure which source data to fetch, based on the union of all
     /// registered indexes' requirements.
     fn configure(&mut self, requirements: SourceRequirements);

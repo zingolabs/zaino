@@ -1,4 +1,12 @@
 //! Block height newtype.
+//!
+//! NOTE: zaino-state defines its own `BlockHeight`. Long-term, shared
+//! primitives like this should live in a single zero-dependency crate
+//! (e.g. `zaino-primitives`) that both zaino-sync and zaino-state depend
+//! on. The sync engine's height needs are likely a subset of the domain
+//! type's (Ord + Copy + Display), so unification should be
+//! straightforward. Until then, this local definition avoids coupling
+//! zaino-sync to zaino-state.
 
 /// A block height on the chain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
