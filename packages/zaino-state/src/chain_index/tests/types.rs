@@ -53,11 +53,15 @@ pub(crate) fn expected_v2_bytes() -> Vec<u8> {
     // BlockHash (parent_hash): V1 tag + 32-byte body.
     out.push(version::V1);
     out.extend_from_slice(&[0x02; 32]);
-    // ChainWork: V1 tag + 32-byte LE (value = 0x42, stored as u128 LE in lower 16 bytes).
+    // ChainWork: V1 tag + 32-byte big-endian (value = 0x42, in the low-order 16
+    // bytes). Corrected from little-endian: the established v1 on-disk format is
+    // big-endian (the original `ChainWork([u8;32])` via `U256::to_big_endian`,
+    // and the `v1_test_db` fixture) — #1313 wrongly minted this golden LE, which
+    // is exactly a golden enshrining the bug it should have caught.
     out.push(version::V1);
     {
         let mut cw_bytes = [0u8; 32];
-        cw_bytes[..16].copy_from_slice(&0x42u128.to_le_bytes());
+        cw_bytes[16..].copy_from_slice(&0x42u128.to_be_bytes());
         out.extend_from_slice(&cw_bytes);
     }
     // Height: V1 tag + u32 big-endian (value = 42).
