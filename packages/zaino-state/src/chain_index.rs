@@ -2,7 +2,7 @@
 //!
 //! Components:
 //! - Mempool: Holds mempool transactions
-//! - NonFinalisedState: Holds block data for the top `NON_FINALIZED_DEPTH` blocks of all chains.
+//! - NonFinalisedState: Holds block data for the top `OPERATIONAL_NFS_DEPTH` blocks of all chains.
 //! - FinalisedState: Holds block data for the remainder of the best chain.
 //!
 //! - Chain: Holds chain / block structs used internally by the ChainIndex.
@@ -53,11 +53,11 @@ use zebra_rpc::{
 use zebra_state::HashOrHeight;
 
 pub mod encoding;
-/// All state below [`NON_FINALIZED_DEPTH`] blocks of the best-known chain tip.
+/// All state below [`OPERATIONAL_NFS_DEPTH`] blocks of the best-known chain tip.
 pub mod finalised_state;
 /// State in the mempool, not yet on-chain
 pub mod mempool;
-/// State within [`NON_FINALIZED_DEPTH`] blocks of the best-known chain tip;
+/// State within [`OPERATIONAL_NFS_DEPTH`] blocks of the best-known chain tip;
 /// stored separately as it may be reorged.
 pub mod non_finalised_state;
 /// BlockchainSource
@@ -84,9 +84,9 @@ mod tests;
 /// [`MAX_NONFINALISED_DEPTH`]: zaino_common::consensus::MAX_NONFINALISED_DEPTH
 /// [`FAST_TEST_MAX_NONFINALISED_DEPTH`]: zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH
 #[cfg(not(any(test, feature = "fast-test-seam")))]
-pub(crate) const NON_FINALIZED_DEPTH: u32 = zaino_common::consensus::MAX_NONFINALISED_DEPTH;
+pub(crate) const OPERATIONAL_NFS_DEPTH: u32 = zaino_common::consensus::MAX_NONFINALISED_DEPTH;
 #[cfg(any(test, feature = "fast-test-seam"))]
-pub(crate) const NON_FINALIZED_DEPTH: u32 =
+pub(crate) const OPERATIONAL_NFS_DEPTH: u32 =
     zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
 
 /// Lower bound on zaino's finalized-DB tip, derived from the current
@@ -98,7 +98,7 @@ pub(crate) const NON_FINALIZED_DEPTH: u32 =
 /// `finalized_height` should account for the asymmetry
 /// (see zingolabs/zaino#1128).
 pub(crate) fn finalized_height_floor(chain_tip: u32) -> crate::Height {
-    crate::Height(chain_tip.saturating_sub(NON_FINALIZED_DEPTH))
+    crate::Height(chain_tip.saturating_sub(OPERATIONAL_NFS_DEPTH))
 }
 
 /// Current wall-clock time as a Unix timestamp in fractional seconds, for
@@ -194,7 +194,7 @@ fn branch_len_to_active_chain(
 /// The interface to the chain index.
 ///
 /// `ChainIndex` provides a unified interface for querying blockchain data from different
-/// backend sources. It combines access to both finalized state (older than `NON_FINALIZED_DEPTH` blocks) and
+/// backend sources. It combines access to both finalized state (older than `OPERATIONAL_NFS_DEPTH` blocks) and
 /// non-finalized state (recent blocks that may still be reorganized).
 ///
 /// # Implementation
@@ -937,7 +937,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         Some(ref nfs) => nfs,
                         None => {
                             // Anchor the non-finalised state at `finalised_height`
-                            // (= chain tip − NON_FINALIZED_DEPTH), never at genesis: a missing
+                            // (= chain tip − OPERATIONAL_NFS_DEPTH), never at genesis: a missing
                             // anchor used to fall through to genesis and then re-anchor up to the
                             // lagging finalised tip, grinding millions of blocks one at a time
                             // (#1261). `resolve_anchor_block` serves the anchor from the finalised
@@ -1619,7 +1619,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     /// between the given heights.
     /// Returns None if the specified start height
     /// is greater than the snapshot's tip and greater
-    /// than the validator's finalized height (`NON_FINALIZED_DEPTH` blocks below tip)
+    /// than the validator's finalized height (`OPERATIONAL_NFS_DEPTH` blocks below tip)
     fn get_block_range(
         &self,
         snapshot: &Self::Snapshot,
@@ -1772,7 +1772,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         let chain_tip_height = self.best_chaintip(nonfinalized_snapshot).await?.height;
 
         // The finalised state serves heights up to `finalized_height_floor(tip)`
-        // (= `tip - NON_FINALIZED_DEPTH`, saturating at genesis); the non-finalised cache serves
+        // (= `tip - OPERATIONAL_NFS_DEPTH`, saturating at genesis); the non-finalised cache serves
         // everything above it, so the lowest non-finalised height is one past the finalised floor.
         let lowest_nonfinalized_height =
             types::Height(finalized_height_floor(chain_tip_height.0).0 + 1);
