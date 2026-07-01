@@ -6093,6 +6093,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-sync"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.0",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "zaino-testutils"
 version = "0.2.0"
 dependencies = [

@@ -7,6 +7,7 @@ members = [
     "packages/zaino-state",
     "packages/zaino-fetch",
     "packages/zaino-proto",
+    "packages/zaino-sync",
     # Live-test suite (docs/adr/0002, docs/adr/0003, docs/adr/0004).
     # zaino-testutils first: the e2e/clientless partitions depend on it.
     "live-tests/zaino-testutils",
@@ -23,6 +24,7 @@ default-members = [
     "packages/zaino-state",
     "packages/zaino-fetch",
     "packages/zaino-proto",
+    "packages/zaino-sync",
 ]
 
 # Use the edition 2021 dependency resolver in the workspace, to match the crates
