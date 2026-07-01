@@ -235,7 +235,10 @@ mod tests {
     #[test]
     fn default_old_db_retention_is_keep() {
         assert_eq!(OldDbRetention::default(), OldDbRetention::Keep);
-        assert_eq!(DatabaseConfig::default().old_db_retention, OldDbRetention::Keep);
+        assert_eq!(
+            DatabaseConfig::default().old_db_retention,
+            OldDbRetention::Keep
+        );
     }
 
     #[test]

@@ -266,11 +266,8 @@ impl<T: BlockchainSource> FinalisedSource<T> {
             #[cfg(test)]
             2 => {
                 let mut standin_cfg = cfg.clone();
-                standin_cfg.storage.database.path = cfg
-                    .storage
-                    .database
-                    .path
-                    .join("__test_major2_standin__");
+                standin_cfg.storage.database.path =
+                    cfg.storage.database.path.join("__test_major2_standin__");
                 Self::spawn_v1(&standin_cfg).await
             }
 

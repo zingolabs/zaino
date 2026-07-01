@@ -1315,7 +1315,9 @@ mod tests {
         crate::chain_index::finalised_state::FinalisedState<Source>,
         Source,
     ) {
-        use crate::chain_index::tests::vectors::{build_active_mockchain_source, load_test_vectors};
+        use crate::chain_index::tests::vectors::{
+            build_active_mockchain_source, load_test_vectors,
+        };
         let blocks = load_test_vectors().unwrap().blocks;
         let source = build_active_mockchain_source(active_height.0, blocks);
 
@@ -1334,7 +1336,10 @@ mod tests {
         crate::chain_index::tests::init_tracing();
 
         let temporary_directory = tempfile::tempdir().unwrap();
-        let cfg = regtest_config(temporary_directory.path().to_path_buf(), OldDbRetention::Keep);
+        let cfg = regtest_config(
+            temporary_directory.path().to_path_buf(),
+            OldDbRetention::Keep,
+        );
         let active_height = Height(20);
 
         let (db, source) = synced_v1_primary(cfg.clone(), active_height).await;
@@ -1345,12 +1350,20 @@ mod tests {
         assert!(old_primary_dir.exists());
 
         let router = Arc::clone(&db.db);
-        build_and_promote_major(Arc::clone(&router), cfg.clone(), source, DbVersion::new(2, 0, 0))
-            .await
-            .unwrap();
+        build_and_promote_major(
+            Arc::clone(&router),
+            cfg.clone(),
+            source,
+            DbVersion::new(2, 0, 0),
+        )
+        .await
+        .unwrap();
 
         // Promoted: the primary reports the target version at the old primary's preserved tip.
-        assert_eq!(router.get_metadata().await.unwrap().version(), DbVersion::new(2, 0, 0));
+        assert_eq!(
+            router.get_metadata().await.unwrap().version(),
+            DbVersion::new(2, 0, 0)
+        );
         assert_eq!(router.db_height().await.unwrap(), old_tip);
         // Retention Keep: the demoted major's directory is retained for instant switch-back.
         assert!(old_primary_dir.exists());
@@ -1361,7 +1374,10 @@ mod tests {
         crate::chain_index::tests::init_tracing();
 
         let temporary_directory = tempfile::tempdir().unwrap();
-        let cfg = regtest_config(temporary_directory.path().to_path_buf(), OldDbRetention::Delete);
+        let cfg = regtest_config(
+            temporary_directory.path().to_path_buf(),
+            OldDbRetention::Delete,
+        );
         let active_height = Height(20);
 
         let (db, source) = synced_v1_primary(cfg.clone(), active_height).await;
@@ -1369,9 +1385,14 @@ mod tests {
         assert!(old_primary_dir.exists());
 
         let router = Arc::clone(&db.db);
-        build_and_promote_major(Arc::clone(&router), cfg.clone(), source, DbVersion::new(2, 0, 0))
-            .await
-            .unwrap();
+        build_and_promote_major(
+            Arc::clone(&router),
+            cfg.clone(),
+            source,
+            DbVersion::new(2, 0, 0),
+        )
+        .await
+        .unwrap();
 
         // Retention Delete: the demoted major's directory is removed.
         assert!(!old_primary_dir.exists());
@@ -1382,7 +1403,10 @@ mod tests {
         crate::chain_index::tests::init_tracing();
 
         let temporary_directory = tempfile::tempdir().unwrap();
-        let cfg = regtest_config(temporary_directory.path().to_path_buf(), OldDbRetention::Keep);
+        let cfg = regtest_config(
+            temporary_directory.path().to_path_buf(),
+            OldDbRetention::Keep,
+        );
         let active_height = Height(20);
 
         let (db, source) = synced_v1_primary(cfg.clone(), active_height).await;
@@ -1390,23 +1414,92 @@ mod tests {
         // Simulate a major build interrupted partway: the target backend exists, is stamped
         // in-progress, and holds only a prefix of the chain.
         {
-            let partial = FinalisedSource::<Source>::spawn_major(2, &cfg).await.unwrap();
+            let partial = FinalisedSource::<Source>::spawn_major(2, &cfg)
+                .await
+                .unwrap();
             partial.wait_until_ready().await;
             let mut metadata = partial.get_metadata().await.unwrap();
             metadata.migration_status = MigrationStatus::MajorBuildInProgress;
             partial.update_metadata(metadata).await.unwrap();
-            partial.write_blocks_to_height(Height(10), &source).await.unwrap();
+            partial
+                .write_blocks_to_height(Height(10), &source)
+                .await
+                .unwrap();
             partial.env().unwrap().sync(true).unwrap();
             partial.shutdown().await.unwrap();
         }
 
         // Resuming builds the remaining blocks (from the partial tip) and promotes to the full tip.
         let router = Arc::clone(&db.db);
-        build_and_promote_major(Arc::clone(&router), cfg.clone(), source, DbVersion::new(2, 0, 0))
-            .await
-            .unwrap();
+        build_and_promote_major(
+            Arc::clone(&router),
+            cfg.clone(),
+            source,
+            DbVersion::new(2, 0, 0),
+        )
+        .await
+        .unwrap();
 
-        assert_eq!(router.get_metadata().await.unwrap().version(), DbVersion::new(2, 0, 0));
+        assert_eq!(
+            router.get_metadata().await.unwrap().version(),
+            DbVersion::new(2, 0, 0)
+        );
         assert_eq!(router.db_height().await.unwrap(), Some(active_height));
+    }
+
+    // ***** minor fail-fast guard (Step 3) *****
+
+    /// A minor migration that forgets to override `migrate()` must fail immediately rather than
+    /// silently running the patch metadata-only path.
+    #[tokio::test]
+    async fn minor_migration_without_override_fails_fast() {
+        #[derive(Clone, Copy)]
+        struct UnimplementedMinor;
+
+        #[async_trait::async_trait]
+        impl<T: BlockchainSource> Migration<T> for UnimplementedMinor {
+            const CURRENT_VERSION: DbVersion = DbVersion {
+                major: 1,
+                minor: 0,
+                patch: 0,
+            };
+            const TO_VERSION: DbVersion = DbVersion {
+                major: 1,
+                minor: 1,
+                patch: 0,
+            };
+            fn migration_type(&self) -> MigrationType {
+                MigrationType::Minor
+            }
+            // Deliberately does not override `migrate()`.
+        }
+
+        // An ephemeral state is enough: the guard errors before touching the router/cfg/source.
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let mut cfg = regtest_config(
+            temporary_directory.path().to_path_buf(),
+            OldDbRetention::Keep,
+        );
+        cfg.ephemeral = true;
+        let source = crate::chain_index::tests::vectors::build_active_mockchain_source(
+            0,
+            crate::chain_index::tests::vectors::load_test_vectors()
+                .unwrap()
+                .blocks,
+        );
+        let db =
+            crate::chain_index::finalised_state::FinalisedState::spawn(cfg.clone(), source.clone())
+                .await
+                .unwrap();
+        let router = Arc::clone(&db.db);
+
+        let error = UnimplementedMinor
+            .migrate(router, cfg, source)
+            .await
+            .expect_err("a minor migration without a `migrate` override must error");
+        assert!(
+            error.to_string().contains("must override"),
+            "unexpected error: {error}"
+        );
     }
 }

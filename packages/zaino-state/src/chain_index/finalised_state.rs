@@ -458,7 +458,9 @@ impl<T: BlockchainSource> FinalisedState<T> {
 
             let target_major = cfg.db_version;
             let target_version = latest_version_for_major(target_major).ok_or_else(|| {
-                FinalisedStateError::Custom(format!("unsupported database version: DbV{target_major}"))
+                FinalisedStateError::Custom(format!(
+                    "unsupported database version: DbV{target_major}"
+                ))
             })?;
 
             // Open the serving primary per the ADR 0002 selection rules, honouring the configured
@@ -1196,9 +1198,63 @@ impl<T: BlockchainSource> FinalisedState<T> {
 #[cfg(test)]
 mod selection_tests {
     use super::*;
+    use crate::chain_index::source::mockchain_source::MockchainSource;
+    use zaino_common::{network::ActivationHeights, DatabaseConfig, Network, StorageConfig};
 
     fn metadata_with(status: MigrationStatus) -> DbMetadata {
         DbMetadata::new(DB_VERSION_V1, [0u8; 32], status)
+    }
+
+    fn regtest_cfg(path: std::path::PathBuf) -> ChainIndexConfig {
+        ChainIndexConfig {
+            storage: StorageConfig {
+                database: DatabaseConfig {
+                    path,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ephemeral: false,
+            db_version: 1,
+            network: Network::Regtest(ActivationHeights::default()),
+        }
+    }
+
+    /// Writes empty `data.mdb` + `lock.mdb` into `dir` to mimic a present LMDB database.
+    fn write_lmdb_files(dir: &std::path::Path) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("data.mdb"), b"").unwrap();
+        std::fs::write(dir.join("lock.mdb"), b"").unwrap();
+    }
+
+    #[test]
+    fn detect_major_dirs_finds_present_versioned_majors() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let cfg = regtest_cfg(temporary_directory.path().to_path_buf());
+
+        // Nothing on disk yet.
+        assert!(FinalisedState::<MockchainSource>::detect_major_dirs(&cfg).is_empty());
+
+        // A populated v1 directory is detected as major 1.
+        write_lmdb_files(&temporary_directory.path().join("regtest").join("v1"));
+        assert_eq!(
+            FinalisedState::<MockchainSource>::detect_major_dirs(&cfg)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            vec![1],
+        );
+    }
+
+    #[test]
+    fn legacy_v0_layout_is_detected() {
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let cfg = regtest_cfg(temporary_directory.path().to_path_buf());
+
+        assert!(!FinalisedState::<MockchainSource>::legacy_v0_present(&cfg));
+
+        // Regtest's legacy directory is `local/`.
+        write_lmdb_files(&temporary_directory.path().join("local"));
+        assert!(FinalisedState::<MockchainSource>::legacy_v0_present(&cfg));
     }
 
     #[test]
