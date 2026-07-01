@@ -1580,7 +1580,7 @@ async fn get_block_range_out_of_range_lower_bound() {
 /// zebrad): a transparent send to the recipient returns the same address txids
 /// whether served from the non-finalized chain (just mined) or after the
 /// 99-block advance pushes the send past the finalization boundary
-/// (NON_FINALIZED_DEPTH = 100).
+/// (the seam depth `FAST_TEST_MAX_NONFINALISED_DEPTH` under `fast-test-seam`).
 ///
 /// `#[ignore]`d (gated): the load-bearing 99-block advance mines orchard
 /// coinbase here — the devtool faucet funds via orchard, since the original's
@@ -1611,8 +1611,9 @@ where
         .await
         .unwrap();
 
-    // The load-bearing advance: 99 blocks push the send below NON_FINALIZED_DEPTH
-    // into the finalized DB. Orchard coinbase here (see #[ignore] rationale).
+    // The load-bearing advance: these blocks push the send below the seam
+    // (`FAST_TEST_MAX_NONFINALISED_DEPTH`) into the finalized DB. Orchard coinbase
+    // here (see #[ignore] rationale).
     test_manager
         .generate_blocks_bulk_and_wait_for_tips(
             99,
@@ -2066,10 +2067,13 @@ async fn get_outpoint_spenders_fetch_vs_state() {
     use zaino_state::chain_index::types::ChainScope;
     use zaino_state::ChainIndex as _;
 
-    // `NON_FINALIZED_DEPTH` is 100; mining this many blocks past a spend buries
-    // it under the finalised floor so `ChainScope::Finalised` can resolve it.
-    // A small margin above 100 keeps the boundary unambiguous.
-    const FINALITY_DEPTH: u32 = 105;
+    // Bury a spend this many blocks past its block to push it below the finalised
+    // floor (tip − seam depth) so `ChainScope::Finalised` can resolve it. This crate
+    // enables `fast-test-seam`, so the live zaino-state uses the tractable
+    // `FAST_TEST_MAX_NONFINALISED_DEPTH`; a small margin above it keeps the boundary
+    // unambiguous. (Without the feature the real seam is ~1000, impractical to mine
+    // here — see zingolabs/zaino#1352.)
+    const FINALITY_DEPTH: u32 = zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH + 5;
     const FUNDING_AMOUNT: u64 = 250_000;
 
     let mut svc = zaino_testutils::launch_state_and_fetch_services_mining_to::<Zebrad>(
@@ -2518,7 +2522,7 @@ mod zebrad {
     #[tokio::test(flavor = "multi_thread")]
     #[cfg_attr(
         not(feature = "devtool-incompatible"),
-        ignore = "heavy: mines ~110 orchard-coinbase blocks (~110 halo2 proofs) to bury a finalised spend below NON_FINALIZED_DEPTH; un-ignore for manual / dedicated CI"
+        ignore = "heavy: mines ~105 orchard-coinbase blocks (~105 halo2 proofs) to bury a finalised spend below the seam (FAST_TEST_MAX_NONFINALISED_DEPTH); un-ignore for manual / dedicated CI"
     )]
     async fn get_outpoint_spenders_fetch_vs_state() {
         crate::get_outpoint_spenders_fetch_vs_state().await;
