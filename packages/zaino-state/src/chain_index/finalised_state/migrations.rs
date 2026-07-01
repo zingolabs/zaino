@@ -148,7 +148,7 @@
 //! - No unsafe code and no temporary named LMDB database are used.
 
 use super::{
-    capability::{DbRead, DbVersion, DbWrite, MigrationStatus},
+    capability::{DbCore, DbRead, DbVersion, DbWrite, MigrationStatus},
     router::Router,
 };
 
@@ -157,7 +157,7 @@ use crate::{
         finalised_state::{
             capability::DbMetadata,
             entry::{StoredEntryFixed, StoredEntryVar},
-            finalised_source::v1::SYNC_CHECKPOINT_INTERVAL,
+            finalised_source::{v1::SYNC_CHECKPOINT_INTERVAL, FinalisedSource, VERSION_DIRS},
             router::EphemeralMode,
         },
         source::BlockchainSource,
@@ -171,8 +171,11 @@ use crate::{
 use lmdb::{Transaction, WriteFlags};
 
 use async_trait::async_trait;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::info;
+use zaino_common::OldDbRetention;
+use zebra_chain::parameters::NetworkKind;
 
 /// Broad categorisation of migration severity.
 ///
@@ -301,23 +304,100 @@ async fn migrate_metadata_only<T: BlockchainSource>(
 
 /// Generic **major** migration: builds the target major from the backing validator and promotes it.
 ///
-/// This is the default behaviour of a major migration (overridable for a bespoke major). The old
-/// primary keeps serving read+write while the new backend is built in its own directory; a brief
-/// ephemeral freeze covers the final catch-up and the atomic primary swap; the old directory is then
-/// kept or deleted per the retention policy. `target` is the newest version of the new major.
+/// This is the default behaviour of a major migration (overridable for a bespoke major). `target` is
+/// the newest version of the new major (a from-scratch build lands directly there).
 ///
-/// Implemented in a later step (it depends on `FinalisedSource::spawn_major`, the retention config,
-/// and `Router::replace_primary`). No major migration is registered yet, so this path is currently
-/// unreachable.
+/// The serving primary (the old major) is **static** for the duration: during a migration the indexer
+/// is paused by the background-op guard (`sync_to_height` early-returns on `has_background_ops`), and
+/// this code never mutates the old primary — it keeps serving reads from its complete data. So,
+/// unlike a minor migration, no ephemeral routing is needed; a crash leaves the old primary intact
+/// and authoritative (ADR 0002, C6).
+///
+/// Steps:
+/// 1. Spawn the target major in its own directory and mark it `MajorBuildInProgress` *before* writing
+///    any data, so a crash classifies the directory as an incomplete build and it is never served as
+///    primary (C7). The recorded version stays the backend's natural version; only the status marks
+///    it incomplete.
+/// 2. Build the new backend up to the old primary's tip. `write_blocks_to_height` resumes from the
+///    new backend's own append-only tip, so an interrupted build resumes (C4).
+/// 3. Completion gate: record the target version durably (fsync). This is the only signal the
+///    migration finished and must be durable before the swap and any cleanup (C5).
+/// 4. Atomically promote the new backend via `replace_primary`, shut down the demoted old primary,
+///    and keep or delete the old major's directory per the retention policy (C8).
 async fn build_and_promote_major<T: BlockchainSource>(
-    _router: Arc<Router<T>>,
-    _cfg: ChainIndexConfig,
-    _source: T,
+    router: Arc<Router<T>>,
+    cfg: ChainIndexConfig,
+    source: T,
     target: DbVersion,
 ) -> Result<(), FinalisedStateError> {
-    Err(FinalisedStateError::Custom(format!(
-        "major build-and-promote to {target} is not yet implemented"
-    )))
+    info!(
+        target_major = target.major,
+        %target, "Starting major migration: building and promoting new major"
+    );
+
+    let old_primary = router.primary_backend();
+    let old_major = old_primary.get_metadata().await?.version().major;
+    let old_tip = old_primary.db_height().await?;
+
+    // 1. Spawn the target major in its own directory and stamp the in-progress marker first.
+    let new_backend = FinalisedSource::spawn_major(target.major, &cfg).await?;
+    new_backend.wait_until_ready().await;
+    {
+        let mut metadata = new_backend.get_metadata().await?;
+        metadata.migration_status = MigrationStatus::MajorBuildInProgress;
+        new_backend.update_metadata(metadata).await?;
+    }
+    new_backend.env()?.sync(true)?;
+
+    // 2. Build up to the old primary's tip (resumable from the new backend's own tip).
+    if let Some(tip) = old_tip {
+        new_backend.write_blocks_to_height(tip, &source).await?;
+    }
+
+    // 3. Completion gate: record the target version, durably, before any swap or cleanup.
+    {
+        let mut metadata = new_backend.get_metadata().await?;
+        metadata.version = target;
+        metadata.migration_status = MigrationStatus::Empty;
+        new_backend.update_metadata(metadata).await?;
+    }
+    new_backend.env()?.sync(true)?;
+
+    // 4. Promote the new backend atomically, shut down the demoted old primary, apply retention.
+    let demoted = router.replace_primary(Arc::new(new_backend));
+    demoted.shutdown().await?;
+
+    if cfg.storage.database.old_db_retention == OldDbRetention::Delete {
+        if let Some(old_dir) = major_dir_path(&cfg, old_major) {
+            info!(major = old_major, path = %old_dir.display(), "Deleting demoted major directory");
+            match std::fs::remove_dir_all(&old_dir) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(FinalisedStateError::Custom(format!(
+                        "failed to delete demoted major directory {}: {error}",
+                        old_dir.display()
+                    )));
+                }
+            }
+        }
+    }
+
+    info!(%target, "Major migration complete");
+    Ok(())
+}
+
+/// The on-disk directory for a given major version: `<base>/<network>/<version-dir>`.
+///
+/// Returns `None` if the major has no `VERSION_DIRS` entry (so callers skip rather than guess a path).
+fn major_dir_path(cfg: &ChainIndexConfig, major: u32) -> Option<PathBuf> {
+    let version_dir = VERSION_DIRS.get((major as usize).checked_sub(1)?)?;
+    let net_dir = match cfg.network.to_zebra_network().kind() {
+        NetworkKind::Mainnet => "mainnet",
+        NetworkKind::Testnet => "testnet",
+        NetworkKind::Regtest => "regtest",
+    };
+    Some(cfg.storage.database.path.join(net_dir).join(version_dir))
 }
 
 /// Orchestrates a sequence of migration steps until `target_version` is reached.
@@ -1203,5 +1283,130 @@ mod tests {
     fn no_path_from_unregistered_source_errors() {
         // No edge departs from 0.0.0 (legacy v0 is rejected, not migrated).
         assert!(plan_migrations::<Source>(v(0, 0, 0), v(1, 1, 0)).is_err());
+    }
+
+    // ***** build_and_promote_major (major migration orchestration) *****
+
+    /// A regtest config rooted at `path`, with the given retention policy.
+    fn regtest_config(path: PathBuf, retention: OldDbRetention) -> ChainIndexConfig {
+        use zaino_common::{network::ActivationHeights, DatabaseConfig, Network, StorageConfig};
+        let mut cfg = ChainIndexConfig {
+            storage: StorageConfig {
+                database: DatabaseConfig {
+                    path,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ephemeral: false,
+            db_version: 1,
+            network: Network::Regtest(ActivationHeights::default()),
+        };
+        cfg.storage.database.old_db_retention = retention;
+        cfg
+    }
+
+    /// Spawns a fresh v1 database and syncs it to `active_height`, returning the running state (whose
+    /// router is the "old primary" for a major migration) and the backing source.
+    async fn synced_v1_primary(
+        cfg: ChainIndexConfig,
+        active_height: Height,
+    ) -> (
+        crate::chain_index::finalised_state::FinalisedState<Source>,
+        Source,
+    ) {
+        use crate::chain_index::tests::vectors::{build_active_mockchain_source, load_test_vectors};
+        let blocks = load_test_vectors().unwrap().blocks;
+        let source = build_active_mockchain_source(active_height.0, blocks);
+
+        let db = crate::chain_index::finalised_state::FinalisedState::spawn(cfg, source.clone())
+            .await
+            .unwrap();
+        db.sync_to_height(active_height, &source).await.unwrap();
+        db.wait_until_synced().await;
+        (db, source)
+    }
+
+    // multi_thread required: `build_and_promote_major` -> `write_blocks_to_height` uses
+    // `block_in_place`, which panics on a current-thread runtime.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn major_migration_builds_promotes_and_keeps_old_dir() {
+        crate::chain_index::tests::init_tracing();
+
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let cfg = regtest_config(temporary_directory.path().to_path_buf(), OldDbRetention::Keep);
+        let active_height = Height(20);
+
+        let (db, source) = synced_v1_primary(cfg.clone(), active_height).await;
+        let old_tip = db.db_height().await.unwrap();
+        assert_eq!(old_tip, Some(active_height));
+
+        let old_primary_dir = cfg.storage.database.path.join("regtest").join("v1");
+        assert!(old_primary_dir.exists());
+
+        let router = Arc::clone(&db.db);
+        build_and_promote_major(Arc::clone(&router), cfg.clone(), source, DbVersion::new(2, 0, 0))
+            .await
+            .unwrap();
+
+        // Promoted: the primary reports the target version at the old primary's preserved tip.
+        assert_eq!(router.get_metadata().await.unwrap().version(), DbVersion::new(2, 0, 0));
+        assert_eq!(router.db_height().await.unwrap(), old_tip);
+        // Retention Keep: the demoted major's directory is retained for instant switch-back.
+        assert!(old_primary_dir.exists());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn major_migration_deletes_old_dir_when_retention_is_delete() {
+        crate::chain_index::tests::init_tracing();
+
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let cfg = regtest_config(temporary_directory.path().to_path_buf(), OldDbRetention::Delete);
+        let active_height = Height(20);
+
+        let (db, source) = synced_v1_primary(cfg.clone(), active_height).await;
+        let old_primary_dir = cfg.storage.database.path.join("regtest").join("v1");
+        assert!(old_primary_dir.exists());
+
+        let router = Arc::clone(&db.db);
+        build_and_promote_major(Arc::clone(&router), cfg.clone(), source, DbVersion::new(2, 0, 0))
+            .await
+            .unwrap();
+
+        // Retention Delete: the demoted major's directory is removed.
+        assert!(!old_primary_dir.exists());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn major_migration_resumes_a_partially_built_target() {
+        crate::chain_index::tests::init_tracing();
+
+        let temporary_directory = tempfile::tempdir().unwrap();
+        let cfg = regtest_config(temporary_directory.path().to_path_buf(), OldDbRetention::Keep);
+        let active_height = Height(20);
+
+        let (db, source) = synced_v1_primary(cfg.clone(), active_height).await;
+
+        // Simulate a major build interrupted partway: the target backend exists, is stamped
+        // in-progress, and holds only a prefix of the chain.
+        {
+            let partial = FinalisedSource::<Source>::spawn_major(2, &cfg).await.unwrap();
+            partial.wait_until_ready().await;
+            let mut metadata = partial.get_metadata().await.unwrap();
+            metadata.migration_status = MigrationStatus::MajorBuildInProgress;
+            partial.update_metadata(metadata).await.unwrap();
+            partial.write_blocks_to_height(Height(10), &source).await.unwrap();
+            partial.env().unwrap().sync(true).unwrap();
+            partial.shutdown().await.unwrap();
+        }
+
+        // Resuming builds the remaining blocks (from the partial tip) and promotes to the full tip.
+        let router = Arc::clone(&db.db);
+        build_and_promote_major(Arc::clone(&router), cfg.clone(), source, DbVersion::new(2, 0, 0))
+            .await
+            .unwrap();
+
+        assert_eq!(router.get_metadata().await.unwrap().version(), DbVersion::new(2, 0, 0));
+        assert_eq!(router.db_height().await.unwrap(), Some(active_height));
     }
 }

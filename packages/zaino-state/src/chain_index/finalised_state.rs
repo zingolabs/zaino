@@ -636,18 +636,12 @@ impl<T: BlockchainSource> FinalisedState<T> {
 
     /// Opens the backend for a specific major version.
     ///
-    /// Maps a major to its concrete `FinalisedSource` backend. (Step 5 promotes this to
-    /// `FinalisedSource::spawn_major` and adds further majors, e.g. DbV2.)
+    /// Thin wrapper over [`FinalisedSource::spawn_major`], which maps a major to its concrete backend.
     async fn open_major_backend(
         cfg: &ChainIndexConfig,
         major: u32,
     ) -> Result<FinalisedSource<T>, FinalisedStateError> {
-        match major {
-            1 => FinalisedSource::spawn_v1(cfg).await,
-            other => Err(FinalisedStateError::Custom(format!(
-                "unsupported database version: DbV{other}"
-            ))),
-        }
+        FinalisedSource::spawn_major(major, cfg).await
     }
 
     /// Selects and opens the serving primary backend per the ADR 0002 (C7) selection rules, honouring

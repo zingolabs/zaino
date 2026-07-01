@@ -121,8 +121,10 @@ not separately run — the new major's intermediate minor/patch migrations.
   the validator while the primary is rebuilt (from on-disk data and/or a validator
   refetch), runs the body, advances `DbMetadata`, and releases the reference (C6
   minor).
-- *major* runs the build-and-promote helper (below), which manages its own brief
-  ephemeral freeze.
+- *major* runs the build-and-promote helper (below). It needs **no** ephemeral routing: during a
+  migration the indexer is paused by the background-op guard (`sync_to_height` early-returns on
+  `has_background_ops`), so the old primary is static and read-served throughout, and the new backend
+  is built independently and swapped in atomically.
 
 **Build-and-promote helper** (`migrations.rs`, the default major path), realising
 C4–C6 for majors:
@@ -130,18 +132,17 @@ C4–C6 for majors:
    its own directory and, as its first durable action, stamps the directory's
    `DbMetadata` with an in-progress status so a crash classifies it as
    *IncompleteBuild* (C7).
-2. It syncs the target backend to tip from the `BlockchainSource` while the
-   existing primary keeps serving read+write; the build resumes from the target
-   backend's own append-only tip (C4), and the existing primary is never mutated
-   (C6).
-3. A brief ephemeral freeze does the final catch-up, then the **completion gate**:
-   the target backend's `DbMetadata` is set to the target version — the newest
-   version of the new major (`latest_version_for_major`) — and fsynced (C5). Only
-   now is the directory *Authoritative*.
-4. `Router::replace_primary` atomically swaps the new backend in as primary, and
-   the ephemeral reference is released.
-5. The old primary is shut down and its directory is kept or deleted per
-   `old_db_retention` (C8).
+2. It builds the target backend up to the old primary's tip from the
+   `BlockchainSource`. The old primary is *static* for the duration (the indexer
+   is paused by the background-op guard) and is never mutated, so it keeps serving
+   reads and a crash leaves it intact (C6). The build resumes from the target
+   backend's own append-only tip (C4).
+3. **Completion gate**: the target backend's `DbMetadata` is set to the target
+   version — the newest version of the new major — and fsynced (C5). Only now is
+   the directory *Authoritative*.
+4. `Router::replace_primary` atomically swaps the new backend in as primary; the
+   demoted old primary is shut down.
+5. The old primary's directory is kept or deleted per `old_db_retention` (C8).
 
 **Startup selection** (`finalised_state.rs`). `detect_majors_on_disk(cfg)`
 enumerates the legacy v0 layout and each versioned major directory

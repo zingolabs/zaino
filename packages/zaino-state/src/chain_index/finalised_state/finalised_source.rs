@@ -245,6 +245,41 @@ impl<T: BlockchainSource> FinalisedSource<T> {
         Ok(Self::V1(Box::new(DbV1::spawn(cfg).await?)))
     }
 
+    /// Spawns the backend for a specific major version, in that major's own directory.
+    ///
+    /// Maps a major to its concrete backend. Used at startup (selecting which major to open) and by
+    /// the major build-and-promote migration (building the target major alongside the serving
+    /// primary). A real DbV2 adds its arm here (and to `VERSION_DIRS` / `latest_version_for_major`).
+    pub(crate) async fn spawn_major(
+        major: u32,
+        cfg: &ChainIndexConfig,
+    ) -> Result<Self, FinalisedStateError> {
+        match major {
+            1 => Self::spawn_v1(cfg).await,
+
+            // Test-only stand-in for a second major: a real `DbV1` backend rooted in a side
+            // directory, used to exercise `build_and_promote_major` (build → completion gate →
+            // promote → retention → resume) end to end without a real DbV2. It deliberately lives
+            // off the canonical `<net>/v2/` path, so `detect_major_dirs` does not pick it up — it
+            // only supports driving the migration helper directly. The full restart/selection path
+            // and reopen-as-major-2 need a real DbV2 (DbV1 enforces `major == 1`).
+            #[cfg(test)]
+            2 => {
+                let mut standin_cfg = cfg.clone();
+                standin_cfg.storage.database.path = cfg
+                    .storage
+                    .database
+                    .path
+                    .join("__test_major2_standin__");
+                Self::spawn_v1(&standin_cfg).await
+            }
+
+            other => Err(FinalisedStateError::Custom(format!(
+                "unsupported database version: DbV{other}"
+            ))),
+        }
+    }
+
     /// Spawns a "ephemeral" finalised state.
     pub(crate) fn ephemeral(
         source: T,
