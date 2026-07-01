@@ -480,6 +480,8 @@ fn fold_commitment_roots<'a>(
     mut orchard: Option<OrchardFrontier>,
     map: &mut std::collections::HashMap<BlockHash, CommitmentRoots>,
 ) -> (Option<SaplingFrontier>, Option<OrchardFrontier>) {
+    sapling.get_or_insert_with(SaplingFrontier::empty);
+    orchard.get_or_insert_with(OrchardFrontier::empty);
     for block in blocks {
         for transaction in &block.transactions {
             for sap in transaction.sapling_note_commitments() {
