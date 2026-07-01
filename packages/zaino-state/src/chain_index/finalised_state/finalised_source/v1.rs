@@ -54,7 +54,6 @@ use zebra_state::HashOrHeight;
 
 use super::LmdbLifecycle;
 
-use async_trait::async_trait;
 use corez::io::{self, Read};
 use dashmap::DashSet;
 use lmdb::{
@@ -88,6 +87,8 @@ pub(crate) mod compact_block;
 pub(crate) mod indexed_block;
 
 pub(crate) mod transparent_address_history;
+
+pub(crate) mod tx_out_set_accumulator;
 
 // ───────────────────────── Schema v1 constants ─────────────────────────
 
@@ -248,7 +249,6 @@ fn spent_corruption_detail(
 /// [`DbCore`] capability implementation for [`DbV1`].
 ///
 /// This trait exposes lifecycle operations and a high-level status indicator.
-#[async_trait]
 impl DbCore for DbV1 {
     fn status(&self) -> StatusType {
         LmdbLifecycle::status(self)
@@ -406,6 +406,26 @@ impl DbV1 {
     /// - validates or initializes the `"metadata"` record (schema hash + version), and
     /// - spawns the background validator / maintenance task.
     pub(crate) async fn spawn(config: &ChainIndexConfig) -> Result<Self, FinalisedStateError> {
+        let mut zaino_db = Self::open_env_and_dbs(config).await?;
+
+        // Validate (or initialise) the metadata entry before we touch any tables.
+        zaino_db.check_schema_version().await?;
+
+        // Temporary 0.4.0-alpha.1 compatibility: heal a cache whose alpha migration left the
+        // `txid_location` index unbuilt. Runs before the background validator starts so it operates
+        // on a quiescent database.
+        zaino_db.reconcile_alpha_txid_location_index().await?;
+
+        // Spawn handler task to perform background validation and trailing tx cleanup.
+        zaino_db.spawn_handler().await?;
+
+        Ok(zaino_db)
+    }
+
+    /// Opens the LMDB environment and every V1 named database, returning an *unstarted* [`DbV1`]
+    /// (status `Spawning`, `db_handler` = `None`, fresh atomics). Performs no metadata validation
+    /// and starts no background task — each caller (`spawn`, `spawn_v1_0_0`) adds its own tail.
+    async fn open_env_and_dbs(config: &ChainIndexConfig) -> Result<Self, FinalisedStateError> {
         info!("Launching FinalisedState");
 
         // Prepare database details and path.
@@ -474,101 +494,52 @@ impl DbV1 {
         let txid_location =
             super::open_or_create_db(&env, "txid_location_1_0_0", DatabaseFlags::empty()).await?;
 
-        let tx_out_set_info_accumulator = super::open_or_create_db(
+        let metadata = super::open_or_create_db(&env, "metadata", DatabaseFlags::empty()).await?;
+
+        #[cfg(feature = "transparent_address_history_experimental")]
+        let address_history = super::open_or_create_db(
             &env,
-            TX_OUT_SET_INFO_ACCUMULATOR_DATABASE_NAME,
-            DatabaseFlags::empty(),
+            "address_history_1_0_0",
+            DatabaseFlags::DUP_SORT | DatabaseFlags::DUP_FIXED,
         )
         .await?;
 
-        let metadata = super::open_or_create_db(&env, "metadata", DatabaseFlags::empty()).await?;
-
-        // Create the DbV1 instance. We declare the variable in the outer scope and
-        // initialise it in the two cfg arms so `zaino_db` is available afterwards.
-        let mut zaino_db: Self;
-
-        #[cfg(feature = "transparent_address_history_experimental")]
-        {
-            let address_history = super::open_or_create_db(
+        Ok(Self {
+            // Opened inline here, before `env` is moved into its `Arc` below (struct fields are
+            // evaluated top-to-bottom).
+            tx_out_set_info_accumulator: super::open_or_create_db(
                 &env,
-                "address_history_1_0_0",
-                DatabaseFlags::DUP_SORT | DatabaseFlags::DUP_FIXED,
+                TX_OUT_SET_INFO_ACCUMULATOR_DATABASE_NAME,
+                DatabaseFlags::empty(),
             )
-            .await?;
-
-            zaino_db = Self {
-                env: Arc::new(env),
-                headers,
-                txids,
-                transparent,
-                sapling,
-                orchard,
-                commitment_tree_data,
-                heights: hashes,
-                spent,
-                txid_location,
-                tx_out_set_info_accumulator,
-                address_history,
-                metadata,
-                validated_tip: Arc::new(AtomicU32::new(0)),
-                validated_set: DashSet::new(),
-                db_handler: std::sync::Mutex::new(None),
-                cancel_token: CancellationToken::new(),
-                status: NamedAtomicStatus::new("FinalisedState", StatusType::Spawning),
-                config: config.clone(),
-            };
-        }
-
-        #[cfg(not(feature = "transparent_address_history_experimental"))]
-        {
-            zaino_db = Self {
-                env: Arc::new(env),
-                headers,
-                txids,
-                transparent,
-                sapling,
-                orchard,
-                commitment_tree_data,
-                heights: hashes,
-                spent,
-                txid_location,
-                tx_out_set_info_accumulator,
-                metadata,
-                validated_tip: Arc::new(AtomicU32::new(0)),
-                validated_set: DashSet::new(),
-                db_handler: std::sync::Mutex::new(None),
-                cancel_token: CancellationToken::new(),
-                status: NamedAtomicStatus::new("FinalisedState", StatusType::Spawning),
-                config: config.clone(),
-            };
-        }
-
-        // Validate (or initialise) the metadata entry before we touch any tables.
-        zaino_db.check_schema_version().await?;
-
-        // Temporary 0.4.0-alpha.1 compatibility: heal a cache whose alpha migration left the
-        // `txid_location` index unbuilt. Runs before the background validator starts so it operates
-        // on a quiescent database.
-        zaino_db.reconcile_alpha_txid_location_index().await?;
-
-        // Spawn handler task to perform background validation and trailing tx cleanup.
-        zaino_db.spawn_handler().await?;
-
-        Ok(zaino_db)
+            .await?,
+            env: Arc::new(env),
+            headers,
+            txids,
+            transparent,
+            sapling,
+            orchard,
+            commitment_tree_data,
+            heights: hashes,
+            spent,
+            txid_location,
+            #[cfg(feature = "transparent_address_history_experimental")]
+            address_history,
+            metadata,
+            validated_tip: Arc::new(AtomicU32::new(0)),
+            validated_set: DashSet::new(),
+            db_handler: std::sync::Mutex::new(None),
+            cancel_token: CancellationToken::new(),
+            status: NamedAtomicStatus::new("FinalisedState", StatusType::Spawning),
+            config: config.clone(),
+        })
     }
 
-    // *** Internal Control Methods ***
-
-    /// Spawns the background validator / maintenance task.
-    ///
-    /// The task runs:
-    /// - **Startup:** full validation passes (`initial_spent_scan`, `initial_address_history_scan`,
-    ///   `initial_block_scan`).
-    /// - **Steady state:** periodically attempts to validate the next height after `validated_tip`.
-    ///   Separately, it performs periodic trailing-reader cleanup via `clean_trailing()`.
-    async fn spawn_handler(&mut self) -> Result<(), FinalisedStateError> {
-        // Clone everything the task needs so we can move it into the async block.
-        let zaino_db = Self {
+    /// A detached handle-copy of this DB for moving into a `spawn` / `spawn_blocking`
+    /// task: shares the env and atomics (`Arc`), copies the `Database` handles (they are
+    /// `Copy`), and resets `db_handler` — the copy is not the background-task lifecycle owner.
+    fn detached_handle(&self) -> Self {
+        Self {
             env: Arc::clone(&self.env),
             headers: self.headers,
             txids: self.txids,
@@ -589,7 +560,21 @@ impl DbV1 {
             cancel_token: self.cancel_token.clone(),
             status: self.status.clone(),
             config: self.config.clone(),
-        };
+        }
+    }
+
+    // *** Internal Control Methods ***
+
+    /// Spawns the background validator / maintenance task.
+    ///
+    /// The task runs:
+    /// - **Startup:** full validation passes (`initial_spent_scan`, `initial_address_history_scan`,
+    ///   `initial_block_scan`).
+    /// - **Steady state:** periodically attempts to validate the next height after `validated_tip`.
+    ///   Separately, it performs periodic trailing-reader cleanup via `clean_trailing()`.
+    async fn spawn_handler(&mut self) -> Result<(), FinalisedStateError> {
+        // Clone everything the task needs so we can move it into the async block.
+        let zaino_db = self.detached_handle();
 
         let handle = tokio::spawn({
             let zaino_db = zaino_db;
@@ -611,7 +596,7 @@ impl DbV1 {
                         ("block scan", r3),
                     ] {
                         if let Err(e) = result {
-                            error!("initial {desc} failed: {e}");
+                            error!(%e, desc, "initial validation failed");
                             zaino_db.status.store(StatusType::CriticalError);
                             // TODO: Handle error better? - Return invalid block error from validate?
                             return;
@@ -625,7 +610,7 @@ impl DbV1 {
 
                     for (desc, result) in [("spent scan", r1), ("block scan", r2)] {
                         if let Err(e) = result {
-                            error!("initial {desc} failed: {e}");
+                            error!(%e, desc, "initial validation failed");
                             zaino_db.status.store(StatusType::CriticalError);
                             // TODO: Handle error better? - Return invalid block error from validate?
                             return;
@@ -634,8 +619,8 @@ impl DbV1 {
                 }
 
                 info!(
-                    "initial validation complete – tip={}",
-                    zaino_db.validated_tip.load(Ordering::Relaxed)
+                    tip = zaino_db.validated_tip.load(Ordering::Relaxed),
+                    "initial validation complete"
                 );
                 zaino_db.status.store(StatusType::Ready);
 
@@ -662,7 +647,7 @@ impl DbV1 {
                     let hkey = match next_height.to_bytes() {
                         Ok(bytes) => bytes,
                         Err(e) => {
-                            warn!("Failed to serialize height {}: {}", next_height, e);
+                            warn!(height = ?next_height, %e, "failed to serialize height");
                             zaino_db.zaino_db_handler_sleep(&mut maintenance).await;
                             continue;
                         }
@@ -677,7 +662,7 @@ impl DbV1 {
 
                     if let Some(hash) = hash_opt {
                         if let Err(e) = zaino_db.validate_block_blocking(next_height, hash) {
-                            warn!("{e}");
+                            warn!(%e, "block validation failed");
                         }
                         // Immediately loop – maybe the chain has more blocks ready.
                         continue;
@@ -795,28 +780,7 @@ impl DbV1 {
     /// validated in pseudo-random height order — thrashing the cache and preventing the tip from
     /// advancing until the whole set had been validated.
     async fn initial_block_scan(&self) -> Result<(), FinalisedStateError> {
-        let zaino_db = Self {
-            env: Arc::clone(&self.env),
-            headers: self.headers,
-            txids: self.txids,
-            transparent: self.transparent,
-            sapling: self.sapling,
-            orchard: self.orchard,
-            commitment_tree_data: self.commitment_tree_data,
-            heights: self.heights,
-            spent: self.spent,
-            txid_location: self.txid_location,
-            tx_out_set_info_accumulator: self.tx_out_set_info_accumulator,
-            #[cfg(feature = "transparent_address_history_experimental")]
-            address_history: self.address_history,
-            metadata: self.metadata,
-            validated_tip: Arc::clone(&self.validated_tip),
-            validated_set: self.validated_set.clone(),
-            db_handler: std::sync::Mutex::new(None),
-            cancel_token: self.cancel_token.clone(),
-            status: self.status.clone(),
-            config: self.config.clone(),
-        };
+        let zaino_db = self.detached_handle();
 
         tokio::task::spawn_blocking(move || {
             let ro = zaino_db.env.begin_ro_txn()?;
@@ -932,10 +896,9 @@ impl DbV1 {
             }
 
             warn!(
-                "detected a 0.4.0-alpha.1 cache recorded at v{} with an unbuilt txid_location \
-                 index; rolling the recorded version back to 1.1.0 so the corrected migration \
-                 rebuilds it in place",
-                metadata.version
+                version = %metadata.version,
+                "detected 0.4.0-alpha.1 cache with unbuilt txid_location index; \
+                 rolling version back to 1.1.0 for corrected migration"
             );
 
             // Clear the `spent` index the alpha migration built: the corrected Stage B rebuilds it
@@ -973,11 +936,6 @@ impl DbV1 {
             Ok(())
         })
     }
-
-    /// Provides access to the finalised txout-set accumulator DB table.
-    pub(crate) fn tx_out_set_info_accumulator_db(&self) -> Database {
-        self.tx_out_set_info_accumulator
-    }
 }
 
 impl Drop for DbV1 {
@@ -1013,142 +971,26 @@ impl DbV1 {
     pub(crate) async fn spawn_v1_0_0(
         config: &ChainIndexConfig,
     ) -> Result<Self, FinalisedStateError> {
-        info!("Launching FinalisedState");
+        let mut zaino_db = Self::open_env_and_dbs(config).await?;
 
-        // Prepare database details and path.
-        let db_size_bytes = config.storage.database.size.to_byte_count();
-        let db_path_dir = match config.network.to_zebra_network().kind() {
-            NetworkKind::Mainnet => "mainnet",
-            NetworkKind::Testnet => "testnet",
-            NetworkKind::Regtest => "regtest",
-        };
-        let db_path = config.storage.database.path.join(db_path_dir).join("v1");
-        if !db_path.exists() {
-            fs::create_dir_all(&db_path)?;
-        }
+        // Write the historical v1.0.0 metadata record. Intentionally skips `check_schema_version`
+        // (see the method doc) — that is the behavioural difference from `spawn`.
+        zaino_db.write_v1_0_0_metadata()?;
 
-        // Check system rescources to set max db reeaders, clamped between 512 and 4096.
-        let cpu_cnt = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4);
+        // Spawn handler task to perform background validation and trailing tx cleanup.
+        zaino_db.spawn_handler().await?;
 
-        // Sets LMDB max_readers based on CPU count (cpu * 32), clamped between 512 and 4096.
-        // Allows high async read concurrency while keeping memory use low (~192B per slot).
-        // The 512 min ensures reasonable capacity even on low-core systems.
-        let max_readers = u32::try_from((cpu_cnt * 32).clamp(512, 4096))
-            .expect("max_readers was clamped to fit in u32");
+        Ok(zaino_db)
+    }
 
-        // Open LMDB environment and set environmental details.
-        //
-        // `NO_SYNC`: commits are not fsynced. The core write path now does many random-key
-        // inserts per block (the `spent` and `txid_location` B-trees are keyed by 32-byte
-        // hashes), which made per-commit fsync the dominant sync cost once those trees outgrew
-        // the page cache. Under `NO_SYNC` the OS batches that write-back; we force durability at
-        // explicit checkpoints (`SYNC_CHECKPOINT_INTERVAL`) and on graceful shutdown instead.
-        // `WRITE_MAP` is unset, so on a write-order-preserving local filesystem a crash does not
-        // corrupt the database — it only discards the unflushed tail of recent commits, which clean
-        // sync and migrations safely re-do. (On NFS / overlay filesystems or a hard pod eviction that
-        // drops the unflushed page cache, write order is not guaranteed and a crash *can* leave torn
-        // pages; the recovery there is to wipe and re-index. See `SYNC_CHECKPOINT_INTERVAL`.)
-        let env = Environment::new()
-            .set_max_dbs(15)
-            .set_map_size(db_size_bytes)
-            .set_max_readers(max_readers)
-            .set_flags(
-                EnvironmentFlags::NO_TLS
-                    | EnvironmentFlags::NO_READAHEAD
-                    | EnvironmentFlags::NO_SYNC,
-            )
-            .open(&db_path)?;
-
-        // Open individual LMDB DBs.
-        let headers =
-            super::open_or_create_db(&env, "headers_1_0_0", DatabaseFlags::empty()).await?;
-        let txids = super::open_or_create_db(&env, "txids_1_0_0", DatabaseFlags::empty()).await?;
-        let transparent =
-            super::open_or_create_db(&env, "transparent_1_0_0", DatabaseFlags::empty()).await?;
-        let sapling =
-            super::open_or_create_db(&env, "sapling_1_0_0", DatabaseFlags::empty()).await?;
-        let orchard =
-            super::open_or_create_db(&env, "orchard_1_0_0", DatabaseFlags::empty()).await?;
-        let commitment_tree_data =
-            super::open_or_create_db(&env, "commitment_tree_data_1_0_0", DatabaseFlags::empty())
-                .await?;
-        let hashes = super::open_or_create_db(&env, "hashes_1_0_0", DatabaseFlags::empty()).await?;
-
-        let spent = super::open_or_create_db(&env, "spent_1_0_0", DatabaseFlags::empty()).await?;
-
-        let txid_location =
-            super::open_or_create_db(&env, "txid_location_1_0_0", DatabaseFlags::empty()).await?;
-
-        let tx_out_set_info_accumulator = super::open_or_create_db(
-            &env,
-            TX_OUT_SET_INFO_ACCUMULATOR_DATABASE_NAME,
-            DatabaseFlags::empty(),
-        )
-        .await?;
-
-        let metadata = super::open_or_create_db(&env, "metadata", DatabaseFlags::empty()).await?;
-
-        let mut zaino_db: Self;
-        #[cfg(feature = "transparent_address_history_experimental")]
-        {
-            let address_history = super::open_or_create_db(
-                &env,
-                "address_history_1_0_0",
-                DatabaseFlags::DUP_SORT | DatabaseFlags::DUP_FIXED,
-            )
-            .await?;
-
-            zaino_db = Self {
-                env: Arc::new(env),
-                headers,
-                txids,
-                transparent,
-                sapling,
-                orchard,
-                commitment_tree_data,
-                heights: hashes,
-                spent,
-                txid_location,
-                tx_out_set_info_accumulator,
-                address_history,
-                metadata,
-                validated_tip: Arc::new(AtomicU32::new(0)),
-                validated_set: DashSet::new(),
-                db_handler: std::sync::Mutex::new(None),
-                cancel_token: CancellationToken::new(),
-                status: NamedAtomicStatus::new("FinalisedState", StatusType::Spawning),
-                config: config.clone(),
-            };
-        }
-        #[cfg(not(feature = "transparent_address_history_experimental"))]
-        {
-            zaino_db = Self {
-                env: Arc::new(env),
-                headers,
-                txids,
-                transparent,
-                sapling,
-                orchard,
-                commitment_tree_data,
-                heights: hashes,
-                spent,
-                txid_location,
-                tx_out_set_info_accumulator,
-                metadata,
-                validated_tip: Arc::new(AtomicU32::new(0)),
-                validated_set: DashSet::new(),
-                db_handler: std::sync::Mutex::new(None),
-                cancel_token: CancellationToken::new(),
-                status: NamedAtomicStatus::new("FinalisedState", StatusType::Spawning),
-                config: config.clone(),
-            };
-        }
-
-        // Initialise the metadata entry before we touch any tables.
+    /// Writes the historical v1.0.0 `"metadata"` record (version 1.0.0, zero schema hash, migration
+    /// status `Empty`) used only by [`DbV1::spawn_v1_0_0`]. Unlike [`DbV1::check_schema_version`],
+    /// this initialises metadata with the historical v1.0.0 value the migration tests require
+    /// instead of the current [`DB_VERSION_V1`] — which is why `spawn_v1_0_0` deliberately does not
+    /// call `check_schema_version`.
+    fn write_v1_0_0_metadata(&self) -> Result<(), FinalisedStateError> {
         tokio::task::block_in_place(|| {
-            let mut txn = zaino_db.env.begin_rw_txn()?;
+            let mut txn = self.env.begin_rw_txn()?;
 
             let entry = StoredEntryFixed::new(
                 b"metadata",
@@ -1163,7 +1005,7 @@ impl DbV1 {
                 },
             );
             txn.put(
-                zaino_db.metadata,
+                self.metadata,
                 b"metadata",
                 &entry.to_bytes()?,
                 WriteFlags::NO_OVERWRITE,
@@ -1172,12 +1014,7 @@ impl DbV1 {
             txn.commit()?;
 
             Ok::<(), FinalisedStateError>(())
-        })?;
-
-        // Spawn handler task to perform background validation and trailing tx cleanup.
-        zaino_db.spawn_handler().await?;
-
-        Ok(zaino_db)
+        })
     }
 }
 

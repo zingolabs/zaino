@@ -1,7 +1,6 @@
 //! Mock BlockchainSourceResult implementation.
 
 use super::*;
-use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
 use std::sync::{
     atomic::{AtomicU32, Ordering},
@@ -416,7 +415,6 @@ impl MockchainSource {
     }
 }
 
-#[async_trait]
 impl BlockchainSource for MockchainSource {
     // ********** Block methods **********
 

@@ -41,6 +41,28 @@ impl JsonRpcServer {
         service_subscriber: IndexerSubscriber<Service>,
         server_config: JsonRpcServerConfig,
     ) -> Result<Self, ServerError> {
+        Self::spawn_inner(service_subscriber, server_config, None).await
+    }
+
+    /// Starts the JSON-RPC service on a pre-bound listener.
+    ///
+    /// Mirrors `TonicServer::spawn_from_listener`: a test harness binds
+    /// `127.0.0.1:0`, reads the OS-assigned port, and hands the open socket
+    /// here, closing the pick-a-port / bind-later race.
+    #[cfg(feature = "test_dependencies")]
+    pub async fn spawn_from_listener<Service: ZcashIndexer + LightWalletIndexer + Clone>(
+        service_subscriber: IndexerSubscriber<Service>,
+        server_config: JsonRpcServerConfig,
+        listener: std::net::TcpListener,
+    ) -> Result<Self, ServerError> {
+        Self::spawn_inner(service_subscriber, server_config, Some(listener)).await
+    }
+
+    async fn spawn_inner<Service: ZcashIndexer + LightWalletIndexer + Clone>(
+        service_subscriber: IndexerSubscriber<Service>,
+        server_config: JsonRpcServerConfig,
+        listener: Option<std::net::TcpListener>,
+    ) -> Result<Self, ServerError> {
         let status = NamedAtomicStatus::new("JSON-RPC", StatusType::Spawning);
 
         let rpc_impl = JsonRpcClient {
@@ -73,15 +95,30 @@ impl JsonRpcServer {
             .rpc_logger(1024)
             .layer_fn(FixRpcResponseMiddleware::new);
 
-        // Build the JSON-RPC server with middleware integrated
-        let server = ServerBuilder::default()
+        // Build the JSON-RPC server with middleware integrated. A pre-bound
+        // listener (test path) is served directly; otherwise we bind the
+        // configured address.
+        let builder = ServerBuilder::default()
             .set_http_middleware(tower::ServiceBuilder::new().layer(http_middleware_layer))
-            .set_rpc_middleware(rpc_middleware)
-            .build(server_config.json_rpc_listen_address)
-            .await
-            .map_err(|e| {
-                ServerError::ServerConfigError(format!("JSON-RPC server build error: {e}"))
-            })?;
+            .set_rpc_middleware(rpc_middleware);
+        let server = match listener {
+            Some(listener) => {
+                listener.set_nonblocking(true).map_err(|e| {
+                    ServerError::ServerConfigError(format!(
+                        "JSON-RPC listener set_nonblocking failed: {e}"
+                    ))
+                })?;
+                builder.build_from_tcp(listener).map_err(|e| {
+                    ServerError::ServerConfigError(format!("JSON-RPC server build error: {e}"))
+                })?
+            }
+            None => builder
+                .build(server_config.json_rpc_listen_address)
+                .await
+                .map_err(|e| {
+                    ServerError::ServerConfigError(format!("JSON-RPC server build error: {e}"))
+                })?,
+        };
 
         let server_handle = server.start(rpc_impl.into_rpc());
 
@@ -118,7 +155,7 @@ impl JsonRpcServer {
 
         if let Some(dir) = &self.cookie_dir {
             if let Err(e) = remove_from_disk(dir) {
-                warn!("Error removing cookie: {e}");
+                warn!(%e, "error removing cookie");
             }
         }
 

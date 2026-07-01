@@ -18,13 +18,15 @@ use crate::chain_index::types::helpers::{BlockMetadata, BlockWithMetadata, TreeR
 use crate::chain_index::types::BlockIndex;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
 use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalisedStateError};
+#[cfg(feature = "prometheus")]
+use crate::metric_names::*;
 use crate::status::Status;
 use crate::{
-    ChainWork, CompactBlockStream, NamedAtomicStatus, NonFinalizedState, StatusType, SyncError,
-    TxOutCompact,
+    CompactBlockStream, NamedAtomicStatus, NonFinalizedState, StatusType, SyncError, TxOutCompact,
 };
 use crate::{IndexedBlock, Outpoint, TransactionHash};
 use std::collections::HashSet;
+use std::str::FromStr;
 use std::{sync::Arc, time::Duration};
 
 use arc_swap::ArcSwapOption;
@@ -73,7 +75,21 @@ mod tests;
 /// preserves the original literal-`100` behavior; deriving the
 /// depth from an explicit wider-consensus reference is tracked in
 /// zingolabs/zaino#1130.
+#[cfg(not(test))]
 pub(crate) const NON_FINALIZED_DEPTH: u32 = zebra_state::MAX_BLOCK_REORG_HEIGHT + 1;
+
+/// In-crate unit tests pin the depth at the pre-zebra-10 value (`100`).
+///
+/// Zebra 10 raised `MAX_BLOCK_REORG_HEIGHT` from 99 to 1000, so the
+/// production depth is now 1001. The 201-block mock-chain test vector is
+/// far shorter than that, so at the production depth `finalized_height_floor`
+/// saturates to genesis for the whole fixture: the finalized seam never moves
+/// off block 0 and the eviction/seam invariants become untestable (see
+/// zingolabs/zaino#1288). The eviction and seam invariants are scale-free, so
+/// exercising them at a tractable depth is sound; the production depth is
+/// covered by the clientless suite, which reaches real chain heights.
+#[cfg(test)]
+pub(crate) const NON_FINALIZED_DEPTH: u32 = 100;
 
 /// Lower bound on zaino's finalized-DB tip, derived from the current
 /// best-known chain tip.
@@ -85,6 +101,17 @@ pub(crate) const NON_FINALIZED_DEPTH: u32 = zebra_state::MAX_BLOCK_REORG_HEIGHT 
 /// (see zingolabs/zaino#1128).
 pub(crate) fn finalized_height_floor(chain_tip: u32) -> crate::Height {
     crate::Height(chain_tip.saturating_sub(NON_FINALIZED_DEPTH))
+}
+
+/// Current wall-clock time as a Unix timestamp in fractional seconds, for
+/// "event happened at" gauges. Falls back to `0.0` if the clock is before the
+/// Unix epoch (never in practice).
+#[cfg(feature = "prometheus")]
+pub(crate) fn unix_now_secs() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0)
 }
 
 /// Builds a zcashd-compatible `getchaintips` response from the local non-finalized snapshot.
@@ -468,14 +495,13 @@ pub trait ChainIndex {
         hash: &types::BlockHash,
     ) -> impl std::future::Future<Output = Result<Option<(types::BlockHash, types::Height)>, Self::Error>>;
 
-    /// Returns the block commitment tree data by hash
+    /// Returns the block commitment tree data by hash.
+    ///
+    /// The hash must exist in the non-finalized snapshot or finalized database
+    /// before the request is proxied to the backing validator.
     #[allow(clippy::type_complexity)]
     fn get_treestate(
         &self,
-        // snapshot: &Self::Snapshot,
-        // currently not implemented internally, fetches data from validator.
-        //
-        // NOTE: Should this check blockhash exists in snapshot and db before proxying call?
         hash: &types::BlockHash,
     ) -> impl std::future::Future<Output = Result<(Option<Vec<u8>>, Option<Vec<u8>>), Self::Error>>;
 
@@ -834,6 +860,8 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             let mut change_rx = source.subscribe_to_blocks_received();
             let mut consecutive_failures: u32 = 0;
             let mut current_backoff = timings.initial_backoff;
+            #[cfg(feature = "prometheus")]
+            let mut has_reached_tip = false;
 
             loop {
                 let source = source.clone();
@@ -843,6 +871,8 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                 }
 
                 status.store(StatusType::Syncing);
+                #[cfg(feature = "prometheus")]
+                let iteration_start = std::time::Instant::now();
 
                 // Race the iter body against cancellation: any await inside
                 // — `source.get_best_block_height`, `fs.sync_to_height`,
@@ -875,6 +905,12 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                     #[cfg(feature = "prometheus")]
                     metrics::gauge!("zaino.chain.tip_height").set(chain_height.0 as f64);
                     let finalised_height = finalized_height_floor(chain_height.0);
+                    #[cfg(feature = "prometheus")]
+                    {
+                        metrics::gauge!(CHAIN_TIP_HEIGHT).set(chain_height.0 as f64);
+                        metrics::gauge!(SYNC_LAG_BLOCKS)
+                            .set((chain_height.0 - finalised_height.0) as f64);
+                    }
 
                     fs.sync_to_height(finalised_height, &source)
                         .await
@@ -924,6 +960,17 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         consecutive_failures = 0;
                         current_backoff = timings.initial_backoff;
                         status.store(StatusType::Ready);
+                        #[cfg(feature = "prometheus")]
+                        {
+                            metrics::counter!(SYNC_ITERATIONS_TOTAL).increment(1);
+                            metrics::histogram!(SYNC_ITERATION_DURATION_SECONDS)
+                                .record(iteration_start.elapsed().as_secs_f64());
+                            if !has_reached_tip {
+                                has_reached_tip = true;
+                                metrics::gauge!(SYNC_HAS_REACHED_TIP).set(1.0);
+                                metrics::gauge!(SYNC_REACHED_TIP_AT).set(unix_now_secs());
+                            }
+                        }
                         // Race the post-success wait against cancellation
                         // and a source-change notification. `shutdown()`'s
                         // `cancel_token.cancel()` releases this immediately
@@ -943,20 +990,35 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                     }
                     Err(e) => {
                         consecutive_failures += 1;
+                        #[cfg(feature = "prometheus")]
+                        {
+                            metrics::counter!(SYNC_ITERATIONS_TOTAL).increment(1);
+                            metrics::histogram!(SYNC_ITERATION_DURATION_SECONDS)
+                                .record(iteration_start.elapsed().as_secs_f64());
+                        }
                         if consecutive_failures >= timings.max_consecutive_failures {
+                            #[cfg(feature = "prometheus")]
+                            metrics::counter!(SYNC_ERRORS_TOTAL, "severity" => "critical")
+                                .increment(1);
                             tracing::error!(
-                                "Sync loop failed {consecutive_failures} consecutive times, \
-                                 giving up: {e:?}"
+                                consecutive_failures,
+                                ?e,
+                                "sync loop failed, giving up"
                             );
                             status.store(StatusType::CriticalError);
                             return Err(e);
                         }
                         tracing::warn!(
-                            "Sync loop iteration failed ({consecutive_failures}/{}), \
-                             retrying in {current_backoff:?}: {e:?}",
-                            timings.max_consecutive_failures
+                            consecutive_failures,
+                            max = timings.max_consecutive_failures,
+                            backoff = ?current_backoff,
+                            ?e,
+                            "sync loop iteration failed, retrying"
                         );
                         status.store(StatusType::RecoverableError);
+                        #[cfg(feature = "prometheus")]
+                        metrics::counter!(SYNC_ERRORS_TOTAL, "severity" => "recoverable")
+                            .increment(1);
                         // Race the failure-path backoff sleep against
                         // cancellation. Without this, `shutdown()` after
                         // `fs.shutdown()` would force the worker through
@@ -1062,8 +1124,7 @@ async fn compact_block_from_source<Source: BlockchainSource>(
                 "orchard commitment tree size overflow",
             ))
         })?,
-        // TODO: Define an empty value https://github.com/zingolabs/zaino/issues/1158
-        ChainWork::from_u256(0.into()),
+        None, // parent chainwork unknown — single-block construction
         network,
     );
     let indexed_block =
@@ -1276,6 +1337,75 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
                 Ok(None)
             }
             Err(e) => Err(ChainIndexError::backing_validator(e)),
+        }
+    }
+
+    /// Returns true when the block hash is present in the local chain index.
+    ///
+    /// During finalized-state sync, a hash is considered known when it is in
+    /// the finalized database or the backing validator can serve it as a
+    /// finalized block.
+    pub(crate) async fn block_hash_known_for_treestate(
+        &self,
+        snapshot: &ChainIndexSnapshot,
+        hash: &types::BlockHash,
+    ) -> Result<bool, ChainIndexError> {
+        match snapshot {
+            ChainIndexSnapshot::NonFinalizedStateExists {
+                non_finalized_snapshot,
+            } => {
+                if non_finalized_snapshot.blocks.contains_key(hash) {
+                    return Ok(true);
+                }
+                Ok(self
+                    .finalized_state
+                    .get_block_height(*hash)
+                    .await?
+                    .is_some())
+            }
+            ChainIndexSnapshot::StillSyncingFinalizedState {
+                validator_finalized_height,
+            } => {
+                if self
+                    .finalized_state
+                    .get_block_height(*hash)
+                    .await?
+                    .is_some()
+                {
+                    return Ok(true);
+                }
+                Ok(self
+                    .get_block_height_passthrough(validator_finalized_height, *hash)
+                    .await?
+                    .is_some())
+            }
+        }
+    }
+
+    /// Returns true when the hash-or-height string refers to a block known to
+    /// the local chain index.
+    pub(crate) async fn hash_or_height_known_for_treestate(
+        &self,
+        snapshot: &ChainIndexSnapshot,
+        hash_or_height: &str,
+    ) -> Result<bool, ChainIndexError> {
+        let hash_or_height = HashOrHeight::from_str(hash_or_height).map_err(|error| {
+            ChainIndexError::internal(format!("invalid hash or height: {error}"))
+        })?;
+        match hash_or_height {
+            HashOrHeight::Hash(hash) => {
+                self.block_hash_known_for_treestate(snapshot, &types::BlockHash::from(hash))
+                    .await
+            }
+            HashOrHeight::Height(height) => {
+                match self
+                    .get_block_hash(snapshot, types::Height::from(height))
+                    .await?
+                {
+                    Some(hash) => self.block_hash_known_for_treestate(snapshot, &hash).await,
+                    None => Ok(false),
+                }
+            }
         }
     }
 
@@ -2237,15 +2367,18 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         }
     }
 
-    /// Returns the block commitment tree data by hash
+    /// Returns the block commitment tree data by hash.
     async fn get_treestate(
         &self,
-        // currently not implemented internally, fetches data from validator.
-        // as this looks up the block by hash, and cares not if the
-        // block is on the main chain or not, this is safe to pass through
-        // even if the target block is non-finalized
         hash: &types::BlockHash,
     ) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>), Self::Error> {
+        let snapshot = self.snapshot_nonfinalized_state().await?;
+        if !self.block_hash_known_for_treestate(&snapshot, hash).await? {
+            return Err(ChainIndexError::internal(format!(
+                "block hash {hash} not found in local chain index"
+            )));
+        }
+
         match self.source().get_treestate(*hash).await {
             Ok(resp) => Ok(resp),
             Err(e) => Err(ChainIndexError {
@@ -2454,12 +2587,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                 }
 
                 // Spent prev outputs leave the UTXO set.
-                for input in transparent.inputs() {
-                    if input.is_null_prevout() {
-                        continue;
-                    }
-
-                    let outpoint = Outpoint::new(*input.prevout_txid(), input.prevout_index());
+                for outpoint in transparent.spent_outpoints() {
                     let prev_txid = TransactionHash::from(*outpoint.prev_txid());
 
                     let prev_out_from_nfs = nfs_created.remove(&outpoint);

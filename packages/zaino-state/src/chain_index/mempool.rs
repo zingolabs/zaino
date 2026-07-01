@@ -2,6 +2,8 @@
 
 use std::{collections::HashSet, sync::Arc};
 
+#[cfg(feature = "prometheus")]
+use crate::metric_names::*;
 use crate::{
     broadcast::{Broadcast, BroadcastSubscriber},
     chain_index::{
@@ -116,7 +118,7 @@ impl<T: BlockchainSource> Mempool<T> {
                 }
                 Err(e) => {
                     mempool.state.notify(mempool.status.load());
-                    warn!("{e}");
+                    warn!(%e, "mempool source fetch failed");
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     continue;
                 }
@@ -165,7 +167,7 @@ impl<T: BlockchainSource> Mempool<T> {
                     Err(e) => {
                         mempool.status.store(StatusType::RecoverableError);
                         state.notify(status.load());
-                        warn!("{e}");
+                        warn!(%e, "mempool initial block hash fetch failed");
                         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                         continue;
                     }
@@ -190,7 +192,7 @@ impl<T: BlockchainSource> Mempool<T> {
                     },
                     Err(e) => {
                         state.notify(status.load());
-                        warn!("{e}");
+                        warn!(%e, "mempool chain tip check failed");
                         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                         continue;
                     }
@@ -201,6 +203,11 @@ impl<T: BlockchainSource> Mempool<T> {
                     status.store(StatusType::Syncing);
                     state.notify(status.load());
                     state.clear();
+                    #[cfg(feature = "prometheus")]
+                    {
+                        metrics::counter!(MEMPOOL_TIP_CHANGES_TOTAL).increment(1);
+                        metrics::gauge!(MEMPOOL_TRANSACTIONS).set(0.0);
+                    }
 
                     mempool
                         .mempool_chain_tip
@@ -215,11 +222,13 @@ impl<T: BlockchainSource> Mempool<T> {
                     Ok(mempool_transactions) => {
                         status.store(StatusType::Ready);
                         state.insert_filtered_set(mempool_transactions, status.load());
+                        #[cfg(feature = "prometheus")]
+                        metrics::gauge!(MEMPOOL_TRANSACTIONS).set(state.len() as f64);
                     }
                     Err(e) => {
                         status.store(StatusType::RecoverableError);
                         state.notify(status.load());
-                        warn!("{e}");
+                        warn!(%e, "mempool transaction fetch failed");
                         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                         continue;
                     }
@@ -487,7 +496,7 @@ impl MempoolSubscriber {
             .await;
 
             if let Err(mempool_error) = mempool_result {
-                warn!("Error in mempool stream: {:?}", mempool_error);
+                warn!(?mempool_error, "error in mempool stream");
                 match mempool_error {
                     MempoolError::StatusError(error_status) => {
                         let _ = channel_tx.send(Err(error_status)).await;

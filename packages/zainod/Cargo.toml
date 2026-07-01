@@ -6,7 +6,7 @@ repository = { workspace = true }
 homepage = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
-version = "0.4.1"
+version = "0.4.2"
 
 [[bin]]
 name = "zainod"
@@ -17,6 +17,23 @@ name = "zainodlib"
 path = "src/lib.rs"
 
 [features]
+default = []
+
+# Test-only seam: `Indexer::launch_inner_with_listeners`, which threads
+# pre-bound listeners through to the gRPC/JSON-RPC servers. Forwards to
+# zaino-serve.
+test_dependencies = ["zaino-serve/test_dependencies"]
+
+# Support for connecting to a zcashd validator node. Opt-in (default off, docs/adr/0005); being
+# deprecated. Forwards to the zaino libs. Build with `--no-default-features`
+# to compile zcashd out end-to-end. See
+# docs/adr/0001-zcashd-support-feature-gate.md.
+zcashd_support = [
+  "zaino-fetch/zcashd_support",
+  "zaino-state/zcashd_support",
+  "zaino-serve/zcashd_support",
+]
+
 # Removes network restrictions.
 no_tls_use_unencrypted_traffic = ["zaino-serve/no_tls_use_unencrypted_traffic"]
 
@@ -24,7 +41,7 @@ no_tls_use_unencrypted_traffic = ["zaino-serve/no_tls_use_unencrypted_traffic"]
 no_tls_with_prometheus = ["no_tls_use_unencrypted_traffic", "prometheus"]
 
 # Prometheus /metrics scrape endpoint.
-prometheus = ["metrics", "metrics-exporter-prometheus", "zaino-state/prometheus"]
+prometheus = ["metrics", "metrics-exporter-prometheus", "zaino-state/prometheus", "zaino-serve/prometheus", "zaino-fetch/prometheus"]
 
 # DANGER: allows the JSON-RPC server to bind to a public (non-private,
 # non-loopback) address. The JSON-RPC interface has NO transport encryption and

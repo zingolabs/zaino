@@ -3,6 +3,8 @@ use super::{
     source::BlockchainSource,
     NON_FINALIZED_DEPTH,
 };
+#[cfg(feature = "prometheus")]
+use crate::metric_names::*;
 use crate::{
     chain_index::types::{
         self, BlockHash, BlockIndex, BlockMetadata, BlockWithMetadata, Height, TreeRootData,
@@ -12,7 +14,6 @@ use crate::{
 };
 use arc_swap::ArcSwap;
 use futures::lock::Mutex;
-use primitive_types::U256;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::mpsc;
 use tracing::{info, instrument, warn};
@@ -329,24 +330,12 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             orchard: orchard_root_and_len,
         };
 
-        // For genesis block, chainwork is just the block's own work (no previous blocks)
-        let genesis_work = ChainWork::from(U256::from(
-            genesis_block
-                .header
-                .difficulty_threshold
-                .to_work()
-                .ok_or_else(|| {
-                    InitError::InvalidNodeData(Box::new(InvalidData(
-                        "Invalid work field of genesis block".to_string(),
-                    )))
-                })?
-                .as_u128(),
-        ));
-
+        // Genesis has no parent — pass None so create_block_context computes
+        // chainwork as just the genesis block's own work.
         Self::create_indexed_block_with_optional_roots(
             genesis_block.as_ref(),
             &tree_roots,
-            genesis_work,
+            None,
             network.clone(),
         )
         .map_err(|e| InitError::InvalidNodeData(Box::new(InvalidData(e))))
@@ -404,7 +393,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         Self::create_indexed_block_with_optional_roots(
             block.as_ref(),
             &tree_roots,
-            ChainWork::from(U256::zero()),
+            None,
             network.clone(),
         )
         .map_err(FinalisedStateError::Custom)
@@ -540,6 +529,8 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 working_snapshot = initial_state.as_ref().clone();
             }
         }
+        self.check_for_nonhigher_reorgs(&mut working_snapshot, None)
+            .await?;
         // Handle non-finalized change listener
         self.handle_nfs_change_listener(&mut working_snapshot)
             .await?;
@@ -606,6 +597,46 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         let indexed_block = block.to_indexed_block(&prev_block, self).await?;
         working_snapshot.add_block_new_chaintip(indexed_block.clone());
         Ok(indexed_block)
+    }
+
+    async fn check_for_nonhigher_reorgs(
+        &self,
+        working_snapshot: &mut NonfinalizedBlockCacheSnapshot,
+        // Callers should provide None. Used for self-recursion case only
+        height_to_recurse_to: Option<Height>,
+    ) -> Result<(), SyncError> {
+        if height_to_recurse_to
+            .is_some_and(|height| height + 100 < working_snapshot.best_tip.height)
+        {
+            return Err(SyncError::ReorgFailure(
+                "reorg detection recursed beyond reason".to_string(),
+            ));
+        }
+        let target_height = height_to_recurse_to.unwrap_or(working_snapshot.best_tip.height);
+        match self
+            .source
+            .get_block(HashOrHeight::Height(zebra_chain::block::Height(u32::from(
+                target_height,
+            ))))
+            .await
+            .map_err(|e| {
+                // TODO: Check error. Determine what kind of error to return, this may be recoverable
+                SyncError::ValidatorConnectionError(NodeConnectionError::UnrecoverableError(
+                    Box::new(e),
+                ))
+            })? {
+            Some(block) => {
+                if block.hash() != working_snapshot.best_tip.hash {
+                    self.handle_reorg(working_snapshot, block.as_ref(), 0)
+                        .await?;
+                }
+                Ok(())
+            }
+            None => {
+                Box::pin(self.check_for_nonhigher_reorgs(working_snapshot, Some(target_height - 1)))
+                    .await
+            }
+        }
     }
 
     /// Handle non-finalized change listener events
@@ -720,6 +751,20 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                         "Non-finalized tip rollback"
                     );
                 }
+
+                #[cfg(feature = "prometheus")]
+                {
+                    if new_best_tip.height == stale_best_tip.height
+                        && new_best_tip.hash != stale_best_tip.hash
+                    {
+                        metrics::counter!(SYNC_REORG_TOTAL).increment(1);
+                        metrics::histogram!(SYNC_REORG_DEPTH).record(0.0);
+                    } else if new_best_tip.height < stale_best_tip.height {
+                        metrics::counter!(SYNC_REORG_TOTAL).increment(1);
+                        metrics::histogram!(SYNC_REORG_DEPTH)
+                            .record((stale_best_tip.height.0 - new_best_tip.height.0) as f64);
+                    }
+                }
             }
             Ok(())
         } else {
@@ -749,7 +794,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         Self::create_indexed_block_with_optional_roots(
             block,
             &tree_roots,
-            *prev_block.chainwork(),
+            Some(*prev_block.chainwork()),
             self.network.clone(),
         )
         .map_err(|e| {
@@ -781,7 +826,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     fn create_indexed_block_with_optional_roots(
         block: &zebra_chain::block::Block,
         tree_roots: &TreeRootData,
-        parent_chainwork: ChainWork,
+        parent_chainwork: Option<ChainWork>,
         network: Network,
     ) -> Result<IndexedBlock, String> {
         let (sapling_root, sapling_size, orchard_root, orchard_size) =

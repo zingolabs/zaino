@@ -73,7 +73,7 @@ script.main = 'source "./tools/scripts/pull-ci-image.sh"'
 
 [tasks.build-image]
 description = "Build the container image for testing artifacts"
-# Note: This task builds the container image from the integration-tests/test_environment
+# Note: This task builds the container image from the live-tests/test_environment
 # directory, which contains the Containerfile and entrypoint.sh for the CI/test environment.
 script_runner = "bash"
 extend = "base-script"
@@ -93,40 +93,111 @@ script.main = 'source "./tools/scripts/push-image.sh"'
 
 [tasks.container-test]
 clear = true
-description = "Run integration tests using the local image"
-# This task runs tests inside the container built from integration-tests/test_environment.
+description = "Engine: run nextest in the local CI container, forwarding args (zcashd_support OFF by default; --with-zcashd adds --features zcashd_support). Devs use `makers test [package|e2e|clientless|live|all]`; live-clientless / live-e2e and the `test` front door call this."
+# This task runs tests inside the container built from live-tests/test_environment.
 # The entrypoint.sh script in the container sets up test binaries (zcashd, zebrad, zcash-cli)
-# by creating symlinks from /home/container_user/artifacts to the expected integration-tests/test_binaries/bins location.
+# by creating symlinks from /home/container_user/artifacts to the expected live-tests/test_binaries/bins location.
 dependencies = ["init-podman-volumes", "ensure-image-exists"]
 script_runner = "bash"
 extend = "base-script"
-script.main = 'source "./tools/scripts/container-test.sh"'
+# The container-test binary (tools/test-runner, a std-only cargo crate — no
+# rust-script needed) owns the podman run; `set -e` makes a test failure abort
+# the script (so `script.post = notify` is skipped on failure, as before).
+script.main = '''
+set -euo pipefail
+cargo run -q --manifest-path tools/test-runner/Cargo.toml --bin container-test -- "${@}"
+'''
 script.post = "makers notify"
 
 # -------------------------------------------------------------------
 
-[tasks.walletless-integration-test]
-description = "Run the walletless-tests workspace inside the CI container (forwards extra args to `cargo nextest run`)"
-env = { WORKSPACE_MANIFEST = "integration-tests/Cargo.toml", WORKSPACE_DESC = "walletless-tests workspace" }
+[tasks.live-clientless]
+description = "Run the `clientless` live-test partition inside the CI container (forwards extra args to `cargo nextest run`)"
+env = { PACKAGE = "clientless", PACKAGE_DESC = "clientless partition" }
 script_runner = "bash"
 extend = "base-script"
 script.main = 'source "./tools/scripts/container-nextest-workspace.sh"'
 
 # -------------------------------------------------------------------
 
-[tasks.wallet-integration-test]
-description = "Run the wallet-tests workspace inside the CI container (forwards extra args to `cargo nextest run`)"
-env = { WORKSPACE_MANIFEST = "integration-tests/wallet-tests/Cargo.toml", WORKSPACE_DESC = "wallet-tests workspace" }
+[tasks.live-e2e]
+description = "Run the `e2e` live-test partition inside the CI container (forwards extra args to `cargo nextest run`)"
+env = { PACKAGE = "e2e", PACKAGE_DESC = "e2e partition" }
 script_runner = "bash"
 extend = "base-script"
 script.main = 'source "./tools/scripts/container-nextest-workspace.sh"'
 
 # -------------------------------------------------------------------
 
-[tasks.integration-test]
-description = "Run both integration-test workspaces (walletless-tests then wallet-tests) and print a combined pass/fail summary"
+# ===================================================================
+# Developer-facing test front door: a single `makers test [SET]` task.
+#
+#   makers test                packaged (the default)
+#   makers test package        packages/* production-crate tests (no validator)
+#   makers test e2e            the e2e live partition
+#   makers test clientless     the clientless live partition
+#   makers test live           both live partitions + combined summary
+#   makers test all            package then live (everything)
+#
+# SET names mirror the crate/dir names (`e2e`, `clientless`); `package`,
+# `live`, and `all` are the groupings. `live` = all non-package tests; `all`
+# = `package` + `live` (see live-tests/CONTEXT.md). Each set delegates to an
+# existing engine rather than re-implementing a run. `--with-zcashd` (handled
+# by the engines) adds the zcashd-backed tests to any set.
+# ===================================================================
+
+[tasks.test]
+# clear = true fully replaces cargo-make's built-in `test` task (which runs
+# `cargo test`); without it our `script` would merge with the builtin `command`.
+clear = true
+description = "Run a test set: `makers test [package|e2e|clientless|live|all]` (default: package). Pass --with-zcashd for the zcashd-backed tests."
 script_runner = "bash"
-script = 'source "./tools/scripts/integration-test-summary.sh"'
+script = '''
+set -uo pipefail
+
+usage() {
+  echo "usage: makers test [package|e2e|clientless|live|all] [-- nextest args]" >&2
+  echo "  package (default)  packages/* tests, no live validator" >&2
+  echo "  e2e | clientless   that single live partition" >&2
+  echo "  live               both live partitions + combined summary" >&2
+  echo "  all                package then live (everything)" >&2
+}
+
+# A non-flag first arg selects the set and must be a known name; a flag first
+# arg (or none) keeps the default `package` and is forwarded to nextest. So
+# `makers test --with-zcashd` runs package with the flag, while a mistyped set
+# name errors instead of silently running the default.
+set="package"
+if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then
+  case "$1" in
+    package|e2e|clientless|live|all) set="$1"; shift ;;
+    *) echo "makers test: unknown set '$1'" >&2; usage; exit 2 ;;
+  esac
+fi
+
+case "$set" in
+  package)    exec makers container-test "$@" ;;
+  e2e)        exec makers live-e2e "$@" ;;
+  clientless) exec makers live-clientless "$@" ;;
+  live)       exec cargo run -q --manifest-path tools/test-runner/Cargo.toml --bin live-summary -- "$@" ;;
+  all)
+    # Run both even if the first fails, then fail if either did, so the
+    # omnibus reflects the whole suite.
+    rc=0
+    makers container-test "$@" || rc=1
+    cargo run -q --manifest-path tools/test-runner/Cargo.toml --bin live-summary -- "$@" || rc=1
+    exit "$rc" ;;
+esac
+'''
+
+# -------------------------------------------------------------------
+
+[tasks.zcashd_test]
+description = "Convenience: the whole suite with the zcashd-backed tests (`makers test all --with-zcashd`)"
+# Delegates to the `test all` front door with the explicit flag — there is no
+# implicit/env-var path to enable zcashd (docs/adr/0005).
+script_runner = "bash"
+script = 'exec makers test all --with-zcashd'
 
 # -------------------------------------------------------------------
 
@@ -184,3 +255,26 @@ script.post = "makers notify"
 description = "Exercise every Makefile.toml task for correctness (idempotent)"
 script_runner = "bash"
 script = 'source "./tools/scripts/verify-all.sh"'
+
+# -------------------------------------------------------------------
+
+# Verify the no-zcashd build compiles: `zcashd_support` is opt-in and being
+# deprecated (docs/adr/0001, 0005), so the default --no-default-features build
+# must stay green or it bit-rots. The reunified workspace (production +
+# live-test crates) is checked in a single pass.
+[tasks.check-no-zcashd-packages]
+description = "cargo check --no-default-features across the whole workspace (zcashd_support off)"
+command = "cargo"
+args = ["check", "--workspace", "--all-targets", "--no-default-features"]
+
+[tasks.check-zaino-proto-heavy]
+description = "Guard: zaino-proto `heavy` must stay enabled under --no-default-features (else the no-zcashd test build silently loses zebra-state/zebra-chain/which)"
+script_runner = "@rust"
+script = { file = "tools/scripts/check-zaino-proto-heavy.rs" }
+
+[tasks.check-no-zcashd]
+description = "Verify the no-zcashd (--no-default-features) build compiles across the workspace, and that zaino-proto `heavy` survives it"
+dependencies = [
+  "check-zaino-proto-heavy",
+  "check-no-zcashd-packages",
+]

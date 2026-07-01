@@ -29,6 +29,7 @@ use zaino_fetch::{
     chain::{transaction::FullTransaction, utils::ParseFromSlice},
     jsonrpsee::{
         connector::{JsonRpSeeConnector, RpcError},
+        raw_transaction::validate_raw_transaction_hex,
         response::{
             address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
             block_deltas::{BlockDelta, BlockDeltas, InputDelta, OutputDelta},
@@ -97,7 +98,6 @@ use tokio::{
     sync::mpsc,
     time::{self, timeout},
 };
-use tonic::async_trait;
 use tower::{Service, ServiceExt};
 use tracing::{info, instrument, warn};
 
@@ -171,7 +171,6 @@ impl Status for StateService {
     }
 }
 
-#[async_trait]
 // #[allow(deprecated)]
 impl ZcashService for StateService {
     const BACKEND_TYPE: BackendType = BackendType::State;
@@ -220,21 +219,27 @@ impl ZcashService for StateService {
 
         info!("Chain syncer launched");
 
-        // Wait for ReadStateService to catch up to primary database:
+        // Wait for ReadStateService to catch up to the validator's best chain tip.
+        // Height alone is insufficient during reorgs: the same height can refer to
+        // different blocks until JSON-RPC and ReadStateService agree on tip hash.
         loop {
-            let server_height = rpc_client.get_blockchain_info().await?.blocks;
+            let blockchain_info = rpc_client.get_blockchain_info().await?;
+            let server_height = blockchain_info.blocks;
+            let server_tip_hash = blockchain_info.best_block_hash;
 
             let syncer_response = read_state_service
                 .ready()
                 .and_then(|service| service.call(ReadRequest::Tip))
                 .await?;
-            let (syncer_height, _) = expected_read_response!(syncer_response, Tip).ok_or(
-                RpcError::new_from_legacycode(LegacyCode::Misc, "no blocks in chain"),
-            )?;
+            let (syncer_height, syncer_tip_hash) =
+                expected_read_response!(syncer_response, Tip).ok_or(
+                    RpcError::new_from_legacycode(LegacyCode::Misc, "no blocks in chain"),
+                )?;
 
-            if server_height.0 == syncer_height.0 {
+            if server_height == syncer_height && server_tip_hash == syncer_tip_hash {
                 info!(
                     height = syncer_height.0,
+                    tip_hash = %syncer_tip_hash,
                     "ReadStateService synced with Zebra"
                 );
                 break;
@@ -242,6 +247,8 @@ impl ZcashService for StateService {
                 info!(
                     syncer_height = syncer_height.0,
                     validator_height = server_height.0,
+                    syncer_tip_hash = %syncer_tip_hash,
+                    validator_tip_hash = %server_tip_hash,
                     "ReadStateService syncing with Zebra"
                 );
                 tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
@@ -625,7 +632,7 @@ impl StateServiceSubscriber {
                         {
                             Ok(_) => {}
                             Err(e) => {
-                                warn!("GetBlockRange channel closed unexpectedly: {}", e);
+                                warn!(%e, "GetBlockRange channel closed unexpectedly");
                             }
                         }
                     }
@@ -643,7 +650,7 @@ impl StateServiceSubscriber {
                             {
                                 Ok(_) => {}
                                 Err(e) => {
-                                    warn!("GetBlockRange channel closed unexpectedly: {}", e);
+                                    warn!(%e, "GetBlockRange channel closed unexpectedly");
                                 }
                             }
                         } else {
@@ -653,7 +660,7 @@ impl StateServiceSubscriber {
                                 .await
                                 .is_err()
                             {
-                                warn!("GetBlockRangeStream closed unexpectedly: {}", e);
+                                warn!(%e, "GetBlockRangeStream closed unexpectedly");
                             }
                         }
                     }
@@ -963,7 +970,6 @@ fn sapling_key_bytes(s: &sapling_crypto::PaymentAddress) -> ([u8; 11], [u8; 32])
     (diversifier, pk_d)
 }
 
-#[async_trait]
 // #[allow(deprecated)]
 impl ZcashIndexer for StateServiceSubscriber {
     type Error = StateServiceError;
@@ -1195,6 +1201,7 @@ impl ZcashIndexer for StateServiceSubscriber {
         &self,
         raw_transaction_hex: String,
     ) -> Result<SentTransactionHash, Self::Error> {
+        validate_raw_transaction_hex(&raw_transaction_hex).map_err(StateServiceError::RpcError)?;
         // Offload to the json rpc connector, as ReadStateService
         // doesn't yet interface with the mempool
         self.rpc_client
@@ -1427,6 +1434,15 @@ impl ZcashIndexer for StateServiceSubscriber {
 
         if let Ok(response) = local_result {
             return Ok(response);
+        }
+
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        if !self
+            .indexer
+            .hash_or_height_known_for_treestate(&snapshot, &fallback_hash_or_height)
+            .await?
+        {
+            return local_result;
         }
 
         self.rpc_client
@@ -1821,67 +1837,8 @@ impl ZcashIndexer for StateServiceSubscriber {
         )?;
         Ok(chain_height)
     }
-
-    /// Helper function, to get the list of taddresses that have sends or reciepts
-    /// within a given block range
-    async fn get_taddress_txids_helper(
-        &self,
-        request: TransparentAddressBlockFilter,
-    ) -> Result<Vec<String>, Self::Error> {
-        let chain_height = self.chain_height().await?;
-        let (start, end) = match request.range {
-            Some(range) => {
-                let start = if let Some(start) = range.start {
-                    match u32::try_from(start.height) {
-                        Ok(height) => Some(height.min(chain_height.0)),
-                        Err(_) => {
-                            return Err(Self::Error::from(tonic::Status::invalid_argument(
-                                "Error: Start height out of range. Failed to convert to u32.",
-                            )))
-                        }
-                    }
-                } else {
-                    None
-                };
-                let end = if let Some(end) = range.end {
-                    match u32::try_from(end.height) {
-                        Ok(height) => Some(height.min(chain_height.0)),
-                        Err(_) => {
-                            return Err(Self::Error::from(tonic::Status::invalid_argument(
-                                "Error: End height out of range. Failed to convert to u32.",
-                            )))
-                        }
-                    }
-                } else {
-                    None
-                };
-                match (start, end) {
-                    (Some(start), Some(end)) => {
-                        if start > end {
-                            (Some(end), Some(start))
-                        } else {
-                            (Some(start), Some(end))
-                        }
-                    }
-                    _ => (start, end),
-                }
-            }
-            None => {
-                return Err(Self::Error::from(tonic::Status::invalid_argument(
-                    "Error: No block range given.",
-                )))
-            }
-        };
-        self.get_address_tx_ids(GetAddressTxIdsRequest::new(
-            vec![request.address],
-            start,
-            end,
-        ))
-        .await
-    }
 }
 
-#[async_trait]
 // #[allow(deprecated)]
 impl LightWalletIndexer for StateServiceSubscriber {
     /// Return the height of the tip of the best chain
@@ -2399,7 +2356,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
                     {
                         Ok(stream) => stream,
                         Err(e) => {
-                            warn!("Error fetching stream from mempool: {:?}", e);
+                            warn!(?e, "error fetching mempool stream");
                             channel_tx
                                 .send(Err(tonic::Status::internal("Error getting mempool stream")))
                                 .await
@@ -2882,7 +2839,7 @@ mod tests {
         use zcash_keys::address::Address;
         use zcash_protocol::consensus::NetworkType;
 
-        // Canonical source: integration-tests/src/lib.rs::rpc::json_rpc
+        // Canonical source: live-tests/clientless/src/lib.rs::rpc::json_rpc
         // Tracked for DRY consolidation: https://github.com/zingolabs/zaino/issues/988
         const SAPLING_ADDRESS: &str = "zregtestsapling1jalqhycwumq3unfxlzyzcktq3n478n82k2wacvl8gwfxk6ahshkxmtp2034qj28n7gl92ka5wca";
         const EXPECTED_DIVERSIFIER: &str = "977e0b930ee6c11e4d26f8";

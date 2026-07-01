@@ -127,8 +127,8 @@ podman tag "${IMAGE_NAME}:${TAG}" "${IMAGE_NAME}:verify-${TAG}" \
 
 # === Tier 3: Container execution ===
 # One test per component: zcashd, zebrad, lightwallet gRPC,
-# wallet-to-validator. Tests live in the integration-tests sub-workspace.
-ITESTS=(--manifest-path integration-tests/Cargo.toml)
+# wallet-to-validator. Tests live in the live-tests sub-workspace.
+ITESTS=(--manifest-path live-tests/Cargo.toml)
 
 run_task "container-test (zcashd)" makers container-test \
     "${ITESTS[@]}" \

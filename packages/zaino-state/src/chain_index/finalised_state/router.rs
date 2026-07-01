@@ -126,7 +126,6 @@ use crate::{
 };
 
 use arc_swap::{ArcSwap, ArcSwapOption};
-use async_trait::async_trait;
 use std::sync::{
     atomic::{AtomicU32, AtomicUsize, Ordering},
     Arc, Mutex,
@@ -475,7 +474,7 @@ impl<T: BlockchainSource> Router<T> {
                     FinalisedSource::Ephemeral(ephemeral_backend) => {
                         ephemeral_backend.update_db_height(db_height)?;
                     }
-                    FinalisedSource::V0(_) | FinalisedSource::V1(_) => {
+                    FinalisedSource::V1(_) => {
                         self.decrement_ephemeral_reference_count(mode);
 
                         return Err(FinalisedStateError::Custom(
@@ -601,7 +600,7 @@ impl<T: BlockchainSource> Router<T> {
 
         match ephemeral.as_ref() {
             FinalisedSource::Ephemeral(ephemeral) => ephemeral.update_db_height(db_height),
-            FinalisedSource::V0(_) | FinalisedSource::V1(_) => Err(FinalisedStateError::Custom(
+            FinalisedSource::V1(_) => Err(FinalisedStateError::Custom(
                 "router ephemeral slot contained a persistent database backend".to_string(),
             )),
         }
@@ -812,7 +811,6 @@ impl<T: BlockchainSource> Router<T> {
 /// `DbCore` methods are routed via capability selection:
 /// - `status()` consults the backend that currently serves `READ_CORE`.
 /// - `shutdown()` attempts to shut down both primary and shadow backends (if present).
-#[async_trait]
 impl<T: BlockchainSource> DbCore for Router<T> {
     /// Returns the runtime status of the database system.
     ///
@@ -869,7 +867,6 @@ impl<T: BlockchainSource> DbCore for Router<T> {
 /// Migration code that intentionally mutates the persistent database must not use these methods
 /// while full ephemeral routing is active; it should use [`Router::primary_backend`] or a dedicated
 /// replacement backend.
-#[async_trait]
 impl<T: BlockchainSource> DbWrite for Router<T> {
     /// Writes a block via the backend currently serving `WRITE_CORE`.
     async fn write_block(&self, blk: IndexedBlock) -> Result<(), FinalisedStateError> {
@@ -917,7 +914,6 @@ impl<T: BlockchainSource> DbWrite for Router<T> {
 ///
 /// These methods represent normal service reads. During ephemeral routing they may be served by the
 /// ephemeral backend rather than the persistent primary backend.
-#[async_trait]
 impl<T: BlockchainSource> DbRead for Router<T> {
     /// Returns the database tip height via the backend currently serving `READ_CORE`.
     async fn db_height(&self) -> Result<Option<Height>, FinalisedStateError> {

@@ -6,11 +6,26 @@ repository = { workspace = true }
 homepage = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
-version = "0.3.0"
+version = "0.3.1"
 
 [features]
+default = []
+
+# Test-only seam: the server `spawn_from_listener` methods, which serve on a
+# pre-bound TcpListener so the test harness can bind 127.0.0.1:0 and hand the
+# open socket over race-free. Not part of the production API.
+test_dependencies = []
+
+# Support for connecting to a zcashd validator node. Opt-in (default off, docs/adr/0005); being
+# deprecated. Forwards to zaino-fetch and zaino-state. See
+# docs/adr/0001-zcashd-support-feature-gate.md.
+zcashd_support = ["zaino-fetch/zcashd_support", "zaino-state/zcashd_support"]
+
 # Removes network restrictions.
 no_tls_use_unencrypted_traffic = ["tonic/tls-native-roots"]
+
+# Prometheus metrics emission (request counting / latency in gRPC handlers).
+prometheus = ["metrics"]
 
 # **Experimental and alpha features**
 # Exposes the **complete** set of experimental / alpha features currently implemented in Zaino.
@@ -32,6 +47,9 @@ zebra-rpc = { workspace = true }
 
 # Tracing
 tracing = { workspace = true }
+
+# Metrics
+metrics = { workspace = true, optional = true }
 
 # Miscellaneous Workspace
 tokio = { workspace = true, features = ["full"] }

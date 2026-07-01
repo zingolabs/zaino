@@ -49,7 +49,7 @@ pub async fn spawn_indexer(
         "Checking connection with node"
     );
     if let Some(donation_address) = &config.donation_address {
-        info!("Instance donation address: {}", donation_address);
+        info!(%donation_address, "instance donation address");
     }
     let zebrad_uri = test_node_and_return_url(
         &config.validator_settings.validator_jsonrpc_listen_address,
@@ -94,27 +94,82 @@ where
         ),
         IndexerError,
     > {
+        Self::launch_inner_impl(service_config, indexer_config, None, None).await
+    }
+
+    /// Launches the indexer on pre-bound listeners (test-only).
+    ///
+    /// The harness binds `127.0.0.1:0` for the gRPC server (and the JSON-RPC
+    /// server when enabled), reads the OS-assigned ports, and hands the open
+    /// sockets here — eliminating the pick-a-port / bind-later race that
+    /// otherwise flakes under parallel test execution. `json_listener` must be
+    /// `Some` exactly when `indexer_config.json_server_settings` is `Some`.
+    #[cfg(feature = "test_dependencies")]
+    pub async fn launch_inner_with_listeners(
+        service_config: Service::Config,
+        indexer_config: ZainodConfig,
+        grpc_listener: std::net::TcpListener,
+        json_listener: Option<std::net::TcpListener>,
+    ) -> Result<
+        (
+            tokio::task::JoinHandle<Result<(), IndexerError>>,
+            Service::Subscriber,
+        ),
+        IndexerError,
+    > {
+        Self::launch_inner_impl(
+            service_config,
+            indexer_config,
+            Some(grpc_listener),
+            json_listener,
+        )
+        .await
+    }
+
+    async fn launch_inner_impl(
+        service_config: Service::Config,
+        indexer_config: ZainodConfig,
+        grpc_listener: Option<std::net::TcpListener>,
+        json_listener: Option<std::net::TcpListener>,
+    ) -> Result<
+        (
+            tokio::task::JoinHandle<Result<(), IndexerError>>,
+            Service::Subscriber,
+        ),
+        IndexerError,
+    > {
         let service = IndexerService::<Service>::spawn(service_config).await?;
         let service_subscriber = service.inner_ref().get_subscriber();
 
         let json_server = match indexer_config.json_server_settings {
-            Some(json_server_config) => Some(
-                JsonRpcServer::spawn(service.inner_ref().get_subscriber(), json_server_config)
+            Some(json_server_config) => Some(match json_listener {
+                #[cfg(feature = "test_dependencies")]
+                Some(listener) => JsonRpcServer::spawn_from_listener(
+                    service.inner_ref().get_subscriber(),
+                    json_server_config,
+                    listener,
+                )
+                .await
+                .unwrap(),
+                _ => JsonRpcServer::spawn(service.inner_ref().get_subscriber(), json_server_config)
                     .await
                     .unwrap(),
-            ),
+            }),
             None => None,
         };
 
-        let grpc_server = TonicServer::spawn(
-            grpc_routes(service.inner_ref().get_subscriber()),
-            GrpcServerConfig {
-                listen_address: indexer_config.grpc_settings.listen_address,
-                tls: indexer_config.grpc_settings.tls,
-            },
-        )
-        .await
-        .unwrap();
+        let routes = grpc_routes(service.inner_ref().get_subscriber());
+        let grpc_config = GrpcServerConfig {
+            listen_address: indexer_config.grpc_settings.listen_address,
+            tls: indexer_config.grpc_settings.tls,
+        };
+        let grpc_server = match grpc_listener {
+            #[cfg(feature = "test_dependencies")]
+            Some(listener) => TonicServer::spawn_from_listener(routes, grpc_config, listener)
+                .await
+                .unwrap(),
+            _ => TonicServer::spawn(routes, grpc_config).await.unwrap(),
+        };
 
         let mut indexer = Self {
             json_server,
@@ -250,18 +305,11 @@ where
             None => StatusType::Offline,
         };
 
-        let service_status_symbol = service_status.get_status_symbol();
-        let json_server_status_symbol = json_server_status.get_status_symbol();
-        let grpc_server_status_symbol = grpc_server_status.get_status_symbol();
-
         info!(
-            "Zaino status check - ChainState Service:{}{} JsonRPC Server:{}{} gRPC Server:{}{}",
-            service_status_symbol,
-            service_status,
-            json_server_status_symbol,
-            json_server_status,
-            grpc_server_status_symbol,
-            grpc_server_status
+            chain_state = %service_status,
+            json_rpc = %json_server_status,
+            grpc = %grpc_server_status,
+            "Zaino status check"
         );
     }
 }

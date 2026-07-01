@@ -1,22 +1,21 @@
 #!/usr/bin/env bash
-# Run one test workspace inside the CI container, forwarding extra args to
-# `cargo nextest run`. The workspace is selected by its manifest so this works
-# for both the integration-tests workspace and the standalone wallet-tests
-# workspace (the zingolib wallet stack lives there, kept out of the
-# zingolib-free integration-tests workspace).
+# Run one live-test partition inside the CI container, forwarding extra args to
+# `cargo nextest run`. The live-test crates are now members of the single root
+# workspace, so the partition is selected by package (`-p`) rather than by a
+# separate workspace manifest.
 #
 # Parameterised by the consuming task's [env]:
-#   WORKSPACE_MANIFEST - path to the workspace Cargo.toml (required)
-#   WORKSPACE_DESC     - human label for the info line (required)
+#   PACKAGE      - the partition crate to test (`clientless` or `e2e`) (required)
+#   PACKAGE_DESC - human label for the info line (required)
 #
-# Sourced as the script.main of the `walletless-integration-test` / `wallet-integration-test`
-# tasks (both extend `base-script`); info comes from the base-script pre-script
+# Sourced as the script.main of the `live-clientless` / `live-e2e` tasks (both
+# extend `base-script`); info comes from the base-script pre-script
 # (tools/scripts/base-script-pre.sh).
 
 set -euo pipefail
 
-info "Running ${WORKSPACE_DESC} via container-test"
-info "-- manifest: ${WORKSPACE_MANIFEST}"
+info "Running ${PACKAGE_DESC} via container-test"
+info "-- package: ${PACKAGE}"
 
 exec makers container-test \
-  --manifest-path "${WORKSPACE_MANIFEST}" "$@"
+  -p "${PACKAGE}" "$@"

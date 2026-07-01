@@ -394,3 +394,29 @@ Bug Fixes / Optimisations
 - Finalised-state sync and migration no longer block serving: large syncs and
   version migrations run in the background while an ephemeral passthrough serves
   finalised reads from the backing source.
+
+--------------------------------------------------------------------------------
+v0 SCHEMA SUPPORT REMOVED (no DB version change)
+Date: 2026-06-18
+--------------------------------------------------------------------------------
+
+Summary
+- The legacy v0 finalised-state backend (`DbV0`) and the v0 -> v1 migration
+  (`Migration0To1`) have been removed. v1 is now the only persistent schema
+  (alongside the ephemeral passthrough).
+- This is a code-only removal: v1's on-disk layout, tables, encoding, checksums,
+  and persisted version marker are unchanged. Existing v1 databases are
+  byte-for-byte unaffected and require no migration.
+
+On-disk schema
+- No changes.
+
+Behaviour change
+- A legacy v0 database found on disk (network directories `live/` / `test/` /
+  `local/` holding `data.mdb` + `lock.mdb`) is no longer opened or migrated.
+  `FinalisedState::spawn` now returns an error directing the operator to remove
+  the directory and restart to resync a v1 database from genesis. v0 carried no
+  unique data (the removed migration rebuilt v1 from the validator from genesis),
+  so no chain data is lost.
+- Requesting database version 0 (`cfg.db_version == 0`) is rejected as an
+  unsupported database version.

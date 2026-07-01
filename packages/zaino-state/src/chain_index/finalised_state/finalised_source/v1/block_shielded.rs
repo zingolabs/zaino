@@ -6,7 +6,6 @@ use super::*;
 ///
 /// Provides access to Sapling / Orchard compact transaction data and per-block commitment tree
 /// metadata.
-#[async_trait]
 impl BlockShieldedExt for DbV1 {
     async fn get_sapling(
         &self,
