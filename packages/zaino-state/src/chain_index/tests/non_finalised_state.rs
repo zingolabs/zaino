@@ -305,7 +305,6 @@ async fn race_pre_mine_finalized_height_block_is_evicted_when_source_advances_mi
     let mc = mockchain.clone();
     mockchain.arm_one_shot_get_block_hook(Box::new(move || mc.mine_blocks(advance)));
 
-    let post_mine_active = initial_active + advance;
     poll_until(
         "NFS tip to reach post-mine height (race window forced)",
         Duration::from_secs(10),
@@ -313,7 +312,7 @@ async fn race_pre_mine_finalized_height_block_is_evicted_when_source_advances_mi
         || async {
             let snapshot = index_reader.snapshot_nonfinalized_state().await.ok()?;
             let nfs = snapshot.resolved_nfs_snapshot()?;
-            (nfs.best_tip.height.0 == post_mine_active).then_some(())
+            (!nfs.blocks.contains_key(&target_hash)).then_some(())
         },
     )
     .await;
