@@ -41,14 +41,16 @@ use crate::chain_index::{
 pub(super) struct PersistentChainWork([u8; 32]);
 
 impl PersistentChainWork {
-    pub(super) fn from_business(cw: &ChainWork) -> Self {
+    pub(super) fn from_business(cw: &Option<ChainWork>) -> Self {
         let mut buf = [0u8; 32];
-        // Big-endian: the value occupies the low-order (last) 16 bytes.
-        buf[16..].copy_from_slice(&cw.as_non_zero_u128().get().to_be_bytes());
+        if let Some(work) = cw {
+            // Big-endian: the value occupies the low-order (last) 16 bytes.
+            buf[16..].copy_from_slice(&work.as_non_zero_u128().get().to_be_bytes());
+        }
         Self(buf)
     }
 
-    pub(super) fn into_business(self) -> io::Result<ChainWork> {
+    pub(super) fn into_business(self) -> io::Result<Option<ChainWork>> {
         // Big-endian: the high-order 16 bytes must be zero for the value to fit u128.
         if self.0[..16] != [0u8; 16] {
             return Err(io::Error::new(
@@ -59,9 +61,7 @@ impl PersistentChainWork {
         let mut be_bytes = [0u8; 16];
         be_bytes.copy_from_slice(&self.0[16..]);
         let value = u128::from_be_bytes(be_bytes);
-        NonZeroU128::new(value)
-            .map(ChainWork::new)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "chainwork is zero"))
+        Ok(NonZeroU128::new(value).map(ChainWork::new))
     }
 }
 
@@ -258,7 +258,9 @@ mod tests {
         let bctx = BlockContext::new(
             BlockHash::from([0x11; 32]),
             BlockHash::from([0x22; 32]),
-            ChainWork::new(NonZeroU128::new(0x0123_4567u128).expect("nonzero")),
+            Some(ChainWork::new(
+                NonZeroU128::new(0x0123_4567u128).expect("nonzero"),
+            )),
             Height(0x0dec_0de0),
         );
         let persisted = PersistentBlockContext::from_business(&bctx);
@@ -281,7 +283,7 @@ mod tests {
         let cw = PersistentChainWork(on_disk)
             .into_business()
             .expect("big-endian on-disk chainwork must decode");
-        assert_eq!(cw.as_non_zero_u128().get(), 17);
+        assert_eq!(cw.unwrap().as_non_zero_u128().get(), 17);
     }
 
     /// Verbatim recovery of the pre-#1313 on-disk `ChainWork` encoder — the
@@ -334,7 +336,7 @@ mod tests {
 
         // Encode: the current encoder reproduces the original's big-endian bytes.
         assert_eq!(
-            PersistentChainWork::from_business(&cw).0,
+            PersistentChainWork::from_business(&Some(cw)).0,
             original_bytes,
             "encode mismatch at {value:#034x}",
         );
@@ -345,7 +347,7 @@ mod tests {
             PersistentChainWork(original_bytes)
                 .into_business()
                 .expect("original on-disk bytes must decode"),
-            cw,
+            Some(cw),
             "decode mismatch at {value:#034x}",
         );
         assert_eq!(original.to_u256(), primitive_types::U256::from(value));

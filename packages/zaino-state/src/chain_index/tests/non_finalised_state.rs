@@ -16,12 +16,14 @@
 //!   absence (the slot does not flip back to "still syncing").
 //! - **G**: `shutdown()` causes the sync loop to terminate cleanly.
 //!
-//! Tests of the cold-start "still-syncing" variant are deliberately
-//! omitted: that variant is being eliminated, and pinning its shape
-//! would create immediate test churn at the refactor PR.
+//! The cold-start "still-syncing" variant has been eliminated (#1096): the NFS
+//! is always present and carries a `Provisional`/`Resolved` availability. The
+//! trailing `best_chaintip_derives_tip_from_nfs_snapshot` test — formerly the
+//! red driver for that elimination — is now a passing regression that pins
+//! `best_chaintip` reading the snapshot's `best_tip` directly.
 
 use super::{load_test_vectors_and_sync_chain_index, poll::poll_until, MockchainMode};
-use crate::chain_index::{finalized_height_floor, ChainIndex};
+use crate::chain_index::{finalization_ceiling, ChainIndex};
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -36,10 +38,10 @@ async fn nfs_lowest_block_matches_finalized_db_tip() {
 
     let snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
     let nfs = snapshot
-        .get_nfs_snapshot()
+        .resolved_nfs_snapshot()
         .expect("NFS exists after harness completes finalized sync");
 
-    let seam_height = finalized_height_floor(mockchain.active_height());
+    let seam_height = finalization_ceiling(mockchain.active_height());
     let nfs_seam_hash = nfs
         .heights_to_hashes
         .get(&seam_height)
@@ -61,6 +63,50 @@ async fn nfs_lowest_block_matches_finalized_db_tip() {
     );
 }
 
+/// Converged full-coverage check, the Resolved counterpart to the Provisional
+/// `passthrough_*` tests: once the indexer has resolved over the real-vector
+/// chain, every height from genesis to the best tip — across the FS/NFS seam —
+/// is served from the snapshot's own data (finalized DB below the seam, NFS
+/// window above it), with no catch-up gap, and height ↔ hash round-trips
+/// through all three query methods.
+#[tokio::test(flavor = "multi_thread")]
+async fn resolved_snapshot_serves_every_block() {
+    let (_blocks, _indexer, index_reader, mockchain) =
+        load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
+
+    let snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
+    assert!(
+        snapshot.is_resolved(),
+        "harness syncs the finalized DB to the seam, so the snapshot is Resolved",
+    );
+
+    for height in 0..=mockchain.active_height() {
+        let height = crate::Height(height);
+        let hash = index_reader
+            .get_block_hash(&snapshot, height)
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("no block served at height {}", height.0));
+
+        assert_eq!(
+            index_reader
+                .get_block_height(&snapshot, hash)
+                .await
+                .unwrap(),
+            Some(height),
+            "get_block_height round-trip at height {}",
+            height.0,
+        );
+
+        let fork_point = index_reader
+            .find_fork_point(&snapshot, &hash)
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("no fork point served at height {}", height.0));
+        assert_eq!(fork_point, (hash, height));
+    }
+}
+
 /// **D**: A block in the NFS is evicted once the finalized DB advances
 /// past its height. Pins the trim step inside `update`
 /// (`non_finalised_state.rs:remove_finalized_blocks`, which retains
@@ -70,11 +116,11 @@ async fn block_is_evicted_from_nfs_when_finalized_advances_past_it() {
     let (_blocks, _indexer, index_reader, mockchain) =
         load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
 
-    let initial_seam_height = finalized_height_floor(mockchain.active_height());
+    let initial_seam_height = finalization_ceiling(mockchain.active_height());
 
     let initial_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
     let initial_nfs = initial_snapshot
-        .get_nfs_snapshot()
+        .resolved_nfs_snapshot()
         .expect("NFS exists after harness");
     let target_hash = *initial_nfs
         .heights_to_hashes
@@ -86,7 +132,6 @@ async fn block_is_evicted_from_nfs_when_finalized_advances_past_it() {
     );
 
     mockchain.mine_blocks(20);
-    let post_mine_active_height = mockchain.active_height();
 
     // Poll the *NFS tip*, not `finalized_state.db_height()`:
     // `fs.sync_to_height` advances the finalized DB BEFORE
@@ -95,20 +140,20 @@ async fn block_is_evicted_from_nfs_when_finalized_advances_past_it() {
     // NFS reaching the post-mine chain tip is only observable after
     // `update` has published the trimmed snapshot.
     poll_until(
-        "NFS tip to catch up to the mined chain (post-trim state)",
+        "NFS tip to catch up to the mined chain (post-trim state) and FS to sync to finalized tip also",
         Duration::from_secs(10),
         Duration::from_millis(25),
         || async {
             let snapshot = index_reader.snapshot_nonfinalized_state().await.ok()?;
-            let nfs = snapshot.get_nfs_snapshot()?;
-            (nfs.best_tip.height.0 == post_mine_active_height).then_some(())
+            let nfs = snapshot.resolved_nfs_snapshot()?;
+            (!nfs.blocks.contains_key(&target_hash)).then_some(())
         },
     )
     .await;
 
     let later_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
     let later_nfs = later_snapshot
-        .get_nfs_snapshot()
+        .resolved_nfs_snapshot()
         .expect("NFS still exists after advance");
 
     assert!(
@@ -136,7 +181,7 @@ async fn nfs_slot_is_monotonic_post_init() {
     for i in 0..10 {
         let snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
         assert!(
-            snapshot.get_nfs_snapshot().is_some(),
+            snapshot.resolved_nfs_snapshot().is_some(),
             "iteration {i}: post-init snapshot must contain an NFS",
         );
         sleep(Duration::from_millis(100)).await;
@@ -170,7 +215,7 @@ async fn shutdown_terminates_sync_loop_cleanly() {
         Duration::from_millis(50),
         || async {
             let snapshot = index_reader.snapshot_nonfinalized_state().await.ok()?;
-            let nfs = snapshot.get_nfs_snapshot()?;
+            let nfs = snapshot.resolved_nfs_snapshot()?;
             (nfs.best_tip.height.0 == target_tip).then_some(())
         },
     )
@@ -210,13 +255,13 @@ async fn shutdown_terminates_sync_loop_cleanly() {
 /// [`MockchainSource::arm_one_shot_get_block_hook`]. The hook fires the
 /// *first* time the worker requests `get_block(Height(_))`, which is the
 /// first call inside iter N's NFS-sync while loop *after* iter N has already
-/// committed to `chain_height = initial_active` and called
-/// `fs.sync_to_height(finalized_height_floor(initial_active))` as a no-op.
+/// committed to `chain_height = initial_active` and synced the finalized DB to
+/// `finalization_ceiling(initial_active)` as a no-op.
 /// From inside the hook the test mines 20 blocks; the same `get_block` call
 /// then reads the *new* `active_chain_height = initial_active + 20` and
 /// returns block `initial_active + 1`, which the worker's loop happily
 /// extends past the iter's commitment all the way to `initial_active + 20`.
-/// The iter's `update` step uses `finalized_height_floor(initial_active)`
+/// The iter's `update` step uses the finalization ceiling for `initial_active`
 /// for the trim and publishes a snapshot whose lowest height is *below* the
 /// post-mine seam.
 ///
@@ -234,11 +279,11 @@ async fn race_pre_mine_finalized_height_block_is_evicted_when_source_advances_mi
         load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
 
     let initial_active = mockchain.active_height();
-    let pre_mine_finalized_height = dbg!(finalized_height_floor(initial_active));
+    let pre_mine_finalized_height = finalization_ceiling(initial_active);
 
     let initial_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
     let initial_nfs = initial_snapshot
-        .get_nfs_snapshot()
+        .resolved_nfs_snapshot()
         .expect("NFS exists after harness");
     let target_hash = *initial_nfs
         .heights_to_hashes
@@ -260,22 +305,21 @@ async fn race_pre_mine_finalized_height_block_is_evicted_when_source_advances_mi
     let mc = mockchain.clone();
     mockchain.arm_one_shot_get_block_hook(Box::new(move || mc.mine_blocks(advance)));
 
-    let post_mine_active = initial_active + advance;
     poll_until(
         "NFS tip to reach post-mine height (race window forced)",
         Duration::from_secs(10),
         Duration::from_millis(25),
         || async {
             let snapshot = index_reader.snapshot_nonfinalized_state().await.ok()?;
-            let nfs = snapshot.get_nfs_snapshot()?;
-            (nfs.best_tip.height.0 == post_mine_active).then_some(())
+            let nfs = snapshot.resolved_nfs_snapshot()?;
+            (!nfs.blocks.contains_key(&target_hash)).then_some(())
         },
     )
     .await;
 
     let later_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
     let later_nfs = later_snapshot
-        .get_nfs_snapshot()
+        .resolved_nfs_snapshot()
         .expect("NFS still exists after advance");
 
     assert!(
@@ -285,4 +329,30 @@ async fn race_pre_mine_finalized_height_block_is_evicted_when_source_advances_mi
          seam (#1126)",
         pre_mine_finalized_height.0,
     );
+}
+
+/// Regression for #1096: `best_chaintip` derives the tip from the
+/// always-present NFS snapshot, never via a validator passthrough.
+///
+/// Before #1096, the cold-start `StillSyncingFinalizedState` variant had no
+/// snapshot tip, so `best_chaintip` round-tripped to the validator and reported
+/// the finalized *floor* (and could surface `database_hole`). Now the snapshot
+/// always carries an NFS `best_tip` and `best_chaintip` reads it directly. This
+/// pins that `best_chaintip` equals the snapshot's `best_tip` — which, after the
+/// harness's sync, is the real chain tip — with no validator call.
+///
+/// multi_thread: depends on the harness's background sync loop advancing the
+/// NFS concurrently with the setup's poll-until-ready loop.
+#[tokio::test(flavor = "multi_thread")]
+async fn best_chaintip_derives_tip_from_nfs_snapshot_not_validator_passthrough() {
+    let (_blocks, _indexer, index_reader, mockchain) =
+        load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
+
+    let snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
+    let tip = index_reader.best_chaintip(&snapshot).await.unwrap();
+
+    // best_chaintip reads the snapshot's best_tip directly (no passthrough)...
+    assert_eq!(tip, snapshot.get_nfs_snapshot().best_tip);
+    // ...which the harness has synced to the real chain tip.
+    assert_eq!(tip.height.0, mockchain.active_height());
 }

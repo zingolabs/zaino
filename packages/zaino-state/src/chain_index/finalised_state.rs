@@ -682,6 +682,15 @@ impl<T: BlockchainSource> FinalisedState<T> {
     where
         T: Send + Sync + 'static,
     {
+        // Honour a source-imposed sync cap (a test/backpressure hook): the
+        // finalized DB may be held below the chain's finalization ceiling,
+        // which — since the non-finalized state leads — holds the snapshot
+        // Provisional with a deterministic catch-up gap.
+        #[cfg(test)]
+        let height = match source.finalized_sync_cap() {
+            Some(cap) => height.min(cap),
+            None => height,
+        };
         if self.db.primary_is_ephemeral() {
             return Ok(());
         }
@@ -1082,7 +1091,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
                     format!("error building block data at height {height}"),
                 ))
             })?;
-            parent_chainwork = Some(chain_block.context.chainwork);
+            parent_chainwork = chain_block.context.chainwork;
 
             db.write_block_v1_0_0(chain_block).await?;
         }

@@ -5,6 +5,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this library adheres to Rust's notion of
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased not landing in 0.4.0]
+### Added
+
+### Changed
+- `chain_index::types::BlockContext`'s chainwork field is now optional
+- `chain_index::ChainIndexSnapshot` has been completely overhauled, is now
+  a struct instead of an enum, with completely private internals. Callers
+  must now interface with it only by passing it to a ChainIndex implementor,
+  as intended.
+
 ## [Unreleased]
 
 ### Added
@@ -47,6 +57,7 @@ and this library adheres to Rust's notion of
   can no longer inflate each other's peak memory.
 ### Deprecated
 ### Removed
+- `NonFinalizedSnapshot::max_serviceable_height`
 ### Fixed
 - The finalised-state txout-set accumulator rebuild at chain tip no longer
   OOM-crashes on memory-constrained hosts. It auto-shards its in-memory spent set

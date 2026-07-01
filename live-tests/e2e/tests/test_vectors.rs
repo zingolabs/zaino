@@ -399,7 +399,7 @@ async fn create_200_block_regtest_chain_vectors() {
             // Update parent block
             parent_block_sapling_tree_size = chain_block.commitment_tree_data().sizes().sapling();
             parent_block_orchard_tree_size = chain_block.commitment_tree_data().sizes().orchard();
-            parent_chain_work = Some(*chain_block.chainwork());
+            parent_chain_work = *chain_block.chainwork();
 
             data.push((height, zebra_block, block_roots, block_treestate));
         }

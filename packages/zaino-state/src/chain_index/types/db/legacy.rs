@@ -40,7 +40,11 @@ use crate::chain_index::encoding::{
     read_vec, version, write_fixed_le, write_i64_le, write_option, write_u16_be, write_u32_be,
     write_u32_le, write_u64_le, write_vec, FixedEncodedLen, ZainoVersionedSerde,
 };
+use crate::chain_index::non_finalised_state::{
+    NonfinalizedBlockCacheSnapshot, ProvisionalCumulativeWork,
+};
 use crate::chain_index::types::{BlockContext, ChainWork, CompactDifficulty};
+use crate::chain_index::NonFinalizedSnapshot as _;
 
 use super::commitment::{CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes};
 
@@ -718,8 +722,6 @@ impl FixedEncodedLen for Outpoint {
     const ENCODED_LEN: usize = 32 + 4;
 }
 
-// *** Block Level Objects ***
-
 /// Essential block header fields required for chain validation and serving block header data.
 ///
 /// NOTE: Optional fields may be added for:
@@ -1040,13 +1042,30 @@ impl IndexedBlock {
     }
 
     /// Returns the cumulative chainwork.
-    pub fn chainwork(&self) -> &ChainWork {
+    pub fn chainwork(&self) -> &Option<ChainWork> {
         self.context.chainwork()
     }
 
     /// Returns the single-block proof-of-work contribution.
     pub fn work(&self) -> ChainWork {
         self.data.bits.to_work()
+    }
+
+    /// Cumulative work relative to the seam. Use this — never an absolute
+    /// chainwork — for best-tip selection within the non-finalized window.
+    pub(crate) fn provisional_cumulative_work(
+        &self,
+        snapshot: &NonfinalizedBlockCacheSnapshot,
+    ) -> ProvisionalCumulativeWork {
+        let mut work = ProvisionalCumulativeWork::new(&ChainWork::from(self.data.bits.to_work()));
+        let mut parent_hash = self.context.parent_hash;
+        while let Some(prev_block) = snapshot.get_chainblock_by_hash(&parent_hash) {
+            work = work
+                .add_block_work(&ChainWork::from(prev_block.data.bits.to_work()))
+                .expect("chainwork integer overflow");
+            parent_hash = prev_block.context.parent_hash;
+        }
+        work
     }
 
     /// Converts this `IndexedBlock` into a CompactBlock protobuf message using proto v4 format.
@@ -1058,33 +1077,53 @@ impl IndexedBlock {
     ///       with tx data being added selectively here.
     pub fn to_compact_block(&self) -> zaino_proto::proto::compact_formats::CompactBlock {
         // NOTE: Returns u64::MAX if the block is not in the best chain.
-        let height: u64 = self.height().0.into();
+        compact_block_from_parts(
+            self.height(),
+            self.hash(),
+            &self.context.parent_hash,
+            self.data().time(),
+            self.transactions(),
+            self.commitment_tree_data(),
+        )
+    }
+}
 
-        let hash = self.hash().0.to_vec();
-        let prev_hash = self.context.parent_hash.0.to_vec();
+/// Build a proto-v4 `CompactBlock` from the parts shared by [`IndexedBlock`]
+/// and the non-finalized `ProvisionalBlock`. Compact-block construction needs
+/// no cumulative chainwork, so both block types produce identical output via
+/// this one assembly — no duplication.
+pub(crate) fn compact_block_from_parts(
+    height: Height,
+    hash: &BlockHash,
+    parent_hash: &BlockHash,
+    time: i64,
+    transactions: &[CompactTxData],
+    commitment_tree_data: &CommitmentTreeData,
+) -> zaino_proto::proto::compact_formats::CompactBlock {
+    let height: u64 = height.0.into();
+    let hash = hash.0.to_vec();
+    let prev_hash = parent_hash.0.to_vec();
 
-        let vtx: Vec<zaino_proto::proto::compact_formats::CompactTx> = self
-            .transactions()
-            .iter()
-            .map(|tx| tx.to_compact_tx(None))
-            .collect();
+    let vtx: Vec<zaino_proto::proto::compact_formats::CompactTx> = transactions
+        .iter()
+        .map(|tx| tx.to_compact_tx(None))
+        .collect();
 
-        let sapling_commitment_tree_size = self.commitment_tree_data().sizes().sapling();
-        let orchard_commitment_tree_size = self.commitment_tree_data().sizes().orchard();
+    let sapling_commitment_tree_size = commitment_tree_data.sizes().sapling();
+    let orchard_commitment_tree_size = commitment_tree_data.sizes().orchard();
 
-        zaino_proto::proto::compact_formats::CompactBlock {
-            proto_version: 0,
-            height,
-            hash,
-            prev_hash,
-            time: self.data().time() as u32,
-            header: vec![],
-            vtx,
-            chain_metadata: Some(zaino_proto::proto::compact_formats::ChainMetadata {
-                sapling_commitment_tree_size,
-                orchard_commitment_tree_size,
-            }),
-        }
+    zaino_proto::proto::compact_formats::CompactBlock {
+        proto_version: 0,
+        height,
+        hash,
+        prev_hash,
+        time: time as u32,
+        header: vec![],
+        vtx,
+        chain_metadata: Some(zaino_proto::proto::compact_formats::ChainMetadata {
+            sapling_commitment_tree_size,
+            orchard_commitment_tree_size,
+        }),
     }
 }
 
@@ -1260,7 +1299,7 @@ impl
         let context = BlockContext::new(
             BlockHash::from(hash),
             BlockHash::from(parent_hash),
-            chainwork,
+            Some(chainwork),
             height,
         );
 

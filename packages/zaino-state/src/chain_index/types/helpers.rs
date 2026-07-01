@@ -140,7 +140,7 @@ impl<'a> BlockWithMetadata<'a> {
     }
 
     /// Extract block header data
-    fn extract_block_data(&self) -> Result<BlockData, String> {
+    pub(crate) fn extract_block_data(&self) -> Result<BlockData, String> {
         let block = self.block;
         let network = &self.metadata.network;
 
@@ -165,7 +165,7 @@ impl<'a> BlockWithMetadata<'a> {
     }
 
     /// Extract and process all transactions in the block
-    fn extract_transactions(&self) -> Result<Vec<CompactTxData>, String> {
+    pub(crate) fn extract_transactions(&self) -> Result<Vec<CompactTxData>, String> {
         let mut transactions = Vec::new();
 
         for (i, txn) in self.block.transactions.iter().enumerate() {
@@ -305,11 +305,16 @@ impl<'a> BlockWithMetadata<'a> {
             None => block_work,
         };
 
-        Ok(BlockContext::new(hash, parent_hash, chainwork, height))
+        Ok(BlockContext::new(
+            hash,
+            parent_hash,
+            Some(chainwork),
+            height,
+        ))
     }
 
     /// Create commitment tree data from metadata
-    fn create_commitment_tree_data(&self) -> super::db::CommitmentTreeData {
+    pub(crate) fn create_commitment_tree_data(&self) -> super::db::CommitmentTreeData {
         let commitment_tree_roots = super::db::CommitmentTreeRoots::new(
             <[u8; 32]>::from(self.metadata.sapling_root),
             <[u8; 32]>::from(self.metadata.orchard_root),

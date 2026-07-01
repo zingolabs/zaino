@@ -93,7 +93,7 @@ impl DbWrite for DbV1 {
                             Err(e) => Err(FinalisedStateError::LmdbError(e)),
                         }
                     })?;
-                    (tip.0 + 1, chainwork)
+                    (tip.0 + 1, chainwork.flatten())
                 }
             };
 
@@ -162,7 +162,7 @@ impl DbWrite for DbV1 {
                     #[cfg(feature = "prometheus")]
                     metrics::histogram!(SYNC_BLOCK_BUILD_SECONDS)
                         .record(build_start.elapsed().as_secs_f64());
-                    parent_chainwork = Some(block.context.chainwork);
+                    parent_chainwork = block.context.chainwork;
                     batch_bytes = batch_bytes.saturating_add(approx_indexed_block_bytes(&block));
                     batch.push(block);
                     next += 1;

@@ -26,7 +26,7 @@ pub(crate) fn canonical_blockheaderdata() -> BlockHeaderData {
     let solution = EquihashSolution::Standard([6u8; 1344]);
     let bits = CompactDifficulty::try_from_bits(TEST_VALID_NBITS).expect("valid nBits");
 
-    let bctx = BlockContext::new(hash, parent_hash, chainwork, height);
+    let bctx = BlockContext::new(hash, parent_hash, Some(chainwork), height);
     let bdata = BlockData::new(1, 2, [3u8; 32], [4u8; 32], bits, [5u8; 32], solution);
     BlockHeaderData::new(bctx, bdata)
 }

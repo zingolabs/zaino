@@ -118,7 +118,7 @@ pub(crate) fn indexed_block_chain(
         );
         let chain_block =
             IndexedBlock::try_from(BlockWithMetadata::new(&vector.zebra_block, metadata)).unwrap();
-        parent_chain_work = Some(chain_block.context.chainwork);
+        parent_chain_work = chain_block.context.chainwork;
         chain_block
     })
 }
