@@ -54,11 +54,64 @@
 
 use std::marker::PhantomData;
 
-use crate::descriptor::Descriptor;
+use crate::descriptor::{Append, BlockLocal, Descriptor, Fold, Monoidal};
 use crate::pipeline::{IndexPipeline, PipelineError};
 use crate::traits::{
     DepsReader, ExtractLocal, IndexDef, MergeAppend, MergeFold, MergeMonoidal, WriteOp,
 };
+
+// ===========================================================================
+// BridgeDispatch — sealed trait mapping (Scope, Composition) → bridge fn
+// ===========================================================================
+
+mod sealed {
+    pub trait Sealed {}
+}
+
+/// Maps a (Scope, Composition) marker pair to the correct bridge constructor.
+///
+/// Sealed — only implemented in this module for the marker pairs defined
+/// in [`crate::descriptor`]. The blanket [`IntoIndexPipeline`] impl in
+/// [`crate::pipeline`] delegates to this trait, so index authors never
+/// need to write `IntoIndexPipeline` by hand.
+///
+/// [`IntoIndexPipeline`]: crate::pipeline::IntoIndexPipeline
+pub trait BridgeDispatch<I: IndexDef>: sealed::Sealed {
+    /// Produce the boxed pipeline for index `I`.
+    fn dispatch() -> Box<dyn IndexPipeline<I::Context>>;
+}
+
+// Seal the marker pairs.
+impl sealed::Sealed for (BlockLocal, Append) {}
+impl sealed::Sealed for (BlockLocal, Monoidal) {}
+impl sealed::Sealed for (BlockLocal, Fold) {}
+
+impl<I> BridgeDispatch<I> for (BlockLocal, Append)
+where
+    I: ExtractLocal + MergeAppend + IndexDef<Scope = BlockLocal, Composition = Append>,
+{
+    fn dispatch() -> Box<dyn IndexPipeline<I::Context>> {
+        local_append::<I, _>()
+    }
+}
+
+impl<I> BridgeDispatch<I> for (BlockLocal, Monoidal)
+where
+    I: ExtractLocal + MergeMonoidal + IndexDef<Scope = BlockLocal, Composition = Monoidal>,
+{
+    fn dispatch() -> Box<dyn IndexPipeline<I::Context>> {
+        local_monoidal::<I, _>()
+    }
+}
+
+impl<I> BridgeDispatch<I> for (BlockLocal, Fold)
+where
+    I: ExtractLocal + MergeFold + IndexDef<Scope = BlockLocal, Composition = Fold>,
+{
+    fn dispatch() -> Box<dyn IndexPipeline<I::Context>> {
+        local_fold::<I, _>()
+    }
+}
 
 // ===========================================================================
 // BlockLocal × Append

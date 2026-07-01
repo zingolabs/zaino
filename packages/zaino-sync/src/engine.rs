@@ -7,7 +7,8 @@
 use std::collections::HashSet;
 
 use crate::backend::{Backend, BackendError, BackendWriter};
-use crate::dag::DependencyDag;
+use crate::dag::{DagError, DependencyDag};
+use crate::index_set::IndexSet;
 use crate::pipeline::{IndexPipeline, PipelineError};
 use crate::primitives::IndexId;
 
@@ -21,6 +22,9 @@ pub struct EngineConfig {
 /// Errors during sync.
 #[derive(Debug, thiserror::Error)]
 pub enum SyncError {
+    /// The dependency graph is invalid.
+    #[error(transparent)]
+    Dag(#[from] DagError),
     /// An index's extract or merge step failed.
     #[error(transparent)]
     Pipeline(#[from] PipelineError),
@@ -60,6 +64,24 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
             backend,
             config,
         }
+    }
+
+    /// Create an engine from a declarative [`IndexSet`].
+    ///
+    /// Builds the dependency DAG from the collected descriptors,
+    /// validates it, and wires up all pipelines.
+    pub fn from_index_set(
+        set: IndexSet<Ctx>,
+        backend: B,
+        config: EngineConfig,
+    ) -> Result<Self, SyncError> {
+        let (dag, indexes) = set.build()?;
+        Ok(Self {
+            dag,
+            indexes,
+            backend,
+            config,
+        })
     }
 
     /// Process a range of blocks through the full pipeline.

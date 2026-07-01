@@ -317,9 +317,22 @@ impl MergeFold for RunningSumIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bridge;
-    use crate::dag::DependencyDag;
     use crate::engine::{EngineConfig, SyncEngine};
+    use crate::index_set::IndexSet;
+
+    /// Helper: build an engine from the three toy indexes.
+    fn build_engine(
+        backend: InMemoryBackend,
+        batch_size: u32,
+    ) -> SyncEngine<TestBlockContext, InMemoryBackend> {
+        let set = IndexSet::new()
+            .with::<ValueIndex>()
+            .with::<CountIndex>()
+            .with::<RunningSumIndex>();
+
+        SyncEngine::from_index_set(set, backend, EngineConfig { batch_size })
+            .expect("valid index set")
+    }
 
     #[test]
     fn end_to_end_single_batch() {
@@ -329,20 +342,7 @@ mod tests {
             .expect("provisioning succeeds");
 
         let backend = InMemoryBackend::new();
-        let mut engine = {
-            let descriptors = vec![
-                ValueIndex::descriptor(),
-                CountIndex::descriptor(),
-                RunningSumIndex::descriptor(),
-            ];
-            let dag = DependencyDag::build(descriptors).expect("valid DAG");
-            let indexes: Vec<Box<dyn crate::pipeline::IndexPipeline<TestBlockContext>>> = vec![
-                bridge::local_append::<ValueIndex, _>(),
-                bridge::local_monoidal::<CountIndex, _>(),
-                bridge::local_fold::<RunningSumIndex, _>(),
-            ];
-            SyncEngine::new(dag, indexes, backend.clone(), EngineConfig { batch_size: 10 })
-        };
+        let mut engine = build_engine(backend.clone(), 10);
 
         engine.sync_range(&blocks).expect("sync succeeds");
 
@@ -378,21 +378,8 @@ mod tests {
             .expect("provisioning succeeds");
 
         let backend = InMemoryBackend::new();
-        let mut engine = {
-            let descriptors = vec![
-                ValueIndex::descriptor(),
-                CountIndex::descriptor(),
-                RunningSumIndex::descriptor(),
-            ];
-            let dag = DependencyDag::build(descriptors).expect("valid DAG");
-            let indexes: Vec<Box<dyn crate::pipeline::IndexPipeline<TestBlockContext>>> = vec![
-                bridge::local_append::<ValueIndex, _>(),
-                bridge::local_monoidal::<CountIndex, _>(),
-                bridge::local_fold::<RunningSumIndex, _>(),
-            ];
-            // Batch size 3: blocks [0,1,2], [3,4,5], [6,7,8], [9]
-            SyncEngine::new(dag, indexes, backend.clone(), EngineConfig { batch_size: 3 })
-        };
+        // Batch size 3: blocks [0,1,2], [3,4,5], [6,7,8], [9]
+        let mut engine = build_engine(backend.clone(), 3);
 
         engine.sync_range(&blocks).expect("sync succeeds");
 

@@ -47,8 +47,9 @@
 //! - Streaming extraction (process blocks as the provisioner delivers
 //!   them, rather than buffering a full batch upfront).
 
+use crate::bridge::BridgeDispatch;
 use crate::descriptor::Descriptor;
-use crate::traits::{ExtractError, WriteOp};
+use crate::traits::{ExtractError, IndexDef, WriteOp};
 
 /// Errors during pipeline operations.
 #[derive(Debug, thiserror::Error)]
@@ -91,4 +92,32 @@ pub trait IndexPipeline<Ctx>: Send + Sync {
         blocks: &[Ctx],
         deps: Option<&crate::traits::DepsReader>,
     ) -> Result<Vec<WriteOp>, PipelineError>;
+}
+
+/// Capstone trait: a fully-defined index that can produce its own pipeline.
+///
+/// An index implements [`IndexDef`] + one extract trait + one merge trait
+/// to define its behaviour. `IntoIndexPipeline` is then derived
+/// automatically via a blanket impl — the (Scope, Composition) marker
+/// pair selects the right bridge through [`BridgeDispatch`].
+///
+/// This is the trait that [`IndexSet::with`](crate::index_set::IndexSet::with)
+/// requires. Index authors never implement it by hand.
+///
+/// [`BridgeDispatch`]: crate::bridge::BridgeDispatch
+pub trait IntoIndexPipeline<Ctx: Send + Sync + 'static>: IndexDef<Context = Ctx> {
+    /// Produce a boxed pipeline for this index.
+    fn into_pipeline() -> Box<dyn IndexPipeline<Ctx>>;
+}
+
+/// Blanket impl: any index whose (Scope, Composition) pair has a
+/// [`BridgeDispatch`] impl gets `IntoIndexPipeline` for free.
+impl<I> IntoIndexPipeline<I::Context> for I
+where
+    I: IndexDef,
+    (I::Scope, I::Composition): BridgeDispatch<I>,
+{
+    fn into_pipeline() -> Box<dyn IndexPipeline<I::Context>> {
+        <(I::Scope, I::Composition) as BridgeDispatch<I>>::dispatch()
+    }
 }

@@ -11,6 +11,7 @@ pub mod bridge;
 pub mod dag;
 pub mod descriptor;
 pub mod engine;
+pub mod index_set;
 pub mod pipeline;
 pub mod primitives;
 pub mod progress;
