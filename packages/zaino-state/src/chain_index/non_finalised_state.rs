@@ -99,7 +99,7 @@ impl ChainIndexSnapshot {
 #[derive(Debug, Clone)]
 /// A snapshot of the nonfinalized state as it existed when this was created.
 pub(crate) struct NonfinalizedBlockCacheSnapshot {
-    /// the set of all known blocks < 100 blocks old
+    /// the set of all known blocks less than `NON_FINALIZED_DEPTH` blocks old
     /// this includes all blocks on-chain, as well as
     /// all blocks known to have been on-chain before being
     /// removed by a reorg. Blocks reorged away have no height.
@@ -606,7 +606,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         height_to_recurse_to: Option<Height>,
     ) -> Result<(), SyncError> {
         if height_to_recurse_to
-            .is_some_and(|height| height + 100 < working_snapshot.best_tip.height)
+            .is_some_and(|height| height + MAX_NFS_DEPTH < working_snapshot.best_tip.height)
         {
             return Err(SyncError::ReorgFailure(
                 "reorg detection recursed beyond reason".to_string(),

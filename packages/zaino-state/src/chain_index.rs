@@ -2,7 +2,7 @@
 //!
 //! Components:
 //! - Mempool: Holds mempool transactions
-//! - NonFinalisedState: Holds block data for the top 100 blocks of all chains.
+//! - NonFinalisedState: Holds block data for the top `NON_FINALIZED_DEPTH` blocks of all chains.
 //! - FinalisedState: Holds block data for the remainder of the best chain.
 //!
 //! - Chain: Holds chain / block structs used internally by the ChainIndex.
@@ -196,7 +196,7 @@ fn branch_len_to_active_chain(
 /// The interface to the chain index.
 ///
 /// `ChainIndex` provides a unified interface for querying blockchain data from different
-/// backend sources. It combines access to both finalized state (older than 100 blocks) and
+/// backend sources. It combines access to both finalized state (older than `NON_FINALIZED_DEPTH` blocks) and
 /// non-finalized state (recent blocks that may still be reorganized).
 ///
 /// # Implementation
@@ -1621,7 +1621,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     /// between the given heights.
     /// Returns None if the specified start height
     /// is greater than the snapshot's tip and greater
-    /// than the validator's finalized height (100 blocks below tip)
+    /// than the validator's finalized height (`NON_FINALIZED_DEPTH` blocks below tip)
     fn get_block_range(
         &self,
         snapshot: &Self::Snapshot,
@@ -1773,9 +1773,11 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     ) -> Result<Option<CompactBlockStream>, Self::Error> {
         let chain_tip_height = self.best_chaintip(nonfinalized_snapshot).await?.height;
 
-        // The nonfinalized cache holds the tip block plus the previous 99 blocks (100 total),
-        // so the lowest possible cached height is `tip - 99` (saturating at 0).
-        let lowest_nonfinalized_height = types::Height(chain_tip_height.0.saturating_sub(99));
+        // The finalised state serves heights up to `finalized_height_floor(tip)`
+        // (= `tip - NON_FINALIZED_DEPTH`, saturating at genesis); the non-finalised cache serves
+        // everything above it, so the lowest non-finalised height is one past the finalised floor.
+        let lowest_nonfinalized_height =
+            types::Height(finalized_height_floor(chain_tip_height.0).0 + 1);
 
         let is_ascending = start_height <= end_height;
 
