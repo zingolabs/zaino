@@ -16,3 +16,6 @@ pub mod primitives;
 pub mod progress;
 pub mod provisioner;
 pub mod traits;
+
+#[cfg(test)]
+mod testing;
