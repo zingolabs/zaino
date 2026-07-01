@@ -33,7 +33,7 @@ jobs:
 
       - name: Determine Rust version from rust-toolchain.toml
         run: |
-          echo "RUST_VERSION=$(./tools/scripts/get-rust-version.sh)" >> $GITHUB_ENV
+          echo "RUST_VERSION=$(cargo run -q --manifest-path tools/workbench/Cargo.toml --bin get-rust-version)" >> $GITHUB_ENV
 
       - name: Extract metadata for Docker (default image)
         id: meta-default

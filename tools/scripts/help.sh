@@ -87,7 +87,7 @@ echo ""
 echo "Environment:"
 echo "  ZCASH_VERSION, ZEBRA_VERSION  Defined by: .env.testing-artifacts"
 echo "  RUST_VERSION                  Derived from rust-toolchain.toml"
-echo "                                via tools/scripts/get-rust-version.sh"
+echo "                                via the workbench get-rust-version bin"
 echo ""
 echo "Build Context:"
 echo "  live-tests/test_environment/   Directory containing the \
