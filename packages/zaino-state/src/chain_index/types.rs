@@ -50,5 +50,6 @@ pub use primitives::{
 
 // Re-export helper types
 pub use helpers::{
-    BestChainLocation, BlockMetadata, BlockWithMetadata, NonBestChainLocation, TreeRootData,
+    BestChainLocation, BlockMetadata, BlockWithMetadata, ChainScope, NonBestChainLocation,
+    TreeRootData,
 };

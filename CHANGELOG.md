@@ -51,6 +51,9 @@ and this library adheres to Rust's notion of
   `ephemeral_finalised_state` config option (default `false`) that runs Zaino
   without a persistent finalised-state database, serving finalised reads from
   the backing validator via an ephemeral passthrough.
+- `ChainIndex::get_outpoint_spenders` — resolves, for each transparent
+  outpoint, the txid that spent it on the best chain (or `None` if unspent),
+  with a `ChainScope` selecting finalised-only or full-chain search.
 ### Changed
 - Finalised-state sync and the v1.1.0 -> v1.2.0 migration are substantially
   faster on large/mainnet caches. The txout-set accumulator is built in bulk at

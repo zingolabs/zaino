@@ -8,6 +8,11 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- `ChainIndex` / `NodeBackedChainIndexSubscriber` gain `get_outpoint_spenders` —
+  for each transparent `Outpoint`, returns the txid that spent it on the best
+  chain (index-aligned with the input, `None` if unspent or unknown).
+- `chain_index::types::ChainScope` — new enum (`Finalised`, `FullChain`)
+  selecting how far `get_outpoint_spenders` searches.
 - Optional ("ephemeral") finalised state: with `ChainIndexConfig::ephemeral`,
   no finalised database is opened. Finalised reads are served by an ephemeral
   passthrough (`finalised_source::ephemeral::EphemeralFinalisedState`) directly
