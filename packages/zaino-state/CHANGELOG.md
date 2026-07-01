@@ -7,16 +7,13 @@ and this library adheres to Rust's notion of
 
 ## [Unreleased not landing in 0.4.0]
 ### Added
-- `chain_index::ChainBlock`
-- `chain_index::non_finalized_state::ProvisionalBlock`,
 
 ### Changed
-- `chain_index::ChainIndex` methods now return `ChainBlock`s in
-  place of `IndexedBlock`s. ChainBlock enum may not contain ChainWork.
-- `chain_index::NonFinalizedSnapshot` trait methods now return
-- `ProvisionalBlock`s instead of `ChainBlocks`. TODO: Before release,
-  this will return `ChainBlock`s, where they are reified as `IndexedBlocks`
-  after sync completes
+- `chain_index::types::BlockContext`'s chainwork field is now optional
+- `chain_index::ChainIndexSnapshot` has been completely overhauled, is now
+  a struct instead of an enum, with completely private internals. Callers
+  must now interface with it only by passing it to a ChainIndex implementor,
+  as intended.
 
 ## [Unreleased]
 
