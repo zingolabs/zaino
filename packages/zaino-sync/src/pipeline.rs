@@ -5,41 +5,50 @@
 //! needs to hold heterogeneous indexes in a single collection and
 //! dispatch uniformly.
 //!
-//! The solution: erase only what must cross the trait-object boundary.
-//! `Delta`, `Accumulator`, and `FoldState` stay *inside* the index —
-//! they never leave its pipeline methods. The engine sees only:
+//! [`IndexPipeline<Ctx>`] is the trait-object-safe interface the engine
+//! works with. Each index's `Delta`, `Accumulator`, and `FoldState` stay
+//! *inside* its bridge implementation — they never cross the trait
+//! boundary. The engine sees only `&[Ctx]` in, `Vec<WriteOp>` out.
 //!
-//! - `Ctx` in (the provisioner's block context — shared, concrete type)
-//! - `Vec<WriteOp>` out
+//! Bridge types in [`crate::bridge`] connect the typed traits to this
+//! interface.
 //!
-//! No `dyn Any`, no downcasting, no runtime type mismatches.
+//! # Current limitation: `process_batch` collapses extract and merge
+//!
+//! The current interface exposes a single `process_batch` method that
+//! takes `&[Ctx]` and returns `Vec<WriteOp>`. This means the engine
+//! cannot control extraction parallelism — it hands a whole batch to
+//! each index and gets final results back. Extraction within the bridge
+//! runs sequentially.
+//!
+//! This is a **conscious MVP decision** to validate that the type algebra
+//! composes end-to-end without solving the intermediate type problem yet.
+//!
+//! # True north: split `extract_one` + `merge_batch`
+//!
+//! The intended design splits the interface into two methods so the
+//! engine can schedule per-block extractions onto a shared thread pool
+//! and control parallelism across indexes:
+//!
+//! ```text
+//! fn extract_one(&self, ctx: &Ctx, deps: ...) -> Result<DeltaToken, ...>;
+//! fn merge_batch(&self, tokens: Vec<DeltaToken>) -> Result<Vec<WriteOp>, ...>;
+//! ```
+//!
+//! `DeltaToken` would be an opaque handle (e.g., an index into a
+//! bridge-internal `Vec<Delta>`) that does not expose the concrete
+//! `Delta` type across the trait boundary — no `dyn Any`, no
+//! downcasting. The bridge owns the typed storage; the engine holds
+//! and routes opaque tokens.
+//!
+//! This split is required to unlock:
+//! - Per-block parallel extraction for `BlockLocal` indexes.
+//! - Engine-controlled work-stealing across indexes sharing a thread pool.
+//! - Streaming extraction (process blocks as the provisioner delivers
+//!   them, rather than buffering a full batch upfront).
 
 use crate::descriptor::Descriptor;
-use crate::traits::{DepsReader, ExtractError, WriteOp};
-
-/// Per-block opaque contribution from one index's extraction.
-///
-/// The engine holds these between extract and merge. The concrete
-/// content is only meaningful to the index that produced it — the
-/// engine never inspects it.
-///
-/// Implemented as an index-specific closure over the delta, avoiding
-/// `dyn Any`. The merge step calls back into the index to consume it.
-pub struct BlockContribution {
-    write_ops: Vec<WriteOp>,
-}
-
-impl BlockContribution {
-    /// Create a contribution from pre-computed write ops (Append path).
-    pub fn from_write_ops(ops: Vec<WriteOp>) -> Self {
-        Self { write_ops: ops }
-    }
-
-    /// Consume into write operations.
-    pub fn into_write_ops(self) -> Vec<WriteOp> {
-        self.write_ops
-    }
-}
+use crate::traits::{ExtractError, WriteOp};
 
 /// Errors during pipeline operations.
 #[derive(Debug, thiserror::Error)]
@@ -58,41 +67,28 @@ pub enum PipelineError {
 /// indexes, kept concrete (not erased). The engine is generic over
 /// `Ctx` once, not per-index.
 ///
-/// Each method on this trait encapsulates a full extract-or-merge step.
-/// The `Delta` type never crosses this boundary — it lives and dies
-/// inside the index's implementation of these methods.
+/// Each call to [`process_batch`](Self::process_batch) encapsulates the
+/// full extract → merge → to_write_ops pipeline for one batch of blocks.
+/// The `Delta` type never crosses this boundary.
+///
+/// **MVP shape.** This will be split into `extract_one` + `merge_batch`
+/// once the `DeltaToken` intermediate design is resolved. See module docs.
 pub trait IndexPipeline<Ctx>: Send + Sync {
     /// The declarative descriptor.
     fn descriptor(&self) -> &Descriptor;
 
-    /// Extract one block's contribution.
+    /// Process a batch of blocks through the full pipeline.
     ///
-    /// For `BlockLocal` indexes: `deps` is `None`.
-    /// For `SelfCumulative` indexes: the index reads its own prior state
-    ///   from the backend internally (the pipeline impl holds a reader).
-    /// For `CrossIndex` indexes: `deps` provides committed state from
-    ///   dependency indexes.
+    /// Internally performs:
+    /// 1. Extraction: produce a delta per block (scope-specific inputs).
+    /// 2. Merge: combine deltas according to composition type.
+    /// 3. Conversion: turn merged result into write operations.
     ///
-    /// Returns a [`BlockContribution`] — opaque to the engine, consumed
-    /// by [`merge_batch`](Self::merge_batch).
-    fn extract_block(
+    /// `blocks` is in chain order. The engine does not inspect
+    /// intermediates — it receives final `WriteOp`s ready for commit.
+    fn process_batch(
         &self,
-        ctx: &Ctx,
-        deps: Option<&DepsReader>,
-    ) -> Result<BlockContribution, PipelineError>;
-
-    /// Merge a batch of block contributions into final write operations.
-    ///
-    /// `contributions` is in chain order. The index applies its
-    /// composition-specific merge internally:
-    /// - `Append`: flatten (already done — contributions carry WriteOps).
-    /// - `Monoidal`: parallel reduce using the declared monoid.
-    /// - `Fold`: sequential application in chain order.
-    ///
-    /// The engine doesn't need to know which strategy is used — it just
-    /// gets `Vec<WriteOp>` back.
-    fn merge_batch(
-        &self,
-        contributions: Vec<BlockContribution>,
+        blocks: &[Ctx],
+        deps: Option<&crate::traits::DepsReader>,
     ) -> Result<Vec<WriteOp>, PipelineError>;
 }
