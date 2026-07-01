@@ -73,18 +73,19 @@ mod tests;
 ///
 /// Sourced from the workspace's single source of truth,
 /// [`zaino_common::consensus`]. Production uses the real
-/// [`MAX_NONFINALISED_DEPTH`]. In-crate unit tests select the tractable
-/// [`FAST_TEST_MAX_NONFINALISED_DEPTH`] (= depth / 10) so the short mock-chain
-/// fixtures still exercise a *moving* finalised seam — at the real depth
-/// `finalized_height_floor` would saturate to genesis for the whole fixture and the
-/// eviction/seam invariants become untestable (see zingolabs/zaino#1288). Both arms
-/// derive from the same upstream reorg bound, so neither is a hard-coded literal.
+/// [`MAX_NONFINALISED_DEPTH`]. The tractable [`FAST_TEST_MAX_NONFINALISED_DEPTH`]
+/// (= depth / 10) is selected for in-crate unit tests (`cfg(test)`) *and* for
+/// cross-crate live tests that enable the `fast-test-seam` feature — so short mock
+/// fixtures and small live chains still exercise a *moving* finalised seam. At the
+/// real depth `finalized_height_floor` saturates to genesis for those fixtures and
+/// the eviction/seam invariants become untestable (see zingolabs/zaino#1288). Both
+/// arms derive from the same upstream reorg bound, so neither is a hard-coded literal.
 ///
 /// [`MAX_NONFINALISED_DEPTH`]: zaino_common::consensus::MAX_NONFINALISED_DEPTH
 /// [`FAST_TEST_MAX_NONFINALISED_DEPTH`]: zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "fast-test-seam")))]
 pub(crate) const NON_FINALIZED_DEPTH: u32 = zaino_common::consensus::MAX_NONFINALISED_DEPTH;
-#[cfg(test)]
+#[cfg(any(test, feature = "fast-test-seam"))]
 pub(crate) const NON_FINALIZED_DEPTH: u32 =
     zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
 
