@@ -1970,7 +1970,9 @@ async fn sole_recipient_outpoint(
     use zaino_state::ChainIndex as _;
 
     let utxos = indexer
-        .get_address_utxos(GetAddressBalanceRequest::new(vec![recipient_taddr.to_string()]))
+        .get_address_utxos(GetAddressBalanceRequest::new(vec![
+            recipient_taddr.to_string()
+        ]))
         .await
         .unwrap();
     assert_eq!(
@@ -2009,6 +2011,35 @@ async fn sole_spender_at(
         "exactly one tx (the shield) should touch the taddr at the spend height"
     );
     txids[0]
+}
+
+/// Funds `recipient_taddr` with a single fresh UTXO of `amount`, mines it in, syncs
+/// both wallets, and returns that outpoint. Leaves exactly one UTXO at the address
+/// (see [`sole_recipient_outpoint`]).
+async fn fund_recipient(
+    svc: &mut zaino_testutils::StateAndFetchServices<Zebrad>,
+    clients: &mut e2e::devtool::DevtoolClients,
+    recipient_taddr: &str,
+    amount: u64,
+) -> zaino_state::chain_index::types::Outpoint {
+    clients.sync_faucet().await;
+    clients.send_from_faucet(recipient_taddr, amount).await;
+    svc.generate_blocks_and_wait_for_tips(1).await;
+    clients.sync_recipient().await;
+    sole_recipient_outpoint(&svc.fetch_subscriber.indexer, recipient_taddr).await
+}
+
+/// Shields the recipient's transparent funds — spending its sole UTXO — mines the
+/// shield in, and returns the txid that spent it (see [`sole_spender_at`]).
+async fn spend_and_record(
+    svc: &mut zaino_testutils::StateAndFetchServices<Zebrad>,
+    clients: &mut e2e::devtool::DevtoolClients,
+    recipient_taddr: &str,
+) -> zaino_state::chain_index::types::TransactionHash {
+    clients.shield_recipient().await;
+    svc.generate_blocks_and_wait_for_tips(1).await;
+    let spend_height = svc.fetch_subscriber.tip_height().await as u32;
+    sole_spender_at(&svc.fetch_subscriber.indexer, recipient_taddr, spend_height).await
 }
 
 /// Rewrite of `zebra::get::chain_cache::get_outpoint_spenders` (retired with the
@@ -2060,42 +2091,21 @@ async fn get_outpoint_spenders_fetch_vs_state() {
     let recipient_taddr = clients.get_recipient_address("transparent").await;
 
     // ---- Phase 1: an outpoint that is SPENT and FINALISED ----
-    clients.sync_faucet().await;
-    clients.send_from_faucet(&recipient_taddr, FUNDING_AMOUNT).await;
-    svc.generate_blocks_and_wait_for_tips(1).await;
-    clients.sync_recipient().await;
-    let outpoint_finalised = sole_recipient_outpoint(&svc.fetch_subscriber.indexer, &recipient_taddr).await;
-
-    clients.shield_recipient().await;
-    svc.generate_blocks_and_wait_for_tips(1).await;
-    let spend_height = svc.fetch_subscriber.tip_height().await as u32;
-    let spender_finalised =
-        sole_spender_at(&svc.fetch_subscriber.indexer, &recipient_taddr, spend_height).await;
+    let outpoint_finalised =
+        fund_recipient(&mut svc, &mut clients, &recipient_taddr, FUNDING_AMOUNT).await;
+    let spender_finalised = spend_and_record(&mut svc, &mut clients, &recipient_taddr).await;
 
     // Bury the spend below the finalised floor.
     svc.generate_blocks_and_wait_for_tips(FINALITY_DEPTH).await;
 
     // ---- Phase 2: an outpoint that is SPENT but stays NON-FINALISED ----
-    clients.sync_faucet().await;
-    clients.send_from_faucet(&recipient_taddr, FUNDING_AMOUNT).await;
-    svc.generate_blocks_and_wait_for_tips(1).await;
-    clients.sync_recipient().await;
     let outpoint_nonfinalised =
-        sole_recipient_outpoint(&svc.fetch_subscriber.indexer, &recipient_taddr).await;
-
-    clients.shield_recipient().await;
-    svc.generate_blocks_and_wait_for_tips(1).await;
-    let spend_height = svc.fetch_subscriber.tip_height().await as u32;
-    let spender_nonfinalised =
-        sole_spender_at(&svc.fetch_subscriber.indexer, &recipient_taddr, spend_height).await;
+        fund_recipient(&mut svc, &mut clients, &recipient_taddr, FUNDING_AMOUNT).await;
+    let spender_nonfinalised = spend_and_record(&mut svc, &mut clients, &recipient_taddr).await;
 
     // ---- Phase 3: an outpoint that is created but left UNSPENT ----
-    clients.sync_faucet().await;
-    clients.send_from_faucet(&recipient_taddr, FUNDING_AMOUNT).await;
-    svc.generate_blocks_and_wait_for_tips(1).await;
-    clients.sync_recipient().await;
     let outpoint_unspent =
-        sole_recipient_outpoint(&svc.fetch_subscriber.indexer, &recipient_taddr).await;
+        fund_recipient(&mut svc, &mut clients, &recipient_taddr, FUNDING_AMOUNT).await;
 
     let outpoints = vec![outpoint_finalised, outpoint_nonfinalised, outpoint_unspent];
 
@@ -2506,7 +2516,10 @@ mod zebrad {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    #[cfg_attr(not(feature = "devtool-incompatible"), ignore = "heavy: mines ~110 orchard-coinbase blocks (~110 halo2 proofs) to bury a finalised spend below NON_FINALIZED_DEPTH; un-ignore for manual / dedicated CI")]
+    #[cfg_attr(
+        not(feature = "devtool-incompatible"),
+        ignore = "heavy: mines ~110 orchard-coinbase blocks (~110 halo2 proofs) to bury a finalised spend below NON_FINALIZED_DEPTH; un-ignore for manual / dedicated CI"
+    )]
     async fn get_outpoint_spenders_fetch_vs_state() {
         crate::get_outpoint_spenders_fetch_vs_state().await;
     }
