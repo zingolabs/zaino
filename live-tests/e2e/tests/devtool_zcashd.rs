@@ -10,8 +10,8 @@
 //!
 //! zcashd mines ORCHARD coinbase to `REG_O_ADDR_FROM_ABANDONART` (the abandon-art
 //! orchard address the devtool faucet owns), so the faucet is funded with no
-//! transparent-coinbase shielding — the zcashd matrix is NOT gated on round-2
-//! P1, only on this heights alignment.
+//! transparent-coinbase shielding — the zcashd matrix is NOT gated on devtool
+//! transparent-coinbase shielding, only on this heights alignment.
 //!
 //! If this passes, the `json_server` tests port by swapping their zingolib
 //! funding for `DevtoolClients` while keeping the zaino-vs-zcashd oracle
@@ -483,8 +483,9 @@ async fn shield_for_validator() {
 
 /// Devtool ports of `wallet_to_validator`'s `mod zcashd` send/shield/get-info
 /// column. Deferred: the heavy finalization send (`sent_to::transparent`'s
-/// seam-deep mine, round-3 P2), `sent_to::all`, and `monitor_unverified_mempool`
-/// (round-3 P3). `send_to_transparent` here is the light send, matching the
+/// seam-deep mine, waits on cheap filler mining), `sent_to::all`, and
+/// `monitor_unverified_mempool` (unconfirmed mempool balances).
+/// `send_to_transparent` here is the light send, matching the
 /// zebrad devtool port.
 mod wallet_to_validator {
     use super::*;
@@ -521,11 +522,11 @@ mod wallet_to_validator {
     /// a transparent send returns the same address txids from the non-finalized
     /// chain and after the seam-deep advance into the finalized DB. `#[ignore]`d
     /// for the same reason — the advance mines orchard coinbase (~100 halo2
-    /// proofs) until per-call cheap filler mining (round-3 P2) lands.
+    /// proofs) until per-call cheap filler mining lands.
     #[tokio::test(flavor = "multi_thread")]
     #[cfg_attr(
         not(feature = "devtool-incompatible"),
-        ignore = "heavy: seam-deep orchard advance (~100 halo2 proofs); un-ignore + transparent filler when round-3 P2 lands"
+        ignore = "heavy: seam-deep orchard advance (~100 halo2 proofs); un-ignore + transparent filler when cheap filler mining lands"
     )]
     async fn send_to_transparent_finalization() {
         let (mut test_manager, mut clients) = launch_and_fund_zcashd_faucet(1).await;
@@ -578,7 +579,7 @@ mod wallet_to_validator {
     #[tokio::test(flavor = "multi_thread")]
     #[cfg_attr(
         not(feature = "devtool-incompatible"),
-        ignore = "heavy: seam-deep orchard advance (~100 halo2 proofs); re-port light or un-ignore with transparent filler (round-3 P2)"
+        ignore = "heavy: seam-deep orchard advance (~100 halo2 proofs); re-port light or un-ignore with transparent filler"
     )]
     async fn send_to_all() {
         let (mut test_manager, mut clients) = launch_and_fund_zcashd_faucet(3).await;

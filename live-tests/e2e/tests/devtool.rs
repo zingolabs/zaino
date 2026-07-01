@@ -23,16 +23,15 @@
 //! - `send_to_transparent` (heavy / finalization) — runnable now via orchard
 //!   funding, but the load-bearing seam-deep advance across the finalized /
 //!   non-finalized boundary costs a halo2 proof per block; waits on cheap
-//!   filler-block mining (round-3 spec P2).
+//!   transparent filler-block mining.
 //! - `monitor_unverified_mempool` — unconfirmed (mempool) wallet balances;
-//!   devtool sync is block-based (round-3 spec P3 — likely stays on zingolib,
-//!   the indexer-side mempool views above already cover the surface).
+//!   devtool sync is block-based (likely stays on zingolib, the indexer-side
+//!   mempool views above already cover the surface).
 //! - the zcashd matrix (`json_server`, zcashd send/query) — the devtool wallet
-//!   rejects zcashd's default regtest activation heights at construction
-//!   (round-2 spec P0); `json_server` is additionally zcashd-bound (its
-//!   reference subscriber *is* zcashd).
-//! - the `test_vectors` chain builder — transparent-coinbase shielding
-//!   (round-2 spec P1).
+//!   rejects zcashd's default regtest activation heights at construction;
+//!   `json_server` is additionally zcashd-bound (its reference subscriber *is*
+//!   zcashd).
+//! - the `test_vectors` chain builder — devtool transparent-coinbase shielding.
 //! - `get_mempool_info` — recomputes expected sizes from
 //!   `FetchServiceSubscriber` internals; low value over the mempool surfaces
 //!   already covered.
@@ -1321,8 +1320,7 @@ async fn get_address_balance_fetch_vs_state() {
 /// `launch_and_build_faucet_request`'s preamble for the faucet-taddr query
 /// tests. The faucet taddr is the abandon-art transparent receiver, which is
 /// also the zebrad miner address under transparent mining; the non-vacuity
-/// probes in the callers verify that equality empirically (devtool round-2
-/// spec P1(1)).
+/// probes in the callers verify that equality empirically.
 async fn launch_transparent_and_faucet_taddr(
     blocks: u32,
 ) -> (zaino_testutils::StateAndFetchServices<Zebrad>, String) {
@@ -1356,7 +1354,7 @@ async fn launch_transparent_and_faucet_taddr(
 /// the fetch and state indexers agree on `get_address_tx_ids` over the faucet's
 /// coinbase taddr. The non-vacuity probe (`!txids.is_empty()`) guards against a
 /// silent empty==empty pass and confirms the devtool faucet's transparent
-/// receiver equals the zebrad miner address (devtool round-2 spec P1(1)).
+/// receiver equals the zebrad miner address.
 async fn get_taddress_txids_faucet_fetch_vs_state() {
     let (mut svc, faucet_taddr) = launch_transparent_and_faucet_taddr(100).await;
 
@@ -1384,8 +1382,7 @@ async fn get_taddress_txids_faucet_fetch_vs_state() {
 /// Port of `state_service_…::get_taddress_balance` (zebrad, faucet-taddr
 /// cluster): the fetch and state indexers agree on `get_taddress_balance` over
 /// the faucet's coinbase taddr. The non-vacuity probe (`value_zat > 0`) guards
-/// against a silent 0==0 pass and confirms the address equality of round-2
-/// spec P1(1).
+/// against a silent 0==0 pass and confirms the address equality.
 async fn get_taddress_balance_faucet_fetch_vs_state() {
     let (mut svc, faucet_taddr) = launch_transparent_and_faucet_taddr(5).await;
 
@@ -1585,10 +1582,10 @@ async fn get_block_range_out_of_range_lower_bound() {
 /// `#[ignore]`d (gated): the load-bearing seam-deep advance mines orchard
 /// coinbase here — the devtool faucet funds via orchard, since the original's
 /// transparent-mine + shield path needs devtool transparent-coinbase shielding
-/// (round-2 P1) — so it costs ~100 halo2 proofs, against the net-speedup
+/// — so it costs ~100 halo2 proofs, against the net-speedup
 /// criterion. The miner pool is fixed at launch and `generate_blocks` has no
 /// per-call override, so the advance can't be cheap transparent filler until
-/// per-call filler mining (round-3 P2) lands; un-ignore and mine the advance to
+/// per-call filler mining lands; un-ignore and mine the advance to
 /// a transparent throwaway then.
 async fn send_to_transparent_finalization<Service>()
 where
@@ -2334,7 +2331,7 @@ mod zebrad {
         #[tokio::test(flavor = "multi_thread")]
         #[cfg_attr(
             not(feature = "devtool-incompatible"),
-            ignore = "heavy: seam-deep orchard advance (~100 halo2 proofs); un-ignore + transparent filler when round-3 P2 lands"
+            ignore = "heavy: seam-deep orchard advance (~100 halo2 proofs); un-ignore + transparent filler when cheap filler mining lands"
         )]
         async fn send_to_transparent_finalization() {
             crate::send_to_transparent_finalization::<FetchService>().await;
@@ -2587,7 +2584,7 @@ mod zebrad {
         #[tokio::test(flavor = "multi_thread")]
         #[cfg_attr(
             not(feature = "devtool-incompatible"),
-            ignore = "heavy: seam-deep orchard advance (~100 halo2 proofs); un-ignore + transparent filler when round-3 P2 lands"
+            ignore = "heavy: seam-deep orchard advance (~100 halo2 proofs); un-ignore + transparent filler when cheap filler mining lands"
         )]
         async fn send_to_transparent_finalization() {
             crate::send_to_transparent_finalization::<StateService>().await;
