@@ -43,12 +43,18 @@ license = "Apache-2.0"
 zingo_common_components = "0.3.1"
 
 # Librustzcash
-incrementalmerkletree = "0.8"
-zcash_address = "0.12"
-zcash_keys = "0.14"
-zcash_protocol = "0.9"
-zcash_primitives = "0.28"
-zcash_transparent = "0.8"
+# TEMPORARY: the librustzcash crates track the NU6.3 (Ironwood) line. The
+# version requirements below match zallet PR #537 (feat/nu63-comp), and the
+# sources are pinned to librustzcash `main` via [patch.crates-io] at the bottom
+# of this file. These MUST stay in lockstep with zallet's dependency set; update
+# them only to follow zallet changes. Drop the `-pre.0` suffixes and the patch
+# once the final NU6.3 releases are published.
+incrementalmerkletree = "0.8.2"
+zcash_address = "0.13.0-pre.0"
+zcash_keys = "0.15.0-pre.0"
+zcash_protocol = "0.10.0-pre.0"
+zcash_primitives = "0.29.0-pre.0"
+zcash_transparent = "0.9.0-pre.0"
 zcash_client_backend = "0.23"
 
 # Zebra
@@ -174,12 +180,24 @@ opt-level = 3
 debug = true
 
 [patch.crates-io]
-#zcash_client_backend = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
-#zcash_address = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
-#zcash_keys = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
-#zcash_primitives = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
-#zcash_protocol = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
-#zcash_transparent = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
+# TEMPORARY: pin the librustzcash crates to `main` (the canonical, internally
+# consistent latest, which carries the NU6.3 / Ironwood work). Tracking zallet
+# PR #537 (feat/nu63-comp): both build against the NU6.3 librustzcash line so
+# zaino and zallet share one librustzcash, and the NU6.3 zebra branch below
+# resolves against the same sources. Pinned to a specific `main` rev (not the
+# bare branch) so resolution is reproducible; bump the rev to follow librustzcash
+# main. Drop this patch for plain crates.io versions once the NU6.3 releases are
+# final. Tracking: zaino#<TODO-revert-librustzcash-main>.
+equihash = { git = "https://github.com/zcash/librustzcash.git", rev = "eb828caadb4b2be4a39823f95e50b42731a515f5" }
+f4jumble = { git = "https://github.com/zcash/librustzcash.git", rev = "eb828caadb4b2be4a39823f95e50b42731a515f5" }
+zcash_address = { git = "https://github.com/zcash/librustzcash.git", rev = "eb828caadb4b2be4a39823f95e50b42731a515f5" }
+zcash_encoding = { git = "https://github.com/zcash/librustzcash.git", rev = "eb828caadb4b2be4a39823f95e50b42731a515f5" }
+zcash_history = { git = "https://github.com/zcash/librustzcash.git", rev = "eb828caadb4b2be4a39823f95e50b42731a515f5" }
+zcash_keys = { git = "https://github.com/zcash/librustzcash.git", rev = "eb828caadb4b2be4a39823f95e50b42731a515f5" }
+zcash_primitives = { git = "https://github.com/zcash/librustzcash.git", rev = "eb828caadb4b2be4a39823f95e50b42731a515f5" }
+zcash_proofs = { git = "https://github.com/zcash/librustzcash.git", rev = "eb828caadb4b2be4a39823f95e50b42731a515f5" }
+zcash_protocol = { git = "https://github.com/zcash/librustzcash.git", rev = "eb828caadb4b2be4a39823f95e50b42731a515f5" }
+zcash_transparent = { package = "zcash_transparent", git = "https://github.com/zcash/librustzcash.git", rev = "eb828caadb4b2be4a39823f95e50b42731a515f5" }
 
 # TEMPORARY: zebra is pinned to an unreleased ZcashFoundation/zebra rev whose
 # ReadRequest::NonFinalizedBlocksListener is a struct variant carrying
