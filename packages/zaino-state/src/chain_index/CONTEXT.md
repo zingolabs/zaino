@@ -32,3 +32,17 @@ blocks.
 ## Eviction
 Removal of a block from the NFS once the finalized floor rises past its
 height. A block is evicted when it passes below the seam.
+
+## Index floor
+The lowest height a given finalized index covers, chosen per index at
+build time. The index asserts nothing about chain activity below its
+floor: an absent key means "no such entry within the built range", not
+"none on the whole chain". Distinct from the finalized floor, which is
+chain-wide and delimits NFS eviction.
+
+## Spending transaction
+For a transparent outpoint, the transaction that consumes it — the one
+listing the outpoint as an input's prevout. Distinct from the outpoint's
+creating transaction, which the outpoint itself already names in its
+first field. A spend index maps outpoints to spending transactions,
+never to creating ones.
