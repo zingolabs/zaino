@@ -5,8 +5,8 @@
 //! The typed trait hierarchy ([`ExtractLocal`], [`MergeAppend`], etc.)
 //! gives compile-time safety at the index definition site. The engine
 //! needs runtime dispatch via [`IndexPipeline<Ctx>`]. Bridges are the
-//! glue: each bridge struct wraps a concrete index type (via
-//! `PhantomData`) and implements `IndexPipeline<Ctx>` by calling the
+//! glue: each bridge struct holds internal state (delta buffer, merge
+//! accumulator) and implements `IndexPipeline<Ctx>` by calling the
 //! type-level extract and merge traits internally. The `Delta` type
 //! never leaves the bridge.
 //!
@@ -19,46 +19,31 @@
 //! need backend reader access that the pipeline interface doesn't yet
 //! provide.
 //!
-//! # MVP limitation: sequential extraction within each bridge
+//! # Three-phase pipeline
 //!
-//! Every `process_batch` impl currently loops sequentially over
-//! `blocks`. For `BlockLocal` indexes, extraction *could* run in
-//! parallel across blocks — the type system already proves there are no
-//! inter-block dependencies (that is the whole point of the `BlockLocal`
-//! scope marker). But because `process_batch` collapses extract + merge
-//! into one call, the engine has no way to schedule individual
-//! extractions onto a shared thread pool or interleave work across
-//! indexes.
+//! Each bridge implements `extract_one` / `merge` / `persist`:
 //!
-//! This is intentional for the MVP: it validates that the type algebra
-//! composes end-to-end without solving the intermediate type problem.
+//! - **`extract_one`**: computes a delta from one block context, pushes
+//!   it into an internal `Mutex<Vec<Delta>>` buffer.
+//! - **`merge`**: drains the delta buffer and combines deltas per the
+//!   composition type. Stores the result in the merge state slot.
+//! - **`persist`**: converts the merged domain state into `WriteOp`s
+//!   and clears the state for the next batch.
 //!
-//! # True north: split `extract_one` + `merge_batch`
-//!
-//! The intended production design splits the pipeline interface so the
-//! engine controls extraction parallelism:
-//!
-//! ```text
-//! fn extract_one(&self, ctx: &Ctx, ...) -> Result<DeltaToken, ...>;
-//! fn merge_batch(&self, tokens: Vec<DeltaToken>) -> Result<Vec<WriteOp>, ...>;
-//! ```
-//!
-//! `DeltaToken` would be an opaque handle (e.g., an index into a
-//! bridge-internal `Vec<Delta>`) — no `dyn Any`, no downcasting. The
-//! bridge owns the typed delta storage; the engine holds and routes
-//! opaque tokens. See [`crate::pipeline`] module docs for details.
+//! Interior mutability (`Mutex`) is used throughout because
+//! `IndexPipeline` methods take `&self` for trait-object safety.
 //!
 //! [`IndexPipeline`]: crate::pipeline::IndexPipeline
 //! [`ExtractLocal`]: crate::traits::ExtractLocal
 //! [`MergeAppend`]: crate::traits::MergeAppend
 
 use std::marker::PhantomData;
+use std::sync::Mutex;
 
 use crate::descriptor::{Append, BlockLocal, Descriptor, Fold, Monoidal};
 use crate::pipeline::{IndexPipeline, PipelineError};
 use crate::traits::{
-    DepsReader, ExtractLocal, IndexDef, MergeAppend, MergeFold, MergeMonoidal, ProvideContext,
-    WriteOp,
+    ExtractLocal, IndexDef, MergeAppend, MergeFold, MergeMonoidal, ProvideContext, WriteOp,
 };
 
 // ===========================================================================
@@ -125,17 +110,19 @@ where
 // BlockLocal × Append
 // ===========================================================================
 
-/// Bridge for indexes that are block-local with disjoint-key (append) merge.
+/// Stateful bridge for BlockLocal × Append indexes.
 ///
-/// **Parallelism profile (true north):**
+/// **Parallelism profile:**
 /// - Extraction: fully parallel across blocks (no inter-block deps).
-/// - Merge: trivial collect — no combine step needed. Each delta's
-///   write ops can be emitted independently.
+/// - Merge: trivial collect — deltas are independent, no combine step.
 ///
-/// **MVP:** extraction runs sequentially over blocks. No parallelism
-/// because `process_batch` owns the full loop. See module docs.
+/// Internal state:
+/// - `deltas`: buffer of per-block deltas, pushed by `extract_one`.
+/// - `merged_ops`: WriteOps produced by `merge`, drained by `persist`.
 pub struct LocalAppendBridge<I: IndexDef> {
     descriptor: Descriptor,
+    deltas: Mutex<Vec<I::Delta>>,
+    merged_ops: Mutex<Vec<WriteOp>>,
     _index: PhantomData<I>,
 }
 
@@ -143,6 +130,8 @@ impl<I: IndexDef> LocalAppendBridge<I> {
     fn new() -> Self {
         Self {
             descriptor: I::descriptor(),
+            deltas: Mutex::new(Vec::new()),
+            merged_ops: Mutex::new(Vec::new()),
             _index: PhantomData,
         }
     }
@@ -157,17 +146,37 @@ where
         &self.descriptor
     }
 
-    fn process_batch(
-        &self,
-        blocks: &[Ctx],
-        _deps: Option<&DepsReader>,
-    ) -> Result<Vec<WriteOp>, PipelineError> {
-        let mut all_ops = Vec::new();
-        for ctx in blocks {
-            let delta = I::extract(&ctx.context())?;
-            all_ops.extend(I::to_write_ops(delta));
+    fn extract_one(&self, ctx: &Ctx) -> Result<(), PipelineError> {
+        let delta = I::extract(&ctx.context())?;
+        self.deltas.lock().expect("delta mutex poisoned").push(delta);
+        Ok(())
+    }
+
+    fn merge(&self) -> Result<(), PipelineError> {
+        let deltas: Vec<I::Delta> = self
+            .deltas
+            .lock()
+            .expect("delta mutex poisoned")
+            .drain(..)
+            .collect();
+
+        let mut ops = Vec::new();
+        for delta in deltas {
+            ops.extend(I::to_write_ops(delta));
         }
-        Ok(all_ops)
+
+        *self.merged_ops.lock().expect("ops mutex poisoned") = ops;
+        Ok(())
+    }
+
+    fn persist(&self) -> Result<Vec<WriteOp>, PipelineError> {
+        let ops = self
+            .merged_ops
+            .lock()
+            .expect("ops mutex poisoned")
+            .drain(..)
+            .collect();
+        Ok(ops)
     }
 }
 
@@ -184,24 +193,29 @@ where
 // BlockLocal × Monoidal
 // ===========================================================================
 
-/// Bridge for indexes that are block-local with monoidal (associative +
-/// commutative) merge.
+/// Stateful bridge for BlockLocal × Monoidal indexes.
 ///
-/// **Parallelism profile (true north):**
+/// **Parallelism profile:**
 /// - Extraction: fully parallel across blocks (no inter-block deps).
 /// - Merge: parallel reduce tree — `combine` is associative +
 ///   commutative, so deltas can be reduced in any order.
 ///
-/// **MVP:** both extraction and merge run sequentially. See module docs.
-pub struct LocalMonoidalBridge<I: IndexDef> {
+/// Internal state:
+/// - `deltas`: buffer of per-block deltas, pushed by `extract_one`.
+/// - `merged_ops`: WriteOps produced by `merge`, drained by `persist`.
+pub struct LocalMonoidalBridge<I: IndexDef + MergeMonoidal> {
     descriptor: Descriptor,
+    deltas: Mutex<Vec<I::Delta>>,
+    merged_ops: Mutex<Vec<WriteOp>>,
     _index: PhantomData<I>,
 }
 
-impl<I: IndexDef> LocalMonoidalBridge<I> {
+impl<I: IndexDef + MergeMonoidal> LocalMonoidalBridge<I> {
     fn new() -> Self {
         Self {
             descriptor: I::descriptor(),
+            deltas: Mutex::new(Vec::new()),
+            merged_ops: Mutex::new(Vec::new()),
             _index: PhantomData,
         }
     }
@@ -216,17 +230,37 @@ where
         &self.descriptor
     }
 
-    fn process_batch(
-        &self,
-        blocks: &[Ctx],
-        _deps: Option<&DepsReader>,
-    ) -> Result<Vec<WriteOp>, PipelineError> {
+    fn extract_one(&self, ctx: &Ctx) -> Result<(), PipelineError> {
+        let delta = I::extract(&ctx.context())?;
+        self.deltas.lock().expect("delta mutex poisoned").push(delta);
+        Ok(())
+    }
+
+    fn merge(&self) -> Result<(), PipelineError> {
+        let deltas: Vec<I::Delta> = self
+            .deltas
+            .lock()
+            .expect("delta mutex poisoned")
+            .drain(..)
+            .collect();
+
         let mut acc = I::identity();
-        for ctx in blocks {
-            let delta = I::extract(&ctx.context())?;
+        for delta in deltas {
             acc = I::combine(acc, I::lift(delta));
         }
-        Ok(I::to_write_ops(acc))
+
+        *self.merged_ops.lock().expect("ops mutex poisoned") = I::to_write_ops(acc);
+        Ok(())
+    }
+
+    fn persist(&self) -> Result<Vec<WriteOp>, PipelineError> {
+        let ops = self
+            .merged_ops
+            .lock()
+            .expect("ops mutex poisoned")
+            .drain(..)
+            .collect();
+        Ok(ops)
     }
 }
 
@@ -243,24 +277,30 @@ where
 // BlockLocal × Fold
 // ===========================================================================
 
-/// Bridge for indexes that are block-local with order-dependent (fold) merge.
+/// Stateful bridge for BlockLocal × Fold indexes.
 ///
-/// **Parallelism profile (true north):**
+/// **Parallelism profile:**
 /// - Extraction: fully parallel across blocks (no inter-block deps).
 /// - Merge: strictly sequential — `fold` must apply deltas in chain
-///   order. This is inherent to the Fold composition type, not an MVP
-///   limitation.
+///   order. This is inherent to the Fold composition type.
 ///
-/// **MVP:** extraction also runs sequentially. See module docs.
-pub struct LocalFoldBridge<I: IndexDef> {
+/// Internal state:
+/// - `deltas`: buffer of per-block deltas, pushed by `extract_one`.
+///   **Must be consumed in insertion order** during merge.
+/// - `merged_ops`: WriteOps produced by `merge`, drained by `persist`.
+pub struct LocalFoldBridge<I: IndexDef + MergeFold> {
     descriptor: Descriptor,
+    deltas: Mutex<Vec<I::Delta>>,
+    merged_ops: Mutex<Vec<WriteOp>>,
     _index: PhantomData<I>,
 }
 
-impl<I: IndexDef> LocalFoldBridge<I> {
+impl<I: IndexDef + MergeFold> LocalFoldBridge<I> {
     fn new() -> Self {
         Self {
             descriptor: I::descriptor(),
+            deltas: Mutex::new(Vec::new()),
+            merged_ops: Mutex::new(Vec::new()),
             _index: PhantomData,
         }
     }
@@ -275,17 +315,37 @@ where
         &self.descriptor
     }
 
-    fn process_batch(
-        &self,
-        blocks: &[Ctx],
-        _deps: Option<&DepsReader>,
-    ) -> Result<Vec<WriteOp>, PipelineError> {
+    fn extract_one(&self, ctx: &Ctx) -> Result<(), PipelineError> {
+        let delta = I::extract(&ctx.context())?;
+        self.deltas.lock().expect("delta mutex poisoned").push(delta);
+        Ok(())
+    }
+
+    fn merge(&self) -> Result<(), PipelineError> {
+        let deltas: Vec<I::Delta> = self
+            .deltas
+            .lock()
+            .expect("delta mutex poisoned")
+            .drain(..)
+            .collect();
+
         let mut state = I::initial_state();
-        for ctx in blocks {
-            let delta = I::extract(&ctx.context())?;
+        for delta in deltas {
             I::fold(&mut state, delta);
         }
-        Ok(I::to_write_ops(state))
+
+        *self.merged_ops.lock().expect("ops mutex poisoned") = I::to_write_ops(state);
+        Ok(())
+    }
+
+    fn persist(&self) -> Result<Vec<WriteOp>, PipelineError> {
+        let ops = self
+            .merged_ops
+            .lock()
+            .expect("ops mutex poisoned")
+            .drain(..)
+            .collect();
+        Ok(ops)
     }
 }
 
