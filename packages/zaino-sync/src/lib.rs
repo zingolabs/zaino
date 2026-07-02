@@ -15,6 +15,7 @@ pub mod index_set;
 pub mod pipeline;
 pub mod primitives;
 pub mod progress;
+pub mod scheduler;
 pub mod provisioner;
 pub mod traits;
 
