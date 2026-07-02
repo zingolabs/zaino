@@ -7,6 +7,14 @@ and this library adheres to Rust's notion of
 
 ## Unreleased
 
+### Added
+- NU6.3 (Ironwood) network upgrade is now supported so Zaino can be consumed by
+  zallet: activation-height configuration (`zaino-common`) recognises NU6.3, and
+  Zebra RPC response parsing (`zaino-fetch`) handles the `Nu6_3` upgrade and the
+  new `ironwood` value pool. The zebra pin is bumped to the NU6.3 branch and the
+  librustzcash crates are pinned to librustzcash `main` (the NU6.3 line),
+  tracking zallet PR #537.
+
 ### Changed
 - **Breaking** — config: `storage.database.sync_write_batch_bytes` (bytes) is
   renamed to `sync_write_batch_size` and given in **GiB** (default raised from
