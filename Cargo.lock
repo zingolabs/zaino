@@ -6037,7 +6037,6 @@ dependencies = [
  "tracing-subscriber",
  "tracing-tree",
  "zebra-chain 10.1.0",
- "zingo_common_components",
 ]
 
 [[package]]
@@ -6272,7 +6271,7 @@ dependencies = [
 [[package]]
 name = "zcash_local_net"
 version = "0.6.0"
-source = "git+https://github.com/zingolabs/infrastructure.git?rev=0cc7dab7d12dd906c23deddd4e1fc3c42cf0f083#0cc7dab7d12dd906c23deddd4e1fc3c42cf0f083"
+source = "git+https://github.com/zingolabs/infrastructure.git?rev=0a003b4fd983be56e2ac2e81099a4f2a6dc87141#0a003b4fd983be56e2ac2e81099a4f2a6dc87141"
 dependencies = [
  "getset",
  "hex",
@@ -6287,7 +6286,7 @@ dependencies = [
  "zebra-chain 9.0.0",
  "zebra-node-services 7.0.0",
  "zebra-rpc 9.0.0",
- "zingo_common_components",
+ "zingo-consensus",
  "zingo_test_vectors",
 ]
 
@@ -7088,18 +7087,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "zingo_common_components"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3378e81bdef45a9659736a09deaef2b5e5cb3d1556031468debfca3a21d4fa76"
-dependencies = [
- "hex",
-]
+name = "zingo-consensus"
+version = "0.1.0"
+source = "git+https://github.com/zingolabs/infrastructure.git?rev=0a003b4fd983be56e2ac2e81099a4f2a6dc87141#0a003b4fd983be56e2ac2e81099a4f2a6dc87141"
 
 [[package]]
 name = "zingo_test_vectors"
 version = "0.0.1"
-source = "git+https://github.com/zingolabs/infrastructure.git?rev=0cc7dab7d12dd906c23deddd4e1fc3c42cf0f083#0cc7dab7d12dd906c23deddd4e1fc3c42cf0f083"
+source = "git+https://github.com/zingolabs/infrastructure.git?rev=0a003b4fd983be56e2ac2e81099a4f2a6dc87141#0a003b4fd983be56e2ac2e81099a4f2a6dc87141"
 dependencies = [
  "bip0039",
 ]
