@@ -17,9 +17,49 @@
 //! 6. Report committed batches (unlocks downstream firing rules).
 
 use std::collections::{HashMap, HashSet};
+use std::marker::PhantomData;
 
 use crate::dag::{DependencyDag, FiringRule};
 use crate::primitives::{BatchIndex, IndexId};
+
+// ===========================================================================
+// State markers — phantom types for index batch lifecycle
+// ===========================================================================
+
+/// The batch has been fully extracted — all block deltas are available.
+pub struct FullyExtracted(());
+
+/// The batch has been merged — deltas combined into index state.
+pub struct Merged(());
+
+/// A typed handle to an index at a specific batch lifecycle stage.
+///
+/// The engine receives these from scheduler transition methods and must
+/// pass them to the next step. Invalid orderings (e.g. committing
+/// before merging) are compile errors — the engine can only obtain a
+/// `BatchHandle<Merged>` by calling `merge_done` with a
+/// `BatchHandle<FullyExtracted>`.
+pub struct BatchHandle<State> {
+    /// Which index this handle is for.
+    pub index: IndexId,
+    /// Which batch.
+    pub batch: BatchIndex,
+    _state: PhantomData<State>,
+}
+
+impl<S> BatchHandle<S> {
+    fn new(index: IndexId, batch: BatchIndex) -> Self {
+        Self {
+            index,
+            batch,
+            _state: PhantomData,
+        }
+    }
+
+    fn transition<T>(self) -> BatchHandle<T> {
+        BatchHandle::new(self.index, self.batch)
+    }
+}
 
 /// A single extraction job the engine can schedule.
 #[derive(Debug, Clone)]
@@ -146,37 +186,54 @@ impl Scheduler {
 
     /// Record that one extraction completed for an index.
     ///
-    /// When the batch is fully extracted, the index transitions to
-    /// pending-merge.
-    pub fn extraction_done(&mut self, index: IndexId) {
+    /// Returns `Some(BatchHandle<FullyExtracted>)` when the batch is
+    /// fully extracted. The engine must pass this handle to
+    /// [`merge_done`](Self::merge_done) — it cannot be skipped or
+    /// reordered.
+    pub fn extraction_done(&mut self, index: IndexId) -> Option<BatchHandle<FullyExtracted>> {
         let count = self.extracted_in_batch.get_mut(&index)
             .expect("index exists in scheduler");
         *count += 1;
 
         if *count >= self.batch_size {
             self.pending_merge.insert(index);
+            let batch = self.current_batch[&index];
+            Some(BatchHandle::new(index, batch))
+        } else {
+            None
         }
     }
 
     /// Which indexes have a full batch of deltas ready for merge?
-    pub fn ready_for_merge(&self) -> Vec<IndexId> {
-        self.pending_merge.iter().copied().collect()
+    ///
+    /// Returns typed handles that can only be consumed by
+    /// [`merge_done`](Self::merge_done).
+    pub fn ready_for_merge(&self) -> Vec<BatchHandle<FullyExtracted>> {
+        self.pending_merge
+            .iter()
+            .map(|&id| BatchHandle::new(id, self.current_batch[&id]))
+            .collect()
     }
 
     /// Record that merge completed for an index.
     ///
-    /// The index transitions to pending-commit.
-    pub fn merge_done(&mut self, index: IndexId) {
-        self.pending_merge.remove(&index);
-        self.pending_commit.insert(index);
+    /// Consumes a `FullyExtracted` handle and returns a `Merged` handle.
+    /// The engine must pass the `Merged` handle to
+    /// [`batch_committed`](Self::batch_committed).
+    pub fn merge_done(&mut self, handle: BatchHandle<FullyExtracted>) -> BatchHandle<Merged> {
+        self.pending_merge.remove(&handle.index);
+        self.pending_commit.insert(handle.index);
+        handle.transition()
     }
 
     /// Record that a batch was committed for an index.
     ///
-    /// Updates committed-through tracking, resets extraction counter,
-    /// and advances the index to the next batch.
-    pub fn batch_committed(&mut self, index: IndexId) {
-        let batch = self.current_batch[&index];
+    /// Consumes a `Merged` handle. Updates committed-through tracking,
+    /// resets extraction counter, and advances the index to the next
+    /// batch.
+    pub fn batch_committed(&mut self, handle: BatchHandle<Merged>) {
+        let index = handle.index;
+        let batch = handle.batch;
 
         self.pending_commit.remove(&index);
         self.committed_through.insert(index, Some(batch));
@@ -302,19 +359,19 @@ mod tests {
         let mut sched = Scheduler::new(dag, 2);
 
         // Extract A's full batch.
-        sched.extraction_done(A);
-        sched.extraction_done(A);
+        assert!(sched.extraction_done(A).is_none());
+        let handle = sched.extraction_done(A).expect("batch complete");
 
         // A is pending merge, not extracting more.
-        assert!(sched.ready_for_merge().contains(&A));
+        assert!(!sched.ready_for_merge().is_empty());
 
         // B still blocked — A hasn't committed yet.
         let jobs = sched.ready_extractions();
         assert!(jobs.iter().all(|j| j.index != B));
 
-        // Merge and commit A.
-        sched.merge_done(A);
-        sched.batch_committed(A);
+        // Merge and commit A — typed handle chain.
+        let merged = sched.merge_done(handle);
+        sched.batch_committed(merged);
 
         // Now B is ready.
         let jobs = sched.ready_extractions();
@@ -331,18 +388,22 @@ mod tests {
         let jobs = sched.ready_extractions();
         assert_eq!(jobs[0].block_offset, 0);
 
-        sched.extraction_done(A);
+        assert!(sched.extraction_done(A).is_none());
 
         let jobs = sched.ready_extractions();
         assert_eq!(jobs[0].block_offset, 1);
 
-        sched.extraction_done(A);
-        sched.extraction_done(A);
+        assert!(sched.extraction_done(A).is_none());
+        let handle = sched.extraction_done(A).expect("batch complete");
 
         // Batch fully extracted — A is pending merge, no more extract jobs.
-        assert!(sched.ready_for_merge().contains(&A));
+        assert!(!sched.ready_for_merge().is_empty());
         let jobs = sched.ready_extractions();
         assert!(jobs.iter().all(|j| j.index != A));
+
+        // Consume handle to prove it exists.
+        let merged = sched.merge_done(handle);
+        sched.batch_committed(merged);
     }
 
     #[test]
@@ -351,11 +412,11 @@ mod tests {
             .expect("valid dag");
         let mut sched = Scheduler::new(dag, 2);
 
-        // Complete batch 0.
-        sched.extraction_done(A);
-        sched.extraction_done(A);
-        sched.merge_done(A);
-        sched.batch_committed(A);
+        // Complete batch 0 — full handle chain.
+        assert!(sched.extraction_done(A).is_none());
+        let extracted = sched.extraction_done(A).expect("batch complete");
+        let merged = sched.merge_done(extracted);
+        sched.batch_committed(merged);
 
         // Now on batch 1.
         let jobs = sched.ready_extractions();
