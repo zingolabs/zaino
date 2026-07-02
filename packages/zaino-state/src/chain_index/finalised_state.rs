@@ -2,8 +2,8 @@
 //!
 //! This module provides `FinalisedState`, the *finalised* portion of the chain index.
 //!
-//! “Finalised” in this context means: All but the top 100 blocks in the blockchain. This follows
-//! Zebra's model where a reorg of depth greater than 100 would require a complete network restart.
+//! “Finalised” in this context means: All but the top `OPERATIONAL_NFS_DEPTH` blocks in the blockchain. This
+//! follows Zebra's model where a reorg deeper than `MAX_BLOCK_REORG_HEIGHT` would require a complete network restart.
 //!
 //! `FinalisedState` is a facade over a `FinalisedSource` — the
 //! backing implementation that actually serves finalised data. That backing is **not necessarily a

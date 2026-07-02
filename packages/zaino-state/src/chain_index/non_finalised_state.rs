@@ -1,7 +1,7 @@
 use super::{
     finalised_state::{reader::DbReader, FinalisedState},
     source::BlockchainSource,
-    NON_FINALIZED_DEPTH,
+    OPERATIONAL_NFS_DEPTH,
 };
 #[cfg(feature = "prometheus")]
 use crate::metric_names::*;
@@ -26,14 +26,14 @@ use zebra_state::HashOrHeight;
 /// but that height can lag far behind the tip while the finalised DB syncs in the background, and
 /// is pinned at `0` in ephemeral mode. Without an independent floor the snapshot would grow by one
 /// block per new block indefinitely. This caps retention to a fixed window regardless, a small
-/// margin above [`NON_FINALIZED_DEPTH`] so it never trims inside the reorg-possible range.
+/// margin above [`OPERATIONAL_NFS_DEPTH`] so it never trims inside the reorg-possible range.
 ///
 /// It also bounds the non-finalised ancestry walkers ([`NonFinalizedState::handle_reorg`] and
 /// [`NonFinalizedState::add_nonbest_block`]): neither should recurse further back than the window
 /// they maintain. The bound is load-bearing for `add_nonbest_block` on the state backend, where
 /// `source.get_block` serves *any* block by hash (including finalised blocks below the window), so
 /// without it a side chain rooted below the anchor would recurse to genesis and overflow the stack.
-const MAX_NFS_DEPTH: u32 = NON_FINALIZED_DEPTH + 10;
+const MAX_NFS_DEPTH: u32 = OPERATIONAL_NFS_DEPTH + 10;
 
 /// Holds the block cache
 #[derive(Debug)]
@@ -99,7 +99,7 @@ impl ChainIndexSnapshot {
 #[derive(Debug, Clone)]
 /// A snapshot of the nonfinalized state as it existed when this was created.
 pub(crate) struct NonfinalizedBlockCacheSnapshot {
-    /// the set of all known blocks < 100 blocks old
+    /// the set of all known blocks less than `OPERATIONAL_NFS_DEPTH` blocks old
     /// this includes all blocks on-chain, as well as
     /// all blocks known to have been on-chain before being
     /// removed by a reorg. Blocks reorged away have no height.
@@ -433,7 +433,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     ) -> Result<(), SyncError> {
         let mut initial_state = self.get_snapshot();
         let local_finalized_tip = finalized_db.to_reader().db_height().await?;
-        // Anchor floor: the non-finalised state must never start more than `NON_FINALIZED_DEPTH`
+        // Anchor floor: the non-finalised state must never start more than `OPERATIONAL_NFS_DEPTH`
         // blocks below the chain tip, even when the finalised DB tip lags far behind during
         // background catch-up. Without this floor a freshly-initialised (or genesis-fallback)
         // snapshot would try to bridge the entire gap from the finalised tip up to the chain tip one
@@ -444,7 +444,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             local_finalized_tip
                 .map(|height| height.0)
                 .unwrap_or(0)
-                .max(u32::from(chain_height).saturating_sub(NON_FINALIZED_DEPTH)),
+                .max(u32::from(chain_height).saturating_sub(OPERATIONAL_NFS_DEPTH)),
         );
         if initial_state.best_tip.height.0 < anchor_height.0 {
             let anchor_block = Self::resolve_anchor_block(
@@ -520,7 +520,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 // we need to work backwards from it and update heights_to_hashes
                 // with it and all its parents.
             }
-            if initial_state.best_tip.height + NON_FINALIZED_DEPTH
+            if initial_state.best_tip.height + OPERATIONAL_NFS_DEPTH
                 < working_snapshot.best_tip.height
             {
                 self.update(finalized_db.clone(), initial_state, working_snapshot)
@@ -606,7 +606,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         height_to_recurse_to: Option<Height>,
     ) -> Result<(), SyncError> {
         if height_to_recurse_to
-            .is_some_and(|height| height + 100 < working_snapshot.best_tip.height)
+            .is_some_and(|height| height + MAX_NFS_DEPTH < working_snapshot.best_tip.height)
         {
             return Err(SyncError::ReorgFailure(
                 "reorg detection recursed beyond reason".to_string(),

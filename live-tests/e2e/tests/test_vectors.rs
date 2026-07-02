@@ -40,7 +40,7 @@ macro_rules! expected_read_response {
 #[tokio::test(flavor = "multi_thread")]
 #[cfg_attr(
     not(feature = "devtool-incompatible"),
-    ignore = "Not a test: builds test-vector data for zaino_state::chain_index unit tests. Also funds via transparent-coinbase shielding (round-2 P1) — un-ignore to regenerate vectors once devtool can shield its own transparent coinbase (tracked by tests/devtool.rs's address_deltas)."
+    ignore = "Not a test: builds test-vector data for zaino_state::chain_index unit tests. Also funds via transparent-coinbase shielding — un-ignore to regenerate vectors once devtool can shield its own transparent coinbase (tracked by tests/devtool.rs's address_deltas)."
 )]
 #[allow(deprecated)]
 async fn create_200_block_regtest_chain_vectors() {
@@ -81,7 +81,7 @@ async fn create_200_block_regtest_chain_vectors() {
     // *** Mine past coinbase maturity, shield the first reward, and mine it in ***
     // Mature the faucet's transparent coinbase (100-block maturity) and shield
     // it. Devtool analogue of `shield_faucet_rounds`; requires the devtool wallet
-    // to spend its own transparent coinbase (round-2 P1, see #[ignore]). Mine
+    // to spend its own transparent coinbase (see #[ignore]). Mine
     // generously (150) so the earliest coinbase — a few blocks past genesis — is
     // comfortably mature before the shield, regardless of startup height.
     test_manager

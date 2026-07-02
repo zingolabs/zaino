@@ -31,7 +31,7 @@ use crate::{
         source::{BlockchainSourceResult, GetTransactionLocation},
         tests::{init_tracing, poll::poll_until, proptest_blockgen::proptest_helpers::add_segment},
         types::BestChainLocation,
-        NonFinalizedSnapshot, NON_FINALIZED_DEPTH,
+        NonFinalizedSnapshot, OPERATIONAL_NFS_DEPTH,
     },
     BlockHash, BlockchainSource, ChainIndex, ChainIndexConfig, NodeBackedChainIndex,
     NodeBackedChainIndexSubscriber, TransactionHash,
@@ -52,7 +52,7 @@ fn passthrough_test(
     init_tracing();
     let network = Network::Regtest(ActivationHeights::default());
     // Long enough to have some finalized blocks to play with
-    let segment_length = NON_FINALIZED_DEPTH as usize + 20;
+    let segment_length = OPERATIONAL_NFS_DEPTH as usize + 20;
     // No need to worry about non-best chains for this test
     let branch_count = 1;
 
