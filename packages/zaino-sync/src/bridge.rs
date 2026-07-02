@@ -6,14 +6,17 @@
 //! gives compile-time safety at the index definition site. The engine
 //! needs runtime dispatch via [`IndexPipeline<Ctx>`]. Bridges are the
 //! glue: each bridge struct holds internal state (delta buffer, merge
-//! accumulator) and implements `IndexPipeline<Ctx>` by calling the
-//! type-level extract and merge traits internally. The `Delta` type
-//! never leaves the bridge.
+//! result) and implements `IndexPipeline<Ctx>` by calling the type-level
+//! extract and merge traits internally. The `Delta` type never leaves
+//! the bridge.
 //!
-//! One bridge per (scope × composition) cell. Currently implemented:
-//! - [`LocalAppendBridge`] — BlockLocal × Append
-//! - [`LocalMonoidalBridge`] — BlockLocal × Monoidal
-//! - [`LocalFoldBridge`] — BlockLocal × Fold
+//! # Single bridge struct
+//!
+//! [`LocalBridge<I>`] handles all three BlockLocal composition types.
+//! The composition-specific logic (how deltas are combined, how the
+//! merged result becomes WriteOps) is dispatched through the
+//! [`MergeStrategy`] trait, which each merge trait (`MergeAppend`,
+//! `MergeMonoidal`, `MergeFold`) satisfies via blanket impls.
 //!
 //! SelfCumulative and CrossIndex bridges are not yet implemented — they
 //! need backend reader access that the pipeline interface doesn't yet
@@ -21,17 +24,11 @@
 //!
 //! # Three-phase pipeline
 //!
-//! Each bridge implements `extract_one` / `merge` / `persist`:
-//!
-//! - **`extract_one`**: computes a delta from one block context, pushes
-//!   it into an internal `Mutex<Vec<Delta>>` buffer.
-//! - **`merge`**: drains the delta buffer and combines deltas per the
-//!   composition type. Stores the result in the merge state slot.
-//! - **`persist`**: converts the merged domain state into `WriteOp`s
-//!   and clears the state for the next batch.
-//!
-//! Interior mutability (`Mutex`) is used throughout because
-//! `IndexPipeline` methods take `&self` for trait-object safety.
+//! - **`extract_one`**: computes a delta, pushes into internal buffer.
+//! - **`merge`**: drains deltas, combines per composition type, stores
+//!   domain-typed result. No serialization.
+//! - **`persist`**: converts domain result to `WriteOp`s. This is the
+//!   serialization boundary.
 //!
 //! [`IndexPipeline`]: crate::pipeline::IndexPipeline
 //! [`ExtractLocal`]: crate::traits::ExtractLocal
@@ -61,17 +58,12 @@ mod sealed {
 /// [`crate::pipeline`] delegates to this trait, so index authors never
 /// need to write `IntoIndexPipeline` by hand.
 ///
-/// `I` is the index type, `Ctx` is the set-wide block context. The bridge
-/// requires `Ctx: ProvideContext<I::BlockContext>` to project the set-wide
-/// context down to what the index needs.
-///
 /// [`IntoIndexPipeline`]: crate::pipeline::IntoIndexPipeline
 pub trait BridgeDispatch<I: IndexDef, Ctx>: sealed::Sealed {
     /// Produce the boxed pipeline for index `I` over set-wide context `Ctx`.
     fn dispatch() -> Box<dyn IndexPipeline<Ctx>>;
 }
 
-// Seal the marker pairs.
 impl sealed::Sealed for (BlockLocal, Append) {}
 impl sealed::Sealed for (BlockLocal, Monoidal) {}
 impl sealed::Sealed for (BlockLocal, Fold) {}
@@ -82,7 +74,7 @@ where
     Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
 {
     fn dispatch() -> Box<dyn IndexPipeline<Ctx>> {
-        local_append::<I, Ctx>()
+        Box::new(LocalBridge::<I, AppendStrategy>::new())
     }
 }
 
@@ -92,7 +84,7 @@ where
     Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
 {
     fn dispatch() -> Box<dyn IndexPipeline<Ctx>> {
-        local_monoidal::<I, Ctx>()
+        Box::new(LocalBridge::<I, MonoidalStrategy>::new())
     }
 }
 
@@ -102,213 +94,136 @@ where
     Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
 {
     fn dispatch() -> Box<dyn IndexPipeline<Ctx>> {
-        local_fold::<I, Ctx>()
+        Box::new(LocalBridge::<I, FoldStrategy>::new())
     }
 }
 
 // ===========================================================================
-// BlockLocal × Append
+// MergeStrategy — composition-specific logic
 // ===========================================================================
 
-/// Stateful bridge for BlockLocal × Append indexes.
+/// Composition-specific merge and persist logic.
 ///
-/// **Parallelism profile:**
-/// - Extraction: fully parallel across blocks (no inter-block deps).
-/// - Merge: trivial collect — deltas are independent, no combine step.
-///
-/// Internal state:
-/// - `deltas`: buffer of per-block deltas, pushed by `extract_one`.
-/// - `merged_ops`: WriteOps produced by `merge`, drained by `persist`.
-pub struct LocalAppendBridge<I: IndexDef> {
-    descriptor: Descriptor,
-    deltas: Mutex<Vec<I::Delta>>,
-    merged_ops: Mutex<Vec<WriteOp>>,
-    _index: PhantomData<I>,
+/// Abstracts the difference between Append, Monoidal, and Fold so that
+/// [`LocalBridge`] can be a single generic struct. Each strategy defines
+/// how to combine a `Vec<Delta>` into a merged result, and how to
+/// convert that result into `WriteOp`s.
+pub(crate) trait MergeStrategy<I: IndexDef>: Send + Sync + 'static {
+    /// The domain-typed result of merging a batch of deltas.
+    type MergedState: Send + Sync;
+
+    /// Combine a batch of deltas into a merged domain result.
+    fn merge_deltas(deltas: Vec<I::Delta>) -> Self::MergedState;
+
+    /// Convert the merged domain result into write operations.
+    /// This is the serialization boundary.
+    fn to_write_ops(state: Self::MergedState) -> Vec<WriteOp>;
 }
 
-impl<I: IndexDef> LocalAppendBridge<I> {
-    fn new() -> Self {
-        Self {
-            descriptor: I::descriptor(),
-            deltas: Mutex::new(Vec::new()),
-            merged_ops: Mutex::new(Vec::new()),
-            _index: PhantomData,
-        }
-    }
-}
+/// Strategy marker for Append composition.
+struct AppendStrategy;
 
-impl<Ctx, I> IndexPipeline<Ctx> for LocalAppendBridge<I>
+impl<I> MergeStrategy<I> for AppendStrategy
 where
-    I: ExtractLocal + MergeAppend,
-    Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
+    I: MergeAppend,
 {
-    fn descriptor(&self) -> &Descriptor {
-        &self.descriptor
+    // For append, the merged state is the collected deltas themselves —
+    // each delta independently produces WriteOps.
+    type MergedState = Vec<I::Delta>;
+
+    fn merge_deltas(deltas: Vec<I::Delta>) -> Self::MergedState {
+        deltas
     }
 
-    fn extract_one(&self, ctx: &Ctx) -> Result<(), PipelineError> {
-        let delta = I::extract(&ctx.context())?;
-        self.deltas.lock().expect("delta mutex poisoned").push(delta);
-        Ok(())
-    }
-
-    fn merge(&self) -> Result<(), PipelineError> {
-        let deltas: Vec<I::Delta> = self
-            .deltas
-            .lock()
-            .expect("delta mutex poisoned")
-            .drain(..)
-            .collect();
-
+    fn to_write_ops(state: Self::MergedState) -> Vec<WriteOp> {
         let mut ops = Vec::new();
-        for delta in deltas {
+        for delta in state {
             ops.extend(I::to_write_ops(delta));
         }
-
-        *self.merged_ops.lock().expect("ops mutex poisoned") = ops;
-        Ok(())
-    }
-
-    fn persist(&self) -> Result<Vec<WriteOp>, PipelineError> {
-        let ops = self
-            .merged_ops
-            .lock()
-            .expect("ops mutex poisoned")
-            .drain(..)
-            .collect();
-        Ok(ops)
+        ops
     }
 }
 
-/// Register a BlockLocal × Append index into the pipeline.
-pub fn local_append<I, Ctx>() -> Box<dyn IndexPipeline<Ctx>>
+/// Strategy marker for Monoidal composition.
+struct MonoidalStrategy;
+
+impl<I> MergeStrategy<I> for MonoidalStrategy
 where
-    I: ExtractLocal + MergeAppend,
-    Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
+    I: MergeMonoidal,
 {
-    Box::new(LocalAppendBridge::<I>::new())
-}
+    type MergedState = I::Accumulator;
 
-// ===========================================================================
-// BlockLocal × Monoidal
-// ===========================================================================
-
-/// Stateful bridge for BlockLocal × Monoidal indexes.
-///
-/// **Parallelism profile:**
-/// - Extraction: fully parallel across blocks (no inter-block deps).
-/// - Merge: parallel reduce tree — `combine` is associative +
-///   commutative, so deltas can be reduced in any order.
-///
-/// Internal state:
-/// - `deltas`: buffer of per-block deltas, pushed by `extract_one`.
-/// - `merged_ops`: WriteOps produced by `merge`, drained by `persist`.
-pub struct LocalMonoidalBridge<I: IndexDef + MergeMonoidal> {
-    descriptor: Descriptor,
-    deltas: Mutex<Vec<I::Delta>>,
-    merged_ops: Mutex<Vec<WriteOp>>,
-    _index: PhantomData<I>,
-}
-
-impl<I: IndexDef + MergeMonoidal> LocalMonoidalBridge<I> {
-    fn new() -> Self {
-        Self {
-            descriptor: I::descriptor(),
-            deltas: Mutex::new(Vec::new()),
-            merged_ops: Mutex::new(Vec::new()),
-            _index: PhantomData,
-        }
-    }
-}
-
-impl<Ctx, I> IndexPipeline<Ctx> for LocalMonoidalBridge<I>
-where
-    I: ExtractLocal + MergeMonoidal,
-    Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
-{
-    fn descriptor(&self) -> &Descriptor {
-        &self.descriptor
-    }
-
-    fn extract_one(&self, ctx: &Ctx) -> Result<(), PipelineError> {
-        let delta = I::extract(&ctx.context())?;
-        self.deltas.lock().expect("delta mutex poisoned").push(delta);
-        Ok(())
-    }
-
-    fn merge(&self) -> Result<(), PipelineError> {
-        let deltas: Vec<I::Delta> = self
-            .deltas
-            .lock()
-            .expect("delta mutex poisoned")
-            .drain(..)
-            .collect();
-
+    fn merge_deltas(deltas: Vec<I::Delta>) -> Self::MergedState {
         let mut acc = I::identity();
         for delta in deltas {
             acc = I::combine(acc, I::lift(delta));
         }
-
-        *self.merged_ops.lock().expect("ops mutex poisoned") = I::to_write_ops(acc);
-        Ok(())
+        acc
     }
 
-    fn persist(&self) -> Result<Vec<WriteOp>, PipelineError> {
-        let ops = self
-            .merged_ops
-            .lock()
-            .expect("ops mutex poisoned")
-            .drain(..)
-            .collect();
-        Ok(ops)
+    fn to_write_ops(state: Self::MergedState) -> Vec<WriteOp> {
+        I::to_write_ops(state)
     }
 }
 
-/// Register a BlockLocal × Monoidal index into the pipeline.
-pub fn local_monoidal<I, Ctx>() -> Box<dyn IndexPipeline<Ctx>>
+/// Strategy marker for Fold composition.
+struct FoldStrategy;
+
+impl<I> MergeStrategy<I> for FoldStrategy
 where
-    I: ExtractLocal + MergeMonoidal,
-    Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
+    I: MergeFold,
 {
-    Box::new(LocalMonoidalBridge::<I>::new())
+    type MergedState = I::FoldState;
+
+    fn merge_deltas(deltas: Vec<I::Delta>) -> Self::MergedState {
+        let mut state = I::initial_state();
+        for delta in deltas {
+            I::fold(&mut state, delta);
+        }
+        state
+    }
+
+    fn to_write_ops(state: Self::MergedState) -> Vec<WriteOp> {
+        I::to_write_ops(state)
+    }
 }
 
 // ===========================================================================
-// BlockLocal × Fold
+// LocalBridge — single struct for all BlockLocal compositions
 // ===========================================================================
 
-/// Stateful bridge for BlockLocal × Fold indexes.
+/// Stateful bridge for all BlockLocal indexes.
+///
+/// `I` is the index type, `S` is the [`MergeStrategy`] marker. The
+/// bridge stores deltas in a buffer and merged state in an `Option`.
 ///
 /// **Parallelism profile:**
-/// - Extraction: fully parallel across blocks (no inter-block deps).
-/// - Merge: strictly sequential — `fold` must apply deltas in chain
-///   order. This is inherent to the Fold composition type.
-///
-/// Internal state:
-/// - `deltas`: buffer of per-block deltas, pushed by `extract_one`.
-///   **Must be consumed in insertion order** during merge.
-/// - `merged_ops`: WriteOps produced by `merge`, drained by `persist`.
-pub struct LocalFoldBridge<I: IndexDef + MergeFold> {
+/// - Extraction: fully parallel across blocks (BlockLocal proves no
+///   inter-block deps).
+/// - Merge: depends on strategy (trivial for Append, parallel-reducible
+///   for Monoidal, sequential for Fold).
+pub(crate) struct LocalBridge<I: IndexDef, S: MergeStrategy<I>> {
     descriptor: Descriptor,
     deltas: Mutex<Vec<I::Delta>>,
-    merged_ops: Mutex<Vec<WriteOp>>,
-    _index: PhantomData<I>,
+    merged: Mutex<Option<S::MergedState>>,
+    _phantom: PhantomData<(I, S)>,
 }
 
-impl<I: IndexDef + MergeFold> LocalFoldBridge<I> {
+impl<I: IndexDef, S: MergeStrategy<I>> LocalBridge<I, S> {
     fn new() -> Self {
         Self {
             descriptor: I::descriptor(),
             deltas: Mutex::new(Vec::new()),
-            merged_ops: Mutex::new(Vec::new()),
-            _index: PhantomData,
+            merged: Mutex::new(None),
+            _phantom: PhantomData,
         }
     }
 }
 
-impl<Ctx, I> IndexPipeline<Ctx> for LocalFoldBridge<I>
+impl<Ctx, I, S> IndexPipeline<Ctx> for LocalBridge<I, S>
 where
-    I: ExtractLocal + MergeFold,
+    I: ExtractLocal,
+    S: MergeStrategy<I>,
     Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
 {
     fn descriptor(&self) -> &Descriptor {
@@ -329,31 +244,19 @@ where
             .drain(..)
             .collect();
 
-        let mut state = I::initial_state();
-        for delta in deltas {
-            I::fold(&mut state, delta);
-        }
-
-        *self.merged_ops.lock().expect("ops mutex poisoned") = I::to_write_ops(state);
+        let state = S::merge_deltas(deltas);
+        *self.merged.lock().expect("merged mutex poisoned") = Some(state);
         Ok(())
     }
 
     fn persist(&self) -> Result<Vec<WriteOp>, PipelineError> {
-        let ops = self
-            .merged_ops
+        let state = self
+            .merged
             .lock()
-            .expect("ops mutex poisoned")
-            .drain(..)
-            .collect();
-        Ok(ops)
+            .expect("merged mutex poisoned")
+            .take()
+            .ok_or_else(|| PipelineError::Persist("no merged state to persist".into()))?;
+        Ok(S::to_write_ops(state))
     }
 }
 
-/// Register a BlockLocal × Fold index into the pipeline.
-pub fn local_fold<I, Ctx>() -> Box<dyn IndexPipeline<Ctx>>
-where
-    I: ExtractLocal + MergeFold,
-    Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
-{
-    Box::new(LocalFoldBridge::<I>::new())
-}
