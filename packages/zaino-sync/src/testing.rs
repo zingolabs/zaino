@@ -111,7 +111,6 @@ impl BackendWriter for InMemoryWriter {
 // Set-wide block context and mock provisioner
 // ===========================================================================
 
-use crate::descriptor::SourceRequirements;
 use crate::provisioner::{ProvisionError, Provisioner};
 
 /// Set-wide block context for tests.
@@ -144,8 +143,6 @@ impl MockProvisioner {
 
 impl Provisioner for MockProvisioner {
     type BlockContext = TestBlockContext;
-
-    fn configure(&mut self, _requirements: SourceRequirements) {}
 
     fn provision_range(
         &self,

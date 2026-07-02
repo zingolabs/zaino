@@ -102,7 +102,8 @@ pub trait IndexDef: Send + Sync + 'static {
     /// This is the index's view of a block — just the data it cares about.
     /// The set-wide context (what the provisioner produces) narrows to this
     /// type via [`ProvideContext`].
-    type BlockContext: Send + Sync;
+    ///
+    type BlockContext: Send + Sync + 'static;
 
     /// The full declarative descriptor.
     fn descriptor() -> Descriptor;

@@ -1,7 +1,5 @@
 //! Declarative index descriptors and type-level axis markers.
 
-use bitflags::bitflags;
-
 use crate::primitives::IndexId;
 
 // ---------------------------------------------------------------------------
@@ -120,48 +118,6 @@ pub enum SourceAccess {
 }
 
 // ---------------------------------------------------------------------------
-// Source requirements — what the provisioner must fetch per block
-// ---------------------------------------------------------------------------
-
-bitflags! {
-    /// Declared per-index. The provisioner computes the union across all
-    /// registered indexes and fetches only what is needed.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-    pub struct SourceRequirements: u32 {
-        /// Raw block data (always implied).
-        const BLOCK       = 0b0001;
-        /// Sapling/Orchard commitment tree roots.
-        const TREE_ROOTS  = 0b0010;
-        /// Cumulative tree sizes.
-        const TREE_SIZES  = 0b0100;
-        /// Chainwork of parent block.
-        const PARENT_WORK = 0b1000;
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ContextRequirements — type-level source of truth for provisioner needs
-// ---------------------------------------------------------------------------
-
-/// Declares what data a block context type requires from the provisioner.
-///
-/// Each index's [`BlockContext`](super::traits::IndexDef::BlockContext)
-/// implements this trait. The engine unions the requirements across all
-/// registered indexes and configures the provisioner accordingly.
-///
-/// This is the single source of truth — indexes don't declare
-/// requirements separately. The context type *is* the requirement.
-pub trait ContextRequirements: Send + Sync + 'static {
-    /// The provisioner requirements needed to populate this context.
-    const REQUIREMENTS: SourceRequirements;
-}
-
-/// Unit context: no data needed (e.g. a pure counting index).
-impl ContextRequirements for () {
-    const REQUIREMENTS: SourceRequirements = SourceRequirements::empty();
-}
-
-// ---------------------------------------------------------------------------
 // Descriptor — the full declarative spec of an index
 // ---------------------------------------------------------------------------
 
@@ -170,6 +126,12 @@ impl ContextRequirements for () {
 /// Carries both runtime-inspectable enums (for the engine's DAG builder)
 /// and is associated with type-level markers (via [`IndexDef`]) for
 /// compile-time enforcement of valid operations.
+///
+/// Provisioner requirements are not declared here — they are implicit
+/// in each index's [`BlockContext`](super::traits::IndexDef::BlockContext)
+/// type. The set-wide context must implement
+/// [`ProvideContext`](super::traits::ProvideContext) for each index's
+/// block context, and the compiler enforces this at registration time.
 ///
 /// [`IndexDef`]: super::traits::IndexDef
 #[derive(Debug, Clone)]
@@ -182,11 +144,6 @@ pub struct Descriptor {
     pub composition: CompositionType,
     /// Indexes this one depends on (must form a DAG).
     pub dependencies: &'static [IndexId],
-    /// What the provisioner must fetch for this index.
-    ///
-    /// Derived from the index's `BlockContext` type via
-    /// [`ContextRequirements`]. Not declared manually.
-    pub requirements: SourceRequirements,
     /// Whether extraction may reach the source for non-local data.
     pub source_access: SourceAccess,
 }

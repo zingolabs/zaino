@@ -1,7 +1,7 @@
 //! BlockLocal × Fold: running sum of values across blocks in a batch.
 
 use crate::descriptor::{
-    BlockLocal, CompositionType, Descriptor, Fold, InputScope, SourceAccess, SourceRequirements,
+    BlockLocal, CompositionType, Descriptor, Fold, InputScope, SourceAccess,
 };
 use crate::primitives::IndexId;
 use crate::traits::{ExtractError, ExtractLocal, IndexDef, MergeFold, WriteOp};
@@ -30,7 +30,6 @@ impl IndexDef for RunningSumIndex {
             scope: InputScope::BlockLocal,
             composition: CompositionType::Fold,
             dependencies: &[],
-            requirements: SourceRequirements::BLOCK,
             source_access: SourceAccess::None,
         }
     }

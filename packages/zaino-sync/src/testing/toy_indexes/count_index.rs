@@ -1,7 +1,7 @@
 //! BlockLocal × Monoidal: counts total blocks seen in each batch.
 
 use crate::descriptor::{
-    BlockLocal, CompositionType, Descriptor, InputScope, Monoidal, SourceAccess, SourceRequirements,
+    BlockLocal, CompositionType, Descriptor, InputScope, Monoidal, SourceAccess,
 };
 use crate::primitives::IndexId;
 use crate::traits::{ExtractError, ExtractLocal, IndexDef, MergeMonoidal, WriteOp};
@@ -31,7 +31,6 @@ impl IndexDef for CountIndex {
             scope: InputScope::BlockLocal,
             composition: CompositionType::Monoidal,
             dependencies: &[],
-            requirements: SourceRequirements::BLOCK,
             source_access: SourceAccess::None,
         }
     }

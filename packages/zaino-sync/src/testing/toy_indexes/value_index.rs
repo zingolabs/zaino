@@ -1,7 +1,7 @@
 //! BlockLocal × Append: stores (height → value) for each block.
 
 use crate::descriptor::{
-    Append, BlockLocal, CompositionType, Descriptor, InputScope, SourceAccess, SourceRequirements,
+    Append, BlockLocal, CompositionType, Descriptor, InputScope, SourceAccess,
 };
 use crate::primitives::IndexId;
 use crate::traits::{ExtractError, ExtractLocal, IndexDef, MergeAppend, WriteOp};
@@ -32,7 +32,6 @@ impl IndexDef for ValueIndex {
             scope: InputScope::BlockLocal,
             composition: CompositionType::Append,
             dependencies: &[],
-            requirements: SourceRequirements::BLOCK,
             source_access: SourceAccess::None,
         }
     }

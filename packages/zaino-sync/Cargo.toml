@@ -10,7 +10,6 @@ description = "DAG-driven parallel sync engine for blockchain index building."
 
 [dependencies]
 thiserror.workspace = true
-bitflags.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"

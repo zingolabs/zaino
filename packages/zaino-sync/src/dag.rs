@@ -305,7 +305,7 @@ fn derive_firing_rule(upstream: &Descriptor, _downstream: &Descriptor) -> Firing
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::descriptor::{SourceAccess, SourceRequirements};
+    use crate::descriptor::SourceAccess;
 
     const A: IndexId = IndexId::new("a");
     const B: IndexId = IndexId::new("b");
@@ -324,7 +324,6 @@ mod tests {
             scope: InputScope::BlockLocal,
             composition: CompositionType::Append,
             dependencies: deps,
-            requirements: SourceRequirements::BLOCK,
             source_access: SourceAccess::None,
         }
     }
