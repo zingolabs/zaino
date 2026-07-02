@@ -1,0 +1,15 @@
+# Standalone dev-tooling crate: its own workspace (not a member of the root one)
+# so building a single tiny, std-only binary never drags in the production
+# dependency graph. One binary per `src/bin/*.rs`; shared logic in `src/lib.rs`.
+[package]
+name = "workbench"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Own workspace root -> isolated resolution, independent of the production tree.
+[workspace]
+
+# Crate-wide: forbid unsafe across the lib and every binary in one place.
+[lints.rust]
+unsafe_code = "forbid"
