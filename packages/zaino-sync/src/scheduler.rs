@@ -77,6 +77,10 @@ pub struct Scheduler {
     dag: DependencyDag,
     batch_size: u32,
 
+    /// Total number of blocks in the sync range. Used to compute the
+    /// effective size of the final (possibly partial) batch.
+    total_blocks: Option<u32>,
+
     /// All index IDs, cached for iteration.
     all_indexes: Vec<IndexId>,
 
@@ -133,6 +137,7 @@ impl Scheduler {
         Self {
             dag,
             batch_size,
+            total_blocks: None,
             all_indexes,
             deps,
             extracted_in_batch,
@@ -161,12 +166,13 @@ impl Scheduler {
                 continue;
             }
 
+            let batch = self.current_batch[&id];
+            let effective = self.effective_batch_size(batch);
             let extracted = self.extracted_in_batch[&id];
-            if extracted >= self.batch_size {
+            if extracted >= effective {
                 continue;
             }
 
-            let batch = self.current_batch[&id];
             if !self.firing_rules_satisfied(id, batch) {
                 continue;
             }
@@ -191,13 +197,15 @@ impl Scheduler {
     /// [`merge_done`](Self::merge_done) — it cannot be skipped or
     /// reordered.
     pub fn extraction_done(&mut self, index: IndexId) -> Option<BatchHandle<FullyExtracted>> {
+        let batch = self.current_batch[&index];
+        let effective = self.effective_batch_size(batch);
+
         let count = self.extracted_in_batch.get_mut(&index)
             .expect("index exists in scheduler");
         *count += 1;
 
-        if *count >= self.batch_size {
+        if *count >= effective {
             self.pending_merge.insert(index);
-            let batch = self.current_batch[&index];
             Some(BatchHandle::new(index, batch))
         } else {
             None
@@ -276,6 +284,35 @@ impl Scheduler {
     /// Access the underlying DAG.
     pub fn dag(&self) -> &DependencyDag {
         &self.dag
+    }
+
+    /// The batch size this scheduler was configured with.
+    pub fn batch_size(&self) -> u32 {
+        self.batch_size
+    }
+
+    /// Set the total number of blocks in the sync range.
+    ///
+    /// Must be called before `sync_range` begins so the scheduler
+    /// knows the effective size of the final (partial) batch.
+    pub fn set_total_blocks(&mut self, total: u32) {
+        self.total_blocks = Some(total);
+    }
+
+    /// Effective batch size for a given batch index.
+    ///
+    /// All batches are `batch_size` except possibly the last one,
+    /// which may be smaller if `total_blocks` is not a multiple of
+    /// `batch_size`.
+    fn effective_batch_size(&self, batch: BatchIndex) -> u32 {
+        match self.total_blocks {
+            Some(total) => {
+                let start = batch.value() * self.batch_size;
+                let remaining = total.saturating_sub(start);
+                remaining.min(self.batch_size)
+            }
+            None => self.batch_size,
+        }
     }
 
     /// Whether all indexes have finished the given batch
