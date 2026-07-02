@@ -323,6 +323,9 @@ pub fn local_network_from_activation_heights(
         nu6_2: activation_heights
             .nu6_2
             .map(zcash_protocol::consensus::BlockHeight::from),
+        nu6_3: activation_heights
+            .nu6_3
+            .map(zcash_protocol::consensus::BlockHeight::from),
     }
 }
 
@@ -1041,6 +1044,8 @@ pub async fn launch_state_and_fetch_services_mining_to<V: ValidatorExt>(
                 nu6: activation_heights.nu6(),
                 nu6_1: activation_heights.nu6_1(),
                 nu6_2: activation_heights.nu6_2(),
+                // zingo_common_components 0.3.1 has no nu6_3 slot.
+                nu6_3: None,
                 nu7: activation_heights.nu7(),
             }
         }),

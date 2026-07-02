@@ -361,7 +361,7 @@ pub struct GetBlockchainInfoResponse {
 
     /// Value pool balances
     #[serde(rename = "valuePools")]
-    value_pools: [ChainBalance; 5],
+    value_pools: [ChainBalance; 6],
 
     /// Branch IDs of the current and upcoming consensus rules
     pub consensus: zebra_rpc::methods::TipConsensusBranch,
@@ -539,7 +539,8 @@ mod get_tx_out_set_info_tests {
                 { "id": "sprout", "chainValue": 0.0, "chainValueZat": 0 },
                 { "id": "sapling", "chainValue": 0.0, "chainValueZat": 0 },
                 { "id": "orchard", "chainValue": 0.0, "chainValueZat": 0 },
-                { "id": "deferred", "chainValue": 0.0, "chainValueZat": 0 }
+                { "id": "deferred", "chainValue": 0.0, "chainValueZat": 0 },
+                { "id": "ironwood", "chainValue": 0.0, "chainValueZat": 0 }
             ],
             "consensus": {
                 "chaintip": "5437f330",
@@ -663,6 +664,10 @@ impl<'de> Deserialize<'de> for ChainBalance {
             // TODO: Investigate source of undocument 'lockbox' value
             // that likely is intended to be 'deferred'
             "lockbox" | "deferred" => Ok(ChainBalance(GetBlockchainInfoBalance::deferred(
+                amount, None,
+            ))),
+            // Ironwood (NU6.3) chain value pool; zero before NU6.3 activates.
+            "ironwood" => Ok(ChainBalance(GetBlockchainInfoBalance::ironwood(
                 amount, None,
             ))),
             "" => Ok(ChainBalance(GetBlockchainInfoBalance::chain_supply(
@@ -1144,7 +1149,7 @@ pub struct BlockObject {
     /// Value pool balances
     ///
     #[serde(rename = "valuePools")]
-    value_pools: Option<[ChainBalance; 5]>,
+    value_pools: Option<[ChainBalance; 6]>,
 
     /// Information about the note commitment trees.
     pub trees: GetBlockTrees,
@@ -1205,8 +1210,15 @@ impl TryFrom<GetBlockResponse> for zebra_rpc::methods::GetBlock {
                         block.difficulty,
                         block.chain_supply.map(|supply| supply.0),
                         block.value_pools.map(
-                            |[transparent, sprout, sapling, orchard, deferred]| {
-                                [transparent.0, sprout.0, sapling.0, orchard.0, deferred.0]
+                            |[transparent, sprout, sapling, orchard, deferred, ironwood]| {
+                                [
+                                    transparent.0,
+                                    sprout.0,
+                                    sapling.0,
+                                    orchard.0,
+                                    deferred.0,
+                                    ironwood.0,
+                                ]
                             },
                         ),
                         block.trees.into(),

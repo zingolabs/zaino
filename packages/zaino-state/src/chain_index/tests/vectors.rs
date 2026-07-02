@@ -111,6 +111,7 @@ pub(crate) fn indexed_block_chain(
                     // see https://zips.z.cash/#nu6-1-candidate-zips for info on NU6.1
                     nu6_1: None,
                     nu6_2: None,
+                    nu6_3: None,
                     nu7: None,
                 }
                 .into(),

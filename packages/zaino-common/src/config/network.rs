@@ -16,6 +16,7 @@ pub const ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS: ActivationHeights = ActivationHeigh
     nu6: Some(2),
     nu6_1: Some(2),
     nu6_2: Some(2),
+    nu6_3: Some(2),
     nu7: None,
 };
 
@@ -108,6 +109,9 @@ pub struct ActivationHeights {
     /// Activation height for `NU6.2` network upgrade.
     #[serde(rename = "NU6.2")]
     pub nu6_2: Option<u32>,
+    /// Activation height for `NU6.3` (Ironwood) network upgrade.
+    #[serde(rename = "NU6.3")]
+    pub nu6_3: Option<u32>,
     /// Activation height for `NU7` network upgrade.
     #[serde(rename = "NU7")]
     pub nu7: Option<u32>,
@@ -126,6 +130,7 @@ impl Default for ActivationHeights {
             nu6: Some(2),
             nu6_1: Some(2),
             nu6_2: Some(2),
+            nu6_3: Some(2),
             nu7: None,
         }
     }
@@ -143,6 +148,10 @@ impl From<ActivationHeights> for zingo_common_components::protocol::ActivationHe
             .set_nu6(val.nu6)
             .set_nu6_1(val.nu6_1)
             .set_nu6_2(val.nu6_2)
+            // NOTE: zingo_common_components 0.3.1 has no nu6_3 slot, so the
+            // NU6.3 activation height is not carried through this intermediate.
+            // The NU6.3 height is preserved on the zebra `ConfiguredActivationHeights`
+            // path, which is what NU6.3 support actually needs.
             .set_nu7(val.nu7)
             .build()
     }
@@ -161,6 +170,7 @@ impl From<ConfiguredActivationHeights> for ActivationHeights {
             nu6,
             nu6_1,
             nu6_2,
+            nu6_3,
             nu7,
         }: ConfiguredActivationHeights,
     ) -> Self {
@@ -175,6 +185,7 @@ impl From<ConfiguredActivationHeights> for ActivationHeights {
             nu6,
             nu6_1,
             nu6_2,
+            nu6_3,
             nu7,
         }
     }
@@ -192,6 +203,7 @@ impl From<ActivationHeights> for ConfiguredActivationHeights {
             nu6,
             nu6_1,
             nu6_2,
+            nu6_3,
             nu7,
         }: ActivationHeights,
     ) -> Self {
@@ -206,6 +218,7 @@ impl From<ActivationHeights> for ConfiguredActivationHeights {
             nu6,
             nu6_1,
             nu6_2,
+            nu6_3,
             nu7,
         }
     }
@@ -224,6 +237,9 @@ impl From<zingo_common_components::protocol::ActivationHeights> for ActivationHe
             nu6: activation_heights.nu6(),
             nu6_1: activation_heights.nu6_1(),
             nu6_2: activation_heights.nu6_2(),
+            // zingo_common_components 0.3.1 has no nu6_3 slot; the NU6.3 height
+            // is not carried on this intermediate (see the forward conversion).
+            nu6_3: None,
             nu7: activation_heights.nu7(),
         }
     }
@@ -248,6 +264,7 @@ impl Network {
             nu6: Some(1),
             nu6_1: None,
             nu6_2: None,
+            nu6_3: None,
             nu7: None,
         }
     }
@@ -292,6 +309,7 @@ impl From<zebra_chain::parameters::Network> for Network {
                         nu6: None,
                         nu6_1: None,
                         nu6_2: None,
+                        nu6_3: None,
                         nu7: None,
                     };
                     for (height, upgrade) in parameters.activation_heights().iter() {
@@ -326,6 +344,9 @@ impl From<zebra_chain::parameters::Network> for Network {
                             }
                             zebra_chain::parameters::NetworkUpgrade::Nu6_2 => {
                                 activation_heights.nu6_2 = Some(height.0)
+                            }
+                            zebra_chain::parameters::NetworkUpgrade::Nu6_3 => {
+                                activation_heights.nu6_3 = Some(height.0)
                             }
                             zebra_chain::parameters::NetworkUpgrade::Nu7 => {
                                 activation_heights.nu7 = Some(height.0)
@@ -376,12 +397,16 @@ mod tests {
             nu6: Some(1),
             nu6_1: Some(1),
             nu6_2: Some(2),
+            nu6_3: Some(3),
             nu7: Some(1000),
         };
 
         let zebra_heights: zebra_chain::parameters::testnet::ConfiguredActivationHeights =
             heights.into();
         assert_eq!(zebra_heights.nu6_2, Some(2));
+        // The NU6.3 height round-trips on the zebra path (unlike the lossy
+        // zingo intermediate below, whose 0.3.1 type has no nu6_3 slot).
+        assert_eq!(zebra_heights.nu6_3, Some(3));
 
         let zingo_heights: zingo_common_components::protocol::ActivationHeights = heights.into();
         let heights = ActivationHeights::from(zingo_heights);
