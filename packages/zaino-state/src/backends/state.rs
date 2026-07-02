@@ -3,6 +3,7 @@
 #[allow(deprecated)]
 use crate::{
     chain_index::{
+        chain_tips_from_nonfinalized_snapshot,
         mempool::{Mempool, MempoolSubscriber},
         source::ValidatorConnector,
         types as chain_types, ChainIndex, ChainIndexRpcExt,
@@ -1545,19 +1546,9 @@ impl ZcashIndexer for StateServiceSubscriber {
     /// [The function in rpc/blockchain.cpp](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L325)
     /// where `return chainActive.Tip()->GetBlockHash().GetHex();` is the [return expression](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L339)returning a `std::string`
     async fn get_best_blockhash(&self) -> Result<GetBlockHash, Self::Error> {
-        // return should be valid hex encoded.
-        // Hash from zebra says:
-        // Return the hash bytes in big-endian byte-order suitable for printing out byte by byte.
-        //
-        // Zebra displays transaction and block hashes in big-endian byte-order,
-        // following the u256 convention set by Bitcoin and zcashd.
-        match self.read_state_service.best_tip() {
-            Some(x) => return Ok(GetBlockHash::new(x.1)),
-            None => {
-                // try RPC if state read fails:
-                Ok(self.rpc_client.get_best_blockhash().await?.into())
-            }
-        }
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let tip = self.indexer.best_chaintip(&snapshot).await?;
+        Ok(GetBlockHash::new(tip.hash.into()))
     }
 
     /// Returns the current block count in the best valid block chain.
@@ -1567,23 +1558,16 @@ impl ZcashIndexer for StateServiceSubscriber {
     /// tags: blockchain
     async fn get_block_count(&self) -> Result<Height, Self::Error> {
         let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
-        let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
-            // TODO: This probably shouldn't be an error.
-            // this is an improvement over previous behaviour of
-            // acting as if we are only synced to the genesis block
-            return Err(StateServiceError::UnavailableNotSyncedEnough);
-        };
-        let h = non_finalized_snapshot.best_tip.height;
-        Ok(h.into())
+        let tip = self.indexer.best_chaintip(&snapshot).await?;
+        Ok(tip.height.into())
     }
 
     async fn get_chain_tips(&self) -> Result<GetChainTipsResponse, Self::Error> {
         let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
         let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
-            return Ok(self.rpc_client.get_chain_tips().await?);
+            return Err(StateServiceError::UnavailableNotSyncedEnough);
         };
-
-        Ok(crate::chain_index::chain_tips_from_nonfinalized_snapshot(
+        Ok(chain_tips_from_nonfinalized_snapshot(
             non_finalized_snapshot,
         ))
     }

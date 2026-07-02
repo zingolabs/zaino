@@ -485,7 +485,9 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// [The function in rpc/blockchain.cpp](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L325)
     /// where `return chainActive.Tip()->GetBlockHash().GetHex();` is the [return expression](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L339)returning a `std::string`
     async fn get_best_blockhash(&self) -> Result<GetBlockHashResponse, Self::Error> {
-        Ok(self.fetcher.get_best_blockhash().await?.into())
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let tip = self.indexer.best_chaintip(&snapshot).await?;
+        Ok(GetBlockHashResponse::new(tip.hash.into()))
     }
 
     /// Returns the current block count in the best valid block chain.
@@ -494,15 +496,17 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// method: post
     /// tags: blockchain
     async fn get_block_count(&self) -> Result<Height, Self::Error> {
-        Ok(self.fetcher.get_block_count().await?.into())
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let tip = self.indexer.best_chaintip(&snapshot).await?;
+        Ok(tip.height.into())
     }
 
+    #[allow(deprecated)]
     async fn get_chain_tips(&self) -> Result<GetChainTipsResponse, Self::Error> {
         let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
         let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
-            return Ok(self.fetcher.get_chain_tips().await?);
+            return Err(FetchServiceError::UnavailableNotSyncedEnough);
         };
-
         Ok(chain_tips_from_nonfinalized_snapshot(
             non_finalized_snapshot,
         ))
