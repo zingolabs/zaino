@@ -3029,18 +3029,23 @@ mod spent_outpoints {
 
     #[test]
     fn skips_null_prevout_and_maps_each_input() {
+        // Asymmetric txid bytes (first byte != last) so the assertion also catches a
+        // byte-order reversal in outpoint construction, not merely a wrong value —
+        // a palindromic array like `[7u8; 32]` reversed is indistinguishable from itself.
+        let txid_a: [u8; 32] = std::array::from_fn(|i| i as u8);
+        let txid_b: [u8; 32] = std::array::from_fn(|i| (i as u8).wrapping_add(100));
         let tx = TransparentCompactTx::new(
             vec![
-                TxInCompact::null_prevout(),    // coinbase input → skipped
-                TxInCompact::new([7u8; 32], 3), // spends output 3 of txid 0x07..
-                TxInCompact::new([8u8; 32], 0), // spends output 0 of txid 0x08..
+                TxInCompact::null_prevout(), // coinbase input → skipped
+                TxInCompact::new(txid_a, 3), // spends output 3 of txid_a
+                TxInCompact::new(txid_b, 0), // spends output 0 of txid_b
             ],
             vec![],
         );
 
         assert_eq!(
             tx.spent_outpoints().collect::<Vec<_>>(),
-            vec![Outpoint::new([7u8; 32], 3), Outpoint::new([8u8; 32], 0)],
+            vec![Outpoint::new(txid_a, 3), Outpoint::new(txid_b, 0)],
         );
     }
 
