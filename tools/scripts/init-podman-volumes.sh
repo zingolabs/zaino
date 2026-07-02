@@ -1,8 +1,19 @@
 #!/usr/bin/env bash
 # Initialize named podman volumes for container builds.
 
+# `podman volume inspect` reads podman's database, not the filesystem, so a
+# volume can "exist" in the DB while its backing directory is gone (e.g. after
+# a partial ~/.local/share/containers cleanup or an interrupted `podman system
+# reset`). Podman then refuses to mount it with "failed to validate if host
+# path is dangerous: lstat .../volumes/<vol>: no such file or directory". Guard
+# on the actual Mountpoint directory, and force-recreate a stale record so the
+# DB and on-disk storage stay in sync.
 for vol in zaino-container-target zaino-cargo-git zaino-cargo-registry; do
-    if ! podman volume inspect "$vol" >/dev/null 2>&1; then
+    mountpoint="$(podman volume inspect --format '{{.Mountpoint}}' "$vol" 2>/dev/null)"
+    if [[ -z "$mountpoint" || ! -d "$mountpoint" ]]; then
+        # -z: no DB record. `! -d`: DB record present but backing dir gone;
+        # rm --force drops the dangling record before we recreate it.
+        podman volume rm --force "$vol" >/dev/null 2>&1 || true
         podman volume create "$vol"
         echo "Created podman volume: $vol"
     fi
