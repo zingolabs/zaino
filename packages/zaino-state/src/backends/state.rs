@@ -66,22 +66,20 @@ use zcash_protocol::consensus::NetworkType;
 use zcash_transparent::address::TransparentAddress;
 use zebra_chain::{
     amount::{Amount, NonNegative},
-    block::{Header, Height, SerializedBlock},
+    block::Height,
     chain_tip::NetworkChainTipHeightEstimator,
-    parameters::{ConsensusBranchId, Network, NetworkKind, NetworkUpgrade},
-    serialization::{BytesInDisplayOrder as _, ZcashDeserialize as _, ZcashSerialize},
+    parameters::{ConsensusBranchId, NetworkKind, NetworkUpgrade},
+    serialization::ZcashDeserialize as _,
     subtree::NoteCommitmentSubtreeIndex,
 };
 use zebra_rpc::{
     client::{
-        GetAddressBalanceRequest, GetBlockchainInfoBalance, GetSubtreesByIndexResponse,
-        GetTreestateResponse, HexData, Input, SubtreeRpcData, TransactionObject,
-        ValidateAddressResponse,
+        GetAddressBalanceRequest, GetSubtreesByIndexResponse, GetTreestateResponse, Input,
+        SubtreeRpcData, TransactionObject, ValidateAddressResponse,
     },
     methods::{
         chain_tip_difficulty, AddressBalance, ConsensusBranchIdHex, GetAddressTxIdsRequest,
-        GetAddressUtxos, GetBlock, GetBlockHash, GetBlockHeader as GetBlockHeaderZebra,
-        GetBlockHeaderObject, GetBlockTransaction, GetBlockTrees, GetBlockchainInfoResponse,
+        GetAddressUtxos, GetBlock, GetBlockHash, GetBlockTransaction, GetBlockchainInfoResponse,
         GetInfo, GetRawTransaction, NetworkUpgradeInfo, NetworkUpgradeStatus, SentTransactionHash,
         TipConsensusBranch,
     },
@@ -90,7 +88,7 @@ use zebra_rpc::{
 };
 use zebra_state::{HashOrHeight, ReadRequest, ReadResponse, ReadStateService};
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use futures::TryFutureExt as _;
 use hex::{FromHex as _, ToHex};
 use indexmap::IndexMap;
@@ -405,149 +403,6 @@ impl StateServiceSubscriber {
             monitor: self.chain_tip_change.clone(),
         }
     }
-    /// Returns the requested block header by hash or height, as a [`GetBlockHeader`] JSON string.
-    /// If the block is not in Zebra's state,
-    /// returns [error code `-8`.](https://github.com/zcash/zcash/issues/5758)
-    /// if a height was passed or -5 if a hash was passed.
-    ///
-    /// zcashd reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
-    /// method: post
-    /// tags: blockchain
-    ///
-    /// # Parameters
-    ///
-    /// - `hash_or_height`: (string, required, example="1") The hash or height
-    ///   for the block to be returned.
-    /// - `verbose`: (bool, optional, default=false, example=true) false for hex encoded data,
-    ///   true for a json object
-    ///
-    /// # Notes
-    ///
-    /// The undocumented `chainwork` field is not returned.
-    ///
-    /// This rpc is used by get_block(verbose), there is currently no
-    /// plan to offer this RPC publicly.
-    async fn get_block_header_inner(
-        state: &ReadStateService,
-        network: &Network,
-        hash_or_height: HashOrHeight,
-        verbose: Option<bool>,
-    ) -> Result<GetBlockHeaderZebra, StateServiceError> {
-        let mut state = state.clone();
-        let verbose = verbose.unwrap_or(true);
-        let network = network.clone();
-
-        let zebra_state::ReadResponse::BlockHeader {
-            header,
-            hash,
-            height,
-            next_block_hash,
-        } = state
-            .ready()
-            .and_then(|service| service.call(zebra_state::ReadRequest::BlockHeader(hash_or_height)))
-            .await
-            .map_err(|_| {
-                StateServiceError::RpcError(RpcError {
-                    // Compatibility with zcashd. Note that since this function
-                    // is reused by getblock(), we return the errors expected
-                    // by it (they differ whether a hash or a height was passed)
-                    code: LegacyCode::InvalidParameter as i64,
-                    message: "block height not in best chain".to_string(),
-                    data: None,
-                })
-            })?
-        else {
-            return Err(StateServiceError::Custom(
-                "Unexpected response to BlockHeader request".to_string(),
-            ));
-        };
-
-        let response = if !verbose {
-            GetBlockHeaderZebra::Raw(HexData(header.zcash_serialize_to_vec()?))
-        } else {
-            let zebra_state::ReadResponse::SaplingTree(sapling_tree) = state
-                .ready()
-                .and_then(|service| {
-                    service.call(zebra_state::ReadRequest::SaplingTree(hash_or_height))
-                })
-                .await?
-            else {
-                return Err(StateServiceError::Custom(
-                    "Unexpected response to SaplingTree request".to_string(),
-                ));
-            };
-            // This could be `None` if there's a chain reorg between state queries.
-            let sapling_tree = sapling_tree.ok_or_else(|| {
-                StateServiceError::RpcError(zaino_fetch::jsonrpsee::connector::RpcError {
-                    code: LegacyCode::InvalidParameter as i64,
-                    message: "missing sapling tree for block".to_string(),
-                    data: None,
-                })
-            })?;
-
-            let zebra_state::ReadResponse::Depth(depth) = state
-                .ready()
-                .and_then(|service| service.call(zebra_state::ReadRequest::Depth(hash)))
-                .await?
-            else {
-                return Err(StateServiceError::Custom(
-                    "Unexpected response to Depth request".to_string(),
-                ));
-            };
-
-            // From <https://zcash.github.io/rpc/getblock.html>
-            // TODO: Deduplicate const definition, consider
-            // refactoring this to avoid duplicate logic
-            const NOT_IN_BEST_CHAIN_CONFIRMATIONS: i64 = -1;
-
-            // Confirmations are one more than the depth.
-            // Depth is limited by height, so it will never overflow an i64.
-            let confirmations = depth
-                .map(|depth| i64::from(depth) + 1)
-                .unwrap_or(NOT_IN_BEST_CHAIN_CONFIRMATIONS);
-
-            let mut nonce = *header.nonce;
-            nonce.reverse();
-
-            let sapling_activation = NetworkUpgrade::Sapling.activation_height(&network);
-            let sapling_tree_size = sapling_tree.count();
-            let final_sapling_root: [u8; 32] =
-                if sapling_activation.is_some() && height >= sapling_activation.unwrap() {
-                    let mut root: [u8; 32] = sapling_tree.root().into();
-                    root.reverse();
-                    root
-                } else {
-                    [0; 32]
-                };
-
-            let difficulty = header.difficulty_threshold.relative_to_network(&network);
-            let block_commitments =
-                header_to_block_commitments(&header, &network, height, final_sapling_root)?;
-
-            let block_header = GetBlockHeaderObject::new(
-                hash,
-                confirmations,
-                height,
-                header.version,
-                header.merkle_root,
-                block_commitments,
-                final_sapling_root,
-                sapling_tree_size,
-                header.time.timestamp(),
-                nonce,
-                header.solution,
-                header.difficulty_threshold,
-                difficulty,
-                header.previous_block_hash,
-                next_block_hash,
-            );
-
-            GetBlockHeaderZebra::Object(Box::new(block_header))
-        };
-
-        Ok(response)
-    }
-
     /// Return a list of consecutive compact blocks.
     #[allow(dead_code, deprecated)]
     async fn get_block_range_inner(
@@ -702,185 +557,6 @@ impl StateServiceSubscriber {
                 "Error: Failed to retrieve block from node. Server Error: {e}",
             )))
         })
-    }
-
-    pub(crate) async fn get_block_inner(
-        state: &ReadStateService,
-        network: &Network,
-        hash_or_height: HashOrHeight,
-        verbosity: Option<u8>,
-    ) -> Result<GetBlock, StateServiceError> {
-        let mut state_1 = state.clone();
-
-        let verbosity = verbosity.unwrap_or(1);
-        match verbosity {
-            0 => {
-                let request = ReadRequest::Block(hash_or_height);
-                let response = state_1
-                    .ready()
-                    .and_then(|service| service.call(request))
-                    .await?;
-                let block = expected_read_response!(response, Block);
-                block.map(SerializedBlock::from).map(GetBlock::Raw).ok_or(
-                    StateServiceError::RpcError(RpcError::new_from_legacycode(
-                        LegacyCode::InvalidParameter,
-                        "block not found",
-                    )),
-                )
-            }
-            1 | 2 => {
-                let state_2 = state.clone();
-                let state_3 = state.clone();
-                let state_4 = state.clone();
-
-                let blockandsize_future = {
-                    let req = ReadRequest::BlockAndSize(hash_or_height);
-                    async move { state_1.ready().and_then(|service| service.call(req)).await }
-                };
-                let orchard_future = {
-                    let req = ReadRequest::OrchardTree(hash_or_height);
-                    async move {
-                        state_2
-                            .clone()
-                            .ready()
-                            .and_then(|service| service.call(req))
-                            .await
-                    }
-                };
-
-                let block_info_future = {
-                    let req = ReadRequest::BlockInfo(hash_or_height);
-                    async move {
-                        state_4
-                            .clone()
-                            .ready()
-                            .and_then(|service| service.call(req))
-                            .await
-                    }
-                };
-                let (fullblock, orchard_tree_response, header, block_info) = futures::join!(
-                    blockandsize_future,
-                    orchard_future,
-                    StateServiceSubscriber::get_block_header_inner(
-                        &state_3,
-                        network,
-                        hash_or_height,
-                        Some(true)
-                    ),
-                    block_info_future
-                );
-
-                let header_obj = match header? {
-                    GetBlockHeaderZebra::Raw(_hex_data) => unreachable!(
-                        "`true` was passed to get_block_header, an object should be returned"
-                    ),
-                    GetBlockHeaderZebra::Object(get_block_header_object) => get_block_header_object,
-                };
-
-                let (transactions_response, size, block_info): (Vec<GetBlockTransaction>, _, _) =
-                    match (fullblock, block_info) {
-                        (
-                            Ok(ReadResponse::BlockAndSize(Some((block, size)))),
-                            Ok(ReadResponse::BlockInfo(Some(block_info))),
-                        ) => Ok((
-                            block
-                                .transactions
-                                .iter()
-                                .map(|transaction| {
-                                    match verbosity {
-                                        1 => GetBlockTransaction::Hash(transaction.hash()),
-                                        2 => GetBlockTransaction::Object(Box::new(
-                                            TransactionObject::from_transaction(
-                                                transaction.clone(),
-                                                Some(header_obj.height()),
-                                                Some(header_obj.confirmations() as u32),
-                                                network,
-                                                DateTime::<Utc>::from_timestamp(
-                                                    header_obj.time(),
-                                                    0,
-                                                ),
-                                                Some(header_obj.hash()),
-                                                // block header has a non-optional height, which indicates
-                                                // a mainchain block. It is implied this method cannot return sidechain
-                                                // data, at least for now. This is subject to change: TODO
-                                                // return Some(true/false) after this assumption is resolved
-                                                None,
-                                                transaction.hash(),
-                                            ),
-                                        )),
-                                        _ => unreachable!("verbosity known to be 1 or 2"),
-                                    }
-                                })
-                                .collect(),
-                            size,
-                            block_info,
-                        )),
-                        (Ok(ReadResponse::Block(None)), Ok(ReadResponse::BlockInfo(None))) => {
-                            Err(StateServiceError::RpcError(RpcError::new_from_legacycode(
-                                LegacyCode::InvalidParameter,
-                                "block not found",
-                            )))
-                        }
-                        (Ok(unexpected), Ok(unexpected2)) => {
-                            unreachable!("Unexpected responses from state service: {unexpected:?} {unexpected2:?}")
-                        }
-                        (Err(e), _) | (_, Err(e)) => Err(e.into()),
-                    }?;
-
-                let orchard_tree_response = orchard_tree_response?;
-                let orchard_tree = expected_read_response!(orchard_tree_response, OrchardTree)
-                    .ok_or(StateServiceError::RpcError(RpcError::new_from_legacycode(
-                        LegacyCode::Misc,
-                        "missing orchard tree",
-                    )))?;
-
-                let final_orchard_root = match NetworkUpgrade::Nu5.activation_height(network) {
-                    Some(activation_height) if header_obj.height() >= activation_height => {
-                        Some(orchard_tree.root().into())
-                    }
-                    _otherwise => None,
-                };
-
-                let trees =
-                    GetBlockTrees::new(header_obj.sapling_tree_size(), orchard_tree.count());
-
-                let (chain_supply, value_pools) = (
-                    GetBlockchainInfoBalance::chain_supply(*block_info.value_pools()),
-                    GetBlockchainInfoBalance::value_pools(*block_info.value_pools(), None),
-                );
-                let transaction_count = transactions_response.len();
-
-                Ok(GetBlock::Object(Box::new(
-                    zebra_rpc::client::BlockObject::new(
-                        header_obj.hash(),
-                        header_obj.confirmations(),
-                        Some(size as i64),
-                        Some(header_obj.height()),
-                        Some(header_obj.version()),
-                        Some(header_obj.merkle_root()),
-                        Some(header_obj.block_commitments()),
-                        Some(header_obj.final_sapling_root()),
-                        final_orchard_root,
-                        transaction_count,
-                        transactions_response,
-                        Some(header_obj.time()),
-                        Some(header_obj.nonce()),
-                        Some(header_obj.solution()),
-                        Some(header_obj.bits()),
-                        Some(header_obj.difficulty()),
-                        Some(chain_supply),
-                        Some(value_pools),
-                        trees,
-                        Some(header_obj.previous_block_hash()),
-                        header_obj.next_block_hash(),
-                    ),
-                )))
-            }
-            more_than_two => Err(StateServiceError::RpcError(RpcError::new_from_legacycode(
-                LegacyCode::InvalidParameter,
-                format!("invalid verbosity of {more_than_two}"),
-            ))),
-        }
     }
 
     /// Returns the network type running.
@@ -1217,10 +893,7 @@ impl ZcashIndexer for StateServiceSubscriber {
         hash: String,
         verbose: bool,
     ) -> Result<GetBlockHeader, Self::Error> {
-        self.rpc_client
-            .get_block_header(hash, verbose)
-            .await
-            .map_err(|e| StateServiceError::Custom(e.to_string()))
+        Ok(self.indexer.get_block_header(hash, verbose).await?)
     }
 
     async fn z_get_block(
@@ -1228,15 +901,10 @@ impl ZcashIndexer for StateServiceSubscriber {
         hash_or_height_string: String,
         verbosity: Option<u8>,
     ) -> Result<GetBlock, Self::Error> {
-        let hash_or_height = HashOrHeight::from_str(&hash_or_height_string);
-
-        StateServiceSubscriber::get_block_inner(
-            &self.read_state_service.clone(),
-            &self.data.network(),
-            hash_or_height?,
-            verbosity,
-        )
-        .await
+        Ok(self
+            .indexer
+            .z_get_block(hash_or_height_string, verbosity)
+            .await?)
     }
 
     async fn get_block_deltas(&self, hash: String) -> Result<BlockDeltas, Self::Error> {
@@ -2716,37 +2384,6 @@ impl LightWalletIndexer for StateServiceSubscriber {
             ),
         ))
     }
-}
-
-#[allow(clippy::result_large_err, deprecated)]
-fn header_to_block_commitments(
-    header: &Header,
-    network: &Network,
-    height: Height,
-    final_sapling_root: [u8; 32],
-) -> Result<[u8; 32], StateServiceError> {
-    let hash = match header.commitment(network, height).map_err(|e| {
-        StateServiceError::SerializationError(
-            zebra_chain::serialization::SerializationError::Parse(
-                // For some reason this error type takes a
-                // &'static str, and the the only way to create one
-                // dynamically is to leak a String. This shouldn't
-                // be a concern, as this error case should
-                // never occur when communing with a zebrad, which
-                // validates this field before serializing it
-                e.to_string().leak(),
-            ),
-        )
-    })? {
-        zebra_chain::block::Commitment::PreSaplingReserved(bytes) => bytes,
-        zebra_chain::block::Commitment::FinalSaplingRoot(_root) => final_sapling_root,
-        zebra_chain::block::Commitment::ChainHistoryActivationReserved => [0; 32],
-        zebra_chain::block::Commitment::ChainHistoryRoot(root) => root.bytes_in_display_order(),
-        zebra_chain::block::Commitment::ChainHistoryBlockTxAuthCommitment(hash) => {
-            hash.bytes_in_display_order()
-        }
-    };
-    Ok(hash)
 }
 
 /// An error type for median time past calculation errors

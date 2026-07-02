@@ -39,6 +39,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, instrument};
 use zaino_fetch::jsonrpsee::response::{
     address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
+    block_header::GetBlockHeader,
     chain_tips::{ChainTip, ChainTipStatus, GetChainTipsResponse},
     EmptyTxOutSetInfo, GetTxOutSetInfo, GetTxOutSetInfoResponse,
 };
@@ -48,7 +49,7 @@ pub use zebra_chain::parameters::Network as ZebraNetwork;
 use zebra_chain::serialization::ZcashSerialize;
 use zebra_rpc::{
     client::{GetAddressBalanceRequest, GetAddressTxIdsRequest},
-    methods::{AddressBalance, GetAddressUtxos},
+    methods::{AddressBalance, GetAddressUtxos, GetBlock},
 };
 use zebra_state::HashOrHeight;
 
@@ -573,6 +574,27 @@ pub trait ChainIndexRpcExt: ChainIndex {
         end_height: types::Height,
         pool_types: PoolTypeFilter,
     ) -> impl std::future::Future<Output = Result<Option<CompactBlockStream>, Self::Error>>;
+
+    /// Returns the `getblock`-shaped block for the given hash-or-height string.
+    ///
+    /// `verbosity` follows the zcashd `getblock` convention (0 = raw, 1 = object with
+    /// txids, 2 = object with full transaction data).
+    ///
+    /// zcashd reference: [`getblock`](https://zcash.github.io/rpc/getblock.html)
+    fn z_get_block(
+        &self,
+        hash_or_height: String,
+        verbosity: Option<u8>,
+    ) -> impl std::future::Future<Output = Result<GetBlock, Self::Error>>;
+
+    /// Returns the `getblockheader`-shaped header for the given block hash.
+    ///
+    /// zcashd reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
+    fn get_block_header(
+        &self,
+        hash: String,
+        verbose: bool,
+    ) -> impl std::future::Future<Output = Result<GetBlockHeader, Self::Error>>;
 
     // ********** Transparent address history methods **********
 
@@ -2594,6 +2616,30 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
         });
 
         Ok(Some(CompactBlockStream::new(channel_receiver)))
+    }
+
+    async fn z_get_block(
+        &self,
+        hash_or_height: String,
+        verbosity: Option<u8>,
+    ) -> Result<GetBlock, Self::Error> {
+        let id = HashOrHeight::from_str(&hash_or_height)
+            .map_err(|error| ChainIndexError::internal(error.to_string()))?;
+        self.source()
+            .get_block_verbose(id, verbosity)
+            .await
+            .map_err(ChainIndexError::backing_validator)
+    }
+
+    async fn get_block_header(
+        &self,
+        hash: String,
+        verbose: bool,
+    ) -> Result<GetBlockHeader, Self::Error> {
+        self.source()
+            .get_block_header(hash, verbose)
+            .await
+            .map_err(ChainIndexError::backing_validator)
     }
 
     /// Returns all changes for the given transparent addresses.

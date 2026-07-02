@@ -1,6 +1,6 @@
 //! Traits and types for the blockchain source thats serves zaino, commonly a validator connection.
 
-use std::{error::Error, str::FromStr as _, sync::Arc};
+use std::{error::Error, sync::Arc};
 
 use crate::chain_index::{
     types::{BlockHash, TransactionHash},
@@ -15,6 +15,7 @@ use zaino_fetch::jsonrpsee::{
     connector::{JsonRpSeeConnector, RpcRequestError},
     response::{
         address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
+        block_header::GetBlockHeader,
         GetBlockError, GetBlockResponse, GetTransactionResponse, GetTreestateResponse,
     },
 };
@@ -60,6 +61,26 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
         &self,
         id: HashOrHeight,
     ) -> impl SendFut<BlockchainSourceResult<Option<Arc<zebra_chain::block::Block>>>>;
+
+    /// Returns the `getblock`-shaped verbose block for the given hash or height.
+    ///
+    /// `verbosity` follows the zcashd `getblock` convention (0 = raw, 1 = object with
+    /// txids, 2 = object with full transaction data).
+    fn get_block_verbose(
+        &self,
+        hash_or_height: HashOrHeight,
+        verbosity: Option<u8>,
+    ) -> impl SendFut<BlockchainSourceResult<zebra_rpc::methods::GetBlock>>;
+
+    /// Returns the `getblockheader`-shaped block header for the given block hash.
+    ///
+    /// When `verbose` is false the header is returned in raw hex form; when true it is
+    /// returned as a structured object.
+    fn get_block_header(
+        &self,
+        hash: String,
+        verbose: bool,
+    ) -> impl SendFut<BlockchainSourceResult<GetBlockHeader>>;
 
     // ********** Transaction methods **********
 

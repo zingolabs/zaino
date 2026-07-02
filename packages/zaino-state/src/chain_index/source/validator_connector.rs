@@ -1,9 +1,22 @@
 //! validator connected blockchain source.
 
+use std::str::FromStr as _;
+
+use chrono::{DateTime, Utc};
 use hex::FromHex as _;
-use zaino_fetch::jsonrpsee::response::address_deltas::BlockInfo;
-use zebra_chain::serialization::BytesInDisplayOrder as _;
-use zebra_rpc::methods::ValidateAddresses as _;
+use zaino_fetch::jsonrpsee::response::{address_deltas::BlockInfo, block_header::GetBlockHeader};
+use zebra_chain::{
+    block::{Header, SerializedBlock},
+    parameters::NetworkUpgrade,
+    serialization::{BytesInDisplayOrder as _, ZcashSerialize as _},
+};
+use zebra_rpc::{
+    client::{BlockObject, GetBlockchainInfoBalance, HexData, TransactionObject},
+    methods::{
+        GetBlock, GetBlockHeaderObject, GetBlockHeaderResponse, GetBlockTransaction, GetBlockTrees,
+        ValidateAddresses as _,
+    },
+};
 
 use crate::Height;
 
@@ -109,6 +122,47 @@ impl BlockchainSource for ValidatorConnector {
                     },
                 }
             }
+        }
+    }
+
+    async fn get_block_verbose(
+        &self,
+        hash_or_height: HashOrHeight,
+        verbosity: Option<u8>,
+    ) -> BlockchainSourceResult<GetBlock> {
+        match self {
+            ValidatorConnector::State(state) => {
+                state.get_block_inner(hash_or_height, verbosity).await
+            }
+            ValidatorConnector::Fetch(fetch) => fetch
+                .get_block(hash_or_height.to_string(), verbosity)
+                .await
+                .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?
+                .try_into()
+                .map_err(|error: zebra_chain::serialization::SerializationError| {
+                    BlockchainSourceError::Unrecoverable(error.to_string())
+                }),
+        }
+    }
+
+    async fn get_block_header(
+        &self,
+        hash: String,
+        verbose: bool,
+    ) -> BlockchainSourceResult<GetBlockHeader> {
+        match self {
+            ValidatorConnector::State(state) => {
+                let hash_or_height = HashOrHeight::from_str(&hash)
+                    .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+                let header = state
+                    .get_block_header_inner(hash_or_height, Some(verbose))
+                    .await?;
+                zebra_block_header_to_wire(header)
+            }
+            ValidatorConnector::Fetch(fetch) => fetch
+                .get_block_header(hash, verbose)
+                .await
+                .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string())),
         }
     }
 
@@ -1076,4 +1130,414 @@ impl BlockchainSource for ValidatorConnector {
             ValidatorConnector::Fetch(_fetch) => Ok(None),
         }
     }
+}
+
+impl State {
+    /// Builds the `getblockheader`-shaped block header from the `ReadStateService`.
+    ///
+    /// Returns the zebra `GetBlockHeaderResponse` shape. This is the shared State-path
+    /// builder used by both [`ValidatorConnector::get_block_header`] (which converts it
+    /// to the JSON-RPC wire form) and [`State::get_block_inner`] (which reuses the
+    /// object fields to assemble a verbose block).
+    ///
+    /// Moved from the former `StateServiceSubscriber::get_block_header_inner`; the error
+    /// type is now [`BlockchainSourceError`] rather than the backend error, so the
+    /// zcashd-compatible `LegacyCode` on the not-in-best-chain case survives only in the
+    /// message string.
+    pub(super) async fn get_block_header_inner(
+        &self,
+        hash_or_height: HashOrHeight,
+        verbose: Option<bool>,
+    ) -> BlockchainSourceResult<GetBlockHeaderResponse> {
+        let mut state = self.read_state_service.clone();
+        let verbose = verbose.unwrap_or(true);
+        let network = self.network.to_zebra_network();
+
+        let ReadResponse::BlockHeader {
+            header,
+            hash,
+            height,
+            next_block_hash,
+        } = state
+            .ready()
+            .and_then(|service| service.call(ReadRequest::BlockHeader(hash_or_height)))
+            .await
+            .map_err(|_| {
+                BlockchainSourceError::Unrecoverable("block height not in best chain".to_string())
+            })?
+        else {
+            return Err(BlockchainSourceError::Unrecoverable(
+                "Unexpected response to BlockHeader request".to_string(),
+            ));
+        };
+
+        let response = if !verbose {
+            GetBlockHeaderResponse::Raw(HexData(
+                header
+                    .zcash_serialize_to_vec()
+                    .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?,
+            ))
+        } else {
+            let ReadResponse::SaplingTree(sapling_tree) = state
+                .ready()
+                .and_then(|service| service.call(ReadRequest::SaplingTree(hash_or_height)))
+                .await
+                .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?
+            else {
+                return Err(BlockchainSourceError::Unrecoverable(
+                    "Unexpected response to SaplingTree request".to_string(),
+                ));
+            };
+            // This could be `None` if there's a chain reorg between state queries.
+            let sapling_tree = sapling_tree.ok_or_else(|| {
+                BlockchainSourceError::Unrecoverable("missing sapling tree for block".to_string())
+            })?;
+
+            let ReadResponse::Depth(depth) = state
+                .ready()
+                .and_then(|service| service.call(ReadRequest::Depth(hash)))
+                .await
+                .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?
+            else {
+                return Err(BlockchainSourceError::Unrecoverable(
+                    "Unexpected response to Depth request".to_string(),
+                ));
+            };
+
+            // Confirmations are one more than the depth. Depth is limited by height, so
+            // it will never overflow an i64.
+            let confirmations = confirmations_from_depth(depth);
+
+            let sapling_tree_size = sapling_tree.count();
+            let final_sapling_root =
+                final_sapling_root(sapling_tree.root().into(), height, &network);
+
+            let block_header = build_block_header_object(
+                &header,
+                hash,
+                height,
+                confirmations,
+                final_sapling_root,
+                sapling_tree_size,
+                next_block_hash,
+                &network,
+            )?;
+
+            GetBlockHeaderResponse::Object(Box::new(block_header))
+        };
+
+        Ok(response)
+    }
+
+    /// Builds the `getblock`-shaped verbose block from the `ReadStateService`.
+    ///
+    /// Moved from the former `StateServiceSubscriber::get_block_inner`; the error type is
+    /// now [`BlockchainSourceError`].
+    pub(super) async fn get_block_inner(
+        &self,
+        hash_or_height: HashOrHeight,
+        verbosity: Option<u8>,
+    ) -> BlockchainSourceResult<GetBlock> {
+        let mut state_1 = self.read_state_service.clone();
+        let verbosity = verbosity.unwrap_or(1);
+        match verbosity {
+            0 => {
+                let request = ReadRequest::Block(hash_or_height);
+                let response = state_1
+                    .ready()
+                    .and_then(|service| service.call(request))
+                    .await
+                    .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+                let block = expected_read_response!(response, Block);
+                block
+                    .map(SerializedBlock::from)
+                    .map(GetBlock::Raw)
+                    .ok_or_else(|| {
+                        BlockchainSourceError::Unrecoverable("block not found".to_string())
+                    })
+            }
+            1 | 2 => {
+                let network = self.network.to_zebra_network();
+                let state_2 = self.read_state_service.clone();
+                let state_4 = self.read_state_service.clone();
+
+                let blockandsize_future = {
+                    let req = ReadRequest::BlockAndSize(hash_or_height);
+                    async move { state_1.ready().and_then(|service| service.call(req)).await }
+                };
+                let orchard_future = {
+                    let req = ReadRequest::OrchardTree(hash_or_height);
+                    async move {
+                        state_2
+                            .clone()
+                            .ready()
+                            .and_then(|service| service.call(req))
+                            .await
+                    }
+                };
+                let block_info_future = {
+                    let req = ReadRequest::BlockInfo(hash_or_height);
+                    async move {
+                        state_4
+                            .clone()
+                            .ready()
+                            .and_then(|service| service.call(req))
+                            .await
+                    }
+                };
+                let (fullblock, orchard_tree_response, header, block_info) = futures::join!(
+                    blockandsize_future,
+                    orchard_future,
+                    self.get_block_header_inner(hash_or_height, Some(true)),
+                    block_info_future
+                );
+
+                let header_obj = match header? {
+                    GetBlockHeaderResponse::Raw(_hex_data) => unreachable!(
+                        "`true` was passed to get_block_header, an object should be returned"
+                    ),
+                    GetBlockHeaderResponse::Object(get_block_header_object) => {
+                        get_block_header_object
+                    }
+                };
+
+                let (block, size, block_info) = match (fullblock, block_info) {
+                    (
+                        Ok(ReadResponse::BlockAndSize(Some((block, size)))),
+                        Ok(ReadResponse::BlockInfo(Some(block_info))),
+                    ) => (block, size, block_info),
+                    (Ok(ReadResponse::Block(None)), Ok(ReadResponse::BlockInfo(None))) => {
+                        return Err(BlockchainSourceError::Unrecoverable(
+                            "block not found".to_string(),
+                        ));
+                    }
+                    (Ok(unexpected), Ok(unexpected2)) => {
+                        unreachable!("Unexpected responses from state service: {unexpected:?} {unexpected2:?}")
+                    }
+                    (Err(e), _) | (_, Err(e)) => {
+                        return Err(BlockchainSourceError::Unrecoverable(e.to_string()));
+                    }
+                };
+
+                let orchard_tree_response = orchard_tree_response
+                    .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+                let orchard_tree = expected_read_response!(orchard_tree_response, OrchardTree)
+                    .ok_or_else(|| {
+                        BlockchainSourceError::Unrecoverable("missing orchard tree".to_string())
+                    })?;
+
+                let final_orchard_root =
+                    final_orchard_root(orchard_tree.root().into(), header_obj.height(), &network);
+
+                let (chain_supply, value_pools) = (
+                    Some(GetBlockchainInfoBalance::chain_supply(
+                        *block_info.value_pools(),
+                    )),
+                    Some(GetBlockchainInfoBalance::value_pools(
+                        *block_info.value_pools(),
+                        None,
+                    )),
+                );
+
+                Ok(build_verbose_block(
+                    &header_obj,
+                    &block,
+                    verbosity,
+                    size as i64,
+                    final_orchard_root,
+                    orchard_tree.count(),
+                    chain_supply,
+                    value_pools,
+                    &network,
+                ))
+            }
+            more_than_two => Err(BlockchainSourceError::Unrecoverable(format!(
+                "invalid verbosity of {more_than_two}"
+            ))),
+        }
+    }
+}
+
+/// Confirmations are one more than the depth, or -1 when the block is not on the best
+/// chain. Depth is limited by height, so it never overflows an `i64`.
+pub(crate) fn confirmations_from_depth(depth: Option<u32>) -> i64 {
+    const NOT_IN_BEST_CHAIN_CONFIRMATIONS: i64 = -1;
+    depth
+        .map(|depth| i64::from(depth) + 1)
+        .unwrap_or(NOT_IN_BEST_CHAIN_CONFIRMATIONS)
+}
+
+/// The `finalsaplingroot` field: the sapling note-commitment tree root in display
+/// (big-endian) byte order once Sapling has activated, else all-zero.
+pub(crate) fn final_sapling_root(
+    root: [u8; 32],
+    height: zebra_chain::block::Height,
+    network: &zebra_chain::parameters::Network,
+) -> [u8; 32] {
+    match NetworkUpgrade::Sapling.activation_height(network) {
+        Some(activation) if height >= activation => {
+            let mut root = root;
+            root.reverse();
+            root
+        }
+        _ => [0; 32],
+    }
+}
+
+/// The `finalorchardroot` field: `Some(root)` once NU5 has activated, else `None`.
+pub(crate) fn final_orchard_root(
+    root: [u8; 32],
+    height: zebra_chain::block::Height,
+    network: &zebra_chain::parameters::Network,
+) -> Option<[u8; 32]> {
+    match NetworkUpgrade::Nu5.activation_height(network) {
+        Some(activation) if height >= activation => Some(root),
+        _ => None,
+    }
+}
+
+/// Assembles a `getblockheader` object from its already-resolved primitive pieces.
+///
+/// Shared by the [`ValidatorConnector`] State path (which reads the pieces from the
+/// `ReadStateService`) and by `MockchainSource` (which reads them from test vectors),
+/// so the two never drift.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_block_header_object(
+    header: &Header,
+    hash: zebra_chain::block::Hash,
+    height: zebra_chain::block::Height,
+    confirmations: i64,
+    final_sapling_root: [u8; 32],
+    sapling_tree_size: u64,
+    next_block_hash: Option<zebra_chain::block::Hash>,
+    network: &zebra_chain::parameters::Network,
+) -> BlockchainSourceResult<GetBlockHeaderObject> {
+    let mut nonce = *header.nonce;
+    nonce.reverse();
+    let difficulty = header.difficulty_threshold.relative_to_network(network);
+    let block_commitments =
+        header_to_block_commitments(header, network, height, final_sapling_root)?;
+
+    Ok(GetBlockHeaderObject::new(
+        hash,
+        confirmations,
+        height,
+        header.version,
+        header.merkle_root,
+        block_commitments,
+        final_sapling_root,
+        sapling_tree_size,
+        header.time.timestamp(),
+        nonce,
+        header.solution,
+        header.difficulty_threshold,
+        difficulty,
+        header.previous_block_hash,
+        next_block_hash,
+    ))
+}
+
+/// Assembles a verbose (`verbosity` 1 or 2) `getblock` object from a resolved header
+/// object plus the block's transactions and pool aggregates.
+///
+/// Shared by the [`ValidatorConnector`] State path and `MockchainSource`. `chain_supply`
+/// / `value_pools` are the cumulative pool balances (present for the validator, `None`
+/// for the mock, whose vectors don't carry them).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_verbose_block(
+    header_obj: &GetBlockHeaderObject,
+    block: &zebra_chain::block::Block,
+    verbosity: u8,
+    size: i64,
+    final_orchard_root: Option<[u8; 32]>,
+    orchard_tree_size: u64,
+    chain_supply: Option<GetBlockchainInfoBalance>,
+    value_pools: Option<[GetBlockchainInfoBalance; 5]>,
+    network: &zebra_chain::parameters::Network,
+) -> GetBlock {
+    let transactions_response: Vec<GetBlockTransaction> = block
+        .transactions
+        .iter()
+        .map(|transaction| match verbosity {
+            1 => GetBlockTransaction::Hash(transaction.hash()),
+            2 => GetBlockTransaction::Object(Box::new(TransactionObject::from_transaction(
+                transaction.clone(),
+                Some(header_obj.height()),
+                Some(header_obj.confirmations() as u32),
+                network,
+                DateTime::<Utc>::from_timestamp(header_obj.time(), 0),
+                Some(header_obj.hash()),
+                // A non-optional header height indicates a mainchain block; sidechain
+                // data is out of scope for now. TODO: return Some(true/false) once resolved.
+                None,
+                transaction.hash(),
+            ))),
+            _ => unreachable!("verbosity known to be 1 or 2"),
+        })
+        .collect();
+
+    let trees = GetBlockTrees::new(header_obj.sapling_tree_size(), orchard_tree_size);
+    let transaction_count = transactions_response.len();
+
+    GetBlock::Object(Box::new(BlockObject::new(
+        header_obj.hash(),
+        header_obj.confirmations(),
+        Some(size),
+        Some(header_obj.height()),
+        Some(header_obj.version()),
+        Some(header_obj.merkle_root()),
+        Some(header_obj.block_commitments()),
+        Some(header_obj.final_sapling_root()),
+        final_orchard_root,
+        transaction_count,
+        transactions_response,
+        Some(header_obj.time()),
+        Some(header_obj.nonce()),
+        Some(header_obj.solution()),
+        Some(header_obj.bits()),
+        Some(header_obj.difficulty()),
+        chain_supply,
+        value_pools,
+        trees,
+        Some(header_obj.previous_block_hash()),
+        header_obj.next_block_hash(),
+    )))
+}
+
+/// Computes the `blockcommitments` field for a block header.
+///
+/// Moved verbatim (bar the error type) from the former `state.rs`
+/// `header_to_block_commitments`.
+pub(crate) fn header_to_block_commitments(
+    header: &Header,
+    network: &zebra_chain::parameters::Network,
+    height: zebra_chain::block::Height,
+    final_sapling_root: [u8; 32],
+) -> BlockchainSourceResult<[u8; 32]> {
+    let hash = match header.commitment(network, height).map_err(|error| {
+        BlockchainSourceError::Unrecoverable(format!("invalid block commitment: {error}"))
+    })? {
+        zebra_chain::block::Commitment::PreSaplingReserved(bytes) => bytes,
+        zebra_chain::block::Commitment::FinalSaplingRoot(_root) => final_sapling_root,
+        zebra_chain::block::Commitment::ChainHistoryActivationReserved => [0; 32],
+        zebra_chain::block::Commitment::ChainHistoryRoot(root) => root.bytes_in_display_order(),
+        zebra_chain::block::Commitment::ChainHistoryBlockTxAuthCommitment(hash) => {
+            hash.bytes_in_display_order()
+        }
+    };
+    Ok(hash)
+}
+
+/// Converts the zebra `GetBlockHeaderResponse` (Raw/Object) into the JSON-RPC wire
+/// `getblockheader` response (Compact/Verbose) expected by the backends.
+///
+/// The two shapes serialize to the same JSON, so a serde round-trip is the least-error-
+/// prone conversion.
+pub(crate) fn zebra_block_header_to_wire(
+    header: GetBlockHeaderResponse,
+) -> BlockchainSourceResult<GetBlockHeader> {
+    let value = serde_json::to_value(&header)
+        .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+    serde_json::from_value(value)
+        .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))
 }

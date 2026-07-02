@@ -16,8 +16,11 @@ use tokio_stream::StreamExt as _;
 use zaino_fetch::jsonrpsee::response::address_deltas::{
     GetAddressDeltasParams, GetAddressDeltasResponse,
 };
-use zebra_chain::serialization::ZcashDeserializeInto;
+use zaino_fetch::jsonrpsee::response::block_header::GetBlockHeader;
+use zebra_chain::serialization::{ZcashDeserializeInto, ZcashSerialize as _};
 use zebra_rpc::client::{GetAddressBalanceRequest, GetAddressTxIdsRequest};
+use zebra_rpc::methods::GetBlock;
+use zebra_state::HashOrHeight;
 
 /// Polls the indexer's nonfinalized-state snapshot until its best-tip height
 /// equals `expected`, or panics after a 10 s budget.
@@ -903,4 +906,93 @@ async fn get_outpoint_spenders_empty_and_single() {
             .unwrap(),
         vec![None],
     );
+}
+
+/// `z_get_block` served through the ChainIndex from the mock vectors: verbosity 0
+/// round-trips to the stored block, and verbosity 1 matches the source and reports the
+/// block's hash / height / txids.
+#[tokio::test(flavor = "multi_thread")]
+async fn z_get_block() {
+    let (_blocks, _indexer, index_reader, mockchain) =
+        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
+    let active_height = mockchain.active_height();
+
+    for height in [1u32, active_height / 2, active_height] {
+        let id = HashOrHeight::Height(zebra_chain::block::Height(height));
+        let expected_block = mockchain.get_block(id).await.unwrap().unwrap();
+
+        // Verbosity 0: the raw serialized block round-trips to the stored block.
+        let GetBlock::Raw(serialized) = index_reader
+            .z_get_block(height.to_string(), Some(0))
+            .await
+            .unwrap()
+        else {
+            panic!("expected a raw block at verbosity 0");
+        };
+        let decoded: zebra_chain::block::Block =
+            serialized.as_ref().zcash_deserialize_into().unwrap();
+        assert_eq!(decoded, *expected_block);
+
+        // Verbosity 1: the ChainIndex delegates to the source and the object reports the
+        // block's hash, height, and every txid.
+        let via_index = index_reader
+            .z_get_block(height.to_string(), Some(1))
+            .await
+            .unwrap();
+        let via_source = mockchain.get_block_verbose(id, Some(1)).await.unwrap();
+        let value = serde_json::to_value(&via_index).unwrap();
+        assert_eq!(value, serde_json::to_value(&via_source).unwrap());
+        assert_eq!(
+            value["hash"].as_str().unwrap(),
+            expected_block.hash().to_string()
+        );
+        assert_eq!(value["height"].as_u64().unwrap(), u64::from(height));
+        assert_eq!(
+            value["tx"].as_array().unwrap().len(),
+            expected_block.transactions.len()
+        );
+    }
+}
+
+/// `get_block_header` served through the ChainIndex from the mock vectors: the compact
+/// (non-verbose) form round-trips to the stored header bytes, and the verbose form
+/// matches the source and reports the right hash / height.
+#[tokio::test(flavor = "multi_thread")]
+async fn get_block_header() {
+    let (_blocks, _indexer, index_reader, mockchain) =
+        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
+    let active_height = mockchain.active_height();
+
+    for height in [1u32, active_height / 2, active_height] {
+        let id = HashOrHeight::Height(zebra_chain::block::Height(height));
+        let block = mockchain.get_block(id).await.unwrap().unwrap();
+        let hash = block.hash().to_string();
+
+        // Non-verbose: the compact hex decodes to the block header's serialization.
+        let GetBlockHeader::Compact(compact) = index_reader
+            .get_block_header(hash.clone(), false)
+            .await
+            .unwrap()
+        else {
+            panic!("expected a compact header when verbose = false");
+        };
+        assert_eq!(
+            hex::decode(compact).unwrap(),
+            block.header.zcash_serialize_to_vec().unwrap()
+        );
+
+        // Verbose: the ChainIndex delegates to the source and reports hash / height.
+        let via_index = index_reader
+            .get_block_header(hash.clone(), true)
+            .await
+            .unwrap();
+        let via_source = mockchain
+            .get_block_header(hash.clone(), true)
+            .await
+            .unwrap();
+        let value = serde_json::to_value(&via_index).unwrap();
+        assert_eq!(value, serde_json::to_value(&via_source).unwrap());
+        assert_eq!(value["hash"].as_str().unwrap(), hash);
+        assert_eq!(value["height"].as_u64().unwrap(), u64::from(height));
+    }
 }

@@ -616,6 +616,25 @@ impl BlockchainSource for ProptestMockchain {
         }
     }
 
+    async fn get_block_verbose(
+        &self,
+        _hash_or_height: HashOrHeight,
+        _verbosity: Option<u8>,
+    ) -> BlockchainSourceResult<zebra_rpc::methods::GetBlock> {
+        // ProptestMockchain exercises sync/reorg, not the verbose getblock RPC.
+        unimplemented!()
+    }
+
+    async fn get_block_header(
+        &self,
+        _hash: String,
+        _verbose: bool,
+    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::block_header::GetBlockHeader>
+    {
+        // ProptestMockchain exercises sync/reorg, not the getblockheader RPC.
+        unimplemented!()
+    }
+
     /// Returns the block commitment tree data by hash
     async fn get_commitment_tree_roots(
         &self,

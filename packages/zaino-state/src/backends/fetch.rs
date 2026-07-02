@@ -426,11 +426,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
         hash_or_height: String,
         verbosity: Option<u8>,
     ) -> Result<GetBlock, Self::Error> {
-        Ok(self
-            .fetcher
-            .get_block(hash_or_height, verbosity)
-            .await?
-            .try_into()?)
+        Ok(self.indexer.z_get_block(hash_or_height, verbosity).await?)
     }
 
     /// Returns information about the given block and its transactions.
@@ -449,7 +445,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
         hash: String,
         verbose: bool,
     ) -> Result<GetBlockHeader, Self::Error> {
-        Ok(self.fetcher.get_block_header(hash, verbose).await?)
+        Ok(self.indexer.get_block_header(hash, verbose).await?)
     }
 
     async fn get_mining_info(&self) -> Result<GetMiningInfoWire, Self::Error> {
