@@ -199,16 +199,19 @@ zcash_proofs = { git = "https://github.com/zcash/librustzcash.git", rev = "eb828
 zcash_protocol = { git = "https://github.com/zcash/librustzcash.git", rev = "eb828caadb4b2be4a39823f95e50b42731a515f5" }
 zcash_transparent = { package = "zcash_transparent", git = "https://github.com/zcash/librustzcash.git", rev = "eb828caadb4b2be4a39823f95e50b42731a515f5" }
 
-# TEMPORARY: zebra is pinned to an unreleased ZcashFoundation/zebra rev whose
-# ReadRequest::NonFinalizedBlocksListener is a struct variant carrying
-# `known_chain_tips` (its Cargo version is 9.0.1, but it is NOT the published
-# crates.io 9.0.1 — that one is still a unit variant). Revert to a plain
-# version requirement once the change is released. This is the single root
-# workspace (the live-test crates were folded in; see docs/adr/0002), so the
-# patch lives here once and every member — production and live-test alike —
-# inherits it through the single lock; Cargo honours `[patch.crates-io]` only
-# from the workspace root. See docs/updating_zebra_crates.md.
+# TEMPORARY: zebra is pinned to the unreleased NU6.3 (Ironwood) branch of
+# ZcashFoundation/zebra, which adds the `NetworkUpgrade::Nu6_3` variant, the
+# `ConfiguredActivationHeights::nu6_3` field, and the sixth `ironwood` value
+# pool balance. All three zebra-* crates use the same rev. This is the exact
+# zebra rev that zallet PR #537 (feat/nu63-comp) uses, and it builds against the
+# librustzcash `main` pinned above, so zaino and zallet share one zebra and one
+# librustzcash. Revert to a plain version requirement once NU6.3 is released.
+# This is the single root workspace (the live-test crates were folded in; see
+# docs/adr/0002), so the patch lives here once and every member — production and
+# live-test alike — inherits it through the single lock; Cargo honours
+# `[patch.crates-io]` only from the workspace root. See
+# docs/updating_zebra_crates.md. Update only to follow zallet changes.
 # Tracking: zaino#<TODO-revert-zebra-fork>.
-zebra-chain = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "9a27f886a5bfb143f65d1712e912cef252426800" }
-zebra-rpc = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "9a27f886a5bfb143f65d1712e912cef252426800" }
-zebra-state = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "9a27f886a5bfb143f65d1712e912cef252426800" }
+zebra-chain = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "fd3e9e32120afbe698522db1f62400b08e8a7444" }
+zebra-rpc = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "fd3e9e32120afbe698522db1f62400b08e8a7444" }
+zebra-state = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "fd3e9e32120afbe698522db1f62400b08e8a7444" }
