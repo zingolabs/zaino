@@ -140,6 +140,28 @@ bitflags! {
 }
 
 // ---------------------------------------------------------------------------
+// ContextRequirements — type-level source of truth for provisioner needs
+// ---------------------------------------------------------------------------
+
+/// Declares what data a block context type requires from the provisioner.
+///
+/// Each index's [`BlockContext`](super::traits::IndexDef::BlockContext)
+/// implements this trait. The engine unions the requirements across all
+/// registered indexes and configures the provisioner accordingly.
+///
+/// This is the single source of truth — indexes don't declare
+/// requirements separately. The context type *is* the requirement.
+pub trait ContextRequirements: Send + Sync + 'static {
+    /// The provisioner requirements needed to populate this context.
+    const REQUIREMENTS: SourceRequirements;
+}
+
+/// Unit context: no data needed (e.g. a pure counting index).
+impl ContextRequirements for () {
+    const REQUIREMENTS: SourceRequirements = SourceRequirements::empty();
+}
+
+// ---------------------------------------------------------------------------
 // Descriptor — the full declarative spec of an index
 // ---------------------------------------------------------------------------
 
@@ -161,6 +183,9 @@ pub struct Descriptor {
     /// Indexes this one depends on (must form a DAG).
     pub dependencies: &'static [IndexId],
     /// What the provisioner must fetch for this index.
+    ///
+    /// Derived from the index's `BlockContext` type via
+    /// [`ContextRequirements`]. Not declared manually.
     pub requirements: SourceRequirements,
     /// Whether extraction may reach the source for non-local data.
     pub source_access: SourceAccess,

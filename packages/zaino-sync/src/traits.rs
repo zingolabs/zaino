@@ -20,8 +20,8 @@ use crate::primitives::IndexId;
 ///
 /// The provisioner produces one context (`Ctx`) per block for the whole
 /// index set. Each index declares its own [`BlockContext`] — the subset
-/// of block data it needs. `ProvideContext<T>` lets the set-wide context
-/// narrow to a `&T` before the bridge passes it to extraction.
+/// of block data it needs. `ProvideContext<T>` produces a `T` that the
+/// bridge passes to extraction.
 ///
 /// The identity blanket impl covers the common case where the index's
 /// block context *is* the set-wide context. For richer set-wide contexts,
@@ -29,20 +29,22 @@ use crate::primitives::IndexId;
 ///
 /// ```text
 /// impl ProvideContext<BlockData> for FullBlockContext {
-///     fn context(&self) -> &BlockData { &self.block }
+///     fn context(&self) -> BlockData {
+///         BlockData { height: self.height, hash: self.hash }
+///     }
 /// }
 /// ```
 ///
 /// [`BlockContext`]: IndexDef::BlockContext
-pub trait ProvideContext<T: ?Sized> {
-    /// Borrow the block context of type `T`.
-    fn context(&self) -> &T;
+pub trait ProvideContext<T> {
+    /// Produce the narrowed block context of type `T`.
+    fn context(&self) -> T;
 }
 
-/// Identity projection: any type provides itself.
-impl<T> ProvideContext<T> for T {
-    fn context(&self) -> &T {
-        self
+/// Identity projection: any type provides itself via clone.
+impl<T: Clone> ProvideContext<T> for T {
+    fn context(&self) -> T {
+        self.clone()
     }
 }
 

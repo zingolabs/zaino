@@ -164,7 +164,7 @@ where
     ) -> Result<Vec<WriteOp>, PipelineError> {
         let mut all_ops = Vec::new();
         for ctx in blocks {
-            let delta = I::extract(ctx.context())?;
+            let delta = I::extract(&ctx.context())?;
             all_ops.extend(I::to_write_ops(delta));
         }
         Ok(all_ops)
@@ -223,7 +223,7 @@ where
     ) -> Result<Vec<WriteOp>, PipelineError> {
         let mut acc = I::identity();
         for ctx in blocks {
-            let delta = I::extract(ctx.context())?;
+            let delta = I::extract(&ctx.context())?;
             acc = I::combine(acc, I::lift(delta));
         }
         Ok(I::to_write_ops(acc))
@@ -282,7 +282,7 @@ where
     ) -> Result<Vec<WriteOp>, PipelineError> {
         let mut state = I::initial_state();
         for ctx in blocks {
-            let delta = I::extract(ctx.context())?;
+            let delta = I::extract(&ctx.context())?;
             I::fold(&mut state, delta);
         }
         Ok(I::to_write_ops(state))
