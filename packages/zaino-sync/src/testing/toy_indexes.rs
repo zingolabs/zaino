@@ -10,6 +10,7 @@ pub mod count_index;
 pub mod running_sum_index;
 pub mod value_index;
 
+use crate::primitives::BlockHeight;
 use crate::traits::ProvideContext;
 
 use super::TestBlockContext;
@@ -21,7 +22,7 @@ use super::TestBlockContext;
 impl ProvideContext<value_index::Context> for TestBlockContext {
     fn context(&self) -> value_index::Context {
         value_index::Context {
-            height: self.height,
+            height: BlockHeight::new(self.height),
             value: self.value,
         }
     }
