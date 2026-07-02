@@ -8,7 +8,7 @@
 
 use crate::descriptor::{
     Append, BlockLocal, Composition, CrossIndex, Descriptor, Fold, Monoidal, Scope,
-    SelfCumulative,
+    SelfCumulative, SourceAccess,
 };
 use crate::primitives::IndexId;
 
@@ -86,7 +86,9 @@ pub enum WriteOp {
 /// Root declaration for any index. Pins the scope and composition axes as
 /// associated types, which downstream extract/merge traits use as bounds.
 ///
-/// `S` and `C` are marker types from [`crate::descriptor`].
+/// The implementor declares axes, name, and dependencies. The
+/// [`descriptor`](Self::descriptor) method is provided — it derives
+/// runtime-inspectable values from the type-level markers automatically.
 pub trait IndexDef: Send + Sync + 'static {
     /// Type-level scope marker (BlockLocal | SelfCumulative | CrossIndex).
     type Scope: Scope;
@@ -102,11 +104,30 @@ pub trait IndexDef: Send + Sync + 'static {
     /// This is the index's view of a block — just the data it cares about.
     /// The set-wide context (what the provisioner produces) narrows to this
     /// type via [`ProvideContext`].
-    ///
     type BlockContext: Send + Sync + 'static;
 
-    /// The full declarative descriptor.
-    fn descriptor() -> Descriptor;
+    /// Unique name for this index. Used as the key in the DAG and in
+    /// write operations.
+    const NAME: IndexId;
+
+    /// Indexes this one depends on (must form a DAG).
+    const DEPENDENCIES: &'static [IndexId] = &[];
+
+    /// Whether extraction may reach the source for non-local data.
+    const SOURCE_ACCESS: SourceAccess = SourceAccess::None;
+
+    /// The full declarative descriptor, derived from type-level markers.
+    ///
+    /// Provided — implementors do not override this.
+    fn descriptor() -> Descriptor {
+        Descriptor {
+            name: Self::NAME,
+            scope: Self::Scope::VALUE,
+            composition: Self::Composition::VALUE,
+            dependencies: Self::DEPENDENCIES,
+            source_access: Self::SOURCE_ACCESS,
+        }
+    }
 }
 
 // ===========================================================================

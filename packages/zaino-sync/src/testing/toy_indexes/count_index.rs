@@ -1,8 +1,6 @@
 //! BlockLocal × Monoidal: counts total blocks seen in each batch.
 
-use crate::descriptor::{
-    BlockLocal, CompositionType, Descriptor, InputScope, Monoidal, SourceAccess,
-};
+use crate::descriptor::{BlockLocal, Monoidal};
 use crate::primitives::IndexId;
 use crate::traits::{ExtractError, ExtractLocal, IndexDef, MergeMonoidal, WriteOp};
 
@@ -25,15 +23,7 @@ impl IndexDef for CountIndex {
     type Delta = u64;
     type BlockContext = Context;
 
-    fn descriptor() -> Descriptor {
-        Descriptor {
-            name: ID,
-            scope: InputScope::BlockLocal,
-            composition: CompositionType::Monoidal,
-            dependencies: &[],
-            source_access: SourceAccess::None,
-        }
-    }
+    const NAME: IndexId = ID;
 }
 
 impl ExtractLocal for CountIndex {

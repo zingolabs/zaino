@@ -1,8 +1,6 @@
 //! BlockLocal × Append: stores (height → value) for each block.
 
-use crate::descriptor::{
-    Append, BlockLocal, CompositionType, Descriptor, InputScope, SourceAccess,
-};
+use crate::descriptor::{Append, BlockLocal};
 use crate::primitives::IndexId;
 use crate::traits::{ExtractError, ExtractLocal, IndexDef, MergeAppend, WriteOp};
 
@@ -26,15 +24,7 @@ impl IndexDef for ValueIndex {
     type Delta = Vec<(Vec<u8>, Vec<u8>)>;
     type BlockContext = Context;
 
-    fn descriptor() -> Descriptor {
-        Descriptor {
-            name: ID,
-            scope: InputScope::BlockLocal,
-            composition: CompositionType::Append,
-            dependencies: &[],
-            source_access: SourceAccess::None,
-        }
-    }
+    const NAME: IndexId = ID;
 }
 
 impl ExtractLocal for ValueIndex {
