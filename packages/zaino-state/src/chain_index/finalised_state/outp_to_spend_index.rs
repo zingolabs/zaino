@@ -2,7 +2,7 @@
 //! outpoint to the txid of the transaction that consumed it.
 //!
 //! Proof of concept, gated behind the `outp_to_spend_index` feature. See
-//! `docs/adr/0002-finalised-spend-index-parallel-build.md`.
+//! `docs/adr/0006-finalised-spend-index-parallel-build.md`.
 //!
 //! The build stages live here: **extract** spends from a block batch,
 //! **collate** them into LMDB key order, and bulk-load them into the index's
@@ -21,7 +21,7 @@ use crate::chain_index::finalised_state::build_indexed_block_from_source;
 use crate::chain_index::source::validator_connector::StateSource;
 use crate::chain_index::source::BlockchainSource;
 use crate::chain_index::types::TransactionHash;
-use crate::chain_index::NON_FINALIZED_DEPTH;
+use crate::chain_index::OPERATIONAL_NFS_DEPTH;
 use crate::config::ChainIndexConfig;
 use crate::error::FinalisedStateError;
 use crate::{IndexedBlock, Outpoint, TransparentCompactTx, ZainoVersionedSerde as _};
@@ -165,8 +165,12 @@ impl SpendIndexDb {
     }
 
     /// The txid that consumed `outpoint`, or `None` if it is unspent in
-    /// finalised state. A single point lookup; the caller unions this with the
-    /// non-finalised window at serve time (the deferred seam union).
+    /// finalised state. A single point lookup. The serve-time union with the
+    /// non-finalised window already exists as
+    /// `ChainIndex::get_outpoint_spenders` (`ChainScope::FullChain`, #1167);
+    /// wiring this store in as that method's finalised leg — replacing the
+    /// monolith's `spent` table + `TxLocation → txid` resolution — is the
+    /// deferred serving step.
     pub(super) fn spending_txid(
         &self,
         outpoint: &Outpoint,
@@ -244,7 +248,7 @@ impl<S: SpendIndexSource> SpendIndexSync<S> {
         };
 
         // Finalised tip: below the reorg-possible window, clamped at genesis.
-        let finalised_tip = best.0.saturating_sub(NON_FINALIZED_DEPTH);
+        let finalised_tip = best.0.saturating_sub(OPERATIONAL_NFS_DEPTH);
 
         let zebra_network = self.network.to_zebra_network();
         let sapling_activation = NetworkUpgrade::Sapling
@@ -300,7 +304,7 @@ pub(crate) fn spawn_build(
     source: StateSource,
     cfg: &ChainIndexConfig,
 ) -> tokio::task::JoinHandle<Result<(), FinalisedStateError>> {
-    let network = cfg.network.clone();
+    let network = cfg.network;
     let dir = spend_index_dir(cfg);
     tokio::spawn(async move {
         let start_height = NetworkUpgrade::Sapling
@@ -496,8 +500,8 @@ mod spend_index_sync {
         let blocks = fixture_blocks();
         let chain_top = blocks.last().expect("non-empty chain").height;
         // No mining: the mock's tip is its max loaded height, so this matches
-        // `run`'s own `best - NON_FINALIZED_DEPTH`.
-        let finalised_tip = chain_top - NON_FINALIZED_DEPTH;
+        // `run`'s own `best - OPERATIONAL_NFS_DEPTH`.
+        let finalised_tip = chain_top - OPERATIONAL_NFS_DEPTH;
 
         let mock = build_active_mockchain_source(chain_top, blocks.clone());
         let (db, dir) = build_index(mock, "run").await;
@@ -621,7 +625,7 @@ mod spend_index_presence {
                 .expect("generate chain")
                 .current()
                 .0;
-            let finalised_tip = (blocks.len() as u32 - 1).saturating_sub(NON_FINALIZED_DEPTH);
+            let finalised_tip = (blocks.len() as u32 - 1).saturating_sub(OPERATIONAL_NFS_DEPTH);
             if has_finalised_spend(&blocks, finalised_tip) {
                 found = Some((blocks, finalised_tip));
                 break;

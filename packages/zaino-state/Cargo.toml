@@ -44,7 +44,7 @@ transparent_address_history_experimental = []
 
 # Standalone, parallel-buildable finalised spend index
 # (transparent_outpoint -> spending_txid). Proof of concept; off by default.
-# See docs/adr/0002-finalised-spend-index-parallel-build.md.
+# See docs/adr/0006-finalised-spend-index-parallel-build.md.
 outp_to_spend_index = []
 
 [dependencies]
