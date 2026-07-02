@@ -12,7 +12,7 @@ echo ""
 echo "Common usage:"
 echo "  makers test            # packages/* tests, no live validator (default)"
 echo "  makers test live       # both live partitions + combined summary"
-echo "  makers test all        # everything: package then live"
+echo "  makers test all        # everything: packages then live"
 echo ""
 echo "If you modify '.env.testing-artifacts', the test command will \
 automatically:"
@@ -21,15 +21,15 @@ echo "  - Build a new local container image if needed"
 echo ""
 echo "Available commands:"
 echo ""
-echo "  test [SET]                 Front door. SET = package (default) | e2e | \
+echo "  test [SET]                 Front door. SET = packages (default) | e2e | \
 clientless | live | all"
-echo "                               package    packages/* tests, no live \
+echo "                               packages   packages/* tests, no live \
 validator"
 echo "                               e2e        the e2e live partition"
 echo "                               clientless the clientless live partition"
 echo "                               live       both live partitions + \
 combined summary"
-echo "                               all        package then live (everything)"
+echo "                               all        packages then live (everything)"
 echo "  container-test             Engine: run nextest in the container \
 (used by the front door; invoke directly to forward engine flags)"
 echo "  live-clientless            Engine: run the clientless live-test \
