@@ -67,7 +67,9 @@ pub use backends::{
 pub mod chain_index;
 
 // Core ChainIndex trait and implementations
-pub use chain_index::{ChainIndex, NodeBackedChainIndex, NodeBackedChainIndexSubscriber};
+pub use chain_index::{
+    ChainIndex, ChainIndexRpcExt, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
+};
 // Source types for ChainIndex backends
 pub use chain_index::source::{BlockchainSource, State, ValidatorConnector};
 // Supporting types

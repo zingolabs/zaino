@@ -7,7 +7,7 @@ use crate::{
             vectors::{indexed_block_chain, load_test_vectors, TestVectorBlockData},
         },
         types::{BestChainLocation, ChainScope, TransactionHash},
-        ChainIndex, NodeBackedChainIndexSubscriber,
+        ChainIndex, ChainIndexRpcExt, NodeBackedChainIndexSubscriber,
     },
     BlockchainSource as _, Outpoint,
 };

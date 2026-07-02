@@ -76,7 +76,7 @@ use crate::{
 };
 use crate::{
     chain_index::{non_finalised_state::ChainIndexSnapshot, NonFinalizedSnapshot},
-    ChainIndex, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
+    ChainIndex, ChainIndexRpcExt, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
 };
 
 /// Chain fetch service backed by Zcashd's JsonRPC engine.

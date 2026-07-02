@@ -315,6 +315,14 @@ fn branch_len_to_active_chain(
 ///
 /// When a call asks for info (e.g. a block), Zaino selects sources in this order:
 #[doc = simple_mermaid::mermaid!("chain_index_passthrough.mmd")]
+///
+/// This trait holds the core methods required by the embedded wallet consumer
+/// (zallet). RPC-server-only methods live on the [`ChainIndexRpcExt`] extension
+/// trait.
+///
+/// TODO: The core/extension split is a provisional first pass. It should be refined
+/// into finer capability-based traits (zallet / lwd / block-explorer) in a follow-up
+/// PR.
 pub trait ChainIndex {
     /// A snapshot of the nonfinalized state, needed for atomic access
     type Snapshot: NonFinalizedSnapshot;
@@ -386,50 +394,6 @@ pub trait ChainIndex {
         start: types::Height,
         end: Option<types::Height>,
     ) -> Option<impl futures::Stream<Item = Result<Vec<u8>, Self::Error>>>;
-
-    /// Returns the *compact* block for the given height.
-    ///
-    /// Returns `None` if the specified `height` is greater than the snapshot's tip.
-    ///
-    /// ## Pool filtering
-    ///
-    /// - `pool_types` controls which per-transaction components are populated.
-    /// - Transactions that contain no elements in any requested pool are omitted from `vtx`.
-    ///   The original transaction index is preserved in `CompactTx.index`.
-    /// - `PoolTypeFilter::default()` preserves the legacy behaviour (only Sapling and Orchard
-    ///   components are populated).
-    #[allow(clippy::type_complexity)]
-    fn get_compact_block(
-        &self,
-        nonfinalized_snapshot: &Self::Snapshot,
-        height: types::Height,
-        pool_types: PoolTypeFilter,
-    ) -> impl std::future::Future<
-        Output = Result<Option<zaino_proto::proto::compact_formats::CompactBlock>, Self::Error>,
-    >;
-
-    /// Streams *compact* blocks for an inclusive height range.
-    ///
-    /// Returns `None` if the requested range is entirely above the snapshot's tip.
-    ///
-    /// - The stream covers `[start_height, end_height]` (inclusive).
-    /// - If `start_height <= end_height` the stream is ascending; otherwise it is descending.
-    ///
-    /// ## Pool filtering
-    ///
-    /// - `pool_types` controls which per-transaction components are populated.
-    /// - Transactions that contain no elements in any requested pool are omitted from `vtx`.
-    ///   The original transaction index is preserved in `CompactTx.index`.
-    /// - `PoolTypeFilter::default()` preserves the legacy behaviour (only Sapling and Orchard
-    ///   components are populated).
-    #[allow(clippy::type_complexity)]
-    fn get_compact_block_stream(
-        &self,
-        nonfinalized_snapshot: &Self::Snapshot,
-        start_height: types::Height,
-        end_height: types::Height,
-        pool_types: PoolTypeFilter,
-    ) -> impl std::future::Future<Output = Result<Option<CompactBlockStream>, Self::Error>>;
 
     // ********** Transaction methods **********
 
@@ -515,12 +479,6 @@ pub trait ChainIndex {
 
     // ********** Transparent address history methods **********
 
-    /// Returns all changes for the given transparent addresses.
-    fn get_address_deltas(
-        &self,
-        params: GetAddressDeltasParams,
-    ) -> impl std::future::Future<Output = Result<GetAddressDeltasResponse, Self::Error>>;
-
     /// Returns the total transparent balance for the given addresses.
     fn get_address_balance(
         &self,
@@ -556,6 +514,73 @@ pub trait ChainIndex {
         outpoints: Vec<types::Outpoint>,
         scope: types::ChainScope,
     ) -> impl std::future::Future<Output = Result<Vec<Option<types::TransactionHash>>, Self::Error>>;
+}
+
+/// RPC-server extension methods layered on top of [`ChainIndex`].
+///
+/// The core [`ChainIndex`] trait holds the subset required by the embedded wallet
+/// consumer (zallet). This extension holds the additional functionality required by
+/// the gRPC (lightwalletd) and JSON-RPC servers: compact-block serving, mempool
+/// metadata, address deltas, and the block-explorer / node-passthrough RPCs.
+///
+/// TODO: This two-way core/extension split is a provisional first pass. It should be
+/// refined into finer capability-based traits (zallet / lwd / block-explorer) in a
+/// follow-up PR, at which point methods will be redistributed to their narrowest
+/// capability.
+pub trait ChainIndexRpcExt: ChainIndex {
+    // ********** Block methods **********
+
+    /// Returns the *compact* block for the given height.
+    ///
+    /// Returns `None` if the specified `height` is greater than the snapshot's tip.
+    ///
+    /// ## Pool filtering
+    ///
+    /// - `pool_types` controls which per-transaction components are populated.
+    /// - Transactions that contain no elements in any requested pool are omitted from `vtx`.
+    ///   The original transaction index is preserved in `CompactTx.index`.
+    /// - `PoolTypeFilter::default()` preserves the legacy behaviour (only Sapling and Orchard
+    ///   components are populated).
+    #[allow(clippy::type_complexity)]
+    fn get_compact_block(
+        &self,
+        nonfinalized_snapshot: &Self::Snapshot,
+        height: types::Height,
+        pool_types: PoolTypeFilter,
+    ) -> impl std::future::Future<
+        Output = Result<Option<zaino_proto::proto::compact_formats::CompactBlock>, Self::Error>,
+    >;
+
+    /// Streams *compact* blocks for an inclusive height range.
+    ///
+    /// Returns `None` if the requested range is entirely above the snapshot's tip.
+    ///
+    /// - The stream covers `[start_height, end_height]` (inclusive).
+    /// - If `start_height <= end_height` the stream is ascending; otherwise it is descending.
+    ///
+    /// ## Pool filtering
+    ///
+    /// - `pool_types` controls which per-transaction components are populated.
+    /// - Transactions that contain no elements in any requested pool are omitted from `vtx`.
+    ///   The original transaction index is preserved in `CompactTx.index`.
+    /// - `PoolTypeFilter::default()` preserves the legacy behaviour (only Sapling and Orchard
+    ///   components are populated).
+    #[allow(clippy::type_complexity)]
+    fn get_compact_block_stream(
+        &self,
+        nonfinalized_snapshot: &Self::Snapshot,
+        start_height: types::Height,
+        end_height: types::Height,
+        pool_types: PoolTypeFilter,
+    ) -> impl std::future::Future<Output = Result<Option<CompactBlockStream>, Self::Error>>;
+
+    // ********** Transparent address history methods **********
+
+    /// Returns all changes for the given transparent addresses.
+    fn get_address_deltas(
+        &self,
+        params: GetAddressDeltasParams,
+    ) -> impl std::future::Future<Output = Result<GetAddressDeltasResponse, Self::Error>>;
 
     // ********** Metadata methods **********
 
@@ -1684,302 +1709,6 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         }
     }
 
-    /// Returns the *compact* block for the given height.
-    ///
-    /// Returns `None` if the specified `height` is greater than the snapshot's tip.
-    ///
-    /// ## Pool filtering
-    ///
-    /// - `pool_types` controls which per-transaction components are populated.
-    /// - Transactions that contain no elements in any requested pool are omitted from `vtx`.
-    ///   The original transaction index is preserved in `CompactTx.index`.
-    /// - `PoolTypeFilter::default()` preserves the legacy behaviour (only Sapling and Orchard
-    ///   components are populated).
-    ///
-    /// Returns None if the specified height
-    /// is greater than the snapshot's tip
-    ///
-    /// **NOTE: This Method is currently not "passthrough aware", this should be added by
-    /// fetching block data from the backing validator when not locally available.**
-    async fn get_compact_block(
-        &self,
-        snapshot: &Self::Snapshot,
-        height: types::Height,
-        pool_types: PoolTypeFilter,
-    ) -> Result<Option<zaino_proto::proto::compact_formats::CompactBlock>, Self::Error> {
-        match snapshot {
-            ChainIndexSnapshot::NonFinalizedStateExists {
-                non_finalized_snapshot,
-            } => {
-                if height <= non_finalized_snapshot.best_tip.height {
-                    Ok(Some(match snapshot.get_chainblock_by_height(&height) {
-                        Some(block) => compact_block_with_pool_types(
-                            block.to_compact_block(),
-                            &pool_types.to_pool_types_vector(),
-                        ),
-                        None => {
-                            match self
-                                .finalized_state
-                                .get_compact_block(height, pool_types.clone())
-                                .await
-                            {
-                                Ok(block) => block,
-                                Err(_) => self
-                                    .get_compact_block_from_node(height, &pool_types)
-                                    .await?
-                                    .ok_or(ChainIndexError::database_hole(height, None))?,
-                            }
-                        }
-                    }))
-                } else {
-                    Ok(None)
-                }
-            }
-
-            ChainIndexSnapshot::StillSyncingFinalizedState {
-                validator_finalized_height: _,
-                //TODO: Once we make chainwork an option field we should be able to
-                // support passthrougth for this
-            } => Ok(None),
-        }
-    }
-
-    /// Streams *compact* blocks for an inclusive height range.
-    ///
-    /// Returns `Ok(None)` if the request is descending and `start_height` exceeds the chain tip.
-    /// For ascending requests that exceed the tip, returns a stream that ends with an
-    /// `out_of_range` error after all available blocks have been sent.
-    ///
-    /// - The stream covers `[start_height, end_height]` (inclusive).
-    /// - If `start_height <= end_height` the stream is ascending; otherwise it is descending.
-    ///
-    /// ## Pool filtering
-    ///
-    /// - `pool_types` controls which per-transaction components are populated.
-    /// - Transactions that contain no elements in any requested pool are omitted from `vtx`.
-    ///   The original transaction index is preserved in `CompactTx.index`.
-    /// - `PoolTypeFilter::default()` preserves the legacy behaviour (only Sapling and Orchard
-    ///   components are populated).
-    ///
-    /// **NOTE: This Method is currently not "passthrough aware", this should be added by
-    /// fetching block data from the backing validator when not locally available.**
-    #[allow(clippy::type_complexity)]
-    async fn get_compact_block_stream(
-        &self,
-        nonfinalized_snapshot: &Self::Snapshot,
-        start_height: types::Height,
-        end_height: types::Height,
-        pool_types: PoolTypeFilter,
-    ) -> Result<Option<CompactBlockStream>, Self::Error> {
-        let chain_tip_height = self.best_chaintip(nonfinalized_snapshot).await?.height;
-
-        // The nonfinalized cache holds the tip block plus the previous 99 blocks (100 total),
-        // so the lowest possible cached height is `tip - 99` (saturating at 0).
-        let lowest_nonfinalized_height = types::Height(chain_tip_height.0.saturating_sub(99));
-
-        let is_ascending = start_height <= end_height;
-
-        // Descending: the first block we'd try to return is already above the tip → error immediately.
-        if !is_ascending && start_height > chain_tip_height {
-            return Ok(None);
-        }
-
-        let pool_types_vector = pool_types.to_pool_types_vector();
-
-        // For ascending requests that extend past the tip: cap the streaming range at the tip,
-        // then append a trailing out_of_range error after all valid blocks have been sent.
-        let needs_out_of_range = is_ascending && end_height > chain_tip_height;
-        let capped_end_height = if needs_out_of_range {
-            chain_tip_height
-        } else {
-            end_height
-        };
-
-        // Pre-create any finalized-state stream(s) we will need so that errors are returned
-        // from this method (not deferred into the spawned task).
-        let finalized_stream: Option<CompactBlockStream> = if is_ascending {
-            if start_height < lowest_nonfinalized_height {
-                let finalized_end_height = types::Height(std::cmp::min(
-                    capped_end_height.0,
-                    lowest_nonfinalized_height.0.saturating_sub(1),
-                ));
-
-                if start_height <= finalized_end_height {
-                    Some(
-                        self.finalized_state
-                            .get_compact_block_stream(
-                                start_height,
-                                finalized_end_height,
-                                pool_types.clone(),
-                            )
-                            .await
-                            .map_err(ChainIndexError::from)?,
-                    )
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        // Serve in reverse order.
-        } else if end_height < lowest_nonfinalized_height {
-            let finalized_start_height = if start_height < lowest_nonfinalized_height {
-                start_height
-            } else {
-                types::Height(lowest_nonfinalized_height.0.saturating_sub(1))
-            };
-
-            Some(
-                self.finalized_state
-                    .get_compact_block_stream(
-                        finalized_start_height,
-                        end_height,
-                        pool_types.clone(),
-                    )
-                    .await
-                    .map_err(ChainIndexError::from)?,
-            )
-        } else {
-            None
-        };
-
-        let nonfinalized_snapshot = nonfinalized_snapshot.clone();
-        let source = self.source.clone();
-        let network = self.network.clone();
-        let pool_types_for_node = pool_types.clone();
-        // TODO: Investigate whether channel size should be changed, added to config, or set dynamically based on resources.
-        let (channel_sender, channel_receiver) = tokio::sync::mpsc::channel(128);
-
-        tokio::spawn(async move {
-            if is_ascending {
-                // 1) Finalized segment (if any), ascending.
-                if let Some(mut finalized_stream) = finalized_stream {
-                    while let Some(stream_item) = finalized_stream.next().await {
-                        if channel_sender.send(stream_item).await.is_err() {
-                            return;
-                        }
-                    }
-                }
-
-                // 2) Nonfinalized segment, ascending.
-                let nonfinalized_start_height =
-                    types::Height(std::cmp::max(start_height.0, lowest_nonfinalized_height.0));
-
-                for height_value in nonfinalized_start_height.0..=capped_end_height.0 {
-                    let Some(indexed_block) = nonfinalized_snapshot
-                        .get_chainblock_by_height(&types::Height(height_value))
-                    else {
-                        match compact_block_from_source(
-                            &source,
-                            network.clone(),
-                            types::Height(height_value),
-                            &pool_types_for_node,
-                        )
-                        .await
-                        {
-                            Ok(Some(compact_block)) => {
-                                if channel_sender.send(Ok(compact_block)).await.is_err() {
-                                    return;
-                                }
-                                continue;
-                            }
-                            Ok(None) => {
-                                let _ = channel_sender
-                                    .send(Err(tonic::Status::internal(format!(
-                                        "Internal error, missing nonfinalized block at height [{height_value}].",
-                                    ))))
-                                    .await;
-                                return;
-                            }
-                            Err(error) => {
-                                let _ = channel_sender
-                                    .send(Err(tonic::Status::internal(error.to_string())))
-                                    .await;
-                                return;
-                            }
-                        }
-                    };
-                    let compact_block = compact_block_with_pool_types(
-                        indexed_block.to_compact_block(),
-                        &pool_types_vector,
-                    );
-                    if channel_sender.send(Ok(compact_block)).await.is_err() {
-                        return;
-                    }
-                }
-                // If the original end_height was above the tip, signal out_of_range after all valid blocks.
-                if needs_out_of_range {
-                    let _ = channel_sender
-                          .send(Err(tonic::Status::out_of_range(format!(
-                              "Error: Height out of range [{}]. Height requested is greater than the best chain tip [{}].",
-                              end_height.0, chain_tip_height.0,
-                          ))))
-                          .await;
-                }
-            } else {
-                // 1) Nonfinalized segment, descending.
-                if start_height >= lowest_nonfinalized_height {
-                    let nonfinalized_end_height =
-                        types::Height(std::cmp::max(end_height.0, lowest_nonfinalized_height.0));
-
-                    for height_value in (nonfinalized_end_height.0..=start_height.0).rev() {
-                        let Some(indexed_block) = nonfinalized_snapshot
-                            .get_chainblock_by_height(&types::Height(height_value))
-                        else {
-                            match compact_block_from_source(
-                                &source,
-                                network.clone(),
-                                types::Height(height_value),
-                                &pool_types_for_node,
-                            )
-                            .await
-                            {
-                                Ok(Some(compact_block)) => {
-                                    if channel_sender.send(Ok(compact_block)).await.is_err() {
-                                        return;
-                                    }
-                                    continue;
-                                }
-                                Ok(None) => {
-                                    let _ = channel_sender
-                                        .send(Err(tonic::Status::internal(format!(
-                                            "Internal error, missing nonfinalized block at height [{height_value}].",
-                                        ))))
-                                        .await;
-                                    return;
-                                }
-                                Err(error) => {
-                                    let _ = channel_sender
-                                        .send(Err(tonic::Status::internal(error.to_string())))
-                                        .await;
-                                    return;
-                                }
-                            }
-                        };
-                        let compact_block = compact_block_with_pool_types(
-                            indexed_block.to_compact_block(),
-                            &pool_types_vector,
-                        );
-                        if channel_sender.send(Ok(compact_block)).await.is_err() {
-                            return;
-                        }
-                    }
-                }
-
-                // 2) Finalized segment (if any), descending.
-                if let Some(mut finalized_stream) = finalized_stream {
-                    while let Some(stream_item) = finalized_stream.next().await {
-                        if channel_sender.send(stream_item).await.is_err() {
-                            return;
-                        }
-                    }
-                }
-            }
-        });
-
-        Ok(Some(CompactBlockStream::new(channel_receiver)))
-    }
-
     // ********** Transaction methods **********
 
     /// given a transaction id, returns the transaction
@@ -2423,17 +2152,6 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
 
     // ********** Transparent address history methods **********
 
-    /// Returns all changes for the given transparent addresses.
-    async fn get_address_deltas(
-        &self,
-        params: GetAddressDeltasParams,
-    ) -> Result<GetAddressDeltasResponse, Self::Error> {
-        self.source()
-            .get_address_deltas(params)
-            .await
-            .map_err(ChainIndexError::backing_validator)
-    }
-
     /// Returns the total transparent balance for the given addresses.
     async fn get_address_balance(
         &self,
@@ -2547,14 +2265,6 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
 
     // ********** Metadata methods **********
 
-    /// Returns Information about the mempool state:
-    /// - size: Current tx count
-    /// - bytes: Sum of all tx sizes
-    /// - usage: Total memory usage for the mempool
-    async fn get_mempool_info(&self) -> MempoolInfo {
-        self.mempool.get_mempool_info().await
-    }
-
     async fn best_chaintip(&self, snapshot: &Self::Snapshot) -> Result<BlockIndex, Self::Error> {
         Ok(match snapshot {
             ChainIndexSnapshot::NonFinalizedStateExists {
@@ -2586,6 +2296,323 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                 }
             }
         })
+    }
+}
+
+impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscriber<Source> {
+    /// Returns the *compact* block for the given height.
+    ///
+    /// Returns `None` if the specified `height` is greater than the snapshot's tip.
+    ///
+    /// ## Pool filtering
+    ///
+    /// - `pool_types` controls which per-transaction components are populated.
+    /// - Transactions that contain no elements in any requested pool are omitted from `vtx`.
+    ///   The original transaction index is preserved in `CompactTx.index`.
+    /// - `PoolTypeFilter::default()` preserves the legacy behaviour (only Sapling and Orchard
+    ///   components are populated).
+    ///
+    /// Returns None if the specified height
+    /// is greater than the snapshot's tip
+    ///
+    /// **NOTE: This Method is currently not "passthrough aware", this should be added by
+    /// fetching block data from the backing validator when not locally available.**
+    async fn get_compact_block(
+        &self,
+        snapshot: &Self::Snapshot,
+        height: types::Height,
+        pool_types: PoolTypeFilter,
+    ) -> Result<Option<zaino_proto::proto::compact_formats::CompactBlock>, Self::Error> {
+        match snapshot {
+            ChainIndexSnapshot::NonFinalizedStateExists {
+                non_finalized_snapshot,
+            } => {
+                if height <= non_finalized_snapshot.best_tip.height {
+                    Ok(Some(match snapshot.get_chainblock_by_height(&height) {
+                        Some(block) => compact_block_with_pool_types(
+                            block.to_compact_block(),
+                            &pool_types.to_pool_types_vector(),
+                        ),
+                        None => {
+                            match self
+                                .finalized_state
+                                .get_compact_block(height, pool_types.clone())
+                                .await
+                            {
+                                Ok(block) => block,
+                                Err(_) => self
+                                    .get_compact_block_from_node(height, &pool_types)
+                                    .await?
+                                    .ok_or(ChainIndexError::database_hole(height, None))?,
+                            }
+                        }
+                    }))
+                } else {
+                    Ok(None)
+                }
+            }
+
+            ChainIndexSnapshot::StillSyncingFinalizedState {
+                validator_finalized_height: _,
+                //TODO: Once we make chainwork an option field we should be able to
+                // support passthrougth for this
+            } => Ok(None),
+        }
+    }
+
+    /// Streams *compact* blocks for an inclusive height range.
+    ///
+    /// Returns `Ok(None)` if the request is descending and `start_height` exceeds the chain tip.
+    /// For ascending requests that exceed the tip, returns a stream that ends with an
+    /// `out_of_range` error after all available blocks have been sent.
+    ///
+    /// - The stream covers `[start_height, end_height]` (inclusive).
+    /// - If `start_height <= end_height` the stream is ascending; otherwise it is descending.
+    ///
+    /// ## Pool filtering
+    ///
+    /// - `pool_types` controls which per-transaction components are populated.
+    /// - Transactions that contain no elements in any requested pool are omitted from `vtx`.
+    ///   The original transaction index is preserved in `CompactTx.index`.
+    /// - `PoolTypeFilter::default()` preserves the legacy behaviour (only Sapling and Orchard
+    ///   components are populated).
+    ///
+    /// **NOTE: This Method is currently not "passthrough aware", this should be added by
+    /// fetching block data from the backing validator when not locally available.**
+    #[allow(clippy::type_complexity)]
+    async fn get_compact_block_stream(
+        &self,
+        nonfinalized_snapshot: &Self::Snapshot,
+        start_height: types::Height,
+        end_height: types::Height,
+        pool_types: PoolTypeFilter,
+    ) -> Result<Option<CompactBlockStream>, Self::Error> {
+        let chain_tip_height = self.best_chaintip(nonfinalized_snapshot).await?.height;
+
+        // The nonfinalized cache holds the tip block plus the previous 99 blocks (100 total),
+        // so the lowest possible cached height is `tip - 99` (saturating at 0).
+        let lowest_nonfinalized_height = types::Height(chain_tip_height.0.saturating_sub(99));
+
+        let is_ascending = start_height <= end_height;
+
+        // Descending: the first block we'd try to return is already above the tip → error immediately.
+        if !is_ascending && start_height > chain_tip_height {
+            return Ok(None);
+        }
+
+        let pool_types_vector = pool_types.to_pool_types_vector();
+
+        // For ascending requests that extend past the tip: cap the streaming range at the tip,
+        // then append a trailing out_of_range error after all valid blocks have been sent.
+        let needs_out_of_range = is_ascending && end_height > chain_tip_height;
+        let capped_end_height = if needs_out_of_range {
+            chain_tip_height
+        } else {
+            end_height
+        };
+
+        // Pre-create any finalized-state stream(s) we will need so that errors are returned
+        // from this method (not deferred into the spawned task).
+        let finalized_stream: Option<CompactBlockStream> = if is_ascending {
+            if start_height < lowest_nonfinalized_height {
+                let finalized_end_height = types::Height(std::cmp::min(
+                    capped_end_height.0,
+                    lowest_nonfinalized_height.0.saturating_sub(1),
+                ));
+
+                if start_height <= finalized_end_height {
+                    Some(
+                        self.finalized_state
+                            .get_compact_block_stream(
+                                start_height,
+                                finalized_end_height,
+                                pool_types.clone(),
+                            )
+                            .await
+                            .map_err(ChainIndexError::from)?,
+                    )
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        // Serve in reverse order.
+        } else if end_height < lowest_nonfinalized_height {
+            let finalized_start_height = if start_height < lowest_nonfinalized_height {
+                start_height
+            } else {
+                types::Height(lowest_nonfinalized_height.0.saturating_sub(1))
+            };
+
+            Some(
+                self.finalized_state
+                    .get_compact_block_stream(
+                        finalized_start_height,
+                        end_height,
+                        pool_types.clone(),
+                    )
+                    .await
+                    .map_err(ChainIndexError::from)?,
+            )
+        } else {
+            None
+        };
+
+        let nonfinalized_snapshot = nonfinalized_snapshot.clone();
+        let source = self.source.clone();
+        let network = self.network.clone();
+        let pool_types_for_node = pool_types.clone();
+        // TODO: Investigate whether channel size should be changed, added to config, or set dynamically based on resources.
+        let (channel_sender, channel_receiver) = tokio::sync::mpsc::channel(128);
+
+        tokio::spawn(async move {
+            if is_ascending {
+                // 1) Finalized segment (if any), ascending.
+                if let Some(mut finalized_stream) = finalized_stream {
+                    while let Some(stream_item) = finalized_stream.next().await {
+                        if channel_sender.send(stream_item).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+
+                // 2) Nonfinalized segment, ascending.
+                let nonfinalized_start_height =
+                    types::Height(std::cmp::max(start_height.0, lowest_nonfinalized_height.0));
+
+                for height_value in nonfinalized_start_height.0..=capped_end_height.0 {
+                    let Some(indexed_block) = nonfinalized_snapshot
+                        .get_chainblock_by_height(&types::Height(height_value))
+                    else {
+                        match compact_block_from_source(
+                            &source,
+                            network.clone(),
+                            types::Height(height_value),
+                            &pool_types_for_node,
+                        )
+                        .await
+                        {
+                            Ok(Some(compact_block)) => {
+                                if channel_sender.send(Ok(compact_block)).await.is_err() {
+                                    return;
+                                }
+                                continue;
+                            }
+                            Ok(None) => {
+                                let _ = channel_sender
+                                    .send(Err(tonic::Status::internal(format!(
+                                        "Internal error, missing nonfinalized block at height [{height_value}].",
+                                    ))))
+                                    .await;
+                                return;
+                            }
+                            Err(error) => {
+                                let _ = channel_sender
+                                    .send(Err(tonic::Status::internal(error.to_string())))
+                                    .await;
+                                return;
+                            }
+                        }
+                    };
+                    let compact_block = compact_block_with_pool_types(
+                        indexed_block.to_compact_block(),
+                        &pool_types_vector,
+                    );
+                    if channel_sender.send(Ok(compact_block)).await.is_err() {
+                        return;
+                    }
+                }
+                // If the original end_height was above the tip, signal out_of_range after all valid blocks.
+                if needs_out_of_range {
+                    let _ = channel_sender
+                          .send(Err(tonic::Status::out_of_range(format!(
+                              "Error: Height out of range [{}]. Height requested is greater than the best chain tip [{}].",
+                              end_height.0, chain_tip_height.0,
+                          ))))
+                          .await;
+                }
+            } else {
+                // 1) Nonfinalized segment, descending.
+                if start_height >= lowest_nonfinalized_height {
+                    let nonfinalized_end_height =
+                        types::Height(std::cmp::max(end_height.0, lowest_nonfinalized_height.0));
+
+                    for height_value in (nonfinalized_end_height.0..=start_height.0).rev() {
+                        let Some(indexed_block) = nonfinalized_snapshot
+                            .get_chainblock_by_height(&types::Height(height_value))
+                        else {
+                            match compact_block_from_source(
+                                &source,
+                                network.clone(),
+                                types::Height(height_value),
+                                &pool_types_for_node,
+                            )
+                            .await
+                            {
+                                Ok(Some(compact_block)) => {
+                                    if channel_sender.send(Ok(compact_block)).await.is_err() {
+                                        return;
+                                    }
+                                    continue;
+                                }
+                                Ok(None) => {
+                                    let _ = channel_sender
+                                        .send(Err(tonic::Status::internal(format!(
+                                            "Internal error, missing nonfinalized block at height [{height_value}].",
+                                        ))))
+                                        .await;
+                                    return;
+                                }
+                                Err(error) => {
+                                    let _ = channel_sender
+                                        .send(Err(tonic::Status::internal(error.to_string())))
+                                        .await;
+                                    return;
+                                }
+                            }
+                        };
+                        let compact_block = compact_block_with_pool_types(
+                            indexed_block.to_compact_block(),
+                            &pool_types_vector,
+                        );
+                        if channel_sender.send(Ok(compact_block)).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+
+                // 2) Finalized segment (if any), descending.
+                if let Some(mut finalized_stream) = finalized_stream {
+                    while let Some(stream_item) = finalized_stream.next().await {
+                        if channel_sender.send(stream_item).await.is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(Some(CompactBlockStream::new(channel_receiver)))
+    }
+
+    /// Returns all changes for the given transparent addresses.
+    async fn get_address_deltas(
+        &self,
+        params: GetAddressDeltasParams,
+    ) -> Result<GetAddressDeltasResponse, Self::Error> {
+        self.source()
+            .get_address_deltas(params)
+            .await
+            .map_err(ChainIndexError::backing_validator)
+    }
+
+    /// Returns Information about the mempool state:
+    /// - size: Current tx count
+    /// - bytes: Sum of all tx sizes
+    /// - usage: Total memory usage for the mempool
+    async fn get_mempool_info(&self) -> MempoolInfo {
+        self.mempool.get_mempool_info().await
     }
 
     async fn get_tx_out_set_info(&self) -> Result<GetTxOutSetInfoResponse, Self::Error> {

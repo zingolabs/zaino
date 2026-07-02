@@ -5,7 +5,7 @@ use crate::{
     chain_index::{
         mempool::{Mempool, MempoolSubscriber},
         source::ValidatorConnector,
-        types as chain_types, ChainIndex,
+        types as chain_types, ChainIndex, ChainIndexRpcExt,
     },
     config::{DonationAddress, StateServiceConfig},
     error::{BlockCacheError, StateServiceError},
