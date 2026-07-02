@@ -7,8 +7,8 @@ for release, in the order it landed. We do not cherry-pick from `dev` to cut
 releases -- the release is always a **prefix** of `dev`'s history.
 
 There are 6 publishable crates (`zainod`, `zaino-serve`, `zaino-state`,
-`zaino-fetch`, `zaino-proto`, `zaino-common`) and 2 internal-only
-(`integration-tests`, `zaino-testutils`). Each public crate is versioned and
+`zaino-fetch`, `zaino-proto`, `zaino-common`) and 3 internal-only
+(`e2e`, `integration`, `zaino-testutils`). Each public crate is versioned and
 released independently.
 
 ### Relationship to ADR 003
@@ -484,7 +484,7 @@ From [ADR 003 §2, "Versioning strategy (SemVer)"](https://github.com/zingolabs/
 
 **ZainoDB versioning**, from the same section:
 
-> - **MAJOR**: Distinct database implementations, providing differing sets of functionality (Currently V1 is the only supported major version. A lightweight V2 database that only holds the minimal set of data required to produce the extra indexes (compared to zebrad) required in Zaino is planned but not yet implemented. V0 is a backwards compatibility layer for the legacy local cache implementation).
+> - **MAJOR**: Distinct database implementations, providing differing sets of functionality (Currently V1 is the only supported major version. A lightweight V2 database that only holds the minimal set of data required to produce the extra indexes (compared to zebrad) required in Zaino is planned but not yet implemented. The legacy V0 local-cache schema has been removed: an on-disk V0 database is no longer opened or migrated — it is rejected with an error directing the operator to resync a V1 database).
 > - **MINOR**: Updates that contain changes to either the public APIs or the on disk schema.
 > - **PATCH**: Internal bug fixes / performance improvements that do not touch the public APIs or on disk schema.
 >
@@ -536,8 +536,8 @@ From [ADR 003 §5, "Public interfaces governed by this ADR"](https://github.com/
 
 **Authoritative crate list (this repo)**: [Context](#context) enumerates the
 **6 crates.io-published packages** — `zainod`, `zaino-serve`, `zaino-state`,
-`zaino-fetch`, `zaino-proto`, `zaino-common` — and **2 internal-only
-packages** — `integration-tests` and `zaino-testutils`.
+`zaino-fetch`, `zaino-proto`, `zaino-common` — and **3 internal-only
+packages** — `e2e`, `integration`, and `zaino-testutils`.
 
 `zainodlib` exists as a library target inside the `zainod` package
 (`packages/zainod/Cargo.toml`: `[[bin]] name = "zainod"` alongside
@@ -641,7 +641,8 @@ corresponding package names (`Cargo.toml`) use the hyphenated form.
 #### Excluded (not governed)
 
 > - `zaino-testutils`
-> - `integration-tests`
+> - `e2e`
+> - `integration`
 >
 > These may change freely without affecting SemVer, except where they force changes to governed public crates.
 

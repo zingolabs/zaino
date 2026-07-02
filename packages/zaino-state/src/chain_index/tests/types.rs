@@ -1,9 +1,16 @@
 //! Unit tests for Zaino-state::ChainIndex::types and encoding.
 
+use std::num::NonZeroU128;
+
 use crate::{
     chain_index::{tests::init_tracing, types::EquihashSolution},
-    version, BlockContext, BlockData, BlockHeaderData, ZainoVersionedSerde as _,
+    version, BlockContext, BlockData, BlockHeaderData, ChainWork, CompactDifficulty,
+    ZainoVersionedSerde as _,
 };
+
+/// A valid nBits value for test fixtures. Passes zebra's compact difficulty
+/// validation but does not correspond to any specific real-world block.
+const TEST_VALID_NBITS: u32 = 0x2007_ffff;
 
 /// Canonical [`BlockHeaderData`] used by the serde tests in this module
 /// and by cross-boundary tests that start from its encoded bytes.
@@ -14,12 +21,13 @@ use crate::{
 pub(crate) fn canonical_blockheaderdata() -> BlockHeaderData {
     let hash = crate::BlockHash::from([1u8; 32]);
     let parent_hash = crate::BlockHash::from([2u8; 32]);
-    let chainwork = crate::ChainWork::from_u256(0.into());
+    let chainwork = ChainWork::new(NonZeroU128::new(0x42).expect("nonzero"));
     let height = crate::Height(42);
     let solution = EquihashSolution::Standard([6u8; 1344]);
+    let bits = CompactDifficulty::try_from_bits(TEST_VALID_NBITS).expect("valid nBits");
 
     let bctx = BlockContext::new(hash, parent_hash, chainwork, height);
-    let bdata = BlockData::new(1, 2, [3u8; 32], [4u8; 32], 3, [5u8; 32], solution);
+    let bdata = BlockData::new(1, 2, [3u8; 32], [4u8; 32], bits, [5u8; 32], solution);
     BlockHeaderData::new(bctx, bdata)
 }
 
@@ -45,9 +53,17 @@ pub(crate) fn expected_v2_bytes() -> Vec<u8> {
     // BlockHash (parent_hash): V1 tag + 32-byte body.
     out.push(version::V1);
     out.extend_from_slice(&[0x02; 32]);
-    // ChainWork: V1 tag + U256 big-endian (value = 0).
+    // ChainWork: V1 tag + 32-byte big-endian (value = 0x42, in the low-order 16
+    // bytes). Corrected from little-endian: the established v1 on-disk format is
+    // big-endian (the original `ChainWork([u8;32])` via `U256::to_big_endian`,
+    // and the `v1_test_db` fixture) — #1313 wrongly minted this golden LE, which
+    // is exactly a golden enshrining the bug it should have caught.
     out.push(version::V1);
-    out.extend_from_slice(&[0x00; 32]);
+    {
+        let mut cw_bytes = [0u8; 32];
+        cw_bytes[16..].copy_from_slice(&0x42u128.to_be_bytes());
+        out.extend_from_slice(&cw_bytes);
+    }
     // Height: V1 tag + u32 big-endian (value = 42).
     out.push(version::V1);
     out.extend_from_slice(&42u32.to_be_bytes());
@@ -61,8 +77,8 @@ pub(crate) fn expected_v2_bytes() -> Vec<u8> {
     out.extend_from_slice(&[0x03; 32]);
     // BlockData.block_commitments: 32 bytes.
     out.extend_from_slice(&[0x04; 32]);
-    // BlockData.bits: u32 little-endian (value = 3).
-    out.extend_from_slice(&3u32.to_le_bytes());
+    // BlockData.bits: u32 little-endian (value = 0x2007_ffff, Zcash mainnet genesis nBits).
+    out.extend_from_slice(&0x2007_ffffu32.to_le_bytes());
     // BlockData.nonce: 32 bytes.
     out.extend_from_slice(&[0x05; 32]);
     // EquihashSolution: Standard variant tag (0x01) + 0x00 padding byte.

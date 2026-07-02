@@ -5,7 +5,7 @@ on:
     inputs:
       nextest-profile:
         type: string
-        default: 'quick'
+        default: 'default'
   workflow_dispatch:
   push:
     tags:
@@ -23,6 +23,25 @@ env:
   INSECURE_CACHE: true
 
 jobs:
+  hadolint:
+    name: Hadolint
+    # Runs on a GitHub-hosted runner (not the self-hosted arc-sh-runners) so it
+    # executes on pull requests, unlike the build/test jobs below which are
+    # skipped on PRs until a self-hosted runner is available. The hadolint
+    # image is pinned by digest for supply-chain integrity; .hadolint.yaml at
+    # the repo root sets the policy (DL3008 apt-version pinning is enforced).
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Lint Dockerfiles
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo \
+            --entrypoint hadolint \
+            hadolint/hadolint:v2.14.0@sha256:27086352fd5e1907ea2b934eb1023f217c5ae087992eb59fde121dce9c9ff21e \
+            Dockerfile live-tests/test_environment/Containerfile
+
   fmt:
     name: Rustfmt
     # Runs on a GitHub-hosted runner (not the self-hosted arc-sh-runners) so it
@@ -33,13 +52,86 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+  repo-guards:
+    name: Repo guards
+    # GitHub-hosted runner so it runs on pull requests. Runs the workbench
+    # repo guards: the rustc-pin check (Dockerfile.deterministic's pallet-rust
+    # tag == rust-toolchain.toml channel) and the no-OpenSSL-apt check, plus the
+    # crate's own fmt/clippy/tests.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Lint and test the workbench crate
+        run: |
+          cargo fmt --manifest-path tools/workbench/Cargo.toml -- --check
+          cargo clippy --manifest-path tools/workbench/Cargo.toml --all-targets -- -D warnings
+          cargo test --manifest-path tools/workbench/Cargo.toml
+
+      - name: Check toolchain pin
+        run: cargo run -q --manifest-path tools/workbench/Cargo.toml --bin check-toolchain-pin
+
+      - name: Check no OpenSSL apt packages
+        run: cargo run -q --manifest-path tools/workbench/Cargo.toml --bin check-no-openssl-apt
+
+  cargo-deny:
+    name: cargo-deny
+    # Enforces deny.toml — including the openssl / openssl-sys / boring* crate
+    # bans. The policy already existed but ran only in the nix dev shell; this
+    # executes it on pull requests so a forbidden crate fails CI.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: cargo-deny check bans
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          # Scoped to `bans` (the openssl/boring* crate prohibition). Full
+          # `check` also runs advisories/licenses, which have pre-existing
+          # failures (e.g. RUSTSEC-2022-0001 lmdb) handled separately.
+          command: check bans
+
   compute-tag:
     uses: ./.github/workflows/compute-tag.yml
+
+  no-zcashd-build:
+    name: No-zcashd build (--no-default-features)
+    # The default-on `zcashd_support` feature is being deprecated; its OFF
+    # state must keep compiling or the deprecation path bit-rots. Runs in the
+    # CI container (toolchain + git deps + cargo cache) like the build job, so
+    # it is skipped on PRs until a self-hosted runner is available — same as the
+    # other compiling jobs. See docs/adr/0001-zcashd-support-feature-gate.md.
+    needs: compute-tag
+    container:
+      image: docker.io/zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
+    runs-on: arc-sh-runners
+    if: github.event_name != 'pull_request' && github.event.pull_request.draft == false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Restore cargo dependencies
+        uses: tespkg/actions-cache/restore@v1
+        with:
+          endpoint: ${{ env.CACHE_ENDPOINT }}
+          port: ${{ env.CACHE_PORT }}
+          bucket: ${{ env.CACHE_BUCKET }}
+          insecure: ${{ env.INSECURE_CACHE }}
+          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-deps-
+          path: |
+            ~/.cargo
+            target/debug/deps
+
+      - name: Check no-zcashd build across all three workspaces
+        run: makers check-no-zcashd
 
   build-test-artifacts:
     name: Build test artifacts
@@ -51,7 +143,7 @@ jobs:
     if: github.event_name != 'pull_request' && github.event.pull_request.draft == false
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Restore cargo dependencies
         id: restore-cargo
@@ -68,7 +160,20 @@ jobs:
             target/debug/deps
 
       - name: Build and archive tests
-        run: cargo nextest archive --verbose --workspace --all-features --archive-file nextest-archive.tar.zst
+        # --no-default-features, NOT --all-features: enable only what the CI test
+        # machinery needs. `test_dependencies` (the launch_inner_with_listeners
+        # harness path) and zcash_protocol/local-consensus are pulled in by the
+        # test crates' own dependency declarations and survive feature
+        # unification, so the harness still functions. This deliberately omits
+        # the product features `--all-features` was speculatively enabling:
+        #   - zcashd_support (opt-in; docs/adr/0001, 0005): zcashd is being
+        #     deprecated; zcashd-backed tests cfg out and are not executed in CI.
+        #   - experimental_features / transparent_address_history_experimental:
+        #     not shipped on by default; CI should not gate on a non-release combo.
+        #   - prometheus.
+        # This also matches what local `makers container-test` runs by default, so
+        # CI and local exercise the same feature set.
+        run: cargo nextest archive --verbose --workspace --no-default-features --archive-file nextest-archive.tar.zst
 
       - name: Save cargo dependencies
         if: steps.restore-cargo.outputs.cache-hit != 'true'
@@ -103,17 +208,23 @@ jobs:
       fail-fast: false
       matrix:
         partition:
-          # - "integration-tests::chain_cache" FIXME: this must be reintroduced when the chain index test hangs are debugged
-          - "integration-tests::fetch_service"
-          - "integration-tests::json_server"
-          - "integration-tests::state_service"
-          - "integration-tests::test_vectors"
-          - "integration-tests::wallet_to_validator"
+          # - "clientless::chain_cache"  # disabled: timeouts/hangs pending chain-index
+          #   integration; re-enable per https://github.com/zingolabs/zaino/issues/1312
+          - "clientless::fetch_service"
+          - "clientless::json_server"
+          - "clientless::state_service"
+          - "clientless::test_vectors"
+          # NOTE: the e2e partition (e2e::devtool, e2e::devtool_zcashd,
+          # e2e::test_vectors) now lives in the unified --workspace archive and
+          # is compiled every run, but is intentionally NOT executed here —
+          # adding the validator-heavy e2e suite to this job is a CI-capacity
+          # decision tracked in https://github.com/zingolabs/zaino/issues/1308.
+          # When added, regenerate this matrix with `makers update-test-targets`.
           - "zainod"
           - "zaino-state"
           - "zaino-testutils"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Restore cargo dependencies
         uses: tespkg/actions-cache/restore@v1
@@ -145,12 +256,18 @@ jobs:
 
       - name: Run Tests (Nextest)
         env:
-          TEST_BINARIES_DIR: ${{ github.workspace }}/integration-tests/test_binaries/bins
+          TEST_BINARIES_DIR: ${{ github.workspace }}/live-tests/test_binaries/bins
         run: |
-          cargo nextest run --verbose --profile ${{ inputs.nextest-profile || 'quick' }} --retries 2 --no-tests fail --archive-file nextest-archive.tar.zst \
-            --workspace-remap ./ --filterset "binary_id(${{ matrix.partition }})" ${{ env.NEXTEST-FLAGS }}
+          # Retries are NOT set here: the `default` profile scopes retries = 2 to
+          # the live packages (e2e/clientless) and keeps production unit partitions
+          # at retries = 0. A global `--retries` flag would blanket the unit tests too.
+          #
+          # `--no-tests fail` guards against a mistyped partition (binary_id matching
+          # nothing).
+          cargo nextest run --verbose --profile ${{ inputs.nextest-profile || 'default' }} --no-tests fail --archive-file nextest-archive.tar.zst \
+            --workspace-remap ./ --filterset "binary_id(${{ matrix.partition }})"
 
       - name: Test Summary
         uses: test-summary/action@v2
         with:
-          paths: "target/nextest/${{ inputs.nextest-profile || 'quick' }}/junit.xml"
+          paths: "target/nextest/${{ inputs.nextest-profile || 'default' }}/junit.xml"

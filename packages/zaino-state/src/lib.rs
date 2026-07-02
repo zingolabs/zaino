@@ -9,6 +9,16 @@
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
+use std::future::Future;
+
+/// A [`Future`] that is [`Send`] and resolves to `T`.
+///
+/// Written as `impl SendFut<T>` in trait method return positions so the `Send`
+/// bound the `async-trait` macro previously supplied implicitly is stated
+/// explicitly per method. See `docs/adr/0002-native-afit-over-async-trait.md`.
+pub trait SendFut<T>: Future<Output = T> + Send {}
+impl<T, F: Future<Output = T> + Send> SendFut<T> for F {}
+
 /// Prometheus metric names emitted by this crate; the single source of truth shared with `zainod`'s `describe_*` registrations (which carry the descriptions).
 #[cfg(feature = "prometheus")]
 #[allow(missing_docs)] // names are self-describing; descriptions live in zainod
@@ -69,11 +79,12 @@ pub use chain_index::non_finalised_state::{
 // NOTE: Should these be pub at all?
 pub use chain_index::types::{
     AddrHistRecord, AddrScript, BlockContext, BlockData, BlockHash, BlockHeaderData, BlockMetadata,
-    BlockWithMetadata, ChainWork, CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes,
-    CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend, CompactTxData, Height,
-    IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList,
-    ScriptType, ShardIndex, ShardRoot, TransactionHash, TransparentCompactTx, TransparentTxList,
-    TreeRootData, TxInCompact, TxLocation, TxOutCompact, TxidList,
+    BlockWithMetadata, ChainWork, ChainWorkError, CommitmentTreeData, CommitmentTreeRoots,
+    CommitmentTreeSizes, CompactDifficulty, CompactDifficultyError, CompactOrchardAction,
+    CompactSaplingOutput, CompactSaplingSpend, CompactTxData, Height, IndexedBlock,
+    OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList, ScriptType,
+    ShardIndex, ShardRoot, TransactionHash, TransparentCompactTx, TransparentTxList, TreeRootData,
+    TxInCompact, TxLocation, TxOutCompact, TxidList,
 };
 
 pub use chain_index::mempool::{MempoolKey, MempoolValue};
@@ -86,14 +97,14 @@ pub mod test_dependencies {
         pub use crate::chain_index::*;
     }
 
-    pub use crate::BlockCacheConfig;
+    pub use crate::ChainIndexConfig;
 }
 
 pub(crate) mod config;
 
 #[allow(deprecated)]
 pub use config::{
-    BackendConfig, BackendType, BlockCacheConfig, CommonBackendConfig, DonationAddress,
+    BackendConfig, BackendType, ChainIndexConfig, CommonBackendConfig, DonationAddress,
     FetchServiceConfig, StateServiceConfig,
 };
 

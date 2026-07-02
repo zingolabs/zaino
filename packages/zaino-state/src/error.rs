@@ -466,7 +466,7 @@ impl<T: ToString> From<RpcRequestError<T>> for NonFinalisedStateError {
 }
 
 /// Errors related to the `FinalisedState`.
-// TODO: Update name to DbError when ZainoDB replaces legacy finalised state.
+// TODO: Update name to DbError when FinalisedState replaces legacy finalised state.
 #[derive(Debug, thiserror::Error)]
 pub enum FinalisedStateError {
     /// Custom Errors.
@@ -513,7 +513,7 @@ pub enum FinalisedStateError {
     LmdbError(#[from] lmdb::Error),
 
     /// Serde Json serialisation / deserialisation errors.
-    // TODO: Remove when ZainoDB replaces legacy finalised state.
+    // TODO: Remove when FinalisedState replaces legacy finalised state.
     #[error("LMDB database error: {0}")]
     SerdeJsonError(#[from] serde_json::Error),
 
@@ -522,7 +522,7 @@ pub enum FinalisedStateError {
     StatusError(StatusError),
 
     /// Error from JsonRpcConnector.
-    // TODO: Remove when ZainoDB replaces legacy finalised state.
+    // TODO: Remove when FinalisedState replaces legacy finalised state.
     #[error("JsonRpcConnector error: {0}")]
     JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::TransportError),
 

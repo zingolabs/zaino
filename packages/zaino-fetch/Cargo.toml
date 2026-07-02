@@ -14,6 +14,12 @@ default = []
 # Prometheus metrics emission (outbound RPC request counting / latency).
 prometheus = ["metrics"]
 
+# Support for connecting to a zcashd validator node. Opt-in (default off, docs/adr/0005); being
+# deprecated. Gates the zcashd-shaped getpeerinfo parsing. Dropping it
+# (`--no-default-features`) compiles zcashd parsing out. See
+# docs/adr/0001-zcashd-support-feature-gate.md.
+zcashd_support = []
+
 [dependencies]
 zaino-common = { workspace = true }
 zaino-proto = { workspace = true }

@@ -5,6 +5,9 @@ use std::{
     path::PathBuf,
 };
 
+/// Default port for the Prometheus metrics endpoint.
+pub const DEFAULT_METRICS_PORT: u16 = 9998;
+
 use serde::{Deserialize, Serialize};
 use tracing::info;
 #[cfg(any(
@@ -74,6 +77,11 @@ pub struct ZainodConfig {
     ///
     /// Required when using the `state` backend.
     pub zebra_db_path: PathBuf,
+    /// Run the finalised-state database in ephemeral/stateless mode.
+    ///
+    /// When enabled, Zaino does not use a persistent on-disk finalised-state database. Finalised
+    /// state reads are served from the configured validator/source instead.
+    pub ephemeral_finalised_state: bool,
     /// Network to connect to (Mainnet, Testnet, or Regtest).
     pub network: Network,
     /// Prometheus metrics endpoint listen address.
@@ -240,6 +248,7 @@ impl Default for ZainodConfig {
             },
             service: ServiceConfig::default(),
             storage: StorageConfig::default(),
+            ephemeral_finalised_state: false,
             zebra_db_path: default_zebra_db_path(),
             network: Network::Testnet,
             donation_address: None,
@@ -425,6 +434,7 @@ fn build_common(cfg: ZainodConfig) -> CommonBackendConfig {
             .unwrap_or_else(|| "xxxxxx".to_string()),
         service: cfg.service,
         storage: cfg.storage,
+        ephemeral_finalised_state: cfg.ephemeral_finalised_state,
         network: cfg.network,
         donation_address: cfg.donation_address,
         indexer_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -802,12 +812,14 @@ listen_address = "127.0.0.1:8137"
         );
         guard.set_var("ZAINO_JSON_SERVER_SETTINGS__COOKIE_DIR", "/env/cookie/path");
         guard.set_var("ZAINO_STORAGE__CACHE__CAPACITY", "12345");
+        guard.set_var("ZAINO_EPHEMERAL_FINALISED_STATE", "true");
 
         let config_path = create_test_config_file(&temp_dir, toml_content, "test_config.toml");
         let config = load_config(&config_path).expect("load_config should succeed");
 
         assert_eq!(config.network, Network::Mainnet);
         assert_eq!(config.storage.cache.capacity, 12345);
+        assert!(config.ephemeral_finalised_state);
         assert!(config.json_server_settings.is_some());
         assert_eq!(
             config.json_server_settings.as_ref().unwrap().cookie_dir,
@@ -992,6 +1004,61 @@ listen_address = "127.0.0.1:8137"
         assert!(result.is_err());
     }
 
+    /// Regression guard: the old `[storage.database] sync_write_batch_bytes` key (renamed to
+    /// `sync_write_batch_size` and re-unitised to GiB) must now fail loudly. Silently ignoring it
+    /// and falling back to the default budget is what OOM-killed nodes at mainnet chain tip.
+    #[test]
+    fn stale_sync_write_batch_bytes_key_is_rejected() {
+        let _guard = EnvGuard::new();
+        let temp_dir = TempDir::new().unwrap();
+
+        let toml_content = r#"
+[validator_settings]
+validator_jsonrpc_listen_address = "127.0.0.1:18232"
+
+[storage.database]
+path = "/zaino/db"
+sync_write_batch_bytes = 2147483648
+
+[grpc_settings]
+listen_address = "127.0.0.1:8137"
+"#;
+
+        let config_path = create_test_config_file(&temp_dir, toml_content, "stale_batch_key.toml");
+        assert!(
+            load_config(&config_path).is_err(),
+            "stale `sync_write_batch_bytes` key must be rejected by deny_unknown_fields"
+        );
+    }
+
+    /// The current `[storage.database]` budget keys parse and bind as expected.
+    #[test]
+    fn current_database_budget_keys_parse() {
+        let _guard = EnvGuard::new();
+        let temp_dir = TempDir::new().unwrap();
+
+        let toml_content = r#"
+[validator_settings]
+validator_jsonrpc_listen_address = "127.0.0.1:18232"
+
+[storage.database]
+path = "/zaino/db"
+sync_write_batch_size = 2
+accumulator_rebuild_memory_size = 1
+sync_checkpoint_interval = 30
+
+[grpc_settings]
+listen_address = "127.0.0.1:8137"
+"#;
+
+        let config_path =
+            create_test_config_file(&temp_dir, toml_content, "current_budget_keys.toml");
+        let config = load_config(&config_path).expect("current budget keys must parse");
+        assert_eq!(config.storage.database.sync_write_batch_size.0, 2);
+        assert_eq!(config.storage.database.accumulator_rebuild_memory_size.0, 1);
+        assert_eq!(config.storage.database.sync_checkpoint_interval, 30);
+    }
+
     /// Verifies that `generate_default_config()` produces valid TOML.
     ///
     /// TOML requires simple values before table sections. If ZainodConfig field
@@ -1104,14 +1171,32 @@ listen_address = "127.0.0.1:8137"
 
         let cfg = ZainodConfig::default();
 
-        let state_cfg = StateServiceConfig::try_from(cfg.clone())
+        let state_config = StateServiceConfig::try_from(cfg.clone())
             .expect("StateServiceConfig conversion should succeed for default ZainodConfig");
-        let fetch_cfg = FetchServiceConfig::try_from(cfg)
+        let fetch_config = FetchServiceConfig::try_from(cfg)
             .expect("FetchServiceConfig conversion should succeed for default ZainodConfig");
 
         assert_eq!(
-            format!("{:#?}", state_cfg.common),
-            format!("{:#?}", fetch_cfg.common),
+            format!("{:#?}", state_config.common),
+            format!("{:#?}", fetch_config.common),
+        );
+
+        let cfg = ZainodConfig {
+            ephemeral_finalised_state: true,
+            ..ZainodConfig::default()
+        };
+
+        let state_config = StateServiceConfig::try_from(cfg.clone())
+            .expect("StateServiceConfig conversion should succeed for ephemeral finalised state");
+        let fetch_config = FetchServiceConfig::try_from(cfg)
+            .expect("FetchServiceConfig conversion should succeed for ephemeral finalised state");
+
+        assert!(state_config.common.ephemeral_finalised_state);
+        assert!(fetch_config.common.ephemeral_finalised_state);
+
+        assert_eq!(
+            format!("{:#?}", state_config.common),
+            format!("{:#?}", fetch_config.common),
         );
     }
 
@@ -1192,5 +1277,40 @@ listen_address = "127.0.0.1:8137"
         json_config_with("8.8.8.8:8237")
             .check_config()
             .expect("public JSON-RPC bind must be accepted under the override feature");
+    }
+
+    #[test]
+    fn test_ephemeral_finalised_state_config_is_deserialized() {
+        let _guard = EnvGuard::new();
+        let temp_dir = TempDir::new().unwrap();
+
+        let toml_content = r#"
+backend = "fetch"
+network = "Testnet"
+ephemeral_finalised_state = true
+
+[validator_settings]
+validator_jsonrpc_listen_address = "127.0.0.1:18232"
+
+[storage.database]
+path = "/zaino/db"
+
+[grpc_settings]
+listen_address = "127.0.0.1:8137"
+"#;
+
+        let config_path =
+            create_test_config_file(&temp_dir, toml_content, "ephemeral_finalised_state.toml");
+        let config = load_config(&config_path).expect("load_config failed");
+
+        assert!(config.ephemeral_finalised_state);
+
+        #[allow(deprecated)]
+        {
+            let fetch_config = FetchServiceConfig::try_from(config)
+                .expect("FetchServiceConfig conversion should succeed");
+
+            assert!(fetch_config.common.ephemeral_finalised_state);
+        }
     }
 }

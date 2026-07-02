@@ -5,15 +5,16 @@
 
 use std::convert::Infallible;
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+#[cfg(feature = "zcashd_support")]
+use serde::Serializer;
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
-use crate::jsonrpsee::{
-    connector::ResponseToError,
-    response::common::{
-        BlockHeight, Bytes, MaybeHeight, NodeId, ProtocolVersion, SecondsF64, TimeOffsetSeconds,
-        UnixTime,
-    },
+use crate::jsonrpsee::connector::ResponseToError;
+#[cfg(feature = "zcashd_support")]
+use crate::jsonrpsee::response::common::{
+    BlockHeight, Bytes, MaybeHeight, NodeId, ProtocolVersion, SecondsF64, TimeOffsetSeconds,
+    UnixTime,
 };
 
 /// Response to a `getpeerinfo` RPC request.
@@ -21,6 +22,7 @@ use crate::jsonrpsee::{
 #[serde(untagged)]
 pub enum GetPeerInfo {
     /// The `zcashd` typed response.
+    #[cfg(feature = "zcashd_support")]
     Zcashd(Vec<ZcashdPeerInfo>),
 
     /// The `zebrad` typed response.
@@ -42,6 +44,7 @@ pub struct ZebradPeerInfo {
 
 // TODO: Do not use primitive types
 /// Response to a `getpeerinfo` RPC request coming from `zcashd`.
+#[cfg(feature = "zcashd_support")]
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ZcashdPeerInfo {
@@ -124,6 +127,7 @@ impl<'de> Deserialize<'de> for GetPeerInfo {
         let v = Value::deserialize(de)?;
 
         // zcashd first
+        #[cfg(feature = "zcashd_support")]
         if let Ok(zd) = serde_json::from_value::<Vec<ZcashdPeerInfo>>(v.clone()) {
             return Ok(GetPeerInfo::Zcashd(zd));
         }
@@ -147,9 +151,11 @@ impl ResponseToError for GetPeerInfo {
 
 /// Bitflags for the peer's advertised services (backed by a u64).
 /// Serialized as a zero-padded 16-digit lowercase hex string.
+#[cfg(feature = "zcashd_support")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ServiceFlags(pub u64);
 
+#[cfg(feature = "zcashd_support")]
 impl ServiceFlags {
     /// Returns the underlying bits
     pub fn bits(self) -> u64 {
@@ -184,22 +190,26 @@ impl ServiceFlags {
     }
 }
 
+#[cfg(feature = "zcashd_support")]
 impl From<u64> for ServiceFlags {
     fn from(x: u64) -> Self {
         ServiceFlags(x)
     }
 }
+#[cfg(feature = "zcashd_support")]
 impl From<ServiceFlags> for u64 {
     fn from(f: ServiceFlags) -> Self {
         f.0
     }
 }
 
+#[cfg(feature = "zcashd_support")]
 impl Serialize for ServiceFlags {
     fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
         ser.serialize_str(&format!("{:016x}", self.0))
     }
 }
+#[cfg(feature = "zcashd_support")]
 impl<'de> Deserialize<'de> for ServiceFlags {
     fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
         let s = String::deserialize(de)?;
@@ -213,6 +223,7 @@ impl<'de> Deserialize<'de> for ServiceFlags {
 }
 
 /// Per-peer validation/sync state. Present when state stats are set. `zcashd` only.
+#[cfg(feature = "zcashd_support")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerStateStats {
     /// Misbehavior score.
@@ -231,6 +242,7 @@ mod tests {
     // use pretty_assertions::assert_eq;
 
     // TODO: get a real testvector
+    #[cfg(feature = "zcashd_support")]
     #[test]
     fn parses_zcashd_payload() {
         let zcashd_json = r#"
@@ -310,6 +322,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "zcashd_support")]
     #[test]
     fn zcashd_rejects_extra_fields() {
         let j = r#"[{
@@ -378,6 +391,7 @@ mod tests {
         assert_eq!(err.to_string(), "getpeerinfo: expected JSON array");
     }
 
+    #[cfg(feature = "zcashd_support")]
     #[test]
     fn getpeerinfo_serializes_as_raw_array() {
         let val = GetPeerInfo::Zcashd(Vec::new());
@@ -392,6 +406,7 @@ mod tests {
         assert_eq!(s, r#"[{"foo":1}]"#);
     }
 
+    #[cfg(feature = "zcashd_support")]
     mod serviceflags {
         use crate::jsonrpsee::response::{
             common::{

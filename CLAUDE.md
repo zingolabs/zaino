@@ -159,3 +159,27 @@ it, double-check whether `?` (in a `fn() -> Result<_, _>` test), a more
 descriptive `.expect("...")` with a message naming the invariant, or an
 `assert!`/`assert_matches!` would make the failure mode clearer. Prefer
 those alternatives whenever they fit.
+
+## Use the language server (LSP) for definitive code intelligence
+
+When answering *where* a symbol is defined, *who* calls or references it,
+its type, or its implementors, use the language server (go-to-definition,
+find-references, hover, call-hierarchy, workspace-symbol) — not `grep` or
+text search. Text search *guesses*; the LSP *resolves*: it follows `use`
+aliases, re-exports, generics, trait impls, and macro expansions a regex
+cannot, and it is not fooled by comments, strings, or shadowed names.
+Reach for `grep` only as a fallback — when the server is genuinely
+unavailable, still indexing, or the target isn't code it understands — and
+say so when you do.
+
+**Single-workspace note (this repo):** the tree is one Cargo workspace. The
+root `Cargo.toml` holds the `packages/*` production crates **and** the live-test
+crates (`live-tests/{e2e,clientless,zaino-testutils}`) as members (see
+docs/adr/0002, docs/adr/0003, docs/adr/0004). `default-members` is the
+production set, so a bare `cargo` / `cargo nextest run` builds and tests only
+those and excludes the heavy live-test crates; the live suite is selected
+explicitly with `-p e2e` / `-p clientless` (the `makers test` front door).
+rust-analyzer indexes the
+single workspace, so go-to-def / find-references resolve across production and
+test code in one pass — no linked-project swapping, and an empty result means
+"no references," not "the other workspace isn't loaded."

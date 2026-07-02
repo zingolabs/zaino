@@ -7,7 +7,6 @@ use proptest::{
 };
 use rand::seq::IndexedRandom;
 use tokio_stream::StreamExt as _;
-use tonic::async_trait;
 use zaino_common::{network::ActivationHeights, DatabaseConfig, Network, StorageConfig};
 use zaino_fetch::jsonrpsee::response::address_deltas::{
     GetAddressDeltasParams, GetAddressDeltasResponse,
@@ -32,9 +31,9 @@ use crate::{
         source::{BlockchainSourceResult, GetTransactionLocation},
         tests::{init_tracing, poll::poll_until, proptest_blockgen::proptest_helpers::add_segment},
         types::BestChainLocation,
-        NonFinalizedSnapshot,
+        NonFinalizedSnapshot, NON_FINALIZED_DEPTH,
     },
-    BlockCacheConfig, BlockHash, BlockchainSource, ChainIndex, NodeBackedChainIndex,
+    BlockHash, BlockchainSource, ChainIndex, ChainIndexConfig, NodeBackedChainIndex,
     NodeBackedChainIndexSubscriber, TransactionHash,
 };
 
@@ -53,7 +52,7 @@ fn passthrough_test(
     init_tracing();
     let network = Network::Regtest(ActivationHeights::default());
     // Long enough to have some finalized blocks to play with
-    let segment_length = 120;
+    let segment_length = NON_FINALIZED_DEPTH as usize + 20;
     // No need to worry about non-best chains for this test
     let branch_count = 1;
 
@@ -76,7 +75,7 @@ fn passthrough_test(
             let temp_dir: tempfile::TempDir = tempfile::tempdir().unwrap();
             let db_path: std::path::PathBuf = temp_dir.path().to_path_buf();
 
-            let config = BlockCacheConfig {
+            let config = ChainIndexConfig {
                 storage: StorageConfig {
                     database: DatabaseConfig {
                         path: db_path,
@@ -84,6 +83,7 @@ fn passthrough_test(
                     },
                     ..Default::default()
                 },
+                ephemeral: true,
                 db_version: 1,
                 network,
 
@@ -93,8 +93,12 @@ fn passthrough_test(
                 .await
                 .unwrap();
             let index_reader = indexer.subscriber();
-            // 101 instead of 100 as heights are 0-indexed
-            let expected_max_serviceable_height = (2 * segment_length) - 101;
+            // The best chain is `2 * segment_length` blocks (genesis segment +
+            // one branch), so its tip height is `2 * segment_length - 1`. The
+            // serviceable cutoff is the finalized floor at that tip — mirror
+            // production's `finalized_height_floor` exactly.
+            let tip_height = (2 * segment_length - 1) as u32;
+            let expected_max_serviceable_height = finalized_height_floor(tip_height).0 as usize;
             // Poll rather than sleeping a fixed 5 s: the indexer discovers the
             // chain topology as soon as the sync task has walked enough of the
             // source to identify the finalized-state cutoff. With a 1 s
@@ -393,7 +397,7 @@ fn make_chain() {
             let temp_dir: tempfile::TempDir = tempfile::tempdir().unwrap();
             let db_path: std::path::PathBuf = temp_dir.path().to_path_buf();
 
-            let config = BlockCacheConfig {
+            let config = ChainIndexConfig {
                 storage: StorageConfig {
                     database: DatabaseConfig {
                         path: db_path,
@@ -401,6 +405,7 @@ fn make_chain() {
                     },
                     ..Default::default()
                 },
+                ephemeral: true,
                 db_version: 1,
                 network,
 
@@ -429,7 +434,7 @@ fn make_chain() {
                 .unwrap();
             for (hash, block) in &non_finalized_snapshot.blocks {
                 if hash != &best_tip_hash {
-                    assert!(block.chainwork().to_u256() <= best_tip_block.chainwork().to_u256());
+                    assert!(block.chainwork() <= best_tip_block.chainwork());
                     if non_finalized_snapshot.heights_to_hashes.get(&block.height()) == Some(block.hash()) {
                         assert_eq!(index_reader.find_fork_point(&snapshot, hash).await.unwrap().unwrap().0, *hash);
                     } else {
@@ -569,7 +574,6 @@ impl ProptestMockchain {
     }
 }
 
-#[async_trait]
 impl BlockchainSource for ProptestMockchain {
     /// Returns the block by hash or height
     async fn get_block(

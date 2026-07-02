@@ -7,6 +7,19 @@ and this library adheres to Rust's notion of
 
 ## Unreleased
 
+### Changed
+- **Breaking** — config: `storage.database.sync_write_batch_bytes` (bytes) is
+  renamed to `sync_write_batch_size` and given in **GiB** (default raised from
+  4 GiB to 32 GiB); this budget now also bounds the txout-set accumulator
+  rebuild's per-shard memory. New `storage.database.sync_checkpoint_interval`
+  (seconds, default 300) makes the bulk-sync flush interval configurable (was a
+  fixed 60s).
+
+### Fixed
+- Zaino no longer OOM-crashes during the txout-set accumulator rebuild when it
+  reaches mainnet chain tip on memory-constrained hosts; the rebuild auto-shards
+  its in-memory spent set to fit the configured `sync_write_batch_size` budget.
+
 ## [0.4.1] - 2026-06-18
 - Bump zaino-proto 0.1.2 → 0.1.3 and zainod 0.4.0 → 0.4.1 to work around
   a yanked 0.1.2 slot on crates.io. No code changes.
@@ -34,6 +47,13 @@ and this library adheres to Rust's notion of
 - `ChainIndex::get_tx_out_set_info` — combines the finalised
   `FinalisedTxOutSetInfoAccumulator` with the non-finalised state to produce
   the full `GetTxOutSetInfoResponse`.
+- Optional ("ephemeral") finalised state: `zainod` gains an
+  `ephemeral_finalised_state` config option (default `false`) that runs Zaino
+  without a persistent finalised-state database, serving finalised reads from
+  the backing validator via an ephemeral passthrough.
+- `ChainIndex::get_outpoint_spenders` — resolves, for each transparent
+  outpoint, the txid that spent it on the best chain (or `None` if unspent),
+  with a `ChainScope` selecting finalised-only or full-chain search.
 ### Changed
 - Finalised-state sync and the v1.1.0 -> v1.2.0 migration are substantially
   faster on large/mainnet caches. The txout-set accumulator is built in bulk at
@@ -42,6 +62,13 @@ and this library adheres to Rust's notion of
   `txid_location` indexes are written in sorted batches — together removing the
   random-fault stall around sandblast height. See the `zaino-state` changelog for
   details; tune the write-batch size with `storage.database.sync_write_batch_bytes`.
+- Finalised-state sync and version migrations are now background, non-blocking
+  operations: large syncs and migrations run while an ephemeral passthrough
+  serves finalised reads, so startup and serving are no longer blocked on
+  persistence. Internally the finalised-state facade `ZainoDB` was renamed
+  `FinalisedState` and its backing `DbBackend`/`db` module became
+  `FinalisedSource`/`finalised_source` (now covering an ephemeral passthrough,
+  not only databases). Bumps the finalised DB version to v1.2.1 (metadata-only).
 - The `zainod` JSON-RPC server now refuses to bind to public or unspecified
   (`0.0.0.0` / `::`) addresses by default; `check_config` enforces the same
   private/loopback rule already applied to gRPC. The unencrypted JSON-RPC

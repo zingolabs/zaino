@@ -8,10 +8,71 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- `ChainIndex` / `NodeBackedChainIndexSubscriber` gain `get_outpoint_spenders` —
+  for each transparent `Outpoint`, returns the txid that spent it on the best
+  chain (index-aligned with the input, `None` if unspent or unknown).
+- `chain_index::types::ChainScope` — new enum (`Finalised`, `FullChain`)
+  selecting how far `get_outpoint_spenders` searches.
+- Optional ("ephemeral") finalised state: with `ChainIndexConfig::ephemeral`,
+  no finalised database is opened. Finalised reads are served by an ephemeral
+  passthrough (`finalised_source::ephemeral::EphemeralFinalisedState`) directly
+  from the backing `BlockchainSource`; `sync_to_height` is a no-op and
+  `db_height` reports `0`.
+- Background finalised-state sync and migration: `FinalisedState::sync_to_height`
+  runs inline for small ranges but spawns for large ones, and version migrations
+  run in the background, in both cases serving reads from an ephemeral passthrough
+  meanwhile. Failed background work retries and escalates to `CriticalError`.
+- `FinalisedState::wait_until_synced` — waits for in-progress background
+  sync/migration to reach its target (distinct from `wait_until_ready`, which
+  reflects serving-readiness).
 ### Changed
+- `chain_index::finalised_state` renames (internal, `pub(crate)`):
+  - facade type `ZainoDB` -> `FinalisedState`
+  - module `db` -> `finalised_source`; enum `DbBackend` -> `FinalisedSource`
+    (variant `Stateless` -> `Ephemeral`), reflecting that the backing source is
+    not necessarily a database
+  - stateless impl `StatelessFinalisedState` -> `EphemeralFinalisedState`
+    (`db/stateless.rs` -> `finalised_source/ephemeral.rs`)
+- `chain_index::non_finalised_state` now caps in-memory retention at
+  `MAX_NFS_DEPTH` blocks below the tip, so the cache cannot grow unbounded when
+  the finalised `db_height` lags (background sync) or is pinned at `0`
+  (ephemeral mode).
+- The finalised-state bulk-sync write-batch flush interval is now configurable
+  via `storage.database.sync_checkpoint_interval` (was a fixed 60s; default now
+  120s). Under `NO_SYNC` this also bounds the window of unflushed writes at risk
+  on a hard kill / eviction; lower it to shrink that window.
+- The txout-set accumulator rebuild now sizes its in-memory spent set from a
+  dedicated `storage.database.accumulator_rebuild_memory_size` budget instead of
+  reusing `sync_write_batch_size`, so the bulk-sync block buffer and the rebuild
+  can no longer inflate each other's peak memory.
 ### Deprecated
 ### Removed
 ### Fixed
+- The finalised-state txout-set accumulator rebuild at chain tip no longer
+  OOM-crashes on memory-constrained hosts. It auto-shards its in-memory spent set
+  by creating-txid prefix and now enforces the per-shard budget *strictly*: each
+  shard is loaded with a hard outpoint cap (range-seeking only that shard's
+  contiguous key range rather than scanning the whole `spent` table), and any
+  shard that would exceed the cap is bisected and retried — down to single-byte
+  shards, at which point it fails with an actionable error rather than OOM-ing.
+  The result is independent of the shard count.
+- Startup `spent`-table integrity failures now report the offending entry's key,
+  value length, and leading value bytes plus a wipe-and-re-index hint (previously
+  a bare "corrupt spent entry" / "version tag N"), and the integrity and rebuild
+  scans walk the cursor explicitly so a real LMDB error propagates instead of
+  being swallowed (release) or `debug_assert!`-panicking (debug).
+- Corrected documentation that claimed `NO_SYNC` "never corrupts the database": on
+  storage that does not preserve write order (NFS, overlay filesystems, hard pod
+  eviction) a crash can leave torn pages; the recovery is to wipe and re-index.
+- The non-finalised state no longer overflows the worker stack when caching a
+  side-chain block. `add_nonbest_block` walked a delivered block's ancestry via
+  `source.get_block` with no depth bound; on the `state` backend `get_block`
+  serves any block by hash (including finalised blocks below the non-finalised
+  window), so a side chain rooted below the anchor recursed down to genesis and
+  crashed the process. The walk is now capped at `MAX_NFS_DEPTH` (matching
+  `handle_reorg`); a side chain that doesn't anchor within the window is skipped
+  (best-effort — zaino does not guarantee knowledge of all sidechain data) rather
+  than crashing or failing the sync.
 
 ## [0.3.0] - 2026-06-17
 

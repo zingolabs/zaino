@@ -4,7 +4,7 @@
 # Global build args
 ############################
 # RUST_VERSION must be supplied via --build-arg. Canonical source is
-# rust-toolchain.toml's `channel`, surfaced by tools/scripts/get-rust-version.sh
+# rust-toolchain.toml's `channel`, surfaced by the workbench get-rust-version bin
 # — no default is set so a stale literal cannot drift from the workspace's
 # pinned toolchain. See README for the recommended build invocation.
 ARG RUST_VERSION
@@ -28,9 +28,16 @@ ARG NO_TLS=false
 ARG CARGO_FEATURES=""
 
 # Build deps incl. protoc for prost-build
+# Versions pinned (DL3008) for reproducibility / supply-chain hygiene. Pins
+# match the candidate versions in docker.io/library/rust:1.95.0-bookworm; bump
+# them together with the base image (query with `apt-cache policy <pkg>`).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      pkg-config clang cmake make libssl-dev ca-certificates \
-      protobuf-compiler \
+      pkg-config=1.8.1-1 \
+      clang=1:14.0-55.7~deb12u1 \
+      cmake=3.25.1-1 \
+      make=4.3-4.1 \
+      ca-certificates=20230311+deb12u1 \
+      protobuf-compiler=3.21.12-3 \
   && rm -rf /var/lib/apt/lists/*
 
 # Copy entire workspace (prevents missing members)
@@ -61,9 +68,12 @@ ARG USER
 ARG HOME
 
 # Runtime deps
+# Versions pinned (DL3008) to the candidates in
+# docker.io/library/debian:bookworm-slim; bump together with the base image.
 RUN apt-get -qq update && \
     apt-get -qq install -y --no-install-recommends \
-      ca-certificates libssl3 libgcc-s1 \
+      ca-certificates=20230311+deb12u1 \
+      libgcc-s1=12.2.0-14+deb12u1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user

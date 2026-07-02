@@ -1,2 +1,55 @@
+# Nextest configuration for the reunified Zaino workspace.
+#
+# The production crates and the live-test crates (e2e, clientless,
+# zaino-testutils) are all members of one workspace, so nextest reads only this
+# root config. It was merged from the former per-workspace configs
+# (live-tests/.config and live-tests/e2e/.config, now deleted); see
+# docs/adr/0002, docs/adr/0003, docs/adr/0004.
+#
+# Profiles:
+#   default  bare `cargo nextest run` (production units), the local `makers test`
+#            runs, AND the CI test job (ci.yml passes `--profile default`).
+#            Live-test tuning is scoped to the live packages via overrides;
+#            `[profile.default.junit]` emits junit.xml for CI reporting.
+#   targets  the canonical test-target inventory (minus testnet/client_rpcs)
+#            consumed by tools/scripts/{update,validate}-test-targets.sh. This is
+#            NOT the CI test run -- that is `default`.
+
 [profile.default]
+# Minimal by design: the production unit-test run (bare `cargo nextest run`,
+# which excludes the live crates via `default-members`) keeps full `num-cpus`
+# parallelism, no slow-timeout, and retries = 0. All live-test tuning is scoped
+# to the live packages below so it never touches the production path — even
+# though `makers live-*` also runs through this profile.
 fail-fast = false
+
+# JUnit output for CI reporting (the CI test job runs this profile). Harmless
+# locally — writes target/nextest/default/junit.xml.
+[profile.default.junit]
+path = "junit.xml"
+
+# Each live test launches a full validator; this group caps concurrent live
+# tests (hence concurrent validators) to 6 without throttling production unit
+# tests, which are not group members and run at full `num-cpus`.
+[test-groups]
+live-validators = { max-threads = 6 }
+
+# Live-package tuning: capped concurrency (via the group), a slow-timeout for
+# validator startup, and retries to absorb RPC-timing flakiness. Scoped to the
+# live packages so production unit tests keep retries = 0 and no slow-timeout.
+[[profile.default.overrides]]
+filter = 'package(e2e) | package(clientless)'
+test-group = "live-validators"
+slow-timeout = { period = "60s", terminate-after = "10" }
+retries = 2
+
+# The canonical test-target inventory consumed by the update/validate-test-targets
+# scripts via `cargo nextest list` -- NOT the CI test run (that is `default`).
+# Listing only enumerates tests, so this profile needs nothing but the filter:
+# run-time keys (test-threads, retries, slow-timeout, junit) would be inert here.
+# Enumerates the full suite minus the testnet and client_rpcs targets.
+[profile.targets]
+default-filter = """
+    not test(testnet)
+    & not test(client_rpcs)
+"""

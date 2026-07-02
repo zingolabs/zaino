@@ -22,11 +22,11 @@ use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalisedStateError};
 use crate::metric_names::*;
 use crate::status::Status;
 use crate::{
-    ChainWork, CompactBlockStream, NamedAtomicStatus, NonFinalizedState, StatusType, SyncError,
-    TxOutCompact,
+    CompactBlockStream, NamedAtomicStatus, NonFinalizedState, StatusType, SyncError, TxOutCompact,
 };
 use crate::{IndexedBlock, Outpoint, TransactionHash};
 use std::collections::HashSet;
+use std::str::FromStr;
 use std::{sync::Arc, time::Duration};
 
 use arc_swap::ArcSwapOption;
@@ -75,7 +75,21 @@ mod tests;
 /// preserves the original literal-`100` behavior; deriving the
 /// depth from an explicit wider-consensus reference is tracked in
 /// zingolabs/zaino#1130.
+#[cfg(not(test))]
 pub(crate) const NON_FINALIZED_DEPTH: u32 = zebra_state::MAX_BLOCK_REORG_HEIGHT + 1;
+
+/// In-crate unit tests pin the depth at the pre-zebra-10 value (`100`).
+///
+/// Zebra 10 raised `MAX_BLOCK_REORG_HEIGHT` from 99 to 1000, so the
+/// production depth is now 1001. The 201-block mock-chain test vector is
+/// far shorter than that, so at the production depth `finalized_height_floor`
+/// saturates to genesis for the whole fixture: the finalized seam never moves
+/// off block 0 and the eviction/seam invariants become untestable (see
+/// zingolabs/zaino#1288). The eviction and seam invariants are scale-free, so
+/// exercising them at a tractable depth is sound; the production depth is
+/// covered by the clientless suite, which reaches real chain heights.
+#[cfg(test)]
+pub(crate) const NON_FINALIZED_DEPTH: u32 = 100;
 
 /// Lower bound on zaino's finalized-DB tip, derived from the current
 /// best-known chain tip.
@@ -481,14 +495,13 @@ pub trait ChainIndex {
         hash: &types::BlockHash,
     ) -> impl std::future::Future<Output = Result<Option<(types::BlockHash, types::Height)>, Self::Error>>;
 
-    /// Returns the block commitment tree data by hash
+    /// Returns the block commitment tree data by hash.
+    ///
+    /// The hash must exist in the non-finalized snapshot or finalized database
+    /// before the request is proxied to the backing validator.
     #[allow(clippy::type_complexity)]
     fn get_treestate(
         &self,
-        // snapshot: &Self::Snapshot,
-        // currently not implemented internally, fetches data from validator.
-        //
-        // NOTE: Should this check blockhash exists in snapshot and db before proxying call?
         hash: &types::BlockHash,
     ) -> impl std::future::Future<Output = Result<(Option<Vec<u8>>, Option<Vec<u8>>), Self::Error>>;
 
@@ -525,6 +538,24 @@ pub trait ChainIndex {
         &self,
         address_strings: GetAddressBalanceRequest,
     ) -> impl std::future::Future<Output = Result<Vec<GetAddressUtxos>, Self::Error>>;
+
+    /// For each outpoint, returns the txid of the transaction that spent it on the best
+    /// chain, or `None` if the outpoint is unspent or unknown.
+    ///
+    /// The output is aligned with the input by index: `result[i]` corresponds to
+    /// `outpoints[i]`. An outpoint is spent at most once on the best chain. `scope` selects
+    /// how far the search reaches: [`ChainScope::FullChain`] searches the non-finalised best
+    /// chain first then the finalised index; [`ChainScope::Finalised`] searches only the
+    /// finalised index, yielding reorg-stable results.
+    ///
+    /// [`ChainScope::FullChain`]: types::ChainScope::FullChain
+    /// [`ChainScope::Finalised`]: types::ChainScope::Finalised
+    fn get_outpoint_spenders(
+        &self,
+        snapshot: &Self::Snapshot,
+        outpoints: Vec<types::Outpoint>,
+        scope: types::ChainScope,
+    ) -> impl std::future::Future<Output = Result<Vec<Option<types::TransactionHash>>, Self::Error>>;
 
     // ********** Metadata methods **********
 
@@ -672,7 +703,7 @@ pub struct NodeBackedChainIndex<Source: BlockchainSource = ValidatorConnector> {
     #[allow(dead_code)]
     mempool: std::sync::Arc<mempool::Mempool<Source>>,
     non_finalized_state: Arc<ArcSwapOption<crate::NonFinalizedState<Source>>>,
-    finalized_db: std::sync::Arc<finalised_state::ZainoDB>,
+    finalized_db: std::sync::Arc<finalised_state::FinalisedState<Source>>,
     sync_loop_handle: Option<tokio::task::JoinHandle<Result<(), SyncError>>>,
     status: NamedAtomicStatus,
     network: ZebraNetwork,
@@ -745,7 +776,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
     /// Currently this is a ReadStateService or JsonRpSeeConnector
     pub async fn new(
         source: Source,
-        config: crate::config::BlockCacheConfig,
+        config: crate::config::ChainIndexConfig,
     ) -> Result<Self, crate::InitError> {
         Self::new_with_sync_timings(source, config, SyncTimings::default()).await
     }
@@ -754,13 +785,13 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
     /// tests that exercise the backoff path and need a faster schedule.
     pub(crate) async fn new_with_sync_timings(
         source: Source,
-        config: crate::config::BlockCacheConfig,
+        config: crate::config::ChainIndexConfig,
         sync_timings: SyncTimings,
     ) -> Result<Self, crate::InitError> {
         use futures::TryFutureExt as _;
 
         let finalized_db =
-            Arc::new(finalised_state::ZainoDB::spawn(config.clone(), source.clone()).await?);
+            Arc::new(finalised_state::FinalisedState::spawn(config.clone(), source.clone()).await?);
         let mempool_state = mempool::Mempool::spawn(source.clone(), None)
             .map_err(crate::InitError::MempoolInitialzationError)
             .await?;
@@ -889,6 +920,8 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                                 "node returned no best block height",
                             ))
                         })?;
+                    #[cfg(feature = "prometheus")]
+                    metrics::gauge!("zaino.chain.tip_height").set(chain_height.0 as f64);
                     let finalised_height = finalized_height_floor(chain_height.0);
                     #[cfg(feature = "prometheus")]
                     {
@@ -905,17 +938,23 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                     let non_finalized_state = match *intermediate_nfs_for_scoping {
                         Some(ref nfs) => nfs,
                         None => {
+                            // Anchor the non-finalised state at `finalised_height`
+                            // (= chain tip − NON_FINALIZED_DEPTH), never at genesis: a missing
+                            // anchor used to fall through to genesis and then re-anchor up to the
+                            // lagging finalised tip, grinding millions of blocks one at a time
+                            // (#1261). `resolve_anchor_block` serves the anchor from the finalised
+                            // DB / passthrough or builds it from the validator.
+                            let anchor = NonFinalizedState::resolve_anchor_block(
+                                &source,
+                                &fs.to_reader(),
+                                &network,
+                                finalised_height,
+                            )
+                            .await?;
                             nfs.store(Some(Arc::new(
-                                NonFinalizedState::initialize(
-                                    source,
-                                    network,
-                                    fs.to_reader()
-                                        .get_chain_block_by_height(finalised_height)
-                                        .await
-                                        .expect("todo"),
-                                )
-                                .await
-                                .expect("todo"),
+                                NonFinalizedState::initialize(source, network, Some(anchor))
+                                    .await
+                                    .map_err(source_error)?,
                             )));
                             &nfs.load_full().expect("just set to Some")
                         }
@@ -1042,7 +1081,7 @@ impl<Source: BlockchainSource> Drop for NodeBackedChainIndex<Source> {
 pub struct NodeBackedChainIndexSubscriber<Source: BlockchainSource = ValidatorConnector> {
     mempool: mempool::MempoolSubscriber,
     non_finalized_state: Arc<ArcSwapOption<crate::NonFinalizedState<Source>>>,
-    finalized_state: finalised_state::reader::DbReader,
+    finalized_state: finalised_state::reader::DbReader<Source>,
     status: NamedAtomicStatus,
     network: ZebraNetwork,
     source: Source,
@@ -1103,8 +1142,7 @@ async fn compact_block_from_source<Source: BlockchainSource>(
                 "orchard commitment tree size overflow",
             ))
         })?,
-        // TODO: Define an empty value https://github.com/zingolabs/zaino/issues/1158
-        ChainWork::from_u256(0.into()),
+        None, // parent chainwork unknown — single-block construction
         network,
     );
     let indexed_block =
@@ -1317,6 +1355,75 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
                 Ok(None)
             }
             Err(e) => Err(ChainIndexError::backing_validator(e)),
+        }
+    }
+
+    /// Returns true when the block hash is present in the local chain index.
+    ///
+    /// During finalized-state sync, a hash is considered known when it is in
+    /// the finalized database or the backing validator can serve it as a
+    /// finalized block.
+    pub(crate) async fn block_hash_known_for_treestate(
+        &self,
+        snapshot: &ChainIndexSnapshot,
+        hash: &types::BlockHash,
+    ) -> Result<bool, ChainIndexError> {
+        match snapshot {
+            ChainIndexSnapshot::NonFinalizedStateExists {
+                non_finalized_snapshot,
+            } => {
+                if non_finalized_snapshot.blocks.contains_key(hash) {
+                    return Ok(true);
+                }
+                Ok(self
+                    .finalized_state
+                    .get_block_height(*hash)
+                    .await?
+                    .is_some())
+            }
+            ChainIndexSnapshot::StillSyncingFinalizedState {
+                validator_finalized_height,
+            } => {
+                if self
+                    .finalized_state
+                    .get_block_height(*hash)
+                    .await?
+                    .is_some()
+                {
+                    return Ok(true);
+                }
+                Ok(self
+                    .get_block_height_passthrough(validator_finalized_height, *hash)
+                    .await?
+                    .is_some())
+            }
+        }
+    }
+
+    /// Returns true when the hash-or-height string refers to a block known to
+    /// the local chain index.
+    pub(crate) async fn hash_or_height_known_for_treestate(
+        &self,
+        snapshot: &ChainIndexSnapshot,
+        hash_or_height: &str,
+    ) -> Result<bool, ChainIndexError> {
+        let hash_or_height = HashOrHeight::from_str(hash_or_height).map_err(|error| {
+            ChainIndexError::internal(format!("invalid hash or height: {error}"))
+        })?;
+        match hash_or_height {
+            HashOrHeight::Hash(hash) => {
+                self.block_hash_known_for_treestate(snapshot, &types::BlockHash::from(hash))
+                    .await
+            }
+            HashOrHeight::Height(height) => {
+                match self
+                    .get_block_hash(snapshot, types::Height::from(height))
+                    .await?
+                {
+                    Some(hash) => self.block_hash_known_for_treestate(snapshot, &hash).await,
+                    None => Ok(false),
+                }
+            }
         }
     }
 
@@ -2278,15 +2385,18 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         }
     }
 
-    /// Returns the block commitment tree data by hash
+    /// Returns the block commitment tree data by hash.
     async fn get_treestate(
         &self,
-        // currently not implemented internally, fetches data from validator.
-        // as this looks up the block by hash, and cares not if the
-        // block is on the main chain or not, this is safe to pass through
-        // even if the target block is non-finalized
         hash: &types::BlockHash,
     ) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>), Self::Error> {
+        let snapshot = self.snapshot_nonfinalized_state().await?;
+        if !self.block_hash_known_for_treestate(&snapshot, hash).await? {
+            return Err(ChainIndexError::internal(format!(
+                "block hash {hash} not found in local chain index"
+            )));
+        }
+
         match self.source().get_treestate(*hash).await {
             Ok(resp) => Ok(resp),
             Err(e) => Err(ChainIndexError {
@@ -2355,6 +2465,84 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
             .get_address_utxos(address_strings)
             .await
             .map_err(ChainIndexError::backing_validator)
+    }
+
+    async fn get_outpoint_spenders(
+        &self,
+        snapshot: &Self::Snapshot,
+        outpoints: Vec<types::Outpoint>,
+        scope: types::ChainScope,
+    ) -> Result<Vec<Option<types::TransactionHash>>, Self::Error> {
+        use std::collections::HashMap;
+
+        let mut result: Vec<Option<TransactionHash>> = vec![None; outpoints.len()];
+
+        // 1) Non-finalised best chain (FullChain scope only). Scan only the blocks reachable
+        //    via `heights_to_hashes` (the `blocks` map also holds reorged-away blocks, which
+        //    must not count). One pass builds an outpoint -> spending-txid map regardless of
+        //    how many outpoints we look up. Under `Finalised` scope this is skipped so results
+        //    are reorg-stable.
+        if let (
+            types::ChainScope::FullChain,
+            ChainIndexSnapshot::NonFinalizedStateExists {
+                non_finalized_snapshot,
+            },
+        ) = (scope, snapshot)
+        {
+            let mut nfs_spenders: HashMap<Outpoint, TransactionHash> = HashMap::new();
+            for hash in non_finalized_snapshot.heights_to_hashes.values() {
+                let Some(block) = non_finalized_snapshot.blocks.get(hash) else {
+                    continue;
+                };
+                for tx in block.transactions() {
+                    let txid = *tx.txid();
+                    // `spent_outpoints` already skips coinbase null prevouts and builds each
+                    // `Outpoint`, keeping the construction in one place (see #1332).
+                    for outpoint in tx.transparent().spent_outpoints() {
+                        nfs_spenders.insert(outpoint, txid);
+                    }
+                }
+            }
+            for (i, outpoint) in outpoints.iter().enumerate() {
+                if let Some(txid) = nfs_spenders.get(outpoint) {
+                    result[i] = Some(*txid);
+                }
+            }
+        }
+
+        // 2) Finalised lookup for the still-unresolved outpoints, batched into one DB call.
+        let unresolved_indices: Vec<usize> = result
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| r.is_none().then_some(i))
+            .collect();
+        if unresolved_indices.is_empty() {
+            return Ok(result);
+        }
+        let unresolved_outpoints: Vec<Outpoint> =
+            unresolved_indices.iter().map(|&i| outpoints[i]).collect();
+        let locations = self
+            .finalized_state
+            .get_outpoint_spenders(unresolved_outpoints)
+            .await?;
+
+        // 3) Resolve each finalised `TxLocation` to a txid. Dedup identical locations so a
+        //    block spending several queried outpoints is only fetched once. `get_txid` is a
+        //    single keyed lookup, far cheaper than reconstructing the whole block.
+        let mut slots_by_location: HashMap<types::TxLocation, Vec<usize>> = HashMap::new();
+        for (slot, location) in unresolved_indices.into_iter().zip(locations) {
+            if let Some(location) = location {
+                slots_by_location.entry(location).or_default().push(slot);
+            }
+        }
+        for (location, slots) in slots_by_location {
+            let txid = self.finalized_state.get_txid(location).await?;
+            for slot in slots {
+                result[slot] = Some(txid);
+            }
+        }
+
+        Ok(result)
     }
 
     // ********** Metadata methods **********
@@ -2495,12 +2683,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                 }
 
                 // Spent prev outputs leave the UTXO set.
-                for input in transparent.inputs() {
-                    if input.is_null_prevout() {
-                        continue;
-                    }
-
-                    let outpoint = Outpoint::new(*input.prevout_txid(), input.prevout_index());
+                for outpoint in transparent.spent_outpoints() {
                     let prev_txid = TransactionHash::from(*outpoint.prev_txid());
 
                     let prev_out_from_nfs = nfs_created.remove(&outpoint);

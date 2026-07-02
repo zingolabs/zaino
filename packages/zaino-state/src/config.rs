@@ -87,6 +87,14 @@ pub struct CommonBackendConfig {
     pub service: ServiceConfig,
     /// Storage configuration (cache and database)
     pub storage: StorageConfig,
+    /// Ephemeral finalised state:
+    ///
+    /// If true, FinalisedState does not write data to disk,
+    /// fetching data  from the backing validator.
+    ///
+    /// Note that full functionality is not available and
+    /// performanc will be reduced in this configuration.
+    pub ephemeral_finalised_state: bool,
     /// Network type.
     pub network: Network,
     /// Zcash donation UA address
@@ -129,6 +137,7 @@ impl StateServiceConfig {
         validator_rpc_password: Option<String>,
         service: ServiceConfig,
         storage: StorageConfig,
+        ephemeral_finalised_state: bool,
         network: Network,
         donation_address: Option<DonationAddress>,
     ) -> Self {
@@ -144,6 +153,7 @@ impl StateServiceConfig {
                 validator_rpc_password: validator_rpc_password.unwrap_or("xxxxxx".to_string()),
                 service,
                 storage,
+                ephemeral_finalised_state,
                 network,
                 donation_address,
                 indexer_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -174,6 +184,7 @@ impl FetchServiceConfig {
         validator_rpc_password: Option<String>,
         service: ServiceConfig,
         storage: StorageConfig,
+        ephemeral_finalised_state: bool,
         network: Network,
         donation_address: Option<DonationAddress>,
     ) -> Self {
@@ -185,6 +196,7 @@ impl FetchServiceConfig {
                 validator_rpc_password: validator_rpc_password.unwrap_or("xxxxxx".to_string()),
                 service,
                 storage,
+                ephemeral_finalised_state,
                 network,
                 donation_address,
                 indexer_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -193,50 +205,59 @@ impl FetchServiceConfig {
     }
 }
 
-/// Holds config data for `[ZainoDb]`.
-/// TODO: Rename  to *ZainoDbConfig* when ChainIndex update is complete **and** remove legacy fields.
+/// Holds config data for `[ChainIndex]` and sub-components.
 #[derive(Debug, Clone)]
-pub struct BlockCacheConfig {
+pub struct ChainIndexConfig {
     /// Storage configuration (cache and database)
     pub storage: StorageConfig,
     /// Database version selected to be run.
     pub db_version: u32,
     /// Network type.
     pub network: Network,
+    /// Ephemeral finalised state:
+    ///
+    /// If true, FinalisedState does not write data to disk,
+    /// fetching data  from the backing validator.
+    ///
+    /// Note that full functionality is not available and
+    /// performanc will be reduced in this configuration.
+    pub ephemeral: bool,
 }
 
-impl BlockCacheConfig {
+impl ChainIndexConfig {
     /// Returns a new instance of [`BlockCacheConfig`].
     #[allow(dead_code)]
-    pub fn new(storage: StorageConfig, db_version: u32, network: Network, _no_sync: bool) -> Self {
-        BlockCacheConfig {
+    pub fn new(storage: StorageConfig, db_version: u32, network: Network, ephemeral: bool) -> Self {
+        ChainIndexConfig {
             storage,
             db_version,
             network,
+            ephemeral,
         }
     }
 }
 
-impl From<CommonBackendConfig> for BlockCacheConfig {
+impl From<CommonBackendConfig> for ChainIndexConfig {
     fn from(value: CommonBackendConfig) -> Self {
         Self {
             storage: value.storage,
             // TODO: update zaino configs to include db version.
             db_version: 1,
             network: value.network,
+            ephemeral: value.ephemeral_finalised_state,
         }
     }
 }
 
 #[allow(deprecated)]
-impl From<StateServiceConfig> for BlockCacheConfig {
+impl From<StateServiceConfig> for ChainIndexConfig {
     fn from(value: StateServiceConfig) -> Self {
         value.common.into()
     }
 }
 
 #[allow(deprecated)]
-impl From<FetchServiceConfig> for BlockCacheConfig {
+impl From<FetchServiceConfig> for ChainIndexConfig {
     fn from(value: FetchServiceConfig) -> Self {
         value.common.into()
     }

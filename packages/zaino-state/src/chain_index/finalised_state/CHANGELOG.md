@@ -342,3 +342,81 @@ Bug Fixes / Optimisations
 --------------------------------------------------------------------------------
 (append new entries below)
 --------------------------------------------------------------------------------
+
+--------------------------------------------------------------------------------
+DB VERSION v1.2.1 (from v1.2.0)
+Date: 2026-06-10
+--------------------------------------------------------------------------------
+
+Summary
+- Metadata-only version marker for the optional ("ephemeral") finalised state and
+  background (non-blocking) finalised-state sync / migration behaviour.
+- No on-disk layout, table, encoding, checksum, or schema-hash change: persisted
+  v1.2.1 databases are byte-for-byte compatible with v1.2.0.
+
+On-disk schema
+- Layout:
+  - No changes.
+- Tables:
+  - Added: None.
+  - Removed: None.
+  - Renamed: None.
+- Encoding:
+  - Keys: No changes.
+  - Values: No changes.
+  - Checksums / validation: No changes (`DB_SCHEMA_V1_HASH` unchanged).
+- Invariants:
+  - No changes.
+
+API / capabilities
+- Capability changes:
+  - Added: None.
+  - Removed: None.
+  - Changed: None.
+- Public surface changes:
+  - The finalised-state backing enum was renamed `DbBackend` -> `FinalisedSource`
+    (variant `Stateless` -> `Ephemeral`) and its module `db` -> `finalised_source`,
+    reflecting that the backing is not necessarily a database (it may be an
+    ephemeral passthrough). The facade type `ZainoDB` was renamed `FinalisedState`.
+    These are internal (`pub(crate)`) renames with no external API impact.
+  - Added: `FinalisedState::wait_until_synced` (waits for background sync/migration
+    to reach its target, distinct from `wait_until_ready`'s serving-readiness).
+
+Migration
+- Strategy: metadata-only (default `Migration` trait implementation), run against
+  the routed primary. No shadow database, no table rebuild.
+- Backfill: None.
+- Completion criteria: `DbMetadata.version` is advanced to v1.2.1 and
+  `migration_status` is reset to `Empty`; the schema checksum is re-stamped unchanged.
+- Failure handling: idempotent; safe to re-run.
+
+Bug Fixes / Optimisations
+- Finalised-state sync and migration no longer block serving: large syncs and
+  version migrations run in the background while an ephemeral passthrough serves
+  finalised reads from the backing source.
+
+--------------------------------------------------------------------------------
+v0 SCHEMA SUPPORT REMOVED (no DB version change)
+Date: 2026-06-18
+--------------------------------------------------------------------------------
+
+Summary
+- The legacy v0 finalised-state backend (`DbV0`) and the v0 -> v1 migration
+  (`Migration0To1`) have been removed. v1 is now the only persistent schema
+  (alongside the ephemeral passthrough).
+- This is a code-only removal: v1's on-disk layout, tables, encoding, checksums,
+  and persisted version marker are unchanged. Existing v1 databases are
+  byte-for-byte unaffected and require no migration.
+
+On-disk schema
+- No changes.
+
+Behaviour change
+- A legacy v0 database found on disk (network directories `live/` / `test/` /
+  `local/` holding `data.mdb` + `lock.mdb`) is no longer opened or migrated.
+  `FinalisedState::spawn` now returns an error directing the operator to remove
+  the directory and restart to resync a v1 database from genesis. v0 carried no
+  unique data (the removed migration rebuilt v1 from the validator from genesis),
+  so no chain data is lost.
+- Requesting database version 0 (`cfg.db_version == 0`) is rejected as an
+  unsupported database version.
