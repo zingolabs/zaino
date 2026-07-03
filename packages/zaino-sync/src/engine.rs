@@ -21,6 +21,7 @@
 //! [`Task`]: crate::scheduler::Task
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::backend::{Backend, BackendError, BackendWriter};
 use crate::block_buffer::BlockBuffer;
@@ -63,7 +64,7 @@ pub enum SyncError {
 /// Pipelines are looked up by `IndexId` for O(1) dispatch.
 pub struct SyncEngine<Ctx, B: Backend> {
     scheduler: Scheduler,
-    pipelines: HashMap<IndexId, Box<dyn IndexPipeline<Ctx>>>,
+    pipelines: HashMap<IndexId, Arc<dyn IndexPipeline<Ctx>>>,
     backend: B,
     buffer: BlockBuffer<Ctx>,
     evicted_through: Option<BatchIndex>,
@@ -81,9 +82,12 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     ) -> Result<Self, SyncError> {
         let (dag, index_vec) = set.build()?;
 
-        let pipelines: HashMap<IndexId, Box<dyn IndexPipeline<Ctx>>> = index_vec
+        let pipelines: HashMap<IndexId, Arc<dyn IndexPipeline<Ctx>>> = index_vec
             .into_iter()
-            .map(|p| (p.descriptor().name, p))
+            .map(|p| {
+                let name = p.descriptor().name;
+                (name, Arc::from(p))
+            })
             .collect();
 
         let batch_size = config.batch_size;
