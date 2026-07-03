@@ -29,7 +29,7 @@ use crate::dag::DagError;
 use crate::index_set::IndexSet;
 use crate::pipeline::{IndexPipeline, PipelineError};
 use crate::primitives::{BatchIndex, BlockOffset, IndexId};
-use crate::scheduler::{Scheduler, Task};
+use crate::scheduler::{ExtractJob, Scheduler, Task};
 
 /// Configuration for the sync engine.
 #[derive(Debug, Clone)]
@@ -258,50 +258,35 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
             .set_blocks_available(self.buffer.total_pushed());
     }
 
-    /// Execute a batch of tasks from the scheduler.
+    /// Execute tasks sequentially (sync path).
     fn dispatch_tasks(&mut self, tasks: Vec<Task>) -> Result<(), SyncError> {
-        for task in tasks {
-            match task {
-                Task::Extract(job) => {
-                    let ctx = self.buffer.get(job.global_offset)
-                        .expect("block available — scheduler verified watermark");
-                    let pipeline = self.pipelines.get(&job.index)
-                        .expect("scheduler only emits registered indexes");
-
-                    pipeline.extract_one(&ctx)?;
-
-                    if let Some(handle) = self.scheduler.extraction_done(job.index) {
-                        self.merge_persist_commit(handle)?;
-                        self.try_evict();
-                    }
-                }
-                Task::CompleteBatch { index, .. } => {
-                    let handle = self.scheduler.ready_for_merge()
-                        .into_iter()
-                        .find(|h| h.index == index);
-
-                    if let Some(handle) = handle {
-                        self.merge_persist_commit(handle)?;
-                        self.try_evict();
-                    }
-                }
-            }
+        let jobs = self.flush_batch_completions(tasks)?;
+        for job in &jobs {
+            let ctx = self.buffer.get(job.global_offset)
+                .expect("block available — scheduler verified watermark");
+            let pipeline = self.pipelines.get(&job.index)
+                .expect("scheduler only emits registered indexes");
+            pipeline.extract_one(&ctx)?;
         }
-        Ok(())
+        self.report_extractions(jobs)
     }
 
-    /// Execute tasks with parallel extraction dispatch.
+    /// Execute tasks with parallel extraction (async path).
     ///
-    /// Extractions for different indexes are independent — the scheduler
-    /// guarantees at most one extraction per index per `ready_work()`
-    /// call. This method spawns them on the blocking thread pool, waits
-    /// for all to complete, then reports completions sequentially.
-    ///
-    /// Batch completions are handled first (they may unblock downstream
-    /// extractions on the next iteration).
+    /// The scheduler guarantees at most one extraction per index per
+    /// `ready_work()` call, so spawned tasks are fully independent.
     async fn dispatch_tasks_async(&mut self, tasks: Vec<Task>) -> Result<(), SyncError> {
-        let mut extract_jobs = Vec::new();
+        let jobs = self.flush_batch_completions(tasks)?;
+        self.run_extractions_parallel(&jobs).await?;
+        self.report_extractions(jobs)
+    }
 
+    /// Handle all batch-completion tasks, return remaining extract jobs.
+    fn flush_batch_completions(
+        &mut self,
+        tasks: Vec<Task>,
+    ) -> Result<Vec<ExtractJob>, SyncError> {
+        let mut extract_jobs = Vec::new();
         for task in tasks {
             match task {
                 Task::Extract(job) => extract_jobs.push(job),
@@ -309,7 +294,6 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
                     let handle = self.scheduler.ready_for_merge()
                         .into_iter()
                         .find(|h| h.index == index);
-
                     if let Some(handle) = handle {
                         self.merge_persist_commit(handle)?;
                         self.try_evict();
@@ -317,10 +301,16 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
                 }
             }
         }
+        Ok(extract_jobs)
+    }
 
-        // Spawn extractions in parallel on the blocking thread pool.
-        let mut handles = Vec::with_capacity(extract_jobs.len());
-        for job in &extract_jobs {
+    /// Spawn extractions on the blocking thread pool and await all.
+    async fn run_extractions_parallel(
+        &self,
+        jobs: &[ExtractJob],
+    ) -> Result<(), SyncError> {
+        let mut handles = Vec::with_capacity(jobs.len());
+        for job in jobs {
             let ctx = self.buffer.get(job.global_offset)
                 .expect("block available — scheduler verified watermark");
             let pipeline = Arc::clone(
@@ -331,19 +321,22 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
                 pipeline.extract_one(&ctx)
             }));
         }
-
         for handle in handles {
             handle.await.expect("extraction task panicked")?;
         }
+        Ok(())
+    }
 
-        // Report completions sequentially — may trigger merges.
-        for job in extract_jobs {
+    /// Report completed extractions to the scheduler.
+    ///
+    /// May trigger merges when a batch becomes fully extracted.
+    fn report_extractions(&mut self, jobs: Vec<ExtractJob>) -> Result<(), SyncError> {
+        for job in jobs {
             if let Some(handle) = self.scheduler.extraction_done(job.index) {
                 self.merge_persist_commit(handle)?;
                 self.try_evict();
             }
         }
-
         Ok(())
     }
 
