@@ -361,7 +361,7 @@ pub struct GetBlockchainInfoResponse {
 
     /// Value pool balances
     #[serde(rename = "valuePools")]
-    value_pools: [ChainBalance; 5],
+    value_pools: [ChainBalance; 6],
 
     /// Branch IDs of the current and upcoming consensus rules
     pub consensus: zebra_rpc::methods::TipConsensusBranch,
@@ -539,6 +539,7 @@ mod get_tx_out_set_info_tests {
                 { "id": "sprout", "chainValue": 0.0, "chainValueZat": 0 },
                 { "id": "sapling", "chainValue": 0.0, "chainValueZat": 0 },
                 { "id": "orchard", "chainValue": 0.0, "chainValueZat": 0 },
+                { "id": "ironwood", "chainValue": 0.0, "chainValueZat": 0 },
                 { "id": "deferred", "chainValue": 0.0, "chainValueZat": 0 }
             ],
             "consensus": {
@@ -548,13 +549,8 @@ mod get_tx_out_set_info_tests {
         }"#;
 
         let parsed: GetBlockchainInfoResponse = serde_json::from_str(json).unwrap();
-        let (name, activation_height, status) = parsed
-            .upgrades
-            .values()
-            .next()
-            .unwrap()
-            .clone()
-            .into_parts();
+        let (name, activation_height, status) =
+            parsed.upgrades.values().next().unwrap().into_parts();
 
         assert_eq!(name, zebra_chain::parameters::NetworkUpgrade::Nu6_2);
         assert_eq!(activation_height, zebra_chain::block::Height(2));
@@ -658,6 +654,9 @@ impl<'de> Deserialize<'de> for ChainBalance {
                 amount, None, /*TODO: handle optional delta*/
             ))),
             "orchard" => Ok(ChainBalance(GetBlockchainInfoBalance::orchard(
+                amount, None, /*TODO: handle optional delta*/
+            ))),
+            "ironwood" => Ok(ChainBalance(GetBlockchainInfoBalance::ironwood(
                 amount, None, /*TODO: handle optional delta*/
             ))),
             // TODO: Investigate source of undocument 'lockbox' value
@@ -904,6 +903,14 @@ pub struct OrchardTrees {
     size: u64,
 }
 
+/// Ironwood note commitment tree information.
+///
+/// Wrapper struct for zebra's IronwoodTrees
+#[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct IronwoodTrees {
+    size: u64,
+}
+
 /// Information about the sapling and orchard note commitment trees if any.
 ///
 /// Wrapper struct for zebra's GetBlockTrees
@@ -913,6 +920,8 @@ pub struct GetBlockTrees {
     sapling: Option<SaplingTrees>,
     #[serde(default)]
     orchard: Option<OrchardTrees>,
+    #[serde(default)]
+    ironwood: Option<IronwoodTrees>,
 }
 
 impl GetBlockTrees {
@@ -925,11 +934,16 @@ impl GetBlockTrees {
     pub fn orchard(&self) -> u64 {
         self.orchard.map_or(0, |o| o.size)
     }
+
+    /// Returns ironwood data held by ['GetBlockTrees'].
+    pub fn ironwood(&self) -> u64 {
+        self.ironwood.map_or(0, |o| o.size)
+    }
 }
 
 impl From<GetBlockTrees> for zebra_rpc::methods::GetBlockTrees {
     fn from(val: GetBlockTrees) -> Self {
-        zebra_rpc::methods::GetBlockTrees::new(val.sapling(), val.orchard())
+        zebra_rpc::methods::GetBlockTrees::new(val.sapling(), val.orchard(), val.ironwood())
     }
 }
 
@@ -1144,7 +1158,7 @@ pub struct BlockObject {
     /// Value pool balances
     ///
     #[serde(rename = "valuePools")]
-    value_pools: Option<[ChainBalance; 5]>,
+    value_pools: Option<[ChainBalance; 6]>,
 
     /// Information about the note commitment trees.
     pub trees: GetBlockTrees,
@@ -1205,8 +1219,15 @@ impl TryFrom<GetBlockResponse> for zebra_rpc::methods::GetBlock {
                         block.difficulty,
                         block.chain_supply.map(|supply| supply.0),
                         block.value_pools.map(
-                            |[transparent, sprout, sapling, orchard, deferred]| {
-                                [transparent.0, sprout.0, sapling.0, orchard.0, deferred.0]
+                            |[transparent, sprout, sapling, orchard, ironwood, deferred]| {
+                                [
+                                    transparent.0,
+                                    sprout.0,
+                                    sapling.0,
+                                    orchard.0,
+                                    ironwood.0,
+                                    deferred.0,
+                                ]
                             },
                         ),
                         block.trees.into(),
@@ -1326,6 +1347,11 @@ pub struct GetTreestateResponse {
     /// (i.e. in regtest mode).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub orchard: Option<zebra_rpc::client::Treestate>,
+
+    /// A treestate containing an Ironwood note commitment tree, hex-encoded. Only present from
+    /// NU6.3, so that pre-NU6.3 responses are unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ironwood: Option<zebra_rpc::client::Treestate>,
 }
 
 /// Error type for the `get_treestate` RPC request.
@@ -1367,6 +1393,8 @@ impl TryFrom<GetTreestateResponse> for zebra_rpc::client::GetTreestateResponse {
             .clone()
             .unwrap_or_else(|| Treestate::new(Commitments::new(None, None)));
 
+        let ironwood = value.ironwood.clone();
+
         Ok(zebra_rpc::client::GetTreestateResponse::new(
             parsed_hash,
             zebra_chain::block::Height(height_u32),
@@ -1375,6 +1403,7 @@ impl TryFrom<GetTreestateResponse> for zebra_rpc::client::GetTreestateResponse {
             None,
             sapling,
             orchard,
+            ironwood,
         ))
     }
 }
@@ -1440,10 +1469,7 @@ impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
                 }
             }
 
-            let confirmations = tx_value
-                .get("confirmations")
-                .and_then(|v| v.as_u64())
-                .map(|v| v as u32);
+            let confirmations = tx_value.get("confirmations").and_then(|v| v.as_i64());
 
             // if let Some(vin_value) = tx_value.get("vin") {
             //     match serde_json::from_value::<Vec<Input>>(vin_value.clone()) {
@@ -1468,6 +1494,7 @@ impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
                 let shielded_spends: Vec<ShieldedSpend> = tx_value["vShieldedSpend"];
                 let shielded_outputs: Vec<ShieldedOutput> = tx_value["vShieldedOutput"];
                 let orchard: Orchard = tx_value["orchard"];
+                let ironwood: Orchard = tx_value["orchard"];
                 let value_balance: f64 = tx_value["valueBalance"];
                 let value_balance_zat: i64 = tx_value["valueBalanceZat"];
                 let size: i64 = tx_value["size"];
@@ -1527,6 +1554,8 @@ impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
                     // optional
                     orchard,
                     // optional
+                    ironwood,
+                    // optional
                     value_balance,
                     // optional
                     value_balance_zat,
@@ -1583,6 +1612,7 @@ impl From<GetTransactionResponse> for zebra_rpc::methods::GetRawTransaction {
                     None,
                     None,
                     obj.orchard().clone(),
+                    obj.ironwood().clone(),
                     obj.value_balance(),
                     obj.value_balance_zat(),
                     obj.size(),

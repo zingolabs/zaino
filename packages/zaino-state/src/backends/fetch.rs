@@ -757,11 +757,12 @@ impl ZcashIndexer for FetchServiceSubscriber {
 
         let (height, confirmations, block_hash, in_best_chain) = match best_chain_location {
             Some(types::BestChainLocation::Block(block_hash, height)) => {
-                let confirmations = snapshot
+                let confirmations: i64 = snapshot
                     .max_serviceable_height()
                     .0
                     .saturating_sub(height.0)
-                    .saturating_add(1);
+                    .saturating_add(1)
+                    .into();
 
                 (
                     Some(zebra_chain::block::Height::from(height)),
