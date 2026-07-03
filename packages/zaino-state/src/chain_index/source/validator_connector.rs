@@ -1058,11 +1058,7 @@ impl BlockchainSource for ValidatorConnector {
             }) => {
                 match read_state_service
                     .clone()
-                    // Empty `known_chain_tips` requests every block currently in the
-                    // non-finalized state (the prior unit-variant behaviour).
-                    .call(zebra_state::ReadRequest::NonFinalizedBlocksListener {
-                        known_chain_tips: Default::default(),
-                    })
+                    .call(zebra_state::ReadRequest::NonFinalizedBlocksListener)
                     .await
                 {
                     Ok(ReadResponse::NonFinalizedBlocksListener(listener)) => {
