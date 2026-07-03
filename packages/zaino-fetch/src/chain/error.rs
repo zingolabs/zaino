@@ -27,6 +27,10 @@ pub enum ParseError {
     #[error("Prost Decode Error: {0}")]
     ProstDecodeError(#[from] prost::DecodeError),
 
+    /// Zebra consensus serialization error.
+    #[error("Zcash serialization error: {0}")]
+    SerializationError(#[from] zebra_chain::serialization::SerializationError),
+
     /// Integer conversion error.
     #[error("Integer conversion error: {0}")]
     TryFromIntError(#[from] std::num::TryFromIntError),
