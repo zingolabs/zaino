@@ -8,6 +8,9 @@ pub struct ChainMetadata {
     /// the size of the Orchard note commitment tree as of the end of this block
     #[prost(uint32, tag = "2")]
     pub orchard_commitment_tree_size: u32,
+    /// the size of the Ironwood note commitment tree as of the end of this block
+    #[prost(uint32, tag = "3")]
+    pub ironwood_commitment_tree_size: u32,
 }
 /// A compact representation of a Zcash block.
 ///
@@ -75,6 +78,8 @@ pub struct CompactTx {
     pub outputs: ::prost::alloc::vec::Vec<CompactSaplingOutput>,
     #[prost(message, repeated, tag = "6")]
     pub actions: ::prost::alloc::vec::Vec<CompactOrchardAction>,
+    #[prost(message, repeated, tag = "9")]
+    pub ironwood_actions: ::prost::alloc::vec::Vec<CompactOrchardAction>,
     /// `CompactTxIn` values corresponding to the `vin` entries of the full transaction.
     ///
     /// Note: the single null-outpoint input for coinbase transactions is omitted. Light

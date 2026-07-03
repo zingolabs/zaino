@@ -218,6 +218,7 @@ impl DbV1 {
                         spends,
                         outputs,
                         actions,
+                        ironwood_actions: Vec::new(),
                         vin,
                         vout,
                     })
@@ -243,6 +244,7 @@ impl DbV1 {
             let chain_metadata = zaino_proto::proto::compact_formats::ChainMetadata {
                 sapling_commitment_tree_size: commitment_tree_data.sizes().sapling(),
                 orchard_commitment_tree_size: commitment_tree_data.sizes().orchard(),
+                ironwood_commitment_tree_size: 0,
             };
 
             // ----- Construct CompactBlock -----
@@ -1062,6 +1064,7 @@ impl DbV1 {
                             spends,
                             outputs,
                             actions,
+                            ironwood_actions: Vec::new(),
                             vin,
                             vout,
                         });
@@ -1082,6 +1085,7 @@ impl DbV1 {
                     let chain_metadata = zaino_proto::proto::compact_formats::ChainMetadata {
                         sapling_commitment_tree_size: commitment_tree_data.sizes().sapling(),
                         orchard_commitment_tree_size: commitment_tree_data.sizes().orchard(),
+                        ironwood_commitment_tree_size: 0,
                     };
 
                     let compact_block = zaino_proto::proto::compact_formats::CompactBlock {

@@ -172,7 +172,9 @@ impl FullBlock {
             return Err(ParseError::InvalidData(format!(
                 "Error decoding full block - {} bytes of Remaining data. Compact Block Created: ({:?})",
                 remaining_data.len(),
-                full_block.clone().into_compact_block(0, 0, PoolTypeFilter::includes_all())
+                full_block
+                    .clone()
+                    .into_compact_block(0, 0, 0, PoolTypeFilter::includes_all())
             )));
         }
         Ok(full_block)
@@ -185,6 +187,7 @@ impl FullBlock {
         self,
         sapling_commitment_tree_size: u32,
         orchard_commitment_tree_size: u32,
+        ironwood_commitment_tree_size: u32,
         pool_types: PoolTypeFilter,
     ) -> Result<CompactBlock, ParseError> {
         let vtx = self
@@ -221,21 +224,8 @@ impl FullBlock {
             chain_metadata: Some(ChainMetadata {
                 sapling_commitment_tree_size,
                 orchard_commitment_tree_size,
+                ironwood_commitment_tree_size,
             }),
         })
-    }
-
-    #[deprecated]
-    /// Converts a zcash full block into a **legacy** compact block.
-    pub fn into_compact(
-        self,
-        sapling_commitment_tree_size: u32,
-        orchard_commitment_tree_size: u32,
-    ) -> Result<CompactBlock, ParseError> {
-        self.into_compact_block(
-            sapling_commitment_tree_size,
-            orchard_commitment_tree_size,
-            PoolTypeFilter::default(),
-        )
     }
 }
