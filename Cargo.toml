@@ -174,3 +174,16 @@ opt-level = 3
 debug = true
 
 [patch.crates-io]
+# SCRATCH (do not commit): reproduction of the zallet librustzcash pin.
+# Pins every librustzcash-hosted crate in the graph to the rev zallet uses.
+equihash = { git = "https://github.com/zcash/librustzcash.git", rev = "cac64ba2b47545f23d356002e4a9f02aaaabc083" }
+f4jumble = { git = "https://github.com/zcash/librustzcash.git", rev = "cac64ba2b47545f23d356002e4a9f02aaaabc083" }
+zcash_address = { git = "https://github.com/zcash/librustzcash.git", rev = "cac64ba2b47545f23d356002e4a9f02aaaabc083" }
+zcash_client_backend = { git = "https://github.com/zcash/librustzcash.git", rev = "cac64ba2b47545f23d356002e4a9f02aaaabc083" }
+zcash_encoding = { git = "https://github.com/zcash/librustzcash.git", rev = "cac64ba2b47545f23d356002e4a9f02aaaabc083" }
+zcash_history = { git = "https://github.com/zcash/librustzcash.git", rev = "cac64ba2b47545f23d356002e4a9f02aaaabc083" }
+zcash_keys = { git = "https://github.com/zcash/librustzcash.git", rev = "cac64ba2b47545f23d356002e4a9f02aaaabc083" }
+zcash_primitives = { git = "https://github.com/zcash/librustzcash.git", rev = "cac64ba2b47545f23d356002e4a9f02aaaabc083" }
+zcash_proofs = { git = "https://github.com/zcash/librustzcash.git", rev = "cac64ba2b47545f23d356002e4a9f02aaaabc083" }
+zcash_protocol = { git = "https://github.com/zcash/librustzcash.git", rev = "cac64ba2b47545f23d356002e4a9f02aaaabc083" }
+zcash_transparent = { git = "https://github.com/zcash/librustzcash.git", rev = "cac64ba2b47545f23d356002e4a9f02aaaabc083" }
