@@ -39,6 +39,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, instrument};
 use zaino_fetch::jsonrpsee::response::{
     address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
+    block_deltas::BlockDeltas,
     block_header::GetBlockHeader,
     chain_tips::{ChainTip, ChainTipStatus, GetChainTipsResponse},
     EmptyTxOutSetInfo, GetTxOutSetInfo, GetTxOutSetInfoResponse,
@@ -595,6 +596,15 @@ pub trait ChainIndexRpcExt: ChainIndex {
         hash: String,
         verbose: bool,
     ) -> impl std::future::Future<Output = Result<GetBlockHeader, Self::Error>>;
+
+    /// Returns the `getblockdeltas`-shaped transparent input/output deltas for the block
+    /// with the given hash.
+    ///
+    /// zcashd reference: [`getblockdeltas`](https://zcash.github.io/rpc/getblockdeltas.html)
+    fn get_block_deltas(
+        &self,
+        hash: String,
+    ) -> impl std::future::Future<Output = Result<BlockDeltas, Self::Error>>;
 
     // ********** Transparent address history methods **********
 
@@ -2638,6 +2648,17 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
     ) -> Result<GetBlockHeader, Self::Error> {
         self.source()
             .get_block_header(hash, verbose)
+            .await
+            .map_err(ChainIndexError::backing_validator)
+    }
+
+    // TODO(internal-first): `getblockdeltas` is buildable from the indexed chainblocks
+    // + finalised/non-finalised prevout resolution. Build it internally by default once
+    // an internal prevout resolver (spanning non-finalised + finalised, reconstructing
+    // addresses from `TxOutCompact`) exists, keeping this source call as the fallback.
+    async fn get_block_deltas(&self, hash: String) -> Result<BlockDeltas, Self::Error> {
+        self.source()
+            .get_block_deltas(hash)
             .await
             .map_err(ChainIndexError::backing_validator)
     }

@@ -1,8 +1,9 @@
 //! Mock BlockchainSourceResult implementation.
 
 use super::validator_connector::{
-    build_block_header_object, build_verbose_block, confirmations_from_depth, final_orchard_root,
-    final_sapling_root, zebra_block_header_to_wire,
+    assemble_block_deltas, build_block_header_object, build_verbose_block,
+    confirmations_from_depth, final_orchard_root, final_sapling_root, median_of_block_times,
+    zebra_block_header_to_wire,
 };
 use super::*;
 use std::collections::{HashMap, HashSet};
@@ -12,7 +13,9 @@ use std::sync::{
     Arc, Mutex,
 };
 use zaino_common::network::ActivationHeights;
-use zaino_fetch::jsonrpsee::response::{address_deltas::BlockInfo, block_header::GetBlockHeader};
+use zaino_fetch::jsonrpsee::response::{
+    address_deltas::BlockInfo, block_deltas::BlockDeltas, block_header::GetBlockHeader,
+};
 use zebra_chain::{block::Block, orchard::tree as orchard, sapling::tree as sapling};
 use zebra_chain::{
     block::{Height, SerializedBlock},
@@ -21,8 +24,8 @@ use zebra_chain::{
     transparent::{Address, OutPoint, Output, OutputIndex},
 };
 use zebra_rpc::{
-    client::{HexData, TransactionObject},
-    methods::{GetBlock, GetBlockHeaderResponse, ValidateAddresses as _},
+    client::{BlockObject, HexData, Input, TransactionObject},
+    methods::{GetBlock, GetBlockHeaderResponse, GetBlockTransaction, ValidateAddresses as _},
 };
 use zebra_state::HashOrHeight;
 
@@ -399,6 +402,39 @@ impl MockchainSource {
         Ok(GetBlockHeaderResponse::Object(Box::new(header_obj)))
     }
 
+    /// Median time past over the 11-block window ending at `start`, walking backwards via
+    /// verbosity-1 `getblock` lookups against the mock vectors.
+    async fn median_time_past(&self, start: &BlockObject) -> BlockchainSourceResult<i64> {
+        const MEDIAN_TIME_PAST_WINDOW: usize = 11;
+        let mut times = Vec::with_capacity(MEDIAN_TIME_PAST_WINDOW);
+        let start_time = start.time().ok_or_else(|| {
+            BlockchainSourceError::Unrecoverable("getblockdeltas: start block missing time".into())
+        })?;
+        times.push(start_time);
+
+        let mut prev = start.previous_block_hash();
+        for _ in 0..(MEDIAN_TIME_PAST_WINDOW - 1) {
+            let Some(hash) = prev else {
+                break; // genesis
+            };
+            match self
+                .get_block_verbose(HashOrHeight::Hash(hash), Some(1))
+                .await
+            {
+                Ok(GetBlock::Object(object)) => {
+                    if let Some(time) = object.time() {
+                        times.push(time);
+                    }
+                    prev = object.previous_block_hash();
+                }
+                Ok(GetBlock::Raw(_)) => break,
+                Err(_) => break,
+            }
+        }
+
+        median_of_block_times(times)
+    }
+
     fn block_height_at_index(&self, block_index: usize) -> Height {
         self.blocks[block_index]
             .coinbase_height()
@@ -591,6 +627,47 @@ impl BlockchainSource for MockchainSource {
         })?;
         let header = self.block_header_response_at(height_index, verbose)?;
         zebra_block_header_to_wire(header)
+    }
+
+    async fn get_block_deltas(&self, hash: String) -> BlockchainSourceResult<BlockDeltas> {
+        let hash_or_height = HashOrHeight::from_str(&hash)
+            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+        let GetBlock::Object(object) = self.get_block_verbose(hash_or_height, Some(2)).await?
+        else {
+            return Err(BlockchainSourceError::Unrecoverable(
+                "getblockdeltas: unexpected raw block".to_string(),
+            ));
+        };
+
+        // The mock holds every transaction, so prevout resolution is a direct index lookup.
+        let mut prevtx_cache: HashMap<
+            zebra_chain::transaction::Hash,
+            Arc<zebra_chain::transaction::Transaction>,
+        > = HashMap::new();
+        for tx in object.tx() {
+            let GetBlockTransaction::Object(txo) = tx else {
+                continue;
+            };
+            for input in txo.inputs() {
+                let Input::NonCoinbase { txid: prevtxid, .. } = input else {
+                    continue;
+                };
+                let prev_hash = zebra_chain::transaction::Hash::from_str(prevtxid)
+                    .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+                if prevtx_cache.contains_key(&prev_hash) {
+                    continue;
+                }
+                let (_height, prev_tx) = self.txid_index.get(&prev_hash).ok_or_else(|| {
+                    BlockchainSourceError::Unrecoverable(format!(
+                        "getblockdeltas: prevout tx {prevtxid} not found in mock chain"
+                    ))
+                })?;
+                prevtx_cache.insert(prev_hash, Arc::clone(prev_tx));
+            }
+        }
+
+        let median_time = self.median_time_past(&object).await?;
+        assemble_block_deltas(&object, &prevtx_cache, median_time, &mockchain_network())
     }
 
     // ********** Transaction methods **********

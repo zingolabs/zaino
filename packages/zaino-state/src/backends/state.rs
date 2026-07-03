@@ -33,7 +33,7 @@ use zaino_fetch::{
         raw_transaction::validate_raw_transaction_hex,
         response::{
             address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
-            block_deltas::{BlockDelta, BlockDeltas, InputDelta, OutputDelta},
+            block_deltas::BlockDeltas,
             block_header::GetBlockHeader,
             block_subsidy::GetBlockSubsidy,
             chain_tips::GetChainTipsResponse,
@@ -65,7 +65,6 @@ use zcash_keys::{address::Address, encoding::AddressCodec};
 use zcash_protocol::consensus::NetworkType;
 use zcash_transparent::address::TransparentAddress;
 use zebra_chain::{
-    amount::{Amount, NonNegative},
     block::Height,
     chain_tip::NetworkChainTipHeightEstimator,
     parameters::{ConsensusBranchId, NetworkKind, NetworkUpgrade},
@@ -74,13 +73,13 @@ use zebra_chain::{
 };
 use zebra_rpc::{
     client::{
-        GetAddressBalanceRequest, GetSubtreesByIndexResponse, GetTreestateResponse, Input,
-        SubtreeRpcData, TransactionObject, ValidateAddressResponse,
+        GetAddressBalanceRequest, GetSubtreesByIndexResponse, GetTreestateResponse, SubtreeRpcData,
+        TransactionObject, ValidateAddressResponse,
     },
     methods::{
         chain_tip_difficulty, AddressBalance, ConsensusBranchIdHex, GetAddressTxIdsRequest,
-        GetAddressUtxos, GetBlock, GetBlockHash, GetBlockTransaction, GetBlockchainInfoResponse,
-        GetInfo, GetRawTransaction, NetworkUpgradeInfo, NetworkUpgradeStatus, SentTransactionHash,
+        GetAddressUtxos, GetBlock, GetBlockHash, GetBlockchainInfoResponse, GetInfo,
+        GetRawTransaction, NetworkUpgradeInfo, NetworkUpgradeStatus, SentTransactionHash,
         TipConsensusBranch,
     },
     server::error::LegacyCode,
@@ -92,7 +91,7 @@ use chrono::Utc;
 use futures::TryFutureExt as _;
 use hex::{FromHex as _, ToHex};
 use indexmap::IndexMap;
-use std::{collections::HashMap, error::Error, fmt, str::FromStr, sync::Arc};
+use std::{str::FromStr, sync::Arc};
 use tokio::{
     sync::mpsc,
     time::{self, timeout},
@@ -564,56 +563,6 @@ impl StateServiceSubscriber {
     pub fn network(&self) -> zaino_common::Network {
         self.config.common.network
     }
-
-    /// Returns the median time of the last 11 blocks.
-    async fn median_time_past(
-        &self,
-        start: &zebra_rpc::client::BlockObject,
-    ) -> Result<i64, MedianTimePast> {
-        const MEDIAN_TIME_PAST_WINDOW: usize = 11;
-
-        let mut times = Vec::with_capacity(MEDIAN_TIME_PAST_WINDOW);
-
-        let start_hash = start.hash().to_string();
-        let time_0 = start
-            .time()
-            .ok_or_else(|| MedianTimePast::StartMissingTime {
-                hash: start_hash.clone(),
-            })?;
-        times.push(time_0);
-
-        let mut prev = start.previous_block_hash();
-
-        for _ in 0..(MEDIAN_TIME_PAST_WINDOW - 1) {
-            let hash = match prev {
-                Some(h) => h.to_string(),
-                None => break, // genesis
-            };
-
-            match self.z_get_block(hash.clone(), Some(1)).await {
-                Ok(GetBlock::Object(obj)) => {
-                    if let Some(t) = obj.time() {
-                        times.push(t);
-                    }
-                    prev = obj.previous_block_hash();
-                }
-                Ok(GetBlock::Raw(_)) => {
-                    return Err(MedianTimePast::UnexpectedRaw { hash });
-                }
-                Err(_e) => {
-                    // Use values up to this point
-                    break;
-                }
-            }
-        }
-
-        if times.is_empty() {
-            return Err(MedianTimePast::EmptyWindow);
-        }
-
-        times.sort_unstable();
-        Ok(times[times.len() / 2])
-    }
 }
 
 /// Extracts the diversifier and pk_d bytes from a validated Sapling
@@ -908,194 +857,7 @@ impl ZcashIndexer for StateServiceSubscriber {
     }
 
     async fn get_block_deltas(&self, hash: String) -> Result<BlockDeltas, Self::Error> {
-        // Get the block WITH the transaction data
-        let zblock = self.z_get_block(hash, Some(2)).await?;
-
-        match zblock {
-            GetBlock::Object(boxed_block) => {
-                // Resolve each transparent spend's prevout ourselves: the
-                // verbosity-2 object from Zebra's stateless
-                // `TransactionObject::from_transaction` leaves input
-                // value/address `None`, so we look the spent output up via the
-                // best-chain `ReadRequest::Transaction` (finalized +
-                // non-finalized, so same-block prevouts resolve too).
-                let network = self.data.network();
-                let mut state = self.read_state_service.clone();
-                // Per-call cache: many inputs may reference the same prevtxid,
-                // so each previous transaction is fetched at most once.
-                let mut prevtx_cache: HashMap<
-                    zebra_chain::transaction::Hash,
-                    Arc<zebra_chain::transaction::Transaction>,
-                > = HashMap::new();
-
-                let mut deltas = Vec::with_capacity(boxed_block.tx().len());
-                for (tx_index, tx) in boxed_block.tx().iter().enumerate() {
-                    let txo = match tx {
-                        GetBlockTransaction::Object(txo) => txo,
-                        GetBlockTransaction::Hash(_) => {
-                            return Err(StateServiceError::Custom(
-                                "Unexpected hash when expecting object".to_string(),
-                            ))
-                        }
-                    };
-
-                    let txid = txo.txid().to_string();
-
-                    let mut inputs: Vec<InputDelta> = Vec::new();
-                    for (i, vin) in txo.inputs().iter().enumerate() {
-                        let (prevtxid, prevout) = match vin {
-                            Input::Coinbase { .. } => continue,
-                            Input::NonCoinbase {
-                                txid: prevtxid,
-                                vout: prevout,
-                                ..
-                            } => (prevtxid, *prevout),
-                        };
-
-                        let prev_hash = zebra_chain::transaction::Hash::from_str(prevtxid)
-                            .map_err(|e| {
-                                StateServiceError::Custom(format!(
-                                    "getblockdeltas: invalid prevout txid {prevtxid}: {e}"
-                                ))
-                            })?;
-
-                        let prev_tx = match prevtx_cache.get(&prev_hash) {
-                            Some(prev_tx) => prev_tx.clone(),
-                            None => {
-                                let response = state
-                                    .ready()
-                                    .and_then(|service| {
-                                        service.call(ReadRequest::Transaction(prev_hash))
-                                    })
-                                    .await?;
-                                let mined_tx = expected_read_response!(response, Transaction)
-                                    .ok_or_else(|| {
-                                        StateServiceError::Custom(format!(
-                                            "getblockdeltas: prevout tx {prevtxid} not in best chain"
-                                        ))
-                                    })?;
-                                prevtx_cache.insert(prev_hash, mined_tx.tx.clone());
-                                mined_tx.tx
-                            }
-                        };
-
-                        let output = prev_tx.outputs().get(prevout as usize).ok_or_else(|| {
-                            StateServiceError::Custom(format!(
-                                "getblockdeltas: prevout index {prevout} out of range for {prevtxid}"
-                            ))
-                        })?;
-
-                        // Nonstandard script ⇒ no derivable address ⇒ skip
-                        // (matches the outputs branch). This is the only
-                        // legitimate skip; it is not loss of a resolvable spend.
-                        let address = match output.address(&network) {
-                            Some(a) => a.to_string(),
-                            None => continue,
-                        };
-
-                        // Inputs are debits, so the amount leaves the address.
-                        let satoshis: Amount =
-                            (-output.value().zatoshis()).try_into().map_err(|e| {
-                                StateServiceError::Custom(format!(
-                                    "getblockdeltas: input amount out of range for {prevtxid}:{prevout}: {e}"
-                                ))
-                            })?;
-
-                        inputs.push(InputDelta {
-                            address,
-                            satoshis,
-                            index: i as u32,
-                            prevtxid: prevtxid.clone(),
-                            prevout,
-                        });
-                    }
-
-                    let outputs: Vec<OutputDelta> = txo
-                        .outputs()
-                        .iter()
-                        .filter_map(|vout| {
-                            let addr_opt = vout
-                                .script_pub_key()
-                                .addresses()
-                                .as_ref()
-                                .and_then(|v| if v.len() == 1 { v.first() } else { None });
-
-                            let addr = addr_opt?.clone();
-
-                            let output_amt: Amount<NonNegative> = match vout.value_zat().try_into()
-                            {
-                                Ok(a) => a,
-                                Err(_) => return None,
-                            };
-
-                            Some(OutputDelta {
-                                address: addr,
-                                satoshis: output_amt,
-                                index: vout.n(),
-                            })
-                        })
-                        .collect::<Vec<_>>();
-
-                    deltas.push(BlockDelta {
-                        txid,
-                        index: tx_index as u32,
-                        inputs,
-                        outputs,
-                    });
-                }
-
-                Ok(BlockDeltas {
-                    hash: boxed_block.hash().to_string(),
-                    confirmations: boxed_block.confirmations(),
-                    size: boxed_block.size().ok_or_else(|| {
-                        StateServiceError::Custom("getblockdeltas: block size missing".into())
-                    })?,
-                    height: boxed_block
-                        .height()
-                        .ok_or_else(|| {
-                            StateServiceError::Custom("getblockdeltas: block height missing".into())
-                        })?
-                        .0,
-                    version: boxed_block.version().ok_or_else(|| {
-                        StateServiceError::Custom("getblockdeltas: block version missing".into())
-                    })?,
-                    merkle_root: boxed_block
-                        .merkle_root()
-                        .ok_or_else(|| {
-                            StateServiceError::Custom(
-                                "getblockdeltas: block merkle root missing".into(),
-                            )
-                        })?
-                        .encode_hex::<String>(),
-                    deltas,
-                    time: boxed_block.time().ok_or_else(|| {
-                        StateServiceError::Custom("getblockdeltas: block time missing".into())
-                    })?,
-                    median_time: self.median_time_past(&boxed_block).await.map_err(|e| {
-                        StateServiceError::Custom(format!("getblockdeltas: median_time_past: {e}"))
-                    })?,
-                    nonce: hex::encode(boxed_block.nonce().ok_or_else(|| {
-                        StateServiceError::Custom("getblockdeltas: block nonce missing".into())
-                    })?),
-                    bits: boxed_block
-                        .bits()
-                        .ok_or_else(|| {
-                            StateServiceError::Custom("getblockdeltas: block bits missing".into())
-                        })?
-                        .to_string(),
-                    difficulty: boxed_block.difficulty().ok_or_else(|| {
-                        StateServiceError::Custom("getblockdeltas: block difficulty missing".into())
-                    })?,
-                    previous_block_hash: boxed_block
-                        .previous_block_hash()
-                        .map(|hash| hash.to_string()),
-                    next_block_hash: boxed_block.next_block_hash().map(|h| h.to_string()),
-                })
-            }
-            GetBlock::Raw(_serialized_block) => Err(StateServiceError::Custom(
-                "Unexpected raw block".to_string(),
-            )),
-        }
+        Ok(self.indexer.get_block_deltas(hash).await?)
     }
 
     async fn get_raw_mempool(&self) -> Result<Vec<String>, Self::Error> {
@@ -2385,37 +2147,6 @@ impl LightWalletIndexer for StateServiceSubscriber {
         ))
     }
 }
-
-/// An error type for median time past calculation errors
-#[derive(Debug, Clone)]
-pub enum MedianTimePast {
-    /// The start block has no `time`.
-    StartMissingTime { hash: String },
-
-    /// Ignored verbosity.
-    UnexpectedRaw { hash: String },
-
-    /// No timestamps collected at all.
-    EmptyWindow,
-}
-
-impl fmt::Display for MedianTimePast {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MedianTimePast::StartMissingTime { hash } => {
-                write!(f, "start block {hash} is missing `time`")
-            }
-            MedianTimePast::UnexpectedRaw { hash } => {
-                write!(f, "unexpected raw payload for block {hash}")
-            }
-            MedianTimePast::EmptyWindow => {
-                write!(f, "no timestamps collected (empty MTP window)")
-            }
-        }
-    }
-}
-
-impl Error for MedianTimePast {}
 
 #[cfg(test)]
 mod tests {

@@ -82,6 +82,13 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
         verbose: bool,
     ) -> impl SendFut<BlockchainSourceResult<GetBlockHeader>>;
 
+    /// Returns the `getblockdeltas`-shaped transparent input/output deltas for the block
+    /// with the given hash.
+    fn get_block_deltas(
+        &self,
+        hash: String,
+    ) -> impl SendFut<BlockchainSourceResult<zaino_fetch::jsonrpsee::response::block_deltas::BlockDeltas>>;
+
     // ********** Transaction methods **********
 
     /// Returns the transaction by txid

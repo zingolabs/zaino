@@ -996,3 +996,39 @@ async fn get_block_header() {
         assert_eq!(value["height"].as_u64().unwrap(), u64::from(height));
     }
 }
+
+/// `get_block_deltas` served through the ChainIndex from the mock vectors: it matches the
+/// source, reports the right block hash / height, and surfaces transparent deltas.
+#[tokio::test(flavor = "multi_thread")]
+async fn get_block_deltas() {
+    let (_blocks, _indexer, index_reader, mockchain) =
+        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
+    let active_height = mockchain.active_height();
+
+    let mut saw_delta_entries = false;
+    for height in [1u32, active_height / 2, active_height] {
+        let id = HashOrHeight::Height(zebra_chain::block::Height(height));
+        let block = mockchain.get_block(id).await.unwrap().unwrap();
+        let hash = block.hash().to_string();
+
+        let via_index = index_reader.get_block_deltas(hash.clone()).await.unwrap();
+        let via_source = mockchain.get_block_deltas(hash.clone()).await.unwrap();
+        assert_eq!(
+            serde_json::to_value(&via_index).unwrap(),
+            serde_json::to_value(&via_source).unwrap()
+        );
+        assert_eq!(via_index.hash, hash);
+        assert_eq!(via_index.height, height);
+        if via_index
+            .deltas
+            .iter()
+            .any(|delta| !delta.inputs.is_empty() || !delta.outputs.is_empty())
+        {
+            saw_delta_entries = true;
+        }
+    }
+    assert!(
+        saw_delta_entries,
+        "expected transparent deltas in at least one sampled block"
+    );
+}

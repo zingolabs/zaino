@@ -635,6 +635,14 @@ impl BlockchainSource for ProptestMockchain {
         unimplemented!()
     }
 
+    async fn get_block_deltas(
+        &self,
+        _hash: String,
+    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::block_deltas::BlockDeltas> {
+        // ProptestMockchain exercises sync/reorg, not the getblockdeltas RPC.
+        unimplemented!()
+    }
+
     /// Returns the block commitment tree data by hash
     async fn get_commitment_tree_roots(
         &self,

@@ -1,17 +1,23 @@
 //! validator connected blockchain source.
 
+use std::collections::HashMap;
 use std::str::FromStr as _;
 
 use chrono::{DateTime, Utc};
-use hex::FromHex as _;
-use zaino_fetch::jsonrpsee::response::{address_deltas::BlockInfo, block_header::GetBlockHeader};
+use hex::{FromHex as _, ToHex as _};
+use zaino_fetch::jsonrpsee::response::{
+    address_deltas::BlockInfo,
+    block_deltas::{BlockDelta, BlockDeltas, InputDelta, OutputDelta},
+    block_header::GetBlockHeader,
+};
 use zebra_chain::{
+    amount::{Amount, NonNegative},
     block::{Header, SerializedBlock},
     parameters::NetworkUpgrade,
     serialization::{BytesInDisplayOrder as _, ZcashSerialize as _},
 };
 use zebra_rpc::{
-    client::{BlockObject, GetBlockchainInfoBalance, HexData, TransactionObject},
+    client::{BlockObject, GetBlockchainInfoBalance, HexData, Input, TransactionObject},
     methods::{
         GetBlock, GetBlockHeaderObject, GetBlockHeaderResponse, GetBlockTransaction, GetBlockTrees,
         ValidateAddresses as _,
@@ -161,6 +167,16 @@ impl BlockchainSource for ValidatorConnector {
             }
             ValidatorConnector::Fetch(fetch) => fetch
                 .get_block_header(hash, verbose)
+                .await
+                .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string())),
+        }
+    }
+
+    async fn get_block_deltas(&self, hash: String) -> BlockchainSourceResult<BlockDeltas> {
+        match self {
+            ValidatorConnector::State(state) => state.get_block_deltas(hash).await,
+            ValidatorConnector::Fetch(fetch) => fetch
+                .get_block_deltas(hash)
                 .await
                 .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string())),
         }
@@ -1356,6 +1372,94 @@ impl State {
             ))),
         }
     }
+
+    /// Builds the `getblockdeltas` response from the `ReadStateService`.
+    ///
+    /// Moved from the former `StateServiceSubscriber::get_block_deltas`; resolves each
+    /// spent prevout via a best-chain `ReadRequest::Transaction` (finalised +
+    /// non-finalised), then hands off to the shared [`assemble_block_deltas`].
+    async fn get_block_deltas(&self, hash: String) -> BlockchainSourceResult<BlockDeltas> {
+        let hash_or_height = HashOrHeight::from_str(&hash)
+            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+        let GetBlock::Object(object) = self.get_block_inner(hash_or_height, Some(2)).await? else {
+            return Err(BlockchainSourceError::Unrecoverable(
+                "getblockdeltas: unexpected raw block".to_string(),
+            ));
+        };
+
+        // Per-call cache: many inputs may reference the same prevtxid, so each previous
+        // transaction is fetched at most once.
+        let mut prevtx_cache: HashMap<
+            zebra_chain::transaction::Hash,
+            Arc<zebra_chain::transaction::Transaction>,
+        > = HashMap::new();
+        for tx in object.tx() {
+            let GetBlockTransaction::Object(txo) = tx else {
+                continue;
+            };
+            for input in txo.inputs() {
+                let Input::NonCoinbase { txid: prevtxid, .. } = input else {
+                    continue;
+                };
+                let prev_hash = zebra_chain::transaction::Hash::from_str(prevtxid)
+                    .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+                if prevtx_cache.contains_key(&prev_hash) {
+                    continue;
+                }
+                let mut state = self.read_state_service.clone();
+                let response = state
+                    .ready()
+                    .and_then(|service| service.call(ReadRequest::Transaction(prev_hash)))
+                    .await
+                    .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+                let mined_tx = expected_read_response!(response, Transaction).ok_or_else(|| {
+                    BlockchainSourceError::Unrecoverable(format!(
+                        "getblockdeltas: prevout tx {prevtxid} not in best chain"
+                    ))
+                })?;
+                prevtx_cache.insert(prev_hash, mined_tx.tx);
+            }
+        }
+
+        let median_time = self.median_time_past(&object).await?;
+        let network = self.network.to_zebra_network();
+        assemble_block_deltas(&object, &prevtx_cache, median_time, &network)
+    }
+
+    /// Median time past over the 11-block window ending at `start`, walking backwards via
+    /// verbosity-1 `getblock` lookups against the `ReadStateService`.
+    // TODO(DRY): MockchainSource duplicates this walk; the only difference is the
+    // per-block fetch. A shared helper generic over an async block fetcher would unify them.
+    async fn median_time_past(&self, start: &BlockObject) -> BlockchainSourceResult<i64> {
+        const MEDIAN_TIME_PAST_WINDOW: usize = 11;
+        let mut times = Vec::with_capacity(MEDIAN_TIME_PAST_WINDOW);
+        let start_time = start.time().ok_or_else(|| {
+            BlockchainSourceError::Unrecoverable("getblockdeltas: start block missing time".into())
+        })?;
+        times.push(start_time);
+
+        let mut prev = start.previous_block_hash();
+        for _ in 0..(MEDIAN_TIME_PAST_WINDOW - 1) {
+            let Some(hash) = prev else {
+                break; // genesis
+            };
+            match self
+                .get_block_inner(HashOrHeight::Hash(hash), Some(1))
+                .await
+            {
+                Ok(GetBlock::Object(object)) => {
+                    if let Some(time) = object.time() {
+                        times.push(time);
+                    }
+                    prev = object.previous_block_hash();
+                }
+                Ok(GetBlock::Raw(_)) => break,
+                Err(_) => break, // use values collected so far
+            }
+        }
+
+        median_of_block_times(times)
+    }
 }
 
 /// Confirmations are one more than the depth, or -1 when the block is not on the best
@@ -1540,4 +1644,166 @@ pub(crate) fn zebra_block_header_to_wire(
         .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
     serde_json::from_value(value)
         .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))
+}
+
+/// Returns the median of a non-empty set of block times.
+pub(crate) fn median_of_block_times(mut times: Vec<i64>) -> BlockchainSourceResult<i64> {
+    if times.is_empty() {
+        return Err(BlockchainSourceError::Unrecoverable(
+            "getblockdeltas: no block times collected for median".to_string(),
+        ));
+    }
+    times.sort_unstable();
+    Ok(times[times.len() / 2])
+}
+
+/// Assembles a `getblockdeltas` response from a verbosity-2 `getblock` object plus a
+/// cache of previous transactions (keyed by txid) needed to resolve each spend's address
+/// and value, its median time, and the running network.
+///
+/// Shared by the [`ValidatorConnector`] State path and `MockchainSource`: both resolve
+/// the prevout transactions their own way, then hand the assembled inputs here so the
+/// delta-shaping logic lives in one place.
+pub(crate) fn assemble_block_deltas(
+    object: &BlockObject,
+    prevtx_cache: &HashMap<
+        zebra_chain::transaction::Hash,
+        Arc<zebra_chain::transaction::Transaction>,
+    >,
+    median_time: i64,
+    network: &zebra_chain::parameters::Network,
+) -> BlockchainSourceResult<BlockDeltas> {
+    let mut deltas = Vec::with_capacity(object.tx().len());
+    for (tx_index, tx) in object.tx().iter().enumerate() {
+        let GetBlockTransaction::Object(txo) = tx else {
+            return Err(BlockchainSourceError::Unrecoverable(
+                "getblockdeltas: unexpected hash when expecting object".to_string(),
+            ));
+        };
+        let txid = txo.txid().to_string();
+
+        let mut inputs: Vec<InputDelta> = Vec::new();
+        for (i, vin) in txo.inputs().iter().enumerate() {
+            let (prevtxid, prevout) = match vin {
+                Input::Coinbase { .. } => continue,
+                Input::NonCoinbase {
+                    txid: prevtxid,
+                    vout: prevout,
+                    ..
+                } => (prevtxid, *prevout),
+            };
+
+            let prev_hash = zebra_chain::transaction::Hash::from_str(prevtxid)
+                .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+            let prev_tx = prevtx_cache.get(&prev_hash).ok_or_else(|| {
+                BlockchainSourceError::Unrecoverable(format!(
+                    "getblockdeltas: prevout tx {prevtxid} not resolved"
+                ))
+            })?;
+
+            let output = prev_tx.outputs().get(prevout as usize).ok_or_else(|| {
+                BlockchainSourceError::Unrecoverable(format!(
+                    "getblockdeltas: prevout index {prevout} out of range for {prevtxid}"
+                ))
+            })?;
+
+            // Nonstandard script ⇒ no derivable address ⇒ skip (matches the outputs branch).
+            let address = match output.address(network) {
+                Some(address) => address.to_string(),
+                None => continue,
+            };
+
+            // Inputs are debits, so the amount leaves the address.
+            let satoshis: Amount = (-output.value().zatoshis()).try_into().map_err(|error| {
+                BlockchainSourceError::Unrecoverable(format!(
+                    "getblockdeltas: input amount out of range for {prevtxid}:{prevout}: {error}"
+                ))
+            })?;
+
+            inputs.push(InputDelta {
+                address,
+                satoshis,
+                index: i as u32,
+                prevtxid: prevtxid.clone(),
+                prevout,
+            });
+        }
+
+        let outputs: Vec<OutputDelta> = txo
+            .outputs()
+            .iter()
+            .filter_map(|vout| {
+                let address = vout
+                    .script_pub_key()
+                    .addresses()
+                    .as_ref()
+                    .and_then(|addresses| addresses.first().cloned())?;
+                let satoshis: Amount<NonNegative> = vout.value_zat().try_into().ok()?;
+                Some(OutputDelta {
+                    address,
+                    satoshis,
+                    index: vout.n(),
+                })
+            })
+            .collect();
+
+        deltas.push(BlockDelta {
+            txid,
+            index: tx_index as u32,
+            inputs,
+            outputs,
+        });
+    }
+
+    Ok(BlockDeltas {
+        hash: object.hash().to_string(),
+        confirmations: object.confirmations(),
+        size: object.size().ok_or_else(|| {
+            BlockchainSourceError::Unrecoverable("getblockdeltas: block size missing".to_string())
+        })?,
+        height: object
+            .height()
+            .ok_or_else(|| {
+                BlockchainSourceError::Unrecoverable(
+                    "getblockdeltas: block height missing".to_string(),
+                )
+            })?
+            .0,
+        version: object.version().ok_or_else(|| {
+            BlockchainSourceError::Unrecoverable(
+                "getblockdeltas: block version missing".to_string(),
+            )
+        })?,
+        merkle_root: object
+            .merkle_root()
+            .ok_or_else(|| {
+                BlockchainSourceError::Unrecoverable(
+                    "getblockdeltas: block merkle root missing".to_string(),
+                )
+            })?
+            .encode_hex::<String>(),
+        deltas,
+        time: object.time().ok_or_else(|| {
+            BlockchainSourceError::Unrecoverable("getblockdeltas: block time missing".to_string())
+        })?,
+        median_time,
+        nonce: hex::encode(object.nonce().ok_or_else(|| {
+            BlockchainSourceError::Unrecoverable("getblockdeltas: block nonce missing".to_string())
+        })?),
+        bits: object
+            .bits()
+            .ok_or_else(|| {
+                BlockchainSourceError::Unrecoverable(
+                    "getblockdeltas: block bits missing".to_string(),
+                )
+            })?
+            .to_string(),
+        difficulty: object.difficulty().ok_or_else(|| {
+            BlockchainSourceError::Unrecoverable(
+                "getblockdeltas: block difficulty missing".to_string(),
+            )
+        })?,
+        previous_block_hash: object.previous_block_hash().map(|hash| hash.to_string()),
+        next_block_hash: object.next_block_hash().map(|hash| hash.to_string()),
+    })
 }
