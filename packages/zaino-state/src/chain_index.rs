@@ -606,6 +606,12 @@ pub trait ChainIndexRpcExt: ChainIndex {
         hash: String,
     ) -> impl std::future::Future<Output = Result<BlockDeltas, Self::Error>>;
 
+    /// Returns the proof-of-work difficulty of the best chain as a multiple of the
+    /// minimum difficulty.
+    ///
+    /// zcashd reference: [`getdifficulty`](https://zcash.github.io/rpc/getdifficulty.html)
+    fn get_difficulty(&self) -> impl std::future::Future<Output = Result<f64, Self::Error>>;
+
     // ********** Transparent address history methods **********
 
     /// Returns all changes for the given transparent addresses.
@@ -2659,6 +2665,16 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
     async fn get_block_deltas(&self, hash: String) -> Result<BlockDeltas, Self::Error> {
         self.source()
             .get_block_deltas(hash)
+            .await
+            .map_err(ChainIndexError::backing_validator)
+    }
+
+    // `getdifficulty` is the difficulty-adjusted expected difficulty (over a block
+    // window), not the tip block's stored bits, so it cannot be built from indexed data:
+    // always delegate to the backing validator.
+    async fn get_difficulty(&self) -> Result<f64, Self::Error> {
+        self.source()
+            .get_difficulty()
             .await
             .map_err(ChainIndexError::backing_validator)
     }

@@ -633,18 +633,7 @@ impl ZcashIndexer for StateServiceSubscriber {
     }
 
     async fn get_difficulty(&self) -> Result<f64, Self::Error> {
-        chain_tip_difficulty(
-            self.config.common.network.to_zebra_network(),
-            self.read_state_service.clone(),
-            false,
-        )
-        .await
-        .map_err(|e| {
-            StateServiceError::RpcError(RpcError::new_from_errorobject(
-                e,
-                "failed to get difficulty",
-            ))
-        })
+        Ok(self.indexer.get_difficulty().await?)
     }
 
     async fn get_block_subsidy(&self, height: u32) -> Result<GetBlockSubsidy, Self::Error> {

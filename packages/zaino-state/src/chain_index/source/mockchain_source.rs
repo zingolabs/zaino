@@ -670,6 +670,19 @@ impl BlockchainSource for MockchainSource {
         assemble_block_deltas(&object, &prevtx_cache, median_time, &mockchain_network())
     }
 
+    // ********** Chain methods **********
+
+    async fn get_difficulty(&self) -> BlockchainSourceResult<f64> {
+        let tip_index = self.active_chain_height_as_usize();
+        let tip_block = self.blocks.get(tip_index).ok_or_else(|| {
+            BlockchainSourceError::Unrecoverable("mock chain has no tip block".to_string())
+        })?;
+        Ok(tip_block
+            .header
+            .difficulty_threshold
+            .relative_to_network(&mockchain_network()))
+    }
+
     // ********** Transaction methods **********
 
     async fn get_transaction(

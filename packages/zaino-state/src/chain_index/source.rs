@@ -121,6 +121,10 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
         &self,
     ) -> impl SendFut<BlockchainSourceResult<Option<zebra_chain::block::Height>>>;
 
+    /// Returns the proof-of-work difficulty of the best chain as a multiple of the
+    /// minimum difficulty (the `getdifficulty` RPC value).
+    fn get_difficulty(&self) -> impl SendFut<BlockchainSourceResult<f64>>;
+
     /// Returns the sapling and orchard treestate by hash
     fn get_treestate(&self, id: BlockHash) -> impl SendFut<BlockchainSourceResult<TreestateBytes>>;
 

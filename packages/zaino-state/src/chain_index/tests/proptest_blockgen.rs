@@ -643,6 +643,11 @@ impl BlockchainSource for ProptestMockchain {
         unimplemented!()
     }
 
+    async fn get_difficulty(&self) -> BlockchainSourceResult<f64> {
+        // ProptestMockchain exercises sync/reorg, not the getdifficulty RPC.
+        unimplemented!()
+    }
+
     /// Returns the block commitment tree data by hash
     async fn get_commitment_tree_roots(
         &self,

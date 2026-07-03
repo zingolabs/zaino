@@ -19,8 +19,8 @@ use zebra_chain::{
 use zebra_rpc::{
     client::{BlockObject, GetBlockchainInfoBalance, HexData, Input, TransactionObject},
     methods::{
-        GetBlock, GetBlockHeaderObject, GetBlockHeaderResponse, GetBlockTransaction, GetBlockTrees,
-        ValidateAddresses as _,
+        chain_tip_difficulty, GetBlock, GetBlockHeaderObject, GetBlockHeaderResponse,
+        GetBlockTransaction, GetBlockTrees, ValidateAddresses as _,
     },
 };
 
@@ -179,6 +179,25 @@ impl BlockchainSource for ValidatorConnector {
                 .get_block_deltas(hash)
                 .await
                 .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string())),
+        }
+    }
+
+    // ********** Chain methods **********
+
+    async fn get_difficulty(&self) -> BlockchainSourceResult<f64> {
+        match self {
+            ValidatorConnector::State(state) => chain_tip_difficulty(
+                state.network.to_zebra_network(),
+                state.read_state_service.clone(),
+                false,
+            )
+            .await
+            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string())),
+            ValidatorConnector::Fetch(fetch) => Ok(fetch
+                .get_difficulty()
+                .await
+                .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?
+                .0),
         }
     }
 

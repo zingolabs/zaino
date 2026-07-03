@@ -334,7 +334,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// method: post
     /// tags: blockchain
     async fn get_difficulty(&self) -> Result<f64, Self::Error> {
-        Ok(self.fetcher.get_difficulty().await?.0)
+        Ok(self.indexer.get_difficulty().await?)
     }
 
     async fn get_block_subsidy(&self, height: u32) -> Result<GetBlockSubsidy, Self::Error> {

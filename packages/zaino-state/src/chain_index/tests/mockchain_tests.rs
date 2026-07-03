@@ -1032,3 +1032,19 @@ async fn get_block_deltas() {
         "expected transparent deltas in at least one sampled block"
     );
 }
+
+/// `get_difficulty` served through the ChainIndex from the mock vectors matches the
+/// source and is a positive difficulty value.
+#[tokio::test(flavor = "multi_thread")]
+async fn get_difficulty() {
+    let (_blocks, _indexer, index_reader, mockchain) =
+        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
+
+    let via_index = index_reader.get_difficulty().await.unwrap();
+    let via_source = mockchain.get_difficulty().await.unwrap();
+    assert_eq!(via_index, via_source);
+    assert!(
+        via_index > 0.0,
+        "difficulty should be positive, got {via_index}"
+    );
+}
