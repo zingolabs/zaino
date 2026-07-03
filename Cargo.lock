@@ -6242,9 +6242,8 @@ dependencies = [
 [[package]]
 name = "zcash_local_net"
 version = "0.6.0"
-source = "git+https://github.com/zingolabs/infrastructure.git?branch=remove_unnecessary_deps#029e93ebf50fa00b883fe6bce00e1c0ae049bb2a"
+source = "git+https://github.com/zingolabs/infrastructure.git?branch=remove_unnecessary_deps#232cf9fb02f3de2c1c6bd0247c875e85296ea566"
 dependencies = [
- "getset",
  "hex",
  "json",
  "reqwest 0.12.28",
@@ -6785,12 +6784,12 @@ dependencies = [
 [[package]]
 name = "zingo-consensus"
 version = "0.1.0"
-source = "git+https://github.com/zingolabs/infrastructure.git?branch=remove_unnecessary_deps#029e93ebf50fa00b883fe6bce00e1c0ae049bb2a"
+source = "git+https://github.com/zingolabs/infrastructure.git?branch=remove_unnecessary_deps#232cf9fb02f3de2c1c6bd0247c875e85296ea566"
 
 [[package]]
 name = "zingo_test_vectors"
 version = "0.0.1"
-source = "git+https://github.com/zingolabs/infrastructure.git?branch=remove_unnecessary_deps#029e93ebf50fa00b883fe6bce00e1c0ae049bb2a"
+source = "git+https://github.com/zingolabs/infrastructure.git?branch=remove_unnecessary_deps#232cf9fb02f3de2c1c6bd0247c875e85296ea566"
 dependencies = [
  "bip0039",
 ]
