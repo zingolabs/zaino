@@ -145,6 +145,27 @@ mod tests {
     }
 
     #[test]
+    fn streaming_iterator_produces_same_results() {
+        let backend = InMemoryBackend::new();
+        let mut engine = build_engine(backend.clone(), 3);
+
+        let blocks = (0u64..=9).map(|h| TestBlockContext {
+            height: h,
+            value: h as u32,
+        });
+
+        engine.sync_streaming(blocks).expect("sync succeeds");
+
+        // Incremental arrival produces the same entry count as pre-loaded.
+        assert_eq!(backend.entries(value_index::ID).len(), 10);
+        assert!(backend.get_value(count_index::ID, b"total").is_some());
+        assert!(backend.get_value(running_sum_index::ID, b"sum").is_some());
+
+        assert_eq!(engine.buffer_len(), 0);
+        assert_eq!(engine.evicted_through(), Some(BatchIndex::new(3)));
+    }
+
+    #[test]
     fn buffer_evicted_during_multi_batch_sync() {
         let provisioner = MockProvisioner::identity();
         let blocks = provisioner

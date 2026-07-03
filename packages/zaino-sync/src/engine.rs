@@ -98,49 +98,67 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
         })
     }
 
-    /// Sync a range of blocks through the full pipeline.
+    /// Sync a pre-loaded range of blocks.
     ///
-    /// Blocks must be in chain order. The engine loads them into an
-    /// internal [`BlockBuffer`], signals the scheduler that all blocks
-    /// are available, and then runs a demand-driven loop:
+    /// Convenience wrapper around [`sync_streaming`](Self::sync_streaming)
+    /// for the common case where all blocks are available upfront.
+    pub fn sync_range(&mut self, blocks: Vec<Ctx>) -> Result<(), SyncError> {
+        self.sync_streaming(blocks)
+    }
+
+    /// Sync blocks from an incremental source.
     ///
-    /// 1. Ask the scheduler for ready [`Task`]s.
-    /// 2. Execute each task (extract via buffer lookup, or merge/persist/commit).
-    /// 3. Report completions back to the scheduler.
-    /// 4. Evict buffer entries once all indexes commit past a batch.
+    /// Pulls blocks from `source` in batches, pushes them into the
+    /// internal [`BlockBuffer`], and interleaves with task processing.
+    /// Each iteration:
+    ///
+    /// 1. **Supply**: pull up to `batch_size` blocks from the source.
+    /// 2. **Demand**: execute all ready [`Task`]s from the scheduler.
+    /// 3. **Evict**: drop buffer entries once all indexes commit past a batch.
+    ///
+    /// The loop terminates when the source is exhausted and no work
+    /// remains. This is the core sync loop — [`sync_range`](Self::sync_range)
+    /// delegates to it.
     ///
     /// **Current shape:** single-threaded, synchronous. The scheduler
     /// infrastructure supports parallel dispatch — swapping in an async
-    /// executor is a future step that does not change this method's
-    /// contract.
-    pub fn sync_range(&mut self, blocks: Vec<Ctx>) -> Result<(), SyncError> {
-        let total_blocks = u32::try_from(blocks.len())
-            .expect("block count fits in u32");
+    /// executor is a future step.
+    pub(crate) fn sync_streaming<I>(&mut self, source: I) -> Result<(), SyncError>
+    where
+        I: IntoIterator<Item = Ctx>,
+    {
+        let mut source = source.into_iter();
+        let mut provisioner_done = false;
 
-        if total_blocks == 0 {
-            return Ok(());
-        }
-
-        // Supply: load all blocks into the buffer.
-        for (i, ctx) in blocks.into_iter().enumerate() {
-            self.buffer.push(
-                BlockOffset::new(u32::try_from(i).expect("block index fits in u32")),
-                ctx,
-            );
-        }
-        self.scheduler.provisioner_done(total_blocks);
-
-        let total_batches = total_blocks.div_ceil(self.scheduler.batch_size());
-
-        // Demand loop: pull tasks, execute, report.
         loop {
-            if !self.scheduler.has_pending_work(total_batches) {
-                break;
+            // Supply: pull up to one batch of blocks from the source.
+            if !provisioner_done {
+                for _ in 0..self.scheduler.batch_size() {
+                    match source.next() {
+                        Some(ctx) => {
+                            let offset = BlockOffset::new(self.buffer.total_pushed());
+                            self.buffer.push(offset, ctx);
+                        }
+                        None => {
+                            self.scheduler.provisioner_done(self.buffer.total_pushed());
+                            provisioner_done = true;
+                            break;
+                        }
+                    }
+                }
+                if !provisioner_done {
+                    self.scheduler.set_blocks_available(self.buffer.total_pushed());
+                }
             }
 
+            // Demand: execute all ready tasks.
             let tasks = self.scheduler.ready_work();
+
             if tasks.is_empty() {
-                break;
+                if provisioner_done {
+                    break;
+                }
+                continue;
             }
 
             for task in tasks {
