@@ -43,6 +43,13 @@ impl<Ctx> BlockBuffer<Ctx> {
     /// The offset must be monotonically increasing — blocks arrive in
     /// chain order from the provisioner.
     pub fn push(&mut self, offset: BlockOffset, ctx: Ctx) {
+        debug_assert_eq!(
+            offset.value(),
+            self.total_pushed(),
+            "blocks must be pushed in order: expected offset {}, got {}",
+            self.total_pushed(),
+            offset.value(),
+        );
         self.blocks.insert(offset.value(), Arc::new(ctx));
     }
 
@@ -77,6 +84,12 @@ impl<Ctx> BlockBuffer<Ctx> {
     /// this batch — the blocks are no longer needed by any index.
     pub fn evict_through_batch(&mut self, through_batch: BatchIndex) {
         let cutoff = (through_batch.value() + 1) * self.batch_size;
+        debug_assert!(
+            cutoff >= self.floor,
+            "eviction must advance: cutoff {} < floor {}",
+            cutoff,
+            self.floor,
+        );
         self.blocks = self.blocks.split_off(&cutoff);
         self.floor = cutoff;
     }

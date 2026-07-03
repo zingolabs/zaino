@@ -154,7 +154,11 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     /// for the common case where all blocks are available upfront.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(block_count = blocks.len())))]
     pub fn sync_range(&mut self, blocks: Vec<Ctx>) -> Result<(), SyncError> {
-        self.sync_streaming(blocks)
+        let result = self.sync_streaming(blocks);
+        if result.is_ok() {
+            self.assert_post_sync_invariants();
+        }
+        result
     }
 
     /// Sync blocks from an incremental source.
@@ -256,6 +260,7 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
         }
 
         self.backend.flush()?;
+        self.assert_post_sync_invariants();
         Ok(())
     }
 
@@ -392,6 +397,11 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
         let batch = handle.batch;
         let index_id = handle.index;
 
+        // The pipeline must exist — the scheduler only emits registered indexes.
+        debug_assert!(
+            self.pipelines.contains_key(&index_id),
+            "merge_persist called for unknown index {index_id}",
+        );
         let pipeline = self.pipelines.get(&index_id)
             .expect("scheduler only emits registered indexes");
 
@@ -452,6 +462,14 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
                 "atomic batch commit"
             );
 
+            // Watermark must advance monotonically.
+            debug_assert!(
+                self.evicted_through.map_or(true, |prev| candidate.value() > prev.value()),
+                "try_commit batch {} but already committed through {:?}",
+                candidate.value(),
+                self.evicted_through.map(|b| b.value()),
+            );
+
             let mut writer = self.backend.writer()?;
             writer.commit(ops)?;
 
@@ -465,8 +483,50 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     /// Called after the atomic commit succeeds. Drops block contexts
     /// that are no longer needed by any index.
     fn try_evict(&mut self, batch: BatchIndex) {
+        // Eviction must be monotonic.
+        debug_assert!(
+            self.evicted_through.map_or(true, |prev| batch.value() > prev.value()),
+            "eviction must advance: evicting batch {} but already evicted through {:?}",
+            batch.value(),
+            self.evicted_through.map(|b| b.value()),
+        );
+
         self.buffer.evict_through_batch(batch);
         self.evicted_through = Some(batch);
+    }
+
+    // -----------------------------------------------------------------------
+    // Invariant assertions
+    // -----------------------------------------------------------------------
+
+    /// Invariants that must hold after a successful sync run.
+    fn assert_post_sync_invariants(&self) {
+        debug_assert!(
+            self.buffer.is_empty(),
+            "buffer must be empty after sync, has {} blocks remaining",
+            self.buffer.len(),
+        );
+
+        debug_assert!(
+            self.pending_ops.is_empty(),
+            "pending_ops must be drained after sync, {} batches remain: {:?}",
+            self.pending_ops.len(),
+            self.pending_ops.keys().map(|b| b.value()).collect::<Vec<_>>(),
+        );
+
+        // If any blocks were processed, eviction must have covered all batches.
+        if self.buffer.total_pushed() > 0 {
+            let batch_size = self.scheduler.batch_size();
+            let total = self.buffer.total_pushed();
+            let expected_last_batch = (total - 1) / batch_size;
+            debug_assert_eq!(
+                self.evicted_through.map(|b| b.value()),
+                Some(expected_last_batch),
+                "eviction must cover all batches: expected through batch {}, got {:?}",
+                expected_last_batch,
+                self.evicted_through.map(|b| b.value()),
+            );
+        }
     }
 }
 

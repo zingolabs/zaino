@@ -237,6 +237,12 @@ impl Scheduler {
             .expect("index exists in scheduler");
         *count += 1;
 
+        debug_assert!(
+            *count <= effective,
+            "extraction count {} exceeds effective batch size {} for index {} batch {}",
+            *count, effective, index, batch.value(),
+        );
+
         if *count >= effective {
             self.pending_merge.insert(index);
             Some(BatchHandle::new(index, batch))
@@ -275,6 +281,22 @@ impl Scheduler {
     pub fn batch_committed(&mut self, handle: BatchHandle<Merged>) {
         let index = handle.index;
         let batch = handle.batch;
+
+        // committed_through must advance monotonically per index.
+        debug_assert!(
+            self.committed_through[&index].map_or(true, |prev| batch.value() > prev.value()),
+            "committed_through must advance for index {}: committing batch {} but already at {:?}",
+            index,
+            batch.value(),
+            self.committed_through[&index].map(|b| b.value()),
+        );
+
+        // The index must be pending commit (came through merge_done).
+        debug_assert!(
+            self.pending_commit.contains(&index),
+            "batch_committed called for index {} which is not pending commit",
+            index,
+        );
 
         self.pending_commit.remove(&index);
         self.committed_through.insert(index, Some(batch));
