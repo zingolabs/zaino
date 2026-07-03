@@ -161,36 +161,42 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
                 continue;
             }
 
-            for task in tasks {
-                match task {
-                    Task::Extract(job) => {
-                        let ctx = self.buffer.get(job.global_offset)
-                            .expect("block available — scheduler verified watermark");
-                        let pipeline = self.pipelines.get(&job.index)
-                            .expect("scheduler only emits registered indexes");
+            self.dispatch_tasks(tasks)?;
+        }
 
-                        pipeline.extract_one(&ctx)?;
+        self.backend.flush()?;
+        Ok(())
+    }
 
-                        if let Some(handle) = self.scheduler.extraction_done(job.index) {
-                            self.merge_persist_commit(handle)?;
-                            self.try_evict();
-                        }
+    /// Execute a batch of tasks from the scheduler.
+    fn dispatch_tasks(&mut self, tasks: Vec<Task>) -> Result<(), SyncError> {
+        for task in tasks {
+            match task {
+                Task::Extract(job) => {
+                    let ctx = self.buffer.get(job.global_offset)
+                        .expect("block available — scheduler verified watermark");
+                    let pipeline = self.pipelines.get(&job.index)
+                        .expect("scheduler only emits registered indexes");
+
+                    pipeline.extract_one(&ctx)?;
+
+                    if let Some(handle) = self.scheduler.extraction_done(job.index) {
+                        self.merge_persist_commit(handle)?;
+                        self.try_evict();
                     }
-                    Task::CompleteBatch { index, .. } => {
-                        let handle = self.scheduler.ready_for_merge()
-                            .into_iter()
-                            .find(|h| h.index == index);
+                }
+                Task::CompleteBatch { index, .. } => {
+                    let handle = self.scheduler.ready_for_merge()
+                        .into_iter()
+                        .find(|h| h.index == index);
 
-                        if let Some(handle) = handle {
-                            self.merge_persist_commit(handle)?;
-                            self.try_evict();
-                        }
+                    if let Some(handle) = handle {
+                        self.merge_persist_commit(handle)?;
+                        self.try_evict();
                     }
                 }
             }
         }
-
-        self.backend.flush()?;
         Ok(())
     }
 
