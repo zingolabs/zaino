@@ -24,7 +24,7 @@ use zebra_rpc::{
 use zaino_fetch::{
     chain::{transaction::FullTransaction, utils::ParseFromSlice},
     jsonrpsee::{
-        connector::{JsonRpSeeConnector, RpcError},
+        connector::RpcError,
         response::{
             address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
             block_deltas::BlockDeltas,
@@ -87,12 +87,6 @@ use crate::{
 #[derive(Debug)]
 #[deprecated = "Will be eventually replaced by `BlockchainSource`"]
 pub struct FetchService {
-    /// JsonRPC Client.
-    ///
-    /// NOTE: DEPRECATED — no longer read now that every fetch goes through the indexer.
-    /// TODO(task 3): remove this field (services should hold only `indexer`, `data`, `config`).
-    #[allow(dead_code)]
-    fetcher: JsonRpSeeConnector,
     /// Core indexer.
     indexer: NodeBackedChainIndex,
     /// Service metadata.
@@ -126,15 +120,10 @@ impl ZcashService for FetchService {
             "Launching Fetch Service"
         );
 
-        let fetcher = JsonRpSeeConnector::new_from_config_parts(
-            &config.common.validator_rpc_address,
-            config.common.validator_rpc_user.clone(),
-            config.common.validator_rpc_password.clone(),
-            config.common.validator_cookie_path.clone(),
-        )
-        .await?;
+        let (source, zebra_build_data) = ValidatorConnector::spawn_fetch(&config.common)
+            .await
+            .map_err(|error| FetchServiceError::Critical(error.to_string()))?;
 
-        let zebra_build_data = fetcher.get_info().await?;
         let data = ServiceMetadata::new(
             get_build_info(config.common.indexer_version.clone()),
             config.common.network.to_zebra_network(),
@@ -143,13 +132,11 @@ impl ZcashService for FetchService {
         );
         info!(build = %data.zebra_build(), subversion = %data.zebra_subversion(), "Connected to Zcash node");
 
-        let source = ValidatorConnector::Fetch(fetcher.clone());
         let indexer = NodeBackedChainIndex::new(source, config.clone().into())
             .await
-            .unwrap();
+            .map_err(|error| FetchServiceError::Critical(error.to_string()))?;
 
         let fetch_service = Self {
-            fetcher,
             indexer,
             data,
             config,
@@ -176,7 +163,6 @@ impl ZcashService for FetchService {
     /// Returns a [`FetchServiceSubscriber`].
     fn get_subscriber(&self) -> IndexerSubscriber<FetchServiceSubscriber> {
         IndexerSubscriber::new(FetchServiceSubscriber {
-            fetcher: self.fetcher.clone(),
             indexer: self.indexer.subscriber(),
             data: self.data.clone(),
             config: self.config.clone(),
@@ -206,12 +192,6 @@ impl Drop for FetchService {
 #[derive(Debug, Clone)]
 #[allow(deprecated)]
 pub struct FetchServiceSubscriber {
-    /// JsonRPC Client.
-    ///
-    /// NOTE: DEPRECATED — no longer read now that every fetch goes through the indexer.
-    /// TODO(task 3): remove this field (services should hold only `indexer`, `data`, `config`).
-    #[allow(dead_code)]
-    fetcher: JsonRpSeeConnector,
     /// Core indexer.
     pub indexer: NodeBackedChainIndexSubscriber,
     /// Service metadata.

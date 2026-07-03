@@ -6,6 +6,7 @@ use std::str::FromStr as _;
 use chrono::{DateTime, Utc};
 use hex::{FromHex as _, ToHex as _};
 use indexmap::IndexMap;
+use tracing::info;
 use zaino_fetch::jsonrpsee::response::{
     address_deltas::BlockInfo,
     block_deltas::{BlockDelta, BlockDeltas, InputDelta, OutputDelta},
@@ -13,8 +14,12 @@ use zaino_fetch::jsonrpsee::response::{
     block_subsidy::GetBlockSubsidy,
     mining_info::GetMiningInfoWire,
     peer_info::GetPeerInfo,
-    GetNetworkSolPsResponse, GetSpentInfoRequest, GetSpentInfoResponse, GetTxOutResponse,
+    GetInfoResponse, GetNetworkSolPsResponse, GetSpentInfoRequest, GetSpentInfoResponse,
+    GetTxOutResponse,
 };
+use zebra_rpc::sync::init_read_state_with_syncer;
+
+use crate::config::{CommonBackendConfig, StateServiceConfig};
 use zebra_chain::{
     amount::{Amount, NonNegative},
     block::{Header, SerializedBlock},
@@ -62,6 +67,12 @@ pub struct State {
     pub mempool_fetcher: JsonRpSeeConnector,
     /// Current network type being run.
     pub network: Network,
+    /// Watches the Zebra syncer's chain-tip changes; served to consumers via
+    /// [`ValidatorConnector::chain_tip_change`].
+    pub chain_tip_change: zebra_state::ChainTipChange,
+    /// Handle to the Zebra `ReadStateService` sync task, kept alive for the lifetime of
+    /// the connector and aborted on [`ValidatorConnector::shutdown`]. Shared across clones.
+    pub sync_task_handle: Option<Arc<tokio::task::JoinHandle<()>>>,
 }
 
 /// A connection to a validator.
@@ -85,6 +96,151 @@ impl ValidatorConnector {
         match self {
             ValidatorConnector::State(state) => &state.mempool_fetcher,
             ValidatorConnector::Fetch(fetch) => fetch,
+        }
+    }
+
+    /// Spawns a JSON-RPC-backed [`ValidatorConnector::Fetch`] from the common backend
+    /// config, returning the connector plus the validator's `getinfo` response (used by
+    /// the backend to build its `ServiceMetadata`).
+    ///
+    /// Owns the `JsonRpSeeConnector` setup that previously lived in `FetchService::spawn`.
+    pub(crate) async fn spawn_fetch(
+        common: &CommonBackendConfig,
+    ) -> Result<(Self, GetInfoResponse), BlockchainSourceError> {
+        let fetcher = JsonRpSeeConnector::new_from_config_parts(
+            &common.validator_rpc_address,
+            common.validator_rpc_user.clone(),
+            common.validator_rpc_password.clone(),
+            common.validator_cookie_path.clone(),
+        )
+        .await
+        .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+
+        let info = fetcher
+            .get_info()
+            .await
+            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+
+        Ok((ValidatorConnector::Fetch(fetcher), info))
+    }
+
+    /// Spawns a `ReadStateService`-backed [`ValidatorConnector::State`] from the state
+    /// backend config, returning the connector plus the validator's `getinfo` response.
+    ///
+    /// Owns the JSON-RPC + Zebra chain-syncer setup that previously lived in
+    /// `StateService::spawn`: builds the mempool JSON-RPC fetcher, launches the syncer
+    /// and `ReadStateService`, then blocks until the syncer has caught up to the
+    /// validator's best chain tip (comparing tip *hash* as well as height so a reorg
+    /// mid-sync cannot report a false match). The syncer task handle is retained on the
+    /// `State` so [`ValidatorConnector::shutdown`] can abort it.
+    pub(crate) async fn spawn_state(
+        config: &StateServiceConfig,
+    ) -> Result<(Self, GetInfoResponse), BlockchainSourceError> {
+        let map_err =
+            |error: &dyn std::fmt::Display| BlockchainSourceError::Unrecoverable(error.to_string());
+
+        let rpc_client = JsonRpSeeConnector::new_from_config_parts(
+            &config.common.validator_rpc_address,
+            config.common.validator_rpc_user.clone(),
+            config.common.validator_rpc_password.clone(),
+            config.common.validator_cookie_path.clone(),
+        )
+        .await
+        .map_err(|error| map_err(&error))?;
+
+        let info = rpc_client
+            .get_info()
+            .await
+            .map_err(|error| map_err(&error))?;
+
+        info!(
+            grpc_address = %config.validator_grpc_address,
+            "Launching Chain Syncer"
+        );
+        let (mut read_state_service, _latest_chain_tip, chain_tip_change, sync_task_handle) =
+            init_read_state_with_syncer(
+                config.validator_state_config.clone(),
+                &config.common.network.to_zebra_network(),
+                config.validator_grpc_address,
+            )
+            .await
+            .map_err(|error| map_err(&error))?
+            .map_err(|error| map_err(&error))?;
+
+        info!("Chain syncer launched");
+
+        // Wait for ReadStateService to catch up to the validator's best chain tip.
+        // Height alone is insufficient during reorgs: the same height can refer to
+        // different blocks until JSON-RPC and ReadStateService agree on tip hash.
+        loop {
+            let blockchain_info = rpc_client
+                .get_blockchain_info()
+                .await
+                .map_err(|error| map_err(&error))?;
+            let server_height = blockchain_info.blocks;
+            let server_tip_hash = blockchain_info.best_block_hash;
+
+            let syncer_response = read_state_service
+                .ready()
+                .and_then(|service| service.call(ReadRequest::Tip))
+                .await
+                .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+            let (syncer_height, syncer_tip_hash) = expected_read_response!(syncer_response, Tip)
+                .ok_or_else(|| {
+                    BlockchainSourceError::Unrecoverable("no blocks in chain".to_string())
+                })?;
+
+            if server_height == syncer_height && server_tip_hash == syncer_tip_hash {
+                info!(
+                    height = syncer_height.0,
+                    tip_hash = %syncer_tip_hash,
+                    "ReadStateService synced with Zebra"
+                );
+                break;
+            } else {
+                info!(
+                    syncer_height = syncer_height.0,
+                    validator_height = server_height.0,
+                    syncer_tip_hash = %syncer_tip_hash,
+                    validator_tip_hash = %server_tip_hash,
+                    "ReadStateService syncing with Zebra"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+                continue;
+            }
+        }
+
+        let source = ValidatorConnector::State(State {
+            read_state_service,
+            mempool_fetcher: rpc_client,
+            network: config.common.network,
+            chain_tip_change,
+            sync_task_handle: Some(Arc::new(sync_task_handle)),
+        });
+
+        Ok((source, info))
+    }
+
+    /// Watches the Zebra syncer's chain-tip changes, when this connector owns one.
+    ///
+    /// `Some` for the `State` variant (which drives its own syncer); `None` for the
+    /// JSON-RPC `Fetch` variant, which has no local tip-change stream.
+    pub(crate) fn chain_tip_change(&self) -> Option<zebra_state::ChainTipChange> {
+        match self {
+            ValidatorConnector::State(state) => Some(state.chain_tip_change.clone()),
+            ValidatorConnector::Fetch(_) => None,
+        }
+    }
+
+    /// The backing [`ReadStateService`], when this connector is `State`-backed.
+    ///
+    /// Test-only escape hatch: live tests recompute expected chain data directly off
+    /// the `ReadStateService`. Production code goes through the `ChainIndex` API.
+    #[cfg(feature = "test_dependencies")]
+    pub(crate) fn read_state_service(&self) -> Option<&ReadStateService> {
+        match self {
+            ValidatorConnector::State(state) => Some(&state.read_state_service),
+            ValidatorConnector::Fetch(_) => None,
         }
     }
 }
@@ -345,7 +501,7 @@ impl BlockchainSource for ValidatorConnector {
             ValidatorConnector::State(State {
                 read_state_service,
                 mempool_fetcher,
-                network: _,
+                ..
             }) => {
                 // Check state for transaction
                 let mut read_state_service = read_state_service.clone();
@@ -502,7 +658,7 @@ impl BlockchainSource for ValidatorConnector {
             ValidatorConnector::State(State {
                 read_state_service,
                 mempool_fetcher,
-                network: _,
+                ..
             }) => {
                 match read_state_service.best_tip() {
                     Some((_height, hash)) => Ok(Some(hash)),
@@ -544,7 +700,7 @@ impl BlockchainSource for ValidatorConnector {
             ValidatorConnector::State(State {
                 read_state_service,
                 mempool_fetcher,
-                network: _,
+                ..
             }) => {
                 match read_state_service.best_tip() {
                     Some((height, _hash)) => Ok(Some(height)),
@@ -1269,9 +1425,7 @@ impl BlockchainSource for ValidatorConnector {
     > {
         match self {
             ValidatorConnector::State(State {
-                read_state_service,
-                mempool_fetcher: _,
-                network: _,
+                read_state_service, ..
             }) => {
                 match read_state_service
                     .clone()
@@ -1291,6 +1445,19 @@ impl BlockchainSource for ValidatorConnector {
                 }
             }
             ValidatorConnector::Fetch(_fetch) => Ok(None),
+        }
+    }
+
+    fn shutdown(&self) {
+        // Only the `State` arm owns a long-lived resource: the Zebra chain-syncer
+        // task feeding the `ReadStateService`. Abort it so the backend drops cleanly.
+        // The `Fetch` arm holds only a stateless JSON-RPC client — nothing to tear down.
+        if let ValidatorConnector::State(State {
+            sync_task_handle: Some(handle),
+            ..
+        }) = self
+        {
+            handle.abort();
         }
     }
 }

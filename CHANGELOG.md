@@ -8,6 +8,22 @@ and this library adheres to Rust's notion of
 ## Unreleased
 
 ### Changed
+- `zaino-state`: the `ChainIndex` trait is split into `ChainIndex` (the
+  wallet-essential core: chain/tx/address/mempool access) and a
+  `ChainIndexRpcExt: ChainIndex` extension (compact-block serving, subtree
+  roots, and the block-explorer / mining / node-passthrough RPCs). The split is
+  a provisional first pass to be refined into finer capability traits later.
+- `zaino-state`: all remaining backend-split RPC functionality has moved out of
+  the `FetchService` (`JsonRpSeeConnector`) and `StateService`
+  (`ReadStateService`) backends and into `BlockchainSource` /
+  `ChainIndex`. Both backends now resolve every fetch through their `ChainIndex`
+  indexer — building responses from Zaino's own indexed state where possible and
+  delegating to the `ValidatorConnector` (`BlockchainSource`) only for
+  validator-only or passthrough data. Validator connection/syncer spawning also
+  moves into `ValidatorConnector::spawn_fetch` / `spawn_state`, so each
+  service/subscriber now holds only `{ indexer, data, config }`. This readies
+  the two backends for their eventual merge into a single
+  `ValidatorBackedIndexerService`. No behaviour change.
 - **Breaking** — config: `storage.database.sync_write_batch_bytes` (bytes) is
   renamed to `sync_write_batch_size` and given in **GiB** (default raised from
   4 GiB to 32 GiB); this budget now also bounds the txout-set accumulator

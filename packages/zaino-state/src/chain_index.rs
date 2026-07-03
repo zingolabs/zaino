@@ -973,6 +973,9 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         self.status.store(StatusType::Closing);
         self.finalized_db.shutdown().await?;
         self.mempool.close();
+        // Release any source-owned background work (e.g. the Zebra chain-syncer
+        // task behind the `State` connector). No-op for poll-only sources.
+        self.source.shutdown();
         Ok(())
     }
 
@@ -1291,8 +1294,18 @@ async fn compact_block_from_source<Source: BlockchainSource>(
 }
 
 impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
-    fn source(&self) -> &Source {
+    pub(crate) fn source(&self) -> &Source {
         &self.source
+    }
+
+    /// The indexer's mempool subscriber.
+    ///
+    /// Test-only escape hatch: live tests recompute expected `getmempoolinfo`
+    /// values directly off the mempool's entries. Production code goes through
+    /// the `ChainIndex` mempool API.
+    #[cfg(feature = "test_dependencies")]
+    pub(crate) fn mempool_subscriber(&self) -> &mempool::MempoolSubscriber {
+        &self.mempool
     }
 
     /// Returns the combined status of all chain index components.

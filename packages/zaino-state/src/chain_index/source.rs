@@ -328,6 +328,15 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     fn subscribe_to_blocks_received(&self) -> Option<tokio::sync::watch::Receiver<()>> {
         None
     }
+
+    /// Release any long-lived resources the source owns (e.g. a background
+    /// syncer task feeding a `ReadStateService`).
+    ///
+    /// Default is a no-op — poll-only sources (`JsonRpSeeConnector`) and test
+    /// mockchains own nothing to tear down. Sources that spawn their own
+    /// validator plumbing (the `State` arm of `ValidatorConnector`, which owns
+    /// the Zebra syncer task) override this to abort that task on shutdown.
+    fn shutdown(&self) {}
 }
 
 /// Sleep up to `duration`, but return early if `change_rx` resolves first.

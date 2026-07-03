@@ -46,7 +46,10 @@ mod chain_query_interface {
             source::ValidatorConnector, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
             ShieldedPool,
         },
-        test_dependencies::{chain_index::ChainIndex, ChainIndexConfig},
+        test_dependencies::{
+            chain_index::{ChainIndex, ChainIndexRpcExt},
+            ChainIndexConfig,
+        },
         FetchService, Height, StateService, StateServiceConfig, ZcashService,
     };
     #[cfg(feature = "zcashd_support")]

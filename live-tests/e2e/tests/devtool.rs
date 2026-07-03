@@ -2263,7 +2263,7 @@ async fn get_mempool_info_state() {
     let mut svc = fund_and_fill_mempool_dual().await;
 
     let info = svc.state_subscriber.get_mempool_info().await.unwrap();
-    let entries = svc.state_subscriber.mempool.get_mempool().await;
+    let entries = svc.state_subscriber.mempool().get_mempool().await;
 
     assert_eq!(entries.len() as u64, info.size);
     assert!(info.size >= 1);

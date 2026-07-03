@@ -282,7 +282,7 @@ async fn create_200_block_regtest_chain_vectors() {
                     })
                     .unwrap();
 
-                let mut state = state_service_subscriber.read_state_service.clone();
+                let mut state = state_service_subscriber.read_state_service();
                 let (sapling_root, orchard_root) = {
                     let (sapling_tree_response, orchard_tree_response) = futures::future::join(
                         state.clone().call(zebra_state::ReadRequest::SaplingTree(

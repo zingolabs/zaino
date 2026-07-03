@@ -3,23 +3,21 @@
 #[allow(deprecated)]
 use crate::{
     chain_index::{
-        chain_tips_from_nonfinalized_snapshot,
-        mempool::{Mempool, MempoolSubscriber},
-        source::ValidatorConnector,
-        types as chain_types, ChainIndex, ChainIndexRpcExt,
+        chain_tips_from_nonfinalized_snapshot, source::ValidatorConnector, types as chain_types,
+        ChainIndex, ChainIndexRpcExt,
     },
     config::{DonationAddress, StateServiceConfig},
     error::{BlockCacheError, StateServiceError},
     indexer::{
         handle_raw_transaction, IndexerSubscriber, LightWalletIndexer, ZcashIndexer, ZcashService,
     },
-    status::{NamedAtomicStatus, Status, StatusType},
+    status::{Status, StatusType},
     stream::{
         AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
         UtxoReplyStream,
     },
     utils::{get_build_info, ServiceMetadata},
-    BackendType, NodeBackedChainIndex, NodeBackedChainIndexSubscriber, State,
+    BackendType, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
 };
 use crate::{
     chain_index::{types::BestChainLocation, NonFinalizedSnapshot},
@@ -29,7 +27,7 @@ use tokio_stream::StreamExt as _;
 use zaino_fetch::{
     chain::{transaction::FullTransaction, utils::ParseFromSlice},
     jsonrpsee::{
-        connector::{JsonRpSeeConnector, RpcError},
+        connector::RpcError,
         response::{
             address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
             block_deltas::BlockDeltas,
@@ -69,30 +67,16 @@ use zebra_rpc::{
         GetBlockchainInfoResponse, GetInfo, GetRawTransaction, SentTransactionHash,
     },
     server::error::LegacyCode,
-    sync::init_read_state_with_syncer,
 };
-use zebra_state::{HashOrHeight, ReadRequest, ReadResponse, ReadStateService};
+use zebra_state::HashOrHeight;
 
-use futures::TryFutureExt as _;
 use hex::{FromHex as _, ToHex};
-use std::{str::FromStr, sync::Arc};
+use std::str::FromStr;
 use tokio::{
     sync::mpsc,
     time::{self, timeout},
 };
-use tower::{Service, ServiceExt};
 use tracing::{info, instrument, warn};
-
-macro_rules! expected_read_response {
-    ($response:ident, $expected_variant:ident) => {
-        match $response {
-            ReadResponse::$expected_variant(inner) => inner,
-            unexpected => {
-                unreachable!("Unexpected response from state service: {unexpected:?}")
-            }
-        }
-    };
-}
 
 /// Chain fetch service backed by Zebra's `ReadStateService` and `TrustedChainSync`.
 ///
@@ -105,51 +89,20 @@ macro_rules! expected_read_response {
 #[derive(Debug)]
 // #[deprecated = "Will be eventually replaced by `BlockchainSource"]
 pub struct StateService {
-    /// `ReadeStateService` from Zebra-State.
-    read_state_service: ReadStateService,
-
-    /// Internal mempool.
-    mempool: Mempool<ValidatorConnector>,
-
-    /// StateService config data.
-    #[allow(deprecated)]
-    config: StateServiceConfig,
-
-    /// Listener for when the chain tip changes
-    chain_tip_change: zebra_state::ChainTipChange,
-
-    /// Sync task handle.
-    sync_task_handle: Option<Arc<tokio::task::JoinHandle<()>>>,
-
-    /// JsonRPC Client.
-    rpc_client: JsonRpSeeConnector,
-
     /// Core indexer.
     indexer: NodeBackedChainIndex,
 
     /// Service metadata.
     data: ServiceMetadata,
 
-    /// Thread-safe status indicator.
-    status: NamedAtomicStatus,
-}
-
-impl StateService {
-    #[cfg(feature = "test_dependencies")]
-    /// Helper for tests
-    pub fn read_state_service(&self) -> &ReadStateService {
-        &self.read_state_service
-    }
+    /// StateService config data.
+    #[allow(deprecated)]
+    config: StateServiceConfig,
 }
 
 impl Status for StateService {
     fn status(&self) -> StatusType {
-        let current_status = self.status.load();
-        if current_status == StatusType::Closing {
-            current_status
-        } else {
-            self.indexer.status()
-        }
+        self.indexer.status()
     }
 }
 
@@ -169,15 +122,9 @@ impl ZcashService for StateService {
             "Spawning State Service"
         );
 
-        let rpc_client = JsonRpSeeConnector::new_from_config_parts(
-            &config.common.validator_rpc_address,
-            config.common.validator_rpc_user.clone(),
-            config.common.validator_rpc_password.clone(),
-            config.common.validator_cookie_path.clone(),
-        )
-        .await?;
-
-        let zebra_build_data = rpc_client.get_info().await?;
+        let (source, zebra_build_data) = ValidatorConnector::spawn_state(&config)
+            .await
+            .map_err(|error| StateServiceError::Critical(error.to_string()))?;
 
         let data = ServiceMetadata::new(
             get_build_info(config.common.indexer_version.clone()),
@@ -187,101 +134,25 @@ impl ZcashService for StateService {
         );
         info!(build = %data.zebra_build(), subversion = %data.zebra_subversion(), "Connected to Zcash node");
 
-        info!(
-            grpc_address = %config.validator_grpc_address,
-            "Launching Chain Syncer"
-        );
-        let (mut read_state_service, _latest_chain_tip, chain_tip_change, sync_task_handle) =
-            init_read_state_with_syncer(
-                config.validator_state_config.clone(),
-                &config.common.network.to_zebra_network(),
-                config.validator_grpc_address,
-            )
-            .await??;
-
-        info!("Chain syncer launched");
-
-        // Wait for ReadStateService to catch up to the validator's best chain tip.
-        // Height alone is insufficient during reorgs: the same height can refer to
-        // different blocks until JSON-RPC and ReadStateService agree on tip hash.
-        loop {
-            let blockchain_info = rpc_client.get_blockchain_info().await?;
-            let server_height = blockchain_info.blocks;
-            let server_tip_hash = blockchain_info.best_block_hash;
-
-            let syncer_response = read_state_service
-                .ready()
-                .and_then(|service| service.call(ReadRequest::Tip))
-                .await?;
-            let (syncer_height, syncer_tip_hash) =
-                expected_read_response!(syncer_response, Tip).ok_or(
-                    RpcError::new_from_legacycode(LegacyCode::Misc, "no blocks in chain"),
-                )?;
-
-            if server_height == syncer_height && server_tip_hash == syncer_tip_hash {
-                info!(
-                    height = syncer_height.0,
-                    tip_hash = %syncer_tip_hash,
-                    "ReadStateService synced with Zebra"
-                );
-                break;
-            } else {
-                info!(
-                    syncer_height = syncer_height.0,
-                    validator_height = server_height.0,
-                    syncer_tip_hash = %syncer_tip_hash,
-                    validator_tip_hash = %server_tip_hash,
-                    "ReadStateService syncing with Zebra"
-                );
-                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-                continue;
-            }
-        }
-
-        let mempool_source = ValidatorConnector::State(crate::chain_index::source::State {
-            read_state_service: read_state_service.clone(),
-            mempool_fetcher: rpc_client.clone(),
-            network: config.common.network,
-        });
-
-        let mempool = Mempool::spawn(mempool_source, None).await?;
-
-        let chain_index = NodeBackedChainIndex::new(
-            ValidatorConnector::State(State {
-                read_state_service: read_state_service.clone(),
-                mempool_fetcher: rpc_client.clone(),
-                network: config.common.network,
-            }),
-            config.clone().into(),
-        )
-        .await
-        .unwrap();
+        let indexer = NodeBackedChainIndex::new(source, config.clone().into())
+            .await
+            .map_err(|error| StateServiceError::Critical(error.to_string()))?;
 
         let state_service = Self {
-            chain_tip_change,
-            read_state_service,
-            sync_task_handle: Some(Arc::new(sync_task_handle)),
-            rpc_client: rpc_client.clone(),
-            mempool,
-            indexer: chain_index,
+            indexer,
             data,
             config,
-            status: NamedAtomicStatus::new("StateService", StatusType::Spawning),
         };
 
         // wait for sync to complete, return error on sync fail.
         loop {
             match state_service.status() {
-                StatusType::Ready => {
-                    state_service.status.store(StatusType::Ready);
-                    break;
-                }
+                StatusType::Ready | StatusType::Closing => break,
                 StatusType::CriticalError => {
                     return Err(StateServiceError::Critical(
                         "Chain index sync failed".to_string(),
                     ));
                 }
-                StatusType::Closing => break,
                 _ => {
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 }
@@ -293,23 +164,23 @@ impl ZcashService for StateService {
 
     fn get_subscriber(&self) -> IndexerSubscriber<StateServiceSubscriber> {
         IndexerSubscriber::new(StateServiceSubscriber {
-            read_state_service: self.read_state_service.clone(),
-            rpc_client: self.rpc_client.clone(),
-            mempool: self.mempool.subscriber(),
             indexer: self.indexer.subscriber(),
             data: self.data.clone(),
             config: self.config.clone(),
-            chain_tip_change: self.chain_tip_change.clone(),
         })
     }
 
     /// Shuts down the StateService.
+    ///
+    /// Delegates to the indexer, which cancels its sync loop, tears down the
+    /// finalised DB and mempool, and aborts the source-owned Zebra chain-syncer
+    /// task via [`crate::chain_index::source::BlockchainSource::shutdown`].
     fn close(&mut self) {
-        if self.sync_task_handle.is_some() {
-            if let Some(handle) = self.sync_task_handle.take() {
-                handle.abort();
-            }
-        }
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                let _ = self.indexer.shutdown().await;
+            });
+        });
     }
 }
 
@@ -326,27 +197,41 @@ impl Drop for StateService {
 #[derive(Debug, Clone)]
 // #[deprecated]
 pub struct StateServiceSubscriber {
-    /// Remote wrappper functionality for zebra's [`ReadStateService`].
-    pub read_state_service: ReadStateService,
-
-    /// Internal mempool.
-    pub mempool: MempoolSubscriber,
-
-    /// StateService config data.
-    #[allow(deprecated)]
-    config: StateServiceConfig,
-
-    /// Listener for when the chain tip changes
-    chain_tip_change: zebra_state::ChainTipChange,
-
-    /// JsonRPC Client.
-    pub rpc_client: JsonRpSeeConnector,
-
     /// Core indexer.
     pub indexer: NodeBackedChainIndexSubscriber,
 
     /// Service metadata.
     pub data: ServiceMetadata,
+
+    /// StateService config data.
+    #[allow(deprecated)]
+    config: StateServiceConfig,
+}
+
+impl StateServiceSubscriber {
+    /// The backing Zebra [`ReadStateService`].
+    ///
+    /// Test-only escape hatch: live tests recompute expected chain data (e.g.
+    /// treestate roots) directly off the `ReadStateService`. Production code goes
+    /// through the `ChainIndex` API.
+    #[cfg(feature = "test_dependencies")]
+    pub fn read_state_service(&self) -> zebra_state::ReadStateService {
+        self.indexer
+            .source()
+            .read_state_service()
+            .expect("StateServiceSubscriber is always State-backed")
+            .clone()
+    }
+
+    /// The indexer's mempool subscriber.
+    ///
+    /// Test-only escape hatch: live tests recompute expected `getmempoolinfo`
+    /// values directly off the mempool's entries. Production code goes through the
+    /// `ChainIndex` mempool API.
+    #[cfg(feature = "test_dependencies")]
+    pub fn mempool(&self) -> &crate::chain_index::mempool::MempoolSubscriber {
+        self.indexer.mempool_subscriber()
+    }
 }
 
 impl Status for StateServiceSubscriber {
@@ -383,7 +268,11 @@ impl StateServiceSubscriber {
     /// Gets a Subscriber to any updates to the latest chain tip
     pub fn chaintip_update_subscriber(&self) -> ChainTipSubscriber {
         ChainTipSubscriber {
-            monitor: self.chain_tip_change.clone(),
+            monitor: self
+                .indexer
+                .source()
+                .chain_tip_change()
+                .expect("StateServiceSubscriber is always State-backed"),
         }
     }
     /// Return a list of consecutive compact blocks.
