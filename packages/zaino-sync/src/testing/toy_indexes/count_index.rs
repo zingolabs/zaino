@@ -1,7 +1,7 @@
 //! BlockLocal × Monoidal: counts total blocks seen in each batch.
 
 use crate::descriptor::{BlockLocal, Monoidal};
-use crate::encode::Encode;
+use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::IndexId;
 use crate::traits::{ExtractError, ExtractLocal, IndexDef, MergeMonoidal, Schema};
 
@@ -31,6 +31,32 @@ impl BlockCount {
 impl Encode for BlockCount {
     fn encode(&self) -> Vec<u8> {
         self.0.to_le_bytes().to_vec()
+    }
+}
+
+impl Decode for BlockCount {
+    fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Ok(Self(u64::decode(bytes)?))
+    }
+}
+
+/// Unit key type for the single "total" entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TotalKey;
+
+impl Encode for TotalKey {
+    fn encode(&self) -> Vec<u8> {
+        b"total".to_vec()
+    }
+}
+
+impl Decode for TotalKey {
+    fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        if bytes == b"total" {
+            Ok(Self)
+        } else {
+            Err(DecodeError::Failed("expected 'total' key".into()))
+        }
     }
 }
 
@@ -72,10 +98,18 @@ impl MergeMonoidal for CountIndex {
 }
 
 impl Schema<BlockCount> for CountIndex {
-    type Key = &'static [u8];
+    type Key = TotalKey;
     type Value = BlockCount;
 
     fn into_entries(count: BlockCount) -> Vec<(Self::Key, Self::Value)> {
-        vec![(b"total".as_slice(), count)]
+        vec![(TotalKey, count)]
+    }
+
+    fn from_entries(entries: Vec<(Self::Key, Self::Value)>) -> BlockCount {
+        entries
+            .into_iter()
+            .next()
+            .map(|(_, v)| v)
+            .unwrap_or(BlockCount::new(0))
     }
 }

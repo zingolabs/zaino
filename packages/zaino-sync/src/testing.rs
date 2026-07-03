@@ -81,6 +81,14 @@ impl BackendReader for InMemoryReader {
         let guard = self.data.lock().expect("test mutex poisoned");
         Ok(guard.get(&index).and_then(|m| m.get(key).cloned()))
     }
+
+    fn scan(&self, index: IndexId) -> Result<Vec<(Vec<u8>, Vec<u8>)>, BackendError> {
+        let guard = self.data.lock().expect("test mutex poisoned");
+        Ok(guard
+            .get(&index)
+            .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default())
+    }
 }
 
 /// Write handle for the in-memory backend.

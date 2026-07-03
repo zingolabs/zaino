@@ -7,7 +7,7 @@
 //! result.
 
 use crate::descriptor::{Monoidal, SelfCumulative};
-use crate::encode::Encode;
+use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::IndexId;
 use crate::traits::{
     ExtractCumulative, ExtractError, IndexDef, MergeMonoidal, Schema,
@@ -38,6 +38,32 @@ impl CumulativeSum {
 impl Encode for CumulativeSum {
     fn encode(&self) -> Vec<u8> {
         self.0.to_le_bytes().to_vec()
+    }
+}
+
+impl Decode for CumulativeSum {
+    fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Ok(Self(u64::decode(bytes)?))
+    }
+}
+
+/// Unit key type for the single "sum" entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CumSumKey;
+
+impl Encode for CumSumKey {
+    fn encode(&self) -> Vec<u8> {
+        b"sum".to_vec()
+    }
+}
+
+impl Decode for CumSumKey {
+    fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        if bytes == b"sum" {
+            Ok(Self)
+        } else {
+            Err(DecodeError::Failed("expected 'sum' key".into()))
+        }
     }
 }
 
@@ -89,10 +115,18 @@ impl MergeMonoidal for CumulativeSumIndex {
 }
 
 impl Schema<CumulativeSum> for CumulativeSumIndex {
-    type Key = &'static [u8];
+    type Key = CumSumKey;
     type Value = CumulativeSum;
 
     fn into_entries(sum: CumulativeSum) -> Vec<(Self::Key, Self::Value)> {
-        vec![(b"sum".as_slice(), sum)]
+        vec![(CumSumKey, sum)]
+    }
+
+    fn from_entries(entries: Vec<(Self::Key, Self::Value)>) -> CumulativeSum {
+        entries
+            .into_iter()
+            .next()
+            .map(|(_, v)| v)
+            .unwrap_or(CumulativeSum::new(0))
     }
 }

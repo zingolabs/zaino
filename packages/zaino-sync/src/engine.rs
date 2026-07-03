@@ -24,19 +24,33 @@ use std::collections::HashMap;
 
 use rayon::prelude::*;
 
-use crate::backend::{Backend, BackendError, BackendWriter};
+use crate::backend::{Backend, BackendError, BackendReader, BackendWriter};
 use crate::block_buffer::BlockBuffer;
 use crate::dag::DagError;
+use crate::encode::{Decode, Encode};
 use crate::index_set::IndexSet;
 use crate::pipeline::{IndexPipeline, PipelineError};
-use crate::primitives::{BatchIndex, BlockOffset, IndexId};
+use crate::primitives::{BatchIndex, BlockHeight, BlockOffset, IndexId};
 use crate::scheduler::{ExtractJob, Scheduler, Task};
+use crate::traits::WriteOp;
+
+/// Well-known index ID for engine metadata (watermark, etc.).
+const METADATA_INDEX: IndexId = IndexId::new("_engine_meta");
+
+/// Key for the committed-height watermark entry.
+const WATERMARK_KEY: &[u8] = b"committed_height";
 
 /// Configuration for the sync engine.
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
     /// Number of blocks per persistence batch.
     pub batch_size: u32,
+    /// The block height of the first block in this sync run.
+    ///
+    /// Used to compute absolute committed heights for the watermark.
+    /// On a fresh sync this is genesis (0); on resume the caller
+    /// reads the prior watermark and sets this to `watermark + 1`.
+    pub start_height: BlockHeight,
 }
 
 /// Errors during sync.
@@ -68,14 +82,23 @@ pub struct SyncEngine<Ctx, B: Backend> {
     pipelines: HashMap<IndexId, Box<dyn IndexPipeline<Ctx>>>,
     backend: B,
     buffer: BlockBuffer<Ctx>,
+    start_height: BlockHeight,
+    /// Write ops waiting for an atomic batch commit. Each index's
+    /// persist step pushes ops here; the actual backend write happens
+    /// when all indexes have persisted for that batch.
+    pending_ops: HashMap<BatchIndex, Vec<WriteOp>>,
     evicted_through: Option<BatchIndex>,
 }
 
 impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     /// Create an engine from a declarative [`IndexSet`].
     ///
-    /// Builds the dependency DAG, constructs the scheduler, and indexes
-    /// pipelines by name for O(1) lookup during dispatch.
+    /// Builds the dependency DAG, constructs the scheduler, indexes
+    /// pipelines by name for O(1) lookup, and hydrates pipeline state
+    /// from the backend. SelfCumulative pipelines decode their running
+    /// accumulators from previously committed data; BlockLocal
+    /// pipelines have no state to load (no-op). If the backend is
+    /// empty the load is a no-op for all pipelines.
     pub fn from_index_set(
         set: IndexSet<Ctx>,
         backend: B,
@@ -88,6 +111,11 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
             .map(|p| (p.descriptor().name, p))
             .collect();
 
+        let reader = backend.reader()?;
+        for pipeline in pipelines.values() {
+            pipeline.load_state(&reader)?;
+        }
+
         let batch_size = config.batch_size;
         let scheduler = Scheduler::new(dag, batch_size);
 
@@ -96,8 +124,28 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
             pipelines,
             backend,
             buffer: BlockBuffer::new(batch_size),
+            start_height: config.start_height,
+            pending_ops: HashMap::new(),
             evicted_through: None,
         })
+    }
+
+    /// The committed-height watermark from a prior sync run, if any.
+    ///
+    /// Read from the backend before engine construction. Returns `None`
+    /// on a fresh backend. The caller uses this to decide what
+    /// `start_height` to pass and where to begin provisioning.
+    pub fn committed_height(backend: &B) -> Result<Option<BlockHeight>, SyncError> {
+        let reader = backend.reader()?;
+        let raw = reader.get(METADATA_INDEX, WATERMARK_KEY)?;
+        match raw {
+            Some(bytes) => {
+                let height = BlockHeight::decode(&bytes)
+                    .map_err(|e| PipelineError::Persist(e.to_string()))?;
+                Ok(Some(height))
+            }
+            None => Ok(None),
+        }
     }
 
     /// Sync a pre-loaded range of blocks.
@@ -280,8 +328,8 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
                         .into_iter()
                         .find(|h| h.index == index);
                     if let Some(handle) = handle {
-                        self.merge_persist_commit(handle)?;
-                        self.try_evict();
+                        self.merge_persist(handle)?;
+                        self.try_commit()?;
                     }
                 }
             }
@@ -317,18 +365,25 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     fn report_extractions(&mut self, jobs: Vec<ExtractJob>) -> Result<(), SyncError> {
         for job in jobs {
             if let Some(handle) = self.scheduler.extraction_done(job.index) {
-                self.merge_persist_commit(handle)?;
-                self.try_evict();
+                self.merge_persist(handle)?;
+                self.try_commit()?;
             }
         }
         Ok(())
     }
 
-    /// Merge, persist, and commit a fully-extracted batch for one index.
-    fn merge_persist_commit(
+    /// Merge and persist a fully-extracted batch for one index.
+    ///
+    /// Combines deltas into domain state, serializes to [`WriteOp`]s,
+    /// and stashes the ops in [`pending_ops`](Self::pending_ops). The
+    /// actual backend write happens later in [`try_commit_and_evict`]
+    /// when ALL indexes have persisted for the batch — a single atomic
+    /// commit covers every index's data plus the watermark.
+    fn merge_persist(
         &mut self,
         handle: crate::scheduler::BatchHandle<crate::scheduler::FullyExtracted>,
     ) -> Result<(), SyncError> {
+        let batch = handle.batch;
         let index_id = handle.index;
 
         let pipeline = self.pipelines.get(&index_id)
@@ -337,40 +392,64 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
         // Merge: combine deltas (domain types).
         pipeline.merge()?;
 
-        // Persist: domain → WriteOps.
+        // Persist: domain → WriteOps, stash for atomic commit.
         let ops = pipeline.persist()?;
+        self.pending_ops.entry(batch).or_default().extend(ops);
 
-        // Commit to backend.
-        if !ops.is_empty() {
-            let mut writer = self.backend.writer()?;
-            writer.commit(ops)?;
-        }
-
-        // Tell the scheduler this batch is done.
+        // Advance the scheduler — downstream indexes can proceed.
         let merged = self.scheduler.merge_done(handle);
         self.scheduler.batch_committed(merged);
 
         Ok(())
     }
 
-    /// Advance the eviction frontier.
+    /// Atomically commit all stashed ops for fully-persisted batches.
     ///
-    /// After each batch commit, checks whether all indexes have moved
-    /// past the next unevicted batch. If so, drops those blocks from
-    /// the buffer — they are no longer needed by any index.
-    fn try_evict(&mut self) {
+    /// When all indexes have persisted for a batch, drains the
+    /// stashed [`WriteOp`]s, appends the watermark (highest committed
+    /// block height), and writes everything in a single backend call.
+    /// The watermark never leads any index's data.
+    fn try_commit(&mut self) -> Result<(), SyncError> {
         loop {
             let candidate = match self.evicted_through {
                 None => BatchIndex::new(0),
                 Some(b) => BatchIndex::new(b.value() + 1),
             };
-            if self.scheduler.all_committed_through(candidate) {
-                self.buffer.evict_through_batch(candidate);
-                self.evicted_through = Some(candidate);
-            } else {
+            if !self.scheduler.all_committed_through(candidate) {
                 break;
             }
+
+            let mut ops = self.pending_ops.remove(&candidate).unwrap_or_default();
+
+            // Watermark: highest committed height for this batch.
+            let batch_size = u64::from(self.scheduler.batch_size());
+            let max_offset =
+                ((u64::from(candidate.value()) + 1) * batch_size)
+                    .min(u64::from(self.buffer.total_pushed()));
+            let committed_height =
+                BlockHeight::new(self.start_height.value() + max_offset - 1);
+
+            ops.push(WriteOp::Put {
+                index: METADATA_INDEX,
+                key: WATERMARK_KEY.to_vec(),
+                value: committed_height.encode(),
+            });
+
+            let mut writer = self.backend.writer()?;
+            writer.commit(ops)?;
+
+            self.try_evict(candidate);
         }
+        Ok(())
+    }
+
+    /// Evict a committed batch's blocks from the buffer.
+    ///
+    /// Called after the atomic commit succeeds. Drops block contexts
+    /// that are no longer needed by any index.
+    fn try_evict(&mut self, batch: BatchIndex) {
+        self.buffer.evict_through_batch(batch);
+        self.evicted_through = Some(batch);
     }
 }
 

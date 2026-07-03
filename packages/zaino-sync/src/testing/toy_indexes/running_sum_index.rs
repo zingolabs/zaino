@@ -1,7 +1,7 @@
 //! BlockLocal × Fold: running sum of values across blocks in a batch.
 
 use crate::descriptor::{BlockLocal, Fold};
-use crate::encode::Encode;
+use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::IndexId;
 use crate::traits::{ExtractError, ExtractLocal, IndexDef, MergeFold, Schema};
 
@@ -30,6 +30,32 @@ impl RunningSum {
 impl Encode for RunningSum {
     fn encode(&self) -> Vec<u8> {
         self.0.to_le_bytes().to_vec()
+    }
+}
+
+impl Decode for RunningSum {
+    fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Ok(Self(u64::decode(bytes)?))
+    }
+}
+
+/// Unit key type for the single "sum" entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SumKey;
+
+impl Encode for SumKey {
+    fn encode(&self) -> Vec<u8> {
+        b"sum".to_vec()
+    }
+}
+
+impl Decode for SumKey {
+    fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        if bytes == b"sum" {
+            Ok(Self)
+        } else {
+            Err(DecodeError::Failed("expected 'sum' key".into()))
+        }
     }
 }
 
@@ -67,10 +93,18 @@ impl MergeFold for RunningSumIndex {
 }
 
 impl Schema<RunningSum> for RunningSumIndex {
-    type Key = &'static [u8];
+    type Key = SumKey;
     type Value = RunningSum;
 
     fn into_entries(sum: RunningSum) -> Vec<(Self::Key, Self::Value)> {
-        vec![(b"sum".as_slice(), sum)]
+        vec![(SumKey, sum)]
+    }
+
+    fn from_entries(entries: Vec<(Self::Key, Self::Value)>) -> RunningSum {
+        entries
+            .into_iter()
+            .next()
+            .map(|(_, v)| v)
+            .unwrap_or(RunningSum::new(0))
     }
 }

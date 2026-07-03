@@ -41,8 +41,9 @@
 use std::marker::PhantomData;
 use std::sync::Mutex;
 
+use crate::backend::BackendReader;
 use crate::descriptor::{Append, BlockLocal, Descriptor, Fold, Monoidal, SelfCumulative};
-use crate::encode::Encode;
+use crate::encode::{Decode, Encode};
 use crate::pipeline::{IndexPipeline, PipelineError};
 use crate::traits::{
     ExtractCumulative, ExtractLocal, IndexDef, MergeAppend, MergeFold, MergeMonoidal,
@@ -370,6 +371,31 @@ where
 {
     fn descriptor(&self) -> &Descriptor {
         &self.descriptor
+    }
+
+    fn load_state(&self, reader: &dyn BackendReader) -> Result<(), PipelineError> {
+        let raw_entries = reader
+            .scan(I::NAME)
+            .map_err(|e| PipelineError::Persist(e.to_string()))?;
+
+        if raw_entries.is_empty() {
+            return Ok(());
+        }
+
+        let entries: Vec<_> = raw_entries
+            .into_iter()
+            .map(|(k, v)| {
+                let key = <I as Schema<S::MergedState>>::Key::decode(&k)
+                    .map_err(|e| PipelineError::Persist(e.to_string()))?;
+                let value = <I as Schema<S::MergedState>>::Value::decode(&v)
+                    .map_err(|e| PipelineError::Persist(e.to_string()))?;
+                Ok((key, value))
+            })
+            .collect::<Result<_, PipelineError>>()?;
+
+        let state = I::from_entries(entries);
+        *self.running_state.lock().expect("running state mutex poisoned") = state;
+        Ok(())
     }
 
     fn extract_one(&self, ctx: &Ctx) -> Result<(), PipelineError> {

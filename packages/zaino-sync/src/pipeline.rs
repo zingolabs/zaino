@@ -32,6 +32,7 @@
 //!    types here. (Currently the merge traits own this step; it will
 //!    move to a dedicated persistence layer.)
 
+use crate::backend::BackendReader;
 use crate::bridge::BridgeDispatch;
 use crate::descriptor::Descriptor;
 use crate::traits::{ExtractError, IndexDef, ProvideContext, WriteOp};
@@ -88,6 +89,16 @@ pub trait IndexPipeline<Ctx>: Send + Sync {
     /// backend. This is the serialization boundary. Clears the
     /// internal state, readying the bridge for the next batch.
     fn persist(&self) -> Result<Vec<WriteOp>, PipelineError>;
+
+    /// Load persisted state from the backend on startup.
+    ///
+    /// Called once per pipeline before the first batch. The default
+    /// implementation is a no-op — BlockLocal indexes have no state
+    /// to resume. SelfCumulative bridges override this to reload the
+    /// running accumulator from the backend.
+    fn load_state(&self, _reader: &dyn BackendReader) -> Result<(), PipelineError> {
+        Ok(())
+    }
 
     /// Convenience: run all three phases sequentially on a batch.
     ///

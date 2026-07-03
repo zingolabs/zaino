@@ -79,12 +79,22 @@ mod tests {
         backend: InMemoryBackend,
         batch_size: u32,
     ) -> SyncEngine<TestBlockContext, InMemoryBackend> {
+        build_engine_at(backend, batch_size, BlockHeight::new(0))
+    }
+
+    /// Helper: build an engine from the three BlockLocal toy indexes
+    /// starting at a given height.
+    fn build_engine_at(
+        backend: InMemoryBackend,
+        batch_size: u32,
+        start_height: BlockHeight,
+    ) -> SyncEngine<TestBlockContext, InMemoryBackend> {
         let set = IndexSet::new()
             .with::<ValueIndex>()
             .with::<CountIndex>()
             .with::<RunningSumIndex>();
 
-        SyncEngine::from_index_set(set, backend, EngineConfig { batch_size })
+        SyncEngine::from_index_set(set, backend, EngineConfig { batch_size, start_height })
             .expect("valid index set")
     }
 
@@ -93,13 +103,23 @@ mod tests {
         backend: InMemoryBackend,
         batch_size: u32,
     ) -> SyncEngine<TestBlockContext, InMemoryBackend> {
+        build_engine_with_cumulative_at(backend, batch_size, BlockHeight::new(0))
+    }
+
+    /// Helper: build an engine with cumulative index starting at a
+    /// given height.
+    fn build_engine_with_cumulative_at(
+        backend: InMemoryBackend,
+        batch_size: u32,
+        start_height: BlockHeight,
+    ) -> SyncEngine<TestBlockContext, InMemoryBackend> {
         let set = IndexSet::new()
             .with::<ValueIndex>()
             .with::<CountIndex>()
             .with::<RunningSumIndex>()
             .with::<CumulativeSumIndex>();
 
-        SyncEngine::from_index_set(set, backend, EngineConfig { batch_size })
+        SyncEngine::from_index_set(set, backend, EngineConfig { batch_size, start_height })
             .expect("valid index set")
     }
 
@@ -329,5 +349,87 @@ mod tests {
         engine.sync_range(blocks).expect("sync succeeds");
 
         assert_eq!(read_cumulative_sum(&backend), 27);
+    }
+
+    #[test]
+    fn cumulative_sum_resumes_from_backend() {
+        // Sync blocks 0..=4, drop the engine, build a new one on the
+        // same backend, sync blocks 5..=6. The new engine must load
+        // the committed accumulator so that extraction sees the correct
+        // prior state (and triggers doubling at the right threshold).
+        //
+        // Phase 1 (blocks 0..=4):
+        //   block 0: prior=0,  delta=0  → sum=0
+        //   block 1: prior=0,  delta=1  → sum=1
+        //   block 2: prior=1,  delta=2  → sum=3
+        //   block 3: prior=3,  delta=3  → sum=6
+        //   block 4: prior=6,  delta=4  → sum=10
+        //
+        // Phase 2 (blocks 5..=6, new engine, loaded prior=10):
+        //   block 5: prior=10, delta=5  → sum=15   (10 is NOT > 10)
+        //   block 6: prior=15, delta=12 → sum=27   (15 > 10, doubled)
+        //
+        // Without load_state the new engine would start from prior=0,
+        // and the result would be 0+5+6 = 11 — wrong.
+        let backend = InMemoryBackend::new();
+
+        // Phase 1.
+        {
+            let blocks: Vec<_> = (0u64..=4)
+                .map(|h| TestBlockContext { height: h, value: h as u32 })
+                .collect();
+            let mut engine = build_engine_with_cumulative(backend.clone(), 20);
+            engine.sync_range(blocks).expect("phase 1 sync succeeds");
+            assert_eq!(read_cumulative_sum(&backend), 10);
+        }
+
+        // Watermark should reflect phase 1.
+        let watermark = SyncEngine::<TestBlockContext, _>::committed_height(&backend)
+            .expect("read succeeds")
+            .expect("watermark exists");
+        assert_eq!(watermark, BlockHeight::new(4));
+
+        // Phase 2: new engine, same backend, starting from watermark + 1.
+        {
+            let start = BlockHeight::new(watermark.value() + 1);
+            let blocks: Vec<_> = (5u64..=6)
+                .map(|h| TestBlockContext { height: h, value: h as u32 })
+                .collect();
+            let mut engine = build_engine_with_cumulative_at(backend.clone(), 20, start);
+            engine.sync_range(blocks).expect("phase 2 sync succeeds");
+            assert_eq!(read_cumulative_sum(&backend), 27);
+        }
+
+        // Watermark should now reflect phase 2.
+        let watermark = SyncEngine::<TestBlockContext, _>::committed_height(&backend)
+            .expect("read succeeds")
+            .expect("watermark exists");
+        assert_eq!(watermark, BlockHeight::new(6));
+    }
+
+    #[test]
+    fn watermark_advances_per_batch() {
+        // Batch size 3, blocks 0..=9 → batches [0,1,2], [3,4,5], [6,7,8], [9].
+        // After sync, watermark should be 9.
+        let backend = InMemoryBackend::new();
+        let mut engine = build_engine(backend.clone(), 3);
+
+        let blocks: Vec<_> = (0u64..=9)
+            .map(|h| TestBlockContext { height: h, value: h as u32 })
+            .collect();
+        engine.sync_range(blocks).expect("sync succeeds");
+
+        let watermark = SyncEngine::<TestBlockContext, _>::committed_height(&backend)
+            .expect("read succeeds")
+            .expect("watermark exists");
+        assert_eq!(watermark, BlockHeight::new(9));
+    }
+
+    #[test]
+    fn watermark_none_on_fresh_backend() {
+        let backend = InMemoryBackend::new();
+        let watermark = SyncEngine::<TestBlockContext, InMemoryBackend>::committed_height(&backend)
+            .expect("read succeeds");
+        assert!(watermark.is_none());
     }
 }

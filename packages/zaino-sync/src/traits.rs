@@ -248,7 +248,7 @@ pub trait MergeFold: IndexDef<Composition = Fold> {
 // The bridge does the mechanical conversion to `WriteOp`s.
 // ===========================================================================
 
-use crate::encode::Encode;
+use crate::encode::{Decode, Encode};
 
 /// Declares an index's key-value schema and how to map results to entries.
 ///
@@ -259,20 +259,27 @@ use crate::encode::Encode;
 /// - Fold: `Self::FoldState`
 ///
 /// The index implements `Schema<M>` for its composition's output type.
-/// The bridge calls `into_entries` and uses `Encode` on the key/value
-/// types to produce `WriteOp`s. No index code touches bytes.
+/// The bridge calls `into_entries` / `from_entries` and uses `Encode` /
+/// `Decode` on the key/value types to produce `WriteOp`s or reconstruct
+/// state. No index code touches bytes.
 ///
 /// Using a type parameter instead of an associated type avoids cycle
 /// errors that arise when the merged type references the index's own
 /// associated types (e.g. `Vec<Self::Delta>`).
 pub trait Schema<M>: IndexDef {
     /// The key type for this index's entries.
-    type Key: Encode + Send + Sync;
+    type Key: Encode + Decode + Send + Sync;
     /// The value type for this index's entries.
-    type Value: Encode + Send + Sync;
+    type Value: Encode + Decode + Send + Sync;
 
     /// Map a merge result to typed key-value entries.
     fn into_entries(merged: M) -> Vec<(Self::Key, Self::Value)>;
+
+    /// Reconstruct a merge result from typed key-value entries.
+    ///
+    /// The mechanical inverse of [`into_entries`](Self::into_entries).
+    /// The bridge calls this after decoding raw bytes from the backend.
+    fn from_entries(entries: Vec<(Self::Key, Self::Value)>) -> M;
 }
 
 // ===========================================================================

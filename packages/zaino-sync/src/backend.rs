@@ -55,9 +55,15 @@ pub trait BackendWriter: Send {
     fn commit(&mut self, ops: Vec<WriteOp>) -> Result<(), BackendError>;
 }
 
-/// Read handle. Used by [`DepsReader`](crate::traits::DepsReader) and
-/// the engine's progress tracking.
+/// Read handle. Used by [`DepsReader`](crate::traits::DepsReader),
+/// the engine's progress tracking, and S-scope state loading.
 pub trait BackendReader: Send {
     /// Read a single key from the given index.
     fn get(&self, index: crate::primitives::IndexId, key: &[u8]) -> Result<Option<Vec<u8>>, BackendError>;
+
+    /// Return all entries for an index as raw key-value byte pairs.
+    ///
+    /// Used by the bridge to load accumulated state on resume. The
+    /// bridge handles decoding; the backend returns raw bytes.
+    fn scan(&self, index: crate::primitives::IndexId) -> Result<Vec<(Vec<u8>, Vec<u8>)>, BackendError>;
 }

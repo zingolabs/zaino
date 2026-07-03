@@ -1,7 +1,7 @@
 //! BlockLocal × Append: stores (height → value) for each block.
 
 use crate::descriptor::{Append, BlockLocal};
-use crate::encode::Encode;
+use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::{BlockHeight, IndexId};
 use crate::traits::{ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema};
 
@@ -32,6 +32,12 @@ impl BlockValue {
 impl Encode for BlockValue {
     fn encode(&self) -> Vec<u8> {
         self.0.to_le_bytes().to_vec()
+    }
+}
+
+impl Decode for BlockValue {
+    fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Ok(Self(u32::decode(bytes)?))
     }
 }
 
@@ -77,6 +83,13 @@ impl Schema<Vec<Entry>> for ValueIndex {
         entries
             .into_iter()
             .map(|entry| (entry.height, entry.value))
+            .collect()
+    }
+
+    fn from_entries(entries: Vec<(Self::Key, Self::Value)>) -> Vec<Entry> {
+        entries
+            .into_iter()
+            .map(|(height, value)| Entry { height, value })
             .collect()
     }
 }
