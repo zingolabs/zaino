@@ -11,6 +11,11 @@ env = { RUSTDOCFLAGS = "-D warnings" }
 command = "cargo"
 args = ["doc", "--no-deps", "--all-features"]
 
+[tasks.check-experimental]
+description = "Compile (incl. test targets) with the experimental_features umbrella on. Gated modules are invisible to default builds, so without this they rot silently (e.g. a crate-wide rename missing a default-off module)."
+command = "cargo"
+args = ["check", "--tests", "--features", "experimental_features"]
+
 [tasks.lint-boundary-conversions]
 description = "Forbid From/TryFrom impls across the persistence and wire boundaries. Both must use named inherent methods (from_business/into_business for persistence; to_wire/try_from_wire for wire)."
 # See CLAUDE.md §'Persistence-boundary conversions' and §'Wire-boundary
@@ -103,6 +108,7 @@ dependencies = [
     "fmt",
     "clippy",
     "doc",
+    "check-experimental",
     "lint-boundary-conversions",
     "lint-workbench",
     "lint-toolchain-pin",

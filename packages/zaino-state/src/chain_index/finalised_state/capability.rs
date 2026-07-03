@@ -964,7 +964,7 @@ pub trait IndexedBlockExt: Send + Sync {
 /// Range semantics:
 /// - Methods that accept `start_height` and `end_height` interpret the range as inclusive:
 ///   `[start_height, end_height]`
-pub trait TransparentHistExt: Send + Sync {
+pub(crate) trait TransparentHistExt: Send + Sync {
     /// Fetch all address history records for a given transparent address.
     ///
     /// Returns:

@@ -6644,6 +6644,8 @@ dependencies = [
  "lazy_static",
  "metrics",
  "mset",
+ "proptest",
+ "proptest-derive",
  "rayon",
  "regex",
  "rlimit",
@@ -6658,6 +6660,7 @@ dependencies = [
  "tracing",
  "zebra-chain",
  "zebra-node-services",
+ "zebra-test",
 ]
 
 [[package]]

@@ -703,6 +703,14 @@ pub struct NodeBackedChainIndex<Source: BlockchainSource = ValidatorConnector> {
     non_finalized_state: Arc<ArcSwapOption<crate::NonFinalizedState<Source>>>,
     finalized_db: std::sync::Arc<finalised_state::FinalisedState<Source>>,
     sync_loop_handle: Option<tokio::task::JoinHandle<Result<(), SyncError>>>,
+    /// Handle to the one-shot finalised spend-index build, if one was spawned.
+    /// Aborted on shutdown/drop so the build never outlives the index.
+    #[cfg(feature = "outp_to_spend_index")]
+    spend_index_build: Option<
+        tokio::task::JoinHandle<
+            Result<finalised_state::outp_to_spend_index::SpendIndexBuildStats, FinalisedStateError>,
+        >,
+    >,
     status: NamedAtomicStatus,
     network: ZebraNetwork,
     source: Source,
@@ -799,6 +807,8 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             non_finalized_state: Arc::new(ArcSwapOption::empty()),
             finalized_db,
             sync_loop_handle: None,
+            #[cfg(feature = "outp_to_spend_index")]
+            spend_index_build: None,
             status: NamedAtomicStatus::new("ChainIndex", StatusType::Spawning),
             network: config.network.to_zebra_network(),
             source,
@@ -806,6 +816,14 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             cancel_token: CancellationToken::new(),
         };
         chain_index.sync_loop_handle = Some(chain_index.start_sync_loop());
+
+        #[cfg(feature = "outp_to_spend_index")]
+        {
+            chain_index.spend_index_build = chain_index
+                .source
+                .finalised_spend_index_source()
+                .map(|source| finalised_state::outp_to_spend_index::spawn_build(source, &config));
+        }
 
         Ok(chain_index)
     }
@@ -837,6 +855,10 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
     /// failure-path round trip.
     pub async fn shutdown(&self) -> Result<(), FinalisedStateError> {
         self.cancel_token.cancel();
+        #[cfg(feature = "outp_to_spend_index")]
+        if let Some(handle) = &self.spend_index_build {
+            handle.abort();
+        }
         self.status.store(StatusType::Closing);
         self.finalized_db.shutdown().await?;
         self.mempool.close();
@@ -1067,6 +1089,10 @@ impl<Source: BlockchainSource> Drop for NodeBackedChainIndex<Source> {
     /// exits at its next await checkpoint instead.
     fn drop(&mut self) {
         self.cancel_token.cancel();
+        #[cfg(feature = "outp_to_spend_index")]
+        if let Some(handle) = &self.spend_index_build {
+            handle.abort();
+        }
     }
 }
 
