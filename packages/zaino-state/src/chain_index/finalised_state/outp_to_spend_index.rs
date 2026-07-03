@@ -8,10 +8,14 @@
 //! **collate** them into LMDB key order, and bulk-load them into the index's
 //! own LMDB store via `MDB_APPEND` ([`SpendIndexDb`]). The independent,
 //! move-only sync loop ([`SpendIndexSync`]) drives these in one shot over
-//! `[start_height, finalised_tip]` streamed from a [`SpendIndexSource`], and
-//! [`spawn_build`] wires it onto the owning `ChainIndex` (StateService only,
-//! from the Sapling activation height). (Table-level integrity over the entries
-//! is deferred; it is not MVP.)
+//! `[start_height, finalised_tip]` streamed from a [`SpendIndexSource`]:
+//! block sourcing/extraction fans out across worker tasks pulling fixed-size
+//! height chunks from a shared queue (`workers = 1` is the serial baseline —
+//! the same path minus concurrency, so serial and parallel builds compare
+//! stage-for-stage), and collation stays one global sort feeding one
+//! `MDB_APPEND` pass. [`spawn_build`] wires it onto the owning `ChainIndex`
+//! (StateService only, from the Sapling activation height). (Table-level
+//! integrity over the entries is deferred; it is not MVP.)
 
 use std::path::Path;
 
@@ -206,77 +210,211 @@ impl SpendIndexSource for StateSource {}
 #[cfg(test)]
 impl SpendIndexSource for crate::chain_index::source::mockchain_source::MockchainSource {}
 
+/// Stage timings and volumes from one one-shot build: the benchmark's
+/// measurement surface. `stream_and_extract` covers the sequential
+/// fetch → decode → extract loop — the stage a parallel build transforms —
+/// while `collate` and `bulk_load` are identical across build variants, so
+/// comparing two builds' stats isolates the streaming stage.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct SpendIndexBuildStats {
+    /// Worker tasks the streaming stage fanned out across (`1` = the serial
+    /// baseline), recorded so every measurement is self-describing.
+    pub(crate) workers: u32,
+    /// Blocks fetched and scanned.
+    pub(crate) blocks: u32,
+    /// Spend records extracted (= entries loaded).
+    pub(crate) spends: usize,
+    /// Wall-clock of the fetch → decode → extract loop.
+    pub(crate) stream_and_extract: std::time::Duration,
+    /// Wall-clock of the global encode + sort + duplicate check.
+    pub(crate) collate: std::time::Duration,
+    /// Wall-clock of the `MDB_APPEND` load and durability sync.
+    pub(crate) bulk_load: std::time::Duration,
+}
+
 /// The independent, single-run builder for the spend index.
 ///
 /// Move-only (`!Clone`) with a private constructor and a `self`-consuming
 /// [`run`](Self::run): the type system makes a second concurrent build
-/// unrepresentable — "only one loop at a time" without a runtime guard. POC
-/// build model: re-stream `start_height` → finalised tip from `source`, extract
-/// every spend, collate once, and bulk-load the index in a single `MDB_APPEND`
-/// pass.
+/// unrepresentable — "only one loop at a time" without a runtime guard. (The
+/// guarantee constrains *builds*; the fan-out of worker tasks inside one
+/// `run` is not a second build.) POC build model: re-stream `start_height` →
+/// finalised tip from `source` across `workers` chunk-pulling tasks, extract
+/// every spend, collate once, and bulk-load the index in a single
+/// `MDB_APPEND` pass.
 pub(super) struct SpendIndexSync<S: SpendIndexSource> {
     source: S,
     db: SpendIndexDb,
-    network: Network,
     /// First height to index, inclusive. Genesis (`0`) for a full index, or a
     /// higher height — e.g. a network-upgrade activation — to cover only spends
     /// occurring from that epoch onward.
     start_height: u32,
+    /// Benchmark knob: when set, the build stops at
+    /// `min(finalised_tip, cap)` instead of the finalised tip, so a baseline
+    /// run can cover a fixed block range. `None` (production) builds to the
+    /// finalised tip.
+    end_height_cap: Option<u32>,
+    /// Worker tasks for the streaming stage. Defaults to the machine's
+    /// available parallelism; `1` selects the serial baseline (the identical
+    /// path minus concurrency), which is what parallel runs are measured
+    /// against.
+    workers: usize,
 }
 
 impl<S: SpendIndexSource> SpendIndexSync<S> {
     /// Private mint: production enters via [`SpendIndexSync::from_state`]
     /// (StateService only); tests construct directly with a `MockchainSource`.
-    fn new(source: S, db: SpendIndexDb, network: Network, start_height: u32) -> Self {
+    fn new(source: S, db: SpendIndexDb, start_height: u32) -> Self {
         Self {
             source,
             db,
-            network,
             start_height,
+            end_height_cap: None,
+            workers: std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get),
         }
     }
 
-    /// Builds the spend index from its start height to the finalised tip, consuming the
-    /// handle. One-shot (POC): no resume, no batching — a single global
-    /// `collate` + `MDB_APPEND`.
-    pub(super) async fn run(self) -> Result<(), FinalisedStateError> {
+    /// Builds the spend index from its start height to the finalised tip,
+    /// consuming the handle and returning the per-stage timings. One-shot
+    /// (POC): no resume, no batching — a single global `collate` +
+    /// `MDB_APPEND`.
+    pub(super) async fn run(self) -> Result<SpendIndexBuildStats, FinalisedStateError> {
         let Some(best) = self.source.get_best_block_height().await.map_err(|error| {
             FinalisedStateError::Custom(format!("spend index: fetch best height: {error:?}"))
         })?
         else {
-            return Ok(()); // empty chain — nothing finalised to index
+            return Ok(SpendIndexBuildStats::default()); // empty chain — nothing finalised to index
         };
 
         // Finalised tip: below the reorg-possible window, clamped at genesis.
+        // A benchmark cap lowers it further so a run covers a fixed range.
         let finalised_tip = best.0.saturating_sub(OPERATIONAL_NFS_DEPTH);
+        let finalised_tip = self
+            .end_height_cap
+            .map_or(finalised_tip, |cap| finalised_tip.min(cap));
 
-        let zebra_network = self.network.to_zebra_network();
-        let sapling_activation = NetworkUpgrade::Sapling
-            .activation_height(&zebra_network)
-            .expect("Sapling activation height is set for every network");
-        let nu5_activation = NetworkUpgrade::Nu5.activation_height(&zebra_network);
+        // Stream finalised blocks across the workers, extracting spends and
+        // dropping each block; only the (smaller) spend records are retained
+        // for the one-shot sort. Fixed-size chunks pulled from a shared queue
+        // self-balance the block-weight skew across the chain (late blocks
+        // are far heavier than early ones), so equal-width per-worker ranges
+        // are not needed.
+        let workers = self.workers.max(1);
+        let chunks =
+            std::sync::Arc::new(chunk_ranges(self.start_height, finalised_tip, CHUNK_BLOCKS));
+        let next_chunk = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
-        // Stream finalised blocks, extracting spends and dropping each block;
-        // only the (smaller) spend records are retained for the one-shot sort.
-        // Chainwork is irrelevant to spend extraction, so a `None` parent is fine.
-        let mut spends: Vec<SpendRecord> = Vec::new();
-        for height in self.start_height..=finalised_tip {
-            let block = build_indexed_block_from_source(
-                &self.source,
-                self.network,
-                sapling_activation,
-                nu5_activation,
-                height,
-                None,
-            )
-            .await?;
-            spends.extend(extract_spends(std::slice::from_ref(&block)));
+        let mut stats = SpendIndexBuildStats {
+            workers: workers as u32,
+            blocks: chunks.iter().map(|(lo, hi)| hi - lo + 1).sum(),
+            ..Default::default()
+        };
+
+        let stream_started = std::time::Instant::now();
+        let mut handles = Vec::with_capacity(workers);
+        for _ in 0..workers {
+            handles.push(tokio::spawn(extract_chunks(
+                self.source.clone(),
+                std::sync::Arc::clone(&chunks),
+                std::sync::Arc::clone(&next_chunk),
+            )));
         }
+        let mut spends: Vec<SpendRecord> = Vec::new();
+        for handle in handles {
+            let worker_records = handle.await.map_err(|error| {
+                FinalisedStateError::Custom(format!("spend index: worker task died: {error}"))
+            })??;
+            spends.extend(worker_records);
+        }
+        stats.stream_and_extract = stream_started.elapsed();
+        stats.spends = spends.len();
 
+        let collate_started = std::time::Instant::now();
         let collated = collate(&spends)?;
+        stats.collate = collate_started.elapsed();
+
+        let load_started = std::time::Instant::now();
         tokio::task::block_in_place(|| self.db.bulk_load(&collated))?;
-        Ok(())
+        stats.bulk_load = load_started.elapsed();
+
+        Ok(stats)
     }
+}
+
+/// Blocks per work-queue chunk. Small relative to any real build range so
+/// chunk-pulling self-balances the block-weight skew, large enough that queue
+/// bookkeeping (one relaxed `fetch_add` per chunk) is noise.
+const CHUNK_BLOCKS: u32 = 1_000;
+
+/// Splits inclusive `[start, end]` into consecutive inclusive ranges of at
+/// most `size` blocks. Empty when `start > end`.
+fn chunk_ranges(start: u32, end: u32, size: u32) -> Vec<(u32, u32)> {
+    let mut ranges = Vec::new();
+    let mut lo = start;
+    while lo <= end {
+        let hi = lo.saturating_add(size - 1).min(end);
+        ranges.push((lo, hi));
+        match hi.checked_add(1) {
+            Some(next) => lo = next,
+            None => break, // end == u32::MAX: the final range is pushed
+        }
+    }
+    ranges
+}
+
+/// One streaming worker: pulls chunk indices from the shared queue until it
+/// drains, fetching each height and extracting its spends into a
+/// worker-local buffer (returned for the caller to concatenate).
+///
+/// Roots-free: the per-block cost is one `get_block` plus a
+/// transparent-input walk — no commitment-tree-root fetch and no compact
+/// conversion of the (discarded) shielded data. The monolith's per-block
+/// ingestion awaits `get_block` *and* `get_commitment_tree_roots` in
+/// sequence, the fetch-latency pattern PR #1241 measured collapsing to
+/// ~1 blk/s in the sandblast band; the spend index never needs the second
+/// call.
+async fn extract_chunks<S: SpendIndexSource>(
+    source: S,
+    chunks: std::sync::Arc<Vec<(u32, u32)>>,
+    next_chunk: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+) -> Result<Vec<SpendRecord>, FinalisedStateError> {
+    let mut records = Vec::new();
+    loop {
+        let index = next_chunk.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let Some(&(lo, hi)) = chunks.get(index) else {
+            return Ok(records);
+        };
+        for height in lo..=hi {
+            let block = source
+                .get_block(zebra_state::HashOrHeight::Height(
+                    zebra_chain::block::Height(height),
+                ))
+                .await?
+                .ok_or_else(|| {
+                    FinalisedStateError::Custom(format!(
+                        "spend index: no block at finalised height {height}"
+                    ))
+                })?;
+            records.extend(extract_spends_from_zebra_block(&block));
+        }
+    }
+}
+
+/// Extracts every transparent spend in one zebra block: each non-coinbase
+/// input yields `(prevout_outpoint, containing_txid)`. Statically read-free —
+/// handed only block data — like [`extract_spends`], its compact-form twin;
+/// the sync-loop tests assert both paths agree over the same chains.
+fn extract_spends_from_zebra_block(
+    block: &zebra_chain::block::Block,
+) -> impl Iterator<Item = SpendRecord> + '_ {
+    block.transactions.iter().flat_map(|tx| {
+        let spending_txid = TransactionHash::from(tx.hash().0);
+        tx.inputs().iter().filter_map(move |input| {
+            input
+                .outpoint()
+                .map(|prevout| (Outpoint::new(prevout.hash.0, prevout.index), spending_txid))
+        })
+    })
 }
 
 /// Map size for the spend index's own LMDB env. LMDB grows the file lazily (no
@@ -303,7 +441,7 @@ fn spend_index_dir(cfg: &ChainIndexConfig) -> std::path::PathBuf {
 pub(crate) fn spawn_build(
     source: StateSource,
     cfg: &ChainIndexConfig,
-) -> tokio::task::JoinHandle<Result<(), FinalisedStateError>> {
+) -> tokio::task::JoinHandle<Result<SpendIndexBuildStats, FinalisedStateError>> {
     let network = cfg.network;
     let dir = spend_index_dir(cfg);
     tokio::spawn(async move {
@@ -314,15 +452,61 @@ pub(crate) fn spawn_build(
             })?
             .0;
         let db = SpendIndexDb::open(&dir, SPEND_INDEX_MAP_SIZE)?;
-        let result = SpendIndexSync::new(source, db, network, start_height)
-            .run()
-            .await;
+        let mut sync = SpendIndexSync::new(source, db, start_height);
+        if let Some(start) = parsed_env::<u32>(BENCH_START_HEIGHT_ENV) {
+            tracing::warn!(
+                start,
+                "spend-index build start overridden via {BENCH_START_HEIGHT_ENV} (benchmark knob)",
+            );
+            sync.start_height = start;
+        }
+        if let Some(cap) = parsed_env::<u32>(BENCH_END_HEIGHT_ENV) {
+            tracing::warn!(
+                cap,
+                "spend-index build height-capped via {BENCH_END_HEIGHT_ENV} (benchmark knob)",
+            );
+            sync.end_height_cap = Some(cap);
+        }
+        if let Some(workers) = parsed_env::<usize>(WORKERS_ENV) {
+            tracing::warn!(
+                workers,
+                "spend-index build worker count set via {WORKERS_ENV} (1 = serial baseline)",
+            );
+            sync.workers = workers.max(1);
+        }
+        let result = sync.run().await;
         match &result {
-            Ok(()) => tracing::info!("finalised spend-index build complete"),
+            Ok(stats) => tracing::info!(?stats, "finalised spend-index build complete"),
             Err(error) => tracing::error!("finalised spend-index build failed: {error}"),
         }
         result
     })
+}
+
+/// Benchmark env knobs. Each is ignored when unset and announced with a
+/// `warn!` when active, so a bounded or tuned build can't pass silently for
+/// a production one. Start/end bound the built range (e.g. a fixed 100k-block
+/// window); the worker knob selects the streaming fan-out, with `1` the
+/// serial baseline that parallel runs are measured against.
+const BENCH_START_HEIGHT_ENV: &str = "ZAINO_SPEND_INDEX_START_HEIGHT";
+const BENCH_END_HEIGHT_ENV: &str = "ZAINO_SPEND_INDEX_END_HEIGHT";
+const WORKERS_ENV: &str = "ZAINO_SPEND_INDEX_WORKERS";
+
+/// The parsed value of env knob `name`, or `None` when unset or unparseable
+/// (the latter is logged, not fatal — a benchmark knob must not take the
+/// production build down).
+fn parsed_env<T: std::str::FromStr>(name: &str) -> Option<T>
+where
+    T::Err: std::fmt::Display,
+{
+    let raw = std::env::var(name).ok()?;
+    match raw.parse() {
+        Ok(value) => Some(value),
+        Err(error) => {
+            tracing::warn!(%raw, "ignoring unparseable {name}: {error}");
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -416,6 +600,41 @@ mod collate {
 }
 
 #[cfg(test)]
+mod chunk_ranges {
+    #[test]
+    fn covers_the_range_exactly_once_with_ragged_tail() {
+        assert_eq!(
+            super::chunk_ranges(10, 34, 10),
+            vec![(10, 19), (20, 29), (30, 34)],
+        );
+    }
+
+    #[test]
+    fn exact_multiple_has_no_ragged_tail() {
+        assert_eq!(super::chunk_ranges(0, 19, 10), vec![(0, 9), (10, 19)]);
+    }
+
+    #[test]
+    fn single_block_range_is_one_chunk() {
+        assert_eq!(super::chunk_ranges(7, 7, 10), vec![(7, 7)]);
+    }
+
+    #[test]
+    fn empty_when_start_exceeds_end() {
+        assert!(super::chunk_ranges(8, 7, 10).is_empty());
+    }
+
+    #[test]
+    fn end_at_u32_max_terminates() {
+        let ranges = super::chunk_ranges(u32::MAX - 5, u32::MAX, 4);
+        assert_eq!(
+            ranges,
+            vec![(u32::MAX - 5, u32::MAX - 2), (u32::MAX - 1, u32::MAX)],
+        );
+    }
+}
+
+#[cfg(test)]
 mod spend_index_db {
     use super::*;
 
@@ -472,7 +691,7 @@ mod spend_index_sync {
             std::env::temp_dir().join(format!("outp_to_spend_index_{tag}_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let db = SpendIndexDb::open(&dir, 1 << 24).expect("open spend index");
-        SpendIndexSync::new(mock, db, Network::Mainnet, 0)
+        SpendIndexSync::new(mock, db, 0)
             .run()
             .await
             .expect("spend-index build runs");
@@ -672,7 +891,7 @@ mod spend_index_presence {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         let db = SpendIndexDb::open(&dir, 1 << 24).expect("open spend index");
-        SpendIndexSync::new(mock, db, Network::Mainnet, 0)
+        SpendIndexSync::new(mock, db, 0)
             .run()
             .await
             .expect("spend-index build runs");

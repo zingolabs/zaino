@@ -706,7 +706,11 @@ pub struct NodeBackedChainIndex<Source: BlockchainSource = ValidatorConnector> {
     /// Handle to the one-shot finalised spend-index build, if one was spawned.
     /// Aborted on shutdown/drop so the build never outlives the index.
     #[cfg(feature = "outp_to_spend_index")]
-    spend_index_build: Option<tokio::task::JoinHandle<Result<(), FinalisedStateError>>>,
+    spend_index_build: Option<
+        tokio::task::JoinHandle<
+            Result<finalised_state::outp_to_spend_index::SpendIndexBuildStats, FinalisedStateError>,
+        >,
+    >,
     status: NamedAtomicStatus,
     network: ZebraNetwork,
     source: Source,

@@ -52,18 +52,26 @@ default-off Cargo feature `outp_to_spend_index` (a member of
 `experimental_features`), decomposed into three roles so that
 read-freedom is scoped to exactly one of them:
 
-- **Block source** (impure): a `BlockchainSource` producing
-  `IndexedBlock`s. Bound at compile time to zebra's StateService or the
+- **Block source** (impure): a `BlockchainSource` producing zebra
+  blocks. Bound at compile time to zebra's StateService or the
   test mockchain via the `SpendIndexSource` trait — the JSON-RPC/zcashd
   `FetchService` does not implement it, so "never FetchService" is a
-  compile-time fact.
+  compile-time fact. The fetch is **roots-free**: one `get_block` per
+  height, skipping the monolith ingestion's second sequential await
+  (`get_commitment_tree_roots`) and its compact conversion of shielded
+  data — the spend index needs neither, and PR #1241 measured that
+  two-await-per-block pattern collapsing to ~1 blk/s in the sandblast
+  band.
 - **Extractor** (statically read-free): a free function handed only
-  `&[IndexedBlock]` — no `&self`, no database, no validator handle in
+  fetched block data — no `&self`, no database, no validator handle in
   scope — so a previous-output lookup is unrepresentable, not merely
   discouraged. Each transparent input yields
   `(prevout_outpoint, containing_txid)`. Null-prevout inputs (only the
   coinbase input) are skipped; spends *of* coinbase outputs are ordinary
-  spends and are indexed.
+  spends and are indexed. It exists in two forms — over raw zebra blocks
+  (the build path) and over zaino's compact form (the original, kept as
+  the test oracle) — and the sync-loop tests assert the two agree over
+  the same chains.
 - **Collator/store** (impure, single-writer): encode, byte-sort, reject
   duplicate keys as corrupt input, and bulk-load with `MDB_APPEND` into
   the index's **own** LMDB environment (database
@@ -83,7 +91,16 @@ source over `[start_height, finalised_tip]`, where
 `finalised_tip = best_height − non-finalized depth` — feeding the
 extractor only finalised blocks makes the build reorg-immune by
 construction. No resume watermark, no backfill from on-disk block
-tables, no migration; a crash reruns from the start height.
+tables, no migration; a crash reruns from the start height. The
+streaming stage fans out across worker tasks pulling fixed-size height
+chunks from a shared queue (chunk-pulling self-balances the block-weight
+skew across the chain); collation stays one global sort feeding one
+append pass, and workers never touch the store — the single-writer
+discipline whose violation PR #1275 diagnosed as LMDB corruption.
+There is one code path, not two: `workers = 1` *is* the serial
+baseline, so serial-vs-parallel benchmarks vary only the fan-out, and
+the build reports per-stage timings (stream/extract, collate, load)
+plus its worker count to make every run a self-describing measurement.
 
 The start height — the **index floor** — is a first-class, configurable
 property of the index that survives into production, not pilot
