@@ -81,7 +81,7 @@ mod tests {
         let backend = InMemoryBackend::new();
         let mut engine = build_engine(backend.clone(), 10);
 
-        engine.sync_range(&blocks).expect("sync succeeds");
+        engine.sync_range(blocks).expect("sync succeeds");
 
         // ValueIndex: 5 entries (heights 0..=4), each height → height as value
         let values = backend.entries(value_index::ID);
@@ -118,7 +118,7 @@ mod tests {
         // Batch size 3: blocks [0,1,2], [3,4,5], [6,7,8], [9]
         let mut engine = build_engine(backend.clone(), 3);
 
-        engine.sync_range(&blocks).expect("sync succeeds");
+        engine.sync_range(blocks).expect("sync succeeds");
 
         // ValueIndex: 10 entries, all correct (append across batches)
         let values = backend.entries(value_index::ID);
