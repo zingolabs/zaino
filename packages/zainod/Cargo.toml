@@ -1,12 +1,12 @@
 [package]
 name = "zainod"
+version = "0.5.1"
 description = "Crate containing the Zaino Indexer binary."
 authors = { workspace = true }
 repository = { workspace = true }
 homepage = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
-version = "0.5.0"
 
 [[bin]]
 name = "zainod"
