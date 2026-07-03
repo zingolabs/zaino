@@ -704,6 +704,20 @@ impl BlockchainSource for ProptestMockchain {
         unimplemented!()
     }
 
+    async fn send_raw_transaction(
+        &self,
+        _raw_transaction_hex: String,
+    ) -> BlockchainSourceResult<zebra_rpc::methods::SentTransactionHash> {
+        unimplemented!()
+    }
+
+    async fn get_treestate_by_id(
+        &self,
+        _hash_or_height: String,
+    ) -> BlockchainSourceResult<zebra_rpc::client::GetTreestateResponse> {
+        unimplemented!()
+    }
+
     /// Returns the block commitment tree data by hash
     async fn get_commitment_tree_roots(
         &self,

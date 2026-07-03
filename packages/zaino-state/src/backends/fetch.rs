@@ -25,7 +25,6 @@ use zaino_fetch::{
     chain::{transaction::FullTransaction, utils::ParseFromSlice},
     jsonrpsee::{
         connector::{JsonRpSeeConnector, RpcError},
-        raw_transaction::validate_raw_transaction_hex,
         response::{
             address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
             block_deltas::BlockDeltas,
@@ -90,7 +89,9 @@ use crate::{
 pub struct FetchService {
     /// JsonRPC Client.
     ///
-    /// NOTE: DEPRCATED, USE INDEXER OR VALIDATOR_CONNECTOR.
+    /// NOTE: DEPRECATED — no longer read now that every fetch goes through the indexer.
+    /// TODO(task 3): remove this field (services should hold only `indexer`, `data`, `config`).
+    #[allow(dead_code)]
     fetcher: JsonRpSeeConnector,
     /// Core indexer.
     indexer: NodeBackedChainIndex,
@@ -207,7 +208,9 @@ impl Drop for FetchService {
 pub struct FetchServiceSubscriber {
     /// JsonRPC Client.
     ///
-    /// NOTE: DEPRCATED, USE INDEXER OR VALIDATOR_CONNECTOR.
+    /// NOTE: DEPRECATED — no longer read now that every fetch goes through the indexer.
+    /// TODO(task 3): remove this field (services should hold only `indexer`, `data`, `config`).
+    #[allow(dead_code)]
     fetcher: JsonRpSeeConnector,
     /// Core indexer.
     pub indexer: NodeBackedChainIndexSubscriber,
@@ -375,12 +378,10 @@ impl ZcashIndexer for FetchServiceSubscriber {
         &self,
         raw_transaction_hex: String,
     ) -> Result<SentTransactionHash, Self::Error> {
-        validate_raw_transaction_hex(&raw_transaction_hex)?;
         Ok(self
-            .fetcher
+            .indexer
             .send_raw_transaction(raw_transaction_hex)
-            .await?
-            .into())
+            .await?)
     }
 
     /// Returns the requested block by hash or height, as a [`GetBlock`] JSON string.
@@ -628,25 +629,10 @@ impl ZcashIndexer for FetchServiceSubscriber {
             return local_result;
         }
 
-        self.fetcher
-            .get_treestate(fallback_hash_or_height)
-            .await
-            .map_err(|_error| {
-                #[allow(deprecated)]
-                FetchServiceError::RpcError(RpcError::new_from_legacycode(
-                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                    "Failed to fetch treestate.",
-                ))
-            })
-            .and_then(|treestate| {
-                treestate.try_into().map_err(|_error| {
-                    #[allow(deprecated)]
-                    FetchServiceError::RpcError(RpcError::new_from_legacycode(
-                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                        "Failed to parse treestate.",
-                    ))
-                })
-            })
+        Ok(self
+            .indexer
+            .get_treestate_by_id(fallback_hash_or_height)
+            .await?)
     }
 
     /// Returns information about a range of Sapling or Orchard subtrees.

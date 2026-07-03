@@ -757,6 +757,23 @@ impl BlockchainSource for MockchainSource {
         )
     }
 
+    async fn send_raw_transaction(
+        &self,
+        _raw_transaction_hex: String,
+    ) -> BlockchainSourceResult<zebra_rpc::methods::SentTransactionHash> {
+        // The mock chain has no mempool to accept submissions.
+        unimplemented!("MockchainSource cannot serve send_raw_transaction")
+    }
+
+    async fn get_treestate_by_id(
+        &self,
+        _hash_or_height: String,
+    ) -> BlockchainSourceResult<zebra_rpc::client::GetTreestateResponse> {
+        // The `z_get_treestate` local path serves the mock; the node-passthrough fallback
+        // is never reached, so this is left unimplemented.
+        unimplemented!("MockchainSource cannot serve the get_treestate_by_id passthrough")
+    }
+
     // ********** Transaction methods **********
 
     async fn get_transaction(

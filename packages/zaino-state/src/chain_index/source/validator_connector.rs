@@ -27,7 +27,7 @@ use zebra_rpc::{
     methods::{
         chain_tip_difficulty, ConsensusBranchIdHex, GetBlock, GetBlockHeaderObject,
         GetBlockHeaderResponse, GetBlockTransaction, GetBlockTrees, GetBlockchainInfoResponse,
-        GetInfo, NetworkUpgradeInfo, NetworkUpgradeStatus, TipConsensusBranch,
+        GetInfo, NetworkUpgradeInfo, NetworkUpgradeStatus, SentTransactionHash, TipConsensusBranch,
         ValidateAddresses as _,
     },
 };
@@ -300,6 +300,33 @@ impl BlockchainSource for ValidatorConnector {
             .get_network_sol_ps(blocks, height)
             .await
             .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))
+    }
+
+    async fn send_raw_transaction(
+        &self,
+        raw_transaction_hex: String,
+    ) -> BlockchainSourceResult<SentTransactionHash> {
+        // ReadStateService does not yet interface with the mempool, so both variants
+        // submit via the JSON-RPC connector.
+        self.json_rpc_connector()
+            .send_raw_transaction(raw_transaction_hex)
+            .await
+            .map(SentTransactionHash::from)
+            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))
+    }
+
+    async fn get_treestate_by_id(
+        &self,
+        hash_or_height: String,
+    ) -> BlockchainSourceResult<zebra_rpc::client::GetTreestateResponse> {
+        self.json_rpc_connector()
+            .get_treestate(hash_or_height)
+            .await
+            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?
+            .try_into()
+            .map_err(|_error| {
+                BlockchainSourceError::Unrecoverable("failed to parse treestate".to_string())
+            })
     }
 
     // ********** Transaction methods **********

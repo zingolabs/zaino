@@ -30,7 +30,6 @@ use zaino_fetch::{
     chain::{transaction::FullTransaction, utils::ParseFromSlice},
     jsonrpsee::{
         connector::{JsonRpSeeConnector, RpcError},
-        raw_transaction::validate_raw_transaction_hex,
         response::{
             address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
             block_deltas::BlockDeltas,
@@ -624,14 +623,10 @@ impl ZcashIndexer for StateServiceSubscriber {
         &self,
         raw_transaction_hex: String,
     ) -> Result<SentTransactionHash, Self::Error> {
-        validate_raw_transaction_hex(&raw_transaction_hex).map_err(StateServiceError::RpcError)?;
-        // Offload to the json rpc connector, as ReadStateService
-        // doesn't yet interface with the mempool
-        self.rpc_client
+        Ok(self
+            .indexer
             .send_raw_transaction(raw_transaction_hex)
-            .await
-            .map(SentTransactionHash::from)
-            .map_err(Into::into)
+            .await?)
     }
 
     async fn get_block_header(
@@ -734,23 +729,10 @@ impl ZcashIndexer for StateServiceSubscriber {
             return local_result;
         }
 
-        self.rpc_client
-            .get_treestate(fallback_hash_or_height)
-            .await
-            .map_err(|_error| {
-                StateServiceError::RpcError(RpcError::new_from_legacycode(
-                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                    "Failed to fetch treestate.",
-                ))
-            })
-            .and_then(|treestate| {
-                treestate.try_into().map_err(|_error| {
-                    StateServiceError::RpcError(RpcError::new_from_legacycode(
-                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                        "Failed to parse treestate.",
-                    ))
-                })
-            })
+        Ok(self
+            .indexer
+            .get_treestate_by_id(fallback_hash_or_height)
+            .await?)
     }
 
     async fn get_mining_info(&self) -> Result<GetMiningInfoWire, Self::Error> {
@@ -1397,7 +1379,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
             }
         };
 
-        let mempool = self.mempool.clone();
+        let indexer = self.indexer.clone();
         let service_timeout = self.config.common.service.timeout;
         let (channel_tx, channel_rx) =
             mpsc::channel(self.config.common.service.channel_size as usize);
@@ -1405,11 +1387,21 @@ impl LightWalletIndexer for StateServiceSubscriber {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
-                    for (mempool_key, mempool_value) in
-                        mempool.get_filtered_mempool(exclude_txids).await
-                    {
-                        let txid_bytes = match hex::decode(mempool_key.txid) {
-                            Ok(bytes) => bytes,
+                    let transactions = match indexer.get_mempool_transactions(exclude_txids).await {
+                        Ok(transactions) => transactions,
+                        Err(e) => {
+                            channel_tx
+                                .send(Err(tonic::Status::unknown(e.to_string())))
+                                .await
+                                .ok();
+                            return;
+                        }
+                    };
+                    for serialized_transaction_bytes in transactions {
+                        let txid = match zebra_chain::transaction::Transaction::zcash_deserialize(
+                            &mut std::io::Cursor::new(&serialized_transaction_bytes),
+                        ) {
+                            Ok(transaction) => transaction.hash().0.to_vec(),
                             Err(error) => {
                                 if channel_tx
                                     .send(Err(tonic::Status::unknown(error.to_string())))
@@ -1423,8 +1415,8 @@ impl LightWalletIndexer for StateServiceSubscriber {
                             }
                         };
                         match <FullTransaction as ParseFromSlice>::parse_from_slice(
-                            mempool_value.serialized_tx.as_ref().as_ref(),
-                            Some(vec![txid_bytes]),
+                            &serialized_transaction_bytes,
+                            Some(vec![txid]),
                             None,
                         ) {
                             Ok(transaction) => {
@@ -1488,65 +1480,66 @@ impl LightWalletIndexer for StateServiceSubscriber {
     /// Return a stream of current Mempool transactions. This will keep the output stream open while
     /// there are mempool transactions. It will close the returned stream when a new block is mined.
     async fn get_mempool_stream(&self) -> Result<RawTransactionStream, Self::Error> {
-        let mut mempool = self.mempool.clone();
+        let indexer = self.indexer.clone();
         let service_timeout = self.config.common.service.timeout;
         let (channel_tx, channel_rx) =
             mpsc::channel(self.config.common.service.channel_size as usize);
-        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
-        let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
-            // TODO: This probably shouldn't be an error.
-            // this is an improvement over previous behaviour of
-            // acting as if we are only synced to the genesis block
-            return Err(StateServiceError::UnavailableNotSyncedEnough);
-        };
-        let mempool_height = non_finalized_snapshot.best_tip.height.0;
+        let snapshot = indexer.snapshot_nonfinalized_state().await?;
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 6) as u64),
                 async {
-                    let (mut mempool_stream, _mempool_handle) = match mempool
-                        .get_mempool_stream(None)
-                        .await
-                    {
-                        Ok(stream) => stream,
-                        Err(e) => {
-                            warn!(?e, "error fetching mempool stream");
+                    let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+                        // TODO: This probably shouldn't be an error.
+                        // this is an improvement over previous behaviour of
+                        // acting as if we are only synced to the genesis block
+                        if let Err(e) = channel_tx
+                            .send(Err(tonic::Status::failed_precondition(
+                                "zaino not yet synced".to_string(),
+                            )))
+                            .await
+                        {
+                            warn!(%e, "GetMempoolStream channel closed unexpectedly");
+                        };
+                        return;
+                    };
+                    let mempool_height = non_finalized_snapshot.best_tip.height.0;
+                    match indexer.get_mempool_stream(None) {
+                        Some(mut mempool_stream) => {
+                            while let Some(result) = mempool_stream.next().await {
+                                match result {
+                                    Ok(transaction_bytes) => {
+                                        if channel_tx
+                                            .send(Ok(RawTransaction {
+                                                data: transaction_bytes,
+                                                height: mempool_height as u64,
+                                            }))
+                                            .await
+                                            .is_err()
+                                        {
+                                            break;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        channel_tx
+                                            .send(Err(tonic::Status::internal(format!(
+                                                "Error in mempool stream: {e:?}"
+                                            ))))
+                                            .await
+                                            .ok();
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        None => {
+                            warn!("Error fetching stream from mempool, Incorrect chain tip!");
                             channel_tx
                                 .send(Err(tonic::Status::internal("Error getting mempool stream")))
                                 .await
                                 .ok();
-                            return;
                         }
                     };
-                    while let Some(result) = mempool_stream.recv().await {
-                        match result {
-                            Ok((_mempool_key, mempool_value)) => {
-                                if channel_tx
-                                    .send(Ok(RawTransaction {
-                                        data: mempool_value
-                                            .serialized_tx
-                                            .as_ref()
-                                            .as_ref()
-                                            .to_vec(),
-                                        height: mempool_height as u64,
-                                    }))
-                                    .await
-                                    .is_err()
-                                {
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                channel_tx
-                                    .send(Err(tonic::Status::internal(format!(
-                                        "Error in mempool stream: {e:?}"
-                                    ))))
-                                    .await
-                                    .ok();
-                                break;
-                            }
-                        }
-                    }
                 },
             )
             .await;
@@ -1562,7 +1555,6 @@ impl LightWalletIndexer for StateServiceSubscriber {
                 }
             }
         });
-
         Ok(RawTransactionStream::new(channel_rx))
     }
 

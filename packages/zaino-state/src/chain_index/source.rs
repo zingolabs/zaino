@@ -29,7 +29,9 @@ use zebra_chain::{
 };
 use zebra_rpc::{
     client::{GetAddressBalanceRequest, GetAddressTxIdsRequest},
-    methods::{AddressBalance, GetAddressUtxos, GetBlockchainInfoResponse, GetInfo},
+    methods::{
+        AddressBalance, GetAddressUtxos, GetBlockchainInfoResponse, GetInfo, SentTransactionHash,
+    },
 };
 use zebra_state::{HashOrHeight, ReadRequest, ReadResponse, ReadStateService};
 
@@ -174,6 +176,21 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
         blocks: Option<i32>,
         height: Option<i32>,
     ) -> impl SendFut<BlockchainSourceResult<GetNetworkSolPsResponse>>;
+
+    /// Submits a raw transaction to the network via the validator's mempool
+    /// (`sendrawtransaction`).
+    fn send_raw_transaction(
+        &self,
+        raw_transaction_hex: String,
+    ) -> impl SendFut<BlockchainSourceResult<SentTransactionHash>>;
+
+    /// Returns the full `z_gettreestate` response for the given hash-or-height string.
+    ///
+    /// Node-passthrough fallback for treestates not locally serviceable by the index.
+    fn get_treestate_by_id(
+        &self,
+        hash_or_height: String,
+    ) -> impl SendFut<BlockchainSourceResult<zebra_rpc::client::GetTreestateResponse>>;
 
     /// Returns the sapling and orchard treestate by hash
     fn get_treestate(&self, id: BlockHash) -> impl SendFut<BlockchainSourceResult<TreestateBytes>>;

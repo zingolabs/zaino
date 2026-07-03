@@ -37,6 +37,7 @@ use source::{BlockchainSource, ValidatorConnector};
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, instrument};
+use zaino_fetch::jsonrpsee::raw_transaction::validate_raw_transaction_hex;
 use zaino_fetch::jsonrpsee::response::{
     address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
     block_deltas::BlockDeltas,
@@ -54,7 +55,10 @@ pub use zebra_chain::parameters::Network as ZebraNetwork;
 use zebra_chain::serialization::ZcashSerialize;
 use zebra_rpc::{
     client::{GetAddressBalanceRequest, GetAddressTxIdsRequest},
-    methods::{AddressBalance, GetAddressUtxos, GetBlock, GetBlockchainInfoResponse, GetInfo},
+    methods::{
+        AddressBalance, GetAddressUtxos, GetBlock, GetBlockchainInfoResponse, GetInfo,
+        SentTransactionHash,
+    },
 };
 use zebra_state::HashOrHeight;
 
@@ -662,6 +666,19 @@ pub trait ChainIndexRpcExt: ChainIndex {
         blocks: Option<i32>,
         height: Option<i32>,
     ) -> impl std::future::Future<Output = Result<GetNetworkSolPsResponse, Self::Error>>;
+
+    /// Submits a raw transaction to the network (`sendrawtransaction`).
+    fn send_raw_transaction(
+        &self,
+        raw_transaction_hex: String,
+    ) -> impl std::future::Future<Output = Result<SentTransactionHash, Self::Error>>;
+
+    /// Returns the full `z_gettreestate` response for the given hash-or-height, via the
+    /// backing validator (node-passthrough fallback for treestates not locally serviceable).
+    fn get_treestate_by_id(
+        &self,
+        hash_or_height: String,
+    ) -> impl std::future::Future<Output = Result<zebra_rpc::client::GetTreestateResponse, Self::Error>>;
 
     // ********** Transparent address history methods **********
 
@@ -2797,6 +2814,28 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
     ) -> Result<GetNetworkSolPsResponse, Self::Error> {
         self.source()
             .get_network_sol_ps(blocks, height)
+            .await
+            .map_err(ChainIndexError::backing_validator)
+    }
+
+    async fn send_raw_transaction(
+        &self,
+        raw_transaction_hex: String,
+    ) -> Result<SentTransactionHash, Self::Error> {
+        validate_raw_transaction_hex(&raw_transaction_hex)
+            .map_err(|error| ChainIndexError::internal(error.to_string()))?;
+        self.source()
+            .send_raw_transaction(raw_transaction_hex)
+            .await
+            .map_err(ChainIndexError::backing_validator)
+    }
+
+    async fn get_treestate_by_id(
+        &self,
+        hash_or_height: String,
+    ) -> Result<zebra_rpc::client::GetTreestateResponse, Self::Error> {
+        self.source()
+            .get_treestate_by_id(hash_or_height)
             .await
             .map_err(ChainIndexError::backing_validator)
     }
