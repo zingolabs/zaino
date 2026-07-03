@@ -21,6 +21,9 @@ use std::path::Path;
 
 use lmdb::{Database, DatabaseFlags, Environment, EnvironmentFlags, Transaction as _, WriteFlags};
 
+// Test-only: the presence test builds its expected values through the
+// compact-form path the production build no longer uses.
+#[cfg(test)]
 use crate::chain_index::finalised_state::build_indexed_block_from_source;
 use crate::chain_index::source::validator_connector::StateSource;
 use crate::chain_index::source::BlockchainSource;
@@ -29,6 +32,7 @@ use crate::chain_index::OPERATIONAL_NFS_DEPTH;
 use crate::config::ChainIndexConfig;
 use crate::error::FinalisedStateError;
 use crate::{IndexedBlock, Outpoint, TransparentCompactTx, ZainoVersionedSerde as _};
+#[cfg(test)]
 use zaino_common::Network;
 use zebra_chain::parameters::NetworkUpgrade;
 
