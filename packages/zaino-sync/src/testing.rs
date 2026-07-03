@@ -4,6 +4,7 @@
 //! `TestBlockContext`) are defined here. Specific index sets live in
 //! sub-modules (e.g. [`toy_indexes`]).
 
+mod bench;
 mod toy_indexes;
 
 use std::collections::HashMap;
@@ -112,6 +113,71 @@ impl BackendWriter for InMemoryWriter {
             }
         }
         Ok(())
+    }
+}
+
+// ===========================================================================
+// Slow backend — wraps any backend with configurable IO latency
+// ===========================================================================
+
+use std::time::Duration;
+
+/// Backend wrapper that adds configurable latency to commits.
+///
+/// Simulates the cost of durable writes (e.g. LMDB fsync) by sleeping
+/// in the writer's `commit` method. Reads are unaffected — real backends
+/// typically have fast reads.
+#[derive(Clone)]
+pub struct SlowBackend<B> {
+    inner: B,
+    commit_delay: Duration,
+}
+
+impl<B> SlowBackend<B> {
+    /// Wrap `inner` with a fixed delay per `commit` call.
+    pub fn new(inner: B, commit_delay: Duration) -> Self {
+        Self {
+            inner,
+            commit_delay,
+        }
+    }
+}
+
+impl<B: Backend> Backend for SlowBackend<B> {
+    type Reader = B::Reader;
+    type Writer = SlowWriter<B::Writer>;
+
+    fn reader(&self) -> Result<Self::Reader, BackendError> {
+        self.inner.reader()
+    }
+
+    fn writer(&self) -> Result<Self::Writer, BackendError> {
+        let inner = self.inner.writer()?;
+        Ok(SlowWriter {
+            inner,
+            delay: self.commit_delay,
+        })
+    }
+
+    fn flush(&self) -> Result<(), BackendError> {
+        self.inner.flush()
+    }
+
+    fn topology(&self) -> WriterTopology {
+        self.inner.topology()
+    }
+}
+
+/// Writer that sleeps before delegating to the inner writer.
+pub struct SlowWriter<W> {
+    inner: W,
+    delay: Duration,
+}
+
+impl<W: BackendWriter> BackendWriter for SlowWriter<W> {
+    fn commit(&mut self, ops: Vec<WriteOp>) -> Result<(), BackendError> {
+        std::thread::sleep(self.delay);
+        self.inner.commit(ops)
     }
 }
 

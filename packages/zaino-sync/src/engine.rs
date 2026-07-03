@@ -152,6 +152,7 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     ///
     /// Convenience wrapper around [`sync_streaming`](Self::sync_streaming)
     /// for the common case where all blocks are available upfront.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(block_count = blocks.len())))]
     pub fn sync_range(&mut self, blocks: Vec<Ctx>) -> Result<(), SyncError> {
         self.sync_streaming(blocks)
     }
@@ -173,6 +174,7 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     /// **Current shape:** single-threaded, synchronous. The scheduler
     /// infrastructure supports parallel dispatch — swapping in an async
     /// executor is a future step.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub(crate) fn sync_streaming<I>(&mut self, source: I) -> Result<(), SyncError>
     where
         I: IntoIterator<Item = Ctx>,
@@ -228,6 +230,7 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     /// This is the production entry point — the provisioner and engine
     /// run concurrently, with the [`BlockBuffer`] absorbing the rate
     /// difference between supply and demand.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     pub async fn sync_channel(
         &mut self,
         mut rx: tokio::sync::mpsc::Receiver<Ctx>,
@@ -308,6 +311,7 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     ///
     /// Handles batch completions first, then runs all extractions in
     /// parallel via rayon, then reports completions sequentially.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(task_count = tasks.len())))]
     fn dispatch_tasks(&mut self, tasks: Vec<Task>) -> Result<(), SyncError> {
         let jobs = self.flush_batch_completions(tasks)?;
         self.run_extractions_parallel(&jobs)?;
@@ -341,10 +345,8 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     ///
     /// Prepares (pipeline, context) pairs on the calling thread, then
     /// fans out via `par_iter`. Borrows from `self` — no Arc cloning.
-    fn run_extractions_parallel(
-        &self,
-        jobs: &[ExtractJob],
-    ) -> Result<(), SyncError> {
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(job_count = jobs.len())))]
+    fn run_extractions_parallel(&self, jobs: &[ExtractJob]) -> Result<(), SyncError> {
         let work: Vec<_> = jobs.iter().map(|job| {
             let ctx = self.buffer.get(job.global_offset)
                 .expect("block available — scheduler verified watermark");
@@ -379,6 +381,10 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     /// actual backend write happens later in [`try_commit_and_evict`]
     /// when ALL indexes have persisted for the batch — a single atomic
     /// commit covers every index's data plus the watermark.
+    #[cfg_attr(feature = "tracing", tracing::instrument(
+        skip_all,
+        fields(index = %handle.index, batch = handle.batch.value())
+    ))]
     fn merge_persist(
         &mut self,
         handle: crate::scheduler::BatchHandle<crate::scheduler::FullyExtracted>,
@@ -394,6 +400,8 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
 
         // Persist: domain → WriteOps, stash for atomic commit.
         let ops = pipeline.persist()?;
+        #[cfg(feature = "tracing")]
+        tracing::debug!(op_count = ops.len(), "persist produced ops");
         self.pending_ops.entry(batch).or_default().extend(ops);
 
         // Advance the scheduler — downstream indexes can proceed.
@@ -409,6 +417,7 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     /// stashed [`WriteOp`]s, appends the watermark (highest committed
     /// block height), and writes everything in a single backend call.
     /// The watermark never leads any index's data.
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     fn try_commit(&mut self) -> Result<(), SyncError> {
         loop {
             let candidate = match self.evicted_through {
@@ -434,6 +443,14 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
                 key: WATERMARK_KEY.to_vec(),
                 value: committed_height.encode(),
             });
+
+            #[cfg(feature = "tracing")]
+            tracing::info!(
+                batch = candidate.value(),
+                op_count = ops.len(),
+                committed_height = committed_height.value(),
+                "atomic batch commit"
+            );
 
             let mut writer = self.backend.writer()?;
             writer.commit(ops)?;
