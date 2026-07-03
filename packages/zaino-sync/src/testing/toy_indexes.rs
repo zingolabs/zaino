@@ -53,6 +53,8 @@ mod tests {
     use crate::provisioner::Provisioner;
     use crate::testing::{InMemoryBackend, MockProvisioner};
 
+    use crate::primitives::BatchIndex;
+
     use count_index::CountIndex;
     use running_sum_index::RunningSumIndex;
     use value_index::ValueIndex;
@@ -140,5 +142,24 @@ mod tests {
             .expect("sum exists");
         let sum = u64::from_le_bytes(sum_bytes.as_slice().try_into().expect("8 bytes"));
         assert_eq!(sum, 9);
+    }
+
+    #[test]
+    fn buffer_evicted_during_multi_batch_sync() {
+        let provisioner = MockProvisioner::identity();
+        let blocks = provisioner
+            .provision_range(BlockHeight::new(0), BlockHeight::new(9))
+            .expect("provisioning succeeds");
+
+        let backend = InMemoryBackend::new();
+        // Batch size 3: batches [0,1,2], [3,4,5], [6,7,8], [9].
+        let mut engine = build_engine(backend, 3);
+
+        engine.sync_range(blocks).expect("sync succeeds");
+
+        // All blocks should be evicted — buffer empty.
+        assert_eq!(engine.buffer_len(), 0);
+        // Eviction frontier covers all 4 batches (0..=3).
+        assert_eq!(engine.evicted_through(), Some(BatchIndex::new(3)));
     }
 }

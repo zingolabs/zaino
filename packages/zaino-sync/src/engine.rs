@@ -225,3 +225,14 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
         }
     }
 }
+
+#[cfg(test)]
+impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
+    pub(crate) fn buffer_len(&self) -> usize {
+        self.buffer.len()
+    }
+
+    pub(crate) fn evicted_through(&self) -> Option<BatchIndex> {
+        self.evicted_through
+    }
+}
