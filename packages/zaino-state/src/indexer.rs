@@ -12,7 +12,10 @@ use zaino_fetch::jsonrpsee::response::{
     chain_tips::GetChainTipsResponse,
     mining_info::GetMiningInfoWire,
     peer_info::GetPeerInfo,
-    z_validate_address::ZValidateAddressResponse,
+    z_validate_address::{
+        InvalidZValidateAddress, KnownZValidateAddress, ZValidateAddressResponse,
+        DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION,
+    },
     GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSpentInfoRequest, GetSpentInfoResponse,
     GetTxOutSetInfoResponse,
 };
@@ -982,4 +985,135 @@ pub(crate) async fn handle_raw_transaction<Indexer: LightWalletIndexer>(
                 .await
         }
     }
+}
+
+/// Maps a Zebra network to the `zcash_protocol` network type used for address decoding.
+fn address_network_type(
+    network: &zebra_chain::parameters::Network,
+) -> zcash_protocol::consensus::NetworkType {
+    use zcash_protocol::consensus::NetworkType;
+    use zebra_chain::parameters::NetworkKind;
+    match network.kind() {
+        NetworkKind::Mainnet => NetworkType::Main,
+        NetworkKind::Testnet => NetworkType::Test,
+        NetworkKind::Regtest => NetworkType::Regtest,
+    }
+}
+
+/// Validates a Zcash address for the `validateaddress` RPC.
+///
+/// Pure address parsing over `network`; no chain data required, so both backends share
+/// this implementation.
+pub(crate) fn validate_address(
+    raw_address: String,
+    network: &zebra_chain::parameters::Network,
+) -> ValidateAddressResponse {
+    use zcash_keys::address::Address;
+    use zcash_transparent::address::TransparentAddress;
+
+    let Ok(address) = raw_address.parse::<zcash_address::ZcashAddress>() else {
+        return ValidateAddressResponse::invalid();
+    };
+
+    let address = match address.convert_if_network::<Address>(address_network_type(network)) {
+        Ok(address) => address,
+        Err(err) => {
+            tracing::debug!(?err, "conversion error");
+            return ValidateAddressResponse::invalid();
+        }
+    };
+
+    match address {
+        Address::Transparent(taddr) => ValidateAddressResponse::new(
+            true,
+            Some(raw_address),
+            Some(matches!(taddr, TransparentAddress::ScriptHash(_))),
+        ),
+        _ => ValidateAddressResponse::invalid(),
+    }
+}
+
+/// Validates a Zcash address for the deprecated `z_validateaddress` RPC.
+///
+/// Pure address parsing over `network`; shared by both backends.
+pub(crate) fn z_validate_address(
+    address: String,
+    network: &zebra_chain::parameters::Network,
+) -> ZValidateAddressResponse {
+    use zcash_keys::address::Address;
+    use zcash_keys::encoding::AddressCodec as _;
+    use zcash_transparent::address::TransparentAddress;
+
+    tracing::warn!("{}", Z_VALIDATE_DEPRECATION);
+
+    let invalid = || {
+        ZValidateAddressResponse::Known(KnownZValidateAddress::Invalid(
+            InvalidZValidateAddress::new(),
+        ))
+    };
+
+    let Ok(parsed_address) = address.parse::<zcash_address::ZcashAddress>() else {
+        return invalid();
+    };
+
+    let converted_address =
+        match parsed_address.convert_if_network::<Address>(address_network_type(network)) {
+            Ok(address) => address,
+            Err(err) => {
+                tracing::debug!(?err, "conversion error");
+                return invalid();
+            }
+        };
+
+    // Note: It could be the case that Zaino needs to support Sprout. For now, it's been disabled.
+    match converted_address {
+        Address::Transparent(TransparentAddress::PublicKeyHash(_)) => {
+            ZValidateAddressResponse::p2pkh(address)
+        }
+        Address::Transparent(TransparentAddress::ScriptHash(_)) => {
+            ZValidateAddressResponse::p2sh(address)
+        }
+        Address::Unified(u) => ZValidateAddressResponse::unified(u.encode(network)),
+        Address::Sapling(s) => {
+            let (diversifier, pk_d) = sapling_key_bytes(&s);
+            ZValidateAddressResponse::sapling(
+                s.encode(network),
+                Some(hex::encode(diversifier)),
+                Some(hex::encode(pk_d)),
+            )
+        }
+        _ => invalid(),
+    }
+}
+
+/// Extracts the diversifier and pk_d bytes from a validated Sapling
+/// [`sapling_crypto::PaymentAddress`], returning pk_d in zcashd's big-endian byte order.
+///
+/// # Deprecation
+///
+/// See [`Z_VALIDATE_DEPRECATION`]. This function exists to support the `z_validateaddress`
+/// RPC endpoint, which itself exists solely for zcashd compatibility. The pk_d bytes are
+/// reversed from `sapling-crypto`'s native little-endian representation to match zcashd's
+/// big-endian hex output.
+///
+/// # Precondition
+///
+/// The caller must have obtained `s` through `PaymentAddress::from_bytes` or equivalent
+/// (e.g. `ZcashAddress::convert_if_network`), which guarantees the diversifier has a valid
+/// `g_d()` and pk_d is a non-identity Jubjub subgroup point. No additional validation is
+/// performed here.
+///
+/// # Layout
+///
+/// `PaymentAddress::to_bytes()` returns 43 bytes: `diversifier (11) || pk_d (32)`.
+pub(crate) fn sapling_key_bytes(s: &sapling_crypto::PaymentAddress) -> ([u8; 11], [u8; 32]) {
+    let bytes = s.to_bytes();
+    let diversifier: [u8; 11] = bytes[..11]
+        .try_into()
+        .expect("PaymentAddress::to_bytes always returns 43 bytes: diversifier is the first 11");
+    let mut pk_d: [u8; 32] = bytes[11..]
+        .try_into()
+        .expect("PaymentAddress::to_bytes always returns 43 bytes: pk_d is the last 32");
+    pk_d.reverse();
+    (diversifier, pk_d)
 }

@@ -34,9 +34,7 @@ use zaino_fetch::{
             chain_tips::GetChainTipsResponse,
             mining_info::GetMiningInfoWire,
             peer_info::GetPeerInfo,
-            z_validate_address::{
-                ZValidateAddressResponse, DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION,
-            },
+            z_validate_address::ZValidateAddressResponse,
             GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSpentInfoRequest,
             GetSpentInfoResponse, GetTxOutResponse, GetTxOutSetInfoResponse,
         },
@@ -520,7 +518,9 @@ impl ZcashIndexer for FetchServiceSubscriber {
         &self,
         address: String,
     ) -> Result<ValidateAddressResponse, Self::Error> {
-        Ok(self.fetcher.validate_address(address).await?)
+        #[allow(deprecated)]
+        let network = self.config.common.network.to_zebra_network();
+        Ok(crate::indexer::validate_address(address, &network))
     }
 
     #[allow(deprecated)]
@@ -528,8 +528,9 @@ impl ZcashIndexer for FetchServiceSubscriber {
         &self,
         address: String,
     ) -> Result<ZValidateAddressResponse, Self::Error> {
-        tracing::warn!("{}", Z_VALIDATE_DEPRECATION);
-        Ok(self.fetcher.z_validate_address(address).await?)
+        #[allow(deprecated)]
+        let network = self.config.common.network.to_zebra_network();
+        Ok(crate::indexer::z_validate_address(address, &network))
     }
 
     /// Returns all transaction ids in the memory pool, as a JSON array.
@@ -811,13 +812,8 @@ impl ZcashIndexer for FetchServiceSubscriber {
     }
 
     async fn chain_height(&self) -> Result<Height, Self::Error> {
-        Ok(Height(
-            self.indexer
-                .snapshot_nonfinalized_state()
-                .await?
-                .max_serviceable_height()
-                .0,
-        ))
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        Ok(self.indexer.best_chaintip(&snapshot).await?.height.into())
     }
     /// Returns the transaction ids made by the provided transparent addresses.
     ///

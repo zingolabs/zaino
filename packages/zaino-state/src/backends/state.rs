@@ -39,10 +39,7 @@ use zaino_fetch::{
             chain_tips::GetChainTipsResponse,
             mining_info::GetMiningInfoWire,
             peer_info::GetPeerInfo,
-            z_validate_address::{
-                InvalidZValidateAddress, KnownZValidateAddress, ZValidateAddressResponse,
-                DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION,
-            },
+            z_validate_address::ZValidateAddressResponse,
             GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSpentInfoRequest,
             GetSpentInfoResponse, GetSubtreesResponse, GetTxOutResponse, GetTxOutSetInfoResponse,
         },
@@ -60,14 +57,10 @@ use zaino_proto::proto::{
         SendResponse, TransparentAddressBlockFilter, TreeState, TxFilter,
     },
 };
-use zcash_keys::{address::Address, encoding::AddressCodec};
-
-use zcash_protocol::consensus::NetworkType;
-use zcash_transparent::address::TransparentAddress;
 use zebra_chain::{
     block::Height,
     chain_tip::NetworkChainTipHeightEstimator,
-    parameters::{ConsensusBranchId, NetworkKind, NetworkUpgrade},
+    parameters::{ConsensusBranchId, NetworkUpgrade},
     serialization::ZcashDeserialize as _,
     subtree::NoteCommitmentSubtreeIndex,
 };
@@ -565,37 +558,6 @@ impl StateServiceSubscriber {
     }
 }
 
-/// Extracts the diversifier and pk_d bytes from a validated Sapling
-/// [`PaymentAddress`], returning pk_d in zcashd's big-endian byte order.
-///
-/// # Deprecation
-///
-/// See [`DEPRECATION_NOTICE`]. This function exists to support the
-/// `z_validateaddress` RPC endpoint, which itself exists solely for zcashd
-/// compatibility. The pk_d bytes are
-/// reversed from `sapling-crypto`'s native little-endian representation to
-/// match zcashd's big-endian hex output.
-///
-/// # Precondition
-///
-/// The caller must have obtained `s` through [`PaymentAddress::from_bytes`] or
-/// equivalent (e.g. `ZcashAddress::convert_if_network`), which guarantees the
-/// diversifier has a valid `g_d()` and pk_d is a non-identity Jubjub subgroup
-/// point. No additional validation is performed here.
-///
-/// # Layout
-///
-/// `PaymentAddress::to_bytes()` returns 43 bytes: `diversifier (11) || pk_d (32)`.
-/// `DiversifiedTransmissionKey::to_bytes()` is `pub(crate)` in `sapling-crypto`,
-/// so we extract pk_d from the serialized form.
-fn sapling_key_bytes(s: &sapling_crypto::PaymentAddress) -> ([u8; 11], [u8; 32]) {
-    let bytes = s.to_bytes();
-    let diversifier: [u8; 11] = bytes[..11].try_into().unwrap();
-    let mut pk_d: [u8; 32] = bytes[11..].try_into().unwrap();
-    pk_d.reverse();
-    (diversifier, pk_d)
-}
-
 // #[allow(deprecated)]
 impl ZcashIndexer for StateServiceSubscriber {
     type Error = StateServiceError;
@@ -986,34 +948,8 @@ impl ZcashIndexer for StateServiceSubscriber {
         &self,
         raw_address: String,
     ) -> Result<ValidateAddressResponse, Self::Error> {
-        use zcash_transparent::address::TransparentAddress;
-
-        let Ok(address) = raw_address.parse::<zcash_address::ZcashAddress>() else {
-            return Ok(ValidateAddressResponse::invalid());
-        };
-
-        let address = match address.convert_if_network::<Address>(
-            match self.config.common.network.to_zebra_network().kind() {
-                NetworkKind::Mainnet => NetworkType::Main,
-                NetworkKind::Testnet => NetworkType::Test,
-                NetworkKind::Regtest => NetworkType::Regtest,
-            },
-        ) {
-            Ok(address) => address,
-            Err(err) => {
-                tracing::debug!(?err, "conversion error");
-                return Ok(ValidateAddressResponse::invalid());
-            }
-        };
-
-        Ok(match address {
-            Address::Transparent(taddr) => ValidateAddressResponse::new(
-                true,
-                Some(raw_address),
-                Some(matches!(taddr, TransparentAddress::ScriptHash(_))),
-            ),
-            _ => ValidateAddressResponse::invalid(),
-        })
+        let network = self.config.common.network.to_zebra_network();
+        Ok(crate::indexer::validate_address(raw_address, &network))
     }
 
     #[allow(deprecated)]
@@ -1021,53 +957,8 @@ impl ZcashIndexer for StateServiceSubscriber {
         &self,
         address: String,
     ) -> Result<ZValidateAddressResponse, Self::Error> {
-        tracing::warn!("{}", Z_VALIDATE_DEPRECATION);
-
-        let Ok(parsed_address) = address.parse::<zcash_address::ZcashAddress>() else {
-            return Ok(ZValidateAddressResponse::Known(
-                KnownZValidateAddress::Invalid(InvalidZValidateAddress::new()),
-            ));
-        };
-
-        let converted_address = match parsed_address.convert_if_network::<Address>(
-            match self.config.common.network.to_zebra_network().kind() {
-                NetworkKind::Mainnet => NetworkType::Main,
-                NetworkKind::Testnet => NetworkType::Test,
-                NetworkKind::Regtest => NetworkType::Regtest,
-            },
-        ) {
-            Ok(address) => address,
-            Err(err) => {
-                tracing::debug!(?err, "conversion error");
-                return Ok(ZValidateAddressResponse::Known(
-                    KnownZValidateAddress::Invalid(InvalidZValidateAddress::new()),
-                ));
-            }
-        };
-
-        // Note: It could be the case that Zaino needs to support Sprout. For now, it's been disabled.
-        match converted_address {
-            Address::Transparent(t) => match t {
-                TransparentAddress::PublicKeyHash(_) => {
-                    Ok(ZValidateAddressResponse::p2pkh(address))
-                }
-                TransparentAddress::ScriptHash(_) => Ok(ZValidateAddressResponse::p2sh(address)),
-            },
-            Address::Unified(u) => Ok(ZValidateAddressResponse::unified(
-                u.encode(&self.network().to_zebra_network()),
-            )),
-            Address::Sapling(s) => {
-                let (diversifier, pk_d) = sapling_key_bytes(&s);
-                Ok(ZValidateAddressResponse::sapling(
-                    s.encode(&self.network().to_zebra_network()),
-                    Some(hex::encode(diversifier)),
-                    Some(hex::encode(pk_d)),
-                ))
-            }
-            _ => Ok(ZValidateAddressResponse::Known(
-                KnownZValidateAddress::Invalid(InvalidZValidateAddress::new()),
-            )),
-        }
+        let network = self.config.common.network.to_zebra_network();
+        Ok(crate::indexer::z_validate_address(address, &network))
     }
 
     async fn z_get_subtrees_by_index(
@@ -1279,15 +1170,8 @@ impl ZcashIndexer for StateServiceSubscriber {
 
     // Helper function, to get the chain height in rpc implementations
     async fn chain_height(&self) -> Result<Height, Self::Error> {
-        let mut state = self.read_state_service.clone();
-        let response = state
-            .ready()
-            .and_then(|service| service.call(ReadRequest::Tip))
-            .await?;
-        let (chain_height, _chain_hash) = expected_read_response!(response, Tip).ok_or(
-            RpcError::new_from_legacycode(LegacyCode::Misc, "no blocks in chain"),
-        )?;
-        Ok(chain_height)
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        Ok(self.indexer.best_chaintip(&snapshot).await?.height.into())
     }
 }
 
@@ -2225,7 +2109,7 @@ mod tests {
     ///   addresses on other networks (mainnet, testnet).
     #[test]
     fn sapling_pk_d_byte_order_matches_test_vector() {
-        use super::sapling_key_bytes;
+        use crate::indexer::sapling_key_bytes;
         use zcash_keys::address::Address;
         use zcash_protocol::consensus::NetworkType;
 
