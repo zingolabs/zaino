@@ -148,17 +148,27 @@ pub trait ExtractLocal: IndexDef<Scope = BlockLocal> {
 
 /// Extraction for self-cumulative indexes.
 ///
-/// The extract signature includes a read handle to this index's own
-/// committed prior state. Extraction for this index is sequential (each
-/// block depends on the previous block's committed output), but the index
-/// runs in parallel with other indexes that have no dependency on it.
+/// The extract signature includes this index's own accumulated state
+/// through the prior block. Extraction for this index is sequential
+/// within a batch (each block depends on the previous block's state),
+/// but the index runs in parallel with other indexes that have no
+/// dependency on it.
+///
+/// The bridge threads state automatically using the index's merge
+/// trait: [`MergeMonoidal`] provides `identity` + `combine` + `lift`;
+/// [`MergeFold`] provides `initial_state` + `fold`. No separate
+/// `advance_state` method is needed — the composition axis already
+/// declares the algebra.
 pub trait ExtractCumulative: IndexDef<Scope = SelfCumulative> {
-    /// Opaque type representing this index's accumulated state, as read
-    /// from the backend after the prior batch's commit.
+    /// The accumulated state threaded through extractions.
+    ///
+    /// For (S, M) indexes this is the same type as the monoidal
+    /// `Accumulator`. For (S, F) indexes it matches `FoldState`.
+    /// The bridge enforces this via a type equality bound.
     type PriorState: Send + Sync;
 
     /// Produce this block's delta given the block context and this index's
-    /// own committed state up to (but not including) this block.
+    /// own accumulated state up to (but not including) this block.
     fn extract(
         ctx: &Self::BlockContext,
         prior: &Self::PriorState,

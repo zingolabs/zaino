@@ -1,12 +1,18 @@
-//! Toy index set: three indexes demonstrating the three composition types.
+//! Toy index set: four indexes demonstrating composition and scope types.
 //!
 //! Each index lives in its own sub-module and declares a narrow
 //! [`BlockContext`](crate::traits::IndexDef::BlockContext). The set-wide
 //! `TestBlockContext` projects into each via [`ProvideContext`].
 //!
+//! BlockLocal indexes: [`ValueIndex`](value_index), [`CountIndex`](count_index),
+//! [`RunningSumIndex`](running_sum_index).
+//!
+//! SelfCumulative indexes: [`CumulativeSumIndex`](cumulative_sum_index).
+//!
 //! [`ProvideContext`]: crate::traits::ProvideContext
 
 pub mod count_index;
+pub mod cumulative_sum_index;
 pub mod running_sum_index;
 pub mod value_index;
 
@@ -40,6 +46,14 @@ impl ProvideContext<running_sum_index::Context> for TestBlockContext {
     }
 }
 
+impl ProvideContext<cumulative_sum_index::Context> for TestBlockContext {
+    fn context(&self) -> cumulative_sum_index::Context {
+        cumulative_sum_index::Context {
+            value: self.value,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // End-to-end tests
 // ---------------------------------------------------------------------------
@@ -56,10 +70,11 @@ mod tests {
     use crate::primitives::BatchIndex;
 
     use count_index::CountIndex;
+    use cumulative_sum_index::CumulativeSumIndex;
     use running_sum_index::RunningSumIndex;
     use value_index::ValueIndex;
 
-    /// Helper: build an engine from the three toy indexes.
+    /// Helper: build an engine from the three BlockLocal toy indexes.
     fn build_engine(
         backend: InMemoryBackend,
         batch_size: u32,
@@ -71,6 +86,29 @@ mod tests {
 
         SyncEngine::from_index_set(set, backend, EngineConfig { batch_size })
             .expect("valid index set")
+    }
+
+    /// Helper: build an engine that includes the CumulativeSumIndex.
+    fn build_engine_with_cumulative(
+        backend: InMemoryBackend,
+        batch_size: u32,
+    ) -> SyncEngine<TestBlockContext, InMemoryBackend> {
+        let set = IndexSet::new()
+            .with::<ValueIndex>()
+            .with::<CountIndex>()
+            .with::<RunningSumIndex>()
+            .with::<CumulativeSumIndex>();
+
+        SyncEngine::from_index_set(set, backend, EngineConfig { batch_size })
+            .expect("valid index set")
+    }
+
+    /// Read the cumulative sum from the backend.
+    fn read_cumulative_sum(backend: &InMemoryBackend) -> u64 {
+        let bytes = backend
+            .get_value(cumulative_sum_index::ID, b"sum")
+            .expect("cumulative sum exists");
+        u64::from_le_bytes(bytes.as_slice().try_into().expect("8 bytes"))
     }
 
     #[test]
@@ -209,5 +247,87 @@ mod tests {
         assert_eq!(engine.buffer_len(), 0);
         // Eviction frontier covers all 4 batches (0..=3).
         assert_eq!(engine.evicted_through(), Some(BatchIndex::new(3)));
+    }
+
+    // -----------------------------------------------------------------------
+    // SelfCumulative tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn cumulative_sum_single_batch() {
+        // Blocks 0..=6, values = heights, all in one batch.
+        // Threshold = 10. Prior sums: 0,0,1,3,6,10,15
+        //   block 0: prior=0,  delta=0          → sum=0
+        //   block 1: prior=0,  delta=1          → sum=1
+        //   block 2: prior=1,  delta=2          → sum=3
+        //   block 3: prior=3,  delta=3          → sum=6
+        //   block 4: prior=6,  delta=4          → sum=10
+        //   block 5: prior=10, delta=5          → sum=15
+        //   block 6: prior=15, delta=6*2=12     → sum=27
+        //
+        // Only block 6 exceeds the threshold (prior=15 > 10).
+        let provisioner = MockProvisioner::identity();
+        let blocks = provisioner
+            .provision_range(BlockHeight::new(0), BlockHeight::new(6))
+            .expect("provisioning succeeds");
+
+        let backend = InMemoryBackend::new();
+        let mut engine = build_engine_with_cumulative(backend.clone(), 20);
+
+        engine.sync_range(blocks).expect("sync succeeds");
+
+        assert_eq!(read_cumulative_sum(&backend), 27);
+    }
+
+    #[test]
+    fn cumulative_sum_deterministic_across_batch_sizes() {
+        // The cumulative result must be identical regardless of batch
+        // boundaries. This is the key property of SelfCumulative: the
+        // running state threads correctly across batches.
+        let provisioner = MockProvisioner::identity();
+
+        let expected = {
+            let blocks = provisioner
+                .provision_range(BlockHeight::new(0), BlockHeight::new(6))
+                .expect("provisioning succeeds");
+            let backend = InMemoryBackend::new();
+            let mut engine = build_engine_with_cumulative(backend.clone(), 20);
+            engine.sync_range(blocks).expect("sync succeeds");
+            read_cumulative_sum(&backend)
+        };
+
+        for batch_size in [1, 2, 3, 4, 5, 7] {
+            let blocks = provisioner
+                .provision_range(BlockHeight::new(0), BlockHeight::new(6))
+                .expect("provisioning succeeds");
+            let backend = InMemoryBackend::new();
+            let mut engine = build_engine_with_cumulative(backend.clone(), batch_size);
+            engine.sync_range(blocks).expect("sync succeeds");
+
+            assert_eq!(
+                read_cumulative_sum(&backend),
+                expected,
+                "batch_size={batch_size} produced different result"
+            );
+        }
+    }
+
+    #[test]
+    fn cumulative_sum_state_threads_across_batches() {
+        // Batch size 3: batches [0,1,2], [3,4,5], [6].
+        // After batch 0: sum = 0+1+2 = 3 (no doubling, all priors ≤ 10)
+        // After batch 1: sum = 3+3+4+5 = 15 (no doubling, priors 3,6,10 ≤ 10)
+        // After batch 2: sum = 15 + 6*2 = 27 (block 6: prior=15 > 10, doubled)
+        let provisioner = MockProvisioner::identity();
+        let blocks = provisioner
+            .provision_range(BlockHeight::new(0), BlockHeight::new(6))
+            .expect("provisioning succeeds");
+
+        let backend = InMemoryBackend::new();
+        let mut engine = build_engine_with_cumulative(backend.clone(), 3);
+
+        engine.sync_range(blocks).expect("sync succeeds");
+
+        assert_eq!(read_cumulative_sum(&backend), 27);
     }
 }

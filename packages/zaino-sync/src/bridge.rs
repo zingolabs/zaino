@@ -18,9 +18,13 @@
 //! [`MergeStrategy`] trait, which each merge trait (`MergeAppend`,
 //! `MergeMonoidal`, `MergeFold`) satisfies via blanket impls.
 //!
-//! SelfCumulative and CrossIndex bridges are not yet implemented — they
-//! need backend reader access that the pipeline interface doesn't yet
-//! provide.
+//! [`CumulativeBridge<I>`] handles all SelfCumulative composition types.
+//! It threads a running [`PriorState`](crate::traits::ExtractCumulative::PriorState)
+//! through sequential extractions and snapshots the accumulated state
+//! at batch end for persistence.
+//!
+//! CrossIndex bridges are not yet implemented — they need backend reader
+//! access that the pipeline interface doesn't yet provide.
 //!
 //! # Three-phase pipeline
 //!
@@ -37,11 +41,12 @@
 use std::marker::PhantomData;
 use std::sync::Mutex;
 
-use crate::descriptor::{Append, BlockLocal, Descriptor, Fold, Monoidal};
+use crate::descriptor::{Append, BlockLocal, Descriptor, Fold, Monoidal, SelfCumulative};
 use crate::encode::Encode;
 use crate::pipeline::{IndexPipeline, PipelineError};
 use crate::traits::{
-    ExtractLocal, IndexDef, MergeAppend, MergeFold, MergeMonoidal, ProvideContext, Schema, WriteOp,
+    ExtractCumulative, ExtractLocal, IndexDef, MergeAppend, MergeFold, MergeMonoidal,
+    ProvideContext, Schema, WriteOp,
 };
 
 // ===========================================================================
@@ -68,6 +73,9 @@ pub trait BridgeDispatch<I: IndexDef, Ctx>: sealed::Sealed {
 impl sealed::Sealed for (BlockLocal, Append) {}
 impl sealed::Sealed for (BlockLocal, Monoidal) {}
 impl sealed::Sealed for (BlockLocal, Fold) {}
+
+impl sealed::Sealed for (SelfCumulative, Monoidal) {}
+impl sealed::Sealed for (SelfCumulative, Fold) {}
 
 impl<I, Ctx> BridgeDispatch<I, Ctx> for (BlockLocal, Append)
 where
@@ -108,6 +116,34 @@ where
     }
 }
 
+impl<I, Ctx> BridgeDispatch<I, Ctx> for (SelfCumulative, Monoidal)
+where
+    I: ExtractCumulative<PriorState = <MonoidalStrategy as MergeStrategy<I>>::MergedState>
+        + MergeMonoidal
+        + Schema<<MonoidalStrategy as MergeStrategy<I>>::MergedState>
+        + IndexDef<Scope = SelfCumulative, Composition = Monoidal>,
+    <MonoidalStrategy as MergeStrategy<I>>::MergedState: Clone,
+    Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
+{
+    fn dispatch() -> Box<dyn IndexPipeline<Ctx>> {
+        Box::new(CumulativeBridge::<I, MonoidalStrategy>::new())
+    }
+}
+
+impl<I, Ctx> BridgeDispatch<I, Ctx> for (SelfCumulative, Fold)
+where
+    I: ExtractCumulative<PriorState = <FoldStrategy as MergeStrategy<I>>::MergedState>
+        + MergeFold
+        + Schema<<FoldStrategy as MergeStrategy<I>>::MergedState>
+        + IndexDef<Scope = SelfCumulative, Composition = Fold>,
+    <FoldStrategy as MergeStrategy<I>>::MergedState: Clone,
+    Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
+{
+    fn dispatch() -> Box<dyn IndexPipeline<Ctx>> {
+        Box::new(CumulativeBridge::<I, FoldStrategy>::new())
+    }
+}
+
 // ===========================================================================
 // MergeStrategy — composition-specific logic
 // ===========================================================================
@@ -115,8 +151,10 @@ where
 /// Composition-specific merge logic. Pure domain — no schema, no encoding.
 ///
 /// Abstracts the difference between Append, Monoidal, and Fold so that
-/// [`LocalBridge`] can be a single generic struct. Each strategy only
-/// defines how to combine `Vec<Delta>` into a merged result.
+/// [`LocalBridge`] and [`CumulativeBridge`] can each be a single generic
+/// struct. Two primitive methods — [`initial_state`](Self::initial_state)
+/// and [`accumulate_one`](Self::accumulate_one) — define the algebra.
+/// [`merge_deltas`](Self::merge_deltas) is provided from them.
 ///
 /// Schema and encoding are handled separately in the bridge's `persist`
 /// method via [`Schema`] + [`Encode`].
@@ -124,8 +162,20 @@ pub(crate) trait MergeStrategy<I: IndexDef>: Send + Sync + 'static {
     /// The domain-typed result of merging a batch of deltas.
     type MergedState: Send + Sync;
 
+    /// The identity/initial state before any deltas.
+    fn initial_state() -> Self::MergedState;
+
+    /// Fold one delta into the running state.
+    fn accumulate_one(state: &mut Self::MergedState, delta: I::Delta);
+
     /// Combine a batch of deltas into a merged domain result.
-    fn merge_deltas(deltas: Vec<I::Delta>) -> Self::MergedState;
+    fn merge_deltas(deltas: Vec<I::Delta>) -> Self::MergedState {
+        let mut state = Self::initial_state();
+        for delta in deltas {
+            Self::accumulate_one(&mut state, delta);
+        }
+        state
+    }
 }
 
 /// Strategy marker for Append composition.
@@ -137,8 +187,12 @@ where
 {
     type MergedState = Vec<I::Delta>;
 
-    fn merge_deltas(deltas: Vec<I::Delta>) -> Self::MergedState {
-        deltas
+    fn initial_state() -> Self::MergedState {
+        Vec::new()
+    }
+
+    fn accumulate_one(state: &mut Self::MergedState, delta: I::Delta) {
+        state.push(delta);
     }
 }
 
@@ -151,12 +205,13 @@ where
 {
     type MergedState = I::Accumulator;
 
-    fn merge_deltas(deltas: Vec<I::Delta>) -> Self::MergedState {
-        let mut acc = I::identity();
-        for delta in deltas {
-            acc = I::combine(acc, I::lift(delta));
-        }
-        acc
+    fn initial_state() -> Self::MergedState {
+        I::identity()
+    }
+
+    fn accumulate_one(state: &mut Self::MergedState, delta: I::Delta) {
+        let prev = std::mem::replace(state, I::identity());
+        *state = I::combine(prev, I::lift(delta));
     }
 }
 
@@ -169,12 +224,12 @@ where
 {
     type MergedState = I::FoldState;
 
-    fn merge_deltas(deltas: Vec<I::Delta>) -> Self::MergedState {
-        let mut state = I::initial_state();
-        for delta in deltas {
-            I::fold(&mut state, delta);
-        }
-        state
+    fn initial_state() -> Self::MergedState {
+        I::initial_state()
+    }
+
+    fn accumulate_one(state: &mut Self::MergedState, delta: I::Delta) {
+        I::fold(state, delta);
     }
 }
 
@@ -236,6 +291,101 @@ where
 
         let state = S::merge_deltas(deltas);
         *self.merged.lock().expect("merged mutex poisoned") = Some(state);
+        Ok(())
+    }
+
+    fn persist(&self) -> Result<Vec<WriteOp>, PipelineError> {
+        let state = self
+            .merged
+            .lock()
+            .expect("merged mutex poisoned")
+            .take()
+            .ok_or_else(|| PipelineError::Persist("no merged state to persist".into()))?;
+
+        let ops = I::into_entries(state)
+            .into_iter()
+            .map(|(key, value)| WriteOp::Put {
+                index: I::NAME,
+                key: key.encode(),
+                value: value.encode(),
+            })
+            .collect();
+
+        Ok(ops)
+    }
+}
+
+// ===========================================================================
+// CumulativeBridge — single struct for all SelfCumulative compositions
+// ===========================================================================
+
+/// Stateful bridge for all SelfCumulative indexes.
+///
+/// Unlike [`LocalBridge`], extraction is sequential within each index:
+/// the bridge maintains a `running_state` that threads through blocks.
+/// Different SelfCumulative indexes still extract in parallel with each
+/// other — the scheduler guarantees at most one pending extraction per
+/// index.
+///
+/// **State threading:**
+/// - Starts at the merge strategy's
+///   [`initial_state`](MergeStrategy::initial_state).
+/// - After each extraction, the delta is folded into the running state
+///   via [`accumulate_one`](MergeStrategy::accumulate_one). No separate
+///   delta buffer — the running state IS the accumulated merge result.
+/// - At batch end, the running state is snapshotted for persistence.
+/// - The running state carries across batch boundaries — no reset.
+///
+/// **Persistence:**
+/// The merge result (running state snapshot) is mapped to entries via
+/// [`Schema`]. For (S, M) indexes where `PriorState = Accumulator`,
+/// this persists the cumulative accumulator.
+pub(crate) struct CumulativeBridge<I: IndexDef, S: MergeStrategy<I>> {
+    descriptor: Descriptor,
+    running_state: Mutex<S::MergedState>,
+    merged: Mutex<Option<S::MergedState>>,
+    _phantom: PhantomData<(I, S)>,
+}
+
+impl<I: IndexDef, S: MergeStrategy<I>> CumulativeBridge<I, S> {
+    fn new() -> Self
+    where
+        S::MergedState: Clone,
+    {
+        Self {
+            descriptor: I::descriptor(),
+            running_state: Mutex::new(S::initial_state()),
+            merged: Mutex::new(None),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<Ctx, I, S> IndexPipeline<Ctx> for CumulativeBridge<I, S>
+where
+    I: ExtractCumulative<PriorState = S::MergedState> + Schema<S::MergedState>,
+    S: MergeStrategy<I>,
+    S::MergedState: Clone,
+    Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
+{
+    fn descriptor(&self) -> &Descriptor {
+        &self.descriptor
+    }
+
+    fn extract_one(&self, ctx: &Ctx) -> Result<(), PipelineError> {
+        let mut running = self.running_state.lock().expect("running state mutex poisoned");
+        let delta = I::extract(&ctx.context(), &running)?;
+        S::accumulate_one(&mut running, delta);
+        Ok(())
+    }
+
+    fn merge(&self) -> Result<(), PipelineError> {
+        let snapshot = self
+            .running_state
+            .lock()
+            .expect("running state mutex poisoned")
+            .clone();
+        *self.merged.lock().expect("merged mutex poisoned") = Some(snapshot);
         Ok(())
     }
 
