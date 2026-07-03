@@ -16,6 +16,7 @@ pub mod pipeline;
 pub mod primitives;
 pub mod progress;
 pub mod scheduler;
+pub mod encode;
 pub mod provisioner;
 pub mod traits;
 

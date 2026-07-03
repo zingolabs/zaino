@@ -38,9 +38,10 @@ use std::marker::PhantomData;
 use std::sync::Mutex;
 
 use crate::descriptor::{Append, BlockLocal, Descriptor, Fold, Monoidal};
+use crate::encode::Encode;
 use crate::pipeline::{IndexPipeline, PipelineError};
 use crate::traits::{
-    ExtractLocal, IndexDef, MergeAppend, MergeFold, MergeMonoidal, ProvideContext, WriteOp,
+    ExtractLocal, IndexDef, MergeAppend, MergeFold, MergeMonoidal, ProvideContext, Schema, WriteOp,
 };
 
 // ===========================================================================
@@ -70,7 +71,10 @@ impl sealed::Sealed for (BlockLocal, Fold) {}
 
 impl<I, Ctx> BridgeDispatch<I, Ctx> for (BlockLocal, Append)
 where
-    I: ExtractLocal + MergeAppend + IndexDef<Scope = BlockLocal, Composition = Append>,
+    I: ExtractLocal
+        + MergeAppend
+        + Schema<<AppendStrategy as MergeStrategy<I>>::MergedState>
+        + IndexDef<Scope = BlockLocal, Composition = Append>,
     Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
 {
     fn dispatch() -> Box<dyn IndexPipeline<Ctx>> {
@@ -80,7 +84,10 @@ where
 
 impl<I, Ctx> BridgeDispatch<I, Ctx> for (BlockLocal, Monoidal)
 where
-    I: ExtractLocal + MergeMonoidal + IndexDef<Scope = BlockLocal, Composition = Monoidal>,
+    I: ExtractLocal
+        + MergeMonoidal
+        + Schema<<MonoidalStrategy as MergeStrategy<I>>::MergedState>
+        + IndexDef<Scope = BlockLocal, Composition = Monoidal>,
     Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
 {
     fn dispatch() -> Box<dyn IndexPipeline<Ctx>> {
@@ -90,7 +97,10 @@ where
 
 impl<I, Ctx> BridgeDispatch<I, Ctx> for (BlockLocal, Fold)
 where
-    I: ExtractLocal + MergeFold + IndexDef<Scope = BlockLocal, Composition = Fold>,
+    I: ExtractLocal
+        + MergeFold
+        + Schema<<FoldStrategy as MergeStrategy<I>>::MergedState>
+        + IndexDef<Scope = BlockLocal, Composition = Fold>,
     Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
 {
     fn dispatch() -> Box<dyn IndexPipeline<Ctx>> {
@@ -102,22 +112,20 @@ where
 // MergeStrategy — composition-specific logic
 // ===========================================================================
 
-/// Composition-specific merge and persist logic.
+/// Composition-specific merge logic. Pure domain — no schema, no encoding.
 ///
 /// Abstracts the difference between Append, Monoidal, and Fold so that
-/// [`LocalBridge`] can be a single generic struct. Each strategy defines
-/// how to combine a `Vec<Delta>` into a merged result, and how to
-/// convert that result into `WriteOp`s.
+/// [`LocalBridge`] can be a single generic struct. Each strategy only
+/// defines how to combine `Vec<Delta>` into a merged result.
+///
+/// Schema and encoding are handled separately in the bridge's `persist`
+/// method via [`Schema`] + [`Encode`].
 pub(crate) trait MergeStrategy<I: IndexDef>: Send + Sync + 'static {
     /// The domain-typed result of merging a batch of deltas.
     type MergedState: Send + Sync;
 
     /// Combine a batch of deltas into a merged domain result.
     fn merge_deltas(deltas: Vec<I::Delta>) -> Self::MergedState;
-
-    /// Convert the merged domain result into write operations.
-    /// This is the serialization boundary.
-    fn to_write_ops(state: Self::MergedState) -> Vec<WriteOp>;
 }
 
 /// Strategy marker for Append composition.
@@ -127,20 +135,10 @@ impl<I> MergeStrategy<I> for AppendStrategy
 where
     I: MergeAppend,
 {
-    // For append, the merged state is the collected deltas themselves —
-    // each delta independently produces WriteOps.
     type MergedState = Vec<I::Delta>;
 
     fn merge_deltas(deltas: Vec<I::Delta>) -> Self::MergedState {
         deltas
-    }
-
-    fn to_write_ops(state: Self::MergedState) -> Vec<WriteOp> {
-        let mut ops = Vec::new();
-        for delta in state {
-            ops.extend(I::to_write_ops(delta));
-        }
-        ops
     }
 }
 
@@ -160,10 +158,6 @@ where
         }
         acc
     }
-
-    fn to_write_ops(state: Self::MergedState) -> Vec<WriteOp> {
-        I::to_write_ops(state)
-    }
 }
 
 /// Strategy marker for Fold composition.
@@ -181,10 +175,6 @@ where
             I::fold(&mut state, delta);
         }
         state
-    }
-
-    fn to_write_ops(state: Self::MergedState) -> Vec<WriteOp> {
-        I::to_write_ops(state)
     }
 }
 
@@ -222,7 +212,7 @@ impl<I: IndexDef, S: MergeStrategy<I>> LocalBridge<I, S> {
 
 impl<Ctx, I, S> IndexPipeline<Ctx> for LocalBridge<I, S>
 where
-    I: ExtractLocal,
+    I: ExtractLocal + Schema<S::MergedState>,
     S: MergeStrategy<I>,
     Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
 {
@@ -256,7 +246,17 @@ where
             .expect("merged mutex poisoned")
             .take()
             .ok_or_else(|| PipelineError::Persist("no merged state to persist".into()))?;
-        Ok(S::to_write_ops(state))
+
+        let ops = I::into_entries(state)
+            .into_iter()
+            .map(|(key, value)| WriteOp::Put {
+                index: I::NAME,
+                key: key.encode(),
+                value: value.encode(),
+            })
+            .collect();
+
+        Ok(ops)
     }
 }
 

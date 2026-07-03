@@ -2,7 +2,7 @@
 
 use crate::descriptor::{Append, BlockLocal};
 use crate::primitives::{BlockHeight, IndexId};
-use crate::traits::{ExtractError, ExtractLocal, IndexDef, MergeAppend, WriteOp};
+use crate::traits::{ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema};
 
 /// Block context for this index: height and value.
 pub struct Context {
@@ -44,12 +44,16 @@ impl ExtractLocal for ValueIndex {
     }
 }
 
-impl MergeAppend for ValueIndex {
-    fn to_write_ops(delta: Self::Delta) -> Vec<WriteOp> {
-        vec![WriteOp::Put {
-            index: ID,
-            key: delta.height.value().to_le_bytes().to_vec(),
-            value: delta.value.to_le_bytes().to_vec(),
-        }]
+impl MergeAppend for ValueIndex {}
+
+impl Schema<Vec<Entry>> for ValueIndex {
+    type Key = BlockHeight;
+    type Value = u32;
+
+    fn into_entries(entries: Vec<Entry>) -> Vec<(Self::Key, Self::Value)> {
+        entries
+            .into_iter()
+            .map(|entry| (entry.height, entry.value))
+            .collect()
     }
 }

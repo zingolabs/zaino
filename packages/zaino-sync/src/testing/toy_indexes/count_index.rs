@@ -2,7 +2,7 @@
 
 use crate::descriptor::{BlockLocal, Monoidal};
 use crate::primitives::IndexId;
-use crate::traits::{ExtractError, ExtractLocal, IndexDef, MergeMonoidal, WriteOp};
+use crate::traits::{ExtractError, ExtractLocal, IndexDef, MergeMonoidal, Schema};
 
 /// Block context for this index: nothing needed.
 ///
@@ -46,12 +46,13 @@ impl MergeMonoidal for CountIndex {
     fn combine(a: Self::Accumulator, b: Self::Accumulator) -> Self::Accumulator {
         a + b
     }
+}
 
-    fn to_write_ops(merged: Self::Accumulator) -> Vec<WriteOp> {
-        vec![WriteOp::Put {
-            index: ID,
-            key: b"total".to_vec(),
-            value: merged.to_le_bytes().to_vec(),
-        }]
+impl Schema<u64> for CountIndex {
+    type Key = &'static [u8];
+    type Value = u64;
+
+    fn into_entries(count: u64) -> Vec<(Self::Key, Self::Value)> {
+        vec![(b"total".as_slice(), count)]
     }
 }

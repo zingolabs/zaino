@@ -184,12 +184,10 @@ pub trait ExtractCross: IndexDef<Scope = CrossIndex> {
 
 /// Merge for append-type indexes (disjoint keys).
 ///
-/// No actual merge logic — each delta's write ops are collected and applied.
-/// The engine can batch writes from multiple blocks without any combine step.
-pub trait MergeAppend: IndexDef<Composition = Append> {
-    /// Convert a single block's delta directly to write operations.
-    fn to_write_ops(delta: Self::Delta) -> Vec<WriteOp>;
-}
+/// Marker trait — Append composition has no merge logic. Each delta
+/// is independent. The bridge collects deltas and passes them to
+/// [`Persist`] at batch boundary.
+pub trait MergeAppend: IndexDef<Composition = Append> {}
 
 /// Merge for monoidal-type indexes (associative + commutative combine).
 ///
@@ -197,6 +195,9 @@ pub trait MergeAppend: IndexDef<Composition = Append> {
 /// parallel reduce tree. The implementor must ensure `combine` is
 /// associative and commutative — the type system cannot enforce these
 /// algebraic properties, but the engine relies on them for correctness.
+///
+/// Pure domain algebra — no persistence concern. Serialization of the
+/// merged accumulator is handled by [`Persist`].
 pub trait MergeMonoidal: IndexDef<Composition = Monoidal> {
     /// The intermediate type used during the reduce.
     type Accumulator: Send + Sync;
@@ -209,15 +210,15 @@ pub trait MergeMonoidal: IndexDef<Composition = Monoidal> {
 
     /// Associative, commutative combine of two accumulators.
     fn combine(a: Self::Accumulator, b: Self::Accumulator) -> Self::Accumulator;
-
-    /// Convert the fully-merged accumulator to write operations.
-    fn to_write_ops(merged: Self::Accumulator) -> Vec<WriteOp>;
 }
 
 /// Merge for fold-type indexes (order-dependent sequential application).
 ///
 /// Deltas must be folded in strict chain order. The engine cannot
 /// parallelise the merge step for this composition type.
+///
+/// Pure domain logic — no persistence concern. Serialization of the
+/// final fold state is handled by [`Persist`].
 pub trait MergeFold: IndexDef<Composition = Fold> {
     /// The running state threaded through the fold.
     type FoldState: Send + Sync;
@@ -227,9 +228,41 @@ pub trait MergeFold: IndexDef<Composition = Fold> {
 
     /// Apply one block's delta to the running state. Called in chain order.
     fn fold(state: &mut Self::FoldState, delta: Self::Delta);
+}
 
-    /// Convert the final fold state to write operations.
-    fn to_write_ops(state: Self::FoldState) -> Vec<WriteOp>;
+// ===========================================================================
+// Schema — index entry declaration, separate from merge logic.
+//
+// The index declares its key/value types and how its merged result
+// maps to entries. The types handle serialization via `Encode`.
+// The bridge does the mechanical conversion to `WriteOp`s.
+// ===========================================================================
+
+use crate::encode::Encode;
+
+/// Declares an index's key-value schema and how to map results to entries.
+///
+/// Generic over `M` — the merge result type. Each composition produces
+/// a different merge result:
+/// - Append: `Vec<Self::Delta>`
+/// - Monoidal: `Self::Accumulator`
+/// - Fold: `Self::FoldState`
+///
+/// The index implements `Schema<M>` for its composition's output type.
+/// The bridge calls `into_entries` and uses `Encode` on the key/value
+/// types to produce `WriteOp`s. No index code touches bytes.
+///
+/// Using a type parameter instead of an associated type avoids cycle
+/// errors that arise when the merged type references the index's own
+/// associated types (e.g. `Vec<Self::Delta>`).
+pub trait Schema<M>: IndexDef {
+    /// The key type for this index's entries.
+    type Key: Encode + Send + Sync;
+    /// The value type for this index's entries.
+    type Value: Encode + Send + Sync;
+
+    /// Map a merge result to typed key-value entries.
+    fn into_entries(merged: M) -> Vec<(Self::Key, Self::Value)>;
 }
 
 // ===========================================================================

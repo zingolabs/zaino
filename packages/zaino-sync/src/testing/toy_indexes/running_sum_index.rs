@@ -2,7 +2,7 @@
 
 use crate::descriptor::{BlockLocal, Fold};
 use crate::primitives::IndexId;
-use crate::traits::{ExtractError, ExtractLocal, IndexDef, MergeFold, WriteOp};
+use crate::traits::{ExtractError, ExtractLocal, IndexDef, MergeFold, Schema};
 
 /// Block context for this index: just the block's value.
 pub struct Context {
@@ -41,12 +41,13 @@ impl MergeFold for RunningSumIndex {
     fn fold(state: &mut Self::FoldState, delta: Self::Delta) {
         *state += delta;
     }
+}
 
-    fn to_write_ops(state: Self::FoldState) -> Vec<WriteOp> {
-        vec![WriteOp::Put {
-            index: ID,
-            key: b"sum".to_vec(),
-            value: state.to_le_bytes().to_vec(),
-        }]
+impl Schema<u64> for RunningSumIndex {
+    type Key = &'static [u8];
+    type Value = u64;
+
+    fn into_entries(sum: u64) -> Vec<(Self::Key, Self::Value)> {
+        vec![(b"sum".as_slice(), sum)]
     }
 }
