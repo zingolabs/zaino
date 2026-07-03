@@ -6096,6 +6096,7 @@ dependencies = [
 name = "zaino-sync"
 version = "0.1.0"
 dependencies = [
+ "rayon",
  "thiserror 2.0.18",
  "tokio",
 ]

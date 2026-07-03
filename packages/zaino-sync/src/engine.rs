@@ -21,7 +21,8 @@
 //! [`Task`]: crate::scheduler::Task
 
 use std::collections::HashMap;
-use std::sync::Arc;
+
+use rayon::prelude::*;
 
 use crate::backend::{Backend, BackendError, BackendWriter};
 use crate::block_buffer::BlockBuffer;
@@ -64,7 +65,7 @@ pub enum SyncError {
 /// Pipelines are looked up by `IndexId` for O(1) dispatch.
 pub struct SyncEngine<Ctx, B: Backend> {
     scheduler: Scheduler,
-    pipelines: HashMap<IndexId, Arc<dyn IndexPipeline<Ctx>>>,
+    pipelines: HashMap<IndexId, Box<dyn IndexPipeline<Ctx>>>,
     backend: B,
     buffer: BlockBuffer<Ctx>,
     evicted_through: Option<BatchIndex>,
@@ -82,12 +83,9 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     ) -> Result<Self, SyncError> {
         let (dag, index_vec) = set.build()?;
 
-        let pipelines: HashMap<IndexId, Arc<dyn IndexPipeline<Ctx>>> = index_vec
+        let pipelines: HashMap<IndexId, Box<dyn IndexPipeline<Ctx>>> = index_vec
             .into_iter()
-            .map(|p| {
-                let name = p.descriptor().name;
-                (name, Arc::from(p))
-            })
+            .map(|p| (p.descriptor().name, p))
             .collect();
 
         let batch_size = config.batch_size;
@@ -203,7 +201,7 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
                 continue;
             }
 
-            self.dispatch_tasks_async(tasks).await?;
+            self.dispatch_tasks(tasks)?;
         }
 
         self.backend.flush()?;
@@ -258,26 +256,13 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
             .set_blocks_available(self.buffer.total_pushed());
     }
 
-    /// Execute tasks sequentially (sync path).
+    /// Execute a batch of tasks from the scheduler.
+    ///
+    /// Handles batch completions first, then runs all extractions in
+    /// parallel via rayon, then reports completions sequentially.
     fn dispatch_tasks(&mut self, tasks: Vec<Task>) -> Result<(), SyncError> {
         let jobs = self.flush_batch_completions(tasks)?;
-        for job in &jobs {
-            let ctx = self.buffer.get(job.global_offset)
-                .expect("block available — scheduler verified watermark");
-            let pipeline = self.pipelines.get(&job.index)
-                .expect("scheduler only emits registered indexes");
-            pipeline.extract_one(&ctx)?;
-        }
-        self.report_extractions(jobs)
-    }
-
-    /// Execute tasks with parallel extraction (async path).
-    ///
-    /// The scheduler guarantees at most one extraction per index per
-    /// `ready_work()` call, so spawned tasks are fully independent.
-    async fn dispatch_tasks_async(&mut self, tasks: Vec<Task>) -> Result<(), SyncError> {
-        let jobs = self.flush_batch_completions(tasks)?;
-        self.run_extractions_parallel(&jobs).await?;
+        self.run_extractions_parallel(&jobs)?;
         self.report_extractions(jobs)
     }
 
@@ -304,26 +289,25 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
         Ok(extract_jobs)
     }
 
-    /// Spawn extractions on the blocking thread pool and await all.
-    async fn run_extractions_parallel(
+    /// Run extractions in parallel via rayon's work-stealing pool.
+    ///
+    /// Prepares (pipeline, context) pairs on the calling thread, then
+    /// fans out via `par_iter`. Borrows from `self` — no Arc cloning.
+    fn run_extractions_parallel(
         &self,
         jobs: &[ExtractJob],
     ) -> Result<(), SyncError> {
-        let mut handles = Vec::with_capacity(jobs.len());
-        for job in jobs {
+        let work: Vec<_> = jobs.iter().map(|job| {
             let ctx = self.buffer.get(job.global_offset)
                 .expect("block available — scheduler verified watermark");
-            let pipeline = Arc::clone(
-                self.pipelines.get(&job.index)
-                    .expect("scheduler only emits registered indexes"),
-            );
-            handles.push(tokio::task::spawn_blocking(move || {
-                pipeline.extract_one(&ctx)
-            }));
-        }
-        for handle in handles {
-            handle.await.expect("extraction task panicked")?;
-        }
+            let pipeline = self.pipelines.get(&job.index)
+                .expect("scheduler only emits registered indexes");
+            (pipeline, ctx)
+        }).collect();
+
+        work.par_iter()
+            .try_for_each(|(pipeline, ctx)| pipeline.extract_one(ctx))?;
+
         Ok(())
     }
 

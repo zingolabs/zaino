@@ -105,6 +105,9 @@ dashmap = "6.1"
 lmdb = "0.8"
 lmdb-sys = "0.8"
 
+# Parallelism
+rayon = "1.10"
+
 # Async
 async-stream = "0.3"
 futures = "0.3.30"

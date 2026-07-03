@@ -9,8 +9,9 @@ homepage.workspace = true
 description = "DAG-driven parallel sync engine for blockchain index building."
 
 [dependencies]
+rayon.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync", "rt"] }
+tokio = { workspace = true, features = ["sync"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
