@@ -145,7 +145,7 @@ zaino-common = { path = "packages/zaino-common", version = "0.3.0" }
 # docs/adr/0001-zcashd-support-feature-gate.md.
 zaino-fetch = { path = "packages/zaino-fetch", version = "0.3.0", default-features = false }
 zaino-proto = { path = "packages/zaino-proto", version = "0.1.3" }
-zaino-state = { path = "packages/zaino-state", version = "0.4.0", default-features = false }
+zaino-state = { path = "packages/zaino-state", version = "0.4.1", default-features = false }
 zaino-serve = { path = "packages/zaino-serve", version = "0.4.0", default-features = false }
 zaino-testutils = { path = "live-tests/zaino-testutils" }
 
@@ -173,24 +173,3 @@ lazy_static = "1.5.0"
 opt-level = 3
 debug = true
 
-[patch.crates-io]
-#zcash_client_backend = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
-#zcash_address = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
-#zcash_keys = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
-#zcash_primitives = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
-#zcash_protocol = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
-#zcash_transparent = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
-
-# TEMPORARY: zebra is pinned to an unreleased ZcashFoundation/zebra rev whose
-# ReadRequest::NonFinalizedBlocksListener is a struct variant carrying
-# `known_chain_tips` (its Cargo version is 9.0.1, but it is NOT the published
-# crates.io 9.0.1 — that one is still a unit variant). Revert to a plain
-# version requirement once the change is released. This is the single root
-# workspace (the live-test crates were folded in; see docs/adr/0002), so the
-# patch lives here once and every member — production and live-test alike —
-# inherits it through the single lock; Cargo honours `[patch.crates-io]` only
-# from the workspace root. See docs/updating_zebra_crates.md.
-# Tracking: zaino#<TODO-revert-zebra-fork>.
-zebra-chain = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "9a27f886a5bfb143f65d1712e912cef252426800" }
-zebra-rpc = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "9a27f886a5bfb143f65d1712e912cef252426800" }
-zebra-state = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "9a27f886a5bfb143f65d1712e912cef252426800" }
