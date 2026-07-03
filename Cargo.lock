@@ -6271,7 +6271,7 @@ dependencies = [
 [[package]]
 name = "zcash_local_net"
 version = "0.6.0"
-source = "git+https://github.com/zingolabs/infrastructure.git?rev=0a003b4fd983be56e2ac2e81099a4f2a6dc87141#0a003b4fd983be56e2ac2e81099a4f2a6dc87141"
+source = "git+https://github.com/zingolabs/infrastructure.git?rev=b09d9c11afc349a1e7ee18a35e3bae0746b829f0#b09d9c11afc349a1e7ee18a35e3bae0746b829f0"
 dependencies = [
  "getset",
  "hex",
@@ -6282,7 +6282,6 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
- "zcash_protocol",
  "zebra-chain 9.0.0",
  "zebra-node-services 7.0.0",
  "zebra-rpc 9.0.0",
@@ -7089,12 +7088,12 @@ dependencies = [
 [[package]]
 name = "zingo-consensus"
 version = "0.1.0"
-source = "git+https://github.com/zingolabs/infrastructure.git?rev=0a003b4fd983be56e2ac2e81099a4f2a6dc87141#0a003b4fd983be56e2ac2e81099a4f2a6dc87141"
+source = "git+https://github.com/zingolabs/infrastructure.git?rev=b09d9c11afc349a1e7ee18a35e3bae0746b829f0#b09d9c11afc349a1e7ee18a35e3bae0746b829f0"
 
 [[package]]
 name = "zingo_test_vectors"
 version = "0.0.1"
-source = "git+https://github.com/zingolabs/infrastructure.git?rev=0a003b4fd983be56e2ac2e81099a4f2a6dc87141#0a003b4fd983be56e2ac2e81099a4f2a6dc87141"
+source = "git+https://github.com/zingolabs/infrastructure.git?rev=b09d9c11afc349a1e7ee18a35e3bae0746b829f0#b09d9c11afc349a1e7ee18a35e3bae0746b829f0"
 dependencies = [
  "bip0039",
 ]

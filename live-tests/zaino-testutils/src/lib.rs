@@ -40,7 +40,7 @@ use zcash_local_net::validator::zcashd::{Zcashd, ZcashdConfig};
 use zcash_local_net::validator::zebrad::{Zebrad, ZebradConfig};
 pub use zcash_local_net::validator::Validator;
 use zcash_local_net::validator::ValidatorConfig as _;
-pub use zcash_local_net::PoolType;
+pub use zcash_local_net::MinerPool;
 use zcash_local_net::{logs::LogsToStdoutAndStderr, process::Process};
 use zebra_chain::parameters::NetworkKind;
 use zebra_rpc::methods::GetInfo;
@@ -529,18 +529,18 @@ impl ValidatorExt for Zcashd {
 ///
 /// This constant is the single upgrade point for shielded funding: when the
 /// next shielded pool (ironwood) becomes minable, only this value changes.
-pub const SHIELDED_FUNDING_POOL: PoolType = PoolType::ORCHARD;
+pub const SHIELDED_FUNDING_POOL: MinerPool = MinerPool::Orchard;
 
 /// The pool a validator mines to when the session doesn't opt into
 /// [`SHIELDED_FUNDING_POOL`]: transparent for zebrad (cheapest block
 /// templates — a shielded miner address would cost a halo2 proof per block),
-/// ORCHARD for zcashd (its historical setting; the cached launch reward
+/// Orchard for zcashd (its historical setting; the cached launch reward
 /// funds wallets without extra mining).
-pub fn default_mining_pool(validator: &ValidatorKind) -> PoolType {
+pub fn default_mining_pool(validator: &ValidatorKind) -> MinerPool {
     if validator == &ValidatorKind::Zebrad {
-        PoolType::Transparent
+        MinerPool::Transparent
     } else {
-        PoolType::ORCHARD
+        MinerPool::Orchard
     }
 }
 
@@ -630,7 +630,7 @@ where
         fields(validator = ?validator, network = ?network, mine_to_pool = ?mine_to_pool, enable_zaino, enable_clients)
     )]
     pub async fn launch_mining_to(
-        mine_to_pool: PoolType,
+        mine_to_pool: MinerPool,
         validator: &ValidatorKind,
         network: Option<NetworkKind>,
         activation_heights: Option<ActivationHeights>,
@@ -1043,7 +1043,7 @@ pub async fn launch_state_and_fetch_services<V: ValidatorExt>(
 /// subject is the miner's coinbase footprint.
 #[allow(deprecated)]
 pub async fn launch_state_and_fetch_services_mining_to<V: ValidatorExt>(
-    mine_to_pool: PoolType,
+    mine_to_pool: MinerPool,
     validator: &ValidatorKind,
     chain_cache: Option<PathBuf>,
     enable_zaino: bool,
@@ -1363,7 +1363,7 @@ pub async fn launch_with_fetch_subscriber<V: ValidatorExt>(
 /// subject is the miner's coinbase footprint.
 #[allow(deprecated)]
 pub async fn launch_with_fetch_subscriber_mining_to<V: ValidatorExt>(
-    mine_to_pool: PoolType,
+    mine_to_pool: MinerPool,
     validator: &ValidatorKind,
     chain_cache: Option<PathBuf>,
 ) -> (TestManager<V, FetchService>, FetchServiceSubscriber) {

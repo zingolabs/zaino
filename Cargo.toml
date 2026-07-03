@@ -136,10 +136,11 @@ zaino-testutils = { path = "live-tests/zaino-testutils" }
 
 # Zingo-infra (validator launcher driving the live tests; not a prod dep).
 # TEMPORARY (zingolabs/infrastructure#269): pinned to an exact commit on the
-# `add_zingo_consensus` branch, which contains all of `add_client_support`
-# plus the zingo-consensus vocabulary migration, so every machine resolves the
-# same code; restore the release tag once tagged upstream.
-zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "0a003b4fd983be56e2ac2e81099a4f2a6dc87141" }
+# `remove_unnecessary_deps` branch, which contains the zingo-consensus
+# vocabulary migration plus the MinerPool replacement of
+# zcash_protocol::PoolType, so every machine resolves the same code; restore
+# the release tag once tagged upstream.
+zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "b09d9c11afc349a1e7ee18a35e3bae0746b829f0" }
 
 wire_serialized_transaction_test_data = "1.0.0"
 config = { version = "0.15", default-features = false, features = ["toml"] }
