@@ -1,0 +1,80 @@
+name: Publish dry-run
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'rc/**'
+      - stable
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  publish-dry-run:
+    name: cargo publish --dry-run
+    runs-on: ubuntu-latest
+    # On rc/* and stable this job MUST pass; everywhere else it is advisory.
+    # For PRs, check the base (target) branch; for pushes, check the ref itself.
+    continue-on-error: >-
+      ${{
+        github.event_name == 'pull_request'
+          && !startsWith(github.base_ref, 'rc/')
+          && github.base_ref != 'stable'
+        || github.event_name != 'pull_request'
+          && !startsWith(github.ref_name, 'rc/')
+          && github.ref_name != 'stable'
+      }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # rust-toolchain.toml auto-installs the pinned toolchain on first cargo
+      # invocation, so no explicit toolchain setup step is needed.
+
+      - name: Dry-run publish (dependency order)
+        id: dry-run
+        run: |
+          set -euo pipefail
+
+          # Publishable crates in dependency order.
+          CRATES=(
+            zaino-proto
+            zaino-common
+            zaino-fetch
+            zaino-state
+            zaino-serve
+            zainod
+          )
+
+          failed=()
+          for crate in "${CRATES[@]}"; do
+            echo "::group::$crate"
+            if cargo publish -p "$crate" --dry-run 2>&1; then
+              echo "  $crate: OK"
+            else
+              failed+=("$crate")
+              echo "::error::cargo publish --dry-run failed for $crate"
+            fi
+            echo "::endgroup::"
+          done
+
+          if [[ ${#failed[@]} -gt 0 ]]; then
+            echo ""
+            echo "============================================"
+            echo "Publish dry-run FAILED for: ${failed[*]}"
+            echo "============================================"
+            echo ""
+            echo "This usually means a [patch.crates-io] override is pulling in"
+            echo "unreleased upstream code. Published crates cannot depend on"
+            echo "unpublished revisions — resolve the patch before releasing."
+            exit 1
+          fi
+
+      - name: Annotate on failure (advisory contexts only)
+        if: >-
+          failure()
+          && (github.event_name != 'push' || (!startsWith(github.ref_name, 'rc/') && github.ref_name != 'stable'))
+          && (github.event_name != 'pull_request' || (!startsWith(github.base_ref, 'rc/') && github.base_ref != 'stable'))
+        run: |
+          echo "::warning::cargo publish --dry-run failed — one or more crates depend on patched (unreleased) upstream code. This must be resolved before the next release."
