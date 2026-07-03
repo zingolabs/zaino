@@ -761,15 +761,15 @@ mod spend_index_sync {
     }
 }
 
-/// End-to-end **presence** test: `run` must build a *non-empty* index when the
-/// finalised range contains transparent spends. The 201-block fixture can't
-/// exercise this (coinbase maturity puts its spends above the depth-100 seam),
-/// so this synthesises a chain with zebra's block generator, which — with
-/// `allow_all_transparent_coinbase_spends` — produces transparent spends that
-/// can land below the seam. Tracks zingolabs/zaino#1334.
+/// Deterministic synthetic-chain generation shared by the presence and
+/// zebra-parity tests. The 201-block fixture can't put a transparent spend
+/// below the depth-100 test seam (coinbase maturity forbids it), so these
+/// chains come from zebra's block generator, whose
+/// `allow_all_transparent_coinbase_spends` predicate lets spends land in the
+/// finalised range.
 #[cfg(test)]
-mod spend_index_presence {
-    use super::*;
+mod synthetic_chain {
+    use super::OPERATIONAL_NFS_DEPTH;
     use crate::chain_index::source::mockchain_source::MockchainSource;
     use proptest::prelude::{Arbitrary, Strategy};
     use proptest::strategy::ValueTree;
@@ -789,7 +789,7 @@ mod spend_index_presence {
     // is overwhelmingly likely within a couple of tries.
     const MAX_GEN_ATTEMPTS: usize = 40;
 
-    fn build_mock(blocks: Vec<Arc<Block>>) -> MockchainSource {
+    pub(super) fn build_mock(blocks: Vec<Arc<Block>>) -> MockchainSource {
         let hashes = blocks
             .iter()
             .map(|block| crate::BlockHash::from(block.hash()))
@@ -814,8 +814,10 @@ mod spend_index_presence {
         })
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn run_builds_a_nonempty_index_from_a_synthetic_chain() {
+    /// A deterministically generated genesis-rooted mainnet chain holding at
+    /// least one transparent spend at or below the seam, plus its finalised
+    /// tip. The seeded `TestRunner` yields the same chain on every run.
+    pub(super) fn with_finalised_spend() -> (Vec<Arc<Block>>, u32) {
         let strategy = LedgerState::arbitrary_with(LedgerStateOverride {
             height_override: Some(Height(0)),
             previous_block_hash_override: Some(GENESIS_PREVIOUS_BLOCK_HASH),
@@ -837,7 +839,6 @@ mod spend_index_presence {
 
         // Deterministically search for a generated chain with a finalised spend,
         // so the presence direction is genuinely exercised.
-        let mut found = None;
         for _ in 0..MAX_GEN_ATTEMPTS {
             let blocks = strategy
                 .new_tree(&mut runner)
@@ -846,14 +847,25 @@ mod spend_index_presence {
                 .0;
             let finalised_tip = (blocks.len() as u32 - 1).saturating_sub(OPERATIONAL_NFS_DEPTH);
             if has_finalised_spend(&blocks, finalised_tip) {
-                found = Some((blocks, finalised_tip));
-                break;
+                return (blocks, finalised_tip);
             }
         }
-        let (blocks, finalised_tip) =
-            found.expect("a synthetic chain with a finalised transparent spend within budget");
+        panic!("no synthetic chain with a finalised transparent spend within budget");
+    }
+}
 
-        let mock = build_mock(blocks);
+/// End-to-end **presence** test: `run` must build a *non-empty* index when the
+/// finalised range contains transparent spends (chain from
+/// [`synthetic_chain`]). Tracks zingolabs/zaino#1334.
+#[cfg(test)]
+mod spend_index_presence {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_builds_a_nonempty_index_from_a_synthetic_chain() {
+        let (blocks, finalised_tip) = synthetic_chain::with_finalised_spend();
+
+        let mock = synthetic_chain::build_mock(blocks);
 
         // Reference: the spends in the finalised range, built the way `run`
         // builds blocks (so this checks fetch + boundary + collate + LMDB
@@ -904,6 +916,117 @@ mod spend_index_presence {
                 "finalised spend {outpoint:?} must be indexed to its spender",
             );
         }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// Cross-implementation **parity** test: the built index must agree
+/// byte-for-byte with zebra's `SpendingTransactionId` read request — the
+/// temporary correctness oracle ADR 0006 designates — served here by a real
+/// `ReadStateService` (dev-features `indexer` + `proptest-impl`) over the
+/// same synthetic chain the index is built from.
+#[cfg(test)]
+mod spend_index_zebra_parity {
+    use super::*;
+    use tower::ServiceExt as _;
+    use zebra_chain::parameters::Network as ZebraNetwork;
+    use zebra_state::{ReadRequest, ReadResponse, ReadStateService, Spend};
+
+    /// The oracle's answer for one prevout: the txid of its spending
+    /// transaction, if zebra knows one.
+    async fn oracle_spender(
+        read_state: &ReadStateService,
+        prevout: zebra_chain::transparent::OutPoint,
+    ) -> Option<zebra_chain::transaction::Hash> {
+        match read_state
+            .clone()
+            .oneshot(ReadRequest::SpendingTransactionId(Spend::OutPoint(prevout)))
+            .await
+            .expect("oracle answers spending-txid reads")
+        {
+            ReadResponse::TransactionId(answer) => answer,
+            other => panic!("unexpected oracle response: {other:?}"),
+        }
+    }
+
+    /// For every prevout spent anywhere in the chain: at or below the seam
+    /// the index and the oracle must agree byte-for-byte; above it the
+    /// finalised-only index is silent by design while the whole-chain oracle
+    /// still answers; a never-spent outpoint is `None` in both.
+    ///
+    /// `multi_thread`: `run` uses `block_in_place` for the LMDB write.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn index_agrees_with_zebra_over_a_synthetic_chain() {
+        let (blocks, finalised_tip) = synthetic_chain::with_finalised_spend();
+
+        // zaino: build the index from genesis over the mockchain.
+        let dir = std::env::temp_dir().join(format!(
+            "outp_to_spend_index_zebra_parity_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let db = SpendIndexDb::open(&dir, 1 << 24).expect("open spend index");
+        SpendIndexSync::new(synthetic_chain::build_mock(blocks.clone()), db, 0)
+            .run()
+            .await
+            .expect("spend-index build runs");
+        let db = SpendIndexDb::open(&dir, 1 << 24).expect("reopen spend index");
+
+        // zebra: checkpoint-committing the same blocks lands them all in the
+        // finalized state, so the oracle covers the whole chain.
+        let (_state, read_state, _tip, _tip_change) =
+            zebra_state::populated_state(blocks.clone(), &ZebraNetwork::Mainnet).await;
+
+        let mut finalised_spends = 0usize;
+        for (height, block) in blocks.iter().enumerate() {
+            for tx in &block.transactions {
+                for input in tx.inputs() {
+                    let Some(prevout) = input.outpoint() else {
+                        continue; // coinbase input: not a spend
+                    };
+                    let indexed = db
+                        .spending_txid(&Outpoint::new(prevout.hash.0, prevout.index))
+                        .expect("read spend index");
+                    let oracle = oracle_spender(&read_state, prevout).await;
+                    assert!(
+                        oracle.is_some(),
+                        "oracle must know the spend of {prevout:?}",
+                    );
+                    if height as u32 <= finalised_tip {
+                        assert_eq!(
+                            indexed.map(<[u8; 32]>::from),
+                            oracle.map(|hash| hash.0),
+                            "finalised spend of {prevout:?}: index and oracle must agree",
+                        );
+                        finalised_spends += 1;
+                    } else {
+                        // The one expected divergence: finalised-only index
+                        // vs whole-chain oracle.
+                        assert_eq!(
+                            indexed, None,
+                            "above-seam spend of {prevout:?} must not be indexed",
+                        );
+                    }
+                }
+            }
+        }
+        assert!(
+            finalised_spends > 0,
+            "chain must exercise the byte-for-byte agreement direction",
+        );
+
+        // A never-spent outpoint: `None` from both implementations.
+        let absent = zebra_chain::transparent::OutPoint {
+            hash: zebra_chain::transaction::Hash([0xEE; 32]),
+            index: u32::MAX,
+        };
+        assert_eq!(
+            db.spending_txid(&Outpoint::new(absent.hash.0, absent.index))
+                .expect("read absent outpoint"),
+            None,
+        );
+        assert_eq!(oracle_spender(&read_state, absent).await, None);
 
         std::fs::remove_dir_all(&dir).ok();
     }
