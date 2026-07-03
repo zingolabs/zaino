@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 
 use crate::dag::{DependencyDag, FiringRule};
-use crate::primitives::{BatchIndex, IndexId};
+use crate::primitives::{BatchIndex, BlockOffset, IndexId};
 
 // ===========================================================================
 // State markers — phantom types for index batch lifecycle
@@ -70,6 +70,9 @@ pub struct ExtractJob {
     pub batch: BatchIndex,
     /// Offset of this block within the batch (0-based).
     pub block_offset: u32,
+    /// Global offset into the sync range — the key for looking up the
+    /// block context in the buffer.
+    pub global_offset: BlockOffset,
 }
 
 /// A unit of work the scheduler declares safe to execute.
@@ -200,8 +203,8 @@ impl Scheduler {
 
             // Check block availability — the provisioner may not have
             // supplied this block yet.
-            let global_offset = batch.value() * self.batch_size + extracted;
-            if global_offset >= self.blocks_available {
+            let global = batch.value() * self.batch_size + extracted;
+            if global >= self.blocks_available {
                 continue;
             }
 
@@ -213,6 +216,7 @@ impl Scheduler {
                 index: id,
                 batch,
                 block_offset: extracted,
+                global_offset: BlockOffset::new(global),
             });
         }
 

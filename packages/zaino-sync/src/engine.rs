@@ -134,21 +134,13 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
             }
 
             for job in &jobs {
-                // Resolve the block index within the full range.
-                let global_offset = job.batch.value() * self.scheduler.batch_size()
-                    + job.block_offset;
+                let offset = job.global_offset.value();
 
-                if global_offset >= total_blocks {
-                    // Past the end of the range — this index has fewer
-                    // blocks than a full batch. Force the batch complete
-                    // by reporting extraction done for the remaining slots.
-                    //
-                    // TODO: handle partial final batches more cleanly.
-                    // For now, skip and let the batch complete naturally.
+                if offset >= total_blocks {
                     continue;
                 }
 
-                let ctx = &blocks[global_offset as usize];
+                let ctx = &blocks[offset as usize];
                 let pipeline = self.pipelines.get(&job.index)
                     .expect("scheduler only emits registered indexes");
 
@@ -159,10 +151,9 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
                 }
             }
 
-            // Advance the block cursor for bookkeeping.
             block_cursor = block_cursor.max(
                 jobs.iter()
-                    .map(|j| j.batch.value() * self.scheduler.batch_size() + j.block_offset + 1)
+                    .map(|j| j.global_offset.value() + 1)
                     .max()
                     .unwrap_or(block_cursor),
             );

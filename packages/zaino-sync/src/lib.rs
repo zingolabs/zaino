@@ -7,6 +7,7 @@
 #![warn(missing_docs)]
 
 pub mod backend;
+pub mod block_buffer;
 pub mod bridge;
 pub mod dag;
 pub mod descriptor;
