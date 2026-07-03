@@ -48,7 +48,7 @@ async fn create_200_block_regtest_chain_vectors() {
     // repeatedly shielding transparent coinbase — mining must stay transparent
     // so regenerated vectors keep that shape.
     let mut test_manager = TestManager::<Zebrad, StateService>::launch_mining_to(
-        zaino_testutils::PoolType::Transparent,
+        zaino_testutils::MinerPool::Transparent,
         &ValidatorKind::Zebrad,
         None,
         None,

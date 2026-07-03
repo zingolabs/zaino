@@ -40,7 +40,7 @@ use zcash_local_net::validator::zcashd::{Zcashd, ZcashdConfig};
 use zcash_local_net::validator::zebrad::{Zebrad, ZebradConfig};
 pub use zcash_local_net::validator::Validator;
 use zcash_local_net::validator::ValidatorConfig as _;
-pub use zcash_local_net::PoolType;
+pub use zcash_local_net::MinerPool;
 use zcash_local_net::{logs::LogsToStdoutAndStderr, process::Process};
 use zebra_chain::parameters::NetworkKind;
 use zebra_rpc::methods::GetInfo;
@@ -326,6 +326,47 @@ pub fn local_network_from_activation_heights(
     }
 }
 
+// Conversions at the zcash_local_net boundary. Named functions rather than
+// From impls: the orphan rule forbids the impls here, and zaino-common must
+// not depend on the harness vocabulary (it reaches us only through
+// zcash_local_net's re-exports).
+/// Convert zaino activation heights into the `zcash_local_net` activation heights type.
+pub fn to_local_net_activation_heights(
+    activation_heights: &ActivationHeights,
+) -> zcash_local_net::protocol::ActivationHeights {
+    zcash_local_net::protocol::ActivationHeights::builder()
+        .set_overwinter(activation_heights.overwinter)
+        .set_sapling(activation_heights.sapling)
+        .set_blossom(activation_heights.blossom)
+        .set_heartwood(activation_heights.heartwood)
+        .set_canopy(activation_heights.canopy)
+        .set_nu5(activation_heights.nu5)
+        .set_nu6(activation_heights.nu6)
+        .set_nu6_1(activation_heights.nu6_1)
+        .set_nu6_2(activation_heights.nu6_2)
+        .set_nu7(activation_heights.nu7)
+        .build()
+}
+
+/// Convert the `zcash_local_net` activation heights type into zaino activation heights.
+pub fn from_local_net_activation_heights(
+    activation_heights: &zcash_local_net::protocol::ActivationHeights,
+) -> ActivationHeights {
+    ActivationHeights {
+        before_overwinter: activation_heights.overwinter(),
+        overwinter: activation_heights.overwinter(),
+        sapling: activation_heights.sapling(),
+        blossom: activation_heights.blossom(),
+        heartwood: activation_heights.heartwood(),
+        canopy: activation_heights.canopy(),
+        nu5: activation_heights.nu5(),
+        nu6: activation_heights.nu6(),
+        nu6_1: activation_heights.nu6_1(),
+        nu6_2: activation_heights.nu6_2(),
+        nu7: activation_heights.nu7(),
+    }
+}
+
 /// Path for zcashd binary.
 #[cfg(feature = "zcashd_support")]
 pub static ZCASHD_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| binary_path("zcashd"));
@@ -488,18 +529,18 @@ impl ValidatorExt for Zcashd {
 ///
 /// This constant is the single upgrade point for shielded funding: when the
 /// next shielded pool (ironwood) becomes minable, only this value changes.
-pub const SHIELDED_FUNDING_POOL: PoolType = PoolType::ORCHARD;
+pub const SHIELDED_FUNDING_POOL: MinerPool = MinerPool::Orchard;
 
 /// The pool a validator mines to when the session doesn't opt into
 /// [`SHIELDED_FUNDING_POOL`]: transparent for zebrad (cheapest block
 /// templates — a shielded miner address would cost a halo2 proof per block),
-/// ORCHARD for zcashd (its historical setting; the cached launch reward
+/// Orchard for zcashd (its historical setting; the cached launch reward
 /// funds wallets without extra mining).
-pub fn default_mining_pool(validator: &ValidatorKind) -> PoolType {
+pub fn default_mining_pool(validator: &ValidatorKind) -> MinerPool {
     if validator == &ValidatorKind::Zebrad {
-        PoolType::Transparent
+        MinerPool::Transparent
     } else {
-        PoolType::ORCHARD
+        MinerPool::Orchard
     }
 }
 
@@ -589,7 +630,7 @@ where
         fields(validator = ?validator, network = ?network, mine_to_pool = ?mine_to_pool, enable_zaino, enable_clients)
     )]
     pub async fn launch_mining_to(
-        mine_to_pool: PoolType,
+        mine_to_pool: MinerPool,
         validator: &ValidatorKind,
         network: Option<NetworkKind>,
         activation_heights: Option<ActivationHeights>,
@@ -621,7 +662,11 @@ where
         // Launch LocalNet:
 
         let mut config = C::Config::default();
-        config.set_test_parameters(mine_to_pool, activation_heights.into(), chain_cache.clone());
+        config.set_test_parameters(
+            mine_to_pool,
+            to_local_net_activation_heights(&activation_heights),
+            chain_cache.clone(),
+        );
 
         debug!("[TEST] Launching validator");
         let (local_net, validator_settings) = C::launch_validator_and_return_config(config)
@@ -998,7 +1043,7 @@ pub async fn launch_state_and_fetch_services<V: ValidatorExt>(
 /// subject is the miner's coinbase footprint.
 #[allow(deprecated)]
 pub async fn launch_state_and_fetch_services_mining_to<V: ValidatorExt>(
-    mine_to_pool: PoolType,
+    mine_to_pool: MinerPool,
     validator: &ValidatorKind,
     chain_cache: Option<PathBuf>,
     enable_zaino: bool,
@@ -1318,7 +1363,7 @@ pub async fn launch_with_fetch_subscriber<V: ValidatorExt>(
 /// subject is the miner's coinbase footprint.
 #[allow(deprecated)]
 pub async fn launch_with_fetch_subscriber_mining_to<V: ValidatorExt>(
-    mine_to_pool: PoolType,
+    mine_to_pool: MinerPool,
     validator: &ValidatorKind,
     chain_cache: Option<PathBuf>,
 ) -> (TestManager<V, FetchService>, FetchServiceSubscriber) {

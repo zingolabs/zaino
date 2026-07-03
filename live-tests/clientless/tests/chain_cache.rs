@@ -172,9 +172,11 @@ mod chain_query_interface {
                     },
                     ephemeral,
                     db_version: 1,
-                    network: zaino_common::Network::Regtest(ActivationHeights::from(
-                        test_manager.local_net.get_activation_heights().await,
-                    )),
+                    network: zaino_common::Network::Regtest(
+                        zaino_testutils::from_local_net_activation_heights(
+                            &test_manager.local_net.get_activation_heights().await,
+                        ),
+                    ),
                 };
 
                 // **NOTE** The "fetch" backend is currently the backend used in the wild, and
@@ -217,7 +219,9 @@ mod chain_query_interface {
                     ephemeral,
                     db_version: 1,
                     network: zaino_common::Network::Regtest(
-                        test_manager.local_net.get_activation_heights().await.into(),
+                        zaino_testutils::from_local_net_activation_heights(
+                            &test_manager.local_net.get_activation_heights().await,
+                        ),
                     ),
                 };
                 let chain_index = NodeBackedChainIndex::new(

@@ -1250,7 +1250,7 @@ async fn transparent_data_in_compact_block() {
         // The assertion below requires every tx to carry a transparent vout;
         // the miner's transparent coinbase is that data source, so coinbase
         // must land on the miner taddr.
-        zaino_testutils::PoolType::Transparent,
+        zaino_testutils::MinerPool::Transparent,
         &ValidatorKind::Zebrad,
         None,
         true,
@@ -1328,7 +1328,7 @@ async fn launch_transparent_and_faucet_taddr(
         // These tests query the faucet taddr, which only coinbase funds —
         // mining must stay transparent or the queries compare empty against
         // empty.
-        zaino_testutils::PoolType::Transparent,
+        zaino_testutils::MinerPool::Transparent,
         &ValidatorKind::Zebrad,
         None,
         true,
@@ -1481,7 +1481,7 @@ async fn get_address_utxos_stream_faucet_fetch_vs_state() {
 /// The block-range edge tests need a known 100-block tip and no wallet client.
 async fn launch_transparent_to_height_100() -> zaino_testutils::StateAndFetchServices<Zebrad> {
     let svc = zaino_testutils::launch_state_and_fetch_services_mining_to::<Zebrad>(
-        zaino_testutils::PoolType::Transparent,
+        zaino_testutils::MinerPool::Transparent,
         &ValidatorKind::Zebrad,
         None,
         true,
@@ -1662,7 +1662,7 @@ async fn address_deltas() {
     let mut svc = zaino_testutils::launch_state_and_fetch_services_mining_to::<Zebrad>(
         // The deltas under test are the faucet taddr's coinbase credits and the
         // shield's debit — coinbase must land on the miner taddr.
-        zaino_testutils::PoolType::Transparent,
+        zaino_testutils::MinerPool::Transparent,
         &ValidatorKind::Zebrad,
         None,
         true,
