@@ -1494,7 +1494,17 @@ impl ZcashIndexer for StateServiceSubscriber {
                     )))?,
             };
 
-            let (sapling, orchard) = self.indexer.get_treestate(block_data.hash()).await?;
+            let treestate: GetTreestateResponse = self
+                .rpc_client
+                .get_treestate(block_data.hash().to_string())
+                .await?
+                .try_into()
+                .map_err(|_error| {
+                    StateServiceError::RpcError(RpcError::new_from_legacycode(
+                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                        "Failed to parse treestate.",
+                    ))
+                })?;
             let time: u32 = block_data.data().time().try_into().map_err(|_error| {
                 StateServiceError::RpcError(RpcError::new_from_legacycode(
                     zebra_rpc::server::error::LegacyCode::InvalidParameter,
@@ -1502,13 +1512,32 @@ impl ZcashIndexer for StateServiceSubscriber {
                 ))
             })?;
 
-            #[allow(deprecated)]
-            Ok(GetTreestateResponse::from_parts(
+            let sapling = treestate.sapling().commitments().final_state().clone();
+            let orchard = treestate.orchard().commitments().final_state().clone();
+            let ironwood = treestate
+                .ironwood()
+                .clone()
+                .and_then(|ironwood| ironwood.commitments().final_state().clone());
+
+            Ok(GetTreestateResponse::new(
                 (*block_data.hash()).into(),
                 block_data.height().into(),
                 time,
-                sapling,
-                orchard,
+                None,
+                zebra_rpc::client::Treestate::new(zebra_rpc::client::Commitments::new(
+                    sapling.as_deref().map(ToOwned::to_owned),
+                    None,
+                )),
+                zebra_rpc::client::Treestate::new(zebra_rpc::client::Commitments::new(
+                    orchard.as_deref().map(ToOwned::to_owned),
+                    None,
+                )),
+                ironwood.map(|final_state| {
+                    zebra_rpc::client::Treestate::new(zebra_rpc::client::Commitments::new(
+                        Some(final_state),
+                        None,
+                    ))
+                }),
             ))
         }
         .await;
@@ -2504,14 +2533,36 @@ impl LightWalletIndexer for StateServiceSubscriber {
                 "Invalid hash or height",
             )),
         )?;
-        #[allow(deprecated)]
-        let (hash, height, time, sapling, orchard) =
-            <StateServiceSubscriber as ZcashIndexer>::z_get_treestate(
-                self,
-                hash_or_height.to_string(),
-            )
-            .await?
-            .into_parts();
+
+        let treestate_response = <StateServiceSubscriber as ZcashIndexer>::z_get_treestate(
+            self,
+            hash_or_height.to_string(),
+        )
+        .await?;
+
+        let sapling_tree = hex::encode(
+            treestate_response
+                .sapling()
+                .commitments()
+                .final_state()
+                .clone()
+                .unwrap_or_default(),
+        );
+        let orchard_tree = hex::encode(
+            treestate_response
+                .orchard()
+                .commitments()
+                .final_state()
+                .clone()
+                .unwrap_or_default(),
+        );
+        let ironwood_tree = treestate_response
+            .ironwood()
+            .clone()
+            .and_then(|treestate| treestate.commitments().final_state().clone())
+            .map(hex::encode)
+            .unwrap_or_default();
+
         Ok(TreeState {
             network: self
                 .config
@@ -2519,11 +2570,12 @@ impl LightWalletIndexer for StateServiceSubscriber {
                 .network
                 .to_zebra_network()
                 .bip70_network_name(),
-            height: height.0 as u64,
-            hash: hash.to_string(),
-            time,
-            sapling_tree: sapling.map(hex::encode).unwrap_or_default(),
-            orchard_tree: orchard.map(hex::encode).unwrap_or_default(),
+            height: treestate_response.height().0 as u64,
+            hash: treestate_response.hash().to_string(),
+            time: treestate_response.time(),
+            sapling_tree,
+            orchard_tree,
+            ironwood_tree,
         })
     }
 
@@ -2735,7 +2787,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
                 .unwrap_or_default(),
             upgrade_name: nu_name.to_string(),
             upgrade_height: nu_height.0 as u64,
-            lightwallet_protocol_version: "v0.4.0".to_string(),
+            lightwallet_protocol_version: "v0.5.0".to_string(),
         })
     }
 

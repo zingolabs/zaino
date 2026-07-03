@@ -140,10 +140,11 @@ impl FullTransaction {
             .collect()
     }
 
-    /// Returns sapling and orchard value balances for the transaction.
+    /// Returns sapling, orchard, and ironwood value balances for the transaction.
     ///
-    /// Returned as (Option\<valueBalanceSapling\>, Option\<valueBalanceOrchard\>).
-    pub fn value_balances(&self) -> (Option<i64>, Option<i64>) {
+    /// Returned as (Option\<valueBalanceSapling\>, Option\<valueBalanceOrchard\>,
+    /// Option\<valueBalanceIronwood\>).
+    pub fn value_balances(&self) -> (Option<i64>, Option<i64>, Option<i64>) {
         let sapling = if self.version() == 4 || self.transaction.has_sapling_shielded_data() {
             Some(
                 self.transaction
@@ -162,7 +163,14 @@ impl FullTransaction {
                 .zatoshis()
         });
 
-        (sapling, orchard)
+        let ironwood = self.transaction.has_ironwood_shielded_data().then(|| {
+            self.transaction
+                .ironwood_value_balance()
+                .ironwood_amount()
+                .zatoshis()
+        });
+
+        (sapling, orchard, ironwood)
     }
 
     /// Returns a vec of sapling nullifiers for the transaction.
@@ -200,6 +208,27 @@ impl FullTransaction {
     pub fn orchard_actions(&self) -> Vec<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> {
         self.transaction
             .orchard_actions()
+            .map(|action| {
+                let nullifier: [u8; 32] = action.nullifier.into();
+                let cmx: [u8; 32] = action.cm_x.into();
+                let ephemeral_key: [u8; 32] = (&action.ephemeral_key).into();
+                let enc_ciphertext: [u8; 580] = action.enc_ciphertext.into();
+
+                (
+                    nullifier.to_vec(),
+                    cmx.to_vec(),
+                    ephemeral_key.to_vec(),
+                    enc_ciphertext.to_vec(),
+                )
+            })
+            .collect()
+    }
+
+    /// Returns a vec of ironwood actions (nullifier, cmx, ephemeral_key, enc_ciphertext) for the transaction.
+    #[allow(clippy::complexity)]
+    pub fn ironwood_actions(&self) -> Vec<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> {
+        self.transaction
+            .ironwood_actions()
             .map(|action| {
                 let nullifier: [u8; 32] = action.nullifier.into();
                 let cmx: [u8; 32] = action.cm_x.into();
@@ -290,6 +319,22 @@ impl FullTransaction {
             Vec::new()
         };
 
+        let ironwood_actions = if pool_types.includes_ironwood() {
+            self.ironwood_actions()
+                .into_iter()
+                .map(
+                    |(nullifier, cmx, ephemeral_key, enc_ciphertext)| CompactOrchardAction {
+                        nullifier,
+                        cmx,
+                        ephemeral_key,
+                        ciphertext: enc_ciphertext[..52].to_vec(),
+                    },
+                )
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         let vout = if pool_types.includes_transparent() {
             self.transparent_outputs()
                 .into_iter()
@@ -325,6 +370,7 @@ impl FullTransaction {
             spends,
             outputs,
             actions,
+            ironwood_actions,
             vin,
             vout,
         })
@@ -333,7 +379,9 @@ impl FullTransaction {
     /// Returns true if the transaction contains either sapling spends or outputs, or orchard actions.
     #[allow(dead_code)]
     pub(crate) fn has_shielded_elements(&self) -> bool {
-        self.transaction.has_sapling_shielded_data() || self.transaction.has_orchard_shielded_data()
+        self.transaction.has_sapling_shielded_data()
+            || self.transaction.has_orchard_shielded_data()
+            || self.transaction.has_ironwood_shielded_data()
     }
 }
 

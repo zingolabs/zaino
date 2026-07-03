@@ -9,6 +9,7 @@ and this library adheres to Rust's notion of
 
 ### Added
 ### Changed
+- Lightwallet protocol vendored subtree updated toward v0.5.0.
 ### Deprecated
 ### Removed
 ### Fixed

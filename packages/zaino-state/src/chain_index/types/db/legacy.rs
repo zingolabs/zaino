@@ -1083,6 +1083,7 @@ impl IndexedBlock {
             chain_metadata: Some(zaino_proto::proto::compact_formats::ChainMetadata {
                 sapling_commitment_tree_size,
                 orchard_commitment_tree_size,
+                ironwood_commitment_tree_size: 0,
             }),
         }
     }
@@ -1393,6 +1394,7 @@ impl CompactTxData {
             spends,
             outputs,
             actions,
+            ironwood_actions: Vec::new(),
             vin,
             vout,
         }
@@ -1414,7 +1416,7 @@ impl TryFrom<(u64, zaino_fetch::chain::transaction::FullTransaction)> for Compac
             .try_into()
             .map_err(|_| "txid must be 32 bytes".to_string())?;
 
-        let (sapling_balance, orchard_balance) = tx.value_balances();
+        let (sapling_balance, orchard_balance, _ironwood_balance) = tx.value_balances();
 
         let vin: Vec<TxInCompact> = tx
             .transparent_inputs()

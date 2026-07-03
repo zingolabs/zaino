@@ -1826,14 +1826,35 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             )),
         )?;
 
-        #[allow(deprecated)]
-        let (hash, height, time, sapling, orchard) =
-            <FetchServiceSubscriber as ZcashIndexer>::z_get_treestate(
-                self,
-                hash_or_height.to_string(),
-            )
-            .await?
-            .into_parts();
+        let treestate_response = <FetchServiceSubscriber as ZcashIndexer>::z_get_treestate(
+            self,
+            hash_or_height.to_string(),
+        )
+        .await?;
+
+        let sapling_tree = hex::encode(
+            treestate_response
+                .sapling()
+                .commitments()
+                .final_state()
+                .clone()
+                .unwrap_or_default(),
+        );
+        let orchard_tree = hex::encode(
+            treestate_response
+                .orchard()
+                .commitments()
+                .final_state()
+                .clone()
+                .unwrap_or_default(),
+        );
+        let ironwood_tree = treestate_response
+            .ironwood()
+            .clone()
+            .and_then(|treestate| treestate.commitments().final_state().clone())
+            .map(hex::encode)
+            .unwrap_or_default();
+
         Ok(TreeState {
             network: self
                 .config
@@ -1841,11 +1862,12 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 .network
                 .to_zebra_network()
                 .bip70_network_name(),
-            height: height.0 as u64,
-            hash: hash.to_string(),
-            time,
-            sapling_tree: sapling.map(hex::encode).unwrap_or_default(),
-            orchard_tree: orchard.map(hex::encode).unwrap_or_default(),
+            height: treestate_response.height().0 as u64,
+            hash: treestate_response.hash().to_string(),
+            time: treestate_response.time(),
+            sapling_tree,
+            orchard_tree,
+            ironwood_tree,
         })
     }
 
@@ -2058,7 +2080,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 .unwrap_or_default(),
             upgrade_name: nu_name.to_string(),
             upgrade_height: nu_height.0 as u64,
-            lightwallet_protocol_version: "v0.4.0".to_string(),
+            lightwallet_protocol_version: "v0.5.0".to_string(),
         })
     }
 
