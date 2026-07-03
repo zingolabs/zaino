@@ -108,6 +108,9 @@ tempfile = { workspace = true }
 tracing-subscriber = { workspace = true }
 once_cell = { workspace = true }
 zebra-chain = { workspace = true, features = ["proptest-impl"] }
+# `indexer` exposes zebra's SpendingTransactionId oracle; `proptest-impl`
+# exposes `populated_state`. Dev-only: off in production builds.
+zebra-state = { workspace = true, features = ["indexer", "proptest-impl"] }
 proptest.workspace = true
 incrementalmerkletree = "0.8.2"
 rand = "0.10.1"
