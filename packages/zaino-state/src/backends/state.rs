@@ -731,6 +731,7 @@ impl StateServiceSubscriber {
                 let state_2 = state.clone();
                 let state_3 = state.clone();
                 let state_4 = state.clone();
+                let state_5 = state.clone();
 
                 let blockandsize_future = {
                     let req = ReadRequest::BlockAndSize(hash_or_height);
@@ -746,7 +747,16 @@ impl StateServiceSubscriber {
                             .await
                     }
                 };
-
+                let ironwood_future = {
+                    let req = ReadRequest::IronwoodTree(hash_or_height);
+                    async move {
+                        state_5
+                            .clone()
+                            .ready()
+                            .and_then(|service| service.call(req))
+                            .await
+                    }
+                };
                 let block_info_future = {
                     let req = ReadRequest::BlockInfo(hash_or_height);
                     async move {
@@ -757,9 +767,10 @@ impl StateServiceSubscriber {
                             .await
                     }
                 };
-                let (fullblock, orchard_tree_response, header, block_info) = futures::join!(
+                let (fullblock, orchard_tree_response, ironwood_tree_response, header, block_info) = futures::join!(
                     blockandsize_future,
                     orchard_future,
+                    ironwood_future,
                     StateServiceSubscriber::get_block_header_inner(
                         &state_3,
                         network,
@@ -792,7 +803,7 @@ impl StateServiceSubscriber {
                                             TransactionObject::from_transaction(
                                                 transaction.clone(),
                                                 Some(header_obj.height()),
-                                                Some(header_obj.confirmations() as u32),
+                                                Some(header_obj.confirmations()),
                                                 network,
                                                 DateTime::<Utc>::from_timestamp(
                                                     header_obj.time(),
@@ -840,8 +851,17 @@ impl StateServiceSubscriber {
                     _otherwise => None,
                 };
 
-                let trees =
-                    GetBlockTrees::new(header_obj.sapling_tree_size(), orchard_tree.count());
+                let ironwood_tree_response = ironwood_tree_response?;
+                let ironwood_tree = expected_read_response!(ironwood_tree_response, IronwoodTree)
+                    .ok_or(StateServiceError::RpcError(
+                    RpcError::new_from_legacycode(LegacyCode::Misc, "missing ironwood tree"),
+                ))?;
+
+                let trees = GetBlockTrees::new(
+                    header_obj.sapling_tree_size(),
+                    orchard_tree.count(),
+                    ironwood_tree.count(),
+                );
 
                 let (chain_supply, value_pools) = (
                     GetBlockchainInfoBalance::chain_supply(*block_info.value_pools()),
@@ -1552,7 +1572,7 @@ impl ZcashIndexer for StateServiceSubscriber {
         // Zebra displays transaction and block hashes in big-endian byte-order,
         // following the u256 convention set by Bitcoin and zcashd.
         match self.read_state_service.best_tip() {
-            Some(x) => return Ok(GetBlockHash::new(x.1)),
+            Some(x) => Ok(GetBlockHash::new(x.1)),
             None => {
                 // try RPC if state read fails:
                 Ok(self.rpc_client.get_best_blockhash().await?.into())
@@ -1789,11 +1809,12 @@ impl ZcashIndexer for StateServiceSubscriber {
 
         let (height, confirmations, block_hash, in_best_chain) = match best_chain_location {
             Some(BestChainLocation::Block(block_hash, height)) => {
-                let confirmations = snapshot
+                let confirmations: i64 = snapshot
                     .max_serviceable_height()
                     .0
                     .saturating_sub(height.0)
-                    .saturating_add(1);
+                    .saturating_add(1)
+                    .into();
 
                 (
                     Some(zebra_chain::block::Height::from(height)),
