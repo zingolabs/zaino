@@ -168,6 +168,92 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
         Ok(())
     }
 
+    /// Sync blocks arriving through an async channel.
+    ///
+    /// The provisioner runs independently (typically a spawned task) and
+    /// sends blocks through the channel. The engine drains available
+    /// blocks, processes ready tasks, and awaits more blocks when idle.
+    /// The channel closing signals provisioner completion.
+    ///
+    /// This is the production entry point — the provisioner and engine
+    /// run concurrently, with the [`BlockBuffer`] absorbing the rate
+    /// difference between supply and demand.
+    pub async fn sync_channel(
+        &mut self,
+        mut rx: tokio::sync::mpsc::Receiver<Ctx>,
+    ) -> Result<(), SyncError> {
+        let mut provisioner_done = false;
+
+        loop {
+            if !provisioner_done {
+                provisioner_done = self.drain_channel(&mut rx);
+            }
+
+            let tasks = self.scheduler.ready_work();
+
+            if tasks.is_empty() {
+                if provisioner_done {
+                    break;
+                }
+                provisioner_done = self.await_block(&mut rx).await;
+                continue;
+            }
+
+            self.dispatch_tasks(tasks)?;
+        }
+
+        self.backend.flush()?;
+        Ok(())
+    }
+
+    /// Non-blocking drain: pull all available blocks from the channel.
+    ///
+    /// Returns `true` if the channel disconnected (provisioner done).
+    fn drain_channel(
+        &mut self,
+        rx: &mut tokio::sync::mpsc::Receiver<Ctx>,
+    ) -> bool {
+        loop {
+            match rx.try_recv() {
+                Ok(ctx) => self.push_block(ctx),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => return false,
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    self.scheduler
+                        .provisioner_done(self.buffer.total_pushed());
+                    return true;
+                }
+            }
+        }
+    }
+
+    /// Blocking wait for the next block from the channel.
+    ///
+    /// Returns `true` if the channel closed (provisioner done).
+    async fn await_block(
+        &mut self,
+        rx: &mut tokio::sync::mpsc::Receiver<Ctx>,
+    ) -> bool {
+        match rx.recv().await {
+            Some(ctx) => {
+                self.push_block(ctx);
+                false
+            }
+            None => {
+                self.scheduler
+                    .provisioner_done(self.buffer.total_pushed());
+                true
+            }
+        }
+    }
+
+    /// Push a single block into the buffer and update availability.
+    fn push_block(&mut self, ctx: Ctx) {
+        let offset = BlockOffset::new(self.buffer.total_pushed());
+        self.buffer.push(offset, ctx);
+        self.scheduler
+            .set_blocks_available(self.buffer.total_pushed());
+    }
+
     /// Execute a batch of tasks from the scheduler.
     fn dispatch_tasks(&mut self, tasks: Vec<Task>) -> Result<(), SyncError> {
         for task in tasks {
