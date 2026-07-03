@@ -623,6 +623,7 @@ impl BlockchainSource for ProptestMockchain {
     ) -> BlockchainSourceResult<(
         Option<(zebra_chain::sapling::tree::Root, u64)>,
         Option<(zebra_chain::orchard::tree::Root, u64)>,
+        Option<(zebra_chain::orchard::tree::Root, u64)>,
     )> {
         if let Some(delay) = self.delay {
             tokio::time::sleep(delay).await;
@@ -630,7 +631,7 @@ impl BlockchainSource for ProptestMockchain {
         let Some(chain_up_to_block) =
             self.get_block_and_all_preceeding(|block| block.hash().0 == id.0)
         else {
-            return Ok((None, None));
+            return Ok((None, None, None));
         };
 
         let (sapling, orchard) =
@@ -681,6 +682,7 @@ impl BlockchainSource for ProptestMockchain {
                     orc_front.tree_size(),
                 )
             }),
+            None,
         ))
     }
 
@@ -688,7 +690,7 @@ impl BlockchainSource for ProptestMockchain {
     async fn get_treestate(
         &self,
         _id: BlockHash,
-    ) -> BlockchainSourceResult<(Option<Vec<u8>>, Option<Vec<u8>>)> {
+    ) -> BlockchainSourceResult<(Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>)> {
         // I don't think this is used for sync?
         unimplemented!()
     }

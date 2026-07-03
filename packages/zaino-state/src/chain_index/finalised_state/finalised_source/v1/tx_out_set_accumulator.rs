@@ -1490,11 +1490,11 @@ impl DbV1 {
             Err(lmdb::Error::NotFound) => return Ok(None),
             Err(error) => return Err(FinalisedStateError::LmdbError(error)),
         };
-        Ok(Self::find_txout_in_stored_transparent_tx_list(
+        Self::find_txout_in_stored_transparent_tx_list(
             stored,
             location.tx_index() as usize,
             outpoint.prev_index() as usize,
-        ))
+        )
     }
 
     /// Fetches the full [`TransparentCompactTx`] for `txid`, read through `txn` (no new txn).

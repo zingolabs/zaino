@@ -133,7 +133,15 @@ impl DbV1 {
                         .clone()
                         .unwrap_or_else(|| OrchardCompactTx::new(None, vec![]));
 
-                    CompactTxData::new(i as u64, txid, transparent_tx, sapling_tx, orchard_tx)
+                    // TODO: Return ironwood!
+                    CompactTxData::new(
+                        i as u64,
+                        txid,
+                        transparent_tx,
+                        sapling_tx,
+                        orchard_tx,
+                        OrchardCompactTx::empty(),
+                    )
                 })
                 .collect();
 

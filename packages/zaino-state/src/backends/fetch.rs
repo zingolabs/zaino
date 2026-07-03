@@ -606,7 +606,8 @@ impl ZcashIndexer for FetchServiceSubscriber {
                     )?,
             };
 
-            let (sapling, orchard) = self.indexer.get_treestate(block_data.hash()).await?;
+            let (sapling, orchard, _ironwood) =
+                self.indexer.get_treestate(block_data.hash()).await?;
             let time: u32 = block_data.data().time().try_into().map_err(|_error| {
                 #[allow(deprecated)]
                 FetchServiceError::RpcError(RpcError::new_from_legacycode(

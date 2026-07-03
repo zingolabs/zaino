@@ -188,14 +188,26 @@ impl DbV1 {
             // Each txid entry is: [0] version tag + [1..32] txid
 
             // So we skip idx * 33 bytes to reach the start of the correct Hash
-            let offset = cursor.position() + (idx as u64) * TransactionHash::VERSIONED_LEN as u64;
+            let transaction_versioned_len = TransactionHash::latest_versioned_len()?;
+            let offset = cursor.position() + (idx as u64) * transaction_versioned_len as u64;
             cursor.set_position(offset);
 
             // Read [0] Txid Record version (skip 1 byte)
             cursor.set_position(cursor.position() + 1);
 
             // Then read 32 bytes for the txid
-            let mut txid_bytes = [0u8; TransactionHash::ENCODED_LEN];
+            let transaction_encoded_len = TransactionHash::latest_encoded_len()?;
+            if transaction_encoded_len != 32 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "TransactionHash latest encoded length must be 32 bytes, got {}",
+                        transaction_encoded_len
+                    ),
+                ))?;
+            }
+
+            let mut txid_bytes = [0u8; 32];
             cursor
                 .read_exact(&mut txid_bytes)
                 .map_err(|e| FinalisedStateError::Custom(format!("txid read error: {e}")))?;

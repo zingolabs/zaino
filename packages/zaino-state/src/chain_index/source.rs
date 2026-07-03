@@ -7,7 +7,7 @@ use crate::chain_index::{
     ShieldedPool,
 };
 use crate::SendFut;
-use futures::{future::join, TryFutureExt as _};
+use futures::TryFutureExt as _;
 use incrementalmerkletree::frontier::CommitmentTree;
 use tower::{Service, ServiceExt as _};
 use zaino_common::Network;
@@ -34,14 +34,15 @@ pub(crate) mod mockchain_source;
 pub mod validator_connector;
 pub use validator_connector::*;
 
-/// Serialized sapling and orchard treestates `(sapling, orchard)`, each `None`
+/// Serialized sapling and orchard treestates `(sapling, orchard, ironwood)`, each `None`
 /// when the pool has no treestate at the queried block.
-pub(crate) type TreestateBytes = (Option<Vec<u8>>, Option<Vec<u8>>);
+pub(crate) type TreestateBytes = (Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>);
 
-/// Sapling and orchard note-commitment tree roots `(sapling, orchard)`, each
+/// Sapling and orchard note-commitment tree roots `(sapling, orchard, ironwood)`, each
 /// paired with its tree size; `None` when the pool has no root at the block.
 pub(crate) type ShieldedTreeRoots = (
     Option<(zebra_chain::sapling::tree::Root, u64)>,
+    Option<(zebra_chain::orchard::tree::Root, u64)>,
     Option<(zebra_chain::orchard::tree::Root, u64)>,
 );
 

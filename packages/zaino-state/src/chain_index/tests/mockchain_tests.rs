@@ -592,7 +592,7 @@ async fn get_treestate() {
         ..
     } in blocks.into_iter()
     {
-        let (sapling_bytes_opt, orchard_bytes_opt) = index_reader
+        let (sapling_bytes_opt, orchard_bytes_opt, _ironwood_bytes_opt) = index_reader
             .get_treestate(&crate::BlockHash(zebra_block.hash().0))
             .await
             .unwrap();

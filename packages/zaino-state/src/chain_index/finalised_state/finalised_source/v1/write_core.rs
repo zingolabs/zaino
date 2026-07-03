@@ -66,6 +66,7 @@ impl DbWrite for DbV1 {
             .activation_height(&zebra_network)
             .expect("Sapling activation height must be set");
         let nu5_activation_height = NetworkUpgrade::Nu5.activation_height(&zebra_network);
+        let nu6_3_activation_height = NetworkUpgrade::Nu6_3.activation_height(&zebra_network);
 
         // Seed `parent_chainwork` from the current tip header (the block before the first one we
         // write). On an empty database this is genesis with zero chainwork. Read raw rather than via
@@ -155,6 +156,7 @@ impl DbWrite for DbV1 {
                         network,
                         sapling_activation_height,
                         nu5_activation_height,
+                        nu6_3_activation_height,
                         next,
                         parent_chainwork,
                     )
@@ -229,6 +231,7 @@ impl DbWrite for DbV1 {
                     network,
                     sapling_activation_height,
                     nu5_activation_height,
+                    nu6_3_activation_height,
                     height_int,
                     parent_chainwork,
                 )

@@ -244,7 +244,9 @@ impl<T: BlockchainSource> EphemeralFinalisedState<T> {
         let block_hash = BlockHash::from(block.hash());
         let block_height = zebra_chain::block::Height(height.0);
 
-        let (sapling, orchard) = self.source.get_commitment_tree_roots(block_hash).await?;
+        let (sapling, orchard, ironwood) =
+            self.source.get_commitment_tree_roots(block_hash).await?;
+
         let sapling_is_active = self.network.is_nu_active(
             zcash_protocol::consensus::NetworkUpgrade::Sapling,
             block_height.into(),
@@ -253,6 +255,11 @@ impl<T: BlockchainSource> EphemeralFinalisedState<T> {
             zcash_protocol::consensus::NetworkUpgrade::Nu5,
             block_height.into(),
         );
+        let ironwood_is_active = self.network.is_nu_active(
+            zcash_protocol::consensus::NetworkUpgrade::Nu6_3,
+            block_height.into(),
+        );
+
         let (sapling_root, sapling_size) = match sapling {
             Some((root, size)) => (root, size),
             None if !sapling_is_active => Default::default(),
@@ -275,6 +282,18 @@ impl<T: BlockchainSource> EphemeralFinalisedState<T> {
                 ));
             }
         };
+        let (ironwood_root, ironwood_size) = match ironwood {
+            Some((root, size)) => (root, size),
+            None if !ironwood_is_active => Default::default(),
+            None => {
+                return Err(FinalisedStateError::BlockchainSourceError(
+                    BlockchainSourceError::Unrecoverable(format!(
+                "missing Ironwood commitment tree root for active NU5 block at height {height}"
+            )),
+                ));
+            }
+        };
+
         let sapling_size = u32::try_from(sapling_size).map_err(|error| {
             FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
                 format!("sapling commitment tree size does not fit into u32: {error}"),
@@ -285,12 +304,19 @@ impl<T: BlockchainSource> EphemeralFinalisedState<T> {
                 format!("orchard commitment tree size does not fit into u32: {error}"),
             ))
         })?;
+        let ironwood_size = u32::try_from(ironwood_size).map_err(|error| {
+            FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
+                format!("ironwood commitment tree size does not fit into u32: {error}"),
+            ))
+        })?;
 
         let block_metadata = BlockMetadata::new(
             sapling_root,
             sapling_size,
             orchard_root,
             orchard_size,
+            ironwood_root,
+            ironwood_size,
             None, // ephemeral store does not track chainwork
             self.network.clone(),
         );

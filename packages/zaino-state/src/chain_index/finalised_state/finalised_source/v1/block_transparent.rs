@@ -250,14 +250,16 @@ impl DbV1 {
         let vin_len = CompactSize::read(&mut *cursor)? as usize;
 
         // Skip vin entries: each is 1-byte version + 36-byte body
-        let vin_skip = vin_len * TxInCompact::VERSIONED_LEN;
+        let tx_in_len = TxInCompact::latest_versioned_len()?;
+        let vin_skip = vin_len * tx_in_len;
         cursor.set_position(cursor.position() + vin_skip as u64);
 
         // Read vout_len (CompactSize)
         let vout_len = CompactSize::read(&mut *cursor)? as usize;
 
         // Skip vout entries: each is 1-byte version + 29-byte body
-        let vout_skip = vout_len * TxOutCompact::VERSIONED_LEN;
+        let tx_out_len = TxOutCompact::latest_versioned_len()?;
+        let vout_skip = vout_len * tx_out_len;
         cursor.set_position(cursor.position() + vout_skip as u64);
 
         Ok(())

@@ -39,10 +39,10 @@ use crate::{
     config::ChainIndexConfig,
     error::FinalisedStateError,
     BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream, CompactOrchardAction,
-    CompactSaplingOutput, CompactSaplingSpend, CompactSize, CompactTxData, FixedEncodedLen as _,
-    Height, IndexedBlock, NamedAtomicStatus, OrchardCompactTx, OrchardTxList, Outpoint,
-    SaplingCompactTx, SaplingTxList, StatusType, TransparentCompactTx, TransparentTxList,
-    TxInCompact, TxLocation, TxOutCompact, TxidList, ZainoVersionedSerde as _,
+    CompactSaplingSpend, CompactSize, CompactTxData, FixedEncodedLen as _, Height, IndexedBlock,
+    NamedAtomicStatus, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList,
+    StatusType, TransparentCompactTx, TransparentTxList, TxInCompact, TxLocation, TxOutCompact,
+    TxidList, ZainoVersionedSerde as _,
 };
 
 #[cfg(feature = "transparent_address_history_experimental")]

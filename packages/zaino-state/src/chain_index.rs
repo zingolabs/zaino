@@ -501,7 +501,9 @@ pub trait ChainIndex {
     fn get_treestate(
         &self,
         hash: &types::BlockHash,
-    ) -> impl std::future::Future<Output = Result<(Option<Vec<u8>>, Option<Vec<u8>>), Self::Error>>;
+    ) -> impl std::future::Future<
+        Output = Result<(Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>), Self::Error>,
+    >;
 
     /// Returns the subtree roots
     fn get_subtree_roots(
@@ -1122,8 +1124,8 @@ async fn compact_block_from_source<Source: BlockchainSource>(
         .get_commitment_tree_roots(types::BlockHash::from(block.hash()))
         .await
         .map_err(ChainIndexError::backing_validator)?;
-    let (sapling_root, sapling_size, orchard_root, orchard_size) =
-        TreeRootData::new(tree_roots.0, tree_roots.1).extract_with_defaults();
+    let (sapling_root, sapling_size, orchard_root, orchard_size, ironwood_root, ironwood_size) =
+        TreeRootData::new(tree_roots.0, tree_roots.1, tree_roots.2).extract_with_defaults();
 
     let metadata = BlockMetadata::new(
         sapling_root,
@@ -1138,6 +1140,13 @@ async fn compact_block_from_source<Source: BlockchainSource>(
             ChainIndexError::backing_validator(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "orchard commitment tree size overflow",
+            ))
+        })?,
+        ironwood_root,
+        ironwood_size.try_into().map_err(|_| {
+            ChainIndexError::backing_validator(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "ironwood commitment tree size overflow",
             ))
         })?,
         None, // parent chainwork unknown — single-block construction
@@ -2389,7 +2398,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     async fn get_treestate(
         &self,
         hash: &types::BlockHash,
-    ) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>), Self::Error> {
+    ) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>), Self::Error> {
         let snapshot = self.snapshot_nonfinalized_state().await?;
         if !self.block_hash_known_for_treestate(&snapshot, hash).await? {
             return Err(ChainIndexError::internal(format!(
@@ -2779,6 +2788,8 @@ pub enum ShieldedPool {
     Sapling,
     /// Orchard
     Orchard,
+    /// Ironwood
+    Ironwood,
 }
 
 impl ShieldedPool {
@@ -2790,6 +2801,7 @@ impl ShieldedPool {
         match self {
             ShieldedPool::Sapling => "sapling".to_string(),
             ShieldedPool::Orchard => "orchard".to_string(),
+            ShieldedPool::Ironwood => "ironwood".to_string(),
         }
     }
 }

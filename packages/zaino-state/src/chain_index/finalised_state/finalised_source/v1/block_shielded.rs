@@ -539,12 +539,13 @@ impl DbV1 {
 
         // Read number of spends (CompactSize)
         let spend_len = CompactSize::read(&mut *cursor)? as usize;
-        let spend_skip = spend_len * CompactSaplingSpend::VERSIONED_LEN;
+        let sapling_spend_len = CompactSaplingSpend::latest_versioned_len()?;
+        let spend_skip = spend_len * sapling_spend_len;
         cursor.set_position(cursor.position() + spend_skip as u64);
 
         // Read number of outputs (CompactSize)
         let output_len = CompactSize::read(&mut *cursor)? as usize;
-        let output_skip = output_len * CompactSaplingOutput::VERSIONED_LEN;
+        let output_skip = output_len * sapling_spend_len;
         cursor.set_position(cursor.position() + output_skip as u64);
 
         Ok(())
@@ -595,7 +596,8 @@ impl DbV1 {
         let action_len = CompactSize::read(&mut *cursor)? as usize;
 
         // Skip actions: each is 1-byte version + 148-byte body
-        let action_skip = action_len * CompactOrchardAction::VERSIONED_LEN;
+        let orchard_action_len = CompactOrchardAction::latest_versioned_len()?;
+        let action_skip = action_len * orchard_action_len;
         cursor.set_position(cursor.position() + action_skip as u64);
 
         Ok(())

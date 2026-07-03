@@ -1351,7 +1351,7 @@ pub struct GetTreestateResponse {
     /// A treestate containing an Ironwood note commitment tree, hex-encoded. Only present from
     /// NU6.3, so that pre-NU6.3 responses are unchanged.
     #[serde(skip_serializing_if = "Option::is_none")]
-    ironwood: Option<zebra_rpc::client::Treestate>,
+    pub ironwood: Option<zebra_rpc::client::Treestate>,
 }
 
 /// Error type for the `get_treestate` RPC request.

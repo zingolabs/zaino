@@ -1,5 +1,6 @@
 //! validator connected blockchain source.
 
+use futures::future::join3;
 use hex::FromHex as _;
 use zaino_fetch::jsonrpsee::response::address_deltas::BlockInfo;
 use zebra_chain::serialization::BytesInDisplayOrder as _;
@@ -361,12 +362,12 @@ impl BlockchainSource for ValidatorConnector {
         }
     }
 
-    /// Returns the Sapling and Orchard treestate by blockhash.
+    /// Returns the Sapling, Orchard and Ironwood treestate by blockhash.
     async fn get_treestate(
         &self,
         // Sould this be HashOrHeight?
         id: BlockHash,
-    ) -> BlockchainSourceResult<(Option<Vec<u8>>, Option<Vec<u8>>)> {
+    ) -> BlockchainSourceResult<(Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>)> {
         let hash_or_height: HashOrHeight = HashOrHeight::Hash(zebra_chain::block::Hash(id.into()));
         match self {
             ValidatorConnector::State(state) => {
@@ -448,7 +449,34 @@ impl BlockchainSource for ValidatorConnector {
                         .map(|tree| tree.to_rpc_bytes())
                 });
 
-                Ok((sapling, orchard))
+                let ironwood = match zebra_chain::parameters::NetworkUpgrade::Nu6_3
+                    .activation_height(&state.network.to_zebra_network())
+                {
+                    Some(activation_height) if height >= activation_height => Some(
+                        state
+                            .read_state_service
+                            .ready()
+                            .and_then(|service| {
+                                service.call(ReadRequest::IronwoodTree(hash_or_height))
+                            })
+                            .await
+                            .map_err(|_e| {
+                                BlockchainSourceError::Unrecoverable(
+                                    InvalidData(format!(
+                                        "could not fetch orchard treestate of block {id}"
+                                    ))
+                                    .to_string(),
+                                )
+                            })?,
+                    ),
+                    _ => None,
+                }
+                .and_then(|orch_response| {
+                    expected_read_response!(orch_response, OrchardTree)
+                        .map(|tree| tree.to_rpc_bytes())
+                });
+
+                Ok((sapling, orchard, ironwood))
             }
             ValidatorConnector::Fetch(fetch) => {
                 let treestate = fetch
@@ -484,7 +512,20 @@ impl BlockchainSource for ValidatorConnector {
                     |t| t.commitments().final_state().clone(),
                 );
 
-                Ok((sapling, orchard))
+                let ironwood = treestate.ironwood.map_or_else(
+                    || {
+                        let mut tree = vec![];
+                        write_commitment_tree(
+                            &CommitmentTree::<zebra_chain::orchard::tree::Node, 32>::empty(),
+                            &mut tree,
+                        )
+                        .expect("can write to Vec");
+                        Some(tree)
+                    },
+                    |t| t.commitments().final_state().clone(),
+                );
+
+                Ok((sapling, orchard, ironwood))
             }
         }
     }
@@ -502,6 +543,7 @@ impl BlockchainSource for ValidatorConnector {
                 let request = match pool {
                     ShieldedPool::Sapling => ReadRequest::SaplingSubtrees { start_index, limit },
                     ShieldedPool::Orchard => ReadRequest::OrchardSubtrees { start_index, limit },
+                    ShieldedPool::Ironwood => ReadRequest::IronwoodSubtrees { start_index, limit },
                 };
                 state
                     .read_state_service
@@ -519,6 +561,14 @@ impl BlockchainSource for ValidatorConnector {
                             .iter()
                             .map(|(_index, subtree)| (subtree.root.to_repr(), subtree.end_height.0))
                             .collect(),
+                        ShieldedPool::Ironwood => {
+                            expected_read_response!(response, IronwoodSubtrees)
+                                .iter()
+                                .map(|(_index, subtree)| {
+                                    (subtree.root.to_repr(), subtree.end_height.0)
+                                })
+                                .collect()
+                        }
                     })
                     .map_err(|e| {
                         BlockchainSourceError::Unrecoverable(format!(
@@ -570,30 +620,38 @@ impl BlockchainSource for ValidatorConnector {
     ) -> BlockchainSourceResult<(
         Option<(zebra_chain::sapling::tree::Root, u64)>,
         Option<(zebra_chain::orchard::tree::Root, u64)>,
+        Option<(zebra_chain::orchard::tree::Root, u64)>,
     )> {
         match self {
             ValidatorConnector::State(state) => {
-                let (sapling_tree_response, orchard_tree_response) =
-                    join(
+                let (sapling_tree_response, orchard_tree_response, ironwood_tree_response) =
+                    join3(
                         state.read_state_service.clone().call(
                             zebra_state::ReadRequest::SaplingTree(HashOrHeight::Hash(id.into())),
                         ),
                         state.read_state_service.clone().call(
                             zebra_state::ReadRequest::OrchardTree(HashOrHeight::Hash(id.into())),
                         ),
+                        state.read_state_service.clone().call(
+                            zebra_state::ReadRequest::IronwoodTree(HashOrHeight::Hash(id.into())),
+                        ),
                     )
                     .await;
-                let (sapling_tree, orchard_tree) = match (
+                let (sapling_tree, orchard_tree, ironwood_tree) = match (
                     //TODO: Better readstateservice error handling
                     sapling_tree_response
                         .map_err(|e| BlockchainSourceError::Unrecoverable(e.to_string()))?,
                     orchard_tree_response
                         .map_err(|e| BlockchainSourceError::Unrecoverable(e.to_string()))?,
+                    ironwood_tree_response
+                        .map_err(|e| BlockchainSourceError::Unrecoverable(e.to_string()))?,
                 ) {
-                    (ReadResponse::SaplingTree(saptree), ReadResponse::OrchardTree(orctree)) => {
-                        (saptree, orctree)
-                    }
-                    (_, _) => panic!("Bad response"),
+                    (
+                        ReadResponse::SaplingTree(saptree),
+                        ReadResponse::OrchardTree(orctree),
+                        ReadResponse::IronwoodTree(irwtree),
+                    ) => (saptree, orctree, irwtree),
+                    (_, _, _) => panic!("Bad response"),
                 };
 
                 Ok((
@@ -601,6 +659,9 @@ impl BlockchainSource for ValidatorConnector {
                         .as_deref()
                         .map(|tree| (tree.root(), tree.count())),
                     orchard_tree
+                        .as_deref()
+                        .map(|tree| (tree.root(), tree.count())),
+                    ironwood_tree
                         .as_deref()
                         .map(|tree| (tree.root(), tree.count())),
                 ))
@@ -622,7 +683,10 @@ impl BlockchainSource for ValidatorConnector {
                         _ => BlockchainSourceError::Unrecoverable(e.to_string()),
                     })?;
                 let GetTreestateResponse {
-                    sapling, orchard, ..
+                    sapling,
+                    orchard,
+                    ironwood,
+                    ..
                 } = tree_responses;
                 let sapling_frontier = sapling
                     .map_or_else(
@@ -638,6 +702,19 @@ impl BlockchainSource for ValidatorConnector {
                     .transpose()
                     .map_err(|e| BlockchainSourceError::Unrecoverable(format!("io error: {e}")))?;
                 let orchard_frontier = orchard
+                    .map_or_else(
+                        || Some(Ok(CommitmentTree::empty())),
+                        |t| {
+                            t.commitments().final_state().as_ref().map(|final_state| {
+                                read_commitment_tree::<zebra_chain::orchard::tree::Node, _, 32>(
+                                    final_state.as_slice(),
+                                )
+                            })
+                        },
+                    )
+                    .transpose()
+                    .map_err(|e| BlockchainSourceError::Unrecoverable(format!("io error: {e}")))?;
+                let ironwood_frontier = ironwood
                     .map_or_else(
                         || Some(Ok(CommitmentTree::empty())),
                         |t| {
@@ -668,7 +745,16 @@ impl BlockchainSource for ValidatorConnector {
                     .map_err(|e| {
                         BlockchainSourceError::Unrecoverable(format!("could not deser: {e}"))
                     })?;
-                Ok((sapling_root, orchard_root))
+                let ironwood_root = ironwood_frontier
+                    .map(|tree| {
+                        zebra_chain::orchard::tree::Root::try_from(tree.root().to_repr())
+                            .map(|root| (root, tree.size() as u64))
+                    })
+                    .transpose()
+                    .map_err(|e| {
+                        BlockchainSourceError::Unrecoverable(format!("could not deser: {e}"))
+                    })?;
+                Ok((sapling_root, orchard_root, ironwood_root))
             }
         }
     }

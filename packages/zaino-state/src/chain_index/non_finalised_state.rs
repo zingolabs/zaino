@@ -320,7 +320,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             .map_err(|e| InitError::InvalidNodeData(Box::new(e)))?
             .ok_or_else(|| InitError::InvalidNodeData(Box::new(MissingGenesisBlock)))?;
 
-        let (sapling_root_and_len, orchard_root_and_len) = source
+        let (sapling_root_and_len, orchard_root_and_len, ironwood_root_and_len) = source
             .get_commitment_tree_roots(genesis_block.hash().into())
             .await
             .map_err(|e| InitError::InvalidNodeData(Box::new(e)))?;
@@ -328,6 +328,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         let tree_roots = TreeRootData {
             sapling: sapling_root_and_len,
             orchard: orchard_root_and_len,
+            ironwood: ironwood_root_and_len,
         };
 
         // Genesis has no parent — pass None so create_block_context computes
@@ -385,10 +386,14 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 ))
             })?;
 
-        let (sapling, orchard) = source
+        let (sapling, orchard, ironwood) = source
             .get_commitment_tree_roots(block.hash().into())
             .await?;
-        let tree_roots = TreeRootData { sapling, orchard };
+        let tree_roots = TreeRootData {
+            sapling,
+            orchard,
+            ironwood,
+        };
 
         Self::create_indexed_block_with_optional_roots(
             block.as_ref(),
@@ -809,12 +814,13 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         &self,
         block_hash: BlockHash,
     ) -> Result<TreeRootData, super::source::BlockchainSourceError> {
-        let (sapling_root_and_len, orchard_root_and_len) =
+        let (sapling_root_and_len, orchard_root_and_len, ironwood_root_and_len) =
             self.source.get_commitment_tree_roots(block_hash).await?;
 
         Ok(TreeRootData {
             sapling: sapling_root_and_len,
             orchard: orchard_root_and_len,
+            ironwood: ironwood_root_and_len,
         })
     }
 
@@ -829,7 +835,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         parent_chainwork: Option<ChainWork>,
         network: Network,
     ) -> Result<IndexedBlock, String> {
-        let (sapling_root, sapling_size, orchard_root, orchard_size) =
+        let (sapling_root, sapling_size, orchard_root, orchard_size, ironwood_root, ironwood_size) =
             tree_roots.clone().extract_with_defaults();
 
         let metadata = BlockMetadata::new(
@@ -837,6 +843,8 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             sapling_size as u32,
             orchard_root,
             orchard_size as u32,
+            ironwood_root,
+            ironwood_size as u32,
             parent_chainwork,
             network,
         );

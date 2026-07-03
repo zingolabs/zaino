@@ -292,6 +292,8 @@ async fn try_write_invalid_block() {
         sapling_tree_size as u32,
         orchard_root,
         orchard_tree_size as u32,
+        zebra_chain::orchard::tree::Root::default(),
+        0,
         None, // no parent chainwork for this test
         zaino_common::Network::Regtest(ActivationHeights::default()).to_zebra_network(),
     );

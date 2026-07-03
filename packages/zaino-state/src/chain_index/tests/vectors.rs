@@ -97,6 +97,8 @@ pub(crate) fn indexed_block_chain(
             vector.sapling_tree_size as u32,
             vector.orchard_root,
             vector.orchard_tree_size as u32,
+            zebra_chain::orchard::tree::Root::default(),
+            0,
             parent_chain_work,
             zebra_chain::parameters::Network::new_regtest(
                 zebra_chain::parameters::testnet::ConfiguredActivationHeights {

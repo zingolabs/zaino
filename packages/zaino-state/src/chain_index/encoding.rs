@@ -273,16 +273,72 @@ pub trait ZainoVersionedSerde: Sized {
     }
 }
 
-/// Defines the fixed encoded length of a database record.
+/// Defines the fixed encoded length metadata for a versioned database record.
+///
+/// This trait is intentionally version-aware.
+///
+/// A type can be fixed-length in one historical wire version and variable-length
+/// in a later wire version. For that reason, fixed length must not be represented
+/// as a single latest constant. Instead, callers must ask for the fixed body
+/// length of a specific encoded version.
+///
+/// Lengths returned by this trait are body lengths only: they exclude the
+/// leading `ZainoVersionedSerde` version tag byte.
+///
+/// Returning `None` means that the requested version is either:
+/// - unsupported by this type,
+/// - not fixed-length,
+/// - or must be decoded by a variable-length wrapper instead.
 pub trait FixedEncodedLen {
-    /// the fixed encoded length of a database record *not* incuding the version byte.
-    const ENCODED_LEN: usize;
-
-    /// Length of version tag in bytes.
+    /// Length of the version tag in bytes.
     const VERSION_TAG_LEN: usize = 1;
 
-    /// the fixed encoded length of a database record *incuding* the version byte.
-    const VERSIONED_LEN: usize = Self::ENCODED_LEN + Self::VERSION_TAG_LEN;
+    /// Returns the fixed encoded body length for `version`, excluding the
+    /// version tag.
+    ///
+    /// Implementations must return the historical length for the exact on-disk
+    /// version requested. They must not return the current/latest struct length
+    /// for all versions.
+    fn encoded_len(version: u8) -> Option<usize>;
+
+    /// Returns the fixed encoded length for `version`, including the version tag.
+    fn versioned_len(version: u8) -> Option<usize> {
+        Self::encoded_len(version).map(|len| len + Self::VERSION_TAG_LEN)
+    }
+
+    /// Returns the fixed body length of the current/latest wire version.
+    ///
+    /// Returns `None` if the latest version is variable-length.
+    fn latest_encoded_len() -> io::Result<usize>
+    where
+        Self: ZainoVersionedSerde,
+    {
+        Self::encoded_len(Self::VERSION).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("no fixed len available for version tag {}", Self::VERSION),
+            )
+        })
+    }
+
+    /// Returns the fixed encoded length of the current/latest wire version,
+    /// including the version tag.
+    ///
+    /// Returns `None` if the latest version is variable-length.
+    fn latest_versioned_len() -> io::Result<usize>
+    where
+        Self: ZainoVersionedSerde,
+    {
+        Self::versioned_len(Self::VERSION).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "no fixed versioned len available for version tag {}",
+                    Self::VERSION
+                ),
+            )
+        })
+    }
 }
 
 /* ──────────────────────────── CompactSize helpers ────────────────────────────── */

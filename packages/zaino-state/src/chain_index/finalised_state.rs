@@ -254,6 +254,7 @@ pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
     network: zaino_common::Network,
     sapling_activation_height: zebra_chain::block::Height,
     nu5_activation_height: Option<zebra_chain::block::Height>,
+    nu6_3_activation_height: Option<zebra_chain::block::Height>,
     height_int: u32,
     parent_chainwork: Option<ChainWork>,
 ) -> Result<IndexedBlock, FinalisedStateError> {
@@ -276,10 +277,14 @@ pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
     let block_hash = BlockHash::from(block.hash().0);
 
     // Fetch sapling / orchard commitment tree data if above the relevant network upgrade.
-    let (sapling_opt, orchard_opt) = source.get_commitment_tree_roots(block_hash).await?;
+    let (sapling_opt, orchard_opt, ironwood_opt) =
+        source.get_commitment_tree_roots(block_hash).await?;
+
     let is_sapling_active = height_int >= sapling_activation_height.0;
     let is_orchard_active = nu5_activation_height
         .is_some_and(|nu5_activation_height| height_int >= nu5_activation_height.0);
+    let is_ironwood_active = nu6_3_activation_height
+        .is_some_and(|nu6_3_activation_height| height_int >= nu6_3_activation_height.0);
 
     let (sapling_root, sapling_size) = if is_sapling_active {
         sapling_opt.ok_or_else(|| {
@@ -301,11 +306,23 @@ pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
         (zebra_chain::orchard::tree::Root::default(), 0)
     };
 
+    let (ironwood_root, ironwood_size) = if is_ironwood_active {
+        ironwood_opt.ok_or_else(|| {
+            FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
+                format!("missing Ironwood commitment tree root for block {block_hash}"),
+            ))
+        })?
+    } else {
+        (zebra_chain::orchard::tree::Root::default(), 0)
+    };
+
     let metadata = BlockMetadata::new(
         sapling_root,
         sapling_size as u32,
         orchard_root,
         orchard_size as u32,
+        ironwood_root,
+        ironwood_size as u32,
         parent_chainwork,
         network.to_zebra_network(),
     );
@@ -1056,7 +1073,8 @@ impl<T: BlockchainSource> FinalisedState<T> {
                 })?;
 
             let block_hash = BlockHash::from(block.hash().0);
-            let (sapling_opt, orchard_opt) = source.get_commitment_tree_roots(block_hash).await?;
+            let (sapling_opt, orchard_opt, ironwood_opt) =
+                source.get_commitment_tree_roots(block_hash).await?;
             let (sapling_root, sapling_size) = sapling_opt.ok_or_else(|| {
                 FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
                     format!("missing Sapling commitment tree root for block {block_hash}"),
@@ -1067,12 +1085,19 @@ impl<T: BlockchainSource> FinalisedState<T> {
                     format!("missing Orchard commitment tree root for block {block_hash}"),
                 ))
             })?;
+            let (ironwood_root, ironwood_size) = ironwood_opt.ok_or_else(|| {
+                FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
+                    format!("missing Orchard commitment tree root for block {block_hash}"),
+                ))
+            })?;
 
             let metadata = BlockMetadata::new(
                 sapling_root,
                 sapling_size as u32,
                 orchard_root,
                 orchard_size as u32,
+                ironwood_root,
+                ironwood_size as u32,
                 parent_chainwork,
                 cfg.network.to_zebra_network(),
             );
