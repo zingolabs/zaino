@@ -10,7 +10,7 @@ description = "DAG-driven parallel sync engine for blockchain index building."
 
 [dependencies]
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "rt"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

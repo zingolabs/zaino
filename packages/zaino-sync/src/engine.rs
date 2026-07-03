@@ -203,7 +203,7 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
                 continue;
             }
 
-            self.dispatch_tasks(tasks)?;
+            self.dispatch_tasks_async(tasks).await?;
         }
 
         self.backend.flush()?;
@@ -287,6 +287,63 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Execute tasks with parallel extraction dispatch.
+    ///
+    /// Extractions for different indexes are independent — the scheduler
+    /// guarantees at most one extraction per index per `ready_work()`
+    /// call. This method spawns them on the blocking thread pool, waits
+    /// for all to complete, then reports completions sequentially.
+    ///
+    /// Batch completions are handled first (they may unblock downstream
+    /// extractions on the next iteration).
+    async fn dispatch_tasks_async(&mut self, tasks: Vec<Task>) -> Result<(), SyncError> {
+        let mut extract_jobs = Vec::new();
+
+        for task in tasks {
+            match task {
+                Task::Extract(job) => extract_jobs.push(job),
+                Task::CompleteBatch { index, .. } => {
+                    let handle = self.scheduler.ready_for_merge()
+                        .into_iter()
+                        .find(|h| h.index == index);
+
+                    if let Some(handle) = handle {
+                        self.merge_persist_commit(handle)?;
+                        self.try_evict();
+                    }
+                }
+            }
+        }
+
+        // Spawn extractions in parallel on the blocking thread pool.
+        let mut handles = Vec::with_capacity(extract_jobs.len());
+        for job in &extract_jobs {
+            let ctx = self.buffer.get(job.global_offset)
+                .expect("block available — scheduler verified watermark");
+            let pipeline = Arc::clone(
+                self.pipelines.get(&job.index)
+                    .expect("scheduler only emits registered indexes"),
+            );
+            handles.push(tokio::task::spawn_blocking(move || {
+                pipeline.extract_one(&ctx)
+            }));
+        }
+
+        for handle in handles {
+            handle.await.expect("extraction task panicked")?;
+        }
+
+        // Report completions sequentially — may trigger merges.
+        for job in extract_jobs {
+            if let Some(handle) = self.scheduler.extraction_done(job.index) {
+                self.merge_persist_commit(handle)?;
+                self.try_evict();
+            }
+        }
+
         Ok(())
     }
 
