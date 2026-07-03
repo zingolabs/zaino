@@ -601,13 +601,7 @@ impl ZcashIndexer for StateServiceSubscriber {
     type Error = StateServiceError;
 
     async fn get_info(&self) -> Result<GetInfo, Self::Error> {
-        // A number of these fields are difficult to access from the state service
-        // TODO: Fix this
-        self.rpc_client
-            .get_info()
-            .await
-            .map(GetInfo::from)
-            .map_err(|e| StateServiceError::Custom(e.to_string()))
+        Ok(self.indexer.get_info().await?)
     }
 
     /// Returns all changes for an address.
@@ -637,10 +631,7 @@ impl ZcashIndexer for StateServiceSubscriber {
     }
 
     async fn get_block_subsidy(&self, height: u32) -> Result<GetBlockSubsidy, Self::Error> {
-        self.rpc_client
-            .get_block_subsidy(height)
-            .await
-            .map_err(|e| StateServiceError::Custom(e.to_string()))
+        Ok(self.indexer.get_block_subsidy(height).await?)
     }
 
     async fn get_blockchain_info(&self) -> Result<GetBlockchainInfoResponse, Self::Error> {
@@ -802,7 +793,7 @@ impl ZcashIndexer for StateServiceSubscriber {
     }
 
     async fn get_peer_info(&self) -> Result<GetPeerInfo, Self::Error> {
-        Ok(self.rpc_client.get_peer_info().await?)
+        Ok(self.indexer.get_peer_info().await?)
     }
 
     async fn z_get_address_balance(
@@ -946,7 +937,7 @@ impl ZcashIndexer for StateServiceSubscriber {
     }
 
     async fn get_mining_info(&self) -> Result<GetMiningInfoWire, Self::Error> {
-        Ok(self.rpc_client.get_mining_info().await?)
+        Ok(self.indexer.get_mining_info().await?)
     }
 
     /// Returns statistics about the unspent transaction output set.
@@ -1235,14 +1226,14 @@ impl ZcashIndexer for StateServiceSubscriber {
         n: u32,
         include_mempool: Option<bool>,
     ) -> Result<GetTxOutResponse, Self::Error> {
-        Ok(self.rpc_client.get_tx_out(txid, n, include_mempool).await?)
+        Ok(self.indexer.get_tx_out(txid, n, include_mempool).await?)
     }
 
     async fn get_spent_info(
         &self,
         request: GetSpentInfoRequest,
     ) -> Result<GetSpentInfoResponse, Self::Error> {
-        Ok(self.rpc_client.get_spent_info(request).await?)
+        Ok(self.indexer.get_spent_info(request).await?)
     }
 
     async fn get_address_tx_ids(
@@ -1283,10 +1274,7 @@ impl ZcashIndexer for StateServiceSubscriber {
         blocks: Option<i32>,
         height: Option<i32>,
     ) -> Result<GetNetworkSolPsResponse, Self::Error> {
-        self.rpc_client
-            .get_network_sol_ps(blocks, height)
-            .await
-            .map_err(|e| StateServiceError::Custom(e.to_string()))
+        Ok(self.indexer.get_network_sol_ps(blocks, height).await?)
     }
 
     // Helper function, to get the chain height in rpc implementations

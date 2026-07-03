@@ -41,8 +41,12 @@ use zaino_fetch::jsonrpsee::response::{
     address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
     block_deltas::BlockDeltas,
     block_header::GetBlockHeader,
+    block_subsidy::GetBlockSubsidy,
     chain_tips::{ChainTip, ChainTipStatus, GetChainTipsResponse},
-    EmptyTxOutSetInfo, GetTxOutSetInfo, GetTxOutSetInfoResponse,
+    mining_info::GetMiningInfoWire,
+    peer_info::GetPeerInfo,
+    EmptyTxOutSetInfo, GetNetworkSolPsResponse, GetSpentInfoRequest, GetSpentInfoResponse,
+    GetTxOutResponse, GetTxOutSetInfo, GetTxOutSetInfoResponse,
 };
 use zaino_proto::proto::utils::{compact_block_with_pool_types, PoolTypeFilter};
 use zebra_chain::parameters::ConsensusBranchId;
@@ -50,7 +54,7 @@ pub use zebra_chain::parameters::Network as ZebraNetwork;
 use zebra_chain::serialization::ZcashSerialize;
 use zebra_rpc::{
     client::{GetAddressBalanceRequest, GetAddressTxIdsRequest},
-    methods::{AddressBalance, GetAddressUtxos, GetBlock},
+    methods::{AddressBalance, GetAddressUtxos, GetBlock, GetInfo},
 };
 use zebra_state::HashOrHeight;
 
@@ -611,6 +615,48 @@ pub trait ChainIndexRpcExt: ChainIndex {
     ///
     /// zcashd reference: [`getdifficulty`](https://zcash.github.io/rpc/getdifficulty.html)
     fn get_difficulty(&self) -> impl std::future::Future<Output = Result<f64, Self::Error>>;
+
+    // ********** Node-passthrough methods **********
+    //
+    // No local-index equivalent; always delegate to the backing validator.
+
+    /// Returns the `getinfo` response.
+    fn get_info(&self) -> impl std::future::Future<Output = Result<GetInfo, Self::Error>>;
+
+    /// Returns the `getpeerinfo` response.
+    fn get_peer_info(&self) -> impl std::future::Future<Output = Result<GetPeerInfo, Self::Error>>;
+
+    /// Returns the `getblocksubsidy` response at the given height.
+    fn get_block_subsidy(
+        &self,
+        height: u32,
+    ) -> impl std::future::Future<Output = Result<GetBlockSubsidy, Self::Error>>;
+
+    /// Returns the `getmininginfo` response.
+    fn get_mining_info(
+        &self,
+    ) -> impl std::future::Future<Output = Result<GetMiningInfoWire, Self::Error>>;
+
+    /// Returns the `gettxout` response for the given outpoint.
+    fn get_tx_out(
+        &self,
+        txid: String,
+        n: u32,
+        include_mempool: Option<bool>,
+    ) -> impl std::future::Future<Output = Result<GetTxOutResponse, Self::Error>>;
+
+    /// Returns the `getspentinfo` response for the given request.
+    fn get_spent_info(
+        &self,
+        request: GetSpentInfoRequest,
+    ) -> impl std::future::Future<Output = Result<GetSpentInfoResponse, Self::Error>>;
+
+    /// Returns the `getnetworksolps` response.
+    fn get_network_sol_ps(
+        &self,
+        blocks: Option<i32>,
+        height: Option<i32>,
+    ) -> impl std::future::Future<Output = Result<GetNetworkSolPsResponse, Self::Error>>;
 
     // ********** Transparent address history methods **********
 
@@ -2675,6 +2721,67 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
     async fn get_difficulty(&self) -> Result<f64, Self::Error> {
         self.source()
             .get_difficulty()
+            .await
+            .map_err(ChainIndexError::backing_validator)
+    }
+
+    async fn get_info(&self) -> Result<GetInfo, Self::Error> {
+        self.source()
+            .get_info()
+            .await
+            .map_err(ChainIndexError::backing_validator)
+    }
+
+    async fn get_peer_info(&self) -> Result<GetPeerInfo, Self::Error> {
+        self.source()
+            .get_peer_info()
+            .await
+            .map_err(ChainIndexError::backing_validator)
+    }
+
+    async fn get_block_subsidy(&self, height: u32) -> Result<GetBlockSubsidy, Self::Error> {
+        self.source()
+            .get_block_subsidy(height)
+            .await
+            .map_err(ChainIndexError::backing_validator)
+    }
+
+    async fn get_mining_info(&self) -> Result<GetMiningInfoWire, Self::Error> {
+        self.source()
+            .get_mining_info()
+            .await
+            .map_err(ChainIndexError::backing_validator)
+    }
+
+    async fn get_tx_out(
+        &self,
+        txid: String,
+        n: u32,
+        include_mempool: Option<bool>,
+    ) -> Result<GetTxOutResponse, Self::Error> {
+        self.source()
+            .get_tx_out(txid, n, include_mempool)
+            .await
+            .map_err(ChainIndexError::backing_validator)
+    }
+
+    async fn get_spent_info(
+        &self,
+        request: GetSpentInfoRequest,
+    ) -> Result<GetSpentInfoResponse, Self::Error> {
+        self.source()
+            .get_spent_info(request)
+            .await
+            .map_err(ChainIndexError::backing_validator)
+    }
+
+    async fn get_network_sol_ps(
+        &self,
+        blocks: Option<i32>,
+        height: Option<i32>,
+    ) -> Result<GetNetworkSolPsResponse, Self::Error> {
+        self.source()
+            .get_network_sol_ps(blocks, height)
             .await
             .map_err(ChainIndexError::backing_validator)
     }

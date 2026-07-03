@@ -683,6 +683,69 @@ impl BlockchainSource for MockchainSource {
             .relative_to_network(&mockchain_network()))
     }
 
+    // ********** Node-passthrough methods **********
+    //
+    // These are node-only RPCs with no chain data in the vectors. Test vectors must be
+    // extended to let MockchainSource serve them; tracked by the update-test-vectors
+    // follow-up (see "Future work").
+
+    async fn get_info(&self) -> BlockchainSourceResult<zebra_rpc::methods::GetInfo> {
+        unimplemented!("MockchainSource cannot serve get_info until test vectors are extended")
+    }
+
+    async fn get_peer_info(
+        &self,
+    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::peer_info::GetPeerInfo> {
+        unimplemented!("MockchainSource cannot serve get_peer_info until test vectors are extended")
+    }
+
+    async fn get_block_subsidy(
+        &self,
+        _height: u32,
+    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::block_subsidy::GetBlockSubsidy>
+    {
+        unimplemented!(
+            "MockchainSource cannot serve get_block_subsidy until test vectors are extended"
+        )
+    }
+
+    async fn get_mining_info(
+        &self,
+    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::mining_info::GetMiningInfoWire>
+    {
+        unimplemented!(
+            "MockchainSource cannot serve get_mining_info until test vectors are extended"
+        )
+    }
+
+    async fn get_tx_out(
+        &self,
+        _txid: String,
+        _n: u32,
+        _include_mempool: Option<bool>,
+    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::GetTxOutResponse> {
+        unimplemented!("MockchainSource cannot serve get_tx_out until test vectors are extended")
+    }
+
+    async fn get_spent_info(
+        &self,
+        _request: zaino_fetch::jsonrpsee::response::GetSpentInfoRequest,
+    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::GetSpentInfoResponse> {
+        unimplemented!(
+            "MockchainSource cannot serve get_spent_info until test vectors are extended"
+        )
+    }
+
+    async fn get_network_sol_ps(
+        &self,
+        _blocks: Option<i32>,
+        _height: Option<i32>,
+    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::GetNetworkSolPsResponse> {
+        unimplemented!(
+            "MockchainSource cannot serve get_network_sol_ps until test vectors are extended"
+        )
+    }
+
     // ********** Transaction methods **********
 
     async fn get_transaction(

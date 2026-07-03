@@ -9,6 +9,10 @@ use zaino_fetch::jsonrpsee::response::{
     address_deltas::BlockInfo,
     block_deltas::{BlockDelta, BlockDeltas, InputDelta, OutputDelta},
     block_header::GetBlockHeader,
+    block_subsidy::GetBlockSubsidy,
+    mining_info::GetMiningInfoWire,
+    peer_info::GetPeerInfo,
+    GetNetworkSolPsResponse, GetSpentInfoRequest, GetSpentInfoResponse, GetTxOutResponse,
 };
 use zebra_chain::{
     amount::{Amount, NonNegative},
@@ -20,7 +24,7 @@ use zebra_rpc::{
     client::{BlockObject, GetBlockchainInfoBalance, HexData, Input, TransactionObject},
     methods::{
         chain_tip_difficulty, GetBlock, GetBlockHeaderObject, GetBlockHeaderResponse,
-        GetBlockTransaction, GetBlockTrees, ValidateAddresses as _,
+        GetBlockTransaction, GetBlockTrees, GetInfo, ValidateAddresses as _,
     },
 };
 
@@ -67,6 +71,18 @@ pub enum ValidatorConnector {
     State(State),
     /// We are connected to a zebrad, zcashd, or other zainod via JsonRpc ("JsonRpSee")
     Fetch(JsonRpSeeConnector),
+}
+
+impl ValidatorConnector {
+    /// The JSON-RPC connector for this validator, used by the node-passthrough RPCs that
+    /// have no local-index equivalent. The `State` variant proxies these through its
+    /// `mempool_fetcher` until the `ReadStateService` can serve them.
+    fn json_rpc_connector(&self) -> &JsonRpSeeConnector {
+        match self {
+            ValidatorConnector::State(state) => &state.mempool_fetcher,
+            ValidatorConnector::Fetch(fetch) => fetch,
+        }
+    }
 }
 
 impl BlockchainSource for ValidatorConnector {
@@ -199,6 +215,71 @@ impl BlockchainSource for ValidatorConnector {
                 .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?
                 .0),
         }
+    }
+
+    // ********** Node-passthrough methods **********
+
+    async fn get_info(&self) -> BlockchainSourceResult<GetInfo> {
+        Ok(self
+            .json_rpc_connector()
+            .get_info()
+            .await
+            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?
+            .into())
+    }
+
+    async fn get_peer_info(&self) -> BlockchainSourceResult<GetPeerInfo> {
+        self.json_rpc_connector()
+            .get_peer_info()
+            .await
+            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))
+    }
+
+    async fn get_block_subsidy(&self, height: u32) -> BlockchainSourceResult<GetBlockSubsidy> {
+        self.json_rpc_connector()
+            .get_block_subsidy(height)
+            .await
+            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))
+    }
+
+    async fn get_mining_info(&self) -> BlockchainSourceResult<GetMiningInfoWire> {
+        self.json_rpc_connector()
+            .get_mining_info()
+            .await
+            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))
+    }
+
+    async fn get_tx_out(
+        &self,
+        txid: String,
+        n: u32,
+        include_mempool: Option<bool>,
+    ) -> BlockchainSourceResult<GetTxOutResponse> {
+        self.json_rpc_connector()
+            .get_tx_out(txid, n, include_mempool)
+            .await
+            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))
+    }
+
+    async fn get_spent_info(
+        &self,
+        request: GetSpentInfoRequest,
+    ) -> BlockchainSourceResult<GetSpentInfoResponse> {
+        self.json_rpc_connector()
+            .get_spent_info(request)
+            .await
+            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))
+    }
+
+    async fn get_network_sol_ps(
+        &self,
+        blocks: Option<i32>,
+        height: Option<i32>,
+    ) -> BlockchainSourceResult<GetNetworkSolPsResponse> {
+        self.json_rpc_connector()
+            .get_network_sol_ps(blocks, height)
+            .await
+            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))
     }
 
     // ********** Transaction methods **********

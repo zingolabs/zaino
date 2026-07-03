@@ -16,7 +16,11 @@ use zaino_fetch::jsonrpsee::{
     response::{
         address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
         block_header::GetBlockHeader,
-        GetBlockError, GetBlockResponse, GetTransactionResponse, GetTreestateResponse,
+        block_subsidy::GetBlockSubsidy,
+        mining_info::GetMiningInfoWire,
+        peer_info::GetPeerInfo,
+        GetBlockError, GetBlockResponse, GetNetworkSolPsResponse, GetSpentInfoRequest,
+        GetSpentInfoResponse, GetTransactionResponse, GetTreestateResponse, GetTxOutResponse,
     },
 };
 use zcash_primitives::merkle_tree::{read_commitment_tree, write_commitment_tree};
@@ -25,7 +29,7 @@ use zebra_chain::{
 };
 use zebra_rpc::{
     client::{GetAddressBalanceRequest, GetAddressTxIdsRequest},
-    methods::{AddressBalance, GetAddressUtxos},
+    methods::{AddressBalance, GetAddressUtxos, GetInfo},
 };
 use zebra_state::{HashOrHeight, ReadRequest, ReadResponse, ReadStateService};
 
@@ -124,6 +128,47 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     /// Returns the proof-of-work difficulty of the best chain as a multiple of the
     /// minimum difficulty (the `getdifficulty` RPC value).
     fn get_difficulty(&self) -> impl SendFut<BlockchainSourceResult<f64>>;
+
+    // ********** Node-passthrough methods **********
+    //
+    // These have no local-index equivalent and always proxy to the backing validator's
+    // JSON-RPC interface.
+
+    /// Returns the `getinfo` response.
+    fn get_info(&self) -> impl SendFut<BlockchainSourceResult<GetInfo>>;
+
+    /// Returns the `getpeerinfo` response.
+    fn get_peer_info(&self) -> impl SendFut<BlockchainSourceResult<GetPeerInfo>>;
+
+    /// Returns the `getblocksubsidy` response at the given height.
+    fn get_block_subsidy(
+        &self,
+        height: u32,
+    ) -> impl SendFut<BlockchainSourceResult<GetBlockSubsidy>>;
+
+    /// Returns the `getmininginfo` response.
+    fn get_mining_info(&self) -> impl SendFut<BlockchainSourceResult<GetMiningInfoWire>>;
+
+    /// Returns the `gettxout` response for the given outpoint.
+    fn get_tx_out(
+        &self,
+        txid: String,
+        n: u32,
+        include_mempool: Option<bool>,
+    ) -> impl SendFut<BlockchainSourceResult<GetTxOutResponse>>;
+
+    /// Returns the `getspentinfo` response for the given request.
+    fn get_spent_info(
+        &self,
+        request: GetSpentInfoRequest,
+    ) -> impl SendFut<BlockchainSourceResult<GetSpentInfoResponse>>;
+
+    /// Returns the `getnetworksolps` response.
+    fn get_network_sol_ps(
+        &self,
+        blocks: Option<i32>,
+        height: Option<i32>,
+    ) -> impl SendFut<BlockchainSourceResult<GetNetworkSolPsResponse>>;
 
     /// Returns the sapling and orchard treestate by hash
     fn get_treestate(&self, id: BlockHash) -> impl SendFut<BlockchainSourceResult<TreestateBytes>>;

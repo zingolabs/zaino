@@ -282,7 +282,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// in Zebra's [`GetInfo`]. Zebra uses the field names and formats from the
     /// [zcashd code](https://github.com/zcash/zcash/blob/v4.6.0-1/src/rpc/misc.cpp#L86-L87).
     async fn get_info(&self) -> Result<GetInfo, Self::Error> {
-        Ok(self.fetcher.get_info().await?.into())
+        Ok(self.indexer.get_info().await?)
     }
 
     /// Returns blockchain state information, as a [`GetBlockchainInfoResponse`] JSON struct.
@@ -325,7 +325,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
     }
 
     async fn get_peer_info(&self) -> Result<GetPeerInfo, Self::Error> {
-        Ok(self.fetcher.get_peer_info().await?)
+        Ok(self.indexer.get_peer_info().await?)
     }
 
     /// Returns the proof-of-work difficulty as a multiple of the minimum difficulty.
@@ -338,7 +338,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
     }
 
     async fn get_block_subsidy(&self, height: u32) -> Result<GetBlockSubsidy, Self::Error> {
-        Ok(self.fetcher.get_block_subsidy(height).await?)
+        Ok(self.indexer.get_block_subsidy(height).await?)
     }
 
     /// Returns the total balance of a provided `addresses` in an [`AddressBalance`] instance.
@@ -449,7 +449,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
     }
 
     async fn get_mining_info(&self) -> Result<GetMiningInfoWire, Self::Error> {
-        Ok(self.fetcher.get_mining_info().await?)
+        Ok(self.indexer.get_mining_info().await?)
     }
 
     /// Returns statistics about the unspent transaction output set.
@@ -800,14 +800,14 @@ impl ZcashIndexer for FetchServiceSubscriber {
         n: u32,
         include_mempool: Option<bool>,
     ) -> Result<GetTxOutResponse, Self::Error> {
-        Ok(self.fetcher.get_tx_out(txid, n, include_mempool).await?)
+        Ok(self.indexer.get_tx_out(txid, n, include_mempool).await?)
     }
 
     async fn get_spent_info(
         &self,
         request: GetSpentInfoRequest,
     ) -> Result<GetSpentInfoResponse, Self::Error> {
-        Ok(self.fetcher.get_spent_info(request).await?)
+        Ok(self.indexer.get_spent_info(request).await?)
     }
 
     async fn chain_height(&self) -> Result<Height, Self::Error> {
@@ -888,7 +888,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
         blocks: Option<i32>,
         height: Option<i32>,
     ) -> Result<GetNetworkSolPsResponse, Self::Error> {
-        Ok(self.fetcher.get_network_sol_ps(blocks, height).await?)
+        Ok(self.indexer.get_network_sol_ps(blocks, height).await?)
     }
 }
 

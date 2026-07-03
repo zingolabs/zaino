@@ -648,6 +648,55 @@ impl BlockchainSource for ProptestMockchain {
         unimplemented!()
     }
 
+    async fn get_info(&self) -> BlockchainSourceResult<zebra_rpc::methods::GetInfo> {
+        unimplemented!()
+    }
+
+    async fn get_peer_info(
+        &self,
+    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::peer_info::GetPeerInfo> {
+        unimplemented!()
+    }
+
+    async fn get_block_subsidy(
+        &self,
+        _height: u32,
+    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::block_subsidy::GetBlockSubsidy>
+    {
+        unimplemented!()
+    }
+
+    async fn get_mining_info(
+        &self,
+    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::mining_info::GetMiningInfoWire>
+    {
+        unimplemented!()
+    }
+
+    async fn get_tx_out(
+        &self,
+        _txid: String,
+        _n: u32,
+        _include_mempool: Option<bool>,
+    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::GetTxOutResponse> {
+        unimplemented!()
+    }
+
+    async fn get_spent_info(
+        &self,
+        _request: zaino_fetch::jsonrpsee::response::GetSpentInfoRequest,
+    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::GetSpentInfoResponse> {
+        unimplemented!()
+    }
+
+    async fn get_network_sol_ps(
+        &self,
+        _blocks: Option<i32>,
+        _height: Option<i32>,
+    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::GetNetworkSolPsResponse> {
+        unimplemented!()
+    }
+
     /// Returns the block commitment tree data by hash
     async fn get_commitment_tree_roots(
         &self,
