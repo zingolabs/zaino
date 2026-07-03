@@ -667,17 +667,34 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// starting at the chain tip. This RPC will return an empty list if the `start_index` subtree
     /// exists, but has not been rebuilt yet. This matches `zcashd`'s behaviour when subtrees aren't
     /// available yet. (But `zcashd` does its rebuild before syncing any blocks.)
+    #[allow(deprecated)]
     async fn z_get_subtrees_by_index(
         &self,
         pool: String,
         start_index: NoteCommitmentSubtreeIndex,
         limit: Option<NoteCommitmentSubtreeIndex>,
     ) -> Result<GetSubtreesByIndexResponse, Self::Error> {
-        Ok(self
-            .fetcher
-            .get_subtrees_by_index(pool, start_index.0, limit.map(|limit_index| limit_index.0))
-            .await?
-            .into())
+        let shielded_pool = match pool.as_str() {
+            "sapling" => crate::chain_index::ShieldedPool::Sapling,
+            "orchard" => crate::chain_index::ShieldedPool::Orchard,
+            otherwise => {
+                return Err(FetchServiceError::RpcError(RpcError::new_from_legacycode(
+                    zebra_rpc::server::error::LegacyCode::Misc,
+                    format!(
+                        "invalid pool name \"{otherwise}\", must be \"sapling\" or \"orchard\""
+                    ),
+                )))
+            }
+        };
+        let roots = self
+            .indexer
+            .get_subtree_roots(shielded_pool, start_index.0, limit.map(|index| index.0))
+            .await?;
+        Ok(crate::indexer::build_subtrees_by_index_response(
+            pool,
+            start_index,
+            roots,
+        ))
     }
 
     /// Returns the raw transaction data, as a [`GetRawTransaction`] JSON string or structure.

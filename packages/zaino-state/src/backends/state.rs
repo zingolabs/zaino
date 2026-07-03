@@ -41,7 +41,7 @@ use zaino_fetch::{
             peer_info::GetPeerInfo,
             z_validate_address::ZValidateAddressResponse,
             GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSpentInfoRequest,
-            GetSpentInfoResponse, GetSubtreesResponse, GetTxOutResponse, GetTxOutSetInfoResponse,
+            GetSpentInfoResponse, GetTxOutResponse, GetTxOutSetInfoResponse,
         },
     },
 };
@@ -62,7 +62,7 @@ use zebra_chain::{
 };
 use zebra_rpc::{
     client::{
-        GetAddressBalanceRequest, GetSubtreesByIndexResponse, GetTreestateResponse, SubtreeRpcData,
+        GetAddressBalanceRequest, GetSubtreesByIndexResponse, GetTreestateResponse,
         TransactionObject, ValidateAddressResponse,
     },
     methods::{
@@ -822,64 +822,27 @@ impl ZcashIndexer for StateServiceSubscriber {
         start_index: NoteCommitmentSubtreeIndex,
         limit: Option<NoteCommitmentSubtreeIndex>,
     ) -> Result<GetSubtreesByIndexResponse, Self::Error> {
-        let mut state = self.read_state_service.clone();
-
-        match pool.as_str() {
-            "sapling" => {
-                let request = zebra_state::ReadRequest::SaplingSubtrees { start_index, limit };
-                let response = state
-                    .ready()
-                    .and_then(|service| service.call(request))
-                    .await?;
-                let sapling_subtrees = expected_read_response!(response, SaplingSubtrees);
-                let subtrees = sapling_subtrees
-                    .values()
-                    .map(|subtree| {
-                        SubtreeRpcData {
-                            root: subtree.root.to_bytes().encode_hex(),
-                            end_height: subtree.end_height,
-                        }
-                        .into()
-                    })
-                    .collect();
-
-                Ok(GetSubtreesResponse {
-                    pool,
-                    start_index,
-                    subtrees,
-                }
-                .into())
+        let shielded_pool = match pool.as_str() {
+            "sapling" => crate::chain_index::ShieldedPool::Sapling,
+            "orchard" => crate::chain_index::ShieldedPool::Orchard,
+            otherwise => {
+                return Err(StateServiceError::RpcError(RpcError::new_from_legacycode(
+                    LegacyCode::Misc,
+                    format!(
+                        "invalid pool name \"{otherwise}\", must be \"sapling\" or \"orchard\""
+                    ),
+                )))
             }
-            "orchard" => {
-                let request = zebra_state::ReadRequest::OrchardSubtrees { start_index, limit };
-                let response = state
-                    .ready()
-                    .and_then(|service| service.call(request))
-                    .await?;
-                let orchard_subtrees = expected_read_response!(response, OrchardSubtrees);
-                let subtrees = orchard_subtrees
-                    .values()
-                    .map(|subtree| {
-                        SubtreeRpcData {
-                            root: subtree.root.encode_hex(),
-                            end_height: subtree.end_height,
-                        }
-                        .into()
-                    })
-                    .collect();
-
-                Ok(GetSubtreesResponse {
-                    pool,
-                    start_index,
-                    subtrees,
-                }
-                .into())
-            }
-            otherwise => Err(StateServiceError::RpcError(RpcError::new_from_legacycode(
-                LegacyCode::Misc,
-                format!("invalid pool name \"{otherwise}\", must be \"sapling\" or \"orchard\""),
-            ))),
-        }
+        };
+        let roots = self
+            .indexer
+            .get_subtree_roots(shielded_pool, start_index.0, limit.map(|index| index.0))
+            .await?;
+        Ok(crate::indexer::build_subtrees_by_index_response(
+            pool,
+            start_index,
+            roots,
+        ))
     }
 
     async fn get_raw_transaction(

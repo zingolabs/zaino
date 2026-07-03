@@ -17,7 +17,7 @@ use zaino_fetch::jsonrpsee::response::{
         DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION,
     },
     GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSpentInfoRequest, GetSpentInfoResponse,
-    GetTxOutSetInfoResponse,
+    GetSubtreesResponse, GetTxOutSetInfoResponse,
 };
 use zaino_proto::proto::{
     compact_formats::CompactBlock,
@@ -32,7 +32,9 @@ use zebra_chain::{
     block::Height, serialization::BytesInDisplayOrder as _, subtree::NoteCommitmentSubtreeIndex,
 };
 use zebra_rpc::{
-    client::{GetSubtreesByIndexResponse, GetTreestateResponse, ValidateAddressResponse},
+    client::{
+        GetSubtreesByIndexResponse, GetTreestateResponse, SubtreeRpcData, ValidateAddressResponse,
+    },
     methods::{
         AddressBalance, GetAddressBalanceRequest, GetAddressTxIdsRequest, GetAddressUtxos,
         GetBlock, GetBlockHash, GetBlockchainInfoResponse, GetInfo, GetRawTransaction,
@@ -1116,4 +1118,63 @@ pub(crate) fn sapling_key_bytes(s: &sapling_crypto::PaymentAddress) -> ([u8; 11]
         .expect("PaymentAddress::to_bytes always returns 43 bytes: pk_d is the last 32");
     pk_d.reverse();
     (diversifier, pk_d)
+}
+
+/// Shapes a `z_getsubtreesbyindex` JSON-RPC response from raw subtree roots.
+///
+/// The `(root, end_height)` pairs from [`ChainIndex::get_subtree_roots`] are already in
+/// the byte order the JSON-RPC uses (sapling `to_bytes`, orchard `to_repr` — zcashd's
+/// `z_getsubtreesbyindex` does not reverse orchard subtree roots), so they are hex-encoded
+/// as-is. Shared by both backends so the shaping lives in one place.
+///
+/// [`ChainIndex::get_subtree_roots`]: crate::ChainIndex::get_subtree_roots
+pub(crate) fn build_subtrees_by_index_response(
+    pool: String,
+    start_index: NoteCommitmentSubtreeIndex,
+    roots: Vec<([u8; 32], u32)>,
+) -> GetSubtreesByIndexResponse {
+    use hex::ToHex as _;
+
+    let subtrees = roots
+        .into_iter()
+        .map(|(root, end_height)| {
+            SubtreeRpcData {
+                root: root.encode_hex(),
+                end_height: Height(end_height),
+            }
+            .into()
+        })
+        .collect();
+
+    GetSubtreesResponse {
+        pool,
+        start_index,
+        subtrees,
+    }
+    .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_subtrees_by_index_response_hex_encodes_roots() {
+        let roots = vec![([0xabu8; 32], 100u32), ([0xcdu8; 32], 200u32)];
+        let response = build_subtrees_by_index_response(
+            "orchard".to_string(),
+            NoteCommitmentSubtreeIndex(5),
+            roots,
+        );
+
+        assert_eq!(response.pool().as_str(), "orchard");
+        assert_eq!(response.start_index(), NoteCommitmentSubtreeIndex(5));
+
+        let subtrees = response.subtrees();
+        assert_eq!(subtrees.len(), 2);
+        assert_eq!(subtrees[0].root, hex::encode([0xabu8; 32]));
+        assert_eq!(subtrees[0].end_height, Height(100));
+        assert_eq!(subtrees[1].root, hex::encode([0xcdu8; 32]));
+        assert_eq!(subtrees[1].end_height, Height(200));
+    }
 }
