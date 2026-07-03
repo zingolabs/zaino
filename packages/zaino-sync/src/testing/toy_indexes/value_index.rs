@@ -1,6 +1,7 @@
 //! BlockLocal × Append: stores (height → value) for each block.
 
 use crate::descriptor::{Append, BlockLocal};
+use crate::encode::Encode;
 use crate::primitives::{BlockHeight, IndexId};
 use crate::traits::{ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema};
 
@@ -9,7 +10,29 @@ pub struct Context {
     /// Block height.
     pub height: BlockHeight,
     /// Arbitrary value carried by this block.
-    pub value: u32,
+    pub value: BlockValue,
+}
+
+/// An arbitrary value carried by a block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockValue(u32);
+
+impl BlockValue {
+    /// Create a block value.
+    pub const fn new(val: u32) -> Self {
+        Self(val)
+    }
+
+    /// The raw numeric value.
+    pub const fn value(&self) -> u32 {
+        self.0
+    }
+}
+
+impl Encode for BlockValue {
+    fn encode(&self) -> Vec<u8> {
+        self.0.to_le_bytes().to_vec()
+    }
 }
 
 /// A single height → value entry. Domain type — no serialization.
@@ -17,7 +40,7 @@ pub struct Entry {
     /// Block height.
     pub height: BlockHeight,
     /// Block value.
-    pub value: u32,
+    pub value: BlockValue,
 }
 
 /// Stores (height → value) for each block.
@@ -48,7 +71,7 @@ impl MergeAppend for ValueIndex {}
 
 impl Schema<Vec<Entry>> for ValueIndex {
     type Key = BlockHeight;
-    type Value = u32;
+    type Value = BlockValue;
 
     fn into_entries(entries: Vec<Entry>) -> Vec<(Self::Key, Self::Value)> {
         entries

@@ -23,7 +23,7 @@ impl ProvideContext<value_index::Context> for TestBlockContext {
     fn context(&self) -> value_index::Context {
         value_index::Context {
             height: BlockHeight::new(self.height),
-            value: self.value,
+            value: value_index::BlockValue::new(self.value),
         }
     }
 }
