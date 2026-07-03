@@ -72,13 +72,36 @@ pub struct ExtractJob {
     pub block_offset: u32,
 }
 
+/// A unit of work the scheduler declares safe to execute.
+///
+/// Workers consume these without knowledge of ordering or dependencies —
+/// the scheduler guarantees anything it emits can run right now.
+#[derive(Debug, Clone)]
+pub enum Task {
+    /// Extract a delta for one index at one block.
+    Extract(ExtractJob),
+    /// Merge + persist + commit a fully-extracted batch.
+    CompleteBatch {
+        /// Which index.
+        index: IndexId,
+        /// Which batch.
+        batch: BatchIndex,
+    },
+}
+
 /// The scheduler: static DAG + runtime progress tracking.
 pub struct Scheduler {
     dag: DependencyDag,
     batch_size: u32,
 
-    /// Total number of blocks in the sync range. Used to compute the
-    /// effective size of the final (possibly partial) batch.
+    /// How many blocks are currently available for extraction. Updated
+    /// by the engine as the provisioner supplies blocks. Extractions
+    /// are only emitted for blocks below this watermark.
+    blocks_available: u32,
+
+    /// Total number of blocks in the sync range. Set when the
+    /// provisioner signals completion. Determines the effective size
+    /// of the final (possibly partial) batch.
     total_blocks: Option<u32>,
 
     /// All index IDs, cached for iteration.
@@ -137,6 +160,7 @@ impl Scheduler {
         Self {
             dag,
             batch_size,
+            blocks_available: 0,
             total_blocks: None,
             all_indexes,
             deps,
@@ -153,6 +177,7 @@ impl Scheduler {
     /// An index is ready for extraction when:
     /// - It is not pending merge or commit.
     /// - Its current batch has not yet been fully extracted.
+    /// - The block is available (provisioner has supplied it).
     /// - All dependency firing rules are satisfied for its current batch.
     ///
     /// Returns one `ExtractJob` per ready (index, block_offset) pair.
@@ -173,13 +198,17 @@ impl Scheduler {
                 continue;
             }
 
+            // Check block availability — the provisioner may not have
+            // supplied this block yet.
+            let global_offset = batch.value() * self.batch_size + extracted;
+            if global_offset >= self.blocks_available {
+                continue;
+            }
+
             if !self.firing_rules_satisfied(id, batch) {
                 continue;
             }
 
-            // Emit one job for the next block to extract.
-            // The engine may call this repeatedly, or take multiple
-            // jobs at once for parallel dispatch.
             jobs.push(ExtractJob {
                 index: id,
                 batch,
@@ -252,6 +281,47 @@ impl Scheduler {
         self.extracted_in_batch.insert(index, 0);
     }
 
+    /// All currently safe-to-execute work.
+    ///
+    /// Returns a mix of extraction and batch-completion tasks. The
+    /// engine spawns all of them — the scheduler guarantees they can
+    /// run concurrently.
+    pub fn ready_work(&self) -> Vec<Task> {
+        let mut tasks: Vec<Task> = self
+            .ready_extractions()
+            .into_iter()
+            .map(Task::Extract)
+            .collect();
+
+        for handle in self.ready_for_merge() {
+            tasks.push(Task::CompleteBatch {
+                index: handle.index,
+                batch: handle.batch,
+            });
+        }
+
+        tasks
+    }
+
+    /// Update the block availability watermark.
+    ///
+    /// Called by the engine as the provisioner supplies blocks. The
+    /// count is cumulative — "5" means blocks 0..5 are available.
+    pub fn set_blocks_available(&mut self, count: u32) {
+        self.blocks_available = count;
+    }
+
+    /// Signal that the provisioner has finished and no more blocks
+    /// will arrive.
+    ///
+    /// This sets `total_blocks` so the scheduler can compute the
+    /// effective size of the final (possibly partial) batch. Before
+    /// this is called, the scheduler assumes every batch is full.
+    pub fn provisioner_done(&mut self, total_blocks: u32) {
+        self.total_blocks = Some(total_blocks);
+        self.blocks_available = total_blocks;
+    }
+
     /// Check whether all firing rules are satisfied for an index at a
     /// given batch.
     fn firing_rules_satisfied(&self, index: IndexId, batch: BatchIndex) -> bool {
@@ -293,10 +363,11 @@ impl Scheduler {
 
     /// Set the total number of blocks in the sync range.
     ///
-    /// Must be called before `sync_range` begins so the scheduler
-    /// knows the effective size of the final (partial) batch.
+    /// Convenience for the synchronous engine path — sets both
+    /// `total_blocks` and `blocks_available` at once (all blocks
+    /// are available immediately when pre-loaded).
     pub fn set_total_blocks(&mut self, total: u32) {
-        self.total_blocks = Some(total);
+        self.provisioner_done(total);
     }
 
     /// Effective batch size for a given batch index.
@@ -361,7 +432,8 @@ mod tests {
     fn phase_zero_indexes_ready_immediately() {
         let dag = DependencyDag::build(vec![desc("a", DEPS_NONE)])
             .expect("valid dag");
-        let sched = Scheduler::new(dag, 3);
+        let mut sched = Scheduler::new(dag, 3);
+        sched.set_blocks_available(10);
 
         let jobs = sched.ready_extractions();
         assert_eq!(jobs.len(), 1);
@@ -371,13 +443,47 @@ mod tests {
     }
 
     #[test]
+    fn no_extractions_when_no_blocks_available() {
+        let dag = DependencyDag::build(vec![desc("a", DEPS_NONE)])
+            .expect("valid dag");
+        let sched = Scheduler::new(dag, 3);
+
+        // No blocks supplied yet — nothing is ready.
+        assert!(sched.ready_extractions().is_empty());
+        assert!(sched.ready_work().is_empty());
+    }
+
+    #[test]
+    fn extractions_gate_on_availability() {
+        let dag = DependencyDag::build(vec![desc("a", DEPS_NONE)])
+            .expect("valid dag");
+        let mut sched = Scheduler::new(dag, 3);
+
+        // Only 1 block available out of a batch of 3.
+        sched.set_blocks_available(1);
+        let jobs = sched.ready_extractions();
+        assert_eq!(jobs.len(), 1);
+
+        // Extract it — now we need block 1 but only have 1 available.
+        sched.extraction_done(A);
+        assert!(sched.ready_extractions().is_empty());
+
+        // Provisioner supplies more.
+        sched.set_blocks_available(3);
+        let jobs = sched.ready_extractions();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].block_offset, 1);
+    }
+
+    #[test]
     fn downstream_blocked_until_upstream_commits() {
         let dag = DependencyDag::build(vec![
             desc("a", DEPS_NONE),
             desc("b", DEPS_A),
         ])
         .expect("valid dag");
-        let sched = Scheduler::new(dag, 2);
+        let mut sched = Scheduler::new(dag, 2);
+        sched.set_blocks_available(10);
 
         let jobs = sched.ready_extractions();
         // Only A is ready, B is blocked.
@@ -394,6 +500,7 @@ mod tests {
         ])
         .expect("valid dag");
         let mut sched = Scheduler::new(dag, 2);
+        sched.set_blocks_available(10);
 
         // Extract A's full batch.
         assert!(sched.extraction_done(A).is_none());
@@ -420,6 +527,7 @@ mod tests {
         let dag = DependencyDag::build(vec![desc("a", DEPS_NONE)])
             .expect("valid dag");
         let mut sched = Scheduler::new(dag, 3);
+        sched.set_blocks_available(10);
 
         // First extraction.
         let jobs = sched.ready_extractions();
@@ -448,6 +556,7 @@ mod tests {
         let dag = DependencyDag::build(vec![desc("a", DEPS_NONE)])
             .expect("valid dag");
         let mut sched = Scheduler::new(dag, 2);
+        sched.set_blocks_available(10);
 
         // Complete batch 0 — full handle chain.
         assert!(sched.extraction_done(A).is_none());
@@ -468,11 +577,34 @@ mod tests {
             desc("b", DEPS_NONE),
         ])
         .expect("valid dag");
-        let sched = Scheduler::new(dag, 3);
+        let mut sched = Scheduler::new(dag, 3);
+        sched.set_blocks_available(10);
 
         let jobs = sched.ready_extractions();
         let ready_ids: HashSet<IndexId> = jobs.iter().map(|j| j.index).collect();
         assert!(ready_ids.contains(&A));
         assert!(ready_ids.contains(&B));
+    }
+
+    #[test]
+    fn ready_work_includes_both_extract_and_batch_tasks() {
+        let dag = DependencyDag::build(vec![
+            desc("a", DEPS_NONE),
+            desc("b", DEPS_NONE),
+        ])
+        .expect("valid dag");
+        let mut sched = Scheduler::new(dag, 2);
+        sched.set_blocks_available(10);
+
+        // Extract A's full batch.
+        sched.extraction_done(A);
+        sched.extraction_done(A);
+
+        // B still extracting. A is ready to merge.
+        let tasks = sched.ready_work();
+        let has_extract = tasks.iter().any(|t| matches!(t, Task::Extract(_)));
+        let has_batch = tasks.iter().any(|t| matches!(t, Task::CompleteBatch { .. }));
+        assert!(has_extract, "should have extract tasks for B");
+        assert!(has_batch, "should have batch task for A");
     }
 }
