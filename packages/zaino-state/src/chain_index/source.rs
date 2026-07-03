@@ -29,7 +29,7 @@ use zebra_chain::{
 };
 use zebra_rpc::{
     client::{GetAddressBalanceRequest, GetAddressTxIdsRequest},
-    methods::{AddressBalance, GetAddressUtxos, GetInfo},
+    methods::{AddressBalance, GetAddressUtxos, GetBlockchainInfoResponse, GetInfo},
 };
 use zebra_state::{HashOrHeight, ReadRequest, ReadResponse, ReadStateService};
 
@@ -128,6 +128,11 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     /// Returns the proof-of-work difficulty of the best chain as a multiple of the
     /// minimum difficulty (the `getdifficulty` RPC value).
     fn get_difficulty(&self) -> impl SendFut<BlockchainSourceResult<f64>>;
+
+    /// Returns the `getblockchaininfo` response.
+    fn get_blockchain_info(
+        &self,
+    ) -> impl SendFut<BlockchainSourceResult<GetBlockchainInfoResponse>>;
 
     // ********** Node-passthrough methods **********
     //

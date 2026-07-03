@@ -5,6 +5,7 @@ use std::str::FromStr as _;
 
 use chrono::{DateTime, Utc};
 use hex::{FromHex as _, ToHex as _};
+use indexmap::IndexMap;
 use zaino_fetch::jsonrpsee::response::{
     address_deltas::BlockInfo,
     block_deltas::{BlockDelta, BlockDeltas, InputDelta, OutputDelta},
@@ -17,14 +18,17 @@ use zaino_fetch::jsonrpsee::response::{
 use zebra_chain::{
     amount::{Amount, NonNegative},
     block::{Header, SerializedBlock},
-    parameters::NetworkUpgrade,
+    chain_tip::NetworkChainTipHeightEstimator,
+    parameters::{ConsensusBranchId, NetworkUpgrade},
     serialization::{BytesInDisplayOrder as _, ZcashSerialize as _},
 };
 use zebra_rpc::{
     client::{BlockObject, GetBlockchainInfoBalance, HexData, Input, TransactionObject},
     methods::{
-        chain_tip_difficulty, GetBlock, GetBlockHeaderObject, GetBlockHeaderResponse,
-        GetBlockTransaction, GetBlockTrees, GetInfo, ValidateAddresses as _,
+        chain_tip_difficulty, ConsensusBranchIdHex, GetBlock, GetBlockHeaderObject,
+        GetBlockHeaderResponse, GetBlockTransaction, GetBlockTrees, GetBlockchainInfoResponse,
+        GetInfo, NetworkUpgradeInfo, NetworkUpgradeStatus, TipConsensusBranch,
+        ValidateAddresses as _,
     },
 };
 
@@ -214,6 +218,22 @@ impl BlockchainSource for ValidatorConnector {
                 .await
                 .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?
                 .0),
+        }
+    }
+
+    async fn get_blockchain_info(&self) -> BlockchainSourceResult<GetBlockchainInfoResponse> {
+        match self {
+            ValidatorConnector::State(state) => state.get_blockchain_info().await,
+            ValidatorConnector::Fetch(fetch) => fetch
+                .get_blockchain_info()
+                .await
+                .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?
+                .try_into()
+                .map_err(|_error| {
+                    BlockchainSourceError::Unrecoverable(
+                        "getblockchaininfo: chainwork not hex-encoded integer".to_string(),
+                    )
+                }),
         }
     }
 
@@ -1559,6 +1579,129 @@ impl State {
         }
 
         median_of_block_times(times)
+    }
+
+    /// Builds the `getblockchaininfo` response from the `ReadStateService`.
+    ///
+    /// Moved from the former `StateServiceSubscriber::get_blockchain_info`; error type is
+    /// now [`BlockchainSourceError`], and the difficulty is propagated rather than
+    /// unwrapped.
+    async fn get_blockchain_info(&self) -> BlockchainSourceResult<GetBlockchainInfoResponse> {
+        let mut state = self.read_state_service.clone();
+        let network = self.network.to_zebra_network();
+
+        let response = state
+            .ready()
+            .and_then(|service| service.call(ReadRequest::TipPoolValues))
+            .await
+            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+        let (height, hash, balance) = match response {
+            ReadResponse::TipPoolValues {
+                tip_height,
+                tip_hash,
+                value_balance,
+            } => (tip_height, tip_hash, value_balance),
+            unexpected => {
+                unreachable!("Unexpected response from state service: {unexpected:?}")
+            }
+        };
+
+        let usage_response = state
+            .ready()
+            .and_then(|service| service.call(ReadRequest::UsageInfo))
+            .await
+            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+        let size_on_disk = expected_read_response!(usage_response, UsageInfo);
+
+        let response = state
+            .ready()
+            .and_then(|service| service.call(ReadRequest::BlockHeader(hash.into())))
+            .await
+            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+        let header = match response {
+            ReadResponse::BlockHeader { header, .. } => header,
+            unexpected => {
+                unreachable!("Unexpected response from state service: {unexpected:?}")
+            }
+        };
+
+        let now = Utc::now();
+        let zebra_estimated_height =
+            NetworkChainTipHeightEstimator::new(header.time, height, &network)
+                .estimate_height_at(now);
+        let estimated_height = if header.time > now || zebra_estimated_height < height {
+            height
+        } else {
+            zebra_estimated_height
+        };
+
+        let upgrades = IndexMap::from_iter(network.full_activation_list().into_iter().filter_map(
+            |(activation_height, network_upgrade)| {
+                // Zebra defines network upgrades by consensus rule changes, zcashd by ZIPs;
+                // upgrades with a consensus branch ID are the same in both.
+                network_upgrade.branch_id().map(|branch_id| {
+                    // zcashd's RPC ignores Disabled network upgrades, so Zebra does too.
+                    let status = if height >= activation_height {
+                        NetworkUpgradeStatus::Active
+                    } else {
+                        NetworkUpgradeStatus::Pending
+                    };
+                    (
+                        ConsensusBranchIdHex::new(branch_id.into()),
+                        NetworkUpgradeInfo::from_parts(network_upgrade, activation_height, status),
+                    )
+                })
+            },
+        ));
+
+        let next_block_height =
+            (height + 1).expect("valid chain tips are a lot less than Height::MAX");
+        let consensus = TipConsensusBranch::from_parts(
+            ConsensusBranchIdHex::new(
+                NetworkUpgrade::current(&network, height)
+                    .branch_id()
+                    .unwrap_or(ConsensusBranchId::RPC_MISSING_ID)
+                    .into(),
+            )
+            .inner(),
+            ConsensusBranchIdHex::new(
+                NetworkUpgrade::current(&network, next_block_height)
+                    .branch_id()
+                    .unwrap_or(ConsensusBranchId::RPC_MISSING_ID)
+                    .into(),
+            )
+            .inner(),
+        );
+
+        let difficulty =
+            chain_tip_difficulty(network.clone(), self.read_state_service.clone(), false)
+                .await
+                .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+
+        let verification_progress = f64::from(height.0) / f64::from(zebra_estimated_height.0);
+
+        Ok(GetBlockchainInfoResponse::new(
+            network.bip70_network_name(),
+            height,
+            hash,
+            estimated_height,
+            GetBlockchainInfoBalance::chain_supply(balance),
+            // TODO: account for new delta_pools arg?
+            GetBlockchainInfoBalance::value_pools(balance, None),
+            upgrades,
+            consensus,
+            height,
+            difficulty,
+            verification_progress,
+            // TODO: store work in the finalized state for each height
+            // (see https://github.com/ZcashFoundation/zebra/issues/7109)
+            0,
+            false,
+            size_on_disk,
+            // TODO (copied from zebra): investigate whether this needs implementing
+            // (it's sprout-only in zcashd)
+            0,
+        ))
     }
 }
 

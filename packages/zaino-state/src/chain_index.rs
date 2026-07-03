@@ -54,7 +54,7 @@ pub use zebra_chain::parameters::Network as ZebraNetwork;
 use zebra_chain::serialization::ZcashSerialize;
 use zebra_rpc::{
     client::{GetAddressBalanceRequest, GetAddressTxIdsRequest},
-    methods::{AddressBalance, GetAddressUtxos, GetBlock, GetInfo},
+    methods::{AddressBalance, GetAddressUtxos, GetBlock, GetBlockchainInfoResponse, GetInfo},
 };
 use zebra_state::HashOrHeight;
 
@@ -622,6 +622,11 @@ pub trait ChainIndexRpcExt: ChainIndex {
 
     /// Returns the `getinfo` response.
     fn get_info(&self) -> impl std::future::Future<Output = Result<GetInfo, Self::Error>>;
+
+    /// Returns the `getblockchaininfo` response.
+    fn get_blockchain_info(
+        &self,
+    ) -> impl std::future::Future<Output = Result<GetBlockchainInfoResponse, Self::Error>>;
 
     /// Returns the `getpeerinfo` response.
     fn get_peer_info(&self) -> impl std::future::Future<Output = Result<GetPeerInfo, Self::Error>>;
@@ -2728,6 +2733,16 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
     async fn get_info(&self) -> Result<GetInfo, Self::Error> {
         self.source()
             .get_info()
+            .await
+            .map_err(ChainIndexError::backing_validator)
+    }
+
+    // `getblockchaininfo` needs cumulative pool value balances (TipPoolValues) and on-disk
+    // size, which are not in the ChainIndex's indexed data, so it cannot be built
+    // internally: always delegate to the backing validator.
+    async fn get_blockchain_info(&self) -> Result<GetBlockchainInfoResponse, Self::Error> {
+        self.source()
+            .get_blockchain_info()
             .await
             .map_err(ChainIndexError::backing_validator)
     }

@@ -648,6 +648,13 @@ impl BlockchainSource for ProptestMockchain {
         unimplemented!()
     }
 
+    async fn get_blockchain_info(
+        &self,
+    ) -> BlockchainSourceResult<zebra_rpc::methods::GetBlockchainInfoResponse> {
+        // ProptestMockchain exercises sync/reorg, not the getblockchaininfo RPC.
+        unimplemented!()
+    }
+
     async fn get_info(&self) -> BlockchainSourceResult<zebra_rpc::methods::GetInfo> {
         unimplemented!()
     }

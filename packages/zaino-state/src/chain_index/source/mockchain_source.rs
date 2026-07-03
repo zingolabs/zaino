@@ -683,6 +683,17 @@ impl BlockchainSource for MockchainSource {
             .relative_to_network(&mockchain_network()))
     }
 
+    async fn get_blockchain_info(
+        &self,
+    ) -> BlockchainSourceResult<zebra_rpc::methods::GetBlockchainInfoResponse> {
+        // Needs cumulative pool value balances (TipPoolValues) and on-disk size, which the
+        // vectors don't carry. Test vectors must be extended to serve this method; tracked
+        // by the update-test-vectors follow-up (see "Future work").
+        unimplemented!(
+            "MockchainSource cannot serve get_blockchain_info until test vectors are extended"
+        )
+    }
+
     // ********** Node-passthrough methods **********
     //
     // These are node-only RPCs with no chain data in the vectors. Test vectors must be
