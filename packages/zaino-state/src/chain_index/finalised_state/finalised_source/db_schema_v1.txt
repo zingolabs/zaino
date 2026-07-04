@@ -1,5 +1,5 @@
 # ────────────────────────────────────────────────────────────────────────────────
-#  Zaino – Finalised State Database, on-disk layout (Schema v1.2, 2026-13-05)
+#  Zaino – Finalised State Database, on-disk layout (Schema v1.3, 2026-07-03)
 # ────────────────────────────────────────────────────────────────────────────────
 #
 #  Any change to this file is a **breaking** change.  Bump the schema version,
@@ -71,13 +71,33 @@
 #              actions = CS n + n × CompactOrchardAction
 #                         CompactOrchardAction = 32-byte nullifier  32-byte cmx  32-byte epk  52-byte ciphertext
 #
-# 6. commitment_tree_data  ―  H  ->  StoredEntryFixed<Vec<CommitmentTreeData>>
+# 6. commitment_tree_data  ―  H  ->  StoredEntryVar<CommitmentTreeData>
 #    Key : BE height
-#    Val : 0x01 + CS n + n × CommitmentTreeData
-#           CommitmentTreeData V1 body  =
+#    Val : 0x01 + CS len + CommitmentTreeData + [32] check_hash
+#           CommitmentTreeData V2 body  =
 #              CommitmentTreeRoots  +  CommitmentTreeSizes
 #              CommitmentTreeRoots  = 32-byte sapling_root  32-byte orchard_root
+#                                     Option<32-byte ironwood_root>
 #              CommitmentTreeSizes  = LE(u32) sapling_total  LE(u32) orchard_total
+#                                     LE(u32) ironwood_total
+#
+#           (Legacy CommitmentTreeData V1 body  =
+#              32-byte sapling_root  32-byte orchard_root
+#              LE(u32) sapling_total  LE(u32) orchard_total ;
+#            fixed-length, previously wrapped in StoredEntryFixed. Rebuilt into the V2
+#            StoredEntryVar layout above by the v1.2.1 → v1.3.0 migration, then dropped.)
+#
+# 13. ironwood  ―  H  ->  StoredEntryVar<OrchardTxList>          (schema v1.3.0)
+#    Key : BE height
+#    Val : 0x01 + CS tx_count + tx_count × Option<OrchardCompactTx>
+#           OrchardCompactTx =
+#              Option<i64> value_balance
+#              actions = CS n + n × CompactOrchardAction
+#                         CompactOrchardAction = 32-byte nullifier  32-byte cmx  32-byte epk  52-byte ciphertext
+#
+#           Ironwood (NU6.3) actions reuse the Orchard compact types. Rows are written for
+#           every block from schema v1.3.0 onward; blocks written before v1.3.0 (all below
+#           NU6.3 activation) have no ironwood row, which readers treat as "no ironwood data".
 #
 # 7. heights  ―  B (block hash)  ->  StoredEntryFixed<Height>
 #    Key : 32-byte block hash (internal byte order)
@@ -132,7 +152,7 @@
 #
 # ─────────────────────────── Environment settings ─────────────────────────────
 #   LMDB page-size:         platform default
-#   max_dbs:                12 (see list above)
+#   max_dbs:                16 (see list above)
 #   Flags:                  MDB_NOTLS | MDB_NORDAHEAD
 #
 #   All Databases are append-only and indexed by height -> LMDB default

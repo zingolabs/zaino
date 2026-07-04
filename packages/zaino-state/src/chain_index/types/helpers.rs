@@ -91,7 +91,7 @@ impl TreeRootData {
     ) {
         let (sapling_root, sapling_size) = self.sapling.unwrap_or_default();
         let (orchard_root, orchard_size) = self.orchard.unwrap_or_default();
-        let (ironwood_root, ironwood_size) = self.orchard.unwrap_or_default();
+        let (ironwood_root, ironwood_size) = self.ironwood.unwrap_or_default();
         (
             sapling_root,
             sapling_size,
@@ -315,13 +315,13 @@ impl<'a> BlockWithMetadata<'a> {
         )
     }
 
-    /// Extract orchard transaction data
+    /// Extract ironwood transaction data
     fn extract_ironwood_data(
         &self,
         txn: &zebra_chain::transaction::Transaction,
     ) -> OrchardCompactTx {
-        let orchard_value = {
-            let val = txn.ironwood_value_balance().orchard_amount();
+        let ironwood_value = {
+            let val = txn.ironwood_value_balance().ironwood_amount();
             if val == 0 {
                 None
             } else {
@@ -330,7 +330,7 @@ impl<'a> BlockWithMetadata<'a> {
         };
 
         OrchardCompactTx::new(
-            orchard_value,
+            ironwood_value,
             txn.ironwood_actions()
                 .map(|action| {
                     let cipher: [u8; 52] = <[u8; 580]>::from(action.enc_ciphertext)[..52]

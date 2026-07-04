@@ -19,7 +19,8 @@ fn approx_indexed_block_bytes(block: &IndexedBlock) -> u64 {
                 + transparent.outputs().len()
                 + tx.sapling().spends().len()
                 + tx.sapling().outputs().len()
-                + tx.orchard().actions().len();
+                + tx.orchard().actions().len()
+                + tx.ironwood().actions().len();
             256 + items as u64 * 128
         })
         .sum()
@@ -418,9 +419,10 @@ impl DbV1 {
             BlockHeaderData::new(block.context, *block.data()),
         );
 
-        // Build commitment tree data
+        // Build commitment tree data. Stored as a `StoredEntryVar` because `CommitmentTreeData` V2
+        // is variable-length (optional Ironwood root).
         let commitment_tree_entry =
-            StoredEntryFixed::new(&block_height_bytes, *block.commitment_tree_data());
+            StoredEntryVar::new(&block_height_bytes, *block.commitment_tree_data());
 
         // Build transaction indexes.
         //
@@ -435,6 +437,7 @@ impl DbV1 {
         let mut txid_set: HashSet<TransactionHash> = HashSet::with_capacity(tx_len);
         let mut sapling = Vec::with_capacity(tx_len);
         let mut orchard = Vec::with_capacity(tx_len);
+        let mut ironwood = Vec::with_capacity(tx_len);
 
         let mut spent_map: HashMap<Outpoint, TxLocation> = HashMap::new();
 
@@ -485,6 +488,14 @@ impl DbV1 {
                 Some(tx.orchard().clone())
             };
             orchard.push(orchard_data);
+
+            // Ironwood transactions (NU6.3; modelled with the Orchard compact types).
+            let ironwood_data = if tx.ironwood().actions().is_empty() {
+                None
+            } else {
+                Some(tx.ironwood().clone())
+            };
+            ironwood.push(ironwood_data);
 
             // Transaction location
             let tx_index =
@@ -639,6 +650,7 @@ impl DbV1 {
             StoredEntryVar::new(&block_height_bytes, TransparentTxList::new(transparent));
         let sapling_entry = StoredEntryVar::new(&block_height_bytes, SaplingTxList::new(sapling));
         let orchard_entry = StoredEntryVar::new(&block_height_bytes, OrchardTxList::new(orchard));
+        let ironwood_entry = StoredEntryVar::new(&block_height_bytes, OrchardTxList::new(ironwood));
 
         // if any database writes fail, or block validation fails, remove block from database and return err.
         let zaino_db = self.detached_handle();
@@ -696,6 +708,13 @@ impl DbV1 {
                 zaino_db.orchard,
                 &block_height_bytes,
                 &orchard_entry.to_bytes()?,
+                WriteFlags::NO_OVERWRITE,
+            )?;
+
+            txn.put(
+                zaino_db.ironwood,
+                &block_height_bytes,
+                &ironwood_entry.to_bytes()?,
                 WriteFlags::NO_OVERWRITE,
             )?;
 
@@ -1122,7 +1141,7 @@ impl DbV1 {
                 BlockHeaderData::new(block.context, *block.data()),
             );
             let commitment_tree_entry =
-                StoredEntryFixed::new(&block_height_bytes, *block.commitment_tree_data());
+                StoredEntryVar::new(&block_height_bytes, *block.commitment_tree_data());
 
             let tx_len = block.transactions().len();
             let mut txids: Vec<TransactionHash> = Vec::with_capacity(tx_len);
@@ -1130,6 +1149,7 @@ impl DbV1 {
             let mut transparent: Vec<Option<TransparentCompactTx>> = Vec::with_capacity(tx_len);
             let mut sapling = Vec::with_capacity(tx_len);
             let mut orchard = Vec::with_capacity(tx_len);
+            let mut ironwood = Vec::with_capacity(tx_len);
 
             for (tx_index, tx) in block.transactions().iter().enumerate() {
                 let hash = tx.txid();
@@ -1166,6 +1186,13 @@ impl DbV1 {
                 };
                 orchard.push(orchard_data);
 
+                let ironwood_data = if tx.ironwood().actions().is_empty() {
+                    None
+                } else {
+                    Some(tx.ironwood().clone())
+                };
+                ironwood.push(ironwood_data);
+
                 let tx_index =
                     u16::try_from(tx_index).map_err(|_| FinalisedStateError::InvalidBlock {
                         height: block_height.0,
@@ -1199,6 +1226,8 @@ impl DbV1 {
                 StoredEntryVar::new(&block_height_bytes, SaplingTxList::new(sapling));
             let orchard_entry =
                 StoredEntryVar::new(&block_height_bytes, OrchardTxList::new(orchard));
+            let ironwood_entry =
+                StoredEntryVar::new(&block_height_bytes, OrchardTxList::new(ironwood));
 
             // Height-keyed tables (+ the hash-keyed `heights`, one entry/block) written per block.
             put_idempotent(
@@ -1236,6 +1265,12 @@ impl DbV1 {
                 self.orchard,
                 &block_height_bytes,
                 &orchard_entry.to_bytes()?,
+            )?;
+            put_idempotent(
+                &mut txn,
+                self.ironwood,
+                &block_height_bytes,
+                &ironwood_entry.to_bytes()?,
             )?;
             put_idempotent(
                 &mut txn,
@@ -1648,13 +1683,15 @@ impl DbV1 {
                 }
             }
 
-            // Delete block data
+            // Delete block data. `ironwood` is `NotFound`-tolerant below, so deleting a pre-v1.3.0
+            // block (which has no ironwood row) is a no-op.
             for &db in &[
                 zaino_db.headers,
                 zaino_db.txids,
                 zaino_db.transparent,
                 zaino_db.sapling,
                 zaino_db.orchard,
+                zaino_db.ironwood,
                 zaino_db.commitment_tree_data,
             ] {
                 match txn.del(db, &block_height_bytes, None) {

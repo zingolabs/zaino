@@ -606,7 +606,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
                     )?,
             };
 
-            let (sapling, orchard, _ironwood) =
+            let (sapling, orchard, ironwood) =
                 self.indexer.get_treestate(block_data.hash()).await?;
             let time: u32 = block_data.data().time().try_into().map_err(|_error| {
                 #[allow(deprecated)]
@@ -616,13 +616,27 @@ impl ZcashIndexer for FetchServiceSubscriber {
                 ))
             })?;
 
-            #[allow(deprecated)]
-            Ok(GetTreestateResponse::from_parts(
+            // `Commitments::new(final_root, final_state)`: the note-commitment tree is the
+            // `final_state`, matching the (now-deprecated) `from_parts` behaviour this replaces.
+            // The `new` constructor is used so the Ironwood (NU6.3) treestate can be included rather
+            // than discarded.
+            Ok(GetTreestateResponse::new(
                 (*block_data.hash()).into(),
                 block_data.height().into(),
                 time,
-                sapling,
-                orchard,
+                None,
+                zebra_rpc::client::Treestate::new(zebra_rpc::client::Commitments::new(
+                    None, sapling,
+                )),
+                zebra_rpc::client::Treestate::new(zebra_rpc::client::Commitments::new(
+                    None, orchard,
+                )),
+                ironwood.map(|final_state| {
+                    zebra_rpc::client::Treestate::new(zebra_rpc::client::Commitments::new(
+                        None,
+                        Some(final_state),
+                    ))
+                }),
             ))
         }
         .await;

@@ -747,6 +747,52 @@ impl<T: BlockchainSource> BlockShieldedExt for EphemeralFinalisedState<T> {
         Ok(orchard_lists)
     }
 
+    async fn get_ironwood(
+        &self,
+        tx_location: TxLocation,
+    ) -> Result<Option<OrchardCompactTx>, FinalisedStateError> {
+        let chain_block = self
+            .get_required_chain_block(Height::try_from(tx_location.block_height()).unwrap())
+            .await?;
+
+        Ok(chain_block
+            .transactions()
+            .get(usize::from(tx_location.tx_index()))
+            .map(|transaction| transaction.ironwood().clone()))
+    }
+
+    async fn get_block_ironwood(
+        &self,
+        height: Height,
+    ) -> Result<OrchardTxList, FinalisedStateError> {
+        let chain_block = self.get_required_chain_block(height).await?;
+
+        Ok(OrchardTxList::new(
+            chain_block
+                .transactions()
+                .iter()
+                .map(|transaction| Some(transaction.ironwood().clone()))
+                .collect(),
+        ))
+    }
+
+    async fn get_block_range_ironwood(
+        &self,
+        start: Height,
+        end: Height,
+    ) -> Result<Vec<OrchardTxList>, FinalisedStateError> {
+        let mut ironwood_lists = Vec::new();
+
+        for height in u32::from(start)..=u32::from(end) {
+            ironwood_lists.push(
+                self.get_block_ironwood(Height::try_from(height).unwrap())
+                    .await?,
+            );
+        }
+
+        Ok(ironwood_lists)
+    }
+
     async fn get_block_commitment_tree_data(
         &self,
         height: Height,

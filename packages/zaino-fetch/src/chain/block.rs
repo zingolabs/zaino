@@ -202,6 +202,7 @@ impl FullBlock {
                             || !compact_tx.spends.is_empty()
                             || !compact_tx.outputs.is_empty()
                             || !compact_tx.actions.is_empty()
+                            || !compact_tx.ironwood_actions.is_empty()
                         {
                             Some(Ok(compact_tx))
                         } else {

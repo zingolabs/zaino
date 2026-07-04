@@ -1107,6 +1107,7 @@ impl IndexedBlock {
 
         let sapling_commitment_tree_size = self.commitment_tree_data().sizes().sapling();
         let orchard_commitment_tree_size = self.commitment_tree_data().sizes().orchard();
+        let ironwood_commitment_tree_size = self.commitment_tree_data().sizes().ironwood();
 
         zaino_proto::proto::compact_formats::CompactBlock {
             proto_version: 0,
@@ -1119,7 +1120,7 @@ impl IndexedBlock {
             chain_metadata: Some(zaino_proto::proto::compact_formats::ChainMetadata {
                 sapling_commitment_tree_size,
                 orchard_commitment_tree_size,
-                ironwood_commitment_tree_size: 0,
+                ironwood_commitment_tree_size,
             }),
         }
     }

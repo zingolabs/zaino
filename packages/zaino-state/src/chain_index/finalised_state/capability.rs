@@ -918,6 +918,32 @@ pub trait BlockShieldedExt: Send + Sync {
         end: Height,
     ) -> impl SendFut<Result<Vec<OrchardTxList>, FinalisedStateError>>;
 
+    /// Fetch the serialized Ironwood (NU6.3) compact tx for the given TxLocation, if present.
+    ///
+    /// Ironwood actions are modelled with the Orchard compact types. Returns `None` when the block
+    /// has no ironwood row (any block below NU6.3 activation, or written before schema v1.3.0).
+    fn get_ironwood(
+        &self,
+        tx_location: TxLocation,
+    ) -> impl SendFut<Result<Option<OrchardCompactTx>, FinalisedStateError>>;
+
+    /// Fetch block ironwood transaction data by height.
+    ///
+    /// Returns an empty [`OrchardTxList`] when the block has no ironwood row.
+    fn get_block_ironwood(
+        &self,
+        height: Height,
+    ) -> impl SendFut<Result<OrchardTxList, FinalisedStateError>>;
+
+    /// Fetches block ironwood tx data for the given (inclusive) height range.
+    ///
+    /// Heights with no ironwood row yield an empty [`OrchardTxList`].
+    fn get_block_range_ironwood(
+        &self,
+        start: Height,
+        end: Height,
+    ) -> impl SendFut<Result<Vec<OrchardTxList>, FinalisedStateError>>;
+
     /// Fetch block commitment tree data by height.
     fn get_block_commitment_tree_data(
         &self,

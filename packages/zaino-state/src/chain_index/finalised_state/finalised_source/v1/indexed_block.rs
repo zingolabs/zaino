@@ -112,9 +112,31 @@ impl DbV1 {
                 .clone();
             let orchard = orchard_list.tx();
 
+            // Ironwood (NU6.3): rows only exist from schema v1.3.0 onward, and only for blocks at or
+            // above NU6.3 activation. A missing row means the block predates ironwood, so every
+            // transaction has an empty ironwood component.
+            let ironwood_list = match txn.get(self.ironwood, &height_bytes) {
+                Ok(raw) => Some(
+                    StoredEntryVar::<OrchardTxList>::from_bytes(raw)
+                        .map_err(|e| {
+                            FinalisedStateError::Custom(format!("ironwood decode error: {e}"))
+                        })?
+                        .inner()
+                        .clone(),
+                ),
+                Err(lmdb::Error::NotFound) => None,
+                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+            };
+            let ironwood: &[Option<OrchardCompactTx>] =
+                ironwood_list.as_ref().map(|list| list.tx()).unwrap_or(&[]);
+
             // Build CompactTxData
             let len = txids.len();
-            if transparent.len() != len || sapling.len() != len || orchard.len() != len {
+            if transparent.len() != len
+                || sapling.len() != len
+                || orchard.len() != len
+                || (!ironwood.is_empty() && ironwood.len() != len)
+            {
                 return Err(FinalisedStateError::Custom(
                     "mismatched tx list lengths in block data".to_string(),
                 ));
@@ -132,15 +154,19 @@ impl DbV1 {
                     let orchard_tx = orchard[i]
                         .clone()
                         .unwrap_or_else(|| OrchardCompactTx::new(None, vec![]));
+                    let ironwood_tx = ironwood
+                        .get(i)
+                        .cloned()
+                        .flatten()
+                        .unwrap_or_else(OrchardCompactTx::empty);
 
-                    // TODO: Return ironwood!
                     CompactTxData::new(
                         i as u64,
                         txid,
                         transparent_tx,
                         sapling_tx,
                         orchard_tx,
-                        OrchardCompactTx::empty(),
+                        ironwood_tx,
                     )
                 })
                 .collect();
@@ -156,11 +182,12 @@ impl DbV1 {
                 Err(e) => return Err(FinalisedStateError::LmdbError(e)),
             };
 
-            let commitment_tree_data: CommitmentTreeData = *StoredEntryFixed::from_bytes(raw)
-                .map_err(|e| {
-                    FinalisedStateError::Custom(format!("commitment_tree decode error: {e}"))
-                })?
-                .inner();
+            let commitment_tree_data: CommitmentTreeData =
+                *StoredEntryVar::<CommitmentTreeData>::from_bytes(raw)
+                    .map_err(|e| {
+                        FinalisedStateError::Custom(format!("commitment_tree decode error: {e}"))
+                    })?
+                    .inner();
 
             // Construct IndexedBlock
             Ok(Some(IndexedBlock::new(

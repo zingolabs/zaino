@@ -360,6 +360,14 @@ impl<T: BlockchainSource> FinalisedSource<T> {
     pub(crate) fn transparent_db(&self) -> Result<Database, FinalisedStateError> {
         Ok(self.require_v1("v1 transparent db")?.transparent_db())
     }
+
+    /// Provides access to the (v1.3.0) `StoredEntryVar` commitment-tree-data table, required for
+    /// Migration1_2_1To1_3_0 to write the rebuilt commitment rows.
+    pub(crate) fn commitment_tree_data_db(&self) -> Result<Database, FinalisedStateError> {
+        Ok(self
+            .require_v1("v1 commitment_tree_data db")?
+            .commitment_tree_data_db())
+    }
 }
 
 impl<T: BlockchainSource> From<DbV1> for FinalisedSource<T> {
@@ -672,6 +680,34 @@ impl<T: BlockchainSource> BlockShieldedExt for FinalisedSource<T> {
         match self {
             Self::V1(db) => db.get_block_range_orchard(start, end).await,
             Self::Ephemeral(db) => db.get_block_range_orchard(start, end).await,
+        }
+    }
+
+    async fn get_ironwood(
+        &self,
+        tx_location: TxLocation,
+    ) -> Result<Option<OrchardCompactTx>, FinalisedStateError> {
+        match self {
+            Self::V1(db) => db.get_ironwood(tx_location).await,
+            Self::Ephemeral(db) => db.get_ironwood(tx_location).await,
+        }
+    }
+
+    async fn get_block_ironwood(&self, h: Height) -> Result<OrchardTxList, FinalisedStateError> {
+        match self {
+            Self::V1(db) => db.get_block_ironwood(h).await,
+            Self::Ephemeral(db) => db.get_block_ironwood(h).await,
+        }
+    }
+
+    async fn get_block_range_ironwood(
+        &self,
+        start: Height,
+        end: Height,
+    ) -> Result<Vec<OrchardTxList>, FinalisedStateError> {
+        match self {
+            Self::V1(db) => db.get_block_range_ironwood(start, end).await,
+            Self::Ephemeral(db) => db.get_block_range_ironwood(start, end).await,
         }
     }
 

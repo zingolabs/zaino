@@ -1056,6 +1056,12 @@ impl<T: BlockchainSource> FinalisedState<T> {
         })?;
         let tip = Height::from(tip);
 
+        // Ironwood (NU6.3) commitment tree data is only expected from activation. Below activation
+        // (or on a network with no NU6.3 activation height) the source has no ironwood root, so it
+        // defaults — mirroring `build_indexed_block_from_source`.
+        let nu6_3_activation_height = zebra_chain::parameters::NetworkUpgrade::Nu6_3
+            .activation_height(&cfg.network.to_zebra_network());
+
         let mut parent_chainwork: Option<ChainWork> = None;
 
         for height in crate::chain_index::types::GENESIS_HEIGHT.0..=tip.0 {
@@ -1085,11 +1091,19 @@ impl<T: BlockchainSource> FinalisedState<T> {
                     format!("missing Orchard commitment tree root for block {block_hash}"),
                 ))
             })?;
-            let (ironwood_root, ironwood_size) = ironwood_opt.ok_or_else(|| {
-                FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
-                    format!("missing Orchard commitment tree root for block {block_hash}"),
-                ))
-            })?;
+            let is_ironwood_active =
+                nu6_3_activation_height.is_some_and(|activation| height >= activation.0);
+            let (ironwood_root, ironwood_size) = if is_ironwood_active {
+                ironwood_opt.ok_or_else(|| {
+                    FinalisedStateError::BlockchainSourceError(
+                        BlockchainSourceError::Unrecoverable(format!(
+                            "missing Ironwood commitment tree root for block {block_hash}"
+                        )),
+                    )
+                })?
+            } else {
+                (zebra_chain::orchard::tree::Root::default(), 0)
+            };
 
             let metadata = BlockMetadata::new(
                 sapling_root,

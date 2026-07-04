@@ -51,6 +51,28 @@ impl BlockShieldedExt for DbV1 {
         self.get_block_range_orchard(start, end).await
     }
 
+    async fn get_ironwood(
+        &self,
+        tx_location: TxLocation,
+    ) -> Result<Option<OrchardCompactTx>, FinalisedStateError> {
+        self.get_ironwood(tx_location).await
+    }
+
+    async fn get_block_ironwood(
+        &self,
+        height: Height,
+    ) -> Result<OrchardTxList, FinalisedStateError> {
+        self.get_block_ironwood(height).await
+    }
+
+    async fn get_block_range_ironwood(
+        &self,
+        start: Height,
+        end: Height,
+    ) -> Result<Vec<OrchardTxList>, FinalisedStateError> {
+        self.get_block_range_ironwood(start, end).await
+    }
+
     async fn get_block_commitment_tree_data(
         &self,
         height: Height,
@@ -409,6 +431,147 @@ impl DbV1 {
             .collect()
     }
 
+    /// Fetch the serialized `OrchardCompactTx` for the given TxLocation from the ironwood table.
+    ///
+    /// Mirrors [`DbV1::get_orchard`] against the ironwood table (ironwood reuses the Orchard compact
+    /// types). A missing ironwood row — any block below NU6.3 activation, or one written before
+    /// schema v1.3.0 — yields `Ok(None)` rather than an error.
+    async fn get_ironwood(
+        &self,
+        tx_location: TxLocation,
+    ) -> Result<Option<OrchardCompactTx>, FinalisedStateError> {
+        use std::io::{Cursor, Read};
+
+        tokio::task::block_in_place(|| {
+            let txn = self.env.begin_ro_txn()?;
+
+            let height = Height::try_from(tx_location.block_height())
+                .map_err(|e| FinalisedStateError::Custom(e.to_string()))?;
+            let height_bytes = height.to_bytes()?;
+
+            let raw = match txn.get(self.ironwood, &height_bytes) {
+                Ok(val) => val,
+                // No ironwood data at this height.
+                Err(lmdb::Error::NotFound) => return Ok(None),
+                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+            };
+
+            let mut cursor = Cursor::new(raw);
+
+            // Skip [0] StoredEntry version
+            cursor.set_position(1);
+
+            // Read CompactSize: length of serialized body
+            CompactSize::read(&mut cursor).map_err(|e| {
+                FinalisedStateError::Custom(format!("compact size read error: {e}"))
+            })?;
+
+            // Skip OrchardTxList version byte
+            cursor.set_position(cursor.position() + 1);
+
+            // Read CompactSize: number of entries
+            let list_len = CompactSize::read(&mut cursor).map_err(|e| {
+                FinalisedStateError::Custom(format!("ironwood tx list len error: {e}"))
+            })?;
+
+            let idx = tx_location.tx_index() as usize;
+            if idx >= list_len as usize {
+                return Err(FinalisedStateError::Custom(
+                    "tx_index out of range in ironwood tx list".to_string(),
+                ));
+            }
+
+            // Skip preceding entries
+            for _ in 0..idx {
+                Self::skip_opt_orchard_entry(&mut cursor)
+                    .map_err(|e| FinalisedStateError::Custom(format!("skip entry error: {e}")))?;
+            }
+
+            let start = cursor.position();
+
+            // Peek presence flag
+            let mut presence = [0u8; 1];
+            cursor.read_exact(&mut presence).map_err(|e| {
+                FinalisedStateError::Custom(format!("failed to read Option tag: {e}"))
+            })?;
+
+            if presence[0] == 0 {
+                return Ok(None);
+            } else if presence[0] != 1 {
+                return Err(FinalisedStateError::Custom(format!(
+                    "invalid Option tag: {}",
+                    presence[0]
+                )));
+            }
+
+            // Rewind to include presence flag in output
+            cursor.set_position(start);
+            Self::skip_opt_orchard_entry(&mut cursor).map_err(|e| {
+                FinalisedStateError::Custom(format!("skip entry error (second pass): {e}"))
+            })?;
+
+            let end = cursor.position();
+
+            Ok(Some(OrchardCompactTx::from_bytes(
+                &raw[start as usize..end as usize],
+            )?))
+        })
+    }
+
+    /// Fetch block ironwood transaction data by height.
+    ///
+    /// A missing ironwood row yields an empty [`OrchardTxList`].
+    async fn get_block_ironwood(
+        &self,
+        height: Height,
+    ) -> Result<OrchardTxList, FinalisedStateError> {
+        let validated_height = self
+            .resolve_validated_hash_or_height(HashOrHeight::Height(height.into()))
+            .await?;
+        let height_bytes = validated_height.to_bytes()?;
+
+        tokio::task::block_in_place(|| {
+            let txn = self.env.begin_ro_txn()?;
+            let raw = match txn.get(self.ironwood, &height_bytes) {
+                Ok(val) => val,
+                Err(lmdb::Error::NotFound) => return Ok(OrchardTxList::new(Vec::new())),
+                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+            };
+
+            let entry: StoredEntryVar<OrchardTxList> = StoredEntryVar::from_bytes(raw)
+                .map_err(|e| FinalisedStateError::Custom(format!("ironwood decode error: {e}")))?;
+
+            Ok(entry.inner().clone())
+        })
+    }
+
+    /// Fetches block ironwood tx data for the given (inclusive) height range.
+    ///
+    /// Unlike the orchard range fetch this resolves each height individually so that heights with no
+    /// ironwood row (pre-v1.3.0 / pre-NU6.3) yield an empty [`OrchardTxList`], keeping the result
+    /// aligned one-entry-per-height with the requested range.
+    async fn get_block_range_ironwood(
+        &self,
+        start: Height,
+        end: Height,
+    ) -> Result<Vec<OrchardTxList>, FinalisedStateError> {
+        if end.0 < start.0 {
+            return Err(FinalisedStateError::Custom(
+                "invalid block range: end < start".to_string(),
+            ));
+        }
+
+        self.validate_block_range(start, end).await?;
+
+        let mut out = Vec::with_capacity((end.0 - start.0 + 1) as usize);
+        for height_int in start.0..=end.0 {
+            let height = Height::try_from(height_int)
+                .map_err(|e| FinalisedStateError::Custom(e.to_string()))?;
+            out.push(self.get_block_ironwood(height).await?);
+        }
+        Ok(out)
+    }
+
     /// Fetch block commitment tree data by height.
     async fn get_block_commitment_tree_data(
         &self,
@@ -431,7 +594,7 @@ impl DbV1 {
                 Err(e) => return Err(FinalisedStateError::LmdbError(e)),
             };
 
-            let entry = StoredEntryFixed::from_bytes(raw).map_err(|e| {
+            let entry = StoredEntryVar::<CommitmentTreeData>::from_bytes(raw).map_err(|e| {
                 FinalisedStateError::Custom(format!("commitment_tree decode error: {e}"))
             })?;
 
@@ -485,7 +648,7 @@ impl DbV1 {
         raw_entries
             .into_iter()
             .map(|bytes| {
-                StoredEntryFixed::<CommitmentTreeData>::from_bytes(&bytes)
+                StoredEntryVar::<CommitmentTreeData>::from_bytes(&bytes)
                     .map(|e| e.item)
                     .map_err(|e| {
                         FinalisedStateError::Custom(format!("commitment_tree decode error: {e}"))
