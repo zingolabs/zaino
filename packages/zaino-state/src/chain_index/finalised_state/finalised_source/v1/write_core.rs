@@ -44,6 +44,155 @@ use crate::version;
 ///
 /// This trait represents the mutating surface (append / delete tip / update metadata). Writes are
 /// performed via LMDB write transactions and validated before becoming visible as “known-good”.
+/// Per-transaction pool lists for one block's row entries, with the duplicate-txid
+/// guard applied.
+struct BlockPoolLists {
+    /// `(txid, transparent)` pairs — both halves come from one binding per
+    /// transaction, so misalignment is structurally impossible.
+    transactions: Vec<(TransactionHash, Option<TransparentCompactTx>)>,
+    sapling: Vec<Option<SaplingCompactTx>>,
+    orchard: Vec<Option<OrchardCompactTx>>,
+    ironwood: Vec<Option<OrchardCompactTx>>,
+}
+
+/// Builds the per-transaction pool lists for one block: each pool records
+/// `Some(compact data)` for a transaction with data in that pool, `None` otherwise,
+/// keeping every list index-aligned with the block's txids.
+fn extract_block_pool_lists(block: &IndexedBlock) -> Result<BlockPoolLists, FinalisedStateError> {
+    let block_height = block.context.index.height;
+    let block_hash = block.context.index.hash;
+
+    let tx_len = block.transactions().len();
+    let mut transactions: Vec<(TransactionHash, Option<TransparentCompactTx>)> =
+        Vec::with_capacity(tx_len);
+    let mut txid_set: HashSet<TransactionHash> = HashSet::with_capacity(tx_len);
+    let mut sapling = Vec::with_capacity(tx_len);
+    let mut orchard = Vec::with_capacity(tx_len);
+    let mut ironwood = Vec::with_capacity(tx_len);
+
+    for tx in block.transactions() {
+        let hash = tx.txid();
+        if !txid_set.insert(*hash) {
+            return Err(FinalisedStateError::InvalidBlock {
+                height: block_height.0,
+                hash: block_hash,
+                reason: format!("duplicate transaction hash in block: {hash:?}"),
+            });
+        }
+
+        // Transparent transactions — paired with the txid at the source binding.
+        let transparent_data =
+            if tx.transparent().inputs().is_empty() && tx.transparent().outputs().is_empty() {
+                None
+            } else {
+                Some(tx.transparent().clone())
+            };
+        transactions.push((*hash, transparent_data));
+
+        // Sapling transactions
+        let sapling_data = if tx.sapling().spends().is_empty() && tx.sapling().outputs().is_empty()
+        {
+            None
+        } else {
+            Some(tx.sapling().clone())
+        };
+        sapling.push(sapling_data);
+
+        // Orchard transactions
+        let orchard_data = if tx.orchard().actions().is_empty() {
+            None
+        } else {
+            Some(tx.orchard().clone())
+        };
+        orchard.push(orchard_data);
+
+        // Ironwood transactions (NU6.3; modelled with the Orchard compact types).
+        let ironwood_data = if tx.ironwood().actions().is_empty() {
+            None
+        } else {
+            Some(tx.ironwood().clone())
+        };
+        ironwood.push(ironwood_data);
+    }
+
+    Ok(BlockPoolLists {
+        transactions,
+        sapling,
+        orchard,
+        ironwood,
+    })
+}
+
+/// Cheap in-memory correctness check: the block's txids must reproduce the header's
+/// merkle root.
+fn verify_header_merkle_root(
+    txids: &[TransactionHash],
+    block: &IndexedBlock,
+) -> Result<(), FinalisedStateError> {
+    let txid_bytes: Vec<[u8; 32]> = txids.iter().map(|txid| txid.0).collect();
+    let computed_merkle_root = DbV1::calculate_block_merkle_root(&txid_bytes);
+    if &computed_merkle_root != block.data().merkle_root() {
+        return Err(FinalisedStateError::InvalidBlock {
+            height: block.context.index.height.0,
+            hash: block.context.index.hash,
+            reason: "header merkle root does not match block txids".to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// One block's row entries, ready to put. Everything is keyed by the block height
+/// except `height_entry` (the hash-keyed height index). `ironwood_entry` is `None`
+/// when the block has no ironwood data — the ironwood table is sparse; readers treat
+/// an absent row as "no ironwood data".
+struct BlockRowEntries {
+    height_entry: StoredEntryFixed<Height>,
+    header_entry: StoredEntryVar<BlockHeaderData>,
+    commitment_tree_entry: StoredEntryVar<CommitmentTreeData>,
+    txid_entry: StoredEntryVar<TxidList>,
+    transparent_entry: StoredEntryVar<TransparentTxList>,
+    sapling_entry: StoredEntryVar<SaplingTxList>,
+    orchard_entry: StoredEntryVar<OrchardTxList>,
+    ironwood_entry: Option<StoredEntryVar<OrchardTxList>>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_block_row_entries(
+    block: &IndexedBlock,
+    block_hash_bytes: &[u8],
+    block_height_bytes: &[u8],
+    txids: Vec<TransactionHash>,
+    transparent: Vec<Option<TransparentCompactTx>>,
+    sapling: Vec<Option<SaplingCompactTx>>,
+    orchard: Vec<Option<OrchardCompactTx>>,
+    ironwood: Vec<Option<OrchardCompactTx>>,
+) -> BlockRowEntries {
+    BlockRowEntries {
+        height_entry: StoredEntryFixed::new(block_hash_bytes, block.context.index.height),
+        header_entry: StoredEntryVar::new(
+            block_height_bytes,
+            BlockHeaderData::new(block.context, *block.data()),
+        ),
+        // Stored as a `StoredEntryVar` because `CommitmentTreeData` V2 is
+        // variable-length (optional Ironwood root).
+        commitment_tree_entry: StoredEntryVar::new(
+            block_height_bytes,
+            *block.commitment_tree_data(),
+        ),
+        txid_entry: StoredEntryVar::new(block_height_bytes, TxidList::new(txids)),
+        transparent_entry: StoredEntryVar::new(
+            block_height_bytes,
+            TransparentTxList::new(transparent),
+        ),
+        sapling_entry: StoredEntryVar::new(block_height_bytes, SaplingTxList::new(sapling)),
+        orchard_entry: StoredEntryVar::new(block_height_bytes, OrchardTxList::new(orchard)),
+        ironwood_entry: ironwood
+            .iter()
+            .any(Option::is_some)
+            .then(|| StoredEntryVar::new(block_height_bytes, OrchardTxList::new(ironwood))),
+    }
+}
+
 impl DbWrite for DbV1 {
     async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
         self.write_block(block).await
@@ -410,34 +559,17 @@ impl DbV1 {
             return Ok(());
         }
 
-        // Build DBHeight
-        let height_entry = StoredEntryFixed::new(&block_hash_bytes, block.context.index.height);
+        // Build the per-transaction pool lists (with the duplicate-txid guard applied).
+        // The accumulator consumes the paired `(txid, transparent)` slice; for storage
+        // the pairs are `unzip`ped into the `TxidList` / `TransparentTxList` shapes.
+        let pool_lists = extract_block_pool_lists(&block)?;
 
-        // Build header
-        let header_entry = StoredEntryVar::new(
-            &block_height_bytes,
-            BlockHeaderData::new(block.context, *block.data()),
-        );
-
-        // Build commitment tree data. Stored as a `StoredEntryVar` because `CommitmentTreeData` V2
-        // is variable-length (optional Ironwood root).
-        let commitment_tree_entry =
-            StoredEntryVar::new(&block_height_bytes, *block.commitment_tree_data());
-
-        // Build transaction indexes.
-        //
-        // `transactions` pairs each transaction hash with its transparent data. Both halves
-        // are sourced from the same `tx` in the loop below, so misalignment is structurally
-        // impossible — the pair shares one binding. Downstream the accumulator consumes the
-        // paired slice; for storage we `unzip` into the existing `TxidList` / `TransparentTxList`
-        // shapes.
-        let tx_len = block.transactions().len();
-        let mut transactions: Vec<(TransactionHash, Option<TransparentCompactTx>)> =
-            Vec::with_capacity(tx_len);
-        let mut txid_set: HashSet<TransactionHash> = HashSet::with_capacity(tx_len);
-        let mut sapling = Vec::with_capacity(tx_len);
-        let mut orchard = Vec::with_capacity(tx_len);
-        let mut ironwood = Vec::with_capacity(tx_len);
+        #[cfg(feature = "transparent_address_history_experimental")]
+        let txid_set: HashSet<TransactionHash> = pool_lists
+            .transactions
+            .iter()
+            .map(|(hash, _)| *hash)
+            .collect();
 
         let mut spent_map: HashMap<Outpoint, TxLocation> = HashMap::new();
 
@@ -453,50 +585,6 @@ impl DbV1 {
 
         #[allow(clippy::unused_enumerate_index)]
         for (_tx_index, tx) in block.transactions().iter().enumerate() {
-            let hash = tx.txid();
-
-            if !txid_set.insert(*hash) {
-                return Err(FinalisedStateError::InvalidBlock {
-                    height: block_height.0,
-                    hash: block_hash,
-                    reason: format!("duplicate transaction hash in block: {hash:?}"),
-                });
-            }
-
-            // Transparent transactions — paired with the txid at the source binding.
-            let transparent_data =
-                if tx.transparent().inputs().is_empty() && tx.transparent().outputs().is_empty() {
-                    None
-                } else {
-                    Some(tx.transparent().clone())
-                };
-            transactions.push((*hash, transparent_data));
-
-            // Sapling transactions
-            let sapling_data =
-                if tx.sapling().spends().is_empty() && tx.sapling().outputs().is_empty() {
-                    None
-                } else {
-                    Some(tx.sapling().clone())
-                };
-            sapling.push(sapling_data);
-
-            // Orchard transactions
-            let orchard_data = if tx.orchard().actions().is_empty() {
-                None
-            } else {
-                Some(tx.orchard().clone())
-            };
-            orchard.push(orchard_data);
-
-            // Ironwood transactions (NU6.3; modelled with the Orchard compact types).
-            let ironwood_data = if tx.ironwood().actions().is_empty() {
-                None
-            } else {
-                Some(tx.ironwood().clone())
-            };
-            ironwood.push(ironwood_data);
-
             // Transaction location
             let tx_index =
                 u16::try_from(_tx_index).map_err(|_| FinalisedStateError::InvalidBlock {
@@ -540,7 +628,8 @@ impl DbV1 {
                     let prev_tx_hash = TransactionHash(*prev_outpoint.prev_txid());
                     if txid_set.contains(&prev_tx_hash) {
                         // Locate the paired (txid, transparent_data) within this block.
-                        if let Some((tx_index, (_, Some(prev_transparent)))) = transactions
+                        if let Some((tx_index, (_, Some(prev_transparent)))) = pool_lists
+                            .transactions
                             .iter()
                             .enumerate()
                             .find(|(_, (h, _))| h == &prev_tx_hash)
@@ -603,12 +692,18 @@ impl DbV1 {
             .maybe_calculate_tx_out_set_info_accumulator_after_block(
                 update_tx_out_set,
                 block_height,
-                &transactions,
+                &pool_lists.transactions,
                 &spent_map,
             )
             .await?;
 
         // Split the paired vector into the per-table shapes used for storage.
+        let BlockPoolLists {
+            transactions,
+            sapling,
+            orchard,
+            ironwood,
+        } = pool_lists;
         let (txids, transparent): (Vec<TransactionHash>, Vec<Option<TransparentCompactTx>>) =
             transactions.into_iter().unzip();
 
@@ -617,17 +712,7 @@ impl DbV1 {
         // lets us mark the block validated after a successful write without the expensive
         // post-commit re-read + spent-index cross-check (which only re-verifies on-disk integrity of
         // bytes we just wrote from memory, and is redundant for our own writes).
-        {
-            let txid_bytes: Vec<[u8; 32]> = txids.iter().map(|txid| txid.0).collect();
-            let computed_merkle_root = Self::calculate_block_merkle_root(&txid_bytes);
-            if &computed_merkle_root != block.data().merkle_root() {
-                return Err(FinalisedStateError::InvalidBlock {
-                    height: block_height.0,
-                    hash: block_hash,
-                    reason: "header merkle root does not match block txids".to_string(),
-                });
-            }
-        }
+        verify_header_merkle_root(&txids, &block)?;
 
         // Reverse txid index entries (`txid -> TxLocation`). Built before `txids` is moved into
         // the `TxidList` below, and sorted by txid so the random-keyed `txid_location` B-tree
@@ -645,18 +730,16 @@ impl DbV1 {
         }
         txid_location_entries.sort_by_key(|entry| entry.0);
 
-        let txid_entry = StoredEntryVar::new(&block_height_bytes, TxidList::new(txids));
-        let transparent_entry =
-            StoredEntryVar::new(&block_height_bytes, TransparentTxList::new(transparent));
-        let sapling_entry = StoredEntryVar::new(&block_height_bytes, SaplingTxList::new(sapling));
-        let orchard_entry = StoredEntryVar::new(&block_height_bytes, OrchardTxList::new(orchard));
-        // The ironwood table is sparse: readers treat an absent row as "no ironwood
-        // data", so an all-`None` list (every pre-NU6.3 block, and any later block
-        // whose transactions carry no ironwood actions) is not written.
-        let ironwood_entry = ironwood
-            .iter()
-            .any(Option::is_some)
-            .then(|| StoredEntryVar::new(&block_height_bytes, OrchardTxList::new(ironwood)));
+        let entries = build_block_row_entries(
+            &block,
+            &block_hash_bytes,
+            &block_height_bytes,
+            txids,
+            transparent,
+            sapling,
+            orchard,
+            ironwood,
+        );
 
         // if any database writes fail, or block validation fails, remove block from database and return err.
         let zaino_db = self.detached_handle();
@@ -667,21 +750,21 @@ impl DbV1 {
             txn.put(
                 zaino_db.headers,
                 &block_height_bytes,
-                &header_entry.to_bytes()?,
+                &entries.header_entry.to_bytes()?,
                 WriteFlags::NO_OVERWRITE,
             )?;
 
             txn.put(
                 zaino_db.heights,
                 &block_hash_bytes,
-                &height_entry.to_bytes()?,
+                &entries.height_entry.to_bytes()?,
                 WriteFlags::NO_OVERWRITE,
             )?;
 
             txn.put(
                 zaino_db.txids,
                 &block_height_bytes,
-                &txid_entry.to_bytes()?,
+                &entries.txid_entry.to_bytes()?,
                 WriteFlags::NO_OVERWRITE,
             )?;
 
@@ -699,25 +782,25 @@ impl DbV1 {
             txn.put(
                 zaino_db.transparent,
                 &block_height_bytes,
-                &transparent_entry.to_bytes()?,
+                &entries.transparent_entry.to_bytes()?,
                 WriteFlags::NO_OVERWRITE,
             )?;
 
             txn.put(
                 zaino_db.sapling,
                 &block_height_bytes,
-                &sapling_entry.to_bytes()?,
+                &entries.sapling_entry.to_bytes()?,
                 WriteFlags::NO_OVERWRITE,
             )?;
 
             txn.put(
                 zaino_db.orchard,
                 &block_height_bytes,
-                &orchard_entry.to_bytes()?,
+                &entries.orchard_entry.to_bytes()?,
                 WriteFlags::NO_OVERWRITE,
             )?;
 
-            if let Some(ironwood_entry) = &ironwood_entry {
+            if let Some(ironwood_entry) = &entries.ironwood_entry {
                 txn.put(
                     zaino_db.ironwood,
                     &block_height_bytes,
@@ -729,7 +812,7 @@ impl DbV1 {
             txn.put(
                 zaino_db.commitment_tree_data,
                 &block_height_bytes,
-                &commitment_tree_entry.to_bytes()?,
+                &entries.commitment_tree_entry.to_bytes()?,
                 WriteFlags::NO_OVERWRITE,
             )?;
 
@@ -1143,64 +1226,10 @@ impl DbV1 {
                 }
             }
 
-            let height_entry = StoredEntryFixed::new(&block_hash_bytes, block_height);
-            let header_entry = StoredEntryVar::new(
-                &block_height_bytes,
-                BlockHeaderData::new(block.context, *block.data()),
-            );
-            let commitment_tree_entry =
-                StoredEntryVar::new(&block_height_bytes, *block.commitment_tree_data());
-
-            let tx_len = block.transactions().len();
-            let mut txids: Vec<TransactionHash> = Vec::with_capacity(tx_len);
-            let mut txid_set: HashSet<TransactionHash> = HashSet::with_capacity(tx_len);
-            let mut transparent: Vec<Option<TransparentCompactTx>> = Vec::with_capacity(tx_len);
-            let mut sapling = Vec::with_capacity(tx_len);
-            let mut orchard = Vec::with_capacity(tx_len);
-            let mut ironwood = Vec::with_capacity(tx_len);
+            // Build the per-transaction pool lists (with the duplicate-txid guard applied).
+            let pool_lists = extract_block_pool_lists(&block)?;
 
             for (tx_index, tx) in block.transactions().iter().enumerate() {
-                let hash = tx.txid();
-                if !txid_set.insert(*hash) {
-                    return Err(FinalisedStateError::InvalidBlock {
-                        height: block_height.0,
-                        hash: block_hash,
-                        reason: format!("duplicate transaction hash in block: {hash:?}"),
-                    });
-                }
-                txids.push(*hash);
-
-                let transparent_data = if tx.transparent().inputs().is_empty()
-                    && tx.transparent().outputs().is_empty()
-                {
-                    None
-                } else {
-                    Some(tx.transparent().clone())
-                };
-                transparent.push(transparent_data);
-
-                let sapling_data =
-                    if tx.sapling().spends().is_empty() && tx.sapling().outputs().is_empty() {
-                        None
-                    } else {
-                        Some(tx.sapling().clone())
-                    };
-                sapling.push(sapling_data);
-
-                let orchard_data = if tx.orchard().actions().is_empty() {
-                    None
-                } else {
-                    Some(tx.orchard().clone())
-                };
-                orchard.push(orchard_data);
-
-                let ironwood_data = if tx.ironwood().actions().is_empty() {
-                    None
-                } else {
-                    Some(tx.ironwood().clone())
-                };
-                ironwood.push(ironwood_data);
-
                 let tx_index =
                     u16::try_from(tx_index).map_err(|_| FinalisedStateError::InvalidBlock {
                         height: block_height.0,
@@ -1213,71 +1242,70 @@ impl DbV1 {
                     spent_batch.push((prev_outpoint.to_bytes()?, tx_location));
                 }
 
-                txid_location_batch.push(((*hash).into(), tx_location));
+                txid_location_batch.push(((*tx.txid()).into(), tx_location));
             }
+
+            let BlockPoolLists {
+                transactions,
+                sapling,
+                orchard,
+                ironwood,
+            } = pool_lists;
+            let (txids, transparent): (Vec<TransactionHash>, Vec<Option<TransparentCompactTx>>) =
+                transactions.into_iter().unzip();
 
             // Cheap in-memory correctness check: txids must reproduce the header merkle root.
-            let txid_bytes: Vec<[u8; 32]> = txids.iter().map(|t| t.0).collect();
-            let computed_merkle_root = Self::calculate_block_merkle_root(&txid_bytes);
-            if &computed_merkle_root != block.data().merkle_root() {
-                return Err(FinalisedStateError::InvalidBlock {
-                    height: block_height.0,
-                    hash: block_hash,
-                    reason: "header merkle root does not match block txids".to_string(),
-                });
-            }
+            verify_header_merkle_root(&txids, &block)?;
 
-            let txid_entry = StoredEntryVar::new(&block_height_bytes, TxidList::new(txids));
-            let transparent_entry =
-                StoredEntryVar::new(&block_height_bytes, TransparentTxList::new(transparent));
-            let sapling_entry =
-                StoredEntryVar::new(&block_height_bytes, SaplingTxList::new(sapling));
-            let orchard_entry =
-                StoredEntryVar::new(&block_height_bytes, OrchardTxList::new(orchard));
-            // Sparse ironwood row: see `write_block` — all-`None` lists are not written.
-            let ironwood_entry = ironwood
-                .iter()
-                .any(Option::is_some)
-                .then(|| StoredEntryVar::new(&block_height_bytes, OrchardTxList::new(ironwood)));
+            let entries = build_block_row_entries(
+                &block,
+                &block_hash_bytes,
+                &block_height_bytes,
+                txids,
+                transparent,
+                sapling,
+                orchard,
+                ironwood,
+            );
 
             // Height-keyed tables (+ the hash-keyed `heights`, one entry/block) written per block.
             put_idempotent(
                 &mut txn,
                 self.headers,
                 &block_height_bytes,
-                &header_entry.to_bytes()?,
+                &entries.header_entry.to_bytes()?,
             )?;
             put_idempotent(
                 &mut txn,
                 self.heights,
                 &block_hash_bytes,
-                &height_entry.to_bytes()?,
+                &entries.height_entry.to_bytes()?,
             )?;
             put_idempotent(
                 &mut txn,
                 self.txids,
                 &block_height_bytes,
-                &txid_entry.to_bytes()?,
+                &entries.txid_entry.to_bytes()?,
             )?;
             put_idempotent(
                 &mut txn,
                 self.transparent,
                 &block_height_bytes,
-                &transparent_entry.to_bytes()?,
+                &entries.transparent_entry.to_bytes()?,
             )?;
             put_idempotent(
                 &mut txn,
                 self.sapling,
                 &block_height_bytes,
-                &sapling_entry.to_bytes()?,
+                &entries.sapling_entry.to_bytes()?,
             )?;
             put_idempotent(
                 &mut txn,
                 self.orchard,
                 &block_height_bytes,
-                &orchard_entry.to_bytes()?,
+                &entries.orchard_entry.to_bytes()?,
             )?;
-            if let Some(ironwood_entry) = &ironwood_entry {
+            if let Some(ironwood_entry) = &entries.ironwood_entry {
                 put_idempotent(
                     &mut txn,
                     self.ironwood,
@@ -1289,7 +1317,7 @@ impl DbV1 {
                 &mut txn,
                 self.commitment_tree_data,
                 &block_height_bytes,
-                &commitment_tree_entry.to_bytes()?,
+                &entries.commitment_tree_entry.to_bytes()?,
             )?;
 
             prev_height = Some(block_height.0);
@@ -1487,7 +1515,8 @@ impl DbV1 {
                     let prev_tx_hash = TransactionHash(*prev_outpoint.prev_txid());
                     if txid_set.contains(&prev_tx_hash) {
                         // Locate the paired (txid, transparent_data) within this block.
-                        if let Some((tx_index, (_, Some(prev_transparent)))) = transactions
+                        if let Some((tx_index, (_, Some(prev_transparent)))) = pool_lists
+                            .transactions
                             .iter()
                             .enumerate()
                             .find(|(_, (h, _))| h == &prev_tx_hash)
