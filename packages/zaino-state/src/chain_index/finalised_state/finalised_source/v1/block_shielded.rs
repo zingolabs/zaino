@@ -766,3 +766,46 @@ impl DbV1 {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod skip_opt_sapling_entry {
+    use super::*;
+    use crate::CompactSaplingOutput;
+
+    /// Regression test for the sapling point-lookup skip width: the skip must advance
+    /// exactly one encoded `Option<SaplingCompactTx>` entry. A refactor had it skipping
+    /// sapling *outputs* at the spend width (33 bytes instead of 117), landing the cursor
+    /// mid-record for any entry with outputs and corrupting every `get_sapling` read of a
+    /// transaction at or after such an entry.
+    ///
+    /// `should_panic` tracks the known bug; remove it together with the fix.
+    #[test]
+    #[should_panic(expected = "skip_opt_sapling_entry must land exactly")]
+    fn advances_exactly_one_encoded_entry() {
+        let tx = SaplingCompactTx::new(
+            Some(7),
+            vec![CompactSaplingSpend::new([1u8; 32])],
+            vec![
+                CompactSaplingOutput::new([2u8; 32], [3u8; 32], [4u8; 52]),
+                CompactSaplingOutput::new([5u8; 32], [6u8; 32], [7u8; 52]),
+            ],
+        );
+        let list = SaplingTxList::new(vec![Some(tx)]);
+        let bytes = list
+            .to_bytes()
+            .expect("encoding an in-memory list cannot fail");
+
+        let mut cursor = std::io::Cursor::new(bytes.as_slice());
+        // Mirror `get_sapling`: skip the SaplingTxList version byte, then the entry count.
+        cursor.set_position(1);
+        CompactSize::read(&mut cursor).expect("entry count is present");
+
+        DbV1::skip_opt_sapling_entry(&mut cursor).expect("entry is well-formed");
+
+        assert_eq!(
+            cursor.position() as usize,
+            bytes.len(),
+            "skip_opt_sapling_entry must land exactly on the end of the single encoded entry"
+        );
+    }
+}
