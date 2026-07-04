@@ -1096,7 +1096,8 @@ impl<T: BlockchainSource> FinalisedState<T> {
         // Ironwood (NU6.3) commitment tree data is only expected from activation. Below activation
         // (or on a network with no NU6.3 activation height) the source has no ironwood root, so it
         // defaults — mirroring `build_indexed_block_from_source`.
-        let nu6_3_activation_height = zebra_chain::parameters::NetworkUpgrade::Nu6_3
+        let nu6_3_activation_height = super::ShieldedPool::Ironwood
+            .activation_upgrade()
             .activation_height(&cfg.network.to_zebra_network());
 
         let mut parent_chainwork: Option<ChainWork> = None;

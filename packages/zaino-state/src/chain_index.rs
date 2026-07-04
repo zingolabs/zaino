@@ -2813,6 +2813,27 @@ pub enum ShieldedPool {
 }
 
 impl ShieldedPool {
+    /// The network upgrade that activates this pool.
+    pub(crate) fn activation_upgrade(&self) -> zebra_chain::parameters::NetworkUpgrade {
+        match self {
+            ShieldedPool::Sapling => zebra_chain::parameters::NetworkUpgrade::Sapling,
+            ShieldedPool::Orchard => zebra_chain::parameters::NetworkUpgrade::Nu5,
+            ShieldedPool::Ironwood => zebra_chain::parameters::NetworkUpgrade::Nu6_3,
+        }
+    }
+
+    /// [`ShieldedPool::activation_upgrade`] in `zcash_protocol` terms, for call sites
+    /// gated through [`zcash_protocol::consensus::Parameters`].
+    pub(crate) fn zcash_protocol_activation_upgrade(
+        &self,
+    ) -> zcash_protocol::consensus::NetworkUpgrade {
+        match self {
+            ShieldedPool::Sapling => zcash_protocol::consensus::NetworkUpgrade::Sapling,
+            ShieldedPool::Orchard => zcash_protocol::consensus::NetworkUpgrade::Nu5,
+            ShieldedPool::Ironwood => zcash_protocol::consensus::NetworkUpgrade::Nu6_3,
+        }
+    }
+
     /// Returns the string representative of the given pool.
     ///
     /// Used for display purposes and in converting the strongly types `PoolType`

@@ -508,7 +508,9 @@ impl StateServiceSubscriber {
             let mut nonce = *header.nonce;
             nonce.reverse();
 
-            let sapling_activation = NetworkUpgrade::Sapling.activation_height(&network);
+            let sapling_activation = crate::chain_index::ShieldedPool::Sapling
+                .activation_upgrade()
+                .activation_height(&network);
             let sapling_tree_size = sapling_tree.count();
             let final_sapling_root: [u8; 32] =
                 if sapling_activation.is_some() && height >= sapling_activation.unwrap() {
@@ -844,7 +846,10 @@ impl StateServiceSubscriber {
                         "missing orchard tree",
                     )))?;
 
-                let final_orchard_root = match NetworkUpgrade::Nu5.activation_height(network) {
+                let final_orchard_root = match crate::chain_index::ShieldedPool::Orchard
+                    .activation_upgrade()
+                    .activation_height(network)
+                {
                     Some(activation_height) if header_obj.height() >= activation_height => {
                         Some(orchard_tree.root().into())
                     }

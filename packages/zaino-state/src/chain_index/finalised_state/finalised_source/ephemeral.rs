@@ -276,15 +276,15 @@ impl<T: BlockchainSource> EphemeralFinalisedState<T> {
             self.source.get_commitment_tree_roots(block_hash).await?;
 
         let sapling_is_active = self.network.is_nu_active(
-            zcash_protocol::consensus::NetworkUpgrade::Sapling,
+            ShieldedPool::Sapling.zcash_protocol_activation_upgrade(),
             block_height.into(),
         );
         let orchard_is_active = self.network.is_nu_active(
-            zcash_protocol::consensus::NetworkUpgrade::Nu5,
+            ShieldedPool::Orchard.zcash_protocol_activation_upgrade(),
             block_height.into(),
         );
         let ironwood_is_active = self.network.is_nu_active(
-            zcash_protocol::consensus::NetworkUpgrade::Nu6_3,
+            ShieldedPool::Ironwood.zcash_protocol_activation_upgrade(),
             block_height.into(),
         );
 

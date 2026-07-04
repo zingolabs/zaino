@@ -2,6 +2,8 @@
 
 use super::*;
 
+use crate::chain_index::ShieldedPool;
+
 #[cfg(feature = "prometheus")]
 use crate::metric_names::*;
 
@@ -208,15 +210,19 @@ impl DbWrite for DbV1 {
         source: &S,
     ) -> Result<(), FinalisedStateError> {
         use crate::chain_index::finalised_state::build_indexed_block_from_source;
-        use zebra_chain::parameters::NetworkUpgrade;
 
         let network = self.config.network;
         let zebra_network = network.to_zebra_network();
-        let sapling_activation_height = NetworkUpgrade::Sapling
+        let sapling_activation_height = ShieldedPool::Sapling
+            .activation_upgrade()
             .activation_height(&zebra_network)
             .expect("Sapling activation height must be set");
-        let nu5_activation_height = NetworkUpgrade::Nu5.activation_height(&zebra_network);
-        let nu6_3_activation_height = NetworkUpgrade::Nu6_3.activation_height(&zebra_network);
+        let nu5_activation_height = ShieldedPool::Orchard
+            .activation_upgrade()
+            .activation_height(&zebra_network);
+        let nu6_3_activation_height = ShieldedPool::Ironwood
+            .activation_upgrade()
+            .activation_height(&zebra_network);
 
         // Seed `parent_chainwork` from the current tip header (the block before the first one we
         // write). On an empty database this is genesis with zero chainwork. Read raw rather than via
