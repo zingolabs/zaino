@@ -708,7 +708,8 @@ impl DbV1 {
 
         // Read number of outputs (CompactSize)
         let output_len = CompactSize::read(&mut *cursor)? as usize;
-        let output_skip = output_len * sapling_spend_len;
+        let sapling_output_len = crate::CompactSaplingOutput::latest_versioned_len()?;
+        let output_skip = output_len * sapling_output_len;
         cursor.set_position(cursor.position() + output_skip as u64);
 
         Ok(())
@@ -777,10 +778,7 @@ mod skip_opt_sapling_entry {
     /// sapling *outputs* at the spend width (33 bytes instead of 117), landing the cursor
     /// mid-record for any entry with outputs and corrupting every `get_sapling` read of a
     /// transaction at or after such an entry.
-    ///
-    /// `should_panic` tracks the known bug; remove it together with the fix.
     #[test]
-    #[should_panic(expected = "skip_opt_sapling_entry must land exactly")]
     fn advances_exactly_one_encoded_entry() {
         let tx = SaplingCompactTx::new(
             Some(7),
