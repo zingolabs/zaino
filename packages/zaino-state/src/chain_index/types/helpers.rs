@@ -250,18 +250,41 @@ impl<'a> BlockWithMetadata<'a> {
         Ok(TransparentCompactTx::new(inputs, outputs))
     }
 
+    /// Returns the first 52 bytes of a 580-byte encrypted note ciphertext: the prefix a
+    /// compact block carries, sufficient for trial decryption.
+    fn compact_ciphertext_prefix(enc_ciphertext: [u8; 580]) -> [u8; 52] {
+        std::array::from_fn(|i| enc_ciphertext[i])
+    }
+
+    /// Builds the Orchard-shaped compact transaction shared by the Orchard and Ironwood
+    /// pools from a value balance and the pool's actions.
+    fn extract_orchard_shaped_data<'t>(
+        value_balance: i64,
+        actions: impl Iterator<Item = &'t zebra_chain::orchard::Action>,
+    ) -> OrchardCompactTx {
+        OrchardCompactTx::new(
+            (value_balance != 0).then_some(value_balance),
+            actions
+                .map(|action| {
+                    CompactOrchardAction::new(
+                        <[u8; 32]>::from(action.nullifier),
+                        <[u8; 32]>::from(action.cm_x),
+                        <[u8; 32]>::from(action.ephemeral_key),
+                        Self::compact_ciphertext_prefix(<[u8; 580]>::from(action.enc_ciphertext)),
+                    )
+                })
+                .collect(),
+        )
+    }
+
     /// Extract sapling transaction data
     fn extract_sapling_data(
         &self,
         txn: &zebra_chain::transaction::Transaction,
     ) -> SaplingCompactTx {
         let sapling_value = {
-            let val = txn.sapling_value_balance().sapling_amount();
-            if val == 0 {
-                None
-            } else {
-                Some(i64::from(val))
-            }
+            let value = i64::from(txn.sapling_value_balance().sapling_amount());
+            (value != 0).then_some(value)
         };
 
         SaplingCompactTx::new(
@@ -271,13 +294,10 @@ impl<'a> BlockWithMetadata<'a> {
                 .collect(),
             txn.sapling_outputs()
                 .map(|output| {
-                    let cipher: [u8; 52] = <[u8; 580]>::from(output.enc_ciphertext)[..52]
-                        .try_into()
-                        .unwrap(); // TODO: Remove unwrap
                     CompactSaplingOutput::new(
                         output.cm_u.to_bytes(),
                         <[u8; 32]>::from(output.ephemeral_key),
-                        cipher,
+                        Self::compact_ciphertext_prefix(<[u8; 580]>::from(output.enc_ciphertext)),
                     )
                 })
                 .collect::<Vec<_>>(),
@@ -289,30 +309,9 @@ impl<'a> BlockWithMetadata<'a> {
         &self,
         txn: &zebra_chain::transaction::Transaction,
     ) -> OrchardCompactTx {
-        let orchard_value = {
-            let val = txn.orchard_value_balance().orchard_amount();
-            if val == 0 {
-                None
-            } else {
-                Some(i64::from(val))
-            }
-        };
-
-        OrchardCompactTx::new(
-            orchard_value,
-            txn.orchard_actions()
-                .map(|action| {
-                    let cipher: [u8; 52] = <[u8; 580]>::from(action.enc_ciphertext)[..52]
-                        .try_into()
-                        .unwrap(); // TODO: Remove unwrap
-                    CompactOrchardAction::new(
-                        <[u8; 32]>::from(action.nullifier),
-                        <[u8; 32]>::from(action.cm_x),
-                        <[u8; 32]>::from(action.ephemeral_key),
-                        cipher,
-                    )
-                })
-                .collect::<Vec<_>>(),
+        Self::extract_orchard_shaped_data(
+            i64::from(txn.orchard_value_balance().orchard_amount()),
+            txn.orchard_actions(),
         )
     }
 
@@ -321,30 +320,9 @@ impl<'a> BlockWithMetadata<'a> {
         &self,
         txn: &zebra_chain::transaction::Transaction,
     ) -> OrchardCompactTx {
-        let ironwood_value = {
-            let val = txn.ironwood_value_balance().ironwood_amount();
-            if val == 0 {
-                None
-            } else {
-                Some(i64::from(val))
-            }
-        };
-
-        OrchardCompactTx::new(
-            ironwood_value,
-            txn.ironwood_actions()
-                .map(|action| {
-                    let cipher: [u8; 52] = <[u8; 580]>::from(action.enc_ciphertext)[..52]
-                        .try_into()
-                        .unwrap(); // TODO: Remove unwrap
-                    CompactOrchardAction::new(
-                        <[u8; 32]>::from(action.nullifier),
-                        <[u8; 32]>::from(action.cm_x),
-                        <[u8; 32]>::from(action.ephemeral_key),
-                        cipher,
-                    )
-                })
-                .collect::<Vec<_>>(),
+        Self::extract_orchard_shaped_data(
+            i64::from(txn.ironwood_value_balance().ironwood_amount()),
+            txn.ironwood_actions(),
         )
     }
 

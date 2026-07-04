@@ -13,6 +13,9 @@ use zebra_state::HashOrHeight;
 
 use crate::chain_index::finalised_state::capability::{DbCore, DbWrite};
 use crate::chain_index::finalised_state::DbMetadata;
+use crate::chain_index::ShieldedPool;
+
+use super::super::required_pool_root;
 use crate::chain_index::source::BlockchainSourceError;
 use crate::chain_index::{
     finalised_state::capability::{
@@ -32,6 +35,15 @@ use crate::{BlockMetadata, BlockWithMetadata, NamedAtomicStatus};
 use zaino_proto::proto::utils::{compact_block_with_pool_types, PoolTypeFilter};
 
 const EPHEMERAL_FINALISED_STATE_STATUS_POLL_INTERVAL: Duration = Duration::from_secs(5);
+
+/// Converts a raw `u32` block height (a stored [`TxLocation`] height or a walk between two
+/// already-validated [`Height`] bounds) into a [`Height`], surfacing an out-of-range value
+/// as a [`FinalisedStateError`] instead of panicking.
+fn height_from_u32(height: u32) -> Result<Height, FinalisedStateError> {
+    Height::try_from(height).map_err(|error| {
+        FinalisedStateError::Custom(format!("invalid block height {height}: {error}"))
+    })
+}
 
 /// Source-backed finalised-state backend used when persistent finalised-state storage is not
 /// serving normal requests.
@@ -260,55 +272,18 @@ impl<T: BlockchainSource> EphemeralFinalisedState<T> {
             block_height.into(),
         );
 
-        let (sapling_root, sapling_size) = match sapling {
-            Some((root, size)) => (root, size),
-            None if !sapling_is_active => Default::default(),
-            None => {
-                return Err(FinalisedStateError::BlockchainSourceError(
-                    BlockchainSourceError::Unrecoverable(format!(
-                "missing Sapling commitment tree root for active Sapling block at height {height}"
-            )),
-                ));
-            }
-        };
-        let (orchard_root, orchard_size) = match orchard {
-            Some((root, size)) => (root, size),
-            None if !orchard_is_active => Default::default(),
-            None => {
-                return Err(FinalisedStateError::BlockchainSourceError(
-                    BlockchainSourceError::Unrecoverable(format!(
-                "missing Orchard commitment tree root for active NU5 block at height {height}"
-            )),
-                ));
-            }
-        };
-        let (ironwood_root, ironwood_size) = match ironwood {
-            Some((root, size)) => (root, size),
-            None if !ironwood_is_active => Default::default(),
-            None => {
-                return Err(FinalisedStateError::BlockchainSourceError(
-                    BlockchainSourceError::Unrecoverable(format!(
-                "missing Ironwood commitment tree root for active NU5 block at height {height}"
-            )),
-                ));
-            }
-        };
-
-        let sapling_size = u32::try_from(sapling_size).map_err(|error| {
-            FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
-                format!("sapling commitment tree size does not fit into u32: {error}"),
-            ))
-        })?;
-        let orchard_size = u32::try_from(orchard_size).map_err(|error| {
-            FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
-                format!("orchard commitment tree size does not fit into u32: {error}"),
-            ))
-        })?;
-        let ironwood_size = u32::try_from(ironwood_size).map_err(|error| {
-            FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
-                format!("ironwood commitment tree size does not fit into u32: {error}"),
-            ))
-        })?;
+        let (sapling_root, sapling_size) =
+            required_pool_root(ShieldedPool::Sapling, sapling_is_active, sapling, || {
+                format!("block at height {height}")
+            })?;
+        let (orchard_root, orchard_size) =
+            required_pool_root(ShieldedPool::Orchard, orchard_is_active, orchard, || {
+                format!("block at height {height}")
+            })?;
+        let (ironwood_root, ironwood_size) =
+            required_pool_root(ShieldedPool::Ironwood, ironwood_is_active, ironwood, || {
+                format!("block at height {height}")
+            })?;
 
         let block_metadata = BlockMetadata::new(
             sapling_root,
@@ -483,10 +458,7 @@ impl<T: BlockchainSource> BlockCoreExt for EphemeralFinalisedState<T> {
         let mut headers = Vec::new();
 
         for height in u32::from(start)..=u32::from(end) {
-            headers.push(
-                self.get_block_header(Height::try_from(height).unwrap())
-                    .await?,
-            );
+            headers.push(self.get_block_header(height_from_u32(height)?).await?);
         }
 
         Ok(headers)
@@ -512,10 +484,7 @@ impl<T: BlockchainSource> BlockCoreExt for EphemeralFinalisedState<T> {
         let mut txid_lists = Vec::new();
 
         for height in u32::from(start)..=u32::from(end) {
-            txid_lists.push(
-                self.get_block_txids(Height::try_from(height).unwrap())
-                    .await?,
-            );
+            txid_lists.push(self.get_block_txids(height_from_u32(height)?).await?);
         }
 
         Ok(txid_lists)
@@ -573,7 +542,7 @@ impl<T: BlockchainSource> BlockTransparentExt for EphemeralFinalisedState<T> {
         tx_location: TxLocation,
     ) -> Result<Option<TransparentCompactTx>, FinalisedStateError> {
         let chain_block = self
-            .get_required_chain_block(Height::try_from(tx_location.block_height()).unwrap())
+            .get_required_chain_block(height_from_u32(tx_location.block_height())?)
             .await?;
 
         Ok(chain_block
@@ -605,10 +574,7 @@ impl<T: BlockchainSource> BlockTransparentExt for EphemeralFinalisedState<T> {
         let mut transparent_lists = Vec::new();
 
         for height in u32::from(start)..=u32::from(end) {
-            transparent_lists.push(
-                self.get_block_transparent(Height::try_from(height).unwrap())
-                    .await?,
-            );
+            transparent_lists.push(self.get_block_transparent(height_from_u32(height)?).await?);
         }
 
         Ok(transparent_lists)
@@ -660,7 +626,7 @@ impl<T: BlockchainSource> BlockShieldedExt for EphemeralFinalisedState<T> {
         tx_location: TxLocation,
     ) -> Result<Option<SaplingCompactTx>, FinalisedStateError> {
         let chain_block = self
-            .get_required_chain_block(Height::try_from(tx_location.block_height()).unwrap())
+            .get_required_chain_block(height_from_u32(tx_location.block_height())?)
             .await?;
 
         Ok(chain_block
@@ -692,10 +658,7 @@ impl<T: BlockchainSource> BlockShieldedExt for EphemeralFinalisedState<T> {
         let mut sapling_lists = Vec::new();
 
         for height in u32::from(start)..=u32::from(end) {
-            sapling_lists.push(
-                self.get_block_sapling(Height::try_from(height).unwrap())
-                    .await?,
-            );
+            sapling_lists.push(self.get_block_sapling(height_from_u32(height)?).await?);
         }
 
         Ok(sapling_lists)
@@ -706,7 +669,7 @@ impl<T: BlockchainSource> BlockShieldedExt for EphemeralFinalisedState<T> {
         tx_location: TxLocation,
     ) -> Result<Option<OrchardCompactTx>, FinalisedStateError> {
         let chain_block = self
-            .get_required_chain_block(Height::try_from(tx_location.block_height()).unwrap())
+            .get_required_chain_block(height_from_u32(tx_location.block_height())?)
             .await?;
 
         Ok(chain_block
@@ -738,10 +701,7 @@ impl<T: BlockchainSource> BlockShieldedExt for EphemeralFinalisedState<T> {
         let mut orchard_lists = Vec::new();
 
         for height in u32::from(start)..=u32::from(end) {
-            orchard_lists.push(
-                self.get_block_orchard(Height::try_from(height).unwrap())
-                    .await?,
-            );
+            orchard_lists.push(self.get_block_orchard(height_from_u32(height)?).await?);
         }
 
         Ok(orchard_lists)
@@ -752,7 +712,7 @@ impl<T: BlockchainSource> BlockShieldedExt for EphemeralFinalisedState<T> {
         tx_location: TxLocation,
     ) -> Result<Option<OrchardCompactTx>, FinalisedStateError> {
         let chain_block = self
-            .get_required_chain_block(Height::try_from(tx_location.block_height()).unwrap())
+            .get_required_chain_block(height_from_u32(tx_location.block_height())?)
             .await?;
 
         Ok(chain_block
@@ -784,10 +744,7 @@ impl<T: BlockchainSource> BlockShieldedExt for EphemeralFinalisedState<T> {
         let mut ironwood_lists = Vec::new();
 
         for height in u32::from(start)..=u32::from(end) {
-            ironwood_lists.push(
-                self.get_block_ironwood(Height::try_from(height).unwrap())
-                    .await?,
-            );
+            ironwood_lists.push(self.get_block_ironwood(height_from_u32(height)?).await?);
         }
 
         Ok(ironwood_lists)
@@ -810,7 +767,7 @@ impl<T: BlockchainSource> BlockShieldedExt for EphemeralFinalisedState<T> {
 
         for height in u32::from(start)..=u32::from(end) {
             commitment_tree_data.push(
-                self.get_block_commitment_tree_data(Height::try_from(height).unwrap())
+                self.get_block_commitment_tree_data(height_from_u32(height)?)
                     .await?,
             );
         }
