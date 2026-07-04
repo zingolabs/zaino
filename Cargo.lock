@@ -344,27 +344,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "bip0039"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "568b6890865156d9043af490d4c4081c385dd68ea10acd6ca15733d511e6b51c"
-dependencies = [
- "hmac 0.12.1",
- "pbkdf2",
- "rand 0.8.6",
- "sha2 0.10.9",
- "unicode-normalization",
- "zeroize",
-]
-
-[[package]]
 name = "bip32"
 version = "0.6.0-pre.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "143f5327f23168716be068f8e1014ba2ea16a6c91e8777bc8927da7b51e1df1f"
 dependencies = [
  "bs58",
- "hmac 0.13.0-pre.4",
+ "hmac",
  "rand_core 0.6.4",
  "ripemd 0.2.0-pre.4",
  "secp256k1",
@@ -1861,15 +1847,6 @@ checksum = "6fe2267d4ed49bc07b63801559be28c718ea06c4738b7a03c94df7386d2cde46"
 
 [[package]]
 name = "hmac"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
-dependencies = [
- "digest 0.10.7",
-]
-
-[[package]]
-name = "hmac"
 version = "0.13.0-pre.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e4b1fb14e4df79f9406b434b60acef9f45c26c50062cccf1346c6103b8c47d58"
@@ -2366,12 +2343,6 @@ dependencies = [
  "futures-util",
  "wasm-bindgen",
 ]
-
-[[package]]
-name = "json"
-version = "0.12.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "078e285eafdfb6c4b434e0d31e8cfcb5115b651496faca5749b88fafd4f23bfd"
 
 [[package]]
 name = "jsonrpsee"
@@ -3092,17 +3063,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "password-hash"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "346f04948ba92c43e8469c1ee6736c7563d71012b17d40745260fe106aac2166"
-dependencies = [
- "base64ct",
- "rand_core 0.6.4",
- "subtle",
-]
-
-[[package]]
 name = "pasta_curves"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3122,16 +3082,6 @@ name = "pathdiff"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df94ce210e5bc13cb6651479fa48d14f601d9858cfe0467f43ae157023b938d3"
-
-[[package]]
-name = "pbkdf2"
-version = "0.12.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8ed6a7761f76e3b9f92dfb0a60a6a6477c61024b775147ff0973a02653abaf2"
-dependencies = [
- "digest 0.10.7",
- "password-hash",
-]
 
 [[package]]
 name = "pem-rfc7468"
@@ -5287,15 +5237,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
 
 [[package]]
-name = "unicode-normalization"
-version = "0.1.25"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5fd4f6878c9cb28d874b009da9e8d183b5abc80117c40bbd187a1fde336be6e8"
-dependencies = [
- "tinyvec",
-]
-
-[[package]]
 name = "unicode-segmentation"
 version = "1.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6010,7 +5951,6 @@ dependencies = [
  "tracing-subscriber",
  "tracing-tree",
  "zebra-chain",
- "zingo_common_components",
 ]
 
 [[package]]
@@ -6242,23 +6182,19 @@ dependencies = [
 
 [[package]]
 name = "zcash_local_net"
-version = "0.6.0"
-source = "git+https://github.com/idky137/infrastructure.git?branch=feat%2Fironwood%2Fzaino#bd3e20ee868aea6483c3904e2ef3715469f6ae70"
+version = "0.7.0"
+source = "git+https://github.com/zingolabs/infrastructure.git?tag=zcash_local_net_v0.7.0#0b38b6ecc9f5fb83754c6a14b36f575949d58929"
 dependencies = [
- "getset",
  "hex",
- "json",
  "reqwest 0.12.28",
+ "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
- "zcash_protocol",
- "zebra-chain",
- "zebra-node-services",
- "zebra-rpc",
- "zingo_common_components",
+ "zingo-consensus",
  "zingo_test_vectors",
 ]
 
@@ -6796,21 +6732,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "zingo_common_components"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29f41ddb12ba9aa1fdbf4025fb54639f1fddd25c6e297574922b39fabfb730d4"
-dependencies = [
- "hex",
-]
+name = "zingo-consensus"
+version = "0.1.0"
+source = "git+https://github.com/zingolabs/infrastructure.git?tag=zcash_local_net_v0.7.0#0b38b6ecc9f5fb83754c6a14b36f575949d58929"
 
 [[package]]
 name = "zingo_test_vectors"
 version = "0.0.1"
-source = "git+https://github.com/idky137/infrastructure.git?branch=feat%2Fironwood%2Fzaino#bd3e20ee868aea6483c3904e2ef3715469f6ae70"
-dependencies = [
- "bip0039",
-]
+source = "git+https://github.com/zingolabs/infrastructure.git?tag=zcash_local_net_v0.7.0#0b38b6ecc9f5fb83754c6a14b36f575949d58929"
 
 [[package]]
 name = "zip32"

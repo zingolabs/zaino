@@ -233,6 +233,7 @@ async fn create_200_block_regtest_chain_vectors() {
         let mut parent_chain_work: Option<ChainWork> = None;
         let mut parent_block_sapling_tree_size: u32 = 0;
         let mut parent_block_orchard_tree_size: u32 = 0;
+        let mut parent_block_ironwood_tree_size: u32 = 0;
 
         for height in 0..=chain_height.0 {
             let (chain_block, zebra_block, block_roots, block_treestate) = {
@@ -376,8 +377,10 @@ async fn create_200_block_regtest_chain_vectors() {
                     parent_chain_work,
                     sapling_root.0.into(),
                     orchard_root.0.into(),
+                    None,
                     parent_block_sapling_tree_size,
                     parent_block_orchard_tree_size,
+                    parent_block_ironwood_tree_size,
                 ))
                 .unwrap();
 
@@ -399,6 +402,7 @@ async fn create_200_block_regtest_chain_vectors() {
             // Update parent block
             parent_block_sapling_tree_size = chain_block.commitment_tree_data().sizes().sapling();
             parent_block_orchard_tree_size = chain_block.commitment_tree_data().sizes().orchard();
+            parent_block_ironwood_tree_size = chain_block.commitment_tree_data().sizes().ironwood();
             parent_chain_work = Some(*chain_block.chainwork());
 
             data.push((height, zebra_block, block_roots, block_treestate));

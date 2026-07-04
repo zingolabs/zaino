@@ -203,25 +203,6 @@ impl From<ActivationHeights> for ConfiguredActivationHeights {
     }
 }
 
-impl From<zingo_common_components::protocol::ActivationHeights> for ActivationHeights {
-    fn from(activation_heights: zingo_common_components::protocol::ActivationHeights) -> Self {
-        ActivationHeights {
-            before_overwinter: activation_heights.overwinter(),
-            overwinter: activation_heights.overwinter(),
-            sapling: activation_heights.sapling(),
-            blossom: activation_heights.blossom(),
-            heartwood: activation_heights.heartwood(),
-            canopy: activation_heights.canopy(),
-            nu5: activation_heights.nu5(),
-            nu6: activation_heights.nu6(),
-            nu6_1: activation_heights.nu6_1(),
-            nu6_2: activation_heights.nu6_2(),
-            nu6_3: activation_heights.nu6_3(),
-            nu7: activation_heights.nu7(),
-        }
-    }
-}
-
 impl Network {
     /// Convert to Zebra's network type for internal use (alias for to_zebra_default).
     pub fn to_zebra_network(&self) -> zebra_chain::parameters::Network {

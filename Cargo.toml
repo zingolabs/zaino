@@ -38,10 +38,6 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 
-# Zingo
-
-zingo_common_components = "0.4"
-
 # Librustzcash
 incrementalmerkletree = "0.8"
 zcash_address = "0.13.0-pre.0"
@@ -143,7 +139,7 @@ zaino-testutils = { path = "live-tests/zaino-testutils" }
 # TEMPORARY (zingolabs/infrastructure#269): pinned to an exact commit on the
 # `add_client_support` branch so every machine resolves the same code; restore
 # the release tag once tagged upstream.
-zcash_local_net = { git = "https://github.com/idky137/infrastructure.git", branch = "feat/ironwood/zaino" }
+zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", tag = "zcash_local_net_v0.7.0" }
 
 wire_serialized_transaction_test_data = "1.0.0"
 config = { version = "0.15", default-features = false, features = ["toml"] }

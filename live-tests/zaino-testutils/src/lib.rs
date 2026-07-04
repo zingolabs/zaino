@@ -347,6 +347,7 @@ pub fn to_local_net_activation_heights(
         .set_nu6(activation_heights.nu6)
         .set_nu6_1(activation_heights.nu6_1)
         .set_nu6_2(activation_heights.nu6_2)
+        .set_nu6_3(activation_heights.nu6_3)
         .set_nu7(activation_heights.nu7)
         .build()
 }
@@ -366,6 +367,7 @@ pub fn from_local_net_activation_heights(
         nu6: activation_heights.nu6(),
         nu6_1: activation_heights.nu6_1(),
         nu6_2: activation_heights.nu6_2(),
+        nu6_3: activation_heights.nu6_3(),
         nu7: activation_heights.nu7(),
     }
 }
