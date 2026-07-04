@@ -434,7 +434,8 @@ impl BlockchainSource for ValidatorConnector {
                     }
                 };
 
-                let sapling = match zebra_chain::parameters::NetworkUpgrade::Sapling
+                let sapling = match ShieldedPool::Sapling
+                    .activation_upgrade()
                     .activation_height(&state.network.to_zebra_network())
                 {
                     Some(activation_height) if height >= activation_height => Some(
@@ -464,7 +465,8 @@ impl BlockchainSource for ValidatorConnector {
                     })
                 });
 
-                let orchard = match zebra_chain::parameters::NetworkUpgrade::Nu5
+                let orchard = match ShieldedPool::Orchard
+                    .activation_upgrade()
                     .activation_height(&state.network.to_zebra_network())
                 {
                     Some(activation_height) if height >= activation_height => Some(
@@ -494,7 +496,8 @@ impl BlockchainSource for ValidatorConnector {
                     })
                 });
 
-                let ironwood = match zebra_chain::parameters::NetworkUpgrade::Nu6_3
+                let ironwood = match ShieldedPool::Ironwood
+                    .activation_upgrade()
                     .activation_height(&state.network.to_zebra_network())
                 {
                     Some(activation_height) if height >= activation_height => Some(
