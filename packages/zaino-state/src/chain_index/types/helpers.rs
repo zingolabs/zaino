@@ -79,6 +79,10 @@ impl TreeRootData {
     }
 
     /// Extract with defaults for genesis/sync use case
+    ///
+    /// Sapling and orchard roots default when absent (genesis). The ironwood component
+    /// passes through unchanged: `None` means the block has no ironwood treestate and
+    /// must be stored as `None`.
     pub fn extract_with_defaults(
         self,
     ) -> (
@@ -86,19 +90,16 @@ impl TreeRootData {
         u64,
         zebra_chain::orchard::tree::Root,
         u64,
-        zebra_chain::orchard::tree::Root,
-        u64,
+        Option<(zebra_chain::orchard::tree::Root, u64)>,
     ) {
         let (sapling_root, sapling_size) = self.sapling.unwrap_or_default();
         let (orchard_root, orchard_size) = self.orchard.unwrap_or_default();
-        let (ironwood_root, ironwood_size) = self.ironwood.unwrap_or_default();
         (
             sapling_root,
             sapling_size,
             orchard_root,
             orchard_size,
-            ironwood_root,
-            ironwood_size,
+            self.ironwood,
         )
     }
 }
@@ -114,10 +115,9 @@ pub struct BlockMetadata {
     pub orchard_root: zebra_chain::orchard::tree::Root,
     /// Orchard tree size
     pub orchard_size: u32,
-    /// Orchard commitment tree root
-    pub ironwood_root: zebra_chain::orchard::tree::Root,
-    /// Orchard tree size
-    pub ironwood_size: u32,
+    /// Ironwood commitment tree root and size; `None` when the block has no ironwood
+    /// treestate (below NU6.3 activation, or a network with no NU6.3 activation height)
+    pub ironwood: Option<(zebra_chain::orchard::tree::Root, u32)>,
     /// Parent block's chainwork (`None` for genesis).
     pub parent_chainwork: Option<ChainWork>,
     /// Network for block validation
@@ -126,14 +126,12 @@ pub struct BlockMetadata {
 
 impl BlockMetadata {
     /// Create new block metadata
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         sapling_root: zebra_chain::sapling::tree::Root,
         sapling_size: u32,
         orchard_root: zebra_chain::orchard::tree::Root,
         orchard_size: u32,
-        ironwood_root: zebra_chain::orchard::tree::Root,
-        ironwood_size: u32,
+        ironwood: Option<(zebra_chain::orchard::tree::Root, u32)>,
         parent_chainwork: Option<ChainWork>,
         network: zebra_chain::parameters::Network,
     ) -> Self {
@@ -142,8 +140,7 @@ impl BlockMetadata {
             sapling_size,
             orchard_root,
             orchard_size,
-            ironwood_root,
-            ironwood_size,
+            ironwood,
             parent_chainwork,
             network,
         }
@@ -358,13 +355,13 @@ impl BlockMetadata {
         let commitment_tree_roots = super::db::CommitmentTreeRoots::new(
             <[u8; 32]>::from(self.sapling_root),
             <[u8; 32]>::from(self.orchard_root),
-            Some(<[u8; 32]>::from(self.ironwood_root)),
+            self.ironwood.map(|(root, _)| <[u8; 32]>::from(root)),
         );
 
         let commitment_tree_size = super::db::CommitmentTreeSizes::new(
             self.sapling_size,
             self.orchard_size,
-            self.ironwood_size,
+            self.ironwood.map_or(0, |(_, size)| size),
         );
 
         super::db::CommitmentTreeData::new(commitment_tree_roots, commitment_tree_size)
@@ -401,19 +398,16 @@ mod create_commitment_tree_data {
     /// `extract_with_defaults` and stored `Some([0; 32])`, so a freshly synced database
     /// and a migrated database encoded identical pre-activation heights differently.
     ///
-    /// `should_panic` tracks the known bug; remove it together with the fix.
     #[test]
-    #[should_panic(expected = "ironwood root must be stored as None")]
     fn absent_ironwood_root_is_stored_as_none() {
-        let (sapling_root, sapling_size, orchard_root, orchard_size, ironwood_root, ironwood_size) =
+        let (sapling_root, sapling_size, orchard_root, orchard_size, ironwood) =
             TreeRootData::new(None, None, None).extract_with_defaults();
         let metadata = BlockMetadata::new(
             sapling_root,
             sapling_size as u32,
             orchard_root,
             orchard_size as u32,
-            ironwood_root,
-            ironwood_size as u32,
+            ironwood.map(|(root, size)| (root, size as u32)),
             None,
             zebra_chain::parameters::Network::Mainnet,
         );

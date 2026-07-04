@@ -15,7 +15,7 @@ use crate::chain_index::finalised_state::capability::{DbCore, DbWrite};
 use crate::chain_index::finalised_state::DbMetadata;
 use crate::chain_index::ShieldedPool;
 
-use super::super::required_pool_root;
+use super::super::{optional_pool_root, required_pool_root};
 use crate::chain_index::source::BlockchainSourceError;
 use crate::chain_index::{
     finalised_state::capability::{
@@ -279,8 +279,8 @@ impl<T: BlockchainSource> EphemeralFinalisedState<T> {
             required_pool_root(ShieldedPool::Orchard, orchard_is_active, orchard, || {
                 format!("block at height {height}")
             })?;
-        let (ironwood_root, ironwood_size) =
-            required_pool_root(ShieldedPool::Ironwood, ironwood_is_active, ironwood, || {
+        let ironwood =
+            optional_pool_root(ShieldedPool::Ironwood, ironwood_is_active, ironwood, || {
                 format!("block at height {height}")
             })?;
 
@@ -289,8 +289,7 @@ impl<T: BlockchainSource> EphemeralFinalisedState<T> {
             sapling_size,
             orchard_root,
             orchard_size,
-            ironwood_root,
-            ironwood_size,
+            ironwood,
             None, // ephemeral store does not track chainwork
             self.network.clone(),
         );

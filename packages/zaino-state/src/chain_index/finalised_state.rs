@@ -298,7 +298,7 @@ pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
         orchard_opt,
         || format!("block {block_hash}"),
     )?;
-    let (ironwood_root, ironwood_size) = required_pool_root(
+    let ironwood = optional_pool_root(
         super::ShieldedPool::Ironwood,
         is_ironwood_active,
         ironwood_opt,
@@ -310,8 +310,7 @@ pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
         sapling_size,
         orchard_root,
         orchard_size,
-        ironwood_root,
-        ironwood_size,
+        ironwood,
         parent_chainwork,
         network.to_zebra_network(),
     );
@@ -339,6 +338,20 @@ fn required_pool_root<R: Default>(
     root_and_size: Option<(R, u64)>,
     location: impl FnOnce() -> String,
 ) -> Result<(R, u32), FinalisedStateError> {
+    optional_pool_root(pool, is_active, root_and_size, location)
+        .map(|resolved| resolved.unwrap_or_else(|| (R::default(), 0)))
+}
+
+/// Like [`required_pool_root`], but keeps the below-activation case as `None` instead of
+/// defaulting, for pools whose storage distinguishes "no treestate yet" from a
+/// default-valued one (the stored ironwood root: `None` = no ironwood data, the encoding
+/// the v1.2.1->v1.3.0 migration produces for pre-activation heights).
+fn optional_pool_root<R>(
+    pool: super::ShieldedPool,
+    is_active: bool,
+    root_and_size: Option<(R, u64)>,
+    location: impl FnOnce() -> String,
+) -> Result<Option<(R, u32)>, FinalisedStateError> {
     let pool = pool.pool_string();
     match root_and_size {
         Some((root, size)) => {
@@ -347,9 +360,9 @@ fn required_pool_root<R: Default>(
                     format!("{pool} commitment tree size does not fit into u32: {error}"),
                 ))
             })?;
-            Ok((root, size))
+            Ok(Some((root, size)))
         }
-        None if !is_active => Ok((R::default(), 0)),
+        None if !is_active => Ok(None),
         None => Err(FinalisedStateError::BlockchainSourceError(
             BlockchainSourceError::Unrecoverable(format!(
                 "missing {pool} commitment tree root for {}",
@@ -1117,7 +1130,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
                 })?;
             let is_ironwood_active =
                 nu6_3_activation_height.is_some_and(|activation| height >= activation.0);
-            let (ironwood_root, ironwood_size) = required_pool_root(
+            let ironwood = optional_pool_root(
                 super::ShieldedPool::Ironwood,
                 is_ironwood_active,
                 ironwood_opt,
@@ -1129,8 +1142,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
                 sapling_size,
                 orchard_root,
                 orchard_size,
-                ironwood_root,
-                ironwood_size,
+                ironwood,
                 parent_chainwork,
                 cfg.network.to_zebra_network(),
             );

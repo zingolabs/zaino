@@ -1124,7 +1124,7 @@ async fn compact_block_from_source<Source: BlockchainSource>(
         .get_commitment_tree_roots(types::BlockHash::from(block.hash()))
         .await
         .map_err(ChainIndexError::backing_validator)?;
-    let (sapling_root, sapling_size, orchard_root, orchard_size, ironwood_root, ironwood_size) =
+    let (sapling_root, sapling_size, orchard_root, orchard_size, ironwood) =
         TreeRootData::new(tree_roots.0, tree_roots.1, tree_roots.2).extract_with_defaults();
 
     let metadata = BlockMetadata::new(
@@ -1142,13 +1142,19 @@ async fn compact_block_from_source<Source: BlockchainSource>(
                 "orchard commitment tree size overflow",
             ))
         })?,
-        ironwood_root,
-        ironwood_size.try_into().map_err(|_| {
-            ChainIndexError::backing_validator(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "ironwood commitment tree size overflow",
-            ))
-        })?,
+        ironwood
+            .map(|(root, size)| {
+                Ok::<_, ChainIndexError>((
+                    root,
+                    size.try_into().map_err(|_| {
+                        ChainIndexError::backing_validator(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "ironwood commitment tree size overflow",
+                        ))
+                    })?,
+                ))
+            })
+            .transpose()?,
         None, // parent chainwork unknown — single-block construction
         network,
     );
