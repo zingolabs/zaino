@@ -74,6 +74,9 @@ impl TonicServer {
 
         let mut server_builder = Server::builder();
         if let Some(tls_config) = server_config.get_valid_tls().await? {
+            // Building the TLS acceptor requires a process-level rustls
+            // CryptoProvider (zingolabs/zaino#1360).
+            zaino_common::crypto::ensure_default_crypto_provider();
             server_builder = server_builder.tls_config(tls_config).map_err(|e| {
                 ServerError::ServerConfigError(format!("TLS configuration error: {e}"))
             })?;
