@@ -101,11 +101,8 @@ pub(crate) async fn load_vectors_v1db_and_reader() -> (
 ///
 /// The test vectors are pre-NU6.3 regtest blocks, so no block carries ironwood data.
 ///
-/// `should_panic` tracks the known bug; remove it together with the fix.
-///
 /// multi_thread required: DbV1 reads run under `tokio::task::block_in_place`.
 #[tokio::test(flavor = "multi_thread")]
-#[should_panic(expected = "no ironwood row may be written")]
 async fn no_ironwood_row_for_blocks_without_ironwood_data() {
     init_tracing();
 

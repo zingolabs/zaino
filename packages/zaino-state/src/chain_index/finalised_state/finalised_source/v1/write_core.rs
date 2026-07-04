@@ -650,7 +650,13 @@ impl DbV1 {
             StoredEntryVar::new(&block_height_bytes, TransparentTxList::new(transparent));
         let sapling_entry = StoredEntryVar::new(&block_height_bytes, SaplingTxList::new(sapling));
         let orchard_entry = StoredEntryVar::new(&block_height_bytes, OrchardTxList::new(orchard));
-        let ironwood_entry = StoredEntryVar::new(&block_height_bytes, OrchardTxList::new(ironwood));
+        // The ironwood table is sparse: readers treat an absent row as "no ironwood
+        // data", so an all-`None` list (every pre-NU6.3 block, and any later block
+        // whose transactions carry no ironwood actions) is not written.
+        let ironwood_entry = ironwood
+            .iter()
+            .any(Option::is_some)
+            .then(|| StoredEntryVar::new(&block_height_bytes, OrchardTxList::new(ironwood)));
 
         // if any database writes fail, or block validation fails, remove block from database and return err.
         let zaino_db = self.detached_handle();
@@ -711,12 +717,14 @@ impl DbV1 {
                 WriteFlags::NO_OVERWRITE,
             )?;
 
-            txn.put(
-                zaino_db.ironwood,
-                &block_height_bytes,
-                &ironwood_entry.to_bytes()?,
-                WriteFlags::NO_OVERWRITE,
-            )?;
+            if let Some(ironwood_entry) = &ironwood_entry {
+                txn.put(
+                    zaino_db.ironwood,
+                    &block_height_bytes,
+                    &ironwood_entry.to_bytes()?,
+                    WriteFlags::NO_OVERWRITE,
+                )?;
+            }
 
             txn.put(
                 zaino_db.commitment_tree_data,
@@ -1226,8 +1234,11 @@ impl DbV1 {
                 StoredEntryVar::new(&block_height_bytes, SaplingTxList::new(sapling));
             let orchard_entry =
                 StoredEntryVar::new(&block_height_bytes, OrchardTxList::new(orchard));
-            let ironwood_entry =
-                StoredEntryVar::new(&block_height_bytes, OrchardTxList::new(ironwood));
+            // Sparse ironwood row: see `write_block` — all-`None` lists are not written.
+            let ironwood_entry = ironwood
+                .iter()
+                .any(Option::is_some)
+                .then(|| StoredEntryVar::new(&block_height_bytes, OrchardTxList::new(ironwood)));
 
             // Height-keyed tables (+ the hash-keyed `heights`, one entry/block) written per block.
             put_idempotent(
@@ -1266,12 +1277,14 @@ impl DbV1 {
                 &block_height_bytes,
                 &orchard_entry.to_bytes()?,
             )?;
-            put_idempotent(
-                &mut txn,
-                self.ironwood,
-                &block_height_bytes,
-                &ironwood_entry.to_bytes()?,
-            )?;
+            if let Some(ironwood_entry) = &ironwood_entry {
+                put_idempotent(
+                    &mut txn,
+                    self.ironwood,
+                    &block_height_bytes,
+                    &ironwood_entry.to_bytes()?,
+                )?;
+            }
             put_idempotent(
                 &mut txn,
                 self.commitment_tree_data,
