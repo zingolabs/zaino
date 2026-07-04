@@ -1494,17 +1494,8 @@ impl ZcashIndexer for StateServiceSubscriber {
                     )))?,
             };
 
-            let treestate: GetTreestateResponse = self
-                .rpc_client
-                .get_treestate(block_data.hash().to_string())
-                .await?
-                .try_into()
-                .map_err(|_error| {
-                    StateServiceError::RpcError(RpcError::new_from_legacycode(
-                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                        "Failed to parse treestate.",
-                    ))
-                })?;
+            let (sapling, orchard, ironwood) =
+                self.indexer.get_treestate(block_data.hash()).await?;
             let time: u32 = block_data.data().time().try_into().map_err(|_error| {
                 StateServiceError::RpcError(RpcError::new_from_legacycode(
                     zebra_rpc::server::error::LegacyCode::InvalidParameter,
@@ -1512,30 +1503,25 @@ impl ZcashIndexer for StateServiceSubscriber {
                 ))
             })?;
 
-            let sapling = treestate.sapling().commitments().final_state().clone();
-            let orchard = treestate.orchard().commitments().final_state().clone();
-            let ironwood = treestate
-                .ironwood()
-                .clone()
-                .and_then(|ironwood| ironwood.commitments().final_state().clone());
-
+            // `Commitments::new(final_root, final_state)`: the note-commitment tree is the
+            // `final_state`, matching the (now-deprecated) `from_parts` behaviour this replaces.
+            // The `new` constructor is used so the Ironwood (NU6.3) treestate can be included rather
+            // than discarded.
             Ok(GetTreestateResponse::new(
                 (*block_data.hash()).into(),
                 block_data.height().into(),
                 time,
                 None,
                 zebra_rpc::client::Treestate::new(zebra_rpc::client::Commitments::new(
-                    sapling.as_deref().map(ToOwned::to_owned),
-                    None,
+                    None, sapling,
                 )),
                 zebra_rpc::client::Treestate::new(zebra_rpc::client::Commitments::new(
-                    orchard.as_deref().map(ToOwned::to_owned),
-                    None,
+                    None, orchard,
                 )),
                 ironwood.map(|final_state| {
                     zebra_rpc::client::Treestate::new(zebra_rpc::client::Commitments::new(
-                        Some(final_state),
                         None,
+                        Some(final_state),
                     ))
                 }),
             ))

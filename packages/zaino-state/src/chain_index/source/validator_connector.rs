@@ -463,7 +463,7 @@ impl BlockchainSource for ValidatorConnector {
                             .map_err(|_e| {
                                 BlockchainSourceError::Unrecoverable(
                                     InvalidData(format!(
-                                        "could not fetch orchard treestate of block {id}"
+                                        "could not fetch ironwood treestate of block {id}"
                                     ))
                                     .to_string(),
                                 )
@@ -471,9 +471,21 @@ impl BlockchainSource for ValidatorConnector {
                     ),
                     _ => None,
                 }
-                .and_then(|orch_response| {
-                    expected_read_response!(orch_response, OrchardTree)
+                .and_then(|irw_response| {
+                    expected_read_response!(irw_response, IronwoodTree)
                         .map(|tree| tree.to_rpc_bytes())
+                })
+                // Mirror the Fetch connector: when the ironwood tree is absent (e.g. before
+                // NU6.3 activation) return the serialized empty tree rather than `None`, so both
+                // backends agree on the empty-tree encoding.
+                .or_else(|| {
+                    let mut tree = vec![];
+                    write_commitment_tree(
+                        &CommitmentTree::<zebra_chain::orchard::tree::Node, 32>::empty(),
+                        &mut tree,
+                    )
+                    .expect("can write to Vec");
+                    Some(tree)
                 });
 
                 Ok((sapling, orchard, ironwood))
