@@ -1458,15 +1458,29 @@ impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
                 },
             };
 
+            // `let field: Kind = json;` reads the JSON key named exactly like the
+            // binding — the key cannot be restated, so sibling fields cannot be
+            // wired to each other's keys by copy-paste. Use the bracketed form
+            // `let field: Kind = json["jsonName"];` only when the JSON key differs
+            // from the binding (camelCase etc.).
             macro_rules! get_tx_value_fields{
-                ($(let $field:ident: $kind:ty = $transaction_json:ident[$field_name:literal]; )+) => {
-                    $(let $field = $transaction_json
+                () => {};
+                (let $field:ident: $kind:ty = $transaction_json:ident; $($rest:tt)*) => {
+                    let $field = $transaction_json
+                        .get(stringify!($field))
+                        .map(|v| ::serde_json::from_value::<$kind>(v.clone()))
+                        .transpose()
+                        .map_err(::serde::de::Error::custom)?;
+                    get_tx_value_fields! { $($rest)* }
+                };
+                (let $field:ident: $kind:ty = $transaction_json:ident[$field_name:literal]; $($rest:tt)*) => {
+                    let $field = $transaction_json
                         .get($field_name)
                         .map(|v| ::serde_json::from_value::<$kind>(v.clone()))
                         .transpose()
                         .map_err(::serde::de::Error::custom)?;
-                    )+
-                }
+                    get_tx_value_fields! { $($rest)* }
+                };
             }
 
             let confirmations = tx_value.get("confirmations").and_then(|v| v.as_i64());
@@ -1493,16 +1507,16 @@ impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
                 let outputs: Vec<Output> = tx_value["vout"];
                 let shielded_spends: Vec<ShieldedSpend> = tx_value["vShieldedSpend"];
                 let shielded_outputs: Vec<ShieldedOutput> = tx_value["vShieldedOutput"];
-                let orchard: Orchard = tx_value["orchard"];
-                let ironwood: Orchard = tx_value["orchard"];
+                let orchard: Orchard = tx_value;
+                let ironwood: Orchard = tx_value;
                 let value_balance: f64 = tx_value["valueBalance"];
                 let value_balance_zat: i64 = tx_value["valueBalanceZat"];
-                let size: i64 = tx_value["size"];
-                let time: i64 = tx_value["time"];
-                let txid: String = tx_value["txid"];
+                let size: i64 = tx_value;
+                let time: i64 = tx_value;
+                let txid: String = tx_value;
                 let auth_digest: String = tx_value["authdigest"];
-                let overwintered: bool = tx_value["overwintered"];
-                let version: u32 = tx_value["version"];
+                let overwintered: bool = tx_value;
+                let version: u32 = tx_value;
                 let version_group_id: String = tx_value["versiongroupid"];
                 let lock_time: u32 = tx_value["locktime"];
                 let expiry_height: Height = tx_value["expiryheight"];
@@ -1918,10 +1932,7 @@ mod get_transaction_response {
     /// It was copy-pasted reading `"orchard"`, so a real ironwood bundle in a verbose
     /// `getrawtransaction` response was silently dropped and the orchard bundle was
     /// duplicated into the ironwood slot.
-    ///
-    /// `should_panic` tracks the known bug; remove it together with the fix.
     #[test]
-    #[should_panic(expected = "ironwood field must carry")]
     fn ironwood_field_reads_ironwood_key() {
         let tx_json = serde_json::json!({
             "hex": "00",
