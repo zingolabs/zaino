@@ -152,11 +152,9 @@ impl DbV1 {
             // error — it just means the block has no ironwood data.
             let ironwood_stored_entry_var = if pool_types.includes_ironwood() {
                 match txn.get(self.ironwood, &height_bytes) {
-                    Ok(raw) => Some(
-                        StoredEntryVar::<OrchardTxList>::from_bytes(raw).map_err(|e| {
-                            FinalisedStateError::Custom(format!("ironwood decode error: {e}"))
-                        })?,
-                    ),
+                    Ok(raw) => Some(StoredEntryVar::<OrchardTxList>::from_bytes(raw).map_err(
+                        |e| FinalisedStateError::Custom(format!("ironwood decode error: {e}")),
+                    )?),
                     Err(lmdb::Error::NotFound) => None,
                     Err(e) => return Err(FinalisedStateError::LmdbError(e)),
                 }
@@ -987,45 +985,44 @@ impl DbV1 {
                     // Ironwood is fetched with a tolerant point lookup rather than a lockstep cursor:
                     // rows are sparse (present only from schema v1.3.0 / NU6.3), so a missing row must
                     // not desync a height-aligned cursor. `NotFound` simply means "no ironwood here".
-                    let ironwood_entries: Option<StoredEntryVar<OrchardTxList>> = if pool_types
-                        .includes_ironwood()
-                    {
-                        let ironwood_key = match current_height.to_bytes() {
-                            Ok(key) => key,
-                            Err(error) => {
-                                send_status(
-                                    &sender,
-                                    tonic::Status::internal(format!(
-                                        "ironwood height to_bytes failed: {error}"
-                                    )),
-                                );
-                                return;
-                            }
-                        };
-                        match txn.get(zaino_db.ironwood, &ironwood_key) {
-                            Ok(raw) => match StoredEntryVar::<OrchardTxList>::from_bytes(raw)
-                                .map_err(|error| format!("ironwood decode error: {error}"))
-                            {
-                                Ok(entry) => Some(entry),
-                                Err(message) => {
-                                    send_status(&sender, tonic::Status::internal(message));
+                    let ironwood_entries: Option<StoredEntryVar<OrchardTxList>> =
+                        if pool_types.includes_ironwood() {
+                            let ironwood_key = match current_height.to_bytes() {
+                                Ok(key) => key,
+                                Err(error) => {
+                                    send_status(
+                                        &sender,
+                                        tonic::Status::internal(format!(
+                                            "ironwood height to_bytes failed: {error}"
+                                        )),
+                                    );
                                     return;
                                 }
-                            },
-                            Err(lmdb::Error::NotFound) => None,
-                            Err(error) => {
-                                send_status(
-                                    &sender,
-                                    tonic::Status::internal(format!(
-                                        "lmdb get(ironwood) failed: {error}"
-                                    )),
-                                );
-                                return;
+                            };
+                            match txn.get(zaino_db.ironwood, &ironwood_key) {
+                                Ok(raw) => match StoredEntryVar::<OrchardTxList>::from_bytes(raw)
+                                    .map_err(|error| format!("ironwood decode error: {error}"))
+                                {
+                                    Ok(entry) => Some(entry),
+                                    Err(message) => {
+                                        send_status(&sender, tonic::Status::internal(message));
+                                        return;
+                                    }
+                                },
+                                Err(lmdb::Error::NotFound) => None,
+                                Err(error) => {
+                                    send_status(
+                                        &sender,
+                                        tonic::Status::internal(format!(
+                                            "lmdb get(ironwood) failed: {error}"
+                                        )),
+                                    );
+                                    return;
+                                }
                             }
-                        }
-                    } else {
-                        None
-                    };
+                        } else {
+                            None
+                        };
                     let ironwood = match ironwood_entries.as_ref() {
                         Some(entry) => entry.inner().tx(),
                         None => &[],

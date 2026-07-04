@@ -126,6 +126,7 @@ pub struct BlockMetadata {
 
 impl BlockMetadata {
     /// Create new block metadata
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         sapling_root: zebra_chain::sapling::tree::Root,
         sapling_size: u32,

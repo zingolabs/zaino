@@ -145,14 +145,11 @@ impl<T: ZainoVersionedSerde + FixedEncodedLen> StoredEntryFixed<T> {
         let mut v = T::VERSION;
 
         loop {
-            match self.item.to_bytes_with_version(v) {
-                Ok(item_bytes) => {
-                    let candidate = Self::blake2b256(&[key.as_ref(), &item_bytes].concat());
-                    if candidate == self.checksum {
-                        return true;
-                    }
+            if let Ok(item_bytes) = self.item.to_bytes_with_version(v) {
+                let candidate = Self::blake2b256(&[key.as_ref(), &item_bytes].concat());
+                if candidate == self.checksum {
+                    return true;
                 }
-                Err(_) => {}
             }
 
             if v == 1 {

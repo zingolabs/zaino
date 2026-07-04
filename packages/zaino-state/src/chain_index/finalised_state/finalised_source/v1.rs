@@ -414,7 +414,7 @@ impl DbV1 {
     /// - validates or initializes the `"metadata"` record (schema hash + version), and
     /// - spawns the background validator / maintenance task.
     pub(crate) async fn spawn(config: &ChainIndexConfig) -> Result<Self, FinalisedStateError> {
-        let mut zaino_db = Self::open_env_and_dbs(config, "commitment_tree_data_1_3_0").await?;
+        let mut zaino_db = Self::open_env_and_dbs(config).await?;
 
         // Validate (or initialise) the metadata entry before we touch any tables.
         zaino_db.check_schema_version().await?;
@@ -434,14 +434,10 @@ impl DbV1 {
     /// (status `Spawning`, `db_handler` = `None`, fresh atomics). Performs no metadata validation
     /// and starts no background task — each caller (`spawn`, `spawn_v1_0_0`) adds its own tail.
     ///
-    /// `commitment_tree_data_name` selects the LMDB table backing the `commitment_tree_data` field:
-    /// the current path passes the v1.3.0 table (`commitment_tree_data_1_3_0`, `StoredEntryVar`),
-    /// while the v1.0.0 fixture builder ([`DbV1::spawn_v1_0_0`]) passes the legacy
-    /// `commitment_tree_data_1_0_0` (`StoredEntryFixed`) so it reproduces a pre-migration database.
-    async fn open_env_and_dbs(
-        config: &ChainIndexConfig,
-        commitment_tree_data_name: &str,
-    ) -> Result<Self, FinalisedStateError> {
+    /// The `commitment_tree_data` handle is the up-to-date `commitment_tree_data_1_3_0` table
+    /// (`StoredEntryVar`). The v1.0.0 fixture builder ([`DbV1::spawn_v1_0_0`]) repoints it to the
+    /// legacy `commitment_tree_data_1_0_0` table (`StoredEntryFixed`) after calling this.
+    async fn open_env_and_dbs(config: &ChainIndexConfig) -> Result<Self, FinalisedStateError> {
         info!("Launching FinalisedState");
 
         // Prepare database details and path.
@@ -503,7 +499,7 @@ impl DbV1 {
         let ironwood =
             super::open_or_create_db(&env, "ironwood_1_3_0", DatabaseFlags::empty()).await?;
         let commitment_tree_data =
-            super::open_or_create_db(&env, commitment_tree_data_name, DatabaseFlags::empty())
+            super::open_or_create_db(&env, "commitment_tree_data_1_3_0", DatabaseFlags::empty())
                 .await?;
         let hashes = super::open_or_create_db(&env, "hashes_1_0_0", DatabaseFlags::empty()).await?;
 
@@ -997,17 +993,99 @@ impl DbV1 {
     pub(crate) async fn spawn_v1_0_0(
         config: &ChainIndexConfig,
     ) -> Result<Self, FinalisedStateError> {
-        // The v1.0.0 fixture must reproduce the legacy on-disk layout: the commitment tree data
-        // lives in `commitment_tree_data_1_0_0` as a `StoredEntryFixed` (see `write_block_v1_0_0`),
-        // which the v1.2.1 -> v1.3.0 migration later rebuilds into the `StoredEntryVar` table.
-        let mut zaino_db =
-            Self::open_env_and_dbs(config, "commitment_tree_data_1_0_0").await?;
+        // The v1.0.0 fixture reproduces the legacy on-disk layout: its commitment tree data lives in
+        // `commitment_tree_data_1_0_0` as a `StoredEntryFixed` (see `write_block_v1_0_0`), which the
+        // v1.2.1 -> v1.3.0 migration later rebuilds into the `commitment_tree_data_1_3_0`
+        // `StoredEntryVar` table. This opener therefore opens the legacy commitment table and never
+        // creates the v1.3.0 table.
+        let db_size_bytes = config.storage.database.size.to_byte_count();
+        let db_path_dir = match config.network.to_zebra_network().kind() {
+            NetworkKind::Mainnet => "mainnet",
+            NetworkKind::Testnet => "testnet",
+            NetworkKind::Regtest => "regtest",
+        };
+        let db_path = config.storage.database.path.join(db_path_dir).join("v1");
+        if !db_path.exists() {
+            fs::create_dir_all(&db_path)?;
+        }
+        let cpu_cnt = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        let max_readers = u32::try_from((cpu_cnt * 32).clamp(512, 4096))
+            .expect("max_readers was clamped to fit in u32");
+        let env = Environment::new()
+            .set_max_dbs(16)
+            .set_map_size(db_size_bytes)
+            .set_max_readers(max_readers)
+            .set_flags(
+                EnvironmentFlags::NO_TLS
+                    | EnvironmentFlags::NO_READAHEAD
+                    | EnvironmentFlags::NO_SYNC,
+            )
+            .open(&db_path)?;
+
+        let headers =
+            super::open_or_create_db(&env, "headers_1_0_0", DatabaseFlags::empty()).await?;
+        let txids = super::open_or_create_db(&env, "txids_1_0_0", DatabaseFlags::empty()).await?;
+        let transparent =
+            super::open_or_create_db(&env, "transparent_1_0_0", DatabaseFlags::empty()).await?;
+        let sapling =
+            super::open_or_create_db(&env, "sapling_1_0_0", DatabaseFlags::empty()).await?;
+        let orchard =
+            super::open_or_create_db(&env, "orchard_1_0_0", DatabaseFlags::empty()).await?;
+        let ironwood =
+            super::open_or_create_db(&env, "ironwood_1_3_0", DatabaseFlags::empty()).await?;
+        let commitment_tree_data =
+            super::open_or_create_db(&env, "commitment_tree_data_1_0_0", DatabaseFlags::empty())
+                .await?;
+        let hashes = super::open_or_create_db(&env, "hashes_1_0_0", DatabaseFlags::empty()).await?;
+        let spent = super::open_or_create_db(&env, "spent_1_0_0", DatabaseFlags::empty()).await?;
+        let txid_location =
+            super::open_or_create_db(&env, "txid_location_1_0_0", DatabaseFlags::empty()).await?;
+        let metadata = super::open_or_create_db(&env, "metadata", DatabaseFlags::empty()).await?;
+        #[cfg(feature = "transparent_address_history_experimental")]
+        let address_history = super::open_or_create_db(
+            &env,
+            "address_history_1_0_0",
+            DatabaseFlags::DUP_SORT | DatabaseFlags::DUP_FIXED,
+        )
+        .await?;
+
+        let zaino_db = Self {
+            tx_out_set_info_accumulator: super::open_or_create_db(
+                &env,
+                TX_OUT_SET_INFO_ACCUMULATOR_DATABASE_NAME,
+                DatabaseFlags::empty(),
+            )
+            .await?,
+            env: Arc::new(env),
+            headers,
+            txids,
+            transparent,
+            sapling,
+            orchard,
+            ironwood,
+            commitment_tree_data,
+            heights: hashes,
+            spent,
+            txid_location,
+            #[cfg(feature = "transparent_address_history_experimental")]
+            address_history,
+            metadata,
+            validated_tip: Arc::new(AtomicU32::new(0)),
+            validated_set: DashSet::new(),
+            db_handler: std::sync::Mutex::new(None),
+            cancel_token: CancellationToken::new(),
+            status: NamedAtomicStatus::new("FinalisedState", StatusType::Spawning),
+            config: config.clone(),
+        };
 
         // Write the historical v1.0.0 metadata record. Intentionally skips `check_schema_version`
         // (see the method doc) — that is the behavioural difference from `spawn`.
         zaino_db.write_v1_0_0_metadata()?;
 
         // Spawn handler task to perform background validation and trailing tx cleanup.
+        let mut zaino_db = zaino_db;
         zaino_db.spawn_handler().await?;
 
         Ok(zaino_db)

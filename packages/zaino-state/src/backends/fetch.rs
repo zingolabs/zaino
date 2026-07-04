@@ -296,7 +296,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// Some fields from the zcashd reference are missing from Zebra's [`GetBlockchainInfoResponse`]. It only contains the fields
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L72-L89)
     async fn get_blockchain_info(&self) -> Result<GetBlockchainInfoResponse, Self::Error> {
-        Ok(self
+        self
             .fetcher
             .get_blockchain_info()
             .await?
@@ -308,7 +308,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
                         "chainwork not hex-encoded integer",
                     ),
                 )
-            })?)
+            })
     }
 
     /// Returns details on the active state of the TX memory pool.

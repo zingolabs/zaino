@@ -1207,8 +1207,7 @@ impl<T: BlockchainSource> Migration<T> for Migration1_2_1To1_3_0 {
                         Err(error) => return Err(FinalisedStateError::LmdbError(error)),
                     }
 
-                    let progress =
-                        StoredEntryFixed::new(MIGRATION_CTD_PROGRESS_KEY, height + 1);
+                    let progress = StoredEntryFixed::new(MIGRATION_CTD_PROGRESS_KEY, height + 1);
                     txn.put(
                         metadata_db,
                         &MIGRATION_CTD_PROGRESS_KEY,

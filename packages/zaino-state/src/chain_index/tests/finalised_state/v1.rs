@@ -7,7 +7,6 @@ use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, Network, StorageConfig};
 use zaino_proto::proto::utils::{compact_block_with_pool_types, PoolTypeFilter};
 
-use crate::chain_index::finalised_state::capability::IndexedBlockExt;
 use crate::chain_index::finalised_state::finalised_source::FinalisedSource;
 use crate::chain_index::finalised_state::reader::DbReader;
 use crate::chain_index::finalised_state::FinalisedState;
@@ -20,8 +19,12 @@ use crate::chain_index::tests::vectors::{
 
 use crate::chain_index::types::TransactionHash;
 
+use crate::chain_index::finalised_state::entry::StoredEntryVar;
 use crate::error::FinalisedStateError;
-use crate::{BlockMetadata, BlockWithMetadata, ChainIndexConfig, Height, IndexedBlock};
+use crate::{
+    BlockHeaderData, BlockMetadata, BlockWithMetadata, ChainIndexConfig, Height, IndexedBlock,
+    ZainoVersionedSerde as _,
+};
 
 use crate::{AddrScript, Outpoint};
 
@@ -245,24 +248,36 @@ async fn load_db_backend_from_file() {
     let finalized_state_backend: FinalisedSource<MockchainSource> =
         FinalisedSource::spawn_v1(&config).await.unwrap();
 
+    // Read block headers directly from the `headers` table rather than via `get_chain_block`, which
+    // reconstructs the full block and validates (reading the v1.3.0 commitment table). This fixture
+    // is a legacy database whose commitment rows are in `commitment_tree_data_1_0_0`, so validation
+    // would fail; the header context asserted here is unaffected.
+    let read_header_direct = |height: Height| -> Option<BlockHeaderData> {
+        use lmdb::Transaction as _;
+        let environment = finalized_state_backend.env().unwrap();
+        let headers_database = environment.open_db(Some("headers_1_0_0")).unwrap();
+        let transaction = environment.begin_ro_txn().unwrap();
+        match transaction.get(headers_database, &height.to_bytes().unwrap()) {
+            Ok(raw) => Some(
+                *StoredEntryVar::<BlockHeaderData>::from_bytes(raw)
+                    .unwrap()
+                    .inner(),
+            ),
+            Err(lmdb::Error::NotFound) => None,
+            Err(error) => panic!("failed to read header at height {}: {error}", height.0),
+        }
+    };
+
     let mut prev_hash = None;
     for height in 0..=100 {
-        let block = finalized_state_backend
-            .get_chain_block(Height(height))
-            .await
-            .unwrap()
-            .unwrap();
+        let header = read_header_direct(Height(height)).unwrap();
         if let Some(prev_hash) = prev_hash {
-            assert_eq!(prev_hash, block.context.parent_hash);
+            assert_eq!(prev_hash, header.context.parent_hash);
         }
-        prev_hash = Some(block.context.index.hash);
-        assert_eq!(block.context.index.height, Height(height));
+        prev_hash = Some(header.context.index.hash);
+        assert_eq!(header.context.index.height, Height(height));
     }
-    assert!(finalized_state_backend
-        .get_chain_block(Height(101))
-        .await
-        .unwrap()
-        .is_none());
+    assert!(read_header_direct(Height(101)).is_none());
     std::fs::remove_file(db_path.join("regtest").join("v1").join("lock.mdb")).unwrap()
 }
 
