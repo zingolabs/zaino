@@ -1205,8 +1205,6 @@ impl BlockchainSource for ValidatorConnector {
 
 #[cfg(test)]
 mod fetch_pool_treestate_slot {
-    use crate::chain_index::source::PoolTreestate;
-
     /// Regression test: the validator's finalRoot must pass through to the pool slot.
     /// zebra populates `Commitments { finalRoot, finalState }` for every pool it
     /// serves, but the slot mapping dropped the root, so zaino's z_gettreestate

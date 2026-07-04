@@ -1400,7 +1400,7 @@ impl CompactTxData {
     }
 
     /// Returns compact ironwood tx data.
-    pub fn ironwood(&self) -> &OrchardCompactTx {
+    pub(crate) fn ironwood(&self) -> &OrchardCompactTx {
         &self.ironwood
     }
 
@@ -1415,52 +1415,28 @@ impl CompactTxData {
             .sapling()
             .spends()
             .iter()
-            .map(
-                |s| zaino_proto::proto::compact_formats::CompactSaplingSpend {
-                    nf: s.nullifier().to_vec(),
-                },
-            )
+            .map(CompactSaplingSpend::into_compact)
             .collect();
 
         let outputs = self
             .sapling()
             .outputs()
             .iter()
-            .map(
-                |o| zaino_proto::proto::compact_formats::CompactSaplingOutput {
-                    cmu: o.cmu().to_vec(),
-                    ephemeral_key: o.ephemeral_key().to_vec(),
-                    ciphertext: o.ciphertext().to_vec(),
-                },
-            )
+            .map(CompactSaplingOutput::into_compact)
             .collect();
 
         let actions = self
             .orchard()
             .actions()
             .iter()
-            .map(
-                |a| zaino_proto::proto::compact_formats::CompactOrchardAction {
-                    nullifier: a.nullifier().to_vec(),
-                    cmx: a.cmx().to_vec(),
-                    ephemeral_key: a.ephemeral_key().to_vec(),
-                    ciphertext: a.ciphertext().to_vec(),
-                },
-            )
+            .map(CompactOrchardAction::into_compact)
             .collect();
 
         let ironwood_actions = self
             .ironwood()
             .actions()
             .iter()
-            .map(
-                |a| zaino_proto::proto::compact_formats::CompactOrchardAction {
-                    nullifier: a.nullifier().to_vec(),
-                    cmx: a.cmx().to_vec(),
-                    ephemeral_key: a.ephemeral_key().to_vec(),
-                    ciphertext: a.ciphertext().to_vec(),
-                },
-            )
+            .map(CompactOrchardAction::into_compact)
             .collect();
 
         let vout = self.transparent().compact_vout();
@@ -1479,6 +1455,30 @@ impl CompactTxData {
             vout,
         }
     }
+}
+
+/// Converts one RPC action tuple `(nullifier, cmx, ephemeral_key, ciphertext)` into a
+/// [`CompactOrchardAction`], naming `pool` in each rejection so orchard and ironwood
+/// failures are distinguishable.
+fn compact_orchard_action_from_parts(
+    pool: &str,
+    (nf, cmx, epk, ct): (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>),
+) -> Result<CompactOrchardAction, String> {
+    let nf: [u8; 32] = nf
+        .try_into()
+        .map_err(|_| format!("{pool} nullifier must be 32 bytes"))?;
+    let cmx: [u8; 32] = cmx
+        .try_into()
+        .map_err(|_| format!("{pool} cmx must be 32 bytes"))?;
+    let epk: [u8; 32] = epk
+        .try_into()
+        .map_err(|_| format!("{pool} ephemeral_key must be 32 bytes"))?;
+    let ct: [u8; 52] = ct
+        .get(..52)
+        .ok_or_else(|| format!("{pool} ciphertext must be at least 52 bytes"))?
+        .try_into()
+        .map_err(|_| format!("{pool} ciphertext must be 52 bytes"))?;
+    Ok(CompactOrchardAction::new(nf, cmx, epk, ct))
 }
 
 /// TryFrom inputs:
@@ -1563,23 +1563,7 @@ impl TryFrom<(u64, zaino_fetch::chain::transaction::FullTransaction)> for Compac
         let orchard_actions: Vec<CompactOrchardAction> = tx
             .orchard_actions()
             .into_iter()
-            .map(|(nf, cmx, epk, ct)| {
-                let nf: [u8; 32] = nf
-                    .try_into()
-                    .map_err(|_| "orchard nullifier must be 32 bytes".to_string())?;
-                let cmx: [u8; 32] = cmx
-                    .try_into()
-                    .map_err(|_| "orchard cmx must be 32 bytes".to_string())?;
-                let epk: [u8; 32] = epk
-                    .try_into()
-                    .map_err(|_| "orchard ephemeral_key must be 32 bytes".to_string())?;
-                let ct: [u8; 52] = ct
-                    .get(..52)
-                    .ok_or("orchard ciphertext must be at least 52 bytes")?
-                    .try_into()
-                    .map_err(|_| "orchard ciphertext must be 52 bytes".to_string())?;
-                Ok::<_, String>(CompactOrchardAction::new(nf, cmx, epk, ct))
-            })
+            .map(|action| compact_orchard_action_from_parts("orchard", action))
             .collect::<Result<_, _>>()?;
 
         let orchard = OrchardCompactTx::new(orchard_balance, orchard_actions);
@@ -1587,23 +1571,7 @@ impl TryFrom<(u64, zaino_fetch::chain::transaction::FullTransaction)> for Compac
         let ironwood_actions: Vec<CompactOrchardAction> = tx
             .ironwood_actions()
             .into_iter()
-            .map(|(nf, cmx, epk, ct)| {
-                let nf: [u8; 32] = nf
-                    .try_into()
-                    .map_err(|_| "orchard nullifier must be 32 bytes".to_string())?;
-                let cmx: [u8; 32] = cmx
-                    .try_into()
-                    .map_err(|_| "orchard cmx must be 32 bytes".to_string())?;
-                let epk: [u8; 32] = epk
-                    .try_into()
-                    .map_err(|_| "orchard ephemeral_key must be 32 bytes".to_string())?;
-                let ct: [u8; 52] = ct
-                    .get(..52)
-                    .ok_or("orchard ciphertext must be at least 52 bytes")?
-                    .try_into()
-                    .map_err(|_| "orchard ciphertext must be 52 bytes".to_string())?;
-                Ok::<_, String>(CompactOrchardAction::new(nf, cmx, epk, ct))
-            })
+            .map(|action| compact_orchard_action_from_parts("ironwood", action))
             .collect::<Result<_, _>>()?;
 
         let ironwood = OrchardCompactTx::new(ironwood_balance, ironwood_actions);

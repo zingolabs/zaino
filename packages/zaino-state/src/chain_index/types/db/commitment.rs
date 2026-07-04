@@ -134,7 +134,7 @@ impl CommitmentTreeRoots {
     }
 
     /// returns orchard commitment tree root.
-    pub fn ironwood(&self) -> &Option<[u8; 32]> {
+    pub(crate) fn ironwood(&self) -> &Option<[u8; 32]> {
         &self.ironwood
     }
 }

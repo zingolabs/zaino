@@ -435,9 +435,20 @@ impl DbV1 {
     /// and starts no background task — each caller (`spawn`, `spawn_v1_0_0`) adds its own tail.
     ///
     /// The `commitment_tree_data` handle is the up-to-date `commitment_tree_data_1_3_0` table
-    /// (`StoredEntryVar`). The v1.0.0 fixture builder ([`DbV1::spawn_v1_0_0`]) repoints it to the
-    /// legacy `commitment_tree_data_1_0_0` table (`StoredEntryFixed`) after calling this.
+    /// (`StoredEntryVar`). The v1.0.0 fixture builder ([`DbV1::spawn_v1_0_0`]) opens the legacy
+    /// `commitment_tree_data_1_0_0` table (`StoredEntryFixed`) instead, via
+    /// [`DbV1::open_env_and_dbs_with_commitment_table`].
     async fn open_env_and_dbs(config: &ChainIndexConfig) -> Result<Self, FinalisedStateError> {
+        Self::open_env_and_dbs_with_commitment_table(config, "commitment_tree_data_1_3_0").await
+    }
+
+    /// [`DbV1::open_env_and_dbs`] with the commitment-tree table name as a parameter, so the
+    /// v1.0.0 fixture opener can select the legacy table without creating the v1.3.0 one
+    /// (on-disk version detection keys off which tables exist).
+    async fn open_env_and_dbs_with_commitment_table(
+        config: &ChainIndexConfig,
+        commitment_table: &str,
+    ) -> Result<Self, FinalisedStateError> {
         info!("Launching FinalisedState");
 
         // Prepare database details and path.
@@ -499,8 +510,7 @@ impl DbV1 {
         let ironwood =
             super::open_or_create_db(&env, "ironwood_1_3_0", DatabaseFlags::empty()).await?;
         let commitment_tree_data =
-            super::open_or_create_db(&env, "commitment_tree_data_1_3_0", DatabaseFlags::empty())
-                .await?;
+            super::open_or_create_db(&env, commitment_table, DatabaseFlags::empty()).await?;
         let hashes = super::open_or_create_db(&env, "hashes_1_0_0", DatabaseFlags::empty()).await?;
 
         let spent = super::open_or_create_db(&env, "spent_1_0_0", DatabaseFlags::empty()).await?;
@@ -998,87 +1008,9 @@ impl DbV1 {
         // v1.2.1 -> v1.3.0 migration later rebuilds into the `commitment_tree_data_1_3_0`
         // `StoredEntryVar` table. This opener therefore opens the legacy commitment table and never
         // creates the v1.3.0 table.
-        let db_size_bytes = config.storage.database.size.to_byte_count();
-        let db_path_dir = match config.network.to_zebra_network().kind() {
-            NetworkKind::Mainnet => "mainnet",
-            NetworkKind::Testnet => "testnet",
-            NetworkKind::Regtest => "regtest",
-        };
-        let db_path = config.storage.database.path.join(db_path_dir).join("v1");
-        if !db_path.exists() {
-            fs::create_dir_all(&db_path)?;
-        }
-        let cpu_cnt = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4);
-        let max_readers = u32::try_from((cpu_cnt * 32).clamp(512, 4096))
-            .expect("max_readers was clamped to fit in u32");
-        let env = Environment::new()
-            .set_max_dbs(16)
-            .set_map_size(db_size_bytes)
-            .set_max_readers(max_readers)
-            .set_flags(
-                EnvironmentFlags::NO_TLS
-                    | EnvironmentFlags::NO_READAHEAD
-                    | EnvironmentFlags::NO_SYNC,
-            )
-            .open(&db_path)?;
-
-        let headers =
-            super::open_or_create_db(&env, "headers_1_0_0", DatabaseFlags::empty()).await?;
-        let txids = super::open_or_create_db(&env, "txids_1_0_0", DatabaseFlags::empty()).await?;
-        let transparent =
-            super::open_or_create_db(&env, "transparent_1_0_0", DatabaseFlags::empty()).await?;
-        let sapling =
-            super::open_or_create_db(&env, "sapling_1_0_0", DatabaseFlags::empty()).await?;
-        let orchard =
-            super::open_or_create_db(&env, "orchard_1_0_0", DatabaseFlags::empty()).await?;
-        let ironwood =
-            super::open_or_create_db(&env, "ironwood_1_3_0", DatabaseFlags::empty()).await?;
-        let commitment_tree_data =
-            super::open_or_create_db(&env, "commitment_tree_data_1_0_0", DatabaseFlags::empty())
+        let zaino_db =
+            Self::open_env_and_dbs_with_commitment_table(config, "commitment_tree_data_1_0_0")
                 .await?;
-        let hashes = super::open_or_create_db(&env, "hashes_1_0_0", DatabaseFlags::empty()).await?;
-        let spent = super::open_or_create_db(&env, "spent_1_0_0", DatabaseFlags::empty()).await?;
-        let txid_location =
-            super::open_or_create_db(&env, "txid_location_1_0_0", DatabaseFlags::empty()).await?;
-        let metadata = super::open_or_create_db(&env, "metadata", DatabaseFlags::empty()).await?;
-        #[cfg(feature = "transparent_address_history_experimental")]
-        let address_history = super::open_or_create_db(
-            &env,
-            "address_history_1_0_0",
-            DatabaseFlags::DUP_SORT | DatabaseFlags::DUP_FIXED,
-        )
-        .await?;
-
-        let zaino_db = Self {
-            tx_out_set_info_accumulator: super::open_or_create_db(
-                &env,
-                TX_OUT_SET_INFO_ACCUMULATOR_DATABASE_NAME,
-                DatabaseFlags::empty(),
-            )
-            .await?,
-            env: Arc::new(env),
-            headers,
-            txids,
-            transparent,
-            sapling,
-            orchard,
-            ironwood,
-            commitment_tree_data,
-            heights: hashes,
-            spent,
-            txid_location,
-            #[cfg(feature = "transparent_address_history_experimental")]
-            address_history,
-            metadata,
-            validated_tip: Arc::new(AtomicU32::new(0)),
-            validated_set: DashSet::new(),
-            db_handler: std::sync::Mutex::new(None),
-            cancel_token: CancellationToken::new(),
-            status: NamedAtomicStatus::new("FinalisedState", StatusType::Spawning),
-            config: config.clone(),
-        };
 
         // Write the historical v1.0.0 metadata record. Intentionally skips `check_schema_version`
         // (see the method doc) — that is the behavioural difference from `spawn`.
