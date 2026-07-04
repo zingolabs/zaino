@@ -79,12 +79,13 @@ fn ironwood_treestate_slot(validator_ironwood: Option<PoolTreestate>) -> Option<
 /// Maps a validator-reported treestate (from the JSON-RPC `z_gettreestate` response)
 /// into the connector's pool slot.
 fn fetch_pool_treestate_slot(treestate: zebra_rpc::client::Treestate) -> Option<PoolTreestate> {
+    let final_root = treestate.commitments().final_root().clone();
     treestate
         .commitments()
         .final_state()
         .clone()
         .map(|final_state| PoolTreestate {
-            final_root: None,
+            final_root,
             final_state,
         })
 }
@@ -457,7 +458,8 @@ impl BlockchainSource for ValidatorConnector {
                 }
                 .and_then(|sap_response| {
                     expected_read_response!(sap_response, SaplingTree).map(|tree| PoolTreestate {
-                        final_root: None,
+                        // finalRoot exactly as zebrad serves it: display-order root bytes.
+                        final_root: Some(tree.root().bytes_in_display_order().to_vec()),
                         final_state: tree.to_rpc_bytes(),
                     })
                 });
@@ -486,7 +488,8 @@ impl BlockchainSource for ValidatorConnector {
                 }
                 .and_then(|orch_response| {
                     expected_read_response!(orch_response, OrchardTree).map(|tree| PoolTreestate {
-                        final_root: None,
+                        // finalRoot exactly as zebrad serves it: display-order root bytes.
+                        final_root: Some(tree.root().bytes_in_display_order().to_vec()),
                         final_state: tree.to_rpc_bytes(),
                     })
                 });
@@ -515,7 +518,8 @@ impl BlockchainSource for ValidatorConnector {
                 }
                 .and_then(|irw_response| {
                     expected_read_response!(irw_response, IronwoodTree).map(|tree| PoolTreestate {
-                        final_root: None,
+                        // finalRoot exactly as zebrad serves it: display-order root bytes.
+                        final_root: Some(tree.root().bytes_in_display_order().to_vec()),
                         final_state: tree.to_rpc_bytes(),
                     })
                 });
@@ -1208,9 +1212,7 @@ mod fetch_pool_treestate_slot {
     /// serves, but the slot mapping dropped the root, so zaino's z_gettreestate
     /// responses carried no finalRoot for any pool.
     ///
-    /// `should_panic` tracks the known gap; remove it together with the fix.
     #[test]
-    #[should_panic(expected = "finalRoot must pass through")]
     fn final_root_passes_through() {
         let final_root = vec![7u8; 32];
         let final_state = vec![1u8, 2, 3];
