@@ -1233,7 +1233,7 @@ impl DbV1 {
             }
 
             // Build the per-transaction pool lists (with the duplicate-txid guard applied).
-            let pool_lists = extract_block_pool_lists(&block)?;
+            let pool_lists = extract_block_pool_lists(block)?;
 
             for (tx_index, tx) in block.transactions().iter().enumerate() {
                 let tx_index =
@@ -1261,10 +1261,10 @@ impl DbV1 {
                 transactions.into_iter().unzip();
 
             // Cheap in-memory correctness check: txids must reproduce the header merkle root.
-            verify_header_merkle_root(&txids, &block)?;
+            verify_header_merkle_root(&txids, block)?;
 
             let entries = build_block_row_entries(
-                &block,
+                block,
                 &block_hash_bytes,
                 &block_height_bytes,
                 txids,
