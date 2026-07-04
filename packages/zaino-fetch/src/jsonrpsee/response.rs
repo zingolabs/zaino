@@ -361,7 +361,7 @@ pub struct GetBlockchainInfoResponse {
 
     /// Value pool balances
     #[serde(rename = "valuePools")]
-    value_pools: [ChainBalance; 6],
+    value_pools: Vec<ChainBalance>,
 
     /// Branch IDs of the current and upcoming consensus rules
     pub consensus: zebra_rpc::methods::TipConsensusBranch,
@@ -569,9 +569,7 @@ mod get_blockchain_info_response {
     /// getblockchaininfo against such a validator failed outright with
     /// "invalid length 5, expected an array of length 6".
     ///
-    /// `should_panic` tracks the known bug; remove it together with the fix.
     #[test]
-    #[should_panic(expected = "five-pool valuePools must deserialize")]
     fn parses_five_value_pools() {
         let json = r#"{
             "chain": "main",
@@ -596,8 +594,18 @@ mod get_blockchain_info_response {
             }
         }"#;
 
-        serde_json::from_str::<GetBlockchainInfoResponse>(json)
+        let parsed = serde_json::from_str::<GetBlockchainInfoResponse>(json)
             .expect("five-pool valuePools must deserialize (pre-Ironwood validator)");
+
+        let pools = super::value_pools_array(parsed.value_pools);
+        // Zebra's canonical order: transparent, sprout, sapling, orchard, deferred, ironwood.
+        assert_eq!(pools[2].id(), "sapling");
+        assert_eq!(pools[2].chain_value_zat().zatoshis(), 5_500_000);
+        // zcashd's "lockbox" entry lands in the deferred slot (zebra also names it "lockbox").
+        assert_eq!(pools[4].id(), "lockbox");
+        // The pool the validator did not report is back-filled with a zero balance.
+        assert_eq!(pools[5].id(), "ironwood");
+        assert_eq!(pools[5].chain_value_zat().zatoshis(), 0);
     }
 }
 
@@ -721,6 +729,21 @@ impl Default for ChainBalance {
     }
 }
 
+/// Fills zebra's canonical six-pool array from however many pools the validator
+/// reported, leaving zero balances for pools the validator does not know about
+/// (a pre-Ironwood validator reports five: no "ironwood" entry). Entries are
+/// matched by pool id, so the validator's ordering is irrelevant; ids outside
+/// zebra's six canonical pools are ignored.
+fn value_pools_array(pools: Vec<ChainBalance>) -> [GetBlockchainInfoBalance; 6] {
+    let mut canonical = GetBlockchainInfoBalance::zero_pools();
+    for ChainBalance(pool) in pools {
+        if let Some(slot) = canonical.iter_mut().find(|slot| slot.id() == pool.id()) {
+            *slot = pool;
+        }
+    }
+    canonical
+}
+
 impl TryFrom<GetBlockchainInfoResponse> for zebra_rpc::methods::GetBlockchainInfoResponse {
     fn try_from(response: GetBlockchainInfoResponse) -> Result<Self, ParseIntError> {
         Ok(zebra_rpc::methods::GetBlockchainInfoResponse::new(
@@ -729,7 +752,7 @@ impl TryFrom<GetBlockchainInfoResponse> for zebra_rpc::methods::GetBlockchainInf
             response.best_block_hash,
             response.estimated_height,
             response.chain_supply.0,
-            response.value_pools.map(|pool| pool.0),
+            value_pools_array(response.value_pools),
             response.upgrades,
             response.consensus,
             response.headers,
@@ -1200,7 +1223,7 @@ pub struct BlockObject {
     /// Value pool balances
     ///
     #[serde(rename = "valuePools")]
-    value_pools: Option<[ChainBalance; 6]>,
+    value_pools: Option<Vec<ChainBalance>>,
 
     /// Information about the note commitment trees.
     pub trees: GetBlockTrees,
@@ -1260,18 +1283,7 @@ impl TryFrom<GetBlockResponse> for zebra_rpc::methods::GetBlock {
                         block.bits,
                         block.difficulty,
                         block.chain_supply.map(|supply| supply.0),
-                        block.value_pools.map(
-                            |[transparent, sprout, sapling, orchard, ironwood, deferred]| {
-                                [
-                                    transparent.0,
-                                    sprout.0,
-                                    sapling.0,
-                                    orchard.0,
-                                    ironwood.0,
-                                    deferred.0,
-                                ]
-                            },
-                        ),
+                        block.value_pools.map(value_pools_array),
                         block.trees.into(),
                         block.previous_block_hash.map(|hash| hash.0),
                         block.next_block_hash.map(|hash| hash.0),
