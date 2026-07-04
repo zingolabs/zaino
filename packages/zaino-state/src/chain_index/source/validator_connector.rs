@@ -51,6 +51,30 @@ pub enum ValidatorConnector {
     Fetch(JsonRpSeeConnector),
 }
 
+/// Serialized empty Orchard-shaped commitment tree in the RPC encoding — what a pool
+/// reports when it has no treestate to serve, and the encoding both backend arms must
+/// agree on.
+fn empty_orchard_tree_rpc_bytes() -> Vec<u8> {
+    let mut tree = vec![];
+    write_commitment_tree(
+        &CommitmentTree::<zebra_chain::orchard::tree::Node, 32>::empty(),
+        &mut tree,
+    )
+    .expect("can write to Vec");
+    tree
+}
+
+/// The ironwood slot of the source treestate tuple, given the ironwood treestate the
+/// validator reported for the block (if any).
+///
+/// The z_gettreestate ironwood field is documented as "Only present from NU6.3, so that
+/// pre-NU6.3 responses are unchanged": when the validator reported no ironwood treestate
+/// (below NU6.3 activation, or on a network with no NU6.3 activation height) the slot
+/// must stay `None`, so the response omits the field exactly as zebrad does.
+fn ironwood_treestate_slot(validator_ironwood: Option<Vec<u8>>) -> Option<Vec<u8>> {
+    validator_ironwood.or_else(|| Some(empty_orchard_tree_rpc_bytes()))
+}
+
 impl BlockchainSource for ValidatorConnector {
     // ********** Block methods **********
 
@@ -474,19 +498,8 @@ impl BlockchainSource for ValidatorConnector {
                 .and_then(|irw_response| {
                     expected_read_response!(irw_response, IronwoodTree)
                         .map(|tree| tree.to_rpc_bytes())
-                })
-                // Mirror the Fetch connector: when the ironwood tree is absent (e.g. before
-                // NU6.3 activation) return the serialized empty tree rather than `None`, so both
-                // backends agree on the empty-tree encoding.
-                .or_else(|| {
-                    let mut tree = vec![];
-                    write_commitment_tree(
-                        &CommitmentTree::<zebra_chain::orchard::tree::Node, 32>::empty(),
-                        &mut tree,
-                    )
-                    .expect("can write to Vec");
-                    Some(tree)
                 });
+                let ironwood = ironwood_treestate_slot(ironwood);
 
                 Ok((sapling, orchard, ironwood))
             }
@@ -512,29 +525,14 @@ impl BlockchainSource for ValidatorConnector {
                 );
 
                 let orchard = treestate.orchard.map_or_else(
-                    || {
-                        let mut tree = vec![];
-                        write_commitment_tree(
-                            &CommitmentTree::<zebra_chain::orchard::tree::Node, 32>::empty(),
-                            &mut tree,
-                        )
-                        .expect("can write to Vec");
-                        Some(tree)
-                    },
+                    || Some(empty_orchard_tree_rpc_bytes()),
                     |t| t.commitments().final_state().clone(),
                 );
 
-                let ironwood = treestate.ironwood.map_or_else(
-                    || {
-                        let mut tree = vec![];
-                        write_commitment_tree(
-                            &CommitmentTree::<zebra_chain::orchard::tree::Node, 32>::empty(),
-                            &mut tree,
-                        )
-                        .expect("can write to Vec");
-                        Some(tree)
-                    },
-                    |t| t.commitments().final_state().clone(),
+                let ironwood = ironwood_treestate_slot(
+                    treestate
+                        .ironwood
+                        .and_then(|t| t.commitments().final_state().clone()),
                 );
 
                 Ok((sapling, orchard, ironwood))
@@ -1173,5 +1171,36 @@ impl BlockchainSource for ValidatorConnector {
             }
             ValidatorConnector::Fetch(_fetch) => Ok(None),
         }
+    }
+}
+
+#[cfg(test)]
+mod ironwood_treestate_slot {
+    /// Regression test: when the validator reported no ironwood treestate (below NU6.3
+    /// activation, or on a network with no NU6.3 activation height) the slot must stay
+    /// `None`, so z_gettreestate omits the ironwood field exactly as zebrad does
+    /// ("Only present from NU6.3, so that pre-NU6.3 responses are unchanged"). The slot
+    /// was previously back-filled with a serialized empty tree, emitting the field at
+    /// every height on every network.
+    ///
+    /// `should_panic` tracks the known bug; remove it together with the fix.
+    #[test]
+    #[should_panic(expected = "ironwood slot must stay absent")]
+    fn absent_validator_ironwood_stays_absent() {
+        assert_eq!(
+            super::ironwood_treestate_slot(None),
+            None,
+            "ironwood slot must stay absent when the validator reported no ironwood treestate"
+        );
+    }
+
+    /// A reported ironwood treestate passes through unchanged.
+    #[test]
+    fn reported_validator_ironwood_passes_through() {
+        let tree_bytes = vec![1u8, 2, 3];
+        assert_eq!(
+            super::ironwood_treestate_slot(Some(tree_bytes.clone())),
+            Some(tree_bytes)
+        );
     }
 }
