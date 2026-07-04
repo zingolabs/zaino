@@ -2,6 +2,7 @@
 
 use super::*;
 
+use crate::chain_index::ShieldedPool;
 use crate::{FixedEncodedLen, ZainoVersionedSerde};
 
 /// How a pool point lookup treats a block height with no row in the pool's table.
@@ -10,6 +11,17 @@ enum MissingRow {
     Error,
     /// The table is sparse: an absent row means the block has no data for this pool.
     NoPoolData,
+}
+
+impl MissingRow {
+    /// The missing-row policy of `pool`'s table: sapling and orchard rows exist for
+    /// every indexed block; pools introduced after schema v1.3.0 use sparse tables.
+    fn for_pool(pool: ShieldedPool) -> MissingRow {
+        match pool {
+            ShieldedPool::Sapling | ShieldedPool::Orchard => MissingRow::Error,
+            ShieldedPool::Ironwood => MissingRow::NoPoolData,
+        }
+    }
 }
 
 /// [`BlockShieldedExt`] capability implementation for [`DbV1`].
@@ -109,13 +121,7 @@ impl DbV1 {
         &self,
         tx_location: TxLocation,
     ) -> Result<Option<SaplingCompactTx>, FinalisedStateError> {
-        self.get_pool_tx(
-            self.sapling,
-            "sapling",
-            MissingRow::Error,
-            tx_location,
-            Self::skip_opt_sapling_entry,
-        )
+        self.get_pool_tx(ShieldedPool::Sapling, tx_location)
     }
 
     /// Fetch block sapling transaction data by height.
@@ -123,11 +129,10 @@ impl DbV1 {
         &self,
         height: Height,
     ) -> Result<SaplingTxList, FinalisedStateError> {
-        self.read_row_at_height(self.sapling, "sapling", height)
-            .await?
-            .ok_or_else(|| {
-                FinalisedStateError::DataUnavailable("sapling data missing from db".into())
-            })
+        self.get_block_pool_tx_list(ShieldedPool::Sapling, height, || {
+            SaplingTxList::new(Vec::new())
+        })
+        .await
     }
 
     /// Fetches block sapling tx data for the given height range.
@@ -142,7 +147,10 @@ impl DbV1 {
         start: Height,
         end: Height,
     ) -> Result<Vec<SaplingTxList>, FinalisedStateError> {
-        self.scan_rows(self.sapling, "sapling", start, end).await
+        self.get_block_range_pool_tx_list(ShieldedPool::Sapling, start, end, || {
+            SaplingTxList::new(Vec::new())
+        })
+        .await
     }
 
     /// Fetch the serialized OrchardCompactTx for the given TxLocation, if present.
@@ -152,13 +160,7 @@ impl DbV1 {
         &self,
         tx_location: TxLocation,
     ) -> Result<Option<OrchardCompactTx>, FinalisedStateError> {
-        self.get_pool_tx(
-            self.orchard,
-            "orchard",
-            MissingRow::Error,
-            tx_location,
-            Self::skip_opt_orchard_entry,
-        )
+        self.get_pool_tx(ShieldedPool::Orchard, tx_location)
     }
 
     /// Fetch block orchard transaction data by height.
@@ -166,11 +168,10 @@ impl DbV1 {
         &self,
         height: Height,
     ) -> Result<OrchardTxList, FinalisedStateError> {
-        self.read_row_at_height(self.orchard, "orchard", height)
-            .await?
-            .ok_or_else(|| {
-                FinalisedStateError::DataUnavailable("orchard data missing from db".into())
-            })
+        self.get_block_pool_tx_list(ShieldedPool::Orchard, height, || {
+            OrchardTxList::new(Vec::new())
+        })
+        .await
     }
 
     /// Fetches block orchard tx data for the given height range.
@@ -185,7 +186,10 @@ impl DbV1 {
         start: Height,
         end: Height,
     ) -> Result<Vec<OrchardTxList>, FinalisedStateError> {
-        self.scan_rows(self.orchard, "orchard", start, end).await
+        self.get_block_range_pool_tx_list(ShieldedPool::Orchard, start, end, || {
+            OrchardTxList::new(Vec::new())
+        })
+        .await
     }
 
     /// Fetch the serialized `OrchardCompactTx` for the given TxLocation from the ironwood table.
@@ -197,13 +201,7 @@ impl DbV1 {
         &self,
         tx_location: TxLocation,
     ) -> Result<Option<OrchardCompactTx>, FinalisedStateError> {
-        self.get_pool_tx(
-            self.ironwood,
-            "ironwood",
-            MissingRow::NoPoolData,
-            tx_location,
-            Self::skip_opt_orchard_entry,
-        )
+        self.get_pool_tx(ShieldedPool::Ironwood, tx_location)
     }
 
     /// Fetch block ironwood transaction data by height.
@@ -213,10 +211,10 @@ impl DbV1 {
         &self,
         height: Height,
     ) -> Result<OrchardTxList, FinalisedStateError> {
-        Ok(self
-            .read_row_at_height(self.ironwood, "ironwood", height)
-            .await?
-            .unwrap_or_else(|| OrchardTxList::new(Vec::new())))
+        self.get_block_pool_tx_list(ShieldedPool::Ironwood, height, || {
+            OrchardTxList::new(Vec::new())
+        })
+        .await
     }
 
     /// Fetches block ironwood tx data for the given (inclusive) height range.
@@ -229,21 +227,10 @@ impl DbV1 {
         start: Height,
         end: Height,
     ) -> Result<Vec<OrchardTxList>, FinalisedStateError> {
-        if end.0 < start.0 {
-            return Err(FinalisedStateError::Custom(
-                "invalid block range: end < start".to_string(),
-            ));
-        }
-
-        self.validate_block_range(start, end).await?;
-
-        let mut out = Vec::with_capacity((end.0 - start.0 + 1) as usize);
-        for height_int in start.0..=end.0 {
-            let height = Height::try_from(height_int)
-                .map_err(|e| FinalisedStateError::Custom(e.to_string()))?;
-            out.push(self.get_block_ironwood(height).await?);
-        }
-        Ok(out)
+        self.get_block_range_pool_tx_list(ShieldedPool::Ironwood, start, end, || {
+            OrchardTxList::new(Vec::new())
+        })
+        .await
     }
 
     /// Fetch block commitment tree data by height.
@@ -276,21 +263,97 @@ impl DbV1 {
 
     // *** Internal DB methods ***
 
-    /// Point lookup for one transaction's compact data in a per-block pool table,
+    /// The LMDB table holding `pool`'s per-block compact transaction lists.
+    fn pool_table(&self, pool: ShieldedPool) -> lmdb::Database {
+        match pool {
+            ShieldedPool::Sapling => self.sapling,
+            ShieldedPool::Orchard => self.orchard,
+            ShieldedPool::Ironwood => self.ironwood,
+        }
+    }
+
+    /// The entry-skip function for `pool`'s tx-list encoding (orchard and ironwood
+    /// share the Orchard compact layout).
+    fn pool_skip_entry(pool: ShieldedPool) -> fn(&mut std::io::Cursor<&[u8]>) -> io::Result<()> {
+        match pool {
+            ShieldedPool::Sapling => Self::skip_opt_sapling_entry,
+            ShieldedPool::Orchard | ShieldedPool::Ironwood => Self::skip_opt_orchard_entry,
+        }
+    }
+
+    /// Fetch one pool's whole-block tx list by height. Dense pools error on a missing
+    /// row; sparse pools yield `empty()`.
+    async fn get_block_pool_tx_list<T: ZainoVersionedSerde>(
+        &self,
+        pool: ShieldedPool,
+        height: Height,
+        empty: impl FnOnce() -> T,
+    ) -> Result<T, FinalisedStateError> {
+        let label = pool.pool_string();
+        match self
+            .read_row_at_height(self.pool_table(pool), &label, height)
+            .await?
+        {
+            Some(list) => Ok(list),
+            None => match MissingRow::for_pool(pool) {
+                MissingRow::Error => Err(FinalisedStateError::DataUnavailable(format!(
+                    "{label} data missing from db"
+                ))),
+                MissingRow::NoPoolData => Ok(empty()),
+            },
+        }
+    }
+
+    /// Fetch one pool's tx lists for the inclusive height range, one entry per height.
+    ///
+    /// Dense pools cursor-scan the range; sparse pools resolve each height individually
+    /// so absent rows yield `empty()` and the result stays aligned one-entry-per-height
+    /// with the requested range.
+    async fn get_block_range_pool_tx_list<T: ZainoVersionedSerde>(
+        &self,
+        pool: ShieldedPool,
+        start: Height,
+        end: Height,
+        empty: impl Fn() -> T,
+    ) -> Result<Vec<T>, FinalisedStateError> {
+        match MissingRow::for_pool(pool) {
+            MissingRow::Error => {
+                self.scan_rows(self.pool_table(pool), &pool.pool_string(), start, end)
+                    .await
+            }
+            MissingRow::NoPoolData => {
+                if end.0 < start.0 {
+                    return Err(FinalisedStateError::Custom(
+                        "invalid block range: end < start".to_string(),
+                    ));
+                }
+                self.validate_block_range(start, end).await?;
+
+                let mut out = Vec::with_capacity((end.0 - start.0 + 1) as usize);
+                for height in Height::range_inclusive(start, end) {
+                    out.push(self.get_block_pool_tx_list(pool, height, &empty).await?);
+                }
+                Ok(out)
+            }
+        }
+    }
+
+    /// Point lookup for one transaction's compact data in `pool`'s per-block table,
     /// without decoding the whole block row.
     ///
-    /// Walks the `StoredEntryVar` tx-list bytes entry-by-entry with `skip_entry`,
-    /// then decodes only the requested entry. `pool` names the table in error
-    /// messages; `missing_row` selects how an absent row is treated.
+    /// Walks the `StoredEntryVar` tx-list bytes entry-by-entry with the pool's skip
+    /// function, then decodes only the requested entry.
     fn get_pool_tx<T: ZainoVersionedSerde>(
         &self,
-        table: lmdb::Database,
-        pool: &str,
-        missing_row: MissingRow,
+        pool: ShieldedPool,
         tx_location: TxLocation,
-        skip_entry: fn(&mut std::io::Cursor<&[u8]>) -> io::Result<()>,
     ) -> Result<Option<T>, FinalisedStateError> {
         use std::io::{Cursor, Read};
+
+        let table = self.pool_table(pool);
+        let label = pool.pool_string();
+        let missing_row = MissingRow::for_pool(pool);
+        let skip_entry = Self::pool_skip_entry(pool);
 
         tokio::task::block_in_place(|| {
             let txn = self.env.begin_ro_txn()?;
@@ -305,7 +368,7 @@ impl DbV1 {
                     return match missing_row {
                         MissingRow::NoPoolData => Ok(None),
                         MissingRow::Error => Err(FinalisedStateError::DataUnavailable(format!(
-                            "{pool} data missing from db"
+                            "{label} data missing from db"
                         ))),
                     };
                 }
@@ -327,13 +390,13 @@ impl DbV1 {
 
             // Read CompactSize: number of entries
             let list_len = CompactSize::read(&mut cursor).map_err(|e| {
-                FinalisedStateError::Custom(format!("{pool} tx list len error: {e}"))
+                FinalisedStateError::Custom(format!("{label} tx list len error: {e}"))
             })?;
 
             let idx = tx_location.tx_index() as usize;
             if idx >= list_len as usize {
                 return Err(FinalisedStateError::Custom(format!(
-                    "tx_index out of range in {pool} tx list"
+                    "tx_index out of range in {label} tx list"
                 )));
             }
 
