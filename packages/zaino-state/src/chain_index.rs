@@ -502,7 +502,14 @@ pub trait ChainIndex {
         &self,
         hash: &types::BlockHash,
     ) -> impl std::future::Future<
-        Output = Result<(Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>), Self::Error>,
+        Output = Result<
+            (
+                Option<source::PoolTreestate>,
+                Option<source::PoolTreestate>,
+                Option<source::PoolTreestate>,
+            ),
+            Self::Error,
+        >,
     >;
 
     /// Returns the subtree roots
@@ -2404,7 +2411,14 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     async fn get_treestate(
         &self,
         hash: &types::BlockHash,
-    ) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>), Self::Error> {
+    ) -> Result<
+        (
+            Option<source::PoolTreestate>,
+            Option<source::PoolTreestate>,
+            Option<source::PoolTreestate>,
+        ),
+        Self::Error,
+    > {
         let snapshot = self.snapshot_nonfinalized_state().await?;
         if !self.block_hash_known_for_treestate(&snapshot, hash).await? {
             return Err(ChainIndexError::internal(format!(

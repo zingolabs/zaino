@@ -34,9 +34,22 @@ pub(crate) mod mockchain_source;
 pub mod validator_connector;
 pub use validator_connector::*;
 
-/// Serialized sapling and orchard treestates `(sapling, orchard, ironwood)`, each `None`
-/// when the pool has no treestate at the queried block.
-pub(crate) type TreestateBytes = (Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>);
+/// One pool's treestate for a block, as reported by the backing validator.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PoolTreestate {
+    /// The pool's note commitment tree root (32 bytes), when the validator reports one.
+    pub final_root: Option<Vec<u8>>,
+    /// The pool's serialized note commitment tree.
+    pub final_state: Vec<u8>,
+}
+
+/// Per-pool treestates `(sapling, orchard, ironwood)`, each `None` when the pool has no
+/// treestate at the queried block.
+pub(crate) type TreestateBytes = (
+    Option<PoolTreestate>,
+    Option<PoolTreestate>,
+    Option<PoolTreestate>,
+);
 
 /// Sapling and orchard note-commitment tree roots `(sapling, orchard, ironwood)`, each
 /// paired with its tree size; `None` when the pool has no root at the block.

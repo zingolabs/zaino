@@ -72,8 +72,21 @@ fn empty_orchard_tree_rpc_bytes() -> Vec<u8> {
 /// (below NU6.3 activation, or on a network with no NU6.3 activation height) the slot
 /// stays `None`, so the response omits the field exactly as zebrad does. This function
 /// names that contract — do not back-fill an empty tree here.
-fn ironwood_treestate_slot(validator_ironwood: Option<Vec<u8>>) -> Option<Vec<u8>> {
+fn ironwood_treestate_slot(validator_ironwood: Option<PoolTreestate>) -> Option<PoolTreestate> {
     validator_ironwood
+}
+
+/// Maps a validator-reported treestate (from the JSON-RPC `z_gettreestate` response)
+/// into the connector's pool slot.
+fn fetch_pool_treestate_slot(treestate: zebra_rpc::client::Treestate) -> Option<PoolTreestate> {
+    treestate
+        .commitments()
+        .final_state()
+        .clone()
+        .map(|final_state| PoolTreestate {
+            final_root: None,
+            final_state,
+        })
 }
 
 impl BlockchainSource for ValidatorConnector {
@@ -392,7 +405,7 @@ impl BlockchainSource for ValidatorConnector {
         &self,
         // Sould this be HashOrHeight?
         id: BlockHash,
-    ) -> BlockchainSourceResult<(Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>)> {
+    ) -> BlockchainSourceResult<super::TreestateBytes> {
         let hash_or_height: HashOrHeight = HashOrHeight::Hash(zebra_chain::block::Hash(id.into()));
         match self {
             ValidatorConnector::State(state) => {
@@ -443,8 +456,10 @@ impl BlockchainSource for ValidatorConnector {
                     _ => None,
                 }
                 .and_then(|sap_response| {
-                    expected_read_response!(sap_response, SaplingTree)
-                        .map(|tree| tree.to_rpc_bytes())
+                    expected_read_response!(sap_response, SaplingTree).map(|tree| PoolTreestate {
+                        final_root: None,
+                        final_state: tree.to_rpc_bytes(),
+                    })
                 });
 
                 let orchard = match zebra_chain::parameters::NetworkUpgrade::Nu5
@@ -470,8 +485,10 @@ impl BlockchainSource for ValidatorConnector {
                     _ => None,
                 }
                 .and_then(|orch_response| {
-                    expected_read_response!(orch_response, OrchardTree)
-                        .map(|tree| tree.to_rpc_bytes())
+                    expected_read_response!(orch_response, OrchardTree).map(|tree| PoolTreestate {
+                        final_root: None,
+                        final_state: tree.to_rpc_bytes(),
+                    })
                 });
 
                 let ironwood = match zebra_chain::parameters::NetworkUpgrade::Nu6_3
@@ -497,8 +514,10 @@ impl BlockchainSource for ValidatorConnector {
                     _ => None,
                 }
                 .and_then(|irw_response| {
-                    expected_read_response!(irw_response, IronwoodTree)
-                        .map(|tree| tree.to_rpc_bytes())
+                    expected_read_response!(irw_response, IronwoodTree).map(|tree| PoolTreestate {
+                        final_root: None,
+                        final_state: tree.to_rpc_bytes(),
+                    })
                 });
                 let ironwood = ironwood_treestate_slot(ironwood);
 
@@ -520,21 +539,26 @@ impl BlockchainSource for ValidatorConnector {
                         let mut tree = vec![];
                         write_commitment_tree(&sapling_crypto::CommitmentTree::empty(), &mut tree)
                             .expect("can write to Vec");
-                        Some(tree)
+                        Some(PoolTreestate {
+                            final_root: None,
+                            final_state: tree,
+                        })
                     },
-                    |t| t.commitments().final_state().clone(),
+                    fetch_pool_treestate_slot,
                 );
 
                 let orchard = treestate.orchard.map_or_else(
-                    || Some(empty_orchard_tree_rpc_bytes()),
-                    |t| t.commitments().final_state().clone(),
+                    || {
+                        Some(PoolTreestate {
+                            final_root: None,
+                            final_state: empty_orchard_tree_rpc_bytes(),
+                        })
+                    },
+                    fetch_pool_treestate_slot,
                 );
 
-                let ironwood = ironwood_treestate_slot(
-                    treestate
-                        .ironwood
-                        .and_then(|t| t.commitments().final_state().clone()),
-                );
+                let ironwood =
+                    ironwood_treestate_slot(treestate.ironwood.and_then(fetch_pool_treestate_slot));
 
                 Ok((sapling, orchard, ironwood))
             }
@@ -1176,6 +1200,46 @@ impl BlockchainSource for ValidatorConnector {
 }
 
 #[cfg(test)]
+mod fetch_pool_treestate_slot {
+    use crate::chain_index::source::PoolTreestate;
+
+    /// Regression test: the validator's finalRoot must pass through to the pool slot.
+    /// zebra populates `Commitments { finalRoot, finalState }` for every pool it
+    /// serves, but the slot mapping dropped the root, so zaino's z_gettreestate
+    /// responses carried no finalRoot for any pool.
+    ///
+    /// `should_panic` tracks the known gap; remove it together with the fix.
+    #[test]
+    #[should_panic(expected = "finalRoot must pass through")]
+    fn final_root_passes_through() {
+        let final_root = vec![7u8; 32];
+        let final_state = vec![1u8, 2, 3];
+        let treestate = zebra_rpc::client::Treestate::new(zebra_rpc::client::Commitments::new(
+            Some(final_root.clone()),
+            Some(final_state.clone()),
+        ));
+
+        let slot = super::fetch_pool_treestate_slot(treestate)
+            .expect("a treestate with a finalState maps to a populated slot");
+
+        assert_eq!(slot.final_state, final_state);
+        assert_eq!(
+            slot.final_root,
+            Some(final_root),
+            "the validator's finalRoot must pass through to the treestate slot"
+        );
+    }
+
+    /// An absent finalState maps to an absent slot.
+    #[test]
+    fn absent_final_state_maps_to_absent_slot() {
+        let treestate =
+            zebra_rpc::client::Treestate::new(zebra_rpc::client::Commitments::new(None, None));
+        assert_eq!(super::fetch_pool_treestate_slot(treestate), None);
+    }
+}
+
+#[cfg(test)]
 mod ironwood_treestate_slot {
     /// Regression test: when the validator reported no ironwood treestate (below NU6.3
     /// activation, or on a network with no NU6.3 activation height) the slot must stay
@@ -1195,10 +1259,13 @@ mod ironwood_treestate_slot {
     /// A reported ironwood treestate passes through unchanged.
     #[test]
     fn reported_validator_ironwood_passes_through() {
-        let tree_bytes = vec![1u8, 2, 3];
+        let treestate = crate::chain_index::source::PoolTreestate {
+            final_root: None,
+            final_state: vec![1u8, 2, 3],
+        };
         assert_eq!(
-            super::ironwood_treestate_slot(Some(tree_bytes.clone())),
-            Some(tree_bytes)
+            super::ironwood_treestate_slot(Some(treestate.clone())),
+            Some(treestate)
         );
     }
 }

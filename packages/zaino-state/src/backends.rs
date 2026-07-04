@@ -4,6 +4,48 @@ pub mod fetch;
 
 pub mod state;
 
+/// Builds the `z_gettreestate` response shared by the Fetch and State backends from the
+/// per-pool treestates the chain index reported.
+///
+/// `Commitments::new(final_root, final_state)`: the note-commitment tree is the
+/// `final_state`. The ironwood treestate is `Some` only from NU6.3 activation, so
+/// pre-NU6.3 responses omit the field exactly as zebrad does.
+fn build_treestate_response(
+    hash: zebra_chain::block::Hash,
+    height: zebra_chain::block::Height,
+    time: u32,
+    (sapling, orchard, ironwood): (
+        Option<crate::chain_index::source::PoolTreestate>,
+        Option<crate::chain_index::source::PoolTreestate>,
+        Option<crate::chain_index::source::PoolTreestate>,
+    ),
+) -> zebra_rpc::client::GetTreestateResponse {
+    fn treestate(
+        pool: Option<crate::chain_index::source::PoolTreestate>,
+    ) -> zebra_rpc::client::Treestate {
+        let (final_root, final_state) = match pool {
+            Some(pool) => (pool.final_root, Some(pool.final_state)),
+            None => (None, None),
+        };
+        zebra_rpc::client::Treestate::new(zebra_rpc::client::Commitments::new(
+            final_root,
+            final_state,
+        ))
+    }
+
+    let sprout_treestate = None;
+    let ironwood_treestate = ironwood.map(|pool| treestate(Some(pool)));
+    zebra_rpc::client::GetTreestateResponse::new(
+        hash,
+        height,
+        time,
+        sprout_treestate,
+        treestate(sapling),
+        treestate(orchard),
+        ironwood_treestate,
+    )
+}
+
 fn latest_network_upgrade(
     upgrades: &indexmap::IndexMap<
         zebra_rpc::methods::ConsensusBranchIdHex,

@@ -1494,8 +1494,7 @@ impl ZcashIndexer for StateServiceSubscriber {
                     )))?,
             };
 
-            let (sapling, orchard, ironwood) =
-                self.indexer.get_treestate(block_data.hash()).await?;
+            let treestates = self.indexer.get_treestate(block_data.hash()).await?;
             let time: u32 = block_data.data().time().try_into().map_err(|_error| {
                 StateServiceError::RpcError(RpcError::new_from_legacycode(
                     zebra_rpc::server::error::LegacyCode::InvalidParameter,
@@ -1503,32 +1502,11 @@ impl ZcashIndexer for StateServiceSubscriber {
                 ))
             })?;
 
-            // `Commitments::new(final_root, final_state)`: the note-commitment tree is the
-            // `final_state`, matching the (now-deprecated) `from_parts` behaviour this replaces.
-            // The `new` constructor is used so the Ironwood (NU6.3) treestate can be included rather
-            // than discarded.
-            let sprout_treestate = None;
-            let sapling_treestate = zebra_rpc::client::Treestate::new(
-                zebra_rpc::client::Commitments::new(None, sapling),
-            );
-            let orchard_treestate = zebra_rpc::client::Treestate::new(
-                zebra_rpc::client::Commitments::new(None, orchard),
-            );
-            let ironwood_treestate = ironwood.map(|final_state| {
-                zebra_rpc::client::Treestate::new(zebra_rpc::client::Commitments::new(
-                    None,
-                    Some(final_state),
-                ))
-            });
-
-            Ok(GetTreestateResponse::new(
+            Ok(super::build_treestate_response(
                 (*block_data.hash()).into(),
                 block_data.height().into(),
                 time,
-                sprout_treestate,
-                sapling_treestate,
-                orchard_treestate,
-                ironwood_treestate,
+                treestates,
             ))
         }
         .await;

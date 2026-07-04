@@ -690,7 +690,7 @@ impl BlockchainSource for ProptestMockchain {
     async fn get_treestate(
         &self,
         _id: BlockHash,
-    ) -> BlockchainSourceResult<(Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>)> {
+    ) -> BlockchainSourceResult<crate::chain_index::source::TreestateBytes> {
         // I don't think this is used for sync?
         unimplemented!()
     }

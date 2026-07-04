@@ -553,18 +553,21 @@ impl BlockchainSource for MockchainSource {
     /// Returns the sapling and orchard treestate by hash
     ///
     /// TODO: Update test vectors to support ironwood.
-    async fn get_treestate(
-        &self,
-        id: BlockHash,
-    ) -> BlockchainSourceResult<(Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>)> {
+    async fn get_treestate(&self, id: BlockHash) -> BlockchainSourceResult<super::TreestateBytes> {
         let active_chain_height = self.active_height() as usize; // serve up to active tip
 
         if let Some(height) = self.hashes.iter().position(|h| h == &id) {
             if height <= active_chain_height {
                 let (sapling_state, orchard_state) = &self.treestates[height];
                 Ok((
-                    Some(sapling_state.clone()),
-                    Some(orchard_state.clone()),
+                    Some(super::PoolTreestate {
+                        final_root: None,
+                        final_state: sapling_state.clone(),
+                    }),
+                    Some(super::PoolTreestate {
+                        final_root: None,
+                        final_state: orchard_state.clone(),
+                    }),
                     None,
                 ))
             } else {
