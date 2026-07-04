@@ -350,19 +350,21 @@ impl<'a> BlockWithMetadata<'a> {
 
         Ok(BlockContext::new(hash, parent_hash, chainwork, height))
     }
+}
 
-    /// Create commitment tree data from metadata
+impl BlockMetadata {
+    /// Create the stored commitment tree data for this block's metadata.
     fn create_commitment_tree_data(&self) -> super::db::CommitmentTreeData {
         let commitment_tree_roots = super::db::CommitmentTreeRoots::new(
-            <[u8; 32]>::from(self.metadata.sapling_root),
-            <[u8; 32]>::from(self.metadata.orchard_root),
-            Some(<[u8; 32]>::from(self.metadata.ironwood_root)),
+            <[u8; 32]>::from(self.sapling_root),
+            <[u8; 32]>::from(self.orchard_root),
+            Some(<[u8; 32]>::from(self.ironwood_root)),
         );
 
         let commitment_tree_size = super::db::CommitmentTreeSizes::new(
-            self.metadata.sapling_size,
-            self.metadata.orchard_size,
-            self.metadata.ironwood_size,
+            self.sapling_size,
+            self.orchard_size,
+            self.ironwood_size,
         );
 
         super::db::CommitmentTreeData::new(commitment_tree_roots, commitment_tree_size)
@@ -377,7 +379,7 @@ impl TryFrom<BlockWithMetadata<'_>> for IndexedBlock {
         let data = block_with_metadata.extract_block_data()?;
         let transactions = block_with_metadata.extract_transactions()?;
         let context = block_with_metadata.create_block_context()?;
-        let commitment_tree_data = block_with_metadata.create_commitment_tree_data();
+        let commitment_tree_data = block_with_metadata.metadata.create_commitment_tree_data();
 
         Ok(IndexedBlock {
             context,
@@ -385,5 +387,43 @@ impl TryFrom<BlockWithMetadata<'_>> for IndexedBlock {
             transactions,
             commitment_tree_data,
         })
+    }
+}
+
+#[cfg(test)]
+mod create_commitment_tree_data {
+    use super::*;
+
+    /// Regression test: a block whose source reported no ironwood treestate (pre-NU6.3,
+    /// or a network with no NU6.3 activation height) must store its ironwood root as
+    /// `None` — the encoding the v1.2.1->v1.3.0 migration and the CommitmentTreeRoots V1
+    /// decode produce for the same state. The write path instead erased the `Option` via
+    /// `extract_with_defaults` and stored `Some([0; 32])`, so a freshly synced database
+    /// and a migrated database encoded identical pre-activation heights differently.
+    ///
+    /// `should_panic` tracks the known bug; remove it together with the fix.
+    #[test]
+    #[should_panic(expected = "ironwood root must be stored as None")]
+    fn absent_ironwood_root_is_stored_as_none() {
+        let (sapling_root, sapling_size, orchard_root, orchard_size, ironwood_root, ironwood_size) =
+            TreeRootData::new(None, None, None).extract_with_defaults();
+        let metadata = BlockMetadata::new(
+            sapling_root,
+            sapling_size as u32,
+            orchard_root,
+            orchard_size as u32,
+            ironwood_root,
+            ironwood_size as u32,
+            None,
+            zebra_chain::parameters::Network::Mainnet,
+        );
+
+        let commitment_tree_data = metadata.create_commitment_tree_data();
+
+        assert_eq!(
+            commitment_tree_data.roots().ironwood(),
+            &None,
+            "ironwood root must be stored as None when the source reported no ironwood treestate"
+        );
     }
 }
