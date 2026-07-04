@@ -44,6 +44,23 @@ fn height_from_u32(height: u32) -> Result<Height, FinalisedStateError> {
     })
 }
 
+/// Collects one item per height across the inclusive `start..=end` range, in ascending
+/// order, by calling `get_at` for each height.
+async fn collect_block_range<T, Fut>(
+    start: Height,
+    end: Height,
+    mut get_at: impl FnMut(Height) -> Fut,
+) -> Result<Vec<T>, FinalisedStateError>
+where
+    Fut: std::future::Future<Output = Result<T, FinalisedStateError>>,
+{
+    let mut items = Vec::new();
+    for height in Height::range_inclusive(start, end) {
+        items.push(get_at(height).await?);
+    }
+    Ok(items)
+}
+
 /// Source-backed finalised-state backend used when persistent finalised-state storage is not
 /// serving normal requests.
 ///
@@ -453,13 +470,7 @@ impl<T: BlockchainSource> BlockCoreExt for EphemeralFinalisedState<T> {
         start: Height,
         end: Height,
     ) -> Result<Vec<BlockHeaderData>, FinalisedStateError> {
-        let mut headers = Vec::new();
-
-        for height in Height::range_inclusive(start, end) {
-            headers.push(self.get_block_header(height).await?);
-        }
-
-        Ok(headers)
+        collect_block_range(start, end, |height| self.get_block_header(height)).await
     }
 
     async fn get_block_txids(&self, height: Height) -> Result<TxidList, FinalisedStateError> {
@@ -479,13 +490,7 @@ impl<T: BlockchainSource> BlockCoreExt for EphemeralFinalisedState<T> {
         start: Height,
         end: Height,
     ) -> Result<Vec<TxidList>, FinalisedStateError> {
-        let mut txid_lists = Vec::new();
-
-        for height in Height::range_inclusive(start, end) {
-            txid_lists.push(self.get_block_txids(height).await?);
-        }
-
-        Ok(txid_lists)
+        collect_block_range(start, end, |height| self.get_block_txids(height)).await
     }
 
     async fn get_txid(
@@ -569,13 +574,7 @@ impl<T: BlockchainSource> BlockTransparentExt for EphemeralFinalisedState<T> {
         start: Height,
         end: Height,
     ) -> Result<Vec<TransparentTxList>, FinalisedStateError> {
-        let mut transparent_lists = Vec::new();
-
-        for height in Height::range_inclusive(start, end) {
-            transparent_lists.push(self.get_block_transparent(height).await?);
-        }
-
-        Ok(transparent_lists)
+        collect_block_range(start, end, |height| self.get_block_transparent(height)).await
     }
 
     async fn get_previous_output(
@@ -653,13 +652,7 @@ impl<T: BlockchainSource> BlockShieldedExt for EphemeralFinalisedState<T> {
         start: Height,
         end: Height,
     ) -> Result<Vec<SaplingTxList>, FinalisedStateError> {
-        let mut sapling_lists = Vec::new();
-
-        for height in Height::range_inclusive(start, end) {
-            sapling_lists.push(self.get_block_sapling(height).await?);
-        }
-
-        Ok(sapling_lists)
+        collect_block_range(start, end, |height| self.get_block_sapling(height)).await
     }
 
     async fn get_orchard(
@@ -696,13 +689,7 @@ impl<T: BlockchainSource> BlockShieldedExt for EphemeralFinalisedState<T> {
         start: Height,
         end: Height,
     ) -> Result<Vec<OrchardTxList>, FinalisedStateError> {
-        let mut orchard_lists = Vec::new();
-
-        for height in Height::range_inclusive(start, end) {
-            orchard_lists.push(self.get_block_orchard(height).await?);
-        }
-
-        Ok(orchard_lists)
+        collect_block_range(start, end, |height| self.get_block_orchard(height)).await
     }
 
     async fn get_ironwood(
@@ -739,13 +726,7 @@ impl<T: BlockchainSource> BlockShieldedExt for EphemeralFinalisedState<T> {
         start: Height,
         end: Height,
     ) -> Result<Vec<OrchardTxList>, FinalisedStateError> {
-        let mut ironwood_lists = Vec::new();
-
-        for height in Height::range_inclusive(start, end) {
-            ironwood_lists.push(self.get_block_ironwood(height).await?);
-        }
-
-        Ok(ironwood_lists)
+        collect_block_range(start, end, |height| self.get_block_ironwood(height)).await
     }
 
     async fn get_block_commitment_tree_data(
@@ -761,13 +742,10 @@ impl<T: BlockchainSource> BlockShieldedExt for EphemeralFinalisedState<T> {
         start: Height,
         end: Height,
     ) -> Result<Vec<CommitmentTreeData>, FinalisedStateError> {
-        let mut commitment_tree_data = Vec::new();
-
-        for height in Height::range_inclusive(start, end) {
-            commitment_tree_data.push(self.get_block_commitment_tree_data(height).await?);
-        }
-
-        Ok(commitment_tree_data)
+        collect_block_range(start, end, |height| {
+            self.get_block_commitment_tree_data(height)
+        })
+        .await
     }
 }
 
