@@ -134,6 +134,9 @@ impl CommitmentTreeRoots {
     }
 
     /// returns orchard commitment tree root.
+    /// No production reader consumes the stored ironwood root yet; the regression test
+    /// for its None-preservation does. Un-gate when a production consumer appears.
+    #[cfg(test)]
     pub(crate) fn ironwood(&self) -> &Option<[u8; 32]> {
         &self.ironwood
     }
