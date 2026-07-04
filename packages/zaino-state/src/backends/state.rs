@@ -1507,23 +1507,28 @@ impl ZcashIndexer for StateServiceSubscriber {
             // `final_state`, matching the (now-deprecated) `from_parts` behaviour this replaces.
             // The `new` constructor is used so the Ironwood (NU6.3) treestate can be included rather
             // than discarded.
+            let sprout_treestate = None;
+            let sapling_treestate = zebra_rpc::client::Treestate::new(
+                zebra_rpc::client::Commitments::new(None, sapling),
+            );
+            let orchard_treestate = zebra_rpc::client::Treestate::new(
+                zebra_rpc::client::Commitments::new(None, orchard),
+            );
+            let ironwood_treestate = ironwood.map(|final_state| {
+                zebra_rpc::client::Treestate::new(zebra_rpc::client::Commitments::new(
+                    None,
+                    Some(final_state),
+                ))
+            });
+
             Ok(GetTreestateResponse::new(
                 (*block_data.hash()).into(),
                 block_data.height().into(),
                 time,
-                None,
-                zebra_rpc::client::Treestate::new(zebra_rpc::client::Commitments::new(
-                    None, sapling,
-                )),
-                zebra_rpc::client::Treestate::new(zebra_rpc::client::Commitments::new(
-                    None, orchard,
-                )),
-                ironwood.map(|final_state| {
-                    zebra_rpc::client::Treestate::new(zebra_rpc::client::Commitments::new(
-                        None,
-                        Some(final_state),
-                    ))
-                }),
+                sprout_treestate,
+                sapling_treestate,
+                orchard_treestate,
+                ironwood_treestate,
             ))
         }
         .await;
