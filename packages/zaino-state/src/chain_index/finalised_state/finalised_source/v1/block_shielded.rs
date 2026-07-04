@@ -2,6 +2,16 @@
 
 use super::*;
 
+use crate::{FixedEncodedLen, ZainoVersionedSerde};
+
+/// How a pool point lookup treats a block height with no row in the pool's table.
+enum MissingRow {
+    /// Every indexed block has a row in this pool's table; an absent row is an error.
+    Error,
+    /// The table is sparse: an absent row means the block has no data for this pool.
+    NoPoolData,
+}
+
 /// [`BlockShieldedExt`] capability implementation for [`DbV1`].
 ///
 /// Provides access to Sapling / Orchard compact transaction data and per-block commitment tree
@@ -99,84 +109,13 @@ impl DbV1 {
         &self,
         tx_location: TxLocation,
     ) -> Result<Option<SaplingCompactTx>, FinalisedStateError> {
-        use std::io::{Cursor, Read};
-
-        tokio::task::block_in_place(|| {
-            let txn = self.env.begin_ro_txn()?;
-
-            let height = Height::try_from(tx_location.block_height())
-                .map_err(|e| FinalisedStateError::Custom(e.to_string()))?;
-            let height_bytes = height.to_bytes()?;
-
-            let raw = match txn.get(self.sapling, &height_bytes) {
-                Ok(val) => val,
-                Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "sapling data missing from db".into(),
-                    ));
-                }
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
-            };
-            let mut cursor = Cursor::new(raw);
-
-            // Skip [0] StoredEntry version
-            cursor.set_position(1);
-
-            // Read CompactSize: length of serialized body
-            CompactSize::read(&mut cursor).map_err(|e| {
-                FinalisedStateError::Custom(format!("compact size read error: {e}"))
-            })?;
-
-            // Skip SaplingTxList version byte
-            cursor.set_position(cursor.position() + 1);
-
-            // Read CompactSize: number of entries
-            let list_len = CompactSize::read(&mut cursor).map_err(|e| {
-                FinalisedStateError::Custom(format!("sapling tx list len error: {e}"))
-            })?;
-
-            let idx = tx_location.tx_index() as usize;
-            if idx >= list_len as usize {
-                return Err(FinalisedStateError::Custom(
-                    "tx_index out of range in sapling tx list".to_string(),
-                ));
-            }
-
-            // Skip preceding entries
-            for _ in 0..idx {
-                Self::skip_opt_sapling_entry(&mut cursor)
-                    .map_err(|e| FinalisedStateError::Custom(format!("skip entry error: {e}")))?;
-            }
-
-            let start = cursor.position();
-
-            // Peek presence flag
-            let mut presence = [0u8; 1];
-            cursor.read_exact(&mut presence).map_err(|e| {
-                FinalisedStateError::Custom(format!("failed to read Option tag: {e}"))
-            })?;
-
-            if presence[0] == 0 {
-                return Ok(None);
-            } else if presence[0] != 1 {
-                return Err(FinalisedStateError::Custom(format!(
-                    "invalid Option tag: {}",
-                    presence[0]
-                )));
-            }
-
-            // Rewind to include tag in returned bytes
-            cursor.set_position(start);
-            Self::skip_opt_sapling_entry(&mut cursor).map_err(|e| {
-                FinalisedStateError::Custom(format!("skip entry error (second pass): {e}"))
-            })?;
-
-            let end = cursor.position();
-
-            Ok(Some(SaplingCompactTx::from_bytes(
-                &raw[start as usize..end as usize],
-            )?))
-        })
+        self.get_pool_tx(
+            self.sapling,
+            "sapling",
+            MissingRow::Error,
+            tx_location,
+            Self::skip_opt_sapling_entry,
+        )
     }
 
     /// Fetch block sapling transaction data by height.
@@ -268,85 +207,13 @@ impl DbV1 {
         &self,
         tx_location: TxLocation,
     ) -> Result<Option<OrchardCompactTx>, FinalisedStateError> {
-        use std::io::{Cursor, Read};
-
-        tokio::task::block_in_place(|| {
-            let txn = self.env.begin_ro_txn()?;
-
-            let height = Height::try_from(tx_location.block_height())
-                .map_err(|e| FinalisedStateError::Custom(e.to_string()))?;
-            let height_bytes = height.to_bytes()?;
-
-            let raw = match txn.get(self.orchard, &height_bytes) {
-                Ok(val) => val,
-                Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "orchard data missing from db".into(),
-                    ));
-                }
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
-            };
-
-            let mut cursor = Cursor::new(raw);
-
-            // Skip [0] StoredEntry version
-            cursor.set_position(1);
-
-            // Read CompactSize: length of serialized body
-            CompactSize::read(&mut cursor).map_err(|e| {
-                FinalisedStateError::Custom(format!("compact size read error: {e}"))
-            })?;
-
-            // Skip OrchardTxList version byte
-            cursor.set_position(cursor.position() + 1);
-
-            // Read CompactSize: number of entries
-            let list_len = CompactSize::read(&mut cursor).map_err(|e| {
-                FinalisedStateError::Custom(format!("orchard tx list len error: {e}"))
-            })?;
-
-            let idx = tx_location.tx_index() as usize;
-            if idx >= list_len as usize {
-                return Err(FinalisedStateError::Custom(
-                    "tx_index out of range in orchard tx list".to_string(),
-                ));
-            }
-
-            // Skip preceding entries
-            for _ in 0..idx {
-                Self::skip_opt_orchard_entry(&mut cursor)
-                    .map_err(|e| FinalisedStateError::Custom(format!("skip entry error: {e}")))?;
-            }
-
-            let start = cursor.position();
-
-            // Peek presence flag
-            let mut presence = [0u8; 1];
-            cursor.read_exact(&mut presence).map_err(|e| {
-                FinalisedStateError::Custom(format!("failed to read Option tag: {e}"))
-            })?;
-
-            if presence[0] == 0 {
-                return Ok(None);
-            } else if presence[0] != 1 {
-                return Err(FinalisedStateError::Custom(format!(
-                    "invalid Option tag: {}",
-                    presence[0]
-                )));
-            }
-
-            // Rewind to include presence flag in output
-            cursor.set_position(start);
-            Self::skip_opt_orchard_entry(&mut cursor).map_err(|e| {
-                FinalisedStateError::Custom(format!("skip entry error (second pass): {e}"))
-            })?;
-
-            let end = cursor.position();
-
-            Ok(Some(OrchardCompactTx::from_bytes(
-                &raw[start as usize..end as usize],
-            )?))
-        })
+        self.get_pool_tx(
+            self.orchard,
+            "orchard",
+            MissingRow::Error,
+            tx_location,
+            Self::skip_opt_orchard_entry,
+        )
     }
 
     /// Fetch block orchard transaction data by height.
@@ -440,82 +307,13 @@ impl DbV1 {
         &self,
         tx_location: TxLocation,
     ) -> Result<Option<OrchardCompactTx>, FinalisedStateError> {
-        use std::io::{Cursor, Read};
-
-        tokio::task::block_in_place(|| {
-            let txn = self.env.begin_ro_txn()?;
-
-            let height = Height::try_from(tx_location.block_height())
-                .map_err(|e| FinalisedStateError::Custom(e.to_string()))?;
-            let height_bytes = height.to_bytes()?;
-
-            let raw = match txn.get(self.ironwood, &height_bytes) {
-                Ok(val) => val,
-                // No ironwood data at this height.
-                Err(lmdb::Error::NotFound) => return Ok(None),
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
-            };
-
-            let mut cursor = Cursor::new(raw);
-
-            // Skip [0] StoredEntry version
-            cursor.set_position(1);
-
-            // Read CompactSize: length of serialized body
-            CompactSize::read(&mut cursor).map_err(|e| {
-                FinalisedStateError::Custom(format!("compact size read error: {e}"))
-            })?;
-
-            // Skip OrchardTxList version byte
-            cursor.set_position(cursor.position() + 1);
-
-            // Read CompactSize: number of entries
-            let list_len = CompactSize::read(&mut cursor).map_err(|e| {
-                FinalisedStateError::Custom(format!("ironwood tx list len error: {e}"))
-            })?;
-
-            let idx = tx_location.tx_index() as usize;
-            if idx >= list_len as usize {
-                return Err(FinalisedStateError::Custom(
-                    "tx_index out of range in ironwood tx list".to_string(),
-                ));
-            }
-
-            // Skip preceding entries
-            for _ in 0..idx {
-                Self::skip_opt_orchard_entry(&mut cursor)
-                    .map_err(|e| FinalisedStateError::Custom(format!("skip entry error: {e}")))?;
-            }
-
-            let start = cursor.position();
-
-            // Peek presence flag
-            let mut presence = [0u8; 1];
-            cursor.read_exact(&mut presence).map_err(|e| {
-                FinalisedStateError::Custom(format!("failed to read Option tag: {e}"))
-            })?;
-
-            if presence[0] == 0 {
-                return Ok(None);
-            } else if presence[0] != 1 {
-                return Err(FinalisedStateError::Custom(format!(
-                    "invalid Option tag: {}",
-                    presence[0]
-                )));
-            }
-
-            // Rewind to include presence flag in output
-            cursor.set_position(start);
-            Self::skip_opt_orchard_entry(&mut cursor).map_err(|e| {
-                FinalisedStateError::Custom(format!("skip entry error (second pass): {e}"))
-            })?;
-
-            let end = cursor.position();
-
-            Ok(Some(OrchardCompactTx::from_bytes(
-                &raw[start as usize..end as usize],
-            )?))
-        })
+        self.get_pool_tx(
+            self.ironwood,
+            "ironwood",
+            MissingRow::NoPoolData,
+            tx_location,
+            Self::skip_opt_orchard_entry,
+        )
     }
 
     /// Fetch block ironwood transaction data by height.
@@ -659,6 +457,152 @@ impl DbV1 {
 
     // *** Internal DB methods ***
 
+    /// Point lookup for one transaction's compact data in a per-block pool table,
+    /// without decoding the whole block row.
+    ///
+    /// Walks the `StoredEntryVar` tx-list bytes entry-by-entry with `skip_entry`,
+    /// then decodes only the requested entry. `pool` names the table in error
+    /// messages; `missing_row` selects how an absent row is treated.
+    fn get_pool_tx<T: ZainoVersionedSerde>(
+        &self,
+        table: lmdb::Database,
+        pool: &str,
+        missing_row: MissingRow,
+        tx_location: TxLocation,
+        skip_entry: fn(&mut std::io::Cursor<&[u8]>) -> io::Result<()>,
+    ) -> Result<Option<T>, FinalisedStateError> {
+        use std::io::{Cursor, Read};
+
+        tokio::task::block_in_place(|| {
+            let txn = self.env.begin_ro_txn()?;
+
+            let height = Height::try_from(tx_location.block_height())
+                .map_err(|e| FinalisedStateError::Custom(e.to_string()))?;
+            let height_bytes = height.to_bytes()?;
+
+            let raw = match txn.get(table, &height_bytes) {
+                Ok(val) => val,
+                Err(lmdb::Error::NotFound) => {
+                    return match missing_row {
+                        MissingRow::NoPoolData => Ok(None),
+                        MissingRow::Error => Err(FinalisedStateError::DataUnavailable(format!(
+                            "{pool} data missing from db"
+                        ))),
+                    };
+                }
+                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+            };
+
+            let mut cursor = Cursor::new(raw);
+
+            // Skip [0] StoredEntry version
+            cursor.set_position(1);
+
+            // Read CompactSize: length of serialized body
+            CompactSize::read(&mut cursor).map_err(|e| {
+                FinalisedStateError::Custom(format!("compact size read error: {e}"))
+            })?;
+
+            // Skip the tx-list version byte
+            cursor.set_position(cursor.position() + 1);
+
+            // Read CompactSize: number of entries
+            let list_len = CompactSize::read(&mut cursor).map_err(|e| {
+                FinalisedStateError::Custom(format!("{pool} tx list len error: {e}"))
+            })?;
+
+            let idx = tx_location.tx_index() as usize;
+            if idx >= list_len as usize {
+                return Err(FinalisedStateError::Custom(format!(
+                    "tx_index out of range in {pool} tx list"
+                )));
+            }
+
+            // Skip preceding entries
+            for _ in 0..idx {
+                skip_entry(&mut cursor)
+                    .map_err(|e| FinalisedStateError::Custom(format!("skip entry error: {e}")))?;
+            }
+
+            let start = cursor.position();
+
+            // Peek presence flag
+            let mut presence = [0u8; 1];
+            cursor.read_exact(&mut presence).map_err(|e| {
+                FinalisedStateError::Custom(format!("failed to read Option tag: {e}"))
+            })?;
+
+            if presence[0] == 0 {
+                return Ok(None);
+            } else if presence[0] != 1 {
+                return Err(FinalisedStateError::Custom(format!(
+                    "invalid Option tag: {}",
+                    presence[0]
+                )));
+            }
+
+            // Rewind to include the presence flag in the returned bytes
+            cursor.set_position(start);
+            skip_entry(&mut cursor).map_err(|e| {
+                FinalisedStateError::Custom(format!("skip entry error (second pass): {e}"))
+            })?;
+
+            let end = cursor.position();
+
+            Ok(Some(T::from_bytes(&raw[start as usize..end as usize])?))
+        })
+    }
+
+    /// Skips the shared prelude of one `Option<PoolCompactTx>` entry: the presence
+    /// byte, and — when the entry is present — the version byte and the `Option<i64>`
+    /// value balance. Returns `false` when the entry was `None` (nothing more to skip).
+    #[inline]
+    fn skip_opt_tx_prelude(cursor: &mut std::io::Cursor<&[u8]>) -> io::Result<bool> {
+        // Read presence byte
+        let mut presence = [0u8; 1];
+        cursor.read_exact(&mut presence)?;
+
+        if presence[0] == 0 {
+            return Ok(false);
+        } else if presence[0] != 1 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid Option tag: {}", presence[0]),
+            ));
+        }
+
+        // Read version
+        cursor.read_exact(&mut [0u8; 1])?;
+
+        // Read value: Option<i64>
+        let mut value_tag = [0u8; 1];
+        cursor.read_exact(&mut value_tag)?;
+        if value_tag[0] == 1 {
+            // Some(i64): read 8 bytes
+            cursor.set_position(cursor.position() + 8);
+        } else if value_tag[0] != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("invalid Option<i64> tag: {}", value_tag[0]),
+            ));
+        }
+
+        Ok(true)
+    }
+
+    /// Advances the cursor past a CompactSize entry count followed by that many
+    /// fixed-length entries of type `T`. Taking the width from the type being
+    /// skipped makes a wrong-width skip unrepresentable.
+    #[inline]
+    fn skip_counted_fixed_entries<T: FixedEncodedLen + ZainoVersionedSerde>(
+        cursor: &mut std::io::Cursor<&[u8]>,
+    ) -> io::Result<()> {
+        let count = CompactSize::read(&mut *cursor)? as usize;
+        let entry_len = T::latest_versioned_len()?;
+        cursor.set_position(cursor.position() + (count * entry_len) as u64);
+        Ok(())
+    }
+
     /// Skips one `Option<SaplingCompactTx>` from the current cursor position.
     ///
     /// The input should be a cursor over just the inner item "list" bytes of a:
@@ -671,54 +615,18 @@ impl DbV1 {
     /// This is faster than deserialising the whole struct as we only read the compact sizes.
     #[inline]
     fn skip_opt_sapling_entry(cursor: &mut std::io::Cursor<&[u8]>) -> io::Result<()> {
-        // Read presence byte
-        let mut presence = [0u8; 1];
-        cursor.read_exact(&mut presence)?;
-
-        if presence[0] == 0 {
+        if !Self::skip_opt_tx_prelude(cursor)? {
             return Ok(());
-        } else if presence[0] != 1 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid Option tag: {}", presence[0]),
-            ));
         }
-
-        // Read version
-        cursor.read_exact(&mut [0u8; 1])?;
-
-        // Read value: Option<i64>
-        let mut value_tag = [0u8; 1];
-        cursor.read_exact(&mut value_tag)?;
-        if value_tag[0] == 1 {
-            // Some(i64): read 8 bytes
-            cursor.set_position(cursor.position() + 8);
-        } else if value_tag[0] != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid Option<i64> tag: {}", value_tag[0]),
-            ));
-        }
-
-        // Read number of spends (CompactSize)
-        let spend_len = CompactSize::read(&mut *cursor)? as usize;
-        let sapling_spend_len = CompactSaplingSpend::latest_versioned_len()?;
-        let spend_skip = spend_len * sapling_spend_len;
-        cursor.set_position(cursor.position() + spend_skip as u64);
-
-        // Read number of outputs (CompactSize)
-        let output_len = CompactSize::read(&mut *cursor)? as usize;
-        let sapling_output_len = crate::CompactSaplingOutput::latest_versioned_len()?;
-        let output_skip = output_len * sapling_output_len;
-        cursor.set_position(cursor.position() + output_skip as u64);
-
-        Ok(())
+        Self::skip_counted_fixed_entries::<CompactSaplingSpend>(cursor)?;
+        Self::skip_counted_fixed_entries::<crate::CompactSaplingOutput>(cursor)
     }
 
     /// Skips one `Option<OrchardCompactTx>` from the current cursor position.
     ///
     /// The input should be a cursor over just the inner item "list" bytes of a:
-    /// - `StoredEntryVar<OrchardTxList>`
+    /// - `StoredEntryVar<OrchardTxList>` (the orchard and ironwood tables share this
+    ///   layout)
     ///
     /// Advances past:
     /// - 1 byte `0x00` if None, or
@@ -727,44 +635,10 @@ impl DbV1 {
     /// This is faster than deserialising the whole struct as we only read the compact sizes.
     #[inline]
     fn skip_opt_orchard_entry(cursor: &mut std::io::Cursor<&[u8]>) -> io::Result<()> {
-        // Read presence byte
-        let mut presence = [0u8; 1];
-        cursor.read_exact(&mut presence)?;
-
-        if presence[0] == 0 {
+        if !Self::skip_opt_tx_prelude(cursor)? {
             return Ok(());
-        } else if presence[0] != 1 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid Option tag: {}", presence[0]),
-            ));
         }
-
-        // Read version
-        cursor.read_exact(&mut [0u8; 1])?;
-
-        // Read value: Option<i64>
-        let mut value_tag = [0u8; 1];
-        cursor.read_exact(&mut value_tag)?;
-        if value_tag[0] == 1 {
-            // Some(i64): read 8 bytes
-            cursor.set_position(cursor.position() + 8);
-        } else if value_tag[0] != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid Option<i64> tag: {}", value_tag[0]),
-            ));
-        }
-
-        // Read number of actions (CompactSize)
-        let action_len = CompactSize::read(&mut *cursor)? as usize;
-
-        // Skip actions: each is 1-byte version + 148-byte body
-        let orchard_action_len = CompactOrchardAction::latest_versioned_len()?;
-        let action_skip = action_len * orchard_action_len;
-        cursor.set_position(cursor.position() + action_skip as u64);
-
-        Ok(())
+        Self::skip_counted_fixed_entries::<CompactOrchardAction>(cursor)
     }
 }
 
