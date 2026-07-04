@@ -559,6 +559,48 @@ mod get_tx_out_set_info_tests {
     }
 }
 
+#[cfg(test)]
+mod get_blockchain_info_response {
+    use super::GetBlockchainInfoResponse;
+
+    /// Regression test: a validator that predates Ironwood (zcashd, or an unpatched
+    /// zebrad) reports five value pools — no "ironwood" entry. The response must still
+    /// deserialize. `value_pools` was a fixed `[ChainBalance; 6]`, so every
+    /// getblockchaininfo against such a validator failed outright with
+    /// "invalid length 5, expected an array of length 6".
+    ///
+    /// `should_panic` tracks the known bug; remove it together with the fix.
+    #[test]
+    #[should_panic(expected = "five-pool valuePools must deserialize")]
+    fn parses_five_value_pools() {
+        let json = r#"{
+            "chain": "main",
+            "blocks": 2,
+            "bestblockhash": "0000000000000000000000000000000000000000000000000000000000000002",
+            "estimatedheight": 2,
+            "chainSupply": {
+                "chainValue": 0.0,
+                "chainValueZat": 0
+            },
+            "upgrades": {},
+            "valuePools": [
+                { "id": "transparent", "chainValue": 0.0, "chainValueZat": 0 },
+                { "id": "sprout", "chainValue": 0.0, "chainValueZat": 0 },
+                { "id": "sapling", "chainValue": 0.055, "chainValueZat": 5500000 },
+                { "id": "orchard", "chainValue": 0.0, "chainValueZat": 0 },
+                { "id": "lockbox", "chainValue": 0.0, "chainValueZat": 0 }
+            ],
+            "consensus": {
+                "chaintip": "c2d6d0b4",
+                "nextblock": "c2d6d0b4"
+            }
+        }"#;
+
+        serde_json::from_str::<GetBlockchainInfoResponse>(json)
+            .expect("five-pool valuePools must deserialize (pre-Ironwood validator)");
+    }
+}
+
 fn default_header() -> Height {
     Height(0)
 }
