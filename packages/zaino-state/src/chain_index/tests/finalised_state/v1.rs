@@ -91,6 +91,38 @@ pub(crate) async fn load_vectors_v1db_and_reader() -> (
 
 // *** FinalisedState Tests ***
 
+/// Regression test: blocks with no ironwood data must have NO ironwood row.
+///
+/// The ironwood table is sparse — readers treat an absent row as "no ironwood data"
+/// (an absent row reads back as an empty list; a stored all-`None` list reads back
+/// with one `None` per transaction). The write path instead wrote an all-`None`
+/// `OrchardTxList` for every block, paying one serialization + LMDB put per block
+/// across the entire pre-NU6.3 chain for zero information.
+///
+/// The test vectors are pre-NU6.3 regtest blocks, so no block carries ironwood data.
+///
+/// `should_panic` tracks the known bug; remove it together with the fix.
+///
+/// multi_thread required: DbV1 reads run under `tokio::task::block_in_place`.
+#[tokio::test(flavor = "multi_thread")]
+#[should_panic(expected = "no ironwood row may be written")]
+async fn no_ironwood_row_for_blocks_without_ironwood_data() {
+    init_tracing();
+
+    let (_test_vector_data, _db_dir, _zaino_db, db_reader) = load_vectors_v1db_and_reader().await;
+
+    let ironwood_list = db_reader
+        .get_block_ironwood(crate::Height(1))
+        .await
+        .unwrap();
+    assert!(
+        ironwood_list.tx().is_empty(),
+        "no ironwood row may be written for a block without ironwood data \
+         (read back {} entries; an absent row reads back as an empty list)",
+        ironwood_list.tx().len(),
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn shutdown_returns_promptly() {
     super::assert_shutdown_returns_promptly("DbV1", spawn_v1_zaino_db).await;
