@@ -2509,43 +2509,14 @@ impl LightWalletIndexer for StateServiceSubscriber {
         )
         .await?;
 
-        let sapling_tree = hex::encode(
-            treestate_response
-                .sapling()
-                .commitments()
-                .final_state()
-                .clone()
-                .unwrap_or_default(),
-        );
-        let orchard_tree = hex::encode(
-            treestate_response
-                .orchard()
-                .commitments()
-                .final_state()
-                .clone()
-                .unwrap_or_default(),
-        );
-        let ironwood_tree = treestate_response
-            .ironwood()
-            .clone()
-            .and_then(|treestate| treestate.commitments().final_state().clone())
-            .map(hex::encode)
-            .unwrap_or_default();
-
-        Ok(TreeState {
-            network: self
-                .config
+        Ok(super::tree_state_from_treestate_response(
+            self.config
                 .common
                 .network
                 .to_zebra_network()
                 .bip70_network_name(),
-            height: treestate_response.height().0 as u64,
-            hash: treestate_response.hash().to_string(),
-            time: treestate_response.time(),
-            sapling_tree,
-            orchard_tree,
-            ironwood_tree,
-        })
+            treestate_response,
+        ))
     }
 
     /// GetLatestTreeState returns the note commitment tree state corresponding to the chain tip.
