@@ -8,7 +8,14 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- Ironwood (NU6.3) / V6 transaction support: ironwood value balances are
+  read from parsed transactions, and compact-block construction populates
+  `CompactTx.ironwoodActions` and the block's `ironwoodCommitmentTreeSize`.
 ### Changed
+- Transaction parsing delegates to
+  `zebra_chain::transaction::Transaction::zcash_deserialize` (zebra-chain 11),
+  replacing the hand-rolled parser that rejected transactions above v5
+  ("Unsupported tx version 6").
 ### Deprecated
 ### Removed
 ### Fixed
