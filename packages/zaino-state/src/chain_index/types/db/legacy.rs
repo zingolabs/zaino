@@ -364,6 +364,16 @@ impl FixedEncodedLen for TransactionHash {
 #[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
 pub struct Height(pub(crate) u32);
 
+impl Height {
+    /// Iterates every height from `start` through `end` inclusive.
+    ///
+    /// Both bounds are already-valid heights, so every intermediate value is a valid
+    /// height by construction — callers walking a range need no per-step validation.
+    pub(crate) fn range_inclusive(start: Self, end: Self) -> impl Iterator<Item = Self> {
+        (start.0..=end.0).map(Self)
+    }
+}
+
 impl PartialOrd<zebra_chain::block::Height> for Height {
     fn partial_cmp(&self, other: &zebra_chain::block::Height) -> Option<std::cmp::Ordering> {
         Some(self.0.cmp(&other.0))

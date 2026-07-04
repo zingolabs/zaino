@@ -36,9 +36,8 @@ use zaino_proto::proto::utils::{compact_block_with_pool_types, PoolTypeFilter};
 
 const EPHEMERAL_FINALISED_STATE_STATUS_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Converts a raw `u32` block height (a stored [`TxLocation`] height or a walk between two
-/// already-validated [`Height`] bounds) into a [`Height`], surfacing an out-of-range value
-/// as a [`FinalisedStateError`] instead of panicking.
+/// Converts a raw `u32` block height (a stored [`TxLocation`] height) into a [`Height`],
+/// surfacing an out-of-range value as a [`FinalisedStateError`] instead of panicking.
 fn height_from_u32(height: u32) -> Result<Height, FinalisedStateError> {
     Height::try_from(height).map_err(|error| {
         FinalisedStateError::Custom(format!("invalid block height {height}: {error}"))
@@ -457,8 +456,8 @@ impl<T: BlockchainSource> BlockCoreExt for EphemeralFinalisedState<T> {
     ) -> Result<Vec<BlockHeaderData>, FinalisedStateError> {
         let mut headers = Vec::new();
 
-        for height in u32::from(start)..=u32::from(end) {
-            headers.push(self.get_block_header(height_from_u32(height)?).await?);
+        for height in Height::range_inclusive(start, end) {
+            headers.push(self.get_block_header(height).await?);
         }
 
         Ok(headers)
@@ -483,8 +482,8 @@ impl<T: BlockchainSource> BlockCoreExt for EphemeralFinalisedState<T> {
     ) -> Result<Vec<TxidList>, FinalisedStateError> {
         let mut txid_lists = Vec::new();
 
-        for height in u32::from(start)..=u32::from(end) {
-            txid_lists.push(self.get_block_txids(height_from_u32(height)?).await?);
+        for height in Height::range_inclusive(start, end) {
+            txid_lists.push(self.get_block_txids(height).await?);
         }
 
         Ok(txid_lists)
@@ -573,8 +572,8 @@ impl<T: BlockchainSource> BlockTransparentExt for EphemeralFinalisedState<T> {
     ) -> Result<Vec<TransparentTxList>, FinalisedStateError> {
         let mut transparent_lists = Vec::new();
 
-        for height in u32::from(start)..=u32::from(end) {
-            transparent_lists.push(self.get_block_transparent(height_from_u32(height)?).await?);
+        for height in Height::range_inclusive(start, end) {
+            transparent_lists.push(self.get_block_transparent(height).await?);
         }
 
         Ok(transparent_lists)
@@ -657,8 +656,8 @@ impl<T: BlockchainSource> BlockShieldedExt for EphemeralFinalisedState<T> {
     ) -> Result<Vec<SaplingTxList>, FinalisedStateError> {
         let mut sapling_lists = Vec::new();
 
-        for height in u32::from(start)..=u32::from(end) {
-            sapling_lists.push(self.get_block_sapling(height_from_u32(height)?).await?);
+        for height in Height::range_inclusive(start, end) {
+            sapling_lists.push(self.get_block_sapling(height).await?);
         }
 
         Ok(sapling_lists)
@@ -700,8 +699,8 @@ impl<T: BlockchainSource> BlockShieldedExt for EphemeralFinalisedState<T> {
     ) -> Result<Vec<OrchardTxList>, FinalisedStateError> {
         let mut orchard_lists = Vec::new();
 
-        for height in u32::from(start)..=u32::from(end) {
-            orchard_lists.push(self.get_block_orchard(height_from_u32(height)?).await?);
+        for height in Height::range_inclusive(start, end) {
+            orchard_lists.push(self.get_block_orchard(height).await?);
         }
 
         Ok(orchard_lists)
@@ -743,8 +742,8 @@ impl<T: BlockchainSource> BlockShieldedExt for EphemeralFinalisedState<T> {
     ) -> Result<Vec<OrchardTxList>, FinalisedStateError> {
         let mut ironwood_lists = Vec::new();
 
-        for height in u32::from(start)..=u32::from(end) {
-            ironwood_lists.push(self.get_block_ironwood(height_from_u32(height)?).await?);
+        for height in Height::range_inclusive(start, end) {
+            ironwood_lists.push(self.get_block_ironwood(height).await?);
         }
 
         Ok(ironwood_lists)
@@ -765,11 +764,8 @@ impl<T: BlockchainSource> BlockShieldedExt for EphemeralFinalisedState<T> {
     ) -> Result<Vec<CommitmentTreeData>, FinalisedStateError> {
         let mut commitment_tree_data = Vec::new();
 
-        for height in u32::from(start)..=u32::from(end) {
-            commitment_tree_data.push(
-                self.get_block_commitment_tree_data(height_from_u32(height)?)
-                    .await?,
-            );
+        for height in Height::range_inclusive(start, end) {
+            commitment_tree_data.push(self.get_block_commitment_tree_data(height).await?);
         }
 
         Ok(commitment_tree_data)
