@@ -70,9 +70,10 @@ fn empty_orchard_tree_rpc_bytes() -> Vec<u8> {
 /// The z_gettreestate ironwood field is documented as "Only present from NU6.3, so that
 /// pre-NU6.3 responses are unchanged": when the validator reported no ironwood treestate
 /// (below NU6.3 activation, or on a network with no NU6.3 activation height) the slot
-/// must stay `None`, so the response omits the field exactly as zebrad does.
+/// stays `None`, so the response omits the field exactly as zebrad does. This function
+/// names that contract — do not back-fill an empty tree here.
 fn ironwood_treestate_slot(validator_ironwood: Option<Vec<u8>>) -> Option<Vec<u8>> {
-    validator_ironwood.or_else(|| Some(empty_orchard_tree_rpc_bytes()))
+    validator_ironwood
 }
 
 impl BlockchainSource for ValidatorConnector {
@@ -1182,10 +1183,7 @@ mod ironwood_treestate_slot {
     /// ("Only present from NU6.3, so that pre-NU6.3 responses are unchanged"). The slot
     /// was previously back-filled with a serialized empty tree, emitting the field at
     /// every height on every network.
-    ///
-    /// `should_panic` tracks the known bug; remove it together with the fix.
     #[test]
-    #[should_panic(expected = "ironwood slot must stay absent")]
     fn absent_validator_ironwood_stays_absent() {
         assert_eq!(
             super::ironwood_treestate_slot(None),
