@@ -132,30 +132,11 @@ impl DbV1 {
         &self,
         height: Height,
     ) -> Result<TransparentTxList, FinalisedStateError> {
-        let validated_height = self
-            .resolve_validated_hash_or_height(HashOrHeight::Height(height.into()))
-            .await?;
-        let height_bytes = validated_height.to_bytes()?;
-
-        tokio::task::block_in_place(|| {
-            let txn = self.env.begin_ro_txn()?;
-            let raw = match txn.get(self.transparent, &height_bytes) {
-                Ok(val) => val,
-                Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "transparent data missing from db".into(),
-                    ));
-                }
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
-            };
-
-            let entry: StoredEntryVar<TransparentTxList> = StoredEntryVar::from_bytes(raw)
-                .map_err(|e| {
-                    FinalisedStateError::Custom(format!("transparent decode error: {e}"))
-                })?;
-
-            Ok(entry.inner().clone())
-        })
+        self.read_row_at_height(self.transparent, "transparent", height)
+            .await?
+            .ok_or_else(|| {
+                FinalisedStateError::DataUnavailable("transparent data missing from db".into())
+            })
     }
 
     /// Fetches block transparent tx data for the given height range.
@@ -170,47 +151,8 @@ impl DbV1 {
         start: Height,
         end: Height,
     ) -> Result<Vec<TransparentTxList>, FinalisedStateError> {
-        if end.0 < start.0 {
-            return Err(FinalisedStateError::Custom(
-                "invalid block range: end < start".to_string(),
-            ));
-        }
-
-        self.validate_block_range(start, end).await?;
-        let start_bytes = start.to_bytes()?;
-        let end_bytes = end.to_bytes()?;
-
-        let raw_entries = tokio::task::block_in_place(|| {
-            let txn = self.env.begin_ro_txn()?;
-            let mut raw_entries = Vec::new();
-            let mut cursor = match txn.open_ro_cursor(self.transparent) {
-                Ok(cursor) => cursor,
-                Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "transparent data missing from db".into(),
-                    ));
-                }
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
-            };
-            for (k, v) in cursor.iter_from(&start_bytes[..]) {
-                if k > &end_bytes[..] {
-                    break;
-                }
-                raw_entries.push(v.to_vec());
-            }
-            Ok::<Vec<Vec<u8>>, FinalisedStateError>(raw_entries)
-        })?;
-
-        raw_entries
-            .into_iter()
-            .map(|bytes| {
-                StoredEntryVar::<TransparentTxList>::from_bytes(&bytes)
-                    .map(|e| e.inner().clone())
-                    .map_err(|e| {
-                        FinalisedStateError::Custom(format!("transparent decode error: {e}"))
-                    })
-            })
-            .collect()
+        self.scan_rows(self.transparent, "transparent", start, end)
+            .await
     }
 
     // *** Internal DB methods ***

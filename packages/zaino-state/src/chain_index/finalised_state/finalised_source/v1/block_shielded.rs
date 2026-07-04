@@ -123,28 +123,11 @@ impl DbV1 {
         &self,
         height: Height,
     ) -> Result<SaplingTxList, FinalisedStateError> {
-        let validated_height = self
-            .resolve_validated_hash_or_height(HashOrHeight::Height(height.into()))
-            .await?;
-        let height_bytes = validated_height.to_bytes()?;
-
-        tokio::task::block_in_place(|| {
-            let txn = self.env.begin_ro_txn()?;
-            let raw = match txn.get(self.sapling, &height_bytes) {
-                Ok(val) => val,
-                Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "sapling data missing from db".into(),
-                    ));
-                }
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
-            };
-
-            let entry: StoredEntryVar<SaplingTxList> = StoredEntryVar::from_bytes(raw)
-                .map_err(|e| FinalisedStateError::Custom(format!("sapling decode error: {e}")))?;
-
-            Ok(entry.inner().clone())
-        })
+        self.read_row_at_height(self.sapling, "sapling", height)
+            .await?
+            .ok_or_else(|| {
+                FinalisedStateError::DataUnavailable("sapling data missing from db".into())
+            })
     }
 
     /// Fetches block sapling tx data for the given height range.
@@ -159,45 +142,7 @@ impl DbV1 {
         start: Height,
         end: Height,
     ) -> Result<Vec<SaplingTxList>, FinalisedStateError> {
-        if end.0 < start.0 {
-            return Err(FinalisedStateError::Custom(
-                "invalid block range: end < start".to_string(),
-            ));
-        }
-
-        self.validate_block_range(start, end).await?;
-        let start_bytes = start.to_bytes()?;
-        let end_bytes = end.to_bytes()?;
-
-        let raw_entries = tokio::task::block_in_place(|| {
-            let txn = self.env.begin_ro_txn()?;
-            let mut raw_entries = Vec::new();
-            let mut cursor = match txn.open_ro_cursor(self.sapling) {
-                Ok(cursor) => cursor,
-                Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "sapling data missing from db".into(),
-                    ));
-                }
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
-            };
-            for (k, v) in cursor.iter_from(&start_bytes[..]) {
-                if k > &end_bytes[..] {
-                    break;
-                }
-                raw_entries.push(v.to_vec());
-            }
-            Ok::<Vec<Vec<u8>>, FinalisedStateError>(raw_entries)
-        })?;
-
-        raw_entries
-            .into_iter()
-            .map(|bytes| {
-                StoredEntryVar::<SaplingTxList>::from_bytes(&bytes)
-                    .map(|e| e.inner().clone())
-                    .map_err(|e| FinalisedStateError::Custom(format!("sapling decode error: {e}")))
-            })
-            .collect()
+        self.scan_rows(self.sapling, "sapling", start, end).await
     }
 
     /// Fetch the serialized OrchardCompactTx for the given TxLocation, if present.
@@ -221,28 +166,11 @@ impl DbV1 {
         &self,
         height: Height,
     ) -> Result<OrchardTxList, FinalisedStateError> {
-        let validated_height = self
-            .resolve_validated_hash_or_height(HashOrHeight::Height(height.into()))
-            .await?;
-        let height_bytes = validated_height.to_bytes()?;
-
-        tokio::task::block_in_place(|| {
-            let txn = self.env.begin_ro_txn()?;
-            let raw = match txn.get(self.orchard, &height_bytes) {
-                Ok(val) => val,
-                Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "orchard data missing from db".into(),
-                    ));
-                }
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
-            };
-
-            let entry: StoredEntryVar<OrchardTxList> = StoredEntryVar::from_bytes(raw)
-                .map_err(|e| FinalisedStateError::Custom(format!("orchard decode error: {e}")))?;
-
-            Ok(entry.inner().clone())
-        })
+        self.read_row_at_height(self.orchard, "orchard", height)
+            .await?
+            .ok_or_else(|| {
+                FinalisedStateError::DataUnavailable("orchard data missing from db".into())
+            })
     }
 
     /// Fetches block orchard tx data for the given height range.
@@ -257,45 +185,7 @@ impl DbV1 {
         start: Height,
         end: Height,
     ) -> Result<Vec<OrchardTxList>, FinalisedStateError> {
-        if end.0 < start.0 {
-            return Err(FinalisedStateError::Custom(
-                "invalid block range: end < start".to_string(),
-            ));
-        }
-
-        self.validate_block_range(start, end).await?;
-        let start_bytes = start.to_bytes()?;
-        let end_bytes = end.to_bytes()?;
-
-        let raw_entries = tokio::task::block_in_place(|| {
-            let txn = self.env.begin_ro_txn()?;
-            let mut raw_entries = Vec::new();
-            let mut cursor = match txn.open_ro_cursor(self.orchard) {
-                Ok(cursor) => cursor,
-                Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "orchard data missing from db".into(),
-                    ));
-                }
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
-            };
-            for (k, v) in cursor.iter_from(&start_bytes[..]) {
-                if k > &end_bytes[..] {
-                    break;
-                }
-                raw_entries.push(v.to_vec());
-            }
-            Ok::<Vec<Vec<u8>>, FinalisedStateError>(raw_entries)
-        })?;
-
-        raw_entries
-            .into_iter()
-            .map(|bytes| {
-                StoredEntryVar::<OrchardTxList>::from_bytes(&bytes)
-                    .map(|e| e.inner().clone())
-                    .map_err(|e| FinalisedStateError::Custom(format!("orchard decode error: {e}")))
-            })
-            .collect()
+        self.scan_rows(self.orchard, "orchard", start, end).await
     }
 
     /// Fetch the serialized `OrchardCompactTx` for the given TxLocation from the ironwood table.
@@ -323,24 +213,10 @@ impl DbV1 {
         &self,
         height: Height,
     ) -> Result<OrchardTxList, FinalisedStateError> {
-        let validated_height = self
-            .resolve_validated_hash_or_height(HashOrHeight::Height(height.into()))
-            .await?;
-        let height_bytes = validated_height.to_bytes()?;
-
-        tokio::task::block_in_place(|| {
-            let txn = self.env.begin_ro_txn()?;
-            let raw = match txn.get(self.ironwood, &height_bytes) {
-                Ok(val) => val,
-                Err(lmdb::Error::NotFound) => return Ok(OrchardTxList::new(Vec::new())),
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
-            };
-
-            let entry: StoredEntryVar<OrchardTxList> = StoredEntryVar::from_bytes(raw)
-                .map_err(|e| FinalisedStateError::Custom(format!("ironwood decode error: {e}")))?;
-
-            Ok(entry.inner().clone())
-        })
+        Ok(self
+            .read_row_at_height(self.ironwood, "ironwood", height)
+            .await?
+            .unwrap_or_else(|| OrchardTxList::new(Vec::new())))
     }
 
     /// Fetches block ironwood tx data for the given (inclusive) height range.
@@ -375,29 +251,11 @@ impl DbV1 {
         &self,
         height: Height,
     ) -> Result<CommitmentTreeData, FinalisedStateError> {
-        let validated_height = self
-            .resolve_validated_hash_or_height(HashOrHeight::Height(height.into()))
-            .await?;
-        let height_bytes = validated_height.to_bytes()?;
-
-        tokio::task::block_in_place(|| {
-            let txn = self.env.begin_ro_txn()?;
-            let raw = match txn.get(self.commitment_tree_data, &height_bytes) {
-                Ok(val) => val,
-                Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "commitment tree data missing from db".into(),
-                    ));
-                }
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
-            };
-
-            let entry = StoredEntryVar::<CommitmentTreeData>::from_bytes(raw).map_err(|e| {
-                FinalisedStateError::Custom(format!("commitment_tree decode error: {e}"))
-            })?;
-
-            Ok(entry.item)
-        })
+        self.read_row_at_height(self.commitment_tree_data, "commitment_tree", height)
+            .await?
+            .ok_or_else(|| {
+                FinalisedStateError::DataUnavailable("commitment tree data missing from db".into())
+            })
     }
 
     /// Fetches block commitment tree data for the given height range.
@@ -412,47 +270,8 @@ impl DbV1 {
         start: Height,
         end: Height,
     ) -> Result<Vec<CommitmentTreeData>, FinalisedStateError> {
-        if end.0 < start.0 {
-            return Err(FinalisedStateError::Custom(
-                "invalid block range: end < start".to_string(),
-            ));
-        }
-
-        self.validate_block_range(start, end).await?;
-        let start_bytes = start.to_bytes()?;
-        let end_bytes = end.to_bytes()?;
-
-        let raw_entries = tokio::task::block_in_place(|| {
-            let txn = self.env.begin_ro_txn()?;
-            let mut raw_entries = Vec::new();
-            let mut cursor = match txn.open_ro_cursor(self.commitment_tree_data) {
-                Ok(cursor) => cursor,
-                Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "commitment tree data missing from db".into(),
-                    ));
-                }
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
-            };
-            for (k, v) in cursor.iter_from(&start_bytes[..]) {
-                if k > &end_bytes[..] {
-                    break;
-                }
-                raw_entries.push(v.to_vec());
-            }
-            Ok::<Vec<Vec<u8>>, FinalisedStateError>(raw_entries)
-        })?;
-
-        raw_entries
-            .into_iter()
-            .map(|bytes| {
-                StoredEntryVar::<CommitmentTreeData>::from_bytes(&bytes)
-                    .map(|e| e.item)
-                    .map_err(|e| {
-                        FinalisedStateError::Custom(format!("commitment_tree decode error: {e}"))
-                    })
-            })
-            .collect()
+        self.scan_rows(self.commitment_tree_data, "commitment_tree", start, end)
+            .await
     }
 
     // *** Internal DB methods ***
