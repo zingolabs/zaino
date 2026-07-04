@@ -1909,3 +1909,57 @@ pub struct GetMempoolInfoResponse {
 impl ResponseToError for GetMempoolInfoResponse {
     type RpcError = Infallible;
 }
+
+#[cfg(test)]
+mod get_transaction_response {
+    use super::GetTransactionResponse;
+
+    /// Regression test: the `ironwood` field must be read from the `"ironwood"` JSON key.
+    /// It was copy-pasted reading `"orchard"`, so a real ironwood bundle in a verbose
+    /// `getrawtransaction` response was silently dropped and the orchard bundle was
+    /// duplicated into the ironwood slot.
+    ///
+    /// `should_panic` tracks the known bug; remove it together with the fix.
+    #[test]
+    #[should_panic(expected = "ironwood field must carry")]
+    fn ironwood_field_reads_ironwood_key() {
+        let tx_json = serde_json::json!({
+            "hex": "00",
+            "txid": "0000000000000000000000000000000000000000000000000000000000000001",
+            "version": 6,
+            "locktime": 0,
+            "orchard": {
+                "actions": [],
+                "valueBalance": -1.11,
+                "valueBalanceZat": -111,
+            },
+            "ironwood": {
+                "actions": [],
+                "valueBalance": -2.22,
+                "valueBalanceZat": -222,
+            },
+        });
+
+        let response: GetTransactionResponse =
+            serde_json::from_value(tx_json).expect("test transaction JSON deserializes");
+        let GetTransactionResponse::Object(tx_object) = response else {
+            panic!("verbose transaction JSON must deserialize to the Object variant");
+        };
+
+        let orchard = tx_object
+            .orchard()
+            .as_ref()
+            .expect("orchard bundle present in JSON");
+        assert_eq!(orchard.value_balance_zat(), -111);
+
+        let ironwood = tx_object
+            .ironwood()
+            .as_ref()
+            .expect("ironwood bundle present in JSON");
+        assert_eq!(
+            ironwood.value_balance_zat(),
+            -222,
+            "ironwood field must carry the \"ironwood\" JSON payload, not a copy of \"orchard\""
+        );
+    }
+}
