@@ -104,8 +104,11 @@ async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() {
         // implementation's answer to compare zaino's served metadata against. Package
         // tests cannot express this: their "source of truth" is the object being
         // served, so any such comparison is circular.
+        // Verbosity 1: txids-as-strings plus the `trees` field the oracle needs
+        // (verbosity 2 returns full transaction objects, which BlockObject's
+        // string-typed `tx` field rejects).
         let oracle_trees = match connector
-            .get_block(block.height.to_string(), Some(2))
+            .get_block(block.height.to_string(), Some(1))
             .await
             .expect("validator serves verbose blocks")
         {
