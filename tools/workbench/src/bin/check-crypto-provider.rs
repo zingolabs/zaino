@@ -125,7 +125,7 @@ fn check_ring_edges(ring_tree: &str) -> Result<(), Vec<String>> {
 fn ring_selecting_edges(tree: &str) -> BTreeSet<String> {
     tree.lines()
         .map(|line| {
-            line.trim_start_matches(|c| matches!(c, '│' | '├' | '└' | '─' | ' '))
+            line.trim_start_matches(['│', '├', '└', '─', ' '])
                 .trim_end_matches(" (*)")
         })
         .filter(|node| {
