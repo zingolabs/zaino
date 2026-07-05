@@ -67,6 +67,26 @@ macro_rules! validator_tests {
     };
 }
 
+/// Orchard-era-only fixture: every upgrade through NU6.2 active from height 2 and
+/// NU6.3 never activating, so coinbases stay Orchard for the whole chain. For
+/// client-free launches only — the zcash-devtool wallet hardcodes the canonical
+/// regtest set (NU6.3 at 2), so wallet-built transactions on this fixture would fail
+/// consensus branch-id validation.
+pub const ORCHARD_ONLY_ACTIVATION_HEIGHTS: ActivationHeights = ActivationHeights {
+    before_overwinter: Some(1),
+    overwinter: Some(1),
+    sapling: Some(1),
+    blossom: Some(1),
+    heartwood: Some(1),
+    canopy: Some(1),
+    nu5: Some(2),
+    nu6: Some(2),
+    nu6_1: Some(2),
+    nu6_2: Some(2),
+    nu6_3: None,
+    nu7: None,
+};
+
 /// Zebrad regtest heights with every upgrade through NU6.3 active from height 2, so
 /// generated blocks carry V6 coinbases from the first post-genesis era.
 pub const NU6_3_ACTIVE_ACTIVATION_HEIGHTS: ActivationHeights = ActivationHeights {

@@ -5,6 +5,11 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use zebra_chain::parameters::testnet::ConfiguredActivationHeights;
 
+/// Must equal zcash_local_net's `supported_regtest_activation_heights`: the
+/// zcash-devtool wallet client hardcodes that canonical set (NU6.3 at 2), and a
+/// zebrad configured differently rejects wallet-built transactions with
+/// "incorrect consensus branch id". See
+/// <https://github.com/zingolabs/zaino/issues/1368>.
 pub const ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS: ActivationHeights = ActivationHeights {
     overwinter: Some(1),
     before_overwinter: Some(1),
@@ -16,7 +21,7 @@ pub const ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS: ActivationHeights = ActivationHeigh
     nu6: Some(2),
     nu6_1: Some(2),
     nu6_2: Some(2),
-    nu6_3: None,
+    nu6_3: Some(2),
     nu7: None,
 };
 

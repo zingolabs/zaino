@@ -7,10 +7,7 @@ use proptest::{
 };
 use rand::seq::IndexedRandom;
 use tokio_stream::StreamExt as _;
-use zaino_common::{
-    network::{ActivationHeights, ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS},
-    DatabaseConfig, Network, StorageConfig,
-};
+use zaino_common::{network::ActivationHeights, DatabaseConfig, Network, StorageConfig};
 use zaino_fetch::jsonrpsee::response::address_deltas::{
     GetAddressDeltasParams, GetAddressDeltasResponse,
 };
@@ -484,13 +481,29 @@ fn passthrough_metadata_consistency_ironwood_only() {
     metadata_consistency_for_era(NU6_3_ACTIVE_HEIGHTS, Some(2), false)
 }
 
-/// Orchard-only era on the current zebrad default heights (NU6.3 never activates):
-/// fake Orchard content from height 2, and — since zebra's stock strategy cannot
-/// generate V6 — ironwood provably never appears anywhere in the chain or the served
-/// form.
+/// Orchard-only heights: every upgrade through NU6.2 at height 2, NU6.3 never
+/// activating.
+const ORCHARD_ONLY_HEIGHTS: ActivationHeights = ActivationHeights {
+    before_overwinter: Some(1),
+    overwinter: Some(1),
+    sapling: Some(1),
+    blossom: Some(1),
+    heartwood: Some(1),
+    canopy: Some(1),
+    nu5: Some(2),
+    nu6: Some(2),
+    nu6_1: Some(2),
+    nu6_2: Some(2),
+    nu6_3: None,
+    nu7: None,
+};
+
+/// Orchard-only era (NU6.3 never activates): fake Orchard content from height 2,
+/// and — since zebra's stock strategy cannot generate V6 — ironwood provably never
+/// appears anywhere in the chain or the served form.
 #[test]
 fn passthrough_metadata_consistency_orchard_only() {
-    metadata_consistency_for_era(ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS, None, false)
+    metadata_consistency_for_era(ORCHARD_ONLY_HEIGHTS, None, false)
 }
 
 /// The transition: fake Orchard content below the NU6.3 boundary, fake Ironwood

@@ -10,7 +10,7 @@
 //! the unfiltered request shape (empty `poolTypes`): orchard-only, ironwood-only, and
 //! the orchard→ironwood transition at the NU6.3 activation boundary.
 
-use zaino_common::network::{ActivationHeights, ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS};
+use zaino_common::network::ActivationHeights;
 use zaino_proto::proto::compact_formats::CompactBlock;
 use zaino_proto::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
 use zaino_proto::proto::service::{BlockId, BlockRange};
@@ -19,7 +19,8 @@ use zaino_state::FetchService;
 use zaino_state::ZcashIndexer as _;
 use zaino_testutils::{
     make_uri, MinerPool, TestManager, ValidatorKind, NU6_3_ACTIVE_ACTIVATION_HEIGHTS,
-    NU6_3_TRANSITION_BOUNDARY, ORCHARD_THEN_IRONWOOD_ACTIVATION_HEIGHTS,
+    NU6_3_TRANSITION_BOUNDARY, ORCHARD_ONLY_ACTIVATION_HEIGHTS,
+    ORCHARD_THEN_IRONWOOD_ACTIVATION_HEIGHTS,
 };
 use zcash_local_net::validator::zebrad::Zebrad;
 
@@ -147,14 +148,14 @@ async fn assert_wire_served_eras(
     test_manager.close().await;
 }
 
-/// Orchard-only era over the wire: NU6.3 never activates (the current zebrad default
-/// heights), so the served stream carries Orchard actions from height 2 and no
-/// ironwood anywhere.
+/// Orchard-only era over the wire: NU6.3 never activates (explicit fixture — the
+/// zebrad default heights are now the canonical NU6.3-at-2 set), so the served
+/// stream carries Orchard actions from height 2 and no ironwood anywhere.
 ///
 /// multi_thread required: the test manager spawns the validator, indexer, and zainod.
 #[tokio::test(flavor = "multi_thread")]
 async fn orchard_only_wire_serving_zebrad() {
-    assert_wire_served_eras(ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS, 6, |height| {
+    assert_wire_served_eras(ORCHARD_ONLY_ACTIVATION_HEIGHTS, 6, |height| {
         if height >= 2 {
             CoinbaseEra::Orchard
         } else {

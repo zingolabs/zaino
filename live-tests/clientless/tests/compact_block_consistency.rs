@@ -15,7 +15,8 @@ use zaino_state::FetchService;
 use zaino_state::ZcashIndexer as _;
 use zaino_testutils::{
     MinerPool, TestManager, ValidatorKind, NU6_3_ACTIVE_ACTIVATION_HEIGHTS,
-    NU6_3_TRANSITION_BOUNDARY, ORCHARD_THEN_IRONWOOD_ACTIVATION_HEIGHTS,
+    NU6_3_TRANSITION_BOUNDARY, ORCHARD_ONLY_ACTIVATION_HEIGHTS,
+    ORCHARD_THEN_IRONWOOD_ACTIVATION_HEIGHTS,
 };
 use zcash_local_net::validator::zebrad::Zebrad;
 use zebra_chain::serialization::ZcashDeserialize as _;
@@ -301,23 +302,20 @@ async fn assert_coinbase_routing(
     test_manager.close().await;
 }
 
-/// Orchard-only era: NU6.3 never activates (the current zebrad default heights), so
-/// every post-NU5 coinbase stays an Orchard coinbase and no ironwood ever appears.
+/// Orchard-only era: NU6.3 never activates, so every post-NU5 coinbase stays an
+/// Orchard coinbase and no ironwood ever appears. (The zebrad *default* heights are
+/// now the canonical NU6.3-at-2 set, so this fixture is explicit.)
 ///
 /// multi_thread required: the test manager spawns the validator and indexer services.
 #[tokio::test(flavor = "multi_thread")]
 async fn orchard_only_coinbase_routing_zebrad() {
-    assert_coinbase_routing(
-        zaino_common::network::ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS,
-        6,
-        |height| {
-            if height >= 2 {
-                CoinbaseEra::Orchard
-            } else {
-                CoinbaseEra::Neither
-            }
-        },
-    )
+    assert_coinbase_routing(ORCHARD_ONLY_ACTIVATION_HEIGHTS, 6, |height| {
+        if height >= 2 {
+            CoinbaseEra::Orchard
+        } else {
+            CoinbaseEra::Neither
+        }
+    })
     .await;
 }
 
