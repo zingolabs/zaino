@@ -53,7 +53,7 @@ metrics = { workspace = true, optional = true }
 
 # Miscellaneous Workspace
 tokio = { workspace = true, features = ["full"] }
-tonic = { workspace = true, features = ["tls-native-roots", "tls-ring"] }
+tonic = { workspace = true, features = ["tls-native-roots", "tls-aws-lc"] }
 thiserror = { workspace = true }
 futures = { workspace = true }
 jsonrpsee = { workspace = true, features = ["server", "macros"] }

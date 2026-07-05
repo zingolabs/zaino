@@ -7,8 +7,9 @@
 //! TLS acceptor panicked at runtime ("Could not automatically determine
 //! the process-level CryptoProvider") — but only on TLS-enabled
 //! deployments, a path no test exercised because every existing test
-//! ran plaintext. The fix pins the feature graph to `ring` and installs
-//! the provider explicitly (`ensure_crypto_provider`); this test covers
+//! ran plaintext. The fix pins the feature graph to a single provider —
+//! `aws-lc-rs`, the preferred provider per ADR-0006 — and installs it
+//! explicitly (`ensure_default_crypto_provider`); this test covers
 //! the full TLS startup + handshake path so a future provider-selection
 //! or certificate-wiring regression fails in CI instead of production.
 //!
