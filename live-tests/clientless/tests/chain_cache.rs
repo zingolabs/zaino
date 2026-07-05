@@ -114,6 +114,7 @@ mod chain_query_interface {
                                 nu6: local_net_activation_heights.nu6(),
                                 nu6_1: local_net_activation_heights.nu6_1(),
                                 nu6_2: local_net_activation_heights.nu6_2(),
+                                nu6_3: local_net_activation_heights.nu6_3(),
                                 nu7: local_net_activation_heights.nu7(),
                             },
                         ))

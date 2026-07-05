@@ -396,6 +396,88 @@ Bug Fixes / Optimisations
   finalised reads from the backing source.
 
 --------------------------------------------------------------------------------
+DB VERSION v1.3.0 (from v1.2.1)
+Date: 2026-07-03
+--------------------------------------------------------------------------------
+
+Summary
+- Persist and serve the Ironwood (NU6.3) shielded pool from the finalised state.
+  Ironwood actions reuse the Orchard compact types (`OrchardCompactTx` /
+  `CompactOrchardAction`), matching zebra, which exposes ironwood actions as
+  `orchard::Action`.
+- Add a new per-height `ironwood` table (`ironwood_1_3_0`) storing
+  `StoredEntryVar<OrchardTxList>`, written for every block from v1.3.0 onward.
+- Rebuild the `commitment_tree_data` table from the legacy fixed-length
+  `StoredEntryFixed<CommitmentTreeData>` (V1) layout into the variable-length
+  `StoredEntryVar<CommitmentTreeData>` (V2) layout, which carries the optional
+  Ironwood commitment-tree root and the Ironwood tree size. The rebuild moves the
+  data into a new table (`commitment_tree_data_1_3_0`) and drops the old one.
+
+On-disk schema
+- Layout:
+  - No directory layout changes (still `<base>/<network>/v1/`).
+- Tables:
+  - Added: `ironwood` — per-height ironwood compact tx data
+    (LMDB database name: `ironwood_1_3_0`, `StoredEntryVar<OrchardTxList>`).
+  - Renamed/rebuilt: `commitment_tree_data` moves from the fixed-length table
+    `commitment_tree_data_1_0_0` (`StoredEntryFixed<CommitmentTreeData>`, V1) to
+    the variable-length table `commitment_tree_data_1_3_0`
+    (`StoredEntryVar<CommitmentTreeData>`, V2). The legacy table is cleared once
+    the rebuild completes.
+  - Removed: legacy `commitment_tree_data_1_0_0` contents (table cleared).
+- Encoding:
+  - Values: `CommitmentTreeData` gains a V2 body — `CommitmentTreeRoots` adds an
+    `Option<32-byte ironwood_root>` and `CommitmentTreeSizes` adds
+    `LE(u32) ironwood_total`. Because the optional root makes the record
+    variable-length, the table wrapper changes from `StoredEntryFixed` to
+    `StoredEntryVar`.
+  - Checksums / validation: `DB_SCHEMA_V1_HASH` updated to match the revised
+    schema text. Ironwood rows are checksum-protected by their height key.
+- Invariants:
+  - Blocks written from v1.3.0 have an `ironwood` row aligned to the block's tx
+    list. Blocks written before v1.3.0 (all below NU6.3 activation) have no
+    ironwood row; readers and startup validation treat a missing row as
+    "no ironwood data at this height".
+
+API / capabilities
+- Capability changes:
+  - No new capability bit: ironwood reads reuse `BLOCK_SHIELDED_EXT` and ironwood
+    compact-block/commitment data reuse `COMPACT_BLOCK_EXT`.
+- Public surface changes:
+  - Added `BlockShieldedExt::{get_ironwood, get_block_ironwood,
+    get_block_range_ironwood}` (and the `DbReader` wrappers), mirroring the
+    orchard accessors.
+  - Compact blocks now populate `CompactTx.ironwood_actions` and
+    `ChainMetadata.ironwood_commitment_tree_size`; `IndexedBlock` materialisation
+    returns real ironwood tx data.
+
+Migration
+- Strategy: in-place rebuild from existing on-disk data (no validator refetch),
+  single re-entrant step.
+- Guard: refuses to run if the DB tip is at or above NU6.3 activation (such a
+  database was synced without ironwood data and must be re-indexed from the
+  validator). Below activation every stored block predates ironwood, so the
+  rebuild sets ironwood root/size to their defaults.
+- Backfill: rebuilds each height's commitment row from the legacy fixed-length
+  row into the new `StoredEntryVar` (V2) table, then clears the legacy table. The
+  new `ironwood` table starts empty (no pre-NU6.3 block has ironwood data).
+- Completion criteria: all heights through the tip rebuilt; `DbMetadata.version`
+  advanced to v1.3.0 with the refreshed schema hash; the temporary progress key
+  (`_migration_commitment_tree_data_progress_1_3_0_next_height`) removed.
+- Failure handling: resumes from the temporary progress height; each rebuilt row
+  and the progress watermark commit together, and re-seen rows are accepted after
+  `NO_OVERWRITE` + byte-match verification.
+
+Bug Fixes / Optimisations
+- Fixed `TreeRootData::extract_with_defaults` reading the orchard tree where it
+  should read ironwood, and `extract_ironwood_data` using the orchard value
+  balance amount instead of the ironwood amount.
+- `to_compact_block`, the compact-block assembly, and the compact-block stream no
+  longer hardcode `ironwood_commitment_tree_size: 0` / empty ironwood actions.
+- Compact-tx "omit empty transaction" filters now consider ironwood actions.
+- The Fetch backend's `z_get_treestate` no longer discards the ironwood treestate.
+
+--------------------------------------------------------------------------------
 v0 SCHEMA SUPPORT REMOVED (no DB version change)
 Date: 2026-06-18
 --------------------------------------------------------------------------------

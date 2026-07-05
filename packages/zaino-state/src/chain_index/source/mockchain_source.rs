@@ -551,24 +551,34 @@ impl BlockchainSource for MockchainSource {
     }
 
     /// Returns the sapling and orchard treestate by hash
-    async fn get_treestate(
-        &self,
-        id: BlockHash,
-    ) -> BlockchainSourceResult<(Option<Vec<u8>>, Option<Vec<u8>>)> {
+    ///
+    /// TODO: Update test vectors to support ironwood.
+    async fn get_treestate(&self, id: BlockHash) -> BlockchainSourceResult<super::TreestateBytes> {
         let active_chain_height = self.active_height() as usize; // serve up to active tip
 
         if let Some(height) = self.hashes.iter().position(|h| h == &id) {
             if height <= active_chain_height {
                 let (sapling_state, orchard_state) = &self.treestates[height];
-                Ok((Some(sapling_state.clone()), Some(orchard_state.clone())))
+                Ok((
+                    Some(super::PoolTreestate {
+                        final_root: None,
+                        final_state: sapling_state.clone(),
+                    }),
+                    Some(super::PoolTreestate {
+                        final_root: None,
+                        final_state: orchard_state.clone(),
+                    }),
+                    None,
+                ))
             } else {
-                Ok((None, None))
+                Ok((None, None, None))
             }
         } else {
-            Ok((None, None))
+            Ok((None, None, None))
         }
     }
 
+    /// TODO: Update test vectors to support ironwood.
     async fn get_subtree_roots(
         &self,
         pool: ShieldedPool,
@@ -652,28 +662,32 @@ impl BlockchainSource for MockchainSource {
                     }
                 }
             }
+            ShieldedPool::Ironwood => {}
         }
 
         Ok(subtree_roots)
     }
 
+    /// TODO: Update test vectors to support ironwood.
     async fn get_commitment_tree_roots(
         &self,
         id: BlockHash,
     ) -> BlockchainSourceResult<(
         Option<(zebra_chain::sapling::tree::Root, u64)>,
         Option<(zebra_chain::orchard::tree::Root, u64)>,
+        Option<(zebra_chain::orchard::tree::Root, u64)>,
     )> {
         let active_chain_height = self.active_height() as usize; // serve up to active tip
 
         if let Some(height) = self.hashes.iter().position(|h| h == &id) {
             if height <= active_chain_height {
-                Ok(self.roots[height])
+                let (sapling, orchard) = self.roots[height];
+                Ok((sapling, orchard, None))
             } else {
-                Ok((None, None))
+                Ok((None, None, None))
             }
         } else {
-            Ok((None, None))
+            Ok((None, None, None))
         }
     }
 

@@ -361,7 +361,7 @@ pub struct GetBlockchainInfoResponse {
 
     /// Value pool balances
     #[serde(rename = "valuePools")]
-    value_pools: [ChainBalance; 5],
+    value_pools: Vec<ChainBalance>,
 
     /// Branch IDs of the current and upcoming consensus rules
     pub consensus: zebra_rpc::methods::TipConsensusBranch,
@@ -539,6 +539,7 @@ mod get_tx_out_set_info_tests {
                 { "id": "sprout", "chainValue": 0.0, "chainValueZat": 0 },
                 { "id": "sapling", "chainValue": 0.0, "chainValueZat": 0 },
                 { "id": "orchard", "chainValue": 0.0, "chainValueZat": 0 },
+                { "id": "ironwood", "chainValue": 0.0, "chainValueZat": 0 },
                 { "id": "deferred", "chainValue": 0.0, "chainValueZat": 0 }
             ],
             "consensus": {
@@ -548,18 +549,63 @@ mod get_tx_out_set_info_tests {
         }"#;
 
         let parsed: GetBlockchainInfoResponse = serde_json::from_str(json).unwrap();
-        let (name, activation_height, status) = parsed
-            .upgrades
-            .values()
-            .next()
-            .unwrap()
-            .clone()
-            .into_parts();
+        let (name, activation_height, status) =
+            parsed.upgrades.values().next().unwrap().into_parts();
 
         assert_eq!(name, zebra_chain::parameters::NetworkUpgrade::Nu6_2);
         assert_eq!(activation_height, zebra_chain::block::Height(2));
         assert_eq!(status, zebra_rpc::methods::NetworkUpgradeStatus::Active);
         assert_eq!(parsed.consensus.into_parts(), (0x5437f330, 0x5437f330));
+    }
+}
+
+#[cfg(test)]
+mod get_blockchain_info_response {
+    use super::GetBlockchainInfoResponse;
+
+    /// Regression test: a validator that predates Ironwood (zcashd, or an unpatched
+    /// zebrad) reports five value pools — no "ironwood" entry. The response must still
+    /// deserialize. `value_pools` was a fixed `[ChainBalance; 6]`, so every
+    /// getblockchaininfo against such a validator failed outright with
+    /// "invalid length 5, expected an array of length 6".
+    ///
+    #[test]
+    fn parses_five_value_pools() {
+        let json = r#"{
+            "chain": "main",
+            "blocks": 2,
+            "bestblockhash": "0000000000000000000000000000000000000000000000000000000000000002",
+            "estimatedheight": 2,
+            "chainSupply": {
+                "chainValue": 0.0,
+                "chainValueZat": 0
+            },
+            "upgrades": {},
+            "valuePools": [
+                { "id": "transparent", "chainValue": 0.0, "chainValueZat": 0 },
+                { "id": "sprout", "chainValue": 0.0, "chainValueZat": 0 },
+                { "id": "sapling", "chainValue": 0.055, "chainValueZat": 5500000 },
+                { "id": "orchard", "chainValue": 0.0, "chainValueZat": 0 },
+                { "id": "lockbox", "chainValue": 0.0, "chainValueZat": 0 }
+            ],
+            "consensus": {
+                "chaintip": "c2d6d0b4",
+                "nextblock": "c2d6d0b4"
+            }
+        }"#;
+
+        let parsed = serde_json::from_str::<GetBlockchainInfoResponse>(json)
+            .expect("five-pool valuePools must deserialize (pre-Ironwood validator)");
+
+        let pools = super::value_pools_array(parsed.value_pools);
+        // Zebra's canonical order: transparent, sprout, sapling, orchard, deferred, ironwood.
+        assert_eq!(pools[2].id(), "sapling");
+        assert_eq!(pools[2].chain_value_zat().zatoshis(), 5_500_000);
+        // zcashd's "lockbox" entry lands in the deferred slot (zebra also names it "lockbox").
+        assert_eq!(pools[4].id(), "lockbox");
+        // The pool the validator did not report is back-filled with a zero balance.
+        assert_eq!(pools[5].id(), "ironwood");
+        assert_eq!(pools[5].chain_value_zat().zatoshis(), 0);
     }
 }
 
@@ -660,6 +706,9 @@ impl<'de> Deserialize<'de> for ChainBalance {
             "orchard" => Ok(ChainBalance(GetBlockchainInfoBalance::orchard(
                 amount, None, /*TODO: handle optional delta*/
             ))),
+            "ironwood" => Ok(ChainBalance(GetBlockchainInfoBalance::ironwood(
+                amount, None, /*TODO: handle optional delta*/
+            ))),
             // TODO: Investigate source of undocument 'lockbox' value
             // that likely is intended to be 'deferred'
             "lockbox" | "deferred" => Ok(ChainBalance(GetBlockchainInfoBalance::deferred(
@@ -680,6 +729,21 @@ impl Default for ChainBalance {
     }
 }
 
+/// Fills zebra's canonical six-pool array from however many pools the validator
+/// reported, leaving zero balances for pools the validator does not know about
+/// (a pre-Ironwood validator reports five: no "ironwood" entry). Entries are
+/// matched by pool id, so the validator's ordering is irrelevant; ids outside
+/// zebra's six canonical pools are ignored.
+fn value_pools_array(pools: Vec<ChainBalance>) -> [GetBlockchainInfoBalance; 6] {
+    let mut canonical = GetBlockchainInfoBalance::zero_pools();
+    for ChainBalance(pool) in pools {
+        if let Some(slot) = canonical.iter_mut().find(|slot| slot.id() == pool.id()) {
+            *slot = pool;
+        }
+    }
+    canonical
+}
+
 impl TryFrom<GetBlockchainInfoResponse> for zebra_rpc::methods::GetBlockchainInfoResponse {
     fn try_from(response: GetBlockchainInfoResponse) -> Result<Self, ParseIntError> {
         Ok(zebra_rpc::methods::GetBlockchainInfoResponse::new(
@@ -688,7 +752,7 @@ impl TryFrom<GetBlockchainInfoResponse> for zebra_rpc::methods::GetBlockchainInf
             response.best_block_hash,
             response.estimated_height,
             response.chain_supply.0,
-            response.value_pools.map(|pool| pool.0),
+            value_pools_array(response.value_pools),
             response.upgrades,
             response.consensus,
             response.headers,
@@ -904,6 +968,14 @@ pub struct OrchardTrees {
     size: u64,
 }
 
+/// Ironwood note commitment tree information.
+///
+/// Wrapper struct for zebra's IronwoodTrees
+#[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct IronwoodTrees {
+    size: u64,
+}
+
 /// Information about the sapling and orchard note commitment trees if any.
 ///
 /// Wrapper struct for zebra's GetBlockTrees
@@ -913,6 +985,8 @@ pub struct GetBlockTrees {
     sapling: Option<SaplingTrees>,
     #[serde(default)]
     orchard: Option<OrchardTrees>,
+    #[serde(default)]
+    ironwood: Option<IronwoodTrees>,
 }
 
 impl GetBlockTrees {
@@ -925,11 +999,16 @@ impl GetBlockTrees {
     pub fn orchard(&self) -> u64 {
         self.orchard.map_or(0, |o| o.size)
     }
+
+    /// Returns ironwood data held by ['GetBlockTrees'].
+    pub fn ironwood(&self) -> u64 {
+        self.ironwood.map_or(0, |o| o.size)
+    }
 }
 
 impl From<GetBlockTrees> for zebra_rpc::methods::GetBlockTrees {
     fn from(val: GetBlockTrees) -> Self {
-        zebra_rpc::methods::GetBlockTrees::new(val.sapling(), val.orchard())
+        zebra_rpc::methods::GetBlockTrees::new(val.sapling(), val.orchard(), val.ironwood())
     }
 }
 
@@ -1144,7 +1223,7 @@ pub struct BlockObject {
     /// Value pool balances
     ///
     #[serde(rename = "valuePools")]
-    value_pools: Option<[ChainBalance; 5]>,
+    value_pools: Option<Vec<ChainBalance>>,
 
     /// Information about the note commitment trees.
     pub trees: GetBlockTrees,
@@ -1204,11 +1283,7 @@ impl TryFrom<GetBlockResponse> for zebra_rpc::methods::GetBlock {
                         block.bits,
                         block.difficulty,
                         block.chain_supply.map(|supply| supply.0),
-                        block.value_pools.map(
-                            |[transparent, sprout, sapling, orchard, deferred]| {
-                                [transparent.0, sprout.0, sapling.0, orchard.0, deferred.0]
-                            },
-                        ),
+                        block.value_pools.map(value_pools_array),
                         block.trees.into(),
                         block.previous_block_hash.map(|hash| hash.0),
                         block.next_block_hash.map(|hash| hash.0),
@@ -1326,6 +1401,11 @@ pub struct GetTreestateResponse {
     /// (i.e. in regtest mode).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub orchard: Option<zebra_rpc::client::Treestate>,
+
+    /// A treestate containing an Ironwood note commitment tree, hex-encoded. Only present from
+    /// NU6.3, so that pre-NU6.3 responses are unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ironwood: Option<zebra_rpc::client::Treestate>,
 }
 
 /// Error type for the `get_treestate` RPC request.
@@ -1367,6 +1447,8 @@ impl TryFrom<GetTreestateResponse> for zebra_rpc::client::GetTreestateResponse {
             .clone()
             .unwrap_or_else(|| Treestate::new(Commitments::new(None, None)));
 
+        let ironwood = value.ironwood.clone();
+
         Ok(zebra_rpc::client::GetTreestateResponse::new(
             parsed_hash,
             zebra_chain::block::Height(height_u32),
@@ -1375,6 +1457,7 @@ impl TryFrom<GetTreestateResponse> for zebra_rpc::client::GetTreestateResponse {
             None,
             sapling,
             orchard,
+            ironwood,
         ))
     }
 }
@@ -1429,21 +1512,32 @@ impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
                 },
             };
 
+            // `let field: Kind = json;` reads the JSON key named exactly like the
+            // binding — the key cannot be restated, so sibling fields cannot be
+            // wired to each other's keys by copy-paste. Use the bracketed form
+            // `let field: Kind = json["jsonName"];` only when the JSON key differs
+            // from the binding (camelCase etc.).
             macro_rules! get_tx_value_fields{
-                ($(let $field:ident: $kind:ty = $transaction_json:ident[$field_name:literal]; )+) => {
-                    $(let $field = $transaction_json
+                () => {};
+                (let $field:ident: $kind:ty = $transaction_json:ident; $($rest:tt)*) => {
+                    let $field = $transaction_json
+                        .get(stringify!($field))
+                        .map(|v| ::serde_json::from_value::<$kind>(v.clone()))
+                        .transpose()
+                        .map_err(::serde::de::Error::custom)?;
+                    get_tx_value_fields! { $($rest)* }
+                };
+                (let $field:ident: $kind:ty = $transaction_json:ident[$field_name:literal]; $($rest:tt)*) => {
+                    let $field = $transaction_json
                         .get($field_name)
                         .map(|v| ::serde_json::from_value::<$kind>(v.clone()))
                         .transpose()
                         .map_err(::serde::de::Error::custom)?;
-                    )+
-                }
+                    get_tx_value_fields! { $($rest)* }
+                };
             }
 
-            let confirmations = tx_value
-                .get("confirmations")
-                .and_then(|v| v.as_u64())
-                .map(|v| v as u32);
+            let confirmations = tx_value.get("confirmations").and_then(|v| v.as_i64());
 
             // if let Some(vin_value) = tx_value.get("vin") {
             //     match serde_json::from_value::<Vec<Input>>(vin_value.clone()) {
@@ -1467,15 +1561,16 @@ impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
                 let outputs: Vec<Output> = tx_value["vout"];
                 let shielded_spends: Vec<ShieldedSpend> = tx_value["vShieldedSpend"];
                 let shielded_outputs: Vec<ShieldedOutput> = tx_value["vShieldedOutput"];
-                let orchard: Orchard = tx_value["orchard"];
+                let orchard: Orchard = tx_value;
+                let ironwood: Orchard = tx_value;
                 let value_balance: f64 = tx_value["valueBalance"];
                 let value_balance_zat: i64 = tx_value["valueBalanceZat"];
-                let size: i64 = tx_value["size"];
-                let time: i64 = tx_value["time"];
-                let txid: String = tx_value["txid"];
+                let size: i64 = tx_value;
+                let time: i64 = tx_value;
+                let txid: String = tx_value;
                 let auth_digest: String = tx_value["authdigest"];
-                let overwintered: bool = tx_value["overwintered"];
-                let version: u32 = tx_value["version"];
+                let overwintered: bool = tx_value;
+                let version: u32 = tx_value;
                 let version_group_id: String = tx_value["versiongroupid"];
                 let lock_time: u32 = tx_value["locktime"];
                 let expiry_height: Height = tx_value["expiryheight"];
@@ -1526,6 +1621,8 @@ impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
                     None,
                     // optional
                     orchard,
+                    // optional
+                    ironwood,
                     // optional
                     value_balance,
                     // optional
@@ -1583,6 +1680,7 @@ impl From<GetTransactionResponse> for zebra_rpc::methods::GetRawTransaction {
                     None,
                     None,
                     obj.orchard().clone(),
+                    obj.ironwood().clone(),
                     obj.value_balance(),
                     obj.value_balance_zat(),
                     obj.size(),
@@ -1878,4 +1976,55 @@ pub struct GetMempoolInfoResponse {
 
 impl ResponseToError for GetMempoolInfoResponse {
     type RpcError = Infallible;
+}
+
+#[cfg(test)]
+mod get_transaction_response {
+    use super::GetTransactionResponse;
+
+    /// Regression test: the `ironwood` field must be read from the `"ironwood"` JSON key.
+    /// It was copy-pasted reading `"orchard"`, so a real ironwood bundle in a verbose
+    /// `getrawtransaction` response was silently dropped and the orchard bundle was
+    /// duplicated into the ironwood slot.
+    #[test]
+    fn ironwood_field_reads_ironwood_key() {
+        let tx_json = serde_json::json!({
+            "hex": "00",
+            "txid": "0000000000000000000000000000000000000000000000000000000000000001",
+            "version": 6,
+            "locktime": 0,
+            "orchard": {
+                "actions": [],
+                "valueBalance": -1.11,
+                "valueBalanceZat": -111,
+            },
+            "ironwood": {
+                "actions": [],
+                "valueBalance": -2.22,
+                "valueBalanceZat": -222,
+            },
+        });
+
+        let response: GetTransactionResponse =
+            serde_json::from_value(tx_json).expect("test transaction JSON deserializes");
+        let GetTransactionResponse::Object(tx_object) = response else {
+            panic!("verbose transaction JSON must deserialize to the Object variant");
+        };
+
+        let orchard = tx_object
+            .orchard()
+            .as_ref()
+            .expect("orchard bundle present in JSON");
+        assert_eq!(orchard.value_balance_zat(), -111);
+
+        let ironwood = tx_object
+            .ironwood()
+            .as_ref()
+            .expect("ironwood bundle present in JSON");
+        assert_eq!(
+            ironwood.value_balance_zat(),
+            -222,
+            "ironwood field must carry the \"ironwood\" JSON payload, not a copy of \"orchard\""
+        );
+    }
 }

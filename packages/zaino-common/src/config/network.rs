@@ -5,6 +5,11 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use zebra_chain::parameters::testnet::ConfiguredActivationHeights;
 
+/// Must equal zcash_local_net's `supported_regtest_activation_heights`: the
+/// zcash-devtool wallet client hardcodes that canonical set (NU6.3 at 2), and a
+/// zebrad configured differently rejects wallet-built transactions with
+/// "incorrect consensus branch id". See
+/// <https://github.com/zingolabs/zaino/issues/1368>.
 pub const ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS: ActivationHeights = ActivationHeights {
     overwinter: Some(1),
     before_overwinter: Some(1),
@@ -16,6 +21,7 @@ pub const ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS: ActivationHeights = ActivationHeigh
     nu6: Some(2),
     nu6_1: Some(2),
     nu6_2: Some(2),
+    nu6_3: Some(2),
     nu7: None,
 };
 
@@ -108,6 +114,9 @@ pub struct ActivationHeights {
     /// Activation height for `NU6.2` network upgrade.
     #[serde(rename = "NU6.2")]
     pub nu6_2: Option<u32>,
+    /// Activation height for `NU6.3` network upgrade.
+    #[serde(rename = "NU6.3")]
+    pub nu6_3: Option<u32>,
     /// Activation height for `NU7` network upgrade.
     #[serde(rename = "NU7")]
     pub nu7: Option<u32>,
@@ -126,6 +135,7 @@ impl Default for ActivationHeights {
             nu6: Some(2),
             nu6_1: Some(2),
             nu6_2: Some(2),
+            nu6_3: None,
             nu7: None,
         }
     }
@@ -144,6 +154,7 @@ impl From<ConfiguredActivationHeights> for ActivationHeights {
             nu6,
             nu6_1,
             nu6_2,
+            nu6_3,
             nu7,
         }: ConfiguredActivationHeights,
     ) -> Self {
@@ -158,6 +169,7 @@ impl From<ConfiguredActivationHeights> for ActivationHeights {
             nu6,
             nu6_1,
             nu6_2,
+            nu6_3,
             nu7,
         }
     }
@@ -175,6 +187,7 @@ impl From<ActivationHeights> for ConfiguredActivationHeights {
             nu6,
             nu6_1,
             nu6_2,
+            nu6_3,
             nu7,
         }: ActivationHeights,
     ) -> Self {
@@ -189,6 +202,7 @@ impl From<ActivationHeights> for ConfiguredActivationHeights {
             nu6,
             nu6_1,
             nu6_2,
+            nu6_3,
             nu7,
         }
     }
@@ -213,6 +227,7 @@ impl Network {
             nu6: Some(1),
             nu6_1: None,
             nu6_2: None,
+            nu6_3: None,
             nu7: None,
         }
     }
@@ -257,6 +272,7 @@ impl From<zebra_chain::parameters::Network> for Network {
                         nu6: None,
                         nu6_1: None,
                         nu6_2: None,
+                        nu6_3: None,
                         nu7: None,
                     };
                     for (height, upgrade) in parameters.activation_heights().iter() {
@@ -291,6 +307,9 @@ impl From<zebra_chain::parameters::Network> for Network {
                             }
                             zebra_chain::parameters::NetworkUpgrade::Nu6_2 => {
                                 activation_heights.nu6_2 = Some(height.0)
+                            }
+                            zebra_chain::parameters::NetworkUpgrade::Nu6_3 => {
+                                activation_heights.nu6_3 = Some(height.0)
                             }
                             zebra_chain::parameters::NetworkUpgrade::Nu7 => {
                                 activation_heights.nu7 = Some(height.0)
@@ -341,6 +360,7 @@ mod tests {
             nu6: Some(1),
             nu6_1: Some(1),
             nu6_2: Some(2),
+            nu6_3: Some(500),
             nu7: Some(1000),
         };
 

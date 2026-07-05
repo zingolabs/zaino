@@ -501,7 +501,16 @@ pub trait ChainIndex {
     fn get_treestate(
         &self,
         hash: &types::BlockHash,
-    ) -> impl std::future::Future<Output = Result<(Option<Vec<u8>>, Option<Vec<u8>>), Self::Error>>;
+    ) -> impl std::future::Future<
+        Output = Result<
+            (
+                Option<source::PoolTreestate>,
+                Option<source::PoolTreestate>,
+                Option<source::PoolTreestate>,
+            ),
+            Self::Error,
+        >,
+    >;
 
     /// Returns the subtree roots
     fn get_subtree_roots(
@@ -1122,8 +1131,8 @@ async fn compact_block_from_source<Source: BlockchainSource>(
         .get_commitment_tree_roots(types::BlockHash::from(block.hash()))
         .await
         .map_err(ChainIndexError::backing_validator)?;
-    let (sapling_root, sapling_size, orchard_root, orchard_size) =
-        TreeRootData::new(tree_roots.0, tree_roots.1).extract_with_defaults();
+    let (sapling_root, sapling_size, orchard_root, orchard_size, ironwood) =
+        TreeRootData::new(tree_roots.0, tree_roots.1, tree_roots.2).extract_with_defaults();
 
     let metadata = BlockMetadata::new(
         sapling_root,
@@ -1140,6 +1149,19 @@ async fn compact_block_from_source<Source: BlockchainSource>(
                 "orchard commitment tree size overflow",
             ))
         })?,
+        ironwood
+            .map(|(root, size)| {
+                Ok::<_, ChainIndexError>((
+                    root,
+                    size.try_into().map_err(|_| {
+                        ChainIndexError::backing_validator(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "ironwood commitment tree size overflow",
+                        ))
+                    })?,
+                ))
+            })
+            .transpose()?,
         None, // parent chainwork unknown — single-block construction
         network,
     );
@@ -2389,7 +2411,14 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     async fn get_treestate(
         &self,
         hash: &types::BlockHash,
-    ) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>), Self::Error> {
+    ) -> Result<
+        (
+            Option<source::PoolTreestate>,
+            Option<source::PoolTreestate>,
+            Option<source::PoolTreestate>,
+        ),
+        Self::Error,
+    > {
         let snapshot = self.snapshot_nonfinalized_state().await?;
         if !self.block_hash_known_for_treestate(&snapshot, hash).await? {
             return Err(ChainIndexError::internal(format!(
@@ -2772,16 +2801,39 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
 }
 
 /// The available shielded pools
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ShieldedPool {
     /// Sapling
     Sapling,
     /// Orchard
     Orchard,
+    /// Ironwood
+    Ironwood,
 }
 
 impl ShieldedPool {
+    /// The network upgrade that activates this pool.
+    pub(crate) fn activation_upgrade(&self) -> zebra_chain::parameters::NetworkUpgrade {
+        match self {
+            ShieldedPool::Sapling => zebra_chain::parameters::NetworkUpgrade::Sapling,
+            ShieldedPool::Orchard => zebra_chain::parameters::NetworkUpgrade::Nu5,
+            ShieldedPool::Ironwood => zebra_chain::parameters::NetworkUpgrade::Nu6_3,
+        }
+    }
+
+    /// [`ShieldedPool::activation_upgrade`] in `zcash_protocol` terms, for call sites
+    /// gated through [`zcash_protocol::consensus::Parameters`].
+    pub(crate) fn zcash_protocol_activation_upgrade(
+        &self,
+    ) -> zcash_protocol::consensus::NetworkUpgrade {
+        match self {
+            ShieldedPool::Sapling => zcash_protocol::consensus::NetworkUpgrade::Sapling,
+            ShieldedPool::Orchard => zcash_protocol::consensus::NetworkUpgrade::Nu5,
+            ShieldedPool::Ironwood => zcash_protocol::consensus::NetworkUpgrade::Nu6_3,
+        }
+    }
+
     /// Returns the string representative of the given pool.
     ///
     /// Used for display purposes and in converting the strongly types `PoolType`
@@ -2790,6 +2842,7 @@ impl ShieldedPool {
         match self {
             ShieldedPool::Sapling => "sapling".to_string(),
             ShieldedPool::Orchard => "orchard".to_string(),
+            ShieldedPool::Ironwood => "ironwood".to_string(),
         }
     }
 }

@@ -508,7 +508,9 @@ impl StateServiceSubscriber {
             let mut nonce = *header.nonce;
             nonce.reverse();
 
-            let sapling_activation = NetworkUpgrade::Sapling.activation_height(&network);
+            let sapling_activation = crate::chain_index::ShieldedPool::Sapling
+                .activation_upgrade()
+                .activation_height(&network);
             let sapling_tree_size = sapling_tree.count();
             let final_sapling_root: [u8; 32] =
                 if sapling_activation.is_some() && height >= sapling_activation.unwrap() {
@@ -731,6 +733,7 @@ impl StateServiceSubscriber {
                 let state_2 = state.clone();
                 let state_3 = state.clone();
                 let state_4 = state.clone();
+                let state_5 = state.clone();
 
                 let blockandsize_future = {
                     let req = ReadRequest::BlockAndSize(hash_or_height);
@@ -746,7 +749,16 @@ impl StateServiceSubscriber {
                             .await
                     }
                 };
-
+                let ironwood_future = {
+                    let req = ReadRequest::IronwoodTree(hash_or_height);
+                    async move {
+                        state_5
+                            .clone()
+                            .ready()
+                            .and_then(|service| service.call(req))
+                            .await
+                    }
+                };
                 let block_info_future = {
                     let req = ReadRequest::BlockInfo(hash_or_height);
                     async move {
@@ -757,9 +769,10 @@ impl StateServiceSubscriber {
                             .await
                     }
                 };
-                let (fullblock, orchard_tree_response, header, block_info) = futures::join!(
+                let (fullblock, orchard_tree_response, ironwood_tree_response, header, block_info) = futures::join!(
                     blockandsize_future,
                     orchard_future,
+                    ironwood_future,
                     StateServiceSubscriber::get_block_header_inner(
                         &state_3,
                         network,
@@ -792,7 +805,7 @@ impl StateServiceSubscriber {
                                             TransactionObject::from_transaction(
                                                 transaction.clone(),
                                                 Some(header_obj.height()),
-                                                Some(header_obj.confirmations() as u32),
+                                                Some(header_obj.confirmations()),
                                                 network,
                                                 DateTime::<Utc>::from_timestamp(
                                                     header_obj.time(),
@@ -833,15 +846,27 @@ impl StateServiceSubscriber {
                         "missing orchard tree",
                     )))?;
 
-                let final_orchard_root = match NetworkUpgrade::Nu5.activation_height(network) {
+                let final_orchard_root = match crate::chain_index::ShieldedPool::Orchard
+                    .activation_upgrade()
+                    .activation_height(network)
+                {
                     Some(activation_height) if header_obj.height() >= activation_height => {
                         Some(orchard_tree.root().into())
                     }
                     _otherwise => None,
                 };
 
-                let trees =
-                    GetBlockTrees::new(header_obj.sapling_tree_size(), orchard_tree.count());
+                let ironwood_tree_response = ironwood_tree_response?;
+                let ironwood_tree = expected_read_response!(ironwood_tree_response, IronwoodTree)
+                    .ok_or(StateServiceError::RpcError(
+                    RpcError::new_from_legacycode(LegacyCode::Misc, "missing ironwood tree"),
+                ))?;
+
+                let trees = GetBlockTrees::new(
+                    header_obj.sapling_tree_size(),
+                    orchard_tree.count(),
+                    ironwood_tree.count(),
+                );
 
                 let (chain_supply, value_pools) = (
                     GetBlockchainInfoBalance::chain_supply(*block_info.value_pools()),
@@ -1474,7 +1499,7 @@ impl ZcashIndexer for StateServiceSubscriber {
                     )))?,
             };
 
-            let (sapling, orchard) = self.indexer.get_treestate(block_data.hash()).await?;
+            let treestates = self.indexer.get_treestate(block_data.hash()).await?;
             let time: u32 = block_data.data().time().try_into().map_err(|_error| {
                 StateServiceError::RpcError(RpcError::new_from_legacycode(
                     zebra_rpc::server::error::LegacyCode::InvalidParameter,
@@ -1482,13 +1507,11 @@ impl ZcashIndexer for StateServiceSubscriber {
                 ))
             })?;
 
-            #[allow(deprecated)]
-            Ok(GetTreestateResponse::from_parts(
+            Ok(super::build_treestate_response(
                 (*block_data.hash()).into(),
                 block_data.height().into(),
                 time,
-                sapling,
-                orchard,
+                treestates,
             ))
         }
         .await;
@@ -1552,7 +1575,7 @@ impl ZcashIndexer for StateServiceSubscriber {
         // Zebra displays transaction and block hashes in big-endian byte-order,
         // following the u256 convention set by Bitcoin and zcashd.
         match self.read_state_service.best_tip() {
-            Some(x) => return Ok(GetBlockHash::new(x.1)),
+            Some(x) => Ok(GetBlockHash::new(x.1)),
             None => {
                 // try RPC if state read fails:
                 Ok(self.rpc_client.get_best_blockhash().await?.into())
@@ -1789,11 +1812,12 @@ impl ZcashIndexer for StateServiceSubscriber {
 
         let (height, confirmations, block_hash, in_best_chain) = match best_chain_location {
             Some(BestChainLocation::Block(block_hash, height)) => {
-                let confirmations = snapshot
+                let confirmations: i64 = snapshot
                     .max_serviceable_height()
                     .0
                     .saturating_sub(height.0)
-                    .saturating_add(1);
+                    .saturating_add(1)
+                    .into();
 
                 (
                     Some(zebra_chain::block::Height::from(height)),
@@ -2483,27 +2507,21 @@ impl LightWalletIndexer for StateServiceSubscriber {
                 "Invalid hash or height",
             )),
         )?;
-        #[allow(deprecated)]
-        let (hash, height, time, sapling, orchard) =
-            <StateServiceSubscriber as ZcashIndexer>::z_get_treestate(
-                self,
-                hash_or_height.to_string(),
-            )
-            .await?
-            .into_parts();
-        Ok(TreeState {
-            network: self
-                .config
+
+        let treestate_response = <StateServiceSubscriber as ZcashIndexer>::z_get_treestate(
+            self,
+            hash_or_height.to_string(),
+        )
+        .await?;
+
+        Ok(super::tree_state_from_treestate_response(
+            self.config
                 .common
                 .network
                 .to_zebra_network()
                 .bip70_network_name(),
-            height: height.0 as u64,
-            hash: hash.to_string(),
-            time,
-            sapling_tree: sapling.map(hex::encode).unwrap_or_default(),
-            orchard_tree: orchard.map(hex::encode).unwrap_or_default(),
-        })
+            treestate_response,
+        ))
     }
 
     /// GetLatestTreeState returns the note commitment tree state corresponding to the chain tip.
@@ -2714,7 +2732,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
                 .unwrap_or_default(),
             upgrade_name: nu_name.to_string(),
             upgrade_height: nu_height.0 as u64,
-            lightwallet_protocol_version: "v0.4.0".to_string(),
+            lightwallet_protocol_version: "v0.5.0".to_string(),
         })
     }
 

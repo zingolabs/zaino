@@ -592,18 +592,18 @@ async fn get_treestate() {
         ..
     } in blocks.into_iter()
     {
-        let (sapling_bytes_opt, orchard_bytes_opt) = index_reader
+        let (sapling_bytes_opt, orchard_bytes_opt, _ironwood_bytes_opt) = index_reader
             .get_treestate(&crate::BlockHash(zebra_block.hash().0))
             .await
             .unwrap();
 
         assert_eq!(
-            sapling_bytes_opt.as_deref(),
-            Some(sapling_tree_state.as_slice())
+            sapling_bytes_opt.map(|pool| pool.final_state),
+            Some(sapling_tree_state)
         );
         assert_eq!(
-            orchard_bytes_opt.as_deref(),
-            Some(orchard_tree_state.as_slice())
+            orchard_bytes_opt.map(|pool| pool.final_state),
+            Some(orchard_tree_state)
         );
     }
 

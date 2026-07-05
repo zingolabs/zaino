@@ -219,12 +219,32 @@ impl DbV1 {
             }
         }
 
-        // *** commitment_tree_data (fixed) ***
+        // *** ironwood ***
+        //
+        // Ironwood (NU6.3) was introduced in schema v1.3.0. Blocks written before that upgrade — and
+        // any block below NU6.3 activation — have no ironwood entry, so a missing row is valid and
+        // simply means "no ironwood data at this height". When an entry is present its checksum is
+        // verified like the other pools.
+        {
+            match ro.get(self.ironwood, &height_key) {
+                Ok(raw) => {
+                    let entry = StoredEntryVar::<OrchardTxList>::from_bytes(raw)
+                        .map_err(|e| fail(&format!("ironwood corrupt data: {e}")))?;
+                    if !entry.verify(&height_key) {
+                        return Err(fail("ironwood checksum mismatch"));
+                    }
+                }
+                Err(lmdb::Error::NotFound) => {}
+                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+            }
+        }
+
+        // *** commitment_tree_data (var) ***
         {
             let raw = ro
                 .get(self.commitment_tree_data, &height_key)
                 .map_err(FinalisedStateError::LmdbError)?;
-            let entry = StoredEntryFixed::<CommitmentTreeData>::from_bytes(raw)
+            let entry = StoredEntryVar::<CommitmentTreeData>::from_bytes(raw)
                 .map_err(|e| fail(&format!("commitment_tree corrupt bytes: {e}")))?;
             if !entry.verify(&height_key) {
                 return Err(fail("commitment_tree checksum mismatch"));

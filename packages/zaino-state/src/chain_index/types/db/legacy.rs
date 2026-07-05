@@ -200,10 +200,16 @@ impl ZainoVersionedSerde for BlockHash {
     }
 }
 
-/// Hash = 32-byte body.
+/// Fixed-length encoding metadata for `BlockHash`.
+///
+/// v1 consists of a single 32-byte hash.
 impl FixedEncodedLen for BlockHash {
-    /// 32 bytes, LE
-    const ENCODED_LEN: usize = 32;
+    fn encoded_len(version: u8) -> Option<usize> {
+        match version {
+            version::V1 => Some(32),
+            _ => None,
+        }
+    }
 }
 
 /// Transaction hash.
@@ -338,10 +344,16 @@ impl ZainoVersionedSerde for TransactionHash {
     }
 }
 
-/// Hash = 32-byte body.
+/// Fixed-length encoding metadata for `TransactionHash`.
+///
+/// v1 consists of a single 32-byte hash.
 impl FixedEncodedLen for TransactionHash {
-    /// 32 bytes, LE
-    const ENCODED_LEN: usize = 32;
+    fn encoded_len(version: u8) -> Option<usize> {
+        match version {
+            version::V1 => Some(32),
+            _ => None,
+        }
+    }
 }
 
 /// Block height.
@@ -351,6 +363,16 @@ impl FixedEncodedLen for TransactionHash {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
 pub struct Height(pub(crate) u32);
+
+impl Height {
+    /// Iterates every height from `start` through `end` inclusive.
+    ///
+    /// Both bounds are already-valid heights, so every intermediate value is a valid
+    /// height by construction — callers walking a range need no per-step validation.
+    pub(crate) fn range_inclusive(start: Self, end: Self) -> impl Iterator<Item = Self> {
+        (start.0..=end.0).map(Self)
+    }
+}
 
 impl PartialOrd<zebra_chain::block::Height> for Height {
     fn partial_cmp(&self, other: &zebra_chain::block::Height) -> Option<std::cmp::Ordering> {
@@ -480,10 +502,16 @@ impl ZainoVersionedSerde for Height {
     }
 }
 
-/// Height = 4-byte big-endian body.
+/// Fixed-length encoding metadata for `Height`.
+///
+/// v1 consists of a single 4-byte big-endian u32.
 impl FixedEncodedLen for Height {
-    /// 4 bytes, BE
-    const ENCODED_LEN: usize = 4;
+    fn encoded_len(version: u8) -> Option<usize> {
+        match version {
+            version::V1 => Some(4),
+            _ => None,
+        }
+    }
 }
 
 /// Numerical index of subtree / shard roots.
@@ -516,10 +544,16 @@ impl ZainoVersionedSerde for ShardIndex {
     }
 }
 
-/// Index = 4-byte big-endian body.
+/// Fixed-length encoding metadata for `ShardIndex`.
+///
+/// v1 consists of a single 4-byte big-endian u32.
 impl FixedEncodedLen for ShardIndex {
-    /// 4 bytes (BE u32)
-    const ENCODED_LEN: usize = 4;
+    fn encoded_len(version: u8) -> Option<usize> {
+        match version {
+            version::V1 => Some(4),
+            _ => None,
+        }
+    }
 }
 
 /// A 20-byte hash160 *plus* a 1-byte ScriptType tag.
@@ -645,10 +679,16 @@ impl ZainoVersionedSerde for AddrScript {
     }
 }
 
-/// AddrScript = 21 bytes of body data.
+/// Fixed-length encoding metadata for `AddrScript`.
+///
+/// v1 consists of a 20 byte script (LE) + 1 byte script type
 impl FixedEncodedLen for AddrScript {
-    /// 20 bytes, LE + 1 byte script type
-    const ENCODED_LEN: usize = 21;
+    fn encoded_len(version: u8) -> Option<usize> {
+        match version {
+            version::V1 => Some(21),
+            _ => None,
+        }
+    }
 }
 
 /// Reference to a spent transparent UTXO.
@@ -712,10 +752,16 @@ impl ZainoVersionedSerde for Outpoint {
     }
 }
 
-/// Outpoint = 32‐byte txid + 4-byte LE u32 index = 36 bytes
+/// Fixed-length encoding metadata for `Outpoint`.
+///
+/// v1 consists of a 32 byte txid + 4 byte tx index.
 impl FixedEncodedLen for Outpoint {
-    /// 32 byte txid + 4 byte tx index.
-    const ENCODED_LEN: usize = 32 + 4;
+    fn encoded_len(version: u8) -> Option<usize> {
+        match version {
+            version::V1 => Some(36),
+            _ => None,
+        }
+    }
 }
 
 // *** Block Level Objects ***
@@ -1071,6 +1117,7 @@ impl IndexedBlock {
 
         let sapling_commitment_tree_size = self.commitment_tree_data().sizes().sapling();
         let orchard_commitment_tree_size = self.commitment_tree_data().sizes().orchard();
+        let ironwood_commitment_tree_size = self.commitment_tree_data().sizes().ironwood();
 
         zaino_proto::proto::compact_formats::CompactBlock {
             proto_version: 0,
@@ -1083,6 +1130,7 @@ impl IndexedBlock {
             chain_metadata: Some(zaino_proto::proto::compact_formats::ChainMetadata {
                 sapling_commitment_tree_size,
                 orchard_commitment_tree_size,
+                ironwood_commitment_tree_size,
             }),
         }
     }
@@ -1137,6 +1185,8 @@ impl
         Option<ChainWork>,
         [u8; 32],
         [u8; 32],
+        Option<[u8; 32]>,
+        u32,
         u32,
         u32,
     )> for IndexedBlock
@@ -1149,13 +1199,17 @@ impl
             parent_chainwork,
             final_sapling_root,
             final_orchard_root,
+            final_ironwood_root,
             parent_sapling_size,
             parent_orchard_size,
+            parent_ironwood_size,
         ): (
             zaino_fetch::chain::block::FullBlock,
             Option<ChainWork>,
             [u8; 32],
             [u8; 32],
+            Option<[u8; 32]>,
+            u32,
             u32,
             u32,
         ),
@@ -1211,6 +1265,7 @@ impl
         // --- Convert transactions ---
         let mut sapling_note_count = 0;
         let mut orchard_note_count = 0;
+        let mut ironwood_note_count = 0;
 
         let full_transactions = full_block.transactions();
         let mut tx = Vec::with_capacity(full_transactions.len());
@@ -1221,6 +1276,7 @@ impl
 
             sapling_note_count += txdata.sapling().outputs().len();
             orchard_note_count += txdata.orchard().actions().len();
+            ironwood_note_count += txdata.ironwood().actions().len();
 
             tx.push(txdata);
         }
@@ -1228,12 +1284,14 @@ impl
         // --- Compute commitment trees ---
         let sapling_root = final_sapling_root;
         let orchard_root = final_orchard_root;
+        let ironwood_root = final_ironwood_root;
 
         let commitment_tree_data = CommitmentTreeData::new(
-            CommitmentTreeRoots::new(sapling_root, orchard_root),
+            CommitmentTreeRoots::new(sapling_root, orchard_root, ironwood_root),
             CommitmentTreeSizes::new(
                 parent_sapling_size + sapling_note_count as u32,
                 parent_orchard_size + orchard_note_count as u32,
+                parent_ironwood_size + ironwood_note_count as u32,
             ),
         );
 
@@ -1287,6 +1345,8 @@ pub struct CompactTxData {
     sapling: SaplingCompactTx,
     /// Compact representation of Orchard actions (shielded pool transactions).
     orchard: OrchardCompactTx,
+    /// Compact representation of Ironwood actions (shielded pool transactions).
+    ironwood: OrchardCompactTx,
 }
 
 impl CompactTxData {
@@ -1297,6 +1357,7 @@ impl CompactTxData {
         transparent: TransparentCompactTx,
         sapling: SaplingCompactTx,
         orchard: OrchardCompactTx,
+        ironwood: OrchardCompactTx,
     ) -> Self {
         Self {
             index,
@@ -1304,6 +1365,7 @@ impl CompactTxData {
             transparent,
             sapling,
             orchard,
+            ironwood,
         }
     }
 
@@ -1337,6 +1399,11 @@ impl CompactTxData {
         &self.orchard
     }
 
+    /// Returns compact ironwood tx data.
+    pub(crate) fn ironwood(&self) -> &OrchardCompactTx {
+        &self.ironwood
+    }
+
     /// Converts this `TxData` into a `CompactTx` protobuf message with an optional fee.
     pub fn to_compact_tx(
         &self,
@@ -1348,38 +1415,28 @@ impl CompactTxData {
             .sapling()
             .spends()
             .iter()
-            .map(
-                |s| zaino_proto::proto::compact_formats::CompactSaplingSpend {
-                    nf: s.nullifier().to_vec(),
-                },
-            )
+            .map(CompactSaplingSpend::into_compact)
             .collect();
 
         let outputs = self
             .sapling()
             .outputs()
             .iter()
-            .map(
-                |o| zaino_proto::proto::compact_formats::CompactSaplingOutput {
-                    cmu: o.cmu().to_vec(),
-                    ephemeral_key: o.ephemeral_key().to_vec(),
-                    ciphertext: o.ciphertext().to_vec(),
-                },
-            )
+            .map(CompactSaplingOutput::into_compact)
             .collect();
 
         let actions = self
             .orchard()
             .actions()
             .iter()
-            .map(
-                |a| zaino_proto::proto::compact_formats::CompactOrchardAction {
-                    nullifier: a.nullifier().to_vec(),
-                    cmx: a.cmx().to_vec(),
-                    ephemeral_key: a.ephemeral_key().to_vec(),
-                    ciphertext: a.ciphertext().to_vec(),
-                },
-            )
+            .map(CompactOrchardAction::into_compact)
+            .collect();
+
+        let ironwood_actions = self
+            .ironwood()
+            .actions()
+            .iter()
+            .map(CompactOrchardAction::into_compact)
             .collect();
 
         let vout = self.transparent().compact_vout();
@@ -1393,10 +1450,35 @@ impl CompactTxData {
             spends,
             outputs,
             actions,
+            ironwood_actions,
             vin,
             vout,
         }
     }
+}
+
+/// Converts one RPC action tuple `(nullifier, cmx, ephemeral_key, ciphertext)` into a
+/// [`CompactOrchardAction`], naming `pool` in each rejection so orchard and ironwood
+/// failures are distinguishable.
+fn compact_orchard_action_from_parts(
+    pool: &str,
+    (nf, cmx, epk, ct): (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>),
+) -> Result<CompactOrchardAction, String> {
+    let nf: [u8; 32] = nf
+        .try_into()
+        .map_err(|_| format!("{pool} nullifier must be 32 bytes"))?;
+    let cmx: [u8; 32] = cmx
+        .try_into()
+        .map_err(|_| format!("{pool} cmx must be 32 bytes"))?;
+    let epk: [u8; 32] = epk
+        .try_into()
+        .map_err(|_| format!("{pool} ephemeral_key must be 32 bytes"))?;
+    let ct: [u8; 52] = ct
+        .get(..52)
+        .ok_or_else(|| format!("{pool} ciphertext must be at least 52 bytes"))?
+        .try_into()
+        .map_err(|_| format!("{pool} ciphertext must be 52 bytes"))?;
+    Ok(CompactOrchardAction::new(nf, cmx, epk, ct))
 }
 
 /// TryFrom inputs:
@@ -1414,7 +1496,7 @@ impl TryFrom<(u64, zaino_fetch::chain::transaction::FullTransaction)> for Compac
             .try_into()
             .map_err(|_| "txid must be 32 bytes".to_string())?;
 
-        let (sapling_balance, orchard_balance) = tx.value_balances();
+        let (sapling_balance, orchard_balance, ironwood_balance) = tx.value_balances();
 
         let vin: Vec<TxInCompact> = tx
             .transparent_inputs()
@@ -1478,29 +1560,21 @@ impl TryFrom<(u64, zaino_fetch::chain::transaction::FullTransaction)> for Compac
 
         let sapling = SaplingCompactTx::new(sapling_balance, spends, outputs);
 
-        let actions: Vec<CompactOrchardAction> = tx
+        let orchard_actions: Vec<CompactOrchardAction> = tx
             .orchard_actions()
             .into_iter()
-            .map(|(nf, cmx, epk, ct)| {
-                let nf: [u8; 32] = nf
-                    .try_into()
-                    .map_err(|_| "orchard nullifier must be 32 bytes".to_string())?;
-                let cmx: [u8; 32] = cmx
-                    .try_into()
-                    .map_err(|_| "orchard cmx must be 32 bytes".to_string())?;
-                let epk: [u8; 32] = epk
-                    .try_into()
-                    .map_err(|_| "orchard ephemeral_key must be 32 bytes".to_string())?;
-                let ct: [u8; 52] = ct
-                    .get(..52)
-                    .ok_or("orchard ciphertext must be at least 52 bytes")?
-                    .try_into()
-                    .map_err(|_| "orchard ciphertext must be 52 bytes".to_string())?;
-                Ok::<_, String>(CompactOrchardAction::new(nf, cmx, epk, ct))
-            })
+            .map(|action| compact_orchard_action_from_parts("orchard", action))
             .collect::<Result<_, _>>()?;
 
-        let orchard = OrchardCompactTx::new(orchard_balance, actions);
+        let orchard = OrchardCompactTx::new(orchard_balance, orchard_actions);
+
+        let ironwood_actions: Vec<CompactOrchardAction> = tx
+            .ironwood_actions()
+            .into_iter()
+            .map(|action| compact_orchard_action_from_parts("ironwood", action))
+            .collect::<Result<_, _>>()?;
+
+        let ironwood = OrchardCompactTx::new(ironwood_balance, ironwood_actions);
 
         Ok(CompactTxData::new(
             index,
@@ -1509,19 +1583,20 @@ impl TryFrom<(u64, zaino_fetch::chain::transaction::FullTransaction)> for Compac
             transparent,
             sapling,
             orchard,
+            ironwood,
         ))
     }
 }
 
 impl ZainoVersionedSerde for CompactTxData {
-    const VERSION: u8 = version::V1;
+    const VERSION: u8 = version::V2;
 
     fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
+        Self::encode_v2(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
+        Self::decode_v2(r)
     }
 
     fn encode_v1<W: Write>(&self, mut w: &mut W) -> io::Result<()> {
@@ -1548,6 +1623,37 @@ impl ZainoVersionedSerde for CompactTxData {
             transparent,
             sapling,
             orchard,
+            OrchardCompactTx::empty(),
+        ))
+    }
+
+    fn encode_v2<W: Write>(&self, mut w: &mut W) -> io::Result<()> {
+        write_u64_le(&mut w, self.index)?;
+
+        self.txid.serialize_with_version(&mut w, 1)?;
+        self.transparent.serialize_with_version(&mut w, 1)?;
+        self.sapling.serialize_with_version(&mut w, 1)?;
+        self.orchard.serialize_with_version(&mut w, 1)?;
+        self.ironwood.serialize_with_version(&mut w, 1)
+    }
+
+    fn decode_v2<R: Read>(r: &mut R) -> io::Result<Self> {
+        let mut r = r;
+        let index = read_u64_le(&mut r)?;
+
+        let txid = TransactionHash::deserialize(&mut r)?;
+        let transparent = TransparentCompactTx::deserialize(&mut r)?;
+        let sapling = SaplingCompactTx::deserialize(&mut r)?;
+        let orchard = OrchardCompactTx::deserialize(&mut r)?;
+        let ironwood = OrchardCompactTx::deserialize(&mut r)?;
+
+        Ok(CompactTxData::new(
+            index,
+            txid,
+            transparent,
+            sapling,
+            orchard,
+            ironwood,
         ))
     }
 }
@@ -1717,10 +1823,16 @@ impl ZainoVersionedSerde for TxInCompact {
     }
 }
 
-/// TxInCompact = 36 bytes
+/// Fixed-length encoding metadata for `TxInCompact`.
+///
+/// v1 consists of a 32-byte txid + 4-byte LE index
 impl FixedEncodedLen for TxInCompact {
-    /// 32-byte txid + 4-byte LE index
-    const ENCODED_LEN: usize = 32 + 4;
+    fn encoded_len(version: u8) -> Option<usize> {
+        match version {
+            version::V1 => Some(36),
+            _ => None,
+        }
+    }
 }
 
 /// Identifies the type of transparent transaction output script.
@@ -1782,10 +1894,16 @@ impl ZainoVersionedSerde for ScriptType {
     }
 }
 
-/// ScriptType = 1 byte
+/// Fixed-length encoding metadata for `ScriptType`.
+///
+/// v1 consists of a single byte
 impl FixedEncodedLen for ScriptType {
-    /// 1 byte
-    const ENCODED_LEN: usize = 1;
+    fn encoded_len(version: u8) -> Option<usize> {
+        match version {
+            version::V1 => Some(1),
+            _ => None,
+        }
+    }
 }
 
 /// Try to recognise a standard P2PKH / P2SH locking script.
@@ -1960,10 +2078,16 @@ impl ZainoVersionedSerde for TxOutCompact {
     }
 }
 
-/// TxOutCompact = 29 bytes
+/// Fixed-length encoding metadata for `TxOutCompact`.
+///
+/// v1 consists of a 8-byte LE value + 20-byte script hash + 1-byte type
 impl FixedEncodedLen for TxOutCompact {
-    /// 8-byte LE value + 20-byte script hash + 1-byte type
-    const ENCODED_LEN: usize = 8 + 20 + 1;
+    fn encoded_len(version: u8) -> Option<usize> {
+        match version {
+            version::V1 => Some(29),
+            _ => None,
+        }
+    }
 }
 
 /// Compact representation of Sapling shielded transaction data for wallet scanning.
@@ -2085,10 +2209,16 @@ impl ZainoVersionedSerde for CompactSaplingSpend {
     }
 }
 
-/// 32-byte nullifier
+/// Fixed-length encoding metadata for `CompactSaplingSpend`.
+///
+/// v1 consists of a 32 byte nullifier
 impl FixedEncodedLen for CompactSaplingSpend {
-    /// 32 bytes
-    const ENCODED_LEN: usize = 32;
+    fn encoded_len(version: u8) -> Option<usize> {
+        match version {
+            version::V1 => Some(32),
+            _ => None,
+        }
+    }
 }
 
 /// Compact representation of a newly created Sapling shielded note output.
@@ -2166,10 +2296,16 @@ impl ZainoVersionedSerde for CompactSaplingOutput {
     }
 }
 
-/// 116 bytes
+/// Fixed-length encoding metadata for `CompactSaplingOutput`.
+///
+/// v1 consists of a 32-byte cmu + 32-byte ephemeral_key + 52-byte ciphertext
 impl FixedEncodedLen for CompactSaplingOutput {
-    /// 32-byte cmu + 32-byte ephemeral_key + 52-byte ciphertext
-    const ENCODED_LEN: usize = 32 + 32 + 52;
+    fn encoded_len(version: u8) -> Option<usize> {
+        match version {
+            version::V1 => Some(116),
+            _ => None,
+        }
+    }
 }
 
 /// Compact summary of all shielded activity in a transaction.
@@ -2196,6 +2332,14 @@ impl OrchardCompactTx {
     /// Returns the orchard actions in this transaction.
     pub fn actions(&self) -> &[CompactOrchardAction] {
         &self.actions
+    }
+
+    /// Return an empty OrchardCompactTx
+    pub fn empty() -> Self {
+        Self {
+            value: None,
+            actions: Vec::new(),
+        }
     }
 }
 
@@ -2318,10 +2462,20 @@ impl ZainoVersionedSerde for CompactOrchardAction {
     }
 }
 
-// CompactOrchardAction = 148 bytes
+/// Fixed-length encoding metadata for `CompactOrchardAction`.
+///
+/// v1 consists of a:
+/// - 32-byte nullifier
+/// - 32-byte cmx
+/// - 32-byte ephemeral_key
+/// - 52-byte ciphertext
 impl FixedEncodedLen for CompactOrchardAction {
-    /// 32-byte nullifier + 32-byte cmx + 32-byte ephemeral_key + 52-byte ciphertext
-    const ENCODED_LEN: usize = 32 + 32 + 32 + 52;
+    fn encoded_len(version: u8) -> Option<usize> {
+        match version {
+            version::V1 => Some(148),
+            _ => None,
+        }
+    }
 }
 
 /// Identifies a transaction's location by block height and transaction index.
@@ -2377,10 +2531,16 @@ impl ZainoVersionedSerde for TxLocation {
     }
 }
 
-/// 6 bytes, BE encoded.
+/// Fixed-length encoding metadata for `TxLocation`.
+///
+/// v1 consists of a 4-byte big-endian block_index + 2-byte big-endian tx_index
 impl FixedEncodedLen for TxLocation {
-    /// 4-byte big-endian block_index + 2-byte big-endian tx_index
-    const ENCODED_LEN: usize = 4 + 2;
+    fn encoded_len(version: u8) -> Option<usize> {
+        match version {
+            version::V1 => Some(6),
+            _ => None,
+        }
+    }
 }
 
 /// Single transparent-address activity record (input or output).
@@ -2481,15 +2641,22 @@ impl ZainoVersionedSerde for AddrHistRecord {
     }
 }
 
-/// 18 byte total
+/// Fixed-length encoding metadata for `AddrHistRecord`.
+///
+/// v1 consists of:
+///  1 byte:  TxLocation tag
+/// +6 bytes: TxLocation body (4 BE block_index + 2 BE tx_index)
+/// +2 bytes: out_index (BE)
+/// +8 bytes: value     (LE)
+/// +1 byte : flags
+/// =18 bytes
 impl FixedEncodedLen for AddrHistRecord {
-    ///  1 byte:  TxLocation tag
-    /// +6 bytes: TxLocation body (4 BE block_index + 2 BE tx_index)
-    /// +2 bytes: out_index (BE)
-    /// +8 bytes: value     (LE)
-    /// +1 byte : flags
-    /// =18 bytes
-    const ENCODED_LEN: usize = (TxLocation::ENCODED_LEN + 1) + 2 + 8 + 1;
+    fn encoded_len(version: u8) -> Option<usize> {
+        match version {
+            version::V1 => Some(18),
+            _ => None,
+        }
+    }
 }
 
 /// AddrHistRecord database byte array.
@@ -2579,6 +2746,9 @@ impl ZainoVersionedSerde for AddrEventBytes {
     }
 }
 
+/// Fixed-length encoding metadata for `AddrEventBytes`.
+///
+/// v1 consists of:
 /// 17 byte body:
 ///
 /// ```text
@@ -2589,7 +2759,12 @@ impl ZainoVersionedSerde for AddrEventBytes {
 /// [9..17]  value        (LE u64) | Amount in zatoshi, little-endian
 /// ```
 impl FixedEncodedLen for AddrEventBytes {
-    const ENCODED_LEN: usize = 17;
+    fn encoded_len(version: u8) -> Option<usize> {
+        match version {
+            version::V1 => Some(17),
+            _ => None,
+        }
+    }
 }
 
 // *** Sharding ***
@@ -2659,10 +2834,16 @@ impl ZainoVersionedSerde for ShardRoot {
     }
 }
 
-/// 68 byte body.
+/// Fixed-length encoding metadata for `ShardRoot`.
+///
+/// v1 consists of a 32 byte hash + 32 byte hash + 4 byte block height
 impl FixedEncodedLen for ShardRoot {
-    /// 32 byte hash + 32 byte hash + 4 byte block height
-    const ENCODED_LEN: usize = 32 + 32 + 4;
+    fn encoded_len(version: u8) -> Option<usize> {
+        match version {
+            version::V1 => Some(68),
+            _ => None,
+        }
+    }
 }
 
 // *** Wrapper Objects ***
