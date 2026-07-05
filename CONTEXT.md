@@ -29,3 +29,27 @@ its packaged content differs. The tree cannot be released until that crate's
 version is bumped. An unchanged crate keeping its published version is not a
 violation.
 _Avoid_: stale version, forgotten bump
+
+### TLS and cryptography
+
+**Preferred CryptoProvider**:
+The TLS cryptography provider zaino installs as the process-wide default
+when no provider is installed yet. A preference, not a mandate: an
+embedder (e.g. zallet) that installs a provider before zaino keeps its
+choice, and zaino handshakes through it.
+_Avoid_: "enforced provider" (implies zaino overrides an embedder's
+already-installed provider; it never does)
+
+**Hybrid key exchange**:
+A TLS 1.3 key-exchange group combining a classical curve with a
+post-quantum KEM (key-encapsulation mechanism), e.g. X25519MLKEM768.
+Secure if either component holds. Hybrids are the post-quantum
+deployment vehicle, not a classical fallback.
+_Avoid_: calling hybrids "classical" because they contain a classical
+component
+
+**Classical key exchange**:
+A key-exchange group with no post-quantum component (X25519, SECP256R1,
+SECP384R1). Deprecated in zaino: still accepted for client
+compatibility, slated for refusal once major wallet stacks negotiate
+hybrids.
