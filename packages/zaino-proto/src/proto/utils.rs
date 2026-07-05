@@ -19,9 +19,16 @@ pub enum PoolTypeError {
 /// Converts a vector of pool_types (i32) into its rich-type representation
 /// Returns `PoolTypeError::InvalidPoolType` when invalid `pool_types` are found
 /// or `PoolTypeError::UnknownPoolType` if unknown ones are found.
+///
+/// An empty vector means the client did not filter, so every shielded pool is
+/// served — including Ironwood, which clients that predate the field simply
+/// ignore as an unknown protobuf field. Backfilling only the pre-NU6.3 pools
+/// here would serve blocks whose `chainMetadata.ironwoodCommitmentTreeSize`
+/// counts commitments from actions the block omits; a scanning wallet sees
+/// that as a tree-size discontinuity and treats it as a chain reorg.
 pub fn pool_types_from_vector(pool_types: &[i32]) -> Result<Vec<PoolType>, PoolTypeError> {
     let pools = if pool_types.is_empty() {
-        vec![PoolType::Sapling, PoolType::Orchard]
+        vec![PoolType::Sapling, PoolType::Orchard, PoolType::Ironwood]
     } else {
         let mut pools: Vec<PoolType> = vec![];
 
@@ -491,5 +498,24 @@ mod test {
             PoolTypeFilter::from_checked_parts(true, true, true, true),
             PoolTypeFilter::includes_all()
         );
+    }
+
+    /// Regression: an unfiltered request (empty `poolTypes`, what every
+    /// pre-Ironwood client sends) must be served Ironwood actions. When the
+    /// empty-vector backfill listed only the pre-NU6.3 shielded pools, the
+    /// served compact blocks stripped `ironwoodActions` while
+    /// `chainMetadata.ironwoodCommitmentTreeSize` still counted them, and
+    /// scanning wallets reported a tree-size discontinuity (a phantom chain
+    /// reorg) at the first block with an Ironwood coinbase.
+    #[test]
+    fn empty_pool_types_request_includes_ironwood() {
+        let pools = crate::proto::utils::pool_types_from_vector(&[]).unwrap();
+        assert!(pools.contains(&PoolType::Ironwood), "{pools:?}");
+
+        let filter = PoolTypeFilter::new_from_slice(&[]).unwrap();
+        assert!(filter.includes_ironwood());
+        assert!(filter.includes_sapling());
+        assert!(filter.includes_orchard());
+        assert!(!filter.includes_transparent());
     }
 }
