@@ -34,7 +34,7 @@ async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() {
         None,
         Some(NU6_3_ACTIVE_ACTIVATION_HEIGHTS),
         None,
-        false,
+        true,
         false,
         false,
     )
@@ -213,7 +213,8 @@ enum CoinbaseEra {
 /// Launches an orchard-receiver mining fixture on `activation_heights`, generates
 /// `blocks` blocks, and asserts each height's raw validator block satisfies exactly
 /// the era predicate `expected_era` assigns it. Raw blocks come straight from the
-/// validator — zaino's serving is not involved, so a failure here is a class-1
+/// validator — zaino runs (the harness needs its subscriber as the block-generation
+/// pollable) but is never consulted, so a failure here is a class-1
 /// (consensus/routing) or fixture fact, never a zaino one.
 async fn assert_coinbase_routing(
     activation_heights: ActivationHeights,
@@ -227,7 +228,7 @@ async fn assert_coinbase_routing(
         None,
         Some(activation_heights),
         None,
-        false,
+        true,
         false,
         false,
     )
