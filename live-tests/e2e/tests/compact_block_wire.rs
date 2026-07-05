@@ -116,7 +116,10 @@ async fn assert_wire_served_eras(
         );
     }
 
-    // Era composition of the served stream.
+    // Era composition of the served stream. Observed failing at the first
+    // ironwood-era height (served orchard 1 / ironwood 0) — hypotheses and the
+    // raw-block disambiguation procedure are tracked in
+    // <https://github.com/zingolabs/zaino/issues/1368>.
     for block in &wire {
         let orchard_actions: usize = block.vtx.iter().map(|tx| tx.actions.len()).sum();
         let ironwood_actions: usize = block.vtx.iter().map(|tx| tx.ironwood_actions.len()).sum();

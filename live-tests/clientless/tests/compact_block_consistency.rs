@@ -172,6 +172,12 @@ fn is_valid_orchard_coinbase(block: &zebra_chain::block::Block) -> bool {
 
 /// Class-1 (consensus) predicate: from NU6.3 the same miner's coinbase must have an
 /// empty Orchard component, with the reward routed to Ironwood actions instead.
+///
+/// Known open question at the activation boundary: the first NU6.3 block's coinbase
+/// has been observed served as Orchard (one action, zero ironwood) — see
+/// <https://github.com/zingolabs/zaino/issues/1368> for the hypotheses (zebrad
+/// builder off-by-one vs missing routing vs a zaino pool-swap). This predicate over
+/// raw validator blocks is that issue's disambiguator.
 fn is_valid_ironwood_coinbase(block: &zebra_chain::block::Block) -> bool {
     let Some(coinbase) = block.transactions.first() else {
         return false;
@@ -216,6 +222,13 @@ enum CoinbaseEra {
 /// validator — zaino runs (the harness needs its subscriber as the block-generation
 /// pollable) but is never consulted, so a failure here is a class-1
 /// (consensus/routing) or fixture fact, never a zaino one.
+///
+/// Mismatches are collected across the whole chain and reported together rather than
+/// aborting at the first failing height, so one run distinguishes the hypotheses of
+/// <https://github.com/zingolabs/zaino/issues/1368>: a boundary-only mismatch is the
+/// zebrad builder off-by-one (A1), every-post-activation-height mismatches mean the
+/// routing is absent (A2), and a clean pass here while the e2e wire tests fail moves
+/// the blame to a zaino pool-swap (B).
 async fn assert_coinbase_routing(
     activation_heights: ActivationHeights,
     blocks: u32,
@@ -242,6 +255,7 @@ async fn assert_coinbase_routing(
     let tip = u64::from(subscriber.chain_height().await.unwrap().0);
 
     let connector = test_manager.full_node_jsonrpc_connector().await;
+    let mut violations: Vec<String> = Vec::new();
     for height in 0..=tip {
         let block = match connector
             .get_block(height.to_string(), Some(0))
@@ -255,24 +269,31 @@ async fn assert_coinbase_routing(
             other => panic!("verbosity-0 getblock must return a raw block, got {other:?}"),
         };
 
-        let (want_orchard, want_ironwood) = match expected_era(height) {
+        let expected = expected_era(height);
+        let (want_orchard, want_ironwood) = match expected {
             CoinbaseEra::Neither => (false, false),
             CoinbaseEra::Orchard => (true, false),
             CoinbaseEra::Ironwood => (false, true),
         };
-        assert_eq!(
-            is_valid_orchard_coinbase(&block),
-            want_orchard,
-            "orchard-coinbase predicate mismatch at height {height} ({})",
-            describe_coinbase(&block)
-        );
-        assert_eq!(
-            is_valid_ironwood_coinbase(&block),
-            want_ironwood,
-            "ironwood-coinbase predicate mismatch at height {height} ({})",
-            describe_coinbase(&block)
-        );
+        let got_orchard = is_valid_orchard_coinbase(&block);
+        let got_ironwood = is_valid_ironwood_coinbase(&block);
+        if got_orchard != want_orchard || got_ironwood != want_ironwood {
+            violations.push(format!(
+                "height {height}: expected {expected:?}, predicates say \
+                 (orchard: {got_orchard}, ironwood: {got_ironwood}) — {}",
+                describe_coinbase(&block)
+            ));
+        }
     }
+
+    assert!(
+        violations.is_empty(),
+        "coinbase routing mismatches ({} of {} heights; see \
+         https://github.com/zingolabs/zaino/issues/1368 for the hypothesis map):\n{}",
+        violations.len(),
+        tip + 1,
+        violations.join("\n")
+    );
 
     test_manager.close().await;
 }
