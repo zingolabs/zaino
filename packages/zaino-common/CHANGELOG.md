@@ -39,6 +39,10 @@ and this library adheres to Rust's notion of
   `RUST_LOG` runtime interface and output formats are unchanged.
 ### Deprecated
 ### Removed
+- Unused dependencies `thiserror`, `nu-ansi-term`, and `hex` (`hex`'s last
+  consumers were the display wrappers removed below). Verified empirically:
+  each dependency was deleted in turn and the crate re-checked with
+  `cargo check --all-targets`.
 - **Breaking** — `Network::zaino_regtest_heights` (unused; regtest heights come
   from `ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS` or an explicit `ActivationHeights`).
 - **Breaking** — `logging::DisplayHash` and `logging::DisplayHexStr` (unused).

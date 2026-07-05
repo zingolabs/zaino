@@ -5942,10 +5942,7 @@ dependencies = [
 name = "zaino-common"
 version = "0.2.0"
 dependencies = [
- "hex",
- "nu-ansi-term",
  "serde",
- "thiserror 2.0.18",
  "time",
  "tracing",
  "tracing-subscriber",
