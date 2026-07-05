@@ -394,6 +394,56 @@ fn passthrough_get_block_range() {
     })
 }
 
+/// Upstream gap demonstration: zebra-chain's stock [`Transaction`] strategy never
+/// generates V6 transactions, even for an NU6.3 ledger state — its NU6.3/NU7 arm is
+/// `prop_oneof![v4_strategy, v5_strategy]` (zebra-chain `transaction/arbitrary.rs`).
+/// V6 is therefore structurally impossible from the stock strategy, not merely rare,
+/// which is why [`passthrough_compact_block_metadata_consistency`] must inject
+/// `fake_v6_transaction` ironwood content instead of relying on generation.
+///
+/// `should_panic` tracks the upstream gap: when a zebra upgrade starts generating V6,
+/// this test flips, and the `#[should_panic]` should be removed together with the
+/// fake-transaction injection in `inject_ironwood_transactions` (generation then covers
+/// it natively).
+///
+/// [`Transaction`]: zebra_chain::transaction::Transaction
+#[test]
+#[should_panic(expected = "zebra's stock Transaction strategy generated no V6")]
+fn zebra_arbitrary_generates_v6_transactions_for_nu6_3() {
+    use proptest::strategy::ValueTree as _;
+    use proptest::test_runner::TestRunner;
+    use zebra_chain::parameters::NetworkUpgrade;
+
+    let mut runner = TestRunner::default();
+
+    let ledger = LedgerState::arbitrary_with(LedgerStateOverride {
+        network_upgrade_override: Some(NetworkUpgrade::Nu6_3),
+        ..LedgerStateOverride::default()
+    })
+    .new_tree(&mut runner)
+    .expect("ledger strategy yields a value")
+    .current();
+    assert_eq!(ledger.network_upgrade(), NetworkUpgrade::Nu6_3);
+
+    let transaction_strategy =
+        zebra_chain::transaction::Transaction::arbitrary_with(ledger.clone());
+
+    let mut generated_versions = std::collections::BTreeSet::new();
+    for _ in 0..64 {
+        let transaction = transaction_strategy
+            .new_tree(&mut runner)
+            .expect("transaction strategy yields a value")
+            .current();
+        generated_versions.insert(transaction.version());
+    }
+
+    assert!(
+        generated_versions.contains(&6),
+        "zebra's stock Transaction strategy generated no V6 transaction for an NU6.3 \
+         ledger state in 64 samples (saw versions {generated_versions:?})"
+    );
+}
+
 /// NU6.3 active from height 2, so post-activation generated blocks carry V6
 /// transactions whose shielded data lands in the Ironwood pool.
 const NU6_3_ACTIVE_HEIGHTS: ActivationHeights = ActivationHeights {
