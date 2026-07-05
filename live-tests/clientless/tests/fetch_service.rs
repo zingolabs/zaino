@@ -5,11 +5,10 @@ use futures::StreamExt as _;
 use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 use zaino_proto::proto::compact_formats::CompactBlock;
 use zaino_proto::proto::service::{BlockId, BlockRange, GetSubtreeRootsArg};
-#[allow(deprecated)]
 use zaino_state::{
-    FetchService, FetchServiceSubscriber, LightWalletIndexer, Status, StatusType, ZcashIndexer,
+    LightWalletIndexer, NodeBackedIndexerServiceSubscriber, Status, StatusType, ZcashIndexer,
 };
-use zaino_testutils::{TestManager, ValidatorExt, ValidatorKind};
+use zaino_testutils::{Rpc, TestManager, ValidatorExt, ValidatorKind};
 use zebra_chain::parameters::subsidy::ParameterSubsidy as _;
 use zebra_rpc::client::ValidateAddressResponse;
 use zebra_rpc::methods::{GetBlock, GetBlockHash};
@@ -95,7 +94,7 @@ async fn fetch_service_get_latest_block<V: ValidatorExt>(validator: &ValidatorKi
 #[allow(deprecated)]
 async fn assert_subscriber_matches_rpc<V, T, FFut, RFut>(
     validator: &ValidatorKind,
-    fetch_query: impl FnOnce(FetchServiceSubscriber) -> FFut,
+    fetch_query: impl FnOnce(NodeBackedIndexerServiceSubscriber) -> FFut,
     rpc_query: impl FnOnce(JsonRpSeeConnector) -> RFut,
 ) where
     V: ValidatorExt,
@@ -321,7 +320,7 @@ async fn fetch_service_get_block_header<V: ValidatorExt>(validator: &ValidatorKi
 #[allow(deprecated)]
 async fn launch_and_mine_five_blocks<V: ValidatorExt>(
     validator: &ValidatorKind,
-) -> (TestManager<V, FetchService>, FetchServiceSubscriber) {
+) -> (TestManager<V, Rpc>, NodeBackedIndexerServiceSubscriber) {
     let (test_manager, fetch_service_subscriber) =
         zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
 

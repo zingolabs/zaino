@@ -19,7 +19,7 @@ use zaino_fetch::jsonrpsee::response::{
 };
 use zebra_rpc::sync::init_read_state_with_syncer;
 
-use crate::config::{CommonBackendConfig, StateServiceConfig};
+use crate::config::{CommonBackendConfig, DirectConnectionConfig};
 use zebra_chain::{
     amount::{Amount, NonNegative},
     block::{Header, SerializedBlock},
@@ -124,26 +124,28 @@ impl ValidatorConnector {
         Ok((ValidatorConnector::Fetch(fetcher), info))
     }
 
-    /// Spawns a `ReadStateService`-backed [`ValidatorConnector::State`] from the state
-    /// backend config, returning the connector plus the validator's `getinfo` response.
+    /// Spawns a `ReadStateService`-backed [`ValidatorConnector::State`] from the common
+    /// backend config plus the [`DirectConnectionConfig`], returning the connector plus
+    /// the validator's `getinfo` response.
     ///
-    /// Owns the JSON-RPC + Zebra chain-syncer setup that previously lived in
-    /// `StateService::spawn`: builds the mempool JSON-RPC fetcher, launches the syncer
-    /// and `ReadStateService`, then blocks until the syncer has caught up to the
-    /// validator's best chain tip (comparing tip *hash* as well as height so a reorg
-    /// mid-sync cannot report a false match). The syncer task handle is retained on the
-    /// `State` so [`ValidatorConnector::shutdown`] can abort it.
+    /// Owns the JSON-RPC + Zebra chain-syncer setup for the `Direct` connection: builds
+    /// the mempool JSON-RPC fetcher, launches the syncer and `ReadStateService`, then
+    /// blocks until the syncer has caught up to the validator's best chain tip (comparing
+    /// tip *hash* as well as height so a reorg mid-sync cannot report a false match). The
+    /// syncer task handle is retained on the `State` so [`ValidatorConnector::shutdown`]
+    /// can abort it.
     pub(crate) async fn spawn_state(
-        config: &StateServiceConfig,
+        common: &CommonBackendConfig,
+        direct: &DirectConnectionConfig,
     ) -> Result<(Self, GetInfoResponse), BlockchainSourceError> {
         let map_err =
             |error: &dyn std::fmt::Display| BlockchainSourceError::Unrecoverable(error.to_string());
 
         let rpc_client = JsonRpSeeConnector::new_from_config_parts(
-            &config.common.validator_rpc_address,
-            config.common.validator_rpc_user.clone(),
-            config.common.validator_rpc_password.clone(),
-            config.common.validator_cookie_path.clone(),
+            &common.validator_rpc_address,
+            common.validator_rpc_user.clone(),
+            common.validator_rpc_password.clone(),
+            common.validator_cookie_path.clone(),
         )
         .await
         .map_err(|error| map_err(&error))?;
@@ -154,14 +156,14 @@ impl ValidatorConnector {
             .map_err(|error| map_err(&error))?;
 
         info!(
-            grpc_address = %config.validator_grpc_address,
+            grpc_address = %direct.validator_grpc_address,
             "Launching Chain Syncer"
         );
         let (mut read_state_service, _latest_chain_tip, chain_tip_change, sync_task_handle) =
             init_read_state_with_syncer(
-                config.validator_state_config.clone(),
-                &config.common.network.to_zebra_network(),
-                config.validator_grpc_address,
+                direct.validator_state_config.clone(),
+                &common.network.to_zebra_network(),
+                direct.validator_grpc_address,
             )
             .await
             .map_err(|error| map_err(&error))?
@@ -213,7 +215,7 @@ impl ValidatorConnector {
         let source = ValidatorConnector::State(State {
             read_state_service,
             mempool_fetcher: rpc_client,
-            network: config.common.network,
+            network: common.network,
             chain_tip_change,
             sync_task_handle: Some(Arc::new(sync_task_handle)),
         });

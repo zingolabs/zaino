@@ -8,6 +8,19 @@ and this library adheres to Rust's notion of
 ## Unreleased
 
 ### Changed
+- `zaino-state`: `FetchService` and `StateService` are merged into a single
+  generic `NodeBackedIndexerService<Source>` (module
+  `zaino_state::indexer::node_backed_indexer`; the former `backends` module is
+  gone). The validator connection is now selected at runtime rather than by type:
+  `NodeBackedIndexerServiceConfig { common, connection }` carries a
+  `ValidatorConnectionType` of either `Rpc` (JSON-RPC, formerly `Fetch`) or
+  `Direct(DirectConnectionConfig)` (Zebra `ReadStateService`, formerly `State`).
+  The per-backend `Fetch/StateServiceConfig`, `Fetch/StateServiceError`, and
+  `BackendConfig` types are replaced by `NodeBackedIndexerServiceConfig`,
+  `NodeBackedIndexerServiceError`, and `ValidatorConnectionType`.
+- **Breaking** — config: `zainod.toml`'s `backend` selector is renamed
+  `state` → `direct` and `fetch` → `rpc`. The legacy `"state"` / `"fetch"`
+  values are still accepted as aliases, so existing config files keep working.
 - `zaino-state`: the `ChainIndex` trait is split into `ChainIndex` (the
   wallet-essential core: chain/tx/address/mempool access) and a
   `ChainIndexRpcExt: ChainIndex` extension (compact-block serving, subtree

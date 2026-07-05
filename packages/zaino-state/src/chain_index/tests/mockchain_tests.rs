@@ -1048,3 +1048,27 @@ async fn get_difficulty() {
         "difficulty should be positive, got {via_index}"
     );
 }
+
+/// Drives the merged [`NodeBackedIndexerServiceSubscriber`] RPC layer over a
+/// `MockchainSource`, confirming the service delegates to its chain index: the
+/// service's `get_latest_block` reports the same tip the mockchain was synced to.
+#[tokio::test(flavor = "multi_thread")]
+async fn node_backed_indexer_service_serves_latest_block() {
+    use crate::indexer::node_backed_indexer::NodeBackedIndexerServiceSubscriber;
+    use crate::LightWalletIndexer as _;
+    use zaino_common::{network::ActivationHeights, Network};
+
+    let (blocks, _indexer, index_reader, _mockchain) =
+        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
+
+    let expected_tip = (blocks.len() as u32) - 1;
+    wait_for_indexer_tip(&index_reader, expected_tip).await;
+
+    let service = NodeBackedIndexerServiceSubscriber::new_for_test(
+        index_reader,
+        Network::Regtest(ActivationHeights::default()),
+    );
+
+    let latest = service.get_latest_block().await.unwrap();
+    assert_eq!(latest.height, expected_tip as u64);
+}

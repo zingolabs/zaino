@@ -1,5 +1,10 @@
-//! Holds the Indexer trait containing the zcash RPC definitions served by zaino
-//! and generic wrapper structs for the various backend options available.
+//! Zaino's indexer frontend: the `ZcashIndexer` / `LightWalletIndexer` RPC trait
+//! definitions served by zaino, the generic [`IndexerService`] / [`IndexerSubscriber`]
+//! wrappers, and the concrete [`node_backed_indexer::NodeBackedIndexerService`] — the
+//! single validator-backed service (JSON-RPC `Rpc` or direct `ReadStateService`
+//! connection, selected at runtime).
+
+pub(crate) mod node_backed_indexer;
 
 use crate::SendFut;
 use tokio::{sync::mpsc, time::timeout};
@@ -48,10 +53,10 @@ use crate::{
         AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
         SubtreeRootReplyStream, UtxoReplyStream,
     },
-    BackendType,
 };
 
-/// Wrapper Struct for a ZainoState chain-fetch service (StateService, FetchService)
+/// Wrapper struct for a ZainoState chain-fetch service (currently the single
+/// [`node_backed_indexer::NodeBackedIndexerService`]).
 ///
 /// The future plan is to also add a TonicService and DarksideService to this to enable
 /// wallets to use a single unified chain fetch service.
@@ -92,9 +97,6 @@ where
 /// Implementors automatically gain [`Liveness`](zaino_common::probing::Liveness) and
 /// [`Readiness`](zaino_common::probing::Readiness) via the [`Status`] supertrait.
 pub trait ZcashService: Sized + Status {
-    /// Backend type. Read state or fetch service.
-    const BACKEND_TYPE: BackendType;
-
     /// A subscriber to the service, used to fetch chain data.
     type Subscriber: Clone + ZcashIndexer + LightWalletIndexer + Status;
 
@@ -113,7 +115,8 @@ pub trait ZcashService: Sized + Status {
     fn close(&mut self);
 }
 
-/// Wrapper Struct for a ZainoState chain-fetch service subscriber (StateServiceSubscriber, FetchServiceSubscriber)
+/// Wrapper struct for a ZainoState chain-fetch service subscriber (currently the single
+/// [`node_backed_indexer::NodeBackedIndexerServiceSubscriber`]).
 ///
 /// The future plan is to also add a TonicServiceSubscriber and DarksideServiceSubscriber to this to enable wallets to use a single unified chain fetch service.
 #[derive(Clone)]
@@ -1154,9 +1157,72 @@ pub(crate) fn build_subtrees_by_index_response(
     .into()
 }
 
+fn latest_network_upgrade(
+    upgrades: &indexmap::IndexMap<
+        zebra_rpc::methods::ConsensusBranchIdHex,
+        zebra_rpc::methods::NetworkUpgradeInfo,
+    >,
+) -> Result<&zebra_rpc::methods::NetworkUpgradeInfo, tonic::Status> {
+    upgrades.last().map(|(_, upgrade)| upgrade).ok_or_else(|| {
+        tonic::Status::failed_precondition("validator returned no network upgrade metadata")
+    })
+}
+
+/// Maximum number of addresses a single `get_address_utxos` / `get_address_utxos_stream`
+/// request may carry.
+///
+/// The service resolves the full backend UTXO set before applying `max_entries` /
+/// `start_height` (issue #974). A complete pushdown fix needs upstream interface changes
+/// the caller-supplied entry cap cannot reach today, so until then this bounds the one
+/// input the service controls locally: the address fan-out. It stops an unauthenticated
+/// caller forcing an unbounded number of backend address lookups in a single request, and
+/// is set well above realistic wallet usage.
+///
+/// TODO: make this deployment-configurable rather than a fixed constant.
+const UTXO_MAX_ADDRESSES: usize = 1000;
+
+/// Reject a `get_address_utxos` request whose address list exceeds [`UTXO_MAX_ADDRESSES`].
+///
+/// `max_entries` bounds the response size, not the backend work; this guard bounds the
+/// address fan-out, the part the service can cap without upstream changes.
+fn validate_utxo_address_count(count: usize) -> Result<(), tonic::Status> {
+    if count > UTXO_MAX_ADDRESSES {
+        return Err(tonic::Status::invalid_argument(format!(
+            "Error: too many addresses in request: {count} exceeds the maximum of {UTXO_MAX_ADDRESSES}."
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn latest_network_upgrade_rejects_empty_metadata() {
+        let upgrades = indexmap::IndexMap::new();
+        let err = super::latest_network_upgrade(&upgrades).expect_err("empty upgrades must fail");
+
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(
+            err.message(),
+            "validator returned no network upgrade metadata"
+        );
+    }
+
+    #[test]
+    fn utxo_address_count_within_limit_is_accepted() {
+        assert!(super::validate_utxo_address_count(0).is_ok());
+        assert!(super::validate_utxo_address_count(super::UTXO_MAX_ADDRESSES).is_ok());
+    }
+
+    #[test]
+    fn utxo_address_count_over_limit_is_rejected() {
+        let err = super::validate_utxo_address_count(super::UTXO_MAX_ADDRESSES + 1)
+            .expect_err("over-limit address count must fail");
+
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
 
     #[test]
     fn build_subtrees_by_index_response_hex_encodes_roots() {
@@ -1176,5 +1242,189 @@ mod tests {
         assert_eq!(subtrees[0].end_height, Height(100));
         assert_eq!(subtrees[1].root, hex::encode([0xcdu8; 32]));
         assert_eq!(subtrees[1].end_height, Height(200));
+    }
+
+    /// Classifies the byte-level relationship between two slices.
+    #[derive(Debug, PartialEq)]
+    enum ByteRelation {
+        /// The slices are identical.
+        Equal,
+        /// `actual` fully byte-reversed equals `expected` (endian swap).
+        FullByteReversal,
+        /// Each byte's bits reversed maps `actual` to `expected`.
+        PerByteBitReversal,
+        /// Reversing bytes within 16-bit chunks maps `actual` to `expected`.
+        ChunkSwap16,
+        /// Reversing bytes within 32-bit chunks maps `actual` to `expected`.
+        ChunkSwap32,
+        /// Reversing bytes within 64-bit chunks maps `actual` to `expected`.
+        ChunkSwap64,
+        /// No recognized transformation.
+        Unrecognized,
+    }
+
+    impl std::fmt::Display for ByteRelation {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::Equal => write!(f, "equal"),
+                Self::FullByteReversal => write!(f, "full byte-reversal (endian swap)"),
+                Self::PerByteBitReversal => write!(f, "per-byte bit-reversal"),
+                Self::ChunkSwap16 => write!(f, "16-bit pairwise byte-swap"),
+                Self::ChunkSwap32 => write!(f, "32-bit chunk byte-reversal"),
+                Self::ChunkSwap64 => write!(f, "64-bit chunk byte-reversal"),
+                Self::Unrecognized => write!(f, "unrecognized mismatch"),
+            }
+        }
+    }
+
+    /// Applies each candidate byte transformation to `actual` and returns
+    /// the first that produces `expected`, or [`ByteRelation::Unrecognized`].
+    // `u32::is_multiple_of` is only stable from Rust 1.87; keep `% n == 0` for our older MSRV.
+    #[allow(clippy::manual_is_multiple_of)]
+    fn classify_byte_relation(actual: &[u8], expected: &[u8]) -> ByteRelation {
+        if actual == expected {
+            return ByteRelation::Equal;
+        }
+
+        let chunk_swap = |size: usize| -> Vec<u8> {
+            actual
+                .chunks(size)
+                .flat_map(|c| c.iter().rev())
+                .copied()
+                .collect()
+        };
+
+        let mut reversed = actual.to_vec();
+        reversed.reverse();
+        if reversed == expected {
+            return ByteRelation::FullByteReversal;
+        }
+
+        let bit_reversed: Vec<u8> = actual.iter().map(|b| b.reverse_bits()).collect();
+        if bit_reversed == expected {
+            return ByteRelation::PerByteBitReversal;
+        }
+
+        if actual.len() % 2 == 0 && chunk_swap(2) == expected {
+            return ByteRelation::ChunkSwap16;
+        }
+        if actual.len() % 4 == 0 && chunk_swap(4) == expected {
+            return ByteRelation::ChunkSwap32;
+        }
+        if actual.len() % 8 == 0 && chunk_swap(8) == expected {
+            return ByteRelation::ChunkSwap64;
+        }
+
+        ByteRelation::Unrecognized
+    }
+
+    /// Verifies that our Sapling address parsing logic produces the same
+    /// diversifier and diversified transmission key (pk_d) hex strings as
+    /// zcashd's `z_validateaddress` RPC.
+    ///
+    /// # Guarantees
+    ///
+    /// - Exercises the production `sapling_key_bytes` function directly.
+    /// - The 11-byte diversifier matches the zcashd-derived test vector.
+    /// - The 32-byte pk_d (after the endian reversal inside `sapling_key_bytes`)
+    ///   matches the zcashd-derived test vector.
+    /// - If the upstream serialization changes, the failure message
+    ///   classifies the mismatch (endian swap, bit-reversal, chunk swap,
+    ///   or unrecognized) to aid diagnosis.
+    ///
+    /// # Non-guarantees
+    ///
+    /// - Does not prove the test vector constants themselves are correct;
+    ///   they were captured from zcashd and are trusted as ground truth.
+    /// - Does not exercise the full `z_validate_address` RPC path through
+    ///   `StateService` — only the `sapling_key_bytes` extraction function.
+    /// - Does not verify behavior for malformed Sapling addresses or
+    ///   addresses on other networks (mainnet, testnet).
+    #[test]
+    fn sapling_pk_d_byte_order_matches_test_vector() {
+        use crate::indexer::sapling_key_bytes;
+        use zcash_keys::address::Address;
+        use zcash_protocol::consensus::NetworkType;
+
+        // Canonical source: live-tests/clientless/src/lib.rs::rpc::json_rpc
+        // Tracked for DRY consolidation: https://github.com/zingolabs/zaino/issues/988
+        const SAPLING_ADDRESS: &str = "zregtestsapling1jalqhycwumq3unfxlzyzcktq3n478n82k2wacvl8gwfxk6ahshkxmtp2034qj28n7gl92ka5wca";
+        const EXPECTED_DIVERSIFIER: &str = "977e0b930ee6c11e4d26f8";
+        const EXPECTED_PK_D: &str =
+            "553ef2f328096a7c2aac6dec85b76b6b9243e733dc9db2eacce3eb8c60592c88";
+
+        let parsed: zcash_address::ZcashAddress = SAPLING_ADDRESS.parse().unwrap();
+        let converted = parsed
+            .convert_if_network::<Address>(NetworkType::Regtest)
+            .unwrap();
+
+        let Address::Sapling(s) = converted else {
+            panic!("expected Sapling address");
+        };
+
+        let (diversifier, pk_d) = sapling_key_bytes(&s);
+
+        let expected_diversifier = hex::decode(EXPECTED_DIVERSIFIER).unwrap();
+        let expected_pk_d = hex::decode(EXPECTED_PK_D).unwrap();
+
+        // Diversifier
+        match classify_byte_relation(&diversifier, &expected_diversifier) {
+            ByteRelation::Equal => {}
+            relation => panic!(
+                "diversifier mismatch.\n  relation: {relation}\n  actual:   {}\n  expected: {}",
+                hex::encode(diversifier),
+                hex::encode(expected_diversifier),
+            ),
+        }
+
+        // pk_d (sapling_key_bytes already applies the endian reversal)
+        match classify_byte_relation(&pk_d, &expected_pk_d) {
+            ByteRelation::Equal => {}
+            relation => panic!(
+                "pk_d mismatch — upstream serialization may have changed.\
+                \n  relation: {relation}\n  actual:   {}\n  expected: {}",
+                hex::encode(pk_d),
+                hex::encode(expected_pk_d),
+            ),
+        }
+    }
+
+    #[test]
+    fn classify_byte_relation_detects_known_transforms() {
+        let original = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+
+        assert_eq!(
+            classify_byte_relation(&original, &original),
+            ByteRelation::Equal,
+        );
+
+        let mut reversed = original.to_vec();
+        reversed.reverse();
+        assert_eq!(
+            classify_byte_relation(&original, &reversed),
+            ByteRelation::FullByteReversal,
+        );
+
+        let bit_rev: Vec<u8> = original.iter().map(|b| b.reverse_bits()).collect();
+        assert_eq!(
+            classify_byte_relation(&original, &bit_rev),
+            ByteRelation::PerByteBitReversal,
+        );
+
+        let swapped_16: Vec<u8> = original
+            .chunks(2)
+            .flat_map(|c| c.iter().rev())
+            .copied()
+            .collect();
+        assert_eq!(
+            classify_byte_relation(&original, &swapped_16),
+            ByteRelation::ChunkSwap16,
+        );
+
+        let garbage = [0xFF; 8];
+        assert_eq!(
+            classify_byte_relation(&original, &garbage),
+            ByteRelation::Unrecognized,
+        );
     }
 }

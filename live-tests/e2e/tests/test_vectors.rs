@@ -14,11 +14,9 @@ use zaino_state::read_u64_le;
 use zaino_state::write_u32_le;
 use zaino_state::write_u64_le;
 use zaino_state::CompactSize;
-#[allow(deprecated)]
-use zaino_state::StateService;
 use zaino_state::ZcashIndexer;
 use zaino_state::{ChainWork, IndexedBlock};
-use zaino_testutils::{TestManager, ValidatorKind};
+use zaino_testutils::{Direct, TestManager, ValidatorKind};
 use zcash_local_net::validator::zebrad::Zebrad;
 use zebra_chain::serialization::{ZcashDeserialize, ZcashSerialize};
 use zebra_rpc::methods::GetAddressUtxos;
@@ -47,7 +45,7 @@ async fn create_200_block_regtest_chain_vectors() {
     // The committed unit-test vectors encode a mixed-pool chain built by
     // repeatedly shielding transparent coinbase — mining must stay transparent
     // so regenerated vectors keep that shape.
-    let mut test_manager = TestManager::<Zebrad, StateService>::launch_mining_to(
+    let mut test_manager = TestManager::<Zebrad, Direct>::launch_mining_to(
         zaino_testutils::PoolType::Transparent,
         &ValidatorKind::Zebrad,
         None,
@@ -242,7 +240,7 @@ async fn create_200_block_regtest_chain_vectors() {
                     .await
                     .and_then(|response| match response {
                         zebra_rpc::methods::GetBlock::Raw(_) => {
-                            Err(zaino_state::StateServiceError::Custom(
+                            Err(zaino_state::NodeBackedIndexerServiceError::Custom(
                                 "Found transaction of `Raw` type, expected only `Object` types."
                                     .to_string(),
                             ))
@@ -254,7 +252,7 @@ async fn create_200_block_regtest_chain_vectors() {
                                     match item {
                                         GetBlockTransaction::Hash(h) => Ok(h.0.to_vec()),
                                         GetBlockTransaction::Object(_) => Err(
-                                            zaino_state::StateServiceError::Custom(
+                                            zaino_state::NodeBackedIndexerServiceError::Custom(
                                                 "Found transaction of `Object` type, expected only `Hash` types."
                                                     .to_string(),
                                             ),
@@ -273,7 +271,7 @@ async fn create_200_block_regtest_chain_vectors() {
                     .await
                     .and_then(|response| match response {
                         zebra_rpc::methods::GetBlock::Object { .. } => {
-                            Err(zaino_state::StateServiceError::Custom(
+                            Err(zaino_state::NodeBackedIndexerServiceError::Custom(
                                 "Found transaction of `Object` type, expected only `Raw` types."
                                     .to_string(),
                             ))

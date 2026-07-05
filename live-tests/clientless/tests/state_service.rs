@@ -1,9 +1,6 @@
 use zaino_fetch::jsonrpsee::response::address_deltas::GetAddressDeltasParams;
 
-#[allow(deprecated)]
-use zaino_state::{
-    FetchServiceSubscriber, LightWalletIndexer, StateServiceSubscriber, ZcashIndexer,
-};
+use zaino_state::{LightWalletIndexer, NodeBackedIndexerServiceSubscriber, ZcashIndexer};
 use zaino_testutils::{StateAndFetchServices, ValidatorExt};
 use zaino_testutils::{ValidatorKind, ZEBRAD_TESTNET_CACHE_DIR};
 use zcash_local_net::validator::zebrad::Zebrad;
@@ -42,8 +39,8 @@ async fn launch_testnet_cached() -> StateAndFetchServices<Zebrad> {
 #[allow(deprecated)]
 async fn assert_subscribers_agree<T, FFut, SFut>(
     services: &StateAndFetchServices<Zebrad>,
-    fetch_query: impl FnOnce(FetchServiceSubscriber) -> FFut,
-    state_query: impl FnOnce(StateServiceSubscriber) -> SFut,
+    fetch_query: impl FnOnce(NodeBackedIndexerServiceSubscriber) -> FFut,
+    state_query: impl FnOnce(NodeBackedIndexerServiceSubscriber) -> SFut,
 ) -> T
 where
     T: std::fmt::Debug + PartialEq,
