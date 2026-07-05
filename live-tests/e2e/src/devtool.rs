@@ -234,6 +234,7 @@ impl Pool {
     pub fn spendable_balance(self, balance: &WalletBalance) -> u64 {
         match self {
             Pool::Orchard => balance.orchard_spendable,
+            Pool::Ironwood => balance.ironwood_spendable,
             Pool::Sapling => balance.sapling_spendable,
             Pool::Transparent => balance.transparent_spendable,
         }

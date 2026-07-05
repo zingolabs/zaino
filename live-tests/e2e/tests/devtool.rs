@@ -170,8 +170,8 @@ where
 /// Port of the `assert_send_to_pool` family from `wallet_to_validator`
 /// (zebrad): send 250_000 from the faucet (spending its orchard coinbase) to
 /// the recipient's `pool` address, mine it in, and assert the recipient's
-/// synced wallet shows the receipt in that pool. Covers `send_to_orchard`
-/// (unified), `send_to_sapling`, and the basic transparent receipt — the
+/// synced wallet shows the receipt in that pool. Covers `send_to_ironwood`
+/// (unified, the NU6.3-era receipt pool), `send_to_sapling`, and the basic transparent receipt — the
 /// per-pool address wiring is the new surface under test. (The original
 /// `send_to_transparent` additionally mines across the finalization boundary
 /// under transparent mining; that variant is deferred, as it exercises the
@@ -233,7 +233,11 @@ where
     clients.sync_recipient().await;
 
     let balance = clients.recipient_balance().await;
-    assert_eq!(e2e::Pool::Orchard.spendable_balance(&balance), 250_000);
+    // From NU6.3 devtool routes unified-address outputs to Ironwood; the
+    // orchard pool must stay empty (a nonzero orchard here means the receipt
+    // was mislabelled, not merely misrouted).
+    assert_eq!(e2e::Pool::Ironwood.spendable_balance(&balance), 250_000);
+    assert_eq!(e2e::Pool::Orchard.spendable_balance(&balance), 0);
     assert_eq!(e2e::Pool::Sapling.spendable_balance(&balance), 250_000);
     assert_eq!(e2e::Pool::Transparent.spendable_balance(&balance), 250_000);
 
@@ -242,10 +246,10 @@ where
 
 /// Port of `wallet_to_validator::shield_for_validator` (zebrad): the faucet
 /// sends 250_000 to the recipient's transparent address; the recipient
-/// confirms the transparent receipt, shields it to orchard, and confirms the
-/// orchard balance net of the ZIP-317 fee (250_000 − 15_000 = 235_000 — the
-/// first devtool exercise of `shield`, and the constant flagged as needing
-/// re-verification against devtool's note selection).
+/// confirms the transparent receipt, shields it (to Ironwood from NU6.3), and
+/// confirms the shielded balance net of the ZIP-317 fee (250_000 − 15_000 =
+/// 235_000 — the first devtool exercise of `shield`, and the constant flagged
+/// as needing re-verification against devtool's note selection).
 async fn shield_for_validator<Service>()
 where
     Service: TestService,
@@ -273,7 +277,7 @@ where
     clients.sync_recipient().await;
 
     assert_eq!(
-        e2e::Pool::Orchard.spendable_balance(&clients.recipient_balance().await),
+        e2e::Pool::Ironwood.spendable_balance(&clients.recipient_balance().await),
         235_000
     );
 
@@ -879,7 +883,7 @@ async fn block_range_returns_all_pools() {
     )
     .await;
 
-    // Three orchard coinbase notes (one per send below — devtool will not
+    // Three ironwood coinbase notes (one per send below — devtool will not
     // chain unconfirmed change), then one send to each pool's recipient
     // address, mined into a single block.
     svc.generate_blocks_and_wait_for_tips(3).await;
@@ -890,7 +894,7 @@ async fn block_range_returns_all_pools() {
     let recipient_u = clients.get_recipient_address("unified").await;
     let deshielding_txid = clients.send_from_faucet(&recipient_t, 250_000).await;
     let sapling_txid = clients.send_from_faucet(&recipient_s, 250_000).await;
-    let orchard_txid = clients.send_from_faucet(&recipient_u, 250_000).await;
+    let ironwood_txid = clients.send_from_faucet(&recipient_u, 250_000).await;
     svc.generate_blocks_and_wait_for_tips(1).await;
 
     let start_height: u64 = 1;
@@ -928,11 +932,10 @@ async fn block_range_returns_all_pools() {
         &e2e::devtool::txid_from_devtool(&sapling_txid),
         e2e::Pool::Sapling,
     );
-    e2e::assert_pool_present(
-        compact_block,
-        &e2e::devtool::txid_from_devtool(&orchard_txid),
-        e2e::Pool::Orchard,
-    );
+    let ironwood_txid = e2e::devtool::txid_from_devtool(&ironwood_txid);
+    e2e::assert_pool_present(compact_block, &ironwood_txid, e2e::Pool::Ironwood);
+    // The unified-address send must carry no Orchard actions from NU6.3.
+    e2e::assert_pool_absent(compact_block, &ironwood_txid, e2e::Pool::Orchard);
 
     svc.test_manager.close().await;
 }
@@ -2306,8 +2309,8 @@ mod zebrad {
         }
 
         #[tokio::test(flavor = "multi_thread")]
-        async fn send_to_orchard() {
-            crate::send_to_pool::<FetchService>(e2e::Pool::Orchard).await;
+        async fn send_to_ironwood() {
+            crate::send_to_pool::<FetchService>(e2e::Pool::Ironwood).await;
         }
 
         #[tokio::test(flavor = "multi_thread")]
@@ -2559,8 +2562,8 @@ mod zebrad {
         }
 
         #[tokio::test(flavor = "multi_thread")]
-        async fn send_to_orchard() {
-            crate::send_to_pool::<StateService>(e2e::Pool::Orchard).await;
+        async fn send_to_ironwood() {
+            crate::send_to_pool::<StateService>(e2e::Pool::Ironwood).await;
         }
 
         #[tokio::test(flavor = "multi_thread")]
