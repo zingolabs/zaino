@@ -65,6 +65,7 @@ fn check() -> Result<String, Vec<String>> {
         }
     }
     let _ = std::fs::remove_dir_all(&scratch);
+    write_github_output(!violations.is_empty())?;
 
     if violations.is_empty() {
         return Ok(format!(
@@ -103,6 +104,25 @@ fn check() -> Result<String, Vec<String>> {
             Err(lines)
         }
     }
+}
+
+/// Publish a `violations=<bool>` step output when running under GitHub
+/// Actions (the `GITHUB_OUTPUT` file is set). Downstream steps use it to
+/// degrade the publish dry-run to `--no-verify`: a crate that reuses a
+/// published version is *shadowed* by the registry during verify builds
+/// (cargo resolves the already-published artifact over the workspace
+/// overlay), so packaged-form verification of its dependents is meaningless
+/// until versions are bumped. Outside GitHub Actions this is a no-op.
+fn write_github_output(violations: bool) -> Result<(), Vec<String>> {
+    let Ok(path) = std::env::var("GITHUB_OUTPUT") else {
+        return Ok(());
+    };
+    let line = format!("violations={violations}\n");
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .and_then(|mut file| std::io::Write::write_all(&mut file, line.as_bytes()))
+        .map_err(|e| vec![format!("cannot append to GITHUB_OUTPUT ({path}): {e}")])
 }
 
 /// A per-process scratch directory for downloads and extractions, removed
