@@ -8,6 +8,9 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- `ActivationHeights.nu6_3` (serde key `"NU6.3"`) for the NU6.3 network
+  upgrade. `ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS` currently leaves it `None`
+  (inactive); a chain with NU6.3 active needs the height stated explicitly.
 - `StorageConfig::database.sync_checkpoint_interval` (seconds, default 120) — max
   wall-clock time spent buffering a bulk-sync write batch before flushing. Under
   the env's `NO_SYNC` mode this also bounds the window of unflushed writes at risk

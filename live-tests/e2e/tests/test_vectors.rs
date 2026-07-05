@@ -38,7 +38,7 @@ macro_rules! expected_read_response {
 #[tokio::test(flavor = "multi_thread")]
 #[cfg_attr(
     not(feature = "devtool-incompatible"),
-    ignore = "Not a test: builds test-vector data for zaino_state::chain_index unit tests. Also funds via transparent-coinbase shielding (round-2 P1) — un-ignore to regenerate vectors once devtool can shield its own transparent coinbase (tracked by tests/devtool.rs's address_deltas)."
+    ignore = "Not a test: builds test-vector data for zaino_state::chain_index unit tests. Also funds via transparent-coinbase shielding — un-ignore to regenerate vectors once devtool can shield its own transparent coinbase (tracked by tests/devtool.rs's address_deltas)."
 )]
 #[allow(deprecated)]
 async fn create_200_block_regtest_chain_vectors() {
@@ -46,7 +46,7 @@ async fn create_200_block_regtest_chain_vectors() {
     // repeatedly shielding transparent coinbase — mining must stay transparent
     // so regenerated vectors keep that shape.
     let mut test_manager = TestManager::<Zebrad, Direct>::launch_mining_to(
-        zaino_testutils::PoolType::Transparent,
+        zaino_testutils::MinerPool::Transparent,
         &ValidatorKind::Zebrad,
         None,
         None,
@@ -79,7 +79,7 @@ async fn create_200_block_regtest_chain_vectors() {
     // *** Mine past coinbase maturity, shield the first reward, and mine it in ***
     // Mature the faucet's transparent coinbase (100-block maturity) and shield
     // it. Devtool analogue of `shield_faucet_rounds`; requires the devtool wallet
-    // to spend its own transparent coinbase (round-2 P1, see #[ignore]). Mine
+    // to spend its own transparent coinbase (see #[ignore]). Mine
     // generously (150) so the earliest coinbase — a few blocks past genesis — is
     // comfortably mature before the shield, regardless of startup height.
     test_manager
@@ -231,6 +231,7 @@ async fn create_200_block_regtest_chain_vectors() {
         let mut parent_chain_work: Option<ChainWork> = None;
         let mut parent_block_sapling_tree_size: u32 = 0;
         let mut parent_block_orchard_tree_size: u32 = 0;
+        let mut parent_block_ironwood_tree_size: u32 = 0;
 
         for height in 0..=chain_height.0 {
             let (chain_block, zebra_block, block_roots, block_treestate) = {
@@ -374,8 +375,10 @@ async fn create_200_block_regtest_chain_vectors() {
                     parent_chain_work,
                     sapling_root.0.into(),
                     orchard_root.0.into(),
+                    None,
                     parent_block_sapling_tree_size,
                     parent_block_orchard_tree_size,
+                    parent_block_ironwood_tree_size,
                 ))
                 .unwrap();
 
@@ -397,6 +400,7 @@ async fn create_200_block_regtest_chain_vectors() {
             // Update parent block
             parent_block_sapling_tree_size = chain_block.commitment_tree_data().sizes().sapling();
             parent_block_orchard_tree_size = chain_block.commitment_tree_data().sizes().orchard();
+            parent_block_ironwood_tree_size = chain_block.commitment_tree_data().sizes().ironwood();
             parent_chain_work = Some(*chain_block.chainwork());
 
             data.push((height, zebra_block, block_roots, block_treestate));

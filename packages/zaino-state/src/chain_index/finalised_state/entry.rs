@@ -66,7 +66,8 @@
 //! maintain a decode path (or bump the DB major version and migrate).
 
 use crate::{
-    read_fixed_le, version, write_fixed_le, CompactSize, FixedEncodedLen, ZainoVersionedSerde,
+    read_fixed_le, read_u8, version, write_fixed_le, CompactSize, FixedEncodedLen,
+    ZainoVersionedSerde,
 };
 
 use blake2::{
@@ -108,93 +109,83 @@ pub(crate) struct StoredEntryFixed<T: ZainoVersionedSerde + FixedEncodedLen> {
 }
 
 impl<T: ZainoVersionedSerde + FixedEncodedLen> StoredEntryFixed<T> {
-    /// Constructs a new checksummed entry for `item` under `key`.
+    /// Constructs a new checksummed fixed-length entry for `item` under `key`.
     ///
-    /// The checksum is computed as:
-    /// `blake2b256(encoded_key || item.serialize())`.
+    /// The checksum is computed over:
     ///
-    /// # Key requirements
-    /// `key` must be the exact byte encoding used as the LMDB key for this record. If the caller
-    /// hashes a different key encoding than what is used for storage, verification will fail.
+    /// `encoded_key || item.serialize()`
+    ///
+    /// This constructor may only be used when the latest version of `T` is still
+    /// fixed-length. If the latest version of `T` has become variable-length,
+    /// callers must use the variable-length stored-entry wrapper for new writes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `T::serialize()` fails. Existing code already treated this path
+    /// as infallible. If desired, this can be made fallible later without changing
+    /// the on-disk format.
     pub(crate) fn new<K: AsRef<[u8]>>(key: K, item: T) -> Self {
         let body = {
-            let mut v = Vec::with_capacity(T::VERSIONED_LEN);
+            let len = T::latest_versioned_len().unwrap_or(0);
+            let mut v = Vec::with_capacity(len);
             item.serialize(&mut v).unwrap();
             v
         };
+
         let checksum = Self::blake2b256(&[key.as_ref(), &body].concat());
         Self { item, checksum }
     }
 
     /// Verifies the checksum for this entry under `key`.
     ///
-    /// Returns `true` if and only if:
-    /// `self.checksum == blake2b256(encoded_key || item.serialize())`.
-    ///
-    /// # Key requirements
-    /// `key` must be the exact byte encoding used as the LMDB key for this record.
-    ///
-    /// # Usage
-    /// Callers should treat a checksum mismatch as a corruption or incompatibility signal and
-    /// return a hard error (or trigger a rebuild path), depending on context.
+    /// Verification tries every supported historical encoding from latest down
+    /// to v1. This is required because the decoded in-memory item no longer
+    /// remembers which exact version produced the stored checksum.
     pub(crate) fn verify<K: AsRef<[u8]>>(&self, key: K) -> bool {
-        // Iterate from latest (T::VERSION) down to 1 (inclusive).
         let mut v = T::VERSION;
+
         loop {
-            // Try to obtain the encoded bytes for this candidate version (tag + body).
-            match self.item.to_bytes_with_version(v) {
-                Ok(item_bytes) => {
-                    // Compute the candidate checksum over (encoded_key || item_bytes).
-                    let candidate = Self::blake2b256(&[key.as_ref(), &item_bytes].concat());
-                    if candidate == self.checksum {
-                        return true;
-                    }
-                }
-                Err(_) => {
-                    // This version not supported by the type's encoder; try older version.
+            if let Ok(item_bytes) = self.item.to_bytes_with_version(v) {
+                let candidate = Self::blake2b256(&[key.as_ref(), &item_bytes].concat());
+                if candidate == self.checksum {
+                    return true;
                 }
             }
 
             if v == 1 {
                 break;
             }
+
             v = v.saturating_sub(1);
         }
 
         false
     }
 
-    /// Returns a reference to the inner record.
+    /// Returns a reference to the inner decoded record.
     pub(crate) fn inner(&self) -> &T {
         &self.item
     }
 
     /// Computes a BLAKE2b-256 checksum over `data`.
-    ///
-    /// This is the hashing primitive used by both wrappers. The checksum is not keyed.
     pub(crate) fn blake2b256(data: &[u8]) -> [u8; 32] {
         let mut hasher = Blake2bVar::new(32).expect("Failed to create hasher");
         hasher.update(data);
+
         let mut output = [0u8; 32];
         hasher
             .finalize_variable(&mut output)
             .expect("Failed to finalize hash");
+
         output
     }
 
     /// Builds serialized stored-entry bytes using a specific inner item version.
     ///
-    /// This is required when writing historical database values whose inner item must be encoded
-    /// with an older version than `T::VERSION`.
+    /// This is used for tests and historical fixture construction.
     ///
-    /// The returned bytes are:
-    /// - StoredEntryFixed version tag
-    /// - inner item bytes encoded with `item_version`
-    /// - checksum over `encoded_key || inner_item_bytes`
-    ///
-    /// This method returns serialized bytes directly because `StoredEntryFixed<T>` does not store
-    /// the inner item version. Constructing `Self` alone would lose the requested item version
-    /// before the value is written.
+    /// The selected `item_version` must be fixed-length according to
+    /// `T::versioned_len(item_version)`.
     #[cfg(test)]
     pub(crate) fn to_bytes_with_item_version<K: AsRef<[u8]>>(
         key: K,
@@ -203,7 +194,14 @@ impl<T: ZainoVersionedSerde + FixedEncodedLen> StoredEntryFixed<T> {
     ) -> io::Result<Vec<u8>> {
         let item_bytes = item.to_bytes_with_version(item_version)?;
 
-        if item_bytes.len() != T::VERSIONED_LEN {
+        let expected_len = T::versioned_len(item_version).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "requested item version is not fixed-length",
+            )
+        })?;
+
+        if item_bytes.len() != expected_len {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "encoded fixed-length item has an unexpected length",
@@ -212,7 +210,7 @@ impl<T: ZainoVersionedSerde + FixedEncodedLen> StoredEntryFixed<T> {
 
         let checksum = Self::blake2b256(&[key.as_ref(), &item_bytes].concat());
 
-        let mut stored_entry_bytes = Vec::with_capacity(1 + T::VERSIONED_LEN + 32);
+        let mut stored_entry_bytes = Vec::with_capacity(1 + expected_len + 32);
         stored_entry_bytes.push(Self::VERSION);
         stored_entry_bytes.extend_from_slice(&item_bytes);
         stored_entry_bytes.extend_from_slice(&checksum);
@@ -221,44 +219,94 @@ impl<T: ZainoVersionedSerde + FixedEncodedLen> StoredEntryFixed<T> {
     }
 }
 
-/// Versioned on-disk encoding for fixed-length checksummed entries.
-///
-/// Body layout (after the `StoredEntryFixed` version tag):
-/// 1. `T::serialize()` bytes (fixed length: `T::VERSIONED_LEN`)
-/// 2. 32-byte checksum
-///
-/// Note: `T::serialize()` includes `T`’s own version tag and body.
 impl<T: ZainoVersionedSerde + FixedEncodedLen> ZainoVersionedSerde for StoredEntryFixed<T> {
     const VERSION: u8 = version::V1;
 
+    /// Encodes the latest fixed stored-entry layout.
     fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
         Self::encode_v1(self, w)
     }
 
+    /// Decodes the latest fixed stored-entry layout.
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
         Self::decode_v1(r)
     }
 
+    /// Encodes a fixed stored entry.
+    ///
+    /// The inner item is serialized with its own latest version tag and body,
+    /// followed by the 32-byte checksum.
+    ///
+    /// This method requires the latest version of `T` to still be fixed-length.
     fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        self.item.serialize(&mut *w)?;
+        let expected_len = T::latest_versioned_len().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "latest item version is not fixed-length",
+            )
+        })?;
+
+        let mut item_bytes = Vec::with_capacity(expected_len);
+        self.item.serialize(&mut item_bytes)?;
+
+        if item_bytes.len() != expected_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "encoded fixed-length item has an unexpected length",
+            ));
+        }
+
+        w.write_all(&item_bytes)?;
         write_fixed_le::<32, _>(&mut *w, &self.checksum)
     }
 
+    /// Decodes a fixed stored entry.
+    ///
+    /// This method reads the inner item version tag first, then uses
+    /// `T::encoded_len(version)` to determine how many body bytes to read.
+    ///
+    /// This is what keeps old fixed-length rows readable after the latest `T`
+    /// changes size or becomes variable-length.
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
-        let mut body = vec![0u8; T::VERSIONED_LEN];
-        r.read_exact(&mut body)?;
-        let item = T::deserialize(&body[..])?;
+        let item_version = read_u8(&mut *r)?;
 
+        let body_len = T::encoded_len(item_version).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "stored item version is not fixed-length or is unsupported",
+            )
+        })?;
+
+        let mut item_bytes = Vec::with_capacity(1 + body_len);
+        item_bytes.push(item_version);
+        item_bytes.resize(1 + body_len, 0);
+
+        r.read_exact(&mut item_bytes[1..])?;
+
+        let item = T::deserialize(&item_bytes[..])?;
         let checksum = read_fixed_le::<32, _>(r)?;
+
         Ok(Self { item, checksum })
     }
 }
 
-/// `StoredEntryFixed<T>` has a fixed encoded body length.
-///
-/// Body length = `T::VERSIONED_LEN` + 32 bytes checksum.
+/// Fixed stored entries are only fixed-length when the latest inner item version
+/// is fixed-length.
 impl<T: ZainoVersionedSerde + FixedEncodedLen> FixedEncodedLen for StoredEntryFixed<T> {
-    const ENCODED_LEN: usize = T::VERSIONED_LEN + 32;
+    /// Returns the fixed encoded body length for a stored fixed entry.
+    ///
+    /// `StoredEntryFixed` v1 consists of:
+    /// - the latest fixed-length versioned encoding of the inner item `T`
+    /// - a 32-byte checksum
+    ///
+    /// If the latest version of `T` is not fixed-length, this returns `None`
+    /// because `StoredEntryFixed<T>` cannot have a fixed latest encoded length.
+    fn encoded_len(version: u8) -> Option<usize> {
+        match version {
+            version::V1 => T::latest_versioned_len().ok().map(|item_len| item_len + 32),
+            _ => None,
+        }
+    }
 }
 
 /// Variable-length checksummed database value wrapper.
@@ -439,105 +487,177 @@ mod tests {
         pub x: u32,
     }
 
-    // TestInner: versioned type with two encodings:
-    // - v1: x as little-endian (body only)
-    // - v2: x as big-endian (body only) and v2 is the current version
     impl ZainoVersionedSerde for TestInner {
         const VERSION: u8 = version::V2;
 
         fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
             self.encode_v2(w)
         }
+
         fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
             Self::decode_v2(r)
         }
 
+        /// v1 body:
+        /// - 4 bytes: `x` as little-endian `u32`
         fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
             write_u32_le(w, self.x)
         }
+
+        /// v2 body:
+        /// - 4 bytes: `x` as big-endian `u32`
+        /// - 4 bytes: duplicate/check field as big-endian `u32`
+        ///
+        /// This intentionally makes v2 a different fixed length from v1 so the
+        /// `StoredEntryFixed` decoder must use the version tag to select the
+        /// correct body length.
         fn encode_v2<W: Write>(&self, w: &mut W) -> io::Result<()> {
-            write_u32_be(w, self.x)
+            write_u32_be(&mut *w, self.x)?;
+            write_u32_be(&mut *w, !self.x)
         }
 
         fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
             let x = read_u32_le(r)?;
             Ok(TestInner { x })
         }
+
         fn decode_v2<R: Read>(r: &mut R) -> io::Result<Self> {
-            let x = read_u32_be(r)?;
+            let x = read_u32_be(&mut *r)?;
+            let check = read_u32_be(&mut *r)?;
+
+            if check != !x {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid TestInner v2 check field",
+                ));
+            }
+
             Ok(TestInner { x })
         }
     }
 
-    // Make TestInner fixed-length for StoredEntryFixed tests.
     impl FixedEncodedLen for TestInner {
-        // body length (no version tag): 4 bytes (u32)
-        const ENCODED_LEN: usize = 4;
+        /// Historical fixed body lengths, excluding the version tag.
+        ///
+        /// v1 is 4 bytes.
+        /// v2 is 8 bytes.
+        fn encoded_len(version: u8) -> Option<usize> {
+            match version {
+                version::V1 => Some(4),
+                version::V2 => Some(8),
+                _ => None,
+            }
+        }
     }
 
-    // Helper: simple key bytes for tests
     fn key_bytes() -> Vec<u8> {
         b"test-key".to_vec()
     }
 
-    // StoredEntryFixed: latest roundtrip (new -> to_bytes -> from_bytes -> verify)
+    #[test]
+    fn test_inner_versions_have_different_lengths() {
+        let inner = TestInner { x: 0x1122_3344 };
+
+        let v1 = inner
+            .to_bytes_with_version(version::V1)
+            .expect("inner v1 bytes");
+        let v2 = inner
+            .to_bytes_with_version(version::V2)
+            .expect("inner v2 bytes");
+
+        assert_eq!(v1.len(), 1 + 4);
+        assert_eq!(v2.len(), 1 + 8);
+        assert_ne!(v1.len(), v2.len());
+
+        assert_eq!(TestInner::versioned_len(version::V1), Some(1 + 4));
+        assert_eq!(TestInner::versioned_len(version::V2), Some(1 + 8));
+    }
+
     #[test]
     fn stored_entry_fixed_roundtrip_latest() {
         let inner = TestInner { x: 0x1122_3344 };
         let key = key_bytes();
 
-        // Construct wrapper using current serializer (StoredEntryFixed::new uses latest encoding)
         let wrapper = StoredEntryFixed::new(&key, inner.clone());
 
-        // Verify should succeed for the same key
-        assert!(
-            wrapper.verify(&key),
-            "wrapper verify (latest) should succeed"
-        );
+        assert!(wrapper.verify(&key), "wrapper verify latest should succeed");
 
-        // Encode wrapper to bytes and decode back
         let bytes = wrapper.to_bytes().expect("wrapper to_bytes");
         let parsed = StoredEntryFixed::<TestInner>::from_bytes(&bytes).expect("from_bytes");
+
         assert_eq!(parsed.item, inner);
         assert_eq!(parsed.checksum, wrapper.checksum);
-
-        // parsed wrapper should verify with same key
         assert!(parsed.verify(&key));
     }
 
     #[test]
-    // StoredEntryFixed: historical v1 body present on disk -> from_bytes + verify must succeed
-    fn stored_entry_fixed_verify_old_v1() {
+    fn stored_entry_fixed_decodes_historical_v1_with_shorter_length() {
         let inner = TestInner { x: 0xAABB_CCDD };
         let key = key_bytes();
 
-        // Produce item bytes according to historical v1 (tag + body)
         let item_bytes_v1 = inner
             .to_bytes_with_version(version::V1)
             .expect("inner v1 bytes");
 
-        // Compute checksum over (key || item_bytes_v1)
+        assert_eq!(
+            item_bytes_v1.len(),
+            TestInner::versioned_len(version::V1).unwrap()
+        );
+        assert_ne!(
+            item_bytes_v1.len(),
+            TestInner::latest_versioned_len().unwrap()
+        );
+
         let mut digest_input = Vec::with_capacity(key.len() + item_bytes_v1.len());
         digest_input.extend_from_slice(&key);
         digest_input.extend_from_slice(&item_bytes_v1);
+
         let checksum = StoredEntryFixed::<TestInner>::blake2b256(&digest_input);
 
-        // Manually build on-disk raw bytes for StoredEntryFixed:
-        // [StoredEntryFixed::VERSION] + item_bytes_v1 (should have length T::VERSIONED_LEN) + checksum
         let mut raw = Vec::new();
         raw.push(StoredEntryFixed::<TestInner>::VERSION);
         raw.extend_from_slice(&item_bytes_v1);
         raw.extend_from_slice(&checksum);
 
-        // Parse using from_bytes (which will call decode_v1 and reconstruct wrapper)
-        let parsed = StoredEntryFixed::<TestInner>::from_bytes(&raw).expect("from_bytes v1");
-        // parsed.item should equal the decoded inner
+        let parsed = StoredEntryFixed::<TestInner>::from_bytes(&raw)
+            .expect("fixed wrapper should decode historical shorter v1 item");
+
         assert_eq!(parsed.item, inner);
-        // verify should succeed using the same key (it will try v2 then v1 candidate encodings)
+        assert_eq!(parsed.checksum, checksum);
         assert!(parsed.verify(&key));
     }
 
-    // StoredEntryFixed: verify fails on tampered checksum or key
+    #[test]
+    fn stored_entry_fixed_decodes_latest_v2_with_longer_length() {
+        let inner = TestInner { x: 0x5566_7788 };
+        let key = key_bytes();
+
+        let item_bytes_v2 = inner
+            .to_bytes_with_version(version::V2)
+            .expect("inner v2 bytes");
+
+        assert_eq!(
+            item_bytes_v2.len(),
+            TestInner::versioned_len(version::V2).unwrap()
+        );
+
+        let checksum = StoredEntryFixed::<TestInner>::blake2b256(
+            &[key.as_slice(), item_bytes_v2.as_slice()].concat(),
+        );
+
+        let mut raw = Vec::new();
+        raw.push(StoredEntryFixed::<TestInner>::VERSION);
+        raw.extend_from_slice(&item_bytes_v2);
+        raw.extend_from_slice(&checksum);
+
+        let parsed = StoredEntryFixed::<TestInner>::from_bytes(&raw)
+            .expect("fixed wrapper should decode latest longer v2 item");
+
+        assert_eq!(parsed.item, inner);
+        assert_eq!(parsed.checksum, checksum);
+        assert!(parsed.verify(&key));
+    }
+
     #[test]
     fn stored_entry_fixed_verify_tamper() {
         let inner = TestInner { x: 0x0102_0304 };
@@ -546,16 +666,15 @@ mod tests {
         let mut wrapper = StoredEntryFixed::new(&key, inner.clone());
         assert!(wrapper.verify(&key));
 
-        // Tamper checksum (flip a byte) and ensure verify fails
         wrapper.checksum[0] ^= 0xff;
         assert!(
             !wrapper.verify(&key),
             "verify should fail with tampered checksum"
         );
 
-        // Restore checksum and verify ok, then check wrong key fails
         wrapper = StoredEntryFixed::new(&key, inner.clone());
         assert!(wrapper.verify(&key));
+
         let wrong_key = b"other-key".to_vec();
         assert!(
             !wrapper.verify(&wrong_key),
@@ -563,22 +682,21 @@ mod tests {
         );
     }
 
-    // -------------------- StoredEntryVar tests --------------------
-
     #[test]
     fn stored_entry_var_roundtrip_latest() {
         let inner = TestInner { x: 0x5566_7788 };
         let key = key_bytes();
 
         let wrapper = StoredEntryVar::new(&key, inner.clone());
+
         assert!(
             wrapper.verify(&key),
-            "var wrapper verify (latest) should succeed"
+            "var wrapper verify latest should succeed"
         );
 
-        // Encode wrapper to bytes and decode back via From/To bytes
         let bytes = wrapper.to_bytes().expect("var to_bytes");
         let parsed = StoredEntryVar::<TestInner>::from_bytes(&bytes).expect("var from_bytes");
+
         assert_eq!(parsed.item, inner);
         assert_eq!(parsed.checksum, wrapper.checksum);
         assert!(parsed.verify(&key));
@@ -589,30 +707,26 @@ mod tests {
         let inner = TestInner { x: 0xDEAD_BEEF };
         let key = key_bytes();
 
-        // item serialized as v1 (tag + body)
         let item_bytes_v1 = inner
             .to_bytes_with_version(version::V1)
             .expect("inner v1 bytes");
 
-        // checksum computed over (key || item_bytes_v1)
         let mut digest_input = Vec::with_capacity(key.len() + item_bytes_v1.len());
         digest_input.extend_from_slice(&key);
         digest_input.extend_from_slice(&item_bytes_v1);
+
         let checksum = StoredEntryVar::<TestInner>::blake2b256(&digest_input);
 
-        // Build raw stored value for StoredEntryVar:
-        // [StoredEntryVar::VERSION] + CompactSize(len) + item_bytes_v1 + checksum
         let mut raw = Vec::new();
         raw.push(StoredEntryVar::<TestInner>::VERSION);
         CompactSize::write(&mut raw, item_bytes_v1.len()).expect("write compactsize");
         raw.extend_from_slice(&item_bytes_v1);
-        // write checksum as fixed 32 bytes
         write_fixed_le::<32, _>(&mut raw, &checksum).expect("write checksum");
 
-        // from_bytes should parse the body and return wrapper
         let parsed = StoredEntryVar::<TestInner>::from_bytes(&raw).expect("var from_bytes v1");
+
         assert_eq!(parsed.item, inner);
-        // verify must succeed using same key (it will try v2 then v1)
+        assert_eq!(parsed.checksum, checksum);
         assert!(parsed.verify(&key));
     }
 
@@ -624,13 +738,12 @@ mod tests {
         let mut wrapper = StoredEntryVar::new(&key, inner);
         assert!(wrapper.verify(&key));
 
-        // tamper checksum
         wrapper.checksum[31] ^= 0xff;
         assert!(!wrapper.verify(&key));
 
-        // restore and test wrong key fails
         let wrapper = StoredEntryVar::new(&key, TestInner { x: 0xCAFEBABE });
         let wrong_key = b"bad-key".to_vec();
+
         assert!(!wrapper.verify(&wrong_key));
     }
 }

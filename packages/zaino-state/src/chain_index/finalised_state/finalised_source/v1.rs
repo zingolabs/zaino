@@ -39,10 +39,10 @@ use crate::{
     config::ChainIndexConfig,
     error::FinalisedStateError,
     BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream, CompactOrchardAction,
-    CompactSaplingOutput, CompactSaplingSpend, CompactSize, CompactTxData, FixedEncodedLen as _,
-    Height, IndexedBlock, NamedAtomicStatus, OrchardCompactTx, OrchardTxList, Outpoint,
-    SaplingCompactTx, SaplingTxList, StatusType, TransparentCompactTx, TransparentTxList,
-    TxInCompact, TxLocation, TxOutCompact, TxidList, ZainoVersionedSerde as _,
+    CompactSaplingSpend, CompactSize, CompactTxData, FixedEncodedLen as _, Height, IndexedBlock,
+    NamedAtomicStatus, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList,
+    StatusType, TransparentCompactTx, TransparentTxList, TxInCompact, TxLocation, TxOutCompact,
+    TxidList, ZainoVersionedSerde as _,
 };
 
 #[cfg(feature = "transparent_address_history_experimental")]
@@ -126,15 +126,15 @@ pub(crate) const DB_SCHEMA_V1_TEXT: &str = include_str!("db_schema_v1.txt");
 /// This value is compared against the schema hash stored in the metadata record to detect schema
 /// drift without a corresponding version bump.
 pub(crate) const DB_SCHEMA_V1_HASH: [u8; 32] = [
-    0x11, 0xb2, 0x6a, 0x12, 0x08, 0x67, 0xf0, 0x42, 0xf6, 0x31, 0x45, 0xea, 0x87, 0xe7, 0x23, 0x75,
-    0x40, 0x3b, 0xf2, 0x14, 0xaa, 0x2b, 0x00, 0x12, 0xec, 0xa4, 0x4d, 0x00, 0xe9, 0x0b, 0x07, 0x9b,
+    0xaf, 0xcb, 0x80, 0xfe, 0x89, 0x2b, 0xc5, 0xba, 0x8e, 0x5d, 0x20, 0xfe, 0x56, 0x72, 0x81, 0x75,
+    0x58, 0x8a, 0xb6, 0x49, 0xf7, 0xc4, 0x45, 0xcd, 0xa2, 0x8f, 0xaf, 0xb9, 0x6a, 0x95, 0xc8, 0x75,
 ];
 
 /// *Current* database V1 version.
 pub(crate) const DB_VERSION_V1: DbVersion = DbVersion {
     major: 1,
-    minor: 2,
-    patch: 1,
+    minor: 3,
+    patch: 0,
 };
 
 /// LMDB table name for the finalised txout-set accumulator.
@@ -314,9 +314,17 @@ pub(crate) struct DbV1 {
     /// Stored per-block, in order.
     orchard: Database,
 
-    /// Block commitment tree data: `Height` -> `StoredEntryFixed<Vec<CommitmentTreeData>>`
+    /// Ironwood: `Height` -> `StoredEntryVar<OrchardTxList>`
     ///
-    /// Stored per-block, in order.
+    /// Ironwood (NU6.3) shielded-pool actions, modelled with the Orchard compact types. Stored
+    /// per-block, in order. Introduced in schema v1.3.0.
+    ironwood: Database,
+
+    /// Block commitment tree data: `Height` -> `StoredEntryVar<CommitmentTreeData>`
+    ///
+    /// Stored per-block, in order. The value is a `StoredEntryVar` (not `StoredEntryFixed`) from
+    /// schema v1.3.0 onward, because `CommitmentTreeData` V2 carries an optional Ironwood root and
+    /// is therefore variable-length.
     commitment_tree_data: Database,
 
     /// Heights: `Hash` -> `StoredEntryFixed<Height>`
@@ -425,7 +433,22 @@ impl DbV1 {
     /// Opens the LMDB environment and every V1 named database, returning an *unstarted* [`DbV1`]
     /// (status `Spawning`, `db_handler` = `None`, fresh atomics). Performs no metadata validation
     /// and starts no background task — each caller (`spawn`, `spawn_v1_0_0`) adds its own tail.
+    ///
+    /// The `commitment_tree_data` handle is the up-to-date `commitment_tree_data_1_3_0` table
+    /// (`StoredEntryVar`). The v1.0.0 fixture builder ([`DbV1::spawn_v1_0_0`]) opens the legacy
+    /// `commitment_tree_data_1_0_0` table (`StoredEntryFixed`) instead, via
+    /// [`DbV1::open_env_and_dbs_with_commitment_table`].
     async fn open_env_and_dbs(config: &ChainIndexConfig) -> Result<Self, FinalisedStateError> {
+        Self::open_env_and_dbs_with_commitment_table(config, "commitment_tree_data_1_3_0").await
+    }
+
+    /// [`DbV1::open_env_and_dbs`] with the commitment-tree table name as a parameter, so the
+    /// v1.0.0 fixture opener can select the legacy table without creating the v1.3.0 one
+    /// (on-disk version detection keys off which tables exist).
+    async fn open_env_and_dbs_with_commitment_table(
+        config: &ChainIndexConfig,
+        commitment_table: &str,
+    ) -> Result<Self, FinalisedStateError> {
         info!("Launching FinalisedState");
 
         // Prepare database details and path.
@@ -464,7 +487,7 @@ impl DbV1 {
         // drops the unflushed page cache, write order is not guaranteed and a crash *can* leave torn
         // pages; the recovery there is to wipe and re-index. See `SYNC_CHECKPOINT_INTERVAL`.)
         let env = Environment::new()
-            .set_max_dbs(15)
+            .set_max_dbs(16)
             .set_map_size(db_size_bytes)
             .set_max_readers(max_readers)
             .set_flags(
@@ -484,9 +507,10 @@ impl DbV1 {
             super::open_or_create_db(&env, "sapling_1_0_0", DatabaseFlags::empty()).await?;
         let orchard =
             super::open_or_create_db(&env, "orchard_1_0_0", DatabaseFlags::empty()).await?;
+        let ironwood =
+            super::open_or_create_db(&env, "ironwood_1_3_0", DatabaseFlags::empty()).await?;
         let commitment_tree_data =
-            super::open_or_create_db(&env, "commitment_tree_data_1_0_0", DatabaseFlags::empty())
-                .await?;
+            super::open_or_create_db(&env, commitment_table, DatabaseFlags::empty()).await?;
         let hashes = super::open_or_create_db(&env, "hashes_1_0_0", DatabaseFlags::empty()).await?;
 
         let spent = super::open_or_create_db(&env, "spent_1_0_0", DatabaseFlags::empty()).await?;
@@ -519,6 +543,7 @@ impl DbV1 {
             transparent,
             sapling,
             orchard,
+            ironwood,
             commitment_tree_data,
             heights: hashes,
             spent,
@@ -546,6 +571,7 @@ impl DbV1 {
             transparent: self.transparent,
             sapling: self.sapling,
             orchard: self.orchard,
+            ironwood: self.ironwood,
             commitment_tree_data: self.commitment_tree_data,
             heights: self.heights,
             spent: self.spent,
@@ -811,6 +837,12 @@ impl DbV1 {
         self.metadata
     }
 
+    /// Provides access to the (v1.3.0) `StoredEntryVar` commitment-tree-data table, required for
+    /// Migration1_2_1To1_3_0 to write the rebuilt commitment rows.
+    pub(crate) fn commitment_tree_data_db(&self) -> Database {
+        self.commitment_tree_data
+    }
+
     /// Provudes access to the spent DB table, required for Migration1_1_0To1_2_0.
     pub(crate) fn spent_db(&self) -> Database {
         self.spent
@@ -971,13 +1003,21 @@ impl DbV1 {
     pub(crate) async fn spawn_v1_0_0(
         config: &ChainIndexConfig,
     ) -> Result<Self, FinalisedStateError> {
-        let mut zaino_db = Self::open_env_and_dbs(config).await?;
+        // The v1.0.0 fixture reproduces the legacy on-disk layout: its commitment tree data lives in
+        // `commitment_tree_data_1_0_0` as a `StoredEntryFixed` (see `write_block_v1_0_0`), which the
+        // v1.2.1 -> v1.3.0 migration later rebuilds into the `commitment_tree_data_1_3_0`
+        // `StoredEntryVar` table. This opener therefore opens the legacy commitment table and never
+        // creates the v1.3.0 table.
+        let zaino_db =
+            Self::open_env_and_dbs_with_commitment_table(config, "commitment_tree_data_1_0_0")
+                .await?;
 
         // Write the historical v1.0.0 metadata record. Intentionally skips `check_schema_version`
         // (see the method doc) — that is the behavioural difference from `spawn`.
         zaino_db.write_v1_0_0_metadata()?;
 
         // Spawn handler task to perform background validation and trailing tx cleanup.
+        let mut zaino_db = zaino_db;
         zaino_db.spawn_handler().await?;
 
         Ok(zaino_db)

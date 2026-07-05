@@ -111,6 +111,7 @@ mod chain_query_interface {
                                 nu6: local_net_activation_heights.nu6(),
                                 nu6_1: local_net_activation_heights.nu6_1(),
                                 nu6_2: local_net_activation_heights.nu6_2(),
+                                nu6_3: local_net_activation_heights.nu6_3(),
                                 nu7: local_net_activation_heights.nu7(),
                             },
                         ))
@@ -170,9 +171,11 @@ mod chain_query_interface {
                     },
                     ephemeral,
                     db_version: 1,
-                    network: zaino_common::Network::Regtest(ActivationHeights::from(
-                        test_manager.local_net.get_activation_heights().await,
-                    )),
+                    network: zaino_common::Network::Regtest(
+                        zaino_testutils::from_local_net_activation_heights(
+                            &test_manager.local_net.get_activation_heights().await,
+                        ),
+                    ),
                 };
 
                 // **NOTE** The "fetch" backend is currently the backend used in the wild, and
@@ -215,7 +218,9 @@ mod chain_query_interface {
                     ephemeral,
                     db_version: 1,
                     network: zaino_common::Network::Regtest(
-                        test_manager.local_net.get_activation_heights().await.into(),
+                        zaino_testutils::from_local_net_activation_heights(
+                            &test_manager.local_net.get_activation_heights().await,
+                        ),
                     ),
                 };
                 let chain_index = NodeBackedChainIndex::new(
@@ -281,8 +286,8 @@ mod chain_query_interface {
     /// validator via the ephemeral passthrough.
     ///
     /// In ephemeral mode `db_height` is `0`, so the non-finalised cache retains
-    /// blocks down to `tip - MAX_NFS_DEPTH` (110). We therefore generate well
-    /// past that depth and query a height below `tip - 110`, so the reads are
+    /// blocks only down to `tip - MAX_NFS_DEPTH` (a small margin past the seam). We
+    /// therefore generate well past that and query a height below it, so the reads are
     /// genuinely served by the ephemeral *finalised* passthrough rather than the
     /// non-finalised cache. The test then:
     /// - fetches a finalised chain (indexed) block by height, re-fetches it by
@@ -300,18 +305,22 @@ mod chain_query_interface {
             create_test_manager_and_chain_index::<C, Conn>(validator, None, false, false, true)
                 .await;
 
-        // Generate well past MAX_NFS_DEPTH (110) so low heights are evicted from
-        // the non-finalised cache and served by the ephemeral finalised passthrough.
+        // The finalised floor sits at `tip - seam`; the non-finalised cache retains a
+        // little past that. Generate well beyond it so low heights are evicted from the
+        // cache and served by the ephemeral finalised passthrough. `fast-test-seam`
+        // shrinks the seam to `FAST_TEST_MAX_NONFINALISED_DEPTH`, so a small chain suffices.
+        let seam = zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
         test_manager
-            .generate_blocks_and_wait_for_tip(150, &indexer)
+            .generate_blocks_and_wait_for_tip(seam + 50, &indexer)
             .await;
         let snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
         let chain_height: u32 = json_service.get_blockchain_info().await.unwrap().blocks.0;
 
-        // `start_height` is below `tip - 110` (evicted from the NFS cache, served
-        // by the passthrough); `end_height` is above `tip - 100` (non-finalised).
-        let start_height: u32 = chain_height - 120;
-        let end_height: u32 = chain_height - 40;
+        // `start_height` is comfortably below the retention window → evicted from the NFS
+        // cache, served by the passthrough; `end_height` is above the finalised floor
+        // (`tip - seam`) → non-finalised.
+        let start_height: u32 = chain_height - (seam + 20);
+        let end_height: u32 = chain_height - seam / 2;
         let finalised_height = Height::try_from(start_height).unwrap();
 
         // --- chain (indexed) block: fetch by height, then by its hash ---
@@ -408,9 +417,11 @@ mod chain_query_interface {
         let snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
         let chain_height = json_service.get_blockchain_info().await.unwrap().blocks.0;
 
-        let finalised_start = Height::try_from(chain_height - 150).unwrap();
-        let finalised_tip = Height::try_from(chain_height - 100).unwrap();
-        let end = Height::try_from(chain_height - 50).unwrap();
+        // Finalised floor is `tip - seam`; pick a range straddling it.
+        let seam = zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
+        let finalised_start = Height::try_from(chain_height - (seam + 50)).unwrap();
+        let finalised_tip = Height::try_from(chain_height - seam).unwrap();
+        let end = Height::try_from(chain_height - seam / 2).unwrap();
 
         let finalized_blocks = indexer
             .get_block_range(&snapshot, finalised_start, Some(finalised_tip))

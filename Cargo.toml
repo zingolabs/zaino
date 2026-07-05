@@ -38,23 +38,19 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 
-# Zingo
-
-zingo_common_components = "0.3.1"
-
 # Librustzcash
 incrementalmerkletree = "0.8"
-zcash_address = "0.12"
-zcash_keys = "0.14"
-zcash_protocol = "0.9"
-zcash_primitives = "0.28"
-zcash_transparent = "0.8"
-zcash_client_backend = "0.23"
+zcash_address = "0.13.0-pre.0"
+zcash_keys = "0.15.0-pre.0"
+zcash_protocol = "0.10.0-pre.0"
+zcash_primitives = "0.29.0-pre.0"
+zcash_transparent = "0.9.0-pre.0"
+zcash_client_backend = "0.24.0-pre.0"
 
 # Zebra
-zebra-chain = "10.0"
-zebra-state = "9.0"
-zebra-rpc = "10.0"
+zebra-chain = "11.0"
+zebra-state = "10.0"
+zebra-rpc = "11.0"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
@@ -72,7 +68,6 @@ tracing-subscriber = { version = "0.3.20", features = [
     "time",
     "json",
 ] }
-tracing-futures = "0.2"
 tracing-tree = "0.4"
 nu-ansi-term = "0.50"
 time = { version = "0.3", features = ["macros", "formatting"] }
@@ -87,24 +82,17 @@ reqwest = { version = "0.13", default-features = false, features = [
 ] }
 tower = { version = "0.4", features = ["buffer", "util"] }
 tonic = { version = "0.14" }
-tonic-build = "0.14"
 prost = "0.14"
 serde = "1.0"
 serde_json = "1.0"
-jsonrpsee-core = "0.24"
 jsonrpsee-types = "0.24"
 jsonrpsee = { version = "0.24", features = ["server", "macros"] }
-hyper = "1.6"
 
 # Hashmaps, channels, DBs
 indexmap = "2.2.6"
-crossbeam-channel = "0.5"
 dashmap = "6.1"
 lmdb = "0.8"
 lmdb-sys = "0.8"
-
-# Async
-async-stream = "0.3"
 futures = "0.3.30"
 
 # Metrics
@@ -113,9 +101,7 @@ metrics-exporter-prometheus = { version = "0.18", default-features = false, feat
 
 # Utility
 thiserror = "2.0"
-lazy-regex = "3.3"
 once_cell = "1.20"
-ctrlc = "3.4"
 chrono = "0.4"
 which = "8"
 whoami = "2.1"
@@ -150,47 +136,23 @@ zaino-serve = { path = "packages/zaino-serve", version = "0.3.1", default-featur
 zaino-testutils = { path = "live-tests/zaino-testutils" }
 
 # Zingo-infra (validator launcher driving the live tests; not a prod dep).
-# TEMPORARY (zingolabs/infrastructure#269): pinned to an exact commit on the
-# `add_client_support` branch so every machine resolves the same code; restore
-# the release tag once tagged upstream.
-zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "0cc7dab7d12dd906c23deddd4e1fc3c42cf0f083" }
+# Pinned to an exact commit past zcash_local_net_v0.7.0: the v0.7.0 launcher's
+# zebrad config writer silently drops NU6.3 activation heights
+# (https://github.com/zingolabs/zaino/issues/1368); this rev carries the
+# "NU6.3" TOML plumbing. Restore a release tag once one is cut upstream.
+zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "0dc4a51f7d9666a3df7eaf28ad4f95cacb86d646" }
 
 wire_serialized_transaction_test_data = "1.0.0"
 config = { version = "0.15", default-features = false, features = ["toml"] }
 nonempty = "0.12.0"
 proptest = "~1.11"
 zip32 = "0.2.1"
-
-# Patch for vulnerable dependency
-slab = "0.4.11"
 anyhow = "1.0"
 arc-swap = "1.7.1"
-cargo-lock = "10.1.0"
 derive_more = "2.0.1"
-lazy_static = "1.5.0"
 
 [profile.test]
 opt-level = 3
 debug = true
 
 [patch.crates-io]
-#zcash_client_backend = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
-#zcash_address = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
-#zcash_keys = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
-#zcash_primitives = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
-#zcash_protocol = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
-#zcash_transparent = { git = "https://github.com/zcash/librustzcash", tag = "zcash_client_backend-0.21.0"}
-
-# TEMPORARY: zebra is pinned to an unreleased ZcashFoundation/zebra rev whose
-# ReadRequest::NonFinalizedBlocksListener is a struct variant carrying
-# `known_chain_tips` (its Cargo version is 9.0.1, but it is NOT the published
-# crates.io 9.0.1 — that one is still a unit variant). Revert to a plain
-# version requirement once the change is released. This is the single root
-# workspace (the live-test crates were folded in; see docs/adr/0002), so the
-# patch lives here once and every member — production and live-test alike —
-# inherits it through the single lock; Cargo honours `[patch.crates-io]` only
-# from the workspace root. See docs/updating_zebra_crates.md.
-# Tracking: zaino#<TODO-revert-zebra-fork>.
-zebra-chain = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "9a27f886a5bfb143f65d1712e912cef252426800" }
-zebra-rpc = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "9a27f886a5bfb143f65d1712e912cef252426800" }
-zebra-state = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "9a27f886a5bfb143f65d1712e912cef252426800" }

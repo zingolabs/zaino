@@ -25,6 +25,3 @@ tracing-tree = { workspace = true }
 nu-ansi-term = { workspace = true }
 hex = { workspace = true }
 time = { workspace = true }
-
-# Zingo
-zingo_common_components = { workspace = true }

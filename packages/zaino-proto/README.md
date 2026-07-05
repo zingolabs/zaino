@@ -45,7 +45,7 @@ for example:
 
 when doing
 ```
-git subtree --prefix=zaino-proto/lightwallet-protocol pull git@github.com:zcash/lightwallet-protocol.git v0.4.0 --squash
+git subtree --prefix=zaino-proto/lightwallet-protocol pull git@github.com:zcash/lightwallet-protocol.git v0.5.0 --squash
 ```
 
 your branch's commits must be sequenced like this.
@@ -62,4 +62,3 @@ If you are developing the `lightclient-protocol` and adopting it on Zaino, it is
 you don't do subsequent `git subtree` to revisions and always rebase against the latest latest version
 that you will be using in your latest commit to avoid rebasing issues and also keeping a coherent
 git commit history for when your branch merges to `dev`.
-

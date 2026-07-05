@@ -31,11 +31,19 @@ use crate::{
         source::{BlockchainSourceResult, GetTransactionLocation},
         tests::{init_tracing, poll::poll_until, proptest_blockgen::proptest_helpers::add_segment},
         types::BestChainLocation,
-        NonFinalizedSnapshot, NON_FINALIZED_DEPTH,
+        NonFinalizedSnapshot, OPERATIONAL_NFS_DEPTH,
     },
-    BlockHash, BlockchainSource, ChainIndex, ChainIndexConfig, NodeBackedChainIndex,
-    NodeBackedChainIndexSubscriber, TransactionHash,
+    BlockHash, BlockchainSource, ChainIndex, ChainIndexConfig, ChainIndexRpcExt, Height,
+    NodeBackedChainIndex, NodeBackedChainIndexSubscriber, TransactionHash,
 };
+
+use zaino_proto::proto::utils::PoolTypeFilter;
+
+/// Chain length per generated segment in the passthrough harness — long enough to
+/// have some finalised blocks to play with. The best chain is twice this (genesis
+/// segment plus one branch), so its expected tip height is
+/// `2 * PASSTHROUGH_SEGMENT_LENGTH - 1`.
+const PASSTHROUGH_SEGMENT_LENGTH: usize = OPERATIONAL_NFS_DEPTH as usize + 20;
 
 /// Handle all the boilerplate for a passthrough
 fn passthrough_test(
@@ -49,10 +57,36 @@ fn passthrough_test(
         &ChainIndexSnapshot,
     ),
 ) {
+    passthrough_test_on(
+        Network::Regtest(ActivationHeights::default()),
+        // Slow the source enough to hold the indexer in passthrough while the
+        // assertions run, without slowing passthrough more than necessary.
+        Some(Duration::from_millis(100)),
+        |_| {},
+        test,
+    )
+}
+
+/// [`passthrough_test`] on an explicit network, with a per-segment chain mutator.
+///
+/// The mutator exists because zebra's stock `Transaction` strategy never generates V6
+/// transactions (its NU6.3/NU7 arm produces only v4/v5), so ironwood-era content must
+/// be injected after generation. Mutating a block's transactions is safe here: the
+/// block hash covers only the header, so parent-hash continuity is untouched, and the
+/// header's merkle root is already arbitrary — the passthrough path tolerates that by
+/// construction.
+fn passthrough_test_on(
+    network: Network,
+    source_delay: Option<Duration>,
+    mutate_segment: impl Fn(&mut Vec<Arc<zebra_chain::block::Block>>),
+    test: impl AsyncFn(
+        &ProptestMockchain,
+        NodeBackedChainIndexSubscriber<ProptestMockchain>,
+        &ChainIndexSnapshot,
+    ),
+) {
     init_tracing();
-    let network = Network::Regtest(ActivationHeights::default());
-    // Long enough to have some finalized blocks to play with
-    let segment_length = NON_FINALIZED_DEPTH as usize + 20;
+    let segment_length = PASSTHROUGH_SEGMENT_LENGTH;
     // No need to worry about non-best chains for this test
     let branch_count = 1;
 
@@ -61,14 +95,15 @@ fn passthrough_test(
     proptest::proptest!(proptest::test_runner::Config::with_cases(1), |(segments in make_branching_chain(branch_count, segment_length, network))| {
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_time().build().unwrap();
         runtime.block_on(async {
-            let (genesis_segment, branching_segments) = segments;
+            let (mut genesis_segment, mut branching_segments) = segments;
+            mutate_segment(&mut genesis_segment.0);
+            for segment in &mut branching_segments {
+                mutate_segment(&mut segment.0);
+            }
             let mockchain = ProptestMockchain {
                 genesis_segment,
                 branching_segments,
-                // This number can be played with. We want to slow down
-                // sync enough to trigger passthrough without
-                // slowing down passthrough more than we need to
-                delay: Some(Duration::from_millis(100)),
+                delay: source_delay,
                 best_branch_cache: Arc::new(std::sync::OnceLock::new()),
                 tx_index: Arc::new(std::sync::OnceLock::new()),
             };
@@ -362,6 +397,386 @@ fn passthrough_get_block_range() {
         }
         while let Some(_success) = parallel.next().await {}
     })
+}
+
+/// Upstream gap demonstration: zebra-chain's stock [`Transaction`] strategy never
+/// generates V6 transactions, even for an NU6.3 ledger state — its NU6.3/NU7 arm is
+/// `prop_oneof![v4_strategy, v5_strategy]` (zebra-chain `transaction/arbitrary.rs`).
+/// V6 is therefore structurally impossible from the stock strategy, not merely rare,
+/// which is why the `passthrough_metadata_consistency_*` walks must inject
+/// `fake_v6_transaction` ironwood content instead of relying on generation.
+///
+/// `should_panic` tracks the upstream gap: when a zebra upgrade starts generating V6,
+/// this test flips, and the `#[should_panic]` should be removed together with the
+/// fake-transaction injection in `inject_ironwood_transactions` (generation then covers
+/// it natively).
+///
+/// [`Transaction`]: zebra_chain::transaction::Transaction
+#[test]
+#[should_panic(expected = "zebra's stock Transaction strategy generated no V6")]
+fn zebra_arbitrary_generates_v6_transactions_for_nu6_3() {
+    use proptest::strategy::ValueTree as _;
+    use proptest::test_runner::TestRunner;
+    use zebra_chain::parameters::NetworkUpgrade;
+
+    let mut runner = TestRunner::default();
+
+    let ledger = LedgerState::arbitrary_with(LedgerStateOverride {
+        network_upgrade_override: Some(NetworkUpgrade::Nu6_3),
+        ..LedgerStateOverride::default()
+    })
+    .new_tree(&mut runner)
+    .expect("ledger strategy yields a value")
+    .current();
+    assert_eq!(ledger.network_upgrade(), NetworkUpgrade::Nu6_3);
+
+    let transaction_strategy =
+        zebra_chain::transaction::Transaction::arbitrary_with(ledger.clone());
+
+    let mut generated_versions = std::collections::BTreeSet::new();
+    for _ in 0..64 {
+        let transaction = transaction_strategy
+            .new_tree(&mut runner)
+            .expect("transaction strategy yields a value")
+            .current();
+        generated_versions.insert(transaction.version());
+    }
+
+    assert!(
+        generated_versions.contains(&6),
+        "zebra's stock Transaction strategy generated no V6 transaction for an NU6.3 \
+         ledger state in 64 samples (saw versions {generated_versions:?})"
+    );
+}
+
+/// NU6.3 active from height 2, so post-activation generated blocks carry V6
+/// transactions whose shielded data lands in the Ironwood pool.
+const NU6_3_ACTIVE_HEIGHTS: ActivationHeights = ActivationHeights {
+    before_overwinter: Some(1),
+    overwinter: Some(1),
+    sapling: Some(1),
+    blossom: Some(1),
+    heartwood: Some(1),
+    canopy: Some(1),
+    nu5: Some(2),
+    nu6: Some(2),
+    nu6_1: Some(2),
+    nu6_2: Some(2),
+    nu6_3: Some(2),
+    nu7: None,
+};
+
+/// Per-block consistency between served compact-block content and its chain metadata.
+///
+/// A compact block's `chainMetadata` tree sizes are cumulative note-commitment counts;
+/// a scanning wallet advances its trees by the actions/outputs each served block
+/// carries, so a served block whose tree-size delta disagrees with its served
+/// commitment count reads as a tree-size discontinuity — a phantom chain reorg. The
+/// walk checks every serviceable height, for both the wire-decoded unfiltered request
+/// (empty `poolTypes`, what real — including pre-Ironwood — clients send) and the
+/// explicit all-pools filter, and cross-checks served counts against the mockchain
+/// source of truth.
+#[test]
+fn passthrough_metadata_consistency_ironwood_only() {
+    metadata_consistency_for_era(NU6_3_ACTIVE_HEIGHTS, Some(2), false)
+}
+
+/// Orchard-only heights: every upgrade through NU6.2 at height 2, NU6.3 never
+/// activating.
+const ORCHARD_ONLY_HEIGHTS: ActivationHeights = ActivationHeights {
+    before_overwinter: Some(1),
+    overwinter: Some(1),
+    sapling: Some(1),
+    blossom: Some(1),
+    heartwood: Some(1),
+    canopy: Some(1),
+    nu5: Some(2),
+    nu6: Some(2),
+    nu6_1: Some(2),
+    nu6_2: Some(2),
+    nu6_3: None,
+    nu7: None,
+};
+
+/// Orchard-only era (NU6.3 never activates): fake Orchard content from height 2,
+/// and — since zebra's stock strategy cannot generate V6 — ironwood provably never
+/// appears anywhere in the chain or the served form.
+#[test]
+fn passthrough_metadata_consistency_orchard_only() {
+    metadata_consistency_for_era(ORCHARD_ONLY_HEIGHTS, None, false)
+}
+
+/// The transition: fake Orchard content below the NU6.3 boundary, fake Ironwood
+/// content from it. The boundary is placed inside the walked non-finalised window so
+/// both eras are actually observed by the walk.
+#[test]
+fn passthrough_metadata_consistency_orchard_to_ironwood_transition() {
+    let expected_tip = (2 * PASSTHROUGH_SEGMENT_LENGTH - 1) as u32;
+    let boundary = expected_tip - (OPERATIONAL_NFS_DEPTH / 2);
+    metadata_consistency_for_era(
+        ActivationHeights {
+            nu6_3: Some(boundary),
+            ..NU6_3_ACTIVE_HEIGHTS
+        },
+        Some(boundary),
+        true,
+    )
+}
+
+/// A structurally-valid (cryptographically fake) V6 transaction carrying a two-action
+/// Ironwood bundle. Injected because zebra's stock strategy never generates V6
+/// (demonstrated by [`zebra_arbitrary_generates_v6_transactions_for_nu6_3`]).
+fn fake_ironwood_transaction() -> zebra_chain::transaction::Transaction {
+    use zebra_chain::amount::Amount;
+    use zebra_chain::orchard::{Flags, ShieldedDataV6};
+    use zebra_chain::parameters::NetworkUpgrade;
+    use zebra_chain::transaction::arbitrary::{fake_v6_orchard_shielded_data, fake_v6_transaction};
+
+    let ironwood = zebra_chain::ironwood::ShieldedData::new(ShieldedDataV6::new(
+        fake_v6_orchard_shielded_data(
+            Flags::ENABLE_SPENDS,
+            Amount::try_from(0).expect("zero is a valid amount"),
+            2,
+        ),
+    ));
+    fake_v6_transaction(NetworkUpgrade::Nu6_3, None, Some(ironwood))
+}
+
+/// A structurally-valid (cryptographically fake) V5 transaction carrying a two-action
+/// Orchard bundle, for deterministic orchard-era content (the stock strategy's orchard
+/// data is probabilistic).
+fn fake_orchard_transaction() -> zebra_chain::transaction::Transaction {
+    use zebra_chain::amount::Amount;
+    use zebra_chain::orchard::Flags;
+    use zebra_chain::parameters::NetworkUpgrade;
+    use zebra_chain::transaction::arbitrary::fake_v6_orchard_shielded_data;
+    use zebra_chain::transaction::{LockTime, Transaction};
+
+    Transaction::V5 {
+        network_upgrade: NetworkUpgrade::Nu5,
+        lock_time: LockTime::unlocked(),
+        expiry_height: zebra_chain::block::Height(0),
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        sapling_shielded_data: None,
+        orchard_shielded_data: Some(fake_v6_orchard_shielded_data(
+            Flags::ENABLE_SPENDS,
+            Amount::try_from(0).expect("zero is a valid amount"),
+            2,
+        )),
+    }
+}
+
+/// Runs the metadata-consistency walk on a chain whose injected shielded content
+/// follows the era layout:
+///
+/// - `ironwood_boundary: None` — orchard era only: fake Orchard content from height 2,
+///   and ironwood must never appear anywhere;
+/// - `ironwood_boundary: Some(b)` — fake Ironwood content from height `b`; when
+///   `orchard_below_boundary` is set, fake Orchard content fills heights 2..b (the
+///   transition layout), otherwise heights below `b` carry only generated content.
+fn metadata_consistency_for_era(
+    heights: ActivationHeights,
+    ironwood_boundary: Option<u32>,
+    orchard_below_boundary: bool,
+) {
+    let inject = move |blocks: &mut Vec<Arc<zebra_chain::block::Block>>| {
+        for block in blocks.iter_mut() {
+            let height = block
+                .coinbase_height()
+                .expect("generated blocks always have a coinbase height")
+                .0;
+            if height < 2 {
+                continue;
+            }
+            let fake_tx = match ironwood_boundary {
+                None => fake_orchard_transaction(),
+                Some(boundary) if height >= boundary => fake_ironwood_transaction(),
+                Some(_) if orchard_below_boundary => fake_orchard_transaction(),
+                Some(_) => continue,
+            };
+            let mut new_block = (**block).clone();
+            new_block.transactions.push(Arc::new(fake_tx));
+            *block = Arc::new(new_block);
+        }
+    };
+
+    passthrough_test_on(
+        Network::Regtest(heights),
+        // No artificial source delay: this test waits for the indexer to finish
+        // syncing, because compact blocks are not served while the finalised state
+        // is still syncing (get_compact_block's StillSyncingFinalizedState arm).
+        None,
+        inject,
+        async |mockchain, index_reader, _snapshot| {
+            // Source of truth: per-height shielded commitment counts from the mockchain
+            // blocks themselves (single branch, so arb branch order is chain order).
+            let source_counts: Vec<(u32, u32, u32)> = mockchain
+                .all_blocks_arb_branch_order()
+                .map(|block| {
+                    let sapling = block
+                        .transactions
+                        .iter()
+                        .map(|tx| tx.sapling_note_commitments().count() as u32)
+                        .sum();
+                    let orchard = block
+                        .transactions
+                        .iter()
+                        .map(|tx| tx.orchard_note_commitments().count() as u32)
+                        .sum();
+                    let ironwood = block
+                        .transactions
+                        .iter()
+                        .map(|tx| tx.ironwood_note_commitments().count() as u32)
+                        .sum();
+                    (sapling, orchard, ironwood)
+                })
+                .collect();
+
+            // Era-composition guards on the source chain, so no assertion below can go
+            // vacuously green (and no era leaks content into the other).
+            match ironwood_boundary {
+                None => {
+                    let ironwood_total: u32 = source_counts.iter().map(|(_, _, i)| i).sum();
+                    assert_eq!(
+                        ironwood_total, 0,
+                        "orchard-only era must carry no ironwood commitments"
+                    );
+                    let orchard_total: u32 = source_counts.iter().map(|(_, o, _)| o).sum();
+                    assert!(
+                        orchard_total > 0,
+                        "orchard-only era carries no orchard commitments; the orchard \
+                         assertions below would be vacuous"
+                    );
+                }
+                Some(boundary) => {
+                    let below: u32 = source_counts[..boundary as usize]
+                        .iter()
+                        .map(|(_, _, i)| i)
+                        .sum();
+                    assert_eq!(
+                        below, 0,
+                        "no ironwood commitments may exist below the activation boundary"
+                    );
+                    let above: u32 = source_counts[boundary as usize..]
+                        .iter()
+                        .map(|(_, _, i)| i)
+                        .sum();
+                    assert!(
+                        above > 0,
+                        "no ironwood commitments above the boundary; the ironwood \
+                         assertions below would be vacuous"
+                    );
+                    if orchard_below_boundary {
+                        let orchard_below: u32 = source_counts[2..boundary as usize]
+                            .iter()
+                            .map(|(_, o, _)| o)
+                            .sum();
+                        assert!(
+                            orchard_below > 0,
+                            "transition layout carries no orchard commitments below the \
+                             boundary; the orchard-era half would be vacuous"
+                        );
+                    }
+                }
+            }
+
+            // Compact blocks are only served once the finalised state has caught up.
+            let snapshot = poll_until(
+                "indexer to finish syncing so compact blocks are served",
+                Duration::from_secs(60),
+                Duration::from_millis(50),
+                || async {
+                    let snapshot = index_reader.snapshot_nonfinalized_state().await.ok()?;
+                    matches!(snapshot, ChainIndexSnapshot::NonFinalizedStateExists { .. })
+                        .then_some(snapshot)
+                },
+            )
+            .await;
+            let snapshot = &snapshot;
+
+            let tip = snapshot
+                .get_nfs_snapshot()
+                .expect("fully synced snapshot has a non-finalised state")
+                .best_tip
+                .height;
+            // The walk covers the non-finalised window; its absolute baseline is the
+            // cumulative source count below the window.
+            let first_walked = finalized_height_floor(tip.0).0 + 1;
+            let baseline = source_counts[..first_walked as usize].iter().fold(
+                (0u32, 0u32, 0u32),
+                |(sapling, orchard, ironwood), (s, o, i)| (sapling + s, orchard + o, ironwood + i),
+            );
+
+            for unfiltered_wire_request in [true, false] {
+                let (mut prev_sapling, mut prev_orchard, mut prev_ironwood) = baseline;
+
+                for height_int in first_walked..=tip.0 {
+                    // The empty slice is the wire shape unfiltered clients send; both
+                    // filters include every shielded pool, which the delta assertions
+                    // below rely on.
+                    let filter = if unfiltered_wire_request {
+                        PoolTypeFilter::new_from_slice(&[]).unwrap()
+                    } else {
+                        PoolTypeFilter::includes_all()
+                    };
+                    let block = index_reader
+                        .get_compact_block(snapshot, Height(height_int), filter)
+                        .await
+                        .unwrap()
+                        .expect("serviceable heights must serve a compact block");
+                    let metadata = block
+                        .chain_metadata
+                        .as_ref()
+                        .expect("served compact blocks carry chain metadata");
+
+                    let served_sapling: u32 =
+                        block.vtx.iter().map(|tx| tx.outputs.len() as u32).sum();
+                    let served_orchard: u32 =
+                        block.vtx.iter().map(|tx| tx.actions.len() as u32).sum();
+                    let served_ironwood: u32 = block
+                        .vtx
+                        .iter()
+                        .map(|tx| tx.ironwood_actions.len() as u32)
+                        .sum();
+
+                    // Serving completeness: everything the source block carries is served.
+                    let (source_sapling, source_orchard, source_ironwood) =
+                        source_counts[height_int as usize];
+                    assert_eq!(
+                        (served_sapling, served_orchard, served_ironwood),
+                        (source_sapling, source_orchard, source_ironwood),
+                        "served shielded counts must match the source block at height \
+                         {height_int} (unfiltered_wire_request: {unfiltered_wire_request})"
+                    );
+
+                    // Metadata consistency: tree-size deltas equal served counts.
+                    assert_eq!(
+                        metadata.sapling_commitment_tree_size,
+                        prev_sapling + served_sapling,
+                        "sapling tree-size delta must equal the served output count at \
+                         height {height_int}"
+                    );
+                    assert_eq!(
+                        metadata.orchard_commitment_tree_size,
+                        prev_orchard + served_orchard,
+                        "orchard tree-size delta must equal the served action count at \
+                         height {height_int}"
+                    );
+                    assert_eq!(
+                        metadata.ironwood_commitment_tree_size,
+                        prev_ironwood + served_ironwood,
+                        "ironwood tree-size delta must equal the served action count at \
+                         height {height_int}"
+                    );
+
+                    prev_sapling = metadata.sapling_commitment_tree_size;
+                    prev_orchard = metadata.orchard_commitment_tree_size;
+                    prev_ironwood = metadata.ironwood_commitment_tree_size;
+                }
+            }
+        },
+    )
 }
 
 // Ignored: this drives the full indexer over `partial_chain_strategy` blocks, whose headers carry
@@ -725,6 +1140,7 @@ impl BlockchainSource for ProptestMockchain {
     ) -> BlockchainSourceResult<(
         Option<(zebra_chain::sapling::tree::Root, u64)>,
         Option<(zebra_chain::orchard::tree::Root, u64)>,
+        Option<(zebra_chain::orchard::tree::Root, u64)>,
     )> {
         if let Some(delay) = self.delay {
             tokio::time::sleep(delay).await;
@@ -732,44 +1148,57 @@ impl BlockchainSource for ProptestMockchain {
         let Some(chain_up_to_block) =
             self.get_block_and_all_preceeding(|block| block.hash().0 == id.0)
         else {
-            return Ok((None, None));
+            return Ok((None, None, None));
         };
 
-        let (sapling, orchard) =
-            chain_up_to_block
-                .iter()
-                .fold((None, None), |(mut sapling, mut orchard), block| {
-                    for transaction in &block.transactions {
-                        for sap_commitment in transaction.sapling_note_commitments() {
-                            let sap_commitment =
-                                sapling_crypto::Node::from_bytes(sap_commitment.to_bytes())
-                                    .unwrap();
+        let (sapling, orchard, ironwood) = chain_up_to_block.iter().fold(
+            (None, None, None),
+            |(mut sapling, mut orchard, mut ironwood), block| {
+                for transaction in &block.transactions {
+                    for sap_commitment in transaction.sapling_note_commitments() {
+                        let sap_commitment =
+                            sapling_crypto::Node::from_bytes(sap_commitment.to_bytes()).unwrap();
 
-                            sapling = Some(sapling.unwrap_or_else(|| {
-                                incrementalmerkletree::frontier::Frontier::<_, 32>::empty()
-                            }));
+                        sapling = Some(sapling.unwrap_or_else(|| {
+                            incrementalmerkletree::frontier::Frontier::<_, 32>::empty()
+                        }));
 
-                            sapling = sapling.map(|mut tree| {
-                                tree.append(sap_commitment);
-                                tree
-                            });
-                        }
-                        for orc_commitment in transaction.orchard_note_commitments() {
-                            let orc_commitment =
-                                zebra_chain::orchard::tree::Node::from(*orc_commitment);
-
-                            orchard = Some(orchard.unwrap_or_else(|| {
-                                incrementalmerkletree::frontier::Frontier::<_, 32>::empty()
-                            }));
-
-                            orchard = orchard.map(|mut tree| {
-                                tree.append(orc_commitment);
-                                tree
-                            });
-                        }
+                        sapling = sapling.map(|mut tree| {
+                            tree.append(sap_commitment);
+                            tree
+                        });
                     }
-                    (sapling, orchard)
-                });
+                    for orc_commitment in transaction.orchard_note_commitments() {
+                        let orc_commitment =
+                            zebra_chain::orchard::tree::Node::from(*orc_commitment);
+
+                        orchard = Some(orchard.unwrap_or_else(|| {
+                            incrementalmerkletree::frontier::Frontier::<_, 32>::empty()
+                        }));
+
+                        orchard = orchard.map(|mut tree| {
+                            tree.append(orc_commitment);
+                            tree
+                        });
+                    }
+                    // Ironwood reuses the Orchard tree/node types.
+                    for irw_commitment in transaction.ironwood_note_commitments() {
+                        let irw_commitment =
+                            zebra_chain::orchard::tree::Node::from(*irw_commitment);
+
+                        ironwood = Some(ironwood.unwrap_or_else(|| {
+                            incrementalmerkletree::frontier::Frontier::<_, 32>::empty()
+                        }));
+
+                        ironwood = ironwood.map(|mut tree| {
+                            tree.append(irw_commitment);
+                            tree
+                        });
+                    }
+                }
+                (sapling, orchard, ironwood)
+            },
+        );
         Ok((
             sapling.map(|sap_front| {
                 (
@@ -783,6 +1212,12 @@ impl BlockchainSource for ProptestMockchain {
                     orc_front.tree_size(),
                 )
             }),
+            ironwood.map(|irw_front| {
+                (
+                    zebra_chain::orchard::tree::Root::from_bytes(irw_front.root().as_bytes()),
+                    irw_front.tree_size(),
+                )
+            }),
         ))
     }
 
@@ -790,7 +1225,7 @@ impl BlockchainSource for ProptestMockchain {
     async fn get_treestate(
         &self,
         _id: BlockHash,
-    ) -> BlockchainSourceResult<(Option<Vec<u8>>, Option<Vec<u8>>)> {
+    ) -> BlockchainSourceResult<crate::chain_index::source::TreestateBytes> {
         // I don't think this is used for sync?
         unimplemented!()
     }

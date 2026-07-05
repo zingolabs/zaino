@@ -687,7 +687,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
                     )?,
             };
 
-            let (sapling, orchard) = self.indexer.get_treestate(block_data.hash()).await?;
+            let treestates = self.indexer.get_treestate(block_data.hash()).await?;
             let time: u32 = block_data.data().time().try_into().map_err(|_error| {
                 #[allow(deprecated)]
                 NodeBackedIndexerServiceError::RpcError(RpcError::new_from_legacycode(
@@ -696,13 +696,11 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
                 ))
             })?;
 
-            #[allow(deprecated)]
-            Ok(GetTreestateResponse::from_parts(
+            Ok(super::build_treestate_response(
                 (*block_data.hash()).into(),
                 block_data.height().into(),
                 time,
-                sapling,
-                orchard,
+                treestates,
             ))
         }
         .await;
@@ -842,11 +840,12 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
 
         let (height, confirmations, block_hash, in_best_chain) = match best_chain_location {
             Some(types::BestChainLocation::Block(block_hash, height)) => {
-                let confirmations = snapshot
+                let confirmations: i64 = snapshot
                     .max_serviceable_height()
                     .0
                     .saturating_sub(height.0)
-                    .saturating_add(1);
+                    .saturating_add(1)
+                    .into();
 
                 (
                     Some(zebra_chain::block::Height::from(height)),
@@ -1906,18 +1905,13 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
             ),
         )?;
 
-        let (hash, height, time, sapling, orchard) =
-            <Self as ZcashIndexer>::z_get_treestate(self, hash_or_height.to_string())
-                .await?
-                .into_parts();
-        Ok(TreeState {
-            network: self.config.network.to_zebra_network().bip70_network_name(),
-            height: height.0 as u64,
-            hash: hash.to_string(),
-            time,
-            sapling_tree: sapling.map(hex::encode).unwrap_or_default(),
-            orchard_tree: orchard.map(hex::encode).unwrap_or_default(),
-        })
+        let treestate_response =
+            <Self as ZcashIndexer>::z_get_treestate(self, hash_or_height.to_string()).await?;
+
+        Ok(super::tree_state_from_treestate_response(
+            self.config.network.to_zebra_network().bip70_network_name(),
+            treestate_response,
+        ))
     }
 
     /// GetLatestTreeState returns the note commitment tree state corresponding to the chain tip.
@@ -2131,7 +2125,7 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
                 .unwrap_or_default(),
             upgrade_name: nu_name.to_string(),
             upgrade_height: nu_height.0 as u64,
-            lightwallet_protocol_version: "v0.4.0".to_string(),
+            lightwallet_protocol_version: "v0.5.0".to_string(),
         })
     }
 

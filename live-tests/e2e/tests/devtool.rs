@@ -21,18 +21,17 @@
 //!
 //! Deferred, with the capability each waits on:
 //! - `send_to_transparent` (heavy / finalization) — runnable now via orchard
-//!   funding, but the load-bearing 99-block advance across the finalized /
+//!   funding, but the load-bearing seam-deep advance across the finalized /
 //!   non-finalized boundary costs a halo2 proof per block; waits on cheap
-//!   filler-block mining (round-3 spec P2).
+//!   transparent filler-block mining.
 //! - `monitor_unverified_mempool` — unconfirmed (mempool) wallet balances;
-//!   devtool sync is block-based (round-3 spec P3 — likely stays on zingolib,
-//!   the indexer-side mempool views above already cover the surface).
+//!   devtool sync is block-based (likely stays on zingolib, the indexer-side
+//!   mempool views above already cover the surface).
 //! - the zcashd matrix (`json_server`, zcashd send/query) — the devtool wallet
-//!   rejects zcashd's default regtest activation heights at construction
-//!   (round-2 spec P0); `json_server` is additionally zcashd-bound (its
-//!   reference subscriber *is* zcashd).
-//! - the `test_vectors` chain builder — transparent-coinbase shielding
-//!   (round-2 spec P1).
+//!   rejects zcashd's default regtest activation heights at construction;
+//!   `json_server` is additionally zcashd-bound (its reference subscriber *is*
+//!   zcashd).
+//! - the `test_vectors` chain builder — devtool transparent-coinbase shielding.
 //! - `get_mempool_info` — recomputes expected sizes from
 //!   `FetchServiceSubscriber` internals; low value over the mempool surfaces
 //!   already covered.
@@ -149,9 +148,11 @@ where
     let (mut test_manager, clients) = launch_and_fund_faucet::<Conn>(1).await;
 
     let faucet_balance = dbg!(clients.faucet_balance().await);
+    // Under the canonical NU6.3-at-2 heights the orchard-receiver mining reward
+    // is routed to the Ironwood pool.
     assert!(
-        faucet_balance.orchard_spendable > 0,
-        "faucet should hold a spendable orchard coinbase note, got {faucet_balance:?}"
+        faucet_balance.ironwood_spendable > 0,
+        "faucet should hold a spendable ironwood coinbase note, got {faucet_balance:?}"
     );
 
     test_manager.close().await;
@@ -160,8 +161,8 @@ where
 /// Port of the `assert_send_to_pool` family from `wallet_to_validator`
 /// (zebrad): send 250_000 from the faucet (spending its orchard coinbase) to
 /// the recipient's `pool` address, mine it in, and assert the recipient's
-/// synced wallet shows the receipt in that pool. Covers `send_to_orchard`
-/// (unified), `send_to_sapling`, and the basic transparent receipt — the
+/// synced wallet shows the receipt in that pool. Covers `send_to_ironwood`
+/// (unified, the NU6.3-era receipt pool), `send_to_sapling`, and the basic transparent receipt — the
 /// per-pool address wiring is the new surface under test. (The original
 /// `send_to_transparent` additionally mines across the finalization boundary
 /// under transparent mining; that variant is deferred, as it exercises the
@@ -219,7 +220,11 @@ where
     clients.sync_recipient().await;
 
     let balance = clients.recipient_balance().await;
-    assert_eq!(e2e::Pool::Orchard.spendable_balance(&balance), 250_000);
+    // From NU6.3 devtool routes unified-address outputs to Ironwood; the
+    // orchard pool must stay empty (a nonzero orchard here means the receipt
+    // was mislabelled, not merely misrouted).
+    assert_eq!(e2e::Pool::Ironwood.spendable_balance(&balance), 250_000);
+    assert_eq!(e2e::Pool::Orchard.spendable_balance(&balance), 0);
     assert_eq!(e2e::Pool::Sapling.spendable_balance(&balance), 250_000);
     assert_eq!(e2e::Pool::Transparent.spendable_balance(&balance), 250_000);
 
@@ -228,10 +233,10 @@ where
 
 /// Port of `wallet_to_validator::shield_for_validator` (zebrad): the faucet
 /// sends 250_000 to the recipient's transparent address; the recipient
-/// confirms the transparent receipt, shields it to orchard, and confirms the
-/// orchard balance net of the ZIP-317 fee (250_000 − 15_000 = 235_000 — the
-/// first devtool exercise of `shield`, and the constant flagged as needing
-/// re-verification against devtool's note selection).
+/// confirms the transparent receipt, shields it (to Ironwood from NU6.3), and
+/// confirms the shielded balance net of the ZIP-317 fee (250_000 − 15_000 =
+/// 235_000 — the first devtool exercise of `shield`, and the constant flagged
+/// as needing re-verification against devtool's note selection).
 async fn shield_for_validator<Conn>()
 where
     Conn: zaino_testutils::ValidatorConnectionMarker,
@@ -257,7 +262,7 @@ where
     clients.sync_recipient().await;
 
     assert_eq!(
-        e2e::Pool::Orchard.spendable_balance(&clients.recipient_balance().await),
+        e2e::Pool::Ironwood.spendable_balance(&clients.recipient_balance().await),
         235_000
     );
 
@@ -829,7 +834,7 @@ async fn block_range_returns_all_pools() {
     )
     .await;
 
-    // Three orchard coinbase notes (one per send below — devtool will not
+    // Three ironwood coinbase notes (one per send below — devtool will not
     // chain unconfirmed change), then one send to each pool's recipient
     // address, mined into a single block.
     svc.generate_blocks_and_wait_for_tips(3).await;
@@ -840,7 +845,7 @@ async fn block_range_returns_all_pools() {
     let recipient_u = clients.get_recipient_address("unified").await;
     let deshielding_txid = clients.send_from_faucet(&recipient_t, 250_000).await;
     let sapling_txid = clients.send_from_faucet(&recipient_s, 250_000).await;
-    let orchard_txid = clients.send_from_faucet(&recipient_u, 250_000).await;
+    let ironwood_txid = clients.send_from_faucet(&recipient_u, 250_000).await;
     svc.generate_blocks_and_wait_for_tips(1).await;
 
     let start_height: u64 = 1;
@@ -878,11 +883,10 @@ async fn block_range_returns_all_pools() {
         &e2e::devtool::txid_from_devtool(&sapling_txid),
         e2e::Pool::Sapling,
     );
-    e2e::assert_pool_present(
-        compact_block,
-        &e2e::devtool::txid_from_devtool(&orchard_txid),
-        e2e::Pool::Orchard,
-    );
+    let ironwood_txid = e2e::devtool::txid_from_devtool(&ironwood_txid);
+    e2e::assert_pool_present(compact_block, &ironwood_txid, e2e::Pool::Ironwood);
+    // The unified-address send must carry no Orchard actions from NU6.3.
+    e2e::assert_pool_absent(compact_block, &ironwood_txid, e2e::Pool::Orchard);
 
     svc.test_manager.close().await;
 }
@@ -1198,7 +1202,7 @@ async fn transparent_data_in_compact_block() {
         // The assertion below requires every tx to carry a transparent vout;
         // the miner's transparent coinbase is that data source, so coinbase
         // must land on the miner taddr.
-        zaino_testutils::PoolType::Transparent,
+        zaino_testutils::MinerPool::Transparent,
         &ValidatorKind::Zebrad,
         None,
         true,
@@ -1268,8 +1272,7 @@ async fn get_address_balance_fetch_vs_state() {
 /// `launch_and_build_faucet_request`'s preamble for the faucet-taddr query
 /// tests. The faucet taddr is the abandon-art transparent receiver, which is
 /// also the zebrad miner address under transparent mining; the non-vacuity
-/// probes in the callers verify that equality empirically (devtool round-2
-/// spec P1(1)).
+/// probes in the callers verify that equality empirically.
 async fn launch_transparent_and_faucet_taddr(
     blocks: u32,
 ) -> (zaino_testutils::StateAndFetchServices<Zebrad>, String) {
@@ -1277,7 +1280,7 @@ async fn launch_transparent_and_faucet_taddr(
         // These tests query the faucet taddr, which only coinbase funds —
         // mining must stay transparent or the queries compare empty against
         // empty.
-        zaino_testutils::PoolType::Transparent,
+        zaino_testutils::MinerPool::Transparent,
         &ValidatorKind::Zebrad,
         None,
         true,
@@ -1303,7 +1306,7 @@ async fn launch_transparent_and_faucet_taddr(
 /// the fetch and state indexers agree on `get_address_tx_ids` over the faucet's
 /// coinbase taddr. The non-vacuity probe (`!txids.is_empty()`) guards against a
 /// silent empty==empty pass and confirms the devtool faucet's transparent
-/// receiver equals the zebrad miner address (devtool round-2 spec P1(1)).
+/// receiver equals the zebrad miner address.
 async fn get_taddress_txids_faucet_fetch_vs_state() {
     let (mut svc, faucet_taddr) = launch_transparent_and_faucet_taddr(100).await;
 
@@ -1331,8 +1334,7 @@ async fn get_taddress_txids_faucet_fetch_vs_state() {
 /// Port of `state_service_…::get_taddress_balance` (zebrad, faucet-taddr
 /// cluster): the fetch and state indexers agree on `get_taddress_balance` over
 /// the faucet's coinbase taddr. The non-vacuity probe (`value_zat > 0`) guards
-/// against a silent 0==0 pass and confirms the address equality of round-2
-/// spec P1(1).
+/// against a silent 0==0 pass and confirms the address equality.
 async fn get_taddress_balance_faucet_fetch_vs_state() {
     let (mut svc, faucet_taddr) = launch_transparent_and_faucet_taddr(5).await;
 
@@ -1431,7 +1433,7 @@ async fn get_address_utxos_stream_faucet_fetch_vs_state() {
 /// The block-range edge tests need a known 100-block tip and no wallet client.
 async fn launch_transparent_to_height_100() -> zaino_testutils::StateAndFetchServices<Zebrad> {
     let svc = zaino_testutils::launch_state_and_fetch_services_mining_to::<Zebrad>(
-        zaino_testutils::PoolType::Transparent,
+        zaino_testutils::MinerPool::Transparent,
         &ValidatorKind::Zebrad,
         None,
         true,
@@ -1526,16 +1528,16 @@ async fn get_block_range_out_of_range_lower_bound() {
 /// Port of `send_to_transparent` (wallet_to_validator, heavy/finalization,
 /// zebrad): a transparent send to the recipient returns the same address txids
 /// whether served from the non-finalized chain (just mined) or after the
-/// 99-block advance pushes the send past the finalization boundary
-/// (NON_FINALIZED_DEPTH = 100).
+/// seam-deep advance pushes the send past the finalization boundary
+/// (the seam depth `FAST_TEST_MAX_NONFINALISED_DEPTH` under `fast-test-seam`).
 ///
-/// `#[ignore]`d (gated): the load-bearing 99-block advance mines orchard
+/// `#[ignore]`d (gated): the load-bearing seam-deep advance mines orchard
 /// coinbase here — the devtool faucet funds via orchard, since the original's
 /// transparent-mine + shield path needs devtool transparent-coinbase shielding
-/// (round-2 P1) — so it costs ~99 halo2 proofs, against the net-speedup
+/// — so it costs ~100 halo2 proofs, against the net-speedup
 /// criterion. The miner pool is fixed at launch and `generate_blocks` has no
 /// per-call override, so the advance can't be cheap transparent filler until
-/// per-call filler mining (round-3 P2) lands; un-ignore and mine the advance to
+/// per-call filler mining lands; un-ignore and mine the advance to
 /// a transparent throwaway then.
 async fn send_to_transparent_finalization<Conn>()
 where
@@ -1556,11 +1558,14 @@ where
         .await
         .unwrap();
 
-    // The load-bearing advance: 99 blocks push the send below NON_FINALIZED_DEPTH
-    // into the finalized DB. Orchard coinbase here (see #[ignore] rationale).
+    // The load-bearing advance: these blocks push the send below the seam
+    // (`FAST_TEST_MAX_NONFINALISED_DEPTH`) into the finalized DB. Orchard coinbase
+    // here (see #[ignore] rationale).
     test_manager
         .generate_blocks_bulk_and_wait_for_tips(
-            99,
+            // Advance past the seam so the send crosses the finalised floor
+            // (`tip - seam`); a small margin above it keeps the boundary unambiguous.
+            zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH + 5,
             test_manager.subscriber(),
             test_manager.subscriber(),
         )
@@ -1607,7 +1612,7 @@ async fn address_deltas() {
     let mut svc = zaino_testutils::launch_state_and_fetch_services_mining_to::<Zebrad>(
         // The deltas under test are the faucet taddr's coinbase credits and the
         // shield's debit — coinbase must land on the miner taddr.
-        zaino_testutils::PoolType::Transparent,
+        zaino_testutils::MinerPool::Transparent,
         &ValidatorKind::Zebrad,
         None,
         true,
@@ -2011,10 +2016,13 @@ async fn get_outpoint_spenders_fetch_vs_state() {
     use zaino_state::chain_index::types::ChainScope;
     use zaino_state::ChainIndex as _;
 
-    // `NON_FINALIZED_DEPTH` is 100; mining this many blocks past a spend buries
-    // it under the finalised floor so `ChainScope::Finalised` can resolve it.
-    // A small margin above 100 keeps the boundary unambiguous.
-    const FINALITY_DEPTH: u32 = 105;
+    // Bury a spend this many blocks past its block to push it below the finalised
+    // floor (tip − seam depth) so `ChainScope::Finalised` can resolve it. This crate
+    // enables `fast-test-seam`, so the live zaino-state uses the tractable
+    // `FAST_TEST_MAX_NONFINALISED_DEPTH`; a small margin above it keeps the boundary
+    // unambiguous. (Without the feature the real seam is ~1000, impractical to mine
+    // here — see zingolabs/zaino#1352.)
+    const FINALITY_DEPTH: u32 = zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH + 5;
     const FUNDING_AMOUNT: u64 = 250_000;
 
     let mut svc = zaino_testutils::launch_state_and_fetch_services_mining_to::<Zebrad>(
@@ -2239,8 +2247,8 @@ mod zebrad {
         }
 
         #[tokio::test(flavor = "multi_thread")]
-        async fn send_to_orchard() {
-            crate::send_to_pool::<Rpc>(e2e::Pool::Orchard).await;
+        async fn send_to_ironwood() {
+            crate::send_to_pool::<Rpc>(e2e::Pool::Ironwood).await;
         }
 
         #[tokio::test(flavor = "multi_thread")]
@@ -2266,7 +2274,7 @@ mod zebrad {
         #[tokio::test(flavor = "multi_thread")]
         #[cfg_attr(
             not(feature = "devtool-incompatible"),
-            ignore = "heavy: 99-block orchard advance (~99 halo2 proofs); un-ignore + transparent filler when round-3 P2 lands"
+            ignore = "heavy: seam-deep orchard advance (~100 halo2 proofs); un-ignore + transparent filler when cheap filler mining lands"
         )]
         async fn send_to_transparent_finalization() {
             crate::send_to_transparent_finalization::<Rpc>().await;
@@ -2456,7 +2464,7 @@ mod zebrad {
     #[tokio::test(flavor = "multi_thread")]
     #[cfg_attr(
         not(feature = "devtool-incompatible"),
-        ignore = "heavy: mines ~110 orchard-coinbase blocks (~110 halo2 proofs) to bury a finalised spend below NON_FINALIZED_DEPTH; un-ignore for manual / dedicated CI"
+        ignore = "heavy: mines ~105 orchard-coinbase blocks (~105 halo2 proofs) to bury a finalised spend below the seam (FAST_TEST_MAX_NONFINALISED_DEPTH); un-ignore for manual / dedicated CI"
     )]
     async fn get_outpoint_spenders_fetch_vs_state() {
         crate::get_outpoint_spenders_fetch_vs_state().await;
@@ -2491,8 +2499,8 @@ mod zebrad {
         }
 
         #[tokio::test(flavor = "multi_thread")]
-        async fn send_to_orchard() {
-            crate::send_to_pool::<Direct>(e2e::Pool::Orchard).await;
+        async fn send_to_ironwood() {
+            crate::send_to_pool::<Direct>(e2e::Pool::Ironwood).await;
         }
 
         #[tokio::test(flavor = "multi_thread")]
@@ -2518,7 +2526,7 @@ mod zebrad {
         #[tokio::test(flavor = "multi_thread")]
         #[cfg_attr(
             not(feature = "devtool-incompatible"),
-            ignore = "heavy: 99-block orchard advance (~99 halo2 proofs); un-ignore + transparent filler when round-3 P2 lands"
+            ignore = "heavy: seam-deep orchard advance (~100 halo2 proofs); un-ignore + transparent filler when cheap filler mining lands"
         )]
         async fn send_to_transparent_finalization() {
             crate::send_to_transparent_finalization::<Direct>().await;

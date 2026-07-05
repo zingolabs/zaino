@@ -160,7 +160,7 @@ use crate::{
     },
     config::ChainIndexConfig,
     error::FinalisedStateError,
-    Height, TransparentTxList, TxLocation, TxidList, ZainoVersionedSerde as _,
+    CommitmentTreeData, Height, TransparentTxList, TxLocation, TxidList, ZainoVersionedSerde as _,
 };
 
 use lmdb::{Transaction, WriteFlags};
@@ -378,6 +378,7 @@ impl<T: BlockchainSource> MigrationManager<T> {
             (1, 0, 0) => Ok(MigrationStep::Migration1_0_0To1_1_0(Migration1_0_0To1_1_0)),
             (1, 1, 0) => Ok(MigrationStep::Migration1_1_0To1_2_0(Migration1_1_0To1_2_0)),
             (1, 2, 0) => Ok(MigrationStep::Migration1_2_0To1_2_1(Migration1_2_0To1_2_1)),
+            (1, 2, 1) => Ok(MigrationStep::Migration1_2_1To1_3_0(Migration1_2_1To1_3_0)),
             (_, _, _) => Err(FinalisedStateError::Custom(format!(
                 "Missing migration from version {}",
                 self.current_version
@@ -395,6 +396,7 @@ enum MigrationStep {
     Migration1_0_0To1_1_0(Migration1_0_0To1_1_0),
     Migration1_1_0To1_2_0(Migration1_1_0To1_2_0),
     Migration1_2_0To1_2_1(Migration1_2_0To1_2_1),
+    Migration1_2_1To1_3_0(Migration1_2_1To1_3_0),
 }
 
 impl MigrationStep {
@@ -408,6 +410,9 @@ impl MigrationStep {
             }
             MigrationStep::Migration1_2_0To1_2_1(_step) => {
                 <Migration1_2_0To1_2_1 as Migration<T>>::TO_VERSION
+            }
+            MigrationStep::Migration1_2_1To1_3_0(_step) => {
+                <Migration1_2_1To1_3_0 as Migration<T>>::TO_VERSION
             }
         }
     }
@@ -423,6 +428,9 @@ impl MigrationStep {
             MigrationStep::Migration1_2_0To1_2_1(step) => {
                 <Migration1_2_0To1_2_1 as Migration<T>>::migration_type(step)
             }
+            MigrationStep::Migration1_2_1To1_3_0(step) => {
+                <Migration1_2_1To1_3_0 as Migration<T>>::migration_type(step)
+            }
         }
     }
 
@@ -436,6 +444,7 @@ impl MigrationStep {
             MigrationStep::Migration1_0_0To1_1_0(step) => step.migrate(router, cfg, source).await,
             MigrationStep::Migration1_1_0To1_2_0(step) => step.migrate(router, cfg, source).await,
             MigrationStep::Migration1_2_0To1_2_1(step) => step.migrate(router, cfg, source).await,
+            MigrationStep::Migration1_2_1To1_3_0(step) => step.migrate(router, cfg, source).await,
         }
     }
 }
@@ -1003,4 +1012,265 @@ impl<T: BlockchainSource> Migration<T> for Migration1_2_0To1_2_1 {
         minor: 2,
         patch: 1,
     };
+}
+
+/// Minor migration: v1.2.1 → v1.3.0.
+///
+/// Introduces the Ironwood (NU6.3) shielded pool to the finalised state:
+/// - a new per-height `ironwood` table (`ironwood_1_3_0`), created empty by `DbV1::spawn`; new
+///   blocks populate it via the write path. No backfill is needed because every block already on
+///   disk predates NU6.3 (see the guard below).
+/// - the `commitment_tree_data` table is rebuilt from the legacy fixed-length
+///   `StoredEntryFixed<CommitmentTreeData>` (V1) rows into the variable-length
+///   `StoredEntryVar<CommitmentTreeData>` (V2) layout, which carries the optional Ironwood root and
+///   size. The rebuild reads the legacy `commitment_tree_data_1_0_0` table and writes the new
+///   `commitment_tree_data_1_3_0` table (opened as the primary's `commitment_tree_data` handle),
+///   then clears the legacy table.
+///
+/// This is a **rebuild from existing on-disk data** (no validator refetch), correct only while every
+/// stored block predates Ironwood. The migration therefore asserts the database tip is below NU6.3
+/// activation before running; a database already synced past NU6.3 under the old schema would be
+/// missing ironwood data that cannot be reconstructed from existing rows and must be re-indexed from
+/// the validator instead.
+///
+/// Safety and resumability:
+/// - Deterministic: each rebuilt row is derived only from the matching legacy row (Ironwood
+///   root/size default to `None`/`0` via `CommitmentTreeData` V1 decode).
+/// - Resumable: the next height to rebuild is stored in the metadata DB under a temporary key.
+/// - Crash-safe: each height's rebuilt row and the progress update commit in the same transaction;
+///   idempotent on resume (`NO_OVERWRITE` + verify-match).
+struct Migration1_2_1To1_3_0;
+
+impl<T: BlockchainSource> Migration<T> for Migration1_2_1To1_3_0 {
+    const CURRENT_VERSION: DbVersion = DbVersion {
+        major: 1,
+        minor: 2,
+        patch: 1,
+    };
+
+    const TO_VERSION: DbVersion = DbVersion {
+        major: 1,
+        minor: 3,
+        patch: 0,
+    };
+
+    fn migration_type(&self) -> MigrationType {
+        MigrationType::Minor
+    }
+
+    async fn migrate(
+        &self,
+        router: Arc<Router<T>>,
+        cfg: ChainIndexConfig,
+        _source: T,
+    ) -> Result<(), FinalisedStateError> {
+        use lmdb::DatabaseFlags;
+
+        // Temporary metadata entry recording the next height to rebuild, removed on completion.
+        const MIGRATION_CTD_PROGRESS_KEY: &[u8] =
+            b"_migration_commitment_tree_data_progress_1_3_0_next_height";
+
+        info!("Starting v1.2.1 → v1.3.0 migration (Ironwood).");
+
+        // Use the persistent primary directly (an ephemeral passthrough serves reads during the
+        // migration; `backend(WriteCore)` would route there and has no LMDB env).
+        let backend = router.primary_backend();
+        let env = backend.env()?;
+        let metadata_db = backend.metadata_db()?;
+        // The primary's `commitment_tree_data` handle is the new `commitment_tree_data_1_3_0` table.
+        let new_ctd_db = backend.commitment_tree_data_db()?;
+
+        // Open the legacy fixed-length commitment table by name. On a pre-v1.3.0 database it already
+        // exists; `open_or_create_db` creating it empty on an unexpected fresh DB is harmless (the
+        // rebuild loop below only runs when a tip exists, and an empty legacy table yields no rows).
+        let legacy_ctd_db =
+            crate::chain_index::finalised_state::finalised_source::open_or_create_db(
+                &env,
+                "commitment_tree_data_1_0_0",
+                DatabaseFlags::empty(),
+            )
+            .await?;
+
+        // Guard: Ironwood data is only expected from NU6.3 activation. A rebuild-from-existing-data
+        // migration cannot reconstruct ironwood roots/sizes for post-NU6.3 blocks.
+        let zebra_network = cfg.network.to_zebra_network();
+        let nu6_3_activation_height = crate::chain_index::ShieldedPool::Ironwood
+            .activation_upgrade()
+            .activation_height(&zebra_network);
+
+        // Mark migration in progress (observability only; resumption uses the progress key).
+        {
+            let mut metadata: DbMetadata = backend.get_metadata().await?;
+            if metadata.migration_status == MigrationStatus::Empty {
+                metadata.migration_status = MigrationStatus::PartialBuidInProgress;
+                backend.update_metadata(metadata).await?;
+            }
+        }
+
+        // Reads the temporary progress height, returning `None` if the key is absent.
+        let read_progress = |key: &[u8]| -> Result<Option<u32>, FinalisedStateError> {
+            let txn = env.begin_ro_txn()?;
+            match txn.get(metadata_db, &key) {
+                Ok(bytes) => {
+                    let entry = StoredEntryFixed::<Height>::from_bytes(bytes).map_err(|error| {
+                        FinalisedStateError::Custom(format!(
+                            "corrupt v1.3.0 migration progress entry: {error}"
+                        ))
+                    })?;
+                    if !entry.verify(key) {
+                        return Err(FinalisedStateError::Custom(
+                            "v1.3.0 migration progress checksum mismatch".to_string(),
+                        ));
+                    }
+                    Ok(Some(entry.inner().0))
+                }
+                Err(lmdb::Error::NotFound) => Ok(None),
+                Err(error) => Err(FinalisedStateError::LmdbError(error)),
+            }
+        };
+
+        // Nothing to rebuild on an empty database; fall through to finalisation.
+        if let Some(db_tip) = backend.db_height().await? {
+            let db_tip = db_tip.0;
+
+            if let Some(activation) = nu6_3_activation_height {
+                if db_tip >= activation.0 {
+                    return Err(FinalisedStateError::Custom(format!(
+                        "cannot migrate finalised state to v1.3.0: tip {db_tip} is at or above NU6.3 \
+                         activation {} but was built without Ironwood data; wipe and re-index the \
+                         finalised state from the validator",
+                        activation.0
+                    )));
+                }
+            }
+
+            let mut next_height =
+                read_progress(MIGRATION_CTD_PROGRESS_KEY)?.unwrap_or(GENESIS_HEIGHT.0);
+
+            info!(
+                resume_height = next_height,
+                db_tip,
+                "v1.3.0 migration: rebuilding commitment_tree_data into StoredEntryVar (V2)"
+            );
+            let started = std::time::Instant::now();
+
+            while next_height <= db_tip {
+                let height = Height::try_from(next_height)
+                    .map_err(|error| FinalisedStateError::Custom(error.to_string()))?;
+                let height_bytes = height.to_bytes()?;
+
+                // Read + verify the legacy fixed-length row.
+                let commitment_tree_data: CommitmentTreeData = {
+                    let txn = env.begin_ro_txn()?;
+                    let raw = txn
+                        .get(legacy_ctd_db, &height_bytes)
+                        .map_err(FinalisedStateError::LmdbError)?;
+                    let entry = StoredEntryFixed::<CommitmentTreeData>::from_bytes(raw).map_err(
+                        |error| {
+                            FinalisedStateError::Custom(format!(
+                                "legacy commitment_tree_data corrupt data: {error}"
+                            ))
+                        },
+                    )?;
+                    if !entry.verify(&height_bytes) {
+                        return Err(FinalisedStateError::Custom(
+                            "legacy commitment_tree_data checksum mismatch".to_string(),
+                        ));
+                    }
+                    *entry.inner()
+                };
+
+                // Re-wrap in the V2 `StoredEntryVar` layout and advance progress atomically.
+                let new_entry_bytes =
+                    StoredEntryVar::new(&height_bytes, commitment_tree_data).to_bytes()?;
+
+                {
+                    let mut txn = env.begin_rw_txn()?;
+                    match txn.put(
+                        new_ctd_db,
+                        &height_bytes,
+                        &new_entry_bytes,
+                        WriteFlags::NO_OVERWRITE,
+                    ) {
+                        Ok(()) => {}
+                        // Idempotent on resume: an existing rebuilt row must match exactly.
+                        Err(lmdb::Error::KeyExist) => {
+                            let existing = txn
+                                .get(new_ctd_db, &height_bytes)
+                                .map_err(FinalisedStateError::LmdbError)?;
+                            if existing != new_entry_bytes.as_slice() {
+                                return Err(FinalisedStateError::Custom(format!(
+                                    "conflicting rebuilt commitment_tree_data at height {}",
+                                    height.0
+                                )));
+                            }
+                        }
+                        Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+                    }
+
+                    let progress = StoredEntryFixed::new(MIGRATION_CTD_PROGRESS_KEY, height + 1);
+                    txn.put(
+                        metadata_db,
+                        &MIGRATION_CTD_PROGRESS_KEY,
+                        &progress.to_bytes()?,
+                        WriteFlags::empty(),
+                    )?;
+                    txn.commit()?;
+                }
+
+                if next_height % SYNC_CHECKPOINT_INTERVAL == 0 {
+                    env.sync(true)?;
+                }
+                if next_height % 50_000 == 0 {
+                    info!(
+                        height = next_height,
+                        db_tip,
+                        elapsed = ?started.elapsed(),
+                        "v1.3.0 migration progress"
+                    );
+                }
+
+                next_height = height.0 + 1;
+            }
+
+            env.sync(true)?;
+            info!(
+                db_tip,
+                elapsed = ?started.elapsed(),
+                "v1.3.0 migration: commitment_tree_data rebuild complete"
+            );
+
+            // Drop the legacy commitment data: clearing frees its pages back to the env freelist.
+            {
+                let mut txn = env.begin_rw_txn()?;
+                txn.clear_db(legacy_ctd_db)?;
+                txn.commit()?;
+            }
+            env.sync(true)?;
+        }
+
+        // Finalise: advance the version durably (the completion gate) before removing the progress
+        // key, so a crash re-selects and cheaply resumes this migration rather than skipping it.
+        env.sync(true)?;
+        let mut metadata: DbMetadata = backend.get_metadata().await?;
+        metadata.version = <Self as Migration<T>>::TO_VERSION;
+        metadata.schema_hash =
+            crate::chain_index::finalised_state::finalised_source::v1::DB_SCHEMA_V1_HASH;
+        metadata.migration_status = MigrationStatus::Empty;
+        backend.update_metadata(metadata).await?;
+        env.sync(true)?;
+
+        {
+            let mut txn = env.begin_rw_txn()?;
+            match txn.del(metadata_db, &MIGRATION_CTD_PROGRESS_KEY, None) {
+                Ok(()) | Err(lmdb::Error::NotFound) => {}
+                Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+            }
+            txn.commit()?;
+        }
+        env.sync(true)?;
+
+        info!("v1.2.1 to v1.3.0 migration complete.");
+        Ok(())
+    }
 }

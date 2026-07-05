@@ -29,6 +29,13 @@ FROM docker.io/zodlinc/zcash:v${ZCASH_VERSION} AS zcashd-downloader
 FROM docker.io/library/rust:${RUST_VERSION}-trixie AS zebra-builder
 
 ARG ZEBRA_VERSION
+# Git ref resolved from ZEBRA_VERSION by the workbench `get-zebra-git-ref`
+# bin: ZEBRA_VERSION is the Docker Hub tag (bare, e.g. "6.0.0-rc.0") while
+# zebra's git release tags carry a `v` prefix. Both build entry points
+# (build-image.sh, build-n-push-ci-image.yaml) resolve and pass it; the
+# bare-ZEBRA_VERSION fallback only serves hand-run builds that pin a branch
+# or SHA.
+ARG ZEBRA_GIT_REF
 # Versions pinned (DL3008) to the candidates in rust:1.95.0-trixie; bump
 # together with the base image (query with `apt-cache policy <pkg>`).
 # --no-install-recommends (DL3015): ca-certificates is already present in the
@@ -44,7 +51,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /zebra
 # Single RUN (DL3059): clone, checkout, build, and stage the binary.
 RUN git clone https://github.com/ZcashFoundation/zebra . \
-    && git checkout "${ZEBRA_VERSION}" \
+    && git checkout "${ZEBRA_GIT_REF:-$ZEBRA_VERSION}" \
     && cargo build --release --bin zebrad \
     && cp target/release/zebrad /tmp/zebrad
 
