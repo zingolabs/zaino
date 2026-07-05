@@ -26,9 +26,14 @@ pub enum PoolTypeError {
 /// here would serve blocks whose `chainMetadata.ironwoodCommitmentTreeSize`
 /// counts commitments from actions the block omits; a scanning wallet sees
 /// that as a tree-size discontinuity and treats it as a chain reorg.
+///
+/// The unfiltered pool set has exactly one definition:
+/// [`PoolTypeFilter::default`]. This wire-decode path delegates to it so the
+/// two cannot drift again (they had: the filter default gained Ironwood while
+/// this backfill still listed only Sapling and Orchard).
 pub fn pool_types_from_vector(pool_types: &[i32]) -> Result<Vec<PoolType>, PoolTypeError> {
     let pools = if pool_types.is_empty() {
-        vec![PoolType::Sapling, PoolType::Orchard, PoolType::Ironwood]
+        PoolTypeFilter::default().to_pool_types_vector()
     } else {
         let mut pools: Vec<PoolType> = vec![];
 
@@ -167,7 +172,7 @@ pub struct PoolTypeFilter {
 }
 
 impl std::default::Default for PoolTypeFilter {
-    /// By default PoolType includes `Sapling` and `Orchard` pools.
+    /// The unfiltered pool set: every shielded pool, transparent excluded.
     fn default() -> Self {
         PoolTypeFilter {
             include_transparent: false,
