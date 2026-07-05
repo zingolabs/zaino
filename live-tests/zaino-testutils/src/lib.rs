@@ -67,6 +67,44 @@ macro_rules! validator_tests {
     };
 }
 
+/// Zebrad regtest heights with every upgrade through NU6.3 active from height 2, so
+/// generated blocks carry V6 coinbases from the first post-genesis era.
+pub const NU6_3_ACTIVE_ACTIVATION_HEIGHTS: ActivationHeights = ActivationHeights {
+    before_overwinter: Some(1),
+    overwinter: Some(1),
+    sapling: Some(1),
+    blossom: Some(1),
+    heartwood: Some(1),
+    canopy: Some(1),
+    nu5: Some(2),
+    nu6: Some(2),
+    nu6_1: Some(2),
+    nu6_2: Some(2),
+    nu6_3: Some(2),
+    nu7: None,
+};
+
+/// Keep in sync with [`ORCHARD_THEN_IRONWOOD_ACTIVATION_HEIGHTS`].
+pub const NU6_3_TRANSITION_BOUNDARY: u32 = 6;
+
+/// NU5 era from height 2, NU6.3 from [`NU6_3_TRANSITION_BOUNDARY`]: the same
+/// orchard-receiver miner first produces Orchard coinbases, then — at the activation
+/// boundary — Ironwood ones.
+pub const ORCHARD_THEN_IRONWOOD_ACTIVATION_HEIGHTS: ActivationHeights = ActivationHeights {
+    before_overwinter: Some(1),
+    overwinter: Some(1),
+    sapling: Some(1),
+    blossom: Some(1),
+    heartwood: Some(1),
+    canopy: Some(1),
+    nu5: Some(2),
+    nu6: Some(2),
+    nu6_1: Some(2),
+    nu6_2: Some(2),
+    nu6_3: Some(NU6_3_TRANSITION_BOUNDARY),
+    nu7: None,
+};
+
 /// All three value pools as the `i32`s a `get_block_range` request carries —
 /// the "request everything" pool filter.
 pub fn all_pools_i32() -> Vec<i32> {
