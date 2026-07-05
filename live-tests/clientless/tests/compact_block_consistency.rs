@@ -23,9 +23,6 @@ use zebra_chain::serialization::ZcashDeserialize as _;
 /// multi_thread required: the test manager spawns the validator and indexer services.
 #[allow(deprecated)]
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "zebrad in the CI image (6.0.0-rc.0) lacks ironwood coinbase routing — \
-            expected red until the image ships a routing-capable build; \
-            https://github.com/zingolabs/zaino/issues/1368"]
 async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() {
     let mut test_manager = TestManager::<Zebrad, FetchService>::launch_mining_to(
         // Shielded mining: from NU6.3 an orchard-receiver coinbase is built as Ironwood
@@ -327,9 +324,6 @@ async fn orchard_only_coinbase_routing_zebrad() {
 ///
 /// multi_thread required: the test manager spawns the validator and indexer services.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "zebrad in the CI image (6.0.0-rc.0) lacks ironwood coinbase routing — \
-            expected red until the image ships a routing-capable build; \
-            https://github.com/zingolabs/zaino/issues/1368"]
 async fn ironwood_only_coinbase_routing_zebrad() {
     assert_coinbase_routing(NU6_3_ACTIVE_ACTIVATION_HEIGHTS, 6, |height| {
         if height >= 2 {
@@ -348,9 +342,6 @@ async fn ironwood_only_coinbase_routing_zebrad() {
 ///
 /// multi_thread required: the test manager spawns the validator and indexer services.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "zebrad in the CI image (6.0.0-rc.0) lacks ironwood coinbase routing — \
-            expected red until the image ships a routing-capable build; \
-            https://github.com/zingolabs/zaino/issues/1368"]
 async fn orchard_coinbase_routing_flips_to_ironwood_at_activation_zebrad() {
     // Two blocks past the boundary, so both eras carry more than one block.
     assert_coinbase_routing(

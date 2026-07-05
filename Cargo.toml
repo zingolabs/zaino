@@ -136,10 +136,11 @@ zaino-serve = { path = "packages/zaino-serve", version = "0.3.1", default-featur
 zaino-testutils = { path = "live-tests/zaino-testutils" }
 
 # Zingo-infra (validator launcher driving the live tests; not a prod dep).
-# TEMPORARY (zingolabs/infrastructure#269): pinned to an exact commit on the
-# `add_client_support` branch so every machine resolves the same code; restore
-# the release tag once tagged upstream.
-zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", tag = "zcash_local_net_v0.7.0" }
+# Pinned to an exact commit past zcash_local_net_v0.7.0: the v0.7.0 launcher's
+# zebrad config writer silently drops NU6.3 activation heights
+# (https://github.com/zingolabs/zaino/issues/1368); this rev carries the
+# "NU6.3" TOML plumbing. Restore a release tag once one is cut upstream.
+zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "0dc4a51f7d9666a3df7eaf28ad4f95cacb86d646" }
 
 wire_serialized_transaction_test_data = "1.0.0"
 config = { version = "0.15", default-features = false, features = ["toml"] }

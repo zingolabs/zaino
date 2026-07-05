@@ -6183,7 +6183,7 @@ dependencies = [
 [[package]]
 name = "zcash_local_net"
 version = "0.7.0"
-source = "git+https://github.com/zingolabs/infrastructure.git?tag=zcash_local_net_v0.7.0#0b38b6ecc9f5fb83754c6a14b36f575949d58929"
+source = "git+https://github.com/zingolabs/infrastructure.git?rev=0dc4a51f7d9666a3df7eaf28ad4f95cacb86d646#0dc4a51f7d9666a3df7eaf28ad4f95cacb86d646"
 dependencies = [
  "hex",
  "reqwest 0.12.28",
@@ -6734,12 +6734,12 @@ dependencies = [
 [[package]]
 name = "zingo-consensus"
 version = "0.1.0"
-source = "git+https://github.com/zingolabs/infrastructure.git?tag=zcash_local_net_v0.7.0#0b38b6ecc9f5fb83754c6a14b36f575949d58929"
+source = "git+https://github.com/zingolabs/infrastructure.git?rev=0dc4a51f7d9666a3df7eaf28ad4f95cacb86d646#0dc4a51f7d9666a3df7eaf28ad4f95cacb86d646"
 
 [[package]]
 name = "zingo_test_vectors"
 version = "0.0.1"
-source = "git+https://github.com/zingolabs/infrastructure.git?tag=zcash_local_net_v0.7.0#0b38b6ecc9f5fb83754c6a14b36f575949d58929"
+source = "git+https://github.com/zingolabs/infrastructure.git?rev=0dc4a51f7d9666a3df7eaf28ad4f95cacb86d646#0dc4a51f7d9666a3df7eaf28ad4f95cacb86d646"
 
 [[package]]
 name = "zip32"
