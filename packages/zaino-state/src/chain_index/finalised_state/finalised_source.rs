@@ -283,6 +283,18 @@ impl<T: BlockchainSource> FinalisedSource<T> {
         }
     }
 
+    /// Start the background validator on the primary v1 backend (no-op for the ephemeral
+    /// passthrough).
+    ///
+    /// Called by the orchestrator only once all pending migrations have completed, so the
+    /// validator never races a migration that populates the tables its initial scan reads.
+    pub(crate) fn start_validator(&self) {
+        match self {
+            Self::V1(db) => db.start_validator(),
+            Self::Ephemeral(_) => {}
+        }
+    }
+
     /// Stores a new runtime status in the concrete backend.
     ///
     /// This is used by router-level background orchestration, for example to report an asynchronous

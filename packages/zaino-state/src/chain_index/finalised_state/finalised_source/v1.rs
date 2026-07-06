@@ -413,8 +413,15 @@ impl DbV1 {
     /// - opens or creates all V1 named databases,
     /// - validates or initializes the `"metadata"` record (schema hash + version), and
     /// - spawns the background validator / maintenance task.
+    /// Opens (and heals) the v1 database **without** starting the background validator.
+    ///
+    /// The validator is started separately via [`DbV1::start_validator`]. This split exists so the
+    /// orchestrator can guarantee that any pending schema migration finishes *before* validation
+    /// runs: the validator's `initial_block_scan` reads tables (e.g. `commitment_tree_data_1_3_0`)
+    /// that a migration populates, so starting it concurrently with a migration races the migration
+    /// and can fail on a not-yet-written row.
     pub(crate) async fn spawn(config: &ChainIndexConfig) -> Result<Self, FinalisedStateError> {
-        let mut zaino_db = Self::open_env_and_dbs(config).await?;
+        let zaino_db = Self::open_env_and_dbs(config).await?;
 
         // Validate (or initialise) the metadata entry before we touch any tables.
         zaino_db.check_schema_version().await?;
@@ -423,9 +430,6 @@ impl DbV1 {
         // `txid_location` index unbuilt. Runs before the background validator starts so it operates
         // on a quiescent database.
         zaino_db.reconcile_alpha_txid_location_index().await?;
-
-        // Spawn handler task to perform background validation and trailing tx cleanup.
-        zaino_db.spawn_handler().await?;
 
         Ok(zaino_db)
     }
@@ -598,7 +602,12 @@ impl DbV1 {
     ///   `initial_block_scan`).
     /// - **Steady state:** periodically attempts to validate the next height after `validated_tip`.
     ///   Separately, it performs periodic trailing-reader cleanup via `clean_trailing()`.
-    async fn spawn_handler(&mut self) -> Result<(), FinalisedStateError> {
+    ///
+    /// Kept separate from [`DbV1::spawn`] so the orchestrator starts it only once all pending
+    /// migrations have finished (the validator reads tables a migration populates). Takes `&self`
+    /// (the join handle lives behind a `Mutex`) so it can be driven through the shared
+    /// `Arc<FinalisedSource>` the router holds after spawn.
+    pub(crate) fn start_validator(&self) {
         // Clone everything the task needs so we can move it into the async block.
         let zaino_db = self.detached_handle();
 
@@ -700,7 +709,6 @@ impl DbV1 {
         });
 
         *self.db_handler.lock().expect("db_handler mutex poisoned") = Some(handle);
-        Ok(())
     }
 
     /// Validates every stored spent-outpoint entry (`Outpoint` -> `TxLocation`) by checksum.
@@ -1016,9 +1024,16 @@ impl DbV1 {
         // (see the method doc) — that is the behavioural difference from `spawn`.
         zaino_db.write_v1_0_0_metadata()?;
 
-        // Spawn handler task to perform background validation and trailing tx cleanup.
-        let mut zaino_db = zaino_db;
-        zaino_db.spawn_handler().await?;
+        // Deliberately does NOT start the background validator. This builds a *pre-migration*
+        // v1.0.0 fixture; the validator validates against the current (v1.3.0) schema — it reads
+        // `commitment_tree_data_1_3_0` and the `ironwood` table — so it must run only after the
+        // database has been migrated to the newest schema. Callers build the fixture with direct
+        // v1.0.0 writes, shut it down, then reopen through `FinalisedState::spawn`, which migrates
+        // first and starts the validator afterwards.
+        //
+        // With no validator to advance it, mark the empty fixture `Ready` directly so callers see a
+        // settled backend.
+        zaino_db.status.store(StatusType::Ready);
 
         Ok(zaino_db)
     }
