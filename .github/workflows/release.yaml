@@ -12,13 +12,32 @@ on:
         type: boolean
         default: true
 
+env:
+  IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/zainod
+  # Push only on tag-push events, or when workflow_dispatch with input.push=true.
+  PUSH_IMAGES: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
+
 jobs:
-  docker:
-    name: Docker images (build+push)
-    runs-on: ubuntu-latest
-    env:
-      # Push only on tag-push events, or when workflow_dispatch with input.push=true.
-      PUSH_IMAGES: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
+  build:
+    name: Build ${{ matrix.variant }} (${{ matrix.arch }})
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+            variant: default
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            variant: default
+          - runner: ubuntu-24.04
+            arch: amd64
+            variant: no-tls
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            variant: no-tls
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
 
@@ -35,6 +54,53 @@ jobs:
         run: |
           echo "RUST_VERSION=$(cargo run -q --manifest-path tools/workbench/Cargo.toml --bin get-rust-version)" >> $GITHUB_ENV
 
+      - name: Compute image tag suffix
+        id: suffix
+        run: |
+          SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          if [ "${{ matrix.variant }}" = "no-tls" ]; then
+            echo "tag=${SHA}-${{ matrix.arch }}-no-tls" >> $GITHUB_OUTPUT
+            echo "cache_key=buildcache-${{ matrix.arch }}-no-tls" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${SHA}-${{ matrix.arch }}" >> $GITHUB_OUTPUT
+            echo "cache_key=buildcache-${{ matrix.arch }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          push: ${{ env.PUSH_IMAGES }}
+          tags: ${{ env.IMAGE }}:${{ steps.suffix.outputs.tag }}
+          build-args: |
+            RUST_VERSION=${{ env.RUST_VERSION }}
+            ${{ matrix.variant == 'no-tls' && 'NO_TLS=true' || '' }}
+          cache-from: |
+            type=registry,ref=${{ env.IMAGE }}:${{ steps.suffix.outputs.cache_key }}
+            type=gha,scope=${{ matrix.arch }}-${{ matrix.variant }}
+          cache-to: |
+            type=registry,ref=${{ env.IMAGE }}:${{ steps.suffix.outputs.cache_key }},mode=max
+            type=gha,scope=${{ matrix.arch }}-${{ matrix.variant }},mode=max
+
+  manifest:
+    name: Create multi-arch manifests
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_ACCESS_TOKEN }}
+
       - name: Extract metadata for Docker (default image)
         id: meta-default
         uses: docker/metadata-action@v6
@@ -46,23 +112,6 @@ jobs:
             type=semver,pattern={{version}}
             type=ref,event=branch
             type=sha,prefix=,format=short
-
-      - name: Build and Push Default Image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          platforms: linux/amd64
-          push: ${{ env.PUSH_IMAGES }}
-          tags: ${{ steps.meta-default.outputs.tags }}
-          labels: ${{ steps.meta-default.outputs.labels }}
-          build-args: |
-            RUST_VERSION=${{ env.RUST_VERSION }}
-          cache-from: |
-            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/zainod:buildcache
-            type=gha
-          cache-to: |
-            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/zainod:buildcache,mode=max
-            type=gha,mode=max
 
       - name: Extract metadata for Docker (no-tls image)
         id: meta-no-tls
@@ -78,31 +127,41 @@ jobs:
             type=ref,event=branch
             type=sha,prefix=,format=short
 
-      - name: Build and Push No-TLS Image
-        uses: docker/build-push-action@v7
-        with:
-          build-args: |
-            NO_TLS=true
-            RUST_VERSION=${{ env.RUST_VERSION }}
-          context: .
-          platforms: linux/amd64
-          push: ${{ env.PUSH_IMAGES }}
-          tags: "${{ steps.meta-no-tls.outputs.tags }}"
-          labels: ${{ steps.meta-no-tls.outputs.labels }}
-          cache-from: |
-            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/zainod:buildcache-no-tls
-            type=gha
-          cache-to: |
-            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/zainod:buildcache-no-tls,mode=max
-            type=gha,mode=max
+      - name: Compute short SHA
+        id: sha
+        run: echo "short=$(echo '${{ github.sha }}' | cut -c1-7)" >> $GITHUB_OUTPUT
+
+      - name: Create default multi-arch manifests
+        run: |
+          for TAG in $TAGS; do
+            docker buildx imagetools create \
+              -t "${TAG}" \
+              "${{ env.IMAGE }}:${{ steps.sha.outputs.short }}-amd64" \
+              "${{ env.IMAGE }}:${{ steps.sha.outputs.short }}-arm64"
+          done
+        env:
+          TAGS: ${{ steps.meta-default.outputs.tags }}
+
+      - name: Create no-tls multi-arch manifests
+        run: |
+          for TAG in $TAGS; do
+            docker buildx imagetools create \
+              -t "${TAG}" \
+              "${{ env.IMAGE }}:${{ steps.sha.outputs.short }}-amd64-no-tls" \
+              "${{ env.IMAGE }}:${{ steps.sha.outputs.short }}-arm64-no-tls"
+          done
+        env:
+          TAGS: ${{ steps.meta-no-tls.outputs.tags }}
 
   create-release:
-    needs: docker
+    needs: manifest
     name: Create GitHub Release
     runs-on: ubuntu-latest
     # Only create a GitHub release when triggered by a real semver tag push.
     # workflow_dispatch (e.g. for verification on a feature branch) skips this.
     if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v7
         with:
