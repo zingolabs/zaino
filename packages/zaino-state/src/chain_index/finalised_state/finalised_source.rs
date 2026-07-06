@@ -380,6 +380,12 @@ impl<T: BlockchainSource> FinalisedSource<T> {
             .require_v1("v1 commitment_tree_data db")?
             .commitment_tree_data_db())
     }
+
+    /// Provides access to the (v1.3.0) `ironwood` table, required for Migration1_2_1To1_3_0 to
+    /// backfill ironwood rows from validator-fetched block data.
+    pub(crate) fn ironwood_db(&self) -> Result<Database, FinalisedStateError> {
+        Ok(self.require_v1("v1 ironwood db")?.ironwood_db())
+    }
 }
 
 impl<T: BlockchainSource> From<DbV1> for FinalisedSource<T> {

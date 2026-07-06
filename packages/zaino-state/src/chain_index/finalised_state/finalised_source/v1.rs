@@ -405,15 +405,14 @@ pub(crate) struct DbV1 {
 /// - validated read fetchers used by the capability trait implementations, and
 /// - internal validation / indexing helpers.
 impl DbV1 {
-    /// Spawns a new [`DbV1`] and opens (or creates) the LMDB environment for the configured network.
+    /// Opens (and heals) the v1 database for the configured network **without** starting the
+    /// background validator.
     ///
     /// This method:
     /// - chooses a versioned path suffix (`.../<network>/v1`),
     /// - configures LMDB map size and reader slots,
-    /// - opens or creates all V1 named databases,
-    /// - validates or initializes the `"metadata"` record (schema hash + version), and
-    /// - spawns the background validator / maintenance task.
-    /// Opens (and heals) the v1 database **without** starting the background validator.
+    /// - opens or creates all V1 named databases, and
+    /// - validates or initializes the `"metadata"` record (schema hash + version).
     ///
     /// The validator is started separately via [`DbV1::start_validator`]. This split exists so the
     /// orchestrator can guarantee that any pending schema migration finishes *before* validation
@@ -849,6 +848,12 @@ impl DbV1 {
     /// Migration1_2_1To1_3_0 to write the rebuilt commitment rows.
     pub(crate) fn commitment_tree_data_db(&self) -> Database {
         self.commitment_tree_data
+    }
+
+    /// Provides access to the (v1.3.0) `ironwood` table, required for Migration1_2_1To1_3_0 to
+    /// backfill ironwood rows for post-NU6.3 blocks from validator-fetched block data.
+    pub(crate) fn ironwood_db(&self) -> Database {
+        self.ironwood
     }
 
     /// Provudes access to the spent DB table, required for Migration1_1_0To1_2_0.
