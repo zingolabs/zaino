@@ -14,19 +14,12 @@ jobs:
     name: cargo publish --dry-run
     runs-on: ubuntu-latest
     # Blocking context (pushes to rc/** or stable, and PRs targeting them):
-    # this job MUST pass. Advisory context (everything else): findings inform
-    # but the run stays green. Keep this predicate the exact inverse of the
-    # "Compute check mode" step below — job-level continue-on-error cannot
-    # read step outputs, so the two encode the same rule twice.
-    continue-on-error: >-
-      ${{
-        github.event_name == 'pull_request'
-          && !startsWith(github.base_ref, 'rc/')
-          && github.base_ref != 'stable'
-        || github.event_name != 'pull_request'
-          && !startsWith(github.ref_name, 'rc/')
-          && github.ref_name != 'stable'
-      }}
+    # this job MUST pass. Advisory context (everything else): failures exit 0
+    # after emitting a warning annotation, so they do not paint a red X on
+    # PRs (a continue-on-error'd failing job still shows as failed in the PR
+    # checks list even though the run succeeds — hence no job-level
+    # continue-on-error here). The context is computed once in the
+    # "Compute check mode" step below.
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -37,7 +30,6 @@ jobs:
       - name: Compute check mode
         id: mode
         run: |
-          # Inverse of the job's continue-on-error predicate above.
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             target="${{ github.base_ref }}"
           else
@@ -96,13 +88,18 @@ jobs:
             echo "============================================"
             echo ""
             echo "The workspace does not publish cleanly as a set. Common causes:"
-            echo "  - a [patch.crates-io] override pulling in unreleased upstream code"
+            echo "  - a [patch.crates-io] override pulling in unreleased upstream"
+            echo "    code (published crates cannot depend on unpublished revisions)"
             echo "  - a dependency on a git revision or path outside the workspace"
             echo "  - a crate that does not compile from its packaged form"
+            echo "  - new cross-crate API or features that exist in the workspace but"
+            echo "    not in the published dependency; resolved by the version bump +"
+            echo "    publish of that dependency at the next release"
+            echo ""
+            if [[ "${{ steps.mode.outputs.mode }}" == "advisory" ]]; then
+              echo "::warning::publish dry-run failed — the workspace would not release cleanly. Advisory on this branch, but it must be resolved before the next release."
+              exit 0
+            fi
+            echo "::error::publish dry-run failed — the workspace would not release cleanly."
             exit 1
           fi
-
-      - name: Annotate on failure (advisory context only)
-        if: failure() && steps.mode.outputs.mode == 'advisory'
-        run: |
-          echo "::warning::publish dry-run failed — the workspace would not release cleanly. This must be resolved before the next release."

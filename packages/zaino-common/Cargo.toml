@@ -25,3 +25,7 @@ tracing-tree = { workspace = true }
 nu-ansi-term = { workspace = true }
 hex = { workspace = true }
 time = { workspace = true }
+rustls = { version = "0.23", default-features = false, features = [
+    "aws_lc_rs",
+    "prefer-post-quantum",
+] }

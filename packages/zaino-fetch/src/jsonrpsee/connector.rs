@@ -210,6 +210,29 @@ fn record_outbound_rpc_metrics(method: &'static str, start: std::time::Instant, 
     }
 }
 
+/// Whether the outbound JSON-RPC client keeps a cookie store (required
+/// for cookie-authenticated validators).
+enum CookieSupport {
+    Enabled,
+    Disabled,
+}
+
+/// Builds the outbound JSON-RPC HTTP client shared by every connector
+/// entry point: 2s connect timeout, 5s request timeout, no redirects.
+fn build_rpc_client(cookies: CookieSupport) -> Result<Client, reqwest::Error> {
+    // reqwest is built with `rustls-no-provider`, which never
+    // auto-selects a rustls CryptoProvider (zingolabs/zaino#1360).
+    zaino_common::crypto::ensure_default_crypto_provider();
+    let mut builder = ClientBuilder::new()
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none());
+    if matches!(cookies, CookieSupport::Enabled) {
+        builder = builder.cookie_store(true);
+    }
+    builder.build()
+}
+
 impl JsonRpSeeConnector {
     /// Creates a new JsonRpSeeConnector with Basic Authentication.
     pub fn new_with_basic_auth(
@@ -217,12 +240,8 @@ impl JsonRpSeeConnector {
         username: String,
         password: String,
     ) -> Result<Self, TransportError> {
-        let client = ClientBuilder::new()
-            .connect_timeout(Duration::from_secs(2))
-            .timeout(Duration::from_secs(5))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(TransportError::ReqwestError)?;
+        let client =
+            build_rpc_client(CookieSupport::Disabled).map_err(TransportError::ReqwestError)?;
 
         Ok(Self {
             url,
@@ -236,13 +255,8 @@ impl JsonRpSeeConnector {
     pub fn new_with_cookie_auth(url: Url, cookie_path: &Path) -> Result<Self, TransportError> {
         let cookie_password = read_and_parse_cookie_token(cookie_path)?;
 
-        let client = ClientBuilder::new()
-            .connect_timeout(Duration::from_secs(2))
-            .timeout(Duration::from_secs(5))
-            .redirect(reqwest::redirect::Policy::none())
-            .cookie_store(true)
-            .build()
-            .map_err(TransportError::ReqwestError)?;
+        let client =
+            build_rpc_client(CookieSupport::Enabled).map_err(TransportError::ReqwestError)?;
 
         Ok(Self {
             url,
@@ -979,12 +993,8 @@ async fn test_node_connection(
     url: Url,
     auth_method: AuthMethod,
 ) -> Result<(), TestNodeConnectionError> {
-    let client = Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(2))
-        .timeout(std::time::Duration::from_secs(5))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(TestNodeConnectionError::ClientBuild)?;
+    let client =
+        build_rpc_client(CookieSupport::Disabled).map_err(TestNodeConnectionError::ClientBuild)?;
 
     let request_body = r#"{"jsonrpc":"2.0","method":"getinfo","params":[],"id":1}"#;
     let mut request_builder = client

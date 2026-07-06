@@ -82,6 +82,11 @@ description = "Assert Dockerfile.deterministic's stagex/pallet-rust tag matches 
 command = "cargo"
 args = ["run", "-q", "--manifest-path", "tools/workbench/Cargo.toml", "--bin", "check-toolchain-pin"]
 
+[tasks.lint-crypto-provider]
+description = "Assert rustls resolves with aws-lc-rs + prefer-post-quantum and that the only ring-selecting feature edges are the tolerated zebra path (ADR-0006). Fails loud in both directions: new edges and vanished edges."
+command = "cargo"
+args = ["run", "-q", "--manifest-path", "tools/workbench/Cargo.toml", "--bin", "check-crypto-provider"]
+
 [tasks.lint-no-openssl-apt]
 description = "Fail if any Dockerfile installs a libssl*/openssl* apt package. TLS is rustls; the system-package companion to deny.toml's openssl crate ban."
 command = "cargo"
@@ -106,6 +111,7 @@ dependencies = [
     "lint-boundary-conversions",
     "lint-workbench",
     "lint-toolchain-pin",
+    "lint-crypto-provider",
     "lint-no-openssl-apt",
     "deny",
     "lint-shell",
