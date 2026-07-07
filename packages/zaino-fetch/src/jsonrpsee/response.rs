@@ -1213,8 +1213,10 @@ pub struct BlockObject {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub difficulty: Option<f64>,
 
-    /// List of transaction IDs in block order, hex-encoded.
-    pub tx: Vec<String>,
+    /// The block's transactions in block order: hex-encoded transaction IDs
+    /// at verbosity 1, full transaction objects at verbosity 2. Both shapes
+    /// share zebra-rpc's untagged enum.
+    pub tx: Vec<zebra_rpc::methods::GetBlockTransaction>,
 
     /// Chain supply balance
     #[serde(default)]
@@ -1254,15 +1256,7 @@ impl TryFrom<GetBlockResponse> for zebra_rpc::methods::GetBlock {
                 Ok(zebra_rpc::methods::GetBlock::Raw(serialized_block.0))
             }
             GetBlockResponse::Object(block) => {
-                let tx: Result<Vec<_>, _> = block
-                    .tx
-                    .into_iter()
-                    .map(|txid| {
-                        txid.parse::<zebra_chain::transaction::Hash>()
-                            .map(zebra_rpc::methods::GetBlockTransaction::Hash)
-                    })
-                    .collect();
-                let tx = tx?;
+                let tx = block.tx;
 
                 Ok(zebra_rpc::methods::GetBlock::Object(Box::new(
                     zebra_rpc::client::BlockObject::new(
@@ -2042,8 +2036,8 @@ mod get_block_response {
         use zebra_chain::serialization::ZcashDeserializeInto as _;
 
         let vector = wire_serialized_transaction_test_data::transactions::get_test_vectors()
-            .into_iter()
-            .next()
+            .first()
+            .cloned()
             .expect("the test-vector crate provides at least one transaction");
         let transaction: zebra_chain::transaction::Transaction = vector
             .tx
@@ -2094,23 +2088,37 @@ mod get_block_response {
     }
 
     /// A verbosity-2 `getblock` response carries full transaction objects in
-    /// `tx`; the response type must deserialize that shape as well. (known
-    /// red: the `tx` field is typed for the verbosity-1 shape only, so the
-    /// object form fails and the fetch backend cannot serve verbosity-2
-    /// blocks at all; issue #1380. The connector surfaces the failure as
-    /// `invalid type: map, expected a string` against `Box<BlockObject>`;
-    /// through the untagged response enum it appears as the variant
-    /// mismatch below.)
+    /// `tx`; the response type must deserialize that shape as well, and the
+    /// conversion into zebra-rpc's `GetBlock` must preserve the objects
+    /// (issue #1380).
     #[test]
-    #[should_panic(expected = "data did not match any variant of untagged enum GetBlockResponse")]
     fn parses_verbosity_2_transaction_objects() {
         let block_json = block_json_with_tx(verbosity_2_transaction_json());
 
         let parsed: GetBlockResponse =
             serde_json::from_value(block_json).expect("verbosity-2 block objects deserialize");
-        let GetBlockResponse::Object(block) = parsed else {
+        let GetBlockResponse::Object(ref block) = parsed else {
             panic!("a JSON block object must parse as the object variant");
         };
-        assert_eq!(block.tx.len(), 1);
+        assert!(
+            matches!(
+                block.tx.as_slice(),
+                [zebra_rpc::methods::GetBlockTransaction::Object(_)]
+            ),
+            "the verbosity-2 entry must parse as a transaction object"
+        );
+
+        let converted: zebra_rpc::methods::GetBlock =
+            parsed.try_into().expect("the object form converts");
+        let zebra_rpc::methods::GetBlock::Object(converted) = converted else {
+            panic!("the conversion must keep the object variant");
+        };
+        assert!(
+            matches!(
+                converted.tx().as_slice(),
+                [zebra_rpc::methods::GetBlockTransaction::Object(_)]
+            ),
+            "the conversion must pass the transaction object through"
+        );
     }
 }
