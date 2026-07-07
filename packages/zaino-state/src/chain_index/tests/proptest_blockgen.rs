@@ -451,7 +451,7 @@ fn zebra_arbitrary_generates_v6_transactions_for_nu6_3() {
 
 /// NU6.3 active from height 2, so post-activation generated blocks carry V6
 /// transactions whose shielded data lands in the Ironwood pool.
-const NU6_3_ACTIVE_HEIGHTS: ActivationHeights = ActivationHeights {
+const IRONWOOD_ONLY_HEIGHTS: ActivationHeights = ActivationHeights {
     before_overwinter: Some(1),
     overwinter: Some(1),
     sapling: Some(1),
@@ -478,7 +478,7 @@ const NU6_3_ACTIVE_HEIGHTS: ActivationHeights = ActivationHeights {
 /// source of truth.
 #[test]
 fn passthrough_metadata_consistency_ironwood_only() {
-    metadata_consistency_for_era(NU6_3_ACTIVE_HEIGHTS, Some(2), false)
+    metadata_consistency_for_era(IRONWOOD_ONLY_HEIGHTS, Some(2), false)
 }
 
 /// Orchard-only heights: every upgrade through NU6.2 at height 2, NU6.3 never
@@ -516,7 +516,7 @@ fn passthrough_metadata_consistency_orchard_to_ironwood_transition() {
     metadata_consistency_for_era(
         ActivationHeights {
             nu6_3: Some(boundary),
-            ..NU6_3_ACTIVE_HEIGHTS
+            ..IRONWOOD_ONLY_HEIGHTS
         },
         Some(boundary),
         true,

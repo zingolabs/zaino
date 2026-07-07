@@ -30,6 +30,48 @@ version is bumped. An unchanged crate keeping its published version is not a
 violation.
 _Avoid_: stale version, forgotten bump
 
+### Chains and networks
+
+**Testnet**:
+The public Zcash test network, and only that. Testnet regimes are
+non-hermetic — state is shared with other participants, and an epoch
+the public chain has left (e.g. pre-NU6.3 once NU6.3 activates there)
+cannot be re-entered.
+_Avoid_: "testnet" for any locally-launched chain, even one launched
+under a testnet network kind
+
+**Regtest net**:
+A hermetic, locally-launched chain whose activation heights the
+launcher chooses. Every hermetic local net is a regtest net, whatever
+network-kind flag it runs under.
+_Avoid_: local testnet, custom testnet
+
+### Pools and upgrades
+
+**Ironwood / Orchard (era naming)**:
+Eras, fixtures, and predicates that speak of shielded pools are named by
+pool — Orchard, Ironwood — and a name that mentions one pool pairs with
+the other pool's name, never with the upgrade's. **NU6.3** names only the
+network upgrade itself: activation heights, consensus branch ID,
+consensus rules.
+_Avoid_: mixing vocabularies in one name or one sibling set (e.g. an
+`ORCHARD_ONLY_*` fixture whose sibling is `NU6_3_ACTIVE_*` — the sibling
+is `IRONWOOD_ONLY_*`)
+
+**Cross-address restriction**:
+The post-NU6.3 rule the Orchard Action circuit enforces: "(g_d, pk_d)
+of the output note must equal (g_d, pk_d) of the spent note" — the
+output note must carry the same expanded receiver (diversified base
+g_d, diversified transmission key pk_d) as its spent note, so each
+Orchard action is either change to the spent note's own address or a
+withdrawal (positive value balance). Orchard-to-Orchard transfers to
+any other address — including another address of the same wallet — are
+prohibited. A companion transaction-level rule forbids new value
+entering the pool. Source:
+<https://zcash.github.io/ironwood/design/action-circuit.html#the-cross-address-restriction>
+_Avoid_: "exit-only" (overclaims — same-receiver change still lands in
+the pool and its commitment tree still grows)
+
 ### TLS and cryptography
 
 **Preferred CryptoProvider**:
