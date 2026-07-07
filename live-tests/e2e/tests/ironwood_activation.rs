@@ -57,8 +57,12 @@ use zcash_local_net::validator::zebrad::Zebrad;
 
 /// Launch an orchard-receiver-mining zebrad + Zaino on the transition
 /// heights, build devtool faucet/recipient wallets (their schedule derived
-/// from the launched validator), mine one block (height 2: the first
-/// Orchard-era coinbase note), and sync the faucet. The transition-fixture
+/// from the launched validator), mine one block, and sync the faucet. The
+/// launch itself already leaves the tip at 2 (`TestManager` mines an
+/// NU-activation block after block 1), so the helper returns at tip 3 with
+/// the faucet holding the Orchard coinbase notes of heights 2 and 3. Tests
+/// that need exact boundary positioning mine to absolute heights from the
+/// observed tip rather than counting from here. The transition-fixture
 /// analogue of `devtool.rs::launch_and_fund_faucet`.
 async fn launch_transition_chain_and_fund_faucet<Service>(
 ) -> (TestManager<Zebrad, Service>, DevtoolClients)
@@ -98,25 +102,28 @@ where
 }
 
 /// The chain value (in zatoshis) of the pool named `pool_id` as of
-/// `height`, read from the served verbosity-2 block object — the same
-/// per-height `valuePools` a zcashd `getblock` reports.
+/// `height`, read from the served verbosity-1 block object — the same
+/// per-height `valuePools` a zcashd `getblock` reports. Verbosity 1, not 2:
+/// the fetch backend cannot deserialize a verbosity-2 block object (its
+/// `tx` entries are maps where zaino-fetch expects txid strings), and the
+/// value pools ride along at verbosity 1.
 async fn pool_zats_at_height<S>(subscriber: &S, height: u32, pool_id: &str) -> i64
 where
     S: ZcashIndexer,
     IndexerError: From<S::Error>,
 {
     let response = subscriber
-        .z_get_block(height.to_string(), Some(2))
+        .z_get_block(height.to_string(), Some(1))
         .await
         .map_err(IndexerError::from)
-        .expect("z_get_block verbosity 2");
+        .expect("z_get_block verbosity 1");
     let zebra_rpc::methods::GetBlock::Object(block) = response else {
-        panic!("verbosity-2 getblock must return a block object");
+        panic!("verbosity-1 getblock must return a block object");
     };
     let pools = block
         .value_pools()
         .as_ref()
-        .expect("verbosity-2 block object carries value pools");
+        .expect("verbosity-1 block object carries value pools");
     pools
         .iter()
         .find(|pool| pool.id() == pool_id)
@@ -139,8 +146,8 @@ where
     let (mut test_manager, mut clients) =
         launch_transition_chain_and_fund_faucet::<Service>().await;
 
-    // Tip is 2: inside the Orchard era, with room to confirm the send at
-    // height 3 while staying below the boundary at 6.
+    // Tip is 3: inside the Orchard era, with room to confirm the send at
+    // height 4 while staying below the boundary at 6.
     let faucet_balance = clients.faucet_balance().await;
     assert!(
         faucet_balance.orchard_spendable > 0,
@@ -191,11 +198,19 @@ where
         "pre-boundary coinbase should be an orchard note, got {pre_boundary_balance:?}"
     );
 
-    // Tip is 2; mine to the boundary itself. Heights 3–5 add more Orchard
-    // coinbase notes, height 6 is the first Ironwood-era block (its coinbase
-    // is the faucet's first Ironwood note).
+    // Mine to the boundary itself, from the observed tip rather than a
+    // hand-count. The blocks below the boundary add more Orchard coinbase
+    // notes; the boundary block is the first Ironwood-era block, and its
+    // coinbase is the faucet's first Ironwood note.
+    let tip = u32::try_from(test_manager.subscriber().tip_height().await)
+        .expect("regtest tips fit in u32");
     test_manager
-        .generate_blocks_and_wait_for_tip(NU6_3_TRANSITION_BOUNDARY - 2, test_manager.subscriber())
+        .generate_blocks_and_wait_for_tip(
+            NU6_3_TRANSITION_BOUNDARY
+                .checked_sub(tip)
+                .expect("the launch preamble must leave room below the boundary"),
+            test_manager.subscriber(),
+        )
         .await;
     clients.sync_faucet().await;
     let crossed_balance = clients.faucet_balance().await;
@@ -250,11 +265,18 @@ where
         }
         orchard_at.push(orchard);
     }
+    for (index, orchard) in orchard_at.iter().enumerate() {
+        let height = index + 1;
+        let ironwood = pool_zats_at_height(subscriber, height as u32, "ironwood").await;
+        eprintln!("pool values at height {height}: orchard={orchard} ironwood={ironwood}");
+    }
     let orchard = |height: u32| orchard_at[height as usize - 1];
     for height in 2..boundary {
         assert!(
             orchard(height) > orchard(height - 1),
-            "each pre-boundary coinbase must grow the orchard pool (height {height})"
+            "each pre-boundary coinbase must grow the orchard pool (height {height}: {} after {})",
+            orchard(height),
+            orchard(height - 1)
         );
     }
     assert_eq!(
@@ -268,7 +290,9 @@ where
     );
     assert!(
         orchard(migration_height) < orchard(boundary),
-        "the migration block must shrink the orchard pool"
+        "the migration block must shrink the orchard pool ({} at the boundary, {} at the migration block)",
+        orchard(boundary),
+        orchard(migration_height)
     );
 
     test_manager.close().await;
@@ -291,11 +315,18 @@ where
     let (mut test_manager, mut clients) =
         launch_transition_chain_and_fund_faucet::<Service>().await;
 
-    // Tip is 2. Mine heights 3 and 4 (a second spendable Orchard note and a
-    // filler), so the two sends below confirm at exactly boundary − 1 and
-    // the boundary.
+    // Position the tip at exactly boundary − 2, from the observed tip
+    // rather than a hand-count, so the two sends below confirm at exactly
+    // boundary − 1 and the boundary.
+    let tip = u32::try_from(test_manager.subscriber().tip_height().await)
+        .expect("regtest tips fit in u32");
     test_manager
-        .generate_blocks_and_wait_for_tip(NU6_3_TRANSITION_BOUNDARY - 4, test_manager.subscriber())
+        .generate_blocks_and_wait_for_tip(
+            NU6_3_TRANSITION_BOUNDARY
+                .checked_sub(2 + tip)
+                .expect("the launch preamble must leave room below the boundary"),
+            test_manager.subscriber(),
+        )
         .await;
     clients.sync_faucet().await;
 
@@ -309,8 +340,16 @@ where
     clients.sync_faucet().await;
     clients.sync_recipient().await;
     let balance = clients.recipient_balance().await;
-    assert_eq!(e2e::Pool::Orchard.spendable_balance(&balance), 250_000);
-    assert_eq!(e2e::Pool::Ironwood.spendable_balance(&balance), 0);
+    assert_eq!(
+        e2e::Pool::Orchard.spendable_balance(&balance),
+        250_000,
+        "receipt confirmed at boundary - 1 must be orchard, got {balance:?}"
+    );
+    assert_eq!(
+        e2e::Pool::Ironwood.spendable_balance(&balance),
+        0,
+        "no ironwood receipt below the boundary, got {balance:?}"
+    );
 
     // Built at tip boundary − 1, confirmed in block 6: the activation block.
     let first_ironwood_txid = clients.send_from_faucet(&recipient, 250_000).await;
@@ -340,7 +379,12 @@ where
     e2e::assert_pool_absent(last_orchard_block, &last_orchard_txid, e2e::Pool::Ironwood);
     let first_ironwood_txid = e2e::devtool::txid_from_devtool(&first_ironwood_txid);
     e2e::assert_pool_present(activation_block, &first_ironwood_txid, e2e::Pool::Ironwood);
-    e2e::assert_pool_absent(activation_block, &first_ironwood_txid, e2e::Pool::Orchard);
+    // The second send is itself migration-shaped: built one block below the
+    // boundary, it spends an Orchard note (the faucet's only spendable kind
+    // at that tip), so its compact form carries the Orchard spend's data
+    // alongside the Ironwood receipt. The receipt's pool routing is what
+    // flips at the boundary, and that is asserted at the wallet tier above.
+    e2e::assert_pool_present(activation_block, &first_ironwood_txid, e2e::Pool::Orchard);
 
     test_manager.close().await;
 }
@@ -359,7 +403,7 @@ where
     let (mut test_manager, mut clients) =
         launch_transition_chain_and_fund_faucet::<Service>().await;
 
-    // Tip is 2; the transparent receipt confirms at 3 and the shield at 4,
+    // Tip is 3; the transparent receipt confirms at 4 and the shield at 5,
     // all below the boundary at 6.
     let recipient_t = clients.get_recipient_address("transparent").await;
     clients.send_from_faucet(&recipient_t, 250_000).await;
