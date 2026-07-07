@@ -112,7 +112,7 @@ pub const ORCHARD_ONLY_ACTIVATION_HEIGHTS: ActivationHeights = ActivationHeights
 
 /// Zebrad regtest heights with every upgrade through NU6.3 active from height 2, so
 /// generated blocks carry V6 coinbases from the first post-genesis era.
-pub const NU6_3_ACTIVE_ACTIVATION_HEIGHTS: ActivationHeights = ActivationHeights {
+pub const IRONWOOD_ONLY_ACTIVATION_HEIGHTS: ActivationHeights = ActivationHeights {
     before_overwinter: Some(1),
     overwinter: Some(1),
     sapling: Some(1),
