@@ -188,11 +188,33 @@ fn build_block_row_entries(
         ),
         sapling_entry: StoredEntryVar::new(block_height_bytes, SaplingTxList::new(sapling)),
         orchard_entry: StoredEntryVar::new(block_height_bytes, OrchardTxList::new(orchard)),
-        ironwood_entry: ironwood
-            .iter()
-            .any(Option::is_some)
-            .then(|| StoredEntryVar::new(block_height_bytes, OrchardTxList::new(ironwood))),
+        ironwood_entry: ironwood_entry(ironwood, block_height_bytes),
     }
+}
+
+/// Builds the sparse ironwood row entry for a block's per-transaction ironwood list: `Some` only
+/// when at least one transaction carries ironwood data, so a block with none stores no ironwood row
+/// (readers treat an absent row as "no ironwood data").
+fn ironwood_entry(
+    ironwood: Vec<Option<OrchardCompactTx>>,
+    block_height_bytes: &[u8],
+) -> Option<StoredEntryVar<OrchardTxList>> {
+    ironwood
+        .iter()
+        .any(Option::is_some)
+        .then(|| StoredEntryVar::new(block_height_bytes, OrchardTxList::new(ironwood)))
+}
+
+/// Builds the sparse ironwood row entry for `block` (the same value the write path stores). Used by
+/// the v1.2.1 → v1.3.0 migration to backfill the ironwood table from validator-fetched blocks.
+pub(crate) fn build_block_ironwood_entry(
+    block: &IndexedBlock,
+    block_height_bytes: &[u8],
+) -> Result<Option<StoredEntryVar<OrchardTxList>>, FinalisedStateError> {
+    Ok(ironwood_entry(
+        extract_block_pool_lists(block)?.ironwood,
+        block_height_bytes,
+    ))
 }
 
 impl DbWrite for DbV1 {

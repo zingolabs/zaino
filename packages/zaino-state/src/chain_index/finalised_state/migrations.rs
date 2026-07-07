@@ -1017,27 +1017,28 @@ impl<T: BlockchainSource> Migration<T> for Migration1_2_0To1_2_1 {
 /// Minor migration: v1.2.1 → v1.3.0.
 ///
 /// Introduces the Ironwood (NU6.3) shielded pool to the finalised state:
-/// - a new per-height `ironwood` table (`ironwood_1_3_0`), created empty by `DbV1::spawn`; new
-///   blocks populate it via the write path. No backfill is needed because every block already on
-///   disk predates NU6.3 (see the guard below).
+/// - a new per-height `ironwood` table (`ironwood_1_3_0`), created empty by `DbV1::spawn`. New
+///   blocks populate it via the write path; here it is backfilled for any stored block at or above
+///   NU6.3 activation (see below).
 /// - the `commitment_tree_data` table is rebuilt from the legacy fixed-length
 ///   `StoredEntryFixed<CommitmentTreeData>` (V1) rows into the variable-length
 ///   `StoredEntryVar<CommitmentTreeData>` (V2) layout, which carries the optional Ironwood root and
-///   size. The rebuild reads the legacy `commitment_tree_data_1_0_0` table and writes the new
-///   `commitment_tree_data_1_3_0` table (opened as the primary's `commitment_tree_data` handle),
-///   then clears the legacy table.
+///   size. The new rows are written to `commitment_tree_data_1_3_0` (the primary's
+///   `commitment_tree_data` handle), then the legacy table is cleared.
 ///
-/// This is a **rebuild from existing on-disk data** (no validator refetch), correct only while every
-/// stored block predates Ironwood. The migration therefore asserts the database tip is below NU6.3
-/// activation before running; a database already synced past NU6.3 under the old schema would be
-/// missing ironwood data that cannot be reconstructed from existing rows and must be re-indexed from
-/// the validator instead.
+/// Per-height rebuild strategy, branching on NU6.3 activation:
+/// - **Below activation:** rebuilt in place from the legacy on-disk commitment row (Ironwood
+///   root/size default to `None`/`0` via `CommitmentTreeData` V1 decode). No validator access.
+/// - **At or above activation:** the legacy data predates Ironwood, so both the commitment row
+///   (now carrying the Ironwood root/size) and the sparse ironwood row are rebuilt from
+///   validator-fetched block data via [`build_indexed_block_from_source`]. This lets the migration
+///   run on a database already synced past NU6.3, rather than forcing a full re-index.
 ///
 /// Safety and resumability:
-/// - Deterministic: each rebuilt row is derived only from the matching legacy row (Ironwood
-///   root/size default to `None`/`0` via `CommitmentTreeData` V1 decode).
+/// - Deterministic: a below-activation row is derived only from its legacy row; an at/above-activation
+///   row is refetched from immutable finalised history, so a resumed rebuild reproduces the same bytes.
 /// - Resumable: the next height to rebuild is stored in the metadata DB under a temporary key.
-/// - Crash-safe: each height's rebuilt row and the progress update commit in the same transaction;
+/// - Crash-safe: each height's rebuilt rows and the progress update commit in the same transaction;
 ///   idempotent on resume (`NO_OVERWRITE` + verify-match).
 struct Migration1_2_1To1_3_0;
 
@@ -1062,9 +1063,15 @@ impl<T: BlockchainSource> Migration<T> for Migration1_2_1To1_3_0 {
         &self,
         router: Arc<Router<T>>,
         cfg: ChainIndexConfig,
-        _source: T,
+        source: T,
     ) -> Result<(), FinalisedStateError> {
         use lmdb::DatabaseFlags;
+
+        use crate::chain_index::finalised_state::{
+            build_indexed_block_from_source,
+            finalised_source::v1::write_core::build_block_ironwood_entry,
+        };
+        use crate::chain_index::ShieldedPool;
 
         // Temporary metadata entry recording the next height to rebuild, removed on completion.
         const MIGRATION_CTD_PROGRESS_KEY: &[u8] =
@@ -1077,8 +1084,10 @@ impl<T: BlockchainSource> Migration<T> for Migration1_2_1To1_3_0 {
         let backend = router.primary_backend();
         let env = backend.env()?;
         let metadata_db = backend.metadata_db()?;
-        // The primary's `commitment_tree_data` handle is the new `commitment_tree_data_1_3_0` table.
+        // The primary's `commitment_tree_data` handle is the new `commitment_tree_data_1_3_0` table;
+        // `ironwood_db` is the new (v1.3.0) sparse ironwood table backfilled below.
         let new_ctd_db = backend.commitment_tree_data_db()?;
+        let ironwood_db = backend.ironwood_db()?;
 
         // Open the legacy fixed-length commitment table by name. On a pre-v1.3.0 database it already
         // exists; `open_or_create_db` creating it empty on an unexpected fresh DB is harmless (the
@@ -1133,17 +1142,6 @@ impl<T: BlockchainSource> Migration<T> for Migration1_2_1To1_3_0 {
         if let Some(db_tip) = backend.db_height().await? {
             let db_tip = db_tip.0;
 
-            if let Some(activation) = nu6_3_activation_height {
-                if db_tip >= activation.0 {
-                    return Err(FinalisedStateError::Custom(format!(
-                        "cannot migrate finalised state to v1.3.0: tip {db_tip} is at or above NU6.3 \
-                         activation {} but was built without Ironwood data; wipe and re-index the \
-                         finalised state from the validator",
-                        activation.0
-                    )));
-                }
-            }
-
             let mut next_height =
                 read_progress(MIGRATION_CTD_PROGRESS_KEY)?.unwrap_or(GENESIS_HEIGHT.0);
 
@@ -1154,58 +1152,116 @@ impl<T: BlockchainSource> Migration<T> for Migration1_2_1To1_3_0 {
             );
             let started = std::time::Instant::now();
 
+            // Idempotent write: on resume an already-written row must match byte-for-byte (the
+            // legacy rebuild is deterministic and the validator refetch is over immutable history).
+            fn put_idempotent(
+                txn: &mut lmdb::RwTransaction<'_>,
+                db: lmdb::Database,
+                key: &[u8],
+                value: &[u8],
+                what: &str,
+            ) -> Result<(), FinalisedStateError> {
+                match txn.put(db, &key, &value, WriteFlags::NO_OVERWRITE) {
+                    Ok(()) => Ok(()),
+                    Err(lmdb::Error::KeyExist) => {
+                        let existing = txn.get(db, &key).map_err(FinalisedStateError::LmdbError)?;
+                        if existing != value {
+                            return Err(FinalisedStateError::Custom(format!(
+                                "conflicting rebuilt {what}"
+                            )));
+                        }
+                        Ok(())
+                    }
+                    Err(error) => Err(FinalisedStateError::LmdbError(error)),
+                }
+            }
+
             while next_height <= db_tip {
                 let height = Height::try_from(next_height)
                     .map_err(|error| FinalisedStateError::Custom(error.to_string()))?;
                 let height_bytes = height.to_bytes()?;
 
-                // Read + verify the legacy fixed-length row.
-                let commitment_tree_data: CommitmentTreeData = {
-                    let txn = env.begin_ro_txn()?;
-                    let raw = txn
-                        .get(legacy_ctd_db, &height_bytes)
-                        .map_err(FinalisedStateError::LmdbError)?;
-                    let entry = StoredEntryFixed::<CommitmentTreeData>::from_bytes(raw).map_err(
-                        |error| {
-                            FinalisedStateError::Custom(format!(
-                                "legacy commitment_tree_data corrupt data: {error}"
-                            ))
-                        },
-                    )?;
-                    if !entry.verify(&height_bytes) {
-                        return Err(FinalisedStateError::Custom(
-                            "legacy commitment_tree_data checksum mismatch".to_string(),
-                        ));
-                    }
-                    *entry.inner()
-                };
+                let ironwood_active =
+                    nu6_3_activation_height.is_some_and(|activation| next_height >= activation.0);
 
-                // Re-wrap in the V2 `StoredEntryVar` layout and advance progress atomically.
-                let new_entry_bytes =
-                    StoredEntryVar::new(&height_bytes, commitment_tree_data).to_bytes()?;
+                // Prepare the rows to write. Reads / validator fetches happen before the write txn
+                // so the commit stays short.
+                let commitment_bytes: Vec<u8>;
+                let ironwood_bytes: Option<Vec<u8>>;
 
+                if ironwood_active {
+                    // Post-NU6.3: the legacy row carries no ironwood root/size and the ironwood
+                    // table has no row, so rebuild both from validator-fetched block data.
+                    let sapling_activation_height = sapling_activation_height.ok_or_else(|| {
+                        FinalisedStateError::Custom(
+                            "Sapling activation height must be set to backfill ironwood"
+                                .to_string(),
+                        )
+                    })?;
+                    let block = build_indexed_block_from_source(
+                        &source,
+                        network,
+                        sapling_activation_height,
+                        nu5_activation_height,
+                        nu6_3_activation_height,
+                        next_height,
+                        // Chainwork is irrelevant here: only the commitment-tree and ironwood rows
+                        // are extracted, and neither depends on it.
+                        None,
+                    )
+                    .await?;
+
+                    commitment_bytes =
+                        StoredEntryVar::new(&height_bytes, *block.commitment_tree_data())
+                            .to_bytes()?;
+                    ironwood_bytes = match build_block_ironwood_entry(&block, &height_bytes)? {
+                        Some(entry) => Some(entry.to_bytes()?),
+                        None => None,
+                    };
+                } else {
+                    // Pre-NU6.3: rebuild the commitment row in place from the legacy fixed-length
+                    // row (ironwood defaults to none).
+                    let commitment_tree_data: CommitmentTreeData = {
+                        let txn = env.begin_ro_txn()?;
+                        let raw = txn
+                            .get(legacy_ctd_db, &height_bytes)
+                            .map_err(FinalisedStateError::LmdbError)?;
+                        let entry = StoredEntryFixed::<CommitmentTreeData>::from_bytes(raw)
+                            .map_err(|error| {
+                                FinalisedStateError::Custom(format!(
+                                    "legacy commitment_tree_data corrupt data: {error}"
+                                ))
+                            })?;
+                        if !entry.verify(&height_bytes) {
+                            return Err(FinalisedStateError::Custom(
+                                "legacy commitment_tree_data checksum mismatch".to_string(),
+                            ));
+                        }
+                        *entry.inner()
+                    };
+                    commitment_bytes =
+                        StoredEntryVar::new(&height_bytes, commitment_tree_data).to_bytes()?;
+                    ironwood_bytes = None;
+                }
+
+                // Write commitment (+ ironwood) and advance progress atomically.
                 {
                     let mut txn = env.begin_rw_txn()?;
-                    match txn.put(
+                    put_idempotent(
+                        &mut txn,
                         new_ctd_db,
                         &height_bytes,
-                        &new_entry_bytes,
-                        WriteFlags::NO_OVERWRITE,
-                    ) {
-                        Ok(()) => {}
-                        // Idempotent on resume: an existing rebuilt row must match exactly.
-                        Err(lmdb::Error::KeyExist) => {
-                            let existing = txn
-                                .get(new_ctd_db, &height_bytes)
-                                .map_err(FinalisedStateError::LmdbError)?;
-                            if existing != new_entry_bytes.as_slice() {
-                                return Err(FinalisedStateError::Custom(format!(
-                                    "conflicting rebuilt commitment_tree_data at height {}",
-                                    height.0
-                                )));
-                            }
-                        }
-                        Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+                        &commitment_bytes,
+                        &format!("commitment_tree_data at height {}", height.0),
+                    )?;
+                    if let Some(bytes) = &ironwood_bytes {
+                        put_idempotent(
+                            &mut txn,
+                            ironwood_db,
+                            &height_bytes,
+                            bytes,
+                            &format!("ironwood at height {}", height.0),
+                        )?;
                     }
 
                     let progress = StoredEntryFixed::new(MIGRATION_CTD_PROGRESS_KEY, height + 1);

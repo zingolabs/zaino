@@ -543,12 +543,25 @@ impl<T: BlockchainSource> FinalisedState<T> {
                         source: migration_source,
                     };
 
-                    if let Err(error) = migration_manager.migrate().await {
-                        tracing::error!("FinalisedState migration failed: {error}");
+                    match migration_manager.migrate().await {
+                        Ok(()) => {
+                            // Start the background validator only now that every migration has
+                            // finished: its initial scan reads tables a migration populates (e.g.
+                            // `commitment_tree_data_1_3_0`), so starting it earlier would race the
+                            // migration and fail on a not-yet-written row.
+                            migration_router.primary_backend().start_validator();
+                        }
+                        Err(error) => {
+                            tracing::error!("FinalisedState migration failed: {error}");
 
-                        migration_router.store_primary_status(StatusType::CriticalError);
+                            migration_router.store_primary_status(StatusType::CriticalError);
+                        }
                     }
                 });
+            } else {
+                // No migration to run, so the on-disk tables the validator scans are already at the
+                // current schema: start it immediately.
+                router.primary_backend().start_validator();
             }
 
             Ok(Self { db: router, cfg })
@@ -1053,6 +1066,14 @@ impl<T: BlockchainSource> FinalisedState<T> {
             migration_manager.migrate().await?;
         }
 
+        // This test helper builds a fixture at an arbitrary (often intermediate) version for
+        // inspection, so it deliberately does NOT start the validator: the validator only validates
+        // against the current schema and would fail on an intermediate-version database. The
+        // foreground migration is already complete, so mark the primary `Ready` directly (as
+        // `spawn_v1_0_0` does) to give callers a settled backend. Validation is exercised through
+        // the production `FinalisedState::spawn` path, which always targets the current schema.
+        router.store_primary_status(StatusType::Ready);
+
         let metadata = router.get_metadata().await?;
         if metadata.version() != target_version {
             return Err(FinalisedStateError::Custom(format!(
@@ -1084,7 +1105,6 @@ impl<T: BlockchainSource> FinalisedState<T> {
         source: T,
     ) -> Result<FinalisedSource<T>, FinalisedStateError> {
         let db = FinalisedSource::spawn_v1_0_0(cfg).await?;
-        db.wait_until_ready().await;
 
         let tip = source.get_best_block_height().await?.ok_or_else(|| {
             FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
