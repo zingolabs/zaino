@@ -243,6 +243,33 @@ use crate::{
 use std::{sync::Arc, time::Duration};
 use tokio::time::{interval, MissedTickBehavior};
 
+/// The activation heights of the three shielded pools whose data
+/// [`build_indexed_block_from_source`] assembles, resolved once per run.
+///
+/// Both the ingestion loop ([`capability::DbWrite::write_blocks_to_height`]) and the v1.2.1 →
+/// v1.3.0 migration backfill need exactly this set of heights; resolving them in one place keeps
+/// the two call sites from drifting apart. A `None` height means the pool's network upgrade has no
+/// activation height on the given network.
+struct PoolActivationHeights {
+    sapling: Option<zebra_chain::block::Height>,
+    nu5: Option<zebra_chain::block::Height>,
+    nu6_3: Option<zebra_chain::block::Height>,
+}
+
+impl PoolActivationHeights {
+    /// Resolves the Sapling, NU5 (Orchard), and NU6.3 (Ironwood) activation heights on
+    /// `zebra_network`.
+    fn resolve(zebra_network: &zebra_chain::parameters::Network) -> Self {
+        let activation_height =
+            |pool: super::ShieldedPool| pool.activation_upgrade().activation_height(zebra_network);
+        Self {
+            sapling: activation_height(super::ShieldedPool::Sapling),
+            nu5: activation_height(super::ShieldedPool::Orchard),
+            nu6_3: activation_height(super::ShieldedPool::Ironwood),
+        }
+    }
+}
+
 /// Fetches the block at `height_int` from `source` and builds its [`IndexedBlock`], threading
 /// `parent_chainwork` into the block metadata.
 ///

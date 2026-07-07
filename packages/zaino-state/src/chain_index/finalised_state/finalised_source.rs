@@ -288,7 +288,7 @@ impl<T: BlockchainSource> FinalisedSource<T> {
     ///
     /// Called by the orchestrator only once all pending migrations have completed, so the
     /// validator never races a migration that populates the tables its initial scan reads.
-    pub(crate) fn start_validator(&self) {
+    pub(super) fn start_validator(&self) {
         match self {
             Self::V1(db) => db.start_validator(),
             Self::Ephemeral(_) => {}
@@ -383,7 +383,7 @@ impl<T: BlockchainSource> FinalisedSource<T> {
 
     /// Provides access to the (v1.3.0) `ironwood` table, required for Migration1_2_1To1_3_0 to
     /// backfill ironwood rows from validator-fetched block data.
-    pub(crate) fn ironwood_db(&self) -> Result<Database, FinalisedStateError> {
+    pub(super) fn ironwood_db(&self) -> Result<Database, FinalisedStateError> {
         Ok(self.require_v1("v1 ironwood db")?.ironwood_db())
     }
 }

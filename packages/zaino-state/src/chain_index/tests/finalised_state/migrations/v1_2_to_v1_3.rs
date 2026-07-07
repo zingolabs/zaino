@@ -39,6 +39,9 @@ fn v1_2_1() -> DbVersion {
 /// database, then reopens it through the production `FinalisedState::spawn` path (which migrates to
 /// the current schema and only then starts the validator) and asserts it reaches `Ready` — i.e. the
 /// migration completed *before* validation, and validation then passed.
+// multi_thread required: the background validator runs blocking LMDB validation
+// (`validate_block_blocking`) inline on its task, which would starve this test's status polling on
+// a current-thread runtime.
 #[tokio::test(flavor = "multi_thread")]
 async fn v1_2_1_cache_migrates_to_current_then_validates() {
     init_tracing();
