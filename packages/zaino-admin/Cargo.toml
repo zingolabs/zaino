@@ -1,0 +1,51 @@
+[package]
+name = "zaino-admin"
+description = "Administration tool for managing a Zaino node."
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+version = "0.1.0"
+
+[[bin]]
+name = "zaino-admin"
+path = "src/main.rs"
+
+[dependencies]
+zaino-store = { workspace = true }
+zaino-state = { workspace = true }
+zaino-proto = { workspace = true }
+zaino-common = { workspace = true }
+
+# Runtime
+tokio = { workspace = true, features = ["full"] }
+
+# Zebra
+zebra-chain = { workspace = true }
+zebra-state = { workspace = true }
+
+# Network / RPC
+tonic = { workspace = true, features = ["tls-webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "tls12"] }
+
+# Serialisation
+prost = { workspace = true }
+primitive-types = { workspace = true }
+
+# Config parsing
+toml = { workspace = true }
+serde = { workspace = true }
+
+# CLI
+clap = { workspace = true, features = ["derive"] }
+
+# Tracing
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
+
+# Utility
+thiserror = { workspace = true }
+futures = { workspace = true }
+hex = { workspace = true }
+tokio-stream = { workspace = true }

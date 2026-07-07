@@ -375,6 +375,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bitmaps"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "031043d04099746d8db04daf1fa424b2bc8bd69d92b25962dcde24da39ab64a2"
+dependencies = [
+ "typenum",
+]
+
+[[package]]
 name = "bitvec"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1994,6 +2003,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "im"
+version = "15.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0acd33ff0285af998aaf9b57342af478078f53492322fafc47450e09397e0e9"
+dependencies = [
+ "bitmaps",
+ "rand_core 0.6.4",
+ "rand_xoshiro 0.6.0",
+ "sized-chunks",
+ "typenum",
+ "version_check",
+]
+
+[[package]]
 name = "impl-codec"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2524,7 +2547,7 @@ dependencies = [
  "metrics",
  "quanta",
  "rand 0.9.4",
- "rand_xoshiro",
+ "rand_xoshiro 0.7.0",
  "sketches-ddsketch",
 ]
 
@@ -3429,6 +3452,15 @@ dependencies = [
 
 [[package]]
 name = "rand_xoshiro"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f97cdb2a36ed4183de61b2f824cc45c9f1037f28afe0a322e9fff4c108b5aaa"
+dependencies = [
+ "rand_core 0.6.4",
+]
+
+[[package]]
+name = "rand_xoshiro"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f703f4665700daf5512dcca5f43afa6af89f09db47fb56be587f80636bda2d41"
@@ -4184,6 +4216,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ee5873ec9cce0195efcb7a4e9507a04cd49aec9c83d0389df45b1ef7ba2e649"
 
 [[package]]
+name = "sized-chunks"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16d69225bde7a69b235da73377861095455d298f2b970996eec25ddbb42b3d1e"
+dependencies = [
+ "bitmaps",
+ "typenum",
+]
+
+[[package]]
 name = "sketches-ddsketch"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4625,6 +4667,7 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -4826,6 +4869,17 @@ checksum = "97d095ae15e245a057c8e8451bab9b3ee1e1f68e9ba2b4fbc18d0ac5237835f2"
 dependencies = [
  "pin-project",
  "tracing",
+]
+
+[[package]]
+name = "tracing-journald"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d3a81ed245bfb62592b1e2bc153e77656d94ee6a0497683a65a12ccaf2438d0"
+dependencies = [
+ "libc",
+ "tracing-core",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -5684,6 +5738,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-admin"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "futures",
+ "hex",
+ "primitive-types 0.13.1",
+ "prost",
+ "rustls",
+ "serde",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-stream",
+ "toml 0.5.11",
+ "tonic",
+ "tracing",
+ "tracing-subscriber",
+ "zaino-common",
+ "zaino-proto",
+ "zaino-state",
+ "zaino-store",
+ "zebra-chain",
+ "zebra-state",
+]
+
+[[package]]
 name = "zaino-common"
 version = "0.1.1"
 dependencies = [
@@ -5693,6 +5773,7 @@ dependencies = [
  "thiserror 1.0.69",
  "time",
  "tracing",
+ "tracing-journald",
  "tracing-subscriber",
  "tracing-tree",
  "zebra-chain",
@@ -5804,6 +5885,7 @@ dependencies = [
  "zaino-common",
  "zaino-fetch",
  "zaino-proto",
+ "zaino-store",
  "zcash_address",
  "zcash_keys",
  "zcash_primitives",
@@ -5812,6 +5894,28 @@ dependencies = [
  "zebra-chain",
  "zebra-rpc",
  "zebra-state",
+]
+
+[[package]]
+name = "zaino-store"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "async-trait",
+ "blake2",
+ "byteorder",
+ "im",
+ "lmdb",
+ "lmdb-sys",
+ "proptest",
+ "serde",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "zaino-common",
 ]
 
 [[package]]

@@ -45,7 +45,6 @@ use crate::{
         finalised_state::capability::{
             CompactBlockExt, DbCore, DbMetadata, DbRead, DbVersion, DbWrite,
         },
-        types::GENESIS_HEIGHT,
     },
     config::BlockCacheConfig,
     error::FinalisedStateError,
@@ -397,7 +396,7 @@ impl DbV0 {
     ///
     /// This method enforces the v0 write invariant:
     /// - if the database is non-empty, the new block height must equal `current_tip + 1`,
-    /// - if the database is empty, the first write must be genesis (`GENESIS_HEIGHT`).
+    /// - if the database is empty, the first write can be at any height (e.g. Sapling activation).
     ///
     /// The following records are written atomically in a single LMDB write transaction:
     /// - `heights_to_hashes[height_be] = hash_json`
@@ -443,13 +442,9 @@ impl DbV0 {
                         )));
                     }
                 }
-                // no block in db, this must be genesis block.
+                // no block in db, this is the first block ingested.
                 Err(lmdb::Error::NotFound) => {
-                    if block_height != GENESIS_HEIGHT.0 {
-                        return Err(FinalisedStateError::Custom(format!(
-                            "first block must be height 0, got {block_height:?}"
-                        )));
-                    }
+                    // First block can start at any height (e.g. Sapling activation).
                 }
                 Err(e) => return Err(FinalisedStateError::LmdbError(e)),
             }

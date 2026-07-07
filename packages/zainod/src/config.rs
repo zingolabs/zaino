@@ -70,7 +70,7 @@ fn is_sensitive_leaf_key(leaf_key: &str) -> bool {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct ZainodConfig {
-    // Simple values first (TOML requirement)
+    // Simple values first (TOML requirement: values must be emitted before tables)
     /// Backend type for fetching blockchain data.
     pub backend: BackendType,
     /// Path to Zebra's state database.
@@ -84,6 +84,16 @@ pub struct ZainodConfig {
     /// Set to enable the `/metrics` scrape endpoint. Disabled when `None`.
     /// Requires the `prometheus` feature; ignored without it.
     pub metrics_endpoint: Option<SocketAddr>,
+    /// Zcash donation UA address
+    pub donation_address: Option<DonationAddress>,
+    /// Maximum concurrent RPC calls to the source node during block-store
+    /// ingestion. Tune this to balance throughput against validator load.
+    pub block_store_max_concurrency: usize,
+    /// First height to fetch from the validator when the database is empty.
+    /// When `None` (the default), syncing starts from the network's Sapling
+    /// activation height. Set this to resume an interrupted sync from a
+    /// specific height without re-fetching earlier blocks.
+    pub start_height: Option<u32>,
 
     // Table sections
     /// JSON-RPC server settings. Set to enable Zaino's JSON-RPC interface.
@@ -96,8 +106,6 @@ pub struct ZainodConfig {
     pub service: ServiceConfig,
     /// Storage settings (cache and database).
     pub storage: StorageConfig,
-    /// Zcash donation UA address
-    pub donation_address: Option<DonationAddress>,
 }
 
 impl ZainodConfig {
@@ -228,7 +236,12 @@ impl Default for ZainodConfig {
     fn default() -> Self {
         Self {
             backend: BackendType::default(),
+            zebra_db_path: default_zebra_db_path(),
+            network: Network::Testnet,
             metrics_endpoint: None,
+            donation_address: None,
+            block_store_max_concurrency: 8,
+            start_height: None,
             json_server_settings: None,
             grpc_settings: GrpcServerConfig {
                 listen_address: "127.0.0.1:8137".parse().unwrap(),
@@ -243,9 +256,6 @@ impl Default for ZainodConfig {
             },
             service: ServiceConfig::default(),
             storage: StorageConfig::default(),
-            zebra_db_path: default_zebra_db_path(),
-            network: Network::Testnet,
-            donation_address: None,
         }
     }
 }
@@ -431,6 +441,8 @@ fn build_common(cfg: ZainodConfig) -> CommonBackendConfig {
         network: cfg.network,
         donation_address: cfg.donation_address,
         indexer_version: env!("CARGO_PKG_VERSION").to_string(),
+        block_store_max_concurrency: cfg.block_store_max_concurrency,
+        start_height: cfg.start_height,
     }
 }
 

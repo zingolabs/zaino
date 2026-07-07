@@ -34,8 +34,9 @@ use crate::{
         types::BestChainLocation,
         NonFinalizedSnapshot,
     },
-    BlockCacheConfig, BlockHash, BlockchainSource, ChainIndex, NodeBackedChainIndex,
-    NodeBackedChainIndexSubscriber, TransactionHash,
+    BlockCacheConfig, BlockHash, BlockchainSource, ChainIndex, CompactBlockPublisher,
+    MempoolAccess, NodeBackedChainIndex, NodeBackedChainIndexSubscriber, TransactionHash,
+    Validator,
 };
 
 /// Handle all the boilerplate for a passthrough
@@ -86,6 +87,8 @@ fn passthrough_test(
                 },
                 db_version: 1,
                 network,
+                block_store_max_concurrency: 8,
+                start_height: None,
 
             };
 
@@ -394,6 +397,8 @@ fn make_chain() {
                 },
                 db_version: 1,
                 network,
+                block_store_max_concurrency: 8,
+                start_height: None,
 
             };
 

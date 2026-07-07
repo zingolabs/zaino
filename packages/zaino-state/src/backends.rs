@@ -1,5 +1,7 @@
 //! Zaino's chain fetch and tx submission backend services.
 
+pub mod block_store;
+
 pub mod fetch;
 
 pub mod state;

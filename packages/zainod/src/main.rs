@@ -11,8 +11,8 @@ async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Start { config } => {
-            let config_path = config.unwrap_or_else(default_config_path);
+        Command::Start => {
+            let config_path = cli.config.unwrap_or_else(default_config_path);
             if let Err(e) = zainodlib::run(config_path).await {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);

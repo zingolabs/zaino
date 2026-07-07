@@ -415,6 +415,8 @@ async fn v1_1_to_v1_2_spent_index_backfill_from_old_version() {
         },
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
+        block_store_max_concurrency: 8,
+        start_height: None,
     };
 
     let source = build_active_mockchain_source(initial_active_height.0, blocks.clone());
@@ -483,6 +485,8 @@ async fn v1_1_to_v1_2_spent_index_migration_resumes_after_crash() {
         },
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
+        block_store_max_concurrency: 8,
+        start_height: None,
     };
 
     let source = build_active_mockchain_source(initial_active_height.0, blocks.clone());
@@ -575,6 +579,8 @@ async fn v1_2_0_cache_missing_txid_location_index_is_rebuilt() {
         },
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
+        block_store_max_concurrency: 8,
+        start_height: None,
     };
 
     let source = build_active_mockchain_source(initial_active_height.0, blocks.clone());

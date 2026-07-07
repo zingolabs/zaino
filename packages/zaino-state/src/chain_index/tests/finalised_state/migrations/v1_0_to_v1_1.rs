@@ -34,6 +34,8 @@ async fn v1_0_to_v1_1_metadata_migration() {
         },
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
+        block_store_max_concurrency: 8,
+        start_height: None,
     };
 
     let source = build_active_mockchain_source(150, blocks.clone());
@@ -95,6 +97,8 @@ async fn v1_0_to_v1_1_mixed_blockheaderdata_formats() {
         },
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
+        block_store_max_concurrency: 8,
+        start_height: None,
     };
 
     let source = build_active_mockchain_source(initial_active_height.0, blocks.clone());

@@ -23,6 +23,10 @@ pub fn default_config_path() -> PathBuf {
     long_about = None
 )]
 pub struct Cli {
+    /// Path to the configuration file. Defaults to $XDG_CONFIG_HOME/zaino/zainod.toml
+    #[arg(short = 'c', long, value_name = "FILE", global = true)]
+    pub config: Option<PathBuf>,
+
     /// Subcommand to execute.
     #[command(subcommand)]
     pub command: Command,
@@ -32,11 +36,7 @@ pub struct Cli {
 #[derive(Subcommand, Debug, Clone)]
 pub enum Command {
     /// Start the Zaino indexer service.
-    Start {
-        /// Path to the configuration file. Defaults to $XDG_CONFIG_HOME/zaino/zainod.toml
-        #[arg(short, long, value_name = "FILE")]
-        config: Option<PathBuf>,
-    },
+    Start,
     /// Generate a configuration file with default values.
     GenerateConfig {
         /// Output path for the generated config file. Defaults to $XDG_CONFIG_HOME/zaino/zainod.toml

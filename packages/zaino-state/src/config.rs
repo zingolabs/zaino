@@ -99,6 +99,14 @@ pub struct CommonBackendConfig {
     /// its own `CARGO_PKG_VERSION` so the wire reflects the deployed
     /// indexer rather than the library crate.
     pub indexer_version: String,
+    /// Maximum concurrent RPC calls to the source node during block-store
+    /// ingestion.
+    pub block_store_max_concurrency: usize,
+    /// First height to fetch from the validator when the database is empty.
+    /// When `None` (the default), syncing starts from the network's Sapling
+    /// activation height. Set this to resume an interrupted sync from a
+    /// specific height without re-fetching earlier blocks.
+    pub start_height: Option<u32>,
 }
 
 /// Holds config data for [crate::StateService].
@@ -147,6 +155,8 @@ impl StateServiceConfig {
                 network,
                 donation_address,
                 indexer_version: env!("CARGO_PKG_VERSION").to_string(),
+                block_store_max_concurrency: 8,
+                start_height: None,
             },
             validator_state_config,
             validator_grpc_address,
@@ -188,6 +198,8 @@ impl FetchServiceConfig {
                 network,
                 donation_address,
                 indexer_version: env!("CARGO_PKG_VERSION").to_string(),
+                block_store_max_concurrency: 8,
+                start_height: None,
             },
         }
     }
@@ -203,6 +215,13 @@ pub struct BlockCacheConfig {
     pub db_version: u32,
     /// Network type.
     pub network: Network,
+    /// Maximum concurrent RPC calls to the source node during block-store
+    /// ingestion. Defaults to 8.
+    pub block_store_max_concurrency: usize,
+    /// First height to fetch from the validator when the database is empty.
+    /// When `None`, syncing starts from the network's Sapling activation
+    /// height.
+    pub start_height: Option<u32>,
 }
 
 impl BlockCacheConfig {
@@ -213,6 +232,8 @@ impl BlockCacheConfig {
             storage,
             db_version,
             network,
+            block_store_max_concurrency: 8,
+            start_height: None,
         }
     }
 }
@@ -224,6 +245,8 @@ impl From<CommonBackendConfig> for BlockCacheConfig {
             // TODO: update zaino configs to include db version.
             db_version: 1,
             network: value.network,
+            block_store_max_concurrency: value.block_store_max_concurrency,
+            start_height: value.start_height,
         }
     }
 }

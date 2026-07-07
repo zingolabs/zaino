@@ -2,7 +2,7 @@ use super::{
     load_test_vectors_and_sync_chain_index, load_test_vectors_and_sync_chain_index_with_timings,
     MockchainMode,
 };
-use crate::chain_index::{ChainIndex, SyncTimings};
+use crate::chain_index::{ChainIndex, CompactBlockPublisher, MempoolAccess, Validator, SyncTimings};
 use std::time::Instant;
 use tokio::time::{sleep, Duration};
 use zaino_common::status::{Status as _, StatusType};

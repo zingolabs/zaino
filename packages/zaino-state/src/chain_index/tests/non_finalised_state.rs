@@ -21,7 +21,7 @@
 //! would create immediate test churn at the refactor PR.
 
 use super::{load_test_vectors_and_sync_chain_index, poll::poll_until, MockchainMode};
-use crate::chain_index::{finalized_height_floor, ChainIndex};
+use crate::chain_index::{finalized_height_floor, ChainIndex, CompactBlockPublisher, MempoolAccess, Validator};
 use std::time::Duration;
 use tokio::time::sleep;
 

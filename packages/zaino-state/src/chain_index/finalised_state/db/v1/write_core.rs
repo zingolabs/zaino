@@ -96,13 +96,9 @@ impl DbV1 {
                         )));
                     }
                 }
-                // no block in db, this must be genesis block.
+                // no block in db, this is the first block ingested.
                 Err(lmdb::Error::NotFound) => {
-                    if block_height.0 != GENESIS_HEIGHT.0 {
-                        return Err(FinalisedStateError::Custom(format!(
-                            "first block must be height 0, got {block_height:?}"
-                        )));
-                    }
+                    // First block can start at any height (e.g. Sapling activation).
                 }
                 Err(e) => return Err(FinalisedStateError::LmdbError(e)),
             }

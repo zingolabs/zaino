@@ -70,6 +70,7 @@ pub async fn spawn_indexer(
                 .map(|res| res.0)
         }
         BackendType::Fetch => {
+            info!("Launching Fetch backend");
             let fetch_config = FetchServiceConfig::try_from(config.clone())?;
             Indexer::<FetchService>::launch_inner(fetch_config, config)
                 .await
@@ -94,9 +95,16 @@ where
         ),
         IndexerError,
     > {
+        info!("Creating indexer service...");
         let service = IndexerService::<Service>::spawn(service_config).await?;
+        info!("Indexer service created");
         let service_subscriber = service.inner_ref().get_subscriber();
+        info!(
+            status = %service.inner_ref().status(),
+            "Service subscriber obtained, starting servers"
+        );
 
+        info!("Starting JSON-RPC and gRPC servers...");
         let json_server = match indexer_config.json_server_settings {
             Some(json_server_config) => Some(
                 JsonRpcServer::spawn(service.inner_ref().get_subscriber(), json_server_config)
@@ -115,12 +123,18 @@ where
         )
         .await
         .unwrap();
+        tracing::info!(
+            addr = %indexer_config.grpc_settings.listen_address,
+            "gRPC server started"
+        );
 
         let mut indexer = Self {
             json_server,
             server: Some(grpc_server),
             service: Some(service),
         };
+
+        info!("Servers started, entering serve loop");
 
         let mut server_interval = tokio::time::interval(tokio::time::Duration::from_millis(100));
         let mut last_log_time = Instant::now();

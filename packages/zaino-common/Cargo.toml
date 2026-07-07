@@ -28,3 +28,7 @@ time = { workspace = true }
 
 # Zingo
 zingo_common_components = { workspace = true }
+
+# Platform-specific logging (Linux only)
+[target.'cfg(target_os = "linux")'.dependencies]
+tracing-journald = { workspace = true }

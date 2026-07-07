@@ -1,142 +1,73 @@
-# Container Usage
+# Docker Usage
 
-This document covers running Zaino using the official container image.
+Image: `hhanh00/zaino:latest`
 
-## Overview
+Binaries in the image: `zainod`, `zaino-admin`.
 
-The container image runs `zainod` - the Zaino indexer daemon. The image:
+## Volumes
 
-- Uses `zainod` as the entrypoint with `start` as the default subcommand
-- Runs as non-root user (`container_user`, UID 1000)
-- Refuses to start if run as root
+| Mount point   | Purpose              |
+|---------------|----------------------|
+| `/app/config` | Config directory     |
+| `/app/data`   | LMDB data directory  |
 
-For CLI usage details, see the CLI documentation or run `docker run --rm zaino --help`.
+## Config file
 
-## Configuration Options
+Minimal `zainod.toml` (place in the directory you mount to `/app/config`):
 
-The container can be configured via:
+```toml
+backend = 'fetch'
+network = 'Mainnet'
+block_store_max_concurrency = 8
+start_height = 0
 
-1. **Environment variables only** - Suitable for simple deployments, but sensitive fields (passwords, secrets, tokens, cookies, private keys) cannot be set via env vars for security reasons
-2. **Config file + env vars** - Mount a config file for sensitive fields, override others with env vars
-3. **Config file only** - Mount a complete config file
+[grpc_settings]
+listen_address = '127.0.0.1:9067'
 
-For data persistence, volume mounts are recommended for the database/cache directory.
+[validator_settings]
+validator_jsonrpc_listen_address = '127.0.0.1:8232'
+validator_user = 'xxxxxx'
+validator_password = 'xxxxxx'
 
-## Deployment with Docker Compose
-
-The recommended way to run Zaino is with Docker Compose, typically alongside Zebra:
-
-```yaml
-services:
-  zaino:
-    image: zaino:latest
-    ports:
-      - "8137:8137"   # gRPC
-      - "8237:8237"   # JSON-RPC (if enabled)
-    volumes:
-      - ./config:/app/config:ro
-      - zaino-data:/app/data
-    environment:
-      - ZAINO_VALIDATOR_SETTINGS__VALIDATOR_JSONRPC_LISTEN_ADDRESS=zebra:18232
-    depends_on:
-      - zebra
-
-  zebra:
-    image: zfnd/zebra:latest
-    volumes:
-      - zebra-data:/home/zebra/.cache/zebra
-    # ... zebra configuration
-
-volumes:
-  zaino-data:
-  zebra-data:
+[storage.database]
+path = '/app/data'
+size = 384
 ```
 
-If Zebra runs on a different host/network, adjust `VALIDATOR_JSONRPC_LISTEN_ADDRESS` accordingly.
+## Setup
 
-## Initial Setup: Generating Configuration
-
-To generate a config file on your host for customization:
-
-```bash
-mkdir -p ./config
-
-docker run --rm -v ./config:/app/config zaino generate-config
-
-# Config is now at ./config/zainod.toml - edit as needed
-```
-
-## Container Paths
-
-The container provides simple mount points:
-
-| Purpose | Mount Point |
-|---------|-------------|
-| Config | `/app/config` |
-| Database | `/app/data` |
-
-These are symlinked internally to the XDG paths that Zaino expects.
-
-## Volume Permissions
-
-The container runs as `container_user` (UID 1000, GID 1000) and never
-starts as root. Mounted volumes must be writable by this user.
-
-For named volumes (e.g. `zaino-data:/app/data`), the container runtime
-handles ownership automatically.
-
-For bind mounts to host directories, ensure the host directory is owned
-by UID 1000 before starting the container:
+Create the data directory:
 
 ```bash
 mkdir -p ./data
-chown 1000:1000 ./data
 ```
 
-### Read-Only Config Mounts
+## Bootstrap
 
-Config files can (and should) be mounted read-only:
-
-```yaml
-volumes:
-  - ./config:/app/config:ro
-```
-
-## Configuration via Environment Variables
-
-Config values can be set via environment variables prefixed with `ZAINO_`, using `__` for nesting:
-
-```yaml
-environment:
-  - ZAINO_NETWORK=Mainnet
-  - ZAINO_VALIDATOR_SETTINGS__VALIDATOR_JSONRPC_LISTEN_ADDRESS=zebra:18232
-  - ZAINO_GRPC_SETTINGS__LISTEN_ADDRESS=0.0.0.0:8137
-```
-
-### Sensitive Fields
-
-For security, the following fields **cannot** be set via environment variables and must use a config file:
-
-- `*_password` (e.g., `validator_password`)
-- `*_secret`
-- `*_token`
-- `*_cookie`
-- `*_private_key`
-
-If you attempt to set these via env vars, Zaino will error on startup.
-
-## Health Check
-
-The image includes a health check:
+Load blocks from a local Zebra RocksDB into the zaino LMDB store:
 
 ```bash
-docker inspect --format='{{.State.Health.Status}}' <container>
+docker run --network host -v ./data:/app/data -v .:/app/config -v ~/.cache/zebra:/app/zebra --entrypoint zaino-admin hhanh00/zaino:latest bootstrap /app/zebra
 ```
 
-## Local Testing
-
-Permission handling can be tested locally:
+## Run the server
 
 ```bash
-./integration-tests/test_environment/test-container-permissions.sh zaino:latest
+docker run -d --network host -v ./data:/app/data -v .:/app/config hhanh00/zaino:latest -c /app/config/zainod.toml start
 ```
+
+The default entrypoint runs `zainod` and forwards all arguments, so
+`-c /app/config/zainod.toml start` is equivalent to
+`zainod -c /app/config/zainod.toml start`.
+
+## Running other tools
+
+Override `--entrypoint` with `zaino-admin` and run the tool subcommand:
+
+Ex: to compare blocks 3300000 to tip between zaino and zec.rocks
+
+```bash
+docker run --network host -v ./data:/app/data -v .:/app/config --entrypoint zaino-admin hhanh00/zaino:latest compare --start-height 3300000 --server-a http://localhost:9067 --server-b https://zec.rocks
+```
+
+Note: container runs in "network host" mode where the container has access to the ports of the host. It could be run in bridge mode but the network configuration is more complex.

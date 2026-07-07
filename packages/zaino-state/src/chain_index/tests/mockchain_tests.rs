@@ -7,7 +7,8 @@ use crate::{
             vectors::{load_test_vectors, TestVectorBlockData},
         },
         types::{BestChainLocation, TransactionHash},
-        ChainIndex, NodeBackedChainIndexSubscriber,
+        ChainIndex, CompactBlockPublisher, MempoolAccess,
+        NodeBackedChainIndexSubscriber, Validator,
     },
     BlockchainSource as _,
 };
@@ -67,7 +68,7 @@ async fn get_block_range() {
     let start = crate::Height(0);
 
     let indexer_blocks =
-        ChainIndex::get_block_range(&index_reader, &nonfinalized_snapshot, start, None)
+        Validator::get_block_range(&index_reader, &nonfinalized_snapshot, start, None)
             .unwrap()
             .collect::<Vec<_>>()
             .await;

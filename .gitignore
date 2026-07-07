@@ -18,3 +18,5 @@ target/
 .failed-tests
 **/proptest-regressions/**
 /result
+data/
+zaino.code-workspace

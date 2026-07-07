@@ -1,0 +1,46 @@
+[package]
+name = "zaino-store"
+description = "Two-tier block store: in-memory PHM + on-disk LMDB. Thread-safe, snapshot-isolated, forward-streaming."
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+version = "0.1.0"
+
+[dependencies]
+# Persistent data structures
+im = { workspace = true }
+
+# LMDB
+lmdb = { workspace = true }
+lmdb-sys = { workspace = true }
+
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+byteorder = { workspace = true }
+
+# Concurrency
+arc-swap = { workspace = true }
+
+# Async runtime (sync loop)
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+async-trait = { workspace = true }
+
+# Hashing (BLAKE2b checksums)
+blake2 = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Common types
+zaino-common = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }

@@ -19,7 +19,7 @@ pub(crate) fn init_tracing() {
         .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
         .with_target(true)
         .try_init()
-        .unwrap();
+        .ok();
 }
 
 use std::path::{Path, PathBuf};
@@ -37,7 +37,8 @@ use crate::{
             build_active_mockchain_source, build_mockchain_source, copy_dir_recursive,
             load_test_vectors, sync_db_with_blockdata,
         },
-        ChainIndex, NodeBackedChainIndex, NodeBackedChainIndexSubscriber, SyncTimings,
+        ChainIndex, CompactBlockPublisher, MempoolAccess, NodeBackedChainIndex,
+        NodeBackedChainIndexSubscriber, SyncTimings, Validator,
     },
     BlockCacheConfig,
 };
@@ -134,6 +135,8 @@ async fn load_with_settings(
         },
         db_version: 1,
         network: Network::Regtest(ActivationHeights::default()),
+        block_store_max_concurrency: 8,
+        start_height: None,
     };
 
     let indexer = NodeBackedChainIndex::new_with_sync_timings(source.clone(), config, sync_timings)
@@ -203,6 +206,8 @@ async fn v1_finalised_seed_dir(mode: MockchainMode) -> &'static Path {
             },
             db_version: 1,
             network: Network::Regtest(ActivationHeights::default()),
+            block_store_max_concurrency: 8,
+            start_height: None,
         };
 
         let zaino_db = ZainoDB::spawn(config, source).await.unwrap();

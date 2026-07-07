@@ -7,6 +7,8 @@ members = [
     "packages/zaino-state",
     "packages/zaino-fetch",
     "packages/zaino-proto",
+    "packages/zaino-store",
+    "packages/zaino-admin",
 ]
 exclude = [
     "integration-tests",
@@ -62,6 +64,7 @@ tracing-subscriber = { version = "0.3.20", features = [
 ] }
 tracing-futures = "0.2"
 tracing-tree = "0.4"
+tracing-journald = "0.3"
 nu-ansi-term = "0.50"
 time = { version = "0.3", features = ["macros", "formatting"] }
 
@@ -129,6 +132,7 @@ zaino-fetch = { path = "packages/zaino-fetch", version = "0.2.0" }
 zaino-proto = { path = "packages/zaino-proto", version = "0.1.1" }
 zaino-state = { path = "packages/zaino-state", version = "0.3.0" }
 zaino-serve = { path = "packages/zaino-serve", version = "0.2.0" }
+zaino-store = { path = "packages/zaino-store", version = "0.1.0" }
 wire_serialized_transaction_test_data = "1.0.0"
 config = { version = "0.15", default-features = false, features = ["toml"] }
 nonempty = "0.11.0"
@@ -139,6 +143,7 @@ zip32 = "0.2.1"
 slab = "0.4.11"
 anyhow = "1.0"
 arc-swap = "1.7.1"
+im = "15"
 cargo-lock = "10.1.0"
 derive_more = "2.0.1"
 lazy_static = "1.5.0"

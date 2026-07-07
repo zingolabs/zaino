@@ -1,11 +1,12 @@
 //! Zcash chain fetch and tx submission service backed by Zebras [`ReadStateService`].
 
 #[allow(deprecated)]
+use crate::chain_index::MempoolAccess;
 use crate::{
     chain_index::{
         mempool::{Mempool, MempoolSubscriber},
         source::ValidatorConnector,
-        types as chain_types, ChainIndex,
+        types as chain_types, ChainIndex, CompactBlockPublisher, Validator,
     },
     config::{DonationAddress, StateServiceConfig},
     error::{BlockCacheError, StateServiceError},
@@ -257,6 +258,7 @@ impl ZcashService for StateService {
 
         let mempool = Mempool::spawn(mempool_source, None).await?;
 
+        info!("Creating NodeBackedChainIndex...");
         let chain_index = NodeBackedChainIndex::new(
             ValidatorConnector::State(State {
                 read_state_service: read_state_service.clone(),
@@ -267,6 +269,7 @@ impl ZcashService for StateService {
         )
         .await
         .unwrap();
+        info!("NodeBackedChainIndex created");
 
         let state_service = Self {
             chain_tip_change,
@@ -280,24 +283,8 @@ impl ZcashService for StateService {
             status: NamedAtomicStatus::new("StateService", StatusType::Spawning),
         };
 
-        // wait for sync to complete, return error on sync fail.
-        loop {
-            match state_service.status() {
-                StatusType::Ready => {
-                    state_service.status.store(StatusType::Ready);
-                    break;
-                }
-                StatusType::CriticalError => {
-                    return Err(StateServiceError::Critical(
-                        "Chain index sync failed".to_string(),
-                    ));
-                }
-                StatusType::Closing => break,
-                _ => {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                }
-            }
-        }
+        state_service.status.store(StatusType::Ready);
+        info!("StateService ready");
 
         Ok(state_service)
     }
@@ -578,7 +565,6 @@ impl StateServiceSubscriber {
                 match state_service_clone
                     .indexer
                     .get_compact_block_stream(
-                        &snapshot,
                         chain_types::Height(start),
                         chain_types::Height(end),
                         pool_type_filter.clone(),
@@ -1923,7 +1909,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
 
         match self
             .indexer
-            .get_compact_block(&snapshot, block_height, PoolTypeFilter::includes_all())
+            .get_compact_block(block_height, PoolTypeFilter::includes_all())
             .await
         {
             Ok(Some(block)) => Ok(block),
@@ -1983,12 +1969,11 @@ impl LightWalletIndexer for StateServiceSubscriber {
             ))
         })?;
 
-        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
         let block_height = chain_types::Height(height);
 
         match self
             .indexer
-            .get_compact_block(&snapshot, block_height, PoolTypeFilter::includes_all())
+            .get_compact_block(block_height, PoolTypeFilter::includes_all())
             .await
         {
             Ok(Some(block)) => Ok(compact_block_to_nullifiers(block)),

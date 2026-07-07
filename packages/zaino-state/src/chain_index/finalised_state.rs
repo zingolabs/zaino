@@ -185,10 +185,11 @@ use router::Router;
 use tracing::{info, instrument};
 use zebra_chain::parameters::NetworkKind;
 
+#[cfg(test)]
+use crate::chain_index::types::GENESIS_HEIGHT;
 use crate::{
     chain_index::{
         finalised_state::db::v1::DB_VERSION_V1, source::BlockchainSourceError,
-        types::GENESIS_HEIGHT,
     },
     config::BlockCacheConfig,
     error::FinalisedStateError,
@@ -510,13 +511,18 @@ impl ZainoDB {
         T: BlockchainSource,
     {
         let network = self.cfg.network;
-        let db_height_opt = self.db_height().await?;
-        let mut db_height = db_height_opt.unwrap_or(GENESIS_HEIGHT);
-
         let zebra_network = network.to_zebra_network();
         let sapling_activation_height = zebra_chain::parameters::NetworkUpgrade::Sapling
             .activation_height(&zebra_network)
             .expect("Sapling activation height must be set");
+
+        let db_height_opt = self.db_height().await?;
+        let mut db_height = db_height_opt.unwrap_or_else(|| {
+            self.cfg
+                .start_height
+                .map(Height)
+                .unwrap_or_else(|| Height::from(sapling_activation_height))
+        });
         let nu5_activation_height =
             zebra_chain::parameters::NetworkUpgrade::Nu5.activation_height(&zebra_network);
 
@@ -887,9 +893,15 @@ impl ZainoDB {
         })?;
         let tip = Height::from(tip);
 
+        let zebra_network = cfg.network.to_zebra_network();
+        let sapling_activation_height = zebra_chain::parameters::NetworkUpgrade::Sapling
+            .activation_height(&zebra_network)
+            .expect("Sapling activation height must be set");
+        let start_height = u32::max(GENESIS_HEIGHT.0, sapling_activation_height.0);
+
         let mut parent_chainwork = ChainWork::from_u256(0.into());
 
-        for height in GENESIS_HEIGHT.0..=tip.0 {
+        for height in start_height..=tip.0 {
             let block = source
                 .get_block(zebra_state::HashOrHeight::Height(
                     zebra_chain::block::Height(height),

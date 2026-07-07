@@ -224,10 +224,16 @@ fn init_tree(env_filter: EnvFilter, config: LogConfig) {
         .with_verbose_entry(false) // Don't repeat span info on entry
         .with_verbose_exit(false); // Don't repeat span info on exit
 
-    tracing_subscriber::registry()
+    let subscriber = tracing_subscriber::registry()
         .with(env_filter)
-        .with(layer)
-        .init();
+        .with(layer);
+
+    #[cfg(target_os = "linux")]
+    let subscriber = subscriber.with(
+        tracing_journald::layer().expect("failed to create journald layer"),
+    );
+
+    subscriber.init();
 }
 
 fn try_init_tree(
@@ -245,10 +251,16 @@ fn try_init_tree(
         .with_verbose_entry(false) // Don't repeat span info on entry
         .with_verbose_exit(false); // Don't repeat span info on exit
 
-    tracing_subscriber::registry()
+    let subscriber = tracing_subscriber::registry()
         .with(env_filter)
-        .with(layer)
-        .try_init()
+        .with(layer);
+
+    #[cfg(target_os = "linux")]
+    let subscriber = subscriber.with(
+        tracing_journald::layer().expect("failed to create journald layer"),
+    );
+
+    subscriber.try_init()
 }
 
 fn init_stream(env_filter: EnvFilter, config: LogConfig) {
@@ -258,14 +270,23 @@ fn init_stream(env_filter: EnvFilter, config: LogConfig) {
         FmtSpan::NONE
     };
 
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
+    let fmt_layer = tracing_subscriber::fmt::layer()
         .with_timer(UtcTime::new(TIME_FORMAT))
         .with_target(true)
         .with_ansi(config.color)
         .with_span_events(span_events)
-        .pretty()
-        .init();
+        .pretty();
+
+    let subscriber = tracing_subscriber::registry()
+        .with(env_filter)
+        .with(fmt_layer);
+
+    #[cfg(target_os = "linux")]
+    let subscriber = subscriber.with(
+        tracing_journald::layer().expect("failed to create journald layer"),
+    );
+
+    subscriber.init();
 }
 
 fn try_init_stream(
@@ -285,20 +306,35 @@ fn try_init_stream(
         .with_span_events(span_events)
         .pretty();
 
-    tracing_subscriber::registry()
+    let subscriber = tracing_subscriber::registry()
         .with(env_filter)
-        .with(fmt_layer)
-        .try_init()
+        .with(fmt_layer);
+
+    #[cfg(target_os = "linux")]
+    let subscriber = subscriber.with(
+        tracing_journald::layer().expect("failed to create journald layer"),
+    );
+
+    subscriber.try_init()
 }
 
 fn init_json(env_filter: EnvFilter) {
     // JSON format keeps full RFC3339 timestamps for machine parsing
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
+    let fmt_layer = tracing_subscriber::fmt::layer()
         .json()
         .with_timer(UtcTime::rfc_3339())
-        .with_target(true)
-        .init();
+        .with_target(true);
+
+    let subscriber = tracing_subscriber::registry()
+        .with(env_filter)
+        .with(fmt_layer);
+
+    #[cfg(target_os = "linux")]
+    let subscriber = subscriber.with(
+        tracing_journald::layer().expect("failed to create journald layer"),
+    );
+
+    subscriber.init();
 }
 
 fn try_init_json(env_filter: EnvFilter) -> Result<(), tracing_subscriber::util::TryInitError> {
@@ -308,10 +344,16 @@ fn try_init_json(env_filter: EnvFilter) -> Result<(), tracing_subscriber::util::
         .with_timer(UtcTime::rfc_3339())
         .with_target(true);
 
-    tracing_subscriber::registry()
+    let subscriber = tracing_subscriber::registry()
         .with(env_filter)
-        .with(fmt_layer)
-        .try_init()
+        .with(fmt_layer);
+
+    #[cfg(target_os = "linux")]
+    let subscriber = subscriber.with(
+        tracing_journald::layer().expect("failed to create journald layer"),
+    );
+
+    subscriber.try_init()
 }
 
 /// Wrapper for displaying hashes in a compact format.

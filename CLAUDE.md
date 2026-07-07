@@ -172,6 +172,15 @@ Reach for `grep` only as a fallback — when the server is genuinely
 unavailable, still indexing, or the target isn't code it understands — and
 say so when you do.
 
+## Dead code
+
+- **StateService** (`packages/zaino-state/src/backends/state.rs`) is dead code.
+  It is never used in production — only `FetchService` is. Do not modify, fix, or
+  add features to StateService. The project has no intent to revive the Zebra
+  backend.
+
+## Multi-workspace caveat
+
 **Multi-workspace caveat (this repo):** the tree has three *separate* Cargo
 workspaces — `Cargo.toml` (root, `packages/*` production), `integration-tests/Cargo.toml`
 (walletless tests), and `integration-tests/wallet-tests/Cargo.toml` (wallet
