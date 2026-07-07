@@ -11,7 +11,7 @@ use crate::{
     },
     BlockchainSource as _, Outpoint,
 };
-use tokio::time::{sleep, Duration};
+use tokio::time::Duration;
 use tokio_stream::StreamExt as _;
 use zaino_fetch::jsonrpsee::response::address_deltas::{
     GetAddressDeltasParams, GetAddressDeltasResponse,
@@ -420,10 +420,20 @@ async fn get_mempool_stream_no_expected_chain_tip_snapshot() {
         .unwrap_or_default();
     mempool_transactions.sort_by_key(|transaction| transaction.hash());
 
+    // Same ordering constraint as the expected-tip variant below: the stream
+    // must open before the mine, or it observes the drained post-mine
+    // mempool and collects nothing. Without an expected tip there is no
+    // guard at open, so the lost race presents as an assertion failure
+    // rather than a hang. The handshake makes the ordering deterministic.
+    let (stream_opened_tx, stream_opened_rx) = tokio::sync::oneshot::channel();
+
     let mempool_stream_task = tokio::spawn(async move {
         let mut mempool_stream = index_reader
             .get_mempool_stream(None)
             .expect("failed to create mempool stream");
+        stream_opened_tx
+            .send(())
+            .expect("the main task awaits the handshake");
 
         let mut indexer_mempool_transactions: Vec<zebra_chain::transaction::Transaction> =
             Vec::new();
@@ -439,7 +449,9 @@ async fn get_mempool_stream_no_expected_chain_tip_snapshot() {
         indexer_mempool_transactions
     });
 
-    sleep(Duration::from_millis(500)).await;
+    stream_opened_rx
+        .await
+        .expect("the collector task opens the stream");
 
     mockchain.mine_blocks(1);
 
@@ -481,11 +493,22 @@ async fn get_mempool_stream_correct_expected_chain_tip_snapshot() {
         .unwrap_or_default();
     mempool_transactions.sort_by_key(|transaction| transaction.hash());
 
+    // The stream closes only when the chain tip moves away from the tip its
+    // snapshot recorded, and the mine below is that one move: the snapshot
+    // and stream-open must therefore happen strictly before the mine, or the
+    // stream arms itself against the post-mine tip and waits forever for a
+    // second mine that never comes. A handshake makes the ordering
+    // deterministic where a sleep only made it likely on an idle machine.
+    let (stream_opened_tx, stream_opened_rx) = tokio::sync::oneshot::channel();
+
     let mempool_stream_task = tokio::spawn(async move {
         let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
         let mut mempool_stream = index_reader
             .get_mempool_stream(Some(&nonfinalized_snapshot))
             .expect("failed to create mempool stream");
+        stream_opened_tx
+            .send(())
+            .expect("the main task awaits the handshake");
 
         let mut indexer_mempool_transactions: Vec<zebra_chain::transaction::Transaction> =
             Vec::new();
@@ -501,7 +524,9 @@ async fn get_mempool_stream_correct_expected_chain_tip_snapshot() {
         indexer_mempool_transactions
     });
 
-    sleep(Duration::from_millis(500)).await;
+    stream_opened_rx
+        .await
+        .expect("the collector task opens the stream");
 
     mockchain.mine_blocks(1);
 
