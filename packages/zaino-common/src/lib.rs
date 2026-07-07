@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod consensus;
+pub mod crypto;
 pub mod logging;
 pub mod net;
 pub mod probing;

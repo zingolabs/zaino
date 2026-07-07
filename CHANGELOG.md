@@ -8,6 +8,17 @@ and this library adheres to Rust's notion of
 ## Unreleased
 
 ### Changed
+- TLS: zaino now installs rustls's **aws-lc-rs** CryptoProvider as its
+  preferred process-level default (was ring) and enables rustls's
+  `prefer-post-quantum` feature, so the X25519MLKEM768 hybrid key exchange
+  leads zaino's outbound handshakes (ADR-0006). Installation remains
+  first-install-wins: an embedder that installs a provider before zaino
+  keeps its choice.
+
+### Deprecated
+- Classical TLS key exchange (X25519, SECP256R1, SECP384R1) is deprecated:
+  still offered and accepted for wallet compatibility, slated for refusal
+  once major wallet stacks negotiate hybrid key exchange (ADR-0006).
 - **Breaking** — config: `storage.database.sync_write_batch_bytes` (bytes) is
   renamed to `sync_write_batch_size` and given in **GiB** (default raised from
   4 GiB to 32 GiB); this budget now also bounds the txout-set accumulator

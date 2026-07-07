@@ -21,6 +21,10 @@ and this library adheres to Rust's notion of
   `sync_write_batch_size` so the two operations cannot inflate each other's peak
   memory.
 ### Changed
+- `crypto::ensure_default_crypto_provider` now installs rustls's
+  **aws-lc-rs** provider (was ring) as the process-level default, and the
+  crate's rustls features become `aws_lc_rs` + `prefer-post-quantum`
+  (ADR-0006). First-install-wins semantics are unchanged.
 - **Breaking** — `StorageConfig::database.sync_write_batch_bytes` (raw bytes) is
   renamed to `sync_write_batch_size` and now expressed in **GiB** (new
   `SyncWriteBatchSize` newtype, mirroring `DatabaseSize`); the default is 8 GiB.
