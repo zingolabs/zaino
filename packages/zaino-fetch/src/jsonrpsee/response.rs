@@ -2028,3 +2028,89 @@ mod get_transaction_response {
         );
     }
 }
+
+#[cfg(test)]
+mod get_block_response {
+    use super::GetBlockResponse;
+
+    /// Builds the `tx` entry of a verbosity-2 `getblock` response exactly as
+    /// zebrad serializes it, by round-tripping a real test-vector
+    /// transaction through zebra-rpc's own response types. Constructing the
+    /// fixture from zebra's serializer keeps it faithful to the wire across
+    /// zebra upgrades, with no hand-maintained JSON to drift.
+    fn verbosity_2_transaction_json() -> serde_json::Value {
+        use zebra_chain::serialization::ZcashDeserializeInto as _;
+
+        let vector = wire_serialized_transaction_test_data::transactions::get_test_vectors()
+            .into_iter()
+            .next()
+            .expect("the test-vector crate provides at least one transaction");
+        let transaction: zebra_chain::transaction::Transaction = vector
+            .tx
+            .as_slice()
+            .zcash_deserialize_into()
+            .expect("test-vector transactions deserialize");
+        let txid = transaction.hash();
+        let tx_object = zebra_rpc::client::TransactionObject::from_transaction(
+            std::sync::Arc::new(transaction),
+            Some(zebra_chain::block::Height(2)),
+            Some(1),
+            &zebra_chain::parameters::Network::Mainnet,
+            None,
+            None,
+            None,
+            txid,
+        );
+        serde_json::to_value(zebra_rpc::methods::GetBlockTransaction::Object(Box::new(
+            tx_object,
+        )))
+        .expect("zebra's response types serialize")
+    }
+
+    fn block_json_with_tx(tx: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "hash": "0000000000000000000000000000000000000000000000000000000000000002",
+            "confirmations": 1,
+            "tx": [tx],
+            "trees": {},
+        })
+    }
+
+    /// A verbosity-1 `getblock` response carries txid strings in `tx`. This
+    /// pins the shape the type already handles, so the verbosity-2 fix below
+    /// cannot regress it.
+    #[test]
+    fn parses_verbosity_1_txid_strings() {
+        let block_json = block_json_with_tx(serde_json::json!(
+            "e85e5729b34c34e8e62aa639302cb3434bb961666e13191da6dc39fcf775b320"
+        ));
+
+        let parsed: GetBlockResponse =
+            serde_json::from_value(block_json).expect("verbosity-1 block objects deserialize");
+        let GetBlockResponse::Object(block) = parsed else {
+            panic!("a JSON block object must parse as the object variant");
+        };
+        assert_eq!(block.tx.len(), 1);
+    }
+
+    /// A verbosity-2 `getblock` response carries full transaction objects in
+    /// `tx`; the response type must deserialize that shape as well. (known
+    /// red: the `tx` field is typed for the verbosity-1 shape only, so the
+    /// object form fails and the fetch backend cannot serve verbosity-2
+    /// blocks at all; issue #1380. The connector surfaces the failure as
+    /// `invalid type: map, expected a string` against `Box<BlockObject>`;
+    /// through the untagged response enum it appears as the variant
+    /// mismatch below.)
+    #[test]
+    #[should_panic(expected = "data did not match any variant of untagged enum GetBlockResponse")]
+    fn parses_verbosity_2_transaction_objects() {
+        let block_json = block_json_with_tx(verbosity_2_transaction_json());
+
+        let parsed: GetBlockResponse =
+            serde_json::from_value(block_json).expect("verbosity-2 block objects deserialize");
+        let GetBlockResponse::Object(block) = parsed else {
+            panic!("a JSON block object must parse as the object variant");
+        };
+        assert_eq!(block.tx.len(), 1);
+    }
+}
