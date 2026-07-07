@@ -173,11 +173,12 @@ mod chain_query_interface {
                     },
                     ephemeral,
                     db_version: 1,
-                    network: zaino_common::Network::Regtest(
-                        zaino_testutils::from_local_net_activation_heights(
-                            &test_manager.local_net.get_activation_heights().await,
-                        ),
-                    ),
+                    // This fixture derives its runtime network from the
+                    // heights the harness launched the validator with.
+                    network: zaino_testutils::from_local_net_activation_heights(
+                        &test_manager.local_net.get_activation_heights().await,
+                    )
+                    .to_regtest_network(),
                 };
 
                 // **NOTE** The "fetch" backend is currently the backend used in the wild, and
@@ -219,11 +220,12 @@ mod chain_query_interface {
                     },
                     ephemeral,
                     db_version: 1,
-                    network: zaino_common::Network::Regtest(
-                        zaino_testutils::from_local_net_activation_heights(
-                            &test_manager.local_net.get_activation_heights().await,
-                        ),
-                    ),
+                    // This fixture derives its runtime network from the
+                    // heights the harness launched the validator with.
+                    network: zaino_testutils::from_local_net_activation_heights(
+                        &test_manager.local_net.get_activation_heights().await,
+                    )
+                    .to_regtest_network(),
                 };
                 let chain_index = NodeBackedChainIndex::new(
                     ValidatorConnector::Fetch(json_service.clone()),

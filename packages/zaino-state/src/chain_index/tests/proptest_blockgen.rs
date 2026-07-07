@@ -7,7 +7,7 @@ use proptest::{
 };
 use rand::seq::IndexedRandom;
 use tokio_stream::StreamExt as _;
-use zaino_common::{network::ActivationHeights, DatabaseConfig, Network, StorageConfig};
+use zaino_common::{network::ActivationHeights, DatabaseConfig, StorageConfig};
 use zaino_fetch::jsonrpsee::response::address_deltas::{
     GetAddressDeltasParams, GetAddressDeltasResponse,
 };
@@ -58,7 +58,7 @@ fn passthrough_test(
     ),
 ) {
     passthrough_test_on(
-        Network::Regtest(ActivationHeights::default()),
+        ActivationHeights::default().to_regtest_network(),
         // Slow the source enough to hold the indexer in passthrough while the
         // assertions run, without slowing passthrough more than necessary.
         Some(Duration::from_millis(100)),
@@ -76,7 +76,7 @@ fn passthrough_test(
 /// header's merkle root is already arbitrary — the passthrough path tolerates that by
 /// construction.
 fn passthrough_test_on(
-    network: Network,
+    network: zebra_chain::parameters::Network,
     source_delay: Option<Duration>,
     mutate_segment: impl Fn(&mut Vec<Arc<zebra_chain::block::Block>>),
     test: impl AsyncFn(
@@ -92,7 +92,7 @@ fn passthrough_test_on(
 
     // from this line to `runtime.block_on(async {` are all
     // copy-pasted. Could a macro get rid of some of this boilerplate?
-    proptest::proptest!(proptest::test_runner::Config::with_cases(1), |(segments in make_branching_chain(branch_count, segment_length, network))| {
+    proptest::proptest!(proptest::test_runner::Config::with_cases(1), |(segments in make_branching_chain(branch_count, segment_length, network.clone()))| {
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_time().build().unwrap();
         runtime.block_on(async {
             let (mut genesis_segment, mut branching_segments) = segments;
@@ -120,7 +120,7 @@ fn passthrough_test_on(
                 },
                 ephemeral: true,
                 db_version: 1,
-                network,
+                network: network.clone(),
 
             };
 
@@ -602,7 +602,7 @@ fn metadata_consistency_for_era(
     };
 
     passthrough_test_on(
-        Network::Regtest(heights),
+        heights.to_regtest_network(),
         // No artificial source delay: this test waits for the indexer to finish
         // syncing, because compact blocks are not served while the finalised state
         // is still syncing (get_compact_block's StillSyncingFinalizedState arm).
@@ -791,14 +791,14 @@ fn metadata_consistency_for_era(
 #[test]
 fn make_chain() {
     init_tracing();
-    let network = Network::Regtest(ActivationHeights::default());
+    let network = ActivationHeights::default().to_regtest_network();
     let segment_length = 12;
 
     let branch_count = 2;
 
     // default is 256. As each case takes multiple seconds, this seems too many.
     // TODO: this should be higher than 1. Currently set to 1 for ease of iteration
-    proptest::proptest!(proptest::test_runner::Config::with_cases(1), |(segments in make_branching_chain(branch_count, segment_length, network))| {
+    proptest::proptest!(proptest::test_runner::Config::with_cases(1), |(segments in make_branching_chain(branch_count, segment_length, network.clone()))| {
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_time().build().unwrap();
         runtime.block_on(async {
             let (genesis_segment, branching_segments) = segments;
@@ -822,7 +822,7 @@ fn make_chain() {
                 },
                 ephemeral: true,
                 db_version: 1,
-                network,
+                network: network.clone(),
 
             };
 
@@ -1257,9 +1257,9 @@ fn make_branching_chain(
     // The length of the initial segment, and of the branches
     // TODO: it would be useful to allow branches of different lengths.
     chain_size: usize,
-    network_override: Network,
+    network_override: zebra_chain::parameters::Network,
 ) -> BoxedStrategy<(ChainSegment, Vec<ChainSegment>)> {
-    let network_override = Some(network_override.to_zebra_network());
+    let network_override = Some(network_override);
     add_segment(
         SummaryDebug(Vec::new()),
         network_override.clone(),

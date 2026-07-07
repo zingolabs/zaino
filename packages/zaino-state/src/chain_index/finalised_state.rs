@@ -251,7 +251,7 @@ use tokio::time::{interval, MissedTickBehavior};
 /// owns the loop.
 pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
     source: &S,
-    network: zaino_common::Network,
+    network: zebra_chain::parameters::Network,
     sapling_activation_height: zebra_chain::block::Height,
     nu5_activation_height: Option<zebra_chain::block::Height>,
     nu6_3_activation_height: Option<zebra_chain::block::Height>,
@@ -312,7 +312,7 @@ pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
         orchard_size,
         ironwood,
         parent_chainwork,
-        network.to_zebra_network(),
+        network,
     );
 
     let block_with_metadata = BlockWithMetadata::new(block.as_ref(), metadata);
@@ -464,7 +464,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
             return Ok(Self {
                 db: Arc::new(Router::new(Arc::new(FinalisedSource::ephemeral(
                     source,
-                    cfg.network.into(),
+                    cfg.network.clone(),
                     None,
                 )))),
                 cfg,
@@ -658,7 +658,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
     /// - `Some(version)` if a compatible database directory is found,
     /// - `None` if no database is detected (fresh DB creation case).
     async fn try_find_current_db_version(cfg: &ChainIndexConfig) -> Option<u32> {
-        let legacy_dir = match cfg.network.to_zebra_network().kind() {
+        let legacy_dir = match cfg.network.kind() {
             NetworkKind::Mainnet => "live",
             NetworkKind::Testnet => "test",
             NetworkKind::Regtest => "local",
@@ -668,7 +668,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
             return Some(0);
         }
 
-        let net_dir = match cfg.network.to_zebra_network().kind() {
+        let net_dir = match cfg.network.kind() {
             NetworkKind::Mainnet => "mainnet",
             NetworkKind::Testnet => "testnet",
             NetworkKind::Regtest => "regtest",
@@ -786,7 +786,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
             let ephemeral_reference = router
                 .init_or_take_ephemeral(
                     source.clone(),
-                    cfg.network.to_zebra_network(),
+                    cfg.network.clone(),
                     EphemeralMode::ReadOnly,
                     db_height_opt,
                 )
@@ -1098,7 +1098,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
         // defaults — mirroring `build_indexed_block_from_source`.
         let nu6_3_activation_height = super::ShieldedPool::Ironwood
             .activation_upgrade()
-            .activation_height(&cfg.network.to_zebra_network());
+            .activation_height(&cfg.network);
 
         let mut parent_chainwork: Option<ChainWork> = None;
 
@@ -1145,7 +1145,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
                 orchard_size,
                 ironwood,
                 parent_chainwork,
-                cfg.network.to_zebra_network(),
+                cfg.network.clone(),
             );
             let block_with_metadata = BlockWithMetadata::new(block.as_ref(), metadata);
             let chain_block = IndexedBlock::try_from(block_with_metadata).map_err(|_| {

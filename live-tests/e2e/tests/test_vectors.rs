@@ -67,6 +67,7 @@ async fn create_200_block_regtest_chain_vectors() {
             .zaino_grpc_listen_address
             .expect("zaino enabled")
             .port(),
+        &test_manager.local_net,
     )
     .await;
 
@@ -319,7 +320,7 @@ async fn create_200_block_regtest_chain_vectors() {
                 };
 
                 let sapling_treestate = match zebra_chain::parameters::NetworkUpgrade::Sapling
-                    .activation_height(&state_service_subscriber.network().to_zebra_network())
+                    .activation_height(&state_service_subscriber.network())
                 {
                     Some(activation_height) if height >= activation_height.0 => Some(
                         state
@@ -342,7 +343,7 @@ async fn create_200_block_regtest_chain_vectors() {
                 })
                 .unwrap();
                 let orchard_treestate = match zebra_chain::parameters::NetworkUpgrade::Nu5
-                    .activation_height(&state_service_subscriber.network().to_zebra_network())
+                    .activation_height(&state_service_subscriber.network())
                 {
                     Some(activation_height) if height >= activation_height.0 => Some(
                         state

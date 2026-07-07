@@ -34,8 +34,8 @@ pub struct State {
     pub read_state_service: ReadStateService,
     /// Temporarily used to fetch mempool data.
     pub mempool_fetcher: JsonRpSeeConnector,
-    /// Current network type being run.
-    pub network: Network,
+    /// The runtime network (activation schedule adopted from the validator).
+    pub network: zebra_chain::parameters::Network,
 }
 
 /// A connection to a validator.
@@ -436,7 +436,7 @@ impl BlockchainSource for ValidatorConnector {
 
                 let sapling = match ShieldedPool::Sapling
                     .activation_upgrade()
-                    .activation_height(&state.network.to_zebra_network())
+                    .activation_height(&state.network)
                 {
                     Some(activation_height) if height >= activation_height => Some(
                         state
@@ -467,7 +467,7 @@ impl BlockchainSource for ValidatorConnector {
 
                 let orchard = match ShieldedPool::Orchard
                     .activation_upgrade()
-                    .activation_height(&state.network.to_zebra_network())
+                    .activation_height(&state.network)
                 {
                     Some(activation_height) if height >= activation_height => Some(
                         state
@@ -498,7 +498,7 @@ impl BlockchainSource for ValidatorConnector {
 
                 let ironwood = match ShieldedPool::Ironwood
                     .activation_upgrade()
-                    .activation_height(&state.network.to_zebra_network())
+                    .activation_height(&state.network)
                 {
                     Some(activation_height) if height >= activation_height => Some(
                         state
@@ -860,7 +860,7 @@ impl BlockchainSource for ValidatorConnector {
                                             transaction.clone(),
                                             height,
                                             None,
-                                            &state.network.to_zebra_network(),
+                                            &state.network,
                                             None,
                                             None,
                                             Some(matches!(

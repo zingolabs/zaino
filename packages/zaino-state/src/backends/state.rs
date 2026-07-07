@@ -7,7 +7,7 @@ use crate::{
         source::ValidatorConnector,
         types as chain_types, ChainIndex,
     },
-    config::{DonationAddress, StateServiceConfig},
+    config::{ChainIndexConfig, DonationAddress, StateServiceConfig},
     error::{BlockCacheError, StateServiceError},
     indexer::{
         handle_raw_transaction, IndexerSubscriber, LightWalletIndexer, ZcashIndexer, ZcashService,
@@ -195,11 +195,41 @@ impl ZcashService for StateService {
         )
         .await?;
 
+        // The validator is the single source of truth for activation heights
+        // (zaino#1076): the config carries only a network kind, and the
+        // runtime network is constructed here before anything consumes one —
+        // from zebra's compiled parameters for the public networks, from the
+        // validator's reported schedule for regtest. There is no fallback: a
+        // silently wrong schedule is the failure mode this removes.
+        let network = match config.common.network {
+            zaino_common::Network::Mainnet => zebra_chain::parameters::Network::Mainnet,
+            zaino_common::Network::Testnet => {
+                zebra_chain::parameters::Network::new_default_testnet()
+            }
+            zaino_common::Network::Regtest => {
+                let blockchain_info = rpc_client.get_blockchain_info().await.map_err(|error| {
+                    StateServiceError::Critical(format!(
+                        "cannot fetch activation heights from the validator at {}: {error}",
+                        config.common.validator_rpc_address
+                    ))
+                })?;
+                let heights = super::activation_heights_from_upgrades(&blockchain_info.upgrades)
+                    .map_err(|reason| {
+                        StateServiceError::Critical(format!(
+                            "cannot adopt activation heights from the validator at {}: {reason}",
+                            config.common.validator_rpc_address
+                        ))
+                    })?;
+                info!(?heights, "Adopted activation heights from the validator");
+                heights.to_regtest_network()
+            }
+        };
+
         let zebra_build_data = rpc_client.get_info().await?;
 
         let data = ServiceMetadata::new(
             get_build_info(config.common.indexer_version.clone()),
-            config.common.network.to_zebra_network(),
+            network.clone(),
             zebra_build_data.build,
             zebra_build_data.subversion,
         );
@@ -212,7 +242,7 @@ impl ZcashService for StateService {
         let (mut read_state_service, _latest_chain_tip, chain_tip_change, sync_task_handle) =
             init_read_state_with_syncer(
                 config.validator_state_config.clone(),
-                &config.common.network.to_zebra_network(),
+                &network,
                 config.validator_grpc_address,
             )
             .await??;
@@ -259,7 +289,7 @@ impl ZcashService for StateService {
         let mempool_source = ValidatorConnector::State(crate::chain_index::source::State {
             read_state_service: read_state_service.clone(),
             mempool_fetcher: rpc_client.clone(),
-            network: config.common.network,
+            network: network.clone(),
         });
 
         let mempool = Mempool::spawn(mempool_source, None).await?;
@@ -268,9 +298,9 @@ impl ZcashService for StateService {
             ValidatorConnector::State(State {
                 read_state_service: read_state_service.clone(),
                 mempool_fetcher: rpc_client.clone(),
-                network: config.common.network,
+                network: network.clone(),
             }),
-            config.clone().into(),
+            ChainIndexConfig::from_backend_config(&config.common, network),
         )
         .await
         .unwrap();
@@ -907,10 +937,10 @@ impl StateServiceSubscriber {
         }
     }
 
-    /// Returns the network type running.
-    #[allow(deprecated)]
-    pub fn network(&self) -> zaino_common::Network {
-        self.config.common.network
+    /// Returns the runtime network, carrying the activation schedule
+    /// adopted from the validator (zaino#1076).
+    pub fn network(&self) -> zebra_chain::parameters::Network {
+        self.data.network()
     }
 
     /// Returns the median time of the last 11 blocks.
@@ -1032,18 +1062,14 @@ impl ZcashIndexer for StateServiceSubscriber {
     }
 
     async fn get_difficulty(&self) -> Result<f64, Self::Error> {
-        chain_tip_difficulty(
-            self.config.common.network.to_zebra_network(),
-            self.read_state_service.clone(),
-            false,
-        )
-        .await
-        .map_err(|e| {
-            StateServiceError::RpcError(RpcError::new_from_errorobject(
-                e,
-                "failed to get difficulty",
-            ))
-        })
+        chain_tip_difficulty(self.data.network(), self.read_state_service.clone(), false)
+            .await
+            .map_err(|e| {
+                StateServiceError::RpcError(RpcError::new_from_errorobject(
+                    e,
+                    "failed to get difficulty",
+                ))
+            })
     }
 
     async fn get_block_subsidy(&self, height: u32) -> Result<GetBlockSubsidy, Self::Error> {
@@ -1090,12 +1116,9 @@ impl ZcashIndexer for StateServiceSubscriber {
         };
 
         let now = Utc::now();
-        let zebra_estimated_height = NetworkChainTipHeightEstimator::new(
-            header.time,
-            height,
-            &self.config.common.network.into(),
-        )
-        .estimate_height_at(now);
+        let zebra_estimated_height =
+            NetworkChainTipHeightEstimator::new(header.time, height, &self.data.network())
+                .estimate_height_at(now);
         let estimated_height = if header.time > now || zebra_estimated_height < height {
             height
         } else {
@@ -1103,10 +1126,8 @@ impl ZcashIndexer for StateServiceSubscriber {
         };
 
         let upgrades = IndexMap::from_iter(
-            self.config
-                .common
-                .network
-                .to_zebra_network()
+            self.data
+                .network()
                 .full_activation_list()
                 .into_iter()
                 .filter_map(|(activation_height, network_upgrade)| {
@@ -1140,14 +1161,14 @@ impl ZcashIndexer for StateServiceSubscriber {
             (height + 1).expect("valid chain tips are a lot less than Height::MAX");
         let consensus = TipConsensusBranch::from_parts(
             ConsensusBranchIdHex::new(
-                NetworkUpgrade::current(&self.config.common.network.into(), height)
+                NetworkUpgrade::current(&self.data.network(), height)
                     .branch_id()
                     .unwrap_or(ConsensusBranchId::RPC_MISSING_ID)
                     .into(),
             )
             .inner(),
             ConsensusBranchIdHex::new(
-                NetworkUpgrade::current(&self.config.common.network.into(), next_block_height)
+                NetworkUpgrade::current(&self.data.network(), next_block_height)
                     .branch_id()
                     .unwrap_or(ConsensusBranchId::RPC_MISSING_ID)
                     .into(),
@@ -1156,22 +1177,15 @@ impl ZcashIndexer for StateServiceSubscriber {
         );
 
         // TODO: Remove unwrap()
-        let difficulty = chain_tip_difficulty(
-            self.config.common.network.to_zebra_network(),
-            self.read_state_service.clone(),
-            false,
-        )
-        .await
-        .unwrap();
+        let difficulty =
+            chain_tip_difficulty(self.data.network(), self.read_state_service.clone(), false)
+                .await
+                .unwrap();
 
         let verification_progress = f64::from(height.0) / f64::from(zebra_estimated_height.0);
 
         Ok(GetBlockchainInfoResponse::new(
-            self.config
-                .common
-                .network
-                .to_zebra_network()
-                .bip70_network_name(),
+            self.data.network().bip70_network_name(),
             height,
             hash,
             estimated_height,
@@ -1621,19 +1635,18 @@ impl ZcashIndexer for StateServiceSubscriber {
             return Ok(ValidateAddressResponse::invalid());
         };
 
-        let address = match address.convert_if_network::<Address>(
-            match self.config.common.network.to_zebra_network().kind() {
+        let address =
+            match address.convert_if_network::<Address>(match self.data.network().kind() {
                 NetworkKind::Mainnet => NetworkType::Main,
                 NetworkKind::Testnet => NetworkType::Test,
                 NetworkKind::Regtest => NetworkType::Regtest,
-            },
-        ) {
-            Ok(address) => address,
-            Err(err) => {
-                tracing::debug!(?err, "conversion error");
-                return Ok(ValidateAddressResponse::invalid());
-            }
-        };
+            }) {
+                Ok(address) => address,
+                Err(err) => {
+                    tracing::debug!(?err, "conversion error");
+                    return Ok(ValidateAddressResponse::invalid());
+                }
+            };
 
         Ok(match address {
             Address::Transparent(taddr) => ValidateAddressResponse::new(
@@ -1658,21 +1671,20 @@ impl ZcashIndexer for StateServiceSubscriber {
             ));
         };
 
-        let converted_address = match parsed_address.convert_if_network::<Address>(
-            match self.config.common.network.to_zebra_network().kind() {
+        let converted_address =
+            match parsed_address.convert_if_network::<Address>(match self.data.network().kind() {
                 NetworkKind::Mainnet => NetworkType::Main,
                 NetworkKind::Testnet => NetworkType::Test,
                 NetworkKind::Regtest => NetworkType::Regtest,
-            },
-        ) {
-            Ok(address) => address,
-            Err(err) => {
-                tracing::debug!(?err, "conversion error");
-                return Ok(ZValidateAddressResponse::Known(
-                    KnownZValidateAddress::Invalid(InvalidZValidateAddress::new()),
-                ));
-            }
-        };
+            }) {
+                Ok(address) => address,
+                Err(err) => {
+                    tracing::debug!(?err, "conversion error");
+                    return Ok(ZValidateAddressResponse::Known(
+                        KnownZValidateAddress::Invalid(InvalidZValidateAddress::new()),
+                    ));
+                }
+            };
 
         // Note: It could be the case that Zaino needs to support Sprout. For now, it's been disabled.
         match converted_address {
@@ -1682,13 +1694,11 @@ impl ZcashIndexer for StateServiceSubscriber {
                 }
                 TransparentAddress::ScriptHash(_) => Ok(ZValidateAddressResponse::p2sh(address)),
             },
-            Address::Unified(u) => Ok(ZValidateAddressResponse::unified(
-                u.encode(&self.network().to_zebra_network()),
-            )),
+            Address::Unified(u) => Ok(ZValidateAddressResponse::unified(u.encode(&self.network()))),
             Address::Sapling(s) => {
                 let (diversifier, pk_d) = sapling_key_bytes(&s);
                 Ok(ZValidateAddressResponse::sapling(
-                    s.encode(&self.network().to_zebra_network()),
+                    s.encode(&self.network()),
                     Some(hex::encode(diversifier)),
                     Some(hex::encode(pk_d)),
                 ))
@@ -1836,7 +1846,7 @@ impl ZcashIndexer for StateServiceSubscriber {
                 height,
                 confirmations,
                 #[allow(deprecated)]
-                &self.config.common.network.to_zebra_network(),
+                &self.data.network(),
                 None,
                 block_hash,
                 in_best_chain,
@@ -2515,11 +2525,7 @@ impl LightWalletIndexer for StateServiceSubscriber {
         .await?;
 
         Ok(super::tree_state_from_treestate_response(
-            self.config
-                .common
-                .network
-                .to_zebra_network()
-                .bip70_network_name(),
+            self.data.network().bip70_network_name(),
             treestate_response,
         ))
     }

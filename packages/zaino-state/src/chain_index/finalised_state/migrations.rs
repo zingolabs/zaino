@@ -343,7 +343,7 @@ impl<T: BlockchainSource> MigrationManager<T> {
                         .router
                         .init_or_take_ephemeral(
                             self.source.clone(),
-                            self.cfg.network.to_zebra_network(),
+                            self.cfg.network.clone(),
                             EphemeralMode::Full,
                             db_height,
                         )
@@ -1093,7 +1093,7 @@ impl<T: BlockchainSource> Migration<T> for Migration1_2_1To1_3_0 {
 
         // Guard: Ironwood data is only expected from NU6.3 activation. A rebuild-from-existing-data
         // migration cannot reconstruct ironwood roots/sizes for post-NU6.3 blocks.
-        let zebra_network = cfg.network.to_zebra_network();
+        let zebra_network = cfg.network.clone();
         let nu6_3_activation_height = crate::chain_index::ShieldedPool::Ironwood
             .activation_upgrade()
             .activation_height(&zebra_network);

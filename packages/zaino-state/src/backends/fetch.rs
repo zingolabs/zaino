@@ -61,7 +61,7 @@ use zaino_proto::proto::{
 use crate::{
     chain_index::chain_tips_from_nonfinalized_snapshot,
     chain_index::{source::ValidatorConnector, types},
-    config::{DonationAddress, FetchServiceConfig},
+    config::{ChainIndexConfig, DonationAddress, FetchServiceConfig},
     error::FetchServiceError,
     indexer::{
         handle_raw_transaction, IndexerSubscriber, LightWalletIndexer, ZcashIndexer, ZcashService,
@@ -135,19 +135,52 @@ impl ZcashService for FetchService {
         )
         .await?;
 
+        // The validator is the single source of truth for activation heights
+        // (zaino#1076): the config carries only a network kind, and the
+        // runtime network is constructed here before anything consumes one —
+        // from zebra's compiled parameters for the public networks, from the
+        // validator's reported schedule for regtest. There is no fallback: a
+        // silently wrong schedule is the failure mode this removes.
+        let network = match config.common.network {
+            zaino_common::Network::Mainnet => zebra_chain::parameters::Network::Mainnet,
+            zaino_common::Network::Testnet => {
+                zebra_chain::parameters::Network::new_default_testnet()
+            }
+            zaino_common::Network::Regtest => {
+                let blockchain_info = fetcher.get_blockchain_info().await.map_err(|error| {
+                    FetchServiceError::Critical(format!(
+                        "cannot fetch activation heights from the validator at {}: {error}",
+                        config.common.validator_rpc_address
+                    ))
+                })?;
+                let heights = super::activation_heights_from_upgrades(&blockchain_info.upgrades)
+                    .map_err(|reason| {
+                        FetchServiceError::Critical(format!(
+                            "cannot adopt activation heights from the validator at {}: {reason}",
+                            config.common.validator_rpc_address
+                        ))
+                    })?;
+                info!(?heights, "Adopted activation heights from the validator");
+                heights.to_regtest_network()
+            }
+        };
+
         let zebra_build_data = fetcher.get_info().await?;
         let data = ServiceMetadata::new(
             get_build_info(config.common.indexer_version.clone()),
-            config.common.network.to_zebra_network(),
+            network.clone(),
             zebra_build_data.build,
             zebra_build_data.subversion,
         );
         info!(build = %data.zebra_build(), subversion = %data.zebra_subversion(), "Connected to Zcash node");
 
         let source = ValidatorConnector::Fetch(fetcher.clone());
-        let indexer = NodeBackedChainIndex::new(source, config.clone().into())
-            .await
-            .unwrap();
+        let indexer = NodeBackedChainIndex::new(
+            source,
+            ChainIndexConfig::from_backend_config(&config.common, network),
+        )
+        .await
+        .unwrap();
 
         let fetch_service = Self {
             fetcher,
@@ -233,10 +266,10 @@ impl FetchServiceSubscriber {
         self.indexer.status()
     }
 
-    /// Returns the network type running.
-    #[allow(deprecated)]
-    pub fn network(&self) -> zaino_common::Network {
-        self.config.common.network
+    /// Returns the runtime network, carrying the activation schedule
+    /// adopted from the validator (zaino#1076).
+    pub fn network(&self) -> zebra_chain::parameters::Network {
+        self.data.network()
     }
 }
 
@@ -778,7 +811,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
                 height,
                 confirmations,
                 #[allow(deprecated)]
-                &self.config.common.network.to_zebra_network(),
+                &self.data.network(),
                 None,
                 block_hash,
                 in_best_chain,
@@ -1830,11 +1863,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         .await?;
 
         Ok(super::tree_state_from_treestate_response(
-            self.config
-                .common
-                .network
-                .to_zebra_network()
-                .bip70_network_name(),
+            self.data.network().bip70_network_name(),
             treestate_response,
         ))
     }

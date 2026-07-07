@@ -809,7 +809,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             finalized_db,
             sync_loop_handle: None,
             status: NamedAtomicStatus::new("ChainIndex", StatusType::Spawning),
-            network: config.network.to_zebra_network(),
+            network: config.network.clone(),
             source,
             sync_timings,
             cancel_token: CancellationToken::new(),

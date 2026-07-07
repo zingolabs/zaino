@@ -10,7 +10,6 @@ use crate::SendFut;
 use futures::TryFutureExt as _;
 use incrementalmerkletree::frontier::CommitmentTree;
 use tower::{Service, ServiceExt as _};
-use zaino_common::Network;
 use zaino_fetch::jsonrpsee::{
     connector::{JsonRpSeeConnector, RpcRequestError},
     response::{
