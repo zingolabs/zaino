@@ -1245,6 +1245,21 @@ pub struct BlockObject {
     pub next_block_hash: Option<GetBlockHash>,
 }
 
+impl BlockObject {
+    /// Per-pool chain value balances as of this block, when the validator
+    /// reports them (`getblock` verbosity 2).
+    pub fn value_pools(&self) -> Option<&[ChainBalance]> {
+        self.value_pools.as_deref()
+    }
+}
+
+impl ChainBalance {
+    /// The underlying per-pool balance entry.
+    pub fn balance(&self) -> &GetBlockchainInfoBalance {
+        &self.0
+    }
+}
+
 impl TryFrom<GetBlockResponse> for zebra_rpc::methods::GetBlock {
     type Error = zebra_chain::serialization::SerializationError;
 

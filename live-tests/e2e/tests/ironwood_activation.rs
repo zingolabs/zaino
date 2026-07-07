@@ -19,6 +19,9 @@
 //! | unified-address receipt lands in Ironwood    | false (pool inactive) | `devtool.rs` `send_to_ironwood` |
 //! | shielded-receiver coinbase pays the era pool | here (wallet view); wire tier in `compact_block_wire.rs` | `devtool.rs` `receives_mining_reward`; wire tier in `compact_block_wire.rs` |
 //! | an Orchard note spends into an Ironwood receipt (ZIP 318 migration) | n/a (nothing to exit) | here |
+//! | `shield` deposits into the era pool             | here        | `devtool.rs` `shield_for_validator` |
+//! | receipt pool flips between the last Orchard block and the activation block | here (boundary − 1) | here (exactly at the boundary) |
+//! | Orchard pool value grows only below the boundary; Ironwood holds value only from it | here (per-height value pools) | here |
 //!
 //! Era composition of the *served* chain (coinbase routing, compact-block
 //! action fields) is covered clientless in
@@ -44,10 +47,10 @@
 //! in `TEST_BINARIES_DIR`/`PATH`, alongside the usual validator binaries.
 
 use e2e::devtool::DevtoolClients;
-use zaino_state::{ZcashIndexer, ZcashService};
+use zaino_state::{LightWalletIndexer, ZcashIndexer, ZcashService};
 use zaino_testutils::{
-    PollableTip, TestManager, TestService, ValidatorKind, NU6_3_TRANSITION_BOUNDARY,
-    ORCHARD_THEN_IRONWOOD_ACTIVATION_HEIGHTS,
+    all_pools_i32, collect_block_range, PollableTip, TestManager, TestService, ValidatorKind,
+    NU6_3_TRANSITION_BOUNDARY, ORCHARD_THEN_IRONWOOD_ACTIVATION_HEIGHTS,
 };
 use zainodlib::error::IndexerError;
 use zcash_local_net::validator::zebrad::Zebrad;
@@ -92,6 +95,34 @@ where
     clients.sync_faucet().await;
 
     (test_manager, clients)
+}
+
+/// The chain value (in zatoshis) of the pool named `pool_id` as of
+/// `height`, read from the served verbosity-2 block object — the same
+/// per-height `valuePools` a zcashd `getblock` reports.
+async fn pool_zats_at_height<S>(subscriber: &S, height: u32, pool_id: &str) -> i64
+where
+    S: ZcashIndexer,
+    IndexerError: From<S::Error>,
+{
+    let response = subscriber
+        .z_get_block(height.to_string(), Some(2))
+        .await
+        .map_err(IndexerError::from)
+        .expect("z_get_block verbosity 2");
+    let zebra_rpc::methods::GetBlock::Object(block) = response else {
+        panic!("verbosity-2 getblock must return a block object");
+    };
+    let pools = block
+        .value_pools()
+        .as_ref()
+        .expect("verbosity-2 block object carries value pools");
+    pools
+        .iter()
+        .find(|pool| pool.id() == pool_id)
+        .unwrap_or_else(|| panic!("value pools must include {pool_id}"))
+        .chain_value_zat()
+        .zatoshis()
 }
 
 /// Orchard-era receipt: with the tip still below the boundary, the faucet's
@@ -198,6 +229,159 @@ where
         "the migration send must spend an orchard note"
     );
 
+    // Chain-tier consequences, read from the served per-height value pools.
+    // The Ironwood pool holds no value below the activation height; the
+    // Orchard pool grows only below it (its coinbases), holds exactly
+    // steady across the boundary edge (the activation block's coinbase pays
+    // Ironwood, and no new value may enter Orchard), and shrinks at the
+    // migration block by the withdrawn amount plus fee.
+    let boundary = NU6_3_TRANSITION_BOUNDARY;
+    let migration_height = boundary + 1;
+    let subscriber = test_manager.subscriber();
+    let mut orchard_at = Vec::new();
+    for height in 1..=migration_height {
+        let ironwood = pool_zats_at_height(subscriber, height, "ironwood").await;
+        let orchard = pool_zats_at_height(subscriber, height, "orchard").await;
+        if height < boundary {
+            assert_eq!(
+                ironwood, 0,
+                "the ironwood pool must hold no value at height {height}, below the boundary"
+            );
+        }
+        orchard_at.push(orchard);
+    }
+    let orchard = |height: u32| orchard_at[height as usize - 1];
+    for height in 2..boundary {
+        assert!(
+            orchard(height) > orchard(height - 1),
+            "each pre-boundary coinbase must grow the orchard pool (height {height})"
+        );
+    }
+    assert_eq!(
+        orchard(boundary),
+        orchard(boundary - 1),
+        "the orchard pool must hold exactly steady across the boundary edge"
+    );
+    assert!(
+        pool_zats_at_height(subscriber, boundary, "ironwood").await > 0,
+        "the activation block's coinbase must give the ironwood pool its first value"
+    );
+    assert!(
+        orchard(migration_height) < orchard(boundary),
+        "the migration block must shrink the orchard pool"
+    );
+
+    test_manager.close().await;
+}
+
+/// The receipt pool flips between adjacent blocks: a send confirmed in the
+/// last Orchard-era block (boundary − 1) lands in Orchard, and a send built
+/// one block below the boundary but confirmed in the activation block
+/// itself lands in Ironwood. The second send also pins the wallet's era
+/// anticipation at the edge: it is constructed while the tip is still
+/// Orchard-era, targeting the first Ironwood-era height, and it spends an
+/// Orchard note (the faucet holds no Ironwood note until the activation
+/// block is mined) — a migration transaction in the activation block.
+async fn receipts_flip_pools_exactly_at_the_boundary<Service>()
+where
+    Service: TestService,
+    IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    <Service as ZcashService>::Subscriber: PollableTip + LightWalletIndexer,
+{
+    let (mut test_manager, mut clients) =
+        launch_transition_chain_and_fund_faucet::<Service>().await;
+
+    // Tip is 2. Mine heights 3 and 4 (a second spendable Orchard note and a
+    // filler), so the two sends below confirm at exactly boundary − 1 and
+    // the boundary.
+    test_manager
+        .generate_blocks_and_wait_for_tip(NU6_3_TRANSITION_BOUNDARY - 4, test_manager.subscriber())
+        .await;
+    clients.sync_faucet().await;
+
+    let recipient = clients.get_recipient_address("unified").await;
+
+    // Confirmed in block 5: the last Orchard-era block.
+    let last_orchard_txid = clients.send_from_faucet(&recipient, 250_000).await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+        .await;
+    clients.sync_faucet().await;
+    clients.sync_recipient().await;
+    let balance = clients.recipient_balance().await;
+    assert_eq!(e2e::Pool::Orchard.spendable_balance(&balance), 250_000);
+    assert_eq!(e2e::Pool::Ironwood.spendable_balance(&balance), 0);
+
+    // Built at tip boundary − 1, confirmed in block 6: the activation block.
+    let first_ironwood_txid = clients.send_from_faucet(&recipient, 250_000).await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+        .await;
+    clients.sync_recipient().await;
+    let balance = clients.recipient_balance().await;
+    assert_eq!(e2e::Pool::Ironwood.spendable_balance(&balance), 250_000);
+    assert_eq!(
+        e2e::Pool::Orchard.spendable_balance(&balance),
+        250_000,
+        "the pre-boundary receipt must survive the flip unchanged"
+    );
+
+    // Era composition of the two served edge blocks.
+    let subscriber = test_manager.subscriber();
+    let boundary = u64::from(NU6_3_TRANSITION_BOUNDARY);
+    let blocks = collect_block_range(subscriber, boundary - 1, boundary, all_pools_i32()).await;
+    let [last_orchard_block, activation_block] = blocks.as_slice() else {
+        panic!("expected exactly the two edge blocks, got {}", blocks.len());
+    };
+    assert_eq!(last_orchard_block.height, boundary - 1);
+    assert_eq!(activation_block.height, boundary);
+    let last_orchard_txid = e2e::devtool::txid_from_devtool(&last_orchard_txid);
+    e2e::assert_pool_present(last_orchard_block, &last_orchard_txid, e2e::Pool::Orchard);
+    e2e::assert_pool_absent(last_orchard_block, &last_orchard_txid, e2e::Pool::Ironwood);
+    let first_ironwood_txid = e2e::devtool::txid_from_devtool(&first_ironwood_txid);
+    e2e::assert_pool_present(activation_block, &first_ironwood_txid, e2e::Pool::Ironwood);
+    e2e::assert_pool_absent(activation_block, &first_ironwood_txid, e2e::Pool::Orchard);
+
+    test_manager.close().await;
+}
+
+/// Below the boundary, `shield` deposits into the Orchard pool: the faucet
+/// funds the recipient's transparent address, the recipient shields, and
+/// the shielded balance (net of the ZIP-317 fee, mirroring
+/// `devtool.rs::shield_for_validator`) lands in Orchard with the Ironwood
+/// pool exactly empty — the era-mirror of the Ironwood-era shield cell.
+async fn shield_deposits_to_orchard_before_boundary<Service>()
+where
+    Service: TestService,
+    IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
+    <Service as ZcashService>::Subscriber: PollableTip,
+{
+    let (mut test_manager, mut clients) =
+        launch_transition_chain_and_fund_faucet::<Service>().await;
+
+    // Tip is 2; the transparent receipt confirms at 3 and the shield at 4,
+    // all below the boundary at 6.
+    let recipient_t = clients.get_recipient_address("transparent").await;
+    clients.send_from_faucet(&recipient_t, 250_000).await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+        .await;
+    clients.sync_recipient().await;
+    assert_eq!(
+        e2e::Pool::Transparent.spendable_balance(&clients.recipient_balance().await),
+        250_000
+    );
+
+    clients.shield_recipient().await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+        .await;
+    clients.sync_recipient().await;
+
+    let balance = clients.recipient_balance().await;
+    assert_eq!(e2e::Pool::Orchard.spendable_balance(&balance), 235_000);
+    assert_eq!(e2e::Pool::Ironwood.spendable_balance(&balance), 0);
+
     test_manager.close().await;
 }
 
@@ -221,6 +405,20 @@ mod zebrad {
         async fn orchard_note_spends_to_ironwood_across_boundary() {
             crate::orchard_note_spends_to_ironwood_across_boundary::<FetchService>().await;
         }
+
+        /// multi_thread required: the test manager spawns the validator and
+        /// indexer services.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn receipts_flip_pools_exactly_at_the_boundary() {
+            crate::receipts_flip_pools_exactly_at_the_boundary::<FetchService>().await;
+        }
+
+        /// multi_thread required: the test manager spawns the validator and
+        /// indexer services.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn shield_deposits_to_orchard_before_boundary() {
+            crate::shield_deposits_to_orchard_before_boundary::<FetchService>().await;
+        }
     }
 
     mod state_service {
@@ -238,6 +436,20 @@ mod zebrad {
         #[tokio::test(flavor = "multi_thread")]
         async fn orchard_note_spends_to_ironwood_across_boundary() {
             crate::orchard_note_spends_to_ironwood_across_boundary::<StateService>().await;
+        }
+
+        /// multi_thread required: the test manager spawns the validator and
+        /// indexer services.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn receipts_flip_pools_exactly_at_the_boundary() {
+            crate::receipts_flip_pools_exactly_at_the_boundary::<StateService>().await;
+        }
+
+        /// multi_thread required: the test manager spawns the validator and
+        /// indexer services.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn shield_deposits_to_orchard_before_boundary() {
+            crate::shield_deposits_to_orchard_before_boundary::<StateService>().await;
         }
     }
 }
