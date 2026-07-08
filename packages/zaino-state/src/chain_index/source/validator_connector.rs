@@ -2416,6 +2416,29 @@ pub(crate) fn assemble_block_deltas(
 }
 
 #[cfg(test)]
+mod zebra_block_header_to_wire {
+    use super::*;
+
+    /// The Direct connection's non-verbose `getblockheader` builds a
+    /// `GetBlockHeaderResponse::Raw` and crosses to the wire type through the
+    /// serde round-trip under test: the raw hex must land in the untagged
+    /// `Compact` variant with the same bytes, or every non-verbose
+    /// `getblockheader` on a Direct connection errors at runtime. The
+    /// mockchain `get_block_header` test covers the same conversion end to
+    /// end; this pins it at its definition.
+    #[test]
+    fn raw_header_round_trips_to_compact_hex() {
+        let header_bytes = vec![0x01, 0x02, 0xab, 0xcd];
+        let raw = GetBlockHeaderResponse::Raw(HexData(header_bytes.clone()));
+
+        let wire = zebra_block_header_to_wire(raw)
+            .expect("the raw header shape must convert to the wire type");
+
+        assert_eq!(wire, GetBlockHeader::Compact(hex::encode(header_bytes)));
+    }
+}
+
+#[cfg(test)]
 mod fetch_pool_treestate_slot {
     /// Regression test: the validator's finalRoot must pass through to the pool slot.
     /// zebra populates `Commitments { finalRoot, finalState }` for every pool it
