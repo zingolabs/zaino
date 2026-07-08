@@ -510,6 +510,18 @@ impl ChainIndexError {
         }
     }
 
+    /// Constructs an `InternalServerError`-kind error from a typed error,
+    /// preserving it as `source` so zaino-serve's RPC-error-code recovery
+    /// walks can downcast to it (e.g. the legacy `-8` code carried by an
+    /// [`RpcError`](zaino_fetch::jsonrpsee::connector::RpcError)).
+    pub(crate) fn internal_from(error: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self {
+            kind: ChainIndexErrorKind::InternalServerError,
+            message: error.to_string(),
+            source: Some(Box::new(error)),
+        }
+    }
+
     pub(crate) fn backing_validator(value: impl std::error::Error + Send + Sync + 'static) -> Self {
         Self {
             kind: ChainIndexErrorKind::InternalServerError,

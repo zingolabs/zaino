@@ -2865,7 +2865,7 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
         raw_transaction_hex: String,
     ) -> Result<SentTransactionHash, Self::Error> {
         validate_raw_transaction_hex(&raw_transaction_hex)
-            .map_err(|error| ChainIndexError::internal(error.to_string()))?;
+            .map_err(ChainIndexError::internal_from)?;
         self.source()
             .send_raw_transaction(raw_transaction_hex)
             .await

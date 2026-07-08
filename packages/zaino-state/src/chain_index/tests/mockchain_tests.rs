@@ -1072,3 +1072,40 @@ async fn node_backed_indexer_service_serves_latest_block() {
     let latest = service.get_latest_block().await.unwrap();
     assert_eq!(latest.height, expected_tip as u64);
 }
+
+/// `sendrawtransaction` rejections must carry zcashd's legacy error code:
+/// zaino-serve forwards the code by downcast-walking the `source()` chain for
+/// the typed `RpcError` (`sendrawtransaction_error_object_from_indexer_error`),
+/// so stringifying it downgrades the legacy `-8` "invalid hex" rejection to a
+/// generic `-32603` internal error.
+///
+/// Invalid hex fails in local validation before the source is consulted, so
+/// this also pins that the rejection happens without a validator round-trip
+/// (the mock's `send_raw_transaction` would panic if reached).
+#[tokio::test(flavor = "multi_thread")]
+async fn send_raw_transaction_invalid_hex_keeps_legacy_error_code() {
+    let (_blocks, _indexer, index_reader, _mockchain) =
+        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
+
+    let error = index_reader
+        .send_raw_transaction("notahexstring".to_string())
+        .await
+        .expect_err("invalid hex must be rejected");
+
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+    let mut rpc_error_code = None;
+    while let Some(source_error) = current {
+        if let Some(rpc_error) =
+            source_error.downcast_ref::<zaino_fetch::jsonrpsee::connector::RpcError>()
+        {
+            rpc_error_code = Some(rpc_error.code);
+            break;
+        }
+        current = source_error.source();
+    }
+    assert_eq!(
+        rpc_error_code,
+        Some(zebra_rpc::server::error::LegacyCode::InvalidParameter as i64),
+        "the typed RpcError (legacy code -8) must stay reachable via the source() chain"
+    );
+}
