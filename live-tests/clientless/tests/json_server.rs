@@ -429,11 +429,8 @@ mod zcashd {
         async fn z_validate_address() {
             let mut services = zaino_testutils::launch_zcashd_dual_fetch_services().await;
 
-            clientless::rpc::z_validate_address::run_z_validate_for(
-                &services.zcashd_subscriber,
-                clientless::rpc::z_validate_address::SaplingSuite::Standard,
-            )
-            .await;
+            clientless::rpc::z_validate_address::run_z_validate_for(&services.zcashd_subscriber)
+                .await;
 
             services.test_manager.close().await;
         }

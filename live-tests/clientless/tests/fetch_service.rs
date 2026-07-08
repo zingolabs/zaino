@@ -1,6 +1,6 @@
 //! These tests compare the output of `FetchService` with the output of `JsonRpcConnector`.
 
-use clientless::rpc::z_validate_address::{run_z_validate_for, SaplingSuite};
+use clientless::rpc::z_validate_address::run_z_validate_for;
 use futures::StreamExt as _;
 use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 use zaino_proto::proto::compact_formats::CompactBlock;
@@ -416,11 +416,11 @@ async fn fetch_service_validate_address<V: ValidatorExt>(validator: &ValidatorKi
 
 /// Launch a fetch-backend manager and run the shared `z_validate_address`
 /// suite against its subscriber.
-async fn z_validate<V: ValidatorExt>(validator: &ValidatorKind, suite: SaplingSuite) {
+async fn z_validate<V: ValidatorExt>(validator: &ValidatorKind) {
     let (mut test_manager, fetch_service_subscriber) =
         zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
 
-    run_z_validate_for(&fetch_service_subscriber, suite).await;
+    run_z_validate_for(&fetch_service_subscriber).await;
 
     test_manager.close().await;
 }
@@ -648,7 +648,7 @@ mod zcashd {
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         pub(crate) async fn z_validate_address() {
-            z_validate::<Zcashd>(&ValidatorKind::Zcashd, SaplingSuite::Standard).await;
+            z_validate::<Zcashd>(&ValidatorKind::Zcashd).await;
         }
     }
 
@@ -719,11 +719,7 @@ mod zebrad {
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         pub(crate) async fn z_validate_address() {
-            z_validate::<Zebrad>(
-                &ValidatorKind::Zebrad,
-                SaplingSuite::ZebradPassthroughFetchService,
-            )
-            .await;
+            z_validate::<Zebrad>(&ValidatorKind::Zebrad).await;
         }
     }
 

@@ -573,11 +573,8 @@ mod zebra {
                 )
                 .await;
 
-                clientless::rpc::z_validate_address::run_z_validate_for(
-                    &services.state_subscriber,
-                    clientless::rpc::z_validate_address::SaplingSuite::Standard,
-                )
-                .await;
+                clientless::rpc::z_validate_address::run_z_validate_for(&services.state_subscriber)
+                    .await;
 
                 services.test_manager.close().await;
             }
