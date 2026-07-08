@@ -1204,15 +1204,11 @@ impl BlockchainSource for ValidatorConnector {
                     GetAddressDeltasParams::Address(a) => (vec![a.clone()], 0, 0, false),
                 };
 
-                let tip = self.get_best_block_height().await?.unwrap().into();
-                let mut start = Height(start_raw);
-                let mut end = Height(end_raw);
-                if end == Height(0) || end > tip {
-                    end = tip;
-                }
-                if start > tip {
-                    start = tip;
-                }
+                let (start, end) = clamp_deltas_range_to_tip(
+                    self.get_best_block_height().await?,
+                    start_raw,
+                    end_raw,
+                )?;
 
                 let transactions: Vec<Box<zebra_rpc::client::TransactionObject>> = {
                     let tx_ids_request =
@@ -2431,6 +2427,67 @@ mod fetch_pool_treestate_slot {
         let treestate =
             zebra_rpc::client::Treestate::new(zebra_rpc::client::Commitments::new(None, None));
         assert_eq!(super::fetch_pool_treestate_slot(treestate), None);
+    }
+}
+
+/// Clamps a `getaddressdeltas` height range to the current best tip:
+/// `end == 0` means "to the tip", and both bounds clamp down to it. A source
+/// that reports no best height (nothing indexed yet) is a typed error.
+fn clamp_deltas_range_to_tip(
+    tip: Option<zebra_chain::block::Height>,
+    start_raw: u32,
+    end_raw: u32,
+) -> BlockchainSourceResult<(Height, Height)> {
+    let tip: Height = tip
+        .ok_or_else(|| {
+            BlockchainSourceError::Unrecoverable(
+                "getaddressdeltas: the source reports no best block height".to_string(),
+            )
+        })?
+        .into();
+    let mut start = Height(start_raw);
+    let mut end = Height(end_raw);
+    if end == Height(0) || end > tip {
+        end = tip;
+    }
+    if start > tip {
+        start = tip;
+    }
+    Ok((start, end))
+}
+
+#[cfg(test)]
+mod clamp_deltas_range_to_tip {
+    use super::*;
+
+    /// A source that reports no best height (nothing indexed yet, or the
+    /// RPC fallback found no tip) must yield a typed error, not a panic:
+    /// this range clamp previously lived inline in `get_address_deltas`
+    /// behind `get_best_block_height().await?.unwrap()`.
+    #[test]
+    fn absent_tip_is_a_typed_error() {
+        assert!(
+            clamp_deltas_range_to_tip(None, 0, 0).is_err(),
+            "an absent tip must surface as a BlockchainSourceError"
+        );
+    }
+
+    /// `end == 0` means "to the tip", and both bounds clamp down to the tip.
+    #[test]
+    fn bounds_clamp_to_tip() {
+        let tip = Some(zebra_chain::block::Height(100));
+
+        let (start, end) =
+            clamp_deltas_range_to_tip(tip, 5, 0).expect("a present tip clamps successfully");
+        assert_eq!((start, end), (Height(5), Height(100)));
+
+        let (start, end) =
+            clamp_deltas_range_to_tip(tip, 5, 400).expect("a present tip clamps successfully");
+        assert_eq!((start, end), (Height(5), Height(100)));
+
+        let (start, end) =
+            clamp_deltas_range_to_tip(tip, 300, 50).expect("a present tip clamps successfully");
+        assert_eq!((start, end), (Height(100), Height(50)));
     }
 }
 
