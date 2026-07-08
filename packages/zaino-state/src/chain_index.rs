@@ -2762,8 +2762,21 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
         hash_or_height: String,
         verbosity: Option<u8>,
     ) -> Result<GetBlock, Self::Error> {
-        let id = HashOrHeight::from_str(&hash_or_height)
-            .map_err(|error| ChainIndexError::internal(error.to_string()))?;
+        // Resolve tip-relative negative heights against the best chaintip,
+        // matching zebra's own `getblock` semantics (`-1` is the tip). A
+        // rejected identifier carries zcashd's legacy InvalidParameter code
+        // as a typed `RpcError` source, which the serve layer recovers by
+        // downcast-walking the error chain.
+        let snapshot = self.snapshot_nonfinalized_state().await?;
+        let tip = self.best_chaintip(&snapshot).await?;
+        let id = HashOrHeight::new(&hash_or_height, Some(tip.height.into())).map_err(|error| {
+            ChainIndexError::internal_from(
+                zaino_fetch::jsonrpsee::connector::RpcError::new_from_legacycode(
+                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                    error,
+                ),
+            )
+        })?;
         self.source()
             .get_block_verbose(id, verbosity)
             .await

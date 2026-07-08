@@ -1073,6 +1073,61 @@ async fn node_backed_indexer_service_serves_latest_block() {
     assert_eq!(latest.height, expected_tip as u64);
 }
 
+/// zebra's `getblock` resolves negative heights against the tip (`-1` is the
+/// tip block). The old Rpc backend forwarded the raw identifier string to the
+/// validator, so `getblock "-1"` worked; the merged pre-parse used
+/// `HashOrHeight::from_str`, which rejects negative heights.
+#[tokio::test(flavor = "multi_thread")]
+async fn z_get_block_resolves_negative_heights_against_the_tip() {
+    let (blocks, _indexer, index_reader, _mockchain) =
+        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
+    let tip_height = (blocks.len() as u32) - 1;
+    wait_for_indexer_tip(&index_reader, tip_height).await;
+
+    let by_negative_height = index_reader
+        .z_get_block("-1".to_string(), Some(1))
+        .await
+        .expect("height -1 must resolve to the tip block");
+    let by_tip_height = index_reader
+        .z_get_block(tip_height.to_string(), Some(1))
+        .await
+        .expect("the tip height resolves");
+    assert_eq!(by_negative_height, by_tip_height);
+}
+
+/// An unparsable `getblock` identifier must carry zcashd's legacy
+/// InvalidParameter code (-8) as a typed `RpcError` in the `source()` chain,
+/// not be flattened into an internal-error string: the serve layer recovers
+/// legacy codes by downcast-walking the chain.
+#[tokio::test(flavor = "multi_thread")]
+async fn z_get_block_invalid_identifier_keeps_legacy_error_code() {
+    let (blocks, _indexer, index_reader, _mockchain) =
+        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
+    wait_for_indexer_tip(&index_reader, (blocks.len() as u32) - 1).await;
+
+    let error = index_reader
+        .z_get_block("notablockid".to_string(), Some(1))
+        .await
+        .expect_err("an unparsable identifier must be rejected");
+
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+    let mut rpc_error_code = None;
+    while let Some(source_error) = current {
+        if let Some(rpc_error) =
+            source_error.downcast_ref::<zaino_fetch::jsonrpsee::connector::RpcError>()
+        {
+            rpc_error_code = Some(rpc_error.code);
+            break;
+        }
+        current = source_error.source();
+    }
+    assert_eq!(
+        rpc_error_code,
+        Some(zebra_rpc::server::error::LegacyCode::InvalidParameter as i64),
+        "the typed RpcError (legacy code -8) must stay reachable via the source() chain"
+    );
+}
+
 /// During the initial finalised-state build there is no non-finalised
 /// snapshot. Both pre-merge backends answered `getchaintips` in that window by
 /// proxying the validator's own response; the merged service must fall back to
