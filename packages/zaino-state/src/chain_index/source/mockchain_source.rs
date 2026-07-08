@@ -180,6 +180,9 @@ pub(crate) struct MockchainSource {
     /// neither know nor care how many `mine_blocks` events occurred
     /// between wakes.
     blocks_received_broadcaster: tokio::sync::watch::Sender<()>,
+    /// Records whether [`BlockchainSource::shutdown`] ran, so teardown tests
+    /// can assert the index releases its source. Shared across clones.
+    shutdown_called: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl MockchainSource {
@@ -246,7 +249,14 @@ impl MockchainSource {
             )),
             get_block_hook: Arc::new(Mutex::new(None)),
             blocks_received_broadcaster: tokio::sync::watch::channel(()).0,
+            shutdown_called: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    /// Whether [`BlockchainSource::shutdown`] has run on this source (or any
+    /// clone of it).
+    pub(crate) fn shutdown_called(&self) -> bool {
+        self.shutdown_called.load(Ordering::SeqCst)
     }
 
     /// When set to true, `get_best_block_height` and `get_best_block_hash`
@@ -710,6 +720,12 @@ impl BlockchainSource for MockchainSource {
         &self,
     ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::peer_info::GetPeerInfo> {
         unimplemented!("MockchainSource cannot serve get_peer_info until test vectors are extended")
+    }
+
+    /// Records the release so teardown tests can assert the index shuts its
+    /// source down (the mock owns no real background work).
+    fn shutdown(&self) {
+        self.shutdown_called.store(true, Ordering::SeqCst);
     }
 
     /// A single active tip at the mockchain's current active height, matching

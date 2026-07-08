@@ -1073,6 +1073,27 @@ async fn node_backed_indexer_service_serves_latest_block() {
     assert_eq!(latest.height, expected_tip as u64);
 }
 
+/// Dropping the chain index without an explicit `shutdown()` call must still
+/// release source-owned background work: `Drop` previously only cancelled the
+/// sync worker, and the async `shutdown()`'s `?` on the DB teardown skipped
+/// the source release when the DB shutdown errored — either way the Direct
+/// connection's Zebra syncer task could outlive its index.
+#[tokio::test(flavor = "multi_thread")]
+async fn dropping_the_chain_index_releases_the_source() {
+    let (_blocks, indexer, _index_reader, mockchain) =
+        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
+
+    assert!(
+        !mockchain.shutdown_called(),
+        "the source must not be shut down while the index is live"
+    );
+    drop(indexer);
+    assert!(
+        mockchain.shutdown_called(),
+        "dropping the index must release source-owned background work"
+    );
+}
+
 /// zebra's `getblock` resolves negative heights against the tip (`-1` is the
 /// tip block). The old Rpc backend forwarded the raw identifier string to the
 /// validator, so `getblock "-1"` worked; the merged pre-parse used

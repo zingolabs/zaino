@@ -976,14 +976,11 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
     /// the design we have. Cancelling first just removes the wasted
     /// failure-path round trip.
     pub async fn shutdown(&self) -> Result<(), FinalisedStateError> {
-        self.cancel_token.cancel();
-        self.status.store(StatusType::Closing);
-        self.finalized_db.shutdown().await?;
-        self.mempool.close();
-        // Release any source-owned background work (e.g. the Zebra chain-syncer
-        // task behind the `State` connector). No-op for poll-only sources.
-        self.source.shutdown();
-        Ok(())
+        // The synchronous teardown (cancellation, mempool close, source
+        // release) runs before the fallible DB shutdown so a DB error cannot
+        // skip it — the source's Zebra syncer task must not outlive the index.
+        self.shutdown_sync_best_effort();
+        self.finalized_db.shutdown().await
     }
 
     /// Synchronous best-effort teardown for contexts that cannot run async
@@ -1222,7 +1219,11 @@ impl<Source: BlockchainSource> Drop for NodeBackedChainIndex<Source> {
     /// on `cancel_token.cancelled()` wrapping the iter body), the worker
     /// exits at its next await checkpoint instead.
     fn drop(&mut self) {
-        self.cancel_token.cancel();
+        // The full synchronous teardown, not just the cancellation: the
+        // source release in particular must run here, or the `State`
+        // connector's Zebra syncer task outlives an index that is dropped
+        // without an explicit `shutdown()` call.
+        self.shutdown_sync_best_effort();
     }
 }
 
