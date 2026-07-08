@@ -379,11 +379,54 @@ pub(super) async fn wait_or_source_change(
 /// An error originating from a blockchain source.
 #[derive(Debug, thiserror::Error)]
 pub enum BlockchainSourceError {
-    /// Unrecoverable error.
+    /// Unrecoverable error described only by a message (no underlying
+    /// typed error exists, e.g. an unexpected response shape).
     // TODO: Add logic for handling recoverable errors if any are identified
     // one candidate may be ephemerable network hiccoughs
     #[error("critical error in backing block source: {0}")]
     Unrecoverable(String),
+    /// Unrecoverable error whose typed cause is preserved as
+    /// [`std::error::Error::source`]. zaino-serve recovers zcashd-compatible
+    /// RPC error codes by downcast-walking `source()` chains, so errors that
+    /// wrap a typed transport or RPC error must use this variant rather than
+    /// [`Self::Unrecoverable`] with a stringified cause.
+    #[error("critical error in backing block source: {message}")]
+    UnrecoverableWithSource {
+        /// Rendered description, including the cause's `Display` output so
+        /// top-level log lines match the previous stringified form.
+        message: String,
+        /// The typed cause, available to `source()`-chain walks.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    },
+}
+
+impl BlockchainSourceError {
+    /// Wraps a typed error, preserving it for `source()`-chain recovery.
+    /// Accepts both concrete error types and already-boxed errors (e.g.
+    /// zebra's `BoxError`).
+    pub(crate) fn unrecoverable(
+        error: impl Into<Box<dyn std::error::Error + Send + Sync + 'static>>,
+    ) -> Self {
+        let source = error.into();
+        Self::UnrecoverableWithSource {
+            message: source.to_string(),
+            source,
+        }
+    }
+
+    /// Wraps a typed error with a context prefix, preserving the error for
+    /// `source()`-chain recovery.
+    pub(crate) fn unrecoverable_context(
+        context: impl std::fmt::Display,
+        error: impl Into<Box<dyn std::error::Error + Send + Sync + 'static>>,
+    ) -> Self {
+        let source = error.into();
+        Self::UnrecoverableWithSource {
+            message: format!("{context}: {source}"),
+            source,
+        }
+    }
 }
 
 /// Error type returned when invalid data is returned by the validator.

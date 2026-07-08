@@ -115,12 +115,12 @@ impl ValidatorConnector {
             common.validator_cookie_path.clone(),
         )
         .await
-        .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+        .map_err(BlockchainSourceError::unrecoverable)?;
 
         let info = fetcher
             .get_info()
             .await
-            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+            .map_err(BlockchainSourceError::unrecoverable)?;
 
         Ok((ValidatorConnector::Fetch(fetcher), info))
     }
@@ -187,7 +187,7 @@ impl ValidatorConnector {
                 .ready()
                 .and_then(|service| service.call(ReadRequest::Tip))
                 .await
-                .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+                .map_err(BlockchainSourceError::unrecoverable)?;
             let (syncer_height, syncer_tip_hash) = expected_read_response!(syncer_response, Tip)
                 .ok_or_else(|| {
                     BlockchainSourceError::Unrecoverable("no blocks in chain".to_string())
@@ -309,7 +309,7 @@ impl BlockchainSource for ValidatorConnector {
                     {
                         Ok(GetBlockResponse::Raw(raw_block)) => Ok(Some(Arc::new(
                             zebra_chain::block::Block::zcash_deserialize(raw_block.as_ref())
-                                .map_err(|e| BlockchainSourceError::Unrecoverable(e.to_string()))?,
+                                .map_err(BlockchainSourceError::unrecoverable)?,
                             ))),
                         Ok(_) => unreachable!(),
                         Err(e) => match e {
@@ -317,7 +317,7 @@ impl BlockchainSource for ValidatorConnector {
                             // TODO/FIX: zcashd returns this transport error when a block is requested higher than current chain. is this correct?
                             RpcRequestError::Transport(zaino_fetch::jsonrpsee::error::TransportError::ErrorStatusCode(500)) => Ok(None),
                             RpcRequestError::ServerWorkQueueFull => Err(BlockchainSourceError::Unrecoverable("Work queue full. not yet implemented: handling of ephemeral network errors.".to_string())),
-                            _ => Err(BlockchainSourceError::Unrecoverable(e.to_string())),
+                            _ => Err(BlockchainSourceError::unrecoverable(e)),
                         },
                     }
                 }
@@ -325,7 +325,7 @@ impl BlockchainSource for ValidatorConnector {
                     "Read Request of Block returned Read Response of {otherwise:#?} \n\
                     This should be deterministically unreachable"
                 ),
-                Err(e) => Err(BlockchainSourceError::Unrecoverable(e.to_string())),
+                Err(e) => Err(BlockchainSourceError::unrecoverable(e)),
             },
             ValidatorConnector::Fetch(fetch) => {
                 match fetch
@@ -334,7 +334,7 @@ impl BlockchainSource for ValidatorConnector {
                 {
                     Ok(GetBlockResponse::Raw(raw_block)) => Ok(Some(Arc::new(
                         zebra_chain::block::Block::zcash_deserialize(raw_block.as_ref())
-                            .map_err(|e| BlockchainSourceError::Unrecoverable(e.to_string()))?,
+                            .map_err(BlockchainSourceError::unrecoverable)?,
                     ))),
                     Ok(_) => unreachable!(),
                     Err(e) => match e {
@@ -342,7 +342,7 @@ impl BlockchainSource for ValidatorConnector {
                         // TODO/FIX: zcashd returns this transport error when a block is requested higher than current chain. is this correct?
                         RpcRequestError::Transport(zaino_fetch::jsonrpsee::error::TransportError::ErrorStatusCode(500)) => Ok(None),
                         RpcRequestError::ServerWorkQueueFull => Err(BlockchainSourceError::Unrecoverable("Work queue full. not yet implemented: handling of ephemeral network errors.".to_string())),
-                        _ => Err(BlockchainSourceError::Unrecoverable(e.to_string())),
+                        _ => Err(BlockchainSourceError::unrecoverable(e)),
                     },
                 }
             }
@@ -361,10 +361,10 @@ impl BlockchainSource for ValidatorConnector {
             ValidatorConnector::Fetch(fetch) => fetch
                 .get_block(hash_or_height.to_string(), verbosity)
                 .await
-                .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?
+                .map_err(BlockchainSourceError::unrecoverable)?
                 .try_into()
                 .map_err(|error: zebra_chain::serialization::SerializationError| {
-                    BlockchainSourceError::Unrecoverable(error.to_string())
+                    BlockchainSourceError::unrecoverable(error)
                 }),
         }
     }
@@ -376,8 +376,8 @@ impl BlockchainSource for ValidatorConnector {
     ) -> BlockchainSourceResult<GetBlockHeader> {
         match self {
             ValidatorConnector::State(state) => {
-                let hash_or_height = HashOrHeight::from_str(&hash)
-                    .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+                let hash_or_height =
+                    HashOrHeight::from_str(&hash).map_err(BlockchainSourceError::unrecoverable)?;
                 let header = state
                     .get_block_header_inner(hash_or_height, Some(verbose))
                     .await?;
@@ -386,7 +386,7 @@ impl BlockchainSource for ValidatorConnector {
             ValidatorConnector::Fetch(fetch) => fetch
                 .get_block_header(hash, verbose)
                 .await
-                .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string())),
+                .map_err(BlockchainSourceError::unrecoverable),
         }
     }
 
@@ -396,7 +396,7 @@ impl BlockchainSource for ValidatorConnector {
             ValidatorConnector::Fetch(fetch) => fetch
                 .get_block_deltas(hash)
                 .await
-                .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string())),
+                .map_err(BlockchainSourceError::unrecoverable),
         }
     }
 
@@ -410,11 +410,11 @@ impl BlockchainSource for ValidatorConnector {
                 false,
             )
             .await
-            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string())),
+            .map_err(BlockchainSourceError::unrecoverable),
             ValidatorConnector::Fetch(fetch) => Ok(fetch
                 .get_difficulty()
                 .await
-                .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?
+                .map_err(BlockchainSourceError::unrecoverable)?
                 .0),
         }
     }
@@ -425,7 +425,7 @@ impl BlockchainSource for ValidatorConnector {
             ValidatorConnector::Fetch(fetch) => fetch
                 .get_blockchain_info()
                 .await
-                .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?
+                .map_err(BlockchainSourceError::unrecoverable)?
                 .try_into()
                 .map_err(|_error| {
                     BlockchainSourceError::Unrecoverable(
@@ -442,7 +442,7 @@ impl BlockchainSource for ValidatorConnector {
             .json_rpc_connector()
             .get_info()
             .await
-            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?
+            .map_err(BlockchainSourceError::unrecoverable)?
             .into())
     }
 
@@ -450,21 +450,21 @@ impl BlockchainSource for ValidatorConnector {
         self.json_rpc_connector()
             .get_peer_info()
             .await
-            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))
+            .map_err(BlockchainSourceError::unrecoverable)
     }
 
     async fn get_block_subsidy(&self, height: u32) -> BlockchainSourceResult<GetBlockSubsidy> {
         self.json_rpc_connector()
             .get_block_subsidy(height)
             .await
-            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))
+            .map_err(BlockchainSourceError::unrecoverable)
     }
 
     async fn get_mining_info(&self) -> BlockchainSourceResult<GetMiningInfoWire> {
         self.json_rpc_connector()
             .get_mining_info()
             .await
-            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))
+            .map_err(BlockchainSourceError::unrecoverable)
     }
 
     async fn get_tx_out(
@@ -476,7 +476,7 @@ impl BlockchainSource for ValidatorConnector {
         self.json_rpc_connector()
             .get_tx_out(txid, n, include_mempool)
             .await
-            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))
+            .map_err(BlockchainSourceError::unrecoverable)
     }
 
     async fn get_spent_info(
@@ -486,7 +486,7 @@ impl BlockchainSource for ValidatorConnector {
         self.json_rpc_connector()
             .get_spent_info(request)
             .await
-            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))
+            .map_err(BlockchainSourceError::unrecoverable)
     }
 
     async fn get_network_sol_ps(
@@ -497,7 +497,7 @@ impl BlockchainSource for ValidatorConnector {
         self.json_rpc_connector()
             .get_network_sol_ps(blocks, height)
             .await
-            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))
+            .map_err(BlockchainSourceError::unrecoverable)
     }
 
     async fn send_raw_transaction(
@@ -510,7 +510,7 @@ impl BlockchainSource for ValidatorConnector {
             .send_raw_transaction(raw_transaction_hex)
             .await
             .map(SentTransactionHash::from)
-            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))
+            .map_err(BlockchainSourceError::unrecoverable)
     }
 
     async fn get_treestate_by_id(
@@ -520,7 +520,7 @@ impl BlockchainSource for ValidatorConnector {
         self.json_rpc_connector()
             .get_treestate(hash_or_height)
             .await
-            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?
+            .map_err(BlockchainSourceError::unrecoverable)?
             .try_into()
             .map_err(|_error| {
                 BlockchainSourceError::Unrecoverable("failed to parse treestate".to_string())
@@ -559,7 +559,7 @@ impl BlockchainSource for ValidatorConnector {
                     })
                     .await
                     .map_err(|e| {
-                        BlockchainSourceError::Unrecoverable(format!("state read failed: {e}"))
+                        BlockchainSourceError::unrecoverable_context("state read failed", e)
                     })?;
 
                 if let zebra_state::ReadResponse::AnyChainTransaction(opt) = response {
@@ -596,9 +596,10 @@ impl BlockchainSource for ValidatorConnector {
                         .get_raw_transaction(zebra_txid.to_string(), Some(0))
                         .await
                         .map_err(|e| {
-                            BlockchainSourceError::Unrecoverable(format!(
-                                "could not fetch transaction data: {e}"
-                            ))
+                            BlockchainSourceError::unrecoverable_context(
+                                "could not fetch transaction data",
+                                e,
+                            )
                         })? {
                         serialized_transaction
                     } else {
@@ -611,9 +612,10 @@ impl BlockchainSource for ValidatorConnector {
                             std::io::Cursor::new(serialized_transaction.as_ref()),
                         )
                         .map_err(|e| {
-                            BlockchainSourceError::Unrecoverable(format!(
-                                "could not deserialize transaction data: {e}"
-                            ))
+                            BlockchainSourceError::unrecoverable_context(
+                                "could not deserialize transaction data",
+                                e,
+                            )
                         })?;
                     Ok(Some((transaction.into(), GetTransactionLocation::Mempool)))
                 } else {
@@ -626,9 +628,10 @@ impl BlockchainSource for ValidatorConnector {
                         .get_raw_transaction(txid.to_rpc_hex(), Some(1))
                         .await
                         .map_err(|e| {
-                            BlockchainSourceError::Unrecoverable(format!(
-                                "could not fetch transaction data: {e}"
-                            ))
+                            BlockchainSourceError::unrecoverable_context(
+                                "could not fetch transaction data",
+                                e,
+                            )
                         })? {
                     transaction_object
                 } else {
@@ -641,9 +644,10 @@ impl BlockchainSource for ValidatorConnector {
                         transaction_object.hex().as_ref(),
                     ))
                     .map_err(|e| {
-                        BlockchainSourceError::Unrecoverable(format!(
-                            "could not deserialize transaction data: {e}"
-                        ))
+                        BlockchainSourceError::unrecoverable_context(
+                            "could not deserialize transaction data",
+                            e,
+                        )
                     })?;
                 let location = match transaction_object.height() {
                     Some(-1) => GetTransactionLocation::NonbestChain,
@@ -673,7 +677,7 @@ impl BlockchainSource for ValidatorConnector {
             .get_raw_mempool()
             .await
             .map_err(|e| {
-                BlockchainSourceError::Unrecoverable(format!("could not fetch mempool data: {e}"))
+                BlockchainSourceError::unrecoverable_context("could not fetch mempool data", e)
             })?
             .transactions;
 
@@ -681,9 +685,10 @@ impl BlockchainSource for ValidatorConnector {
             .into_iter()
             .map(|txid_str| {
                 zebra_chain::transaction::Hash::from_str(&txid_str).map_err(|e| {
-                    BlockchainSourceError::Unrecoverable(format!(
-                        "invalid transaction id '{txid_str}': {e}"
-                    ))
+                    BlockchainSourceError::unrecoverable_context(
+                        format!("invalid transaction id '{txid_str}'"),
+                        e,
+                    )
                 })
             })
             .collect::<Result<_, _>>()?;
@@ -711,9 +716,10 @@ impl BlockchainSource for ValidatorConnector {
                                 .get_best_blockhash()
                                 .await
                                 .map_err(|e| {
-                                    BlockchainSourceError::Unrecoverable(format!(
-                                        "could not fetch best block hash from validator: {e}"
-                                    ))
+                                    BlockchainSourceError::unrecoverable_context(
+                                        "could not fetch best block hash from validator",
+                                        e,
+                                    )
                                 })?
                                 .0,
                         ))
@@ -725,9 +731,10 @@ impl BlockchainSource for ValidatorConnector {
                     .get_best_blockhash()
                     .await
                     .map_err(|e| {
-                        BlockchainSourceError::Unrecoverable(format!(
-                            "could not fetch best block hash from validator: {e}"
-                        ))
+                        BlockchainSourceError::unrecoverable_context(
+                            "could not fetch best block hash from validator",
+                            e,
+                        )
                     })?
                     .0,
             )),
@@ -753,9 +760,10 @@ impl BlockchainSource for ValidatorConnector {
                                 .get_block_count()
                                 .await
                                 .map_err(|e| {
-                                    BlockchainSourceError::Unrecoverable(format!(
-                                        "could not fetch best block hash from validator: {e}"
-                                    ))
+                                    BlockchainSourceError::unrecoverable_context(
+                                        "could not fetch best block hash from validator",
+                                        e,
+                                    )
                                 })?
                                 .into(),
                         ))
@@ -767,9 +775,10 @@ impl BlockchainSource for ValidatorConnector {
                     .get_block_count()
                     .await
                     .map_err(|e| {
-                        BlockchainSourceError::Unrecoverable(format!(
-                            "could not fetch best block hash from validator: {e}"
-                        ))
+                        BlockchainSourceError::unrecoverable_context(
+                            "could not fetch best block hash from validator",
+                            e,
+                        )
                     })?
                     .into(),
             )),
@@ -988,9 +997,10 @@ impl BlockchainSource for ValidatorConnector {
                         }
                     })
                     .map_err(|e| {
-                        BlockchainSourceError::Unrecoverable(format!(
-                            "could not get subtrees from validator: {e}"
-                        ))
+                        BlockchainSourceError::unrecoverable_context(
+                            "could not get subtrees from validator",
+                            e,
+                        )
                     })
             }
 
@@ -999,9 +1009,10 @@ impl BlockchainSource for ValidatorConnector {
                     .get_subtrees_by_index(pool.pool_string(), start_index, max_entries)
                     .await
                     .map_err(|e| {
-                        BlockchainSourceError::Unrecoverable(format!(
-                            "could not get subtrees from validator: {e}"
-                        ))
+                        BlockchainSourceError::unrecoverable_context(
+                            "could not get subtrees from validator",
+                            e,
+                        )
                     })?;
 
                 Ok(subtrees
@@ -1022,9 +1033,10 @@ impl BlockchainSource for ValidatorConnector {
                     })
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|e| {
-                        BlockchainSourceError::Unrecoverable(format!(
-                            "could not get subtrees from validator: {e}"
-                        ))
+                        BlockchainSourceError::unrecoverable_context(
+                            "could not get subtrees from validator",
+                            e,
+                        )
                     })?)
             }
         }
@@ -1056,12 +1068,9 @@ impl BlockchainSource for ValidatorConnector {
                     .await;
                 let (sapling_tree, orchard_tree, ironwood_tree) = match (
                     //TODO: Better readstateservice error handling
-                    sapling_tree_response
-                        .map_err(|e| BlockchainSourceError::Unrecoverable(e.to_string()))?,
-                    orchard_tree_response
-                        .map_err(|e| BlockchainSourceError::Unrecoverable(e.to_string()))?,
-                    ironwood_tree_response
-                        .map_err(|e| BlockchainSourceError::Unrecoverable(e.to_string()))?,
+                    sapling_tree_response.map_err(BlockchainSourceError::unrecoverable)?,
+                    orchard_tree_response.map_err(BlockchainSourceError::unrecoverable)?,
+                    ironwood_tree_response.map_err(BlockchainSourceError::unrecoverable)?,
                 ) {
                     (
                         ReadResponse::SaplingTree(saptree),
@@ -1097,7 +1106,7 @@ impl BlockchainSource for ValidatorConnector {
                                     .to_string(),
                             )
                         }
-                        _ => BlockchainSourceError::Unrecoverable(e.to_string()),
+                        _ => BlockchainSourceError::unrecoverable(e),
                     })?;
                 let GetTreestateResponse {
                     sapling,
@@ -1117,7 +1126,7 @@ impl BlockchainSource for ValidatorConnector {
                         },
                     )
                     .transpose()
-                    .map_err(|e| BlockchainSourceError::Unrecoverable(format!("io error: {e}")))?;
+                    .map_err(|e| BlockchainSourceError::unrecoverable_context("io error", e))?;
                 let orchard_frontier = orchard
                     .map_or_else(
                         || Some(Ok(CommitmentTree::empty())),
@@ -1130,7 +1139,7 @@ impl BlockchainSource for ValidatorConnector {
                         },
                     )
                     .transpose()
-                    .map_err(|e| BlockchainSourceError::Unrecoverable(format!("io error: {e}")))?;
+                    .map_err(|e| BlockchainSourceError::unrecoverable_context("io error", e))?;
                 let ironwood_frontier = ironwood
                     .map_or_else(
                         || Some(Ok(CommitmentTree::empty())),
@@ -1143,7 +1152,7 @@ impl BlockchainSource for ValidatorConnector {
                         },
                     )
                     .transpose()
-                    .map_err(|e| BlockchainSourceError::Unrecoverable(format!("io error: {e}")))?;
+                    .map_err(|e| BlockchainSourceError::unrecoverable_context("io error", e))?;
                 let sapling_root = sapling_frontier
                     .map(|tree| {
                         zebra_chain::sapling::tree::Root::try_from(tree.root().to_bytes())
@@ -1151,7 +1160,7 @@ impl BlockchainSource for ValidatorConnector {
                     })
                     .transpose()
                     .map_err(|e| {
-                        BlockchainSourceError::Unrecoverable(format!("could not deser: {e}"))
+                        BlockchainSourceError::unrecoverable_context("could not deser", e)
                     })?;
                 let orchard_root = orchard_frontier
                     .map(|tree| {
@@ -1160,7 +1169,7 @@ impl BlockchainSource for ValidatorConnector {
                     })
                     .transpose()
                     .map_err(|e| {
-                        BlockchainSourceError::Unrecoverable(format!("could not deser: {e}"))
+                        BlockchainSourceError::unrecoverable_context("could not deser", e)
                     })?;
                 let ironwood_root = ironwood_frontier
                     .map(|tree| {
@@ -1169,7 +1178,7 @@ impl BlockchainSource for ValidatorConnector {
                     })
                     .transpose()
                     .map_err(|e| {
-                        BlockchainSourceError::Unrecoverable(format!("could not deser: {e}"))
+                        BlockchainSourceError::unrecoverable_context("could not deser", e)
                     })?;
                 Ok((sapling_root, orchard_root, ironwood_root))
             }
@@ -1268,14 +1277,10 @@ impl BlockchainSource for ValidatorConnector {
                         let response = read_state
                             .ready()
                             .await
-                            .map_err(|error| {
-                                BlockchainSourceError::Unrecoverable(error.to_string())
-                            })?
+                            .map_err(BlockchainSourceError::unrecoverable)?
                             .call(ReadRequest::BlockHeader(hash_or_height))
                             .await
-                            .map_err(|error| {
-                                BlockchainSourceError::Unrecoverable(error.to_string())
-                            })?;
+                            .map_err(BlockchainSourceError::unrecoverable)?;
 
                         match response {
                             ReadResponse::BlockHeader { hash, .. } => Ok(BlockInfo::new(
@@ -1296,14 +1301,10 @@ impl BlockchainSource for ValidatorConnector {
                         let response = read_state
                             .ready()
                             .await
-                            .map_err(|error| {
-                                BlockchainSourceError::Unrecoverable(error.to_string())
-                            })?
+                            .map_err(BlockchainSourceError::unrecoverable)?
                             .call(ReadRequest::BlockHeader(hash_or_height))
                             .await
-                            .map_err(|error| {
-                                BlockchainSourceError::Unrecoverable(error.to_string())
-                            })?;
+                            .map_err(BlockchainSourceError::unrecoverable)?;
 
                         match response {
                             ReadResponse::BlockHeader { hash, .. } => Ok(BlockInfo::new(
@@ -1330,7 +1331,7 @@ impl BlockchainSource for ValidatorConnector {
             ValidatorConnector::Fetch(fetch) => fetch
                 .get_address_deltas(params)
                 .await
-                .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string())),
+                .map_err(BlockchainSourceError::unrecoverable),
         }
     }
 
@@ -1343,14 +1344,14 @@ impl BlockchainSource for ValidatorConnector {
                 let mut state = state.read_state_service.clone();
 
                 let strings_set = address_strings.valid_addresses().map_err(|error| {
-                    BlockchainSourceError::Unrecoverable(format!("invalid address: {error}"))
+                    BlockchainSourceError::unrecoverable_context("invalid address", error)
                 })?;
 
                 let response = state
                     .ready()
                     .and_then(|service| service.call(ReadRequest::AddressBalance(strings_set)))
                     .await
-                    .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+                    .map_err(BlockchainSourceError::unrecoverable)?;
 
                 let (balance, received) = match response {
                     ReadResponse::AddressBalance { balance, received } => (balance, received),
@@ -1375,7 +1376,7 @@ impl BlockchainSource for ValidatorConnector {
                         .collect(),
                 )
                 .await
-                .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?
+                .map_err(BlockchainSourceError::unrecoverable)?
                 .into()),
         }
     }
@@ -1393,7 +1394,7 @@ impl BlockchainSource for ValidatorConnector {
                     .ready()
                     .and_then(|service| service.call(ReadRequest::Tip))
                     .await
-                    .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+                    .map_err(BlockchainSourceError::unrecoverable)?;
 
                 let (chain_height, _chain_hash) = expected_read_response!(response, Tip)
                     .ok_or_else(|| {
@@ -1420,9 +1421,7 @@ impl BlockchainSource for ValidatorConnector {
                     addresses: GetAddressBalanceRequest::new(addresses)
                         .valid_addresses()
                         .map_err(|error| {
-                            BlockchainSourceError::Unrecoverable(format!(
-                                "invalid address: {error}"
-                            ))
+                            BlockchainSourceError::unrecoverable_context("invalid address", error)
                         })?,
 
                     height_range: zebra_chain::block::Height(start)
@@ -1432,7 +1431,7 @@ impl BlockchainSource for ValidatorConnector {
                     .ready()
                     .and_then(|service| service.call(request))
                     .await
-                    .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+                    .map_err(BlockchainSourceError::unrecoverable)?;
 
                 let hashes = expected_read_response!(response, AddressesTransactionIds);
 
@@ -1461,14 +1460,15 @@ impl BlockchainSource for ValidatorConnector {
                 fetch
                     .get_address_txids(addresses, start, end)
                     .await
-                    .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?
+                    .map_err(BlockchainSourceError::unrecoverable)?
                     .transactions
                     .iter()
                     .map(|txid_string| {
                         TransactionHash::from_hex(txid_string.as_bytes()).map_err(|error| {
-                            BlockchainSourceError::Unrecoverable(format!(
-                                "invalid txid from getaddresstxids `{txid_string}`: {error}"
-                            ))
+                            BlockchainSourceError::unrecoverable_context(
+                                format!("invalid txid from getaddresstxids `{txid_string}`"),
+                                error,
+                            )
                         })
                     })
                     .collect::<Result<Vec<TransactionHash>, BlockchainSourceError>>()
@@ -1485,7 +1485,7 @@ impl BlockchainSource for ValidatorConnector {
                 let mut state = state.read_state_service.clone();
 
                 let valid_addresses = addresses.valid_addresses().map_err(|error| {
-                    BlockchainSourceError::Unrecoverable(format!("invalid address: {error}"))
+                    BlockchainSourceError::unrecoverable_context("invalid address", error)
                 })?;
 
                 let request = ReadRequest::UtxosByAddresses(valid_addresses);
@@ -1493,7 +1493,7 @@ impl BlockchainSource for ValidatorConnector {
                     .ready()
                     .and_then(|service| service.call(request))
                     .await
-                    .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+                    .map_err(BlockchainSourceError::unrecoverable)?;
 
                 let utxos = expected_read_response!(response, AddressUtxos);
                 let mut last_output_location =
@@ -1536,7 +1536,7 @@ impl BlockchainSource for ValidatorConnector {
                         .collect(),
                 )
                 .await
-                .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?
+                .map_err(BlockchainSourceError::unrecoverable)?
                 .into_iter()
                 .map(|utxos| utxos.into())
                 .collect()),
@@ -1635,14 +1635,14 @@ impl State {
             GetBlockHeaderResponse::Raw(HexData(
                 header
                     .zcash_serialize_to_vec()
-                    .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?,
+                    .map_err(BlockchainSourceError::unrecoverable)?,
             ))
         } else {
             let ReadResponse::SaplingTree(sapling_tree) = state
                 .ready()
                 .and_then(|service| service.call(ReadRequest::SaplingTree(hash_or_height)))
                 .await
-                .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?
+                .map_err(BlockchainSourceError::unrecoverable)?
             else {
                 return Err(BlockchainSourceError::Unrecoverable(
                     "Unexpected response to SaplingTree request".to_string(),
@@ -1657,7 +1657,7 @@ impl State {
                 .ready()
                 .and_then(|service| service.call(ReadRequest::Depth(hash)))
                 .await
-                .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?
+                .map_err(BlockchainSourceError::unrecoverable)?
             else {
                 return Err(BlockchainSourceError::Unrecoverable(
                     "Unexpected response to Depth request".to_string(),
@@ -1707,7 +1707,7 @@ impl State {
                     .ready()
                     .and_then(|service| service.call(request))
                     .await
-                    .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+                    .map_err(BlockchainSourceError::unrecoverable)?;
                 let block = expected_read_response!(response, Block);
                 block
                     .map(SerializedBlock::from)
@@ -1787,19 +1787,19 @@ impl State {
                         unreachable!("Unexpected responses from state service: {unexpected:?} {unexpected2:?}")
                     }
                     (Err(e), _) | (_, Err(e)) => {
-                        return Err(BlockchainSourceError::Unrecoverable(e.to_string()));
+                        return Err(BlockchainSourceError::unrecoverable(e));
                     }
                 };
 
-                let orchard_tree_response = orchard_tree_response
-                    .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+                let orchard_tree_response =
+                    orchard_tree_response.map_err(BlockchainSourceError::unrecoverable)?;
                 let orchard_tree = expected_read_response!(orchard_tree_response, OrchardTree)
                     .ok_or_else(|| {
                         BlockchainSourceError::Unrecoverable("missing orchard tree".to_string())
                     })?;
 
-                let ironwood_tree_response = ironwood_tree_response
-                    .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+                let ironwood_tree_response =
+                    ironwood_tree_response.map_err(BlockchainSourceError::unrecoverable)?;
                 let ironwood_tree = expected_read_response!(ironwood_tree_response, IronwoodTree)
                     .ok_or_else(|| {
                     BlockchainSourceError::Unrecoverable("missing ironwood tree".to_string())
@@ -1843,8 +1843,8 @@ impl State {
     /// spent prevout via a best-chain `ReadRequest::Transaction` (finalised +
     /// non-finalised), then hands off to the shared [`assemble_block_deltas`].
     async fn get_block_deltas(&self, hash: String) -> BlockchainSourceResult<BlockDeltas> {
-        let hash_or_height = HashOrHeight::from_str(&hash)
-            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+        let hash_or_height =
+            HashOrHeight::from_str(&hash).map_err(BlockchainSourceError::unrecoverable)?;
         let GetBlock::Object(object) = self.get_block_inner(hash_or_height, Some(2)).await? else {
             return Err(BlockchainSourceError::Unrecoverable(
                 "getblockdeltas: unexpected raw block".to_string(),
@@ -1866,7 +1866,7 @@ impl State {
                     continue;
                 };
                 let prev_hash = zebra_chain::transaction::Hash::from_str(prevtxid)
-                    .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+                    .map_err(BlockchainSourceError::unrecoverable)?;
                 if prevtx_cache.contains_key(&prev_hash) {
                     continue;
                 }
@@ -1875,7 +1875,7 @@ impl State {
                     .ready()
                     .and_then(|service| service.call(ReadRequest::Transaction(prev_hash)))
                     .await
-                    .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+                    .map_err(BlockchainSourceError::unrecoverable)?;
                 let mined_tx = expected_read_response!(response, Transaction).ok_or_else(|| {
                     BlockchainSourceError::Unrecoverable(format!(
                         "getblockdeltas: prevout tx {prevtxid} not in best chain"
@@ -1938,7 +1938,7 @@ impl State {
             .ready()
             .and_then(|service| service.call(ReadRequest::TipPoolValues))
             .await
-            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+            .map_err(BlockchainSourceError::unrecoverable)?;
         let (height, hash, balance) = match response {
             ReadResponse::TipPoolValues {
                 tip_height,
@@ -1954,14 +1954,14 @@ impl State {
             .ready()
             .and_then(|service| service.call(ReadRequest::UsageInfo))
             .await
-            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+            .map_err(BlockchainSourceError::unrecoverable)?;
         let size_on_disk = expected_read_response!(usage_response, UsageInfo);
 
         let response = state
             .ready()
             .and_then(|service| service.call(ReadRequest::BlockHeader(hash.into())))
             .await
-            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+            .map_err(BlockchainSourceError::unrecoverable)?;
         let header = match response {
             ReadResponse::BlockHeader { header, .. } => header,
             unexpected => {
@@ -2020,7 +2020,7 @@ impl State {
         let difficulty =
             chain_tip_difficulty(network.clone(), self.read_state_service.clone(), false)
                 .await
-                .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+                .map_err(BlockchainSourceError::unrecoverable)?;
 
         let verification_progress = f64::from(height.0) / f64::from(zebra_estimated_height.0);
 
@@ -2211,7 +2211,7 @@ pub(crate) fn header_to_block_commitments(
     final_sapling_root: [u8; 32],
 ) -> BlockchainSourceResult<[u8; 32]> {
     let hash = match header.commitment(network, height).map_err(|error| {
-        BlockchainSourceError::Unrecoverable(format!("invalid block commitment: {error}"))
+        BlockchainSourceError::unrecoverable_context("invalid block commitment", error)
     })? {
         zebra_chain::block::Commitment::PreSaplingReserved(bytes) => bytes,
         zebra_chain::block::Commitment::FinalSaplingRoot(_root) => final_sapling_root,
@@ -2232,10 +2232,8 @@ pub(crate) fn header_to_block_commitments(
 pub(crate) fn zebra_block_header_to_wire(
     header: GetBlockHeaderResponse,
 ) -> BlockchainSourceResult<GetBlockHeader> {
-    let value = serde_json::to_value(&header)
-        .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
-    serde_json::from_value(value)
-        .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))
+    let value = serde_json::to_value(&header).map_err(BlockchainSourceError::unrecoverable)?;
+    serde_json::from_value(value).map_err(BlockchainSourceError::unrecoverable)
 }
 
 /// Returns the median of a non-empty set of block times.
@@ -2286,7 +2284,7 @@ pub(crate) fn assemble_block_deltas(
             };
 
             let prev_hash = zebra_chain::transaction::Hash::from_str(prevtxid)
-                .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+                .map_err(BlockchainSourceError::unrecoverable)?;
             let prev_tx = prevtx_cache.get(&prev_hash).ok_or_else(|| {
                 BlockchainSourceError::Unrecoverable(format!(
                     "getblockdeltas: prevout tx {prevtxid} not resolved"
@@ -2307,9 +2305,10 @@ pub(crate) fn assemble_block_deltas(
 
             // Inputs are debits, so the amount leaves the address.
             let satoshis: Amount = (-output.value().zatoshis()).try_into().map_err(|error| {
-                BlockchainSourceError::Unrecoverable(format!(
-                    "getblockdeltas: input amount out of range for {prevtxid}:{prevout}: {error}"
-                ))
+                BlockchainSourceError::unrecoverable_context(
+                    format!("getblockdeltas: input amount out of range for {prevtxid}:{prevout}"),
+                    error,
+                )
             })?;
 
             inputs.push(InputDelta {
@@ -2433,6 +2432,57 @@ mod fetch_pool_treestate_slot {
         let treestate =
             zebra_rpc::client::Treestate::new(zebra_rpc::client::Commitments::new(None, None));
         assert_eq!(super::fetch_pool_treestate_slot(treestate), None);
+    }
+}
+
+#[cfg(test)]
+mod get_block_verbose {
+    use super::*;
+
+    /// zaino-serve recovers zcashd-compatible RPC error codes by downcast-walking
+    /// [`std::error::Error::source`] chains (see
+    /// `getblock_error_object_from_indexer_error` and
+    /// `sendrawtransaction_error_object_from_indexer_error` in
+    /// `zaino-serve/src/rpc/jsonrpc/service.rs`). The connector boundary must
+    /// therefore preserve the typed cause instead of flattening it to a string,
+    /// or `getblock` failures surface as generic internal errors rather than the
+    /// legacy `-8` code lightwalletd-family clients key on.
+    #[tokio::test]
+    async fn fetch_error_keeps_transport_error_in_source_chain() {
+        // Port 1 refuses connections, so the request fails at the transport
+        // layer without contacting any validator.
+        let connector = zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector::new_with_basic_auth(
+            "http://127.0.0.1:1/"
+                .parse()
+                .expect("static url literal parses"),
+            "user".to_string(),
+            "password".to_string(),
+        )
+        .expect("connector construction is network-free");
+        let source = ValidatorConnector::Fetch(connector);
+
+        let error = source
+            .get_block_verbose(HashOrHeight::Height(zebra_chain::block::Height(1)), Some(1))
+            .await
+            .expect_err("a request to a closed port must fail");
+
+        let mut current: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+        let mut transport_error_reachable = false;
+        while let Some(source_error) = current {
+            if source_error
+                .downcast_ref::<zaino_fetch::jsonrpsee::error::TransportError>()
+                .is_some()
+            {
+                transport_error_reachable = true;
+                break;
+            }
+            current = source_error.source();
+        }
+        assert!(
+            transport_error_reachable,
+            "the typed TransportError must stay reachable via the source() chain; \
+             stringifying it strips the RPC error code the serve layer recovers"
+        );
     }
 }
 

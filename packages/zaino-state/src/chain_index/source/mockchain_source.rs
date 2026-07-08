@@ -370,7 +370,7 @@ impl MockchainSource {
             return Ok(GetBlockHeaderResponse::Raw(HexData(
                 header
                     .zcash_serialize_to_vec()
-                    .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?,
+                    .map_err(BlockchainSourceError::unrecoverable)?,
             )));
         }
 
@@ -592,7 +592,7 @@ impl BlockchainSource for MockchainSource {
                 // full block, so serialize it to measure.
                 let size = block
                     .zcash_serialize_to_vec()
-                    .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?
+                    .map_err(BlockchainSourceError::unrecoverable)?
                     .len() as i64;
 
                 // `chain_supply` / `value_pools` are cumulative pool balances that the test
@@ -622,8 +622,8 @@ impl BlockchainSource for MockchainSource {
         hash: String,
         verbose: bool,
     ) -> BlockchainSourceResult<GetBlockHeader> {
-        let hash_or_height = HashOrHeight::from_str(&hash)
-            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+        let hash_or_height =
+            HashOrHeight::from_str(&hash).map_err(BlockchainSourceError::unrecoverable)?;
         let height_index = self.resolve_index(&hash_or_height).ok_or_else(|| {
             BlockchainSourceError::Unrecoverable("block height not in best chain".to_string())
         })?;
@@ -632,8 +632,8 @@ impl BlockchainSource for MockchainSource {
     }
 
     async fn get_block_deltas(&self, hash: String) -> BlockchainSourceResult<BlockDeltas> {
-        let hash_or_height = HashOrHeight::from_str(&hash)
-            .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+        let hash_or_height =
+            HashOrHeight::from_str(&hash).map_err(BlockchainSourceError::unrecoverable)?;
         let GetBlock::Object(object) = self.get_block_verbose(hash_or_height, Some(2)).await?
         else {
             return Err(BlockchainSourceError::Unrecoverable(
@@ -655,7 +655,7 @@ impl BlockchainSource for MockchainSource {
                     continue;
                 };
                 let prev_hash = zebra_chain::transaction::Hash::from_str(prevtxid)
-                    .map_err(|error| BlockchainSourceError::Unrecoverable(error.to_string()))?;
+                    .map_err(BlockchainSourceError::unrecoverable)?;
                 if prevtx_cache.contains_key(&prev_hash) {
                     continue;
                 }
