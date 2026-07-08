@@ -2242,6 +2242,29 @@ pub(crate) fn median_of_block_times(mut times: Vec<i64>) -> BlockchainSourceResu
     Ok(times[times.len() / 2])
 }
 
+/// Maps a verbose-transaction output to its `getblockdeltas` output delta,
+/// or `None` when the output does not participate in address deltas: only
+/// outputs with exactly one derivable address are attributed. Zero means no
+/// address to credit (nonstandard script); more than one (e.g. bare multisig)
+/// has no single owning address, and zcashd's getblockdeltas omits such
+/// outputs rather than crediting the first address.
+fn output_delta_from_verbose(vout: &zebra_rpc::client::Output) -> Option<OutputDelta> {
+    let address =
+        vout.script_pub_key()
+            .addresses()
+            .as_ref()
+            .and_then(|addresses| match addresses.as_slice() {
+                [address] => Some(address.clone()),
+                _ => None,
+            })?;
+    let satoshis: Amount<NonNegative> = vout.value_zat().try_into().ok()?;
+    Some(OutputDelta {
+        address,
+        satoshis,
+        index: vout.n(),
+    })
+}
+
 /// Assembles a `getblockdeltas` response from a verbosity-2 `getblock` object plus a
 /// cache of previous transactions (keyed by txid) needed to resolve each spend's address
 /// and value, its median time, and the running network.
@@ -2318,19 +2341,7 @@ pub(crate) fn assemble_block_deltas(
         let outputs: Vec<OutputDelta> = txo
             .outputs()
             .iter()
-            .filter_map(|vout| {
-                let address = vout
-                    .script_pub_key()
-                    .addresses()
-                    .as_ref()
-                    .and_then(|addresses| addresses.first().cloned())?;
-                let satoshis: Amount<NonNegative> = vout.value_zat().try_into().ok()?;
-                Some(OutputDelta {
-                    address,
-                    satoshis,
-                    index: vout.n(),
-                })
-            })
+            .filter_map(output_delta_from_verbose)
             .collect();
 
         deltas.push(BlockDelta {
@@ -2454,6 +2465,60 @@ fn clamp_deltas_range_to_tip(
         start = tip;
     }
     Ok((start, end))
+}
+
+#[cfg(test)]
+mod output_delta_from_verbose {
+    use super::*;
+
+    fn output_with_addresses(addresses: Option<Vec<String>>) -> zebra_rpc::client::Output {
+        zebra_rpc::client::Output::new(
+            0.00000001,
+            1,
+            0,
+            zebra_rpc::client::ScriptPubKey::new(
+                "asm".to_string(),
+                zebra_chain::transparent::Script::new(&[0u8]),
+                addresses.as_ref().map(|a| a.len() as u32),
+                "pubkeyhash".to_string(),
+                addresses,
+            ),
+        )
+    }
+
+    /// An output with exactly one derivable address is attributed to it.
+    #[test]
+    fn single_address_output_is_attributed() {
+        let delta =
+            output_delta_from_verbose(&output_with_addresses(Some(vec!["t1address".to_string()])))
+                .expect("a single-address output participates in deltas");
+        assert_eq!(delta.address, "t1address");
+    }
+
+    /// An output with multiple derivable addresses (e.g. bare multisig) has no
+    /// single owning address: zcashd's getblockdeltas omits it, and crediting
+    /// the first address would fabricate balance for it. The pre-fix code took
+    /// `addresses.first()`.
+    #[test]
+    fn multi_address_output_is_omitted() {
+        assert_eq!(
+            output_delta_from_verbose(&output_with_addresses(Some(vec![
+                "t1first".to_string(),
+                "t1second".to_string(),
+            ]))),
+            None,
+            "a multi-address output must be omitted, not attributed to the first address"
+        );
+    }
+
+    /// No derivable address (nonstandard script) means no delta.
+    #[test]
+    fn addressless_output_is_omitted() {
+        assert_eq!(
+            output_delta_from_verbose(&output_with_addresses(None)),
+            None
+        );
+    }
 }
 
 #[cfg(test)]
