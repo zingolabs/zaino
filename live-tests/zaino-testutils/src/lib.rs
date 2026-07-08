@@ -73,8 +73,10 @@ macro_rules! validator_tests {
 /// the truth source — and is never zainod's own schedule: zainod's config
 /// carries only a network kind, and both backends adopt the runtime schedule
 /// from the running validator's `getblockchaininfo.upgrades` (zaino#1076).
-/// It matches zcash_local_net's `supported_regtest_activation_heights`, which
-/// the devtool wallet client currently requires (zaino#1368).
+/// Wallet clients impose no constraint on this choice: they derive their
+/// schedule from the running validator too
+/// (`zcash_local_net::wallet::WalletNetwork::from_validator`, infrastructure
+/// ADR 0003).
 pub const ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS: ActivationHeights = ActivationHeights {
     before_overwinter: Some(1),
     overwinter: Some(1),
@@ -91,10 +93,10 @@ pub const ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS: ActivationHeights = ActivationHeigh
 };
 
 /// Orchard-era-only fixture: every upgrade through NU6.2 active from height 2 and
-/// NU6.3 never activating, so coinbases stay Orchard for the whole chain. For
-/// client-free launches only — the zcash-devtool wallet hardcodes the canonical
-/// regtest set (NU6.3 at 2), so wallet-built transactions on this fixture would fail
-/// consensus branch-id validation.
+/// NU6.3 never activating, so coinbases stay Orchard for the whole chain. Wallet
+/// launches on this fixture are fine: the wallet derives its schedule from the
+/// running validator (infrastructure ADR 0003), so its transactions carry the
+/// fixture's own consensus branch IDs.
 pub const ORCHARD_ONLY_ACTIVATION_HEIGHTS: ActivationHeights = ActivationHeights {
     before_overwinter: Some(1),
     overwinter: Some(1),
@@ -1327,9 +1329,10 @@ pub async fn launch_zcashd_dual_fetch_services() -> ZcashdDualFetchServices {
 }
 
 /// [`launch_zcashd_dual_fetch_services`] with the zcashd chain and both fetch
-/// services pinned to `activation_heights`, for wallet clients (e.g. the devtool
-/// wallet) whose compiled-in regtest heights differ from zcashd's defaults and
-/// must be matched by the validator.
+/// services pinned to `activation_heights`, for tests whose fixture needs a
+/// schedule other than zcashd's defaults. Wallet clients need no matching on
+/// their side: they derive their schedule from the running validator
+/// (infrastructure ADR 0003).
 #[cfg(feature = "zcashd_support")]
 #[allow(deprecated)]
 pub async fn launch_zcashd_dual_fetch_services_at(
