@@ -712,6 +712,34 @@ impl BlockchainSource for MockchainSource {
         unimplemented!("MockchainSource cannot serve get_peer_info until test vectors are extended")
     }
 
+    /// A single active tip at the mockchain's current active height, matching
+    /// what a validator with no side branches reports.
+    async fn get_chain_tips(
+        &self,
+    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::chain_tips::GetChainTipsResponse>
+    {
+        if self
+            .force_requests_against_source_to_fail
+            .load(Ordering::SeqCst)
+        {
+            return Err(BlockchainSourceError::Unrecoverable(
+                "forced source failure".into(),
+            ));
+        }
+        let height = self.active_height();
+        let Some(index) = self.valid_height(height) else {
+            return Ok(vec![]);
+        };
+        Ok(vec![
+            zaino_fetch::jsonrpsee::response::chain_tips::ChainTip::new(
+                height,
+                self.blocks[index].hash().to_string(),
+                0,
+                zaino_fetch::jsonrpsee::response::chain_tips::ChainTipStatus::Active,
+            ),
+        ])
+    }
+
     async fn get_block_subsidy(
         &self,
         _height: u32,

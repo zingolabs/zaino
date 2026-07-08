@@ -1080,6 +1080,13 @@ impl BlockchainSource for ProptestMockchain {
         unimplemented!()
     }
 
+    async fn get_chain_tips(
+        &self,
+    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::chain_tips::GetChainTipsResponse>
+    {
+        unimplemented!()
+    }
+
     async fn get_block_subsidy(
         &self,
         _height: u32,

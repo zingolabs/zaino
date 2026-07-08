@@ -254,6 +254,25 @@ impl<Source: BlockchainSource> NodeBackedIndexerServiceSubscriber<Source> {
     }
 }
 
+/// `getchaintips` served from the non-finalised snapshot when it exists,
+/// falling back to the validator's own response during the initial
+/// finalised-state build — matching both pre-merge backends, which proxied
+/// the validator for that window instead of erroring.
+pub(crate) async fn chain_tips_for_snapshot<Source: BlockchainSource>(
+    snapshot: &ChainIndexSnapshot,
+    source: &Source,
+) -> Result<GetChainTipsResponse, NodeBackedIndexerServiceError> {
+    match snapshot.get_nfs_snapshot() {
+        Some(non_finalized_snapshot) => Ok(chain_tips_from_nonfinalized_snapshot(
+            non_finalized_snapshot,
+        )),
+        None => Ok(source
+            .get_chain_tips()
+            .await
+            .map_err(crate::error::ChainIndexError::backing_validator)?),
+    }
+}
+
 /// Placeholder metadata and config for test-only service construction.
 #[cfg(test)]
 fn test_service_parts(network: zaino_common::Network) -> (ServiceMetadata, CommonBackendConfig) {
@@ -619,12 +638,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
     #[allow(deprecated)]
     async fn get_chain_tips(&self) -> Result<GetChainTipsResponse, Self::Error> {
         let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
-        let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
-            return Err(NodeBackedIndexerServiceError::UnavailableNotSyncedEnough);
-        };
-        Ok(chain_tips_from_nonfinalized_snapshot(
-            non_finalized_snapshot,
-        ))
+        chain_tips_for_snapshot(&snapshot, self.indexer.source()).await
     }
 
     /// Return information about the given Zcash address.

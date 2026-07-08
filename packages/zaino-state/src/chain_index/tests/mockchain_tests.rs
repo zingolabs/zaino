@@ -1073,6 +1073,41 @@ async fn node_backed_indexer_service_serves_latest_block() {
     assert_eq!(latest.height, expected_tip as u64);
 }
 
+/// During the initial finalised-state build there is no non-finalised
+/// snapshot. Both pre-merge backends answered `getchaintips` in that window by
+/// proxying the validator's own response; the merged service must fall back to
+/// the source the same way, rather than serving UnavailableNotSyncedEnough for
+/// the whole build (hours on mainnet).
+#[tokio::test]
+async fn get_chain_tips_falls_back_to_source_while_syncing() {
+    use crate::chain_index::non_finalised_state::ChainIndexSnapshot;
+    use crate::chain_index::tests::vectors::build_mockchain_source;
+    use crate::indexer::node_backed_indexer::chain_tips_for_snapshot;
+
+    let blocks = load_test_vectors().unwrap().blocks;
+    let tip_height = (blocks.len() as u32) - 1;
+    let expected_tip_hash = blocks[tip_height as usize].zebra_block.hash().to_string();
+    let mock = build_mockchain_source(blocks);
+
+    let syncing_snapshot = ChainIndexSnapshot::StillSyncingFinalizedState {
+        validator_finalized_height: crate::Height(tip_height),
+    };
+
+    let tips = chain_tips_for_snapshot(&syncing_snapshot, &mock)
+        .await
+        .expect("the syncing window must proxy the source's chain tips");
+
+    assert_eq!(
+        tips,
+        vec![zaino_fetch::jsonrpsee::response::chain_tips::ChainTip::new(
+            tip_height,
+            expected_tip_hash,
+            0,
+            zaino_fetch::jsonrpsee::response::chain_tips::ChainTipStatus::Active,
+        )]
+    );
+}
+
 /// Dropping the service must not panic on a thread with no Tokio runtime.
 /// `Drop` runs the blocking teardown, which previously called
 /// `Handle::current()` unconditionally; outside a runtime that panics, and a

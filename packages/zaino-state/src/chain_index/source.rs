@@ -169,6 +169,15 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     /// Returns the `getpeerinfo` response.
     fn get_peer_info(&self) -> impl SendFut<BlockchainSourceResult<GetPeerInfo>>;
 
+    /// Returns the validator's `getchaintips` response. Serves as the
+    /// `getchaintips` fallback while the local index is still building its
+    /// finalised state and has no non-finalised snapshot to answer from.
+    fn get_chain_tips(
+        &self,
+    ) -> impl SendFut<
+        BlockchainSourceResult<zaino_fetch::jsonrpsee::response::chain_tips::GetChainTipsResponse>,
+    >;
+
     /// Returns the `getblocksubsidy` response at the given height.
     fn get_block_subsidy(
         &self,

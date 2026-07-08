@@ -452,6 +452,16 @@ impl BlockchainSource for ValidatorConnector {
             .map_err(BlockchainSourceError::unrecoverable)
     }
 
+    async fn get_chain_tips(
+        &self,
+    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::chain_tips::GetChainTipsResponse>
+    {
+        self.json_rpc_connector()
+            .get_chain_tips()
+            .await
+            .map_err(BlockchainSourceError::unrecoverable)
+    }
+
     async fn get_block_subsidy(&self, height: u32) -> BlockchainSourceResult<GetBlockSubsidy> {
         self.json_rpc_connector()
             .get_block_subsidy(height)
