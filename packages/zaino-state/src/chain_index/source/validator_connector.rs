@@ -224,17 +224,6 @@ impl ValidatorConnector {
         Ok((source, info))
     }
 
-    /// Watches the Zebra syncer's chain-tip changes, when this connector owns one.
-    ///
-    /// `Some` for the `State` variant (which drives its own syncer); `None` for the
-    /// JSON-RPC `Fetch` variant, which has no local tip-change stream.
-    pub(crate) fn chain_tip_change(&self) -> Option<zebra_state::ChainTipChange> {
-        match self {
-            ValidatorConnector::State(state) => Some(state.chain_tip_change.clone()),
-            ValidatorConnector::Fetch(_) => None,
-        }
-    }
-
     /// The backing [`ReadStateService`], when this connector is `State`-backed.
     ///
     /// Test-only escape hatch: live tests recompute expected chain data directly off
@@ -288,6 +277,16 @@ fn fetch_pool_treestate_slot(treestate: zebra_rpc::client::Treestate) -> Option<
 }
 
 impl BlockchainSource for ValidatorConnector {
+    /// `Some` for the `State` variant, which drives its own Zebra syncer; the
+    /// JSON-RPC `Fetch` variant has no local tip-change stream and keeps the
+    /// trait's `None` default semantics.
+    fn chain_tip_change(&self) -> Option<zebra_state::ChainTipChange> {
+        match self {
+            ValidatorConnector::State(state) => Some(state.chain_tip_change.clone()),
+            ValidatorConnector::Fetch(_) => None,
+        }
+    }
+
     // ********** Block methods **********
 
     async fn get_block(

@@ -383,7 +383,10 @@ mod zebra {
         #[tokio::test(flavor = "multi_thread")]
         async fn state_service_chaintip_update_subscriber() {
             let services = launch_regtest(true).await;
-            let mut chaintip_subscriber = services.state_subscriber.chaintip_update_subscriber();
+            let mut chaintip_subscriber = services
+                .state_subscriber
+                .chaintip_update_subscriber()
+                .expect("the Direct connection exposes a local tip-change stream");
             services
                 .test_manager
                 .generate_blocks_and_check_each(

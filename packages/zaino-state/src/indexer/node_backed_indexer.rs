@@ -291,24 +291,22 @@ impl ChainTipSubscriber {
     }
 }
 
-/// Methods available only on the production (`ValidatorConnector`-backed) subscriber:
-/// the `Direct` connection owns a Zebra chain-tip stream and `ReadStateService` that the
-/// generic source abstraction does not expose.
-impl NodeBackedIndexerServiceSubscriber<ValidatorConnector> {
-    /// Gets a subscriber to any updates to the latest chain tip.
-    ///
-    /// Only meaningful for the `Direct` connection; the `Rpc` connection has no local
-    /// tip-change stream.
-    pub fn chaintip_update_subscriber(&self) -> ChainTipSubscriber {
-        ChainTipSubscriber {
-            monitor: self
-                .indexer
-                .source()
-                .chain_tip_change()
-                .expect("chaintip_update_subscriber requires the Direct connection"),
-        }
+impl<Source: BlockchainSource> NodeBackedIndexerServiceSubscriber<Source> {
+    /// A subscriber to chain-tip updates, when the backing source exposes a
+    /// local tip-change stream. `Some` only on the `Direct` connection; the
+    /// `Rpc` connection (and any other stream-less source) observes tips by
+    /// polling the validator and yields `None`.
+    pub fn chaintip_update_subscriber(&self) -> Option<ChainTipSubscriber> {
+        Some(ChainTipSubscriber {
+            monitor: self.indexer.source().chain_tip_change()?,
+        })
     }
+}
 
+/// Methods available only on the production (`ValidatorConnector`-backed) subscriber:
+/// the `Direct` connection owns a `ReadStateService` that the generic source
+/// abstraction does not expose.
+impl NodeBackedIndexerServiceSubscriber<ValidatorConnector> {
     /// The backing Zebra [`zebra_state::ReadStateService`] (`Direct` connection only).
     ///
     /// Test-only escape hatch: live tests recompute expected chain data directly off the
