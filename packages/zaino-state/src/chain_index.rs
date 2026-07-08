@@ -986,6 +986,19 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         Ok(())
     }
 
+    /// Synchronous best-effort teardown for contexts that cannot run async
+    /// work (a `Drop` on a current-thread runtime, or on a thread with no
+    /// runtime at all): cancels the sync worker, closes the mempool, and
+    /// releases source-owned background work. The finalised DB's async
+    /// [`shutdown`](Self::shutdown) step is skipped; the DB's own `Drop`
+    /// remains responsible for releasing its resources.
+    pub(crate) fn shutdown_sync_best_effort(&self) {
+        self.cancel_token.cancel();
+        self.status.store(StatusType::Closing);
+        self.mempool.close();
+        self.source.shutdown();
+    }
+
     /// Displays the status of the chain_index
     pub fn status(&self) -> StatusType {
         let finalized_status = self.finalized_db.status();

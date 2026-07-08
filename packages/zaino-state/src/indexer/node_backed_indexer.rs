@@ -116,12 +116,26 @@ impl<Source: BlockchainSource> NodeBackedIndexerService<Source> {
     /// Tears down the indexer (sync loop, finalised DB, mempool, and any source-owned
     /// syncer task) from a synchronous context. Shared by [`ZcashService::close`] and
     /// [`Drop`].
+    ///
+    /// `block_in_place` is only legal on a multi-thread runtime; on a
+    /// current-thread runtime or a thread with no runtime it panics, and a
+    /// panic inside `Drop` during unwind aborts the process. Those contexts
+    /// fall back to the synchronous best-effort teardown, which skips only
+    /// the finalised DB's async shutdown step (the DB's own `Drop` still
+    /// releases its resources).
     fn shutdown_blocking(&self) {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let _ = self.indexer.shutdown().await;
-            });
-        });
+        use tokio::runtime::{Handle, RuntimeFlavor};
+
+        match Handle::try_current() {
+            Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
+                tokio::task::block_in_place(|| {
+                    handle.block_on(async {
+                        let _ = self.indexer.shutdown().await;
+                    });
+                });
+            }
+            _ => self.indexer.shutdown_sync_best_effort(),
+        }
     }
 }
 
@@ -240,6 +254,49 @@ impl<Source: BlockchainSource> NodeBackedIndexerServiceSubscriber<Source> {
     }
 }
 
+/// Placeholder metadata and config for test-only service construction.
+#[cfg(test)]
+fn test_service_parts(network: zaino_common::Network) -> (ServiceMetadata, CommonBackendConfig) {
+    (
+        ServiceMetadata::new(
+            get_build_info("test".to_string()),
+            network.to_zebra_network(),
+            "test-build".to_string(),
+            "test-subversion".to_string(),
+        ),
+        CommonBackendConfig::new(
+            "127.0.0.1:0".to_string(),
+            None,
+            None,
+            None,
+            zaino_common::ServiceConfig::default(),
+            zaino_common::StorageConfig::default(),
+            true,
+            network,
+            None,
+        ),
+    )
+}
+
+#[cfg(test)]
+impl<Source: BlockchainSource> NodeBackedIndexerService<Source> {
+    /// Wraps a chain index in a service for tests, with placeholder
+    /// metadata/config. Lets unit tests exercise the service lifecycle over a
+    /// mock source (no real validator). Production builds go through
+    /// [`ZcashService::spawn`].
+    pub(crate) fn new_for_test(
+        indexer: NodeBackedChainIndex<Source>,
+        network: zaino_common::Network,
+    ) -> Self {
+        let (data, config) = test_service_parts(network);
+        Self {
+            data,
+            config,
+            indexer,
+        }
+    }
+}
+
 #[cfg(test)]
 impl<Source: BlockchainSource> NodeBackedIndexerServiceSubscriber<Source> {
     /// Wraps a chain-index subscriber in a service subscriber for tests, with placeholder
@@ -249,24 +306,10 @@ impl<Source: BlockchainSource> NodeBackedIndexerServiceSubscriber<Source> {
         indexer: NodeBackedChainIndexSubscriber<Source>,
         network: zaino_common::Network,
     ) -> Self {
+        let (data, config) = test_service_parts(network);
         Self {
-            data: ServiceMetadata::new(
-                get_build_info("test".to_string()),
-                network.to_zebra_network(),
-                "test-build".to_string(),
-                "test-subversion".to_string(),
-            ),
-            config: CommonBackendConfig::new(
-                "127.0.0.1:0".to_string(),
-                None,
-                None,
-                None,
-                zaino_common::ServiceConfig::default(),
-                zaino_common::StorageConfig::default(),
-                true,
-                network,
-                None,
-            ),
+            data,
+            config,
             indexer,
         }
     }

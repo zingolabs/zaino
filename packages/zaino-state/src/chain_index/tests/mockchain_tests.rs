@@ -1073,6 +1073,61 @@ async fn node_backed_indexer_service_serves_latest_block() {
     assert_eq!(latest.height, expected_tip as u64);
 }
 
+/// Dropping the service must not panic on a thread with no Tokio runtime.
+/// `Drop` runs the blocking teardown, which previously called
+/// `Handle::current()` unconditionally; outside a runtime that panics, and a
+/// panic inside `Drop` during unwind aborts the process.
+///
+/// multi_thread required: the harness's finalised-state validation uses
+/// `block_in_place`. The drop under test happens on a separate plain thread.
+#[tokio::test(flavor = "multi_thread")]
+async fn service_drop_survives_thread_without_runtime() {
+    use crate::indexer::node_backed_indexer::NodeBackedIndexerService;
+    use zaino_common::{network::ActivationHeights, Network};
+
+    let (_blocks, indexer, _index_reader, _mockchain) =
+        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
+
+    let service = NodeBackedIndexerService::new_for_test(
+        indexer,
+        Network::Regtest(ActivationHeights::default()),
+    );
+
+    std::thread::spawn(move || drop(service))
+        .join()
+        .expect("dropping the service off-runtime must not panic");
+}
+
+/// Dropping the service must not panic on a current-thread Tokio runtime,
+/// where `block_in_place` (the old unconditional teardown entry) aborts.
+///
+/// multi_thread required: the harness's finalised-state validation uses
+/// `block_in_place`. The drop under test happens inside a current-thread
+/// runtime built on a separate thread.
+#[tokio::test(flavor = "multi_thread")]
+async fn service_drop_survives_current_thread_runtime() {
+    use crate::indexer::node_backed_indexer::NodeBackedIndexerService;
+    use zaino_common::{network::ActivationHeights, Network};
+
+    let (_blocks, indexer, _index_reader, _mockchain) =
+        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
+
+    let service = NodeBackedIndexerService::new_for_test(
+        indexer,
+        Network::Regtest(ActivationHeights::default()),
+    );
+
+    std::thread::spawn(move || {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread runtime builds")
+            .block_on(async move { drop(service) });
+    })
+    .join()
+    .expect("dropping the service on a current-thread runtime must not panic");
+}
+
 /// The `Rpc` connection has no local chain-tip-change stream, so requesting a
 /// chain-tip subscriber over such a source must yield `None` rather than
 /// panic. Before this method returned `Option`, it existed only in a
