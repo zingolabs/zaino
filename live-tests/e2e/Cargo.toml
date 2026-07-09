@@ -20,6 +20,9 @@ zcashd_support = [
     "zaino-state/zcashd_support",
     "zaino-fetch/zcashd_support",
     "zainod/zcashd_support",
+    # devtool_zcashd.rs constructs the Zcashd validator directly, so forward
+    # zcash_local_net's opt-in legacy-stack gate here as well.
+    "zcash_local_net/legacy-stack",
 ]
 
 # Single non-default gate for every devtool-incompatible / heavy test (the

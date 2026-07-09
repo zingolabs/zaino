@@ -22,6 +22,9 @@ zcashd_support = [
     "zaino-state/zcashd_support",
     "zaino-serve/zcashd_support",
     "zainod/zcashd_support",
+    # zcash_local_net gates its Zcashd validator behind this opt-in
+    # legacy-stack feature (its docs/adr/0001-excise-legacy-stack.md).
+    "zcash_local_net/legacy-stack",
 ]
 
 # **Experimental and alpha features**

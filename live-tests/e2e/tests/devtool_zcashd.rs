@@ -3,10 +3,11 @@
 //! The zebrad devtool suite (`tests/devtool.rs`) is complete. This isolates the
 //! one remaining alignment for the zcashd matrix (the `json_server` oracle tests
 //! and the zcashd send/query column): launch zcashd at the same activation
-//! heights zebrad uses — `ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS`, which the devtool
-//! wallet's compiled-in `supported_regtest_activation_heights` requires (the 46
-//! zebrad tests prove the wallet accepts them) — rather than zcashd's default
-//! heights (all = 1), which would mismatch the wallet's consensus branch IDs.
+//! heights zebrad uses — `ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS` — rather than
+//! zcashd's default heights (all = 1), so the two matrix columns exercise one
+//! fixture shape. The wallet itself imposes no heights requirement: it derives
+//! its schedule from the running validator (infrastructure ADR 0003), so this
+//! alignment is about matrix parity, not wallet compatibility.
 //!
 //! zcashd mines ORCHARD coinbase to `REG_O_ADDR_FROM_ABANDONART` (the abandon-art
 //! orchard address the devtool faucet owns), so the faucet is funded with no
@@ -30,12 +31,13 @@ use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
 use zebra_rpc::client::GetAddressBalanceRequest;
 use zebra_rpc::methods::GetAddressTxIdsRequest;
 
-/// Launch zcashd (orchard-mining) at the devtool-compatible activation heights
+/// Launch zcashd (orchard-mining) at the zebrad-matrix activation heights
 /// (`ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS`, which the PoC below proves zcashd
-/// accepts and the devtool wallet requires) and build the devtool
-/// faucet/recipient wallets against the resulting Zaino, without mining or
-/// syncing. The zcashd analogue of devtool.rs's `launch_and_build_clients`,
-/// concrete on zcashd (which has no StateService backend).
+/// accepts; the wallet derives its schedule from the validator) and build the
+/// devtool faucet/recipient wallets against the resulting Zaino, without
+/// mining or syncing. The zcashd analogue of devtool.rs's
+/// `launch_and_build_clients`, concrete on zcashd (which has no StateService
+/// backend).
 async fn launch_zcashd_and_build_clients() -> (TestManager<Zcashd, Rpc>, DevtoolClients) {
     let test_manager = TestManager::<Zcashd, Rpc>::launch_mining_to(
         zaino_testutils::SHIELDED_FUNDING_POOL, // ORCHARD
@@ -102,11 +104,11 @@ async fn faucet_receives_zcashd_orchard_reward() {
     test_manager.close().await;
 }
 
-/// Launch zcashd dual fetch services at the devtool-compatible activation
-/// heights (`ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS`, which the PoC above proves
-/// zcashd accepts and the devtool wallet requires) and build the devtool
-/// faucet/recipient wallets against the resulting Zaino — the devtool analogue
-/// of json_server's `create_zcashd_test_manager_and_fetch_services`.
+/// Launch zcashd dual fetch services at the zebrad-matrix activation heights
+/// (`ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS`, which the PoC above proves zcashd
+/// accepts; the wallet derives its schedule from the validator) and build the
+/// devtool faucet/recipient wallets against the resulting Zaino — the devtool
+/// analogue of json_server's `create_zcashd_test_manager_and_fetch_services`.
 async fn create_zcashd_devtool_services() -> (ZcashdDualFetchServices, DevtoolClients) {
     let services = zaino_testutils::launch_zcashd_dual_fetch_services_at(
         zaino_testutils::ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS,
@@ -118,6 +120,7 @@ async fn create_zcashd_devtool_services() -> (ZcashdDualFetchServices, DevtoolCl
             .zaino_grpc_listen_address
             .expect("zaino enabled")
             .port(),
+        &services.test_manager.local_net,
     )
     .await;
     (services, clients)
