@@ -4,12 +4,12 @@ use crate::{
     chain::{error::ParseError, transaction::FullTransaction},
     utils::ParseFromSlice,
 };
-use std::{io::Cursor, sync::Arc};
+use std::sync::Arc;
 use zaino_proto::proto::{
     compact_formats::{ChainMetadata, CompactBlock},
     utils::PoolTypeFilter,
 };
-use zebra_chain::serialization::{ZcashDeserialize as _, ZcashSerialize as _};
+use zebra_chain::serialization::ZcashSerialize as _;
 
 /// Complete block header.
 #[derive(Debug, Clone)]
@@ -100,15 +100,10 @@ impl ParseFromSlice for FullBlock {
         txid: Option<Vec<Vec<u8>>>,
         tx_version: Option<u32>,
     ) -> Result<(&[u8], Self), ParseError> {
-        if tx_version.is_some() {
-            return Err(ParseError::InvalidData(
-                "tx_version must be None for FullBlock::parse_from_slice".to_string(),
-            ));
-        }
+        crate::utils::reject_tx_version(tx_version, "FullBlock")?;
 
-        let mut cursor = Cursor::new(data);
-        let block = zebra_chain::block::Block::zcash_deserialize(&mut cursor)?;
-        let consumed = usize::try_from(cursor.position())?;
+        let (block, consumed) =
+            crate::utils::zcash_deserialize_consumed::<zebra_chain::block::Block>(data)?;
         let txids = txid.unwrap_or_default();
 
         if !txids.is_empty() && txids.len() != block.transactions.len() {

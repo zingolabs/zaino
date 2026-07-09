@@ -1,7 +1,7 @@
 //! Transaction fetching and deserialization functionality.
 
 use crate::{chain::error::ParseError, utils::ParseFromSlice};
-use std::{io::Cursor, sync::Arc};
+use std::sync::Arc;
 use zaino_proto::proto::{
     compact_formats::{
         CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend, CompactTx, CompactTxIn,
@@ -11,7 +11,7 @@ use zaino_proto::proto::{
 };
 use zebra_chain::{
     parameters::{OVERWINTER_VERSION_GROUP_ID, SAPLING_VERSION_GROUP_ID, TX_V5_VERSION_GROUP_ID},
-    serialization::{ZcashDeserialize as _, ZcashSerialize as _},
+    serialization::ZcashSerialize as _,
     transparent,
 };
 
@@ -28,21 +28,57 @@ pub struct FullTransaction {
     tx_id: Vec<u8>,
 }
 
+/// Maps an iterator of shielded-pool actions to (nullifier, cmx,
+/// ephemeral_key, enc_ciphertext) byte tuples. A macro rather than an `fn`
+/// because the orchard and ironwood action types are distinct nominal types
+/// that only share field names, which functions cannot abstract over.
+macro_rules! actions_to_byte_tuples {
+    ($actions:expr) => {
+        $actions
+            .map(|action| {
+                let nullifier: [u8; 32] = action.nullifier.into();
+                let cmx: [u8; 32] = action.cm_x.into();
+                let ephemeral_key: [u8; 32] = (&action.ephemeral_key).into();
+                let enc_ciphertext: [u8; 580] = action.enc_ciphertext.into();
+
+                (
+                    nullifier.to_vec(),
+                    cmx.to_vec(),
+                    ephemeral_key.to_vec(),
+                    enc_ciphertext.to_vec(),
+                )
+            })
+            .collect()
+    };
+}
+
+/// Collects `items()` mapped through `to_compact` when `included`, and the
+/// empty vector otherwise — the shared shape of every per-pool arm of
+/// `to_compact_tx`. `items` is a closure so an excluded pool's data is never
+/// extracted.
+fn compact_pool_items<T, C>(
+    included: bool,
+    items: impl FnOnce() -> Vec<T>,
+    to_compact: impl Fn(T) -> C,
+) -> Vec<C> {
+    if included {
+        items().into_iter().map(to_compact).collect()
+    } else {
+        Vec::new()
+    }
+}
+
 impl ParseFromSlice for FullTransaction {
     fn parse_from_slice(
         data: &[u8],
         txid: Option<Vec<Vec<u8>>>,
         tx_version: Option<u32>,
     ) -> Result<(&[u8], Self), ParseError> {
-        if tx_version.is_some() {
-            return Err(ParseError::InvalidData(
-                "tx_version must be None for FullTransaction::parse_from_slice".to_string(),
-            ));
-        }
+        crate::utils::reject_tx_version(tx_version, "FullTransaction")?;
 
-        let mut cursor = Cursor::new(data);
-        let transaction = zebra_chain::transaction::Transaction::zcash_deserialize(&mut cursor)?;
-        let consumed = usize::try_from(cursor.position())?;
+        let (transaction, consumed) = crate::utils::zcash_deserialize_consumed::<
+            zebra_chain::transaction::Transaction,
+        >(data)?;
         let tx_id = txid
             .and_then(|txids| txids.into_iter().next())
             .unwrap_or_else(|| transaction.hash().0.to_vec());
@@ -206,43 +242,13 @@ impl FullTransaction {
     /// Returns a vec of orchard actions (nullifier, cmx, ephemeral_key, enc_ciphertext) for the transaction.
     #[allow(clippy::complexity)]
     pub fn orchard_actions(&self) -> Vec<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> {
-        self.transaction
-            .orchard_actions()
-            .map(|action| {
-                let nullifier: [u8; 32] = action.nullifier.into();
-                let cmx: [u8; 32] = action.cm_x.into();
-                let ephemeral_key: [u8; 32] = (&action.ephemeral_key).into();
-                let enc_ciphertext: [u8; 580] = action.enc_ciphertext.into();
-
-                (
-                    nullifier.to_vec(),
-                    cmx.to_vec(),
-                    ephemeral_key.to_vec(),
-                    enc_ciphertext.to_vec(),
-                )
-            })
-            .collect()
+        actions_to_byte_tuples!(self.transaction.orchard_actions())
     }
 
     /// Returns a vec of ironwood actions (nullifier, cmx, ephemeral_key, enc_ciphertext) for the transaction.
     #[allow(clippy::complexity)]
     pub fn ironwood_actions(&self) -> Vec<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>)> {
-        self.transaction
-            .ironwood_actions()
-            .map(|action| {
-                let nullifier: [u8; 32] = action.nullifier.into();
-                let cmx: [u8; 32] = action.cm_x.into();
-                let ephemeral_key: [u8; 32] = (&action.ephemeral_key).into();
-                let enc_ciphertext: [u8; 580] = action.enc_ciphertext.into();
-
-                (
-                    nullifier.to_vec(),
-                    cmx.to_vec(),
-                    ephemeral_key.to_vec(),
-                    enc_ciphertext.to_vec(),
-                )
-            })
-            .collect()
+        actions_to_byte_tuples!(self.transaction.ironwood_actions())
     }
 
     /// Returns the orchard anchor of the transaction.
@@ -279,73 +285,56 @@ impl FullTransaction {
         index: Option<u64>,
         pool_types: &PoolTypeFilter,
     ) -> Result<CompactTx, ParseError> {
-        let spends = if pool_types.includes_sapling() {
-            self.shielded_spends()
-                .into_iter()
-                .map(|nf| CompactSaplingSpend { nf })
-                .collect()
-        } else {
-            Vec::new()
+        // Orchard and ironwood actions share the compact form deliberately:
+        // ironwood actions are packed into `CompactOrchardAction`.
+        let compact_orchard_action = |(nullifier, cmx, ephemeral_key, enc_ciphertext): (
+            Vec<u8>,
+            Vec<u8>,
+            Vec<u8>,
+            Vec<u8>,
+        )| CompactOrchardAction {
+            nullifier,
+            cmx,
+            ephemeral_key,
+            ciphertext: enc_ciphertext[..52].to_vec(),
         };
 
-        let outputs = if pool_types.includes_sapling() {
-            self.shielded_outputs()
-                .into_iter()
-                .map(
-                    |(cmu, ephemeral_key, enc_ciphertext)| CompactSaplingOutput {
-                        cmu,
-                        ephemeral_key,
-                        ciphertext: enc_ciphertext[..52].to_vec(),
-                    },
-                )
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let spends = compact_pool_items(
+            pool_types.includes_sapling(),
+            || self.shielded_spends(),
+            |nf| CompactSaplingSpend { nf },
+        );
 
-        let actions = if pool_types.includes_orchard() {
-            self.orchard_actions()
-                .into_iter()
-                .map(
-                    |(nullifier, cmx, ephemeral_key, enc_ciphertext)| CompactOrchardAction {
-                        nullifier,
-                        cmx,
-                        ephemeral_key,
-                        ciphertext: enc_ciphertext[..52].to_vec(),
-                    },
-                )
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let outputs = compact_pool_items(
+            pool_types.includes_sapling(),
+            || self.shielded_outputs(),
+            |(cmu, ephemeral_key, enc_ciphertext)| CompactSaplingOutput {
+                cmu,
+                ephemeral_key,
+                ciphertext: enc_ciphertext[..52].to_vec(),
+            },
+        );
 
-        let ironwood_actions = if pool_types.includes_ironwood() {
-            self.ironwood_actions()
-                .into_iter()
-                .map(
-                    |(nullifier, cmx, ephemeral_key, enc_ciphertext)| CompactOrchardAction {
-                        nullifier,
-                        cmx,
-                        ephemeral_key,
-                        ciphertext: enc_ciphertext[..52].to_vec(),
-                    },
-                )
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let actions = compact_pool_items(
+            pool_types.includes_orchard(),
+            || self.orchard_actions(),
+            compact_orchard_action,
+        );
 
-        let vout = if pool_types.includes_transparent() {
-            self.transparent_outputs()
-                .into_iter()
-                .map(|(value, script_hash)| CompactTxOut {
-                    value,
-                    script_pub_key: script_hash,
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+        let ironwood_actions = compact_pool_items(
+            pool_types.includes_ironwood(),
+            || self.ironwood_actions(),
+            compact_orchard_action,
+        );
+
+        let vout = compact_pool_items(
+            pool_types.includes_transparent(),
+            || self.transparent_outputs(),
+            |(value, script_hash)| CompactTxOut {
+                value,
+                script_pub_key: script_hash,
+            },
+        );
 
         let vin = if pool_types.includes_transparent() {
             self.transaction

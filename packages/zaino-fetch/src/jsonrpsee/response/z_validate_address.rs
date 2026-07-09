@@ -20,7 +20,7 @@ use serde::{
 };
 use serde_json::Value;
 
-use crate::jsonrpsee::connector::{ResponseToError, RpcError};
+use crate::jsonrpsee::connector::ResponseToError;
 
 /// Error type for the `z_validateaddress` RPC.
 #[derive(Debug, thiserror::Error)]
@@ -116,13 +116,7 @@ impl ResponseToError for ZValidateAddressResponse {
     type RpcError = ZValidateAddressError;
 }
 
-impl TryFrom<RpcError> for ZValidateAddressError {
-    type Error = RpcError;
-
-    fn try_from(value: RpcError) -> Result<Self, Self::Error> {
-        Err(value)
-    }
-}
+crate::jsonrpsee::response::impl_rpc_error_passthrough!(ZValidateAddressError);
 
 /// An enum that represents the known JSON schema for the `z_validateaddress` RPC.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -252,13 +246,7 @@ impl ValidZValidateAddress {
 
     /// Returns the address type.
     pub fn address_type(&self) -> ZValidateAddressType {
-        match &self.0 {
-            AddressData::P2pkh { .. } => ZValidateAddressType::P2pkh,
-            AddressData::P2sh { .. } => ZValidateAddressType::P2sh,
-            AddressData::Sprout { .. } => ZValidateAddressType::Sprout,
-            AddressData::Sapling { .. } => ZValidateAddressType::Sapling,
-            AddressData::Unified { .. } => ZValidateAddressType::Unified,
-        }
+        self.0.variant_type()
     }
 
     /// Returns the legacy field for the address type.
@@ -329,22 +317,10 @@ impl ValidZValidateAddress {
     }
 
     fn common(&self) -> &CommonFields {
-        match &self.0 {
-            AddressData::P2pkh { common, .. }
-            | AddressData::P2sh { common, .. }
-            | AddressData::Sprout { common, .. }
-            | AddressData::Sapling { common, .. }
-            | AddressData::Unified { common, .. } => common,
-        }
+        self.0.common()
     }
     fn common_mut(&mut self) -> &mut CommonFields {
-        match &mut self.0 {
-            AddressData::P2pkh { common, .. }
-            | AddressData::P2sh { common, .. }
-            | AddressData::Sprout { common, .. }
-            | AddressData::Sapling { common, .. }
-            | AddressData::Unified { common, .. } => common,
-        }
+        self.0.common_mut()
     }
 
     /// Returns the address data.
@@ -429,6 +405,16 @@ pub enum AddressData {
 
 impl AddressData {
     fn common(&self) -> &CommonFields {
+        match self {
+            AddressData::P2pkh { common, .. }
+            | AddressData::P2sh { common, .. }
+            | AddressData::Sprout { common, .. }
+            | AddressData::Sapling { common, .. }
+            | AddressData::Unified { common, .. } => common,
+        }
+    }
+
+    fn common_mut(&mut self) -> &mut CommonFields {
         match self {
             AddressData::P2pkh { common, .. }
             | AddressData::P2sh { common, .. }

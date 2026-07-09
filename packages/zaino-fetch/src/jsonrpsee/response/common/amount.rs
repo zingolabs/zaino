@@ -133,7 +133,7 @@ impl<'de> Deserialize<'de> for ZecAmount {
 impl Serialize for ZecAmount {
     fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
         // Emit a JSON number in ZEC.
-        let zec = (self.0 as f64) / 100_000_000.0;
+        let zec = (self.0 as f64) / (ZATS_PER_ZEC as f64);
         ser.serialize_f64(zec)
     }
 }
