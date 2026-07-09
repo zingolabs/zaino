@@ -272,9 +272,10 @@ impl ValidatorConnector {
 /// (zaino#1076): the config carries only a network kind, and the runtime
 /// network is constructed here before anything consumes one. On regtest the
 /// schedule is adopted wholesale from the validator's report. On Mainnet and
-/// Testnet the compiled zebra parameters are used, but the validator's
-/// reported schedule is verified against them first, so a validator running
-/// a *configured* testnet (custom activation heights) fails loud here
+/// The Public Testnet the compiled zebra parameters are used, but the
+/// validator's reported schedule is verified against them first, so a
+/// validator reporting custom activation heights under the `PubTestnet`
+/// kind (a regtest net in configured-testnet clothing) fails loud here
 /// instead of silently drifting from the index. There is no fallback: a
 /// silently wrong schedule is the failure mode this removes.
 ///
@@ -293,7 +294,7 @@ async fn adopt_network(
         ))
     })?;
 
-    // Shared by the Mainnet/Testnet arms: the compiled network is only
+    // Shared by the Mainnet / The Public Testnet arms: the compiled network is only
     // trusted after the validator's report agrees with it.
     let verified = |network: zebra_chain::parameters::Network| {
         verify_reported_upgrades(&network, &blockchain_info.upgrades).map_err(|reason| {
@@ -307,7 +308,7 @@ async fn adopt_network(
 
     match common.network {
         zaino_common::Network::Mainnet => verified(zebra_chain::parameters::Network::Mainnet),
-        zaino_common::Network::Testnet => {
+        zaino_common::Network::PubTestnet => {
             verified(zebra_chain::parameters::Network::new_default_testnet())
         }
         zaino_common::Network::Regtest => {
@@ -358,7 +359,8 @@ fn verify_reported_upgrades(
 /// runtime network here at first contact, before anything consumes a
 /// `Network` (zaino#1076). An upgrade absent from the validator's map is
 /// never-activated — nothing is backfilled from defaults. Mainnet and
-/// Testnet use zebra's compiled parameters and never take this path.
+/// The Public Testnet use zebra's compiled parameters and never take this
+/// path.
 ///
 /// `before_overwinter` is always `None` here: the map is keyed by consensus
 /// branch ID, which `BeforeOverwinter` does not have, so it can never appear
@@ -2946,7 +2948,7 @@ mod verify_reported_upgrades {
     }
 
     /// A reported height disagreeing with the compiled schedule fails loud —
-    /// the configured-testnet / wrong-network drift class.
+    /// the wrong-schedule / wrong-network drift class.
     #[test]
     fn rejects_a_mismatched_height() {
         let upgrades = upgrades_map(

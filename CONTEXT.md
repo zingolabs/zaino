@@ -32,13 +32,14 @@ _Avoid_: stale version, forgotten bump
 
 ### Chains and networks
 
-**Testnet**:
-The public Zcash test network, and only that. Testnet regimes are
+**The Public Testnet**:
+The public Zcash test network, and only that. Its regimes are
 non-hermetic — state is shared with other participants, and an epoch
 the public chain has left (e.g. pre-NU6.3 once NU6.3 activates there)
-cannot be re-entered.
-_Avoid_: "testnet" for any locally-launched chain, even one launched
-under a testnet network kind
+cannot be re-entered. Always this exact phrase in prose; identifiers
+use `the_pub_testnet` and types use `PubTestnet`.
+_Avoid_: bare "Testnet"/"testnet", and especially "testnet" for any
+locally-launched chain, even one launched under a testnet network kind
 
 **Regtest net**:
 A hermetic, locally-launched chain whose activation heights the

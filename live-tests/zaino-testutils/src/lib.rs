@@ -473,8 +473,8 @@ pub static ZEBRAD_CHAIN_CACHE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
     Some(workspace_root_path.join("live-tests/chain_cache/client_rpc_tests_large"))
 });
 
-/// Path for the Zebra chain cache in the user's home directory.
-pub static ZEBRAD_TESTNET_CACHE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
+/// Path for the Zebra chain cache of The Public Testnet in the user's home directory.
+pub static ZEBRAD_THE_PUB_TESTNET_CACHE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
     let home_path = PathBuf::from(std::env::var("HOME").unwrap());
     Some(home_path.join(".cache/zebra"))
 });
@@ -736,7 +736,7 @@ where
         // that adoption.
         let zaino_network_kind = match network_kind {
             NetworkKind::Mainnet => Network::Mainnet,
-            NetworkKind::Testnet => Network::Testnet,
+            NetworkKind::Testnet => Network::PubTestnet,
             NetworkKind::Regtest => Network::Regtest,
         };
 
@@ -1159,7 +1159,7 @@ pub async fn launch_state_and_fetch_services_mining_to<V: ValidatorExt>(
         Some(NetworkKind::Testnet) => {
             println!("Waiting for validator to spawn..");
             tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
-            Network::Testnet
+            Network::PubTestnet
         }
         // The kind suffices: zainod adopts the schedule from the validator
         // at spawn (zaino#1076).
