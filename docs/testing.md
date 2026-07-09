@@ -26,14 +26,14 @@ The `makers` tasks below build and run the test suites inside a **podman**
 container, so you don't need the validator binaries on your host `$PATH`. The
 container image is built or pulled automatically on first run.
 
-The single front door is `makers test [SET]`, where `SET` defaults to `package`:
+The single front door is `makers test [SET]`, where `SET` defaults to `packages`:
 
-- `makers test` (or `makers test package`) — the **package** set: the
+- `makers test` (or `makers test packages`) — the **packages** set: the
   `packages/*` production-crate tests that need no live validator.
 - `makers test e2e` / `makers test clientless` — one live partition.
 - `makers test live` — both live partitions (`clientless` then `e2e`) against a
   live validator, with a combined pass/fail summary.
-- `makers test all` — the whole suite: package then live.
+- `makers test all` — the whole suite: packages then live.
 
 (`container-test`, `live-clientless`, and `live-e2e` are the internal engines
 the `test` front door delegates to; invoke them directly only when you need to

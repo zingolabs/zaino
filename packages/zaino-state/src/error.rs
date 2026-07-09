@@ -10,11 +10,11 @@ use std::{any::type_name, fmt::Display};
 use zaino_fetch::jsonrpsee::connector::RpcRequestError;
 use zaino_proto::proto::utils::GetBlockRangeError;
 
-/// Errors related to the `StateService`.
-// #[deprecated]
+/// Errors returned by the [`NodeBackedIndexerService`](crate::NodeBackedIndexerService)
+/// subscriber's `ZcashIndexer` / `LightWalletIndexer` methods.
 #[derive(Debug, thiserror::Error)]
 #[allow(clippy::result_large_err)]
-pub enum StateServiceError {
+pub enum NodeBackedIndexerServiceError {
     /// Critical Errors, Restart Zaino.
     #[error("Critical error: {0}")]
     Critical(String),
@@ -88,7 +88,7 @@ pub enum StateServiceError {
     UnavailableNotSyncedEnough,
 }
 
-impl From<GetBlockRangeError> for StateServiceError {
+impl From<GetBlockRangeError> for NodeBackedIndexerServiceError {
     fn from(value: GetBlockRangeError) -> Self {
         match value {
             GetBlockRangeError::StartHeightOutOfRange => {
@@ -115,55 +115,59 @@ impl From<GetBlockRangeError> for StateServiceError {
 }
 
 #[allow(deprecated)]
-impl From<StateServiceError> for tonic::Status {
-    fn from(error: StateServiceError) -> Self {
+impl From<NodeBackedIndexerServiceError> for tonic::Status {
+    fn from(error: NodeBackedIndexerServiceError) -> Self {
         match error {
-            StateServiceError::Critical(message) => tonic::Status::internal(message),
-            StateServiceError::Custom(message) => tonic::Status::internal(message),
-            StateServiceError::JoinError(err) => {
+            NodeBackedIndexerServiceError::Critical(message) => tonic::Status::internal(message),
+            NodeBackedIndexerServiceError::Custom(message) => tonic::Status::internal(message),
+            NodeBackedIndexerServiceError::JoinError(err) => {
                 tonic::Status::internal(format!("Join error: {err}"))
             }
-            StateServiceError::JsonRpcConnectorError(err) => {
+            NodeBackedIndexerServiceError::JsonRpcConnectorError(err) => {
                 tonic::Status::internal(format!("JsonRpcConnector error: {err}"))
             }
-            StateServiceError::RpcError(err) => {
+            NodeBackedIndexerServiceError::RpcError(err) => {
                 tonic::Status::internal(format!("RPC error: {err:?}"))
             }
-            StateServiceError::ChainIndexError(err) => match err.kind {
+            NodeBackedIndexerServiceError::ChainIndexError(err) => match err.kind {
                 ChainIndexErrorKind::InternalServerError => tonic::Status::internal(err.message),
                 ChainIndexErrorKind::InvalidSnapshot => {
                     tonic::Status::failed_precondition(err.message)
                 }
             },
-            StateServiceError::BlockCacheError(err) => {
+            NodeBackedIndexerServiceError::BlockCacheError(err) => {
                 tonic::Status::internal(format!("BlockCache error: {err:?}"))
             }
-            StateServiceError::MempoolError(err) => {
+            NodeBackedIndexerServiceError::MempoolError(err) => {
                 tonic::Status::internal(format!("Mempool error: {err:?}"))
             }
-            StateServiceError::TonicStatusError(err) => err,
-            StateServiceError::SerializationError(err) => {
+            NodeBackedIndexerServiceError::TonicStatusError(err) => err,
+            NodeBackedIndexerServiceError::SerializationError(err) => {
                 tonic::Status::internal(format!("Serialization error: {err}"))
             }
-            StateServiceError::TryFromIntError(err) => {
+            NodeBackedIndexerServiceError::TryFromIntError(err) => {
                 tonic::Status::internal(format!("Integer conversion error: {err}"))
             }
-            StateServiceError::IoError(err) => tonic::Status::internal(format!("IO error: {err}")),
-            StateServiceError::Generic(err) => {
+            NodeBackedIndexerServiceError::IoError(err) => {
+                tonic::Status::internal(format!("IO error: {err}"))
+            }
+            NodeBackedIndexerServiceError::Generic(err) => {
                 tonic::Status::internal(format!("Generic error: {err}"))
             }
-            ref err @ StateServiceError::ZebradVersionMismatch { .. } => {
+            ref err @ NodeBackedIndexerServiceError::ZebradVersionMismatch { .. } => {
                 tonic::Status::internal(err.to_string())
             }
-            StateServiceError::UnhandledRpcError(e) => tonic::Status::internal(e.to_string()),
-            StateServiceError::UnavailableNotSyncedEnough => {
+            NodeBackedIndexerServiceError::UnhandledRpcError(e) => {
+                tonic::Status::internal(e.to_string())
+            }
+            NodeBackedIndexerServiceError::UnavailableNotSyncedEnough => {
                 tonic::Status::failed_precondition("zaino not yet synced".to_string())
             }
         }
     }
 }
 
-impl<T: ToString> From<RpcRequestError<T>> for StateServiceError {
+impl<T: ToString> From<RpcRequestError<T>> for NodeBackedIndexerServiceError {
     fn from(value: RpcRequestError<T>) -> Self {
         match value {
             RpcRequestError::Transport(transport_error) => {
@@ -180,122 +184,6 @@ impl<T: ToString> From<RpcRequestError<T>> for StateServiceError {
                 Self::Custom("Server queue full. Handling for this not yet implemented".to_string())
             }
             RpcRequestError::UnexpectedErrorResponse(error) => Self::Custom(format!("{error}")),
-        }
-    }
-}
-
-/// Errors related to the `FetchService`.
-#[deprecated]
-#[derive(Debug, thiserror::Error)]
-pub enum FetchServiceError {
-    /// Critical Errors, Restart Zaino.
-    #[error("Critical error: {0}")]
-    Critical(String),
-
-    /// Error from JsonRpcConnector.
-    #[error("JsonRpcConnector error: {0}")]
-    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::TransportError),
-
-    /// Chain index error.
-    #[error("Chain index error: {0}")]
-    ChainIndexError(#[from] ChainIndexError),
-
-    /// RPC error in compatibility with zcashd.
-    #[error("RPC error: {0:?}")]
-    RpcError(#[from] zaino_fetch::jsonrpsee::connector::RpcError),
-
-    /// Tonic gRPC error.
-    #[error("Tonic status error: {0}")]
-    TonicStatusError(#[from] tonic::Status),
-
-    /// Serialization error.
-    #[error("Serialization error: {0}")]
-    SerializationError(#[from] zebra_chain::serialization::SerializationError),
-    #[error("Zaino has not synced high enough to serve this data")]
-    /// Zaino has not yet synced.
-    UnavailableNotSyncedEnough,
-}
-
-impl From<FetchServiceError> for tonic::Status {
-    fn from(error: FetchServiceError) -> Self {
-        match error {
-            FetchServiceError::Critical(message) => tonic::Status::internal(message),
-            FetchServiceError::JsonRpcConnectorError(err) => {
-                tonic::Status::internal(format!("JsonRpcConnector error: {err}"))
-            }
-            FetchServiceError::ChainIndexError(err) => match err.kind {
-                ChainIndexErrorKind::InternalServerError => tonic::Status::internal(err.message),
-                ChainIndexErrorKind::InvalidSnapshot => {
-                    tonic::Status::failed_precondition(err.message)
-                }
-            },
-            FetchServiceError::RpcError(err) => {
-                tonic::Status::internal(format!("RPC error: {err:?}"))
-            }
-            FetchServiceError::TonicStatusError(err) => err,
-            FetchServiceError::SerializationError(err) => {
-                tonic::Status::internal(format!("Serialization error: {err}"))
-            }
-            FetchServiceError::UnavailableNotSyncedEnough => {
-                tonic::Status::failed_precondition("zaino not yet synced".to_string())
-            }
-        }
-    }
-}
-
-impl<T: ToString> From<RpcRequestError<T>> for FetchServiceError {
-    fn from(value: RpcRequestError<T>) -> Self {
-        match value {
-            RpcRequestError::Transport(transport_error) => {
-                FetchServiceError::JsonRpcConnectorError(transport_error)
-            }
-            RpcRequestError::JsonRpc(error) => {
-                FetchServiceError::Critical(format!("argument failed to serialze: {error}"))
-            }
-            RpcRequestError::InternalUnrecoverable(e) => {
-                FetchServiceError::Critical(format!("Internal unrecoverable error: {e}"))
-            }
-            RpcRequestError::ServerWorkQueueFull => FetchServiceError::Critical(
-                "Server queue full. Handling for this not yet implemented".to_string(),
-            ),
-            RpcRequestError::Method(e) => FetchServiceError::Critical(format!(
-                "unhandled rpc-specific {} error: {}",
-                type_name::<T>(),
-                e.to_string()
-            )),
-            RpcRequestError::UnexpectedErrorResponse(error) => {
-                FetchServiceError::Critical(format!(
-                    "unhandled rpc-specific {} error: {}",
-                    type_name::<T>(),
-                    error
-                ))
-            }
-        }
-    }
-}
-
-impl From<GetBlockRangeError> for FetchServiceError {
-    fn from(value: GetBlockRangeError) -> Self {
-        match value {
-            GetBlockRangeError::StartHeightOutOfRange => {
-                FetchServiceError::TonicStatusError(tonic::Status::out_of_range(
-                    "Error: Start height out of range. Failed to convert to u32.",
-                ))
-            }
-            GetBlockRangeError::NoStartHeightProvided => FetchServiceError::TonicStatusError(
-                tonic::Status::out_of_range("Error: No start height given"),
-            ),
-            GetBlockRangeError::EndHeightOutOfRange => {
-                FetchServiceError::TonicStatusError(tonic::Status::out_of_range(
-                    "Error: End height out of range. Failed to convert to u32.",
-                ))
-            }
-            GetBlockRangeError::NoEndHeightProvided => FetchServiceError::TonicStatusError(
-                tonic::Status::out_of_range("Error: No end height given."),
-            ),
-            GetBlockRangeError::PoolTypeArgumentError(_) => FetchServiceError::TonicStatusError(
-                tonic::Status::invalid_argument("Error: invalid pool type"),
-            ),
         }
     }
 }
@@ -619,6 +507,18 @@ impl ChainIndexError {
             kind: ChainIndexErrorKind::InternalServerError,
             message: message.into(),
             source: None,
+        }
+    }
+
+    /// Constructs an `InternalServerError`-kind error from a typed error,
+    /// preserving it as `source` so zaino-serve's RPC-error-code recovery
+    /// walks can downcast to it (e.g. the legacy `-8` code carried by an
+    /// [`RpcError`](zaino_fetch::jsonrpsee::connector::RpcError)).
+    pub(crate) fn internal_from(error: impl std::error::Error + Send + Sync + 'static) -> Self {
+        Self {
+            kind: ChainIndexErrorKind::InternalServerError,
+            message: error.to_string(),
+            source: Some(Box::new(error)),
         }
     }
 

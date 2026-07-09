@@ -11,10 +11,9 @@
 use zaino_common::network::ActivationHeights;
 use zaino_fetch::jsonrpsee::response::GetBlockResponse;
 #[allow(deprecated)]
-use zaino_state::FetchService;
 use zaino_state::ZcashIndexer as _;
 use zaino_testutils::{
-    MinerPool, TestManager, ValidatorKind, NU6_3_ACTIVE_ACTIVATION_HEIGHTS,
+    MinerPool, Rpc, TestManager, ValidatorKind, NU6_3_ACTIVE_ACTIVATION_HEIGHTS,
     NU6_3_TRANSITION_BOUNDARY, ORCHARD_ONLY_ACTIVATION_HEIGHTS,
     ORCHARD_THEN_IRONWOOD_ACTIVATION_HEIGHTS,
 };
@@ -25,7 +24,7 @@ use zebra_chain::serialization::ZcashDeserialize as _;
 #[allow(deprecated)]
 #[tokio::test(flavor = "multi_thread")]
 async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() {
-    let mut test_manager = TestManager::<Zebrad, FetchService>::launch_mining_to(
+    let mut test_manager = TestManager::<Zebrad, Rpc>::launch_mining_to(
         // Shielded mining: from NU6.3 an orchard-receiver coinbase is built as Ironwood
         // actions (the coinbase's Orchard component must be empty from NU6.3), so every
         // generated block carries ironwood data for the walk to check. A transparent
@@ -239,7 +238,7 @@ async fn assert_coinbase_routing(
     expected_era: impl Fn(u64) -> CoinbaseEra,
 ) {
     #[allow(deprecated)]
-    let mut test_manager = TestManager::<Zebrad, FetchService>::launch_mining_to(
+    let mut test_manager = TestManager::<Zebrad, Rpc>::launch_mining_to(
         MinerPool::Orchard,
         &ValidatorKind::Zebrad,
         None,
