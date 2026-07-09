@@ -179,13 +179,14 @@ impl ValidatorConnector {
                         common.validator_rpc_address
                     ))
                 })?;
-                let heights = activation_heights_from_upgrades(&blockchain_info.upgrades)
-                    .map_err(|reason| {
+                let heights = activation_heights_from_upgrades(&blockchain_info.upgrades).map_err(
+                    |reason| {
                         BlockchainSourceError::Unrecoverable(format!(
                             "cannot adopt activation heights from the validator at {}: {reason}",
                             common.validator_rpc_address
                         ))
-                    })?;
+                    },
+                )?;
                 info!(?heights, "Adopted activation heights from the validator");
                 heights.to_regtest_network()
             }

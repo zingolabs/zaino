@@ -47,10 +47,10 @@
 //! in `TEST_BINARIES_DIR`/`PATH`, alongside the usual validator binaries.
 
 use e2e::devtool::DevtoolClients;
-use zaino_state::{LightWalletIndexer, ZcashIndexer, ZcashService};
+use zaino_state::ZcashIndexer;
 use zaino_testutils::{
-    all_pools_i32, collect_block_range, PollableTip, TestManager, TestService, ValidatorKind,
-    NU6_3_TRANSITION_BOUNDARY, ORCHARD_THEN_IRONWOOD_ACTIVATION_HEIGHTS,
+    all_pools_i32, collect_block_range, PollableTip, TestManager, ValidatorConnectionMarker,
+    ValidatorKind, NU6_3_TRANSITION_BOUNDARY, ORCHARD_THEN_IRONWOOD_ACTIVATION_HEIGHTS,
 };
 use zainodlib::error::IndexerError;
 use zcash_local_net::validator::zebrad::Zebrad;
@@ -67,9 +67,7 @@ use zcash_local_net::validator::zebrad::Zebrad;
 async fn launch_transition_chain_and_fund_faucet<Service>(
 ) -> (TestManager<Zebrad, Service>, DevtoolClients)
 where
-    Service: TestService,
-    IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
-    <Service as ZcashService>::Subscriber: PollableTip,
+    Service: ValidatorConnectionMarker,
 {
     let test_manager = TestManager::<Zebrad, Service>::launch_mining_to(
         zaino_testutils::SHIELDED_FUNDING_POOL,
@@ -139,9 +137,7 @@ where
 /// `devtool.rs::send_to_pool(Ironwood)`.
 async fn unified_receipt_lands_in_orchard_before_boundary<Service>()
 where
-    Service: TestService,
-    IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
-    <Service as ZcashService>::Subscriber: PollableTip,
+    Service: ValidatorConnectionMarker,
 {
     let (mut test_manager, mut clients) =
         launch_transition_chain_and_fund_faucet::<Service>().await;
@@ -185,9 +181,7 @@ where
 /// when change returns to the spent note's address.
 async fn orchard_note_spends_to_ironwood_across_boundary<Service>()
 where
-    Service: TestService,
-    IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
-    <Service as ZcashService>::Subscriber: PollableTip,
+    Service: ValidatorConnectionMarker,
 {
     let (mut test_manager, mut clients) =
         launch_transition_chain_and_fund_faucet::<Service>().await;
@@ -308,9 +302,7 @@ where
 /// block is mined) — a migration transaction in the activation block.
 async fn receipts_flip_pools_exactly_at_the_boundary<Service>()
 where
-    Service: TestService,
-    IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
-    <Service as ZcashService>::Subscriber: PollableTip + LightWalletIndexer,
+    Service: ValidatorConnectionMarker,
 {
     let (mut test_manager, mut clients) =
         launch_transition_chain_and_fund_faucet::<Service>().await;
@@ -396,9 +388,7 @@ where
 /// pool exactly empty — the era-mirror of the Ironwood-era shield cell.
 async fn shield_deposits_to_orchard_before_boundary<Service>()
 where
-    Service: TestService,
-    IndexerError: From<<<Service as ZcashService>::Subscriber as ZcashIndexer>::Error>,
-    <Service as ZcashService>::Subscriber: PollableTip,
+    Service: ValidatorConnectionMarker,
 {
     let (mut test_manager, mut clients) =
         launch_transition_chain_and_fund_faucet::<Service>().await;
@@ -434,66 +424,66 @@ mod zebrad {
     // turbofish use sites below, so the allow covers the whole module.
     #[allow(deprecated)]
     mod fetch_service {
-        use zaino_state::FetchService;
+        use zaino_testutils::Rpc;
 
         /// multi_thread required: the test manager spawns the validator and
         /// indexer services.
         #[tokio::test(flavor = "multi_thread")]
         async fn unified_receipt_lands_in_orchard_before_boundary() {
-            crate::unified_receipt_lands_in_orchard_before_boundary::<FetchService>().await;
+            crate::unified_receipt_lands_in_orchard_before_boundary::<Rpc>().await;
         }
 
         /// multi_thread required: the test manager spawns the validator and
         /// indexer services.
         #[tokio::test(flavor = "multi_thread")]
         async fn orchard_note_spends_to_ironwood_across_boundary() {
-            crate::orchard_note_spends_to_ironwood_across_boundary::<FetchService>().await;
+            crate::orchard_note_spends_to_ironwood_across_boundary::<Rpc>().await;
         }
 
         /// multi_thread required: the test manager spawns the validator and
         /// indexer services.
         #[tokio::test(flavor = "multi_thread")]
         async fn receipts_flip_pools_exactly_at_the_boundary() {
-            crate::receipts_flip_pools_exactly_at_the_boundary::<FetchService>().await;
+            crate::receipts_flip_pools_exactly_at_the_boundary::<Rpc>().await;
         }
 
         /// multi_thread required: the test manager spawns the validator and
         /// indexer services.
         #[tokio::test(flavor = "multi_thread")]
         async fn shield_deposits_to_orchard_before_boundary() {
-            crate::shield_deposits_to_orchard_before_boundary::<FetchService>().await;
+            crate::shield_deposits_to_orchard_before_boundary::<Rpc>().await;
         }
     }
 
     mod state_service {
-        use zaino_state::StateService;
+        use zaino_testutils::Direct;
 
         /// multi_thread required: the test manager spawns the validator and
         /// indexer services.
         #[tokio::test(flavor = "multi_thread")]
         async fn unified_receipt_lands_in_orchard_before_boundary() {
-            crate::unified_receipt_lands_in_orchard_before_boundary::<StateService>().await;
+            crate::unified_receipt_lands_in_orchard_before_boundary::<Direct>().await;
         }
 
         /// multi_thread required: the test manager spawns the validator and
         /// indexer services.
         #[tokio::test(flavor = "multi_thread")]
         async fn orchard_note_spends_to_ironwood_across_boundary() {
-            crate::orchard_note_spends_to_ironwood_across_boundary::<StateService>().await;
+            crate::orchard_note_spends_to_ironwood_across_boundary::<Direct>().await;
         }
 
         /// multi_thread required: the test manager spawns the validator and
         /// indexer services.
         #[tokio::test(flavor = "multi_thread")]
         async fn receipts_flip_pools_exactly_at_the_boundary() {
-            crate::receipts_flip_pools_exactly_at_the_boundary::<StateService>().await;
+            crate::receipts_flip_pools_exactly_at_the_boundary::<Direct>().await;
         }
 
         /// multi_thread required: the test manager spawns the validator and
         /// indexer services.
         #[tokio::test(flavor = "multi_thread")]
         async fn shield_deposits_to_orchard_before_boundary() {
-            crate::shield_deposits_to_orchard_before_boundary::<StateService>().await;
+            crate::shield_deposits_to_orchard_before_boundary::<Direct>().await;
         }
     }
 }

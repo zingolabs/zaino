@@ -22,9 +22,9 @@
 //!    The mapping from that shape to adopted heights is unit-tested next to
 //!    `activation_heights_from_upgrades` in zaino-state.
 
-#[allow(deprecated)]
-use zaino_state::FetchService;
 use zaino_state::ZcashIndexer as _;
+#[allow(deprecated)]
+use zaino_testutils::Rpc;
 use zaino_testutils::{
     all_pools_i32, collect_block_range, MinerPool, TestManager, ValidatorKind,
     NU6_3_TRANSITION_BOUNDARY, ORCHARD_THEN_IRONWOOD_ACTIVATION_HEIGHTS,
@@ -37,14 +37,14 @@ use zcash_local_net::validator::zebrad::Zebrad;
 /// placeholder (see `launch_mining_to`), so the launch itself is the
 /// deliberate config/validator misalignment under test.
 #[allow(deprecated)]
-async fn launch_transition_validator() -> TestManager<Zebrad, FetchService> {
+async fn launch_transition_validator() -> TestManager<Zebrad, Rpc> {
     assert_ne!(
         ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS, ORCHARD_THEN_IRONWOOD_ACTIVATION_HEIGHTS,
         "premise: zainod's config placeholder must differ from the fixture \
          schedule, or this proves nothing"
     );
 
-    TestManager::<Zebrad, FetchService>::launch_mining_to(
+    TestManager::<Zebrad, Rpc>::launch_mining_to(
         MinerPool::Orchard,
         &ValidatorKind::Zebrad,
         None,

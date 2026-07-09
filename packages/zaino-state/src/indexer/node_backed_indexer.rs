@@ -62,8 +62,8 @@ use crate::{
         types,
     },
     config::{
-        ChainIndexConfig, CommonBackendConfig, DonationAddress,
-        NodeBackedIndexerServiceConfig, ValidatorConnectionType,
+        ChainIndexConfig, CommonBackendConfig, DonationAddress, NodeBackedIndexerServiceConfig,
+        ValidatorConnectionType,
     },
     error::NodeBackedIndexerServiceError,
     indexer::{
