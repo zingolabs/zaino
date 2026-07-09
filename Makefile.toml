@@ -197,7 +197,7 @@ case "$set" in
     # invoked directly rather than through the `live` summary runner, which
     # forwards no nextest args. Run every set even if an earlier one fails,
     # as in `all`.
-    ironwood_filter='binary(ironwood_activation) | binary(testnet_ironwood_boundary) | test(ironwood)'
+    ironwood_filter='binary(ironwood_activation) | binary(the_pub_testnet_ironwood_boundary) | test(ironwood)'
     rc=0
     makers container-test -E "$ironwood_filter" "$@" || rc=1
     makers live-clientless -E "$ironwood_filter" "$@" || rc=1
