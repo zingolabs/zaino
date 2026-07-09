@@ -606,7 +606,7 @@ impl DbV1 {
     /// migrations have finished (the validator reads tables a migration populates). Takes `&self`
     /// (the join handle lives behind a `Mutex`) so it can be driven through the shared
     /// `Arc<FinalisedSource>` the router holds after spawn.
-    pub(crate) fn start_validator(&self) {
+    pub(super) fn start_validator(&self) {
         // Clone everything the task needs so we can move it into the async block.
         let zaino_db = self.detached_handle();
 
@@ -852,7 +852,7 @@ impl DbV1 {
 
     /// Provides access to the (v1.3.0) `ironwood` table, required for Migration1_2_1To1_3_0 to
     /// backfill ironwood rows for post-NU6.3 blocks from validator-fetched block data.
-    pub(crate) fn ironwood_db(&self) -> Database {
+    pub(super) fn ironwood_db(&self) -> Database {
         self.ironwood
     }
 

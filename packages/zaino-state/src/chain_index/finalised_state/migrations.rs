@@ -491,6 +491,34 @@ impl<T: BlockchainSource> Migration<T> for Migration1_0_0To1_1_0 {
 /// - No shadow database.
 struct Migration1_1_0To1_2_0;
 
+/// Writes `value` under `key` with `NO_OVERWRITE`, tolerating an existing byte-identical row.
+///
+/// Migrations use this to stay idempotent on crash-resume: a resumed pass may revisit rows it has
+/// already committed, and each such row must match the rebuilt bytes exactly. Any difference —
+/// a conflicting rebuild or a corrupt existing row — aborts the migration with the message
+/// `describe` produces. `describe` runs only on that error path, so the per-row success path
+/// allocates nothing.
+fn put_idempotent(
+    txn: &mut lmdb::RwTransaction<'_>,
+    db: lmdb::Database,
+    key: &[u8],
+    value: &[u8],
+    describe: impl FnOnce() -> String,
+) -> Result<(), FinalisedStateError> {
+    match txn.put(db, &key, &value, WriteFlags::NO_OVERWRITE) {
+        Ok(()) => Ok(()),
+        Err(lmdb::Error::KeyExist) => {
+            let existing = txn.get(db, &key).map_err(FinalisedStateError::LmdbError)?;
+            if existing == value {
+                Ok(())
+            } else {
+                Err(FinalisedStateError::Custom(describe()))
+            }
+        }
+        Err(error) => Err(FinalisedStateError::LmdbError(error)),
+    }
+}
+
 /// Flushes a buffered batch of `spent` index entries in sorted key order, then commits them
 /// together with the Stage B progress watermark and fsyncs.
 ///
@@ -511,26 +539,12 @@ fn flush_migration_spent_batch(
     let mut txn = env.begin_rw_txn()?;
     for (outpoint_bytes, tx_location) in buffer.iter() {
         let entry_bytes = StoredEntryFixed::new(outpoint_bytes, *tx_location).to_bytes()?;
-        match txn.put(
-            spent_db,
-            outpoint_bytes,
-            &entry_bytes,
-            WriteFlags::NO_OVERWRITE,
-        ) {
-            Ok(()) => {}
-            Err(lmdb::Error::KeyExist) => {
-                let existing = txn
-                    .get(spent_db, outpoint_bytes)
-                    .map_err(FinalisedStateError::LmdbError)?;
-                if existing != entry_bytes {
-                    return Err(FinalisedStateError::Custom(format!(
-                        "conflicting existing spent entry during batched migration for outpoint {}",
-                        hex::encode(outpoint_bytes)
-                    )));
-                }
-            }
-            Err(error) => return Err(FinalisedStateError::LmdbError(error)),
-        }
+        put_idempotent(&mut txn, spent_db, outpoint_bytes, &entry_bytes, || {
+            format!(
+                "conflicting existing spent entry during batched migration for outpoint {}",
+                hex::encode(outpoint_bytes)
+            )
+        })?;
     }
 
     let progress = StoredEntryFixed::new(progress_key, up_to_height + 1);
@@ -689,42 +703,20 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
                         let entry_bytes =
                             StoredEntryFixed::new(txid_bytes, *tx_location).to_bytes()?;
 
-                        match txn.put(
+                        // Idempotent on resume: an existing entry must match byte-for-byte, which
+                        // also rejects a corrupt existing row (its checksum bytes would differ).
+                        put_idempotent(
+                            &mut txn,
                             txid_location_db,
                             txid_bytes,
                             &entry_bytes,
-                            WriteFlags::NO_OVERWRITE,
-                        ) {
-                            Ok(()) => {}
-
-                            // Idempotent on resume: an existing entry must match exactly.
-                            Err(lmdb::Error::KeyExist) => {
-                                let existing_bytes = txn
-                                    .get(txid_location_db, txid_bytes)
-                                    .map_err(FinalisedStateError::LmdbError)?;
-                                let existing_entry =
-                                    StoredEntryFixed::<TxLocation>::from_bytes(existing_bytes)
-                                        .map_err(|error| {
-                                            FinalisedStateError::Custom(format!(
-                                                "corrupt existing txid_location entry: {error}"
-                                            ))
-                                        })?;
-                                if !existing_entry.verify(txid_bytes) {
-                                    return Err(FinalisedStateError::Custom(
-                                        "existing txid_location entry checksum mismatch"
-                                            .to_string(),
-                                    ));
-                                }
-                                if existing_entry.inner() != tx_location {
-                                    return Err(FinalisedStateError::Custom(format!(
-                                        "conflicting txid_location entry at height {}",
-                                        height.0
-                                    )));
-                                }
-                            }
-
-                            Err(error) => return Err(FinalisedStateError::LmdbError(error)),
-                        }
+                            || {
+                                format!(
+                                "conflicting or corrupt existing txid_location entry at height {}",
+                                height.0
+                            )
+                            },
+                        )?;
                     }
 
                     let progress =
@@ -1069,9 +1061,8 @@ impl<T: BlockchainSource> Migration<T> for Migration1_2_1To1_3_0 {
 
         use crate::chain_index::finalised_state::{
             build_indexed_block_from_source,
-            finalised_source::v1::write_core::build_block_ironwood_entry,
+            finalised_source::v1::write_core::build_block_ironwood_entry, PoolActivationHeights,
         };
-        use crate::chain_index::ShieldedPool;
 
         // Temporary metadata entry recording the next height to rebuild, removed on completion.
         const MIGRATION_CTD_PROGRESS_KEY: &[u8] =
@@ -1100,21 +1091,15 @@ impl<T: BlockchainSource> Migration<T> for Migration1_2_1To1_3_0 {
             )
             .await?;
 
-        // Network-upgrade activation heights (mirrors `write_blocks_to_height`). Blocks at or above
-        // NU6.3 have their ironwood root/size and ironwood tx list rebuilt from the validator (the
-        // legacy on-disk data predates ironwood); blocks below it are rebuilt in place from the
-        // legacy commitment row, with no ironwood.
+        // Network-upgrade activation heights (shared with `write_blocks_to_height`). Blocks at or
+        // above NU6.3 have their ironwood root/size and ironwood tx list rebuilt from the validator
+        // (the legacy on-disk data predates ironwood); blocks below it are rebuilt in place from
+        // the legacy commitment row, with no ironwood.
         let network = cfg.network;
-        let zebra_network = network.to_zebra_network();
-        let sapling_activation_height = ShieldedPool::Sapling
-            .activation_upgrade()
-            .activation_height(&zebra_network);
-        let nu5_activation_height = ShieldedPool::Orchard
-            .activation_upgrade()
-            .activation_height(&zebra_network);
-        let nu6_3_activation_height = ShieldedPool::Ironwood
-            .activation_upgrade()
-            .activation_height(&zebra_network);
+        let pool_activations = PoolActivationHeights::resolve(&network.to_zebra_network());
+        let sapling_activation_height = pool_activations.sapling;
+        let nu5_activation_height = pool_activations.nu5;
+        let nu6_3_activation_height = pool_activations.nu6_3;
 
         // Mark migration in progress (observability only; resumption uses the progress key).
         {
@@ -1161,30 +1146,6 @@ impl<T: BlockchainSource> Migration<T> for Migration1_2_1To1_3_0 {
             );
             let started = std::time::Instant::now();
 
-            // Idempotent write: on resume an already-written row must match byte-for-byte (the
-            // legacy rebuild is deterministic and the validator refetch is over immutable history).
-            fn put_idempotent(
-                txn: &mut lmdb::RwTransaction<'_>,
-                db: lmdb::Database,
-                key: &[u8],
-                value: &[u8],
-                what: &str,
-            ) -> Result<(), FinalisedStateError> {
-                match txn.put(db, &key, &value, WriteFlags::NO_OVERWRITE) {
-                    Ok(()) => Ok(()),
-                    Err(lmdb::Error::KeyExist) => {
-                        let existing = txn.get(db, &key).map_err(FinalisedStateError::LmdbError)?;
-                        if existing != value {
-                            return Err(FinalisedStateError::Custom(format!(
-                                "conflicting rebuilt {what}"
-                            )));
-                        }
-                        Ok(())
-                    }
-                    Err(error) => Err(FinalisedStateError::LmdbError(error)),
-                }
-            }
-
             while next_height <= db_tip {
                 let height = Height::try_from(next_height)
                     .map_err(|error| FinalisedStateError::Custom(error.to_string()))?;
@@ -1218,7 +1179,16 @@ impl<T: BlockchainSource> Migration<T> for Migration1_2_1To1_3_0 {
                         // are extracted, and neither depends on it.
                         None,
                     )
-                    .await?;
+                    .await
+                    .map_err(|error| {
+                        FinalisedStateError::Custom(format!(
+                            "v1.3.0 ironwood backfill failed at height {next_height}: {error}. \
+                             This backfill refetches every stored block from NU6.3 activation \
+                             through the database tip; ensure the backing validator serves that \
+                             range, or wipe the finalised-state directory and re-index from the \
+                             validator."
+                        ))
+                    })?;
 
                     commitment_bytes =
                         StoredEntryVar::new(&height_bytes, *block.commitment_tree_data())
@@ -1261,16 +1231,17 @@ impl<T: BlockchainSource> Migration<T> for Migration1_2_1To1_3_0 {
                         new_ctd_db,
                         &height_bytes,
                         &commitment_bytes,
-                        &format!("commitment_tree_data at height {}", height.0),
+                        || {
+                            format!(
+                                "conflicting rebuilt commitment_tree_data at height {}",
+                                height.0
+                            )
+                        },
                     )?;
                     if let Some(bytes) = &ironwood_bytes {
-                        put_idempotent(
-                            &mut txn,
-                            ironwood_db,
-                            &height_bytes,
-                            bytes,
-                            &format!("ironwood at height {}", height.0),
-                        )?;
+                        put_idempotent(&mut txn, ironwood_db, &height_bytes, bytes, || {
+                            format!("conflicting rebuilt ironwood at height {}", height.0)
+                        })?;
                     }
 
                     let progress = StoredEntryFixed::new(MIGRATION_CTD_PROGRESS_KEY, height + 1);
