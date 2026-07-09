@@ -40,15 +40,17 @@ owns shared fixtures and the feature-forwarding surface (`zcashd_support`,
 `transparent_address_history_experimental`).
 _Avoid_: test helpers, testlib.
 
-**package (test set)**:
+**packages (test set)**:
 The tests of the `packages/*` production crates — the workspace
 `default-members`, exercised by bare `cargo nextest run` and by `makers test`
-(the default with no argument, equivalently `makers test package`). Named for
+(the default with no argument, equivalently `makers test packages`). Named for
 where the crates live (`packages/`); the functional reason they run apart from
 the live partitions is that they need **no** live validator. They are *not*
 network-free, though: e.g. zaino-serve's gRPC `spawn` regression test binds a
 loopback socket and stands up a tonic server. The absent ingredient is a
 validator, not the network.
-_Avoid_: offline (overclaims "no network" — these tests bind loopback sockets);
-unit test (the set includes crate-level integration tests); container test
-(names the run mechanism, which the live suite shares).
+_Avoid_: package (singular — the set is plural, matching the `packages/` dir;
+`makers test package` now errors with `unknown set`); offline (overclaims "no
+network" — these tests bind loopback sockets); unit test (the set includes
+crate-level integration tests); container test (names the run mechanism, which
+the live suite shares).
