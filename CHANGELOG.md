@@ -8,6 +8,35 @@ and this library adheres to Rust's notion of
 ## Unreleased
 
 ### Changed
+- `zaino-state`: `FetchService` and `StateService` are merged into a single
+  generic `NodeBackedIndexerService<Source>` (module
+  `zaino_state::indexer::node_backed_indexer`; the former `backends` module is
+  gone). The validator connection is now selected at runtime rather than by type:
+  `NodeBackedIndexerServiceConfig { common, connection }` carries a
+  `ValidatorConnectionType` of either `Rpc` (JSON-RPC, formerly `Fetch`) or
+  `Direct(DirectConnectionConfig)` (Zebra `ReadStateService`, formerly `State`).
+  The per-backend `Fetch/StateServiceConfig`, `Fetch/StateServiceError`, and
+  `BackendConfig` types are replaced by `NodeBackedIndexerServiceConfig`,
+  `NodeBackedIndexerServiceError`, and `ValidatorConnectionType`.
+- **Breaking** — config: `zainod.toml`'s `backend` selector is renamed
+  `state` → `direct` and `fetch` → `rpc`. The legacy `"state"` / `"fetch"`
+  values are still accepted as aliases, so existing config files keep working.
+- `zaino-state`: the `ChainIndex` trait is split into `ChainIndex` (the
+  wallet-essential core: chain/tx/address/mempool access) and a
+  `ChainIndexRpcExt: ChainIndex` extension (compact-block serving, subtree
+  roots, and the block-explorer / mining / node-passthrough RPCs). The split is
+  a provisional first pass to be refined into finer capability traits later.
+- `zaino-state`: all remaining backend-split RPC functionality has moved out of
+  the `FetchService` (`JsonRpSeeConnector`) and `StateService`
+  (`ReadStateService`) backends and into `BlockchainSource` /
+  `ChainIndex`. Both backends now resolve every fetch through their `ChainIndex`
+  indexer — building responses from Zaino's own indexed state where possible and
+  delegating to the `ValidatorConnector` (`BlockchainSource`) only for
+  validator-only or passthrough data. Validator connection/syncer spawning also
+  moves into `ValidatorConnector::spawn_fetch` / `spawn_state`, so each
+  service/subscriber now holds only `{ indexer, data, config }`. This readies
+  the two backends for their eventual merge into a single
+  `ValidatorBackedIndexerService`. No behaviour change.
 - TLS: zaino now installs rustls's **aws-lc-rs** CryptoProvider as its
   preferred process-level default (was ring) and enables rustls's
   `prefer-post-quantum` feature, so the X25519MLKEM768 hybrid key exchange
