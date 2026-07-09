@@ -15,7 +15,7 @@ use std::{
 use tonic::transport::Channel;
 use tracing::{debug, info, instrument};
 use zaino_common::{
-    network::{ActivationHeights, ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS},
+    network::ActivationHeights,
     probing::{Liveness, Readiness},
     status::Status,
     validator::ValidatorConfig,
@@ -65,6 +65,29 @@ macro_rules! validator_tests {
     };
 }
 
+/// The canonical regtest activation heights the harness *launches* validators
+/// with when a test names no others (everything through NU6.3 active from
+/// height 2). This is validator-launch vocabulary — the configuring side of
+/// the truth source — and is never zainod's own schedule: zainod's config
+/// carries only a network kind, and both backends adopt the runtime schedule
+/// from the running validator's `getblockchaininfo.upgrades` (zaino#1076).
+/// It matches zcash_local_net's `supported_regtest_activation_heights`, which
+/// the devtool wallet client currently requires (zaino#1368).
+pub const ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS: ActivationHeights = ActivationHeights {
+    before_overwinter: Some(1),
+    overwinter: Some(1),
+    sapling: Some(1),
+    blossom: Some(1),
+    heartwood: Some(1),
+    canopy: Some(1),
+    nu5: Some(2),
+    nu6: Some(2),
+    nu6_1: Some(2),
+    nu6_2: Some(2),
+    nu6_3: Some(2),
+    nu7: None,
+};
+
 /// Orchard-era-only fixture: every upgrade through NU6.2 active from height 2 and
 /// NU6.3 never activating, so coinbases stay Orchard for the whole chain. For
 /// client-free launches only — the zcash-devtool wallet hardcodes the canonical
@@ -87,7 +110,7 @@ pub const ORCHARD_ONLY_ACTIVATION_HEIGHTS: ActivationHeights = ActivationHeights
 
 /// Zebrad regtest heights with every upgrade through NU6.3 active from height 2, so
 /// generated blocks carry V6 coinbases from the first post-genesis era.
-pub const NU6_3_ACTIVE_ACTIVATION_HEIGHTS: ActivationHeights = ActivationHeights {
+pub const IRONWOOD_ONLY_ACTIVATION_HEIGHTS: ActivationHeights = ActivationHeights {
     before_overwinter: Some(1),
     overwinter: Some(1),
     sapling: Some(1),
@@ -450,8 +473,8 @@ pub static ZEBRAD_CHAIN_CACHE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
     Some(workspace_root_path.join("live-tests/chain_cache/client_rpc_tests_large"))
 });
 
-/// Path for the Zebra chain cache in the user's home directory.
-pub static ZEBRAD_TESTNET_CACHE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
+/// Path for the Zebra chain cache of The Public Testnet in the user's home directory.
+pub static ZEBRAD_THE_PUB_TESTNET_CACHE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
     let home_path = PathBuf::from(std::env::var("HOME").unwrap());
     Some(home_path.join(".cache/zebra"))
 });
@@ -705,8 +728,17 @@ where
         let activation_heights =
             activation_heights.unwrap_or_else(|| validator.default_activation_heights());
         let network_kind = network.unwrap_or(NetworkKind::Regtest);
-        let zaino_network_kind =
-            Network::from_network_kind_and_activation_heights(&network_kind, &activation_heights);
+        // The validator is the single source of truth for activation heights
+        // (zaino#1076). zainod's config is a payload-free network kind: the
+        // fixture heights configure the validator alone, and zainod adopts
+        // the real schedule from the validator at spawn. Every
+        // custom-heights launch is therefore a standing regression test of
+        // that adoption.
+        let zaino_network_kind = match network_kind {
+            NetworkKind::Mainnet => Network::Mainnet,
+            NetworkKind::Testnet => Network::PubTestnet,
+            NetworkKind::Regtest => Network::Regtest,
+        };
 
         if enable_clients && !enable_zaino {
             return Err(std::io::Error::other(
@@ -1127,25 +1159,11 @@ pub async fn launch_state_and_fetch_services_mining_to<V: ValidatorExt>(
         Some(NetworkKind::Testnet) => {
             println!("Waiting for validator to spawn..");
             tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
-            Network::Testnet
+            Network::PubTestnet
         }
-        _ => Network::Regtest({
-            let activation_heights = test_manager.local_net.get_activation_heights().await;
-            ActivationHeights {
-                before_overwinter: activation_heights.overwinter(),
-                overwinter: activation_heights.overwinter(),
-                sapling: activation_heights.sapling(),
-                blossom: activation_heights.blossom(),
-                heartwood: activation_heights.heartwood(),
-                canopy: activation_heights.canopy(),
-                nu5: activation_heights.nu5(),
-                nu6: activation_heights.nu6(),
-                nu6_1: activation_heights.nu6_1(),
-                nu6_2: activation_heights.nu6_2(),
-                nu6_3: activation_heights.nu6_3(),
-                nu7: activation_heights.nu7(),
-            }
-        }),
+        // The kind suffices: zainod adopts the schedule from the validator
+        // at spawn (zaino#1076).
+        _ => Network::Regtest,
     };
 
     test_manager.local_net.print_stdout();
@@ -1325,7 +1343,7 @@ pub async fn launch_zcashd_dual_fetch_services_at(
             .data_dir()
             .path()
             .join("zcashd-fetch-service-zaino"),
-        Network::Regtest(activation_heights),
+        Network::Regtest,
     )
     .await;
     let zcashd_subscriber = zcashd_fetch_service.get_subscriber().inner();
@@ -1343,7 +1361,7 @@ pub async fn launch_zcashd_dual_fetch_services_at(
             .data_dir()
             .path()
             .join("zaino-fetch-service-zaino"),
-        Network::Regtest(activation_heights),
+        Network::Regtest,
     )
     .await;
     let zaino_subscriber = zaino_fetch_service.get_subscriber().inner();

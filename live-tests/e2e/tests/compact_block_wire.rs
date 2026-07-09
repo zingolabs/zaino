@@ -17,7 +17,7 @@ use zaino_proto::proto::service::{BlockId, BlockRange};
 #[allow(deprecated)]
 use zaino_state::ZcashIndexer as _;
 use zaino_testutils::{
-    make_uri, MinerPool, Rpc, TestManager, ValidatorKind, NU6_3_ACTIVE_ACTIVATION_HEIGHTS,
+    make_uri, MinerPool, Rpc, TestManager, ValidatorKind, IRONWOOD_ONLY_ACTIVATION_HEIGHTS,
     NU6_3_TRANSITION_BOUNDARY, ORCHARD_ONLY_ACTIVATION_HEIGHTS,
     ORCHARD_THEN_IRONWOOD_ACTIVATION_HEIGHTS,
 };
@@ -170,7 +170,7 @@ async fn orchard_only_wire_serving_zebrad() {
 /// multi_thread required: the test manager spawns the validator, indexer, and zainod.
 #[tokio::test(flavor = "multi_thread")]
 async fn ironwood_only_wire_serving_zebrad() {
-    assert_wire_served_eras(NU6_3_ACTIVE_ACTIVATION_HEIGHTS, 6, |height| {
+    assert_wire_served_eras(IRONWOOD_ONLY_ACTIVATION_HEIGHTS, 6, |height| {
         if height >= 2 {
             CoinbaseEra::Ironwood
         } else {

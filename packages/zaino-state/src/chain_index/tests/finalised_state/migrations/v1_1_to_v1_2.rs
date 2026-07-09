@@ -4,7 +4,7 @@ use lmdb::{Cursor as _, Transaction as _, WriteFlags};
 use std::path::PathBuf;
 use tempfile::TempDir;
 use zaino_common::network::ActivationHeights;
-use zaino_common::{DatabaseConfig, Network, StorageConfig};
+use zaino_common::{DatabaseConfig, StorageConfig};
 
 use crate::chain_index::finalised_state::capability::{
     BlockCoreExt as _, CapabilityRequest, DbRead as _, DbVersion, MigrationStatus,
@@ -426,7 +426,7 @@ async fn v1_1_to_v1_2_spent_index_backfill_from_old_version() {
         },
         ephemeral: false,
         db_version: 1,
-        network: Network::Regtest(ActivationHeights::default()),
+        network: ActivationHeights::default().to_regtest_network(),
     };
 
     let source = build_active_mockchain_source(initial_active_height.0, blocks.clone());
@@ -498,7 +498,7 @@ async fn v1_1_to_v1_2_spent_index_migration_resumes_after_crash() {
         },
         ephemeral: false,
         db_version: 1,
-        network: Network::Regtest(ActivationHeights::default()),
+        network: ActivationHeights::default().to_regtest_network(),
     };
 
     let source = build_active_mockchain_source(initial_active_height.0, blocks.clone());
@@ -597,7 +597,7 @@ async fn v1_2_0_cache_missing_txid_location_index_is_rebuilt() {
         },
         ephemeral: false,
         db_version: 1,
-        network: Network::Regtest(ActivationHeights::default()),
+        network: ActivationHeights::default().to_regtest_network(),
     };
 
     let source = build_active_mockchain_source(initial_active_height.0, blocks.clone());

@@ -103,7 +103,8 @@ pub struct ZainodConfig {
     /// When enabled, Zaino does not use a persistent on-disk finalised-state database. Finalised
     /// state reads are served from the configured validator/source instead.
     pub ephemeral_finalised_state: bool,
-    /// Network to connect to (Mainnet, Testnet, or Regtest).
+    /// Network to connect to (Mainnet, PubTestnet — The Public Testnet — or Regtest;
+    /// `"Testnet"` is accepted as a legacy spelling of PubTestnet).
     pub network: Network,
     /// Prometheus metrics endpoint listen address.
     ///
@@ -243,11 +244,6 @@ impl ZainodConfig {
 
         Ok(())
     }
-
-    /// Returns the network type currently being used by the server.
-    pub fn get_network(&self) -> Result<zebra_chain::parameters::Network, IndexerError> {
-        Ok(self.network.to_zebra_network())
-    }
 }
 
 impl Default for ZainodConfig {
@@ -271,7 +267,7 @@ impl Default for ZainodConfig {
             storage: StorageConfig::default(),
             ephemeral_finalised_state: false,
             zebra_db_path: default_zebra_db_path(),
-            network: Network::Testnet,
+            network: Network::PubTestnet,
             donation_address: None,
         }
     }
@@ -607,7 +603,7 @@ key_path = "{}"
 
         let toml_content = r#"
 backend = "state"
-network = "Testnet"
+network = "PubTestnet"
 zebra_db_path = "/opt/zebra/data"
 
 [storage.database]
@@ -626,6 +622,7 @@ listen_address = "127.0.0.1:8137"
 
         // legacy `backend = "state"` still parses via the serde alias
         assert_eq!(config.backend, BackendType::Direct);
+        assert_eq!(config.network, Network::PubTestnet);
         assert!(config.json_server_settings.is_none());
         assert_eq!(
             config.validator_settings.validator_user,
@@ -637,6 +634,33 @@ listen_address = "127.0.0.1:8137"
         );
     }
 
+    /// The pre-rename config spelling of The Public Testnet still parses,
+    /// via the `#[serde(alias = "Testnet")]` on `Network::PubTestnet`.
+    #[test]
+    fn legacy_testnet_spelling_parses_as_the_pub_testnet() {
+        let _guard = EnvGuard::new();
+        let temp_dir = TempDir::new().unwrap();
+
+        let toml_content = r#"
+backend = "state"
+network = "Testnet"
+zebra_db_path = "/opt/zebra/data"
+
+[storage.database]
+path = "/opt/zaino/data"
+
+[validator_settings]
+validator_jsonrpc_listen_address = "127.0.0.1:18232"
+
+[grpc_settings]
+listen_address = "127.0.0.1:8137"
+"#;
+
+        let config_path = create_test_config_file(&temp_dir, toml_content, "legacy_testnet.toml");
+        let config = load_config(&config_path).expect("load_config failed");
+        assert_eq!(config.network, Network::PubTestnet);
+    }
+
     #[test]
     fn test_cookie_dir_logic() {
         let _guard = EnvGuard::new();
@@ -645,7 +669,7 @@ listen_address = "127.0.0.1:8137"
         // Scenario 1: auth enabled, cookie_dir empty (should use default ephemeral path)
         let toml_content = r#"
 backend = "fetch"
-network = "Testnet"
+network = "PubTestnet"
 zebra_db_path = "/zebra/db"
 
 [storage.database]
@@ -675,7 +699,7 @@ listen_address = "127.0.0.1:8137"
         // Scenario 2: auth enabled, cookie_dir specified
         let toml_content2 = r#"
 backend = "fetch"
-network = "Testnet"
+network = "PubTestnet"
 zebra_db_path = "/zebra/db"
 
 [storage.database]
@@ -702,7 +726,7 @@ listen_address = "127.0.0.1:8137"
         // Scenario 3: cookie_dir not specified (should be None)
         let toml_content3 = r#"
 backend = "fetch"
-network = "Testnet"
+network = "PubTestnet"
 zebra_db_path = "/zebra/db"
 
 [storage.database]
@@ -813,7 +837,7 @@ listen_address = "127.0.0.1:8137"
         let temp_dir = TempDir::new().unwrap();
 
         let toml_content = r#"
-network = "Testnet"
+network = "PubTestnet"
 
 [validator_settings]
 validator_jsonrpc_listen_address = "127.0.0.1:18232"
@@ -904,7 +928,7 @@ listen_address = "127.0.0.1:8137"
 
         let toml_content = r#"
 backend = "fetch"
-network = "Testnet"
+network = "PubTestnet"
 
 [validator_settings]
 validator_jsonrpc_listen_address = "192.168.1.10:18232"
@@ -935,7 +959,7 @@ listen_address = "127.0.0.1:8137"
 
         let toml_content = r#"
 backend = "fetch"
-network = "Testnet"
+network = "PubTestnet"
 
 [validator_settings]
 validator_jsonrpc_listen_address = "8.8.8.8:18232"
@@ -1296,7 +1320,7 @@ listen_address = "127.0.0.1:8137"
 
         let toml_content = r#"
 backend = "fetch"
-network = "Testnet"
+network = "PubTestnet"
 ephemeral_finalised_state = true
 
 [validator_settings]

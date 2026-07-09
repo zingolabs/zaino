@@ -233,8 +233,7 @@ impl DbWrite for DbV1 {
             build_indexed_block_from_source, PoolActivationHeights,
         };
 
-        let network = self.config.network;
-        let zebra_network = network.to_zebra_network();
+        let zebra_network = self.config.network.clone();
         let pool_activations = PoolActivationHeights::resolve(&zebra_network);
         let sapling_activation_height = pool_activations
             .sapling
@@ -282,7 +281,7 @@ impl DbWrite for DbV1 {
         info!(
             start_height,
             target = height.0,
-            ?network,
+            ?zebra_network,
             "write_blocks_to_height: syncing finalised blocks"
         );
 
@@ -327,7 +326,7 @@ impl DbWrite for DbV1 {
                     let build_start = std::time::Instant::now();
                     let block = build_indexed_block_from_source(
                         source,
-                        network,
+                        zebra_network.clone(),
                         sapling_activation_height,
                         nu5_activation_height,
                         nu6_3_activation_height,
@@ -354,7 +353,7 @@ impl DbWrite for DbV1 {
                         info!(
                             current = next - 1,
                             target = height.0,
-                            ?network,
+                            ?zebra_network,
                             "write_blocks_to_height: syncing"
                         );
                         last_progress_log = std::time::Instant::now();

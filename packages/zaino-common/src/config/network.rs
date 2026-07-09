@@ -5,80 +5,38 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use zebra_chain::parameters::testnet::ConfiguredActivationHeights;
 
-/// Must equal zcash_local_net's `supported_regtest_activation_heights`: the
-/// zcash-devtool wallet client hardcodes that canonical set (NU6.3 at 2), and a
-/// zebrad configured differently rejects wallet-built transactions with
-/// "incorrect consensus branch id". See
-/// <https://github.com/zingolabs/zaino/issues/1368>.
-pub const ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS: ActivationHeights = ActivationHeights {
-    overwinter: Some(1),
-    before_overwinter: Some(1),
-    sapling: Some(1),
-    blossom: Some(1),
-    heartwood: Some(1),
-    canopy: Some(1),
-    nu5: Some(2),
-    nu6: Some(2),
-    nu6_1: Some(2),
-    nu6_2: Some(2),
-    nu6_3: Some(2),
-    nu7: None,
-};
-
-/// Network type for Zaino configuration.
+/// The network *kind* zaino is configured for. Deliberately payload-free:
+/// activation heights are chain facts the validator owns, so a config value
+/// cannot carry them — the backends adopt the runtime schedule from the
+/// validator's `getblockchaininfo.upgrades` at spawn and hold it as a
+/// `zebra_chain::parameters::Network`
+/// (<https://github.com/zingolabs/zaino/issues/1076>). A pre-adoption
+/// height read is unrepresentable: this type has no heights to read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
-#[serde(from = "NetworkSerde", into = "NetworkSerde")]
 pub enum Network {
     /// Mainnet network
     Mainnet,
-    /// Testnet network
-    Testnet,
+    /// The Public Testnet: the shared-consensus test network, whose
+    /// activation heights come only from checked-in zebra parameters —
+    /// never from configuration. Accepts the legacy config spelling
+    /// `"Testnet"`.
+    #[serde(alias = "Testnet")]
+    PubTestnet,
     /// Regtest network (for local testing)
-    Regtest(ActivationHeights),
+    Regtest,
 }
 
 impl fmt::Display for Network {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Network::Mainnet => write!(f, "Mainnet"),
-            Network::Testnet => write!(f, "Testnet"),
-            Network::Regtest(_) => write!(f, "Regtest"),
+            Network::PubTestnet => write!(f, "PubTestnet"),
+            Network::Regtest => write!(f, "Regtest"),
         }
     }
 }
 
-/// Helper type for Network serialization/deserialization.
-///
-/// This allows Network to serialize as simple strings ("Mainnet", "Testnet", "Regtest")
-/// while the actual Network::Regtest variant carries activation heights internally.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
-enum NetworkSerde {
-    Mainnet,
-    Testnet,
-    Regtest,
-}
-
-impl From<NetworkSerde> for Network {
-    fn from(value: NetworkSerde) -> Self {
-        match value {
-            NetworkSerde::Mainnet => Network::Mainnet,
-            NetworkSerde::Testnet => Network::Testnet,
-            NetworkSerde::Regtest => Network::Regtest(ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS),
-        }
-    }
-}
-
-impl From<Network> for NetworkSerde {
-    fn from(value: Network) -> Self {
-        match value {
-            Network::Mainnet => NetworkSerde::Mainnet,
-            Network::Testnet => NetworkSerde::Testnet,
-            Network::Regtest(_) => NetworkSerde::Regtest,
-        }
-    }
-}
-
-/// Configurable activation heights for Regtest and configured Testnets.
+/// Configurable activation heights for a Regtest validator launch.
 ///
 /// We use our own type instead of the zebra type
 /// as the zebra type is missing a number of useful
@@ -144,9 +102,9 @@ impl Default for ActivationHeights {
 /// Records the `NetworkUpgrade`-variant ↔ `ActivationHeights`-field correspondence
 /// exactly once, generating everything derived from it: the two field-by-field
 /// `From` conversions between [`ActivationHeights`] and zebra's
-/// [`ConfiguredActivationHeights`] (the structs share field names), and
-/// `ActivationHeights::from_zebra_pairs`, which walks zebra's
-/// `(height, upgrade)` activation list.
+/// [`ConfiguredActivationHeights`] (the structs share field names), the
+/// all-`None` [`ActivationHeights::NEVER_ACTIVATED`] schedule, and the
+/// per-upgrade [`ActivationHeights::slot_mut`] accessor.
 ///
 /// A declarative macro rather than functions because plain `fn`s cannot abstract
 /// over struct fields, and the variant/field spellings (`Nu5`/`nu5`) differ only
@@ -174,28 +132,25 @@ macro_rules! activation_heights_mirror {
         }
 
         impl ActivationHeights {
-            /// Builds heights from zebra's `(height, upgrade)` activation list;
-            /// upgrades absent from the list stay `None`.
-            fn from_zebra_pairs<'a>(
-                pairs: impl IntoIterator<
-                    Item = (
-                        &'a zebra_chain::block::Height,
-                        &'a zebra_chain::parameters::NetworkUpgrade,
-                    ),
-                >,
-            ) -> Self {
-                let mut heights = Self { $($field: None),* };
-                for (height, upgrade) in pairs {
-                    match upgrade {
-                        zebra_chain::parameters::NetworkUpgrade::Genesis => (),
-                        $(
-                            zebra_chain::parameters::NetworkUpgrade::$variant => {
-                                heights.$field = Some(height.0)
-                            }
-                        )*
-                    }
+            /// The all-`None` schedule: every upgrade never-activated. The
+            /// starting point for building heights from an external report,
+            /// where an upgrade absent from the report must stay unset.
+            pub const NEVER_ACTIVATED: Self = Self { $($field: None),* };
+
+            /// Mutable slot for `upgrade`'s activation height, or `None` for
+            /// `Genesis` (height 0 by definition; it has no slot).
+            pub fn slot_mut(
+                &mut self,
+                upgrade: zebra_chain::parameters::NetworkUpgrade,
+            ) -> Option<&mut Option<u32>> {
+                match upgrade {
+                    zebra_chain::parameters::NetworkUpgrade::Genesis => None,
+                    $(
+                        zebra_chain::parameters::NetworkUpgrade::$variant => {
+                            Some(&mut self.$field)
+                        }
+                    )*
                 }
-                heights
             }
         }
     };
@@ -217,30 +172,17 @@ activation_heights_mirror!(
 );
 
 impl Network {
-    /// Convert to Zebra's network type for internal use (alias for to_zebra_default).
-    pub fn to_zebra_network(&self) -> zebra_chain::parameters::Network {
-        self.into()
-    }
-
     /// Determines if we should wait for the server to fully sync. Used for testing
     ///
-    /// - Mainnet/Testnet: Skip sync (false) because we don't want to sync real chains in tests
+    /// - Mainnet / The Public Testnet: Skip sync (false) because we don't want
+    ///   to sync real chains in tests
     /// - Regtest: Enable sync (true) because regtest is local and fast to sync
     pub fn wait_on_server_sync(&self) -> bool {
         match self {
-            Network::Mainnet | Network::Testnet => false, // Real networks - don't try to sync the whole chain
-            Network::Regtest(_) => true,                  // Local network - safe and fast to sync
-        }
-    }
-
-    pub fn from_network_kind_and_activation_heights(
-        network: &zebra_chain::parameters::NetworkKind,
-        activation_heights: &ActivationHeights,
-    ) -> Self {
-        match network {
-            zebra_chain::parameters::NetworkKind::Mainnet => Network::Mainnet,
-            zebra_chain::parameters::NetworkKind::Testnet => Network::Testnet,
-            zebra_chain::parameters::NetworkKind::Regtest => Network::Regtest(*activation_heights),
+            // Real networks - don't try to sync the whole chain
+            Network::Mainnet | Network::PubTestnet => false,
+            // Local network - safe and fast to sync
+            Network::Regtest => true,
         }
     }
 }
@@ -251,32 +193,26 @@ impl From<zebra_chain::parameters::Network> for Network {
             zebra_chain::parameters::Network::Mainnet => Network::Mainnet,
             zebra_chain::parameters::Network::Testnet(parameters) => {
                 if parameters.is_regtest() {
-                    Network::Regtest(ActivationHeights::from_zebra_pairs(
-                        parameters.activation_heights().iter(),
-                    ))
+                    Network::Regtest
                 } else {
-                    Network::Testnet
+                    Network::PubTestnet
                 }
             }
         }
     }
 }
 
-impl From<Network> for zebra_chain::parameters::Network {
-    fn from(val: Network) -> Self {
-        match val {
-            Network::Regtest(activation_heights) => zebra_chain::parameters::Network::new_regtest(
-                Into::<ConfiguredActivationHeights>::into(activation_heights).into(),
-            ),
-            Network::Testnet => zebra_chain::parameters::Network::new_default_testnet(),
-            Network::Mainnet => zebra_chain::parameters::Network::Mainnet,
-        }
-    }
-}
-
-impl From<&Network> for zebra_chain::parameters::Network {
-    fn from(val: &Network) -> Self {
-        (*val).into()
+impl ActivationHeights {
+    /// Builds the runtime regtest network for a chain whose schedule is
+    /// known first-hand: a validator being *launched* with these heights, or
+    /// a test fixture that is its own chain (mockchain sources, proptest
+    /// block generators). Production indexer code never calls this with
+    /// configured values — it adopts the runtime network from the
+    /// validator's reported schedule instead (zaino#1076).
+    pub fn to_regtest_network(&self) -> zebra_chain::parameters::Network {
+        zebra_chain::parameters::Network::new_regtest(
+            Into::<ConfiguredActivationHeights>::into(*self).into(),
+        )
     }
 }
 

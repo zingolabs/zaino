@@ -4,7 +4,7 @@ use hex::ToHex;
 use std::path::PathBuf;
 use tempfile::TempDir;
 use zaino_common::network::ActivationHeights;
-use zaino_common::{DatabaseConfig, Network, StorageConfig};
+use zaino_common::{DatabaseConfig, StorageConfig};
 use zaino_proto::proto::utils::{compact_block_with_pool_types, PoolTypeFilter};
 
 use crate::chain_index::finalised_state::finalised_source::FinalisedSource;
@@ -44,7 +44,7 @@ pub(crate) async fn spawn_v1_zaino_db(
         },
         ephemeral: false,
         db_version: 1,
-        network: Network::Regtest(ActivationHeights::default()),
+        network: ActivationHeights::default().to_regtest_network(),
     };
 
     let zaino_db = FinalisedState::spawn(config, source).await.unwrap();
@@ -193,7 +193,7 @@ async fn save_db_to_file_and_reload() {
         },
         ephemeral: false,
         db_version: 1,
-        network: Network::Regtest(ActivationHeights::default()),
+        network: ActivationHeights::default().to_regtest_network(),
     };
 
     let source = build_mockchain_source(blocks.clone());
@@ -272,7 +272,7 @@ async fn load_db_backend_from_file() {
         },
         ephemeral: false,
         db_version: 1,
-        network: Network::Regtest(ActivationHeights::default()),
+        network: ActivationHeights::default().to_regtest_network(),
     };
     let finalized_state_backend: FinalisedSource<MockchainSource> =
         FinalisedSource::spawn_v1(&config).await.unwrap();
@@ -338,7 +338,7 @@ async fn try_write_invalid_block() {
         orchard_tree_size as u32,
         None,
         None, // no parent chainwork for this test
-        zaino_common::Network::Regtest(ActivationHeights::default()).to_zebra_network(),
+        ActivationHeights::default().to_regtest_network(),
     );
 
     let mut chain_block =

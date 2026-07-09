@@ -13,7 +13,7 @@ use zaino_fetch::jsonrpsee::response::GetBlockResponse;
 #[allow(deprecated)]
 use zaino_state::ZcashIndexer as _;
 use zaino_testutils::{
-    MinerPool, Rpc, TestManager, ValidatorKind, NU6_3_ACTIVE_ACTIVATION_HEIGHTS,
+    MinerPool, Rpc, TestManager, ValidatorKind, IRONWOOD_ONLY_ACTIVATION_HEIGHTS,
     NU6_3_TRANSITION_BOUNDARY, ORCHARD_ONLY_ACTIVATION_HEIGHTS,
     ORCHARD_THEN_IRONWOOD_ACTIVATION_HEIGHTS,
 };
@@ -32,7 +32,7 @@ async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() {
         MinerPool::Orchard,
         &ValidatorKind::Zebrad,
         None,
-        Some(NU6_3_ACTIVE_ACTIVATION_HEIGHTS),
+        Some(IRONWOOD_ONLY_ACTIVATION_HEIGHTS),
         None,
         true,
         false,
@@ -325,7 +325,7 @@ async fn orchard_only_coinbase_routing_zebrad() {
 /// multi_thread required: the test manager spawns the validator and indexer services.
 #[tokio::test(flavor = "multi_thread")]
 async fn ironwood_only_coinbase_routing_zebrad() {
-    assert_coinbase_routing(NU6_3_ACTIVE_ACTIVATION_HEIGHTS, 6, |height| {
+    assert_coinbase_routing(IRONWOOD_ONLY_ACTIVATION_HEIGHTS, 6, |height| {
         if height >= 2 {
             CoinbaseEra::Ironwood
         } else {
