@@ -476,6 +476,17 @@ pub trait ZcashIndexerRpc {
     ) -> Result<GetNetworkSolPsResponse, ErrorObjectOwned>;
 }
 
+/// Maps an indexer error to the JSON-RPC error object every plain-delegation
+/// method returns: `InvalidParams` (converted to the zcash legacy "misc" code
+/// in RPC middleware) carrying the error's message as data.
+fn invalid_params_error_object(error: impl std::fmt::Display) -> ErrorObjectOwned {
+    ErrorObjectOwned::owned(
+        ErrorCode::InvalidParams.code(),
+        "Internal server error",
+        Some(error.to_string()),
+    )
+}
+
 // Currently all errors are hidden from downstream client, a full fix should be implemented. this is a temporary fix to
 // get zaino working, propagating a 500 error code to "block not found". This is still not the full correct behaviour
 // but fixes the current bugs in zaino and gets tests running.
@@ -491,25 +502,23 @@ fn error_object_from_rpc_error(
     ErrorObjectOwned::owned(rpc_error.code as i32, rpc_error.message.clone(), None::<()>)
 }
 
-fn getblock_error_object_from_indexer_error<Error>(error: Error) -> ErrorObjectOwned
+/// Walks `error`'s `source` chain and returns the first error object `map`
+/// produces, falling back to a generic internal-server-error object carrying
+/// the original error's message. The shared skeleton of the per-method error
+/// translators below, which differ only in the mapping they apply to each
+/// source.
+fn error_object_from_source_chain<Error>(
+    error: Error,
+    map: impl Fn(&(dyn std::error::Error + 'static)) -> Option<ErrorObjectOwned>,
+) -> ErrorObjectOwned
 where
     Error: std::error::Error + 'static,
 {
     let mut current_error: Option<&(dyn std::error::Error + 'static)> = Some(&error);
 
     while let Some(error_source) = current_error {
-        if let Some(zaino_fetch::jsonrpsee::error::TransportError::ErrorStatusCode(500)) =
-            error_source.downcast_ref::<zaino_fetch::jsonrpsee::error::TransportError>()
-        {
-            return ErrorObjectOwned::owned(
-                zaino_fetch::jsonrpsee::connector::RpcError::new_from_legacycode(
-                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                    "block not found",
-                )
-                .code as i32,
-                "block not found",
-                None::<()>,
-            );
+        if let Some(error_object) = map(error_source) {
+            return error_object;
         }
 
         current_error = error_source.source();
@@ -522,25 +531,36 @@ where
     )
 }
 
+fn getblock_error_object_from_indexer_error<Error>(error: Error) -> ErrorObjectOwned
+where
+    Error: std::error::Error + 'static,
+{
+    error_object_from_source_chain(error, |error_source| {
+        if let Some(zaino_fetch::jsonrpsee::error::TransportError::ErrorStatusCode(500)) =
+            error_source.downcast_ref::<zaino_fetch::jsonrpsee::error::TransportError>()
+        {
+            Some(ErrorObjectOwned::owned(
+                zaino_fetch::jsonrpsee::connector::RpcError::new_from_legacycode(
+                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                    "block not found",
+                )
+                .code as i32,
+                "block not found",
+                None::<()>,
+            ))
+        } else {
+            None
+        }
+    })
+}
+
 fn sendrawtransaction_error_object_from_indexer_error<Error>(error: Error) -> ErrorObjectOwned
 where
     Error: std::error::Error + 'static,
 {
-    let mut current_error: Option<&(dyn std::error::Error + 'static)> = Some(&error);
-
-    while let Some(error_source) = current_error {
-        if let Some(rpc_error) = rpc_error_from_error_source(error_source) {
-            return error_object_from_rpc_error(rpc_error);
-        }
-
-        current_error = error_source.source();
-    }
-
-    ErrorObjectOwned::owned(
-        ErrorCode::InternalError.code(),
-        "Internal server error",
-        Some(error.to_string()),
-    )
+    error_object_from_source_chain(error, |error_source| {
+        rpc_error_from_error_source(error_source).map(error_object_from_rpc_error)
+    })
 }
 
 /// Uses ErrorCode::InvalidParams as this is converted to zcash legacy "minsc" ErrorCode in RPC middleware.
@@ -551,28 +571,15 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .get_info()
             .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InvalidParams.code(),
-                    "Internal server error",
-                    Some(e.to_string()),
-                )
-            })
+            .map_err(invalid_params_error_object)
     }
 
     async fn get_mining_info(&self) -> Result<GetMiningInfoWire, ErrorObjectOwned> {
-        Ok(self
-            .service_subscriber
+        self.service_subscriber
             .inner_ref()
             .get_mining_info()
             .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InvalidParams.code(),
-                    "Internal server error",
-                    Some(e.to_string()),
-                )
-            })?)
+            .map_err(invalid_params_error_object)
     }
 
     async fn get_tx_out_set_info(&self) -> Result<GetTxOutSetInfoResponse, ErrorObjectOwned> {
@@ -580,13 +587,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .get_tx_out_set_info()
             .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InvalidParams.code(),
-                    "Internal server error",
-                    Some(e.to_string()),
-                )
-            })
+            .map_err(invalid_params_error_object)
     }
 
     async fn get_best_blockhash(&self) -> Result<GetBlockHash, ErrorObjectOwned> {
@@ -594,13 +595,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .get_best_blockhash()
             .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InvalidParams.code(),
-                    "Internal server error",
-                    Some(e.to_string()),
-                )
-            })
+            .map_err(invalid_params_error_object)
     }
 
     async fn get_blockchain_info(&self) -> Result<GetBlockchainInfoResponse, ErrorObjectOwned> {
@@ -608,13 +603,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .get_blockchain_info()
             .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InvalidParams.code(),
-                    "Internal server error",
-                    Some(e.to_string()),
-                )
-            })
+            .map_err(invalid_params_error_object)
     }
 
     async fn get_mempool_info(&self) -> Result<GetMempoolInfoResponse, ErrorObjectOwned> {
@@ -622,13 +611,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .get_mempool_info()
             .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InvalidParams.code(),
-                    "Internal server error",
-                    Some(e.to_string()),
-                )
-            })
+            .map_err(invalid_params_error_object)
     }
 
     async fn get_difficulty(&self) -> Result<f64, ErrorObjectOwned> {
@@ -636,13 +619,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .get_difficulty()
             .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InvalidParams.code(),
-                    "Internal server error",
-                    Some(e.to_string()),
-                )
-            })
+            .map_err(invalid_params_error_object)
     }
 
     async fn get_block_deltas(&self, hash: String) -> Result<BlockDeltas, ErrorObjectOwned> {
@@ -650,13 +627,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .get_block_deltas(hash)
             .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InvalidParams.code(),
-                    "Internal server error",
-                    Some(e.to_string()),
-                )
-            })
+            .map_err(invalid_params_error_object)
     }
 
     async fn get_peer_info(&self) -> Result<GetPeerInfo, ErrorObjectOwned> {
@@ -664,13 +635,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .get_peer_info()
             .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InvalidParams.code(),
-                    "Internal server error",
-                    Some(e.to_string()),
-                )
-            })
+            .map_err(invalid_params_error_object)
     }
 
     async fn get_block_subsidy(&self, height: u32) -> Result<GetBlockSubsidy, ErrorObjectOwned> {
@@ -678,13 +643,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .get_block_subsidy(height)
             .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InvalidParams.code(),
-                    "Internal server error",
-                    Some(e.to_string()),
-                )
-            })
+            .map_err(invalid_params_error_object)
     }
 
     async fn get_block_count(&self) -> Result<Height, ErrorObjectOwned> {
@@ -692,13 +651,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .get_block_count()
             .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InvalidParams.code(),
-                    "Internal server error",
-                    Some(e.to_string()),
-                )
-            })
+            .map_err(invalid_params_error_object)
     }
 
     async fn get_chain_tips(&self) -> Result<GetChainTipsResponse, ErrorObjectOwned> {
@@ -706,13 +659,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .get_chain_tips()
             .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InvalidParams.code(),
-                    "Internal server error",
-                    Some(e.to_string()),
-                )
-            })
+            .map_err(invalid_params_error_object)
     }
 
     async fn validate_address(
@@ -723,13 +670,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .validate_address(address)
             .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InvalidParams.code(),
-                    "Internal server error",
-                    Some(e.to_string()),
-                )
-            })
+            .map_err(invalid_params_error_object)
     }
 
     #[allow(deprecated)]
@@ -742,13 +683,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .z_validate_address(address)
             .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InvalidParams.code(),
-                    "Internal server error",
-                    Some(e.to_string()),
-                )
-            })
+            .map_err(invalid_params_error_object)
     }
 
     async fn z_get_address_balance(
@@ -759,13 +694,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .z_get_address_balance(address_strings)
             .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InvalidParams.code(),
-                    "Internal server error",
-                    Some(e.to_string()),
-                )
-            })
+            .map_err(invalid_params_error_object)
     }
 
     async fn send_raw_transaction(
@@ -800,13 +729,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .get_block_header(hash, verbose)
             .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InvalidParams.code(),
-                    "Internal server error",
-                    Some(e.to_string()),
-                )
-            })
+            .map_err(invalid_params_error_object)
     }
 
     async fn get_raw_mempool(&self) -> Result<Vec<String>, ErrorObjectOwned> {
@@ -814,13 +737,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .get_raw_mempool()
             .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InvalidParams.code(),
-                    "Internal server error",
-                    Some(e.to_string()),
-                )
-            })
+            .map_err(invalid_params_error_object)
     }
 
     async fn z_get_treestate(
@@ -831,13 +748,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .z_get_treestate(hash_or_height)
             .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InvalidParams.code(),
-                    "Internal server error",
-                    Some(e.to_string()),
-                )
-            })
+            .map_err(invalid_params_error_object)
     }
 
     async fn z_get_subtrees_by_index(
@@ -850,13 +761,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .z_get_subtrees_by_index(pool, start_index, limit)
             .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InvalidParams.code(),
-                    "Internal server error",
-                    Some(e.to_string()),
-                )
-            })
+            .map_err(invalid_params_error_object)
     }
 
     async fn get_raw_transaction(
@@ -868,13 +773,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .get_raw_transaction(txid_hex, verbose)
             .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InvalidParams.code(),
-                    "Internal server error",
-                    Some(e.to_string()),
-                )
-            })
+            .map_err(invalid_params_error_object)
     }
 
     async fn get_tx_out(
@@ -887,13 +786,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .get_tx_out(txid, n, include_mempool)
             .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InvalidParams.code(),
-                    "Internal server error",
-                    Some(e.to_string()),
-                )
-            })
+            .map_err(invalid_params_error_object)
     }
 
     async fn get_spent_info(
@@ -904,13 +797,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .get_spent_info(request)
             .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InvalidParams.code(),
-                    "Internal server error",
-                    Some(e.to_string()),
-                )
-            })
+            .map_err(invalid_params_error_object)
     }
 
     async fn get_address_tx_ids(
@@ -921,13 +808,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .get_address_tx_ids(request)
             .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InvalidParams.code(),
-                    "Internal server error",
-                    Some(e.to_string()),
-                )
-            })
+            .map_err(invalid_params_error_object)
     }
 
     async fn z_get_address_utxos(
@@ -938,28 +819,9 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .z_get_address_utxos(address_strings)
             .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InvalidParams.code(),
-                    "Internal server error",
-                    Some(e.to_string()),
-                )
-            })
+            .map_err(invalid_params_error_object)
     }
 
-    /// Returns the estimated network solutions per second based on the last n blocks.
-    ///
-    /// zcashd reference: [`getnetworksolps`](https://zcash.github.io/rpc/getnetworksolps.html)
-    /// method: post
-    /// tags: blockchain
-    ///
-    /// This RPC is implemented in the [mining.cpp](https://github.com/zcash/zcash/blob/d00fc6f4365048339c83f463874e4d6c240b63af/src/rpc/mining.cpp#L104)
-    /// file of the Zcash repository. The Zebra implementation can be found [here](https://github.com/ZcashFoundation/zebra/blob/19bca3f1159f9cb9344c9944f7e1cb8d6a82a07f/zebra-rpc/src/methods.rs#L2687).
-    ///
-    /// # Parameters
-    ///
-    /// - `blocks`: (number, optional, default=120) Number of blocks, or -1 for blocks over difficulty averaging window.
-    /// - `height`: (number, optional, default=-1) To estimate network speed at the time of a specific block height.
     async fn get_network_sol_ps(
         &self,
         blocks: Option<i32>,
@@ -969,12 +831,6 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .get_network_sol_ps(blocks, height)
             .await
-            .map_err(|e| {
-                ErrorObjectOwned::owned(
-                    ErrorCode::InvalidParams.code(),
-                    "Internal server error",
-                    Some(e.to_string()),
-                )
-            })
+            .map_err(invalid_params_error_object)
     }
 }
