@@ -270,24 +270,47 @@ impl ValidatorConnector {
 ///
 /// The validator is the single source of truth for activation heights
 /// (zaino#1076): the config carries only a network kind, and the runtime
-/// network is constructed here before anything consumes one — from zebra's
-/// compiled parameters for the public networks, from the validator's
-/// reported schedule for regtest. There is no fallback: a silently wrong
-/// schedule is the failure mode this removes.
+/// network is constructed here before anything consumes one. On regtest the
+/// schedule is adopted wholesale from the validator's report. On Mainnet and
+/// Testnet the compiled zebra parameters are used, but the validator's
+/// reported schedule is verified against them first, so a validator running
+/// a *configured* testnet (custom activation heights) fails loud here
+/// instead of silently drifting from the index. There is no fallback: a
+/// silently wrong schedule is the failure mode this removes.
+///
+/// Adoption happens exactly once, at spawn. A validator restarted
+/// mid-session with a different schedule is out of scope (the test harness
+/// restarts validator and indexer together); it would invalidate the index
+/// without being re-detected here.
 async fn adopt_network(
     common: &CommonBackendConfig,
     rpc_client: &JsonRpSeeConnector,
 ) -> Result<zebra_chain::parameters::Network, BlockchainSourceError> {
-    Ok(match common.network {
-        zaino_common::Network::Mainnet => zebra_chain::parameters::Network::Mainnet,
-        zaino_common::Network::Testnet => zebra_chain::parameters::Network::new_default_testnet(),
+    let blockchain_info = rpc_client.get_blockchain_info().await.map_err(|error| {
+        BlockchainSourceError::Unrecoverable(format!(
+            "cannot fetch activation heights from the validator at {}: {error}",
+            common.validator_rpc_address
+        ))
+    })?;
+
+    // Shared by the Mainnet/Testnet arms: the compiled network is only
+    // trusted after the validator's report agrees with it.
+    let verified = |network: zebra_chain::parameters::Network| {
+        verify_reported_upgrades(&network, &blockchain_info.upgrades).map_err(|reason| {
+            BlockchainSourceError::Unrecoverable(format!(
+                "the validator at {} disagrees with the compiled {network} parameters: {reason}",
+                common.validator_rpc_address
+            ))
+        })?;
+        Ok(network)
+    };
+
+    match common.network {
+        zaino_common::Network::Mainnet => verified(zebra_chain::parameters::Network::Mainnet),
+        zaino_common::Network::Testnet => {
+            verified(zebra_chain::parameters::Network::new_default_testnet())
+        }
         zaino_common::Network::Regtest => {
-            let blockchain_info = rpc_client.get_blockchain_info().await.map_err(|error| {
-                BlockchainSourceError::Unrecoverable(format!(
-                    "cannot fetch activation heights from the validator at {}: {error}",
-                    common.validator_rpc_address
-                ))
-            })?;
             let heights =
                 activation_heights_from_upgrades(&blockchain_info.upgrades).map_err(|reason| {
                     BlockchainSourceError::Unrecoverable(format!(
@@ -296,9 +319,35 @@ async fn adopt_network(
                     ))
                 })?;
             info!(?heights, "Adopted activation heights from the validator");
-            heights.to_regtest_network()
+            Ok(heights.to_regtest_network())
         }
-    })
+    }
+}
+
+/// Checks every `(upgrade, height)` the validator reports against `network`'s
+/// compiled activation schedule, rejecting the first disagreement.
+///
+/// Only reported entries are checked — the report's *completeness* is not:
+/// the map is keyed by consensus branch ID, so upgrades zebra considers
+/// unconfigured are simply absent, and an older validator may not know the
+/// newest upgrades yet.
+fn verify_reported_upgrades(
+    network: &zebra_chain::parameters::Network,
+    upgrades: &IndexMap<ConsensusBranchIdHex, NetworkUpgradeInfo>,
+) -> Result<(), String> {
+    for upgrade_info in upgrades.values() {
+        let (upgrade, height, _status) = upgrade_info.into_parts();
+        let compiled = upgrade.activation_height(network);
+        if compiled != Some(height) {
+            return Err(format!(
+                "the validator reports {upgrade:?} activating at height {}, \
+                 but the compiled parameters say {:?}",
+                height.0,
+                compiled.map(|compiled_height| compiled_height.0)
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Builds the regtest activation heights from the validator's reported
@@ -310,6 +359,12 @@ async fn adopt_network(
 /// `Network` (zaino#1076). An upgrade absent from the validator's map is
 /// never-activated — nothing is backfilled from defaults. Mainnet and
 /// Testnet use zebra's compiled parameters and never take this path.
+///
+/// `before_overwinter` is always `None` here: the map is keyed by consensus
+/// branch ID, which `BeforeOverwinter` does not have, so it can never appear
+/// in the report. Correctness relies on zebra's `new_regtest` supplying its
+/// own `BeforeOverwinter` handling when `to_regtest_network` builds the
+/// runtime network from these heights.
 fn activation_heights_from_upgrades(
     upgrades: &IndexMap<ConsensusBranchIdHex, NetworkUpgradeInfo>,
 ) -> Result<zaino_common::config::network::ActivationHeights, String> {
@@ -2862,6 +2917,69 @@ mod activation_heights_from_upgrades {
         assert!(
             reason.contains("twice"),
             "error should name the duplication, got: {reason}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod verify_reported_upgrades {
+    fn upgrades_map(
+        json: &str,
+    ) -> indexmap::IndexMap<
+        zebra_rpc::methods::ConsensusBranchIdHex,
+        zebra_rpc::methods::NetworkUpgradeInfo,
+    > {
+        serde_json::from_str(json).expect("upgrades fixture parses")
+    }
+
+    /// A report agreeing with the compiled schedule passes.
+    #[test]
+    fn accepts_a_report_matching_the_compiled_schedule() {
+        let upgrades = upgrades_map(
+            r#"{
+                "76b809bb": { "name": "Sapling", "activationheight": 419200, "status": "active" }
+            }"#,
+        );
+
+        super::verify_reported_upgrades(&zebra_chain::parameters::Network::Mainnet, &upgrades)
+            .expect("mainnet Sapling at 419200 matches the compiled parameters");
+    }
+
+    /// A reported height disagreeing with the compiled schedule fails loud —
+    /// the configured-testnet / wrong-network drift class.
+    #[test]
+    fn rejects_a_mismatched_height() {
+        let upgrades = upgrades_map(
+            r#"{
+                "76b809bb": { "name": "Sapling", "activationheight": 419201, "status": "active" }
+            }"#,
+        );
+
+        let reason =
+            super::verify_reported_upgrades(&zebra_chain::parameters::Network::Mainnet, &upgrades)
+                .expect_err("a wrong Sapling height must be rejected");
+        assert!(
+            reason.contains("419201"),
+            "error should name the reported height, got: {reason}"
+        );
+    }
+
+    /// An upgrade the compiled schedule never activates must also be
+    /// rejected when the validator reports a height for it.
+    #[test]
+    fn rejects_an_upgrade_the_compiled_schedule_lacks() {
+        let upgrades = upgrades_map(
+            r#"{
+                "77190ad8": { "name": "NU7", "activationheight": 123, "status": "pending" }
+            }"#,
+        );
+
+        let reason =
+            super::verify_reported_upgrades(&zebra_chain::parameters::Network::Mainnet, &upgrades)
+                .expect_err("an unscheduled upgrade with a reported height must be rejected");
+        assert!(
+            reason.contains("None"),
+            "error should show the compiled schedule has no height, got: {reason}"
         );
     }
 }
