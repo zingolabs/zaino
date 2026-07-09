@@ -95,72 +95,52 @@ impl Default for ActivationHeights {
     }
 }
 
-impl From<ConfiguredActivationHeights> for ActivationHeights {
-    fn from(
-        ConfiguredActivationHeights {
-            before_overwinter,
-            overwinter,
-            sapling,
-            blossom,
-            heartwood,
-            canopy,
-            nu5,
-            nu6,
-            nu6_1,
-            nu6_2,
-            nu6_3,
-            nu7,
-        }: ConfiguredActivationHeights,
-    ) -> Self {
-        Self {
-            before_overwinter,
-            overwinter,
-            sapling,
-            blossom,
-            heartwood,
-            canopy,
-            nu5,
-            nu6,
-            nu6_1,
-            nu6_2,
-            nu6_3,
-            nu7,
+/// Records the `NetworkUpgrade`-variant ↔ `ActivationHeights`-field correspondence
+/// exactly once, generating everything derived from it: the two field-by-field
+/// `From` conversions between [`ActivationHeights`] and zebra's
+/// [`ConfiguredActivationHeights`] (the structs share field names).
+///
+/// A declarative macro rather than functions because plain `fn`s cannot abstract
+/// over struct fields, and the variant/field spellings (`Nu5`/`nu5`) differ only
+/// by casing, which `macro_rules!` cannot derive — hence explicit pairs.
+///
+/// Zebra's side of these conversions is structurally stable; the recurring edit
+/// here is a new network upgrade, which lands as a single `(Variant, field)`
+/// entry in the invocation below (after adding the struct field). The exhaustive
+/// destructures and match keep full compile-time drift detection: a new zebra
+/// field or variant fails the build until its pair is added.
+macro_rules! activation_heights_mirror {
+    ($(($variant:ident, $field:ident)),* $(,)?) => {
+        impl From<ConfiguredActivationHeights> for ActivationHeights {
+            fn from(
+                ConfiguredActivationHeights { $($field),* }: ConfiguredActivationHeights,
+            ) -> Self {
+                Self { $($field),* }
+            }
         }
-    }
-}
-impl From<ActivationHeights> for ConfiguredActivationHeights {
-    fn from(
-        ActivationHeights {
-            before_overwinter,
-            overwinter,
-            sapling,
-            blossom,
-            heartwood,
-            canopy,
-            nu5,
-            nu6,
-            nu6_1,
-            nu6_2,
-            nu6_3,
-            nu7,
-        }: ActivationHeights,
-    ) -> Self {
-        Self {
-            before_overwinter,
-            overwinter,
-            sapling,
-            blossom,
-            heartwood,
-            canopy,
-            nu5,
-            nu6,
-            nu6_1,
-            nu6_2,
-            nu6_3,
-            nu7,
+
+        impl From<ActivationHeights> for ConfiguredActivationHeights {
+            fn from(ActivationHeights { $($field),* }: ActivationHeights) -> Self {
+                Self { $($field),* }
+            }
         }
-    }
+    };
 }
+
+activation_heights_mirror!(
+    (BeforeOverwinter, before_overwinter),
+    (Overwinter, overwinter),
+    (Sapling, sapling),
+    (Blossom, blossom),
+    (Heartwood, heartwood),
+    (Canopy, canopy),
+    (Nu5, nu5),
+    (Nu6, nu6),
+    (Nu6_1, nu6_1),
+    (Nu6_2, nu6_2),
+    (Nu6_3, nu6_3),
+    (Nu7, nu7),
+);
 
 impl Network {
     /// Determines if we should wait for the server to fully sync. Used for testing
