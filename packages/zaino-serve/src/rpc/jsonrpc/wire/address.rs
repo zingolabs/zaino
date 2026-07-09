@@ -23,13 +23,13 @@ pub(crate) fn validate_address_from_domain(validated: ValidatedAddress) -> Valid
 
 /// The `z_validateaddress` response.
 ///
-/// Zebra has no type for this zcashd-only method, so the shape is defined here.
-/// The serialization is hand-written because zcashd's is irregular in two ways a
+/// Zebra has no type for this legacy-only method, so the shape is defined here.
+/// The serialization is hand-written because the legacy full node's is irregular in two ways a
 /// derive cannot express: the address kind is emitted twice, under both
 /// `address_type` and the legacy `type` key, and the per-kind key material
 /// fields appear only for the kinds that have them.
 ///
-/// zcashd's `ismine` field is deliberately absent: Zaino holds no wallet, so it
+/// the legacy full node's `ismine` field is deliberately absent: Zaino holds no wallet, so it
 /// cannot answer the question, and emitting `false` would be a lie rather than
 /// an omission.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,7 +107,7 @@ impl Serialize for ValidZValidateAddressWire {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut map = serializer.serialize_map(None)?;
 
-        // zcashd emits the kind under both keys. `type` is the legacy name and
+        // the legacy full node emits the kind under both keys. `type` is the legacy name and
         // clients still read it, so both are mirrored from the one field.
         map.serialize_entry("address_type", &self.kind)?;
         map.serialize_entry("type", &self.kind)?;
@@ -134,7 +134,7 @@ struct SaplingKeysWire {
     diversified_transmission_key: String,
 }
 
-/// Address kinds zcashd's `z_validateaddress` names.
+/// Address kinds the legacy full node's `z_validateaddress` names.
 ///
 /// There is no `sprout` variant: Zaino does not classify Sprout addresses, so
 /// this can never be asked to serialize one. See

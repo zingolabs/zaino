@@ -12,9 +12,7 @@
 //! partitions even when the first fails, so the summary reflects the whole
 //! suite. It then exits non-zero if either partition failed, so CI still
 //! catches it.
-//!
-//! `--with-zcashd` is forwarded as a flag to the child `makers` calls so the
-//! zcashd-backed tests are included; otherwise nothing enables them.
+
 #![forbid(unsafe_code)]
 
 use std::error::Error;
@@ -55,15 +53,11 @@ impl Summary {
 
 /// Run one partition's `makers` task, streaming its combined output to our
 /// stdout while capturing it for parsing. Returns (exit_code, captured_output).
-fn run_partition(task: &str, with_zcashd: bool) -> Result<(i32, String), Box<dyn Error>> {
+fn run_partition(task: &str) -> Result<(i32, String), Box<dyn Error>> {
     // `bash -c '... 2>&1'` merges stderr into stdout so the single captured
     // stream carries the nextest summary line wherever nextest emits it.
     let mut cmd = Command::new("bash");
-    // Forward `--with-zcashd` as an explicit flag (no implicit env var): the
-    // partition task passes it through to `container-test`, which adds
-    // `--features zcashd_support`.
-    let zcashd_flag = if with_zcashd { " --with-zcashd" } else { "" };
-    cmd.arg("-c").arg(format!("makers {task}{zcashd_flag} 2>&1"));
+    cmd.arg("-c").arg(format!("makers {task} 2>&1"));
     let mut child = cmd.stdout(Stdio::piped()).spawn()?;
 
     let stdout = child
@@ -153,7 +147,6 @@ fn print_row(label: &str, s: &Summary) {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let with_zcashd = std::env::args().any(|a| a == "--with-zcashd");
     let set = if std::env::args().any(|a| a == "--all") {
         TestSet::All
     } else {
@@ -164,7 +157,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         TestSet::All => {
             println!(">>> all: running packages set");
             let start = Instant::now();
-            let (rc, log) = run_partition("container-test", with_zcashd)?;
+            let (rc, log) = run_partition("container-test")?;
             let elapsed = start.elapsed();
             let mut s = parse_summary(&log);
             s.elapsed = elapsed;
@@ -173,14 +166,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         TestSet::Live => None,
     };
 
+
     println!(">>> live: running clientless partition");
     let cl_start = Instant::now();
-    let (cl_rc, cl_log) = run_partition("live-clientless", with_zcashd)?;
+    let (cl_rc, cl_log) = run_partition("live-clientless")?;
     let cl_elapsed = cl_start.elapsed();
 
     println!(">>> live: running e2e partition");
     let e2e_start = Instant::now();
-    let (e2e_rc, e2e_log) = run_partition("live-e2e", with_zcashd)?;
+    let (e2e_rc, e2e_log) = run_partition("live-e2e")?;
     let e2e_elapsed = e2e_start.elapsed();
 
     let mut cl = parse_summary(&cl_log);

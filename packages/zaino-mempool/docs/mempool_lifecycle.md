@@ -116,7 +116,7 @@ wait for tip agreement — that is the coherence layer's job:
    current set → `added` / `removed` txids.
 3. **Heights.** If there are additions, fetch `getrawmempool verbose` to obtain each
    new transaction's **tip-at-entry height** — the validator's own `nHeight`
-   (Zebra `VerifiedUnminedTx.height`, zcashd `CTxMemPoolEntry.nHeight`) — mirroring
+   (Zebra `VerifiedUnminedTx.height`, the legacy full node `CTxMemPoolEntry.nHeight`) — mirroring
    the validator rather than deriving a height locally.
 4. **Raw fetch.** Fetch raw bytes for each added txid (bounded concurrency). A txid
    that disappeared between listing and fetch is skipped (a normal race), not an

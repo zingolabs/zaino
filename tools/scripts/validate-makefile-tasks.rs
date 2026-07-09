@@ -49,7 +49,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &format!("{}:{}", image_name, tag),
             "cargo", "test",
             "--package", "zaino-testutils",
-            "--lib", "launch_testmanager::zcashd::basic",
+            "--lib", "launch_testmanager::zebrad::fetch_service::basic",
             "--", "--nocapture"
         ])
         .stdout(Stdio::inherit())

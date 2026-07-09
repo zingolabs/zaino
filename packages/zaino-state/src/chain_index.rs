@@ -148,7 +148,7 @@ pub(crate) fn unix_now_secs() -> f64 {
 ///
 /// The primary implementation is [`NodeBackedChainIndex`], which can be backed by either:
 /// - Direct read access to a zebrad database via `ReadStateService` (preferred)
-/// - A JSON-RPC connection to a validator node (zcashd, zebrad, or another zainod)
+/// - A JSON-RPC connection to a validator node (zebrad or another zainod)
 ///
 /// # Constructing one
 ///
@@ -478,10 +478,10 @@ pub trait ChainIndexRpcExt: ChainIndex {
 
     /// Returns the `getblock`-shaped block for the given hash-or-height string.
     ///
-    /// `verbosity` follows the zcashd `getblock` convention (0 = raw, 1 = object with
+    /// `verbosity` follows the legacy full-node `getblock` convention (0 = raw, 1 = object with
     /// txids, 2 = object with full transaction data).
     ///
-    /// zcashd reference: [`getblock`](https://zcash.github.io/rpc/getblock.html)
+    /// Zcash RPC reference: [`getblock`](https://zcash.github.io/rpc/getblock.html)
     fn z_get_block(
         &self,
         hash_or_height: String,
@@ -490,7 +490,7 @@ pub trait ChainIndexRpcExt: ChainIndex {
 
     /// Returns the `getblockheader`-shaped header for the given block hash.
     ///
-    /// zcashd reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
+    /// Zcash RPC reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
     fn get_block_header(
         &self,
         hash: String,
@@ -508,7 +508,7 @@ pub trait ChainIndexRpcExt: ChainIndex {
     /// Returns the `getblockdeltas`-shaped transparent input/output deltas for the block
     /// with the given hash.
     ///
-    /// zcashd reference: [`getblockdeltas`](https://zcash.github.io/rpc/getblockdeltas.html)
+    /// Zcash RPC reference: [`getblockdeltas`](https://zcash.github.io/rpc/getblockdeltas.html)
     fn get_block_deltas(
         &self,
         hash: String,
@@ -517,7 +517,7 @@ pub trait ChainIndexRpcExt: ChainIndex {
     /// Returns the proof-of-work difficulty of the best chain as a multiple of the
     /// minimum difficulty.
     ///
-    /// zcashd reference: [`getdifficulty`](https://zcash.github.io/rpc/getdifficulty.html)
+    /// Zcash RPC reference: [`getdifficulty`](https://zcash.github.io/rpc/getdifficulty.html)
     fn get_difficulty(&self) -> impl std::future::Future<Output = Result<f64, Self::Error>>;
 
     // ********** Node-passthrough methods **********
@@ -604,7 +604,7 @@ pub trait ChainIndexRpcExt: ChainIndex {
     ///
     /// Returns `None` while the indexer is still syncing the finalised state (the
     /// accumulator's spent-index invariants are not yet established). The wire
-    /// layer renders that as zcashd's empty object.
+    /// layer renders that as the legacy full node's empty object.
     fn get_tx_out_set_info(
         &self,
     ) -> impl std::future::Future<Output = Result<Option<TxOutSetInfo>, Self::Error>>;
@@ -617,7 +617,7 @@ pub trait ChainIndexRpcExt: ChainIndex {
 /// This is the primary implementation backing [`ChainIndex`] and replaces the functionality
 /// previously provided by `FetchService` and `StateService`. It can be backed by either:
 /// - A zebra `ReadStateService` for direct database access (preferred for performance)
-/// - A JSON-RPC connection to any validator node (zcashd, zebrad, or another zainod)
+/// - A JSON-RPC connection to any validator node (zebrad or another zainod)
 ///
 /// To use the [`ChainIndex`] trait methods, call [`subscriber()`](NodeBackedChainIndex::subscriber)
 /// to get a [`NodeBackedChainIndexSubscriber`] which implements the trait.
@@ -2398,7 +2398,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ChainIndexRpcExt
     ) -> Result<GetBlock, Self::Error> {
         // Resolve tip-relative negative heights against the best chaintip,
         // matching zebra's own `getblock` semantics (`-1` is the tip). A
-        // rejected identifier carries zcashd's legacy InvalidParameter code
+        // rejected identifier carries the legacy full node's legacy InvalidParameter code
         // as a typed `RpcError` source, which the serve layer recovers by
         // downcast-walking the error chain.
         let snapshot = self.snapshot_nonfinalized_state();
@@ -2528,7 +2528,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ChainIndexRpcExt
         raw_transaction_hex: String,
     ) -> Result<zaino_primitives::types::TransactionId, Self::Error> {
         // A local rejection, before the validator round trip. It carries
-        // zcashd's `InvalidParameter` so the client sees the same code it
+        // the legacy full node's `InvalidParameter` so the client sees the same code it
         // would have got from the validator, rather than a generic internal
         // error — the serving layer recovers it by downcasting the source
         // chain.

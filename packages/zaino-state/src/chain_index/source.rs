@@ -153,7 +153,7 @@ pub trait BlockchainSource:
 
     /// Returns the `getblock`-shaped verbose block for the given hash or height.
     ///
-    /// `verbosity` follows the zcashd `getblock` convention (0 = raw, 1 = object with
+    /// `verbosity` follows the legacy full-node `getblock` convention (0 = raw, 1 = object with
     /// txids, 2 = object with full transaction data).
     fn get_block_verbose(
         &self,
@@ -315,9 +315,9 @@ pub trait BlockchainSource:
     ///
     /// If end is zero, it's interpreted as the latest block height.
     ///
-    /// [Original zcashd implementation](https://github.com/zcash/zcash/blob/18238d90cd0b810f5b07d5aaa1338126aa128c06/src/rpc/misc.cpp#L881)
+    /// [the original legacy full-node implementation](https://github.com/zcash/zcash/blob/18238d90cd0b810f5b07d5aaa1338126aa128c06/src/rpc/misc.cpp#L881)
     ///
-    /// zcashd reference: [`getaddressdeltas`](https://zcash.github.io/rpc/getaddressdeltas.html)
+    /// Zcash RPC reference: [`getaddressdeltas`](https://zcash.github.io/rpc/getaddressdeltas.html)
     /// method: post
     /// tags: address
     fn get_address_deltas(
@@ -327,7 +327,7 @@ pub trait BlockchainSource:
 
     /// Returns the total balance of a provided `addresses` in an [`AddressBalance`](zaino_primitives::types::AddressBalance) instance.
     ///
-    /// zcashd reference: [`getaddressbalance`](https://zcash.github.io/rpc/getaddressbalance.html)
+    /// Zcash RPC reference: [`getaddressbalance`](https://zcash.github.io/rpc/getaddressbalance.html)
     /// method: post
     /// tags: address
     ///
@@ -338,14 +338,14 @@ pub trait BlockchainSource:
     ///
     /// # Notes
     ///
-    /// zcashd also accepts a single string parameter instead of an array of strings, but Zebra
+    /// the legacy full node also accepts a single string parameter instead of an array of strings, but Zebra
     /// doesn't because lightwalletd always calls this RPC with an array of addresses.
     ///
-    /// zcashd also returns the total amount of Zatoshis received by the addresses, but Zebra
+    /// the legacy full node also returns the total amount of Zatoshis received by the addresses, but Zebra
     /// doesn't because lightwalletd doesn't use that information.
     ///
     /// The RPC documentation says that the returned object has a string `balance` field, but
-    /// zcashd actually [returns an
+    /// the legacy full node actually [returns an
     /// integer](https://github.com/zcash/lightwalletd/blob/bdaac63f3ee0dbef62bde04f6817a9f90d483b00/common/common.go#L128-L130).
     fn get_address_balance(
         &self,
@@ -354,7 +354,7 @@ pub trait BlockchainSource:
 
     /// Returns the transaction ids made by the provided transparent addresses.
     ///
-    /// zcashd reference: [`getaddresstxids`](https://zcash.github.io/rpc/getaddresstxids.html)
+    /// Zcash RPC reference: [`getaddresstxids`](https://zcash.github.io/rpc/getaddresstxids.html)
     /// method: post
     /// tags: address
     ///
@@ -376,7 +376,7 @@ pub trait BlockchainSource:
 
     /// Returns all unspent outputs for a list of addresses.
     ///
-    /// zcashd reference: [`getaddressutxos`](https://zcash.github.io/rpc/getaddressutxos.html)
+    /// Zcash RPC reference: [`getaddressutxos`](https://zcash.github.io/rpc/getaddressutxos.html)
     /// method: post
     /// tags: address
     ///
@@ -465,7 +465,7 @@ pub enum BlockchainSourceError {
     #[error("critical error in backing block source: {0}")]
     Unrecoverable(String),
     /// Unrecoverable error whose typed cause is preserved as
-    /// [`std::error::Error::source`]. zaino-serve recovers zcashd-compatible
+    /// [`std::error::Error::source`]. zaino-serve recovers legacy-compatible
     /// RPC error codes by downcast-walking `source()` chains, so errors that
     /// wrap a typed transport or RPC error must use this variant rather than
     /// [`Self::Unrecoverable`] with a stringified cause.

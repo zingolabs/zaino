@@ -16,12 +16,6 @@ default = []
 # open socket over race-free. Not part of the production API.
 test_dependencies = []
 
-# Support for connecting to a zcashd validator node. Opt-in (default off, docs/adr/0005); being
-# deprecated. Gates the zcashd-shaped types in this crate's wire module — which
-# is now the only place in the workspace this feature gates anything, so it
-# forwards nowhere. See docs/adr/0001-zcashd-support-feature-gate.md.
-zcashd_support = []
-
 # Removes network restrictions.
 no_tls_use_unencrypted_traffic = ["tonic/tls-native-roots"]
 

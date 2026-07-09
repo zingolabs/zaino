@@ -69,13 +69,13 @@ const INVALID_ADDRESS_CODE: i64 = -5;
 ///
 /// The same `-5` as [`INVALID_ADDRESS_CODE`], named separately because it says
 /// something different: on `getspentinfo` there is no address to reject, and
-/// zcashd uses this code for "unspent, unknown, or no spent index" alike.
+/// the legacy full node uses this code for "unspent, unknown, or no spent index" alike.
 const NO_SPEND_ON_RECORD: i64 = -5;
 
 /// The JSON-RPC standard code for a method the server does not implement.
 ///
-/// Not a zcashd legacy code — it comes from the envelope, not the application.
-/// Relevant because `getspentinfo` is zcashd-only, so a zebrad-backed
+/// Not a legacy full-node legacy code — it comes from the envelope, not the application.
+/// Relevant because `getspentinfo` is legacy-only, so a zebrad-backed
 /// deployment answers every call with this.
 const METHOD_NOT_FOUND: i64 = -32601;
 
@@ -129,8 +129,8 @@ fn submission_rejection(error: &FetchError) -> Option<zaino_source::SendRawTrans
 
 /// The codes `getspentinfo` answers with rather than fails with.
 ///
-/// `-5` is zcashd saying it has no spend on record; `-32601` is a validator
-/// saying it does not implement the method, which for this zcashd-only method
+/// `-5` is the legacy full node saying it has no spend on record; `-32601` is a validator
+/// saying it does not implement the method, which for this legacy-only method
 /// means the backing node is zebrad. Both are answers about the question, so a
 /// client should see the reason rather than a generic transport error — and
 /// they must stay distinct, because reading "I cannot answer" as "the output is
@@ -397,7 +397,7 @@ impl ZebraRpcAdapter {
     /// not-found codes as `Ok(None)`.
     ///
     /// For `gettxout`, whose *ordinary* answer is already optional: an unspent
-    /// output is a successful query with nothing to report. zcashd returns JSON
+    /// output is a successful query with nothing to report. the legacy full node returns JSON
     /// `null` and zebrad returns a not-found code; both mean absent.
     ///
     /// `getspentinfo` used to share this, and should not have: it has no null
@@ -838,7 +838,7 @@ impl zaino_source::OneShotGetSpentInfo for ZebraRpcAdapter {
                 }
             })?;
 
-        // A `null` body would be the same fact by a different route. zcashd
+        // A `null` body would be the same fact by a different route. the legacy full node
         // does not send one, but reading it as "no spend on record" keeps the
         // two spellings from producing different answers.
         parse::parse_spent_info(&value)
@@ -1155,7 +1155,7 @@ mod classification_tests {
         );
     }
 
-    /// `getspentinfo` is zcashd-only, so a zebrad-backed deployment answers
+    /// `getspentinfo` is legacy-only, so a zebrad-backed deployment answers
     /// every call `-32601`. That must not be read as "unspent": one says the
     /// output has no spend on record, the other says this node cannot tell you
     /// either way, and collapsing them reports spent outputs as unspent.

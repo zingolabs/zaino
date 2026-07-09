@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 /// Validator (full-node) connection settings.
 ///
-/// Configures how Zaino connects to the backing validator (Zebra or Zcashd).
+/// Configures how Zaino connects to the backing validator (Zebra).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct ValidatorConfig {

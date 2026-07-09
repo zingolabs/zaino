@@ -35,8 +35,6 @@ use zaino_status::{Liveness, Readiness, Status};
 use zainodlib::{config::BackendType, error::IndexerError, indexer::Indexer};
 pub use zcash_local_net as services;
 use zcash_local_net::error::LaunchError;
-#[cfg(feature = "zcashd_support")]
-use zcash_local_net::validator::zcashd::{Zcashd, ZcashdConfig};
 use zcash_local_net::validator::zebrad::{Zebrad, ZebradConfig};
 pub use zcash_local_net::validator::Validator;
 use zcash_local_net::validator::ValidatorConfig as _;
@@ -434,14 +432,6 @@ pub fn from_local_net_activation_heights(
     }
 }
 
-/// Path for zcashd binary.
-#[cfg(feature = "zcashd_support")]
-pub static ZCASHD_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| binary_path("zcashd"));
-
-/// Path for zcash-cli binary.
-#[cfg(feature = "zcashd_support")]
-pub static ZCASH_CLI_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| binary_path("zcash-cli"));
-
 /// Path for zebrad binary.
 pub static ZEBRAD_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| binary_path("zebrad"));
 
@@ -450,14 +440,6 @@ pub static LIGHTWALLETD_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| binary_path("l
 
 /// Path for zainod binary.
 pub static ZAINOD_BIN: Lazy<Option<PathBuf>> = Lazy::new(|| binary_path("zainod"));
-
-/// Path for zcashd chain cache.
-#[cfg(feature = "zcashd_support")]
-pub static ZCASHD_CHAIN_CACHE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
-    let mut workspace_root_path = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    workspace_root_path.pop();
-    Some(workspace_root_path.join("live-tests/chain_cache/client_rpc_tests"))
-});
 
 /// Path for zebrad chain cache.
 pub static ZEBRAD_CHAIN_CACHE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
@@ -481,9 +463,6 @@ pub static ZEBRAD_TESTNET_STATE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
 #[derive(Debug, PartialEq, Clone, Copy)]
 /// Represents the type of validator to launch.
 pub enum ValidatorKind {
-    /// Zcashd.
-    #[cfg(feature = "zcashd_support")]
-    Zcashd,
     /// Zebrad.
     Zebrad,
 }
@@ -491,13 +470,10 @@ pub enum ValidatorKind {
 impl ValidatorKind {
     /// Default regtest activation heights for this validator kind.
     ///
-    /// Centralises the per-kind selection so the choice (and its
-    /// `zcashd_support` gating) lives in one place instead of being matched at
-    /// every call site.
+    /// Centralises the per-kind selection so the choice lives in one place
+    /// instead of being matched at every call site.
     pub fn default_activation_heights(self) -> ActivationHeights {
         match self {
-            #[cfg(feature = "zcashd_support")]
-            ValidatorKind::Zcashd => ActivationHeights::default(),
             ValidatorKind::Zebrad => ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS,
         }
     }
@@ -505,9 +481,6 @@ impl ValidatorKind {
 
 /// Config for validators.
 pub enum ValidatorTestConfig {
-    /// Zcashd Config.
-    #[cfg(feature = "zcashd_support")]
-    ZcashdConfig(ZcashdConfig),
     /// Zebrad Config.
     ZebradConfig(zcash_local_net::validator::zebrad::ZebradConfig),
 }
@@ -524,9 +497,9 @@ pub struct TestManager<C: Validator, Conn: ValidatorConnectionMarker> {
     pub data_dir: PathBuf,
     /// Network (chain) type:
     pub network: NetworkKind,
-    /// Zebrad/Zcashd JsonRpc listen address.
+    /// Validator JsonRpc listen address.
     pub full_node_rpc_listen_address: SocketAddr,
-    /// Zebrad/Zcashd gRpc listen address.
+    /// Validator gRpc listen address.
     pub full_node_grpc_listen_address: SocketAddr,
     /// Zaino Indexer JoinHandle.
     pub zaino_handle: Option<tokio::task::JoinHandle<Result<(), IndexerError>>>,
@@ -578,23 +551,6 @@ impl ValidatorExt for Zebrad {
     }
 }
 
-#[cfg(feature = "zcashd_support")]
-impl ValidatorExt for Zcashd {
-    async fn launch_validator_and_return_config(
-        config: Self::Config,
-    ) -> Result<(Self, ValidatorConfig), LaunchError> {
-        let zcashd = Zcashd::launch(config).await?;
-        let validator_config = ValidatorConfig {
-            validator_jsonrpc_listen_address: format!("{}:{}", Ipv4Addr::LOCALHOST, zcashd.port()),
-            validator_grpc_listen_address: None,
-            validator_cookie_path: None,
-            validator_user: Some("xxxxxx".to_string()),
-            validator_password: Some("xxxxxx".to_string()),
-        };
-        Ok((zcashd, validator_config))
-    }
-}
-
 /// The pool that sessions funding wallets from coinbase mine to. Shielded
 /// coinbase carries no 100-confirmation maturity rule (that rule covers only
 /// transparent coinbase outputs), so a test that needs shielded start funds
@@ -611,15 +567,11 @@ impl ValidatorExt for Zcashd {
 pub const SHIELDED_FUNDING_POOL: MinerPool = MinerPool::Orchard;
 
 /// The pool a validator mines to when the session doesn't opt into
-/// [`SHIELDED_FUNDING_POOL`]: transparent for zebrad (cheapest block
-/// templates — a shielded miner address would cost a halo2 proof per block),
-/// Orchard for zcashd (its historical setting; the cached launch reward
-/// funds wallets without extra mining).
+/// [`SHIELDED_FUNDING_POOL`]: transparent (cheapest block templates — a
+/// shielded miner address would cost a halo2 proof per block).
 pub fn default_mining_pool(validator: &ValidatorKind) -> MinerPool {
-    if validator == &ValidatorKind::Zebrad {
-        MinerPool::Transparent
-    } else {
-        MinerPool::Orchard
+    match validator {
+        ValidatorKind::Zebrad => MinerPool::Transparent,
     }
 }
 
@@ -684,7 +636,7 @@ where
     /// Launches zcash-local-net<Empty, Validator> with coinbase paid to
     /// `mine_to_pool`'s regtest miner address.
     ///
-    /// Possible validators: Zcashd, Zebrad.
+    /// Possible validators: Zebrad.
     ///
     /// On zebrad a shielded `mine_to_pool` maps to a unified miner address
     /// whose receivers zebra tries in order orchard → sapling → transparent
@@ -716,12 +668,6 @@ where
         enable_zaino_jsonrpc_server: bool,
         enable_clients: bool,
     ) -> Result<Self, std::io::Error> {
-        #[cfg(feature = "zcashd_support")]
-        if (validator == &ValidatorKind::Zcashd) && (Conn::BACKEND == BackendType::Direct) {
-            return Err(std::io::Error::other(
-                "Cannot use the direct (ReadStateService) connection with zcashd.",
-            ));
-        }
         zaino_common::logging::try_init();
 
         let activation_heights =
@@ -1258,125 +1204,16 @@ async fn spawn_fetch_service(
     .unwrap()
 }
 
-/// Handles from [`launch_zcashd_dual_fetch_services`]: a zcashd-backed
-/// [`TestManager`] (JSON-RPC server enabled) plus two standalone fetch
-/// services — one pointed at zcashd directly, one at Zaino's JSON-RPC
-/// server — for tests that compare the two. The owned services exist only to
-/// keep their subscribers alive.
-#[cfg(feature = "zcashd_support")]
-pub struct ZcashdDualFetchServices {
-    /// The launched zcashd + Zaino test manager.
-    pub test_manager: TestManager<Zcashd, Rpc>,
-    /// Owned zcashd-direct `Rpc` service; keeps `zcashd_subscriber` alive.
-    pub zcashd_fetch_service: NodeBackedIndexerService,
-    /// Subscriber whose answers come from zcashd directly.
-    pub zcashd_subscriber: NodeBackedIndexerServiceSubscriber,
-    /// Owned Zaino-pointed `Rpc` service; keeps `zaino_subscriber` alive.
-    pub zaino_fetch_service: NodeBackedIndexerService,
-    /// Subscriber whose answers come through Zaino's JSON-RPC server.
-    pub zaino_subscriber: NodeBackedIndexerServiceSubscriber,
-}
-
-#[cfg(feature = "zcashd_support")]
-#[allow(deprecated)]
-impl ZcashdDualFetchServices {
-    /// Mine `n` blocks and wait for both the zaino and zcashd subscribers to
-    /// observe the new tip.
-    pub async fn generate_blocks_and_wait_for_tips(&self, n: u32) {
-        self.test_manager
-            .generate_blocks_and_wait_for_tips(n, &self.zaino_subscriber, &self.zcashd_subscriber)
-            .await;
-    }
-}
-
-/// Launch a zcashd [`TestManager`] (with the JSON-RPC server enabled) alongside
-/// two standalone [`FetchService`] instances — one pointed at zcashd directly,
-/// one at Zaino's JSON-RPC server — for tests that compare the two, bundled as
-/// a [`ZcashdDualFetchServices`].
-///
-/// Shared core of the `create_zcashd_test_manager_and_fetch_services` harness in
-/// both live-test partitions (`clientless` and `e2e`). The `e2e` partition
-/// wraps this and additionally builds lightclients from the returned manager's
-/// gRPC address.
-#[cfg(feature = "zcashd_support")]
-#[allow(deprecated)]
-pub async fn launch_zcashd_dual_fetch_services() -> ZcashdDualFetchServices {
-    launch_zcashd_dual_fetch_services_at(ActivationHeights::default()).await
-}
-
-/// [`launch_zcashd_dual_fetch_services`] with the zcashd chain and both fetch
-/// services pinned to `activation_heights`, for wallet clients (e.g. the devtool
-/// wallet) whose compiled-in regtest heights differ from zcashd's defaults and
-/// must be matched by the validator.
-#[cfg(feature = "zcashd_support")]
-#[allow(deprecated)]
-pub async fn launch_zcashd_dual_fetch_services_at(
-    activation_heights: ActivationHeights,
-) -> ZcashdDualFetchServices {
-    let test_manager = TestManager::<Zcashd, Rpc>::launch(
-        &ValidatorKind::Zcashd,
-        None,
-        Some(activation_heights),
-        None,
-        true,
-        true,
-        false,
-    )
-    .await
-    .unwrap();
-
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
-    let zcashd_fetch_service = spawn_fetch_service(
-        test_manager.full_node_rpc_listen_address.to_string(),
-        None,
-        test_manager
-            .local_net
-            .data_dir()
-            .path()
-            .join("zcashd-fetch-service-zaino"),
-        Network::Regtest,
-    )
-    .await;
-    let zcashd_subscriber = zcashd_fetch_service.get_subscriber().inner();
-
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
-    let zaino_fetch_service = spawn_fetch_service(
-        test_manager
-            .zaino_json_rpc_listen_address
-            .expect("zaino jsonrpc address must be active for these tests")
-            .to_string(),
-        test_manager.json_server_cookie_dir.clone(),
-        test_manager
-            .local_net
-            .data_dir()
-            .path()
-            .join("zaino-fetch-service-zaino"),
-        Network::Regtest,
-    )
-    .await;
-    let zaino_subscriber = zaino_fetch_service.get_subscriber().inner();
-
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-
-    ZcashdDualFetchServices {
-        test_manager,
-        zcashd_fetch_service,
-        zcashd_subscriber,
-        zaino_fetch_service,
-        zaino_subscriber,
-    }
-}
-
-/// Return a copy of `info` with its error timestamp cleared, so two `getinfo`
+/// Returns a copy of `info` with its error timestamp cleared, so two `getinfo`
 /// responses from different sources can be compared without spurious timestamp
 /// differences.
 pub fn get_info_with_zeroed_timestamp(
-    mut info: zaino_primitives::types::rpc::NodeInfo,
+    info: zaino_primitives::types::rpc::NodeInfo,
 ) -> zaino_primitives::types::rpc::NodeInfo {
-    info.errors_timestamp = None;
-    info
+    zaino_primitives::types::rpc::NodeInfo {
+        errors_timestamp: None,
+        ..info
+    }
 }
 
 /// Launch a fetch-backend [`TestManager`] and return it together with its own
@@ -1467,59 +1304,6 @@ mod launch_testmanager {
         )
         .await
         .unwrap()
-    }
-
-    #[cfg(feature = "zcashd_support")]
-    mod zcashd {
-        use zcash_local_net::validator::zcashd::Zcashd;
-
-        use super::*;
-
-        #[tokio::test(flavor = "multi_thread")]
-        #[allow(deprecated)]
-        pub(crate) async fn basic() {
-            let mut test_manager =
-                launch_minimal::<Zcashd, Rpc>(&ValidatorKind::Zcashd, None, false).await;
-            assert_eq!(2, (test_manager.local_net.get_chain_height().await));
-            test_manager.close().await;
-        }
-
-        #[tokio::test(flavor = "multi_thread")]
-        #[allow(deprecated)]
-        pub(crate) async fn generate_blocks() {
-            let mut test_manager =
-                launch_minimal::<Zcashd, Rpc>(&ValidatorKind::Zcashd, None, false).await;
-            assert_eq!(2, (test_manager.local_net.get_chain_height().await));
-            test_manager.local_net.generate_blocks(1).await.unwrap();
-            assert_eq!(3, (test_manager.local_net.get_chain_height().await));
-            test_manager.close().await;
-        }
-
-        #[ignore = "chain cache needs development"]
-        #[tokio::test(flavor = "multi_thread")]
-        #[allow(deprecated)]
-        pub(crate) async fn with_chain() {
-            let mut test_manager = launch_minimal::<Zcashd, Rpc>(
-                &ValidatorKind::Zcashd,
-                ZCASHD_CHAIN_CACHE_DIR.clone(),
-                false,
-            )
-            .await;
-            assert_eq!(10, (test_manager.local_net.get_chain_height().await));
-            test_manager.close().await;
-        }
-
-        #[tokio::test(flavor = "multi_thread")]
-        #[allow(deprecated)]
-        pub(crate) async fn zaino() {
-            let mut test_manager =
-                launch_minimal::<Zcashd, Rpc>(&ValidatorKind::Zcashd, None, true).await;
-
-            let _grpc_client = build_client(test_manager.grpc_socket_to_uri())
-                .await
-                .unwrap();
-            test_manager.close().await;
-        }
     }
 
     mod zebrad {

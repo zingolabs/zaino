@@ -191,7 +191,7 @@ impl ChainHeadSnapshot for MapBackedSnapshot {
     /// parent. The canonical tip is always included, even in the degenerate
     /// case where the window holds a single block.
     ///
-    /// zcashd enumerates block-tree leaves and reports inactive fully-known
+    /// the legacy full node enumerates block-tree leaves and reports inactive fully-known
     /// branches as `valid-fork`. ChainHead retains whole blocks, never
     /// headers-only or invalid candidates, so those two statuses are the only
     /// ones this can emit.

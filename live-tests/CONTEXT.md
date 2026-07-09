@@ -8,7 +8,7 @@ flow. Split into two partitions, `e2e` and `clientless`.
 ## Language
 
 **Live test**:
-A test that requires a *live* validator process (Zebra or zcashd), and
+A test that requires a *live* validator process (Zebra), and
 optionally a live wallet client, to exercise Zaino against real external
 infrastructure. The defining property of this suite and the reason it is
 excluded from the default `container-test` flow and run only by its own task
@@ -26,7 +26,7 @@ _Avoid_: wallet test, wallet-tests, lightclient.
 **clientless (test partition)**:
 The partition that drives Zaino's service layer (`FetchService`/`StateService`
 subscribers, RPC surface) directly against a live validator, with no wallet
-client — fetch-vs-state and zcashd-vs-zainod oracle checks. Formerly the
+client — fetch-vs-state oracle checks. Formerly the
 `walletless-tests` package; named `integration` until docs/adr/0004 reverted
 that to `clientless`. The crate/dir is `live-tests/clientless`; selected with
 `-p clientless` or `makers test clientless`.
@@ -36,8 +36,8 @@ reverted in docs/adr/0004, now reserved for Cargo's sense).
 **zaino-testutils**:
 The client-agnostic test harness consumed by both the `e2e` and `clientless`
 partitions. A standalone crate, not part of either partition; it
-owns shared fixtures and the feature-forwarding surface (`zcashd_support`,
-`transparent_address_history_experimental`).
+owns shared fixtures and the feature-forwarding surface
+(`transparent_address_history_experimental`).
 _Avoid_: test helpers, testlib.
 
 **packages (test set)**:

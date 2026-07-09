@@ -20,7 +20,7 @@ source ./tools/scripts/functions.sh
 # root.
 mkdir -p target
 
-TARGET=$(resolve_build_target "$ZCASH_VERSION" "$ZEBRA_VERSION")
+TARGET=$(resolve_build_target "$ZEBRA_VERSION")
 
 # For local builds, use the current user's UID/GID to avoid permission
 # issues. CI builds will use the default UID=1001 from the Containerfile.
@@ -51,7 +51,6 @@ info "Resolved ZEBRA_VERSION=$ZEBRA_VERSION to ZEBRA_GIT_REF=$ZEBRA_GIT_REF"
 cd live-tests/test_environment && \
 podman build -f Containerfile \
   --target "$TARGET" \
-  --build-arg "ZCASH_VERSION=$ZCASH_VERSION" \
   --build-arg "ZEBRA_VERSION=$ZEBRA_VERSION" \
   --build-arg "ZEBRA_GIT_REF=$ZEBRA_GIT_REF" \
   --build-arg "DEVTOOL_VERSION=$DEVTOOL_VERSION" \

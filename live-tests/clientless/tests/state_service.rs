@@ -436,7 +436,7 @@ mod zebra {
         }
 
         #[tokio::test(flavor = "multi_thread")]
-        #[ignore = "We no longer use chain caches. See zcashd::check_info::regtest_no_cache."]
+        #[ignore = "We no longer use chain caches."]
         async fn regtest_with_cache() {
             state_service_check_info::<Zebrad>(
                 &ValidatorKind::Zebrad,
