@@ -313,37 +313,12 @@ async fn adopt_network(
 fn activation_heights_from_upgrades(
     upgrades: &IndexMap<ConsensusBranchIdHex, NetworkUpgradeInfo>,
 ) -> Result<zaino_common::config::network::ActivationHeights, String> {
-    let mut heights = zaino_common::config::network::ActivationHeights {
-        before_overwinter: None,
-        overwinter: None,
-        sapling: None,
-        blossom: None,
-        heartwood: None,
-        canopy: None,
-        nu5: None,
-        nu6: None,
-        nu6_1: None,
-        nu6_2: None,
-        nu6_3: None,
-        nu7: None,
-    };
+    let mut heights = zaino_common::config::network::ActivationHeights::NEVER_ACTIVATED;
     for upgrade_info in upgrades.values() {
         let (upgrade, height, _status) = upgrade_info.into_parts();
-        let slot = match upgrade {
-            // Genesis is height 0 by definition; it has no configuration slot.
-            NetworkUpgrade::Genesis => continue,
-            NetworkUpgrade::BeforeOverwinter => &mut heights.before_overwinter,
-            NetworkUpgrade::Overwinter => &mut heights.overwinter,
-            NetworkUpgrade::Sapling => &mut heights.sapling,
-            NetworkUpgrade::Blossom => &mut heights.blossom,
-            NetworkUpgrade::Heartwood => &mut heights.heartwood,
-            NetworkUpgrade::Canopy => &mut heights.canopy,
-            NetworkUpgrade::Nu5 => &mut heights.nu5,
-            NetworkUpgrade::Nu6 => &mut heights.nu6,
-            NetworkUpgrade::Nu6_1 => &mut heights.nu6_1,
-            NetworkUpgrade::Nu6_2 => &mut heights.nu6_2,
-            NetworkUpgrade::Nu6_3 => &mut heights.nu6_3,
-            NetworkUpgrade::Nu7 => &mut heights.nu7,
+        // Genesis is height 0 by definition; it has no configuration slot.
+        let Some(slot) = heights.slot_mut(upgrade) else {
+            continue;
         };
         if slot.replace(height.0).is_some() {
             return Err(format!("validator reported {upgrade:?} twice"));
@@ -2792,20 +2767,7 @@ mod activation_heights_from_upgrades {
 
     /// All-`None` heights: the starting point adoption fills from the
     /// validator's map, and the expected value for every absent upgrade.
-    const NEVER_ACTIVATED: ActivationHeights = ActivationHeights {
-        before_overwinter: None,
-        overwinter: None,
-        sapling: None,
-        blossom: None,
-        heartwood: None,
-        canopy: None,
-        nu5: None,
-        nu6: None,
-        nu6_1: None,
-        nu6_2: None,
-        nu6_3: None,
-        nu7: None,
-    };
+    const NEVER_ACTIVATED: ActivationHeights = ActivationHeights::NEVER_ACTIVATED;
 
     fn upgrades_map(
         json: &str,

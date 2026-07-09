@@ -251,22 +251,6 @@ pub struct ChainIndexConfig {
 }
 
 impl ChainIndexConfig {
-    /// Returns a new instance of [`ChainIndexConfig`].
-    #[allow(dead_code)]
-    pub fn new(
-        storage: StorageConfig,
-        db_version: u32,
-        network: zebra_chain::parameters::Network,
-        ephemeral: bool,
-    ) -> Self {
-        ChainIndexConfig {
-            storage,
-            db_version,
-            network,
-            ephemeral,
-        }
-    }
-
     /// Builds the chain-index config from the backend config plus the
     /// runtime network. The backend config carries only a network kind, so
     /// the adopted runtime network arrives as its own argument — there is

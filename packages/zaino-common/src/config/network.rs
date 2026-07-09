@@ -98,7 +98,9 @@ impl Default for ActivationHeights {
 /// Records the `NetworkUpgrade`-variant ↔ `ActivationHeights`-field correspondence
 /// exactly once, generating everything derived from it: the two field-by-field
 /// `From` conversions between [`ActivationHeights`] and zebra's
-/// [`ConfiguredActivationHeights`] (the structs share field names).
+/// [`ConfiguredActivationHeights`] (the structs share field names), the
+/// all-`None` [`ActivationHeights::NEVER_ACTIVATED`] schedule, and the
+/// per-upgrade [`ActivationHeights::slot_mut`] accessor.
 ///
 /// A declarative macro rather than functions because plain `fn`s cannot abstract
 /// over struct fields, and the variant/field spellings (`Nu5`/`nu5`) differ only
@@ -122,6 +124,29 @@ macro_rules! activation_heights_mirror {
         impl From<ActivationHeights> for ConfiguredActivationHeights {
             fn from(ActivationHeights { $($field),* }: ActivationHeights) -> Self {
                 Self { $($field),* }
+            }
+        }
+
+        impl ActivationHeights {
+            /// The all-`None` schedule: every upgrade never-activated. The
+            /// starting point for building heights from an external report,
+            /// where an upgrade absent from the report must stay unset.
+            pub const NEVER_ACTIVATED: Self = Self { $($field: None),* };
+
+            /// Mutable slot for `upgrade`'s activation height, or `None` for
+            /// `Genesis` (height 0 by definition; it has no slot).
+            pub fn slot_mut(
+                &mut self,
+                upgrade: zebra_chain::parameters::NetworkUpgrade,
+            ) -> Option<&mut Option<u32>> {
+                match upgrade {
+                    zebra_chain::parameters::NetworkUpgrade::Genesis => None,
+                    $(
+                        zebra_chain::parameters::NetworkUpgrade::$variant => {
+                            Some(&mut self.$field)
+                        }
+                    )*
+                }
             }
         }
     };
