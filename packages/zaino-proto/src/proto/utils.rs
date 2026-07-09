@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use crate::proto::{
-    compact_formats::{ChainMetadata, CompactBlock, CompactOrchardAction},
+    compact_formats::{ChainMetadata, CompactBlock, CompactOrchardAction, CompactTx},
     service::{BlockId, BlockRange, PoolType},
 };
 #[cfg(feature = "heavy")]
@@ -84,11 +84,11 @@ pub enum GetBlockRangeError {
 /// - `start` and `end` are in the inclusive range `0..=u32::MAX`, so they can be
 ///   safely converted to `u32` (for example via `u32::try_from(...)`) without
 ///   failing.
-/// - `pool_types` has been validated via `pool_types_from_vector`.
+/// - the requested pools have been validated into a [`PoolTypeFilter`].
 pub struct ValidatedBlockRangeRequest {
     start: u64,
     end: u64,
-    pool_types: Vec<PoolType>,
+    filter: PoolTypeFilter,
 }
 
 impl ValidatedBlockRangeRequest {
@@ -113,14 +113,10 @@ impl ValidatedBlockRangeRequest {
         fits_in_u32(start, GetBlockRangeError::StartHeightOutOfRange)?;
         fits_in_u32(end, GetBlockRangeError::EndHeightOutOfRange)?;
 
-        let pool_types = pool_types_from_vector(&request.pool_types)
+        let filter = PoolTypeFilter::new_from_slice(&request.pool_types)
             .map_err(GetBlockRangeError::PoolTypeArgumentError)?;
 
-        Ok(ValidatedBlockRangeRequest {
-            start,
-            end,
-            pool_types,
-        })
+        Ok(ValidatedBlockRangeRequest { start, end, filter })
     }
 
     /// Start Height of the BlockRange Request
@@ -133,19 +129,9 @@ impl ValidatedBlockRangeRequest {
         self.end
     }
 
-    /// Pool Types of the BlockRange request
-    pub fn pool_types(&self) -> Vec<PoolType> {
-        self.pool_types.clone()
-    }
-
-    /// checks whether this request is specified in reversed order
-    pub fn is_reverse_ordered(&self) -> bool {
-        self.start > self.end
-    }
-
-    /// Reverses the order of this request
-    pub fn reverse(&mut self) {
-        (self.start, self.end) = (self.end, self.start);
+    /// The validated pool filter of the BlockRange request
+    pub fn pool_type_filter(&self) -> &PoolTypeFilter {
+        &self.filter
     }
 }
 
@@ -292,52 +278,48 @@ pub fn blockid_to_hashorheight(block_id: BlockId) -> Option<HashOrHeight> {
         .ok()
 }
 
-/// Prunes a compact block of transaction information related to pools not
-/// included in the `pool_types` vector.
-/// An empty vector means the client did not filter, so the unfiltered pool
-/// set ([`PoolTypeFilter::default`]) is served.
-pub fn compact_block_with_pool_types(
-    mut block: CompactBlock,
-    pool_types: &[PoolType],
-) -> CompactBlock {
-    let unfiltered;
-    let pool_types = if pool_types.is_empty() {
-        unfiltered = PoolTypeFilter::default().to_pool_types_vector();
-        &unfiltered
-    } else {
-        pool_types
-    };
+impl CompactTx {
+    /// Whether any per-pool field of this transaction is non-empty.
+    pub fn has_pool_data(&self) -> bool {
+        !self.vin.is_empty()
+            || !self.vout.is_empty()
+            || !self.spends.is_empty()
+            || !self.outputs.is_empty()
+            || !self.actions.is_empty()
+            || !self.ironwood_actions.is_empty()
+    }
+}
 
+/// Prunes a compact block of transaction information related to pools the
+/// filter excludes, then omits transactions left with no pool data at all.
+///
+/// An unfiltered request is expressed as [`PoolTypeFilter::default`]; the
+/// request-decode path ([`PoolTypeFilter::new_from_slice`]) produces it for
+/// an empty `poolTypes` field.
+pub fn prune_compact_block(mut block: CompactBlock, filter: &PoolTypeFilter) -> CompactBlock {
     for compact_tx in &mut block.vtx {
         // strip out transparent inputs if not requested
-        if !pool_types.contains(&PoolType::Transparent) {
+        if !filter.includes_transparent() {
             compact_tx.vin.clear();
             compact_tx.vout.clear();
         }
         // strip out sapling if not requested
-        if !pool_types.contains(&PoolType::Sapling) {
+        if !filter.includes_sapling() {
             compact_tx.spends.clear();
             compact_tx.outputs.clear();
         }
         // strip out orchard if not requested
-        if !pool_types.contains(&PoolType::Orchard) {
+        if !filter.includes_orchard() {
             compact_tx.actions.clear();
         }
         // strip out ironwood if not requested
-        if !pool_types.contains(&PoolType::Ironwood) {
+        if !filter.includes_ironwood() {
             compact_tx.ironwood_actions.clear();
         }
     }
 
     // Omit transactions that have no elements in any requested pool type.
-    block.vtx.retain(|compact_tx| {
-        !compact_tx.vin.is_empty()
-            || !compact_tx.vout.is_empty()
-            || !compact_tx.spends.is_empty()
-            || !compact_tx.outputs.is_empty()
-            || !compact_tx.actions.is_empty()
-            || !compact_tx.ironwood_actions.is_empty()
-    });
+    block.vtx.retain(CompactTx::has_pool_data);
 
     block
 }

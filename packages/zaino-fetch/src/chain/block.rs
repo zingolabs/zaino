@@ -191,19 +191,7 @@ impl FullBlock {
             .enumerate()
             .filter_map(
                 |(index, tx)| match tx.to_compact_tx(Some(index as u64), &pool_types) {
-                    Ok(compact_tx) => {
-                        if !compact_tx.vin.is_empty()
-                            || !compact_tx.vout.is_empty()
-                            || !compact_tx.spends.is_empty()
-                            || !compact_tx.outputs.is_empty()
-                            || !compact_tx.actions.is_empty()
-                            || !compact_tx.ironwood_actions.is_empty()
-                        {
-                            Some(Ok(compact_tx))
-                        } else {
-                            None
-                        }
-                    }
+                    Ok(compact_tx) => compact_tx.has_pool_data().then_some(Ok(compact_tx)),
                     Err(parse_error) => Some(Err(parse_error)),
                 },
             )

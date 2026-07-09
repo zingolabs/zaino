@@ -49,7 +49,7 @@ use zaino_proto::proto::{
         TxFilter,
     },
     utils::{
-        blockid_to_hashorheight, compact_block_to_nullifiers, GetBlockRangeError, PoolTypeFilter,
+        blockid_to_hashorheight, compact_block_to_nullifiers, PoolTypeFilter,
         ValidatedBlockRangeRequest,
     },
 };
@@ -1254,9 +1254,7 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
         let validated_request = ValidatedBlockRangeRequest::new_from_block_range(&request)
             .map_err(NodeBackedIndexerServiceError::from)?;
 
-        let pool_type_filter = PoolTypeFilter::new_from_pool_types(&validated_request.pool_types())
-            .map_err(GetBlockRangeError::PoolTypeArgumentError)
-            .map_err(NodeBackedIndexerServiceError::from)?;
+        let pool_type_filter = validated_request.pool_type_filter().clone();
 
         // Note conversion here is safe due to the use of [`ValidatedBlockRangeRequest::new_from_block_range`]
         let start = validated_request.start() as u32;
@@ -1383,9 +1381,7 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
         let validated_request = ValidatedBlockRangeRequest::new_from_block_range(&request)
             .map_err(NodeBackedIndexerServiceError::from)?;
 
-        let pool_type_filter = PoolTypeFilter::new_from_pool_types(&validated_request.pool_types())
-            .map_err(GetBlockRangeError::PoolTypeArgumentError)
-            .map_err(NodeBackedIndexerServiceError::from)?;
+        let pool_type_filter = validated_request.pool_type_filter().clone();
 
         // Note conversion here is safe due to the use of [`ValidatedBlockRangeRequest::new_from_block_range`]
         let start = validated_request.start() as u32;

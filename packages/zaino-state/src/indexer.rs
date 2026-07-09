@@ -606,38 +606,20 @@ pub trait ZcashIndexer: Send + Sync + 'static {
             let chain_height = self.chain_height().await?;
             let (start, end) = match request.range {
                 Some(range) => {
-                    let start = if let Some(start) = range.start {
-                        match u32::try_from(start.height) {
-                            Ok(height) => Some(height.min(chain_height.0)),
-                            Err(_) => {
-                                return Err(Self::Error::from(tonic::Status::invalid_argument(
-                                    "Error: Start height out of range. Failed to convert to u32.",
-                                )))
-                            }
-                        }
-                    } else {
-                        None
-                    };
-                    let end = if let Some(end) = range.end {
-                        match u32::try_from(end.height) {
-                            Ok(height) => Some(height.min(chain_height.0)),
-                            Err(_) => {
-                                return Err(Self::Error::from(tonic::Status::invalid_argument(
-                                    "Error: End height out of range. Failed to convert to u32.",
-                                )))
-                            }
-                        }
-                    } else {
-                        None
-                    };
+                    let start = clamped_optional_height(
+                        range.start,
+                        chain_height,
+                        "Error: Start height out of range. Failed to convert to u32.",
+                    )
+                    .map_err(Self::Error::from)?;
+                    let end = clamped_optional_height(
+                        range.end,
+                        chain_height,
+                        "Error: End height out of range. Failed to convert to u32.",
+                    )
+                    .map_err(Self::Error::from)?;
                     match (start, end) {
-                        (Some(start), Some(end)) => {
-                            if start > end {
-                                (Some(end), Some(start))
-                            } else {
-                                (Some(start), Some(end))
-                            }
-                        }
+                        (Some(start), Some(end)) if start > end => (Some(end), Some(start)),
                         _ => (start, end),
                     }
                 }
@@ -655,6 +637,22 @@ pub trait ZcashIndexer: Send + Sync + 'static {
             .await
         }
     }
+}
+
+/// Clamps an optional block-range endpoint to the chain height, or errors
+/// with `out_of_range_message` when the provided height cannot be
+/// represented as a `u32`.
+fn clamped_optional_height(
+    endpoint: Option<BlockId>,
+    chain_height: Height,
+    out_of_range_message: &'static str,
+) -> Result<Option<u32>, tonic::Status> {
+    endpoint
+        .map(|block_id| match u32::try_from(block_id.height) {
+            Ok(height) => Ok(height.min(chain_height.0)),
+            Err(_) => Err(tonic::Status::invalid_argument(out_of_range_message)),
+        })
+        .transpose()
 }
 
 /// Light Client Protocol gRPC method signatures.
