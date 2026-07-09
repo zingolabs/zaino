@@ -613,19 +613,8 @@ pub enum ZValidateAddressType {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::jsonrpsee::response::test_util::roundtrip;
     use serde_json::json;
-
-    /// Verifies that a type can be serialized and deserialized with the same shape.
-    ///
-    /// If the type does not have the same shape after serialization and deserialization, this function will panic.
-    fn roundtrip<T>(value: &T)
-    where
-        T: serde::Serialize + for<'de> serde::Deserialize<'de> + std::fmt::Debug + PartialEq,
-    {
-        let s = serde_json::to_string(value).unwrap();
-        let back: T = serde_json::from_str(&s).unwrap();
-        assert_eq!(&back, value);
-    }
 
     #[test]
     fn invalid_roundtrip_and_shape() {

@@ -213,6 +213,22 @@ impl TryFrom<super::connector::RpcError> for GetSpentInfoError {
     }
 }
 
+/// Test helpers shared by the response modules' `#[cfg(test)]` suites.
+#[cfg(test)]
+pub(crate) mod test_util {
+    /// Verifies that a type can be serialized and deserialized with the same shape.
+    ///
+    /// If the type does not have the same shape after serialization and deserialization, this function will panic.
+    pub(crate) fn roundtrip<T>(value: &T)
+    where
+        T: serde::Serialize + for<'de> serde::Deserialize<'de> + std::fmt::Debug + PartialEq,
+    {
+        let s = serde_json::to_string(value).unwrap();
+        let back: T = serde_json::from_str(&s).unwrap();
+        assert_eq!(&back, value);
+    }
+}
+
 #[cfg(test)]
 mod get_spent_info {
     use super::{GetSpentInfoError, GetSpentInfoRequest, GetSpentInfoResponse};
