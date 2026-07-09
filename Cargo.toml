@@ -143,7 +143,7 @@ zaino-testutils = { path = "live-tests/zaino-testutils" }
 # truth (infrastructure ADR 0003, PR #278): wallet clients derive their
 # heights via `WalletNetwork::from_validator`, and `ZainodConfig` carries a
 # payload-free network kind. Restore a release tag once one is cut upstream.
-zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "78511f7304ba27895967be860016ede923acec08" }
+zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "85502cd0b5faf9308e590865dae51bf31fdd342e" }
 
 wire_serialized_transaction_test_data = "1.0.0"
 config = { version = "0.15", default-features = false, features = ["toml"] }
