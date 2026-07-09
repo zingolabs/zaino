@@ -1,14 +1,10 @@
 //! Types associated with the `getmininginfo` RPC request.
 
-use std::{collections::HashMap, convert::Infallible};
+use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::jsonrpsee::connector::ResponseToError;
-
-impl ResponseToError for GetMiningInfoWire {
-    type RpcError = Infallible;
-}
+crate::jsonrpsee::response::impl_infallible_response_to_error!(GetMiningInfoWire);
 
 /// Wire superset compatible with `zcashd` and `zebrad`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
