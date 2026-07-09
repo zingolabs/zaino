@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 use tempfile::TempDir;
 use zaino_common::network::ActivationHeights;
-use zaino_common::{DatabaseConfig, Network, StorageConfig};
+use zaino_common::{DatabaseConfig, StorageConfig};
 
 use crate::chain_index::finalised_state::capability::{DbVersion, MigrationStatus};
 use crate::chain_index::finalised_state::finalised_source::v1::DB_VERSION_V1;
@@ -39,6 +39,9 @@ fn v1_2_1() -> DbVersion {
 /// database, then reopens it through the production `FinalisedState::spawn` path (which migrates to
 /// the current schema and only then starts the validator) and asserts it reaches `Ready` — i.e. the
 /// migration completed *before* validation, and validation then passed.
+// multi_thread required: the background validator runs blocking LMDB validation
+// (`validate_block_blocking`) inline on its task, which would starve this test's status polling on
+// a current-thread runtime.
 #[tokio::test(flavor = "multi_thread")]
 async fn v1_2_1_cache_migrates_to_current_then_validates() {
     init_tracing();
@@ -59,7 +62,7 @@ async fn v1_2_1_cache_migrates_to_current_then_validates() {
         },
         ephemeral: false,
         db_version: 1,
-        network: Network::Regtest(ActivationHeights::default()),
+        network: ActivationHeights::default().to_regtest_network(),
     };
 
     let source = build_active_mockchain_source(active_height.0, blocks.clone());

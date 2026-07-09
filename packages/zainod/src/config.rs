@@ -21,10 +21,31 @@ use zaino_common::{
     try_resolve_address, AddressResolution, Network, ServiceConfig, StorageConfig, ValidatorConfig,
 };
 use zaino_serve::server::config::{GrpcServerConfig, JsonRpcServerConfig};
-#[allow(deprecated)]
 use zaino_state::{
-    BackendType, CommonBackendConfig, DonationAddress, FetchServiceConfig, StateServiceConfig,
+    CommonBackendConfig, DirectConnectionConfig, DonationAddress, NodeBackedIndexerServiceConfig,
+    ValidatorConnectionType,
 };
+
+/// On-disk selector for the validator connection (`backend = "direct" | "rpc"` in the
+/// config file), mapped to [`zaino_state::ValidatorConnectionType`] at spawn.
+///
+/// The legacy values `"state"` / `"fetch"` remain accepted as aliases for backward
+/// compatibility with existing `zainod.toml` files.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BackendType {
+    /// Direct Zebra `ReadStateService` access (formerly `state`).
+    ///
+    /// More efficient but requires running on the same machine as Zebra.
+    #[serde(alias = "state")]
+    Direct,
+    /// JSON-RPC access (formerly `fetch`).
+    ///
+    /// Compatible with Zcashd, Zebra, or another Zaino instance.
+    #[default]
+    #[serde(alias = "fetch")]
+    Rpc,
+}
 
 /// Header for generated configuration files.
 pub const GENERATED_CONFIG_HEADER: &str = r#"# Zaino Configuration
@@ -358,59 +379,56 @@ pub fn load_config_with_env(
     Ok(parsed_config)
 }
 
-#[allow(deprecated)]
-impl TryFrom<ZainodConfig> for StateServiceConfig {
+impl TryFrom<ZainodConfig> for NodeBackedIndexerServiceConfig {
     type Error = IndexerError;
 
     fn try_from(cfg: ZainodConfig) -> Result<Self, Self::Error> {
-        let grpc_listen_address = cfg
-            .validator_settings
-            .validator_grpc_listen_address
-            .as_ref()
-            .ok_or_else(|| {
-                IndexerError::ConfigError(
-                    "Missing validator_grpc_listen_address in configuration".to_string(),
-                )
-            })?;
+        let connection = match cfg.backend {
+            BackendType::Rpc => ValidatorConnectionType::Rpc,
+            BackendType::Direct => {
+                let grpc_listen_address = cfg
+                    .validator_settings
+                    .validator_grpc_listen_address
+                    .as_ref()
+                    .ok_or_else(|| {
+                        IndexerError::ConfigError(
+                            "Missing validator_grpc_listen_address in configuration".to_string(),
+                        )
+                    })?;
 
-        let validator_grpc_address =
-            fetch_socket_addr_from_hostname(grpc_listen_address).map_err(|e| {
-                let msg = match e {
-                    IndexerError::ConfigError(msg) => msg,
-                    other => other.to_string(),
+                let validator_grpc_address = fetch_socket_addr_from_hostname(grpc_listen_address)
+                    .map_err(|e| {
+                    let msg = match e {
+                        IndexerError::ConfigError(msg) => msg,
+                        other => other.to_string(),
+                    };
+                    IndexerError::ConfigError(format!(
+                        "Invalid validator_grpc_listen_address '{grpc_listen_address}': {msg}"
+                    ))
+                })?;
+
+                let validator_state_config = zebra_state::Config {
+                    cache_dir: cfg.zebra_db_path.clone(),
+                    ephemeral: false,
+                    delete_old_database: true,
+                    debug_stop_at_height: None,
+                    debug_validity_check_interval: None,
+                    should_backup_non_finalized_state: true,
+                    debug_skip_non_finalized_state_backup_task: false,
                 };
-                IndexerError::ConfigError(format!(
-                    "Invalid validator_grpc_listen_address '{grpc_listen_address}': {msg}"
-                ))
-            })?;
+                let validator_cookie_auth = cfg.validator_settings.validator_cookie_path.is_some();
 
-        let validator_state_config = zebra_state::Config {
-            cache_dir: cfg.zebra_db_path.clone(),
-            ephemeral: false,
-            delete_old_database: true,
-            debug_stop_at_height: None,
-            debug_validity_check_interval: None,
-            should_backup_non_finalized_state: true,
-            debug_skip_non_finalized_state_backup_task: false,
+                ValidatorConnectionType::Direct(DirectConnectionConfig {
+                    validator_state_config,
+                    validator_grpc_address,
+                    validator_cookie_auth,
+                })
+            }
         };
-        let validator_cookie_auth = cfg.validator_settings.validator_cookie_path.is_some();
 
-        Ok(StateServiceConfig {
+        Ok(NodeBackedIndexerServiceConfig {
             common: build_common(cfg),
-            validator_state_config,
-            validator_grpc_address,
-            validator_cookie_auth,
-        })
-    }
-}
-
-#[allow(deprecated)]
-impl TryFrom<ZainodConfig> for FetchServiceConfig {
-    type Error = IndexerError;
-
-    fn try_from(cfg: ZainodConfig) -> Result<Self, Self::Error> {
-        Ok(FetchServiceConfig {
-            common: build_common(cfg),
+            connection,
         })
     }
 }
@@ -550,7 +568,8 @@ key_path = "{}"
         let config_path = create_test_config_file(&temp_dir, &toml_content, "full_config.toml");
         let config = load_config(&config_path).expect("load_config failed");
 
-        assert_eq!(config.backend, BackendType::Fetch);
+        // legacy `backend = "fetch"` still parses via the serde alias
+        assert_eq!(config.backend, BackendType::Rpc);
         assert!(config.json_server_settings.is_some());
         assert_eq!(
             config
@@ -600,7 +619,8 @@ listen_address = "127.0.0.1:8137"
         let config = load_config(&config_path).expect("load_config failed");
         let default_values = ZainodConfig::default();
 
-        assert_eq!(config.backend, BackendType::State);
+        // legacy `backend = "state"` still parses via the serde alias
+        assert_eq!(config.backend, BackendType::Direct);
         assert!(config.json_server_settings.is_none());
         assert_eq!(
             config.validator_settings.validator_user,
@@ -1133,66 +1153,56 @@ listen_address = "127.0.0.1:8137"
     /// `CARGO_PKG_VERSION` at the boundary so the wire reflects the
     /// deployed binary, not zaino-state's library version.
     #[test]
-    #[allow(deprecated)]
     fn indexer_version_is_zainod_pkg_version() {
         let _guard = EnvGuard::new();
 
-        let cfg = ZainodConfig::default();
-
-        let state_cfg = StateServiceConfig::try_from(cfg.clone())
-            .expect("StateServiceConfig conversion should succeed for default ZainodConfig");
-        assert_eq!(state_cfg.common.indexer_version, env!("CARGO_PKG_VERSION"));
-
-        let fetch_cfg = FetchServiceConfig::try_from(cfg)
-            .expect("FetchServiceConfig conversion should succeed for default ZainodConfig");
-        assert_eq!(fetch_cfg.common.indexer_version, env!("CARGO_PKG_VERSION"));
+        let service_cfg = NodeBackedIndexerServiceConfig::try_from(ZainodConfig::default())
+            .expect("service config conversion should succeed for default ZainodConfig");
+        assert_eq!(
+            service_cfg.common.indexer_version,
+            env!("CARGO_PKG_VERSION")
+        );
     }
 
-    /// `StateServiceConfig::try_from` and `FetchServiceConfig::try_from`
-    /// share a single `build_common` helper, so the two backends can
-    /// never quietly disagree on the common payload they hand to a
-    /// service. Locks that property in across every field: a future
-    /// hand-rolled divergence (e.g. one path stops applying the
-    /// missing-credentials sentinel, or a new common field gets
-    /// populated on only one side) makes this fail. Pretty-Debug
-    /// equality is used because not every constituent of
-    /// `CommonBackendConfig` derives `PartialEq`, and a single
-    /// stringified compare future-proofs the test against fields added
-    /// later.
+    /// The `Rpc` and `Direct` connections share a single `build_common` helper, so the
+    /// common payload handed to the service is connection-independent. Locks that in
+    /// across every field: a future divergence (e.g. one path stops applying the
+    /// missing-credentials sentinel, or a new common field gets populated on only one
+    /// side) makes this fail. Pretty-Debug equality is used because not every constituent
+    /// of `CommonBackendConfig` derives `PartialEq`, and a single stringified compare
+    /// future-proofs the test against fields added later.
     #[test]
-    #[allow(deprecated)]
-    fn state_and_fetch_common_payloads_agree() {
+    fn common_payload_is_connection_independent() {
         let _guard = EnvGuard::new();
 
-        let cfg = ZainodConfig::default();
+        let rpc_cfg = NodeBackedIndexerServiceConfig::try_from(ZainodConfig {
+            backend: BackendType::Rpc,
+            ..ZainodConfig::default()
+        })
+        .expect("Rpc conversion should succeed for default ZainodConfig");
+        let direct_cfg = NodeBackedIndexerServiceConfig::try_from(ZainodConfig {
+            backend: BackendType::Direct,
+            ..ZainodConfig::default()
+        })
+        .expect("Direct conversion should succeed for default ZainodConfig");
 
-        let state_config = StateServiceConfig::try_from(cfg.clone())
-            .expect("StateServiceConfig conversion should succeed for default ZainodConfig");
-        let fetch_config = FetchServiceConfig::try_from(cfg)
-            .expect("FetchServiceConfig conversion should succeed for default ZainodConfig");
+        assert!(matches!(rpc_cfg.connection, ValidatorConnectionType::Rpc));
+        assert!(matches!(
+            direct_cfg.connection,
+            ValidatorConnectionType::Direct(_)
+        ));
 
         assert_eq!(
-            format!("{:#?}", state_config.common),
-            format!("{:#?}", fetch_config.common),
+            format!("{:#?}", rpc_cfg.common),
+            format!("{:#?}", direct_cfg.common),
         );
 
-        let cfg = ZainodConfig {
+        let ephemeral_cfg = NodeBackedIndexerServiceConfig::try_from(ZainodConfig {
             ephemeral_finalised_state: true,
             ..ZainodConfig::default()
-        };
-
-        let state_config = StateServiceConfig::try_from(cfg.clone())
-            .expect("StateServiceConfig conversion should succeed for ephemeral finalised state");
-        let fetch_config = FetchServiceConfig::try_from(cfg)
-            .expect("FetchServiceConfig conversion should succeed for ephemeral finalised state");
-
-        assert!(state_config.common.ephemeral_finalised_state);
-        assert!(fetch_config.common.ephemeral_finalised_state);
-
-        assert_eq!(
-            format!("{:#?}", state_config.common),
-            format!("{:#?}", fetch_config.common),
-        );
+        })
+        .expect("conversion should succeed for ephemeral finalised state");
+        assert!(ephemeral_cfg.common.ephemeral_finalised_state);
     }
 
     /// Builds a default config with the JSON-RPC server bound to `addr`.
@@ -1300,12 +1310,9 @@ listen_address = "127.0.0.1:8137"
 
         assert!(config.ephemeral_finalised_state);
 
-        #[allow(deprecated)]
-        {
-            let fetch_config = FetchServiceConfig::try_from(config)
-                .expect("FetchServiceConfig conversion should succeed");
+        let service_config = NodeBackedIndexerServiceConfig::try_from(config)
+            .expect("service config conversion should succeed");
 
-            assert!(fetch_config.common.ephemeral_finalised_state);
-        }
+        assert!(service_config.common.ephemeral_finalised_state);
     }
 }

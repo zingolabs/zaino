@@ -4,7 +4,7 @@
 //!
 //! [`DevtoolClients`] mirrors [`crate::Clients`]' method names one-for-one so
 //! tests can swap backends mechanically. The clients are managed by
-//! zcash_local_net's [`zcash_local_net::client`] module: each wallet
+//! zcash_local_net's [`zcash_local_net::wallet`] module: each wallet
 //! operation is a run-to-completion `zcash-devtool` subprocess invocation
 //! (the binary must be built with `--features regtest_support` and be
 //! locatable via `TEST_BINARIES_DIR`/`PATH`).
@@ -21,9 +21,9 @@
 //!   constants derived from zingolib note selection (e.g. 235_000 after
 //!   shielding 250_000) must be re-verified on first devtool runs.
 
-use zcash_local_net::client::{
+use zcash_local_net::wallet::{
     zcash_devtool::{ZcashDevtool, ZcashDevtoolConfig},
-    AddressReceiver, Client as _, GetInfo, WalletBalance,
+    AddressReceiver, GetInfo, Wallet as _, WalletBalance,
 };
 use zcash_primitives::transaction::TxId;
 
@@ -51,7 +51,7 @@ pub async fn build_clients<V: zcash_local_net::validator::Validator>(
     zaino_grpc_listen_port: u16,
     validator: &V,
 ) -> DevtoolClients {
-    let network = zcash_local_net::client::WalletNetwork::from_validator(validator).await;
+    let network = zcash_local_net::wallet::WalletNetwork::from_validator(validator).await;
 
     let mut faucet_config = ZcashDevtoolConfig::faucet(network);
     faucet_config.indexer_port = zaino_grpc_listen_port;

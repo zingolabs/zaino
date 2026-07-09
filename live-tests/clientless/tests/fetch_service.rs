@@ -1,15 +1,14 @@
 //! These tests compare the output of `FetchService` with the output of `JsonRpcConnector`.
 
-use clientless::rpc::z_validate_address::{run_z_validate_for, SaplingSuite};
+use clientless::rpc::z_validate_address::run_z_validate_for;
 use futures::StreamExt as _;
 use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 use zaino_proto::proto::compact_formats::CompactBlock;
 use zaino_proto::proto::service::{BlockId, BlockRange, GetSubtreeRootsArg};
-#[allow(deprecated)]
 use zaino_state::{
-    FetchService, FetchServiceSubscriber, LightWalletIndexer, Status, StatusType, ZcashIndexer,
+    LightWalletIndexer, NodeBackedIndexerServiceSubscriber, Status, StatusType, ZcashIndexer,
 };
-use zaino_testutils::{TestManager, ValidatorExt, ValidatorKind};
+use zaino_testutils::{Rpc, TestManager, ValidatorExt, ValidatorKind};
 use zebra_chain::parameters::subsidy::ParameterSubsidy as _;
 use zebra_rpc::client::ValidateAddressResponse;
 use zebra_rpc::methods::{GetBlock, GetBlockHash};
@@ -95,7 +94,7 @@ async fn fetch_service_get_latest_block<V: ValidatorExt>(validator: &ValidatorKi
 #[allow(deprecated)]
 async fn assert_subscriber_matches_rpc<V, T, FFut, RFut>(
     validator: &ValidatorKind,
-    fetch_query: impl FnOnce(FetchServiceSubscriber) -> FFut,
+    fetch_query: impl FnOnce(NodeBackedIndexerServiceSubscriber) -> FFut,
     rpc_query: impl FnOnce(JsonRpSeeConnector) -> RFut,
 ) where
     V: ValidatorExt,
@@ -320,7 +319,7 @@ async fn fetch_service_get_block_header<V: ValidatorExt>(validator: &ValidatorKi
 #[allow(deprecated)]
 async fn launch_and_mine_five_blocks<V: ValidatorExt>(
     validator: &ValidatorKind,
-) -> (TestManager<V, FetchService>, FetchServiceSubscriber) {
+) -> (TestManager<V, Rpc>, NodeBackedIndexerServiceSubscriber) {
     let (test_manager, fetch_service_subscriber) =
         zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
 
@@ -416,11 +415,11 @@ async fn fetch_service_validate_address<V: ValidatorExt>(validator: &ValidatorKi
 
 /// Launch a fetch-backend manager and run the shared `z_validate_address`
 /// suite against its subscriber.
-async fn z_validate<V: ValidatorExt>(validator: &ValidatorKind, suite: SaplingSuite) {
+async fn z_validate<V: ValidatorExt>(validator: &ValidatorKind) {
     let (mut test_manager, fetch_service_subscriber) =
         zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
 
-    run_z_validate_for(&fetch_service_subscriber, suite).await;
+    run_z_validate_for(&fetch_service_subscriber).await;
 
     test_manager.close().await;
 }
@@ -648,7 +647,7 @@ mod zcashd {
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         pub(crate) async fn z_validate_address() {
-            z_validate::<Zcashd>(&ValidatorKind::Zcashd, SaplingSuite::Standard).await;
+            z_validate::<Zcashd>(&ValidatorKind::Zcashd).await;
         }
     }
 
@@ -719,11 +718,7 @@ mod zebrad {
 
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         pub(crate) async fn z_validate_address() {
-            z_validate::<Zebrad>(
-                &ValidatorKind::Zebrad,
-                SaplingSuite::ZebradPassthroughFetchService,
-            )
-            .await;
+            z_validate::<Zebrad>(&ValidatorKind::Zebrad).await;
         }
     }
 

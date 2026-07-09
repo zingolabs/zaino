@@ -93,7 +93,7 @@ script.main = 'source "./tools/scripts/push-image.sh"'
 
 [tasks.container-test]
 clear = true
-description = "Engine: run nextest in the local CI container, forwarding args (zcashd_support OFF by default; --with-zcashd adds --features zcashd_support). Devs use `makers test [package|e2e|clientless|live|all]`; live-clientless / live-e2e and the `test` front door call this."
+description = "Engine: run nextest in the local CI container, forwarding args (zcashd_support OFF by default; --with-zcashd adds --features zcashd_support). Devs use `makers test [packages|e2e|clientless|live|all]`; live-clientless / live-e2e and the `test` front door call this."
 # This task runs tests inside the container built from live-tests/test_environment.
 # The entrypoint.sh script in the container sets up test binaries (zcashd, zebrad, zcash-cli)
 # by creating symlinks from /home/container_user/artifacts to the expected live-tests/test_binaries/bins location.
@@ -132,16 +132,16 @@ script.main = 'source "./tools/scripts/container-nextest-workspace.sh"'
 # ===================================================================
 # Developer-facing test front door: a single `makers test [SET]` task.
 #
-#   makers test                packaged (the default)
-#   makers test package        packages/* production-crate tests (no validator)
+#   makers test                packages (the default)
+#   makers test packages       packages/* production-crate tests (no validator)
 #   makers test e2e            the e2e live partition
 #   makers test clientless     the clientless live partition
 #   makers test live           both live partitions + combined summary
-#   makers test all            package then live (everything)
+#   makers test all            packages then live (everything)
 #
-# SET names mirror the crate/dir names (`e2e`, `clientless`); `package`,
-# `live`, and `all` are the groupings. `live` = all non-package tests; `all`
-# = `package` + `live` (see live-tests/CONTEXT.md). Each set delegates to an
+# SET names mirror the crate/dir names (`e2e`, `clientless`); `packages`,
+# `live`, and `all` are the groupings. `live` = all non-packages tests; `all`
+# = `packages` + `live` (see live-tests/CONTEXT.md). Each set delegates to an
 # existing engine rather than re-implementing a run. `--with-zcashd` (handled
 # by the engines) adds the zcashd-backed tests to any set.
 # ===================================================================
@@ -150,34 +150,34 @@ script.main = 'source "./tools/scripts/container-nextest-workspace.sh"'
 # clear = true fully replaces cargo-make's built-in `test` task (which runs
 # `cargo test`); without it our `script` would merge with the builtin `command`.
 clear = true
-description = "Run a test set: `makers test [package|e2e|clientless|live|all|ironwood]` (default: package). Pass --with-zcashd for the zcashd-backed tests."
+description = "Run a test set: `makers test [packages|e2e|clientless|live|all|ironwood]` (default: packages). Pass --with-zcashd for the zcashd-backed tests."
 script_runner = "bash"
 script = '''
 set -uo pipefail
 
 usage() {
-  echo "usage: makers test [package|e2e|clientless|live|all|ironwood] [-- nextest args]" >&2
-  echo "  package (default)  packages/* tests, no live validator" >&2
+  echo "usage: makers test [packages|e2e|clientless|live|all|ironwood] [-- nextest args]" >&2
+  echo "  packages (default) packages/* tests, no live validator" >&2
   echo "  e2e | clientless   that single live partition" >&2
   echo "  live               both live partitions + combined summary" >&2
-  echo "  all                package then live (everything)" >&2
-  echo "  ironwood           the ironwood tests of every set, package then clientless then e2e" >&2
+  echo "  all                packages then live (everything)" >&2
+  echo "  ironwood           the ironwood tests of every set, packages then clientless then e2e" >&2
 }
 
 # A non-flag first arg selects the set and must be a known name; a flag first
-# arg (or none) keeps the default `package` and is forwarded to nextest. So
-# `makers test --with-zcashd` runs package with the flag, while a mistyped set
+# arg (or none) keeps the default `packages` and is forwarded to nextest. So
+# `makers test --with-zcashd` runs packages with the flag, while a mistyped set
 # name errors instead of silently running the default.
-set="package"
+set="packages"
 if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then
   case "$1" in
-    package|e2e|clientless|live|all|ironwood) set="$1"; shift ;;
+    packages|e2e|clientless|live|all|ironwood) set="$1"; shift ;;
     *) echo "makers test: unknown set '$1'" >&2; usage; exit 2 ;;
   esac
 fi
 
 case "$set" in
-  package)    exec makers container-test "$@" ;;
+  packages)   exec makers container-test "$@" ;;
   e2e)        exec makers live-e2e "$@" ;;
   clientless) exec makers live-clientless "$@" ;;
   live)       exec cargo run -q --manifest-path tools/test-runner/Cargo.toml --bin live-summary -- "$@" ;;

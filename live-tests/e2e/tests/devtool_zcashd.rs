@@ -22,11 +22,9 @@
 // launchers, all gated behind `zcashd_support`. Gate the whole binary so it
 // compiles out under `--no-default-features` (mirrors the clientless partition's json_server.rs).
 #![cfg(feature = "zcashd_support")]
-#![allow(deprecated)] // FetchService is a deprecated re-export.
-
 use e2e::devtool::DevtoolClients;
-use zaino_state::{ChainIndex, FetchService, ZcashIndexer};
-use zaino_testutils::{TestManager, ValidatorKind, ZcashdDualFetchServices};
+use zaino_state::{ChainIndex, ZcashIndexer};
+use zaino_testutils::{Rpc, TestManager, ValidatorKind, ZcashdDualFetchServices};
 use zcash_local_net::validator::zcashd::Zcashd;
 use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
 use zebra_rpc::client::GetAddressBalanceRequest;
@@ -38,8 +36,8 @@ use zebra_rpc::methods::GetAddressTxIdsRequest;
 /// faucet/recipient wallets against the resulting Zaino, without mining or
 /// syncing. The zcashd analogue of devtool.rs's `launch_and_build_clients`,
 /// concrete on zcashd (which has no StateService backend).
-async fn launch_zcashd_and_build_clients() -> (TestManager<Zcashd, FetchService>, DevtoolClients) {
-    let test_manager = TestManager::<Zcashd, FetchService>::launch_mining_to(
+async fn launch_zcashd_and_build_clients() -> (TestManager<Zcashd, Rpc>, DevtoolClients) {
+    let test_manager = TestManager::<Zcashd, Rpc>::launch_mining_to(
         zaino_testutils::SHIELDED_FUNDING_POOL, // ORCHARD
         &ValidatorKind::Zcashd,
         None, // network -> Regtest
@@ -71,7 +69,7 @@ async fn launch_zcashd_and_build_clients() -> (TestManager<Zcashd, FetchService>
 /// height 2). The send/shield analogue of devtool.rs's `launch_and_fund_faucet`.
 async fn launch_and_fund_zcashd_faucet(
     orchard_notes: u32,
-) -> (TestManager<Zcashd, FetchService>, DevtoolClients) {
+) -> (TestManager<Zcashd, Rpc>, DevtoolClients) {
     let (test_manager, mut clients) = launch_zcashd_and_build_clients().await;
     test_manager
         .generate_blocks_and_wait_for_tip(orchard_notes + 1, test_manager.subscriber())
