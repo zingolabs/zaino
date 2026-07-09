@@ -206,10 +206,8 @@ impl NodeBackedIndexerServiceConfig {
         network: Network,
         donation_address: Option<DonationAddress>,
     ) -> Self {
-        tracing::trace!(
-            activations = ?network.to_zebra_network().full_activation_list(),
-            "direct-connection service expecting NU activations"
-        );
+        // The config carries only the network kind; the activation schedule
+        // is adopted from the validator at spawn and logged there (#1076).
         NodeBackedIndexerServiceConfig {
             common: CommonBackendConfig::new(
                 validator_rpc_address,
@@ -238,8 +236,10 @@ pub struct ChainIndexConfig {
     pub storage: StorageConfig,
     /// Database version selected to be run.
     pub db_version: u32,
-    /// Network type.
-    pub network: Network,
+    /// The runtime network, carrying the activation schedule adopted from
+    /// the validator (zaino#1076) — or, in fixtures that are their own
+    /// chain, the fixture's schedule.
+    pub network: zebra_chain::parameters::Network,
     /// Ephemeral finalised state:
     ///
     /// If true, FinalisedState does not write data to disk,
@@ -251,9 +251,14 @@ pub struct ChainIndexConfig {
 }
 
 impl ChainIndexConfig {
-    /// Returns a new instance of [`BlockCacheConfig`].
+    /// Returns a new instance of [`ChainIndexConfig`].
     #[allow(dead_code)]
-    pub fn new(storage: StorageConfig, db_version: u32, network: Network, ephemeral: bool) -> Self {
+    pub fn new(
+        storage: StorageConfig,
+        db_version: u32,
+        network: zebra_chain::parameters::Network,
+        ephemeral: bool,
+    ) -> Self {
         ChainIndexConfig {
             storage,
             db_version,
@@ -261,23 +266,22 @@ impl ChainIndexConfig {
             ephemeral,
         }
     }
-}
 
-impl From<CommonBackendConfig> for ChainIndexConfig {
-    fn from(value: CommonBackendConfig) -> Self {
+    /// Builds the chain-index config from the backend config plus the
+    /// runtime network. The backend config carries only a network kind, so
+    /// the adopted runtime network arrives as its own argument — there is
+    /// no conversion from a service config alone.
+    pub fn from_backend_config(
+        common: &CommonBackendConfig,
+        network: zebra_chain::parameters::Network,
+    ) -> Self {
         Self {
-            storage: value.storage,
+            storage: common.storage.clone(),
             // TODO: update zaino configs to include db version.
             db_version: 1,
-            network: value.network,
-            ephemeral: value.ephemeral_finalised_state,
+            network,
+            ephemeral: common.ephemeral_finalised_state,
         }
-    }
-}
-
-impl From<&NodeBackedIndexerServiceConfig> for ChainIndexConfig {
-    fn from(value: &NodeBackedIndexerServiceConfig) -> Self {
-        value.common.clone().into()
     }
 }
 

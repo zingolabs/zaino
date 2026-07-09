@@ -138,9 +138,12 @@ zaino-testutils = { path = "live-tests/zaino-testutils" }
 # Zingo-infra (validator launcher driving the live tests; not a prod dep).
 # Pinned to an exact commit past zcash_local_net_v0.7.0: the v0.7.0 launcher's
 # zebrad config writer silently drops NU6.3 activation heights
-# (https://github.com/zingolabs/zaino/issues/1368); this rev carries the
-# "NU6.3" TOML plumbing. Restore a release tag once one is cut upstream.
-zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "0dc4a51f7d9666a3df7eaf28ad4f95cacb86d646" }
+# (https://github.com/zingolabs/zaino/issues/1368). This rev additionally
+# makes the Validator the sole compile-time source of activation-height
+# truth (infrastructure ADR 0003, PR #278): wallet clients derive their
+# heights via `WalletNetwork::from_validator`, and `ZainodConfig` carries a
+# payload-free network kind. Restore a release tag once one is cut upstream.
+zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "78511f7304ba27895967be860016ede923acec08" }
 
 wire_serialized_transaction_test_data = "1.0.0"
 config = { version = "0.15", default-features = false, features = ["toml"] }

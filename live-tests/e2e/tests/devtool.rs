@@ -81,6 +81,7 @@ where
             .zaino_grpc_listen_address
             .expect("zaino enabled")
             .port(),
+        &test_manager.local_net,
     )
     .await;
 
@@ -117,6 +118,7 @@ where
             .zaino_grpc_listen_address
             .expect("zaino enabled")
             .port(),
+        &test_manager.local_net,
     )
     .await;
 
@@ -740,6 +742,7 @@ async fn block_range_returns_default_pools() {
             .zaino_grpc_listen_address
             .expect("zaino enabled")
             .port(),
+        &svc.test_manager.local_net,
     )
     .await;
 
@@ -831,6 +834,7 @@ async fn block_range_returns_all_pools() {
             .zaino_grpc_listen_address
             .expect("zaino enabled")
             .port(),
+        &svc.test_manager.local_net,
     )
     .await;
 
@@ -968,6 +972,7 @@ async fn fund_and_send_dual(
             .zaino_grpc_listen_address
             .expect("zaino enabled")
             .port(),
+        &svc.test_manager.local_net,
     )
     .await;
 
@@ -1119,6 +1124,7 @@ async fn fund_and_fill_mempool_dual() -> zaino_testutils::StateAndFetchServices<
             .zaino_grpc_listen_address
             .expect("zaino enabled")
             .port(),
+        &svc.test_manager.local_net,
     )
     .await;
 
@@ -1293,6 +1299,7 @@ async fn launch_transparent_and_faucet_taddr(
             .zaino_grpc_listen_address
             .expect("zaino enabled")
             .port(),
+        &svc.test_manager.local_net,
     )
     .await;
 
@@ -1624,6 +1631,7 @@ async fn address_deltas() {
             .zaino_grpc_listen_address
             .expect("zaino enabled")
             .port(),
+        &svc.test_manager.local_net,
     )
     .await;
 
@@ -1783,6 +1791,7 @@ async fn get_block_deltas_resolves_transparent_spend() {
             .zaino_grpc_listen_address
             .expect("zaino enabled")
             .port(),
+        &svc.test_manager.local_net,
     )
     .await;
 
@@ -2038,6 +2047,7 @@ async fn get_outpoint_spenders_fetch_vs_state() {
             .zaino_grpc_listen_address
             .expect("zaino enabled")
             .port(),
+        &svc.test_manager.local_net,
     )
     .await;
 

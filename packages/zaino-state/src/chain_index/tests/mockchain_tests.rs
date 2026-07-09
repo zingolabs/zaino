@@ -1081,7 +1081,7 @@ async fn get_difficulty() {
 async fn node_backed_indexer_service_serves_latest_block() {
     use crate::indexer::node_backed_indexer::NodeBackedIndexerServiceSubscriber;
     use crate::LightWalletIndexer as _;
-    use zaino_common::{network::ActivationHeights, Network};
+    use zaino_common::network::ActivationHeights;
 
     let (blocks, _indexer, index_reader, _mockchain) =
         load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
@@ -1091,7 +1091,7 @@ async fn node_backed_indexer_service_serves_latest_block() {
 
     let service = NodeBackedIndexerServiceSubscriber::new_for_test(
         index_reader,
-        Network::Regtest(ActivationHeights::default()),
+        ActivationHeights::default().to_regtest_network(),
     );
 
     let latest = service.get_latest_block().await.unwrap();
@@ -1219,14 +1219,14 @@ async fn get_chain_tips_falls_back_to_source_while_syncing() {
 #[tokio::test(flavor = "multi_thread")]
 async fn service_drop_survives_thread_without_runtime() {
     use crate::indexer::node_backed_indexer::NodeBackedIndexerService;
-    use zaino_common::{network::ActivationHeights, Network};
+    use zaino_common::network::ActivationHeights;
 
     let (_blocks, indexer, _index_reader, _mockchain) =
         load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
 
     let service = NodeBackedIndexerService::new_for_test(
         indexer,
-        Network::Regtest(ActivationHeights::default()),
+        ActivationHeights::default().to_regtest_network(),
     );
 
     std::thread::spawn(move || drop(service))
@@ -1243,14 +1243,14 @@ async fn service_drop_survives_thread_without_runtime() {
 #[tokio::test(flavor = "multi_thread")]
 async fn service_drop_survives_current_thread_runtime() {
     use crate::indexer::node_backed_indexer::NodeBackedIndexerService;
-    use zaino_common::{network::ActivationHeights, Network};
+    use zaino_common::network::ActivationHeights;
 
     let (_blocks, indexer, _index_reader, _mockchain) =
         load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
 
     let service = NodeBackedIndexerService::new_for_test(
         indexer,
-        Network::Regtest(ActivationHeights::default()),
+        ActivationHeights::default().to_regtest_network(),
     );
 
     std::thread::spawn(move || {
@@ -1274,14 +1274,14 @@ async fn service_drop_survives_current_thread_runtime() {
 #[tokio::test(flavor = "multi_thread")]
 async fn chaintip_update_subscriber_absent_without_tip_stream() {
     use crate::indexer::node_backed_indexer::NodeBackedIndexerServiceSubscriber;
-    use zaino_common::{network::ActivationHeights, Network};
+    use zaino_common::network::ActivationHeights;
 
     let (_blocks, _indexer, index_reader, _mockchain) =
         load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
 
     let service = NodeBackedIndexerServiceSubscriber::new_for_test(
         index_reader,
-        Network::Regtest(ActivationHeights::default()),
+        ActivationHeights::default().to_regtest_network(),
     );
 
     assert!(

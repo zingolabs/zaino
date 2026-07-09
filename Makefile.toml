@@ -150,17 +150,18 @@ script.main = 'source "./tools/scripts/container-nextest-workspace.sh"'
 # clear = true fully replaces cargo-make's built-in `test` task (which runs
 # `cargo test`); without it our `script` would merge with the builtin `command`.
 clear = true
-description = "Run a test set: `makers test [packages|e2e|clientless|live|all]` (default: packages). Pass --with-zcashd for the zcashd-backed tests."
+description = "Run a test set: `makers test [packages|e2e|clientless|live|all|ironwood]` (default: packages). Pass --with-zcashd for the zcashd-backed tests."
 script_runner = "bash"
 script = '''
 set -uo pipefail
 
 usage() {
-  echo "usage: makers test [packages|e2e|clientless|live|all] [-- nextest args]" >&2
+  echo "usage: makers test [packages|e2e|clientless|live|all|ironwood] [-- nextest args]" >&2
   echo "  packages (default) packages/* tests, no live validator" >&2
   echo "  e2e | clientless   that single live partition" >&2
   echo "  live               both live partitions + combined summary" >&2
   echo "  all                packages then live (everything)" >&2
+  echo "  ironwood           the ironwood tests of every set, packages then clientless then e2e" >&2
 }
 
 # A non-flag first arg selects the set and must be a known name; a flag first
@@ -170,7 +171,7 @@ usage() {
 set="packages"
 if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then
   case "$1" in
-    packages|e2e|clientless|live|all) set="$1"; shift ;;
+    packages|e2e|clientless|live|all|ironwood) set="$1"; shift ;;
     *) echo "makers test: unknown set '$1'" >&2; usage; exit 2 ;;
   esac
 fi
@@ -186,6 +187,21 @@ case "$set" in
     rc=0
     makers container-test "$@" || rc=1
     cargo run -q --manifest-path tools/test-runner/Cargo.toml --bin live-summary -- "$@" || rc=1
+    exit "$rc" ;;
+  ironwood)
+    # The one definition of the ironwood selection: the two dedicated test
+    # binaries, plus every test whose name carries the pool's name (the
+    # CONTEXT.md era-naming convention keeps new ironwood tests inside this
+    # net). The same expression serves every engine — a selector naming a
+    # binary a partition lacks simply matches nothing there. The engines are
+    # invoked directly rather than through the `live` summary runner, which
+    # forwards no nextest args. Run every set even if an earlier one fails,
+    # as in `all`.
+    ironwood_filter='binary(ironwood_activation) | binary(testnet_ironwood_boundary) | test(ironwood)'
+    rc=0
+    makers container-test -E "$ironwood_filter" "$@" || rc=1
+    makers live-clientless -E "$ironwood_filter" "$@" || rc=1
+    makers live-e2e -E "$ironwood_filter" "$@" || rc=1
     exit "$rc" ;;
 esac
 '''

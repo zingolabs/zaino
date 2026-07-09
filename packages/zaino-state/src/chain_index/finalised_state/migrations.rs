@@ -343,7 +343,7 @@ impl<T: BlockchainSource> MigrationManager<T> {
                         .router
                         .init_or_take_ephemeral(
                             self.source.clone(),
-                            self.cfg.network.to_zebra_network(),
+                            self.cfg.network.clone(),
                             EphemeralMode::Full,
                             db_height,
                         )
@@ -1104,17 +1104,16 @@ impl<T: BlockchainSource> Migration<T> for Migration1_2_1To1_3_0 {
         // NU6.3 have their ironwood root/size and ironwood tx list rebuilt from the validator (the
         // legacy on-disk data predates ironwood); blocks below it are rebuilt in place from the
         // legacy commitment row, with no ironwood.
-        let network = cfg.network;
-        let zebra_network = network.to_zebra_network();
+        let network = cfg.network.clone();
         let sapling_activation_height = ShieldedPool::Sapling
             .activation_upgrade()
-            .activation_height(&zebra_network);
+            .activation_height(&network);
         let nu5_activation_height = ShieldedPool::Orchard
             .activation_upgrade()
-            .activation_height(&zebra_network);
+            .activation_height(&network);
         let nu6_3_activation_height = ShieldedPool::Ironwood
             .activation_upgrade()
-            .activation_height(&zebra_network);
+            .activation_height(&network);
 
         // Mark migration in progress (observability only; resumption uses the progress key).
         {
@@ -1209,7 +1208,7 @@ impl<T: BlockchainSource> Migration<T> for Migration1_2_1To1_3_0 {
                     })?;
                     let block = build_indexed_block_from_source(
                         &source,
-                        network,
+                        network.clone(),
                         sapling_activation_height,
                         nu5_activation_height,
                         nu6_3_activation_height,

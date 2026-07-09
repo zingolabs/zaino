@@ -233,8 +233,7 @@ impl DbWrite for DbV1 {
     ) -> Result<(), FinalisedStateError> {
         use crate::chain_index::finalised_state::build_indexed_block_from_source;
 
-        let network = self.config.network;
-        let zebra_network = network.to_zebra_network();
+        let zebra_network = self.config.network.clone();
         let sapling_activation_height = ShieldedPool::Sapling
             .activation_upgrade()
             .activation_height(&zebra_network)
@@ -286,7 +285,7 @@ impl DbWrite for DbV1 {
         info!(
             start_height,
             target = height.0,
-            ?network,
+            ?zebra_network,
             "write_blocks_to_height: syncing finalised blocks"
         );
 
@@ -331,7 +330,7 @@ impl DbWrite for DbV1 {
                     let build_start = std::time::Instant::now();
                     let block = build_indexed_block_from_source(
                         source,
-                        network,
+                        zebra_network.clone(),
                         sapling_activation_height,
                         nu5_activation_height,
                         nu6_3_activation_height,
@@ -358,7 +357,7 @@ impl DbWrite for DbV1 {
                         info!(
                             current = next - 1,
                             target = height.0,
-                            ?network,
+                            ?zebra_network,
                             "write_blocks_to_height: syncing"
                         );
                         last_progress_log = std::time::Instant::now();

@@ -243,11 +243,6 @@ impl ZainodConfig {
 
         Ok(())
     }
-
-    /// Returns the network type currently being used by the server.
-    pub fn get_network(&self) -> Result<zebra_chain::parameters::Network, IndexerError> {
-        Ok(self.network.to_zebra_network())
-    }
 }
 
 impl Default for ZainodConfig {

@@ -42,7 +42,7 @@ async fn launch_zcashd_and_build_clients() -> (TestManager<Zcashd, Rpc>, Devtool
         &ValidatorKind::Zcashd,
         None, // network -> Regtest
         // The heights the devtool wallet accepts (same as the zebrad path).
-        Some(zaino_common::network::ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS),
+        Some(zaino_testutils::ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS),
         None,  // no chain cache: build fresh at these heights
         true,  // enable zaino
         false, // no json-rpc server
@@ -56,6 +56,7 @@ async fn launch_zcashd_and_build_clients() -> (TestManager<Zcashd, Rpc>, Devtool
             .zaino_grpc_listen_address
             .expect("zaino enabled")
             .port(),
+        &test_manager.local_net,
     )
     .await;
 
@@ -108,7 +109,7 @@ async fn faucet_receives_zcashd_orchard_reward() {
 /// of json_server's `create_zcashd_test_manager_and_fetch_services`.
 async fn create_zcashd_devtool_services() -> (ZcashdDualFetchServices, DevtoolClients) {
     let services = zaino_testutils::launch_zcashd_dual_fetch_services_at(
-        zaino_common::network::ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS,
+        zaino_testutils::ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS,
     )
     .await;
     let clients = e2e::devtool::build_clients(

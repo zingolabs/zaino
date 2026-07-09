@@ -136,7 +136,7 @@ fn normalize_requested_addresses_for_network(
 /// transparent address prefixes, so output-derived transparent addresses use
 /// `NetworkKind::Testnet`.
 fn mockchain_network() -> zebra_chain::parameters::Network {
-    zaino_common::Network::Regtest(ActivationHeights::default()).to_zebra_network()
+    ActivationHeights::default().to_regtest_network()
 }
 
 /// A test-only mock implementation of BlockchainReader using ordered lists by height.

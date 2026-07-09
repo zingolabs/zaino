@@ -62,8 +62,8 @@ use crate::{
         types,
     },
     config::{
-        CommonBackendConfig, DonationAddress, NodeBackedIndexerServiceConfig,
-        ValidatorConnectionType,
+        ChainIndexConfig, CommonBackendConfig, DonationAddress,
+        NodeBackedIndexerServiceConfig, ValidatorConnectionType,
     },
     error::NodeBackedIndexerServiceError,
     indexer::{
@@ -154,9 +154,10 @@ impl ZcashService for NodeBackedIndexerService<ValidatorConnector> {
             "Launching NodeBackedIndexerService"
         );
 
-        // Select the validator connection from config; both arms return the built source
-        // plus the validator `getinfo` used for service metadata.
-        let (source, zebra_build_data) = match &config.connection {
+        // Select the validator connection from config; both arms return the built source,
+        // the validator `getinfo` used for service metadata, and the runtime network
+        // (activation schedule adopted from the validator at first contact, zaino#1076).
+        let (source, zebra_build_data, network) = match &config.connection {
             ValidatorConnectionType::Rpc => ValidatorConnector::spawn_fetch(&config.common).await,
             ValidatorConnectionType::Direct(direct) => {
                 ValidatorConnector::spawn_state(&config.common, direct).await
@@ -166,15 +167,18 @@ impl ZcashService for NodeBackedIndexerService<ValidatorConnector> {
 
         let data = ServiceMetadata::new(
             get_build_info(config.common.indexer_version.clone()),
-            config.common.network.to_zebra_network(),
+            network.clone(),
             zebra_build_data.build,
             zebra_build_data.subversion,
         );
         info!(build = %data.zebra_build(), subversion = %data.zebra_subversion(), "Connected to Zcash node");
 
-        let indexer = NodeBackedChainIndex::new(source, (&config).into())
-            .await
-            .map_err(|error| NodeBackedIndexerServiceError::Critical(error.to_string()))?;
+        let indexer = NodeBackedChainIndex::new(
+            source,
+            ChainIndexConfig::from_backend_config(&config.common, network),
+        )
+        .await
+        .map_err(|error| NodeBackedIndexerServiceError::Critical(error.to_string()))?;
 
         let service = Self {
             indexer,
@@ -248,9 +252,10 @@ impl<Source: BlockchainSource> NodeBackedIndexerServiceSubscriber<Source> {
         self.indexer.status()
     }
 
-    /// Returns the network type running.
-    pub fn network(&self) -> zaino_common::Network {
-        self.config.network
+    /// Returns the runtime network, carrying the activation schedule
+    /// adopted from the validator (zaino#1076).
+    pub fn network(&self) -> zebra_chain::parameters::Network {
+        self.data.network()
     }
 }
 
@@ -273,13 +278,18 @@ pub(crate) async fn chain_tips_for_snapshot<Source: BlockchainSource>(
     }
 }
 
-/// Placeholder metadata and config for test-only service construction.
+/// Placeholder metadata and config for test-only service construction. Takes the
+/// runtime (zebra) network directly — tests are their own chain, so they stand in
+/// for the validator the production path adopts the schedule from.
 #[cfg(test)]
-fn test_service_parts(network: zaino_common::Network) -> (ServiceMetadata, CommonBackendConfig) {
+fn test_service_parts(
+    network: zebra_chain::parameters::Network,
+) -> (ServiceMetadata, CommonBackendConfig) {
+    let network_kind = zaino_common::Network::from(network.clone());
     (
         ServiceMetadata::new(
             get_build_info("test".to_string()),
-            network.to_zebra_network(),
+            network,
             "test-build".to_string(),
             "test-subversion".to_string(),
         ),
@@ -291,7 +301,7 @@ fn test_service_parts(network: zaino_common::Network) -> (ServiceMetadata, Commo
             zaino_common::ServiceConfig::default(),
             zaino_common::StorageConfig::default(),
             true,
-            network,
+            network_kind,
             None,
         ),
     )
@@ -305,7 +315,7 @@ impl<Source: BlockchainSource> NodeBackedIndexerService<Source> {
     /// [`ZcashService::spawn`].
     pub(crate) fn new_for_test(
         indexer: NodeBackedChainIndex<Source>,
-        network: zaino_common::Network,
+        network: zebra_chain::parameters::Network,
     ) -> Self {
         let (data, config) = test_service_parts(network);
         Self {
@@ -323,7 +333,7 @@ impl<Source: BlockchainSource> NodeBackedIndexerServiceSubscriber<Source> {
     /// (no real validator). Production builds go through [`ZcashService::get_subscriber`].
     pub(crate) fn new_for_test(
         indexer: NodeBackedChainIndexSubscriber<Source>,
-        network: zaino_common::Network,
+        network: zebra_chain::parameters::Network,
     ) -> Self {
         let (data, config) = test_service_parts(network);
         Self {
@@ -654,7 +664,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
         address: String,
     ) -> Result<ValidateAddressResponse, Self::Error> {
         #[allow(deprecated)]
-        let network = self.config.network.to_zebra_network();
+        let network = self.data.network();
         Ok(crate::indexer::validate_address(address, &network))
     }
 
@@ -664,7 +674,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
         address: String,
     ) -> Result<ZValidateAddressResponse, Self::Error> {
         #[allow(deprecated)]
-        let network = self.config.network.to_zebra_network();
+        let network = self.data.network();
         Ok(crate::indexer::z_validate_address(address, &network))
     }
 
@@ -919,7 +929,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
                 height,
                 confirmations,
                 #[allow(deprecated)]
-                &self.config.network.to_zebra_network(),
+                &self.data.network(),
                 None,
                 block_hash,
                 in_best_chain,
@@ -1964,7 +1974,7 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
             <Self as ZcashIndexer>::z_get_treestate(self, hash_or_height.to_string()).await?;
 
         Ok(super::tree_state_from_treestate_response(
-            self.config.network.to_zebra_network().bip70_network_name(),
+            self.data.network().bip70_network_name(),
             treestate_response,
         ))
     }

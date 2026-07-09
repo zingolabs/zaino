@@ -213,7 +213,6 @@ async fn fetch_service_get_block_subsidy<V: ValidatorExt>(validator: &ValidatorK
     // first halving boundary plus a margin on both validators.
     let height_limit = fetch_service_subscriber
         .network()
-        .to_zebra_network()
         .height_for_first_halving()
         .0
         + 10;

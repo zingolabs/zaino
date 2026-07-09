@@ -456,7 +456,7 @@ impl DbV1 {
 
         // Prepare database details and path.
         let db_size_bytes = config.storage.database.size.to_byte_count();
-        let db_path_dir = match config.network.to_zebra_network().kind() {
+        let db_path_dir = match config.network.kind() {
             NetworkKind::Mainnet => "mainnet",
             NetworkKind::Testnet => "testnet",
             NetworkKind::Regtest => "regtest",
@@ -1128,7 +1128,7 @@ mod tests {
     async fn initial_spent_scan_reports_corrupt_value() {
         use lmdb::{Transaction as _, WriteFlags};
         use zaino_common::network::ActivationHeights;
-        use zaino_common::{DatabaseConfig, Network, StorageConfig};
+        use zaino_common::{DatabaseConfig, StorageConfig};
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let config = ChainIndexConfig {
@@ -1141,7 +1141,7 @@ mod tests {
             },
             ephemeral: false,
             db_version: 1,
-            network: Network::Regtest(ActivationHeights::default()),
+            network: ActivationHeights::default().to_regtest_network(),
         };
 
         let db = DbV1::spawn(&config).await.expect("spawn empty v1 db");

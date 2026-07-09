@@ -66,8 +66,8 @@ pub struct State {
     pub read_state_service: ReadStateService,
     /// Temporarily used to fetch mempool data.
     pub mempool_fetcher: JsonRpSeeConnector,
-    /// Current network type being run.
-    pub network: Network,
+    /// The runtime network (activation schedule adopted from the validator).
+    pub network: zebra_chain::parameters::Network,
     /// Watches the Zebra syncer's chain-tip changes; served to consumers via
     /// [`ValidatorConnector::chain_tip_change`].
     pub chain_tip_change: zebra_state::ChainTipChange,
@@ -89,6 +89,62 @@ pub enum ValidatorConnector {
     Fetch(JsonRpSeeConnector),
 }
 
+/// Builds the regtest activation heights from the validator's reported
+/// upgrade schedule (`getblockchaininfo.upgrades`).
+///
+/// The validator's configured activation heights are authoritative: the
+/// config type is a payload-free kind, so both connection arms construct the
+/// runtime network at first contact, before anything consumes a
+/// `Network` (zaino#1076). An upgrade absent from the validator's map is
+/// never-activated — nothing is backfilled from defaults. Mainnet and
+/// Testnet use zebra's compiled parameters and never take this path.
+fn activation_heights_from_upgrades(
+    upgrades: &indexmap::IndexMap<
+        zebra_rpc::methods::ConsensusBranchIdHex,
+        zebra_rpc::methods::NetworkUpgradeInfo,
+    >,
+) -> Result<zaino_common::config::network::ActivationHeights, String> {
+    use zebra_chain::parameters::NetworkUpgrade;
+
+    let mut heights = zaino_common::config::network::ActivationHeights {
+        before_overwinter: None,
+        overwinter: None,
+        sapling: None,
+        blossom: None,
+        heartwood: None,
+        canopy: None,
+        nu5: None,
+        nu6: None,
+        nu6_1: None,
+        nu6_2: None,
+        nu6_3: None,
+        nu7: None,
+    };
+    for upgrade_info in upgrades.values() {
+        let (upgrade, height, _status) = upgrade_info.into_parts();
+        let slot = match upgrade {
+            // Genesis is height 0 by definition; it has no configuration slot.
+            NetworkUpgrade::Genesis => continue,
+            NetworkUpgrade::BeforeOverwinter => &mut heights.before_overwinter,
+            NetworkUpgrade::Overwinter => &mut heights.overwinter,
+            NetworkUpgrade::Sapling => &mut heights.sapling,
+            NetworkUpgrade::Blossom => &mut heights.blossom,
+            NetworkUpgrade::Heartwood => &mut heights.heartwood,
+            NetworkUpgrade::Canopy => &mut heights.canopy,
+            NetworkUpgrade::Nu5 => &mut heights.nu5,
+            NetworkUpgrade::Nu6 => &mut heights.nu6,
+            NetworkUpgrade::Nu6_1 => &mut heights.nu6_1,
+            NetworkUpgrade::Nu6_2 => &mut heights.nu6_2,
+            NetworkUpgrade::Nu6_3 => &mut heights.nu6_3,
+            NetworkUpgrade::Nu7 => &mut heights.nu7,
+        };
+        if slot.replace(height.0).is_some() {
+            return Err(format!("validator reported {upgrade:?} twice"));
+        }
+    }
+    Ok(heights)
+}
+
 impl ValidatorConnector {
     /// The JSON-RPC connector for this validator, used by the node-passthrough RPCs that
     /// have no local-index equivalent. The `State` variant proxies these through its
@@ -100,6 +156,42 @@ impl ValidatorConnector {
         }
     }
 
+    /// Builds the runtime network for the configured network kind — the
+    /// validator is the single source of truth for activation heights
+    /// (zaino#1076): the config carries only a kind, and the runtime network
+    /// is constructed here at first contact, before anything consumes a
+    /// `Network` — from zebra's compiled parameters for the public networks,
+    /// from the validator's reported schedule for regtest. There is no
+    /// fallback: a silently wrong schedule is the failure mode this removes.
+    async fn adopt_network(
+        common: &CommonBackendConfig,
+        fetcher: &JsonRpSeeConnector,
+    ) -> Result<zebra_chain::parameters::Network, BlockchainSourceError> {
+        Ok(match common.network {
+            zaino_common::Network::Mainnet => zebra_chain::parameters::Network::Mainnet,
+            zaino_common::Network::Testnet => {
+                zebra_chain::parameters::Network::new_default_testnet()
+            }
+            zaino_common::Network::Regtest => {
+                let blockchain_info = fetcher.get_blockchain_info().await.map_err(|error| {
+                    BlockchainSourceError::Unrecoverable(format!(
+                        "cannot fetch activation heights from the validator at {}: {error}",
+                        common.validator_rpc_address
+                    ))
+                })?;
+                let heights = activation_heights_from_upgrades(&blockchain_info.upgrades)
+                    .map_err(|reason| {
+                        BlockchainSourceError::Unrecoverable(format!(
+                            "cannot adopt activation heights from the validator at {}: {reason}",
+                            common.validator_rpc_address
+                        ))
+                    })?;
+                info!(?heights, "Adopted activation heights from the validator");
+                heights.to_regtest_network()
+            }
+        })
+    }
+
     /// Spawns a JSON-RPC-backed [`ValidatorConnector::Fetch`] from the common backend
     /// config, returning the connector plus the validator's `getinfo` response (used by
     /// the backend to build its `ServiceMetadata`).
@@ -107,7 +199,8 @@ impl ValidatorConnector {
     /// Owns the `JsonRpSeeConnector` setup that previously lived in `FetchService::spawn`.
     pub(crate) async fn spawn_fetch(
         common: &CommonBackendConfig,
-    ) -> Result<(Self, GetInfoResponse), BlockchainSourceError> {
+    ) -> Result<(Self, GetInfoResponse, zebra_chain::parameters::Network), BlockchainSourceError>
+    {
         let fetcher = JsonRpSeeConnector::new_from_config_parts(
             &common.validator_rpc_address,
             common.validator_rpc_user.clone(),
@@ -117,12 +210,14 @@ impl ValidatorConnector {
         .await
         .map_err(BlockchainSourceError::unrecoverable)?;
 
+        let network = Self::adopt_network(common, &fetcher).await?;
+
         let info = fetcher
             .get_info()
             .await
             .map_err(BlockchainSourceError::unrecoverable)?;
 
-        Ok((ValidatorConnector::Fetch(fetcher), info))
+        Ok((ValidatorConnector::Fetch(fetcher), info, network))
     }
 
     /// Spawns a `ReadStateService`-backed [`ValidatorConnector::State`] from the common
@@ -138,7 +233,8 @@ impl ValidatorConnector {
     pub(crate) async fn spawn_state(
         common: &CommonBackendConfig,
         direct: &DirectConnectionConfig,
-    ) -> Result<(Self, GetInfoResponse), BlockchainSourceError> {
+    ) -> Result<(Self, GetInfoResponse, zebra_chain::parameters::Network), BlockchainSourceError>
+    {
         let map_err =
             |error: &dyn std::fmt::Display| BlockchainSourceError::Unrecoverable(error.to_string());
 
@@ -150,6 +246,10 @@ impl ValidatorConnector {
         )
         .await
         .map_err(|error| map_err(&error))?;
+
+        // Adopt the runtime network before the read-state syncer launches:
+        // it is the first consumer of the activation schedule.
+        let network = Self::adopt_network(common, &rpc_client).await?;
 
         let info = rpc_client
             .get_info()
@@ -163,7 +263,7 @@ impl ValidatorConnector {
         let (mut read_state_service, _latest_chain_tip, chain_tip_change, sync_task_handle) =
             init_read_state_with_syncer(
                 direct.validator_state_config.clone(),
-                &common.network.to_zebra_network(),
+                &network,
                 direct.validator_grpc_address,
             )
             .await
@@ -216,12 +316,12 @@ impl ValidatorConnector {
         let source = ValidatorConnector::State(State {
             read_state_service,
             mempool_fetcher: rpc_client,
-            network: common.network,
+            network: network.clone(),
             chain_tip_change,
             sync_task_handle: Some(Arc::new(sync_task_handle)),
         });
 
-        Ok((source, info))
+        Ok((source, info, network))
     }
 
     /// The backing [`ReadStateService`], when this connector is `State`-backed.
@@ -404,7 +504,7 @@ impl BlockchainSource for ValidatorConnector {
     async fn get_difficulty(&self) -> BlockchainSourceResult<f64> {
         match self {
             ValidatorConnector::State(state) => chain_tip_difficulty(
-                state.network.to_zebra_network(),
+                state.network.clone(),
                 state.read_state_service.clone(),
                 false,
             )
@@ -829,7 +929,7 @@ impl BlockchainSource for ValidatorConnector {
 
                 let sapling = match ShieldedPool::Sapling
                     .activation_upgrade()
-                    .activation_height(&state.network.to_zebra_network())
+                    .activation_height(&state.network)
                 {
                     Some(activation_height) if height >= activation_height => Some(
                         state
@@ -860,7 +960,7 @@ impl BlockchainSource for ValidatorConnector {
 
                 let orchard = match ShieldedPool::Orchard
                     .activation_upgrade()
-                    .activation_height(&state.network.to_zebra_network())
+                    .activation_height(&state.network)
                 {
                     Some(activation_height) if height >= activation_height => Some(
                         state
@@ -891,7 +991,7 @@ impl BlockchainSource for ValidatorConnector {
 
                 let ironwood = match ShieldedPool::Ironwood
                     .activation_upgrade()
-                    .activation_height(&state.network.to_zebra_network())
+                    .activation_height(&state.network)
                 {
                     Some(activation_height) if height >= activation_height => Some(
                         state
@@ -1249,7 +1349,7 @@ impl BlockchainSource for ValidatorConnector {
                                             transaction.clone(),
                                             height,
                                             None,
-                                            &state.network.to_zebra_network(),
+                                            &state.network,
                                             None,
                                             None,
                                             Some(matches!(
@@ -1616,7 +1716,7 @@ impl State {
     ) -> BlockchainSourceResult<GetBlockHeaderResponse> {
         let mut state = self.read_state_service.clone();
         let verbose = verbose.unwrap_or(true);
-        let network = self.network.to_zebra_network();
+        let network = self.network.clone();
 
         let ReadResponse::BlockHeader {
             header,
@@ -1722,7 +1822,7 @@ impl State {
                     })
             }
             1 | 2 => {
-                let network = self.network.to_zebra_network();
+                let network = self.network.clone();
                 let state_2 = self.read_state_service.clone();
                 let state_4 = self.read_state_service.clone();
                 let state_5 = self.read_state_service.clone();
@@ -1891,7 +1991,7 @@ impl State {
         }
 
         let median_time = self.median_time_past(&object).await?;
-        let network = self.network.to_zebra_network();
+        let network = self.network.clone();
         assemble_block_deltas(&object, &prevtx_cache, median_time, &network)
     }
 
@@ -1937,7 +2037,7 @@ impl State {
     /// unwrapped.
     async fn get_blockchain_info(&self) -> BlockchainSourceResult<GetBlockchainInfoResponse> {
         let mut state = self.read_state_service.clone();
-        let network = self.network.to_zebra_network();
+        let network = self.network.clone();
 
         let response = state
             .ready()
@@ -2667,6 +2767,124 @@ mod ironwood_treestate_slot {
         assert_eq!(
             super::ironwood_treestate_slot(Some(treestate.clone())),
             Some(treestate)
+        );
+    }
+}
+
+#[cfg(test)]
+mod activation_heights_from_upgrades {
+    use zaino_common::config::network::ActivationHeights;
+
+    /// All-`None` heights: the starting point adoption fills from the
+    /// validator's map, and the expected value for every absent upgrade.
+    const NEVER_ACTIVATED: ActivationHeights = ActivationHeights {
+        before_overwinter: None,
+        overwinter: None,
+        sapling: None,
+        blossom: None,
+        heartwood: None,
+        canopy: None,
+        nu5: None,
+        nu6: None,
+        nu6_1: None,
+        nu6_2: None,
+        nu6_3: None,
+        nu7: None,
+    };
+
+    fn upgrades_map(
+        json: &str,
+    ) -> indexmap::IndexMap<
+        zebra_rpc::methods::ConsensusBranchIdHex,
+        zebra_rpc::methods::NetworkUpgradeInfo,
+    > {
+        serde_json::from_str(json).expect("upgrades fixture parses")
+    }
+
+    fn adopted_heights(
+        upgrades: &indexmap::IndexMap<
+            zebra_rpc::methods::ConsensusBranchIdHex,
+            zebra_rpc::methods::NetworkUpgradeInfo,
+        >,
+    ) -> ActivationHeights {
+        super::activation_heights_from_upgrades(upgrades).expect("valid schedule")
+    }
+
+    /// An upgrade absent from the validator's map is never-activated —
+    /// nothing is backfilled from any default schedule.
+    #[test]
+    fn leaves_absent_upgrades_never_activated() {
+        let upgrades = upgrades_map(
+            r#"{
+                "c2d6d0b4": { "name": "NU5", "activationheight": 2, "status": "active" },
+                "c8e71055": { "name": "NU6", "activationheight": 2, "status": "active" }
+            }"#,
+        );
+
+        assert_eq!(
+            adopted_heights(&upgrades),
+            ActivationHeights {
+                nu5: Some(2),
+                nu6: Some(2),
+                ..NEVER_ACTIVATED
+            }
+        );
+    }
+
+    /// The ORCHARD_THEN_IRONWOOD transition shape: everything through NU6.2
+    /// at 1–2, NU6.3 at 6 — the schedule the ironwood_activation fixtures
+    /// launch validators with.
+    #[test]
+    fn reads_a_transition_schedule() {
+        let upgrades = upgrades_map(
+            r#"{
+                "5ba81b19": { "name": "Overwinter", "activationheight": 1, "status": "active" },
+                "76b809bb": { "name": "Sapling", "activationheight": 1, "status": "active" },
+                "2bb40e60": { "name": "Blossom", "activationheight": 1, "status": "active" },
+                "f5b9230b": { "name": "Heartwood", "activationheight": 1, "status": "active" },
+                "e9ff75a6": { "name": "Canopy", "activationheight": 1, "status": "active" },
+                "c2d6d0b4": { "name": "NU5", "activationheight": 2, "status": "active" },
+                "c8e71055": { "name": "NU6", "activationheight": 2, "status": "active" },
+                "4dec4df0": { "name": "NU6.1", "activationheight": 2, "status": "active" },
+                "5437f330": { "name": "NU6.2", "activationheight": 2, "status": "active" },
+                "37a5165b": { "name": "NU6.3", "activationheight": 6, "status": "pending" }
+            }"#,
+        );
+
+        assert_eq!(
+            adopted_heights(&upgrades),
+            ActivationHeights {
+                overwinter: Some(1),
+                sapling: Some(1),
+                blossom: Some(1),
+                heartwood: Some(1),
+                canopy: Some(1),
+                nu5: Some(2),
+                nu6: Some(2),
+                nu6_1: Some(2),
+                nu6_2: Some(2),
+                nu6_3: Some(6),
+                ..NEVER_ACTIVATED
+            }
+        );
+    }
+
+    /// A validator reporting the same upgrade twice is nonsense; adoption
+    /// must fail loudly rather than pick a height.
+    #[test]
+    fn rejects_a_duplicate_upgrade() {
+        let upgrades = upgrades_map(
+            r#"{
+                "c2d6d0b4": { "name": "NU5", "activationheight": 2, "status": "active" },
+                "c8e71055": { "name": "NU5", "activationheight": 3, "status": "pending" }
+            }"#,
+        );
+
+        let reason =
+            super::activation_heights_from_upgrades(&upgrades).expect_err("duplicate must fail");
+        assert!(
+            reason.contains("twice"),
+            "error should name the duplication, got: {reason}"
         );
     }
 }

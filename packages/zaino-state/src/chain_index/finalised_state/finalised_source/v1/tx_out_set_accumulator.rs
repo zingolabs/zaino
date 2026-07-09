@@ -1710,7 +1710,7 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
     use zaino_common::network::ActivationHeights;
-    use zaino_common::{DatabaseConfig, Network, StorageConfig, SyncWriteBatchSize};
+    use zaino_common::{DatabaseConfig, StorageConfig, SyncWriteBatchSize};
 
     fn p2pkh_out(value: u64) -> TxOutCompact {
         TxOutCompact::new(value, [0x11; 20], 0).expect("P2PKH script_type should be valid")
@@ -2111,7 +2111,7 @@ mod tests {
             },
             ephemeral: false,
             db_version: 1,
-            network: Network::Regtest(ActivationHeights::default()),
+            network: ActivationHeights::default().to_regtest_network(),
         };
 
         let zaino_db = FinalisedState::spawn(config, source.clone()).await.unwrap();
@@ -2186,7 +2186,7 @@ mod tests {
             },
             ephemeral: false,
             db_version: 1,
-            network: Network::Regtest(ActivationHeights::default()),
+            network: ActivationHeights::default().to_regtest_network(),
         };
 
         let zaino_db = FinalisedState::spawn(config, source.clone()).await.unwrap();
