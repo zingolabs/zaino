@@ -1256,9 +1256,8 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
 
         let pool_type_filter = validated_request.pool_type_filter().clone();
 
-        // Note conversion here is safe due to the use of [`ValidatedBlockRangeRequest::new_from_block_range`]
-        let start = validated_request.start() as u32;
-        let end = validated_request.end() as u32;
+        let start = validated_request.start();
+        let end = validated_request.end();
 
         let service_clone = self.clone();
         let service_timeout = self.config.service.timeout;
@@ -1383,9 +1382,8 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
 
         let pool_type_filter = validated_request.pool_type_filter().clone();
 
-        // Note conversion here is safe due to the use of [`ValidatedBlockRangeRequest::new_from_block_range`]
-        let start = validated_request.start() as u32;
-        let end = validated_request.end() as u32;
+        let start = validated_request.start();
+        let end = validated_request.end();
 
         let service_clone = self.clone();
         let service_timeout = self.config.service.timeout;

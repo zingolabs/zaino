@@ -24,6 +24,8 @@ pub enum PoolTypeError {
     InvalidPoolType,
     /// Pool Type value was mapped to value that can't be mapped to a known pool type.
     UnknownPoolType(i32),
+    /// The same pool type was named more than once in one request.
+    DuplicatePoolType,
 }
 
 /// Converts a vector of pool_types (i32) into its rich-type representation
@@ -80,14 +82,13 @@ pub enum GetBlockRangeError {
 ///
 /// # Guarantees
 ///
-/// - `start` and `end` were provided in the request.
-/// - `start` and `end` are in the inclusive range `0..=u32::MAX`, so they can be
-///   safely converted to `u32` (for example via `u32::try_from(...)`) without
-///   failing.
+/// - `start` and `end` were provided in the request and are held as the
+///   `u32`s they parsed to, so the range guarantee is a type fact rather
+///   than a documented promise.
 /// - the requested pools have been validated into a [`PoolTypeFilter`].
 pub struct ValidatedBlockRangeRequest {
-    start: u64,
-    end: u64,
+    start: u32,
+    end: u32,
     filter: PoolTypeFilter,
 }
 
@@ -110,8 +111,8 @@ impl ValidatedBlockRangeRequest {
         let start = provided_height(&request.start, GetBlockRangeError::NoStartHeightProvided)?;
         let end = provided_height(&request.end, GetBlockRangeError::NoEndHeightProvided)?;
 
-        fits_in_u32(start, GetBlockRangeError::StartHeightOutOfRange)?;
-        fits_in_u32(end, GetBlockRangeError::EndHeightOutOfRange)?;
+        let start = u32::try_from(start).map_err(|_| GetBlockRangeError::StartHeightOutOfRange)?;
+        let end = u32::try_from(end).map_err(|_| GetBlockRangeError::EndHeightOutOfRange)?;
 
         let filter = PoolTypeFilter::new_from_slice(&request.pool_types)
             .map_err(GetBlockRangeError::PoolTypeArgumentError)?;
@@ -120,12 +121,12 @@ impl ValidatedBlockRangeRequest {
     }
 
     /// Start Height of the BlockRange Request
-    pub fn start(&self) -> u64 {
+    pub fn start(&self) -> u32 {
         self.start
     }
 
     /// End Height of the BlockRange Request
-    pub fn end(&self) -> u64 {
+    pub fn end(&self) -> u32 {
         self.end
     }
 
@@ -141,12 +142,10 @@ fn provided_height(
     endpoint: &Option<BlockId>,
     missing: GetBlockRangeError,
 ) -> Result<u64, GetBlockRangeError> {
-    Ok(endpoint.as_ref().ok_or(missing)?.height)
-}
-
-/// Errors with `out_of_range` when `height` cannot be represented as a `u32`.
-fn fits_in_u32(height: u64, out_of_range: GetBlockRangeError) -> Result<(), GetBlockRangeError> {
-    u32::try_from(height).map(|_| ()).map_err(|_| out_of_range)
+    endpoint
+        .as_ref()
+        .map(|block_id| block_id.height)
+        .ok_or(missing)
 }
 
 /// The set of pools a request asks to be served.
@@ -180,8 +179,9 @@ impl PoolTypeFilter {
 
     /// create a `PoolTypeFilter` from a vector of raw i32 `PoolType`s
     /// If the vector is empty it will return `Self::default()`.
-    /// If the vector contains `PoolType::Invalid` or the vector contains more
-    /// elements than there are known pools, returns `PoolTypeError::InvalidPoolType`.
+    /// If the vector contains `PoolType::Invalid` returns
+    /// `PoolTypeError::InvalidPoolType`; if it names any pool more than
+    /// once, returns `PoolTypeError::DuplicatePoolType`.
     pub fn new_from_slice(pool_types: &[i32]) -> Result<Self, PoolTypeError> {
         let pool_types = pool_types_from_vector(pool_types)?;
 
@@ -190,23 +190,24 @@ impl PoolTypeFilter {
 
     /// create a `PoolTypeFilter` from a slice of `PoolType`
     /// If the slice is empty it will return `Self::default()`.
-    /// If the slice contains `PoolType::Invalid` or the slice contains more
-    /// elements than there are known pools, returns `PoolTypeError::InvalidPoolType`.
+    /// If the slice contains `PoolType::Invalid`, returns
+    /// `PoolTypeError::InvalidPoolType`; if it names any pool more than
+    /// once, returns `PoolTypeError::DuplicatePoolType`. A valid request
+    /// therefore names at most the four known pools, each exactly once.
     pub fn new_from_pool_types(pool_types: &[PoolType]) -> Result<PoolTypeFilter, PoolTypeError> {
-        if pool_types.len() > KNOWN_POOLS.len() {
-            return Err(PoolTypeError::InvalidPoolType);
-        }
-
         if pool_types.is_empty() {
             return Ok(Self::default());
         }
 
-        let mut included = BTreeSet::new();
-        for &pool_type in pool_types {
-            if pool_type == PoolType::Invalid {
-                return Err(PoolTypeError::InvalidPoolType);
-            }
-            included.insert(pool_type);
+        let included = pool_types
+            .iter()
+            .map(|&pool_type| match pool_type {
+                PoolType::Invalid => Err(PoolTypeError::InvalidPoolType),
+                pool_type => Ok(pool_type),
+            })
+            .collect::<Result<BTreeSet<_>, _>>()?;
+        if included.len() != pool_types.len() {
+            return Err(PoolTypeError::DuplicatePoolType);
         }
         Ok(PoolTypeFilter { included })
     }
@@ -297,45 +298,71 @@ impl CompactTx {
 /// request-decode path ([`PoolTypeFilter::new_from_slice`]) produces it for
 /// an empty `poolTypes` field.
 pub fn prune_compact_block(mut block: CompactBlock, filter: &PoolTypeFilter) -> CompactBlock {
-    for compact_tx in &mut block.vtx {
-        // strip out transparent inputs if not requested
-        if !filter.includes_transparent() {
-            compact_tx.vin.clear();
-            compact_tx.vout.clear();
-        }
-        // strip out sapling if not requested
-        if !filter.includes_sapling() {
-            compact_tx.spends.clear();
-            compact_tx.outputs.clear();
-        }
-        // strip out orchard if not requested
-        if !filter.includes_orchard() {
-            compact_tx.actions.clear();
-        }
-        // strip out ironwood if not requested
-        if !filter.includes_ironwood() {
-            compact_tx.ironwood_actions.clear();
-        }
-    }
-
-    // Omit transactions that have no elements in any requested pool type.
-    block.vtx.retain(CompactTx::has_pool_data);
-
+    block.vtx = block
+        .vtx
+        .into_iter()
+        .map(|compact_tx| prune_compact_tx(compact_tx, filter))
+        .filter(CompactTx::has_pool_data)
+        .collect();
     block
 }
 
-/// Strips the outputs and transparent data from all transactions, retains
-/// only the nullifier from all Orchard and Ironwood actions, and clears the
-/// chain metadata from the block. Sapling spends are kept whole: the spend
-/// itself is the nullifier carrier.
-pub fn compact_block_to_nullifiers(mut block: CompactBlock) -> CompactBlock {
-    for ctransaction in &mut block.vtx {
-        ctransaction.outputs = Vec::new();
-        ctransaction.vin = Vec::new();
-        ctransaction.vout = Vec::new();
-        retain_only_nullifiers(&mut ctransaction.actions);
-        retain_only_nullifiers(&mut ctransaction.ironwood_actions);
+/// Rebuilds one transaction keeping only the data of pools the filter
+/// includes.
+fn prune_compact_tx(compact_tx: CompactTx, filter: &PoolTypeFilter) -> CompactTx {
+    let CompactTx {
+        index,
+        txid,
+        fee,
+        spends,
+        outputs,
+        actions,
+        ironwood_actions,
+        vin,
+        vout,
+    } = compact_tx;
+    CompactTx {
+        index,
+        txid,
+        fee,
+        spends: included_or_empty(filter.includes_sapling(), spends),
+        outputs: included_or_empty(filter.includes_sapling(), outputs),
+        actions: included_or_empty(filter.includes_orchard(), actions),
+        ironwood_actions: included_or_empty(filter.includes_ironwood(), ironwood_actions),
+        vin: included_or_empty(filter.includes_transparent(), vin),
+        vout: included_or_empty(filter.includes_transparent(), vout),
     }
+}
+
+/// `items` when `included`, the empty vector otherwise.
+fn included_or_empty<T>(included: bool, items: Vec<T>) -> Vec<T> {
+    if included {
+        items
+    } else {
+        Vec::new()
+    }
+}
+
+/// Rebuilds the block so each transaction carries only its nullifier
+/// carriers: Sapling spends whole (the spend is its own nullifier record),
+/// Orchard and Ironwood actions reduced to nullifier-only, and every other
+/// field emptied. Chain metadata is zeroed.
+pub fn compact_block_to_nullifiers(mut block: CompactBlock) -> CompactBlock {
+    block.vtx = block
+        .vtx
+        .into_iter()
+        .map(|compact_tx| CompactTx {
+            index: compact_tx.index,
+            txid: compact_tx.txid,
+            fee: compact_tx.fee,
+            spends: compact_tx.spends,
+            outputs: Vec::new(),
+            actions: nullifiers_only(compact_tx.actions),
+            ironwood_actions: nullifiers_only(compact_tx.ironwood_actions),
+            vin: Vec::new(),
+            vout: Vec::new(),
+        })
+        .collect();
 
     block.chain_metadata = Some(ChainMetadata {
         sapling_commitment_tree_size: 0,
@@ -346,13 +373,14 @@ pub fn compact_block_to_nullifiers(mut block: CompactBlock) -> CompactBlock {
 }
 
 /// Reduces each action to one carrying only its nullifier.
-fn retain_only_nullifiers(actions: &mut [CompactOrchardAction]) {
-    for action in actions {
-        *action = CompactOrchardAction {
-            nullifier: std::mem::take(&mut action.nullifier),
+fn nullifiers_only(actions: Vec<CompactOrchardAction>) -> Vec<CompactOrchardAction> {
+    actions
+        .into_iter()
+        .map(|action| CompactOrchardAction {
+            nullifier: action.nullifier,
             ..Default::default()
-        }
-    }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -379,7 +407,7 @@ mod test {
     }
 
     #[test]
-    fn test_pool_type_filter_fails_when_too_many_items() {
+    fn test_pool_type_filter_fails_when_duplicated() {
         let pools = [
             PoolType::Transparent,
             PoolType::Sapling,
@@ -391,7 +419,15 @@ mod test {
 
         assert_eq!(
             PoolTypeFilter::new_from_pool_types(&pools),
-            Err(PoolTypeError::InvalidPoolType)
+            Err(PoolTypeError::DuplicatePoolType)
+        );
+    }
+
+    #[test]
+    fn test_pool_type_filter_fails_on_minimal_duplicate() {
+        assert_eq!(
+            PoolTypeFilter::new_from_pool_types(&[PoolType::Orchard, PoolType::Orchard]),
+            Err(PoolTypeError::DuplicatePoolType)
         );
     }
 
