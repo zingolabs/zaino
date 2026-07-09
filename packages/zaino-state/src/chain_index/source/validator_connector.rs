@@ -122,6 +122,19 @@ impl ValidatorConnector {
             .await
             .map_err(BlockchainSourceError::unrecoverable)?;
 
+        // A freshly started validator answers RPC before it has fetched and
+        // committed its first block: zebra serves getblockchaininfo and an
+        // empty getrawmempool while getbestblockhash returns "No blocks in
+        // state" until genesis arrives, which can take minutes of peer
+        // discovery. Everything downstream assumes a servable tip
+        // (Mempool::spawn returns Critical on get_best_block_hash and the
+        // ChainIndex sync loop escalates to CriticalError), so wait here
+        // instead of failing spawn and exit-looping the whole process.
+        while let Err(e) = fetcher.get_best_blockhash().await {
+            info!(%e, "Waiting for validator to serve its first block");
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        }
+
         Ok((ValidatorConnector::Fetch(fetcher), info))
     }
 
@@ -188,10 +201,19 @@ impl ValidatorConnector {
                 .and_then(|service| service.call(ReadRequest::Tip))
                 .await
                 .map_err(BlockchainSourceError::unrecoverable)?;
-            let (syncer_height, syncer_tip_hash) = expected_read_response!(syncer_response, Tip)
-                .ok_or_else(|| {
-                    BlockchainSourceError::Unrecoverable("no blocks in chain".to_string())
-                })?;
+            // A freshly started validator answers RPC before it has committed
+            // its first block (getblockchaininfo reports a genesis-hash
+            // placeholder on an empty state), and the syncer has no tip until
+            // genesis arrives, which can take minutes of peer discovery.
+            // Everything below assumes a servable tip, so wait here instead
+            // of failing spawn and exit-looping the whole process.
+            let Some((syncer_height, syncer_tip_hash)) =
+                expected_read_response!(syncer_response, Tip)
+            else {
+                info!("Waiting for validator to serve its first block");
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                continue;
+            };
 
             if server_height == syncer_height && server_tip_hash == syncer_tip_hash {
                 info!(
