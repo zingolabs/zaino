@@ -514,21 +514,18 @@ fn error_object_from_source_chain<Error>(
 where
     Error: std::error::Error + 'static,
 {
-    let mut current_error: Option<&(dyn std::error::Error + 'static)> = Some(&error);
-
-    while let Some(error_source) = current_error {
-        if let Some(error_object) = map(error_source) {
-            return error_object;
-        }
-
-        current_error = error_source.source();
-    }
-
-    ErrorObjectOwned::owned(
-        ErrorCode::InternalError.code(),
-        "Internal server error",
-        Some(error.to_string()),
+    std::iter::successors(
+        Some(&error as &(dyn std::error::Error + 'static)),
+        |error_source| error_source.source(),
     )
+    .find_map(map)
+    .unwrap_or_else(|| {
+        ErrorObjectOwned::owned(
+            ErrorCode::InternalError.code(),
+            "Internal server error",
+            Some(error.to_string()),
+        )
+    })
 }
 
 fn getblock_error_object_from_indexer_error<Error>(error: Error) -> ErrorObjectOwned
