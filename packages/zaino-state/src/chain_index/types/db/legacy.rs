@@ -1134,36 +1134,6 @@ impl IndexedBlock {
     }
 }
 
-impl ZainoVersionedSerde for IndexedBlock {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, mut w: &mut W) -> io::Result<()> {
-        PersistentBlockContext::from_business(&self.context).serialize_with_version(&mut w, 1)?;
-        self.data.serialize_with_version(&mut w, 1)?;
-        write_vec(&mut w, &self.transactions, |w, tx| {
-            tx.serialize_with_version(w, 1)
-        })?;
-        self.commitment_tree_data.serialize_with_version(&mut w, 1)
-    }
-
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
-        let mut r = r;
-        let context = PersistentBlockContext::deserialize(&mut r)?.into_business()?;
-        let data = BlockData::deserialize(&mut r)?;
-        let tx = read_vec(&mut r, |r| CompactTxData::deserialize(r))?;
-        let ctd = CommitmentTreeData::deserialize(&mut r)?;
-
-        Ok(IndexedBlock::new(context, data, tx, ctd))
-    }
-}
 /// TryFrom inputs:
 /// - FullBlock:
 ///   - Holds block data.
@@ -1578,76 +1548,6 @@ impl TryFrom<(u64, zaino_fetch::chain::transaction::FullTransaction)> for Compac
             index,
             // NOTE: do we need to use from_bytes_in_display_order here?
             txid.into(),
-            transparent,
-            sapling,
-            orchard,
-            ironwood,
-        ))
-    }
-}
-
-impl ZainoVersionedSerde for CompactTxData {
-    const VERSION: u8 = version::V2;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v2(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v2(r)
-    }
-
-    fn encode_v1<W: Write>(&self, mut w: &mut W) -> io::Result<()> {
-        write_u64_le(&mut w, self.index)?;
-
-        self.txid.serialize_with_version(&mut w, 1)?;
-        self.transparent.serialize_with_version(&mut w, 1)?;
-        self.sapling.serialize_with_version(&mut w, 1)?;
-        self.orchard.serialize_with_version(&mut w, 1)
-    }
-
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
-        let mut r = r;
-        let index = read_u64_le(&mut r)?;
-
-        let txid = TransactionHash::deserialize(&mut r)?;
-        let transparent = TransparentCompactTx::deserialize(&mut r)?;
-        let sapling = SaplingCompactTx::deserialize(&mut r)?;
-        let orchard = OrchardCompactTx::deserialize(&mut r)?;
-
-        Ok(CompactTxData::new(
-            index,
-            txid,
-            transparent,
-            sapling,
-            orchard,
-            OrchardCompactTx::empty(),
-        ))
-    }
-
-    fn encode_v2<W: Write>(&self, mut w: &mut W) -> io::Result<()> {
-        write_u64_le(&mut w, self.index)?;
-
-        self.txid.serialize_with_version(&mut w, 1)?;
-        self.transparent.serialize_with_version(&mut w, 1)?;
-        self.sapling.serialize_with_version(&mut w, 1)?;
-        self.orchard.serialize_with_version(&mut w, 1)?;
-        self.ironwood.serialize_with_version(&mut w, 1)
-    }
-
-    fn decode_v2<R: Read>(r: &mut R) -> io::Result<Self> {
-        let mut r = r;
-        let index = read_u64_le(&mut r)?;
-
-        let txid = TransactionHash::deserialize(&mut r)?;
-        let transparent = TransparentCompactTx::deserialize(&mut r)?;
-        let sapling = SaplingCompactTx::deserialize(&mut r)?;
-        let orchard = OrchardCompactTx::deserialize(&mut r)?;
-        let ironwood = OrchardCompactTx::deserialize(&mut r)?;
-
-        Ok(CompactTxData::new(
-            index,
-            txid,
             transparent,
             sapling,
             orchard,
