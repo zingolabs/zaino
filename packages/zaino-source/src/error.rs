@@ -2,36 +2,96 @@
 
 use core::fmt;
 
-/// Transport-level failure (connection refused, timeout, deserialization).
+/// What kind of transport failure occurred.
 ///
-/// Shared across all query traits. Domain-specific errors (block not found,
-/// height out of range) are per-trait; transport errors are uniform because
-/// they depend on the adapter, not the question.
+/// Machine-readable — the resilience wrapper matches on this to
+/// decide retryability, not on message strings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransportFailure {
+    /// Connection refused, DNS failure, TLS handshake error.
+    Connection,
+    /// Request timed out.
+    Timeout,
+    /// Non-2xx HTTP status code.
+    HttpStatus(u16),
+    /// Server returned a JSON-RPC error code.
+    RpcError(i64),
+    /// Response couldn't be deserialized.
+    Parse,
+    /// Authentication rejected.
+    Auth,
+}
+
+/// Transport-level failure from a single attempt.
+///
+/// Carries a structured [`TransportFailure`] for machine classification
+/// and a human-readable message for logging.
 #[derive(Debug, thiserror::Error)]
-#[error("transport error: {message}")]
+#[error("{message}")]
 pub struct TransportError {
-    message: String,
+    /// What kind of failure.
+    pub kind: TransportFailure,
+    /// Human-readable description.
+    pub message: String,
 }
 
 impl TransportError {
-    /// Wrap an arbitrary transport failure.
-    pub fn new(message: impl Into<String>) -> Self {
+    /// Construct a transport error.
+    pub fn new(kind: TransportFailure, message: impl Into<String>) -> Self {
         Self {
+            kind,
             message: message.into(),
         }
     }
 }
 
-/// Combined domain + transport error for a query.
+/// Single-attempt error from an adapter.
 ///
-/// Generic over the domain error `E`. Each query trait defines its own
-/// domain error; this wrapper adds the transport layer uniformly.
+/// Two variants: the server answered with a domain rejection, or the
+/// transport failed. No retry awareness.
 #[derive(Debug, thiserror::Error)]
 pub enum QueryError<E: fmt::Debug + fmt::Display> {
-    /// The question has a domain-level answer: "not found", "not ready", etc.
+    /// The server answered with a domain-level rejection.
     #[error("{0}")]
     Domain(E),
-    /// The question couldn't be delivered or the response couldn't be parsed.
+
+    /// Transport-level failure.
     #[error("{0}")]
-    Transport(#[from] TransportError),
+    Transport(TransportError),
+}
+
+impl<E: fmt::Debug + fmt::Display> From<TransportError> for QueryError<E> {
+    fn from(e: TransportError) -> Self {
+        Self::Transport(e)
+    }
+}
+
+/// Retries exhausted while trying to reach the validator.
+#[derive(Debug, thiserror::Error)]
+#[error("unavailable after {attempts} attempts: {last_error}")]
+pub struct UnavailableError {
+    /// Number of attempts made.
+    pub attempts: u32,
+    /// The last transport error before giving up.
+    pub last_error: TransportError,
+}
+
+/// Consumer-facing error from the resilience wrapper.
+///
+/// - `Domain`: the server answered "no" (never retried)
+/// - `Transport`: non-retryable transport failure (passed through)
+/// - `Unavailable`: retryable failure, retries exhausted
+#[derive(Debug, thiserror::Error)]
+pub enum ResilientError<E: fmt::Debug + fmt::Display> {
+    /// The server answered with a domain-level rejection.
+    #[error("{0}")]
+    Domain(E),
+
+    /// Non-retryable transport failure.
+    #[error("{0}")]
+    Transport(TransportError),
+
+    /// Retries exhausted — the validator is unreachable.
+    #[error("{0}")]
+    Unavailable(UnavailableError),
 }

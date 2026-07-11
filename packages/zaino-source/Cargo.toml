@@ -10,6 +10,7 @@ license.workspace = true
 [dependencies]
 zaino-primitives = { path = "../zaino-primitives" }
 thiserror = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
 
 [features]
 testing = []

@@ -35,3 +35,26 @@ pub enum RpcError {
     #[error("null result without error")]
     NullResult,
 }
+
+impl From<RpcError> for zaino_source::TransportError {
+    fn from(e: RpcError) -> Self {
+        use zaino_source::TransportFailure;
+
+        let kind = match &e {
+            RpcError::Http(inner) => {
+                if inner.is_timeout() {
+                    TransportFailure::Timeout
+                } else {
+                    TransportFailure::Connection
+                }
+            }
+            RpcError::Status(401 | 403) => TransportFailure::Auth,
+            RpcError::Status(code) => TransportFailure::HttpStatus(*code),
+            RpcError::Rpc { code, .. } => TransportFailure::RpcError(*code),
+            RpcError::WorkQueueExhausted { .. } => TransportFailure::RpcError(-1),
+            RpcError::Json(_) | RpcError::NullResult => TransportFailure::Parse,
+        };
+
+        zaino_source::TransportError::new(kind, e.to_string())
+    }
+}

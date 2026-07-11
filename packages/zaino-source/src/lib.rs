@@ -25,7 +25,10 @@ mod get_subtree_roots;
 mod get_transaction;
 mod get_treestate;
 
-pub use error::{QueryError, TransportError};
+pub mod resilient;
+
+pub use error::{QueryError, ResilientError, TransportError, TransportFailure, UnavailableError};
+pub use resilient::{Resilient, RetryPolicy};
 pub use get_address_balance::{GetAddressBalance, GetAddressBalanceError};
 pub use get_address_deltas::{GetAddressDeltas, GetAddressDeltasError};
 pub use get_address_txids::{GetAddressTxids, GetAddressTxidsError};
