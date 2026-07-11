@@ -19,7 +19,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "net", "io-util"] }
 
 [lints.rust]
 unsafe_code = "forbid"
