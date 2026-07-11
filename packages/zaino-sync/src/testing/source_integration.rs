@@ -7,7 +7,9 @@
 use crate::descriptor::{Append, BlockLocal};
 use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::{BlockHeight, IndexId};
-use crate::traits::{ExtractError, ExtractLocal, IndexDef, MergeAppend, ProvideContext, Schema};
+use crate::traits::{
+    ExtractError, ExtractLocal, IndexDef, MergeAppend, ProvideContext, Schema, SchemaDecodeError,
+};
 
 use zaino_primitives::types::{BlockHash, BlockTime, CompactDifficulty, Height};
 
@@ -119,6 +121,15 @@ impl Schema<Vec<TxCountEntry>> for TxCountIndex {
             .into_iter()
             .map(|(height, tx_count)| TxCountEntry { height, tx_count })
             .collect()
+    }
+
+    fn encode_key(key: &Self::Key) -> Vec<u8> { key.encode() }
+    fn encode_value(value: &Self::Value) -> Vec<u8> { value.encode() }
+    fn decode_key(bytes: &[u8]) -> Result<Self::Key, SchemaDecodeError> {
+        BlockHeight::decode(bytes).map_err(|e| SchemaDecodeError::Invalid(e.to_string()))
+    }
+    fn decode_value(bytes: &[u8]) -> Result<Self::Value, SchemaDecodeError> {
+        u32::decode(bytes).map_err(|e| SchemaDecodeError::Invalid(e.to_string()))
     }
 }
 
@@ -244,6 +255,15 @@ impl Schema<Vec<HeaderEntry>> for HeadersIndex {
             .into_iter()
             .map(|(height, value)| HeaderEntry { height, value })
             .collect()
+    }
+
+    fn encode_key(key: &Self::Key) -> Vec<u8> { key.encode() }
+    fn encode_value(value: &Self::Value) -> Vec<u8> { value.encode() }
+    fn decode_key(bytes: &[u8]) -> Result<Self::Key, SchemaDecodeError> {
+        BlockHeight::decode(bytes).map_err(|e| SchemaDecodeError::Invalid(e.to_string()))
+    }
+    fn decode_value(bytes: &[u8]) -> Result<Self::Value, SchemaDecodeError> {
+        HeaderValue::decode(bytes).map_err(|e| SchemaDecodeError::Invalid(e.to_string()))
     }
 }
 

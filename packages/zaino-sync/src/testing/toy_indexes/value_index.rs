@@ -3,7 +3,7 @@
 use crate::descriptor::{Append, BlockLocal};
 use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::{BlockHeight, IndexId};
-use crate::traits::{ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema};
+use crate::traits::{ExtractError, ExtractLocal, IndexDef, MergeAppend, Schema, SchemaDecodeError};
 
 /// Block context for this index: height and value.
 pub struct Context {
@@ -91,5 +91,21 @@ impl Schema<Vec<Entry>> for ValueIndex {
             .into_iter()
             .map(|(height, value)| Entry { height, value })
             .collect()
+    }
+
+    fn encode_key(key: &Self::Key) -> Vec<u8> {
+        key.encode()
+    }
+
+    fn encode_value(value: &Self::Value) -> Vec<u8> {
+        value.encode()
+    }
+
+    fn decode_key(bytes: &[u8]) -> Result<Self::Key, SchemaDecodeError> {
+        BlockHeight::decode(bytes).map_err(|e| SchemaDecodeError::Invalid(e.to_string()))
+    }
+
+    fn decode_value(bytes: &[u8]) -> Result<Self::Value, SchemaDecodeError> {
+        BlockValue::decode(bytes).map_err(|e| SchemaDecodeError::Invalid(e.to_string()))
     }
 }

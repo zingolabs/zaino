@@ -3,7 +3,7 @@
 use crate::descriptor::{BlockLocal, Fold};
 use crate::encode::{Decode, DecodeError, Encode};
 use crate::primitives::IndexId;
-use crate::traits::{ExtractError, ExtractLocal, IndexDef, MergeFold, Schema};
+use crate::traits::{ExtractError, ExtractLocal, IndexDef, MergeFold, Schema, SchemaDecodeError};
 
 /// Block context for this index: just the block's value.
 pub struct Context {
@@ -106,5 +106,14 @@ impl Schema<RunningSum> for RunningSumIndex {
             .next()
             .map(|(_, v)| v)
             .unwrap_or(RunningSum::new(0))
+    }
+
+    fn encode_key(key: &Self::Key) -> Vec<u8> { key.encode() }
+    fn encode_value(value: &Self::Value) -> Vec<u8> { value.encode() }
+    fn decode_key(bytes: &[u8]) -> Result<Self::Key, SchemaDecodeError> {
+        SumKey::decode(bytes).map_err(|e| SchemaDecodeError::Invalid(e.to_string()))
+    }
+    fn decode_value(bytes: &[u8]) -> Result<Self::Value, SchemaDecodeError> {
+        RunningSum::decode(bytes).map_err(|e| SchemaDecodeError::Invalid(e.to_string()))
     }
 }
