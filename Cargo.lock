@@ -3873,6 +3873,8 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "rustls-platform-verifier",
+ "serde",
+ "serde_json",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
@@ -6008,6 +6010,9 @@ dependencies = [
 [[package]]
 name = "zaino-primitives"
 version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "zaino-proto"
@@ -6020,6 +6025,17 @@ dependencies = [
  "which",
  "zebra-chain 10.1.0",
  "zebra-state 9.0.1",
+]
+
+[[package]]
+name = "zaino-rpc"
+version = "0.1.0"
+dependencies = [
+ "reqwest 0.13.1",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]
@@ -6046,7 +6062,23 @@ dependencies = [
 name = "zaino-source"
 version = "0.1.0"
 dependencies = [
+ "thiserror 2.0.18",
+ "tokio",
  "zaino-primitives",
+]
+
+[[package]]
+name = "zaino-source-zebra-rpc"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "zaino-primitives",
+ "zaino-rpc",
+ "zaino-source",
 ]
 
 [[package]]
@@ -6112,6 +6144,8 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "zaino-primitives",
+ "zaino-source",
 ]
 
 [[package]]

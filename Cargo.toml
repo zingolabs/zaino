@@ -3,6 +3,8 @@
 members = [
     "packages/zaino-primitives",
     "packages/zaino-source",
+    "packages/zaino-rpc",
+    "packages/zaino-source-zebra-rpc",
     "packages/zaino-common",
     "packages/zainod",
     "packages/zaino-serve",
@@ -22,6 +24,8 @@ members = [
 default-members = [
     "packages/zaino-primitives",
     "packages/zaino-source",
+    "packages/zaino-rpc",
+    "packages/zaino-source-zebra-rpc",
     "packages/zaino-common",
     "packages/zainod",
     "packages/zaino-serve",
@@ -88,6 +92,7 @@ http = "1.1"
 url = "2.5"
 reqwest = { version = "0.13", default-features = false, features = [
     "cookies",
+    "json",
     "rustls",
     "webpki-roots",
 ] }

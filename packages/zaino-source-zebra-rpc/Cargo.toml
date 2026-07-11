@@ -1,0 +1,25 @@
+[package]
+name = "zaino-source-zebra-rpc"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+description = "Zebra JSON-RPC adapter implementing zaino-source query traits."
+
+[dependencies]
+zaino-primitives = { path = "../zaino-primitives" }
+zaino-rpc = { path = "../zaino-rpc" }
+zaino-source = { path = "../zaino-source" }
+hex.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
