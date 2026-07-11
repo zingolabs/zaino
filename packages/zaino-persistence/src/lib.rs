@@ -9,3 +9,6 @@ mod error;
 
 pub use backend::{Backend, BackendReader, BackendWriter, WriteOp};
 pub use error::BackendError;
+
+#[cfg(feature = "testing")]
+pub mod in_memory;

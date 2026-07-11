@@ -12,6 +12,9 @@ description = "Driven port traits for index persistence (read/write)."
 zaino-primitives = { path = "../zaino-primitives" }
 thiserror.workspace = true
 
+[features]
+testing = []
+
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
