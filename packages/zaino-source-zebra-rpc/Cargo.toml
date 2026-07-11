@@ -13,6 +13,7 @@ zaino-primitives = { path = "../zaino-primitives" }
 zaino-rpc = { path = "../zaino-rpc" }
 zaino-source = { path = "../zaino-source" }
 hex.workspace = true
+zebra-chain = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true

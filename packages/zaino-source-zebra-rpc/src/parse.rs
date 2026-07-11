@@ -98,6 +98,10 @@ pub(crate) enum ParseError {
     /// Height validation failed.
     #[error("invalid height: {0}")]
     Height(String),
+
+    /// Block deserialization failed.
+    #[error("deserialize: {0}")]
+    Deserialize(String),
 }
 
 impl ParseError {

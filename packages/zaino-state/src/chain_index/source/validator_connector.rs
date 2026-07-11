@@ -78,7 +78,7 @@ impl BlockchainSource for ValidatorConnector {
                         Err(e) => match e {
                             RpcRequestError::Method(GetBlockError::MissingBlock(_)) => Ok(None),
                             // TODO/FIX: zcashd returns this transport error when a block is requested higher than current chain. is this correct?
-                            RpcRequestError::Transport(zaino_fetch::jsonrpsee::error::TransportError::ErrorStatusCode(500)) => Ok(None),
+                            RpcRequestError::Transport(zaino_fetch::jsonrpsee::error::FetchError::ErrorStatusCode(500)) => Ok(None),
                             RpcRequestError::ServerWorkQueueFull => Err(BlockchainSourceError::Unrecoverable("Work queue full. not yet implemented: handling of ephemeral network errors.".to_string())),
                             _ => Err(BlockchainSourceError::Unrecoverable(e.to_string())),
                         },
@@ -103,7 +103,7 @@ impl BlockchainSource for ValidatorConnector {
                     Err(e) => match e {
                         RpcRequestError::Method(GetBlockError::MissingBlock(_)) => Ok(None),
                         // TODO/FIX: zcashd returns this transport error when a block is requested higher than current chain. is this correct?
-                        RpcRequestError::Transport(zaino_fetch::jsonrpsee::error::TransportError::ErrorStatusCode(500)) => Ok(None),
+                        RpcRequestError::Transport(zaino_fetch::jsonrpsee::error::FetchError::ErrorStatusCode(500)) => Ok(None),
                         RpcRequestError::ServerWorkQueueFull => Err(BlockchainSourceError::Unrecoverable("Work queue full. not yet implemented: handling of ephemeral network errors.".to_string())),
                         _ => Err(BlockchainSourceError::Unrecoverable(e.to_string())),
                     },
