@@ -1,0 +1,10 @@
+# Multi-stage: build on Arch (matches dev machine glibc), run on Arch slim.
+FROM docker.io/archlinux:latest AS builder
+RUN pacman -Syu --noconfirm rust cmake gcc make pkgconf
+WORKDIR /src
+COPY . .
+RUN cargo build -p sync-bench --release
+
+FROM docker.io/archlinux:latest
+COPY --from=builder /src/target/release/sync-headers /usr/local/bin/sync-headers
+ENTRYPOINT ["sync-headers"]
