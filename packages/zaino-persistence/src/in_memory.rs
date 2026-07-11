@@ -5,18 +5,16 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use zaino_primitives::types::IndexId;
+use crate::backend::{Backend, BackendReader, BackendWriter, Namespace, RawKey, RawValue, WriteOp};
+use crate::error::{CommitError, FlushError, OpenError, ReadError};
 
-use crate::backend::{WriteOp, Backend, BackendReader, BackendWriter};
-use crate::error::BackendError;
-
-/// In-memory backend. Stores key-value pairs per index.
+/// In-memory backend. Stores key-value pairs per namespace.
 ///
 /// Thread-safe via `Arc<Mutex<...>>` — readers and writers share the
 /// same underlying map.
 #[derive(Clone)]
 pub struct InMemoryBackend {
-    data: Arc<Mutex<HashMap<IndexId, HashMap<Vec<u8>, Vec<u8>>>>>,
+    data: Arc<Mutex<HashMap<Namespace, HashMap<RawKey, RawValue>>>>,
 }
 
 impl InMemoryBackend {
@@ -27,16 +25,16 @@ impl InMemoryBackend {
         }
     }
 
-    /// Read all entries for a given index. For assertions.
-    pub fn entries(&self, index: IndexId) -> HashMap<Vec<u8>, Vec<u8>> {
+    /// Read all entries for a given namespace. For assertions.
+    pub fn entries(&self, namespace: Namespace) -> HashMap<RawKey, RawValue> {
         let guard = self.data.lock().expect("mutex poisoned");
-        guard.get(&index).cloned().unwrap_or_default()
+        guard.get(namespace).cloned().unwrap_or_default()
     }
 
     /// Read a single value. For assertions.
-    pub fn get_value(&self, index: IndexId, key: &[u8]) -> Option<Vec<u8>> {
+    pub fn get_value(&self, namespace: Namespace, key: &[u8]) -> Option<RawValue> {
         let guard = self.data.lock().expect("mutex poisoned");
-        guard.get(&index).and_then(|m| m.get(key).cloned())
+        guard.get(namespace).and_then(|m| m.get(key).cloned())
     }
 }
 
@@ -50,38 +48,38 @@ impl Backend for InMemoryBackend {
     type Reader = InMemoryReader;
     type Writer = InMemoryWriter;
 
-    fn reader(&self) -> Result<Self::Reader, BackendError> {
+    fn reader(&self) -> Result<Self::Reader, OpenError> {
         Ok(InMemoryReader {
             data: Arc::clone(&self.data),
         })
     }
 
-    fn writer(&self) -> Result<Self::Writer, BackendError> {
+    fn writer(&self) -> Result<Self::Writer, OpenError> {
         Ok(InMemoryWriter {
             data: Arc::clone(&self.data),
         })
     }
 
-    fn flush(&self) -> Result<(), BackendError> {
+    fn flush(&self) -> Result<(), FlushError> {
         Ok(())
     }
 }
 
 /// Read handle for the in-memory backend.
 pub struct InMemoryReader {
-    data: Arc<Mutex<HashMap<IndexId, HashMap<Vec<u8>, Vec<u8>>>>>,
+    data: Arc<Mutex<HashMap<Namespace, HashMap<RawKey, RawValue>>>>,
 }
 
 impl BackendReader for InMemoryReader {
-    fn get(&self, index: IndexId, key: &[u8]) -> Result<Option<Vec<u8>>, BackendError> {
+    fn get(&self, namespace: Namespace, key: &[u8]) -> Result<Option<RawValue>, ReadError> {
         let guard = self.data.lock().expect("mutex poisoned");
-        Ok(guard.get(&index).and_then(|m| m.get(key).cloned()))
+        Ok(guard.get(namespace).and_then(|m| m.get(key).cloned()))
     }
 
-    fn scan(&self, index: IndexId) -> Result<Vec<(Vec<u8>, Vec<u8>)>, BackendError> {
+    fn scan(&self, namespace: Namespace) -> Result<Vec<(RawKey, RawValue)>, ReadError> {
         let guard = self.data.lock().expect("mutex poisoned");
         Ok(guard
-            .get(&index)
+            .get(namespace)
             .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
             .unwrap_or_default())
     }
@@ -89,19 +87,19 @@ impl BackendReader for InMemoryReader {
 
 /// Write handle for the in-memory backend.
 pub struct InMemoryWriter {
-    data: Arc<Mutex<HashMap<IndexId, HashMap<Vec<u8>, Vec<u8>>>>>,
+    data: Arc<Mutex<HashMap<Namespace, HashMap<RawKey, RawValue>>>>,
 }
 
 impl BackendWriter for InMemoryWriter {
-    fn commit(&mut self, ops: Vec<WriteOp>) -> Result<(), BackendError> {
+    fn commit(&mut self, ops: Vec<WriteOp>) -> Result<(), CommitError> {
         let mut guard = self.data.lock().expect("mutex poisoned");
         for op in ops {
             match op {
-                WriteOp::Put { index, key, value } => {
-                    guard.entry(index).or_default().insert(key, value);
+                WriteOp::Put { namespace, key, value } => {
+                    guard.entry(namespace).or_default().insert(key, value);
                 }
-                WriteOp::Delete { index, key } => {
-                    if let Some(map) = guard.get_mut(&index) {
+                WriteOp::Delete { namespace, key } => {
+                    if let Some(map) = guard.get_mut(namespace) {
                         map.remove(&key);
                     }
                 }
@@ -134,11 +132,11 @@ impl<B: Backend> Backend for SlowBackend<B> {
     type Reader = B::Reader;
     type Writer = SlowWriter<B::Writer>;
 
-    fn reader(&self) -> Result<Self::Reader, BackendError> {
+    fn reader(&self) -> Result<Self::Reader, OpenError> {
         self.inner.reader()
     }
 
-    fn writer(&self) -> Result<Self::Writer, BackendError> {
+    fn writer(&self) -> Result<Self::Writer, OpenError> {
         let inner = self.inner.writer()?;
         Ok(SlowWriter {
             inner,
@@ -146,7 +144,7 @@ impl<B: Backend> Backend for SlowBackend<B> {
         })
     }
 
-    fn flush(&self) -> Result<(), BackendError> {
+    fn flush(&self) -> Result<(), FlushError> {
         self.inner.flush()
     }
 }
@@ -158,7 +156,7 @@ pub struct SlowWriter<W> {
 }
 
 impl<W: BackendWriter> BackendWriter for SlowWriter<W> {
-    fn commit(&mut self, ops: Vec<WriteOp>) -> Result<(), BackendError> {
+    fn commit(&mut self, ops: Vec<WriteOp>) -> Result<(), CommitError> {
         std::thread::sleep(self.delay);
         self.inner.commit(ops)
     }

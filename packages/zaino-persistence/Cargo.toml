@@ -9,7 +9,6 @@ license.workspace = true
 description = "Driven port traits for index persistence (read/write)."
 
 [dependencies]
-zaino-primitives = { path = "../zaino-primitives" }
 thiserror.workspace = true
 
 [features]

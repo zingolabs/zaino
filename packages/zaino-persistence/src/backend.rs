@@ -3,29 +3,62 @@
 //! The sync engine writes through this, the serving layer reads from it.
 //! Both depend on the same abstraction; neither knows the concrete
 //! storage technology.
+//!
+//! # Namespaces
+//!
+//! The backend organises data into **namespaces** — independent
+//! keyspaces, each with its own key ordering. In LMDB these map to
+//! named databases; in RocksDB to column families; in the in-memory
+//! backend to separate `HashMap`s.
+//!
+//! Namespaces are declared at construction time. All writes and reads
+//! target a declared namespace.
+//!
+//! > **Note:** the upfront declaration requirement exists because LMDB
+//! > (our primary backend) needs the full set of named databases at
+//! > environment open time. A backend backed by RocksDB or a HashMap
+//! > could support dynamic namespace creation. If we add such a backend,
+//! > consider relaxing this to an `ensure_namespace` method.
 
-use zaino_primitives::types::IndexId;
+use crate::error::{CommitError, FlushError, OpenError, ReadError};
 
-use crate::error::BackendError;
+/// A namespace identifier — names an independent keyspace within the backend.
+///
+/// Not an `IndexId`: a namespace is a storage concept (where bytes live),
+/// an index is a domain concept (what the bytes mean). The engine maps
+/// index IDs and its own metadata to separate namespaces.
+pub type Namespace = &'static str;
 
-/// A write operation: put or delete a key-value pair in a named index.
+/// Encoded key bytes, as produced by the index's schema encoding.
+///
+/// Opaque to the backend — it stores and retrieves these without
+/// interpretation. Key ordering is lexicographic on the raw bytes.
+pub type RawKey = Vec<u8>;
+
+/// Encoded value bytes, as produced by the index's schema encoding.
+///
+/// Opaque to the backend — it stores and retrieves these without
+/// interpretation.
+pub type RawValue = Vec<u8>;
+
+/// A write operation: put or delete a key-value pair in a namespace.
 #[derive(Debug)]
 pub enum WriteOp {
     /// Insert or overwrite a key-value pair.
     Put {
-        /// Target index.
-        index: IndexId,
-        /// Serialised key.
-        key: Vec<u8>,
-        /// Serialised value.
-        value: Vec<u8>,
+        /// Target namespace.
+        namespace: Namespace,
+        /// Encoded key.
+        key: RawKey,
+        /// Encoded value.
+        value: RawValue,
     },
     /// Remove a key.
     Delete {
-        /// Target index.
-        index: IndexId,
-        /// Serialised key.
-        key: Vec<u8>,
+        /// Target namespace.
+        namespace: Namespace,
+        /// Encoded key.
+        key: RawKey,
     },
 }
 
@@ -41,26 +74,26 @@ pub trait Backend: Send + Sync {
     type Writer: BackendWriter;
 
     /// Obtain a read handle. May be called concurrently.
-    fn reader(&self) -> Result<Self::Reader, BackendError>;
+    fn reader(&self) -> Result<Self::Reader, OpenError>;
 
     /// Obtain a write handle.
-    fn writer(&self) -> Result<Self::Writer, BackendError>;
+    fn writer(&self) -> Result<Self::Writer, OpenError>;
 
     /// Force durability of all committed data.
-    fn flush(&self) -> Result<(), BackendError>;
+    fn flush(&self) -> Result<(), FlushError>;
 }
 
 /// Write handle. The engine sends batches of [`WriteOp`]s through this.
 pub trait BackendWriter: Send {
     /// Commit a batch of write operations atomically.
-    fn commit(&mut self, ops: Vec<WriteOp>) -> Result<(), BackendError>;
+    fn commit(&mut self, ops: Vec<WriteOp>) -> Result<(), CommitError>;
 }
 
 /// Read handle. Used for state loading and query serving.
 pub trait BackendReader: Send {
-    /// Read a single key from the given index.
-    fn get(&self, index: IndexId, key: &[u8]) -> Result<Option<Vec<u8>>, BackendError>;
+    /// Read a single key from the given namespace.
+    fn get(&self, namespace: Namespace, key: &[u8]) -> Result<Option<RawValue>, ReadError>;
 
-    /// Return all entries for an index as raw key-value byte pairs.
-    fn scan(&self, index: IndexId) -> Result<Vec<(Vec<u8>, Vec<u8>)>, BackendError>;
+    /// Return all entries for a namespace as raw key-value byte pairs.
+    fn scan(&self, namespace: Namespace) -> Result<Vec<(RawKey, RawValue)>, ReadError>;
 }

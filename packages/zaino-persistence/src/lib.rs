@@ -7,8 +7,8 @@
 mod backend;
 mod error;
 
-pub use backend::{Backend, BackendReader, BackendWriter, WriteOp};
-pub use error::BackendError;
+pub use backend::{Backend, BackendReader, BackendWriter, Namespace, RawKey, RawValue, WriteOp};
+pub use error::{CommitError, FlushError, OpenError, ReadError};
 
 #[cfg(feature = "testing")]
 pub mod in_memory;
