@@ -5,6 +5,7 @@
 //! sub-modules (e.g. [`toy_indexes`]).
 
 mod bench;
+mod source_integration;
 mod toy_indexes;
 
 use std::collections::HashMap;
