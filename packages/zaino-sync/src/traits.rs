@@ -248,9 +248,7 @@ pub trait MergeFold: IndexDef<Composition = Fold> {
 // The bridge does the mechanical conversion to `WriteOp`s.
 // ===========================================================================
 
-use crate::encode::{Decode, Encode};
-
-/// Declares an index's key-value schema and how to map results to entries.
+/// Declares an index's key-value schema, entry mapping, and persistence encoding.
 ///
 /// Generic over `M` — the merge result type. Each composition produces
 /// a different merge result:
@@ -259,18 +257,22 @@ use crate::encode::{Decode, Encode};
 /// - Fold: `Self::FoldState`
 ///
 /// The index implements `Schema<M>` for its composition's output type.
-/// The bridge calls `into_entries` / `from_entries` and uses `Encode` /
-/// `Decode` on the key/value types to produce `WriteOp`s or reconstruct
-/// state. No index code touches bytes.
+/// The bridge calls `into_entries` / `from_entries` for domain mapping,
+/// and `encode_key` / `encode_value` / `decode_key` / `decode_value`
+/// for persistence. The sync engine never touches bytes directly.
+///
+/// **Encoding lives in the index**, not on the types. The index author
+/// defines both the domain mapping AND the byte representation in one
+/// place. No orphan-rule issues, versioning is local to the index.
 ///
 /// Using a type parameter instead of an associated type avoids cycle
 /// errors that arise when the merged type references the index's own
 /// associated types (e.g. `Vec<Self::Delta>`).
 pub trait Schema<M>: IndexDef {
     /// The key type for this index's entries.
-    type Key: Encode + Decode + Send + Sync;
+    type Key: Send + Sync;
     /// The value type for this index's entries.
-    type Value: Encode + Decode + Send + Sync;
+    type Value: Send + Sync;
 
     /// Map a merge result to typed key-value entries.
     fn into_entries(merged: M) -> Vec<(Self::Key, Self::Value)>;
@@ -278,8 +280,27 @@ pub trait Schema<M>: IndexDef {
     /// Reconstruct a merge result from typed key-value entries.
     ///
     /// The mechanical inverse of [`into_entries`](Self::into_entries).
-    /// The bridge calls this after decoding raw bytes from the backend.
     fn from_entries(entries: Vec<(Self::Key, Self::Value)>) -> M;
+
+    /// Encode a key to its on-disk byte representation.
+    fn encode_key(key: &Self::Key) -> Vec<u8>;
+
+    /// Encode a value to its on-disk byte representation.
+    fn encode_value(value: &Self::Value) -> Vec<u8>;
+
+    /// Decode a key from its on-disk byte representation.
+    fn decode_key(bytes: &[u8]) -> Result<Self::Key, SchemaDecodeError>;
+
+    /// Decode a value from its on-disk byte representation.
+    fn decode_value(bytes: &[u8]) -> Result<Self::Value, SchemaDecodeError>;
+}
+
+/// Error from decoding a persisted key or value.
+#[derive(Debug, thiserror::Error)]
+pub enum SchemaDecodeError {
+    /// The byte slice has the wrong length or format.
+    #[error("{0}")]
+    Invalid(String),
 }
 
 // ===========================================================================

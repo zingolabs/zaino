@@ -4,8 +4,11 @@
 //! `TestBlockContext`) are defined here. Specific index sets live in
 //! sub-modules (e.g. [`toy_indexes`]).
 
+#[cfg(test)]
 mod bench;
+#[cfg(test)]
 mod source_integration;
+#[cfg(test)]
 mod toy_indexes;
 
 use std::collections::HashMap;

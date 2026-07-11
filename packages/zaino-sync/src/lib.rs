@@ -17,9 +17,9 @@ pub mod pipeline;
 pub mod primitives;
 pub mod progress;
 pub mod scheduler;
-pub mod encode;
+pub(crate) mod encode;
 pub mod provisioner;
 pub mod traits;
 
-#[cfg(test)]
-mod testing;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;

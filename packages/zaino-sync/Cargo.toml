@@ -10,6 +10,7 @@ description = "DAG-driven parallel sync engine for blockchain index building."
 
 [features]
 tracing = ["dep:tracing"]
+testing = []
 
 [dependencies]
 rayon.workspace = true

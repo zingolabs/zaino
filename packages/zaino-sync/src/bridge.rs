@@ -43,7 +43,6 @@ use std::sync::Mutex;
 
 use crate::backend::BackendReader;
 use crate::descriptor::{Append, BlockLocal, Descriptor, Fold, Monoidal, SelfCumulative};
-use crate::encode::{Decode, Encode};
 use crate::pipeline::{IndexPipeline, PipelineError};
 use crate::traits::{
     ExtractCumulative, ExtractLocal, IndexDef, MergeAppend, MergeFold, MergeMonoidal,
@@ -307,8 +306,8 @@ where
             .into_iter()
             .map(|(key, value)| WriteOp::Put {
                 index: I::NAME,
-                key: key.encode(),
-                value: value.encode(),
+                key: I::encode_key(&key),
+                value: I::encode_value(&value),
             })
             .collect();
 
@@ -385,9 +384,9 @@ where
         let entries: Vec<_> = raw_entries
             .into_iter()
             .map(|(k, v)| {
-                let key = <I as Schema<S::MergedState>>::Key::decode(&k)
+                let key = I::decode_key(&k)
                     .map_err(|e| PipelineError::Persist(e.to_string()))?;
-                let value = <I as Schema<S::MergedState>>::Value::decode(&v)
+                let value = I::decode_value(&v)
                     .map_err(|e| PipelineError::Persist(e.to_string()))?;
                 Ok((key, value))
             })
@@ -427,8 +426,8 @@ where
             .into_iter()
             .map(|(key, value)| WriteOp::Put {
                 index: I::NAME,
-                key: key.encode(),
-                value: value.encode(),
+                key: I::encode_key(&key),
+                value: I::encode_value(&value),
             })
             .collect();
 
