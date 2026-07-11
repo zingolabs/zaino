@@ -1,10 +1,15 @@
-# Multi-stage: build on Arch (matches dev machine glibc), run on Arch slim.
+# Stage 1: build (cached between runs via volume mounts)
 FROM docker.io/archlinux:latest AS builder
 RUN pacman -Syu --noconfirm rust cmake gcc make pkgconf
 WORKDIR /src
 COPY . .
-RUN cargo build -p sync-bench --release
+# cargo registry + target cached via podman --mount args in deploy.sh
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo build -p sync-bench --release && \
+    cp target/release/sync-headers /sync-headers
 
-FROM docker.io/archlinux:latest
-COPY --from=builder /src/target/release/sync-headers /usr/local/bin/sync-headers
+# Stage 2: minimal runtime (just the binary + glibc)
+FROM docker.io/archlinux:base
+COPY --from=builder /sync-headers /usr/local/bin/sync-headers
 ENTRYPOINT ["sync-headers"]

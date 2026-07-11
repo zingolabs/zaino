@@ -23,7 +23,7 @@ echo "=== Building container image ==="
 podman build -t "$IMAGE" -f live-tests/sync-bench/Containerfile .
 
 echo "=== Saving and copying to node ==="
-podman save "$IMAGE" -o /tmp/sync-bench.tar
+podman save --format oci-archive "$IMAGE" -o /tmp/sync-bench.tar
 scp /tmp/sync-bench.tar "$NODE":/tmp/sync-bench.tar
 
 echo "=== Importing image on node ==="
