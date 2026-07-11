@@ -7,7 +7,7 @@ use zaino_source::{
 };
 use zebra_chain::serialization::ZcashDeserializeInto;
 
-use crate::{convert, parse};
+use crate::parse;
 
 /// Zebra JSON-RPC adapter.
 ///
@@ -60,8 +60,8 @@ impl zaino_source::GetBlock for ZebraRpcAdapter {
         let sapling_tree_size = 0;
         let orchard_tree_size = 0;
 
-        convert::block_from_zebra(zebra_block, sapling_tree_size, orchard_tree_size)
-            .map_err(|e| from_parse(e).into())
+        zaino_convert_zebra::block_from_zebra(zebra_block, sapling_tree_size, orchard_tree_size)
+            .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()).into())
     }
 }
 

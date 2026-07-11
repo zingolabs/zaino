@@ -11,6 +11,7 @@ description = "Zebra ReadState adapter: direct DB reads, no RPC."
 [dependencies]
 zaino-primitives.workspace = true
 zaino-source.workspace = true
+zaino-convert-zebra.workspace = true
 zebra-chain = { workspace = true }
 zebra-state = { workspace = true }
 tokio.workspace = true

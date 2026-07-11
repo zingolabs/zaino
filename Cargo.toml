@@ -15,6 +15,8 @@ members = [
     "packages/zaino-proto",
     "packages/zaino-sync",
     "packages/zaino-indexes",
+    "packages/zaino-convert-zebra",
+    "packages/zaino-source-zebra-readstate",
     # Live-test suite (docs/adr/0002, docs/adr/0003, docs/adr/0004).
     # zaino-testutils first: the e2e/clientless partitions depend on it.
     "live-tests/zaino-testutils",
@@ -176,6 +178,8 @@ zaino-rpc = { path = "packages/zaino-rpc" }
 zaino-source-zebra-rpc = { path = "packages/zaino-source-zebra-rpc" }
 zaino-sync = { path = "packages/zaino-sync" }
 zaino-indexes = { path = "packages/zaino-indexes" }
+zaino-convert-zebra = { path = "packages/zaino-convert-zebra" }
+zaino-source-zebra-readstate = { path = "packages/zaino-source-zebra-readstate" }
 
 # Zingo-infra (validator launcher driving the live tests; not a prod dep).
 # TEMPORARY (zingolabs/infrastructure#269): pinned to an exact commit on the
