@@ -17,3 +17,4 @@ build/
 .failed-tests
 **/proptest-regressions/**
 /result
+bench-results/
