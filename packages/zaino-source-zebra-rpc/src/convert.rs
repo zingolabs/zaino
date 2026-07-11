@@ -46,6 +46,8 @@ fn header_from_zebra(zb: &zebra_chain::block::Block) -> Result<BlockHeader, Pars
         time: h.time.timestamp() as u32,
         merkle_root: MerkleRoot::from(h.merkle_root.0),
         block_commitments: BlockCommitments::from(*h.commitment_bytes),
+        // TODO: upstream PR to zebra adding CompactDifficulty::to_bits() -> u32.
+        // Workaround: round-trip through display-order bytes.
         bits: u32::from_be_bytes(h.difficulty_threshold.bytes_in_display_order()),
         nonce: *h.nonce,
     })
