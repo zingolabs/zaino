@@ -6,7 +6,7 @@ use tower::ServiceExt;
 use zebra_chain::parameters::Network;
 use zebra_state::{ReadRequest, ReadResponse, ReadStateService};
 
-use zaino_primitives::types::{Block, BlockHash, Height};
+use zaino_primitives::types::{Block, BlockHash, ChainMetadata, Height};
 use zaino_source::{
     FailureMode, FetchError, GetBlockError, GetChainTipError, QueryError,
 };
@@ -45,7 +45,10 @@ impl zaino_source::GetBlock for ZebraReadStateAdapter {
         height: Height,
     ) -> Result<Block, QueryError<GetBlockError>> {
         let zebra_height = zebra_chain::block::Height(u32::from(height));
-        let request = ReadRequest::Block(zebra_height.into());
+
+        // Use BlockHeader request — Zebra reads only the header from RocksDB,
+        // no transaction deserialization. Critical for sandblast-era blocks.
+        let request = ReadRequest::BlockHeader(zebra_height.into());
 
         let response = self
             .state
@@ -55,15 +58,17 @@ impl zaino_source::GetBlock for ZebraReadStateAdapter {
             .map_err(|e| FetchError::new(FailureMode::Connection, format!("state service: {e}")))?;
 
         match response {
-            ReadResponse::Block(Some(arc_block)) => {
-                // arc_block is Arc<zebra_chain::block::Block>
-                let zebra_block = (*arc_block).clone();
-                // TODO: tree sizes from state
-                zaino_convert_zebra::block_from_zebra(zebra_block, 0, 0)
-                    .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()).into())
-            }
-            ReadResponse::Block(None) => {
-                Err(QueryError::Domain(GetBlockError::HeightNotFound(height)))
+            ReadResponse::BlockHeader { header, hash, height: h, .. } => {
+                let converted = zaino_convert_zebra::header_from_parts(&header, hash, h)
+                    .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?;
+                Ok(Block {
+                    header: converted,
+                    transactions: Vec::new(),
+                    chain_metadata: ChainMetadata {
+                        sapling_tree_size: 0,
+                        orchard_tree_size: 0,
+                    },
+                })
             }
             _ => Err(FetchError::new(
                 FailureMode::Parse,

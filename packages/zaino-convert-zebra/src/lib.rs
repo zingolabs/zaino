@@ -42,7 +42,9 @@ pub fn block_from_zebra(
     })
 }
 
-fn header_from_zebra(zb: &zebra_chain::block::Block) -> Result<BlockHeader, ConvertError> {
+/// Convert just the header — skips all transaction parsing.
+/// Much faster for header-only indexes on large blocks.
+pub fn header_from_zebra(zb: &zebra_chain::block::Block) -> Result<BlockHeader, ConvertError> {
     let h = &zb.header;
     let height = zb
         .coinbase_height()
@@ -59,6 +61,25 @@ fn header_from_zebra(zb: &zebra_chain::block::Block) -> Result<BlockHeader, Conv
         // Workaround: round-trip through display-order bytes.
         bits: u32::from_be_bytes(h.difficulty_threshold.bytes_in_display_order()),
         nonce: *h.nonce,
+    })
+}
+
+/// Convert from pre-parsed header components (from ReadRequest::BlockHeader).
+/// No block deserialization needed at all.
+pub fn header_from_parts(
+    header: &zebra_chain::block::Header,
+    hash: zebra_chain::block::Hash,
+    height: zebra_chain::block::Height,
+) -> Result<BlockHeader, ConvertError> {
+    Ok(BlockHeader {
+        hash: BlockHash::from(hash.0),
+        prev_hash: BlockHash::from(header.previous_block_hash.0),
+        height: Height::try_from(height.0).map_err(|e| ConvertError::Height(e.to_string()))?,
+        time: header.time.timestamp() as u32,
+        merkle_root: MerkleRoot::from(header.merkle_root.0),
+        block_commitments: BlockCommitments::from(*header.commitment_bytes),
+        bits: u32::from_be_bytes(header.difficulty_threshold.bytes_in_display_order()),
+        nonce: *header.nonce,
     })
 }
 
