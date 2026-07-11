@@ -8,6 +8,7 @@ homepage.workspace = true
 license.workspace = true
 
 [dependencies]
+thiserror = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -15,20 +15,11 @@ const MAX_HEIGHT: u32 = (1 << 31) - 1;
 pub struct Height(u32);
 
 /// Error returned when a `u32` exceeds the protocol height limit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("height {got} exceeds protocol maximum {MAX_HEIGHT}")]
 pub struct HeightOverflow {
     /// The value that was rejected.
     pub got: u32,
-}
-
-impl fmt::Display for HeightOverflow {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "height {} exceeds protocol maximum {}",
-            self.got, MAX_HEIGHT
-        )
-    }
 }
 
 impl Height {
