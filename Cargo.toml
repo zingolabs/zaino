@@ -14,12 +14,13 @@ members = [
     "packages/zaino-fetch",
     "packages/zaino-proto",
     "packages/zaino-sync",
-    "packages/zaino-sync-demo",
+    "packages/zaino-indexes",
     # Live-test suite (docs/adr/0002, docs/adr/0003, docs/adr/0004).
     # zaino-testutils first: the e2e/clientless partitions depend on it.
     "live-tests/zaino-testutils",
     "live-tests/clientless",
     "live-tests/e2e",
+    "live-tests/sync-bench",
 ]
 # `container-test` runs a bare `cargo nextest run`, which operates on
 # default-members — so the heavy live-test crates are built and tested only
@@ -165,6 +166,16 @@ zaino-proto = { path = "packages/zaino-proto", version = "0.1.3" }
 zaino-state = { path = "packages/zaino-state", version = "0.3.1", default-features = false }
 zaino-serve = { path = "packages/zaino-serve", version = "0.3.1", default-features = false }
 zaino-testutils = { path = "live-tests/zaino-testutils" }
+
+# New sync-engine crates (no published versions yet).
+zaino-primitives = { path = "packages/zaino-primitives" }
+zaino-source = { path = "packages/zaino-source" }
+zaino-persistence = { path = "packages/zaino-persistence" }
+zaino-backend-lmdb = { path = "packages/zaino-backend-lmdb" }
+zaino-rpc = { path = "packages/zaino-rpc" }
+zaino-source-zebra-rpc = { path = "packages/zaino-source-zebra-rpc" }
+zaino-sync = { path = "packages/zaino-sync" }
+zaino-indexes = { path = "packages/zaino-indexes" }
 
 # Zingo-infra (validator launcher driving the live tests; not a prod dep).
 # TEMPORARY (zingolabs/infrastructure#269): pinned to an exact commit on the

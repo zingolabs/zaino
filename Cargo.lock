@@ -4625,6 +4625,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "sync-bench"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "tokio",
+ "zaino-backend-lmdb",
+ "zaino-indexes",
+ "zaino-persistence",
+ "zaino-primitives",
+ "zaino-rpc",
+ "zaino-source",
+ "zaino-source-zebra-rpc",
+ "zaino-sync",
+]
+
+[[package]]
 name = "sync_wrapper"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6017,6 +6033,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-indexes"
+version = "0.1.0"
+dependencies = [
+ "zaino-primitives",
+ "zaino-sync",
+]
+
+[[package]]
 name = "zaino-persistence"
 version = "0.1.0"
 dependencies = [
@@ -6166,19 +6190,6 @@ dependencies = [
  "zaino-persistence",
  "zaino-primitives",
  "zaino-source",
-]
-
-[[package]]
-name = "zaino-sync-demo"
-version = "0.1.0"
-dependencies = [
- "futures",
- "tokio",
- "zaino-primitives",
- "zaino-rpc",
- "zaino-source",
- "zaino-source-zebra-rpc",
- "zaino-sync",
 ]
 
 [[package]]

@@ -26,7 +26,7 @@ RPC="http://zebra.golden-mainnet.svc:8232"
 BIN="target/release/sync-headers"
 
 echo "=== Building release binary ==="
-cargo build -p zaino-sync-demo --release --quiet
+cargo build -p sync-bench --release --quiet
 
 echo "=== Deploying pod ${POD} ==="
 kubectl --context "$CONTEXT" -n "$NS" run "$POD" \
