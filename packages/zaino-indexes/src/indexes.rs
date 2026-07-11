@@ -4,3 +4,4 @@
 //! merge, schema, and encoding.
 
 pub mod headers;
+pub mod transparent_spends;

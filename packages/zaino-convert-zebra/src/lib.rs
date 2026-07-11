@@ -23,7 +23,7 @@ pub enum ConvertError {
 
 /// Convert a zebra block into a domain [`Block`].
 pub fn block_from_zebra(
-    zb: zebra_chain::block::Block,
+    zb: &zebra_chain::block::Block,
     sapling_tree_size: u32,
     orchard_tree_size: u32,
 ) -> Result<Block, ConvertError> {

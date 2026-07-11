@@ -61,7 +61,7 @@ impl zaino_source::GetBlock for ZebraRpcAdapter {
         let sapling_tree_size = 0;
         let orchard_tree_size = 0;
 
-        zaino_convert_zebra::block_from_zebra(zebra_block, sapling_tree_size, orchard_tree_size)
+        zaino_convert_zebra::block_from_zebra(&zebra_block, sapling_tree_size, orchard_tree_size)
             .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()).into())
     }
 }

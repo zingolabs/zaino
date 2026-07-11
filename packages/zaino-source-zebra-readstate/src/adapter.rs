@@ -45,10 +45,7 @@ impl zaino_source::GetBlock for ZebraReadStateAdapter {
         height: Height,
     ) -> Result<Block, QueryError<GetBlockError>> {
         let zebra_height = zebra_chain::block::Height(u32::from(height));
-
-        // Use BlockHeader request — Zebra reads only the header from RocksDB,
-        // no transaction deserialization. Critical for sandblast-era blocks.
-        let request = ReadRequest::BlockHeader(zebra_height.into());
+        let request = ReadRequest::Block(zebra_height.into());
 
         let response = self
             .state
@@ -58,17 +55,13 @@ impl zaino_source::GetBlock for ZebraReadStateAdapter {
             .map_err(|e| FetchError::new(FailureMode::Connection, format!("state service: {e}")))?;
 
         match response {
-            ReadResponse::BlockHeader { header, hash, height: h, .. } => {
-                let converted = zaino_convert_zebra::header_from_parts(&header, hash, h)
-                    .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?;
-                Ok(Block {
-                    header: converted,
-                    transactions: Vec::new(),
-                    chain_metadata: ChainMetadata {
-                        sapling_tree_size: 0,
-                        orchard_tree_size: 0,
-                    },
-                })
+            ReadResponse::Block(Some(arc_block)) => {
+                // Convert from &Block — no clone of the Arc'd block.
+                zaino_convert_zebra::block_from_zebra(&arc_block, 0, 0)
+                    .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()).into())
+            }
+            ReadResponse::Block(None) => {
+                Err(QueryError::Domain(GetBlockError::HeightNotFound(height)))
             }
             _ => Err(FetchError::new(
                 FailureMode::Parse,
