@@ -7,7 +7,7 @@ use core::fmt;
 /// Machine-readable — the resilience wrapper matches on this to
 /// decide retryability, not on message strings.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TransportFailure {
+pub enum FailureMode {
     /// Connection refused, DNS failure, TLS handshake error.
     Connection,
     /// Request timed out.
@@ -30,14 +30,14 @@ pub enum TransportFailure {
 #[error("{message}")]
 pub struct TransportError {
     /// What kind of failure.
-    pub kind: TransportFailure,
+    pub kind: FailureMode,
     /// Human-readable description.
     pub message: String,
 }
 
 impl TransportError {
     /// Construct a transport error.
-    pub fn new(kind: TransportFailure, message: impl Into<String>) -> Self {
+    pub fn new(kind: FailureMode, message: impl Into<String>) -> Self {
         Self {
             kind,
             message: message.into(),
@@ -57,12 +57,12 @@ pub enum QueryError<E: fmt::Debug + fmt::Display> {
 
     /// Transport-level failure.
     #[error("{0}")]
-    Transport(TransportError),
+    Fetch(TransportError),
 }
 
 impl<E: fmt::Debug + fmt::Display> From<TransportError> for QueryError<E> {
     fn from(e: TransportError) -> Self {
-        Self::Transport(e)
+        Self::Fetch(e)
     }
 }
 
@@ -82,14 +82,14 @@ pub struct UnavailableError {
 /// - `Transport`: non-retryable transport failure (passed through)
 /// - `Unavailable`: retryable failure, retries exhausted
 #[derive(Debug, thiserror::Error)]
-pub enum ResilientError<E: fmt::Debug + fmt::Display> {
+pub enum SourceError<E: fmt::Debug + fmt::Display> {
     /// The server answered with a domain-level rejection.
     #[error("{0}")]
     Domain(E),
 
     /// Non-retryable transport failure.
     #[error("{0}")]
-    Transport(TransportError),
+    Fetch(TransportError),
 
     /// Retries exhausted — the validator is unreachable.
     #[error("{0}")]

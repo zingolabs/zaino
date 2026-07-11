@@ -27,8 +27,7 @@ mod get_treestate;
 
 pub mod resilient;
 
-pub use error::{QueryError, ResilientError, TransportError, TransportFailure, UnavailableError};
-pub use resilient::{Resilient, RetryPolicy};
+pub use error::{FailureMode, QueryError, SourceError, TransportError, UnavailableError};
 pub use get_address_balance::{GetAddressBalance, GetAddressBalanceError};
 pub use get_address_deltas::{GetAddressDeltas, GetAddressDeltasError};
 pub use get_address_txids::{GetAddressTxids, GetAddressTxidsError};
@@ -43,6 +42,7 @@ pub use get_mempool_txids::{GetMempoolTxids, GetMempoolTxidsError};
 pub use get_subtree_roots::{GetSubtreeRoots, GetSubtreeRootsError};
 pub use get_transaction::{GetTransaction, GetTransactionError, TransactionResponse};
 pub use get_treestate::{GetTreestate, GetTreestateError};
+pub use resilient::{Resilient, RetryPolicy};
 
 #[cfg(feature = "testing")]
 pub mod mock;

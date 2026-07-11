@@ -3,8 +3,8 @@
 use zaino_primitives::types::{BlockHash, Height, Treestate};
 use zaino_rpc::RpcClient;
 use zaino_source::{
-    GetBlockBytesError, GetChainTipError, GetTreestateError, QueryError, TransportError,
-    TransportFailure,
+    FailureMode, GetBlockBytesError, GetChainTipError, GetTreestateError, QueryError,
+    TransportError,
 };
 
 use crate::parse;
@@ -27,7 +27,7 @@ impl ZebraRpcAdapter {
 
 /// Parse errors are always non-retryable — the response arrived but was malformed.
 fn from_parse(e: crate::parse::ParseError) -> TransportError {
-    TransportError::new(TransportFailure::Parse, e.to_string())
+    TransportError::new(FailureMode::Parse, e.to_string())
 }
 
 impl zaino_source::GetBlockBytes for ZebraRpcAdapter {
@@ -44,27 +44,25 @@ impl zaino_source::GetBlockBytes for ZebraRpcAdapter {
             .rpc
             .call("getblock", params)
             .await
-            .map_err(|e| QueryError::Transport(e.into()))?;
+            .map_err(|e| QueryError::Fetch(e.into()))?;
         parse::parse_raw_block(&value).map_err(|e| from_parse(e).into())
     }
 }
 
 impl zaino_source::GetChainTip for ZebraRpcAdapter {
-    async fn get_chain_tip(
-        &self,
-    ) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
+    async fn get_chain_tip(&self) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
         let hash_value = self
             .rpc
             .call("getbestblockhash", vec![])
             .await
-            .map_err(|e| QueryError::Transport(e.into()))?;
+            .map_err(|e| QueryError::Fetch(e.into()))?;
         let hash = parse::parse_block_hash(&hash_value).map_err(from_parse)?;
 
         let height_value = self
             .rpc
             .call("getblockcount", vec![])
             .await
-            .map_err(|e| QueryError::Transport(e.into()))?;
+            .map_err(|e| QueryError::Fetch(e.into()))?;
         let height = parse::parse_height(&height_value).map_err(from_parse)?;
 
         Ok((hash, height))
@@ -81,7 +79,7 @@ impl zaino_source::GetTreestate for ZebraRpcAdapter {
             .rpc
             .call("z_gettreestate", params)
             .await
-            .map_err(|e| QueryError::Transport(e.into()))?;
+            .map_err(|e| QueryError::Fetch(e.into()))?;
         parse::parse_treestate(&value).map_err(|e| from_parse(e).into())
     }
 }

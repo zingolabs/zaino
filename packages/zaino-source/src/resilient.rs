@@ -16,7 +16,7 @@
 use std::future::Future;
 use std::time::Duration;
 
-use crate::error::{QueryError, ResilientError, TransportFailure, UnavailableError};
+use crate::error::{FailureMode, QueryError, SourceError, UnavailableError};
 
 /// Retry policy configuration.
 #[derive(Debug, Clone)]
@@ -55,14 +55,14 @@ impl RetryPolicy {
 }
 
 /// Whether a transport error kind is worth retrying.
-fn is_retryable(kind: &TransportFailure) -> bool {
+fn is_retryable(kind: &FailureMode) -> bool {
     match kind {
-        TransportFailure::Connection => true,
-        TransportFailure::Timeout => true,
-        TransportFailure::HttpStatus(code) => *code >= 500,
-        TransportFailure::RpcError(code) => *code == -1, // work-queue-full
-        TransportFailure::Parse => false,
-        TransportFailure::Auth => false,
+        FailureMode::Connection => true,
+        FailureMode::Timeout => true,
+        FailureMode::HttpStatus(code) => *code >= 500,
+        FailureMode::RpcError(code) => *code == -1, // work-queue-full
+        FailureMode::Parse => false,
+        FailureMode::Auth => false,
     }
 }
 
@@ -82,7 +82,7 @@ impl<V> Resilient<V> {
     }
 
     /// Core retry loop. Each public method delegates here.
-    async fn with_retry<T, E, F, Fut>(&self, mut f: F) -> Result<T, ResilientError<E>>
+    async fn with_retry<T, E, F, Fut>(&self, mut f: F) -> Result<T, SourceError<E>>
     where
         E: core::fmt::Debug + core::fmt::Display,
         F: FnMut() -> Fut,
@@ -96,17 +96,17 @@ impl<V> Resilient<V> {
             match f().await {
                 Ok(value) => return Ok(value),
 
-                Err(QueryError::Domain(e)) => return Err(ResilientError::Domain(e)),
+                Err(QueryError::Domain(e)) => return Err(SourceError::Domain(e)),
 
-                Err(QueryError::Transport(e)) => {
+                Err(QueryError::Fetch(e)) => {
                     if !is_retryable(&e.kind) || attempt >= self.policy.max_attempts {
                         if is_retryable(&e.kind) {
-                            return Err(ResilientError::Unavailable(UnavailableError {
+                            return Err(SourceError::Unavailable(UnavailableError {
                                 attempts: attempt,
                                 last_error: e,
                             }));
                         }
-                        return Err(ResilientError::Transport(e));
+                        return Err(SourceError::Fetch(e));
                     }
 
                     tokio::time::sleep(self.policy.delay_for(attempt)).await;
@@ -127,7 +127,7 @@ impl<V: crate::GetBlockBytes> Resilient<V> {
     pub async fn get_block_bytes(
         &self,
         height: Height,
-    ) -> Result<Vec<u8>, ResilientError<crate::GetBlockBytesError>> {
+    ) -> Result<Vec<u8>, SourceError<crate::GetBlockBytesError>> {
         self.with_retry(|| self.inner.get_block_bytes(height)).await
     }
 }
@@ -136,7 +136,7 @@ impl<V: crate::GetChainTip> Resilient<V> {
     /// Fetch chain tip with retry.
     pub async fn get_chain_tip(
         &self,
-    ) -> Result<(BlockHash, Height), ResilientError<crate::GetChainTipError>> {
+    ) -> Result<(BlockHash, Height), SourceError<crate::GetChainTipError>> {
         self.with_retry(|| self.inner.get_chain_tip()).await
     }
 }
@@ -146,7 +146,7 @@ impl<V: crate::GetTreestate> Resilient<V> {
     pub async fn get_treestate(
         &self,
         height: Height,
-    ) -> Result<Treestate, ResilientError<crate::GetTreestateError>> {
+    ) -> Result<Treestate, SourceError<crate::GetTreestateError>> {
         self.with_retry(|| self.inner.get_treestate(height)).await
     }
 }
@@ -157,44 +157,44 @@ mod tests {
 
     #[test]
     fn connection_is_retryable() {
-        assert!(is_retryable(&TransportFailure::Connection));
+        assert!(is_retryable(&FailureMode::Connection));
     }
 
     #[test]
     fn timeout_is_retryable() {
-        assert!(is_retryable(&TransportFailure::Timeout));
+        assert!(is_retryable(&FailureMode::Timeout));
     }
 
     #[test]
     fn http_500_is_retryable() {
-        assert!(is_retryable(&TransportFailure::HttpStatus(500)));
-        assert!(is_retryable(&TransportFailure::HttpStatus(503)));
+        assert!(is_retryable(&FailureMode::HttpStatus(500)));
+        assert!(is_retryable(&FailureMode::HttpStatus(503)));
     }
 
     #[test]
     fn http_400_is_not_retryable() {
-        assert!(!is_retryable(&TransportFailure::HttpStatus(400)));
-        assert!(!is_retryable(&TransportFailure::HttpStatus(404)));
+        assert!(!is_retryable(&FailureMode::HttpStatus(400)));
+        assert!(!is_retryable(&FailureMode::HttpStatus(404)));
     }
 
     #[test]
     fn work_queue_full_is_retryable() {
-        assert!(is_retryable(&TransportFailure::RpcError(-1)));
+        assert!(is_retryable(&FailureMode::RpcError(-1)));
     }
 
     #[test]
     fn block_not_found_rpc_is_not_retryable() {
-        assert!(!is_retryable(&TransportFailure::RpcError(-8)));
+        assert!(!is_retryable(&FailureMode::RpcError(-8)));
     }
 
     #[test]
     fn parse_is_not_retryable() {
-        assert!(!is_retryable(&TransportFailure::Parse));
+        assert!(!is_retryable(&FailureMode::Parse));
     }
 
     #[test]
     fn auth_is_not_retryable() {
-        assert!(!is_retryable(&TransportFailure::Auth));
+        assert!(!is_retryable(&FailureMode::Auth));
     }
 
     #[test]
