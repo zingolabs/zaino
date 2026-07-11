@@ -1,8 +1,8 @@
-//! Query: fetch raw serialized block bytes by hash.
+//! Query: fetch a parsed block by hash.
 
 use std::future::Future;
 
-use zaino_primitives::types::BlockHash;
+use zaino_primitives::types::{Block, BlockHash};
 
 use super::QueryError;
 
@@ -14,14 +14,11 @@ pub enum GetBlockByHashError {
     NotFound(BlockHash),
 }
 
-/// Fetch the raw serialized block identified by its hash.
-///
-/// Maps to `getblock(hash, 0)` over JSON-RPC, or the equivalent
-/// ReadState query.
+/// Fetch a fully parsed block identified by its hash.
 pub trait GetBlockByHash: Send + Sync {
-    /// Fetch raw block bytes by hash.
+    /// Fetch a parsed block by hash.
     fn get_block_by_hash(
         &self,
         hash: BlockHash,
-    ) -> impl Future<Output = Result<Vec<u8>, QueryError<GetBlockByHashError>>> + Send;
+    ) -> impl Future<Output = Result<Block, QueryError<GetBlockByHashError>>> + Send;
 }

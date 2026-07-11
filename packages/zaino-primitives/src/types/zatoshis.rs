@@ -55,7 +55,7 @@ impl fmt::Display for Zatoshis {
 }
 
 /// A signed zatoshi delta (balance change: positive = receive, negative = spend).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SignedZatoshis(i64);
 
 impl SignedZatoshis {
