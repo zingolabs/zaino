@@ -15,7 +15,7 @@ BACKEND="${4:-lmdb}"
 
 CONTEXT="zingo-infra"
 NS="golden-mainnet"
-NODE="tekau"  # control-plane node
+NODE="root@tekau"  # control-plane node
 IMAGE="sync-bench:local"
 RPC="http://zebra.golden-mainnet.svc:8232"
 
@@ -27,7 +27,7 @@ podman save --format oci-archive "$IMAGE" -o /tmp/sync-bench.tar
 scp /tmp/sync-bench.tar "$NODE":/tmp/sync-bench.tar
 
 echo "=== Importing image on node ==="
-ssh "$NODE" "sudo k3s ctr images import /tmp/sync-bench.tar && rm /tmp/sync-bench.tar"
+ssh "$NODE" "k3s ctr images import /tmp/sync-bench.tar && rm /tmp/sync-bench.tar"
 
 # Delete previous job if exists.
 kubectl --context "$CONTEXT" -n "$NS" delete job sync-bench 2>/dev/null || true
@@ -56,7 +56,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: bench
-          image: docker.io/library/$IMAGE
+          image: localhost/$IMAGE
           imagePullPolicy: Never
           args: ["$BLOCKS", "$CONC", "$BATCH"]
           env:
