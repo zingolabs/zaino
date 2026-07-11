@@ -1,0 +1,21 @@
+[package]
+name = "zaino-source-zebra-readstate"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+description = "Zebra ReadState adapter: direct DB reads, no RPC."
+
+[dependencies]
+zaino-primitives.workspace = true
+zaino-source.workspace = true
+zebra-chain = { workspace = true }
+zebra-state = { workspace = true }
+tokio.workspace = true
+tower = { workspace = true, features = ["util"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
