@@ -3,6 +3,7 @@
 members = [
     "packages/zaino-primitives",
     "packages/zaino-source",
+    "packages/zaino-persistence",
     "packages/zaino-rpc",
     "packages/zaino-source-zebra-rpc",
     "packages/zaino-common",
