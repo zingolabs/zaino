@@ -41,12 +41,12 @@
 use std::marker::PhantomData;
 use std::sync::Mutex;
 
-use crate::backend::BackendReader;
+use crate::backend::{BackendReader, WriteOp};
 use crate::descriptor::{Append, BlockLocal, Descriptor, Fold, Monoidal, SelfCumulative};
 use crate::pipeline::{IndexPipeline, PipelineError};
 use crate::traits::{
     ExtractCumulative, ExtractLocal, IndexDef, MergeAppend, MergeFold, MergeMonoidal,
-    ProvideContext, Schema, WriteOp,
+    ProvideContext, Schema,
 };
 
 // ===========================================================================

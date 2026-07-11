@@ -58,26 +58,7 @@ pub struct DepsReader;
 /// Handle for non-local source access (the escape hatch).
 pub struct SourceHandle;
 
-/// A single write operation produced by the merge step.
-#[derive(Debug)]
-pub enum WriteOp {
-    /// Insert or overwrite a key-value pair.
-    Put {
-        /// Target index.
-        index: IndexId,
-        /// Serialised key.
-        key: Vec<u8>,
-        /// Serialised value.
-        value: Vec<u8>,
-    },
-    /// Remove a key.
-    Delete {
-        /// Target index.
-        index: IndexId,
-        /// Serialised key.
-        key: Vec<u8>,
-    },
-}
+// WriteOp is defined in zaino-persistence and re-exported via crate::backend.
 
 // ---------------------------------------------------------------------------
 // IndexDef — the root trait that pins both axes

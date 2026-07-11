@@ -32,10 +32,10 @@
 //!    types here. (Currently the merge traits own this step; it will
 //!    move to a dedicated persistence layer.)
 
-use crate::backend::BackendReader;
+use crate::backend::{BackendReader, WriteOp};
 use crate::bridge::BridgeDispatch;
 use crate::descriptor::Descriptor;
-use crate::traits::{ExtractError, IndexDef, ProvideContext, WriteOp};
+use crate::traits::{ExtractError, IndexDef, ProvideContext};
 
 /// Errors during pipeline operations.
 #[derive(Debug, thiserror::Error)]

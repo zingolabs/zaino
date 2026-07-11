@@ -24,7 +24,7 @@ use std::collections::HashMap;
 
 use rayon::prelude::*;
 
-use crate::backend::{Backend, BackendError, BackendReader, BackendWriter};
+use crate::backend::{Backend, BackendError, BackendReader, BackendWriter, WriteOp};
 use crate::block_buffer::BlockBuffer;
 use crate::dag::DagError;
 use crate::encode::{Decode, Encode};
@@ -32,7 +32,6 @@ use crate::index_set::IndexSet;
 use crate::pipeline::{IndexPipeline, PipelineError};
 use crate::primitives::{BatchIndex, BlockHeight, BlockOffset, IndexId};
 use crate::scheduler::{ExtractJob, Scheduler, Task};
-use crate::traits::WriteOp;
 
 /// Well-known index ID for engine metadata (watermark, etc.).
 const METADATA_INDEX: IndexId = IndexId::new("_engine_meta");
