@@ -5963,6 +5963,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-backend-lmdb"
+version = "0.1.0"
+dependencies = [
+ "lmdb",
+ "tempfile",
+ "zaino-persistence",
+]
+
+[[package]]
 name = "zaino-common"
 version = "0.2.0"
 dependencies = [
