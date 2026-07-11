@@ -155,6 +155,10 @@ impl<V: crate::GetTreestate> Resilient<V> {
 mod tests {
     use super::*;
 
+    // ---------------------------------------------------------------
+    // Unit tests: classification + backoff
+    // ---------------------------------------------------------------
+
     #[test]
     fn connection_is_retryable() {
         assert!(is_retryable(&FailureMode::Connection));
@@ -219,5 +223,102 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(policy.delay_for(3), Duration::from_secs(5));
+    }
+
+    // ---------------------------------------------------------------
+    // Integration tests: Resilient<MockChain> with failure injection
+    // ---------------------------------------------------------------
+
+    #[cfg(feature = "testing")]
+    mod integration {
+        use super::*;
+        use crate::mock::MockChain;
+        use zaino_primitives::types::{BlockHash, Height};
+
+        fn height(h: u32) -> Height {
+            Height::try_from(h).expect("valid")
+        }
+
+        fn hash(b: u8) -> BlockHash {
+            BlockHash::from([b; 32])
+        }
+
+        fn fast_policy(max_attempts: u32) -> RetryPolicy {
+            RetryPolicy {
+                max_attempts,
+                initial_delay: Duration::from_millis(1),
+                backoff_factor: 1.0,
+                max_delay: Duration::from_millis(1),
+            }
+        }
+
+        #[tokio::test]
+        async fn retries_transient_then_succeeds() {
+            let mock = MockChain::new()
+                .with_block(height(0), hash(1), vec![0xAB])
+                .fail_next(2, FailureMode::Timeout);
+
+            let source = Resilient::new(mock, fast_policy(5));
+
+            // Should succeed after 2 retries.
+            let bytes = source.get_block_bytes(height(0)).await.expect("succeeds");
+            assert_eq!(bytes, vec![0xAB]);
+        }
+
+        #[tokio::test]
+        async fn exhausts_retries_returns_unavailable() {
+            let mock = MockChain::new()
+                .with_block(height(0), hash(1), vec![0xAB])
+                .fail_next(10, FailureMode::Connection);
+
+            let source = Resilient::new(mock, fast_policy(3));
+
+            let err = source.get_block_bytes(height(0)).await.unwrap_err();
+            assert!(
+                matches!(err, SourceError::Unavailable(ref u) if u.attempts == 3),
+                "expected Unavailable after 3 attempts, got: {err:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn fatal_error_not_retried() {
+            let mock = MockChain::new()
+                .with_block(height(0), hash(1), vec![0xAB])
+                .fail_next(1, FailureMode::Auth);
+
+            let source = Resilient::new(mock, fast_policy(5));
+
+            let err = source.get_block_bytes(height(0)).await.unwrap_err();
+            assert!(
+                matches!(err, SourceError::Fetch(ref e) if e.mode == FailureMode::Auth),
+                "expected Fetch(Auth), got: {err:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn domain_error_not_retried() {
+            let mock = MockChain::new(); // no blocks
+
+            let source = Resilient::new(mock, fast_policy(5));
+
+            let err = source.get_block_bytes(height(99)).await.unwrap_err();
+            assert!(
+                matches!(err, SourceError::Domain(_)),
+                "expected Domain, got: {err:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn chain_tip_retries_transient() {
+            let mock = MockChain::new()
+                .with_block(height(0), hash(1), vec![])
+                .fail_next(1, FailureMode::Timeout);
+
+            let source = Resilient::new(mock, fast_policy(3));
+
+            let (tip_hash, tip_height) = source.get_chain_tip().await.expect("succeeds");
+            assert_eq!(tip_hash, hash(1));
+            assert_eq!(tip_height, height(0));
+        }
     }
 }
