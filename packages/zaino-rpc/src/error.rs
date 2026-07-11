@@ -30,4 +30,8 @@ pub enum RpcError {
         /// Number of attempts made.
         attempts: u32,
     },
+
+    /// Server returned null result without an error object.
+    #[error("null result without error")]
+    NullResult,
 }
