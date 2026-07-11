@@ -39,6 +39,7 @@ impl ZebraReadStateAdapter {
 }
 
 impl zaino_source::GetBlock for ZebraReadStateAdapter {
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(h = u32::from(height))))]
     async fn get_block(
         &self,
         height: Height,
@@ -74,6 +75,7 @@ impl zaino_source::GetBlock for ZebraReadStateAdapter {
 }
 
 impl zaino_source::GetChainTip for ZebraReadStateAdapter {
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     async fn get_chain_tip(
         &self,
     ) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {

@@ -16,6 +16,10 @@ zebra-chain = { workspace = true }
 zebra-state = { workspace = true }
 tokio.workspace = true
 tower = { workspace = true, features = ["util"] }
+tracing = { workspace = true, optional = true }
+
+[features]
+tracing = ["dep:tracing"]
 
 [lints.rust]
 unsafe_code = "forbid"
