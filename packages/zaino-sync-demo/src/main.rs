@@ -199,22 +199,23 @@ async fn main() {
 
     println!("Chain tip: height={tip_height}, hash={tip_hash}");
 
-    // Parse args: sync-headers [block_count] [concurrency]
+    // Parse args: sync-headers [block_count] [concurrency] [batch_size]
     // RPC URL via env: ZEBRA_RPC_URL (default: http://127.0.0.1:8232)
     let args: Vec<String> = std::env::args().collect();
     let n_blocks: u32 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(100);
     let concurrency: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(8);
+    let batch_size: u32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(50);
 
     let sync_from = tip_u32.saturating_sub(n_blocks - 1);
     let sync_to = tip_u32;
     let block_count = sync_to - sync_from + 1;
 
-    println!("Syncing blocks {sync_from}..={sync_to} ({block_count} blocks, concurrency={concurrency})");
+    println!("Syncing blocks {sync_from}..={sync_to} ({block_count} blocks, concurrency={concurrency}, batch_size={batch_size})");
 
     let backend = InMemoryBackend::new();
     let set = IndexSet::new().with::<HeadersIndex>();
     let config = EngineConfig {
-        batch_size: 50,
+        batch_size,
         start_height: BlockHeight::new(u64::from(sync_from)),
     };
     let mut engine =
