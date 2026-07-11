@@ -6126,6 +6126,7 @@ version = "0.1.0"
 dependencies = [
  "tokio",
  "tower 0.4.13",
+ "tracing",
  "zaino-convert-zebra",
  "zaino-primitives",
  "zaino-source",
@@ -6142,6 +6143,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
  "zaino-convert-zebra",
  "zaino-primitives",
  "zaino-rpc",

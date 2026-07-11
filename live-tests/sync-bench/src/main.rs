@@ -190,7 +190,7 @@ async fn main() {
             );
             let backend = LmdbBackend::open(LmdbConfig {
                 path: lmdb_path.into(),
-                map_size_bytes: 1 << 30,
+                map_size_bytes: 120 << 30, // 120 GB
                 namespaces: vec![ns_headers, ns_spends, ns_meta],
             })
             .expect("LMDB open failed");
@@ -234,7 +234,7 @@ async fn main() {
             let adapter = Arc::new(ZebraRpcAdapter::new(rpc));
             let backend = LmdbBackend::open(LmdbConfig {
                 path: lmdb_path.into(),
-                map_size_bytes: 1 << 30,
+                map_size_bytes: 120 << 30, // 120 GB
                 namespaces: vec![ns_headers, ns_spends, ns_meta],
             })
             .expect("LMDB open failed");
