@@ -40,3 +40,6 @@ pub use get_mempool_txids::{GetMempoolTxids, GetMempoolTxidsError};
 pub use get_subtree_roots::{GetSubtreeRoots, GetSubtreeRootsError};
 pub use get_transaction::{GetTransaction, GetTransactionError, TransactionResponse};
 pub use get_treestate::{GetTreestate, GetTreestateError};
+
+#[cfg(feature = "testing")]
+pub mod mock;

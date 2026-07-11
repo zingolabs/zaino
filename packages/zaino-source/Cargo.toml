@@ -11,6 +11,12 @@ license.workspace = true
 zaino-primitives = { path = "../zaino-primitives" }
 thiserror = { workspace = true }
 
+[features]
+testing = []
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
