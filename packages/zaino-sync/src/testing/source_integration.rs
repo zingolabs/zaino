@@ -385,7 +385,7 @@ mod tests {
         for h in 0..5u32 {
             let key = BlockHeight::new(u64::from(h)).encode();
             let val = backend
-                .get_value(TX_COUNT_ID, &key)
+                .get_value(TX_COUNT_ID.into(), &key)
                 .expect("tx_count entry exists");
             let count = u32::from_le_bytes(val.as_slice().try_into().expect("4 bytes"));
             assert_eq!(count, h + 1, "block {h} tx count");
@@ -395,7 +395,7 @@ mod tests {
         for h in 0..5u32 {
             let key = BlockHeight::new(u64::from(h)).encode();
             let val = backend
-                .get_value(HEADERS_ID, &key)
+                .get_value(HEADERS_ID.into(), &key)
                 .expect("header entry exists");
             let header = HeaderValue::decode(&val).expect("valid header encoding");
 
@@ -433,10 +433,10 @@ mod tests {
         for h in 0..n {
             let key = BlockHeight::new(u64::from(h)).encode();
             backend
-                .get_value(TX_COUNT_ID, &key)
+                .get_value(TX_COUNT_ID.into(), &key)
                 .unwrap_or_else(|| panic!("tx_count for block {h} missing"));
             backend
-                .get_value(HEADERS_ID, &key)
+                .get_value(HEADERS_ID.into(), &key)
                 .unwrap_or_else(|| panic!("header for block {h} missing"));
         }
     }

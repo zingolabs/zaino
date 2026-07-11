@@ -28,13 +28,13 @@ impl InMemoryBackend {
     /// Read all entries for a given namespace. For assertions.
     pub fn entries(&self, namespace: Namespace) -> HashMap<RawKey, RawValue> {
         let guard = self.data.lock().expect("mutex poisoned");
-        guard.get(namespace).cloned().unwrap_or_default()
+        guard.get(&namespace).cloned().unwrap_or_default()
     }
 
     /// Read a single value. For assertions.
     pub fn get_value(&self, namespace: Namespace, key: &[u8]) -> Option<RawValue> {
         let guard = self.data.lock().expect("mutex poisoned");
-        guard.get(namespace).and_then(|m| m.get(key).cloned())
+        guard.get(&namespace).and_then(|m| m.get(key).cloned())
     }
 }
 
@@ -73,13 +73,13 @@ pub struct InMemoryReader {
 impl BackendReader for InMemoryReader {
     fn get(&self, namespace: Namespace, key: &[u8]) -> Result<Option<RawValue>, ReadError> {
         let guard = self.data.lock().expect("mutex poisoned");
-        Ok(guard.get(namespace).and_then(|m| m.get(key).cloned()))
+        Ok(guard.get(&namespace).and_then(|m| m.get(key).cloned()))
     }
 
     fn scan(&self, namespace: Namespace) -> Result<Vec<(RawKey, RawValue)>, ReadError> {
         let guard = self.data.lock().expect("mutex poisoned");
         Ok(guard
-            .get(namespace)
+            .get(&namespace)
             .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
             .unwrap_or_default())
     }
@@ -99,7 +99,7 @@ impl BackendWriter for InMemoryWriter {
                     guard.entry(namespace).or_default().insert(key, value);
                 }
                 WriteOp::Delete { namespace, key } => {
-                    if let Some(map) = guard.get_mut(namespace) {
+                    if let Some(map) = guard.get_mut(&namespace) {
                         map.remove(&key);
                     }
                 }

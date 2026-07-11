@@ -24,7 +24,7 @@ use std::collections::HashMap;
 
 use rayon::prelude::*;
 
-use crate::backend::{Backend, BackendError, BackendReader, BackendWriter, WriteOp};
+use crate::backend::{Backend, BackendReader, BackendWriter, Namespace, WriteOp};
 use crate::block_buffer::BlockBuffer;
 use crate::dag::DagError;
 use crate::encode::{Decode, Encode};
@@ -33,8 +33,8 @@ use crate::pipeline::{IndexPipeline, PipelineError};
 use crate::primitives::{BatchIndex, BlockHeight, BlockOffset, IndexId};
 use crate::scheduler::{ExtractJob, Scheduler, Task};
 
-/// Well-known index ID for engine metadata (watermark, etc.).
-const METADATA_INDEX: IndexId = IndexId::new("_engine_meta");
+/// Namespace for engine metadata (watermark, etc.) — not an index.
+const METADATA_NS: Namespace = Namespace::new("_engine_meta");
 
 /// Key for the committed-height watermark entry.
 const WATERMARK_KEY: &[u8] = b"committed_height";
@@ -61,9 +61,18 @@ pub enum SyncError {
     /// An index's extract or merge step failed.
     #[error(transparent)]
     Pipeline(#[from] PipelineError),
-    /// The storage backend failed.
+    /// Failed to open a backend reader or writer.
     #[error(transparent)]
-    Backend(#[from] BackendError),
+    BackendOpen(#[from] crate::backend::OpenError),
+    /// Failed to read from the backend.
+    #[error(transparent)]
+    BackendRead(#[from] crate::backend::ReadError),
+    /// Failed to commit a batch to the backend.
+    #[error(transparent)]
+    BackendCommit(#[from] crate::backend::CommitError),
+    /// Failed to flush the backend.
+    #[error(transparent)]
+    BackendFlush(#[from] crate::backend::FlushError),
 }
 
 /// The sync engine.
@@ -136,7 +145,7 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     /// `start_height` to pass and where to begin provisioning.
     pub fn committed_height(backend: &B) -> Result<Option<BlockHeight>, SyncError> {
         let reader = backend.reader()?;
-        let raw = reader.get(METADATA_INDEX, WATERMARK_KEY)?;
+        let raw = reader.get(METADATA_NS, WATERMARK_KEY)?;
         match raw {
             Some(bytes) => {
                 let height = BlockHeight::decode(&bytes)
@@ -448,7 +457,7 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
                 BlockHeight::new(self.start_height.value() + max_offset - 1);
 
             ops.push(WriteOp::Put {
-                index: METADATA_INDEX,
+                namespace: METADATA_NS,
                 key: WATERMARK_KEY.to_vec(),
                 value: committed_height.encode(),
             });

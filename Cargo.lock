@@ -6008,6 +6008,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-persistence"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "zaino-primitives",
+]
+
+[[package]]
 name = "zaino-primitives"
 version = "0.1.0"
 dependencies = [
@@ -6036,6 +6044,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "zaino-source",
 ]
 
 [[package]]
@@ -6079,6 +6088,7 @@ dependencies = [
  "zaino-primitives",
  "zaino-rpc",
  "zaino-source",
+ "zebra-chain 10.1.0",
 ]
 
 [[package]]
@@ -6144,8 +6154,22 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "zaino-persistence",
  "zaino-primitives",
  "zaino-source",
+]
+
+[[package]]
+name = "zaino-sync-demo"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "tokio",
+ "zaino-primitives",
+ "zaino-rpc",
+ "zaino-source",
+ "zaino-source-zebra-rpc",
+ "zaino-sync",
 ]
 
 [[package]]

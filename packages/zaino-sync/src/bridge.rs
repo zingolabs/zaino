@@ -305,7 +305,7 @@ where
         let ops = I::into_entries(state)
             .into_iter()
             .map(|(key, value)| WriteOp::Put {
-                index: I::NAME,
+                namespace: I::NAME.into(),
                 key: I::encode_key(&key),
                 value: I::encode_value(&value),
             })
@@ -374,7 +374,7 @@ where
 
     fn load_state(&self, reader: &dyn BackendReader) -> Result<(), PipelineError> {
         let raw_entries = reader
-            .scan(I::NAME)
+            .scan(I::NAME.into())
             .map_err(|e| PipelineError::Persist(e.to_string()))?;
 
         if raw_entries.is_empty() {
@@ -425,7 +425,7 @@ where
         let ops = I::into_entries(state)
             .into_iter()
             .map(|(key, value)| WriteOp::Put {
-                index: I::NAME,
+                namespace: I::NAME.into(),
                 key: I::encode_key(&key),
                 value: I::encode_value(&value),
             })

@@ -126,7 +126,7 @@ mod tests {
     /// Read the cumulative sum from the backend.
     fn read_cumulative_sum(backend: &InMemoryBackend) -> u64 {
         let bytes = backend
-            .get_value(cumulative_sum_index::ID, b"sum")
+            .get_value(cumulative_sum_index::ID.into(), b"sum")
             .expect("cumulative sum exists");
         u64::from_le_bytes(bytes.as_slice().try_into().expect("8 bytes"))
     }
@@ -144,7 +144,7 @@ mod tests {
         engine.sync_range(blocks).expect("sync succeeds");
 
         // ValueIndex: 5 entries (heights 0..=4), each height → height as value
-        let values = backend.entries(value_index::ID);
+        let values = backend.entries(value_index::ID.into());
         assert_eq!(values.len(), 5);
         for h in 0u64..=4 {
             let stored = values.get(&h.to_le_bytes().to_vec()).expect("key exists");
@@ -154,14 +154,14 @@ mod tests {
 
         // CountIndex: one entry "total" = 5
         let count_bytes = backend
-            .get_value(count_index::ID, b"total")
+            .get_value(count_index::ID.into(), b"total")
             .expect("count exists");
         let count = u64::from_le_bytes(count_bytes.as_slice().try_into().expect("8 bytes"));
         assert_eq!(count, 5);
 
         // RunningSumIndex: one entry "sum" = 0+1+2+3+4 = 10
         let sum_bytes = backend
-            .get_value(running_sum_index::ID, b"sum")
+            .get_value(running_sum_index::ID.into(), b"sum")
             .expect("sum exists");
         let sum = u64::from_le_bytes(sum_bytes.as_slice().try_into().expect("8 bytes"));
         assert_eq!(sum, 10);
@@ -181,14 +181,14 @@ mod tests {
         engine.sync_range(blocks).expect("sync succeeds");
 
         // ValueIndex: 10 entries, all correct (append across batches)
-        let values = backend.entries(value_index::ID);
+        let values = backend.entries(value_index::ID.into());
         assert_eq!(values.len(), 10);
 
         // CountIndex: last batch was [9] (1 block), so count = 1.
         // Monoidal merge runs per-batch, and each batch overwrites the
         // same "total" key — the final value reflects the last batch.
         let count_bytes = backend
-            .get_value(count_index::ID, b"total")
+            .get_value(count_index::ID.into(), b"total")
             .expect("count exists");
         let count = u64::from_le_bytes(count_bytes.as_slice().try_into().expect("8 bytes"));
         assert_eq!(count, 1);
@@ -196,7 +196,7 @@ mod tests {
         // RunningSumIndex: last batch was [9], fold sum = 9.
         // Same overwrite semantics as CountIndex.
         let sum_bytes = backend
-            .get_value(running_sum_index::ID, b"sum")
+            .get_value(running_sum_index::ID.into(), b"sum")
             .expect("sum exists");
         let sum = u64::from_le_bytes(sum_bytes.as_slice().try_into().expect("8 bytes"));
         assert_eq!(sum, 9);
@@ -215,9 +215,9 @@ mod tests {
         engine.sync_streaming(blocks).expect("sync succeeds");
 
         // Incremental arrival produces the same entry count as pre-loaded.
-        assert_eq!(backend.entries(value_index::ID).len(), 10);
-        assert!(backend.get_value(count_index::ID, b"total").is_some());
-        assert!(backend.get_value(running_sum_index::ID, b"sum").is_some());
+        assert_eq!(backend.entries(value_index::ID.into()).len(), 10);
+        assert!(backend.get_value(count_index::ID.into(), b"total").is_some());
+        assert!(backend.get_value(running_sum_index::ID.into(), b"sum").is_some());
 
         assert_eq!(engine.buffer_len(), 0);
         assert_eq!(engine.evicted_through(), Some(BatchIndex::new(3)));
@@ -243,9 +243,9 @@ mod tests {
 
         engine.sync_channel(rx).await.expect("sync succeeds");
 
-        assert_eq!(backend.entries(value_index::ID).len(), 10);
-        assert!(backend.get_value(count_index::ID, b"total").is_some());
-        assert!(backend.get_value(running_sum_index::ID, b"sum").is_some());
+        assert_eq!(backend.entries(value_index::ID.into()).len(), 10);
+        assert!(backend.get_value(count_index::ID.into(), b"total").is_some());
+        assert!(backend.get_value(running_sum_index::ID.into(), b"sum").is_some());
         assert_eq!(engine.buffer_len(), 0);
         assert_eq!(engine.evicted_through(), Some(BatchIndex::new(3)));
     }

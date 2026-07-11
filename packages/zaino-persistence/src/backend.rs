@@ -27,7 +27,32 @@ use crate::error::{CommitError, FlushError, OpenError, ReadError};
 /// Not an `IndexId`: a namespace is a storage concept (where bytes live),
 /// an index is a domain concept (what the bytes mean). The engine maps
 /// index IDs and its own metadata to separate namespaces.
-pub type Namespace = &'static str;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Namespace(&'static str);
+
+impl Namespace {
+    /// Create a namespace from a static string.
+    pub const fn new(name: &'static str) -> Self {
+        Self(name)
+    }
+
+    /// The string value.
+    pub const fn as_str(&self) -> &'static str {
+        self.0
+    }
+}
+
+impl core::fmt::Display for Namespace {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl From<zaino_primitives::types::IndexId> for Namespace {
+    fn from(id: zaino_primitives::types::IndexId) -> Self {
+        Self(id.as_str())
+    }
+}
 
 /// Encoded key bytes, as produced by the index's schema encoding.
 ///

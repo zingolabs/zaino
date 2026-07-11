@@ -280,7 +280,7 @@ async fn main() {
     println!("\nSample indexed headers:");
     for h in [sync_from, sync_from + block_count / 2, sync_to] {
         let key = HeadersIndex::encode_key(&BlockHeight::new(u64::from(h)));
-        if let Some(val) = backend.get_value(HEADERS_ID, &key) {
+        if let Some(val) = backend.get_value(HEADERS_ID.into(), &key) {
             let header = HeadersIndex::decode_value(&val).expect("valid encoding");
             println!(
                 "  height={h} hash={} prev={} time={} bits={:#010x}",

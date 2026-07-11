@@ -5,5 +5,6 @@
 //! this module re-exports them for convenience within zaino-sync.
 
 pub use zaino_persistence::{
-    Backend, BackendError, BackendReader, BackendWriter, WriteOp,
+    Backend, BackendReader, BackendWriter, CommitError, FlushError, Namespace, OpenError,
+    RawKey, RawValue, ReadError, WriteOp,
 };
