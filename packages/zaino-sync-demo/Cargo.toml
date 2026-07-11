@@ -18,6 +18,7 @@ zaino-rpc = { path = "../zaino-rpc" }
 zaino-source = { path = "../zaino-source" }
 zaino-source-zebra-rpc = { path = "../zaino-source-zebra-rpc" }
 zaino-sync = { path = "../zaino-sync", features = ["testing"] }
+futures = "0.3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints.rust]

@@ -10,6 +10,7 @@
 //! Syncs recent blocks (last 100 from tip) into an InMemoryBackend
 //! and prints progress + results.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use zaino_primitives::types::{Block, BlockHash, BlockTime, CompactDifficulty, Height};
@@ -175,12 +176,17 @@ impl Schema<Vec<HeaderEntry>> for HeadersIndex {
 
 #[tokio::main]
 async fn main() {
+    let rpc_url = std::env::var("ZEBRA_RPC_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:8232".to_string());
+
     let rpc = RpcClient::new(RpcClientConfig {
-        url: "http://127.0.0.1:8232".to_string(),
+        url: rpc_url.clone(),
         auth: None,
         ..Default::default()
     })
     .expect("RPC client creation failed");
+
+    println!("RPC: {rpc_url}");
 
     let adapter = ZebraRpcAdapter::new(rpc);
 
@@ -193,12 +199,17 @@ async fn main() {
 
     println!("Chain tip: height={tip_height}, hash={tip_hash}");
 
-    // Sync last 100 blocks.
-    let sync_from = tip_u32.saturating_sub(99);
+    // Parse args: sync-headers [block_count] [concurrency]
+    // RPC URL via env: ZEBRA_RPC_URL (default: http://127.0.0.1:8232)
+    let args: Vec<String> = std::env::args().collect();
+    let n_blocks: u32 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(100);
+    let concurrency: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(8);
+
+    let sync_from = tip_u32.saturating_sub(n_blocks - 1);
     let sync_to = tip_u32;
     let block_count = sync_to - sync_from + 1;
 
-    println!("Syncing blocks {sync_from}..={sync_to} ({block_count} blocks)");
+    println!("Syncing blocks {sync_from}..={sync_to} ({block_count} blocks, concurrency={concurrency})");
 
     let backend = InMemoryBackend::new();
     let set = IndexSet::new().with::<HeadersIndex>();
@@ -209,27 +220,48 @@ async fn main() {
     let mut engine =
         SyncEngine::from_index_set(set, backend.clone(), config).expect("valid index set");
 
-    // Provisioner: fetch blocks, send through channel.
-    let (tx, rx) = tokio::sync::mpsc::channel(32);
+    // Provisioner: fetch blocks concurrently, send in order.
+    let (tx, rx) = tokio::sync::mpsc::channel(concurrency * 2);
     let start = Instant::now();
 
-    tokio::spawn(async move {
-        for h in sync_from..=sync_to {
-            let height = Height::try_from(h).expect("valid height");
-            let block = adapter.get_block(height).await.expect("get_block failed");
+    let adapter = Arc::new(adapter);
 
-            if h % 10 == 0 || h == sync_to {
-                let elapsed = start.elapsed().as_secs_f64();
-                let done = h - sync_from + 1;
-                let rate = done as f64 / elapsed;
-                eprintln!(
-                    "  fetched {done}/{block_count} blocks ({rate:.1} blocks/s)"
-                );
+    tokio::spawn(async move {
+        // Fetch blocks in a sliding window: up to `concurrency` in-flight,
+        // issued in height order so results arrive roughly in order.
+        let mut in_flight = futures::stream::FuturesOrdered::new();
+        let mut next_to_spawn = sync_from;
+        let mut sent = 0u32;
+
+        loop {
+            // Fill the window.
+            while in_flight.len() < concurrency && next_to_spawn <= sync_to {
+                let h = next_to_spawn;
+                next_to_spawn += 1;
+                let adapter = Arc::clone(&adapter);
+                in_flight.push_back(async move {
+                    let height = Height::try_from(h).expect("valid height");
+                    let block = adapter.get_block(height).await.expect("get_block failed");
+                    (h, context_from_block(&block))
+                });
             }
 
-            tx.send(context_from_block(&block))
-                .await
-                .expect("channel open");
+            // Wait for the next result (in submission order).
+            use futures::StreamExt;
+            match in_flight.next().await {
+                Some((h, ctx)) => {
+                    tx.send(ctx).await.expect("engine channel open");
+                    sent += 1;
+                    let _ = h; // used implicitly via ordering
+
+                    if sent % 50 == 0 || sent == block_count {
+                        let elapsed = start.elapsed().as_secs_f64();
+                        let rate = sent as f64 / elapsed;
+                        eprintln!("  sent {sent}/{block_count} blocks ({rate:.1} blocks/s)");
+                    }
+                }
+                None => break, // all done
+            }
         }
     });
 
