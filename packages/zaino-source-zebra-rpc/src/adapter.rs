@@ -4,7 +4,7 @@ use zaino_primitives::types::{BlockHash, Height, Treestate};
 use zaino_rpc::RpcClient;
 use zaino_source::{
     FailureMode, GetBlockBytesError, GetChainTipError, GetTreestateError, QueryError,
-    TransportError,
+    FetchError,
 };
 
 use crate::parse;
@@ -26,8 +26,8 @@ impl ZebraRpcAdapter {
 }
 
 /// Parse errors are always non-retryable — the response arrived but was malformed.
-fn from_parse(e: crate::parse::ParseError) -> TransportError {
-    TransportError::new(FailureMode::Parse, e.to_string())
+fn from_parse(e: crate::parse::ParseError) -> FetchError {
+    FetchError::new(FailureMode::Parse, e.to_string())
 }
 
 impl zaino_source::GetBlockBytes for ZebraRpcAdapter {
@@ -39,7 +39,7 @@ impl zaino_source::GetBlockBytes for ZebraRpcAdapter {
             serde_json::Value::String(u32::from(height).to_string()),
             serde_json::Value::Number(0.into()),
         ];
-        // RpcError → TransportError via From impl in zaino-rpc
+        // RpcError → FetchError via From impl in zaino-rpc
         let value = self
             .rpc
             .call("getblock", params)

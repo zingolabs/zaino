@@ -27,7 +27,7 @@ mod get_treestate;
 
 pub mod resilient;
 
-pub use error::{FailureMode, QueryError, SourceError, TransportError, UnavailableError};
+pub use error::{FailureMode, QueryError, SourceError, FetchError, UnavailableError};
 pub use get_address_balance::{GetAddressBalance, GetAddressBalanceError};
 pub use get_address_deltas::{GetAddressDeltas, GetAddressDeltasError};
 pub use get_address_txids::{GetAddressTxids, GetAddressTxidsError};

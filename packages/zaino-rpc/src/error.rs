@@ -36,7 +36,7 @@ pub enum RpcError {
     NullResult,
 }
 
-impl From<RpcError> for zaino_source::TransportError {
+impl From<RpcError> for zaino_source::FetchError {
     fn from(e: RpcError) -> Self {
         use zaino_source::FailureMode;
 
@@ -55,6 +55,6 @@ impl From<RpcError> for zaino_source::TransportError {
             RpcError::Json(_) | RpcError::NullResult => FailureMode::Parse,
         };
 
-        zaino_source::TransportError::new(kind, e.to_string())
+        zaino_source::FetchError::new(kind, e.to_string())
     }
 }

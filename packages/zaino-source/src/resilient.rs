@@ -99,8 +99,8 @@ impl<V> Resilient<V> {
                 Err(QueryError::Domain(e)) => return Err(SourceError::Domain(e)),
 
                 Err(QueryError::Fetch(e)) => {
-                    if !is_retryable(&e.kind) || attempt >= self.policy.max_attempts {
-                        if is_retryable(&e.kind) {
+                    if !is_retryable(&e.mode) || attempt >= self.policy.max_attempts {
+                        if is_retryable(&e.mode) {
                             return Err(SourceError::Unavailable(UnavailableError {
                                 attempts: attempt,
                                 last_error: e,

@@ -28,18 +28,18 @@ pub enum FailureMode {
 /// and a human-readable message for logging.
 #[derive(Debug, thiserror::Error)]
 #[error("{message}")]
-pub struct TransportError {
+pub struct FetchError {
     /// What kind of failure.
-    pub kind: FailureMode,
+    pub mode: FailureMode,
     /// Human-readable description.
     pub message: String,
 }
 
-impl TransportError {
+impl FetchError {
     /// Construct a transport error.
-    pub fn new(kind: FailureMode, message: impl Into<String>) -> Self {
+    pub fn new(mode: FailureMode, message: impl Into<String>) -> Self {
         Self {
-            kind,
+            mode,
             message: message.into(),
         }
     }
@@ -57,11 +57,11 @@ pub enum QueryError<E: fmt::Debug + fmt::Display> {
 
     /// Transport-level failure.
     #[error("{0}")]
-    Fetch(TransportError),
+    Fetch(FetchError),
 }
 
-impl<E: fmt::Debug + fmt::Display> From<TransportError> for QueryError<E> {
-    fn from(e: TransportError) -> Self {
+impl<E: fmt::Debug + fmt::Display> From<FetchError> for QueryError<E> {
+    fn from(e: FetchError) -> Self {
         Self::Fetch(e)
     }
 }
@@ -73,7 +73,7 @@ pub struct UnavailableError {
     /// Number of attempts made.
     pub attempts: u32,
     /// The last transport error before giving up.
-    pub last_error: TransportError,
+    pub last_error: FetchError,
 }
 
 /// Consumer-facing error from the resilience wrapper.
@@ -89,7 +89,7 @@ pub enum SourceError<E: fmt::Debug + fmt::Display> {
 
     /// Non-retryable transport failure.
     #[error("{0}")]
-    Fetch(TransportError),
+    Fetch(FetchError),
 
     /// Retries exhausted — the validator is unreachable.
     #[error("{0}")]

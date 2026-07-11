@@ -1,21 +1,24 @@
 //! In-memory mock adapter for testing.
 //!
 //! Implements the query traits against a pre-populated chain.
-//! No network, no disk — just a `HashMap`.
+//! Supports failure injection: configure the mock to fail N times
+//! with a specific [`FailureMode`] before succeeding, exercising
+//! the resilience wrapper.
 //!
 //! ```ignore
 //! let mock = MockChain::new()
 //!     .with_block(height, hash, bytes)
-//!     .with_block(height, hash, bytes);
-//! let tip = mock.get_chain_tip().await?;
+//!     .fail_next(2, FailureMode::Timeout); // first 2 calls fail
 //! ```
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use zaino_primitives::types::{BlockHash, Height, Treestate};
 
+use crate::error::{FailureMode, FetchError};
 use crate::{
-    GetBlockBytesError, GetBlockByHashError, GetChainTipError, GetTreestateError, QueryError,
+    GetBlockByHashError, GetBlockBytesError, GetChainTipError, GetTreestateError, QueryError,
 };
 
 /// A pre-populated in-memory chain for testing.
@@ -24,6 +27,10 @@ pub struct MockChain {
     by_hash: HashMap<[u8; 32], u32>,
     tip: Option<(BlockHash, Height)>,
     treestates: HashMap<u32, Treestate>,
+    /// Number of remaining failures to inject before succeeding.
+    failures_remaining: AtomicU32,
+    /// What kind of failure to inject.
+    failure_mode: FailureMode,
 }
 
 struct MockBlock {
@@ -31,13 +38,15 @@ struct MockBlock {
 }
 
 impl MockChain {
-    /// Empty chain.
+    /// Empty chain, no failure injection.
     pub fn new() -> Self {
         Self {
             blocks: HashMap::new(),
             by_hash: HashMap::new(),
             tip: None,
             treestates: HashMap::new(),
+            failures_remaining: AtomicU32::new(0),
+            failure_mode: FailureMode::Connection,
         }
     }
 
@@ -55,6 +64,35 @@ impl MockChain {
         self.treestates.insert(u32::from(height), treestate);
         self
     }
+
+    /// Inject `count` failures with the given mode before the next
+    /// successful call. Each query trait method decrements the counter
+    /// and returns a [`FetchError`] until it reaches zero.
+    pub fn fail_next(self, count: u32, mode: FailureMode) -> Self {
+        self.failures_remaining.store(count, Ordering::SeqCst);
+        Self {
+            failure_mode: mode,
+            ..self
+        }
+    }
+
+    /// If failures remain, decrement and return an error.
+    fn maybe_fail<E: core::fmt::Debug + core::fmt::Display>(
+        &self,
+    ) -> Option<QueryError<E>> {
+        let prev = self.failures_remaining.fetch_update(
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+            |n| if n > 0 { Some(n - 1) } else { None },
+        );
+        match prev {
+            Ok(_) => Some(QueryError::Fetch(FetchError::new(
+                self.failure_mode.clone(),
+                format!("mock injected {:?}", self.failure_mode),
+            ))),
+            Err(_) => None,
+        }
+    }
 }
 
 impl Default for MockChain {
@@ -68,10 +106,15 @@ impl crate::GetBlockBytes for MockChain {
         &self,
         height: Height,
     ) -> Result<Vec<u8>, QueryError<GetBlockBytesError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
         self.blocks
             .get(&u32::from(height))
             .map(|b| b.bytes.clone())
-            .ok_or(QueryError::Domain(GetBlockBytesError::HeightNotFound(height)))
+            .ok_or(QueryError::Domain(GetBlockBytesError::HeightNotFound(
+                height,
+            )))
     }
 }
 
@@ -80,6 +123,9 @@ impl crate::GetBlockByHash for MockChain {
         &self,
         hash: BlockHash,
     ) -> Result<Vec<u8>, QueryError<GetBlockByHashError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
         let h = self
             .by_hash
             .get(&<[u8; 32]>::from(hash))
@@ -92,9 +138,10 @@ impl crate::GetBlockByHash for MockChain {
 }
 
 impl crate::GetChainTip for MockChain {
-    async fn get_chain_tip(
-        &self,
-    ) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
+    async fn get_chain_tip(&self) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
         self.tip
             .ok_or(QueryError::Domain(GetChainTipError::NotReady))
     }
@@ -105,10 +152,15 @@ impl crate::GetTreestate for MockChain {
         &self,
         height: Height,
     ) -> Result<Treestate, QueryError<GetTreestateError>> {
+        if let Some(err) = self.maybe_fail() {
+            return Err(err);
+        }
         self.treestates
             .get(&u32::from(height))
             .cloned()
-            .ok_or(QueryError::Domain(GetTreestateError::HeightNotFound(height)))
+            .ok_or(QueryError::Domain(GetTreestateError::HeightNotFound(
+                height,
+            )))
     }
 }
 
@@ -128,7 +180,10 @@ mod tests {
     async fn tip_of_empty_chain_is_not_ready() {
         let mock = MockChain::new();
         let err = crate::GetChainTip::get_chain_tip(&mock).await.unwrap_err();
-        assert!(matches!(err, QueryError::Domain(GetChainTipError::NotReady)));
+        assert!(matches!(
+            err,
+            QueryError::Domain(GetChainTipError::NotReady)
+        ));
     }
 
     #[tokio::test]
@@ -187,5 +242,44 @@ mod tests {
             .expect("treestate exists");
         assert_eq!(result.sapling, Some(vec![1, 2, 3]));
         assert!(result.orchard.is_none());
+    }
+
+    #[tokio::test]
+    async fn injected_failure_then_success() {
+        let mock = MockChain::new()
+            .with_block(height(0), hash(1), vec![0xAB])
+            .fail_next(1, FailureMode::Timeout);
+
+        // First call fails.
+        let err = crate::GetBlockBytes::get_block_bytes(&mock, height(0))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, QueryError::Fetch(ref e) if e.mode == FailureMode::Timeout));
+
+        // Second call succeeds.
+        let bytes = crate::GetBlockBytes::get_block_bytes(&mock, height(0))
+            .await
+            .expect("succeeds after failure consumed");
+        assert_eq!(bytes, vec![0xAB]);
+    }
+
+    #[tokio::test]
+    async fn multiple_injected_failures() {
+        let mock = MockChain::new()
+            .with_block(height(0), hash(1), vec![0xCD])
+            .fail_next(3, FailureMode::Connection);
+
+        for _ in 0..3 {
+            let err = crate::GetBlockBytes::get_block_bytes(&mock, height(0))
+                .await
+                .unwrap_err();
+            assert!(matches!(err, QueryError::Fetch(_)));
+        }
+
+        // Fourth call succeeds.
+        let bytes = crate::GetBlockBytes::get_block_bytes(&mock, height(0))
+            .await
+            .expect("succeeds after 3 failures");
+        assert_eq!(bytes, vec![0xCD]);
     }
 }
