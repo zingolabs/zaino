@@ -121,6 +121,19 @@ where
 
 #[tokio::main]
 async fn main() {
+    // Opt-in tracing: only initialize when RUST_LOG is set.
+    if std::env::var("RUST_LOG").is_ok() {
+        use tracing_subscriber::fmt::format::FmtSpan;
+        tracing_subscriber::fmt()
+            .with_span_events(FmtSpan::CLOSE)
+            .with_target(false)
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .expect("RUST_LOG is set but could not be parsed"),
+            )
+            .init();
+    }
+
     let rpc_url = std::env::var("ZEBRA_RPC_URL")
         .unwrap_or_else(|_| "http://127.0.0.1:8232".to_string());
     let state_dir = std::env::var("ZEBRA_STATE_DIR").ok().map(PathBuf::from);

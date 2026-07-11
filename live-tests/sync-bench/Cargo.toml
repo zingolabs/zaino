@@ -17,8 +17,9 @@ zaino-primitives.workspace = true
 zaino-indexes.workspace = true
 zaino-rpc.workspace = true
 zaino-source.workspace = true
-zaino-source-zebra-rpc.workspace = true
-zaino-source-zebra-readstate.workspace = true
+zaino-source-zebra-rpc = { workspace = true, features = ["tracing"] }
+zaino-source-zebra-readstate = { workspace = true, features = ["tracing"] }
+tracing-subscriber.workspace = true
 zebra-chain = { workspace = true }
 zaino-sync = { workspace = true, features = ["testing"] }
 zaino-persistence = { workspace = true, features = ["testing"] }
