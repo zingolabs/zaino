@@ -170,4 +170,43 @@ mod tests {
             assert_eq!(size, h + 1, "block {h} should have {} bytes", h + 1);
         }
     }
+
+    /// 100 blocks, batch size 10, channel capacity 8.
+    ///
+    /// The provisioner outruns the engine: channel fills at block 8,
+    /// provisioner suspends until the engine drains a batch. Exercises
+    /// backpressure across 10 batch cycles.
+    #[tokio::test]
+    async fn multi_batch_backpressure() {
+        let n = 100u32;
+        let chain = mock_chain(n);
+        let backend = InMemoryBackend::new();
+
+        let set = IndexSet::new().with::<BlockSizeIndex>();
+        let config = EngineConfig {
+            batch_size: 10,
+            start_height: BlockHeight::new(0),
+        };
+        let mut engine =
+            SyncEngine::from_index_set(set, backend.clone(), config).expect("valid set");
+
+        // Channel smaller than batch size — provisioner must wait.
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+
+        tokio::spawn(async move {
+            provision(chain, 0, n - 1, tx).await;
+        });
+
+        engine.sync_channel(rx).await.expect("sync succeeds");
+
+        // Verify every block was indexed.
+        for h in 0..n {
+            let key = BlockHeight::new(u64::from(h)).encode();
+            let val = backend
+                .get_value(BLOCK_SIZE_ID, &key)
+                .unwrap_or_else(|| panic!("entry for block {h} missing"));
+            let size = u32::from_le_bytes(val.as_slice().try_into().expect("4 bytes"));
+            assert_eq!(size, h + 1, "block {h} size mismatch");
+        }
+    }
 }
