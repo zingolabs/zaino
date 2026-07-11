@@ -2,26 +2,9 @@
 
 use std::future::Future;
 
-use zaino_primitives::types::Height;
+use zaino_primitives::types::{Height, Treestate};
 
 use super::QueryError;
-
-/// Serialized commitment tree bytes for one pool.
-///
-/// Opaque to this crate. Interpretation (Sapling vs Orchard,
-/// deserialization into tree structures) happens in consumer crates.
-pub type TreeBytes = Vec<u8>;
-
-/// Commitment tree state at a block: Sapling and Orchard trees.
-///
-/// Either pool may be absent if the block predates that pool's activation.
-#[derive(Debug, Clone)]
-pub struct TreestateResponse {
-    /// Serialized Sapling commitment tree, if active at this height.
-    pub sapling: Option<TreeBytes>,
-    /// Serialized Orchard commitment tree, if active at this height.
-    pub orchard: Option<TreeBytes>,
-}
 
 /// Domain error for [`GetTreestate`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
@@ -40,5 +23,5 @@ pub trait GetTreestate: Send + Sync {
     fn get_treestate(
         &self,
         height: Height,
-    ) -> impl Future<Output = Result<TreestateResponse, QueryError<GetTreestateError>>> + Send;
+    ) -> impl Future<Output = Result<Treestate, QueryError<GetTreestateError>>> + Send;
 }
