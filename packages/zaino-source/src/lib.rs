@@ -14,7 +14,7 @@ mod get_block_bytes;
 mod get_chain_tip;
 mod get_treestate;
 
-pub use error::TransportError;
+pub use error::{QueryError, TransportError};
 pub use get_block_bytes::{GetBlockBytes, GetBlockBytesError};
 pub use get_chain_tip::{GetChainTip, GetChainTipError};
-pub use get_treestate::{GetTreestate, GetTreestateError};
+pub use get_treestate::{GetTreestate, GetTreestateError, TreestateResponse};

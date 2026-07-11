@@ -9,6 +9,7 @@ license.workspace = true
 
 [dependencies]
 zaino-primitives = { path = "../zaino-primitives" }
+thiserror = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"
