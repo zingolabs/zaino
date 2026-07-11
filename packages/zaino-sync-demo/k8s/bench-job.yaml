@@ -1,0 +1,53 @@
+# bench-job.yaml — k8s Job for in-cluster sync benchmarking.
+#
+# Usage:
+#   1. Build and deploy binary:
+#      cargo build -p zaino-sync-demo --release
+#      # Then use bench.sh or manual kubectl cp
+#
+#   2. Create a ConfigMap with the binary (or use an init container):
+#      kubectl create configmap sync-headers-bin \
+#        --from-file=sync-headers=target/release/sync-headers \
+#        -n golden-mainnet
+#
+#   3. Apply the job (edit args as needed):
+#      kubectl apply -f bench-job.yaml
+#
+#   4. Watch logs:
+#      kubectl logs -f job/sync-bench -n golden-mainnet
+#
+#   The job auto-cleans after 5 minutes (ttlSecondsAfterFinished).
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sync-bench
+  namespace: golden-mainnet
+  labels:
+    app: zaino-sync-bench
+spec:
+  ttlSecondsAfterFinished: 300
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: bench
+          image: archlinux:latest
+          command: ["/tmp/sync-headers"]
+          # Args: [block_count] [concurrency] [batch_size]
+          args: ["10000", "16", "50"]
+          env:
+            - name: ZEBRA_RPC_URL
+              value: "http://zebra.golden-mainnet.svc:8232"
+            # Set ZAINO_DB_PATH for LMDB, omit for in-memory.
+            - name: ZAINO_DB_PATH
+              value: "/tmp/zaino-bench-db"
+          volumeMounts:
+            - name: binary
+              mountPath: /tmp/sync-headers
+              subPath: sync-headers
+      volumes:
+        - name: binary
+          configMap:
+            name: sync-headers-bin
+            defaultMode: 0755

@@ -1,7 +1,7 @@
-//! Demo: sync HeadersIndex from a live Zebra validator.
+//! Demo: sync Zcash indexes from a live Zebra validator.
 //!
 //! Usage:
-//!   cargo run -p zaino-sync-demo -- [block_count] [concurrency] [batch_size]
+//!   sync-headers [block_count] [concurrency] [batch_size]
 //!
 //! Environment:
 //!   ZEBRA_RPC_URL  — RPC endpoint (default: http://127.0.0.1:8232)
@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use zaino_backend_lmdb::{LmdbBackend, LmdbConfig};
 use zaino_persistence::in_memory::InMemoryBackend;
-use zaino_persistence::{Backend, BackendReader, Namespace};
+use zaino_persistence::{Backend, Namespace};
 use zaino_primitives::types::{Block, BlockHash, BlockTime, CompactDifficulty, Height};
 use zaino_rpc::{RpcClient, RpcClientConfig};
 use zaino_source::{GetBlock, GetChainTip};
@@ -173,6 +173,12 @@ impl Schema<Vec<HeaderEntry>> for HeadersIndex {
 // Generic sync runner
 // ---------------------------------------------------------------------------
 
+struct RunResult {
+    elapsed_secs: f64,
+    blocks_per_sec: f64,
+    db_size_bytes: Option<u64>,
+}
+
 async fn run_sync<B: Backend + 'static>(
     backend: B,
     adapter: Arc<ZebraRpcAdapter>,
@@ -180,7 +186,9 @@ async fn run_sync<B: Backend + 'static>(
     sync_to: u32,
     concurrency: usize,
     batch_size: u32,
-) where
+    db_path: Option<&str>,
+) -> RunResult
+where
     B::Reader: 'static,
     B::Writer: 'static,
 {
@@ -190,8 +198,7 @@ async fn run_sync<B: Backend + 'static>(
         batch_size,
         start_height: BlockHeight::new(u64::from(sync_from)),
     };
-    let mut engine =
-        SyncEngine::from_index_set(set, backend, config).expect("valid index set");
+    let mut engine = SyncEngine::from_index_set(set, backend, config).expect("valid index set");
 
     let (tx, rx) = tokio::sync::mpsc::channel(concurrency * 2);
     let start = Instant::now();
@@ -219,10 +226,10 @@ async fn run_sync<B: Backend + 'static>(
                     tx.send(ctx).await.expect("engine channel open");
                     sent += 1;
 
-                    if sent % 50 == 0 || sent == block_count {
+                    if sent % 500 == 0 || sent == block_count {
                         let elapsed = start.elapsed().as_secs_f64();
                         let rate = sent as f64 / elapsed;
-                        eprintln!("  sent {sent}/{block_count} blocks ({rate:.1} blocks/s)");
+                        println!("  progress: {sent}/{block_count} ({rate:.0} blocks/s)");
                     }
                 }
                 None => break,
@@ -232,22 +239,35 @@ async fn run_sync<B: Backend + 'static>(
 
     engine.sync_channel(rx).await.expect("sync failed");
 
-    let elapsed = start.elapsed();
-    println!(
-        "\nDone in {:.2}s ({:.1} blocks/s)",
-        elapsed.as_secs_f64(),
-        block_count as f64 / elapsed.as_secs_f64()
-    );
+    let elapsed_secs = start.elapsed().as_secs_f64();
+    let blocks_per_sec = block_count as f64 / elapsed_secs;
+
+    let db_size_bytes = db_path.and_then(|p| {
+        std::fs::read_dir(p)
+            .ok()?
+            .filter_map(|e| e.ok())
+            .filter_map(|e| e.metadata().ok().map(|m| m.len()))
+            .reduce(|a, b| a + b)
+    });
+
+    RunResult {
+        elapsed_secs,
+        blocks_per_sec,
+        db_size_bytes,
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
+const COMMIT_HASH: &str = env!("CARGO_PKG_VERSION");
+
 #[tokio::main]
 async fn main() {
     let rpc_url = std::env::var("ZEBRA_RPC_URL")
         .unwrap_or_else(|_| "http://127.0.0.1:8232".to_string());
+    let db_path = std::env::var("ZAINO_DB_PATH").ok();
 
     let rpc = RpcClient::new(RpcClientConfig {
         url: rpc_url.clone(),
@@ -258,7 +278,7 @@ async fn main() {
 
     let adapter = Arc::new(ZebraRpcAdapter::new(rpc));
 
-    let (_, tip_height) = adapter
+    let (tip_hash, tip_height) = adapter
         .get_chain_tip()
         .await
         .expect("get_chain_tip failed");
@@ -271,55 +291,75 @@ async fn main() {
 
     let sync_from = tip_u32.saturating_sub(n_blocks - 1);
     let sync_to = tip_u32;
+    let block_count = sync_to - sync_from + 1;
 
-    let db_path = std::env::var("ZAINO_DB_PATH").ok();
+    let backend_name = db_path.as_deref().unwrap_or("in-memory");
+    let index_set = "headers";
+    let provisioner = "zebra-rpc";
 
-    println!("RPC: {rpc_url}");
-    println!("Tip: {tip_height}");
-    println!("Backend: {}", db_path.as_deref().unwrap_or("in-memory"));
-    println!(
-        "Syncing {sync_from}..={sync_to} ({n_blocks} blocks, conc={concurrency}, batch={batch_size})"
-    );
+    println!("════════════════════════════════════════════");
+    println!("  zaino-sync-demo");
+    println!("════════════════════════════════════════════");
+    println!("  version:      {COMMIT_HASH}");
+    println!("  rpc:          {rpc_url}");
+    println!("  provisioner:  {provisioner}");
+    println!("  backend:      {backend_name}");
+    println!("  index_set:    {index_set}");
+    println!("  chain_tip:    {tip_height} ({tip_hash})");
+    println!("  block_range:  {sync_from}..={sync_to} ({block_count} blocks)");
+    println!("  concurrency:  {concurrency}");
+    println!("  batch_size:   {batch_size}");
+    println!("────────────────────────────────────────────");
 
     let ns_headers: Namespace = HEADERS_ID.into();
     let ns_meta = Namespace::new("_engine_meta");
 
-    match db_path {
+    let result = match db_path.as_deref() {
         Some(path) => {
             let backend = LmdbBackend::open(LmdbConfig {
                 path: path.into(),
-                map_size_bytes: 1 << 30, // 1 GB
+                map_size_bytes: 1 << 30,
                 namespaces: vec![ns_headers, ns_meta],
             })
             .expect("LMDB open failed");
 
-            run_sync(backend, adapter, sync_from, sync_to, concurrency, batch_size).await;
-        }
-        None => {
-            let backend = InMemoryBackend::new();
             run_sync(
-                backend.clone(),
-                adapter.clone(),
+                backend,
+                adapter,
                 sync_from,
                 sync_to,
                 concurrency,
                 batch_size,
+                Some(path),
             )
-            .await;
-
-            // Print sample results from in-memory backend.
-            println!("\nSample indexed headers:");
-            let reader = backend.reader().expect("reader");
-            for h in [sync_from, sync_from + (sync_to - sync_from) / 2, sync_to] {
-                let key = HeadersIndex::encode_key(&BlockHeight::new(u64::from(h)));
-                if let Some(val) = reader.get(ns_headers, &key).expect("read") {
-                    let header = HeadersIndex::decode_value(&val).expect("decode");
-                    println!(
-                        "  height={h} hash={} prev={} time={} bits={:#010x}",
-                        header.hash, header.prev_hash, header.time, header.bits
-                    );
-                }
-            }
+            .await
         }
+        None => {
+            let backend = InMemoryBackend::new();
+            run_sync(
+                backend,
+                adapter,
+                sync_from,
+                sync_to,
+                concurrency,
+                batch_size,
+                None,
+            )
+            .await
+        }
+    };
+
+    println!("════════════════════════════════════════════");
+    println!("  RESULTS");
+    println!("════════════════════════════════════════════");
+    println!("  total_blocks: {block_count}");
+    println!("  total_time:   {:.2}s", result.elapsed_secs);
+    println!("  blocks/s:     {:.1}", result.blocks_per_sec);
+    if let Some(size) = result.db_size_bytes {
+        let mb = size as f64 / (1024.0 * 1024.0);
+        println!("  db_size:      {:.2} MB", mb);
+        let bytes_per_block = size as f64 / block_count as f64;
+        println!("  bytes/block:  {:.0}", bytes_per_block);
     }
+    println!("════════════════════════════════════════════");
 }
