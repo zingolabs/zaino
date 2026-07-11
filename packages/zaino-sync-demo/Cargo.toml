@@ -1,0 +1,24 @@
+[package]
+name = "zaino-sync-demo"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+description = "Demo: sync Zcash indexes against a live Zebra validator."
+
+[[bin]]
+name = "sync-headers"
+path = "src/main.rs"
+
+[dependencies]
+zaino-primitives = { path = "../zaino-primitives" }
+zaino-rpc = { path = "../zaino-rpc" }
+zaino-source = { path = "../zaino-source" }
+zaino-source-zebra-rpc = { path = "../zaino-source-zebra-rpc" }
+zaino-sync = { path = "../zaino-sync", features = ["testing"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints.rust]
+unsafe_code = "forbid"
