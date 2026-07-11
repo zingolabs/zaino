@@ -1,6 +1,8 @@
 # Workspace Members are in dependency order, do not change this without prior consideration.
 [workspace]
 members = [
+    "packages/zaino-primitives",
+    "packages/zaino-source",
     "packages/zaino-common",
     "packages/zainod",
     "packages/zaino-serve",
@@ -18,6 +20,8 @@ members = [
 # default-members — so the heavy live-test crates are built and tested only
 # when selected explicitly (`-p e2e` / `-p clientless`). See docs/adr/0002.
 default-members = [
+    "packages/zaino-primitives",
+    "packages/zaino-source",
     "packages/zaino-common",
     "packages/zainod",
     "packages/zaino-serve",

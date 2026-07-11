@@ -6006,6 +6006,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-primitives"
+version = "0.1.0"
+
+[[package]]
 name = "zaino-proto"
 version = "0.1.3"
 dependencies = [
@@ -6036,6 +6040,13 @@ dependencies = [
  "zaino-state",
  "zebra-chain 10.1.0",
  "zebra-rpc 10.0.1",
+]
+
+[[package]]
+name = "zaino-source"
+version = "0.1.0"
+dependencies = [
+ "zaino-primitives",
 ]
 
 [[package]]
