@@ -18,6 +18,8 @@ zaino-rpc = { path = "../zaino-rpc" }
 zaino-source = { path = "../zaino-source" }
 zaino-source-zebra-rpc = { path = "../zaino-source-zebra-rpc" }
 zaino-sync = { path = "../zaino-sync", features = ["testing"] }
+zaino-persistence = { path = "../zaino-persistence", features = ["testing"] }
+zaino-backend-lmdb = { path = "../zaino-backend-lmdb" }
 futures = "0.3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 

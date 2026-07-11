@@ -1,18 +1,18 @@
 //! Demo: sync HeadersIndex from a live Zebra validator.
 //!
 //! Usage:
-//!   # Port-forward first:
-//!   kubectl --context zingo-infra port-forward -n golden-mainnet svc/zebra 8232:8232
+//!   cargo run -p zaino-sync-demo -- [block_count] [concurrency] [batch_size]
 //!
-//!   # Then run:
-//!   cargo run -p zaino-sync-demo
-//!
-//! Syncs recent blocks (last 100 from tip) into an InMemoryBackend
-//! and prints progress + results.
+//! Environment:
+//!   ZEBRA_RPC_URL  — RPC endpoint (default: http://127.0.0.1:8232)
+//!   ZAINO_DB_PATH  — LMDB path. If set, uses LMDB. If unset, in-memory.
 
 use std::sync::Arc;
 use std::time::Instant;
 
+use zaino_backend_lmdb::{LmdbBackend, LmdbConfig};
+use zaino_persistence::in_memory::InMemoryBackend;
+use zaino_persistence::{Backend, BackendReader, Namespace};
 use zaino_primitives::types::{Block, BlockHash, BlockTime, CompactDifficulty, Height};
 use zaino_rpc::{RpcClient, RpcClientConfig};
 use zaino_source::{GetBlock, GetChainTip};
@@ -21,7 +21,6 @@ use zaino_sync::descriptor::{Append, BlockLocal};
 use zaino_sync::engine::{EngineConfig, SyncEngine};
 use zaino_sync::index_set::IndexSet;
 use zaino_sync::primitives::{BlockHeight, IndexId};
-use zaino_sync::testing::InMemoryBackend;
 use zaino_sync::traits::{
     ExtractError, ExtractLocal, IndexDef, MergeAppend, ProvideContext, Schema, SchemaDecodeError,
 };
@@ -50,7 +49,7 @@ fn context_from_block(block: &Block) -> ZcashBlockContext {
 }
 
 // ---------------------------------------------------------------------------
-// HeadersIndex (L,A): height → (hash, prev_hash, time, bits)
+// HeadersIndex (L,A)
 // ---------------------------------------------------------------------------
 
 struct HeaderCtx {
@@ -144,9 +143,9 @@ impl Schema<Vec<HeaderEntry>> for HeadersIndex {
     }
 
     fn decode_key(bytes: &[u8]) -> Result<BlockHeight, SchemaDecodeError> {
-        let arr: [u8; 8] = bytes
-            .try_into()
-            .map_err(|_| SchemaDecodeError::Invalid(format!("expected 8 bytes, got {}", bytes.len())))?;
+        let arr: [u8; 8] = bytes.try_into().map_err(|_| {
+            SchemaDecodeError::Invalid(format!("expected 8 bytes, got {}", bytes.len()))
+        })?;
         Ok(BlockHeight::new(u64::from_le_bytes(arr)))
     }
 
@@ -171,6 +170,77 @@ impl Schema<Vec<HeaderEntry>> for HeadersIndex {
 }
 
 // ---------------------------------------------------------------------------
+// Generic sync runner
+// ---------------------------------------------------------------------------
+
+async fn run_sync<B: Backend + 'static>(
+    backend: B,
+    adapter: Arc<ZebraRpcAdapter>,
+    sync_from: u32,
+    sync_to: u32,
+    concurrency: usize,
+    batch_size: u32,
+) where
+    B::Reader: 'static,
+    B::Writer: 'static,
+{
+    let block_count = sync_to - sync_from + 1;
+    let set = IndexSet::new().with::<HeadersIndex>();
+    let config = EngineConfig {
+        batch_size,
+        start_height: BlockHeight::new(u64::from(sync_from)),
+    };
+    let mut engine =
+        SyncEngine::from_index_set(set, backend, config).expect("valid index set");
+
+    let (tx, rx) = tokio::sync::mpsc::channel(concurrency * 2);
+    let start = Instant::now();
+
+    tokio::spawn(async move {
+        let mut in_flight = futures::stream::FuturesOrdered::new();
+        let mut next_to_spawn = sync_from;
+        let mut sent = 0u32;
+
+        loop {
+            while in_flight.len() < concurrency && next_to_spawn <= sync_to {
+                let h = next_to_spawn;
+                next_to_spawn += 1;
+                let adapter = Arc::clone(&adapter);
+                in_flight.push_back(async move {
+                    let height = Height::try_from(h).expect("valid height");
+                    let block = adapter.get_block(height).await.expect("get_block failed");
+                    context_from_block(&block)
+                });
+            }
+
+            use futures::StreamExt;
+            match in_flight.next().await {
+                Some(ctx) => {
+                    tx.send(ctx).await.expect("engine channel open");
+                    sent += 1;
+
+                    if sent % 50 == 0 || sent == block_count {
+                        let elapsed = start.elapsed().as_secs_f64();
+                        let rate = sent as f64 / elapsed;
+                        eprintln!("  sent {sent}/{block_count} blocks ({rate:.1} blocks/s)");
+                    }
+                }
+                None => break,
+            }
+        }
+    });
+
+    engine.sync_channel(rx).await.expect("sync failed");
+
+    let elapsed = start.elapsed();
+    println!(
+        "\nDone in {:.2}s ({:.1} blocks/s)",
+        elapsed.as_secs_f64(),
+        block_count as f64 / elapsed.as_secs_f64()
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -186,21 +256,14 @@ async fn main() {
     })
     .expect("RPC client creation failed");
 
-    println!("RPC: {rpc_url}");
+    let adapter = Arc::new(ZebraRpcAdapter::new(rpc));
 
-    let adapter = ZebraRpcAdapter::new(rpc);
-
-    // Get chain tip.
-    let (tip_hash, tip_height) = adapter
+    let (_, tip_height) = adapter
         .get_chain_tip()
         .await
         .expect("get_chain_tip failed");
     let tip_u32 = u32::from(tip_height);
 
-    println!("Chain tip: height={tip_height}, hash={tip_hash}");
-
-    // Parse args: sync-headers [block_count] [concurrency] [batch_size]
-    // RPC URL via env: ZEBRA_RPC_URL (default: http://127.0.0.1:8232)
     let args: Vec<String> = std::env::args().collect();
     let n_blocks: u32 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(100);
     let concurrency: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(8);
@@ -208,84 +271,55 @@ async fn main() {
 
     let sync_from = tip_u32.saturating_sub(n_blocks - 1);
     let sync_to = tip_u32;
-    let block_count = sync_to - sync_from + 1;
 
-    println!("Syncing blocks {sync_from}..={sync_to} ({block_count} blocks, concurrency={concurrency}, batch_size={batch_size})");
+    let db_path = std::env::var("ZAINO_DB_PATH").ok();
 
-    let backend = InMemoryBackend::new();
-    let set = IndexSet::new().with::<HeadersIndex>();
-    let config = EngineConfig {
-        batch_size,
-        start_height: BlockHeight::new(u64::from(sync_from)),
-    };
-    let mut engine =
-        SyncEngine::from_index_set(set, backend.clone(), config).expect("valid index set");
-
-    // Provisioner: fetch blocks concurrently, send in order.
-    let (tx, rx) = tokio::sync::mpsc::channel(concurrency * 2);
-    let start = Instant::now();
-
-    let adapter = Arc::new(adapter);
-
-    tokio::spawn(async move {
-        // Fetch blocks in a sliding window: up to `concurrency` in-flight,
-        // issued in height order so results arrive roughly in order.
-        let mut in_flight = futures::stream::FuturesOrdered::new();
-        let mut next_to_spawn = sync_from;
-        let mut sent = 0u32;
-
-        loop {
-            // Fill the window.
-            while in_flight.len() < concurrency && next_to_spawn <= sync_to {
-                let h = next_to_spawn;
-                next_to_spawn += 1;
-                let adapter = Arc::clone(&adapter);
-                in_flight.push_back(async move {
-                    let height = Height::try_from(h).expect("valid height");
-                    let block = adapter.get_block(height).await.expect("get_block failed");
-                    (h, context_from_block(&block))
-                });
-            }
-
-            // Wait for the next result (in submission order).
-            use futures::StreamExt;
-            match in_flight.next().await {
-                Some((h, ctx)) => {
-                    tx.send(ctx).await.expect("engine channel open");
-                    sent += 1;
-                    let _ = h; // used implicitly via ordering
-
-                    if sent % 50 == 0 || sent == block_count {
-                        let elapsed = start.elapsed().as_secs_f64();
-                        let rate = sent as f64 / elapsed;
-                        eprintln!("  sent {sent}/{block_count} blocks ({rate:.1} blocks/s)");
-                    }
-                }
-                None => break, // all done
-            }
-        }
-    });
-
-    // Run engine.
-    engine.sync_channel(rx).await.expect("sync failed");
-
-    let elapsed = start.elapsed();
+    println!("RPC: {rpc_url}");
+    println!("Tip: {tip_height}");
+    println!("Backend: {}", db_path.as_deref().unwrap_or("in-memory"));
     println!(
-        "\nDone in {:.2}s ({:.1} blocks/s)",
-        elapsed.as_secs_f64(),
-        block_count as f64 / elapsed.as_secs_f64()
+        "Syncing {sync_from}..={sync_to} ({n_blocks} blocks, conc={concurrency}, batch={batch_size})"
     );
 
-    // Print some results.
-    println!("\nSample indexed headers:");
-    for h in [sync_from, sync_from + block_count / 2, sync_to] {
-        let key = HeadersIndex::encode_key(&BlockHeight::new(u64::from(h)));
-        if let Some(val) = backend.get_value(HEADERS_ID.into(), &key) {
-            let header = HeadersIndex::decode_value(&val).expect("valid encoding");
-            println!(
-                "  height={h} hash={} prev={} time={} bits={:#010x}",
-                header.hash, header.prev_hash, header.time, header.bits
-            );
+    let ns_headers: Namespace = HEADERS_ID.into();
+    let ns_meta = Namespace::new("_engine_meta");
+
+    match db_path {
+        Some(path) => {
+            let backend = LmdbBackend::open(LmdbConfig {
+                path: path.into(),
+                map_size_bytes: 1 << 30, // 1 GB
+                namespaces: vec![ns_headers, ns_meta],
+            })
+            .expect("LMDB open failed");
+
+            run_sync(backend, adapter, sync_from, sync_to, concurrency, batch_size).await;
+        }
+        None => {
+            let backend = InMemoryBackend::new();
+            run_sync(
+                backend.clone(),
+                adapter.clone(),
+                sync_from,
+                sync_to,
+                concurrency,
+                batch_size,
+            )
+            .await;
+
+            // Print sample results from in-memory backend.
+            println!("\nSample indexed headers:");
+            let reader = backend.reader().expect("reader");
+            for h in [sync_from, sync_from + (sync_to - sync_from) / 2, sync_to] {
+                let key = HeadersIndex::encode_key(&BlockHeight::new(u64::from(h)));
+                if let Some(val) = reader.get(ns_headers, &key).expect("read") {
+                    let header = HeadersIndex::decode_value(&val).expect("decode");
+                    println!(
+                        "  height={h} hash={} prev={} time={} bits={:#010x}",
+                        header.hash, header.prev_hash, header.time, header.bits
+                    );
+                }
+            }
         }
     }
 }
