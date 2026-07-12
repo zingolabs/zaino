@@ -4630,6 +4630,7 @@ version = "0.1.0"
 dependencies = [
  "futures",
  "tokio",
+ "tracing-subscriber",
  "zaino-backend-lmdb",
  "zaino-indexes",
  "zaino-persistence",
