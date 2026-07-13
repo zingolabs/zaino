@@ -40,17 +40,16 @@ license = "Apache-2.0"
 
 # Librustzcash
 incrementalmerkletree = "0.8"
-zcash_address = "0.13.0-pre.0"
-zcash_keys = "0.15.0-pre.0"
-zcash_protocol = "0.10.0-pre.0"
-zcash_primitives = "0.29.0-pre.0"
-zcash_transparent = "0.9.0-pre.0"
-zcash_client_backend = "0.24.0-pre.0"
+zcash_address = "0.13"
+zcash_keys = "0.15"
+zcash_protocol = "0.10"
+zcash_primitives = "0.29"
+zcash_transparent = "0.9"
 
 # Zebra
-zebra-chain = "11.0"
-zebra-state = "10.0"
-zebra-rpc = "11.0"
+zebra-chain = "11.1"
+zebra-state = "10.1"
+zebra-rpc = "11.1"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
