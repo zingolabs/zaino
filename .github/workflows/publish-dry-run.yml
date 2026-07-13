@@ -13,11 +13,15 @@ jobs:
   publish-dry-run:
     name: cargo publish --dry-run
     runs-on: ubuntu-latest
-    # Blocking context: direct pushes to rc/** or stable — the branch is in
-    # release-prep state and must publish cleanly.  Advisory context: everything
-    # else, including PRs that *target* rc/** or stable.  Those PRs carry
-    # unbumped dev code; version bumps happen on the RC branch after merge, so
-    # a publish failure at PR time is expected, not actionable.
+    # Two failure classes with different thresholds:
+    #
+    #   version-reuse (unbumped crates)     → blocking only on push to rc/stable
+    #   publish-blocking (patches, git deps) → blocking on push OR PR to rc/stable
+    #
+    # Version bumps happen on the RC branch after merge, so PRs always carry
+    # unbumped code — that's expected, not actionable. But structural publish
+    # blockers (patches, git deps) must not land on an RC branch at all.
+    # On dev/feature branches both are advisory.
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -25,20 +29,32 @@ jobs:
       # rust-toolchain.toml auto-installs the pinned toolchain on first cargo
       # invocation, so no explicit toolchain setup step is needed.
 
-      - name: Compute check mode
-        id: mode
+      - name: Compute check context
+        id: ctx
         run: |
-          if [[ "${{ github.event_name }}" == "push" ]]; then
+          is_push=${{ github.event_name == 'push' }}
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            target="${{ github.base_ref }}"
+          else
             target="${{ github.ref_name }}"
-          else
-            # PRs (including those targeting rc/** or stable) are always
-            # advisory — they carry pre-bump code by design.
-            target=""
           fi
-          if [[ "$target" == rc/* || "$target" == stable ]]; then
-            echo "mode=blocking" >> "$GITHUB_OUTPUT"
+          [[ "$target" == rc/* || "$target" == stable ]] && release=true || release=false
+
+          echo "is_push=$is_push"     >> "$GITHUB_OUTPUT"
+          echo "release=$release"     >> "$GITHUB_OUTPUT"
+
+          # Derived modes:
+          #   reuse_mode:   blocking only on push to a release branch
+          #   publish_mode: blocking on any event targeting a release branch
+          if $is_push && $release; then
+            echo "reuse_mode=blocking"   >> "$GITHUB_OUTPUT"
           else
-            echo "mode=advisory" >> "$GITHUB_OUTPUT"
+            echo "reuse_mode=advisory"   >> "$GITHUB_OUTPUT"
+          fi
+          if $release; then
+            echo "publish_mode=blocking" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish_mode=advisory" >> "$GITHUB_OUTPUT"
           fi
 
       # A publishable crate whose exact version is already on crates.io with
@@ -50,7 +66,7 @@ jobs:
         id: version-check
         run: |
           cargo run --manifest-path tools/workbench/Cargo.toml \
-            --bin check-published-versions -- --mode "${{ steps.mode.outputs.mode }}"
+            --bin check-published-versions -- --mode "${{ steps.ctx.outputs.reuse_mode }}"
 
       # --workspace resolves sibling dependencies against a local overlay
       # registry, so packaging succeeds even when members depend on
@@ -73,6 +89,10 @@ jobs:
 
           verify_flag=""
           if [[ "${{ steps.version-check.outputs.violations }}" == "true" ]]; then
+            # Note: version-check internally runs cargo publish --dry-run
+            # --no-verify to produce .crate files. If that fails (e.g. due to
+            # [patch.crates-io]), the step already failed — we only reach here
+            # when packaging succeeded but content differs from crates.io.
             verify_flag="--no-verify"
             echo "Version-reuse violations present: packaged crates would verify-compile"
             echo "against the already-published versions that shadow the workspace overlay."
@@ -96,7 +116,7 @@ jobs:
             echo "    not in the published dependency; resolved by the version bump +"
             echo "    publish of that dependency at the next release"
             echo ""
-            if [[ "${{ steps.mode.outputs.mode }}" == "advisory" ]]; then
+            if [[ "${{ steps.ctx.outputs.publish_mode }}" == "advisory" ]]; then
               echo "::warning::publish dry-run failed — the workspace would not release cleanly. Advisory on this branch, but it must be resolved before the next release."
               exit 0
             fi
