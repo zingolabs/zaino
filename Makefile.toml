@@ -182,12 +182,10 @@ case "$set" in
   clientless) exec makers live-clientless "$@" ;;
   live)       exec cargo run -q --manifest-path tools/test-runner/Cargo.toml --bin live-summary -- "$@" ;;
   all)
-    # Run both even if the first fails, then fail if either did, so the
-    # omnibus reflects the whole suite.
-    rc=0
-    makers container-test "$@" || rc=1
-    cargo run -q --manifest-path tools/test-runner/Cargo.toml --bin live-summary -- "$@" || rc=1
-    exit "$rc" ;;
+    # The summary runner's --all mode runs the packages set and both live
+    # partitions (each set runs even when an earlier one fails, and the exit
+    # code reflects any failure), so the combined table covers everything.
+    exec cargo run -q --manifest-path tools/test-runner/Cargo.toml --bin live-summary -- --all "$@" ;;
   ironwood)
     # The one definition of the ironwood selection: the two dedicated test
     # binaries, plus every test whose name carries the pool's name (the
@@ -197,7 +195,7 @@ case "$set" in
     # invoked directly rather than through the `live` summary runner, which
     # forwards no nextest args. Run every set even if an earlier one fails,
     # as in `all`.
-    ironwood_filter='binary(ironwood_activation) | binary(testnet_ironwood_boundary) | test(ironwood)'
+    ironwood_filter='binary(ironwood_activation) | binary(the_pub_testnet_ironwood_boundary) | test(ironwood)'
     rc=0
     makers container-test -E "$ironwood_filter" "$@" || rc=1
     makers live-clientless -E "$ironwood_filter" "$@" || rc=1

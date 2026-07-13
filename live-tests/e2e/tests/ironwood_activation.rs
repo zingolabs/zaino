@@ -2,7 +2,7 @@
 //!
 //! Every test here runs a devtool wallet on
 //! [`ORCHARD_THEN_IRONWOOD_ACTIVATION_HEIGHTS`] — the hermetic replay of what
-//! the public testnet did once at height 4,134,000: heights 2 through 5 are
+//! The Public Testnet did once at height 4,134,000: heights 2 through 5 are
 //! Orchard era, [`NU6_3_TRANSITION_BOUNDARY`] (6) onward is Ironwood era.
 //! The wallets derive their activation schedule from the running validator
 //! (`WalletNetwork::from_validator`, infrastructure ADR 0003), so the
@@ -29,7 +29,7 @@
 //! wire in `compact_block_wire.rs`; this file owns the cells that need a
 //! wallet on both sides of the boundary.
 //!
-//! The public testnet cannot host the migration cell for us: its pre-NU6.3
+//! The Public Testnet cannot host the migration cell for us: its pre-NU6.3
 //! epoch closed at height 4,134,000, no new value may enter Orchard from
 //! there (post-activation Orchard actions permit only same-receiver change
 //! or withdrawal — the cross-address restriction,

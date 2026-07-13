@@ -2,7 +2,7 @@ use zaino_fetch::jsonrpsee::response::address_deltas::GetAddressDeltasParams;
 
 use zaino_state::{LightWalletIndexer, NodeBackedIndexerServiceSubscriber, ZcashIndexer};
 use zaino_testutils::{StateAndFetchServices, ValidatorExt};
-use zaino_testutils::{ValidatorKind, ZEBRAD_TESTNET_CACHE_DIR};
+use zaino_testutils::{ValidatorKind, ZEBRAD_THE_PUB_TESTNET_CACHE_DIR};
 use zcash_local_net::validator::zebrad::Zebrad;
 use zebra_chain::parameters::NetworkKind;
 use zebra_rpc::methods::{GetAddressBalanceRequest, GetAddressTxIdsRequest};
@@ -23,7 +23,7 @@ async fn launch_regtest(enable_zaino: bool) -> StateAndFetchServices<Zebrad> {
 async fn launch_testnet_cached() -> StateAndFetchServices<Zebrad> {
     zaino_testutils::launch_state_and_fetch_services::<Zebrad>(
         &ValidatorKind::Zebrad,
-        ZEBRAD_TESTNET_CACHE_DIR.clone(),
+        ZEBRAD_THE_PUB_TESTNET_CACHE_DIR.clone(),
         false,
         Some(NetworkKind::Testnet),
     )
@@ -427,7 +427,7 @@ mod zebra {
         async fn testnet() {
             state_service_check_info::<Zebrad>(
                 &ValidatorKind::Zebrad,
-                ZEBRAD_TESTNET_CACHE_DIR.clone(),
+                ZEBRAD_THE_PUB_TESTNET_CACHE_DIR.clone(),
                 NetworkKind::Testnet,
             )
             .await;
@@ -612,7 +612,7 @@ mod zebra {
         async fn block_object_testnet() {
             state_service_get_block_object(
                 &ValidatorKind::Zebrad,
-                ZEBRAD_TESTNET_CACHE_DIR.clone(),
+                ZEBRAD_THE_PUB_TESTNET_CACHE_DIR.clone(),
                 NetworkKind::Testnet,
             )
             .await;
@@ -628,7 +628,7 @@ mod zebra {
         async fn block_raw_testnet() {
             state_service_get_block_raw(
                 &ValidatorKind::Zebrad,
-                ZEBRAD_TESTNET_CACHE_DIR.clone(),
+                ZEBRAD_THE_PUB_TESTNET_CACHE_DIR.clone(),
                 NetworkKind::Testnet,
             )
             .await;

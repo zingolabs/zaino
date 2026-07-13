@@ -13,13 +13,11 @@ jobs:
   publish-dry-run:
     name: cargo publish --dry-run
     runs-on: ubuntu-latest
-    # Blocking context (pushes to rc/** or stable, and PRs targeting them):
-    # this job MUST pass. Advisory context (everything else): failures exit 0
-    # after emitting a warning annotation, so they do not paint a red X on
-    # PRs (a continue-on-error'd failing job still shows as failed in the PR
-    # checks list even though the run succeeds — hence no job-level
-    # continue-on-error here). The context is computed once in the
-    # "Compute check mode" step below.
+    # Blocking context: direct pushes to rc/** or stable — the branch is in
+    # release-prep state and must publish cleanly.  Advisory context: everything
+    # else, including PRs that *target* rc/** or stable.  Those PRs carry
+    # unbumped dev code; version bumps happen on the RC branch after merge, so
+    # a publish failure at PR time is expected, not actionable.
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -30,10 +28,12 @@ jobs:
       - name: Compute check mode
         id: mode
         run: |
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            target="${{ github.base_ref }}"
-          else
+          if [[ "${{ github.event_name }}" == "push" ]]; then
             target="${{ github.ref_name }}"
+          else
+            # PRs (including those targeting rc/** or stable) are always
+            # advisory — they carry pre-bump code by design.
+            target=""
           fi
           if [[ "$target" == rc/* || "$target" == stable ]]; then
             echo "mode=blocking" >> "$GITHUB_OUTPUT"
