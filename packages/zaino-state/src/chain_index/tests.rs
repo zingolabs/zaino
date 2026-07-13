@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use tokio::sync::OnceCell;
 use tokio::time::Duration;
-use zaino_common::{network::ActivationHeights, DatabaseConfig, Network, StorageConfig};
+use zaino_common::{network::ActivationHeights, DatabaseConfig, StorageConfig};
 
 use crate::{
     chain_index::{
@@ -134,7 +134,7 @@ async fn load_with_settings(
         },
         ephemeral: false,
         db_version: 1,
-        network: Network::Regtest(ActivationHeights::default()),
+        network: ActivationHeights::default().to_regtest_network(),
     };
 
     let indexer = NodeBackedChainIndex::new_with_sync_timings(source.clone(), config, sync_timings)
@@ -222,7 +222,7 @@ async fn v1_finalised_seed_dir(mode: MockchainMode) -> &'static Path {
             },
             ephemeral: false,
             db_version: 1,
-            network: Network::Regtest(ActivationHeights::default()),
+            network: ActivationHeights::default().to_regtest_network(),
         };
 
         let zaino_db = FinalisedState::spawn(config, source).await.unwrap();

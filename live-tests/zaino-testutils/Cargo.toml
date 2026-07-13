@@ -65,5 +65,7 @@ futures = { workspace = true }
 http = { workspace = true }
 once_cell = { workspace = true }
 tokio = { workspace = true }
-tonic.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+tonic.workspace = true

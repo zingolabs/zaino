@@ -40,11 +40,20 @@ info "Files in tools/scripts/: $(ls -la tools/scripts/ | head -5)"
 DEVTOOL_REV=$(resolve_devtool_rev "$DEVTOOL_VERSION")
 info "Resolved DEVTOOL_VERSION=$DEVTOOL_VERSION to DEVTOOL_REV=$DEVTOOL_REV"
 
+# Resolve ZEBRA_VERSION (canonically the Docker Hub tag, e.g. "6.0.0-rc.0")
+# to the git ref the zebra-builder source stage checks out — zebra's release
+# tags are `v`-prefixed in git. Fails here, before the build, on an
+# unresolvable value.
+ZEBRA_GIT_REF=$(cargo run -q --manifest-path tools/workbench/Cargo.toml \
+  --bin get-zebra-git-ref -- "$ZEBRA_VERSION")
+info "Resolved ZEBRA_VERSION=$ZEBRA_VERSION to ZEBRA_GIT_REF=$ZEBRA_GIT_REF"
+
 cd live-tests/test_environment && \
 podman build -f Containerfile \
   --target "$TARGET" \
   --build-arg "ZCASH_VERSION=$ZCASH_VERSION" \
   --build-arg "ZEBRA_VERSION=$ZEBRA_VERSION" \
+  --build-arg "ZEBRA_GIT_REF=$ZEBRA_GIT_REF" \
   --build-arg "DEVTOOL_VERSION=$DEVTOOL_VERSION" \
   --build-arg "DEVTOOL_REV=$DEVTOOL_REV" \
   --build-arg "RUST_VERSION=$RUST_VERSION" \

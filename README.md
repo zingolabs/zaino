@@ -106,7 +106,7 @@ The test suites run inside a **podman** container via `makers` (cargo-make):
 ```sh
 makers test            # packages/* tests that need no live validator (default)
 makers test live       # both live partitions (clientless + e2e) + combined summary
-makers test all        # everything: package then live
+makers test all        # everything: packages then live
 ```
 
 zcashd-backed tests are **off by default**; add `--with-zcashd` to include them

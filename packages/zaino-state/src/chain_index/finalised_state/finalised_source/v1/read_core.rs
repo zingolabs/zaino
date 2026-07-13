@@ -2,6 +2,8 @@
 
 use super::*;
 
+use crate::ZainoVersionedSerde;
+
 /// [`DbRead`] capability implementation for [`DbV1`].
 ///
 /// This trait is the read-only surface used by higher layers. Methods typically delegate to
@@ -121,4 +123,92 @@ impl DbV1 {
     }
 
     // *** Internal DB methods ***
+}
+
+impl DbV1 {
+    /// Fetches and decodes one `StoredEntryVar<T>` row keyed by an already-validated
+    /// height. Returns `Ok(None)` when the table has no row for the height; `label`
+    /// names the table in decode errors.
+    fn read_row<T: ZainoVersionedSerde>(
+        &self,
+        table: lmdb::Database,
+        label: &str,
+        height_bytes: &[u8],
+    ) -> Result<Option<T>, FinalisedStateError> {
+        tokio::task::block_in_place(|| {
+            let txn = self.env.begin_ro_txn()?;
+            let raw = match txn.get(table, &height_bytes) {
+                Ok(val) => val,
+                Err(lmdb::Error::NotFound) => return Ok(None),
+                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+            };
+            let entry: StoredEntryVar<T> = StoredEntryVar::from_bytes(raw)
+                .map_err(|e| FinalisedStateError::Custom(format!("{label} decode error: {e}")))?;
+            Ok(Some(entry.item))
+        })
+    }
+
+    /// [`DbV1::read_row`] at a height that is first validated against the index.
+    pub(super) async fn read_row_at_height<T: ZainoVersionedSerde>(
+        &self,
+        table: lmdb::Database,
+        label: &str,
+        height: Height,
+    ) -> Result<Option<T>, FinalisedStateError> {
+        let validated_height = self
+            .resolve_validated_hash_or_height(HashOrHeight::Height(height.into()))
+            .await?;
+        let height_bytes = validated_height.to_bytes()?;
+        self.read_row(table, label, &height_bytes)
+    }
+
+    /// Cursor-scans and decodes every `StoredEntryVar<T>` row in the validated
+    /// inclusive `start..=end` height range.
+    pub(super) async fn scan_rows<T: ZainoVersionedSerde>(
+        &self,
+        table: lmdb::Database,
+        label: &str,
+        start: Height,
+        end: Height,
+    ) -> Result<Vec<T>, FinalisedStateError> {
+        if end.0 < start.0 {
+            return Err(FinalisedStateError::Custom(
+                "invalid block range: end < start".to_string(),
+            ));
+        }
+
+        self.validate_block_range(start, end).await?;
+        let start_bytes = start.to_bytes()?;
+        let end_bytes = end.to_bytes()?;
+
+        let raw_entries = tokio::task::block_in_place(|| {
+            let txn = self.env.begin_ro_txn()?;
+            let mut raw_entries = Vec::new();
+            let mut cursor = match txn.open_ro_cursor(table) {
+                Ok(cursor) => cursor,
+                Err(lmdb::Error::NotFound) => {
+                    return Err(FinalisedStateError::DataUnavailable(format!(
+                        "{label} data missing from db"
+                    )));
+                }
+                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+            };
+            for (k, v) in cursor.iter_from(&start_bytes[..]) {
+                if k > &end_bytes[..] {
+                    break;
+                }
+                raw_entries.push(v.to_vec());
+            }
+            Ok::<Vec<Vec<u8>>, FinalisedStateError>(raw_entries)
+        })?;
+
+        raw_entries
+            .into_iter()
+            .map(|bytes| {
+                StoredEntryVar::<T>::from_bytes(&bytes)
+                    .map(|e| e.item)
+                    .map_err(|e| FinalisedStateError::Custom(format!("{label} decode error: {e}")))
+            })
+            .collect()
+    }
 }

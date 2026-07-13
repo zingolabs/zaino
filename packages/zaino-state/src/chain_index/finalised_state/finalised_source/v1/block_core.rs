@@ -56,27 +56,11 @@ impl DbV1 {
         &self,
         height: Height,
     ) -> Result<BlockHeaderData, FinalisedStateError> {
-        let validated_height = self
-            .resolve_validated_hash_or_height(HashOrHeight::Height(height.into()))
-            .await?;
-        let height_bytes = validated_height.to_bytes()?;
-
-        tokio::task::block_in_place(|| {
-            let txn = self.env.begin_ro_txn()?;
-            let raw = match txn.get(self.headers, &height_bytes) {
-                Ok(val) => val,
-                Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "header data missing from db".into(),
-                    ));
-                }
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
-            };
-            let entry = StoredEntryVar::from_bytes(raw)
-                .map_err(|e| FinalisedStateError::Custom(format!("header decode error: {e}")))?;
-
-            Ok(*entry.inner())
-        })
+        self.read_row_at_height(self.headers, "header", height)
+            .await?
+            .ok_or_else(|| {
+                FinalisedStateError::DataUnavailable("header data missing from db".into())
+            })
     }
 
     /// Fetches block headers for the given height range.
@@ -91,45 +75,7 @@ impl DbV1 {
         start: Height,
         end: Height,
     ) -> Result<Vec<BlockHeaderData>, FinalisedStateError> {
-        if end.0 < start.0 {
-            return Err(FinalisedStateError::Custom(
-                "invalid block range: end < start".to_string(),
-            ));
-        }
-
-        self.validate_block_range(start, end).await?;
-        let start_bytes = start.to_bytes()?;
-        let end_bytes = end.to_bytes()?;
-
-        let raw_entries = tokio::task::block_in_place(|| {
-            let txn = self.env.begin_ro_txn()?;
-            let mut raw_entries = Vec::new();
-            let mut cursor = match txn.open_ro_cursor(self.headers) {
-                Ok(cursor) => cursor,
-                Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "header data missing from db".into(),
-                    ));
-                }
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
-            };
-            for (k, v) in cursor.iter_from(&start_bytes[..]) {
-                if k > &end_bytes[..] {
-                    break;
-                }
-                raw_entries.push(v.to_vec());
-            }
-            Ok::<Vec<Vec<u8>>, FinalisedStateError>(raw_entries)
-        })?;
-
-        raw_entries
-            .into_iter()
-            .map(|bytes| {
-                StoredEntryVar::<BlockHeaderData>::from_bytes(&bytes)
-                    .map(|e| *e.inner())
-                    .map_err(|e| FinalisedStateError::Custom(format!("header decode error: {e}")))
-            })
-            .collect()
+        self.scan_rows(self.headers, "header", start, end).await
     }
 
     /// Fetch the txid bytes for a given TxLocation.
@@ -188,14 +134,26 @@ impl DbV1 {
             // Each txid entry is: [0] version tag + [1..32] txid
 
             // So we skip idx * 33 bytes to reach the start of the correct Hash
-            let offset = cursor.position() + (idx as u64) * TransactionHash::VERSIONED_LEN as u64;
+            let transaction_versioned_len = TransactionHash::latest_versioned_len()?;
+            let offset = cursor.position() + (idx as u64) * transaction_versioned_len as u64;
             cursor.set_position(offset);
 
             // Read [0] Txid Record version (skip 1 byte)
             cursor.set_position(cursor.position() + 1);
 
             // Then read 32 bytes for the txid
-            let mut txid_bytes = [0u8; TransactionHash::ENCODED_LEN];
+            let transaction_encoded_len = TransactionHash::latest_encoded_len()?;
+            if transaction_encoded_len != 32 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "TransactionHash latest encoded length must be 32 bytes, got {}",
+                        transaction_encoded_len
+                    ),
+                ))?;
+            }
+
+            let mut txid_bytes = [0u8; 32];
             cursor
                 .read_exact(&mut txid_bytes)
                 .map_err(|e| FinalisedStateError::Custom(format!("txid read error: {e}")))?;
@@ -206,28 +164,9 @@ impl DbV1 {
 
     /// Fetch block txids by height.
     async fn get_block_txids(&self, height: Height) -> Result<TxidList, FinalisedStateError> {
-        let validated_height = self
-            .resolve_validated_hash_or_height(HashOrHeight::Height(height.into()))
-            .await?;
-        let height_bytes = validated_height.to_bytes()?;
-
-        tokio::task::block_in_place(|| {
-            let txn = self.env.begin_ro_txn()?;
-            let raw = match txn.get(self.txids, &height_bytes) {
-                Ok(val) => val,
-                Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "txid data missing from db".into(),
-                    ));
-                }
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
-            };
-
-            let entry: StoredEntryVar<TxidList> = StoredEntryVar::from_bytes(raw)
-                .map_err(|e| FinalisedStateError::Custom(format!("txids decode error: {e}")))?;
-
-            Ok(entry.inner().clone())
-        })
+        self.read_row_at_height(self.txids, "txids", height)
+            .await?
+            .ok_or_else(|| FinalisedStateError::DataUnavailable("txid data missing from db".into()))
     }
 
     /// Fetches block txids for the given height range.
@@ -242,45 +181,7 @@ impl DbV1 {
         start: Height,
         end: Height,
     ) -> Result<Vec<TxidList>, FinalisedStateError> {
-        if end.0 < start.0 {
-            return Err(FinalisedStateError::Custom(
-                "invalid block range: end < start".to_string(),
-            ));
-        }
-
-        self.validate_block_range(start, end).await?;
-        let start_bytes = start.to_bytes()?;
-        let end_bytes = end.to_bytes()?;
-
-        let raw_entries = tokio::task::block_in_place(|| {
-            let txn = self.env.begin_ro_txn()?;
-            let mut raw_entries = Vec::new();
-            let mut cursor = match txn.open_ro_cursor(self.txids) {
-                Ok(cursor) => cursor,
-                Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
-                        "txid data missing from db".into(),
-                    ));
-                }
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
-            };
-            for (k, v) in cursor.iter_from(&start_bytes[..]) {
-                if k > &end_bytes[..] {
-                    break;
-                }
-                raw_entries.push(v.to_vec());
-            }
-            Ok::<Vec<Vec<u8>>, FinalisedStateError>(raw_entries)
-        })?;
-
-        raw_entries
-            .into_iter()
-            .map(|bytes| {
-                StoredEntryVar::<TxidList>::from_bytes(&bytes)
-                    .map(|e| e.inner().clone())
-                    .map_err(|e| FinalisedStateError::Custom(format!("txids decode error: {e}")))
-            })
-            .collect()
+        self.scan_rows(self.txids, "txids", start, end).await
     }
 
     // Fetch the TxLocation for the given txid, transaction data is indexed by TxLocation internally.

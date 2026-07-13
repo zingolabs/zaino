@@ -8,6 +8,9 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- The chain index tracks Ironwood (NU6.3) note-commitment treestate roots,
+  storing `None` while the pool has no treestate rather than fabricating a
+  root.
 - `ChainIndex` / `NodeBackedChainIndexSubscriber` gain `get_outpoint_spenders` —
   for each transparent `Outpoint`, returns the txid that spent it on the best
   chain (index-aligned with the input, `None` if unspent or unknown).

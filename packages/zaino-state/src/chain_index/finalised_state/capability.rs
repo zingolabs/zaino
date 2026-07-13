@@ -372,12 +372,18 @@ impl ZainoVersionedSerde for DbMetadata {
     }
 }
 
-/// `DbMetadata` has a fixed encoded body length.
+/// Fixed-length encoding metadata for `DbMetadata`.
 ///
+/// v1 consists of:
 /// Body length = `DbVersion::VERSIONED_LEN` (12 + 1) + 32-byte schema hash
 /// + `MigrationStatus::VERSIONED_LEN` (1 + 1) = 47 bytes.
 impl FixedEncodedLen for DbMetadata {
-    const ENCODED_LEN: usize = DbVersion::VERSIONED_LEN + 32 + MigrationStatus::VERSIONED_LEN;
+    fn encoded_len(version: u8) -> Option<usize> {
+        match version {
+            version::V1 => Some(47),
+            _ => None,
+        }
+    }
 }
 
 /// Human-readable summary for logs.
@@ -535,9 +541,16 @@ impl ZainoVersionedSerde for DbVersion {
     }
 }
 
-// DbVersion: body = 3*(4-byte u32) - 12 bytes
+/// Fixed-length encoding metadata for `DbVersion`.
+///
+/// v1 consists of *(4-byte u32) = 12 bytes
 impl FixedEncodedLen for DbVersion {
-    const ENCODED_LEN: usize = 4 + 4 + 4;
+    fn encoded_len(version: u8) -> Option<usize> {
+        match version {
+            version::V1 => Some(12),
+            _ => None,
+        }
+    }
 }
 
 /// Formats as `{major}.{minor}.{patch}` for logs and diagnostics.
@@ -636,9 +649,16 @@ impl ZainoVersionedSerde for MigrationStatus {
     }
 }
 
-/// `MigrationStatus` has a fixed 1-byte encoded body (discriminator).
+/// Fixed-length encoding metadata for `MigrationStatus`.
+///
+/// v1 consists of a single byte
 impl FixedEncodedLen for MigrationStatus {
-    const ENCODED_LEN: usize = 1;
+    fn encoded_len(version: u8) -> Option<usize> {
+        match version {
+            version::V1 => Some(1),
+            _ => None,
+        }
+    }
 }
 
 // ***** Core Database functionality *****
@@ -893,6 +913,32 @@ pub trait BlockShieldedExt: Send + Sync {
 
     /// Fetches block orchard tx data for the given (inclusive) height range.
     fn get_block_range_orchard(
+        &self,
+        start: Height,
+        end: Height,
+    ) -> impl SendFut<Result<Vec<OrchardTxList>, FinalisedStateError>>;
+
+    /// Fetch the serialized Ironwood (NU6.3) compact tx for the given TxLocation, if present.
+    ///
+    /// Ironwood actions are modelled with the Orchard compact types. Returns `None` when the block
+    /// has no ironwood row (any block below NU6.3 activation, or written before schema v1.3.0).
+    fn get_ironwood(
+        &self,
+        tx_location: TxLocation,
+    ) -> impl SendFut<Result<Option<OrchardCompactTx>, FinalisedStateError>>;
+
+    /// Fetch block ironwood transaction data by height.
+    ///
+    /// Returns an empty [`OrchardTxList`] when the block has no ironwood row.
+    fn get_block_ironwood(
+        &self,
+        height: Height,
+    ) -> impl SendFut<Result<OrchardTxList, FinalisedStateError>>;
+
+    /// Fetches block ironwood tx data for the given (inclusive) height range.
+    ///
+    /// Heights with no ironwood row yield an empty [`OrchardTxList`].
+    fn get_block_range_ironwood(
         &self,
         start: Height,
         end: Height,
