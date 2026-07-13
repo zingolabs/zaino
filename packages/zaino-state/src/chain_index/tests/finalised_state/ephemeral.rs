@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use tempfile::TempDir;
 use zaino_common::network::ActivationHeights;
-use zaino_common::{DatabaseConfig, Network, StorageConfig};
+use zaino_common::{DatabaseConfig, StorageConfig};
 use zaino_proto::proto::utils::{compact_block_with_pool_types, PoolTypeFilter};
 
 use crate::chain_index::finalised_state::FinalisedState;
@@ -45,7 +45,7 @@ pub(crate) async fn spawn_ephemeral_finalised_state(
         },
         ephemeral: true,
         db_version: 1,
-        network: Network::Regtest(ActivationHeights::default()),
+        network: ActivationHeights::default().to_regtest_network(),
     };
 
     let finalised_state = FinalisedState::spawn(config, source).await?;

@@ -25,7 +25,7 @@ use zebra_rpc::client::ValidateAddressResponse;
 use crate::jsonrpsee::response::address_deltas::GetAddressDeltasError;
 use crate::jsonrpsee::response::GetTxOutSetInfoResponse;
 use crate::jsonrpsee::{
-    error::{FetchError, JsonRpcError},
+    error::{JsonRpcError, TransportError},
     response::{
         address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
         block_deltas::{BlockDeltas, BlockDeltasError},
@@ -126,8 +126,9 @@ impl std::error::Error for RpcError {}
 // and the token from the cookie file as the password.
 // The cookie file itself is formatted as "__cookie__:<token>".
 // This function extracts just the <token> part.
-fn read_and_parse_cookie_token(cookie_path: &Path) -> Result<String, FetchError> {
-    let cookie_content = fs::read_to_string(cookie_path).map_err(FetchError::CookieReadError)?;
+fn read_and_parse_cookie_token(cookie_path: &Path) -> Result<String, TransportError> {
+    let cookie_content =
+        fs::read_to_string(cookie_path).map_err(TransportError::CookieReadError)?;
     let trimmed_content = cookie_content.trim();
     if let Some(stripped) = trimmed_content.strip_prefix("__cookie__:") {
         Ok(stripped.to_string())
@@ -161,7 +162,7 @@ pub trait ResponseToError: Sized {
 pub enum RpcRequestError<MethodError> {
     /// Error variant for errors related to the transport layer.
     #[error("Transport error: {0}")]
-    Transport(#[from] FetchError),
+    Transport(#[from] TransportError),
 
     /// Error variant for errors related to the JSON-RPC method being called.
     #[error("Method error: {0:?}")]
@@ -209,19 +210,38 @@ fn record_outbound_rpc_metrics(method: &'static str, start: std::time::Instant, 
     }
 }
 
+/// Whether the outbound JSON-RPC client keeps a cookie store (required
+/// for cookie-authenticated validators).
+enum CookieSupport {
+    Enabled,
+    Disabled,
+}
+
+/// Builds the outbound JSON-RPC HTTP client shared by every connector
+/// entry point: 2s connect timeout, 5s request timeout, no redirects.
+fn build_rpc_client(cookies: CookieSupport) -> Result<Client, reqwest::Error> {
+    // reqwest is built with `rustls-no-provider`, which never
+    // auto-selects a rustls CryptoProvider (zingolabs/zaino#1360).
+    zaino_common::crypto::ensure_default_crypto_provider();
+    let mut builder = ClientBuilder::new()
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none());
+    if matches!(cookies, CookieSupport::Enabled) {
+        builder = builder.cookie_store(true);
+    }
+    builder.build()
+}
+
 impl JsonRpSeeConnector {
     /// Creates a new JsonRpSeeConnector with Basic Authentication.
     pub fn new_with_basic_auth(
         url: Url,
         username: String,
         password: String,
-    ) -> Result<Self, FetchError> {
-        let client = ClientBuilder::new()
-            .connect_timeout(Duration::from_secs(2))
-            .timeout(Duration::from_secs(5))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(FetchError::ReqwestError)?;
+    ) -> Result<Self, TransportError> {
+        let client =
+            build_rpc_client(CookieSupport::Disabled).map_err(TransportError::ReqwestError)?;
 
         Ok(Self {
             url,
@@ -232,16 +252,11 @@ impl JsonRpSeeConnector {
     }
 
     /// Creates a new JsonRpSeeConnector with Cookie Authentication.
-    pub fn new_with_cookie_auth(url: Url, cookie_path: &Path) -> Result<Self, FetchError> {
+    pub fn new_with_cookie_auth(url: Url, cookie_path: &Path) -> Result<Self, TransportError> {
         let cookie_password = read_and_parse_cookie_token(cookie_path)?;
 
-        let client = ClientBuilder::new()
-            .connect_timeout(Duration::from_secs(2))
-            .timeout(Duration::from_secs(5))
-            .redirect(reqwest::redirect::Policy::none())
-            .cookie_store(true)
-            .build()
-            .map_err(FetchError::ReqwestError)?;
+        let client =
+            build_rpc_client(CookieSupport::Enabled).map_err(TransportError::ReqwestError)?;
 
         Ok(Self {
             url,
@@ -260,7 +275,7 @@ impl JsonRpSeeConnector {
         validator_rpc_user: String,
         validator_rpc_password: String,
         validator_cookie_path: Option<PathBuf>,
-    ) -> Result<Self, FetchError> {
+    ) -> Result<Self, TransportError> {
         match validator_cookie_path.is_some() {
             true => JsonRpSeeConnector::new_with_cookie_auth(
                 test_node_and_return_url(
@@ -291,7 +306,7 @@ impl JsonRpSeeConnector {
     }
 
     /// Returns the http::uri the JsonRpSeeConnector is configured to send requests to.
-    pub fn uri(&self) -> Result<Uri, FetchError> {
+    pub fn uri(&self) -> Result<Uri, TransportError> {
         Ok(self.url.as_str().parse()?)
     }
 
@@ -330,14 +345,14 @@ impl JsonRpSeeConnector {
             let response = request_builder
                 .send()
                 .await
-                .map_err(|e| RpcRequestError::Transport(FetchError::ReqwestError(e)))?;
+                .map_err(|e| RpcRequestError::Transport(TransportError::ReqwestError(e)))?;
 
             let status = response.status();
 
             let body_bytes = response
                 .bytes()
                 .await
-                .map_err(|e| RpcRequestError::Transport(FetchError::ReqwestError(e)))?;
+                .map_err(|e| RpcRequestError::Transport(TransportError::ReqwestError(e)))?;
 
             let body_str = String::from_utf8_lossy(&body_bytes);
 
@@ -356,17 +371,17 @@ impl JsonRpSeeConnector {
             let code = status.as_u16();
             let rpc_result = match code {
                 // Invalid
-                ..100 | 600.. => Err(RpcRequestError::Transport(FetchError::InvalidStatusCode(
-                    code,
-                ))),
+                ..100 | 600.. => Err(RpcRequestError::Transport(
+                    TransportError::InvalidStatusCode(code),
+                )),
                 // Informational | Redirection
                 100..200 | 300..400 => Err(RpcRequestError::Transport(
-                    FetchError::UnexpectedStatusCode(code),
+                    TransportError::UnexpectedStatusCode(code),
                 )),
                 // Success
                 200..300 => {
                     let response: RpcResponse = serde_json::from_slice(&body_bytes)
-                        .map_err(|e| FetchError::BadNodeData(Box::new(e), type_name::<R>()))?;
+                        .map_err(|e| TransportError::BadNodeData(Box::new(e), type_name::<R>()))?;
 
                     match response.error {
                         Some(error) => Err(RpcRequestError::Method(
@@ -377,7 +392,7 @@ impl JsonRpSeeConnector {
                         None => {
                             let result: R =
                                 serde_json::from_value(response.result).map_err(|e| {
-                                    FetchError::BadNodeData(Box::new(e), type_name::<R>())
+                                    TransportError::BadNodeData(Box::new(e), type_name::<R>())
                                 })?;
                             match result.to_error() {
                                 Ok(r) => Ok(r),
@@ -386,7 +401,7 @@ impl JsonRpSeeConnector {
                         }
                     }
                 }
-                400..600 => Err(RpcRequestError::Transport(FetchError::ErrorStatusCode(
+                400..600 => Err(RpcRequestError::Transport(TransportError::ErrorStatusCode(
                     code,
                 ))),
             };
@@ -978,12 +993,8 @@ async fn test_node_connection(
     url: Url,
     auth_method: AuthMethod,
 ) -> Result<(), TestNodeConnectionError> {
-    let client = Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(2))
-        .timeout(std::time::Duration::from_secs(5))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(TestNodeConnectionError::ClientBuild)?;
+    let client =
+        build_rpc_client(CookieSupport::Disabled).map_err(TestNodeConnectionError::ClientBuild)?;
 
     let request_body = r#"{"jsonrpc":"2.0","method":"getinfo","params":[],"id":1}"#;
     let mut request_builder = client
@@ -1020,9 +1031,9 @@ async fn test_node_connection(
 }
 
 /// Resolves an address string (hostname:port or ip:port) to a SocketAddr.
-fn resolve_address(address: &str) -> Result<SocketAddr, FetchError> {
+fn resolve_address(address: &str) -> Result<SocketAddr, TransportError> {
     zaino_common::net::resolve_socket_addr(address)
-        .map_err(|e| FetchError::BadNodeData(Box::new(e), "address resolution"))
+        .map_err(|e| TransportError::BadNodeData(Box::new(e), "address resolution"))
 }
 
 /// Tries to connect to zebrad/zcashd using the provided address and returns the correct URL.
@@ -1032,7 +1043,7 @@ pub async fn test_node_and_return_url(
     cookie_path: Option<PathBuf>,
     user: Option<String>,
     password: Option<String>,
-) -> Result<Url, FetchError> {
+) -> Result<Url, TransportError> {
     let addr = resolve_address(address)?;
 
     let auth_method = match cookie_path.is_some() {
@@ -1089,7 +1100,7 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(
             result.unwrap_err(),
-            FetchError::BadNodeData(_, "address resolution")
+            TransportError::BadNodeData(_, "address resolution")
         ));
     }
 

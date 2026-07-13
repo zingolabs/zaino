@@ -15,16 +15,12 @@ zebra-chain = { workspace = true }
 # Serialization
 serde = { workspace = true, features = ["derive"] }
 
-# Error handling
-thiserror = { workspace = true }
-
 # Logging
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-tree = { workspace = true }
-nu-ansi-term = { workspace = true }
-hex = { workspace = true }
 time = { workspace = true }
-
-# Zingo
-zingo_common_components = { workspace = true }
+rustls = { version = "0.23", default-features = false, features = [
+    "aws_lc_rs",
+    "prefer-post-quantum",
+] }

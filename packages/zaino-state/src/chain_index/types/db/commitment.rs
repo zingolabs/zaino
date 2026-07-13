@@ -8,9 +8,12 @@
 
 use corez::io::{self, Read, Write};
 
-use crate::chain_index::encoding::{
-    read_fixed_le, read_u32_le, version, write_fixed_le, write_u32_le, FixedEncodedLen,
-    ZainoVersionedSerde,
+use crate::{
+    chain_index::encoding::{
+        read_fixed_le, read_u32_le, version, write_fixed_le, write_u32_le, FixedEncodedLen,
+        ZainoVersionedSerde,
+    },
+    read_option, write_option,
 };
 
 /// Holds commitment tree metadata (roots and sizes) for a block.
@@ -39,20 +42,20 @@ impl CommitmentTreeData {
 }
 
 impl ZainoVersionedSerde for CommitmentTreeData {
-    const VERSION: u8 = version::V1;
+    const VERSION: u8 = version::V2;
 
     fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
+        Self::encode_v2(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
+        Self::decode_v2(r)
     }
 
     fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let mut w = w;
-        self.roots.serialize(&mut w)?; // carries its own tag
-        self.sizes.serialize(&mut w)
+        self.roots.serialize_with_version(&mut w, 1)?;
+        self.sizes.serialize_with_version(&mut w, 1)
     }
 
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
@@ -61,14 +64,41 @@ impl ZainoVersionedSerde for CommitmentTreeData {
         let sizes = CommitmentTreeSizes::deserialize(&mut r)?;
         Ok(CommitmentTreeData::new(roots, sizes))
     }
+
+    fn encode_v2<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let mut w = w;
+        self.roots.serialize_with_version(&mut w, 2)?;
+        self.sizes.serialize_with_version(&mut w, 2)
+    }
+
+    fn decode_v2<R: Read>(r: &mut R) -> io::Result<Self> {
+        let mut r = r;
+        let roots = CommitmentTreeRoots::deserialize(&mut r)?;
+        let sizes = CommitmentTreeSizes::deserialize(&mut r)?;
+        Ok(CommitmentTreeData::new(roots, sizes))
+    }
 }
 
-/// CommitmentTreeData: 74 bytes total
 impl FixedEncodedLen for CommitmentTreeData {
-    // 1 byte tag + 64 body for roots
-    // + 1 byte tag +  8 body for sizes
-    const ENCODED_LEN: usize =
-        (CommitmentTreeRoots::ENCODED_LEN + 1) + (CommitmentTreeSizes::ENCODED_LEN + 1);
+    /// Returns the fixed encoded body length for a specific
+    /// `CommitmentTreeData` version.
+    ///
+    /// v1 is fixed-length:
+    /// - versioned `CommitmentTreeRoots` v1
+    /// - versioned `CommitmentTreeSizes` v1
+    ///
+    /// v2 is variable-length because `CommitmentTreeRoots` v2 contains an
+    /// `Option<[u8; 32]>`.
+    fn encoded_len(version: u8) -> Option<usize> {
+        match version {
+            version::V1 => Some(
+                CommitmentTreeRoots::versioned_len(version::V1)?
+                    + CommitmentTreeSizes::versioned_len(version::V1)?,
+            ),
+            version::V2 => None,
+            _ => None,
+        }
+    }
 }
 
 /// Commitment tree roots for shielded transactions, enabling shielded wallet synchronization.
@@ -79,12 +109,18 @@ pub struct CommitmentTreeRoots {
     sapling: [u8; 32],
     /// Orchard note-commitment tree root at this block.
     orchard: [u8; 32],
+    /// Ironwood note-commitment tree root at this block.
+    ironwood: Option<[u8; 32]>,
 }
 
 impl CommitmentTreeRoots {
     /// Reutns a new CommitmentTreeRoots instance.
-    pub fn new(sapling: [u8; 32], orchard: [u8; 32]) -> Self {
-        Self { sapling, orchard }
+    pub fn new(sapling: [u8; 32], orchard: [u8; 32], ironwood: Option<[u8; 32]>) -> Self {
+        Self {
+            sapling,
+            orchard,
+            ironwood,
+        }
     }
 
     /// Returns sapling commitment tree root.
@@ -96,17 +132,25 @@ impl CommitmentTreeRoots {
     pub fn orchard(&self) -> &[u8; 32] {
         &self.orchard
     }
+
+    /// returns orchard commitment tree root.
+    /// No production reader consumes the stored ironwood root yet; the regression test
+    /// for its None-preservation does. Un-gate when a production consumer appears.
+    #[cfg(test)]
+    pub(crate) fn ironwood(&self) -> &Option<[u8; 32]> {
+        &self.ironwood
+    }
 }
 
 impl ZainoVersionedSerde for CommitmentTreeRoots {
-    const VERSION: u8 = version::V1;
+    const VERSION: u8 = version::V2;
 
     fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
+        Self::encode_v2(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
+        Self::decode_v2(r)
     }
 
     fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -119,14 +163,44 @@ impl ZainoVersionedSerde for CommitmentTreeRoots {
         let mut r = r;
         let sapling = read_fixed_le::<32, _>(&mut r)?;
         let orchard = read_fixed_le::<32, _>(&mut r)?;
-        Ok(CommitmentTreeRoots::new(sapling, orchard))
+        Ok(CommitmentTreeRoots::new(sapling, orchard, None))
+    }
+
+    fn encode_v2<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let mut w = w;
+        write_fixed_le::<32, _>(&mut w, &self.sapling)?;
+        write_fixed_le::<32, _>(&mut w, &self.orchard)?;
+        write_option(&mut w, &self.ironwood, |w, v| write_fixed_le(w, v))
+    }
+
+    fn decode_v2<R: Read>(r: &mut R) -> io::Result<Self> {
+        let mut r = r;
+        let sapling = read_fixed_le::<32, _>(&mut r)?;
+        let orchard = read_fixed_le::<32, _>(&mut r)?;
+        let ironwood = read_option(&mut r, |r| read_fixed_le(r))?;
+
+        Ok(CommitmentTreeRoots::new(sapling, orchard, ironwood))
     }
 }
 
-/// CommitmentTreeRoots: 64 bytes total
 impl FixedEncodedLen for CommitmentTreeRoots {
-    /// 32 byte hash + 32 byte hash.
-    const ENCODED_LEN: usize = 32 + 32;
+    /// Returns the fixed encoded body length for a specific
+    /// `CommitmentTreeRoots` version.
+    ///
+    /// v1 is fixed-length:
+    /// - 32 bytes Sapling root
+    /// - 32 bytes Orchard root
+    ///
+    /// v2 is variable-length because `ironwood: Option<[u8; 32]>` encodes as:
+    /// - 1 byte option tag
+    /// - plus 32 bytes when present
+    fn encoded_len(version: u8) -> Option<usize> {
+        match version {
+            version::V1 => Some(32 + 32),
+            version::V2 => None,
+            _ => None,
+        }
+    }
 }
 
 /// Sizes of commitment trees, indicating total number of shielded notes created.
@@ -137,12 +211,18 @@ pub struct CommitmentTreeSizes {
     sapling: u32,
     /// Total notes in Orchard commitment tree.
     orchard: u32,
+    /// Total notes in Ironwood commitment tree.
+    ironwood: u32,
 }
 
 impl CommitmentTreeSizes {
     /// Creates a new CompactSaplingSizes instance.
-    pub fn new(sapling: u32, orchard: u32) -> Self {
-        Self { sapling, orchard }
+    pub fn new(sapling: u32, orchard: u32, ironwood: u32) -> Self {
+        Self {
+            sapling,
+            orchard,
+            ironwood,
+        }
     }
 
     /// Returns sapling commitment tree size
@@ -154,17 +234,22 @@ impl CommitmentTreeSizes {
     pub fn orchard(&self) -> u32 {
         self.orchard
     }
+
+    /// Returns orchard commitment tree size
+    pub fn ironwood(&self) -> u32 {
+        self.ironwood
+    }
 }
 
 impl ZainoVersionedSerde for CommitmentTreeSizes {
-    const VERSION: u8 = version::V1;
+    const VERSION: u8 = version::V2;
 
     fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
+        Self::encode_v2(self, w)
     }
 
     fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
+        Self::decode_v2(r)
     }
 
     fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
@@ -177,12 +262,42 @@ impl ZainoVersionedSerde for CommitmentTreeSizes {
         let mut r = r;
         let sapling = read_u32_le(&mut r)?;
         let orchard = read_u32_le(&mut r)?;
-        Ok(CommitmentTreeSizes::new(sapling, orchard))
+        Ok(CommitmentTreeSizes::new(sapling, orchard, 0))
+    }
+
+    fn encode_v2<W: Write>(&self, w: &mut W) -> io::Result<()> {
+        let mut w = w;
+        write_u32_le(&mut w, self.sapling)?;
+        write_u32_le(&mut w, self.orchard)?;
+        write_u32_le(&mut w, self.ironwood)
+    }
+
+    fn decode_v2<R: Read>(r: &mut R) -> io::Result<Self> {
+        let mut r = r;
+        let sapling = read_u32_le(&mut r)?;
+        let orchard = read_u32_le(&mut r)?;
+        let ironwood = read_u32_le(&mut r)?;
+        Ok(CommitmentTreeSizes::new(sapling, orchard, ironwood))
     }
 }
 
-/// CommitmentTreeSizes: 8 bytes total
 impl FixedEncodedLen for CommitmentTreeSizes {
-    /// 4 byte LE int32 + 4 byte LE int32
-    const ENCODED_LEN: usize = 4 + 4;
+    /// Returns the fixed encoded body length for a specific
+    /// `CommitmentTreeSizes` version.
+    ///
+    /// v1 is fixed-length:
+    /// - 4 bytes Sapling size
+    /// - 4 bytes Orchard size
+    ///
+    /// v2 is also fixed-length:
+    /// - 4 bytes Sapling size
+    /// - 4 bytes Orchard size
+    /// - 4 bytes Ironwood size
+    fn encoded_len(version: u8) -> Option<usize> {
+        match version {
+            version::V1 => Some(4 + 4),
+            version::V2 => Some(4 + 4 + 4),
+            _ => None,
+        }
+    }
 }

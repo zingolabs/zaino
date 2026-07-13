@@ -283,6 +283,18 @@ impl<T: BlockchainSource> FinalisedSource<T> {
         }
     }
 
+    /// Start the background validator on the primary v1 backend (no-op for the ephemeral
+    /// passthrough).
+    ///
+    /// Called by the orchestrator only once all pending migrations have completed, so the
+    /// validator never races a migration that populates the tables its initial scan reads.
+    pub(super) fn start_validator(&self) {
+        match self {
+            Self::V1(db) => db.start_validator(),
+            Self::Ephemeral(_) => {}
+        }
+    }
+
     /// Stores a new runtime status in the concrete backend.
     ///
     /// This is used by router-level background orchestration, for example to report an asynchronous
@@ -359,6 +371,20 @@ impl<T: BlockchainSource> FinalisedSource<T> {
     /// read block transparent data directly (bypassing per-height block re-validation).
     pub(crate) fn transparent_db(&self) -> Result<Database, FinalisedStateError> {
         Ok(self.require_v1("v1 transparent db")?.transparent_db())
+    }
+
+    /// Provides access to the (v1.3.0) `StoredEntryVar` commitment-tree-data table, required for
+    /// Migration1_2_1To1_3_0 to write the rebuilt commitment rows.
+    pub(crate) fn commitment_tree_data_db(&self) -> Result<Database, FinalisedStateError> {
+        Ok(self
+            .require_v1("v1 commitment_tree_data db")?
+            .commitment_tree_data_db())
+    }
+
+    /// Provides access to the (v1.3.0) `ironwood` table, required for Migration1_2_1To1_3_0 to
+    /// backfill ironwood rows from validator-fetched block data.
+    pub(super) fn ironwood_db(&self) -> Result<Database, FinalisedStateError> {
+        Ok(self.require_v1("v1 ironwood db")?.ironwood_db())
     }
 }
 
@@ -672,6 +698,34 @@ impl<T: BlockchainSource> BlockShieldedExt for FinalisedSource<T> {
         match self {
             Self::V1(db) => db.get_block_range_orchard(start, end).await,
             Self::Ephemeral(db) => db.get_block_range_orchard(start, end).await,
+        }
+    }
+
+    async fn get_ironwood(
+        &self,
+        tx_location: TxLocation,
+    ) -> Result<Option<OrchardCompactTx>, FinalisedStateError> {
+        match self {
+            Self::V1(db) => db.get_ironwood(tx_location).await,
+            Self::Ephemeral(db) => db.get_ironwood(tx_location).await,
+        }
+    }
+
+    async fn get_block_ironwood(&self, h: Height) -> Result<OrchardTxList, FinalisedStateError> {
+        match self {
+            Self::V1(db) => db.get_block_ironwood(h).await,
+            Self::Ephemeral(db) => db.get_block_ironwood(h).await,
+        }
+    }
+
+    async fn get_block_range_ironwood(
+        &self,
+        start: Height,
+        end: Height,
+    ) -> Result<Vec<OrchardTxList>, FinalisedStateError> {
+        match self {
+            Self::V1(db) => db.get_block_range_ironwood(start, end).await,
+            Self::Ephemeral(db) => db.get_block_range_ironwood(start, end).await,
         }
     }
 

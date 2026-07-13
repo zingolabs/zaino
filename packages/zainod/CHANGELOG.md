@@ -9,6 +9,11 @@ and this crate adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- Ironwood (NU6.3) / V6 transaction support, end to end through the
+  workspace crates: V6 parsing and ironwood extraction (`zaino-fetch`),
+  `ironwoodActions` in served compact blocks (`zaino-proto`, on by
+  default), and ironwood treestate roots in the chain index
+  (`zaino-state`).
 - `[storage.database]` config gains `sync_checkpoint_interval` (seconds, default
   120) — the bulk-sync write-batch flush interval, which also bounds the window of
   unflushed (`NO_SYNC`) writes at risk on a hard kill / eviction.
@@ -16,6 +21,9 @@ and this crate adheres to Rust's notion of
   default 8) — a dedicated heap budget for the txout-set accumulator rebuild,
   separate from `sync_write_batch_size`.
 ### Changed
+- Version marked `0.4.3-ironwood.1` so Ironwood feature builds identify
+  themselves at `zainod --version`; stock `0.4.2` binaries are otherwise
+  indistinguishable from this branch's builds.
 - **Breaking** — `[storage.database] sync_write_batch_bytes` (bytes) is renamed
   to `sync_write_batch_size` and is now given in **GiB** (default 8). It now
   budgets only the bulk-sync block buffer; the accumulator rebuild uses the new

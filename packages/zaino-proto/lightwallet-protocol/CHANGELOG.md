@@ -36,6 +36,14 @@ and the protocol adheres to
   an added `poolTypes` field, which allows the caller of this method to specify
   which pools the resulting `CompactTx` values should contain data for.
 
+## [v0.5.0] - 2026-07-03
+
+### Added
+- `compact_formats.ChainMetadata` has added field `ironwoodCommitmentTreeSize`
+- `compact_formats.CompactTx` has added field `ironwoodActions`
+- `service.PoolType` has added `IRONWOOD`
+- `service.TreeState` has added `ironwoodTree`
+
 ### Deprecated
 - `service.CompactTxStreamer`:
     - The `GetBlockNullifiers` and `GetBlockRangeNullifiers` methods are

@@ -8,7 +8,13 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- Pool-type filter serves Ironwood by default (`include_ironwood: true`), so
+  clients that predate the field still receive `ironwoodActions` (unknown
+  protobuf fields are carried harmlessly).
 ### Changed
+- Lightwallet protocol vendored subtree updated to v0.5.0:
+  `CompactTx.ironwoodActions` (field 9, `CompactOrchardAction`-shaped) and
+  `CompactBlock.ironwoodCommitmentTreeSize`.
 ### Deprecated
 ### Removed
 ### Fixed
