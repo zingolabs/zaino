@@ -6068,7 +6068,6 @@ dependencies = [
  "zaino-state",
  "zcash_address",
  "zcash_protocol",
- "zebra-chain",
  "zebra-state",
 ]
 

@@ -70,7 +70,6 @@ zaino-state = { workspace = true }
 zaino-serve = { workspace = true }
 
 # Zebra
-zebra-chain = { workspace = true }
 zebra-state = { workspace = true }
 
 # Runtime
