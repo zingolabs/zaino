@@ -114,7 +114,6 @@ blake2 = "0.10"
 hex = "0.4"
 toml = "1.1"
 primitive-types = "0.14"
-bs58 = "0.5"
 bitflags = "2.9"
 
 # Test
@@ -146,9 +145,7 @@ zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev
 
 wire_serialized_transaction_test_data = "1.0.0"
 config = { version = "0.15", default-features = false, features = ["toml"] }
-nonempty = "0.12.0"
 proptest = "~1.11"
-zip32 = "0.2.1"
 anyhow = "1.0"
 arc-swap = "1.7.1"
 derive_more = "2.0.1"

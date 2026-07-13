@@ -669,14 +669,9 @@ name = "clientless"
 version = "0.2.0"
 dependencies = [
  "anyhow",
- "corez",
  "futures",
  "hex",
- "serde_json",
- "tempfile",
  "tokio",
- "tower 0.4.13",
- "tracing",
  "wire_serialized_transaction_test_data",
  "zaino-common",
  "zaino-fetch",
@@ -688,7 +683,6 @@ dependencies = [
  "zebra-chain",
  "zebra-rpc",
  "zebra-state",
- "zip32",
 ]
 
 [[package]]
@@ -2774,12 +2768,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "549e471b99ccaf2f89101bec68f4d244457d5a95a9c3d0672e9564124397741d"
 
 [[package]]
-name = "nonempty"
-version = "0.12.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9737e026353e5cd0736f98eddae28665118eb6f6600902a7f50db585621fecb6"
-
-[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2936,7 +2924,7 @@ dependencies = [
  "incrementalmerkletree",
  "lazy_static",
  "memuse",
- "nonempty 0.11.0",
+ "nonempty",
  "pasta_curves",
  "rand 0.8.6",
  "rand_core 0.6.4",
@@ -5976,11 +5964,9 @@ dependencies = [
  "arc-swap",
  "bitflags 2.13.0",
  "blake2",
- "bs58",
  "chrono",
  "corez",
  "dashmap",
- "derive_more",
  "futures",
  "hex",
  "incrementalmerkletree",
@@ -5988,11 +5974,8 @@ dependencies = [
  "lmdb",
  "lmdb-sys",
  "metrics",
- "nonempty 0.12.0",
- "once_cell",
  "primitive-types 0.14.0",
  "proptest",
- "prost",
  "rand 0.10.1",
  "reqwest 0.13.1",
  "sapling-crypto",
@@ -6061,7 +6044,6 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
- "tracing-subscriber",
  "zaino-common",
  "zaino-fetch",
  "zaino-serve",
@@ -6093,7 +6075,7 @@ checksum = "1440921903cdb86133fb9e2fe800be488015db2939a30bedb413078a1acb0306"
 dependencies = [
  "corez",
  "hex",
- "nonempty 0.11.0",
+ "nonempty",
 ]
 
 [[package]]
@@ -6121,7 +6103,7 @@ dependencies = [
  "document-features",
  "group",
  "memuse",
- "nonempty 0.11.0",
+ "nonempty",
  "orchard",
  "rand_core 0.6.4",
  "sapling-crypto",
@@ -6183,7 +6165,7 @@ dependencies = [
  "incrementalmerkletree",
  "jubjub",
  "memuse",
- "nonempty 0.11.0",
+ "nonempty",
  "orchard",
  "rand_core 0.6.4",
  "redjubjub",
@@ -6271,7 +6253,7 @@ dependencies = [
  "document-features",
  "getset",
  "hex",
- "nonempty 0.11.0",
+ "nonempty",
  "ripemd 0.1.3",
  "secp256k1",
  "sha2 0.10.9",
