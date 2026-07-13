@@ -5,8 +5,8 @@
 //! the `clientless` then `e2e` partition (each in its own CI container via its
 //! own `makers` task); `--all` first runs the `packages` set (`makers
 //! container-test`) and adds its row to the table. The runner streams each
-//! run's output while capturing it, parses the nextest summary line (tallies
-//! and wall-clock duration), and aggregates the totals.
+//! run's output while capturing it, parses the nextest summary line for
+//! tallies, and measures wall-clock duration via `Instant`.
 //!
 //! Unlike a cargo-make `dependencies` list (which is fail-fast), this runs BOTH
 //! partitions even when the first fails, so the summary reflects the whole
@@ -20,6 +20,7 @@
 use std::error::Error;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// Which partitions this invocation runs and summarizes.
 enum TestSet {
@@ -36,8 +37,8 @@ struct Summary {
     passed: u64,
     failed: u64,
     skipped: u64,
-    /// Wall-clock milliseconds from the summary line's `[ 510.718s]` stamp.
-    millis: u64,
+    /// Wall-clock duration measured by the runner (includes build + test time).
+    elapsed: Duration,
 }
 
 impl Summary {
@@ -47,7 +48,7 @@ impl Summary {
             passed: self.passed + other.passed,
             failed: self.failed + other.failed,
             skipped: self.skipped + other.skipped,
-            millis: self.millis + other.millis,
+            elapsed: self.elapsed + other.elapsed,
         }
     }
 }
@@ -117,25 +118,6 @@ fn count_before(line: &str, marker: &str) -> u64 {
     head[head.len() - digit_count..].parse().unwrap_or(0)
 }
 
-/// The wall-clock milliseconds from the summary line's `[ 510.718s]` stamp,
-/// or 0 if absent. Parsed as integers (whole seconds and up to three
-/// fractional digits) — no floating point.
-fn duration_millis(line: &str) -> u64 {
-    let Some(idx) = line.find("s]") else {
-        return 0;
-    };
-    let head = &line[..idx];
-    let start = head
-        .rfind(|c: char| !(c.is_ascii_digit() || c == '.'))
-        .map_or(0, |i| i + 1);
-    let stamp = &head[start..];
-    let (whole, frac) = stamp.split_once('.').unwrap_or((stamp, ""));
-    let whole: u64 = whole.parse().unwrap_or(0);
-    // Right-pad the fraction to exactly three digits ("7" -> 700ms).
-    let frac: u64 = format!("{frac:0<3.3}").parse().unwrap_or(0);
-    whole * 1000 + frac
-}
-
 /// Parse the last nextest summary line out of a captured run.
 ///
 /// nextest prints e.g.:
@@ -156,12 +138,14 @@ fn parse_summary(log: &str) -> Summary {
         passed: count_before(&line, "passed"),
         failed: count_before(&line, "failed"),
         skipped: count_before(&line, "skipped"),
-        millis: duration_millis(&line),
+        ..Summary::default()
     }
 }
 
 fn print_row(label: &str, s: &Summary) {
-    let secs = format!("{}.{:03}", s.millis / 1000, s.millis % 1000);
+    let total_secs = s.elapsed.as_secs();
+    let millis = s.elapsed.subsec_millis();
+    let secs = format!("{total_secs}.{millis:03}");
     println!(
         "  {label:<18} {:>4} run, {:>4} passed, {:>4} failed, {:>4} skipped, {secs:>10}s",
         s.run, s.passed, s.failed, s.skipped
@@ -179,20 +163,30 @@ fn main() -> Result<(), Box<dyn Error>> {
     let packages = match set {
         TestSet::All => {
             println!(">>> all: running packages set");
+            let start = Instant::now();
             let (rc, log) = run_partition("container-test", with_zcashd)?;
-            Some((rc, parse_summary(&log)))
+            let elapsed = start.elapsed();
+            let mut s = parse_summary(&log);
+            s.elapsed = elapsed;
+            Some((rc, s))
         }
         TestSet::Live => None,
     };
 
     println!(">>> live: running clientless partition");
+    let cl_start = Instant::now();
     let (cl_rc, cl_log) = run_partition("live-clientless", with_zcashd)?;
+    let cl_elapsed = cl_start.elapsed();
 
     println!(">>> live: running e2e partition");
+    let e2e_start = Instant::now();
     let (e2e_rc, e2e_log) = run_partition("live-e2e", with_zcashd)?;
+    let e2e_elapsed = e2e_start.elapsed();
 
-    let cl = parse_summary(&cl_log);
-    let e2e = parse_summary(&e2e_log);
+    let mut cl = parse_summary(&cl_log);
+    cl.elapsed = cl_elapsed;
+    let mut e2e = parse_summary(&e2e_log);
+    e2e.elapsed = e2e_elapsed;
 
     let header = match packages {
         Some(_) => "test summary",
@@ -278,41 +272,5 @@ mod parse_summary {
         let log = "Summary [1s] 1 test run: 1 passed, 0 skipped\n\
                    Summary [2s] 9 tests run: 7 passed, 1 failed, 1 skipped";
         check(log, 9, 7, 1, 1);
-    }
-}
-
-#[cfg(test)]
-mod duration_millis {
-    use super::*;
-
-    #[test]
-    fn fractional_seconds_with_padding() {
-        assert_eq!(duration_millis("Summary [ 73.207s] 8 tests run: 8 passed"), 73_207);
-    }
-
-    #[test]
-    fn no_padding() {
-        assert_eq!(duration_millis("Summary [510.718s] 29 tests run: 23 passed"), 510_718);
-    }
-
-    #[test]
-    fn short_fraction_is_right_padded() {
-        assert_eq!(duration_millis("Summary [2.7s] 1 test run: 1 passed"), 2_700);
-    }
-
-    #[test]
-    fn whole_seconds_without_fraction() {
-        assert_eq!(duration_millis("Summary [2s] 1 test run: 1 passed"), 2_000);
-    }
-
-    #[test]
-    fn missing_stamp_is_zero() {
-        assert_eq!(duration_millis("no summary line here"), 0);
-    }
-
-    #[test]
-    fn survives_through_parse_summary() {
-        let s = parse_summary("Summary [  1.795s] 1 test run: 0 passed, 1 failed, 114 skipped");
-        assert_eq!(s.millis, 1_795);
     }
 }
