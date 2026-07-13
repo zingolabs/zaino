@@ -243,6 +243,33 @@ use crate::{
 use std::{sync::Arc, time::Duration};
 use tokio::time::{interval, MissedTickBehavior};
 
+/// The activation heights of the three shielded pools whose data
+/// [`build_indexed_block_from_source`] assembles, resolved once per run.
+///
+/// Both the ingestion loop ([`capability::DbWrite::write_blocks_to_height`]) and the v1.2.1 →
+/// v1.3.0 migration backfill need exactly this set of heights; resolving them in one place keeps
+/// the two call sites from drifting apart. A `None` height means the pool's network upgrade has no
+/// activation height on the given network.
+struct PoolActivationHeights {
+    sapling: Option<zebra_chain::block::Height>,
+    nu5: Option<zebra_chain::block::Height>,
+    nu6_3: Option<zebra_chain::block::Height>,
+}
+
+impl PoolActivationHeights {
+    /// Resolves the Sapling, NU5 (Orchard), and NU6.3 (Ironwood) activation heights on
+    /// `zebra_network`.
+    fn resolve(zebra_network: &zebra_chain::parameters::Network) -> Self {
+        let activation_height =
+            |pool: super::ShieldedPool| pool.activation_upgrade().activation_height(zebra_network);
+        Self {
+            sapling: activation_height(super::ShieldedPool::Sapling),
+            nu5: activation_height(super::ShieldedPool::Orchard),
+            nu6_3: activation_height(super::ShieldedPool::Ironwood),
+        }
+    }
+}
+
 /// Fetches the block at `height_int` from `source` and builds its [`IndexedBlock`], threading
 /// `parent_chainwork` into the block metadata.
 ///
@@ -251,7 +278,7 @@ use tokio::time::{interval, MissedTickBehavior};
 /// owns the loop.
 pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
     source: &S,
-    network: zaino_common::Network,
+    network: zebra_chain::parameters::Network,
     sapling_activation_height: zebra_chain::block::Height,
     nu5_activation_height: Option<zebra_chain::block::Height>,
     nu6_3_activation_height: Option<zebra_chain::block::Height>,
@@ -312,7 +339,7 @@ pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
         orchard_size,
         ironwood,
         parent_chainwork,
-        network.to_zebra_network(),
+        network,
     );
 
     let block_with_metadata = BlockWithMetadata::new(block.as_ref(), metadata);
@@ -464,7 +491,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
             return Ok(Self {
                 db: Arc::new(Router::new(Arc::new(FinalisedSource::ephemeral(
                     source,
-                    cfg.network.into(),
+                    cfg.network.clone(),
                     None,
                 )))),
                 cfg,
@@ -543,12 +570,25 @@ impl<T: BlockchainSource> FinalisedState<T> {
                         source: migration_source,
                     };
 
-                    if let Err(error) = migration_manager.migrate().await {
-                        tracing::error!("FinalisedState migration failed: {error}");
+                    match migration_manager.migrate().await {
+                        Ok(()) => {
+                            // Start the background validator only now that every migration has
+                            // finished: its initial scan reads tables a migration populates (e.g.
+                            // `commitment_tree_data_1_3_0`), so starting it earlier would race the
+                            // migration and fail on a not-yet-written row.
+                            migration_router.primary_backend().start_validator();
+                        }
+                        Err(error) => {
+                            tracing::error!("FinalisedState migration failed: {error}");
 
-                        migration_router.store_primary_status(StatusType::CriticalError);
+                            migration_router.store_primary_status(StatusType::CriticalError);
+                        }
                     }
                 });
+            } else {
+                // No migration to run, so the on-disk tables the validator scans are already at the
+                // current schema: start it immediately.
+                router.primary_backend().start_validator();
             }
 
             Ok(Self { db: router, cfg })
@@ -658,7 +698,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
     /// - `Some(version)` if a compatible database directory is found,
     /// - `None` if no database is detected (fresh DB creation case).
     async fn try_find_current_db_version(cfg: &ChainIndexConfig) -> Option<u32> {
-        let legacy_dir = match cfg.network.to_zebra_network().kind() {
+        let legacy_dir = match cfg.network.kind() {
             NetworkKind::Mainnet => "live",
             NetworkKind::Testnet => "test",
             NetworkKind::Regtest => "local",
@@ -668,7 +708,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
             return Some(0);
         }
 
-        let net_dir = match cfg.network.to_zebra_network().kind() {
+        let net_dir = match cfg.network.kind() {
             NetworkKind::Mainnet => "mainnet",
             NetworkKind::Testnet => "testnet",
             NetworkKind::Regtest => "regtest",
@@ -786,7 +826,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
             let ephemeral_reference = router
                 .init_or_take_ephemeral(
                     source.clone(),
-                    cfg.network.to_zebra_network(),
+                    cfg.network.clone(),
                     EphemeralMode::ReadOnly,
                     db_height_opt,
                 )
@@ -1053,6 +1093,14 @@ impl<T: BlockchainSource> FinalisedState<T> {
             migration_manager.migrate().await?;
         }
 
+        // This test helper builds a fixture at an arbitrary (often intermediate) version for
+        // inspection, so it deliberately does NOT start the validator: the validator only validates
+        // against the current schema and would fail on an intermediate-version database. The
+        // foreground migration is already complete, so mark the primary `Ready` directly (as
+        // `spawn_v1_0_0` does) to give callers a settled backend. Validation is exercised through
+        // the production `FinalisedState::spawn` path, which always targets the current schema.
+        router.store_primary_status(StatusType::Ready);
+
         let metadata = router.get_metadata().await?;
         if metadata.version() != target_version {
             return Err(FinalisedStateError::Custom(format!(
@@ -1084,7 +1132,6 @@ impl<T: BlockchainSource> FinalisedState<T> {
         source: T,
     ) -> Result<FinalisedSource<T>, FinalisedStateError> {
         let db = FinalisedSource::spawn_v1_0_0(cfg).await?;
-        db.wait_until_ready().await;
 
         let tip = source.get_best_block_height().await?.ok_or_else(|| {
             FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
@@ -1098,7 +1145,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
         // defaults — mirroring `build_indexed_block_from_source`.
         let nu6_3_activation_height = super::ShieldedPool::Ironwood
             .activation_upgrade()
-            .activation_height(&cfg.network.to_zebra_network());
+            .activation_height(&cfg.network);
 
         let mut parent_chainwork: Option<ChainWork> = None;
 
@@ -1145,7 +1192,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
                 orchard_size,
                 ironwood,
                 parent_chainwork,
-                cfg.network.to_zebra_network(),
+                cfg.network.clone(),
             );
             let block_with_metadata = BlockWithMetadata::new(block.as_ref(), metadata);
             let chain_block = IndexedBlock::try_from(block_with_metadata).map_err(|_| {

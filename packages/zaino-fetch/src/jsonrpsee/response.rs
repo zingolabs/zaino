@@ -1213,8 +1213,10 @@ pub struct BlockObject {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub difficulty: Option<f64>,
 
-    /// List of transaction IDs in block order, hex-encoded.
-    pub tx: Vec<String>,
+    /// The block's transactions in block order: hex-encoded transaction IDs
+    /// at verbosity 1, full transaction objects at verbosity 2. Both shapes
+    /// share zebra-rpc's untagged enum.
+    pub tx: Vec<zebra_rpc::methods::GetBlockTransaction>,
 
     /// Chain supply balance
     #[serde(default)]
@@ -1245,6 +1247,21 @@ pub struct BlockObject {
     pub next_block_hash: Option<GetBlockHash>,
 }
 
+impl BlockObject {
+    /// Per-pool chain value balances as of this block, when the validator
+    /// reports them (`getblock` verbosity 2).
+    pub fn value_pools(&self) -> Option<&[ChainBalance]> {
+        self.value_pools.as_deref()
+    }
+}
+
+impl ChainBalance {
+    /// The underlying per-pool balance entry.
+    pub fn balance(&self) -> &GetBlockchainInfoBalance {
+        &self.0
+    }
+}
+
 impl TryFrom<GetBlockResponse> for zebra_rpc::methods::GetBlock {
     type Error = zebra_chain::serialization::SerializationError;
 
@@ -1254,15 +1271,7 @@ impl TryFrom<GetBlockResponse> for zebra_rpc::methods::GetBlock {
                 Ok(zebra_rpc::methods::GetBlock::Raw(serialized_block.0))
             }
             GetBlockResponse::Object(block) => {
-                let tx: Result<Vec<_>, _> = block
-                    .tx
-                    .into_iter()
-                    .map(|txid| {
-                        txid.parse::<zebra_chain::transaction::Hash>()
-                            .map(zebra_rpc::methods::GetBlockTransaction::Hash)
-                    })
-                    .collect();
-                let tx = tx?;
+                let tx = block.tx;
 
                 Ok(zebra_rpc::methods::GetBlock::Object(Box::new(
                     zebra_rpc::client::BlockObject::new(
@@ -2025,6 +2034,106 @@ mod get_transaction_response {
             ironwood.value_balance_zat(),
             -222,
             "ironwood field must carry the \"ironwood\" JSON payload, not a copy of \"orchard\""
+        );
+    }
+}
+
+#[cfg(test)]
+mod get_block_response {
+    use super::GetBlockResponse;
+
+    /// Builds the `tx` entry of a verbosity-2 `getblock` response exactly as
+    /// zebrad serializes it, by round-tripping a real test-vector
+    /// transaction through zebra-rpc's own response types. Constructing the
+    /// fixture from zebra's serializer keeps it faithful to the wire across
+    /// zebra upgrades, with no hand-maintained JSON to drift.
+    fn verbosity_2_transaction_json() -> serde_json::Value {
+        use zebra_chain::serialization::ZcashDeserializeInto as _;
+
+        let vector = wire_serialized_transaction_test_data::transactions::get_test_vectors()
+            .first()
+            .cloned()
+            .expect("the test-vector crate provides at least one transaction");
+        let transaction: zebra_chain::transaction::Transaction = vector
+            .tx
+            .as_slice()
+            .zcash_deserialize_into()
+            .expect("test-vector transactions deserialize");
+        let txid = transaction.hash();
+        let tx_object = zebra_rpc::client::TransactionObject::from_transaction(
+            std::sync::Arc::new(transaction),
+            Some(zebra_chain::block::Height(2)),
+            Some(1),
+            &zebra_chain::parameters::Network::Mainnet,
+            None,
+            None,
+            None,
+            txid,
+        );
+        serde_json::to_value(zebra_rpc::methods::GetBlockTransaction::Object(Box::new(
+            tx_object,
+        )))
+        .expect("zebra's response types serialize")
+    }
+
+    fn block_json_with_tx(tx: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "hash": "0000000000000000000000000000000000000000000000000000000000000002",
+            "confirmations": 1,
+            "tx": [tx],
+            "trees": {},
+        })
+    }
+
+    /// A verbosity-1 `getblock` response carries txid strings in `tx`. This
+    /// pins the shape the type already handles, so the verbosity-2 fix below
+    /// cannot regress it.
+    #[test]
+    fn parses_verbosity_1_txid_strings() {
+        let block_json = block_json_with_tx(serde_json::json!(
+            "e85e5729b34c34e8e62aa639302cb3434bb961666e13191da6dc39fcf775b320"
+        ));
+
+        let parsed: GetBlockResponse =
+            serde_json::from_value(block_json).expect("verbosity-1 block objects deserialize");
+        let GetBlockResponse::Object(block) = parsed else {
+            panic!("a JSON block object must parse as the object variant");
+        };
+        assert_eq!(block.tx.len(), 1);
+    }
+
+    /// A verbosity-2 `getblock` response carries full transaction objects in
+    /// `tx`; the response type must deserialize that shape as well, and the
+    /// conversion into zebra-rpc's `GetBlock` must preserve the objects
+    /// (issue #1380).
+    #[test]
+    fn parses_verbosity_2_transaction_objects() {
+        let block_json = block_json_with_tx(verbosity_2_transaction_json());
+
+        let parsed: GetBlockResponse =
+            serde_json::from_value(block_json).expect("verbosity-2 block objects deserialize");
+        let GetBlockResponse::Object(ref block) = parsed else {
+            panic!("a JSON block object must parse as the object variant");
+        };
+        assert!(
+            matches!(
+                block.tx.as_slice(),
+                [zebra_rpc::methods::GetBlockTransaction::Object(_)]
+            ),
+            "the verbosity-2 entry must parse as a transaction object"
+        );
+
+        let converted: zebra_rpc::methods::GetBlock =
+            parsed.try_into().expect("the object form converts");
+        let zebra_rpc::methods::GetBlock::Object(converted) = converted else {
+            panic!("the conversion must keep the object variant");
+        };
+        assert!(
+            matches!(
+                converted.tx().as_slice(),
+                [zebra_rpc::methods::GetBlockTransaction::Object(_)]
+            ),
+            "the conversion must pass the transaction object through"
         );
     }
 }

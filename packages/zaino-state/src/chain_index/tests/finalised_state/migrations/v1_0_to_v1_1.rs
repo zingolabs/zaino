@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use tempfile::TempDir;
 use zaino_common::network::ActivationHeights;
-use zaino_common::{DatabaseConfig, Network, StorageConfig};
+use zaino_common::{DatabaseConfig, StorageConfig};
 
 use crate::chain_index::finalised_state::capability::{
     DbCore as _, DbRead as _, DbVersion, MigrationStatus,
@@ -34,7 +34,7 @@ async fn v1_0_to_v1_1_metadata_migration() {
         },
         ephemeral: false,
         db_version: 1,
-        network: Network::Regtest(ActivationHeights::default()),
+        network: ActivationHeights::default().to_regtest_network(),
     };
 
     let source = build_active_mockchain_source(150, blocks.clone());
@@ -100,7 +100,7 @@ async fn v1_0_to_v1_1_mixed_blockheaderdata_formats() {
         },
         ephemeral: false,
         db_version: 1,
-        network: Network::Regtest(ActivationHeights::default()),
+        network: ActivationHeights::default().to_regtest_network(),
     };
 
     let source = build_active_mockchain_source(initial_active_height.0, blocks.clone());

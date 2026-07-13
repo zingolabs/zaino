@@ -2,8 +2,6 @@
 
 use super::*;
 
-use crate::chain_index::ShieldedPool;
-
 #[cfg(feature = "prometheus")]
 use crate::metric_names::*;
 
@@ -188,11 +186,33 @@ fn build_block_row_entries(
         ),
         sapling_entry: StoredEntryVar::new(block_height_bytes, SaplingTxList::new(sapling)),
         orchard_entry: StoredEntryVar::new(block_height_bytes, OrchardTxList::new(orchard)),
-        ironwood_entry: ironwood
-            .iter()
-            .any(Option::is_some)
-            .then(|| StoredEntryVar::new(block_height_bytes, OrchardTxList::new(ironwood))),
+        ironwood_entry: ironwood_entry(ironwood, block_height_bytes),
     }
+}
+
+/// Builds the sparse ironwood row entry for a block's per-transaction ironwood list: `Some` only
+/// when at least one transaction carries ironwood data, so a block with none stores no ironwood row
+/// (readers treat an absent row as "no ironwood data").
+fn ironwood_entry(
+    ironwood: Vec<Option<OrchardCompactTx>>,
+    block_height_bytes: &[u8],
+) -> Option<StoredEntryVar<OrchardTxList>> {
+    ironwood
+        .iter()
+        .any(Option::is_some)
+        .then(|| StoredEntryVar::new(block_height_bytes, OrchardTxList::new(ironwood)))
+}
+
+/// Builds the sparse ironwood row entry for `block` (the same value the write path stores). Used by
+/// the v1.2.1 → v1.3.0 migration to backfill the ironwood table from validator-fetched blocks.
+pub(crate) fn build_block_ironwood_entry(
+    block: &IndexedBlock,
+    block_height_bytes: &[u8],
+) -> Result<Option<StoredEntryVar<OrchardTxList>>, FinalisedStateError> {
+    Ok(ironwood_entry(
+        extract_block_pool_lists(block)?.ironwood,
+        block_height_bytes,
+    ))
 }
 
 impl DbWrite for DbV1 {
@@ -209,20 +229,17 @@ impl DbWrite for DbV1 {
         height: Height,
         source: &S,
     ) -> Result<(), FinalisedStateError> {
-        use crate::chain_index::finalised_state::build_indexed_block_from_source;
+        use crate::chain_index::finalised_state::{
+            build_indexed_block_from_source, PoolActivationHeights,
+        };
 
-        let network = self.config.network;
-        let zebra_network = network.to_zebra_network();
-        let sapling_activation_height = ShieldedPool::Sapling
-            .activation_upgrade()
-            .activation_height(&zebra_network)
+        let zebra_network = self.config.network.clone();
+        let pool_activations = PoolActivationHeights::resolve(&zebra_network);
+        let sapling_activation_height = pool_activations
+            .sapling
             .expect("Sapling activation height must be set");
-        let nu5_activation_height = ShieldedPool::Orchard
-            .activation_upgrade()
-            .activation_height(&zebra_network);
-        let nu6_3_activation_height = ShieldedPool::Ironwood
-            .activation_upgrade()
-            .activation_height(&zebra_network);
+        let nu5_activation_height = pool_activations.nu5;
+        let nu6_3_activation_height = pool_activations.nu6_3;
 
         // Seed `parent_chainwork` from the current tip header (the block before the first one we
         // write). On an empty database this is genesis with zero chainwork. Read raw rather than via
@@ -264,7 +281,7 @@ impl DbWrite for DbV1 {
         info!(
             start_height,
             target = height.0,
-            ?network,
+            ?zebra_network,
             "write_blocks_to_height: syncing finalised blocks"
         );
 
@@ -309,7 +326,7 @@ impl DbWrite for DbV1 {
                     let build_start = std::time::Instant::now();
                     let block = build_indexed_block_from_source(
                         source,
-                        network,
+                        zebra_network.clone(),
                         sapling_activation_height,
                         nu5_activation_height,
                         nu6_3_activation_height,
@@ -336,7 +353,7 @@ impl DbWrite for DbV1 {
                         info!(
                             current = next - 1,
                             target = height.0,
-                            ?network,
+                            ?zebra_network,
                             "write_blocks_to_height: syncing"
                         );
                         last_progress_log = std::time::Instant::now();

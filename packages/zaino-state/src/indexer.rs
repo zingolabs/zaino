@@ -1,5 +1,10 @@
-//! Holds the Indexer trait containing the zcash RPC definitions served by zaino
-//! and generic wrapper structs for the various backend options available.
+//! Zaino's indexer frontend: the `ZcashIndexer` / `LightWalletIndexer` RPC trait
+//! definitions served by zaino, the generic [`IndexerService`] / [`IndexerSubscriber`]
+//! wrappers, and the concrete [`node_backed_indexer::NodeBackedIndexerService`] — the
+//! single validator-backed service (JSON-RPC `Rpc` or direct `ReadStateService`
+//! connection, selected at runtime).
+
+pub(crate) mod node_backed_indexer;
 
 use crate::SendFut;
 use tokio::{sync::mpsc, time::timeout};
@@ -12,9 +17,12 @@ use zaino_fetch::jsonrpsee::response::{
     chain_tips::GetChainTipsResponse,
     mining_info::GetMiningInfoWire,
     peer_info::GetPeerInfo,
-    z_validate_address::ZValidateAddressResponse,
+    z_validate_address::{
+        InvalidZValidateAddress, KnownZValidateAddress, ZValidateAddressResponse,
+        DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION,
+    },
     GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSpentInfoRequest, GetSpentInfoResponse,
-    GetTxOutSetInfoResponse,
+    GetSubtreesResponse, GetTxOutSetInfoResponse,
 };
 use zaino_proto::proto::{
     compact_formats::CompactBlock,
@@ -29,7 +37,9 @@ use zebra_chain::{
     block::Height, serialization::BytesInDisplayOrder as _, subtree::NoteCommitmentSubtreeIndex,
 };
 use zebra_rpc::{
-    client::{GetSubtreesByIndexResponse, GetTreestateResponse, ValidateAddressResponse},
+    client::{
+        GetSubtreesByIndexResponse, GetTreestateResponse, SubtreeRpcData, ValidateAddressResponse,
+    },
     methods::{
         AddressBalance, GetAddressBalanceRequest, GetAddressTxIdsRequest, GetAddressUtxos,
         GetBlock, GetBlockHash, GetBlockchainInfoResponse, GetInfo, GetRawTransaction,
@@ -43,10 +53,10 @@ use crate::{
         AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
         SubtreeRootReplyStream, UtxoReplyStream,
     },
-    BackendType,
 };
 
-/// Wrapper Struct for a ZainoState chain-fetch service (StateService, FetchService)
+/// Wrapper struct for a ZainoState chain-fetch service (currently the single
+/// [`node_backed_indexer::NodeBackedIndexerService`]).
 ///
 /// The future plan is to also add a TonicService and DarksideService to this to enable
 /// wallets to use a single unified chain fetch service.
@@ -87,9 +97,6 @@ where
 /// Implementors automatically gain [`Liveness`](zaino_common::probing::Liveness) and
 /// [`Readiness`](zaino_common::probing::Readiness) via the [`Status`] supertrait.
 pub trait ZcashService: Sized + Status {
-    /// Backend type. Read state or fetch service.
-    const BACKEND_TYPE: BackendType;
-
     /// A subscriber to the service, used to fetch chain data.
     type Subscriber: Clone + ZcashIndexer + LightWalletIndexer + Status;
 
@@ -108,7 +115,8 @@ pub trait ZcashService: Sized + Status {
     fn close(&mut self);
 }
 
-/// Wrapper Struct for a ZainoState chain-fetch service subscriber (StateServiceSubscriber, FetchServiceSubscriber)
+/// Wrapper struct for a ZainoState chain-fetch service subscriber (currently the single
+/// [`node_backed_indexer::NodeBackedIndexerServiceSubscriber`]).
 ///
 /// The future plan is to also add a TonicServiceSubscriber and DarksideServiceSubscriber to this to enable wallets to use a single unified chain fetch service.
 #[derive(Clone)]
@@ -981,5 +989,525 @@ pub(crate) async fn handle_raw_transaction<Indexer: LightWalletIndexer>(
                 .send(Err(tonic::Status::unknown(e.to_string())))
                 .await
         }
+    }
+}
+
+/// Maps a Zebra network to the `zcash_protocol` network type used for address decoding.
+fn address_network_type(
+    network: &zebra_chain::parameters::Network,
+) -> zcash_protocol::consensus::NetworkType {
+    use zcash_protocol::consensus::NetworkType;
+    use zebra_chain::parameters::NetworkKind;
+    match network.kind() {
+        NetworkKind::Mainnet => NetworkType::Main,
+        NetworkKind::Testnet => NetworkType::Test,
+        NetworkKind::Regtest => NetworkType::Regtest,
+    }
+}
+
+/// Validates a Zcash address for the `validateaddress` RPC.
+///
+/// Pure address parsing over `network`; no chain data required, so both backends share
+/// this implementation.
+pub(crate) fn validate_address(
+    raw_address: String,
+    network: &zebra_chain::parameters::Network,
+) -> ValidateAddressResponse {
+    use zcash_keys::address::Address;
+    use zcash_transparent::address::TransparentAddress;
+
+    let Ok(address) = raw_address.parse::<zcash_address::ZcashAddress>() else {
+        return ValidateAddressResponse::invalid();
+    };
+
+    let address = match address.convert_if_network::<Address>(address_network_type(network)) {
+        Ok(address) => address,
+        Err(err) => {
+            tracing::debug!(?err, "conversion error");
+            return ValidateAddressResponse::invalid();
+        }
+    };
+
+    match address {
+        Address::Transparent(taddr) => ValidateAddressResponse::new(
+            true,
+            Some(raw_address),
+            Some(matches!(taddr, TransparentAddress::ScriptHash(_))),
+        ),
+        _ => ValidateAddressResponse::invalid(),
+    }
+}
+
+/// Validates a Zcash address for the deprecated `z_validateaddress` RPC.
+///
+/// Pure address parsing over `network`; shared by both backends.
+pub(crate) fn z_validate_address(
+    address: String,
+    network: &zebra_chain::parameters::Network,
+) -> ZValidateAddressResponse {
+    use zcash_keys::address::Address;
+    use zcash_keys::encoding::AddressCodec as _;
+    use zcash_transparent::address::TransparentAddress;
+
+    tracing::warn!("{}", Z_VALIDATE_DEPRECATION);
+
+    let invalid = || {
+        ZValidateAddressResponse::Known(KnownZValidateAddress::Invalid(
+            InvalidZValidateAddress::new(),
+        ))
+    };
+
+    let Ok(parsed_address) = address.parse::<zcash_address::ZcashAddress>() else {
+        return invalid();
+    };
+
+    let converted_address =
+        match parsed_address.convert_if_network::<Address>(address_network_type(network)) {
+            Ok(address) => address,
+            Err(err) => {
+                tracing::debug!(?err, "conversion error");
+                return invalid();
+            }
+        };
+
+    // Note: It could be the case that Zaino needs to support Sprout. For now, it's been disabled.
+    match converted_address {
+        Address::Transparent(TransparentAddress::PublicKeyHash(_)) => {
+            ZValidateAddressResponse::p2pkh(address)
+        }
+        Address::Transparent(TransparentAddress::ScriptHash(_)) => {
+            ZValidateAddressResponse::p2sh(address)
+        }
+        Address::Unified(u) => ZValidateAddressResponse::unified(u.encode(network)),
+        Address::Sapling(s) => {
+            let (diversifier, pk_d) = sapling_key_bytes(&s);
+            ZValidateAddressResponse::sapling(
+                s.encode(network),
+                Some(hex::encode(diversifier)),
+                Some(hex::encode(pk_d)),
+            )
+        }
+        _ => invalid(),
+    }
+}
+
+/// Extracts the diversifier and pk_d bytes from a validated Sapling
+/// [`sapling_crypto::PaymentAddress`], returning pk_d in zcashd's big-endian byte order.
+///
+/// # Deprecation
+///
+/// See [`Z_VALIDATE_DEPRECATION`]. This function exists to support the `z_validateaddress`
+/// RPC endpoint, which itself exists solely for zcashd compatibility. The pk_d bytes are
+/// reversed from `sapling-crypto`'s native little-endian representation to match zcashd's
+/// big-endian hex output.
+///
+/// # Precondition
+///
+/// The caller must have obtained `s` through `PaymentAddress::from_bytes` or equivalent
+/// (e.g. `ZcashAddress::convert_if_network`), which guarantees the diversifier has a valid
+/// `g_d()` and pk_d is a non-identity Jubjub subgroup point. No additional validation is
+/// performed here.
+///
+/// # Layout
+///
+/// `PaymentAddress::to_bytes()` returns 43 bytes: `diversifier (11) || pk_d (32)`.
+pub(crate) fn sapling_key_bytes(s: &sapling_crypto::PaymentAddress) -> ([u8; 11], [u8; 32]) {
+    let bytes = s.to_bytes();
+    let diversifier: [u8; 11] = bytes[..11]
+        .try_into()
+        .expect("PaymentAddress::to_bytes always returns 43 bytes: diversifier is the first 11");
+    let mut pk_d: [u8; 32] = bytes[11..]
+        .try_into()
+        .expect("PaymentAddress::to_bytes always returns 43 bytes: pk_d is the last 32");
+    pk_d.reverse();
+    (diversifier, pk_d)
+}
+
+/// Shapes a `z_getsubtreesbyindex` JSON-RPC response from raw subtree roots.
+///
+/// The `(root, end_height)` pairs from [`ChainIndex::get_subtree_roots`] are already in
+/// the byte order the JSON-RPC uses (sapling `to_bytes`, orchard `to_repr` — zcashd's
+/// `z_getsubtreesbyindex` does not reverse orchard subtree roots), so they are hex-encoded
+/// as-is. Shared by both backends so the shaping lives in one place.
+///
+/// [`ChainIndex::get_subtree_roots`]: crate::ChainIndex::get_subtree_roots
+pub(crate) fn build_subtrees_by_index_response(
+    pool: String,
+    start_index: NoteCommitmentSubtreeIndex,
+    roots: Vec<([u8; 32], u32)>,
+) -> GetSubtreesByIndexResponse {
+    use hex::ToHex as _;
+
+    let subtrees = roots
+        .into_iter()
+        .map(|(root, end_height)| {
+            SubtreeRpcData {
+                root: root.encode_hex(),
+                end_height: Height(end_height),
+            }
+            .into()
+        })
+        .collect();
+
+    GetSubtreesResponse {
+        pool,
+        start_index,
+        subtrees,
+    }
+    .into()
+}
+
+/// Builds the gRPC [`TreeState`](zaino_proto::proto::service::TreeState) from a
+/// `z_gettreestate` response: hex-encoded per-pool final states (the ironwood field is
+/// the empty string below NU6.3 activation, matching lightwalletd behaviour).
+fn tree_state_from_treestate_response(
+    network: String,
+    treestate_response: zebra_rpc::client::GetTreestateResponse,
+) -> zaino_proto::proto::service::TreeState {
+    let sapling_tree = hex::encode(
+        treestate_response
+            .sapling()
+            .commitments()
+            .final_state()
+            .clone()
+            .unwrap_or_default(),
+    );
+    let orchard_tree = hex::encode(
+        treestate_response
+            .orchard()
+            .commitments()
+            .final_state()
+            .clone()
+            .unwrap_or_default(),
+    );
+    let ironwood_tree = treestate_response
+        .ironwood()
+        .clone()
+        .and_then(|treestate| treestate.commitments().final_state().clone())
+        .map(hex::encode)
+        .unwrap_or_default();
+
+    zaino_proto::proto::service::TreeState {
+        network,
+        height: treestate_response.height().0 as u64,
+        hash: treestate_response.hash().to_string(),
+        time: treestate_response.time(),
+        sapling_tree,
+        orchard_tree,
+        ironwood_tree,
+    }
+}
+
+/// Builds the `z_gettreestate` response from the per-pool treestates the chain index
+/// reported.
+///
+/// `Commitments::new(final_root, final_state)`: the note-commitment tree is the
+/// `final_state`. The ironwood treestate is `Some` only from NU6.3 activation, so
+/// pre-NU6.3 responses omit the field exactly as zebrad does.
+fn build_treestate_response(
+    hash: zebra_chain::block::Hash,
+    height: zebra_chain::block::Height,
+    time: u32,
+    (sapling, orchard, ironwood): (
+        Option<crate::chain_index::source::PoolTreestate>,
+        Option<crate::chain_index::source::PoolTreestate>,
+        Option<crate::chain_index::source::PoolTreestate>,
+    ),
+) -> zebra_rpc::client::GetTreestateResponse {
+    fn treestate(
+        pool: Option<crate::chain_index::source::PoolTreestate>,
+    ) -> zebra_rpc::client::Treestate {
+        let (final_root, final_state) = match pool {
+            Some(pool) => (pool.final_root, Some(pool.final_state)),
+            None => (None, None),
+        };
+        zebra_rpc::client::Treestate::new(zebra_rpc::client::Commitments::new(
+            final_root,
+            final_state,
+        ))
+    }
+
+    let sprout_treestate = None;
+    let ironwood_treestate = ironwood.map(|pool| treestate(Some(pool)));
+    zebra_rpc::client::GetTreestateResponse::new(
+        hash,
+        height,
+        time,
+        sprout_treestate,
+        treestate(sapling),
+        treestate(orchard),
+        ironwood_treestate,
+    )
+}
+
+fn latest_network_upgrade(
+    upgrades: &indexmap::IndexMap<
+        zebra_rpc::methods::ConsensusBranchIdHex,
+        zebra_rpc::methods::NetworkUpgradeInfo,
+    >,
+) -> Result<&zebra_rpc::methods::NetworkUpgradeInfo, tonic::Status> {
+    upgrades.last().map(|(_, upgrade)| upgrade).ok_or_else(|| {
+        tonic::Status::failed_precondition("validator returned no network upgrade metadata")
+    })
+}
+
+/// Maximum number of addresses a single `get_address_utxos` / `get_address_utxos_stream`
+/// request may carry.
+///
+/// The service resolves the full backend UTXO set before applying `max_entries` /
+/// `start_height` (issue #974). A complete pushdown fix needs upstream interface changes
+/// the caller-supplied entry cap cannot reach today, so until then this bounds the one
+/// input the service controls locally: the address fan-out. It stops an unauthenticated
+/// caller forcing an unbounded number of backend address lookups in a single request, and
+/// is set well above realistic wallet usage.
+///
+/// TODO: make this deployment-configurable rather than a fixed constant.
+const UTXO_MAX_ADDRESSES: usize = 1000;
+
+/// Reject a `get_address_utxos` request whose address list exceeds [`UTXO_MAX_ADDRESSES`].
+///
+/// `max_entries` bounds the response size, not the backend work; this guard bounds the
+/// address fan-out, the part the service can cap without upstream changes.
+fn validate_utxo_address_count(count: usize) -> Result<(), tonic::Status> {
+    if count > UTXO_MAX_ADDRESSES {
+        return Err(tonic::Status::invalid_argument(format!(
+            "Error: too many addresses in request: {count} exceeds the maximum of {UTXO_MAX_ADDRESSES}."
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn latest_network_upgrade_rejects_empty_metadata() {
+        let upgrades = indexmap::IndexMap::new();
+        let err = super::latest_network_upgrade(&upgrades).expect_err("empty upgrades must fail");
+
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(
+            err.message(),
+            "validator returned no network upgrade metadata"
+        );
+    }
+
+    #[test]
+    fn utxo_address_count_within_limit_is_accepted() {
+        assert!(super::validate_utxo_address_count(0).is_ok());
+        assert!(super::validate_utxo_address_count(super::UTXO_MAX_ADDRESSES).is_ok());
+    }
+
+    #[test]
+    fn utxo_address_count_over_limit_is_rejected() {
+        let err = super::validate_utxo_address_count(super::UTXO_MAX_ADDRESSES + 1)
+            .expect_err("over-limit address count must fail");
+
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn build_subtrees_by_index_response_hex_encodes_roots() {
+        let roots = vec![([0xabu8; 32], 100u32), ([0xcdu8; 32], 200u32)];
+        let response = build_subtrees_by_index_response(
+            "orchard".to_string(),
+            NoteCommitmentSubtreeIndex(5),
+            roots,
+        );
+
+        assert_eq!(response.pool().as_str(), "orchard");
+        assert_eq!(response.start_index(), NoteCommitmentSubtreeIndex(5));
+
+        let subtrees = response.subtrees();
+        assert_eq!(subtrees.len(), 2);
+        assert_eq!(subtrees[0].root, hex::encode([0xabu8; 32]));
+        assert_eq!(subtrees[0].end_height, Height(100));
+        assert_eq!(subtrees[1].root, hex::encode([0xcdu8; 32]));
+        assert_eq!(subtrees[1].end_height, Height(200));
+    }
+
+    /// Classifies the byte-level relationship between two slices.
+    #[derive(Debug, PartialEq)]
+    enum ByteRelation {
+        /// The slices are identical.
+        Equal,
+        /// `actual` fully byte-reversed equals `expected` (endian swap).
+        FullByteReversal,
+        /// Each byte's bits reversed maps `actual` to `expected`.
+        PerByteBitReversal,
+        /// Reversing bytes within 16-bit chunks maps `actual` to `expected`.
+        ChunkSwap16,
+        /// Reversing bytes within 32-bit chunks maps `actual` to `expected`.
+        ChunkSwap32,
+        /// Reversing bytes within 64-bit chunks maps `actual` to `expected`.
+        ChunkSwap64,
+        /// No recognized transformation.
+        Unrecognized,
+    }
+
+    impl std::fmt::Display for ByteRelation {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::Equal => write!(f, "equal"),
+                Self::FullByteReversal => write!(f, "full byte-reversal (endian swap)"),
+                Self::PerByteBitReversal => write!(f, "per-byte bit-reversal"),
+                Self::ChunkSwap16 => write!(f, "16-bit pairwise byte-swap"),
+                Self::ChunkSwap32 => write!(f, "32-bit chunk byte-reversal"),
+                Self::ChunkSwap64 => write!(f, "64-bit chunk byte-reversal"),
+                Self::Unrecognized => write!(f, "unrecognized mismatch"),
+            }
+        }
+    }
+
+    /// Applies each candidate byte transformation to `actual` and returns
+    /// the first that produces `expected`, or [`ByteRelation::Unrecognized`].
+    // `u32::is_multiple_of` is only stable from Rust 1.87; keep `% n == 0` for our older MSRV.
+    #[allow(clippy::manual_is_multiple_of)]
+    fn classify_byte_relation(actual: &[u8], expected: &[u8]) -> ByteRelation {
+        if actual == expected {
+            return ByteRelation::Equal;
+        }
+
+        let chunk_swap = |size: usize| -> Vec<u8> {
+            actual
+                .chunks(size)
+                .flat_map(|c| c.iter().rev())
+                .copied()
+                .collect()
+        };
+
+        let mut reversed = actual.to_vec();
+        reversed.reverse();
+        if reversed == expected {
+            return ByteRelation::FullByteReversal;
+        }
+
+        let bit_reversed: Vec<u8> = actual.iter().map(|b| b.reverse_bits()).collect();
+        if bit_reversed == expected {
+            return ByteRelation::PerByteBitReversal;
+        }
+
+        if actual.len() % 2 == 0 && chunk_swap(2) == expected {
+            return ByteRelation::ChunkSwap16;
+        }
+        if actual.len() % 4 == 0 && chunk_swap(4) == expected {
+            return ByteRelation::ChunkSwap32;
+        }
+        if actual.len() % 8 == 0 && chunk_swap(8) == expected {
+            return ByteRelation::ChunkSwap64;
+        }
+
+        ByteRelation::Unrecognized
+    }
+
+    /// Verifies that our Sapling address parsing logic produces the same
+    /// diversifier and diversified transmission key (pk_d) hex strings as
+    /// zcashd's `z_validateaddress` RPC.
+    ///
+    /// # Guarantees
+    ///
+    /// - Exercises the production `sapling_key_bytes` function directly.
+    /// - The 11-byte diversifier matches the zcashd-derived test vector.
+    /// - The 32-byte pk_d (after the endian reversal inside `sapling_key_bytes`)
+    ///   matches the zcashd-derived test vector.
+    /// - If the upstream serialization changes, the failure message
+    ///   classifies the mismatch (endian swap, bit-reversal, chunk swap,
+    ///   or unrecognized) to aid diagnosis.
+    ///
+    /// # Non-guarantees
+    ///
+    /// - Does not prove the test vector constants themselves are correct;
+    ///   they were captured from zcashd and are trusted as ground truth.
+    /// - Does not exercise the full `z_validate_address` RPC path through
+    ///   `StateService` — only the `sapling_key_bytes` extraction function.
+    /// - Does not verify behavior for malformed Sapling addresses or
+    ///   addresses on other networks (mainnet, testnet).
+    #[test]
+    fn sapling_pk_d_byte_order_matches_test_vector() {
+        use crate::indexer::sapling_key_bytes;
+        use zcash_keys::address::Address;
+        use zcash_protocol::consensus::NetworkType;
+
+        // Canonical source: live-tests/clientless/src/lib.rs::rpc::json_rpc
+        // Tracked for DRY consolidation: https://github.com/zingolabs/zaino/issues/988
+        const SAPLING_ADDRESS: &str = "zregtestsapling1jalqhycwumq3unfxlzyzcktq3n478n82k2wacvl8gwfxk6ahshkxmtp2034qj28n7gl92ka5wca";
+        const EXPECTED_DIVERSIFIER: &str = "977e0b930ee6c11e4d26f8";
+        const EXPECTED_PK_D: &str =
+            "553ef2f328096a7c2aac6dec85b76b6b9243e733dc9db2eacce3eb8c60592c88";
+
+        let parsed: zcash_address::ZcashAddress = SAPLING_ADDRESS.parse().unwrap();
+        let converted = parsed
+            .convert_if_network::<Address>(NetworkType::Regtest)
+            .unwrap();
+
+        let Address::Sapling(s) = converted else {
+            panic!("expected Sapling address");
+        };
+
+        let (diversifier, pk_d) = sapling_key_bytes(&s);
+
+        let expected_diversifier = hex::decode(EXPECTED_DIVERSIFIER).unwrap();
+        let expected_pk_d = hex::decode(EXPECTED_PK_D).unwrap();
+
+        // Diversifier
+        match classify_byte_relation(&diversifier, &expected_diversifier) {
+            ByteRelation::Equal => {}
+            relation => panic!(
+                "diversifier mismatch.\n  relation: {relation}\n  actual:   {}\n  expected: {}",
+                hex::encode(diversifier),
+                hex::encode(expected_diversifier),
+            ),
+        }
+
+        // pk_d (sapling_key_bytes already applies the endian reversal)
+        match classify_byte_relation(&pk_d, &expected_pk_d) {
+            ByteRelation::Equal => {}
+            relation => panic!(
+                "pk_d mismatch — upstream serialization may have changed.\
+                \n  relation: {relation}\n  actual:   {}\n  expected: {}",
+                hex::encode(pk_d),
+                hex::encode(expected_pk_d),
+            ),
+        }
+    }
+
+    #[test]
+    fn classify_byte_relation_detects_known_transforms() {
+        let original = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+
+        assert_eq!(
+            classify_byte_relation(&original, &original),
+            ByteRelation::Equal,
+        );
+
+        let mut reversed = original.to_vec();
+        reversed.reverse();
+        assert_eq!(
+            classify_byte_relation(&original, &reversed),
+            ByteRelation::FullByteReversal,
+        );
+
+        let bit_rev: Vec<u8> = original.iter().map(|b| b.reverse_bits()).collect();
+        assert_eq!(
+            classify_byte_relation(&original, &bit_rev),
+            ByteRelation::PerByteBitReversal,
+        );
+
+        let swapped_16: Vec<u8> = original
+            .chunks(2)
+            .flat_map(|c| c.iter().rev())
+            .copied()
+            .collect();
+        assert_eq!(
+            classify_byte_relation(&original, &swapped_16),
+            ByteRelation::ChunkSwap16,
+        );
+
+        let garbage = [0xFF; 8];
+        assert_eq!(
+            classify_byte_relation(&original, &garbage),
+            ByteRelation::Unrecognized,
+        );
     }
 }

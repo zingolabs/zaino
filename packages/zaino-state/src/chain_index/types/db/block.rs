@@ -321,7 +321,7 @@ mod tests {
 
         impl ChainWork {
             /// Returns ChainWork as a U256.
-            pub(super) fn to_u256(&self) -> primitive_types::U256 {
+            pub(super) fn to_u256(self) -> primitive_types::U256 {
                 primitive_types::U256::from_big_endian(&self.0)
             }
 

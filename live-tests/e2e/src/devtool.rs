@@ -4,7 +4,7 @@
 //!
 //! [`DevtoolClients`] mirrors [`crate::Clients`]' method names one-for-one so
 //! tests can swap backends mechanically. The clients are managed by
-//! zcash_local_net's [`zcash_local_net::client`] module: each wallet
+//! zcash_local_net's [`zcash_local_net::wallet`] module: each wallet
 //! operation is a run-to-completion `zcash-devtool` subprocess invocation
 //! (the binary must be built with `--features regtest_support` and be
 //! locatable via `TEST_BINARIES_DIR`/`PATH`).
@@ -21,9 +21,9 @@
 //!   constants derived from zingolib note selection (e.g. 235_000 after
 //!   shielding 250_000) must be re-verified on first devtool runs.
 
-use zcash_local_net::client::{
+use zcash_local_net::wallet::{
     zcash_devtool::{ZcashDevtool, ZcashDevtoolConfig},
-    AddressReceiver, Client as _, GetInfo, WalletBalance,
+    AddressReceiver, GetInfo, Wallet as _, WalletBalance,
 };
 use zcash_primitives::transaction::TxId;
 
@@ -39,17 +39,27 @@ pub struct DevtoolClients {
 }
 
 /// Launch faucet + recipient devtool wallets against a running Zaino gRPC
-/// listener. The devtool analogue of [`crate::build_clients`]; Zaino must
-/// already be serving (wallet initialization fetches the chain tip and
-/// birthday tree state from it).
-pub async fn build_clients(zaino_grpc_listen_port: u16) -> DevtoolClients {
-    let mut faucet_config = ZcashDevtoolConfig::faucet();
+/// listener, deriving the wallet network from the running `validator`. That
+/// derivation is the only construction the client API offers
+/// (infrastructure ADR 0003: the Validator is the single source of truth
+/// for activation heights), so wallet/validator height drift is
+/// unrepresentable — the wallets follow whatever schedule the validator was
+/// launched with, fixture or canonical. The devtool analogue of
+/// [`crate::build_clients`]; Zaino must already be serving (wallet
+/// initialization fetches the chain tip and birthday tree state from it).
+pub async fn build_clients<V: zcash_local_net::validator::Validator>(
+    zaino_grpc_listen_port: u16,
+    validator: &V,
+) -> DevtoolClients {
+    let network = zcash_local_net::wallet::WalletNetwork::from_validator(validator).await;
+
+    let mut faucet_config = ZcashDevtoolConfig::faucet(network);
     faucet_config.indexer_port = zaino_grpc_listen_port;
     let faucet = ZcashDevtool::launch(faucet_config)
         .await
         .expect("launch devtool faucet wallet");
 
-    let mut recipient_config = ZcashDevtoolConfig::recipient();
+    let mut recipient_config = ZcashDevtoolConfig::recipient(network);
     recipient_config.indexer_port = zaino_grpc_listen_port;
     let recipient = ZcashDevtool::launch(recipient_config)
         .await

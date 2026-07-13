@@ -15,10 +15,9 @@ use zaino_proto::proto::compact_formats::CompactBlock;
 use zaino_proto::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
 use zaino_proto::proto::service::{BlockId, BlockRange};
 #[allow(deprecated)]
-use zaino_state::FetchService;
 use zaino_state::ZcashIndexer as _;
 use zaino_testutils::{
-    make_uri, MinerPool, TestManager, ValidatorKind, NU6_3_ACTIVE_ACTIVATION_HEIGHTS,
+    make_uri, MinerPool, Rpc, TestManager, ValidatorKind, IRONWOOD_ONLY_ACTIVATION_HEIGHTS,
     NU6_3_TRANSITION_BOUNDARY, ORCHARD_ONLY_ACTIVATION_HEIGHTS,
     ORCHARD_THEN_IRONWOOD_ACTIVATION_HEIGHTS,
 };
@@ -49,7 +48,7 @@ async fn assert_wire_served_eras(
     expected_era: impl Fn(u64) -> CoinbaseEra,
 ) {
     #[allow(deprecated)]
-    let mut test_manager = TestManager::<Zebrad, FetchService>::launch_mining_to(
+    let mut test_manager = TestManager::<Zebrad, Rpc>::launch_mining_to(
         MinerPool::Orchard,
         &ValidatorKind::Zebrad,
         None,
@@ -171,7 +170,7 @@ async fn orchard_only_wire_serving_zebrad() {
 /// multi_thread required: the test manager spawns the validator, indexer, and zainod.
 #[tokio::test(flavor = "multi_thread")]
 async fn ironwood_only_wire_serving_zebrad() {
-    assert_wire_served_eras(NU6_3_ACTIVE_ACTIVATION_HEIGHTS, 6, |height| {
+    assert_wire_served_eras(IRONWOOD_ONLY_ACTIVATION_HEIGHTS, 6, |height| {
         if height >= 2 {
             CoinbaseEra::Ironwood
         } else {

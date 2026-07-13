@@ -83,7 +83,17 @@ pub mod rpc {
 
             // assert_eq!(fs_sprout, expected_sprout);
 
-            // Sapling (differs by validator)
+            // Sapling
+            let expected_sapling = ValidZValidateAddress::sapling(
+                VALID_SAPLING_ADDRESS.to_string(),
+                Some(VALID_DIVERSIFIER.to_string()),
+                Some(VALID_DIVERSIFIED_TRANSMISSION_KEY.to_string()),
+            );
+            assert_known_valid_eq(
+                rpc_call(VALID_SAPLING_ADDRESS.to_string()).await,
+                expected_sapling,
+                "Sapling",
+            );
 
             // Unified (differs by validator)
             let expected_unified =
@@ -101,70 +111,15 @@ pub mod rpc {
             assert_eq!(all_zeroes, ZValidateAddressResponse::invalid());
         }
 
-        pub async fn run_z_validate_sapling<F, Fut>(rpc_call: &F)
-        where
-            F: Fn(String) -> Fut,
-            Fut: Future<Output = ZValidateAddressResponse>,
-        {
-            let expected_sapling = ValidZValidateAddress::sapling(
-                VALID_SAPLING_ADDRESS.to_string(),
-                Some(VALID_DIVERSIFIER.to_string()),
-                Some(VALID_DIVERSIFIED_TRANSMISSION_KEY.to_string()),
-            );
-            assert_known_valid_eq(
-                rpc_call(VALID_SAPLING_ADDRESS.to_string()).await,
-                expected_sapling,
-                "Sapling",
-            );
-        }
-
-        /// zebrad's JSON-RPC passthrough (via FetchService) omits `diversifier`
-        /// and `diversifiedtransmissionkey` from the Sapling response. This is
-        /// the safer behavior: address component extraction should happen
-        /// client-side, not by delegating to a remote actor.
-        ///
-        /// See [`DEPRECATION_NOTICE`](zaino_fetch::jsonrpsee::response::z_validate_address::DEPRECATION_NOTICE).
-        pub async fn run_z_validate_sapling_zebrad_passthrough_fetchservice<F, Fut>(rpc_call: &F)
-        where
-            F: Fn(String) -> Fut,
-            Fut: Future<Output = ZValidateAddressResponse>,
-        {
-            let expected_sapling = ValidZValidateAddress::sapling(
-                VALID_SAPLING_ADDRESS.to_string(),
-                None::<String>,
-                None::<String>,
-            );
-            assert_known_valid_eq(
-                rpc_call(VALID_SAPLING_ADDRESS.to_string()).await,
-                expected_sapling,
-                "Sapling (zebrad passthrough via FetchService — keys omitted)",
-            );
-        }
-
-        /// Which sapling suite to run after the shared suite.
-        pub enum SaplingSuite {
-            /// Full response — diversifier and diversifiedtransmissionkey present.
-            Standard,
-            /// zebrad's JSON-RPC passthrough (via FetchService) omits those keys.
-            ZebradPassthroughFetchService,
-        }
-
         /// Build the `z_validate_address` rpc-call closure from `subscriber` and
-        /// run the shared validation suite plus the chosen sapling suite. Factors
-        /// the identical closure + suite-call preamble shared by the four
-        /// `z_validate_address` tests (fetch_service zcashd/zebrad, state_service,
-        /// json_server).
+        /// run the shared validation suite. Factors the identical closure +
+        /// suite-call preamble shared by the four `z_validate_address` tests
+        /// (fetch_service zcashd/zebrad, state_service, json_server).
         #[allow(deprecated)]
-        pub async fn run_z_validate_for<S: ZcashIndexer>(subscriber: &S, sapling: SaplingSuite) {
+        pub async fn run_z_validate_for<S: ZcashIndexer>(subscriber: &S) {
             let rpc_call =
                 |addr: String| async move { subscriber.z_validate_address(addr).await.unwrap() };
             run_z_validate_suite(&rpc_call).await;
-            match sapling {
-                SaplingSuite::Standard => run_z_validate_sapling(&rpc_call).await,
-                SaplingSuite::ZebradPassthroughFetchService => {
-                    run_z_validate_sapling_zebrad_passthrough_fetchservice(&rpc_call).await
-                }
-            }
         }
     }
 }

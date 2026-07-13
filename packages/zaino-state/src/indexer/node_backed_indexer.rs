@@ -24,8 +24,7 @@ use zebra_rpc::{
 use zaino_fetch::{
     chain::{transaction::FullTransaction, utils::ParseFromSlice},
     jsonrpsee::{
-        connector::{JsonRpSeeConnector, RpcError},
-        raw_transaction::validate_raw_transaction_hex,
+        connector::RpcError,
         response::{
             address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
             block_deltas::BlockDeltas,
@@ -34,9 +33,7 @@ use zaino_fetch::{
             chain_tips::GetChainTipsResponse,
             mining_info::GetMiningInfoWire,
             peer_info::GetPeerInfo,
-            z_validate_address::{
-                ZValidateAddressResponse, DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION,
-            },
+            z_validate_address::ZValidateAddressResponse,
             GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSpentInfoRequest,
             GetSpentInfoResponse, GetTxOutResponse, GetTxOutSetInfoResponse,
         },
@@ -60,9 +57,15 @@ use zaino_proto::proto::{
 #[allow(deprecated)]
 use crate::{
     chain_index::chain_tips_from_nonfinalized_snapshot,
-    chain_index::{source::ValidatorConnector, types},
-    config::{DonationAddress, FetchServiceConfig},
-    error::FetchServiceError,
+    chain_index::{
+        source::{BlockchainSource, ValidatorConnector},
+        types,
+    },
+    config::{
+        ChainIndexConfig, CommonBackendConfig, DonationAddress, NodeBackedIndexerServiceConfig,
+        ValidatorConnectionType,
+    },
+    error::NodeBackedIndexerServiceError,
     indexer::{
         handle_raw_transaction, IndexerSubscriber, LightWalletIndexer, ZcashIndexer, ZcashService,
     },
@@ -72,96 +75,123 @@ use crate::{
         UtxoReplyStream,
     },
     utils::{get_build_info, ServiceMetadata},
-    BackendType,
 };
 use crate::{
     chain_index::{non_finalised_state::ChainIndexSnapshot, NonFinalizedSnapshot},
-    ChainIndex, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
+    ChainIndex, ChainIndexRpcExt, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
 };
 
-/// Chain fetch service backed by Zcashd's JsonRPC engine.
+/// A single node-backed chain-fetch + tx-submission service, generic over its
+/// [`BlockchainSource`].
 ///
-/// This service is a central service, [`FetchServiceSubscriber`] should be created to fetch data.
-/// This is done to enable large numbers of concurrent subscribers without significant slowdowns.
+/// Replaces the former `FetchService` / `StateService` split: the JSON-RPC (`Rpc`) and
+/// direct-`ReadStateService` (`Direct`) backends are now one type selected at runtime
+/// via [`NodeBackedIndexerServiceConfig`]. Production instantiates the default
+/// `Source = ValidatorConnector` (which itself carries the `Rpc`/`Direct` arm); tests
+/// may instantiate over a mock source.
 ///
-/// NOTE: We currently do not implement clone for chain fetch services as this service is responsible for maintaining and closing its child processes.
-///       ServiceSubscribers are used to create separate chain fetch processes while allowing central state processes to be managed in a single place.
-///       If we want the ability to clone Service all JoinHandle's should be converted to Arc\<JoinHandle\>.
+/// This service is a central service — create a [`NodeBackedIndexerServiceSubscriber`]
+/// (via [`ZcashService::get_subscriber`]) to fetch data. This lets large numbers of
+/// concurrent subscribers run without contending on the single central process.
+///
+/// NOTE: We do not implement `Clone` for the central service: it owns and closes its
+/// child processes. Subscribers are the clone-safe read handles.
 #[derive(Debug)]
-#[deprecated = "Will be eventually replaced by `BlockchainSource`"]
-pub struct FetchService {
-    /// JsonRPC Client.
-    ///
-    /// NOTE: DEPRCATED, USE INDEXER OR VALIDATOR_CONNECTOR.
-    fetcher: JsonRpSeeConnector,
+pub struct NodeBackedIndexerService<Source: BlockchainSource = ValidatorConnector> {
     /// Core indexer.
-    indexer: NodeBackedChainIndex,
+    indexer: NodeBackedChainIndex<Source>,
     /// Service metadata.
     data: ServiceMetadata,
-
-    /// StateService config data.
-    #[allow(deprecated)]
-    config: FetchServiceConfig,
+    /// Connection-independent config (validator RPC, storage, network, ...).
+    config: CommonBackendConfig,
 }
 
-#[allow(deprecated)]
-impl Status for FetchService {
+impl<Source: BlockchainSource> Status for NodeBackedIndexerService<Source> {
     fn status(&self) -> StatusType {
         self.indexer.status()
     }
 }
 
-#[allow(deprecated)]
-impl ZcashService for FetchService {
-    const BACKEND_TYPE: BackendType = BackendType::Fetch;
+impl<Source: BlockchainSource> NodeBackedIndexerService<Source> {
+    /// Tears down the indexer (sync loop, finalised DB, mempool, and any source-owned
+    /// syncer task) from a synchronous context. Shared by [`ZcashService::close`] and
+    /// [`Drop`].
+    ///
+    /// `block_in_place` is only legal on a multi-thread runtime; on a
+    /// current-thread runtime or a thread with no runtime it panics, and a
+    /// panic inside `Drop` during unwind aborts the process. Those contexts
+    /// fall back to the synchronous best-effort teardown, which skips only
+    /// the finalised DB's async shutdown step (the DB's own `Drop` still
+    /// releases its resources).
+    fn shutdown_blocking(&self) {
+        use tokio::runtime::{Handle, RuntimeFlavor};
 
-    type Subscriber = FetchServiceSubscriber;
-    type Config = FetchServiceConfig;
+        match Handle::try_current() {
+            Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
+                tokio::task::block_in_place(|| {
+                    handle.block_on(async {
+                        let _ = self.indexer.shutdown().await;
+                    });
+                });
+            }
+            _ => self.indexer.shutdown_sync_best_effort(),
+        }
+    }
+}
 
-    /// Initializes a new FetchService instance and starts sync process.
-    #[instrument(name = "FetchService::spawn", skip(config), fields(network = %config.common.network))]
-    async fn spawn(config: FetchServiceConfig) -> Result<Self, FetchServiceError> {
+impl ZcashService for NodeBackedIndexerService<ValidatorConnector> {
+    type Subscriber = NodeBackedIndexerServiceSubscriber<ValidatorConnector>;
+    type Config = NodeBackedIndexerServiceConfig;
+
+    /// Initializes a new [`NodeBackedIndexerService`] and starts its sync process.
+    #[instrument(name = "NodeBackedIndexerService::spawn", skip(config), fields(network = %config.common.network))]
+    async fn spawn(
+        config: NodeBackedIndexerServiceConfig,
+    ) -> Result<Self, NodeBackedIndexerServiceError> {
         info!(
             rpc_address = %config.common.validator_rpc_address,
             network = %config.common.network,
-            "Launching Fetch Service"
+            "Launching NodeBackedIndexerService"
         );
 
-        let fetcher = JsonRpSeeConnector::new_from_config_parts(
-            &config.common.validator_rpc_address,
-            config.common.validator_rpc_user.clone(),
-            config.common.validator_rpc_password.clone(),
-            config.common.validator_cookie_path.clone(),
-        )
-        .await?;
+        // Select the validator connection from config; both arms return the built source,
+        // the validator `getinfo` used for service metadata, and the runtime network
+        // (activation schedule adopted from the validator at first contact, zaino#1076).
+        let (source, zebra_build_data, network) = match &config.connection {
+            ValidatorConnectionType::Rpc => ValidatorConnector::spawn_fetch(&config.common).await,
+            ValidatorConnectionType::Direct(direct) => {
+                ValidatorConnector::spawn_state(&config.common, direct).await
+            }
+        }
+        .map_err(|error| NodeBackedIndexerServiceError::Critical(error.to_string()))?;
 
-        let zebra_build_data = fetcher.get_info().await?;
         let data = ServiceMetadata::new(
             get_build_info(config.common.indexer_version.clone()),
-            config.common.network.to_zebra_network(),
+            network.clone(),
             zebra_build_data.build,
             zebra_build_data.subversion,
         );
         info!(build = %data.zebra_build(), subversion = %data.zebra_subversion(), "Connected to Zcash node");
 
-        let source = ValidatorConnector::Fetch(fetcher.clone());
-        let indexer = NodeBackedChainIndex::new(source, config.clone().into())
-            .await
-            .unwrap();
+        let indexer = NodeBackedChainIndex::new(
+            source,
+            ChainIndexConfig::from_backend_config(&config.common, network),
+        )
+        .await
+        .map_err(|error| NodeBackedIndexerServiceError::Critical(error.to_string()))?;
 
-        let fetch_service = Self {
-            fetcher,
+        let service = Self {
             indexer,
             data,
-            config,
+            config: config.common,
         };
 
         // wait for sync to complete, return error on sync fail.
         loop {
-            match fetch_service.status() {
+            match service.status() {
                 StatusType::Ready | StatusType::Closing => break,
                 StatusType::CriticalError => {
-                    return Err(FetchServiceError::Critical(
+                    return Err(NodeBackedIndexerServiceError::Critical(
                         "ChainIndex initial sync failed, check full log for details.".to_string(),
                     ));
                 }
@@ -171,78 +201,210 @@ impl ZcashService for FetchService {
             }
         }
 
-        Ok(fetch_service)
+        Ok(service)
     }
 
-    /// Returns a [`FetchServiceSubscriber`].
-    fn get_subscriber(&self) -> IndexerSubscriber<FetchServiceSubscriber> {
-        IndexerSubscriber::new(FetchServiceSubscriber {
-            fetcher: self.fetcher.clone(),
+    /// Returns a [`NodeBackedIndexerServiceSubscriber`].
+    fn get_subscriber(
+        &self,
+    ) -> IndexerSubscriber<NodeBackedIndexerServiceSubscriber<ValidatorConnector>> {
+        IndexerSubscriber::new(NodeBackedIndexerServiceSubscriber {
             indexer: self.indexer.subscriber(),
             data: self.data.clone(),
             config: self.config.clone(),
         })
     }
 
-    /// Shuts down the StateService.
+    /// Shuts down the service, tearing down its indexer (sync loop, finalised DB,
+    /// mempool, and any source-owned syncer task).
     fn close(&mut self) {
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async {
-                let _ = self.indexer.shutdown().await;
-            });
-        });
+        self.shutdown_blocking();
     }
 }
 
-#[allow(deprecated)]
-impl Drop for FetchService {
+impl<Source: BlockchainSource> Drop for NodeBackedIndexerService<Source> {
     fn drop(&mut self) {
-        self.close()
+        self.shutdown_blocking();
     }
 }
 
-/// A fetch service subscriber.
-///
-/// Subscribers should be
+/// A clone-safe, read-only subscriber to a [`NodeBackedIndexerService`].
 #[derive(Debug, Clone)]
-#[allow(deprecated)]
-pub struct FetchServiceSubscriber {
-    /// JsonRPC Client.
-    ///
-    /// NOTE: DEPRCATED, USE INDEXER OR VALIDATOR_CONNECTOR.
-    fetcher: JsonRpSeeConnector,
+pub struct NodeBackedIndexerServiceSubscriber<Source: BlockchainSource = ValidatorConnector> {
     /// Core indexer.
-    pub indexer: NodeBackedChainIndexSubscriber,
+    pub indexer: NodeBackedChainIndexSubscriber<Source>,
     /// Service metadata.
     pub data: ServiceMetadata,
-    /// StateService config data.
-    #[allow(deprecated)]
-    config: FetchServiceConfig,
+    /// Connection-independent config (validator RPC, storage, network, ...).
+    config: CommonBackendConfig,
 }
 
-impl Status for FetchServiceSubscriber {
+impl<Source: BlockchainSource> Status for NodeBackedIndexerServiceSubscriber<Source> {
     fn status(&self) -> StatusType {
         self.indexer.status()
     }
 }
 
-impl FetchServiceSubscriber {
+impl<Source: BlockchainSource> NodeBackedIndexerServiceSubscriber<Source> {
     /// Fetches the current status
     #[deprecated(note = "Use the Status trait method instead")]
     pub fn get_status(&self) -> StatusType {
         self.indexer.status()
     }
 
-    /// Returns the network type running.
-    #[allow(deprecated)]
-    pub fn network(&self) -> zaino_common::Network {
-        self.config.common.network
+    /// Returns the runtime network, carrying the activation schedule
+    /// adopted from the validator (zaino#1076).
+    pub fn network(&self) -> zebra_chain::parameters::Network {
+        self.data.network()
     }
 }
 
-impl ZcashIndexer for FetchServiceSubscriber {
-    #[allow(deprecated)]
-    type Error = FetchServiceError;
+/// `getchaintips` served from the non-finalised snapshot when it exists,
+/// falling back to the validator's own response during the initial
+/// finalised-state build — matching both pre-merge backends, which proxied
+/// the validator for that window instead of erroring.
+pub(crate) async fn chain_tips_for_snapshot<Source: BlockchainSource>(
+    snapshot: &ChainIndexSnapshot,
+    source: &Source,
+) -> Result<GetChainTipsResponse, NodeBackedIndexerServiceError> {
+    match snapshot.get_nfs_snapshot() {
+        Some(non_finalized_snapshot) => Ok(chain_tips_from_nonfinalized_snapshot(
+            non_finalized_snapshot,
+        )),
+        None => Ok(source
+            .get_chain_tips()
+            .await
+            .map_err(crate::error::ChainIndexError::backing_validator)?),
+    }
+}
+
+/// Placeholder metadata and config for test-only service construction. Takes the
+/// runtime (zebra) network directly — tests are their own chain, so they stand in
+/// for the validator the production path adopts the schedule from.
+#[cfg(test)]
+fn test_service_parts(
+    network: zebra_chain::parameters::Network,
+) -> (ServiceMetadata, CommonBackendConfig) {
+    let network_kind = zaino_common::Network::from(network.clone());
+    (
+        ServiceMetadata::new(
+            get_build_info("test".to_string()),
+            network,
+            "test-build".to_string(),
+            "test-subversion".to_string(),
+        ),
+        CommonBackendConfig::new(
+            "127.0.0.1:0".to_string(),
+            None,
+            None,
+            None,
+            zaino_common::ServiceConfig::default(),
+            zaino_common::StorageConfig::default(),
+            true,
+            network_kind,
+            None,
+        ),
+    )
+}
+
+#[cfg(test)]
+impl<Source: BlockchainSource> NodeBackedIndexerService<Source> {
+    /// Wraps a chain index in a service for tests, with placeholder
+    /// metadata/config. Lets unit tests exercise the service lifecycle over a
+    /// mock source (no real validator). Production builds go through
+    /// [`ZcashService::spawn`].
+    pub(crate) fn new_for_test(
+        indexer: NodeBackedChainIndex<Source>,
+        network: zebra_chain::parameters::Network,
+    ) -> Self {
+        let (data, config) = test_service_parts(network);
+        Self {
+            data,
+            config,
+            indexer,
+        }
+    }
+}
+
+#[cfg(test)]
+impl<Source: BlockchainSource> NodeBackedIndexerServiceSubscriber<Source> {
+    /// Wraps a chain-index subscriber in a service subscriber for tests, with placeholder
+    /// metadata/config. Lets unit tests drive the service RPC layer over a mock source
+    /// (no real validator). Production builds go through [`ZcashService::get_subscriber`].
+    pub(crate) fn new_for_test(
+        indexer: NodeBackedChainIndexSubscriber<Source>,
+        network: zebra_chain::parameters::Network,
+    ) -> Self {
+        let (data, config) = test_service_parts(network);
+        Self {
+            data,
+            config,
+            indexer,
+        }
+    }
+}
+
+/// A subscriber to any chaintip updates.
+#[derive(Clone)]
+pub struct ChainTipSubscriber {
+    monitor: zebra_state::ChainTipChange,
+}
+
+impl ChainTipSubscriber {
+    /// Waits until the tip hash has changed (relative to the last time this method
+    /// was called), then returns the best tip's block hash.
+    pub async fn next_tip_hash(
+        &mut self,
+    ) -> Result<zebra_chain::block::Hash, tokio::sync::watch::error::RecvError> {
+        self.monitor
+            .wait_for_tip_change()
+            .await
+            .map(|tip| tip.best_tip_hash())
+    }
+}
+
+impl<Source: BlockchainSource> NodeBackedIndexerServiceSubscriber<Source> {
+    /// A subscriber to chain-tip updates, when the backing source exposes a
+    /// local tip-change stream. `Some` only on the `Direct` connection; the
+    /// `Rpc` connection (and any other stream-less source) observes tips by
+    /// polling the validator and yields `None`.
+    pub fn chaintip_update_subscriber(&self) -> Option<ChainTipSubscriber> {
+        Some(ChainTipSubscriber {
+            monitor: self.indexer.source().chain_tip_change()?,
+        })
+    }
+}
+
+/// Methods available only on the production (`ValidatorConnector`-backed) subscriber:
+/// the `Direct` connection owns a `ReadStateService` that the generic source
+/// abstraction does not expose.
+impl NodeBackedIndexerServiceSubscriber<ValidatorConnector> {
+    /// The backing Zebra [`zebra_state::ReadStateService`] (`Direct` connection only).
+    ///
+    /// Test-only escape hatch: live tests recompute expected chain data directly off the
+    /// `ReadStateService`. Production code goes through the `ChainIndex` API.
+    #[cfg(feature = "test_dependencies")]
+    pub fn read_state_service(&self) -> zebra_state::ReadStateService {
+        self.indexer
+            .source()
+            .read_state_service()
+            .expect("read_state_service requires the Direct connection")
+            .clone()
+    }
+
+    /// The indexer's mempool subscriber.
+    ///
+    /// Test-only escape hatch: live tests recompute expected `getmempoolinfo` values
+    /// directly off the mempool's entries. Production code goes through the `ChainIndex`
+    /// mempool API.
+    #[cfg(feature = "test_dependencies")]
+    pub fn mempool(&self) -> &crate::chain_index::mempool::MempoolSubscriber {
+        self.indexer.mempool_subscriber()
+    }
+}
+
+impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscriber<Source> {
+    type Error = NodeBackedIndexerServiceError;
 
     /// Returns information about all changes to the given transparent addresses within the given inclusive block-height range.
     ///
@@ -282,7 +444,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// in Zebra's [`GetInfo`]. Zebra uses the field names and formats from the
     /// [zcashd code](https://github.com/zcash/zcash/blob/v4.6.0-1/src/rpc/misc.cpp#L86-L87).
     async fn get_info(&self) -> Result<GetInfo, Self::Error> {
-        Ok(self.fetcher.get_info().await?.into())
+        Ok(self.indexer.get_info().await?)
     }
 
     /// Returns blockchain state information, as a [`GetBlockchainInfoResponse`] JSON struct.
@@ -296,18 +458,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// Some fields from the zcashd reference are missing from Zebra's [`GetBlockchainInfoResponse`]. It only contains the fields
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L72-L89)
     async fn get_blockchain_info(&self) -> Result<GetBlockchainInfoResponse, Self::Error> {
-        self.fetcher
-            .get_blockchain_info()
-            .await?
-            .try_into()
-            .map_err(|_e| {
-                #[allow(deprecated)]
-                FetchServiceError::SerializationError(
-                    zebra_chain::serialization::SerializationError::Parse(
-                        "chainwork not hex-encoded integer",
-                    ),
-                )
-            })
+        Ok(self.indexer.get_blockchain_info().await?)
     }
 
     /// Returns details on the active state of the TX memory pool.
@@ -324,7 +475,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
     }
 
     async fn get_peer_info(&self) -> Result<GetPeerInfo, Self::Error> {
-        Ok(self.fetcher.get_peer_info().await?)
+        Ok(self.indexer.get_peer_info().await?)
     }
 
     /// Returns the proof-of-work difficulty as a multiple of the minimum difficulty.
@@ -333,11 +484,11 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// method: post
     /// tags: blockchain
     async fn get_difficulty(&self) -> Result<f64, Self::Error> {
-        Ok(self.fetcher.get_difficulty().await?.0)
+        Ok(self.indexer.get_difficulty().await?)
     }
 
     async fn get_block_subsidy(&self, height: u32) -> Result<GetBlockSubsidy, Self::Error> {
-        Ok(self.fetcher.get_block_subsidy(height).await?)
+        Ok(self.indexer.get_block_subsidy(height).await?)
     }
 
     /// Returns the total balance of a provided `addresses` in an [`AddressBalance`] instance.
@@ -388,12 +539,10 @@ impl ZcashIndexer for FetchServiceSubscriber {
         &self,
         raw_transaction_hex: String,
     ) -> Result<SentTransactionHash, Self::Error> {
-        validate_raw_transaction_hex(&raw_transaction_hex)?;
         Ok(self
-            .fetcher
+            .indexer
             .send_raw_transaction(raw_transaction_hex)
-            .await?
-            .into())
+            .await?)
     }
 
     /// Returns the requested block by hash or height, as a [`GetBlock`] JSON string.
@@ -425,11 +574,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
         hash_or_height: String,
         verbosity: Option<u8>,
     ) -> Result<GetBlock, Self::Error> {
-        Ok(self
-            .fetcher
-            .get_block(hash_or_height, verbosity)
-            .await?
-            .try_into()?)
+        Ok(self.indexer.z_get_block(hash_or_height, verbosity).await?)
     }
 
     /// Returns information about the given block and its transactions.
@@ -440,7 +585,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
     ///
     /// Note: This method has only been implemented in `zcashd`. Zebra has no intention of supporting it.
     async fn get_block_deltas(&self, hash: String) -> Result<BlockDeltas, Self::Error> {
-        Ok(self.fetcher.get_block_deltas(hash).await?)
+        Ok(self.indexer.get_block_deltas(hash).await?)
     }
 
     async fn get_block_header(
@@ -448,11 +593,11 @@ impl ZcashIndexer for FetchServiceSubscriber {
         hash: String,
         verbose: bool,
     ) -> Result<GetBlockHeader, Self::Error> {
-        Ok(self.fetcher.get_block_header(hash, verbose).await?)
+        Ok(self.indexer.get_block_header(hash, verbose).await?)
     }
 
     async fn get_mining_info(&self) -> Result<GetMiningInfoWire, Self::Error> {
-        Ok(self.fetcher.get_mining_info().await?)
+        Ok(self.indexer.get_mining_info().await?)
     }
 
     /// Returns statistics about the unspent transaction output set.
@@ -484,7 +629,9 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// [The function in rpc/blockchain.cpp](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L325)
     /// where `return chainActive.Tip()->GetBlockHash().GetHex();` is the [return expression](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L339)returning a `std::string`
     async fn get_best_blockhash(&self) -> Result<GetBlockHashResponse, Self::Error> {
-        Ok(self.fetcher.get_best_blockhash().await?.into())
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let tip = self.indexer.best_chaintip(&snapshot).await?;
+        Ok(GetBlockHashResponse::new(tip.hash.into()))
     }
 
     /// Returns the current block count in the best valid block chain.
@@ -493,18 +640,15 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// method: post
     /// tags: blockchain
     async fn get_block_count(&self) -> Result<Height, Self::Error> {
-        Ok(self.fetcher.get_block_count().await?.into())
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let tip = self.indexer.best_chaintip(&snapshot).await?;
+        Ok(tip.height.into())
     }
 
+    #[allow(deprecated)]
     async fn get_chain_tips(&self) -> Result<GetChainTipsResponse, Self::Error> {
         let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
-        let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
-            return Ok(self.fetcher.get_chain_tips().await?);
-        };
-
-        Ok(chain_tips_from_nonfinalized_snapshot(
-            non_finalized_snapshot,
-        ))
+        chain_tips_for_snapshot(&snapshot, self.indexer.source()).await
     }
 
     /// Return information about the given Zcash address.
@@ -519,7 +663,9 @@ impl ZcashIndexer for FetchServiceSubscriber {
         &self,
         address: String,
     ) -> Result<ValidateAddressResponse, Self::Error> {
-        Ok(self.fetcher.validate_address(address).await?)
+        #[allow(deprecated)]
+        let network = self.data.network();
+        Ok(crate::indexer::validate_address(address, &network))
     }
 
     #[allow(deprecated)]
@@ -527,8 +673,9 @@ impl ZcashIndexer for FetchServiceSubscriber {
         &self,
         address: String,
     ) -> Result<ZValidateAddressResponse, Self::Error> {
-        tracing::warn!("{}", Z_VALIDATE_DEPRECATION);
-        Ok(self.fetcher.z_validate_address(address).await?)
+        #[allow(deprecated)]
+        let network = self.data.network();
+        Ok(crate::indexer::z_validate_address(address, &network))
     }
 
     /// Returns all transaction ids in the memory pool, as a JSON array.
@@ -567,7 +714,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// NOTE: This method currently has to fetch data from 2 places (get_treestate and get_indexed_block_by_*),
     ///       If `ValidatorConnector::GetTreeState` was updated to return the additional information
     ///       required, this second call could be removed, improving the performance of this method.
-    // Pre-existing lint: `FetchServiceError` is a large error type; returning it by value here is
+    // Pre-existing lint: `NodeBackedIndexerServiceError` is a large error type; returning it by value here is
     // flagged by `result_large_err`. Suppressed to satisfy `-D warnings` without an invasive
     // boxing refactor of the shared error enum.
     #[allow(clippy::result_large_err)]
@@ -587,7 +734,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
                     .await?
                     .ok_or(
                         #[allow(deprecated)]
-                        FetchServiceError::RpcError(RpcError::new_from_legacycode(
+                        NodeBackedIndexerServiceError::RpcError(RpcError::new_from_legacycode(
                             zebra_rpc::server::error::LegacyCode::InvalidParameter,
                             "Failed to fetch block data.",
                         )),
@@ -598,7 +745,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
                     .await?
                     .ok_or(
                         #[allow(deprecated)]
-                        FetchServiceError::RpcError(RpcError::new_from_legacycode(
+                        NodeBackedIndexerServiceError::RpcError(RpcError::new_from_legacycode(
                             zebra_rpc::server::error::LegacyCode::InvalidParameter,
                             "Failed to fetch block data.",
                         )),
@@ -608,7 +755,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
             let treestates = self.indexer.get_treestate(block_data.hash()).await?;
             let time: u32 = block_data.data().time().try_into().map_err(|_error| {
                 #[allow(deprecated)]
-                FetchServiceError::RpcError(RpcError::new_from_legacycode(
+                NodeBackedIndexerServiceError::RpcError(RpcError::new_from_legacycode(
                     zebra_rpc::server::error::LegacyCode::InvalidParameter,
                     "Block time is out of range for u32.",
                 ))
@@ -636,25 +783,10 @@ impl ZcashIndexer for FetchServiceSubscriber {
             return local_result;
         }
 
-        self.fetcher
-            .get_treestate(fallback_hash_or_height)
-            .await
-            .map_err(|_error| {
-                #[allow(deprecated)]
-                FetchServiceError::RpcError(RpcError::new_from_legacycode(
-                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                    "Failed to fetch treestate.",
-                ))
-            })
-            .and_then(|treestate| {
-                treestate.try_into().map_err(|_error| {
-                    #[allow(deprecated)]
-                    FetchServiceError::RpcError(RpcError::new_from_legacycode(
-                        zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                        "Failed to parse treestate.",
-                    ))
-                })
-            })
+        Ok(self
+            .indexer
+            .get_treestate_by_id(fallback_hash_or_height)
+            .await?)
     }
 
     /// Returns information about a range of Sapling or Orchard subtrees.
@@ -675,17 +807,36 @@ impl ZcashIndexer for FetchServiceSubscriber {
     /// starting at the chain tip. This RPC will return an empty list if the `start_index` subtree
     /// exists, but has not been rebuilt yet. This matches `zcashd`'s behaviour when subtrees aren't
     /// available yet. (But `zcashd` does its rebuild before syncing any blocks.)
+    #[allow(deprecated)]
     async fn z_get_subtrees_by_index(
         &self,
         pool: String,
         start_index: NoteCommitmentSubtreeIndex,
         limit: Option<NoteCommitmentSubtreeIndex>,
     ) -> Result<GetSubtreesByIndexResponse, Self::Error> {
-        Ok(self
-            .fetcher
-            .get_subtrees_by_index(pool, start_index.0, limit.map(|limit_index| limit_index.0))
-            .await?
-            .into())
+        let shielded_pool = match pool.as_str() {
+            "sapling" => crate::chain_index::ShieldedPool::Sapling,
+            "orchard" => crate::chain_index::ShieldedPool::Orchard,
+            otherwise => {
+                return Err(NodeBackedIndexerServiceError::RpcError(
+                    RpcError::new_from_legacycode(
+                        zebra_rpc::server::error::LegacyCode::Misc,
+                        format!(
+                            "invalid pool name \"{otherwise}\", must be \"sapling\" or \"orchard\""
+                        ),
+                    ),
+                ))
+            }
+        };
+        let roots = self
+            .indexer
+            .get_subtree_roots(shielded_pool, start_index.0, limit.map(|index| index.0))
+            .await?;
+        Ok(crate::indexer::build_subtrees_by_index_response(
+            pool,
+            start_index,
+            roots,
+        ))
     }
 
     /// Returns the raw transaction data, as a [`GetRawTransaction`] JSON string or structure.
@@ -714,7 +865,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
     ) -> Result<GetRawTransaction, Self::Error> {
         #[allow(deprecated)]
         let txid = types::TransactionHash::from_hex(&txid_hex).map_err(|error| {
-            FetchServiceError::RpcError(RpcError::new_from_legacycode(
+            NodeBackedIndexerServiceError::RpcError(RpcError::new_from_legacycode(
                 zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey,
                 error.to_string(),
             ))
@@ -722,7 +873,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
 
         #[allow(deprecated)]
         let not_found_error = || {
-            FetchServiceError::RpcError(RpcError::new_from_legacycode(
+            NodeBackedIndexerServiceError::RpcError(RpcError::new_from_legacycode(
                 zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey,
                 "No such mempool or main chain transaction",
             ))
@@ -778,7 +929,7 @@ impl ZcashIndexer for FetchServiceSubscriber {
                 height,
                 confirmations,
                 #[allow(deprecated)]
-                &self.config.common.network.to_zebra_network(),
+                &self.data.network(),
                 None,
                 block_hash,
                 in_best_chain,
@@ -798,24 +949,19 @@ impl ZcashIndexer for FetchServiceSubscriber {
         n: u32,
         include_mempool: Option<bool>,
     ) -> Result<GetTxOutResponse, Self::Error> {
-        Ok(self.fetcher.get_tx_out(txid, n, include_mempool).await?)
+        Ok(self.indexer.get_tx_out(txid, n, include_mempool).await?)
     }
 
     async fn get_spent_info(
         &self,
         request: GetSpentInfoRequest,
     ) -> Result<GetSpentInfoResponse, Self::Error> {
-        Ok(self.fetcher.get_spent_info(request).await?)
+        Ok(self.indexer.get_spent_info(request).await?)
     }
 
     async fn chain_height(&self) -> Result<Height, Self::Error> {
-        Ok(Height(
-            self.indexer
-                .snapshot_nonfinalized_state()
-                .await?
-                .max_serviceable_height()
-                .0,
-        ))
+        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        Ok(self.indexer.best_chaintip(&snapshot).await?.height.into())
     }
     /// Returns the transaction ids made by the provided transparent addresses.
     ///
@@ -886,12 +1032,12 @@ impl ZcashIndexer for FetchServiceSubscriber {
         blocks: Option<i32>,
         height: Option<i32>,
     ) -> Result<GetNetworkSolPsResponse, Self::Error> {
-        Ok(self.fetcher.get_network_sol_ps(blocks, height).await?)
+        Ok(self.indexer.get_network_sol_ps(blocks, height).await?)
     }
 }
 
 #[allow(deprecated)]
-impl LightWalletIndexer for FetchServiceSubscriber {
+impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSubscriber<Source> {
     /// Return the height of the tip of the best chain
     async fn get_latest_block(&self) -> Result<BlockId, Self::Error> {
         match self.indexer.snapshot_nonfinalized_state().await? {
@@ -902,7 +1048,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 // TODO: This probably shouldn't be an error.
                 // this is an improvement over previous behaviour of reporting
                 // the genesis block
-                Err(FetchServiceError::UnavailableNotSyncedEnough)
+                Err(NodeBackedIndexerServiceError::UnavailableNotSyncedEnough)
             }
         }
         // dbg!(&tip);
@@ -911,7 +1057,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     /// Return the compact block corresponding to the given block identifier
     async fn get_block(&self, request: BlockId) -> Result<CompactBlock, Self::Error> {
         let hash_or_height = blockid_to_hashorheight(request).ok_or(
-            FetchServiceError::TonicStatusError(tonic::Status::invalid_argument(
+            NodeBackedIndexerServiceError::TonicStatusError(tonic::Status::invalid_argument(
                 "Error: Invalid hash and/or height out of range. Failed to convert to u32.",
             )),
         )?;
@@ -923,12 +1069,12 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 match self.indexer.get_block_height(&snapshot, hash.into()).await {
                     Ok(Some(height)) => height.0,
                     Ok(None) => {
-                        return Err(FetchServiceError::TonicStatusError(tonic::Status::invalid_argument(
+                        return Err(NodeBackedIndexerServiceError::TonicStatusError(tonic::Status::invalid_argument(
                             "Error: Invalid hash and/or height out of range. Hash not founf in chain",
                         )));
                     }
                     Err(_e) => {
-                        return Err(FetchServiceError::TonicStatusError(
+                        return Err(NodeBackedIndexerServiceError::TonicStatusError(
                             tonic::Status::internal("Error: Internal db error."),
                         ));
                     }
@@ -940,7 +1086,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             // TODO: This probably shouldn't be an error.
             // this is an improvement over previous behaviour of
             // acting as if we are only synced to the genesis block
-            return Err(FetchServiceError::UnavailableNotSyncedEnough);
+            return Err(NodeBackedIndexerServiceError::UnavailableNotSyncedEnough);
         };
 
         match self
@@ -956,32 +1102,38 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             Ok(None) => {
                 let chain_height = non_finalized_snapshot.best_tip.height.0;
                 match hash_or_height {
-                    HashOrHeight::Height(Height(height)) if height >= chain_height => Err(
-                        FetchServiceError::TonicStatusError(tonic::Status::out_of_range(format!(
-                            "Error: Height out of range [{hash_or_height}]. Height requested \
+                    HashOrHeight::Height(Height(height)) if height >= chain_height => {
+                        Err(NodeBackedIndexerServiceError::TonicStatusError(
+                            tonic::Status::out_of_range(format!(
+                                "Error: Height out of range [{hash_or_height}]. Height requested \
                                 is greater than the best chain tip [{chain_height}].",
-                        ))),
-                    ),
-                    _otherwise => Err(FetchServiceError::TonicStatusError(tonic::Status::unknown(
-                        "Error: Failed to retrieve block from state.",
-                    ))),
+                            )),
+                        ))
+                    }
+                    _otherwise => Err(NodeBackedIndexerServiceError::TonicStatusError(
+                        tonic::Status::unknown("Error: Failed to retrieve block from state."),
+                    )),
                 }
             }
             Err(e) => {
                 let chain_height = non_finalized_snapshot.best_tip.height.0;
                 match hash_or_height {
-                    HashOrHeight::Height(Height(height)) if height >= chain_height => Err(
-                        FetchServiceError::TonicStatusError(tonic::Status::out_of_range(format!(
-                            "Error: Height out of range [{hash_or_height}]. Height requested \
+                    HashOrHeight::Height(Height(height)) if height >= chain_height => {
+                        Err(NodeBackedIndexerServiceError::TonicStatusError(
+                            tonic::Status::out_of_range(format!(
+                                "Error: Height out of range [{hash_or_height}]. Height requested \
                                 is greater than the best chain tip [{chain_height}].",
-                        ))),
-                    ),
+                            )),
+                        ))
+                    }
                     _otherwise =>
                     // TODO: Hide server error from clients before release. Currently useful for dev purposes.
                     {
-                        Err(FetchServiceError::TonicStatusError(tonic::Status::unknown(
-                            format!("Error: Failed to retrieve block from node. Server Error: {e}",),
-                        )))
+                        Err(NodeBackedIndexerServiceError::TonicStatusError(
+                            tonic::Status::unknown(format!(
+                                "Error: Failed to retrieve block from node. Server Error: {e}",
+                            )),
+                        ))
                     }
                 }
             }
@@ -993,7 +1145,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     /// NOTE: Currently this only returns Orchard nullifiers to follow Lightwalletd functionality but Sapling could be added if required by wallets.
     async fn get_block_nullifiers(&self, request: BlockId) -> Result<CompactBlock, Self::Error> {
         let hash_or_height = blockid_to_hashorheight(request).ok_or(
-            FetchServiceError::TonicStatusError(tonic::Status::invalid_argument(
+            NodeBackedIndexerServiceError::TonicStatusError(tonic::Status::invalid_argument(
                 "Error: Invalid hash and/or height out of range. Failed to convert to u32.",
             )),
         )?;
@@ -1004,12 +1156,12 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 match self.indexer.get_block_height(&snapshot, hash.into()).await {
                     Ok(Some(height)) => height.0,
                     Ok(None) => {
-                        return Err(FetchServiceError::TonicStatusError(tonic::Status::invalid_argument(
+                        return Err(NodeBackedIndexerServiceError::TonicStatusError(tonic::Status::invalid_argument(
                             "Error: Invalid hash and/or height out of range. Hash not founf in chain",
                         )));
                     }
                     Err(_e) => {
-                        return Err(FetchServiceError::TonicStatusError(
+                        return Err(NodeBackedIndexerServiceError::TonicStatusError(
                             tonic::Status::internal("Error: Internal db error."),
                         ));
                     }
@@ -1020,7 +1172,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             // TODO: This probably shouldn't be an error.
             // this is an improvement over previous behaviour of
             // acting as if we are only synced to the genesis block
-            return Err(FetchServiceError::UnavailableNotSyncedEnough);
+            return Err(NodeBackedIndexerServiceError::UnavailableNotSyncedEnough);
         };
         match self
             .indexer
@@ -1035,40 +1187,44 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             Ok(None) => {
                 let chain_height = non_finalized_snapshot.best_tip.height.0;
                 match hash_or_height {
-                    HashOrHeight::Height(Height(height)) if height >= chain_height => Err(
-                        FetchServiceError::TonicStatusError(tonic::Status::out_of_range(format!(
-                            "Error: Height out of range [{hash_or_height}]. Height requested \
+                    HashOrHeight::Height(Height(height)) if height >= chain_height => {
+                        Err(NodeBackedIndexerServiceError::TonicStatusError(
+                            tonic::Status::out_of_range(format!(
+                                "Error: Height out of range [{hash_or_height}]. Height requested \
                                 is greater than the best chain tip [{chain_height}].",
-                        ))),
-                    ),
+                            )),
+                        ))
+                    }
                     HashOrHeight::Height(height)
                         if height > self.data.network().sapling_activation_height() =>
                     {
-                        Err(FetchServiceError::TonicStatusError(
+                        Err(NodeBackedIndexerServiceError::TonicStatusError(
                             tonic::Status::out_of_range(format!(
                                 "Error: Height out of range [{hash_or_height}]. Height requested \
                                 is below sapling activation height [{chain_height}].",
                             )),
                         ))
                     }
-                    _otherwise => Err(FetchServiceError::TonicStatusError(tonic::Status::unknown(
-                        "Error: Failed to retrieve block from state.",
-                    ))),
+                    _otherwise => Err(NodeBackedIndexerServiceError::TonicStatusError(
+                        tonic::Status::unknown("Error: Failed to retrieve block from state."),
+                    )),
                 }
             }
             Err(e) => {
                 let chain_height = non_finalized_snapshot.best_tip.height.0;
                 match hash_or_height {
-                    HashOrHeight::Height(Height(height)) if height >= chain_height => Err(
-                        FetchServiceError::TonicStatusError(tonic::Status::out_of_range(format!(
-                            "Error: Height out of range [{hash_or_height}]. Height requested \
+                    HashOrHeight::Height(Height(height)) if height >= chain_height => {
+                        Err(NodeBackedIndexerServiceError::TonicStatusError(
+                            tonic::Status::out_of_range(format!(
+                                "Error: Height out of range [{hash_or_height}]. Height requested \
                                 is greater than the best chain tip [{chain_height}].",
-                        ))),
-                    ),
+                            )),
+                        ))
+                    }
                     HashOrHeight::Height(height)
                         if height > self.data.network().sapling_activation_height() =>
                     {
-                        Err(FetchServiceError::TonicStatusError(
+                        Err(NodeBackedIndexerServiceError::TonicStatusError(
                             tonic::Status::out_of_range(format!(
                                 "Error: Height out of range [{hash_or_height}]. Height requested \
                                 is below sapling activation height [{chain_height}].",
@@ -1078,9 +1234,11 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                     _otherwise =>
                     // TODO: Hide server error from clients before release. Currently useful for dev purposes.
                     {
-                        Err(FetchServiceError::TonicStatusError(tonic::Status::unknown(
-                            format!("Error: Failed to retrieve block from node. Server Error: {e}",),
-                        )))
+                        Err(NodeBackedIndexerServiceError::TonicStatusError(
+                            tonic::Status::unknown(format!(
+                                "Error: Failed to retrieve block from node. Server Error: {e}",
+                            )),
+                        ))
                     }
                 }
             }
@@ -1094,24 +1252,20 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         request: BlockRange,
     ) -> Result<CompactBlockStream, Self::Error> {
         let validated_request = ValidatedBlockRangeRequest::new_from_block_range(&request)
-            .map_err(FetchServiceError::from)?;
+            .map_err(NodeBackedIndexerServiceError::from)?;
 
         let pool_type_filter = PoolTypeFilter::new_from_pool_types(&validated_request.pool_types())
             .map_err(GetBlockRangeError::PoolTypeArgumentError)
-            .map_err(FetchServiceError::from)?;
+            .map_err(NodeBackedIndexerServiceError::from)?;
 
         // Note conversion here is safe due to the use of [`ValidatedBlockRangeRequest::new_from_block_range`]
         let start = validated_request.start() as u32;
         let end = validated_request.end() as u32;
 
-        let fetch_service_clone = self.clone();
-        let service_timeout = self.config.common.service.timeout;
-        let (channel_tx, channel_rx) =
-            mpsc::channel(self.config.common.service.channel_size as usize);
-        let snapshot = fetch_service_clone
-            .indexer
-            .snapshot_nonfinalized_state()
-            .await?;
+        let service_clone = self.clone();
+        let service_timeout = self.config.service.timeout;
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
+        let snapshot = service_clone.indexer.snapshot_nonfinalized_state().await?;
 
         tokio::spawn(async move {
             let timeout_result = timeout(
@@ -1134,7 +1288,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                     // Use the snapshot tip directly, as this function doesn't support passthrough
                     let chain_height = non_finalized_snapshot.best_tip.height.0;
 
-                    match fetch_service_clone
+                    match service_clone
                         .indexer
                         .get_compact_block_stream(
                             &snapshot,
@@ -1227,24 +1381,20 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         request: BlockRange,
     ) -> Result<CompactBlockStream, Self::Error> {
         let validated_request = ValidatedBlockRangeRequest::new_from_block_range(&request)
-            .map_err(FetchServiceError::from)?;
+            .map_err(NodeBackedIndexerServiceError::from)?;
 
         let pool_type_filter = PoolTypeFilter::new_from_pool_types(&validated_request.pool_types())
             .map_err(GetBlockRangeError::PoolTypeArgumentError)
-            .map_err(FetchServiceError::from)?;
+            .map_err(NodeBackedIndexerServiceError::from)?;
 
         // Note conversion here is safe due to the use of [`ValidatedBlockRangeRequest::new_from_block_range`]
         let start = validated_request.start() as u32;
         let end = validated_request.end() as u32;
 
-        let fetch_service_clone = self.clone();
-        let service_timeout = self.config.common.service.timeout;
-        let (channel_tx, channel_rx) =
-            mpsc::channel(self.config.common.service.channel_size as usize);
-        let snapshot = fetch_service_clone
-            .indexer
-            .snapshot_nonfinalized_state()
-            .await?;
+        let service_clone = self.clone();
+        let service_timeout = self.config.service.timeout;
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
+        let snapshot = service_clone.indexer.snapshot_nonfinalized_state().await?;
 
         tokio::spawn(async move {
             let timeout_result = timeout(
@@ -1268,7 +1418,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                     // Use the snapshot tip directly, as this function doesn't support passthrough
                     let chain_height = non_finalized_snapshot.best_tip.height.0;
 
-                    match fetch_service_clone
+                    match service_clone
                         .indexer
                         .get_compact_block_stream(
                             &snapshot,
@@ -1378,7 +1528,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             let (hex, height) = if let GetRawTransaction::Object(tx_object) = tx {
                 (tx_object.hex().clone(), tx_object.height())
             } else {
-                return Err(FetchServiceError::TonicStatusError(
+                return Err(NodeBackedIndexerServiceError::TonicStatusError(
                     tonic::Status::not_found("Error: Transaction not received"),
                 ));
             };
@@ -1391,7 +1541,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                         // TODO: This probably shouldn't be an error.
                         // this is an improvement over previous behaviour of
                         // acting as if we are only synced to the genesis block
-                        return Err(FetchServiceError::UnavailableNotSyncedEnough);
+                        return Err(NodeBackedIndexerServiceError::UnavailableNotSyncedEnough);
                     };
                     non_finalized_snapshot.best_tip.height.0 as u64
                 }
@@ -1402,7 +1552,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                 height,
             })
         } else {
-            Err(FetchServiceError::TonicStatusError(
+            Err(NodeBackedIndexerServiceError::TonicStatusError(
                 tonic::Status::invalid_argument("Error: Transaction hash incorrect"),
             ))
         }
@@ -1426,17 +1576,15 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     ) -> Result<RawTransactionStream, Self::Error> {
         let chain_height = self.chain_height().await?;
         let txids = self.get_taddress_txids_helper(request).await?;
-        let fetch_service_clone = self.clone();
-        let service_timeout = self.config.common.service.timeout;
-        let (transmitter, receiver) =
-            mpsc::channel(self.config.common.service.channel_size as usize);
+        let service_clone = self.clone();
+        let service_timeout = self.config.service.timeout;
+        let (transmitter, receiver) = mpsc::channel(self.config.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
                     for txid in txids {
-                        let transaction =
-                            fetch_service_clone.get_raw_transaction(txid, Some(1)).await;
+                        let transaction = service_clone.get_raw_transaction(txid, Some(1)).await;
                         if handle_raw_transaction::<Self>(
                             chain_height.0 as u64,
                             transaction,
@@ -1483,9 +1631,9 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         let checked_balance: i64 = match i64::try_from(balance.balance()) {
             Ok(balance) => balance,
             Err(_) => {
-                return Err(FetchServiceError::TonicStatusError(tonic::Status::unknown(
-                    "Error: Error converting balance from u64 to i64.",
-                )));
+                return Err(NodeBackedIndexerServiceError::TonicStatusError(
+                    tonic::Status::unknown("Error: Error converting balance from u64 to i64."),
+                ));
             }
         };
         Ok(Balance {
@@ -1499,10 +1647,10 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         &self,
         mut request: AddressStream,
     ) -> Result<Balance, Self::Error> {
-        let fetch_service_clone = self.clone();
-        let service_timeout = self.config.common.service.timeout;
+        let service_clone = self.clone();
+        let service_timeout = self.config.service.timeout;
         let (channel_tx, mut channel_rx) =
-            mpsc::channel::<String>(self.config.common.service.channel_size as usize);
+            mpsc::channel::<String>(self.config.service.channel_size as usize);
         let fetcher_task_handle = tokio::spawn(async move {
             let fetcher_timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
@@ -1512,8 +1660,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                         match channel_rx.recv().await {
                             Some(taddr) => {
                                 let taddrs = GetAddressBalanceRequest::new(vec![taddr]);
-                                let balance =
-                                    fetch_service_clone.z_get_address_balance(taddrs).await?;
+                                let balance = service_clone.z_get_address_balance(taddrs).await?;
                                 total_balance += balance.balance();
                             }
                             None => {
@@ -1561,11 +1708,11 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 fetcher_task_handle.abort();
-                return Err(FetchServiceError::TonicStatusError(e));
+                return Err(NodeBackedIndexerServiceError::TonicStatusError(e));
             }
             Err(_) => {
                 fetcher_task_handle.abort();
-                return Err(FetchServiceError::TonicStatusError(
+                return Err(NodeBackedIndexerServiceError::TonicStatusError(
                     tonic::Status::deadline_exceeded(
                         "Error: get_taddress_balance_stream request timed out in address loop.",
                     ),
@@ -1579,21 +1726,23 @@ impl LightWalletIndexer for FetchServiceSubscriber {
                     Err(_) => {
                         // TODO: Hide server error from clients before release.
                         // Currently useful for dev purposes.
-                        return Err(FetchServiceError::TonicStatusError(tonic::Status::unknown(
-                            "Error: Error converting balance from u64 to i64.",
-                        )));
+                        return Err(NodeBackedIndexerServiceError::TonicStatusError(
+                            tonic::Status::unknown(
+                                "Error: Error converting balance from u64 to i64.",
+                            ),
+                        ));
                     }
                 };
                 Ok(Balance {
                     value_zat: checked_balance,
                 })
             }
-            Ok(Err(e)) => Err(FetchServiceError::TonicStatusError(e)),
+            Ok(Err(e)) => Err(NodeBackedIndexerServiceError::TonicStatusError(e)),
             // TODO: Hide server error from clients before release.
             // Currently useful for dev purposes.
-            Err(e) => Err(FetchServiceError::TonicStatusError(tonic::Status::unknown(
-                format!("Fetcher Task failed: {e}"),
-            ))),
+            Err(e) => Err(NodeBackedIndexerServiceError::TonicStatusError(
+                tonic::Status::unknown(format!("Fetcher Task failed: {e}")),
+            )),
         }
     }
 
@@ -1618,7 +1767,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
 
         for (i, excluded_id) in request.exclude_txid_suffixes.iter().enumerate() {
             if excluded_id.len() > 32 {
-                return Err(FetchServiceError::TonicStatusError(
+                return Err(NodeBackedIndexerServiceError::TonicStatusError(
                     tonic::Status::invalid_argument(format!(
                         "Error: excluded txid {} is larger than 32 bytes",
                         i
@@ -1634,9 +1783,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         }
 
         let mempool = self.indexer.clone();
-        let service_timeout = self.config.common.service.timeout;
-        let (channel_tx, channel_rx) =
-            mpsc::channel(self.config.common.service.channel_size as usize);
+        let service_timeout = self.config.service.timeout;
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
 
         tokio::spawn(async move {
             let timeout = timeout(
@@ -1735,9 +1883,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     #[allow(deprecated)]
     async fn get_mempool_stream(&self) -> Result<RawTransactionStream, Self::Error> {
         let indexer = self.indexer.clone();
-        let service_timeout = self.config.common.service.timeout;
-        let (channel_tx, channel_rx) =
-            mpsc::channel(self.config.common.service.channel_size as usize);
+        let service_timeout = self.config.service.timeout;
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
         let snapshot = indexer.snapshot_nonfinalized_state().await?;
         tokio::spawn(async move {
             let timeout = timeout(
@@ -1818,23 +1965,16 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     /// The block can be specified by either height or hash.
     async fn get_tree_state(&self, request: BlockId) -> Result<TreeState, Self::Error> {
         let hash_or_height = blockid_to_hashorheight(request).ok_or(
-            crate::error::FetchServiceError::TonicStatusError(tonic::Status::invalid_argument(
-                "Invalid hash or height",
-            )),
+            crate::error::NodeBackedIndexerServiceError::TonicStatusError(
+                tonic::Status::invalid_argument("Invalid hash or height"),
+            ),
         )?;
 
-        let treestate_response = <FetchServiceSubscriber as ZcashIndexer>::z_get_treestate(
-            self,
-            hash_or_height.to_string(),
-        )
-        .await?;
+        let treestate_response =
+            <Self as ZcashIndexer>::z_get_treestate(self, hash_or_height.to_string()).await?;
 
         Ok(super::tree_state_from_treestate_response(
-            self.config
-                .common
-                .network
-                .to_zebra_network()
-                .bip70_network_name(),
+            self.data.network().bip70_network_name(),
             treestate_response,
         ))
     }
@@ -1852,8 +1992,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     #[allow(deprecated)]
     fn timeout_channel_size(&self) -> (u32, u32) {
         (
-            self.config.common.service.timeout,
-            self.config.common.service.channel_size,
+            self.config.service.timeout,
+            self.config.service.channel_size,
         )
     }
 
@@ -1884,17 +2024,21 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             let checked_index = match i32::try_from(output_index.index()) {
                 Ok(index) => index,
                 Err(_) => {
-                    return Err(FetchServiceError::TonicStatusError(tonic::Status::unknown(
-                        "Error: Index out of range. Failed to convert to i32.",
-                    )));
+                    return Err(NodeBackedIndexerServiceError::TonicStatusError(
+                        tonic::Status::unknown(
+                            "Error: Index out of range. Failed to convert to i32.",
+                        ),
+                    ));
                 }
             };
             let checked_satoshis = match i64::try_from(satoshis) {
                 Ok(satoshis) => satoshis,
                 Err(_) => {
-                    return Err(FetchServiceError::TonicStatusError(tonic::Status::unknown(
-                        "Error: Satoshis out of range. Failed to convert to i64.",
-                    )));
+                    return Err(NodeBackedIndexerServiceError::TonicStatusError(
+                        tonic::Status::unknown(
+                            "Error: Satoshis out of range. Failed to convert to i64.",
+                        ),
+                    ));
                 }
             };
             let utxo_reply = GetAddressUtxosReply {
@@ -1924,9 +2068,8 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         super::validate_utxo_address_count(request.addresses.len())?;
         let taddrs = GetAddressBalanceRequest::new(request.addresses);
         let utxos = self.z_get_address_utxos(taddrs).await?;
-        let service_timeout = self.config.common.service.timeout;
-        let (channel_tx, channel_rx) =
-            mpsc::channel(self.config.common.service.channel_size as usize);
+        let service_timeout = self.config.service.timeout;
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
@@ -2018,7 +2161,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
         .to_string();
 
         let latest_upgrade = super::latest_network_upgrade(blockchain_info.upgrades())
-            .map_err(FetchServiceError::TonicStatusError)?
+            .map_err(NodeBackedIndexerServiceError::TonicStatusError)?
             .into_parts();
 
         let nu_name = latest_upgrade.0;
@@ -2041,7 +2184,6 @@ impl LightWalletIndexer for FetchServiceSubscriber {
             zcashd_subversion: self.data.zebra_subversion(),
             donation_address: self
                 .config
-                .common
                 .donation_address
                 .as_ref()
                 .map(DonationAddress::encode)
@@ -2056,7 +2198,7 @@ impl LightWalletIndexer for FetchServiceSubscriber {
     ///
     /// NOTE: Currently unimplemented in Zaino.
     async fn ping(&self, _request: Duration) -> Result<PingResponse, Self::Error> {
-        Err(FetchServiceError::TonicStatusError(
+        Err(NodeBackedIndexerServiceError::TonicStatusError(
             tonic::Status::unimplemented(
                 "Ping not yet implemented. If you require this RPC \
             please open an issue or PR at the Zaino github \

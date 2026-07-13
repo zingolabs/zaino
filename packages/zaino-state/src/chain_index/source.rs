@@ -1,6 +1,6 @@
 //! Traits and types for the blockchain source thats serves zaino, commonly a validator connection.
 
-use std::{error::Error, str::FromStr as _, sync::Arc};
+use std::{error::Error, sync::Arc};
 
 use crate::chain_index::{
     types::{BlockHash, TransactionHash},
@@ -10,12 +10,16 @@ use crate::SendFut;
 use futures::TryFutureExt as _;
 use incrementalmerkletree::frontier::CommitmentTree;
 use tower::{Service, ServiceExt as _};
-use zaino_common::Network;
 use zaino_fetch::jsonrpsee::{
     connector::{JsonRpSeeConnector, RpcRequestError},
     response::{
         address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
-        GetBlockError, GetBlockResponse, GetTransactionResponse, GetTreestateResponse,
+        block_header::GetBlockHeader,
+        block_subsidy::GetBlockSubsidy,
+        mining_info::GetMiningInfoWire,
+        peer_info::GetPeerInfo,
+        GetBlockError, GetBlockResponse, GetNetworkSolPsResponse, GetSpentInfoRequest,
+        GetSpentInfoResponse, GetTransactionResponse, GetTreestateResponse, GetTxOutResponse,
     },
 };
 use zcash_primitives::merkle_tree::{read_commitment_tree, write_commitment_tree};
@@ -24,7 +28,9 @@ use zebra_chain::{
 };
 use zebra_rpc::{
     client::{GetAddressBalanceRequest, GetAddressTxIdsRequest},
-    methods::{AddressBalance, GetAddressUtxos},
+    methods::{
+        AddressBalance, GetAddressUtxos, GetBlockchainInfoResponse, GetInfo, SentTransactionHash,
+    },
 };
 use zebra_state::{HashOrHeight, ReadRequest, ReadResponse, ReadStateService};
 
@@ -75,6 +81,33 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
         id: HashOrHeight,
     ) -> impl SendFut<BlockchainSourceResult<Option<Arc<zebra_chain::block::Block>>>>;
 
+    /// Returns the `getblock`-shaped verbose block for the given hash or height.
+    ///
+    /// `verbosity` follows the zcashd `getblock` convention (0 = raw, 1 = object with
+    /// txids, 2 = object with full transaction data).
+    fn get_block_verbose(
+        &self,
+        hash_or_height: HashOrHeight,
+        verbosity: Option<u8>,
+    ) -> impl SendFut<BlockchainSourceResult<zebra_rpc::methods::GetBlock>>;
+
+    /// Returns the `getblockheader`-shaped block header for the given block hash.
+    ///
+    /// When `verbose` is false the header is returned in raw hex form; when true it is
+    /// returned as a structured object.
+    fn get_block_header(
+        &self,
+        hash: String,
+        verbose: bool,
+    ) -> impl SendFut<BlockchainSourceResult<GetBlockHeader>>;
+
+    /// Returns the `getblockdeltas`-shaped transparent input/output deltas for the block
+    /// with the given hash.
+    fn get_block_deltas(
+        &self,
+        hash: String,
+    ) -> impl SendFut<BlockchainSourceResult<zaino_fetch::jsonrpsee::response::block_deltas::BlockDeltas>>;
+
     // ********** Transaction methods **********
 
     /// Returns the transaction by txid
@@ -106,6 +139,88 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     fn get_best_block_height(
         &self,
     ) -> impl SendFut<BlockchainSourceResult<Option<zebra_chain::block::Height>>>;
+
+    /// Returns the proof-of-work difficulty of the best chain as a multiple of the
+    /// minimum difficulty (the `getdifficulty` RPC value).
+    fn get_difficulty(&self) -> impl SendFut<BlockchainSourceResult<f64>>;
+
+    /// A watch stream of the source's chain-tip changes, when the source owns
+    /// one locally. Only the `Direct` validator connection (which drives its
+    /// own Zebra syncer) does; every other source observes tips by polling,
+    /// and inherits this `None` default.
+    fn chain_tip_change(&self) -> Option<zebra_state::ChainTipChange> {
+        None
+    }
+
+    /// Returns the `getblockchaininfo` response.
+    fn get_blockchain_info(
+        &self,
+    ) -> impl SendFut<BlockchainSourceResult<GetBlockchainInfoResponse>>;
+
+    // ********** Node-passthrough methods **********
+    //
+    // These have no local-index equivalent and always proxy to the backing validator's
+    // JSON-RPC interface.
+
+    /// Returns the `getinfo` response.
+    fn get_info(&self) -> impl SendFut<BlockchainSourceResult<GetInfo>>;
+
+    /// Returns the `getpeerinfo` response.
+    fn get_peer_info(&self) -> impl SendFut<BlockchainSourceResult<GetPeerInfo>>;
+
+    /// Returns the validator's `getchaintips` response. Serves as the
+    /// `getchaintips` fallback while the local index is still building its
+    /// finalised state and has no non-finalised snapshot to answer from.
+    fn get_chain_tips(
+        &self,
+    ) -> impl SendFut<
+        BlockchainSourceResult<zaino_fetch::jsonrpsee::response::chain_tips::GetChainTipsResponse>,
+    >;
+
+    /// Returns the `getblocksubsidy` response at the given height.
+    fn get_block_subsidy(
+        &self,
+        height: u32,
+    ) -> impl SendFut<BlockchainSourceResult<GetBlockSubsidy>>;
+
+    /// Returns the `getmininginfo` response.
+    fn get_mining_info(&self) -> impl SendFut<BlockchainSourceResult<GetMiningInfoWire>>;
+
+    /// Returns the `gettxout` response for the given outpoint.
+    fn get_tx_out(
+        &self,
+        txid: String,
+        n: u32,
+        include_mempool: Option<bool>,
+    ) -> impl SendFut<BlockchainSourceResult<GetTxOutResponse>>;
+
+    /// Returns the `getspentinfo` response for the given request.
+    fn get_spent_info(
+        &self,
+        request: GetSpentInfoRequest,
+    ) -> impl SendFut<BlockchainSourceResult<GetSpentInfoResponse>>;
+
+    /// Returns the `getnetworksolps` response.
+    fn get_network_sol_ps(
+        &self,
+        blocks: Option<i32>,
+        height: Option<i32>,
+    ) -> impl SendFut<BlockchainSourceResult<GetNetworkSolPsResponse>>;
+
+    /// Submits a raw transaction to the network via the validator's mempool
+    /// (`sendrawtransaction`).
+    fn send_raw_transaction(
+        &self,
+        raw_transaction_hex: String,
+    ) -> impl SendFut<BlockchainSourceResult<SentTransactionHash>>;
+
+    /// Returns the full `z_gettreestate` response for the given hash-or-height string.
+    ///
+    /// Node-passthrough fallback for treestates not locally serviceable by the index.
+    fn get_treestate_by_id(
+        &self,
+        hash_or_height: String,
+    ) -> impl SendFut<BlockchainSourceResult<zebra_rpc::client::GetTreestateResponse>>;
 
     /// Returns the sapling and orchard treestate by hash
     fn get_treestate(&self, id: BlockHash) -> impl SendFut<BlockchainSourceResult<TreestateBytes>>;
@@ -243,6 +358,15 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     fn subscribe_to_blocks_received(&self) -> Option<tokio::sync::watch::Receiver<()>> {
         None
     }
+
+    /// Release any long-lived resources the source owns (e.g. a background
+    /// syncer task feeding a `ReadStateService`).
+    ///
+    /// Default is a no-op — poll-only sources (`JsonRpSeeConnector`) and test
+    /// mockchains own nothing to tear down. Sources that spawn their own
+    /// validator plumbing (the `State` arm of `ValidatorConnector`, which owns
+    /// the Zebra syncer task) override this to abort that task on shutdown.
+    fn shutdown(&self) {}
 }
 
 /// Sleep up to `duration`, but return early if `change_rx` resolves first.
@@ -271,11 +395,54 @@ pub(super) async fn wait_or_source_change(
 /// An error originating from a blockchain source.
 #[derive(Debug, thiserror::Error)]
 pub enum BlockchainSourceError {
-    /// Unrecoverable error.
+    /// Unrecoverable error described only by a message (no underlying
+    /// typed error exists, e.g. an unexpected response shape).
     // TODO: Add logic for handling recoverable errors if any are identified
     // one candidate may be ephemerable network hiccoughs
     #[error("critical error in backing block source: {0}")]
     Unrecoverable(String),
+    /// Unrecoverable error whose typed cause is preserved as
+    /// [`std::error::Error::source`]. zaino-serve recovers zcashd-compatible
+    /// RPC error codes by downcast-walking `source()` chains, so errors that
+    /// wrap a typed transport or RPC error must use this variant rather than
+    /// [`Self::Unrecoverable`] with a stringified cause.
+    #[error("critical error in backing block source: {message}")]
+    UnrecoverableWithSource {
+        /// Rendered description, including the cause's `Display` output so
+        /// top-level log lines match the previous stringified form.
+        message: String,
+        /// The typed cause, available to `source()`-chain walks.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync + 'static>,
+    },
+}
+
+impl BlockchainSourceError {
+    /// Wraps a typed error, preserving it for `source()`-chain recovery.
+    /// Accepts both concrete error types and already-boxed errors (e.g.
+    /// zebra's `BoxError`).
+    pub(crate) fn unrecoverable(
+        error: impl Into<Box<dyn std::error::Error + Send + Sync + 'static>>,
+    ) -> Self {
+        let source = error.into();
+        Self::UnrecoverableWithSource {
+            message: source.to_string(),
+            source,
+        }
+    }
+
+    /// Wraps a typed error with a context prefix, preserving the error for
+    /// `source()`-chain recovery.
+    pub(crate) fn unrecoverable_context(
+        context: impl std::fmt::Display,
+        error: impl Into<Box<dyn std::error::Error + Send + Sync + 'static>>,
+    ) -> Self {
+        let source = error.into();
+        Self::UnrecoverableWithSource {
+            message: format!("{context}: {source}"),
+            source,
+        }
+    }
 }
 
 /// Error type returned when invalid data is returned by the validator.

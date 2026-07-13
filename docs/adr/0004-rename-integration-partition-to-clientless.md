@@ -50,3 +50,6 @@ unchanged.
   "clientless" is no longer avoided.
 - ADR-0003's naming bullet and its three-front-door task surface are superseded;
   its two-crate split and the `live` umbrella decision still stand.
+
+> **Later note:** the `package` set was renamed `packages` (plural, matching the
+> `packages/` dir); `makers test package` now errors. See `live-tests/CONTEXT.md`.

@@ -405,16 +405,22 @@ pub(crate) struct DbV1 {
 /// - validated read fetchers used by the capability trait implementations, and
 /// - internal validation / indexing helpers.
 impl DbV1 {
-    /// Spawns a new [`DbV1`] and opens (or creates) the LMDB environment for the configured network.
+    /// Opens (and heals) the v1 database for the configured network **without** starting the
+    /// background validator.
     ///
     /// This method:
     /// - chooses a versioned path suffix (`.../<network>/v1`),
     /// - configures LMDB map size and reader slots,
-    /// - opens or creates all V1 named databases,
-    /// - validates or initializes the `"metadata"` record (schema hash + version), and
-    /// - spawns the background validator / maintenance task.
+    /// - opens or creates all V1 named databases, and
+    /// - validates or initializes the `"metadata"` record (schema hash + version).
+    ///
+    /// The validator is started separately via [`DbV1::start_validator`]. This split exists so the
+    /// orchestrator can guarantee that any pending schema migration finishes *before* validation
+    /// runs: the validator's `initial_block_scan` reads tables (e.g. `commitment_tree_data_1_3_0`)
+    /// that a migration populates, so starting it concurrently with a migration races the migration
+    /// and can fail on a not-yet-written row.
     pub(crate) async fn spawn(config: &ChainIndexConfig) -> Result<Self, FinalisedStateError> {
-        let mut zaino_db = Self::open_env_and_dbs(config).await?;
+        let zaino_db = Self::open_env_and_dbs(config).await?;
 
         // Validate (or initialise) the metadata entry before we touch any tables.
         zaino_db.check_schema_version().await?;
@@ -423,9 +429,6 @@ impl DbV1 {
         // `txid_location` index unbuilt. Runs before the background validator starts so it operates
         // on a quiescent database.
         zaino_db.reconcile_alpha_txid_location_index().await?;
-
-        // Spawn handler task to perform background validation and trailing tx cleanup.
-        zaino_db.spawn_handler().await?;
 
         Ok(zaino_db)
     }
@@ -453,7 +456,7 @@ impl DbV1 {
 
         // Prepare database details and path.
         let db_size_bytes = config.storage.database.size.to_byte_count();
-        let db_path_dir = match config.network.to_zebra_network().kind() {
+        let db_path_dir = match config.network.kind() {
             NetworkKind::Mainnet => "mainnet",
             NetworkKind::Testnet => "testnet",
             NetworkKind::Regtest => "regtest",
@@ -598,7 +601,12 @@ impl DbV1 {
     ///   `initial_block_scan`).
     /// - **Steady state:** periodically attempts to validate the next height after `validated_tip`.
     ///   Separately, it performs periodic trailing-reader cleanup via `clean_trailing()`.
-    async fn spawn_handler(&mut self) -> Result<(), FinalisedStateError> {
+    ///
+    /// Kept separate from [`DbV1::spawn`] so the orchestrator starts it only once all pending
+    /// migrations have finished (the validator reads tables a migration populates). Takes `&self`
+    /// (the join handle lives behind a `Mutex`) so it can be driven through the shared
+    /// `Arc<FinalisedSource>` the router holds after spawn.
+    pub(super) fn start_validator(&self) {
         // Clone everything the task needs so we can move it into the async block.
         let zaino_db = self.detached_handle();
 
@@ -700,7 +708,6 @@ impl DbV1 {
         });
 
         *self.db_handler.lock().expect("db_handler mutex poisoned") = Some(handle);
-        Ok(())
     }
 
     /// Validates every stored spent-outpoint entry (`Outpoint` -> `TxLocation`) by checksum.
@@ -841,6 +848,12 @@ impl DbV1 {
     /// Migration1_2_1To1_3_0 to write the rebuilt commitment rows.
     pub(crate) fn commitment_tree_data_db(&self) -> Database {
         self.commitment_tree_data
+    }
+
+    /// Provides access to the (v1.3.0) `ironwood` table, required for Migration1_2_1To1_3_0 to
+    /// backfill ironwood rows for post-NU6.3 blocks from validator-fetched block data.
+    pub(super) fn ironwood_db(&self) -> Database {
+        self.ironwood
     }
 
     /// Provudes access to the spent DB table, required for Migration1_1_0To1_2_0.
@@ -1016,9 +1029,16 @@ impl DbV1 {
         // (see the method doc) — that is the behavioural difference from `spawn`.
         zaino_db.write_v1_0_0_metadata()?;
 
-        // Spawn handler task to perform background validation and trailing tx cleanup.
-        let mut zaino_db = zaino_db;
-        zaino_db.spawn_handler().await?;
+        // Deliberately does NOT start the background validator. This builds a *pre-migration*
+        // v1.0.0 fixture; the validator validates against the current (v1.3.0) schema — it reads
+        // `commitment_tree_data_1_3_0` and the `ironwood` table — so it must run only after the
+        // database has been migrated to the newest schema. Callers build the fixture with direct
+        // v1.0.0 writes, shut it down, then reopen through `FinalisedState::spawn`, which migrates
+        // first and starts the validator afterwards.
+        //
+        // With no validator to advance it, mark the empty fixture `Ready` directly so callers see a
+        // settled backend.
+        zaino_db.status.store(StatusType::Ready);
 
         Ok(zaino_db)
     }
@@ -1108,7 +1128,7 @@ mod tests {
     async fn initial_spent_scan_reports_corrupt_value() {
         use lmdb::{Transaction as _, WriteFlags};
         use zaino_common::network::ActivationHeights;
-        use zaino_common::{DatabaseConfig, Network, StorageConfig};
+        use zaino_common::{DatabaseConfig, StorageConfig};
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let config = ChainIndexConfig {
@@ -1121,7 +1141,7 @@ mod tests {
             },
             ephemeral: false,
             db_version: 1,
-            network: Network::Regtest(ActivationHeights::default()),
+            network: ActivationHeights::default().to_regtest_network(),
         };
 
         let db = DbV1::spawn(&config).await.expect("spawn empty v1 db");

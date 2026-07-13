@@ -1,21 +1,32 @@
 //! Mock BlockchainSourceResult implementation.
 
+use super::validator_connector::{
+    assemble_block_deltas, build_block_header_object, build_verbose_block,
+    confirmations_from_depth, final_orchard_root, final_sapling_root, median_of_block_times,
+    zebra_block_header_to_wire,
+};
 use super::*;
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr as _;
 use std::sync::{
     atomic::{AtomicU32, Ordering},
     Arc, Mutex,
 };
 use zaino_common::network::ActivationHeights;
-use zaino_fetch::jsonrpsee::response::address_deltas::BlockInfo;
+use zaino_fetch::jsonrpsee::response::{
+    address_deltas::BlockInfo, block_deltas::BlockDeltas, block_header::GetBlockHeader,
+};
 use zebra_chain::{block::Block, orchard::tree as orchard, sapling::tree as sapling};
 use zebra_chain::{
-    block::Height,
+    block::{Height, SerializedBlock},
     parameters::NetworkKind,
-    serialization::BytesInDisplayOrder as _,
+    serialization::{BytesInDisplayOrder as _, ZcashSerialize as _},
     transparent::{Address, OutPoint, Output, OutputIndex},
 };
-use zebra_rpc::{client::TransactionObject, methods::ValidateAddresses as _};
+use zebra_rpc::{
+    client::{BlockObject, HexData, Input, TransactionObject},
+    methods::{GetBlock, GetBlockHeaderResponse, GetBlockTransaction, ValidateAddresses as _},
+};
 use zebra_state::HashOrHeight;
 
 /// Build the txid → (height, tx) lookup map used by
@@ -125,7 +136,7 @@ fn normalize_requested_addresses_for_network(
 /// transparent address prefixes, so output-derived transparent addresses use
 /// `NetworkKind::Testnet`.
 fn mockchain_network() -> zebra_chain::parameters::Network {
-    zaino_common::Network::Regtest(ActivationHeights::default()).to_zebra_network()
+    ActivationHeights::default().to_regtest_network()
 }
 
 /// A test-only mock implementation of BlockchainReader using ordered lists by height.
@@ -169,6 +180,9 @@ pub(crate) struct MockchainSource {
     /// neither know nor care how many `mine_blocks` events occurred
     /// between wakes.
     blocks_received_broadcaster: tokio::sync::watch::Sender<()>,
+    /// Records whether [`BlockchainSource::shutdown`] ran, so teardown tests
+    /// can assert the index releases its source. Shared across clones.
+    shutdown_called: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl MockchainSource {
@@ -235,7 +249,14 @@ impl MockchainSource {
             )),
             get_block_hook: Arc::new(Mutex::new(None)),
             blocks_received_broadcaster: tokio::sync::watch::channel(()).0,
+            shutdown_called: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    /// Whether [`BlockchainSource::shutdown`] has run on this source (or any
+    /// clone of it).
+    pub(crate) fn shutdown_called(&self) -> bool {
+        self.shutdown_called.load(Ordering::SeqCst)
     }
 
     /// When set to true, `get_best_block_height` and `get_best_block_hash`
@@ -330,6 +351,98 @@ impl MockchainSource {
 
     fn active_chain_height_as_usize(&self) -> usize {
         self.active_height() as usize
+    }
+
+    /// Resolves a hash-or-height request to a block index within the active chain.
+    fn resolve_index(&self, id: &HashOrHeight) -> Option<usize> {
+        match id {
+            HashOrHeight::Height(height) => self.valid_height(height.0),
+            HashOrHeight::Hash(hash) => self.valid_hash(hash),
+        }
+    }
+
+    /// The zebra hash of the block after `height_index`, if it is within the active chain.
+    fn next_block_hash(&self, height_index: usize) -> Option<zebra_chain::block::Hash> {
+        let next = height_index + 1;
+        (next <= self.active_chain_height_as_usize()).then(|| self.blocks[next].hash())
+    }
+
+    /// Builds the zebra `getblockheader` response for the block at `height_index` from the
+    /// test-vector block and tree-root data, using the same builders as the validator path.
+    fn block_header_response_at(
+        &self,
+        height_index: usize,
+        verbose: bool,
+    ) -> BlockchainSourceResult<GetBlockHeaderResponse> {
+        let block = &self.blocks[height_index];
+        let header = &block.header;
+        if !verbose {
+            return Ok(GetBlockHeaderResponse::Raw(HexData(
+                header
+                    .zcash_serialize_to_vec()
+                    .map_err(BlockchainSourceError::unrecoverable)?,
+            )));
+        }
+
+        let network = mockchain_network();
+        let hash = block.hash();
+        let height = block.coinbase_height().ok_or_else(|| {
+            BlockchainSourceError::Unrecoverable("block missing coinbase height".to_string())
+        })?;
+        let depth = self.active_height().checked_sub(height.0);
+        let confirmations = confirmations_from_depth(depth);
+
+        let (sapling_root_bytes, sapling_tree_size) = match &self.roots[height_index].0 {
+            Some((root, size)) => (<[u8; 32]>::from(*root), *size),
+            None => ([0u8; 32], 0),
+        };
+        let final_sapling_root = final_sapling_root(sapling_root_bytes, height, &network);
+        let next_block_hash = self.next_block_hash(height_index);
+
+        let header_obj = build_block_header_object(
+            header,
+            hash,
+            height,
+            confirmations,
+            final_sapling_root,
+            sapling_tree_size,
+            next_block_hash,
+            &network,
+        )?;
+        Ok(GetBlockHeaderResponse::Object(Box::new(header_obj)))
+    }
+
+    /// Median time past over the 11-block window ending at `start`, walking backwards via
+    /// verbosity-1 `getblock` lookups against the mock vectors.
+    async fn median_time_past(&self, start: &BlockObject) -> BlockchainSourceResult<i64> {
+        const MEDIAN_TIME_PAST_WINDOW: usize = 11;
+        let mut times = Vec::with_capacity(MEDIAN_TIME_PAST_WINDOW);
+        let start_time = start.time().ok_or_else(|| {
+            BlockchainSourceError::Unrecoverable("getblockdeltas: start block missing time".into())
+        })?;
+        times.push(start_time);
+
+        let mut prev = start.previous_block_hash();
+        for _ in 0..(MEDIAN_TIME_PAST_WINDOW - 1) {
+            let Some(hash) = prev else {
+                break; // genesis
+            };
+            match self
+                .get_block_verbose(HashOrHeight::Hash(hash), Some(1))
+                .await
+            {
+                Ok(GetBlock::Object(object)) => {
+                    if let Some(time) = object.time() {
+                        times.push(time);
+                    }
+                    prev = object.previous_block_hash();
+                }
+                Ok(GetBlock::Raw(_)) => break,
+                Err(_) => break,
+            }
+        }
+
+        median_of_block_times(times)
     }
 
     fn block_height_at_index(&self, block_index: usize) -> Height {
@@ -448,6 +561,263 @@ impl BlockchainSource for MockchainSource {
                 Ok(Some(Arc::clone(&self.blocks[hash_index])))
             }
         }
+    }
+
+    async fn get_block_verbose(
+        &self,
+        hash_or_height: HashOrHeight,
+        verbosity: Option<u8>,
+    ) -> BlockchainSourceResult<GetBlock> {
+        let verbosity = verbosity.unwrap_or(1);
+        let height_index = self
+            .resolve_index(&hash_or_height)
+            .ok_or_else(|| BlockchainSourceError::Unrecoverable("block not found".to_string()))?;
+
+        match verbosity {
+            0 => Ok(GetBlock::Raw(SerializedBlock::from(Arc::clone(
+                &self.blocks[height_index],
+            )))),
+            1 | 2 => {
+                let block = &self.blocks[height_index];
+                let network = mockchain_network();
+
+                let GetBlockHeaderResponse::Object(header_obj) =
+                    self.block_header_response_at(height_index, true)?
+                else {
+                    unreachable!("`true` yields an object")
+                };
+
+                let height = block.coinbase_height().ok_or_else(|| {
+                    BlockchainSourceError::Unrecoverable(
+                        "block missing coinbase height".to_string(),
+                    )
+                })?;
+                let (orchard_root_bytes, orchard_tree_size) = match &self.roots[height_index].1 {
+                    Some((root, size)) => (<[u8; 32]>::from(*root), *size),
+                    None => ([0u8; 32], 0),
+                };
+                let final_orchard_root = final_orchard_root(orchard_root_bytes, height, &network);
+
+                // The verbose block reports the block's serialized byte size; the mock has the
+                // full block, so serialize it to measure.
+                let size = block
+                    .zcash_serialize_to_vec()
+                    .map_err(BlockchainSourceError::unrecoverable)?
+                    .len() as i64;
+
+                // `chain_supply` / `value_pools` are cumulative pool balances that the test
+                // vectors do not carry, so they are `None` for the mock.
+                Ok(build_verbose_block(
+                    &header_obj,
+                    block,
+                    verbosity,
+                    size,
+                    final_orchard_root,
+                    orchard_tree_size,
+                    // The mock's test vectors do not carry an ironwood tree size.
+                    0,
+                    None,
+                    None,
+                    &network,
+                ))
+            }
+            more_than_two => Err(BlockchainSourceError::Unrecoverable(format!(
+                "invalid verbosity of {more_than_two}"
+            ))),
+        }
+    }
+
+    async fn get_block_header(
+        &self,
+        hash: String,
+        verbose: bool,
+    ) -> BlockchainSourceResult<GetBlockHeader> {
+        let hash_or_height =
+            HashOrHeight::from_str(&hash).map_err(BlockchainSourceError::unrecoverable)?;
+        let height_index = self.resolve_index(&hash_or_height).ok_or_else(|| {
+            BlockchainSourceError::Unrecoverable("block height not in best chain".to_string())
+        })?;
+        let header = self.block_header_response_at(height_index, verbose)?;
+        zebra_block_header_to_wire(header)
+    }
+
+    async fn get_block_deltas(&self, hash: String) -> BlockchainSourceResult<BlockDeltas> {
+        let hash_or_height =
+            HashOrHeight::from_str(&hash).map_err(BlockchainSourceError::unrecoverable)?;
+        let GetBlock::Object(object) = self.get_block_verbose(hash_or_height, Some(2)).await?
+        else {
+            return Err(BlockchainSourceError::Unrecoverable(
+                "getblockdeltas: unexpected raw block".to_string(),
+            ));
+        };
+
+        // The mock holds every transaction, so prevout resolution is a direct index lookup.
+        let mut prevtx_cache: HashMap<
+            zebra_chain::transaction::Hash,
+            Arc<zebra_chain::transaction::Transaction>,
+        > = HashMap::new();
+        for tx in object.tx() {
+            let GetBlockTransaction::Object(txo) = tx else {
+                continue;
+            };
+            for input in txo.inputs() {
+                let Input::NonCoinbase { txid: prevtxid, .. } = input else {
+                    continue;
+                };
+                let prev_hash = zebra_chain::transaction::Hash::from_str(prevtxid)
+                    .map_err(BlockchainSourceError::unrecoverable)?;
+                if prevtx_cache.contains_key(&prev_hash) {
+                    continue;
+                }
+                let (_height, prev_tx) = self.txid_index.get(&prev_hash).ok_or_else(|| {
+                    BlockchainSourceError::Unrecoverable(format!(
+                        "getblockdeltas: prevout tx {prevtxid} not found in mock chain"
+                    ))
+                })?;
+                prevtx_cache.insert(prev_hash, Arc::clone(prev_tx));
+            }
+        }
+
+        let median_time = self.median_time_past(&object).await?;
+        assemble_block_deltas(&object, &prevtx_cache, median_time, &mockchain_network())
+    }
+
+    // ********** Chain methods **********
+
+    async fn get_difficulty(&self) -> BlockchainSourceResult<f64> {
+        let tip_index = self.active_chain_height_as_usize();
+        let tip_block = self.blocks.get(tip_index).ok_or_else(|| {
+            BlockchainSourceError::Unrecoverable("mock chain has no tip block".to_string())
+        })?;
+        Ok(tip_block
+            .header
+            .difficulty_threshold
+            .relative_to_network(&mockchain_network()))
+    }
+
+    async fn get_blockchain_info(
+        &self,
+    ) -> BlockchainSourceResult<zebra_rpc::methods::GetBlockchainInfoResponse> {
+        // Needs cumulative pool value balances (TipPoolValues) and on-disk size, which the
+        // vectors don't carry. Test vectors must be extended to serve this method; tracked
+        // by the update-test-vectors follow-up (see "Future work").
+        unimplemented!(
+            "MockchainSource cannot serve get_blockchain_info until test vectors are extended"
+        )
+    }
+
+    // ********** Node-passthrough methods **********
+    //
+    // These are node-only RPCs with no chain data in the vectors. Test vectors must be
+    // extended to let MockchainSource serve them; tracked by the update-test-vectors
+    // follow-up (see "Future work").
+
+    async fn get_info(&self) -> BlockchainSourceResult<zebra_rpc::methods::GetInfo> {
+        unimplemented!("MockchainSource cannot serve get_info until test vectors are extended")
+    }
+
+    async fn get_peer_info(
+        &self,
+    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::peer_info::GetPeerInfo> {
+        unimplemented!("MockchainSource cannot serve get_peer_info until test vectors are extended")
+    }
+
+    /// Records the release so teardown tests can assert the index shuts its
+    /// source down (the mock owns no real background work).
+    fn shutdown(&self) {
+        self.shutdown_called.store(true, Ordering::SeqCst);
+    }
+
+    /// A single active tip at the mockchain's current active height, matching
+    /// what a validator with no side branches reports.
+    async fn get_chain_tips(
+        &self,
+    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::chain_tips::GetChainTipsResponse>
+    {
+        if self
+            .force_requests_against_source_to_fail
+            .load(Ordering::SeqCst)
+        {
+            return Err(BlockchainSourceError::Unrecoverable(
+                "forced source failure".into(),
+            ));
+        }
+        let height = self.active_height();
+        let Some(index) = self.valid_height(height) else {
+            return Ok(vec![]);
+        };
+        Ok(vec![
+            zaino_fetch::jsonrpsee::response::chain_tips::ChainTip::new(
+                height,
+                self.blocks[index].hash().to_string(),
+                0,
+                zaino_fetch::jsonrpsee::response::chain_tips::ChainTipStatus::Active,
+            ),
+        ])
+    }
+
+    async fn get_block_subsidy(
+        &self,
+        _height: u32,
+    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::block_subsidy::GetBlockSubsidy>
+    {
+        unimplemented!(
+            "MockchainSource cannot serve get_block_subsidy until test vectors are extended"
+        )
+    }
+
+    async fn get_mining_info(
+        &self,
+    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::mining_info::GetMiningInfoWire>
+    {
+        unimplemented!(
+            "MockchainSource cannot serve get_mining_info until test vectors are extended"
+        )
+    }
+
+    async fn get_tx_out(
+        &self,
+        _txid: String,
+        _n: u32,
+        _include_mempool: Option<bool>,
+    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::GetTxOutResponse> {
+        unimplemented!("MockchainSource cannot serve get_tx_out until test vectors are extended")
+    }
+
+    async fn get_spent_info(
+        &self,
+        _request: zaino_fetch::jsonrpsee::response::GetSpentInfoRequest,
+    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::GetSpentInfoResponse> {
+        unimplemented!(
+            "MockchainSource cannot serve get_spent_info until test vectors are extended"
+        )
+    }
+
+    async fn get_network_sol_ps(
+        &self,
+        _blocks: Option<i32>,
+        _height: Option<i32>,
+    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::GetNetworkSolPsResponse> {
+        unimplemented!(
+            "MockchainSource cannot serve get_network_sol_ps until test vectors are extended"
+        )
+    }
+
+    async fn send_raw_transaction(
+        &self,
+        _raw_transaction_hex: String,
+    ) -> BlockchainSourceResult<zebra_rpc::methods::SentTransactionHash> {
+        // The mock chain has no mempool to accept submissions.
+        unimplemented!("MockchainSource cannot serve send_raw_transaction")
+    }
+
+    async fn get_treestate_by_id(
+        &self,
+        _hash_or_height: String,
+    ) -> BlockchainSourceResult<zebra_rpc::client::GetTreestateResponse> {
+        // The `z_get_treestate` local path serves the mock; the node-passthrough fallback
+        // is never reached, so this is left unimplemented.
+        unimplemented!("MockchainSource cannot serve the get_treestate_by_id passthrough")
     }
 
     // ********** Transaction methods **********
