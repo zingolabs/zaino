@@ -36,18 +36,12 @@ zaino-fetch = { workspace = true }
 zaino-testutils = { workspace = true }
 # The lib's z_validate helper calls `ZcashIndexer::z_validate_address`.
 zaino-state = { workspace = true, features = ["test_dependencies"] }
+tracing.workspace = true
 
 [dev-dependencies]
 anyhow = { workspace = true }
-# Enable the tractable seam depth (fast-test-seam) so the chain_cache tests exercise
-# finalisation/eviction at small chain heights. Dev-dependency only — the feature
-# must never reach a shipped build (see the zaino-state feature comment).
-zaino-state = { workspace = true, features = ["fast-test-seam"] }
 
 # Test utility
-# Not imported by any test source; present so the
-# transparent_address_history_experimental feature can forward to
-# zainod/transparent_address_history_experimental in the spawned daemon.
 zainod = { workspace = true }
 zaino-testutils = { workspace = true }
 zaino-fetch = { workspace = true }
@@ -57,8 +51,13 @@ wire_serialized_transaction_test_data = { workspace = true }
 zebra-chain = { workspace = true }
 zebra-state = { workspace = true }
 zebra-rpc = { workspace = true }
+zip32 = { workspace = true }
 
+corez = { workspace = true }
+serde_json = { workspace = true }
 futures = { workspace = true }
+tempfile = { workspace = true }
+tower = { workspace = true }
 hex = { workspace = true }
 
 # Runtime

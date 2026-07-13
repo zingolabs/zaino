@@ -498,8 +498,8 @@ where
     let mut current_error: Option<&(dyn std::error::Error + 'static)> = Some(&error);
 
     while let Some(error_source) = current_error {
-        if let Some(zaino_fetch::jsonrpsee::error::TransportError::ErrorStatusCode(500)) =
-            error_source.downcast_ref::<zaino_fetch::jsonrpsee::error::TransportError>()
+        if let Some(zaino_fetch::jsonrpsee::error::FetchError::ErrorStatusCode(500)) =
+            error_source.downcast_ref::<zaino_fetch::jsonrpsee::error::FetchError>()
         {
             return ErrorObjectOwned::owned(
                 zaino_fetch::jsonrpsee::connector::RpcError::new_from_legacycode(

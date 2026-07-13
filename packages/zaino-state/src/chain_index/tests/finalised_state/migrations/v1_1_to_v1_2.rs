@@ -4,13 +4,13 @@ use lmdb::{Cursor as _, Transaction as _, WriteFlags};
 use std::path::PathBuf;
 use tempfile::TempDir;
 use zaino_common::network::ActivationHeights;
-use zaino_common::{DatabaseConfig, StorageConfig};
+use zaino_common::{DatabaseConfig, Network, StorageConfig};
 
 use crate::chain_index::finalised_state::capability::{
-    BlockCoreExt as _, CapabilityRequest, DbRead as _, DbVersion, MigrationStatus,
-    TransparentHistExt as _,
+    BlockCoreExt as _, BlockTransparentExt as _, CapabilityRequest, DbRead as _, DbVersion,
+    MigrationStatus,
 };
-use crate::chain_index::finalised_state::entry::{StoredEntryFixed, StoredEntryVar};
+use crate::chain_index::finalised_state::entry::StoredEntryFixed;
 use crate::chain_index::finalised_state::finalised_source::v1::DB_SCHEMA_V1_HASH;
 use crate::chain_index::finalised_state::finalised_source::v1::TX_OUT_SET_INFO_ACCUMULATOR_KEY;
 use crate::chain_index::finalised_state::finalised_source::FinalisedSource;
@@ -20,134 +20,7 @@ use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{
     build_active_mockchain_source, load_test_vectors, TestVectorData,
 };
-use crate::{ChainIndexConfig, Height, TransparentTxList, TxLocation, ZainoVersionedSerde as _};
-
-/// Reads a block's `TransparentTxList` **directly** from the `transparent` table, bypassing the
-/// validated accessor (`get_block_transparent`), which routes through `validate_block_blocking` and
-/// would read the v1.3.0 commitment table. On a database that has not yet run the v1.2.1 -> v1.3.0
-/// migration the commitment rows are still in the legacy table, so validation would fail; the
-/// migration data these tests assert on (`txid_location`, `spent`, txout-set) is unaffected.
-fn read_block_transparent_direct(
-    database_backend: &FinalisedSource<MockchainSource>,
-    height: Height,
-) -> TransparentTxList {
-    use lmdb::Transaction as _;
-    let environment = database_backend.env().unwrap();
-    let transparent_database = database_backend.transparent_db().unwrap();
-    let transaction = environment.begin_ro_txn().unwrap();
-    let raw = transaction
-        .get(transparent_database, &height.to_bytes().unwrap())
-        .unwrap();
-    StoredEntryVar::<TransparentTxList>::from_bytes(raw)
-        .unwrap()
-        .inner()
-        .clone()
-}
-
-/// Direct-read copy of the production oracle
-/// (`tx_out_set_accumulator::expected_tx_out_set_info_accumulator`), differing only in that it reads
-/// the transparent list directly (`read_block_transparent_direct`) instead of through the validated
-/// `get_block_transparent`, so it works on a database whose commitment rows are still in the legacy
-/// table (validation would fail there). The oracle logic is otherwise identical.
-async fn expected_tx_out_set_info_accumulator_direct(
-    database_backend: &FinalisedSource<MockchainSource>,
-    max_height: Height,
-) -> crate::chain_index::types::db::metadata::FinalisedTxOutSetInfoAccumulator {
-    use lmdb::Transaction as _;
-
-    let environment = database_backend.env().unwrap();
-    let spent_database = database_backend.spent_db().unwrap();
-
-    let mut expected_accumulator =
-        crate::chain_index::types::db::metadata::FinalisedTxOutSetInfoAccumulator::empty();
-
-    for height_raw in 0..=max_height.0 {
-        let height = Height(height_raw);
-        let transparent_transaction_list = read_block_transparent_direct(database_backend, height);
-
-        for (transaction_index, transparent_transaction_opt) in
-            transparent_transaction_list.tx().iter().enumerate()
-        {
-            let Some(transparent_transaction) = transparent_transaction_opt else {
-                continue;
-            };
-            if transparent_transaction.outputs().is_empty() {
-                continue;
-            }
-
-            let transaction_index = u16::try_from(transaction_index).unwrap();
-            let transaction_location = TxLocation::new(height.0, transaction_index);
-            // `get_txid` reads the `txids` table directly (no validation).
-            let transaction_hash = database_backend
-                .get_txid(transaction_location)
-                .await
-                .unwrap();
-
-            let mut unspent_outputs_for_transaction = 0u64;
-            let read_transaction = environment.begin_ro_txn().unwrap();
-
-            for (output_index, output) in transparent_transaction.outputs().iter().enumerate() {
-                if crate::chain_index::types::db::metadata::is_unspendable_tx_out(output) {
-                    continue;
-                }
-
-                let output_index = u32::try_from(output_index).unwrap();
-                let outpoint = crate::Outpoint::new(transaction_hash.0, output_index);
-                let outpoint_bytes = outpoint.to_bytes().unwrap();
-
-                let still_unspent = match read_transaction.get(spent_database, &outpoint_bytes) {
-                    Ok(spent_bytes) => {
-                        let spent_entry =
-                            StoredEntryFixed::<TxLocation>::from_bytes(spent_bytes).unwrap();
-                        assert!(
-                            spent_entry.verify(&outpoint_bytes),
-                            "spent checksum mismatch for outpoint {outpoint:?}"
-                        );
-                        spent_entry.inner().block_height() > max_height.0
-                    }
-                    Err(lmdb::Error::NotFound) => true,
-                    Err(error) => {
-                        panic!("failed to read spent entry for outpoint {outpoint:?}: {error}")
-                    }
-                };
-
-                if still_unspent {
-                    unspent_outputs_for_transaction += 1;
-                    expected_accumulator
-                        .apply_added_output(&outpoint, output)
-                        .unwrap();
-                }
-            }
-
-            if unspent_outputs_for_transaction > 0 {
-                expected_accumulator.transactions += 1;
-            }
-        }
-    }
-
-    expected_accumulator
-}
-
-/// Test assertion: the backend's maintained txout-set accumulator equals the independently recomputed
-/// [`expected_tx_out_set_info_accumulator_direct`]. Direct-read equivalent of the production
-/// `assert_tx_out_set_info_accumulator_matches_transparent_data`.
-async fn assert_tx_out_set_info_accumulator_matches_transparent_data_direct(
-    database_backend: &FinalisedSource<MockchainSource>,
-) {
-    let database_height = database_backend.db_height().await.unwrap().unwrap();
-    let expected_accumulator =
-        expected_tx_out_set_info_accumulator_direct(database_backend, database_height).await;
-
-    let actual_accumulator = database_backend
-        .get_tx_out_set_info_accumulator()
-        .await
-        .unwrap();
-
-    assert_eq!(
-        actual_accumulator, expected_accumulator,
-        "txout-set accumulator does not match transparent data and spent index"
-    );
-}
+use crate::{ChainIndexConfig, Height, TxLocation, ZainoVersionedSerde as _};
 
 const MIGRATION_SPENT_PROGRESS_KEY: &[u8] = b"_migration_spent_progress_1_2_0_next_height";
 
@@ -193,7 +66,10 @@ async fn assert_txid_location_index_matches_block_data(
 
     for height_raw in 0..=database_height.0 {
         let height = Height(height_raw);
-        let transparent_transaction_list = read_block_transparent_direct(database_backend, height);
+        let transparent_transaction_list = database_backend
+            .get_block_transparent(height)
+            .await
+            .unwrap();
 
         for transaction_index in 0..transparent_transaction_list.tx().len() {
             let expected_location = TxLocation::new(height.0, transaction_index as u16);
@@ -247,7 +123,7 @@ async fn simulate_interrupted_v1_1_to_v1_2_spent_index_migration(
     let spent_database = database_backend.spent_db().unwrap();
     let (tx_out_set_info_accumulator_database, expected_resume_accumulator) = (
         database_backend.tx_out_set_info_accumulator_db().unwrap(),
-        expected_tx_out_set_info_accumulator_direct(database_backend, resume_height - 1).await,
+        crate::chain_index::finalised_state::finalised_source::v1::tx_out_set_accumulator::expected_tx_out_set_info_accumulator(database_backend, resume_height - 1).await,
     );
 
     let spent_keys_to_delete: Vec<Vec<u8>> = {
@@ -354,7 +230,10 @@ async fn assert_spent_index_matches_transparent_data(
 
     for height_raw in 0..=database_height.0 {
         let height = Height(height_raw);
-        let transparent_transaction_list = read_block_transparent_direct(database_backend, height);
+        let transparent_transaction_list = database_backend
+            .get_block_transparent(height)
+            .await
+            .unwrap();
 
         let transaction = environment.begin_ro_txn().unwrap();
 
@@ -426,7 +305,7 @@ async fn v1_1_to_v1_2_spent_index_backfill_from_old_version() {
         },
         ephemeral: false,
         db_version: 1,
-        network: ActivationHeights::default().to_regtest_network(),
+        network: Network::Regtest(ActivationHeights::default()),
     };
 
     let source = build_active_mockchain_source(initial_active_height.0, blocks.clone());
@@ -471,7 +350,7 @@ async fn v1_1_to_v1_2_spent_index_backfill_from_old_version() {
 
     assert_txid_location_index_matches_block_data(&migrated_backend).await;
     assert_spent_index_matches_transparent_data(&migrated_backend).await;
-    assert_tx_out_set_info_accumulator_matches_transparent_data_direct(&migrated_backend).await;
+    crate::chain_index::finalised_state::finalised_source::v1::tx_out_set_accumulator::assert_tx_out_set_info_accumulator_matches_transparent_data(&migrated_backend).await;
 
     migrated_database.shutdown().await.unwrap();
 }
@@ -498,7 +377,7 @@ async fn v1_1_to_v1_2_spent_index_migration_resumes_after_crash() {
         },
         ephemeral: false,
         db_version: 1,
-        network: ActivationHeights::default().to_regtest_network(),
+        network: Network::Regtest(ActivationHeights::default()),
     };
 
     let source = build_active_mockchain_source(initial_active_height.0, blocks.clone());
@@ -568,7 +447,7 @@ async fn v1_1_to_v1_2_spent_index_migration_resumes_after_crash() {
 
     assert_txid_location_index_matches_block_data(&resumed_backend).await;
     assert_spent_index_matches_transparent_data(&resumed_backend).await;
-    assert_tx_out_set_info_accumulator_matches_transparent_data_direct(&resumed_backend).await;
+    crate::chain_index::finalised_state::finalised_source::v1::tx_out_set_accumulator::assert_tx_out_set_info_accumulator_matches_transparent_data(&resumed_backend).await;
 
     resumed_database.shutdown().await.unwrap();
 }
@@ -597,7 +476,7 @@ async fn v1_2_0_cache_missing_txid_location_index_is_rebuilt() {
         },
         ephemeral: false,
         db_version: 1,
-        network: ActivationHeights::default().to_regtest_network(),
+        network: Network::Regtest(ActivationHeights::default()),
     };
 
     let source = build_active_mockchain_source(initial_active_height.0, blocks.clone());
@@ -654,7 +533,7 @@ async fn v1_2_0_cache_missing_txid_location_index_is_rebuilt() {
 
     assert_txid_location_index_matches_block_data(&healed_backend).await;
     assert_spent_index_matches_transparent_data(&healed_backend).await;
-    assert_tx_out_set_info_accumulator_matches_transparent_data_direct(&healed_backend).await;
+    crate::chain_index::finalised_state::finalised_source::v1::tx_out_set_accumulator::assert_tx_out_set_info_accumulator_matches_transparent_data(&healed_backend).await;
 
     healed_database.shutdown().await.unwrap();
 }

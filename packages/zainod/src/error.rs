@@ -1,12 +1,14 @@
 //! Hold error types for the Indexer and related functionality.
 
-use zaino_fetch::jsonrpsee::error::TransportError;
+use zaino_fetch::jsonrpsee::error::FetchError;
 use zaino_serve::server::error::ServerError;
 
-use zaino_state::NodeBackedIndexerServiceError;
+#[allow(deprecated)]
+use zaino_state::{FetchServiceError, StateServiceError};
 
 /// Zingo-Indexer errors.
 #[derive(Debug, thiserror::Error)]
+#[allow(deprecated)]
 pub enum IndexerError {
     /// Server based errors.
     #[error("Server error: {0}")]
@@ -16,10 +18,13 @@ pub enum IndexerError {
     ConfigError(String),
     /// JSON RPSee connector errors.
     #[error("JSON RPSee connector error: {0}")]
-    TransportError(#[from] TransportError),
-    /// NodeBackedIndexerService errors.
-    #[error("NodeBackedIndexerService error: {0}")]
-    NodeBackedIndexerServiceError(Box<NodeBackedIndexerServiceError>),
+    TransportError(#[from] FetchError),
+    /// FetchService errors.
+    #[error("FetchService error: {0}")]
+    FetchServiceError(Box<FetchServiceError>),
+    /// FetchService errors.
+    #[error("StateService error: {0}")]
+    StateServiceError(Box<StateServiceError>),
     /// HTTP related errors due to invalid URI.
     #[error("HTTP error: Invalid URI {0}")]
     HttpError(#[from] http::Error),
@@ -38,8 +43,16 @@ pub enum IndexerError {
     Restart,
 }
 
-impl From<NodeBackedIndexerServiceError> for IndexerError {
-    fn from(value: NodeBackedIndexerServiceError) -> Self {
-        IndexerError::NodeBackedIndexerServiceError(Box::new(value))
+#[allow(deprecated)]
+impl From<StateServiceError> for IndexerError {
+    fn from(value: StateServiceError) -> Self {
+        IndexerError::StateServiceError(Box::new(value))
+    }
+}
+
+#[allow(deprecated)]
+impl From<FetchServiceError> for IndexerError {
+    fn from(value: FetchServiceError) -> Self {
+        IndexerError::FetchServiceError(Box::new(value))
     }
 }

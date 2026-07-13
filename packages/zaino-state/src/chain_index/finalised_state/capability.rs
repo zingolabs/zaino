@@ -283,12 +283,7 @@ impl From<CapabilityRequest> for Capability {
 /// - one versioned [`MigrationStatus`].
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Eq, Hash, Default)]
 #[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
-// `pub` (not `pub(crate)`) so it matches the visibility of the `pub` capability
-// traits in this module that expose it (e.g. `DbRead::get_metadata`). The
-// `capability` module is itself `pub(crate)`, so this does not widen the type
-// beyond the crate; it only resolves the rustc-1.96 E0446 private-in-public
-// check on `DbRead::get_metadata`'s signature.
-pub struct DbMetadata {
+pub(crate) struct DbMetadata {
     /// Schema version triple for the on-disk database.
     pub(crate) version: DbVersion,
 
@@ -372,18 +367,12 @@ impl ZainoVersionedSerde for DbMetadata {
     }
 }
 
-/// Fixed-length encoding metadata for `DbMetadata`.
+/// `DbMetadata` has a fixed encoded body length.
 ///
-/// v1 consists of:
 /// Body length = `DbVersion::VERSIONED_LEN` (12 + 1) + 32-byte schema hash
 /// + `MigrationStatus::VERSIONED_LEN` (1 + 1) = 47 bytes.
 impl FixedEncodedLen for DbMetadata {
-    fn encoded_len(version: u8) -> Option<usize> {
-        match version {
-            version::V1 => Some(47),
-            _ => None,
-        }
-    }
+    const ENCODED_LEN: usize = DbVersion::VERSIONED_LEN + 32 + MigrationStatus::VERSIONED_LEN;
 }
 
 /// Human-readable summary for logs.
@@ -541,16 +530,9 @@ impl ZainoVersionedSerde for DbVersion {
     }
 }
 
-/// Fixed-length encoding metadata for `DbVersion`.
-///
-/// v1 consists of *(4-byte u32) = 12 bytes
+// DbVersion: body = 3*(4-byte u32) - 12 bytes
 impl FixedEncodedLen for DbVersion {
-    fn encoded_len(version: u8) -> Option<usize> {
-        match version {
-            version::V1 => Some(12),
-            _ => None,
-        }
-    }
+    const ENCODED_LEN: usize = 4 + 4 + 4;
 }
 
 /// Formats as `{major}.{minor}.{patch}` for logs and diagnostics.
@@ -649,16 +631,9 @@ impl ZainoVersionedSerde for MigrationStatus {
     }
 }
 
-/// Fixed-length encoding metadata for `MigrationStatus`.
-///
-/// v1 consists of a single byte
+/// `MigrationStatus` has a fixed 1-byte encoded body (discriminator).
 impl FixedEncodedLen for MigrationStatus {
-    fn encoded_len(version: u8) -> Option<usize> {
-        match version {
-            version::V1 => Some(1),
-            _ => None,
-        }
-    }
+    const ENCODED_LEN: usize = 1;
 }
 
 // ***** Core Database functionality *****
@@ -913,32 +888,6 @@ pub trait BlockShieldedExt: Send + Sync {
 
     /// Fetches block orchard tx data for the given (inclusive) height range.
     fn get_block_range_orchard(
-        &self,
-        start: Height,
-        end: Height,
-    ) -> impl SendFut<Result<Vec<OrchardTxList>, FinalisedStateError>>;
-
-    /// Fetch the serialized Ironwood (NU6.3) compact tx for the given TxLocation, if present.
-    ///
-    /// Ironwood actions are modelled with the Orchard compact types. Returns `None` when the block
-    /// has no ironwood row (any block below NU6.3 activation, or written before schema v1.3.0).
-    fn get_ironwood(
-        &self,
-        tx_location: TxLocation,
-    ) -> impl SendFut<Result<Option<OrchardCompactTx>, FinalisedStateError>>;
-
-    /// Fetch block ironwood transaction data by height.
-    ///
-    /// Returns an empty [`OrchardTxList`] when the block has no ironwood row.
-    fn get_block_ironwood(
-        &self,
-        height: Height,
-    ) -> impl SendFut<Result<OrchardTxList, FinalisedStateError>>;
-
-    /// Fetches block ironwood tx data for the given (inclusive) height range.
-    ///
-    /// Heights with no ironwood row yield an empty [`OrchardTxList`].
-    fn get_block_range_ironwood(
         &self,
         start: Height,
         end: Height,

@@ -97,7 +97,6 @@ pub(crate) fn indexed_block_chain(
             vector.sapling_tree_size as u32,
             vector.orchard_root,
             vector.orchard_tree_size as u32,
-            None,
             parent_chain_work,
             zebra_chain::parameters::Network::new_regtest(
                 zebra_chain::parameters::testnet::ConfiguredActivationHeights {
@@ -112,7 +111,6 @@ pub(crate) fn indexed_block_chain(
                     // see https://zips.z.cash/#nu6-1-candidate-zips for info on NU6.1
                     nu6_1: None,
                     nu6_2: None,
-                    nu6_3: None,
                     nu7: None,
                 }
                 .into(),

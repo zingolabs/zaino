@@ -102,16 +102,10 @@ impl ZainoVersionedSerde for MempoolInfo {
     }
 }
 
-/// Fixed-length encoding metadata for `MempoolInfo`.
-///
-/// v1 consists of 8 byte size + 8 byte bytes + 8 byte usage
+/// 24 byte body.
 impl FixedEncodedLen for MempoolInfo {
-    fn encoded_len(version: u8) -> Option<usize> {
-        match version {
-            version::V1 => Some(24),
-            _ => None,
-        }
-    }
+    /// 8 byte size + 8 byte bytes + 8 byte usage
+    const ENCODED_LEN: usize = 8 + 8 + 8;
 }
 
 impl From<zaino_fetch::jsonrpsee::response::GetMempoolInfoResponse> for MempoolInfo {
@@ -334,16 +328,9 @@ impl ZainoVersionedSerde for FinalisedTxOutSetInfoAccumulator {
     }
 }
 
-/// Fixed-length encoding metadata for `FinalisedTxOutSetInfoAccumulator`.
-///
-/// v1 consists of 8 + 8 + 8 + 32 + 8 = 64 bytes
 impl FixedEncodedLen for FinalisedTxOutSetInfoAccumulator {
-    fn encoded_len(version: u8) -> Option<usize> {
-        match version {
-            version::V1 => Some(64),
-            _ => None,
-        }
-    }
+    /// 8 + 8 + 8 + 32 + 8 = 64 bytes.
+    const ENCODED_LEN: usize = 8 + 8 + 8 + 32 + 8;
 }
 
 #[cfg(test)]
@@ -366,7 +353,7 @@ mod tests {
 
         assert_eq!(
             encoded_accumulator.len(),
-            FinalisedTxOutSetInfoAccumulator::latest_versioned_len().unwrap()
+            FinalisedTxOutSetInfoAccumulator::VERSIONED_LEN
         );
 
         let decoded_accumulator =

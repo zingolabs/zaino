@@ -14,9 +14,11 @@ use zaino_state::read_u64_le;
 use zaino_state::write_u32_le;
 use zaino_state::write_u64_le;
 use zaino_state::CompactSize;
+#[allow(deprecated)]
+use zaino_state::StateService;
 use zaino_state::ZcashIndexer;
 use zaino_state::{ChainWork, IndexedBlock};
-use zaino_testutils::{Direct, TestManager, ValidatorKind};
+use zaino_testutils::{TestManager, ValidatorKind};
 use zcash_local_net::validator::zebrad::Zebrad;
 use zebra_chain::serialization::{ZcashDeserialize, ZcashSerialize};
 use zebra_rpc::methods::GetAddressUtxos;
@@ -38,15 +40,15 @@ macro_rules! expected_read_response {
 #[tokio::test(flavor = "multi_thread")]
 #[cfg_attr(
     not(feature = "devtool-incompatible"),
-    ignore = "Not a test: builds test-vector data for zaino_state::chain_index unit tests. Also funds via transparent-coinbase shielding — un-ignore to regenerate vectors once devtool can shield its own transparent coinbase (tracked by tests/devtool.rs's address_deltas)."
+    ignore = "Not a test: builds test-vector data for zaino_state::chain_index unit tests. Also funds via transparent-coinbase shielding (round-2 P1) — un-ignore to regenerate vectors once devtool can shield its own transparent coinbase (tracked by tests/devtool.rs's address_deltas)."
 )]
 #[allow(deprecated)]
 async fn create_200_block_regtest_chain_vectors() {
     // The committed unit-test vectors encode a mixed-pool chain built by
     // repeatedly shielding transparent coinbase — mining must stay transparent
     // so regenerated vectors keep that shape.
-    let mut test_manager = TestManager::<Zebrad, Direct>::launch_mining_to(
-        zaino_testutils::MinerPool::Transparent,
+    let mut test_manager = TestManager::<Zebrad, StateService>::launch_mining_to(
+        zaino_testutils::PoolType::Transparent,
         &ValidatorKind::Zebrad,
         None,
         None,
@@ -65,7 +67,6 @@ async fn create_200_block_regtest_chain_vectors() {
             .zaino_grpc_listen_address
             .expect("zaino enabled")
             .port(),
-        &test_manager.local_net,
     )
     .await;
 
@@ -80,7 +81,7 @@ async fn create_200_block_regtest_chain_vectors() {
     // *** Mine past coinbase maturity, shield the first reward, and mine it in ***
     // Mature the faucet's transparent coinbase (100-block maturity) and shield
     // it. Devtool analogue of `shield_faucet_rounds`; requires the devtool wallet
-    // to spend its own transparent coinbase (see #[ignore]). Mine
+    // to spend its own transparent coinbase (round-2 P1, see #[ignore]). Mine
     // generously (150) so the earliest coinbase — a few blocks past genesis — is
     // comfortably mature before the shield, regardless of startup height.
     test_manager
@@ -232,7 +233,6 @@ async fn create_200_block_regtest_chain_vectors() {
         let mut parent_chain_work: Option<ChainWork> = None;
         let mut parent_block_sapling_tree_size: u32 = 0;
         let mut parent_block_orchard_tree_size: u32 = 0;
-        let mut parent_block_ironwood_tree_size: u32 = 0;
 
         for height in 0..=chain_height.0 {
             let (chain_block, zebra_block, block_roots, block_treestate) = {
@@ -242,7 +242,7 @@ async fn create_200_block_regtest_chain_vectors() {
                     .await
                     .and_then(|response| match response {
                         zebra_rpc::methods::GetBlock::Raw(_) => {
-                            Err(zaino_state::NodeBackedIndexerServiceError::Custom(
+                            Err(zaino_state::StateServiceError::Custom(
                                 "Found transaction of `Raw` type, expected only `Object` types."
                                     .to_string(),
                             ))
@@ -254,7 +254,7 @@ async fn create_200_block_regtest_chain_vectors() {
                                     match item {
                                         GetBlockTransaction::Hash(h) => Ok(h.0.to_vec()),
                                         GetBlockTransaction::Object(_) => Err(
-                                            zaino_state::NodeBackedIndexerServiceError::Custom(
+                                            zaino_state::StateServiceError::Custom(
                                                 "Found transaction of `Object` type, expected only `Hash` types."
                                                     .to_string(),
                                             ),
@@ -273,7 +273,7 @@ async fn create_200_block_regtest_chain_vectors() {
                     .await
                     .and_then(|response| match response {
                         zebra_rpc::methods::GetBlock::Object { .. } => {
-                            Err(zaino_state::NodeBackedIndexerServiceError::Custom(
+                            Err(zaino_state::StateServiceError::Custom(
                                 "Found transaction of `Object` type, expected only `Raw` types."
                                     .to_string(),
                             ))
@@ -282,7 +282,7 @@ async fn create_200_block_regtest_chain_vectors() {
                     })
                     .unwrap();
 
-                let mut state = state_service_subscriber.read_state_service();
+                let mut state = state_service_subscriber.read_state_service.clone();
                 let (sapling_root, orchard_root) = {
                     let (sapling_tree_response, orchard_tree_response) = futures::future::join(
                         state.clone().call(zebra_state::ReadRequest::SaplingTree(
@@ -318,7 +318,7 @@ async fn create_200_block_regtest_chain_vectors() {
                 };
 
                 let sapling_treestate = match zebra_chain::parameters::NetworkUpgrade::Sapling
-                    .activation_height(&state_service_subscriber.network())
+                    .activation_height(&state_service_subscriber.network().to_zebra_network())
                 {
                     Some(activation_height) if height >= activation_height.0 => Some(
                         state
@@ -341,7 +341,7 @@ async fn create_200_block_regtest_chain_vectors() {
                 })
                 .unwrap();
                 let orchard_treestate = match zebra_chain::parameters::NetworkUpgrade::Nu5
-                    .activation_height(&state_service_subscriber.network())
+                    .activation_height(&state_service_subscriber.network().to_zebra_network())
                 {
                     Some(activation_height) if height >= activation_height.0 => Some(
                         state
@@ -376,10 +376,8 @@ async fn create_200_block_regtest_chain_vectors() {
                     parent_chain_work,
                     sapling_root.0.into(),
                     orchard_root.0.into(),
-                    None,
                     parent_block_sapling_tree_size,
                     parent_block_orchard_tree_size,
-                    parent_block_ironwood_tree_size,
                 ))
                 .unwrap();
 
@@ -401,7 +399,6 @@ async fn create_200_block_regtest_chain_vectors() {
             // Update parent block
             parent_block_sapling_tree_size = chain_block.commitment_tree_data().sizes().sapling();
             parent_block_orchard_tree_size = chain_block.commitment_tree_data().sizes().orchard();
-            parent_block_ironwood_tree_size = chain_block.commitment_tree_data().sizes().ironwood();
             parent_chain_work = Some(*chain_block.chainwork());
 
             data.push((height, zebra_block, block_roots, block_treestate));

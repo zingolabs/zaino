@@ -278,7 +278,7 @@ mod tests {
 
     fn sample_delta_with_block_index(i: u32, bi: Option<u32>) -> AddressDelta {
         AddressDelta {
-            satoshis: if i.is_multiple_of(2) { 1_000 } else { -500 },
+            satoshis: if i % 2 == 0 { 1_000 } else { -500 },
             txid: format!("deadbeef{:02x}", i),
             index: i,
             height: 123_456 + i,

@@ -56,16 +56,18 @@ pub use indexer::{
     ZcashService,
 };
 
-pub use indexer::node_backed_indexer::{
-    ChainTipSubscriber, NodeBackedIndexerService, NodeBackedIndexerServiceSubscriber,
+pub(crate) mod backends;
+
+#[allow(deprecated)]
+pub use backends::{
+    fetch::{FetchService, FetchServiceSubscriber},
+    state::{StateService, StateServiceSubscriber},
 };
 
 pub mod chain_index;
 
 // Core ChainIndex trait and implementations
-pub use chain_index::{
-    ChainIndex, ChainIndexRpcExt, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
-};
+pub use chain_index::{ChainIndex, NodeBackedChainIndex, NodeBackedChainIndexSubscriber};
 // Source types for ChainIndex backends
 pub use chain_index::source::{BlockchainSource, State, ValidatorConnector};
 // Supporting types
@@ -100,14 +102,16 @@ pub mod test_dependencies {
 
 pub(crate) mod config;
 
+#[allow(deprecated)]
 pub use config::{
-    ChainIndexConfig, CommonBackendConfig, DirectConnectionConfig, DonationAddress,
-    NodeBackedIndexerServiceConfig, ValidatorConnectionType,
+    BackendConfig, BackendType, ChainIndexConfig, CommonBackendConfig, DonationAddress,
+    FetchServiceConfig, StateServiceConfig,
 };
 
 pub(crate) mod error;
 
-pub use error::NodeBackedIndexerServiceError;
+#[allow(deprecated)]
+pub use error::{FetchServiceError, StateServiceError};
 
 pub(crate) mod status;
 

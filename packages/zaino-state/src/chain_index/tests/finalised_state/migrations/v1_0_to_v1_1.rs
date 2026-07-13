@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use tempfile::TempDir;
 use zaino_common::network::ActivationHeights;
-use zaino_common::{DatabaseConfig, StorageConfig};
+use zaino_common::{DatabaseConfig, Network, StorageConfig};
 
 use crate::chain_index::finalised_state::capability::{
     DbCore as _, DbRead as _, DbVersion, MigrationStatus,
@@ -34,7 +34,7 @@ async fn v1_0_to_v1_1_metadata_migration() {
         },
         ephemeral: false,
         db_version: 1,
-        network: ActivationHeights::default().to_regtest_network(),
+        network: Network::Regtest(ActivationHeights::default()),
     };
 
     let source = build_active_mockchain_source(150, blocks.clone());
@@ -51,11 +51,7 @@ async fn v1_0_to_v1_1_metadata_migration() {
     .await
     .unwrap();
 
-    // `wait_until_synced` (not `wait_until_ready`): a v1.1.0 database keeps its commitment rows in
-    // the legacy `commitment_tree_data_1_0_0` table (the v1.2.1 -> v1.3.0 migration has not run), so
-    // the background validator — which reads the v1.3.0 commitment table — can never reach the ready
-    // state. `wait_until_synced` waits for the migration to complete, which is what this test needs.
-    zaino_db.wait_until_synced().await;
+    zaino_db.wait_until_ready().await;
 
     let metadata = zaino_db.get_metadata().await.unwrap();
 
@@ -100,7 +96,7 @@ async fn v1_0_to_v1_1_mixed_blockheaderdata_formats() {
         },
         ephemeral: false,
         db_version: 1,
-        network: ActivationHeights::default().to_regtest_network(),
+        network: Network::Regtest(ActivationHeights::default()),
     };
 
     let source = build_active_mockchain_source(initial_active_height.0, blocks.clone());

@@ -11,14 +11,6 @@ version = "0.3.1"
 [features]
 default = []
 
-# TEST-ONLY: shrink the finalised/non-finalised seam to the tractable
-# `FAST_TEST_MAX_NONFINALISED_DEPTH` so cross-crate live tests can exercise
-# finalisation/eviction with small chains. MUST appear only in `[dev-dependencies]`
-# of the live-test crates — never a normal/shipped dependency: resolver = "2" keeps
-# dev-dependency features out of production dependency graphs, and `default-members`
-# excludes the live-test crates from production builds.
-fast-test-seam = []
-
 # Support for connecting to a zcashd validator node. Opt-in (default off, docs/adr/0005); being
 # deprecated. Forwards to zaino-fetch. See
 # docs/adr/0001-zcashd-support-feature-gate.md.
@@ -83,17 +75,22 @@ lmdb = { workspace = true }
 lmdb-sys = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
+prost = { workspace = true }
+primitive-types = { workspace = true }
 blake2 = { workspace = true }
 sha2 = { workspace = true }
 corez = { workspace = true }
+bs58 = { workspace = true }
+nonempty = { workspace = true }
 arc-swap = { workspace = true }
 reqwest.workspace = true
 bitflags = { workspace = true }
+derive_more = { workspace = true, features = ["from"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
 tracing-subscriber = { workspace = true }
-primitive-types = { workspace = true }
+once_cell = { workspace = true }
 zebra-chain = { workspace = true, features = ["proptest-impl"] }
 proptest.workspace = true
 incrementalmerkletree = "0.8.2"

@@ -5,8 +5,9 @@
 //! docs/adr/0001-zcashd-support-feature-gate.md.
 #![cfg(feature = "zcashd_support")]
 
-use zaino_state::{NodeBackedIndexerServiceSubscriber, ZcashIndexer};
-use zaino_testutils::{Rpc, TestManager};
+#[allow(deprecated)]
+use zaino_state::{FetchService, FetchServiceSubscriber, ZcashIndexer};
+use zaino_testutils::TestManager;
 use zcash_local_net::validator::zcashd::Zcashd;
 
 /// Assert that `query` returns the same value from the zcashd-backed and
@@ -15,11 +16,11 @@ use zcash_local_net::validator::zcashd::Zcashd;
 /// problem. The pure-compare building block of the json_server tests.
 #[allow(deprecated)]
 async fn assert_subscribers_agree<Q, Fut, T>(
-    zcashd_subscriber: &NodeBackedIndexerServiceSubscriber,
-    zaino_subscriber: &NodeBackedIndexerServiceSubscriber,
+    zcashd_subscriber: &FetchServiceSubscriber,
+    zaino_subscriber: &FetchServiceSubscriber,
     query: Q,
 ) where
-    Q: Fn(NodeBackedIndexerServiceSubscriber) -> Fut,
+    Q: Fn(FetchServiceSubscriber) -> Fut,
     Fut: std::future::Future<Output = T>,
     T: std::fmt::Debug + PartialEq,
 {
@@ -33,13 +34,13 @@ async fn assert_subscribers_agree<Q, Fut, T>(
 /// tests that check an invariant holds across the chain.
 #[allow(deprecated)]
 async fn compare_over_blocks<Q, Fut, T>(
-    test_manager: &TestManager<Zcashd, Rpc>,
-    zcashd_subscriber: &NodeBackedIndexerServiceSubscriber,
-    zaino_subscriber: &NodeBackedIndexerServiceSubscriber,
+    test_manager: &TestManager<Zcashd, FetchService>,
+    zcashd_subscriber: &FetchServiceSubscriber,
+    zaino_subscriber: &FetchServiceSubscriber,
     blocks: u32,
     query: Q,
 ) where
-    Q: Fn(NodeBackedIndexerServiceSubscriber) -> Fut,
+    Q: Fn(FetchServiceSubscriber) -> Fut,
     Fut: std::future::Future<Output = T>,
     T: std::fmt::Debug + PartialEq,
 {
@@ -429,8 +430,11 @@ mod zcashd {
         async fn z_validate_address() {
             let mut services = zaino_testutils::launch_zcashd_dual_fetch_services().await;
 
-            clientless::rpc::z_validate_address::run_z_validate_for(&services.zcashd_subscriber)
-                .await;
+            clientless::rpc::z_validate_address::run_z_validate_for(
+                &services.zcashd_subscriber,
+                clientless::rpc::z_validate_address::SaplingSuite::Standard,
+            )
+            .await;
 
             services.test_manager.close().await;
         }

@@ -42,37 +42,31 @@ impl std::fmt::Display for DonationAddress {
     }
 }
 
-/// How the [`NodeBackedIndexerService`](crate::NodeBackedIndexerService) connects to its
-/// validator to source blockchain data.
+/// Type of backend to be used.
 ///
-/// Carries the connection-specific configuration inline: the `Direct` variant owns the
-/// Zebra `ReadStateService` settings, while `Rpc` needs only the JSON-RPC connection bits
-/// already held in [`CommonBackendConfig`].
-#[derive(Debug, Clone)]
-pub enum ValidatorConnectionType {
-    /// JSON-RPC connection (formerly `Fetch`).
+/// Determines how Zaino fetches blockchain data from the validator.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BackendType {
+    /// Uses Zebra's ReadStateService for direct state access.
+    ///
+    /// More efficient but requires running on the same machine as Zebra.
+    State,
+    /// Uses JSON-RPC client to fetch data.
     ///
     /// Compatible with Zcashd, Zebra, or another Zaino instance.
-    Rpc,
-    /// Direct Zebra `ReadStateService` connection (formerly `State`).
-    ///
-    /// More efficient but requires running alongside a Zebra whose state DB and gRPC
-    /// sync endpoint we own.
-    Direct(DirectConnectionConfig),
+    #[default]
+    Fetch,
 }
 
-/// Connection parameters for the [`ValidatorConnectionType::Direct`] backend.
-///
-/// Bundles the Zebra `ReadStateService` DB config with the gRPC sync endpoint used to
-/// drive it, so the whole "direct connection" description travels as one value.
+/// Unified backend configuration enum.
 #[derive(Debug, Clone)]
-pub struct DirectConnectionConfig {
-    /// Zebra [`zebra_state::ReadStateService`] config data (DB cache dir etc.).
-    pub validator_state_config: zebra_state::Config,
-    /// Validator gRPC address (requires ip:port format for Zebra state sync).
-    pub validator_grpc_address: std::net::SocketAddr,
-    /// Whether validator cookie authentication is enabled.
-    pub validator_cookie_auth: bool,
+#[allow(deprecated)]
+pub enum BackendConfig {
+    /// StateService config.
+    State(StateServiceConfig),
+    /// Fetchservice config.
+    Fetch(FetchServiceConfig),
 }
 
 /// Configuration shared by every backend variant.
@@ -115,84 +109,25 @@ pub struct CommonBackendConfig {
     pub indexer_version: String,
 }
 
-impl CommonBackendConfig {
-    /// Builds a [`CommonBackendConfig`], applying the default RPC user/password
-    /// placeholder (`"xxxxxx"`) and this crate's `CARGO_PKG_VERSION` as the
-    /// indexer version. Shared by the [`NodeBackedIndexerServiceConfig`] constructors.
+/// Holds config data for [crate::StateService].
+#[derive(Debug, Clone)]
+// #[deprecated]
+pub struct StateServiceConfig {
+    /// Settings shared with [`FetchServiceConfig`].
+    pub common: CommonBackendConfig,
+    /// Zebra [`zebra_state::ReadStateService`] config data
+    pub validator_state_config: zebra_state::Config,
+    /// Validator gRPC address (requires ip:port format for Zebra state sync).
+    pub validator_grpc_address: std::net::SocketAddr,
+    /// Validator cookie auth.
+    pub validator_cookie_auth: bool,
+}
+
+#[allow(deprecated)]
+impl StateServiceConfig {
+    /// Returns a new instance of [`StateServiceConfig`].
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        validator_rpc_address: String,
-        validator_cookie_path: Option<PathBuf>,
-        validator_rpc_user: Option<String>,
-        validator_rpc_password: Option<String>,
-        service: ServiceConfig,
-        storage: StorageConfig,
-        ephemeral_finalised_state: bool,
-        network: Network,
-        donation_address: Option<DonationAddress>,
-    ) -> Self {
-        CommonBackendConfig {
-            validator_rpc_address,
-            validator_cookie_path,
-            validator_rpc_user: validator_rpc_user.unwrap_or_else(|| "xxxxxx".to_string()),
-            validator_rpc_password: validator_rpc_password.unwrap_or_else(|| "xxxxxx".to_string()),
-            service,
-            storage,
-            ephemeral_finalised_state,
-            network,
-            donation_address,
-            indexer_version: env!("CARGO_PKG_VERSION").to_string(),
-        }
-    }
-}
-
-/// Holds config data for [`crate::NodeBackedIndexerService`].
-///
-/// Replaces the former per-backend `FetchServiceConfig` / `StateServiceConfig`: the
-/// shared bits live in [`CommonBackendConfig`] and the backend-specific bits (only the
-/// `Direct` backend has any) live in [`ValidatorConnectionType`].
-#[derive(Debug, Clone)]
-pub struct NodeBackedIndexerServiceConfig {
-    /// Connection-independent settings (validator RPC, storage, network, ...).
-    pub common: CommonBackendConfig,
-    /// Which validator connection to use, and its connection-specific config.
-    pub connection: ValidatorConnectionType,
-}
-
-impl NodeBackedIndexerServiceConfig {
-    /// Returns a JSON-RPC (`Rpc`) service config (formerly `FetchServiceConfig::new`).
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_rpc(
-        validator_rpc_address: String,
-        validator_cookie_path: Option<PathBuf>,
-        validator_rpc_user: Option<String>,
-        validator_rpc_password: Option<String>,
-        service: ServiceConfig,
-        storage: StorageConfig,
-        ephemeral_finalised_state: bool,
-        network: Network,
-        donation_address: Option<DonationAddress>,
-    ) -> Self {
-        NodeBackedIndexerServiceConfig {
-            common: CommonBackendConfig::new(
-                validator_rpc_address,
-                validator_cookie_path,
-                validator_rpc_user,
-                validator_rpc_password,
-                service,
-                storage,
-                ephemeral_finalised_state,
-                network,
-                donation_address,
-            ),
-            connection: ValidatorConnectionType::Rpc,
-        }
-    }
-
-    /// Returns a direct-`ReadStateService` (`Direct`) service config
-    /// (formerly `StateServiceConfig::new`).
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_direct(
         validator_state_config: zebra_state::Config,
         validator_rpc_address: String,
         validator_grpc_address: std::net::SocketAddr,
@@ -206,25 +141,66 @@ impl NodeBackedIndexerServiceConfig {
         network: Network,
         donation_address: Option<DonationAddress>,
     ) -> Self {
-        // The config carries only the network kind; the activation schedule
-        // is adopted from the validator at spawn and logged there (#1076).
-        NodeBackedIndexerServiceConfig {
-            common: CommonBackendConfig::new(
+        tracing::trace!(
+            activations = ?network.to_zebra_network().full_activation_list(),
+            "state service expecting NU activations"
+        );
+        StateServiceConfig {
+            common: CommonBackendConfig {
                 validator_rpc_address,
                 validator_cookie_path,
-                validator_rpc_user,
-                validator_rpc_password,
+                validator_rpc_user: validator_rpc_user.unwrap_or("xxxxxx".to_string()),
+                validator_rpc_password: validator_rpc_password.unwrap_or("xxxxxx".to_string()),
                 service,
                 storage,
                 ephemeral_finalised_state,
                 network,
                 donation_address,
-            ),
-            connection: ValidatorConnectionType::Direct(DirectConnectionConfig {
-                validator_state_config,
-                validator_grpc_address,
-                validator_cookie_auth,
-            }),
+                indexer_version: env!("CARGO_PKG_VERSION").to_string(),
+            },
+            validator_state_config,
+            validator_grpc_address,
+            validator_cookie_auth,
+        }
+    }
+}
+
+/// Holds config data for [crate::FetchService].
+#[derive(Debug, Clone)]
+#[deprecated]
+pub struct FetchServiceConfig {
+    /// Settings shared with [`StateServiceConfig`].
+    pub common: CommonBackendConfig,
+}
+
+#[allow(deprecated)]
+impl FetchServiceConfig {
+    /// Returns a new instance of [`FetchServiceConfig`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        validator_rpc_address: String,
+        validator_cookie_path: Option<PathBuf>,
+        validator_rpc_user: Option<String>,
+        validator_rpc_password: Option<String>,
+        service: ServiceConfig,
+        storage: StorageConfig,
+        ephemeral_finalised_state: bool,
+        network: Network,
+        donation_address: Option<DonationAddress>,
+    ) -> Self {
+        FetchServiceConfig {
+            common: CommonBackendConfig {
+                validator_rpc_address,
+                validator_cookie_path,
+                validator_rpc_user: validator_rpc_user.unwrap_or("xxxxxx".to_string()),
+                validator_rpc_password: validator_rpc_password.unwrap_or("xxxxxx".to_string()),
+                service,
+                storage,
+                ephemeral_finalised_state,
+                network,
+                donation_address,
+                indexer_version: env!("CARGO_PKG_VERSION").to_string(),
+            },
         }
     }
 }
@@ -236,10 +212,8 @@ pub struct ChainIndexConfig {
     pub storage: StorageConfig,
     /// Database version selected to be run.
     pub db_version: u32,
-    /// The runtime network, carrying the activation schedule adopted from
-    /// the validator (zaino#1076) — or, in fixtures that are their own
-    /// chain, the fixture's schedule.
-    pub network: zebra_chain::parameters::Network,
+    /// Network type.
+    pub network: Network,
     /// Ephemeral finalised state:
     ///
     /// If true, FinalisedState does not write data to disk,
@@ -251,21 +225,41 @@ pub struct ChainIndexConfig {
 }
 
 impl ChainIndexConfig {
-    /// Builds the chain-index config from the backend config plus the
-    /// runtime network. The backend config carries only a network kind, so
-    /// the adopted runtime network arrives as its own argument — there is
-    /// no conversion from a service config alone.
-    pub fn from_backend_config(
-        common: &CommonBackendConfig,
-        network: zebra_chain::parameters::Network,
-    ) -> Self {
+    /// Returns a new instance of [`BlockCacheConfig`].
+    #[allow(dead_code)]
+    pub fn new(storage: StorageConfig, db_version: u32, network: Network, ephemeral: bool) -> Self {
+        ChainIndexConfig {
+            storage,
+            db_version,
+            network,
+            ephemeral,
+        }
+    }
+}
+
+impl From<CommonBackendConfig> for ChainIndexConfig {
+    fn from(value: CommonBackendConfig) -> Self {
         Self {
-            storage: common.storage.clone(),
+            storage: value.storage,
             // TODO: update zaino configs to include db version.
             db_version: 1,
-            network,
-            ephemeral: common.ephemeral_finalised_state,
+            network: value.network,
+            ephemeral: value.ephemeral_finalised_state,
         }
+    }
+}
+
+#[allow(deprecated)]
+impl From<StateServiceConfig> for ChainIndexConfig {
+    fn from(value: StateServiceConfig) -> Self {
+        value.common.into()
+    }
+}
+
+#[allow(deprecated)]
+impl From<FetchServiceConfig> for ChainIndexConfig {
+    fn from(value: FetchServiceConfig) -> Self {
+        value.common.into()
     }
 }
 

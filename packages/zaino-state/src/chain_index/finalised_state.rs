@@ -2,8 +2,8 @@
 //!
 //! This module provides `FinalisedState`, the *finalised* portion of the chain index.
 //!
-//! “Finalised” in this context means: All but the top `OPERATIONAL_NFS_DEPTH` blocks in the blockchain. This
-//! follows Zebra's model where a reorg deeper than `MAX_BLOCK_REORG_HEIGHT` would require a complete network restart.
+//! “Finalised” in this context means: All but the top 100 blocks in the blockchain. This follows
+//! Zebra's model where a reorg of depth greater than 100 would require a complete network restart.
 //!
 //! `FinalisedState` is a facade over a `FinalisedSource` — the
 //! backing implementation that actually serves finalised data. That backing is **not necessarily a
@@ -243,33 +243,6 @@ use crate::{
 use std::{sync::Arc, time::Duration};
 use tokio::time::{interval, MissedTickBehavior};
 
-/// The activation heights of the three shielded pools whose data
-/// [`build_indexed_block_from_source`] assembles, resolved once per run.
-///
-/// Both the ingestion loop ([`capability::DbWrite::write_blocks_to_height`]) and the v1.2.1 →
-/// v1.3.0 migration backfill need exactly this set of heights; resolving them in one place keeps
-/// the two call sites from drifting apart. A `None` height means the pool's network upgrade has no
-/// activation height on the given network.
-struct PoolActivationHeights {
-    sapling: Option<zebra_chain::block::Height>,
-    nu5: Option<zebra_chain::block::Height>,
-    nu6_3: Option<zebra_chain::block::Height>,
-}
-
-impl PoolActivationHeights {
-    /// Resolves the Sapling, NU5 (Orchard), and NU6.3 (Ironwood) activation heights on
-    /// `zebra_network`.
-    fn resolve(zebra_network: &zebra_chain::parameters::Network) -> Self {
-        let activation_height =
-            |pool: super::ShieldedPool| pool.activation_upgrade().activation_height(zebra_network);
-        Self {
-            sapling: activation_height(super::ShieldedPool::Sapling),
-            nu5: activation_height(super::ShieldedPool::Orchard),
-            nu6_3: activation_height(super::ShieldedPool::Ironwood),
-        }
-    }
-}
-
 /// Fetches the block at `height_int` from `source` and builds its [`IndexedBlock`], threading
 /// `parent_chainwork` into the block metadata.
 ///
@@ -278,10 +251,9 @@ impl PoolActivationHeights {
 /// owns the loop.
 pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
     source: &S,
-    network: zebra_chain::parameters::Network,
+    network: zaino_common::Network,
     sapling_activation_height: zebra_chain::block::Height,
     nu5_activation_height: Option<zebra_chain::block::Height>,
-    nu6_3_activation_height: Option<zebra_chain::block::Height>,
     height_int: u32,
     parent_chainwork: Option<ChainWork>,
 ) -> Result<IndexedBlock, FinalisedStateError> {
@@ -304,42 +276,38 @@ pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
     let block_hash = BlockHash::from(block.hash().0);
 
     // Fetch sapling / orchard commitment tree data if above the relevant network upgrade.
-    let (sapling_opt, orchard_opt, ironwood_opt) =
-        source.get_commitment_tree_roots(block_hash).await?;
-
+    let (sapling_opt, orchard_opt) = source.get_commitment_tree_roots(block_hash).await?;
     let is_sapling_active = height_int >= sapling_activation_height.0;
     let is_orchard_active = nu5_activation_height
         .is_some_and(|nu5_activation_height| height_int >= nu5_activation_height.0);
-    let is_ironwood_active = nu6_3_activation_height
-        .is_some_and(|nu6_3_activation_height| height_int >= nu6_3_activation_height.0);
 
-    let (sapling_root, sapling_size) = required_pool_root(
-        super::ShieldedPool::Sapling,
-        is_sapling_active,
-        sapling_opt,
-        || format!("block {block_hash}"),
-    )?;
-    let (orchard_root, orchard_size) = required_pool_root(
-        super::ShieldedPool::Orchard,
-        is_orchard_active,
-        orchard_opt,
-        || format!("block {block_hash}"),
-    )?;
-    let ironwood = optional_pool_root(
-        super::ShieldedPool::Ironwood,
-        is_ironwood_active,
-        ironwood_opt,
-        || format!("block {block_hash}"),
-    )?;
+    let (sapling_root, sapling_size) = if is_sapling_active {
+        sapling_opt.ok_or_else(|| {
+            FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
+                format!("missing Sapling commitment tree root for block {block_hash}"),
+            ))
+        })?
+    } else {
+        (zebra_chain::sapling::tree::Root::default(), 0)
+    };
+
+    let (orchard_root, orchard_size) = if is_orchard_active {
+        orchard_opt.ok_or_else(|| {
+            FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
+                format!("missing Orchard commitment tree root for block {block_hash}"),
+            ))
+        })?
+    } else {
+        (zebra_chain::orchard::tree::Root::default(), 0)
+    };
 
     let metadata = BlockMetadata::new(
         sapling_root,
-        sapling_size,
+        sapling_size as u32,
         orchard_root,
-        orchard_size,
-        ironwood,
+        orchard_size as u32,
         parent_chainwork,
-        network,
+        network.to_zebra_network(),
     );
 
     let block_with_metadata = BlockWithMetadata::new(block.as_ref(), metadata);
@@ -348,55 +316,6 @@ pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
             "error building block data at height {height_int}"
         )))
     })
-}
-
-/// Resolves a pool's optional commitment-tree root and size against the pool's activation
-/// status at the block in question.
-///
-/// From activation onward the root is required: a missing root is an unrecoverable source
-/// error. Below activation (or on a network where the pool's upgrade has no activation
-/// height) the pool has no tree yet, so the root defaults and the size is zero.
-///
-/// `location` describes the block for the error message (e.g. `block <hash>` or
-/// `block at height <n>`) and is only evaluated on failure.
-fn required_pool_root<R: Default>(
-    pool: super::ShieldedPool,
-    is_active: bool,
-    root_and_size: Option<(R, u64)>,
-    location: impl FnOnce() -> String,
-) -> Result<(R, u32), FinalisedStateError> {
-    optional_pool_root(pool, is_active, root_and_size, location)
-        .map(|resolved| resolved.unwrap_or_else(|| (R::default(), 0)))
-}
-
-/// Like [`required_pool_root`], but keeps the below-activation case as `None` instead of
-/// defaulting, for pools whose storage distinguishes "no treestate yet" from a
-/// default-valued one (the stored ironwood root: `None` = no ironwood data, the encoding
-/// the v1.2.1->v1.3.0 migration produces for pre-activation heights).
-fn optional_pool_root<R>(
-    pool: super::ShieldedPool,
-    is_active: bool,
-    root_and_size: Option<(R, u64)>,
-    location: impl FnOnce() -> String,
-) -> Result<Option<(R, u32)>, FinalisedStateError> {
-    let pool = pool.pool_string();
-    match root_and_size {
-        Some((root, size)) => {
-            let size = u32::try_from(size).map_err(|error| {
-                FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
-                    format!("{pool} commitment tree size does not fit into u32: {error}"),
-                ))
-            })?;
-            Ok(Some((root, size)))
-        }
-        None if !is_active => Ok(None),
-        None => Err(FinalisedStateError::BlockchainSourceError(
-            BlockchainSourceError::Unrecoverable(format!(
-                "missing {pool} commitment tree root for {}",
-                location()
-            )),
-        )),
-    }
 }
 
 use super::source::BlockchainSource;
@@ -491,7 +410,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
             return Ok(Self {
                 db: Arc::new(Router::new(Arc::new(FinalisedSource::ephemeral(
                     source,
-                    cfg.network.clone(),
+                    cfg.network.into(),
                     None,
                 )))),
                 cfg,
@@ -570,25 +489,12 @@ impl<T: BlockchainSource> FinalisedState<T> {
                         source: migration_source,
                     };
 
-                    match migration_manager.migrate().await {
-                        Ok(()) => {
-                            // Start the background validator only now that every migration has
-                            // finished: its initial scan reads tables a migration populates (e.g.
-                            // `commitment_tree_data_1_3_0`), so starting it earlier would race the
-                            // migration and fail on a not-yet-written row.
-                            migration_router.primary_backend().start_validator();
-                        }
-                        Err(error) => {
-                            tracing::error!("FinalisedState migration failed: {error}");
+                    if let Err(error) = migration_manager.migrate().await {
+                        tracing::error!("FinalisedState migration failed: {error}");
 
-                            migration_router.store_primary_status(StatusType::CriticalError);
-                        }
+                        migration_router.store_primary_status(StatusType::CriticalError);
                     }
                 });
-            } else {
-                // No migration to run, so the on-disk tables the validator scans are already at the
-                // current schema: start it immediately.
-                router.primary_backend().start_validator();
             }
 
             Ok(Self { db: router, cfg })
@@ -698,7 +604,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
     /// - `Some(version)` if a compatible database directory is found,
     /// - `None` if no database is detected (fresh DB creation case).
     async fn try_find_current_db_version(cfg: &ChainIndexConfig) -> Option<u32> {
-        let legacy_dir = match cfg.network.kind() {
+        let legacy_dir = match cfg.network.to_zebra_network().kind() {
             NetworkKind::Mainnet => "live",
             NetworkKind::Testnet => "test",
             NetworkKind::Regtest => "local",
@@ -708,7 +614,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
             return Some(0);
         }
 
-        let net_dir = match cfg.network.kind() {
+        let net_dir = match cfg.network.to_zebra_network().kind() {
             NetworkKind::Mainnet => "mainnet",
             NetworkKind::Testnet => "testnet",
             NetworkKind::Regtest => "regtest",
@@ -826,7 +732,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
             let ephemeral_reference = router
                 .init_or_take_ephemeral(
                     source.clone(),
-                    cfg.network.clone(),
+                    cfg.network.to_zebra_network(),
                     EphemeralMode::ReadOnly,
                     db_height_opt,
                 )
@@ -1093,14 +999,6 @@ impl<T: BlockchainSource> FinalisedState<T> {
             migration_manager.migrate().await?;
         }
 
-        // This test helper builds a fixture at an arbitrary (often intermediate) version for
-        // inspection, so it deliberately does NOT start the validator: the validator only validates
-        // against the current schema and would fail on an intermediate-version database. The
-        // foreground migration is already complete, so mark the primary `Ready` directly (as
-        // `spawn_v1_0_0` does) to give callers a settled backend. Validation is exercised through
-        // the production `FinalisedState::spawn` path, which always targets the current schema.
-        router.store_primary_status(StatusType::Ready);
-
         let metadata = router.get_metadata().await?;
         if metadata.version() != target_version {
             return Err(FinalisedStateError::Custom(format!(
@@ -1132,6 +1030,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
         source: T,
     ) -> Result<FinalisedSource<T>, FinalisedStateError> {
         let db = FinalisedSource::spawn_v1_0_0(cfg).await?;
+        db.wait_until_ready().await;
 
         let tip = source.get_best_block_height().await?.ok_or_else(|| {
             FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
@@ -1139,13 +1038,6 @@ impl<T: BlockchainSource> FinalisedState<T> {
             ))
         })?;
         let tip = Height::from(tip);
-
-        // Ironwood (NU6.3) commitment tree data is only expected from activation. Below activation
-        // (or on a network with no NU6.3 activation height) the source has no ironwood root, so it
-        // defaults — mirroring `build_indexed_block_from_source`.
-        let nu6_3_activation_height = super::ShieldedPool::Ironwood
-            .activation_upgrade()
-            .activation_height(&cfg.network);
 
         let mut parent_chainwork: Option<ChainWork> = None;
 
@@ -1164,35 +1056,25 @@ impl<T: BlockchainSource> FinalisedState<T> {
                 })?;
 
             let block_hash = BlockHash::from(block.hash().0);
-            let (sapling_opt, orchard_opt, ironwood_opt) =
-                source.get_commitment_tree_roots(block_hash).await?;
-            // Per this builder's contract, the fixture source provides Sapling and Orchard
-            // roots for every block, so those pools are unconditionally required.
-            let (sapling_root, sapling_size) =
-                required_pool_root(super::ShieldedPool::Sapling, true, sapling_opt, || {
-                    format!("block {block_hash}")
-                })?;
-            let (orchard_root, orchard_size) =
-                required_pool_root(super::ShieldedPool::Orchard, true, orchard_opt, || {
-                    format!("block {block_hash}")
-                })?;
-            let is_ironwood_active =
-                nu6_3_activation_height.is_some_and(|activation| height >= activation.0);
-            let ironwood = optional_pool_root(
-                super::ShieldedPool::Ironwood,
-                is_ironwood_active,
-                ironwood_opt,
-                || format!("block {block_hash}"),
-            )?;
+            let (sapling_opt, orchard_opt) = source.get_commitment_tree_roots(block_hash).await?;
+            let (sapling_root, sapling_size) = sapling_opt.ok_or_else(|| {
+                FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
+                    format!("missing Sapling commitment tree root for block {block_hash}"),
+                ))
+            })?;
+            let (orchard_root, orchard_size) = orchard_opt.ok_or_else(|| {
+                FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
+                    format!("missing Orchard commitment tree root for block {block_hash}"),
+                ))
+            })?;
 
             let metadata = BlockMetadata::new(
                 sapling_root,
-                sapling_size,
+                sapling_size as u32,
                 orchard_root,
-                orchard_size,
-                ironwood,
+                orchard_size as u32,
                 parent_chainwork,
-                cfg.network.clone(),
+                cfg.network.to_zebra_network(),
             );
             let block_with_metadata = BlockWithMetadata::new(block.as_ref(), metadata);
             let chain_block = IndexedBlock::try_from(block_with_metadata).map_err(|_| {

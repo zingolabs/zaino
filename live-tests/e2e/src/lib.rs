@@ -17,12 +17,8 @@ pub mod devtool;
 /// address string plus a balance-field closure.
 #[derive(Clone, Copy, Debug)]
 pub enum Pool {
-    /// Orchard (funds routed via a unified address through NU6.2; from NU6.3
-    /// devtool routes unified-address outputs to Ironwood — use
-    /// [`Pool::Ironwood`] for the receipt pool on NU6.3-active chains).
+    /// Orchard (funds routed via a unified address).
     Orchard,
-    /// Ironwood (funds routed via a unified address from NU6.3).
-    Ironwood,
     /// Sapling.
     Sapling,
     /// Transparent.
@@ -34,7 +30,7 @@ impl Pool {
     /// funds into this pool.
     pub fn address_kind(self) -> &'static str {
         match self {
-            Pool::Orchard | Pool::Ironwood => "unified",
+            Pool::Orchard => "unified",
             Pool::Sapling => "sapling",
             Pool::Transparent => "transparent",
         }
@@ -42,7 +38,7 @@ impl Pool {
 }
 
 /// Whether the compact tx with `txid` carries no data for `pool` (transparent
-/// `vout` / sapling `outputs` / orchard `actions` / `ironwood_actions`).
+/// `vout` / sapling `outputs` / orchard `actions`).
 fn pool_tx_field_empty(block: &CompactBlock, txid: &TxId, pool: Pool) -> bool {
     let tx = block
         .vtx
@@ -53,7 +49,6 @@ fn pool_tx_field_empty(block: &CompactBlock, txid: &TxId, pool: Pool) -> bool {
         Pool::Transparent => tx.vout.is_empty(),
         Pool::Sapling => tx.outputs.is_empty(),
         Pool::Orchard => tx.actions.is_empty(),
-        Pool::Ironwood => tx.ironwood_actions.is_empty(),
     }
 }
 

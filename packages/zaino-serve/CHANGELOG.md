@@ -9,8 +9,6 @@ and this library adheres to Rust's notion of
 
 ### Added
 ### Changed
-- tonic's TLS provider feature switches from `tls-ring` to `tls-aws-lc`,
-  following the workspace's aws-lc-rs preferred CryptoProvider (ADR-0006).
 ### Deprecated
 ### Removed
 ### Fixed

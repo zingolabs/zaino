@@ -10,5 +10,3 @@
 mod v1_0_to_v1_1;
 #[cfg(not(feature = "transparent_address_history_experimental"))]
 mod v1_1_to_v1_2;
-#[cfg(not(feature = "transparent_address_history_experimental"))]
-mod v1_2_to_v1_3;

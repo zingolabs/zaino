@@ -17,7 +17,7 @@ pub struct JsonRpcError {
 
 /// General error type for handling JsonRpSeeConnector errors.
 #[derive(Debug, thiserror::Error)]
-pub enum TransportError {
+pub enum FetchError {
     /// The cookie file used to authenticate with zebra could not be read
     #[error("could not read zebra authentication cookie file: {0}")]
     CookieReadError(io::Error),
@@ -57,7 +57,7 @@ pub enum TransportError {
     ),
 }
 
-impl TransportError {
+impl FetchError {
     /// Converts TransportError to tonic::Status
     ///
     /// TODO: This impl should be changed to return the correct status [per this issue](https://github.com/zcash/lightwalletd/issues/497) before release,
@@ -68,8 +68,8 @@ impl TransportError {
     }
 }
 
-impl From<TransportError> for tonic::Status {
-    fn from(err: TransportError) -> Self {
+impl From<FetchError> for tonic::Status {
+    fn from(err: FetchError) -> Self {
         err.to_grpc_status()
     }
 }
