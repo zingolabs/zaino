@@ -95,8 +95,8 @@ thiserror = { workspace = true }
 # Formats
 toml = { workspace = true }
 config = { workspace = true }
-tempfile = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 zcash_address = { workspace = true }
 zcash_protocol = { workspace = true }

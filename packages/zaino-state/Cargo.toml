@@ -83,7 +83,6 @@ lmdb = { workspace = true }
 lmdb-sys = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
-primitive-types = { workspace = true }
 blake2 = { workspace = true }
 sha2 = { workspace = true }
 corez = { workspace = true }
@@ -94,6 +93,7 @@ bitflags = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 tracing-subscriber = { workspace = true }
+primitive-types = { workspace = true }
 zebra-chain = { workspace = true, features = ["proptest-impl"] }
 proptest.workspace = true
 incrementalmerkletree = "0.8.2"
