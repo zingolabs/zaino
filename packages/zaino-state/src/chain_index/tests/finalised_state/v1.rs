@@ -4,10 +4,9 @@ use hex::ToHex;
 use std::path::PathBuf;
 use tempfile::TempDir;
 use zaino_common::network::ActivationHeights;
-use zaino_common::{DatabaseConfig, Network, StorageConfig};
+use zaino_common::{DatabaseConfig, StorageConfig};
 use zaino_proto::proto::utils::{compact_block_with_pool_types, PoolTypeFilter};
 
-use crate::chain_index::finalised_state::capability::IndexedBlockExt;
 use crate::chain_index::finalised_state::finalised_source::FinalisedSource;
 use crate::chain_index::finalised_state::reader::DbReader;
 use crate::chain_index::finalised_state::FinalisedState;
@@ -20,8 +19,12 @@ use crate::chain_index::tests::vectors::{
 
 use crate::chain_index::types::TransactionHash;
 
+use crate::chain_index::finalised_state::entry::StoredEntryVar;
 use crate::error::FinalisedStateError;
-use crate::{BlockMetadata, BlockWithMetadata, ChainIndexConfig, Height, IndexedBlock};
+use crate::{
+    BlockHeaderData, BlockMetadata, BlockWithMetadata, ChainIndexConfig, Height, IndexedBlock,
+    ZainoVersionedSerde as _,
+};
 
 use crate::{AddrScript, Outpoint};
 
@@ -41,7 +44,7 @@ pub(crate) async fn spawn_v1_zaino_db(
         },
         ephemeral: false,
         db_version: 1,
-        network: Network::Regtest(ActivationHeights::default()),
+        network: ActivationHeights::default().to_regtest_network(),
     };
 
     let zaino_db = FinalisedState::spawn(config, source).await.unwrap();
@@ -87,6 +90,35 @@ pub(crate) async fn load_vectors_v1db_and_reader() -> (
 }
 
 // *** FinalisedState Tests ***
+
+/// Regression test: blocks with no ironwood data must have NO ironwood row.
+///
+/// The ironwood table is sparse — readers treat an absent row as "no ironwood data"
+/// (an absent row reads back as an empty list; a stored all-`None` list reads back
+/// with one `None` per transaction). The write path instead wrote an all-`None`
+/// `OrchardTxList` for every block, paying one serialization + LMDB put per block
+/// across the entire pre-NU6.3 chain for zero information.
+///
+/// The test vectors are pre-NU6.3 regtest blocks, so no block carries ironwood data.
+///
+/// multi_thread required: DbV1 reads run under `tokio::task::block_in_place`.
+#[tokio::test(flavor = "multi_thread")]
+async fn no_ironwood_row_for_blocks_without_ironwood_data() {
+    init_tracing();
+
+    let (_test_vector_data, _db_dir, _zaino_db, db_reader) = load_vectors_v1db_and_reader().await;
+
+    let ironwood_list = db_reader
+        .get_block_ironwood(crate::Height(1))
+        .await
+        .unwrap();
+    assert!(
+        ironwood_list.tx().is_empty(),
+        "no ironwood row may be written for a block without ironwood data \
+         (read back {} entries; an absent row reads back as an empty list)",
+        ironwood_list.tx().len(),
+    );
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn shutdown_returns_promptly() {
@@ -161,7 +193,7 @@ async fn save_db_to_file_and_reload() {
         },
         ephemeral: false,
         db_version: 1,
-        network: Network::Regtest(ActivationHeights::default()),
+        network: ActivationHeights::default().to_regtest_network(),
     };
 
     let source = build_mockchain_source(blocks.clone());
@@ -240,29 +272,41 @@ async fn load_db_backend_from_file() {
         },
         ephemeral: false,
         db_version: 1,
-        network: Network::Regtest(ActivationHeights::default()),
+        network: ActivationHeights::default().to_regtest_network(),
     };
     let finalized_state_backend: FinalisedSource<MockchainSource> =
         FinalisedSource::spawn_v1(&config).await.unwrap();
 
+    // Read block headers directly from the `headers` table rather than via `get_chain_block`, which
+    // reconstructs the full block and validates (reading the v1.3.0 commitment table). This fixture
+    // is a legacy database whose commitment rows are in `commitment_tree_data_1_0_0`, so validation
+    // would fail; the header context asserted here is unaffected.
+    let read_header_direct = |height: Height| -> Option<BlockHeaderData> {
+        use lmdb::Transaction as _;
+        let environment = finalized_state_backend.env().unwrap();
+        let headers_database = environment.open_db(Some("headers_1_0_0")).unwrap();
+        let transaction = environment.begin_ro_txn().unwrap();
+        match transaction.get(headers_database, &height.to_bytes().unwrap()) {
+            Ok(raw) => Some(
+                *StoredEntryVar::<BlockHeaderData>::from_bytes(raw)
+                    .unwrap()
+                    .inner(),
+            ),
+            Err(lmdb::Error::NotFound) => None,
+            Err(error) => panic!("failed to read header at height {}: {error}", height.0),
+        }
+    };
+
     let mut prev_hash = None;
     for height in 0..=100 {
-        let block = finalized_state_backend
-            .get_chain_block(Height(height))
-            .await
-            .unwrap()
-            .unwrap();
+        let header = read_header_direct(Height(height)).unwrap();
         if let Some(prev_hash) = prev_hash {
-            assert_eq!(prev_hash, block.context.parent_hash);
+            assert_eq!(prev_hash, header.context.parent_hash);
         }
-        prev_hash = Some(block.context.index.hash);
-        assert_eq!(block.context.index.height, Height(height));
+        prev_hash = Some(header.context.index.hash);
+        assert_eq!(header.context.index.height, Height(height));
     }
-    assert!(finalized_state_backend
-        .get_chain_block(Height(101))
-        .await
-        .unwrap()
-        .is_none());
+    assert!(read_header_direct(Height(101)).is_none());
     std::fs::remove_file(db_path.join("regtest").join("v1").join("lock.mdb")).unwrap()
 }
 
@@ -292,8 +336,9 @@ async fn try_write_invalid_block() {
         sapling_tree_size as u32,
         orchard_root,
         orchard_tree_size as u32,
+        None,
         None, // no parent chainwork for this test
-        zaino_common::Network::Regtest(ActivationHeights::default()).to_zebra_network(),
+        ActivationHeights::default().to_regtest_network(),
     );
 
     let mut chain_block =

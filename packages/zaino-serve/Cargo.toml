@@ -6,7 +6,7 @@ repository = { workspace = true }
 homepage = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
-version = "0.4.0"
+version = "0.5.0"
 
 [features]
 default = []
@@ -53,9 +53,10 @@ metrics = { workspace = true, optional = true }
 
 # Miscellaneous Workspace
 tokio = { workspace = true, features = ["full"] }
-tonic = { workspace = true, features = ["tls-native-roots"] }
+tonic = { workspace = true, features = ["tls-native-roots", "tls-aws-lc"] }
 thiserror = { workspace = true }
 futures = { workspace = true }
 jsonrpsee = { workspace = true, features = ["server", "macros"] }
 serde = { workspace = true, features = ["derive"] }
 tower = { workspace = true }
+zaino-common.workspace = true

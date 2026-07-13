@@ -34,14 +34,15 @@ path = "junit.xml"
 [test-groups]
 live-validators = { max-threads = 6 }
 
-# Live-package tuning: capped concurrency (via the group), a slow-timeout for
-# validator startup, and retries to absorb RPC-timing flakiness. Scoped to the
-# live packages so production unit tests keep retries = 0 and no slow-timeout.
+# Live-package tuning: capped concurrency (via the group) and a slow-timeout for
+# validator startup. Scoped to the live packages so production unit tests keep
+# no slow-timeout. Retries are 0 everywhere: a flaky live test is a signal to
+# fix, not to absorb.
 [[profile.default.overrides]]
 filter = 'package(e2e) | package(clientless)'
 test-group = "live-validators"
 slow-timeout = { period = "60s", terminate-after = "10" }
-retries = 2
+retries = 0
 
 # The canonical test-target inventory consumed by the update/validate-test-targets
 # scripts via `cargo nextest list` -- NOT the CI test run (that is `default`).

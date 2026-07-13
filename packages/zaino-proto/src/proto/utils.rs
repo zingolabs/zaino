@@ -19,9 +19,21 @@ pub enum PoolTypeError {
 /// Converts a vector of pool_types (i32) into its rich-type representation
 /// Returns `PoolTypeError::InvalidPoolType` when invalid `pool_types` are found
 /// or `PoolTypeError::UnknownPoolType` if unknown ones are found.
+///
+/// An empty vector means the client did not filter, so every shielded pool is
+/// served — including Ironwood, which clients that predate the field simply
+/// ignore as an unknown protobuf field. Backfilling only the pre-NU6.3 pools
+/// here would serve blocks whose `chainMetadata.ironwoodCommitmentTreeSize`
+/// counts commitments from actions the block omits; a scanning wallet sees
+/// that as a tree-size discontinuity and treats it as a chain reorg.
+///
+/// The unfiltered pool set has exactly one definition:
+/// [`PoolTypeFilter::default`]. This wire-decode path delegates to it so the
+/// two cannot drift again (they had: the filter default gained Ironwood while
+/// this backfill still listed only Sapling and Orchard).
 pub fn pool_types_from_vector(pool_types: &[i32]) -> Result<Vec<PoolType>, PoolTypeError> {
     let pools = if pool_types.is_empty() {
-        vec![PoolType::Sapling, PoolType::Orchard]
+        PoolTypeFilter::default().to_pool_types_vector()
     } else {
         let mut pools: Vec<PoolType> = vec![];
 
@@ -156,15 +168,17 @@ pub struct PoolTypeFilter {
     include_transparent: bool,
     include_sapling: bool,
     include_orchard: bool,
+    include_ironwood: bool,
 }
 
 impl std::default::Default for PoolTypeFilter {
-    /// By default PoolType includes `Sapling` and `Orchard` pools.
+    /// The unfiltered pool set: every shielded pool, transparent excluded.
     fn default() -> Self {
         PoolTypeFilter {
             include_transparent: false,
             include_sapling: true,
             include_orchard: true,
+            include_ironwood: true,
         }
     }
 }
@@ -176,6 +190,7 @@ impl PoolTypeFilter {
             include_transparent: true,
             include_sapling: true,
             include_orchard: true,
+            include_ironwood: true,
         }
     }
 
@@ -196,7 +211,7 @@ impl PoolTypeFilter {
     pub fn new_from_pool_types(
         pool_types: &Vec<PoolType>,
     ) -> Result<PoolTypeFilter, PoolTypeError> {
-        if pool_types.len() > PoolType::Orchard as usize {
+        if pool_types.len() > PoolType::Ironwood as usize {
             return Err(PoolTypeError::InvalidPoolType);
         }
 
@@ -211,6 +226,7 @@ impl PoolTypeFilter {
                     PoolType::Transparent => filter.include_transparent = true,
                     PoolType::Sapling => filter.include_sapling = true,
                     PoolType::Orchard => filter.include_orchard = true,
+                    PoolType::Ironwood => filter.include_ironwood = true,
                 }
             }
 
@@ -229,12 +245,16 @@ impl PoolTypeFilter {
             include_transparent: false,
             include_sapling: false,
             include_orchard: false,
+            include_ironwood: false,
         }
     }
 
     /// only internal use
     fn is_empty(&self) -> bool {
-        !self.include_transparent && !self.include_sapling && !self.include_orchard
+        !self.include_transparent
+            && !self.include_sapling
+            && !self.include_orchard
+            && !self.include_ironwood
     }
 
     /// retuns whether the filter includes transparent data
@@ -250,6 +270,11 @@ impl PoolTypeFilter {
     // returnw whether the filter includes orchard data
     pub fn includes_orchard(&self) -> bool {
         self.include_orchard
+    }
+
+    /// returns whether the filter includes ironwood data
+    pub fn includes_ironwood(&self) -> bool {
+        self.include_ironwood
     }
 
     /// Convert this filter into the corresponding `Vec<PoolType>`.
@@ -270,6 +295,10 @@ impl PoolTypeFilter {
             pool_types.push(PoolType::Orchard);
         }
 
+        if self.include_ironwood {
+            pool_types.push(PoolType::Ironwood);
+        }
+
         pool_types
     }
 
@@ -279,11 +308,13 @@ impl PoolTypeFilter {
         include_transparent: bool,
         include_sapling: bool,
         include_orchard: bool,
+        include_ironwood: bool,
     ) -> Self {
         PoolTypeFilter {
             include_transparent,
             include_sapling,
             include_orchard,
+            include_ironwood,
         }
     }
 }
@@ -322,6 +353,7 @@ pub fn compact_block_with_pool_types(
             !compact_tx.spends.is_empty()
                 || !compact_tx.outputs.is_empty()
                 || !compact_tx.actions.is_empty()
+                || !compact_tx.ironwood_actions.is_empty()
         });
     } else {
         for compact_tx in &mut block.vtx {
@@ -339,6 +371,10 @@ pub fn compact_block_with_pool_types(
             if !pool_types.contains(&PoolType::Orchard) {
                 compact_tx.actions.clear();
             }
+            // strip out ironwood if not requested
+            if !pool_types.contains(&PoolType::Ironwood) {
+                compact_tx.ironwood_actions.clear();
+            }
         }
 
         // Omit transactions that have no elements in any requested pool type.
@@ -348,6 +384,7 @@ pub fn compact_block_with_pool_types(
                 || !compact_tx.spends.is_empty()
                 || !compact_tx.outputs.is_empty()
                 || !compact_tx.actions.is_empty()
+                || !compact_tx.ironwood_actions.is_empty()
         });
     }
 
@@ -368,11 +405,18 @@ pub fn compact_block_to_nullifiers(mut block: CompactBlock) -> CompactBlock {
                 ..Default::default()
             }
         }
+        for caction in &mut ctransaction.ironwood_actions {
+            *caction = CompactOrchardAction {
+                nullifier: caction.nullifier.clone(),
+                ..Default::default()
+            }
+        }
     }
 
     block.chain_metadata = Some(ChainMetadata {
         sapling_commitment_tree_size: 0,
         orchard_commitment_tree_size: 0,
+        ironwood_commitment_tree_size: 0,
     });
     block
 }
@@ -406,6 +450,7 @@ mod test {
             PoolType::Transparent,
             PoolType::Sapling,
             PoolType::Orchard,
+            PoolType::Ironwood,
             PoolType::Orchard,
         ]
         .to_vec();
@@ -418,11 +463,17 @@ mod test {
 
     #[test]
     fn test_pool_type_filter_t_z_o() {
-        let pools = [PoolType::Transparent, PoolType::Sapling, PoolType::Orchard].to_vec();
+        let pools = [
+            PoolType::Transparent,
+            PoolType::Sapling,
+            PoolType::Orchard,
+            PoolType::Ironwood,
+        ]
+        .to_vec();
 
         assert_eq!(
             PoolTypeFilter::new_from_pool_types(&pools),
-            Ok(PoolTypeFilter::from_checked_parts(true, true, true))
+            Ok(PoolTypeFilter::from_checked_parts(true, true, true, true))
         );
     }
 
@@ -432,7 +483,9 @@ mod test {
 
         assert_eq!(
             PoolTypeFilter::new_from_pool_types(&pools),
-            Ok(PoolTypeFilter::from_checked_parts(true, false, false))
+            Ok(PoolTypeFilter::from_checked_parts(
+                true, false, false, false
+            ))
         );
     }
 
@@ -447,8 +500,27 @@ mod test {
     #[test]
     fn test_pool_type_filter_includes_all() {
         assert_eq!(
-            PoolTypeFilter::from_checked_parts(true, true, true),
+            PoolTypeFilter::from_checked_parts(true, true, true, true),
             PoolTypeFilter::includes_all()
         );
+    }
+
+    /// Regression: an unfiltered request (empty `poolTypes`, what every
+    /// pre-Ironwood client sends) must be served Ironwood actions. When the
+    /// empty-vector backfill listed only the pre-NU6.3 shielded pools, the
+    /// served compact blocks stripped `ironwoodActions` while
+    /// `chainMetadata.ironwoodCommitmentTreeSize` still counted them, and
+    /// scanning wallets reported a tree-size discontinuity (a phantom chain
+    /// reorg) at the first block with an Ironwood coinbase.
+    #[test]
+    fn empty_pool_types_request_includes_ironwood() {
+        let pools = crate::proto::utils::pool_types_from_vector(&[]).unwrap();
+        assert!(pools.contains(&PoolType::Ironwood), "{pools:?}");
+
+        let filter = PoolTypeFilter::new_from_slice(&[]).unwrap();
+        assert!(filter.includes_ironwood());
+        assert!(filter.includes_sapling());
+        assert!(filter.includes_orchard());
+        assert!(!filter.includes_transparent());
     }
 }

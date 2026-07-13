@@ -8,6 +8,9 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- `ActivationHeights.nu6_3` (serde key `"NU6.3"`) for the NU6.3 network
+  upgrade. `ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS` currently leaves it `None`
+  (inactive); a chain with NU6.3 active needs the height stated explicitly.
 - `StorageConfig::database.sync_checkpoint_interval` (seconds, default 120) — max
   wall-clock time spent buffering a bulk-sync write batch before flushing. Under
   the env's `NO_SYNC` mode this also bounds the window of unflushed writes at risk
@@ -18,6 +21,10 @@ and this library adheres to Rust's notion of
   `sync_write_batch_size` so the two operations cannot inflate each other's peak
   memory.
 ### Changed
+- `crypto::ensure_default_crypto_provider` now installs rustls's
+  **aws-lc-rs** provider (was ring) as the process-level default, and the
+  crate's rustls features become `aws_lc_rs` + `prefer-post-quantum`
+  (ADR-0006). First-install-wins semantics are unchanged.
 - **Breaking** — `StorageConfig::database.sync_write_batch_bytes` (raw bytes) is
   renamed to `sync_write_batch_size` and now expressed in **GiB** (new
   `SyncWriteBatchSize` newtype, mirroring `DatabaseSize`); the default is 8 GiB.
@@ -28,8 +35,27 @@ and this library adheres to Rust's notion of
   unrecognized key under `[storage.database]` (e.g. a stale `sync_write_batch_bytes`)
   is a hard parse error instead of being silently ignored and falling back to the
   default budget — the silent fallback previously OOM-killed nodes.
+- The `ActivationHeights` ↔ `ConfiguredActivationHeights` conversions and the
+  zebra-network → `ActivationHeights` extraction are now generated from a single
+  variant/field pair list (internal refactor; conversion behavior unchanged).
+- `logging::init` / `logging::try_init` build their subscriber through one shared
+  installer (internal refactor). The `ZAINOLOG_FORMAT` / `ZAINOLOG_COLOR` /
+  `RUST_LOG` runtime interface and output formats are unchanged.
 ### Deprecated
 ### Removed
+- Unused dependencies `thiserror`, `nu-ansi-term`, and `hex` (`hex`'s last
+  consumers were the display wrappers removed below). Verified empirically:
+  each dependency was deleted in turn and the crate re-checked with
+  `cargo check --all-targets`.
+- **Breaking** — `Network::zaino_regtest_heights` (unused; regtest heights come
+  from `ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS` or an explicit `ActivationHeights`).
+- **Breaking** — `logging::DisplayHash` and `logging::DisplayHexStr` (unused).
+- **Breaking** — the unused programmatic logging-configuration surface:
+  `logging::init_with_config` / `logging::try_init_with_config` and the `LogConfig`
+  / `LogFormat` types (including the `LogConfig` builder methods and
+  `show_span_events`, which no caller could reach). Logging is configured via the
+  `ZAINOLOG_FORMAT` / `ZAINOLOG_COLOR` / `RUST_LOG` environment variables, whose
+  behavior is unchanged.
 ### Fixed
 
 ## [0.2.0] - 2026-06-17

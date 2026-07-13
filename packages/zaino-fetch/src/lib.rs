@@ -7,6 +7,7 @@
 
 pub mod chain;
 pub mod jsonrpsee;
+pub mod utils;
 
 /// Prometheus metric names emitted by this crate; the single source of truth shared with `zainod`'s `describe_*` registrations (which carry the descriptions).
 #[cfg(feature = "prometheus")]

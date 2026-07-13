@@ -86,8 +86,16 @@ impl ZainoVersionedSerde for PersistentChainWork {
     }
 }
 
+/// Fixed-length encoding metadata for `PersistentChainWork`.
+///
+/// v1 consists of a single 32-byte value.
 impl FixedEncodedLen for PersistentChainWork {
-    const ENCODED_LEN: usize = 32;
+    fn encoded_len(version: u8) -> Option<usize> {
+        match version {
+            version::V1 => Some(32),
+            _ => None,
+        }
+    }
 }
 
 /// Database-adjacent persistence shape for [`CompactDifficulty`].
@@ -129,8 +137,16 @@ impl ZainoVersionedSerde for PersistentCompactDifficulty {
     }
 }
 
+/// Fixed-length encoding metadata for `PersistentCompactDifficulty`.
+///
+/// v1 consists of a single 4-byte LE u32.
 impl FixedEncodedLen for PersistentCompactDifficulty {
-    const ENCODED_LEN: usize = 4;
+    fn encoded_len(version: u8) -> Option<usize> {
+        match version {
+            version::V1 => Some(4),
+            _ => None,
+        }
+    }
 }
 
 /// Database-adjacent persistence shape for [`BlockContext`].
@@ -305,7 +321,7 @@ mod tests {
 
         impl ChainWork {
             /// Returns ChainWork as a U256.
-            pub(super) fn to_u256(&self) -> primitive_types::U256 {
+            pub(super) fn to_u256(self) -> primitive_types::U256 {
                 primitive_types::U256::from_big_endian(&self.0)
             }
 

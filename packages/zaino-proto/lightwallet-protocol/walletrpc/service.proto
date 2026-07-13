@@ -14,6 +14,7 @@ enum PoolType {
     TRANSPARENT = 1;
     SAPLING = 2;
     ORCHARD = 3;
+    IRONWOOD = 4;
 }
 
 // A BlockID message contains identifiers to select a block: a height or a
@@ -179,6 +180,7 @@ message TreeState {
     uint32 time = 4;        // Unix epoch time when the block was mined
     string saplingTree = 5; // sapling commitment tree state
     string orchardTree = 6; // orchard commitment tree state
+    string ironwoodTree = 7; // ironwood commitment tree state
 }
 
 enum ShieldedProtocol {

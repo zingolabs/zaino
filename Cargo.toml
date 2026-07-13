@@ -38,23 +38,18 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 
-# Zingo
-
-zingo_common_components = "0.3.1"
-
 # Librustzcash
 incrementalmerkletree = "0.8"
-zcash_address = "0.12"
-zcash_keys = "0.14"
-zcash_protocol = "0.9"
-zcash_primitives = "0.28"
-zcash_transparent = "0.8"
-zcash_client_backend = "0.23"
+zcash_address = "0.13"
+zcash_keys = "0.15"
+zcash_protocol = "0.10"
+zcash_primitives = "0.29"
+zcash_transparent = "0.9"
 
 # Zebra
-zebra-chain = "10.0"
-zebra-state = "9.0"
-zebra-rpc = "10.0"
+zebra-chain = "11.1"
+zebra-state = "10.1"
+zebra-rpc = "11.1"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
@@ -72,7 +67,6 @@ tracing-subscriber = { version = "0.3.20", features = [
     "time",
     "json",
 ] }
-tracing-futures = "0.2"
 tracing-tree = "0.4"
 nu-ansi-term = "0.50"
 time = { version = "0.3", features = ["macros", "formatting"] }
@@ -82,29 +76,22 @@ http = "1.1"
 url = "2.5"
 reqwest = { version = "0.13", default-features = false, features = [
     "cookies",
-    "rustls",
+    "rustls-no-provider",
     "webpki-roots",
 ] }
 tower = { version = "0.4", features = ["buffer", "util"] }
 tonic = { version = "0.14" }
-tonic-build = "0.14"
 prost = "0.14"
 serde = "1.0"
 serde_json = "1.0"
-jsonrpsee-core = "0.24"
 jsonrpsee-types = "0.24"
 jsonrpsee = { version = "0.24", features = ["server", "macros"] }
-hyper = "1.6"
 
 # Hashmaps, channels, DBs
 indexmap = "2.2.6"
-crossbeam-channel = "0.5"
 dashmap = "6.1"
 lmdb = "0.8"
 lmdb-sys = "0.8"
-
-# Async
-async-stream = "0.3"
 futures = "0.3.30"
 
 # Metrics
@@ -113,9 +100,7 @@ metrics-exporter-prometheus = { version = "0.18", default-features = false, feat
 
 # Utility
 thiserror = "2.0"
-lazy-regex = "3.3"
 once_cell = "1.20"
-ctrlc = "3.4"
 chrono = "0.4"
 which = "8"
 whoami = "2.1"
@@ -129,7 +114,6 @@ blake2 = "0.10"
 hex = "0.4"
 toml = "1.1"
 primitive-types = "0.14"
-bs58 = "0.5"
 bitflags = "2.9"
 
 # Test
@@ -138,38 +122,36 @@ tempfile = "3.2"
 # no longer need `default-features = false` to drop it: their default feature
 # set is already empty. Enable zcashd end-to-end with `--features zcashd_support`.
 zainod = { path = "packages/zainod" }
-zaino-common = { path = "packages/zaino-common", version = "0.3.0" }
+zaino-common = { path = "packages/zaino-common", version = "0.4.0" }
 # default-features = false so the default-on `zcashd_support` feature can be
 # dropped end-to-end via `--no-default-features`; each consumer re-enables it
 # by forwarding `zcashd_support` in its own `default`. See
 # docs/adr/0001-zcashd-support-feature-gate.md.
-zaino-fetch = { path = "packages/zaino-fetch", version = "0.3.0", default-features = false }
-zaino-proto = { path = "packages/zaino-proto", version = "0.1.4" }
-zaino-state = { path = "packages/zaino-state", version = "0.4.1", default-features = false }
-zaino-serve = { path = "packages/zaino-serve", version = "0.4.0", default-features = false }
+zaino-fetch = { path = "packages/zaino-fetch", version = "0.4.0", default-features = false }
+zaino-proto = { path = "packages/zaino-proto", version = "0.2.0" }
+zaino-state = { path = "packages/zaino-state", version = "0.5.0", default-features = false }
+zaino-serve = { path = "packages/zaino-serve", version = "0.5.0", default-features = false }
 zaino-testutils = { path = "live-tests/zaino-testutils" }
 
 # Zingo-infra (validator launcher driving the live tests; not a prod dep).
-# TEMPORARY (zingolabs/infrastructure#269): pinned to an exact commit on the
-# `add_client_support` branch so every machine resolves the same code; restore
-# the release tag once tagged upstream.
-zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "0cc7dab7d12dd906c23deddd4e1fc3c42cf0f083" }
+# Pinned to an exact commit past zcash_local_net_v0.7.0: the v0.7.0 launcher's
+# zebrad config writer silently drops NU6.3 activation heights
+# (https://github.com/zingolabs/zaino/issues/1368). This rev additionally
+# makes the Validator the sole compile-time source of activation-height
+# truth (infrastructure ADR 0003, PR #278): wallet clients derive their
+# heights via `WalletNetwork::from_validator`, and `ZainodConfig` carries a
+# payload-free network kind. Restore a release tag once one is cut upstream.
+zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev = "85502cd0b5faf9308e590865dae51bf31fdd342e" }
 
 wire_serialized_transaction_test_data = "1.0.0"
 config = { version = "0.15", default-features = false, features = ["toml"] }
-nonempty = "0.12.0"
 proptest = "~1.11"
-zip32 = "0.2.1"
-
-# Patch for vulnerable dependency
-slab = "0.4.11"
 anyhow = "1.0"
 arc-swap = "1.7.1"
-cargo-lock = "10.1.0"
 derive_more = "2.0.1"
-lazy_static = "1.5.0"
 
 [profile.test]
 opt-level = 3
 debug = true
 
+[patch.crates-io]
