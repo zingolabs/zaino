@@ -201,23 +201,31 @@ impl Scheduler {
                 continue;
             }
 
-            // Check block availability — the provisioner may not have
-            // supplied this block yet.
-            let global = batch.value() * self.batch_size + extracted;
-            if global >= self.blocks_available {
-                continue;
-            }
-
             if !self.firing_rules_satisfied(id, batch) {
                 continue;
             }
 
-            jobs.push(ExtractJob {
-                index: id,
-                batch,
-                block_offset: extracted,
-                global_offset: BlockOffset::new(global),
-            });
+            // How many blocks to emit depends on the index's scope:
+            // - BlockLocal: all available (fully parallel, no inter-block deps)
+            // - SelfCumulative/CrossIndex: one at a time (sequential)
+            let is_parallel = self.dag.node(id)
+                .map(|n| n.descriptor.scope == crate::descriptor::InputScope::BlockLocal)
+                .unwrap_or(false);
+
+            let limit = if is_parallel { effective } else { extracted + 1 };
+
+            for offset in extracted..limit {
+                let global = batch.value() * self.batch_size + offset;
+                if global >= self.blocks_available {
+                    break;
+                }
+                jobs.push(ExtractJob {
+                    index: id,
+                    batch,
+                    block_offset: offset,
+                    global_offset: BlockOffset::new(global),
+                });
+            }
         }
 
         #[cfg(feature = "tracing")]
@@ -485,10 +493,12 @@ mod tests {
         sched.set_blocks_available(10);
 
         let jobs = sched.ready_extractions();
-        assert_eq!(jobs.len(), 1);
+        // With batch_size=3 and 10 blocks available, emits all 3 blocks.
+        assert_eq!(jobs.len(), 3);
         assert_eq!(jobs[0].index, A);
-        assert_eq!(jobs[0].batch, BatchIndex::new(0));
         assert_eq!(jobs[0].block_offset, 0);
+        assert_eq!(jobs[1].block_offset, 1);
+        assert_eq!(jobs[2].block_offset, 2);
     }
 
     #[test]
@@ -517,11 +527,12 @@ mod tests {
         sched.extraction_done(A);
         assert!(sched.ready_extractions().is_empty());
 
-        // Provisioner supplies more.
+        // Provisioner supplies more — now all 3 available, 1 already extracted.
         sched.set_blocks_available(3);
         let jobs = sched.ready_extractions();
-        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs.len(), 2); // blocks 1 and 2
         assert_eq!(jobs[0].block_offset, 1);
+        assert_eq!(jobs[1].block_offset, 2);
     }
 
     #[test]
