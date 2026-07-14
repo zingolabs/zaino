@@ -1,6 +1,6 @@
 # Stage 1: build (cached between runs via volume mounts)
 FROM docker.io/archlinux:latest AS builder
-RUN pacman -Syu --noconfirm rust cmake gcc make pkgconf clang
+RUN pacman -Syu --noconfirm rust cmake gcc make pkgconf clang protobuf
 WORKDIR /src
 COPY . .
 # cargo registry + target cached via podman --mount args in deploy.sh

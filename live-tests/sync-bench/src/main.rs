@@ -9,9 +9,12 @@
 //!   ZAINO_DB_PATH    — LMDB path. If set, uses LMDB. If unset, in-memory.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
+use tracing::info;
+
+static TRACER_PROVIDER: OnceLock<opentelemetry_sdk::trace::SdkTracerProvider> = OnceLock::new();
 use zaino_backend_lmdb::{LmdbBackend, LmdbConfig};
 use zaino_indexes::indexes::headers::ID as HEADERS_ID;
 use zaino_indexes::indexes::txids::ID as TXIDS_ID;
@@ -93,7 +96,13 @@ where
                     if sent % 500 == 0 || sent == block_count {
                         let elapsed = start.elapsed().as_secs_f64();
                         let rate = sent as f64 / elapsed;
-                        println!("  progress: {sent}/{block_count} ({rate:.0} blocks/s)");
+                        info!(
+                            sent,
+                            total = block_count,
+                            elapsed_secs = format!("{elapsed:.1}"),
+                            blocks_per_sec = format!("{rate:.0}"),
+                            "provisioner progress",
+                        );
                     }
                 }
                 None => break,
@@ -127,25 +136,60 @@ where
 
 #[tokio::main]
 async fn main() {
-    // Opt-in tracing: only initialize when RUST_LOG is set.
+    // Always initialize tracing. RUST_LOG controls verbosity (default: sync_bench=info).
     // JSON output when ZAINO_LOG_JSON=1 (for Loki/Grafana), human-readable otherwise.
-    if std::env::var("RUST_LOG").is_ok() {
+    // OTLP export to Tempo when OTEL_EXPORTER_OTLP_ENDPOINT is set.
+    {
         use tracing_subscriber::fmt::format::FmtSpan;
-        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-            .expect("RUST_LOG is set but could not be parsed");
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+        use tracing_subscriber::Layer;
 
-        if std::env::var("ZAINO_LOG_JSON").as_deref() == Ok("1") {
-            tracing_subscriber::fmt()
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("sync_bench=info"));
+
+        let fmt_layer = if std::env::var("ZAINO_LOG_JSON").as_deref() == Ok("1") {
+            tracing_subscriber::fmt::layer()
                 .json()
                 .with_span_events(FmtSpan::CLOSE)
-                .with_env_filter(filter)
-                .init();
+                .boxed()
         } else {
-            tracing_subscriber::fmt()
+            tracing_subscriber::fmt::layer()
                 .with_span_events(FmtSpan::CLOSE)
                 .with_target(false)
-                .with_env_filter(filter)
-                .init();
+                .boxed()
+        };
+
+        let registry = tracing_subscriber::registry()
+            .with(filter)
+            .with(fmt_layer);
+
+        if std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").is_ok() {
+            use opentelemetry::trace::TracerProvider;
+
+            let exporter = opentelemetry_otlp::SpanExporter::builder()
+                .with_tonic()
+                .build()
+                .expect("OTLP exporter");
+
+            let tracer_provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+                .with_batch_exporter(exporter)
+                .with_resource(
+                    opentelemetry_sdk::Resource::builder()
+                        .with_service_name("sync-bench")
+                        .build(),
+                )
+                .build();
+
+            let otel_layer = tracing_opentelemetry::layer()
+                .with_tracer(tracer_provider.tracer("sync-bench"));
+
+            registry.with(otel_layer).init();
+
+            // Stash provider so we can flush on shutdown.
+            TRACER_PROVIDER.set(tracer_provider).ok();
+        } else {
+            registry.init();
         }
     }
 
@@ -187,22 +231,31 @@ async fn main() {
     let block_count = sync_to - sync_from + 1;
     let backend_name = db_path.as_deref().unwrap_or("in-memory");
 
-    println!("════════════════════════════════════════════");
-    println!("  sync-bench");
-    println!("════════════════════════════════════════════");
-    if state_dir.is_some() {
-        println!("  state_dir:    {}", state_dir.as_ref().expect("set").display());
-    } else {
-        println!("  rpc:          {rpc_url}");
-    }
-    println!("  provisioner:  {provisioner_name}");
-    println!("  backend:      {backend_name}");
-    println!("  index_set:    current_zaino (8 indexes)");
-    println!("  chain_tip:    {tip_height} ({tip_hash})");
-    println!("  block_range:  {sync_from}..={sync_to} ({block_count} blocks)");
-    println!("  concurrency:  {concurrency}");
-    println!("  batch_size:   {batch_size}");
-    println!("────────────────────────────────────────────");
+    // Log configuration.
+    let state_dir_display = state_dir.as_ref().map(|d| d.display().to_string());
+    info!(
+        provisioner = provisioner_name,
+        backend = backend_name,
+        chain_tip_height = %tip_height,
+        chain_tip_hash = %tip_hash,
+        sync_from,
+        sync_to,
+        block_count,
+        concurrency,
+        batch_size,
+        state_dir = state_dir_display.as_deref().unwrap_or("n/a"),
+        rpc_url = if state_dir.is_none() { rpc_url.as_str() } else { "n/a" },
+        "sync-bench configuration",
+    );
+
+    // Log index set description.
+    let set = current_zaino::index_set();
+    let descriptions = set.describe();
+    info!(
+        count = descriptions.len(),
+        indexes = ?descriptions,
+        "index set: current_zaino",
+    );
 
     let ns_headers: Namespace = HEADERS_ID.into();
     let ns_txids: Namespace = TXIDS_ID.into();
@@ -306,17 +359,19 @@ async fn main() {
         }
     };
 
-    println!("════════════════════════════════════════════");
-    println!("  RESULTS");
-    println!("════════════════════════════════════════════");
-    println!("  total_blocks: {block_count}");
-    println!("  total_time:   {:.2}s", result.elapsed_secs);
-    println!("  blocks/s:     {:.1}", result.blocks_per_sec);
-    if let Some(size) = result.db_size_bytes {
-        let mb = size as f64 / (1024.0 * 1024.0);
-        println!("  db_size:      {:.2} MB", mb);
-        let bytes_per_block = size as f64 / block_count as f64;
-        println!("  bytes/block:  {:.0}", bytes_per_block);
+    info!(
+        total_blocks = block_count,
+        total_time_secs = format!("{:.2}", result.elapsed_secs),
+        blocks_per_sec = format!("{:.1}", result.blocks_per_sec),
+        db_size_mb = result.db_size_bytes.map(|s| format!("{:.2}", s as f64 / (1024.0 * 1024.0))),
+        bytes_per_block = result.db_size_bytes.map(|s| format!("{:.0}", s as f64 / block_count as f64)),
+        "sync-bench results",
+    );
+
+    // Flush any pending OTLP spans before exit.
+    if let Some(provider) = TRACER_PROVIDER.get() {
+        if let Err(e) = provider.shutdown() {
+            eprintln!("OTLP shutdown error: {e}");
+        }
     }
-    println!("════════════════════════════════════════════");
 }

@@ -19,7 +19,12 @@ zaino-rpc.workspace = true
 zaino-source.workspace = true
 zaino-source-zebra-rpc = { workspace = true, features = ["tracing"] }
 zaino-source-zebra-readstate = { workspace = true, features = ["tracing"] }
+tracing.workspace = true
 tracing-subscriber.workspace = true
+tracing-opentelemetry.workspace = true
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+opentelemetry-otlp.workspace = true
 zebra-chain = { workspace = true }
 zaino-sync = { workspace = true, features = ["testing", "tracing"] }
 zaino-persistence = { workspace = true, features = ["testing"] }
