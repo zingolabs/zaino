@@ -220,6 +220,15 @@ impl Scheduler {
             });
         }
 
+        #[cfg(feature = "tracing")]
+        if !jobs.is_empty() {
+            tracing::debug!(
+                job_count = jobs.len(),
+                blocks_available = self.blocks_available,
+                "ready_extractions"
+            );
+        }
+
         jobs
     }
 
@@ -244,6 +253,13 @@ impl Scheduler {
         );
 
         if *count >= effective {
+            #[cfg(feature = "tracing")]
+            tracing::info!(
+                index = %index,
+                batch = batch.value(),
+                block_count = effective,
+                "batch fully extracted"
+            );
             self.pending_merge.insert(index);
             Some(BatchHandle::new(index, batch))
         } else {
@@ -300,6 +316,13 @@ impl Scheduler {
 
         self.pending_commit.remove(&index);
         self.committed_through.insert(index, Some(batch));
+
+        #[cfg(feature = "tracing")]
+        tracing::debug!(
+            index = %index,
+            batch = batch.value(),
+            "batch committed, advancing"
+        );
 
         // Advance to next batch.
         let next = BatchIndex::new(batch.value() + 1);

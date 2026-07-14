@@ -282,7 +282,11 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
         loop {
             match rx.try_recv() {
                 Ok(ctx) => self.push_block(ctx),
-                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => return false,
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                    #[cfg(feature = "tracing")]
+                    tracing::trace!(buffered = self.buffer.len(), "channel drained");
+                    return false;
+                }
                 Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
                     self.scheduler
                         .provisioner_done(self.buffer.total_pushed());
@@ -326,6 +330,13 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     /// parallel via rayon, then reports completions sequentially.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(task_count = tasks.len())))]
     fn dispatch_tasks(&mut self, tasks: Vec<Task>) -> Result<(), SyncError> {
+        #[cfg(feature = "tracing")]
+        {
+            let extracts = tasks.iter().filter(|t| matches!(t, Task::Extract(_))).count();
+            let completes = tasks.len() - extracts;
+            tracing::debug!(extracts, completes, buffer = self.buffer.len(), "dispatch");
+        }
+
         let jobs = self.flush_batch_completions(tasks)?;
         self.run_extractions_parallel(&jobs)?;
         self.report_extractions(jobs)
