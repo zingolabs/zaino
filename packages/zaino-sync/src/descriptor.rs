@@ -32,7 +32,7 @@ impl sealed::Scope for SelfCumulative {}
 impl sealed::Scope for CrossIndex {}
 
 /// Runtime-inspectable mirror of the type-level scope marker.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display)]
 pub enum InputScope {
     /// Only needs the current block's context.
     BlockLocal,
@@ -77,7 +77,7 @@ impl sealed::Composition for Monoidal {}
 impl sealed::Composition for Fold {}
 
 /// Runtime-inspectable mirror of the type-level composition marker.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display)]
 pub enum CompositionType {
     /// Disjoint keys. Merge = collect.
     Append,
@@ -108,7 +108,7 @@ impl Composition for Fold {
 // ---------------------------------------------------------------------------
 
 /// Whether an extractor needs a source handle beyond the block context.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display)]
 pub enum SourceAccess {
     /// Extraction is pure: BlockContext + (optional deps/prior state) only.
     None,
@@ -146,4 +146,28 @@ pub struct Descriptor {
     pub dependencies: &'static [IndexId],
     /// Whether extraction may reach the source for non-local data.
     pub source_access: SourceAccess,
+}
+
+impl core::fmt::Display for Descriptor {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "{} ({} × {})",
+            self.name, self.scope, self.composition,
+        )?;
+        if !self.dependencies.is_empty() {
+            write!(f, " deps=[")?;
+            for (i, dep) in self.dependencies.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{dep}")?;
+            }
+            write!(f, "]")?;
+        }
+        if self.source_access != SourceAccess::None {
+            write!(f, " source={}", self.source_access)?;
+        }
+        Ok(())
+    }
 }

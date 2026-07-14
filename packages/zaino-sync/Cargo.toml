@@ -16,6 +16,7 @@ testing = ["zaino-persistence/testing"]
 zaino-persistence = { path = "../zaino-persistence" }
 zaino-primitives = { path = "../zaino-primitives" }
 rayon.workspace = true
+strum.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing = { workspace = true, optional = true }

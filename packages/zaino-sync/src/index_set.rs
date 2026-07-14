@@ -42,6 +42,14 @@ impl<Ctx: Send + Sync + 'static> IndexSet<Ctx> {
         self
     }
 
+    /// Return a description line for each registered index.
+    pub fn describe(&self) -> Vec<String> {
+        self.pipelines
+            .iter()
+            .map(|p| p.descriptor().to_string())
+            .collect()
+    }
+
     /// Build the dependency DAG and return the parts the engine needs.
     ///
     /// Validates uniqueness, dependency existence, and acyclicity.

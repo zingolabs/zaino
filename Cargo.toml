@@ -89,6 +89,10 @@ tracing-subscriber = { version = "0.3.20", features = [
     "json",
 ] }
 tracing-futures = "0.2"
+tracing-opentelemetry = "0.33"
+opentelemetry = "0.32"
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic"] }
 tracing-tree = "0.4"
 nu-ansi-term = "0.50"
 time = { version = "0.3", features = ["macros", "formatting"] }
@@ -130,6 +134,9 @@ futures = "0.3.30"
 # Metrics
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.16", default-features = false, features = ["http-listener"] }
+
+# Derive
+strum = { version = "0.27", features = ["derive"] }
 
 # Utility
 thiserror = "2.0"
