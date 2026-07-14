@@ -334,7 +334,7 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
         {
             let extracts = tasks.iter().filter(|t| matches!(t, Task::Extract(_))).count();
             let completes = tasks.len() - extracts;
-            tracing::debug!(extracts, completes, buffer = self.buffer.len(), "dispatch");
+            tracing::trace!(extracts, completes, buffer = self.buffer.len(), "dispatch");
         }
 
         let jobs = self.flush_batch_completions(tasks)?;

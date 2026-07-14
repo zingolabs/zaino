@@ -230,7 +230,7 @@ impl Scheduler {
 
         #[cfg(feature = "tracing")]
         if !jobs.is_empty() {
-            tracing::debug!(
+            tracing::trace!(
                 job_count = jobs.len(),
                 blocks_available = self.blocks_available,
                 "ready_extractions"
@@ -326,7 +326,7 @@ impl Scheduler {
         self.committed_through.insert(index, Some(batch));
 
         #[cfg(feature = "tracing")]
-        tracing::debug!(
+        tracing::trace!(
             index = %index,
             batch = batch.value(),
             "batch committed, advancing"
