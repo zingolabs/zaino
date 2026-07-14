@@ -62,11 +62,19 @@ kubectl --context "$CONTEXT" -n "$NS" delete job sync-bench 2>/dev/null || true
 # --- Build Job manifest ---
 echo "=== Creating Job: $BLOCKS blocks, conc=$CONC, batch=$BATCH, source=$SOURCE ==="
 
+# Optional RUST_LOG passthrough.
+RUST_LOG_YAML=""
+if [ -n "${RUST_LOG:-}" ]; then
+  RUST_LOG_YAML="
+            - name: RUST_LOG
+              value: \"$RUST_LOG\""
+fi
+
 if [ "$SOURCE" = "readstate" ]; then
   ENV_YAML="            - name: ZEBRA_STATE_DIR
               value: \"/zebra-state\"
             - name: ZAINO_DB_PATH
-              value: \"/data/zaino-bench\""
+              value: \"/data/zaino-bench\"$RUST_LOG_YAML"
   VOLUMES_YAML="      volumes:
         - name: zebra-state
           hostPath:
@@ -87,7 +95,7 @@ else
   ENV_YAML="            - name: ZEBRA_RPC_URL
               value: \"$RPC\"
             - name: ZAINO_DB_PATH
-              value: \"/data/zaino-bench\""
+              value: \"/data/zaino-bench\"$RUST_LOG_YAML"
   VOLUMES_YAML="      volumes:
         - name: bench-data
           emptyDir:
