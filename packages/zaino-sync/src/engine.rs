@@ -343,25 +343,71 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     }
 
     /// Handle all batch-completion tasks, return remaining extract jobs.
+    ///
+    /// Merge+persist runs in parallel across indexes (they have independent
+    /// internal buffers). Scheduler updates and op stashing are sequential.
     fn flush_batch_completions(
         &mut self,
         tasks: Vec<Task>,
     ) -> Result<Vec<ExtractJob>, SyncError> {
         let mut extract_jobs = Vec::new();
+        let mut batch_indexes = Vec::new();
+
         for task in tasks {
             match task {
                 Task::Extract(job) => extract_jobs.push(job),
                 Task::CompleteBatch { index, .. } => {
-                    let handle = self.scheduler.ready_for_merge()
-                        .into_iter()
-                        .find(|h| h.index == index);
-                    if let Some(handle) = handle {
-                        self.merge_persist(handle)?;
-                        self.try_commit()?;
-                    }
+                    batch_indexes.push(index);
                 }
             }
         }
+
+        if !batch_indexes.is_empty() {
+            // Collect handles.
+            let handles: Vec<_> = batch_indexes
+                .iter()
+                .filter_map(|&index| {
+                    self.scheduler
+                        .ready_for_merge()
+                        .into_iter()
+                        .find(|h| h.index == index)
+                })
+                .collect();
+
+            // Parallel merge+persist: each pipeline has interior-mutable buffers.
+            // Uses rayon par_iter — each index merges on a separate thread.
+            let merge_results: Vec<_> = handles
+                .par_iter()
+                .map(|handle| {
+                    let pipeline = self.pipelines.get(&handle.index)
+                        .expect("scheduler only emits registered indexes");
+                    pipeline.merge()?;
+                    let ops = pipeline.persist()?;
+                    #[cfg(feature = "tracing")]
+                    tracing::debug!(
+                        index = %handle.index,
+                        batch = handle.batch.value(),
+                        op_count = ops.len(),
+                        "merge+persist complete"
+                    );
+                    Ok((handle.index, handle.batch, ops))
+                })
+                .collect::<Result<Vec<_>, SyncError>>()?;
+
+            // Sequential: stash ops + update scheduler.
+            for (index_id, batch, ops) in merge_results {
+                self.pending_ops.entry(batch).or_default().extend(ops);
+                let handle = self.scheduler.ready_for_merge()
+                    .into_iter()
+                    .find(|h| h.index == index_id)
+                    .expect("handle must still be pending");
+                let merged = self.scheduler.merge_done(handle);
+                self.scheduler.batch_committed(merged);
+            }
+
+            self.try_commit()?;
+        }
+
         Ok(extract_jobs)
     }
 
