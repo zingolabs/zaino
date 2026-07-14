@@ -37,6 +37,7 @@ IMAGE="sync-bench:local"
 LOG="${RUST_LOG:-sync_bench=info,zaino_sync=trace}"
 LOG_JSON="${ZAINO_LOG_JSON:-1}"
 OTEL_ENDPOINT="${OTEL_EXPORTER_OTLP_ENDPOINT:-http://tempo.monitoring.svc:4317}"
+SYNC_START="${SYNC_FROM:-}"
 
 # ── Build ──────────────────────────────────────────────────────
 if [[ "${SKIP_BUILD:-}" != "1" ]]; then
@@ -125,8 +126,15 @@ VEOF
 )
 fi
 
+# Optional SYNC_FROM — appended to both source variants.
+if [[ -n "$SYNC_START" ]]; then
+  ENV_YAML="${ENV_YAML}
+        - name: SYNC_FROM
+          value: \"$SYNC_START\""
+fi
+
 # ── Apply Job ──────────────────────────────────────────────────
-echo "▸ creating Job $JOB in $NS (${BLOCK_COUNT} blocks, concurrency=$CONCURRENCY, batch=$BATCH_SIZE)"
+echo "▸ creating Job $JOB in $NS (${BLOCK_COUNT} blocks, concurrency=$CONCURRENCY, batch=$BATCH_SIZE${SYNC_START:+, from=$SYNC_START})"
 
 kubectl apply -f - <<EOF
 apiVersion: batch/v1

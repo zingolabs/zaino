@@ -229,8 +229,13 @@ async fn main() {
         };
 
     let tip_u32 = u32::from(tip_height);
-    let sync_from = tip_u32.saturating_sub(n_blocks - 1);
-    let sync_to = tip_u32;
+    // SYNC_FROM overrides the start height (for targeting specific chain ranges).
+    // Without it, syncs the last n_blocks before tip.
+    let sync_from = std::env::var("SYNC_FROM")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or_else(|| tip_u32.saturating_sub(n_blocks - 1));
+    let sync_to = sync_from + n_blocks - 1;
     let block_count = sync_to - sync_from + 1;
     let backend_name = db_path.as_deref().unwrap_or("in-memory");
 
