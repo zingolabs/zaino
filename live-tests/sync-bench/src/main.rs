@@ -128,16 +128,25 @@ where
 #[tokio::main]
 async fn main() {
     // Opt-in tracing: only initialize when RUST_LOG is set.
+    // JSON output when ZAINO_LOG_JSON=1 (for Loki/Grafana), human-readable otherwise.
     if std::env::var("RUST_LOG").is_ok() {
         use tracing_subscriber::fmt::format::FmtSpan;
-        tracing_subscriber::fmt()
-            .with_span_events(FmtSpan::CLOSE)
-            .with_target(false)
-            .with_env_filter(
-                tracing_subscriber::EnvFilter::try_from_default_env()
-                    .expect("RUST_LOG is set but could not be parsed"),
-            )
-            .init();
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .expect("RUST_LOG is set but could not be parsed");
+
+        if std::env::var("ZAINO_LOG_JSON").as_deref() == Ok("1") {
+            tracing_subscriber::fmt()
+                .json()
+                .with_span_events(FmtSpan::CLOSE)
+                .with_env_filter(filter)
+                .init();
+        } else {
+            tracing_subscriber::fmt()
+                .with_span_events(FmtSpan::CLOSE)
+                .with_target(false)
+                .with_env_filter(filter)
+                .init();
+        }
     }
 
     let rpc_url = std::env::var("ZEBRA_RPC_URL")
