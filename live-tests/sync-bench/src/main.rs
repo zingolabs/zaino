@@ -14,8 +14,14 @@ use std::time::Instant;
 
 use zaino_backend_lmdb::{LmdbBackend, LmdbConfig};
 use zaino_indexes::indexes::headers::ID as HEADERS_ID;
+use zaino_indexes::indexes::txids::ID as TXIDS_ID;
+use zaino_indexes::indexes::hash_to_height::ID as HASH_HEIGHT_ID;
+use zaino_indexes::indexes::txid_location::ID as TXID_LOC_ID;
+use zaino_indexes::indexes::transparent_data::ID as TDATA_ID;
+use zaino_indexes::indexes::sapling::ID as SAPLING_ID;
+use zaino_indexes::indexes::orchard::ID as ORCHARD_ID;
 use zaino_indexes::indexes::transparent_spends::ID as SPENDS_ID;
-use zaino_indexes::sets::headers_and_spends::{self, HeadersAndSpendsContext};
+use zaino_indexes::sets::current_zaino::{self, CurrentZainoContext};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_persistence::{Backend, Namespace};
 use zaino_primitives::types::{BlockHash, Height};
@@ -50,17 +56,17 @@ where
     B::Reader: 'static,
     B::Writer: 'static,
     F: Fn(u32) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = HeadersAndSpendsContext> + Send,
+    Fut: std::future::Future<Output = CurrentZainoContext> + Send,
 {
     let block_count = sync_to - sync_from + 1;
-    let set = headers_and_spends::index_set();
+    let set = current_zaino::index_set();
     let config = EngineConfig {
         batch_size,
         start_height: BlockHeight::new(u64::from(sync_from)),
     };
     let mut engine = SyncEngine::from_index_set(set, backend, config).expect("valid index set");
 
-    let (tx, rx) = tokio::sync::mpsc::channel::<HeadersAndSpendsContext>(concurrency * 2);
+    let (tx, rx) = tokio::sync::mpsc::channel::<CurrentZainoContext>(concurrency * 2);
     let start = Instant::now();
 
     let fetch_block = Arc::new(fetch_block);
@@ -182,7 +188,7 @@ async fn main() {
     }
     println!("  provisioner:  {provisioner_name}");
     println!("  backend:      {backend_name}");
-    println!("  index_set:    headers+spends");
+    println!("  index_set:    current_zaino (8 indexes)");
     println!("  chain_tip:    {tip_height} ({tip_hash})");
     println!("  block_range:  {sync_from}..={sync_to} ({block_count} blocks)");
     println!("  concurrency:  {concurrency}");
@@ -190,6 +196,12 @@ async fn main() {
     println!("────────────────────────────────────────────");
 
     let ns_headers: Namespace = HEADERS_ID.into();
+    let ns_txids: Namespace = TXIDS_ID.into();
+    let ns_hash_height: Namespace = HASH_HEIGHT_ID.into();
+    let ns_txid_loc: Namespace = TXID_LOC_ID.into();
+    let ns_tdata: Namespace = TDATA_ID.into();
+    let ns_sapling: Namespace = SAPLING_ID.into();
+    let ns_orchard: Namespace = ORCHARD_ID.into();
     let ns_spends: Namespace = SPENDS_ID.into();
     let ns_meta = Namespace::new("_engine_meta");
 
@@ -204,7 +216,7 @@ async fn main() {
             let backend = LmdbBackend::open(LmdbConfig {
                 path: lmdb_path.into(),
                 map_size_bytes: 120 << 30, // 120 GB
-                namespaces: vec![ns_headers, ns_spends, ns_meta],
+                namespaces: vec![ns_headers, ns_spends, ns_txids, ns_hash_height, ns_txid_loc, ns_tdata, ns_sapling, ns_orchard, ns_meta],
             })
             .expect("LMDB open failed");
 
@@ -213,7 +225,7 @@ async fn main() {
                 async move {
                     let height = Height::try_from(h).expect("valid");
                     let block = adapter.get_block(height).await.expect("get_block");
-                    headers_and_spends::context_from_block(&block)
+                    current_zaino::context_from_block(&block)
                 }
             };
             run_sync(backend, fetch, sync_from, sync_to, concurrency, batch_size, Some(lmdb_path))
@@ -231,7 +243,7 @@ async fn main() {
                 async move {
                     let height = Height::try_from(h).expect("valid");
                     let block = adapter.get_block(height).await.expect("get_block");
-                    headers_and_spends::context_from_block(&block)
+                    current_zaino::context_from_block(&block)
                 }
             };
             run_sync(backend, fetch, sync_from, sync_to, concurrency, batch_size, None).await
@@ -248,7 +260,7 @@ async fn main() {
             let backend = LmdbBackend::open(LmdbConfig {
                 path: lmdb_path.into(),
                 map_size_bytes: 120 << 30, // 120 GB
-                namespaces: vec![ns_headers, ns_spends, ns_meta],
+                namespaces: vec![ns_headers, ns_spends, ns_txids, ns_hash_height, ns_txid_loc, ns_tdata, ns_sapling, ns_orchard, ns_meta],
             })
             .expect("LMDB open failed");
 
@@ -257,7 +269,7 @@ async fn main() {
                 async move {
                     let height = Height::try_from(h).expect("valid");
                     let block = adapter.get_block(height).await.expect("get_block");
-                    headers_and_spends::context_from_block(&block)
+                    current_zaino::context_from_block(&block)
                 }
             };
             run_sync(backend, fetch, sync_from, sync_to, concurrency, batch_size, Some(lmdb_path))
@@ -278,7 +290,7 @@ async fn main() {
                 async move {
                     let height = Height::try_from(h).expect("valid");
                     let block = adapter.get_block(height).await.expect("get_block");
-                    headers_and_spends::context_from_block(&block)
+                    current_zaino::context_from_block(&block)
                 }
             };
             run_sync(backend, fetch, sync_from, sync_to, concurrency, batch_size, None).await
