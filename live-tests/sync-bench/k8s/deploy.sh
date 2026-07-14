@@ -52,18 +52,22 @@ if [[ "${SKIP_PUSH:-}" != "1" ]]; then
 fi
 
 # ── Zebra state volume path ───────────────────────────────────
-# Resolve the PVC-backed hostPath for Zebra's RocksDB state.
-ZEBRA_HOSTPATH=$(kubectl get pvc zebra-state -n "$NS" -o jsonpath='{.spec.volumeName}' 2>/dev/null || true)
-if [[ -n "$ZEBRA_HOSTPATH" ]]; then
-  ZEBRA_HOSTPATH=$(kubectl get pv "$ZEBRA_HOSTPATH" -o jsonpath='{.spec.csi.volumeHandle}' 2>/dev/null || true)
-fi
-# Fallback: use the path from the existing sync-bench Job if available.
-if [[ -z "$ZEBRA_HOSTPATH" ]]; then
-  ZEBRA_HOSTPATH=$(kubectl get job sync-bench -n "$NS" -o jsonpath='{.spec.template.spec.volumes[?(@.name=="zebra-state")].hostPath.path}' 2>/dev/null || true)
-fi
-if [[ -z "$ZEBRA_HOSTPATH" ]]; then
-  echo "⚠ could not resolve zebra-state volume path; set it manually in the Job spec" >&2
-  exit 1
+# Accept ZEBRA_HOSTPATH from env, or resolve from cluster state.
+if [[ -z "${ZEBRA_HOSTPATH:-}" ]]; then
+  # Try PVC first.
+  ZEBRA_HOSTPATH=$(kubectl get pvc zebra-state -n "$NS" -o jsonpath='{.spec.volumeName}' 2>/dev/null || true)
+  if [[ -n "$ZEBRA_HOSTPATH" ]]; then
+    ZEBRA_HOSTPATH=$(kubectl get pv "$ZEBRA_HOSTPATH" -o jsonpath='{.spec.csi.volumeHandle}' 2>/dev/null || true)
+  fi
+  # Fallback: any bench job with the label.
+  if [[ -z "$ZEBRA_HOSTPATH" ]]; then
+    ZEBRA_HOSTPATH=$(kubectl get job -n "$NS" -l app=zaino-sync-bench \
+      -o jsonpath='{.items[0].spec.template.spec.volumes[?(@.name=="zebra-state")].hostPath.path}' 2>/dev/null || true)
+  fi
+  if [[ -z "$ZEBRA_HOSTPATH" ]]; then
+    echo "⚠ could not resolve zebra-state volume path; export ZEBRA_HOSTPATH=..." >&2
+    exit 1
+  fi
 fi
 
 # ── Source-specific env/volumes ────────────────────────────────
