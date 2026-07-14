@@ -376,9 +376,14 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
 
             // Parallel merge+persist: each pipeline has interior-mutable buffers.
             // Uses rayon par_iter — each index merges on a separate thread.
+            // Capture current span so rayon threads inherit the trace context.
+            #[cfg(feature = "tracing")]
+            let parent_span = tracing::Span::current();
             let merge_results: Vec<_> = handles
                 .par_iter()
                 .map(|handle| {
+                    #[cfg(feature = "tracing")]
+                    let _guard = parent_span.enter();
                     let pipeline = self.pipelines.get(&handle.index)
                         .expect("scheduler only emits registered indexes");
                     pipeline.merge()?;
@@ -425,8 +430,15 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
             (pipeline, ctx)
         }).collect();
 
+        // Capture current span so rayon threads inherit the trace context.
+        #[cfg(feature = "tracing")]
+        let parent_span = tracing::Span::current();
         work.par_iter()
-            .try_for_each(|(pipeline, ctx)| pipeline.extract_one(ctx))?;
+            .try_for_each(|(pipeline, ctx)| {
+                #[cfg(feature = "tracing")]
+                let _guard = parent_span.enter();
+                pipeline.extract_one(ctx)
+            })?;
 
         Ok(())
     }
