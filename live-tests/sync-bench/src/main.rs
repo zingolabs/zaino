@@ -14,6 +14,8 @@ use std::time::Instant;
 
 use tracing::info;
 
+const BENCH_TARGET: &str = "sync_bench";
+
 static TRACER_PROVIDER: OnceLock<opentelemetry_sdk::trace::SdkTracerProvider> = OnceLock::new();
 use zaino_backend_lmdb::{LmdbBackend, LmdbConfig};
 use zaino_indexes::indexes::headers::ID as HEADERS_ID;
@@ -97,6 +99,7 @@ where
                         let elapsed = start.elapsed().as_secs_f64();
                         let rate = sent as f64 / elapsed;
                         info!(
+                            target: BENCH_TARGET,
                             sent,
                             total = block_count,
                             elapsed_secs = format!("{elapsed:.1}"),
@@ -234,6 +237,7 @@ async fn main() {
     // Log configuration.
     let state_dir_display = state_dir.as_ref().map(|d| d.display().to_string());
     info!(
+        target: BENCH_TARGET,
         provisioner = provisioner_name,
         backend = backend_name,
         chain_tip_height = %tip_height,
@@ -252,6 +256,7 @@ async fn main() {
     let set = current_zaino::index_set();
     let descriptions = set.describe();
     info!(
+        target: BENCH_TARGET,
         count = descriptions.len(),
         indexes = ?descriptions,
         "index set: current_zaino",
@@ -360,6 +365,7 @@ async fn main() {
     };
 
     info!(
+        target: BENCH_TARGET,
         total_blocks = block_count,
         total_time_secs = format!("{:.2}", result.elapsed_secs),
         blocks_per_sec = format!("{:.1}", result.blocks_per_sec),

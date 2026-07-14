@@ -7,9 +7,9 @@ COPY . .
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build -p sync-bench --release && \
-    cp target/release/sync-headers /sync-headers
+    cp target/release/sync-bench /sync-bench
 
 # Stage 2: minimal runtime (just the binary + glibc)
 FROM docker.io/archlinux:base
-COPY --from=builder /sync-headers /usr/local/bin/sync-headers
-ENTRYPOINT ["sync-headers"]
+COPY --from=builder /sync-bench /usr/local/bin/sync-bench
+ENTRYPOINT ["sync-bench"]

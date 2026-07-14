@@ -9,7 +9,7 @@ license.workspace = true
 description = "Live benchmark: sync Zcash indexes against a Zebra validator."
 
 [[bin]]
-name = "sync-headers"
+name = "sync-bench"
 path = "src/main.rs"
 
 [dependencies]
