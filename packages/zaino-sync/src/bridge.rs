@@ -173,6 +173,32 @@ where
 ///
 /// Schema and encoding are handled separately in the bridge's `persist`
 /// method via [`Schema`] + [`Encode`].
+///
+/// # Future optimisation: parallel monoidal reduce
+///
+/// The current [`merge_deltas`](Self::merge_deltas) implementation is a
+/// sequential left-fold for all strategies. For [`MonoidalStrategy`] this
+/// is suboptimal: the associativity guarantee of
+/// [`MergeMonoidal::combine`](crate::traits::MergeMonoidal::combine) means
+/// deltas can be reduced in a tree-shaped parallel pass:
+///
+/// ```text
+/// Sequential:  ((((e ⊕ d₁) ⊕ d₂) ⊕ d₃) ⊕ d₄)     — O(n)
+/// Parallel:    (d₁ ⊕ d₂) ⊕ (d₃ ⊕ d₄)               — O(log n) via rayon reduce
+/// ```
+///
+/// This would replace the provided `merge_deltas` with:
+///
+/// ```text
+/// deltas.into_par_iter()
+///     .map(|d| I::lift(d))
+///     .reduce(|| I::identity(), |a, b| I::combine(a, b))
+/// ```
+///
+/// Not yet implemented because current indexes have cheap `combine`
+/// (microseconds per call), making rayon scheduling overhead larger than
+/// the parallelism gain. Implement when profiling shows merge as a
+/// bottleneck — the trait boundary already guarantees correctness.
 pub(crate) trait MergeStrategy<I: IndexDef>: Send + Sync + 'static {
     /// The domain-typed result of merging a batch of deltas.
     type MergedState: Send + Sync;
