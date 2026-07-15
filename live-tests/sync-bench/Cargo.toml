@@ -12,6 +12,10 @@ description = "Live benchmark: sync Zcash indexes against a Zebra validator."
 name = "sync-bench"
 path = "src/main.rs"
 
+[[bin]]
+name = "provision-bench"
+path = "src/provision_bench.rs"
+
 [dependencies]
 zaino-primitives.workspace = true
 zaino-indexes.workspace = true
@@ -25,6 +29,7 @@ tracing-opentelemetry.workspace = true
 opentelemetry.workspace = true
 opentelemetry_sdk.workspace = true
 opentelemetry-otlp.workspace = true
+strum.workspace = true
 zebra-chain = { workspace = true }
 zaino-sync = { workspace = true, features = ["testing", "tracing"] }
 zaino-persistence = { workspace = true, features = ["testing"] }
