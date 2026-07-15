@@ -31,7 +31,7 @@ use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_persistence::{Backend, Namespace};
 use zaino_primitives::types::{BlockHash, Height};
 use zaino_rpc::{RpcClient, RpcClientConfig};
-use zaino_source::{GetBlock, GetChainTip, GetCompactBlock};
+use zaino_source::{GetBlock, GetChainTip, GetPreIndexCompactBlock};
 use zaino_source_zebra_readstate::ZebraReadStateAdapter;
 use zaino_source_zebra_rpc::ZebraRpcAdapter;
 use zaino_sync::engine::{EngineConfig, SyncEngine};
@@ -296,8 +296,8 @@ async fn main() {
                 let adapter = Arc::clone(&adapter);
                 async move {
                     let height = Height::try_from(h).expect("valid");
-                    let compact = adapter.get_compact_block(height).await.expect("get_compact_block");
-                    current_zaino::context_from_compact_block(&compact)
+                    let compact = adapter.get_pre_index_compact_block(height).await.expect("get_pre_index_compact_block");
+                    current_zaino::context_from_pre_index_compact_block(&compact)
                 }
             };
             run_sync(backend, fetch, sync_from, sync_to, concurrency, batch_size, Some(lmdb_path))
@@ -314,8 +314,8 @@ async fn main() {
                 let adapter = Arc::clone(&adapter);
                 async move {
                     let height = Height::try_from(h).expect("valid");
-                    let compact = adapter.get_compact_block(height).await.expect("get_compact_block");
-                    current_zaino::context_from_compact_block(&compact)
+                    let compact = adapter.get_pre_index_compact_block(height).await.expect("get_pre_index_compact_block");
+                    current_zaino::context_from_pre_index_compact_block(&compact)
                 }
             };
             run_sync(backend, fetch, sync_from, sync_to, concurrency, batch_size, None).await

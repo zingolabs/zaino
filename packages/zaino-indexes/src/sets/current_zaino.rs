@@ -140,12 +140,12 @@ pub fn context_from_block(block: &Block) -> CurrentZainoContext {
 }
 
 
-/// Build context from a domain [`CompactBlock`](zaino_primitives::types::CompactBlock).
+/// Build context from a [`PreIndexCompactBlock`](zaino_primitives::types::PreIndexCompactBlock).
 ///
 /// Same output as [`context_from_block`] but sourced from the compact
 /// representation that skips proof/signature deserialization.
-pub fn context_from_compact_block(
-    cb: &zaino_primitives::types::CompactBlock,
+pub fn context_from_pre_index_compact_block(
+    cb: &zaino_primitives::types::PreIndexCompactBlock,
 ) -> CurrentZainoContext {
     use zaino_primitives::types::EncryptedCiphertext;
     let height = BlockHeight::new(u64::from(cb.height));

@@ -37,7 +37,7 @@ pub use get_best_block_height::{GetBestBlockHeight, GetBestBlockHeightError};
 pub use get_block_by_hash::{GetBlockByHash, GetBlockByHashError};
 pub use get_block::{GetBlock, GetBlockError};
 pub use get_block_verbose::{GetBlockVerbose, GetBlockVerboseError};
-pub use get_compact_block::GetCompactBlock;
+pub use get_compact_block::GetPreIndexCompactBlock;
 pub use get_chain_tip::{GetChainTip, GetChainTipError};
 pub use get_commitment_tree_roots::{GetCommitmentTreeRoots, GetCommitmentTreeRootsError};
 pub use get_mempool_txids::{GetMempoolTxids, GetMempoolTxidsError};

@@ -36,10 +36,7 @@ pub use aliases::{
     SubtreeIndex, TreeSize, TxIndex,
 };
 pub use block::{Block, BlockHeader, ChainMetadata};
-pub use compact_block::{
-    CompactBlock, CompactOrchardAction, CompactSaplingOutput, CompactTransaction,
-    CompactTransparentInput, CompactTransparentOutput,
-};
+pub use compact_block::{CompactBlock, PreIndexCompactBlock, PreIndexCompactTx};
 pub use block_commitments::BlockCommitments;
 pub use block_hash::BlockHash;
 pub use block_verbose::BlockVerbose;

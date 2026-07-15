@@ -38,11 +38,11 @@ impl ZebraReadStateAdapter {
     }
 }
 
-impl zaino_source::GetCompactBlock for ZebraReadStateAdapter {
-    async fn get_compact_block(
+impl zaino_source::GetPreIndexCompactBlock for ZebraReadStateAdapter {
+    async fn get_pre_index_compact_block(
         &self,
         height: Height,
-    ) -> Result<zaino_primitives::types::CompactBlock, QueryError<GetBlockError>> {
+    ) -> Result<zaino_primitives::types::PreIndexCompactBlock, QueryError<GetBlockError>> {
         let zebra_height = zebra_chain::block::Height(u32::from(height));
         let request = ReadRequest::CompactBlock(zebra_height.into());
 
@@ -55,7 +55,7 @@ impl zaino_source::GetCompactBlock for ZebraReadStateAdapter {
 
         match response {
             ReadResponse::CompactBlock(Some(compact)) => {
-                Ok(zaino_convert_zebra::compact_block_from_zebra(&compact))
+                Ok(zaino_convert_zebra::pre_index_compact_block_from_zebra(&compact))
             }
             ReadResponse::CompactBlock(None) => {
                 Err(QueryError::Domain(GetBlockError::HeightNotFound(height)))

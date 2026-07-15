@@ -20,7 +20,7 @@ use std::time::Instant;
 
 use futures::StreamExt;
 use zaino_primitives::types::Height;
-use zaino_source::{GetBlock, GetCompactBlock};
+use zaino_source::{GetBlock, GetPreIndexCompactBlock};
 use zaino_source_zebra_readstate::ZebraReadStateAdapter;
 
 const TARGET: &str = "provision_bench";
@@ -200,7 +200,7 @@ async fn main() {
                         let a = Arc::clone(&a);
                         async move {
                             let height = Height::try_from(h).expect("valid");
-                            let _compact = a.get_compact_block(height).await.expect("get_compact_block");
+                            let _compact = a.get_pre_index_compact_block(height).await.expect("get_pre_index_compact_block");
                         }
                     },
                     sync_from, sync_to, concurrency, BenchMode::CompactBlock,
@@ -228,7 +228,7 @@ async fn main() {
                         let a = Arc::clone(&a);
                         async move {
                             let height = Height::try_from(h).expect("valid");
-                            let _compact = a.get_compact_block(height).await.expect("get_compact_block");
+                            let _compact = a.get_pre_index_compact_block(height).await.expect("get_pre_index_compact_block");
                         }
                     },
                     sync_from, sync_to, concurrency, BenchMode::HeadersSpends,
@@ -242,7 +242,7 @@ async fn main() {
                         let a = Arc::clone(&a);
                         async move {
                             let height = Height::try_from(h).expect("valid");
-                            let _compact = a.get_compact_block(height).await.expect("get_compact_block");
+                            let _compact = a.get_pre_index_compact_block(height).await.expect("get_pre_index_compact_block");
                         }
                     },
                     sync_from, sync_to, concurrency, BenchMode::CurrentZaino,
