@@ -7,9 +7,11 @@ COPY . .
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build -p sync-bench --release && \
-    cp target/release/sync-bench /sync-bench
+    cp target/release/sync-bench /sync-bench && \
+    cp target/release/provision-bench /provision-bench
 
-# Stage 2: minimal runtime (just the binary + glibc)
+# Stage 2: minimal runtime (just the binaries + glibc)
 FROM docker.io/archlinux:base
 COPY --from=builder /sync-bench /usr/local/bin/sync-bench
+COPY --from=builder /provision-bench /usr/local/bin/provision-bench
 ENTRYPOINT ["sync-bench"]
