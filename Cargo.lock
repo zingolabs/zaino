@@ -5927,8 +5927,12 @@ dependencies = [
 name = "zaino-mempool"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
+ "futures",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
+ "tracing",
  "zaino-common",
  "zaino-proto",
  "zebra-chain",

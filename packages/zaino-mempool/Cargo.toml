@@ -18,6 +18,12 @@ zebra-chain = { workspace = true }
 
 # Runtime
 tokio = { workspace = true, features = ["full"] }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+arc-swap = { workspace = true }
+
+# Tracing
+tracing = { workspace = true }
 
 # Utility
 thiserror = { workspace = true }

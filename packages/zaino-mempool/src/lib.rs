@@ -26,17 +26,24 @@ pub mod entry;
 pub mod error;
 pub mod event;
 pub mod ports;
+pub mod service;
 pub mod snapshot;
+pub mod subscriber;
+
+#[cfg(test)]
+mod tests;
 
 pub use config::MempoolConfig;
 pub use entry::MempoolEntry;
 pub use error::MempoolError;
 pub use event::MempoolEvent;
 pub use ports::{BlockRef, MempoolSource, MempoolTxMeta, NfsEpochObserver, NonFinalizedEpoch};
+pub use service::MempoolService;
 pub use snapshot::{
     FreezeReason, MempoolCompleteness, MempoolMode, MempoolSnapshot, ObservedTips, TipChange,
     ValidatorTip,
 };
+pub use subscriber::{MempoolFilterError, MempoolInfo, MempoolSubscriber, TxIdPrefix};
 
 /// A [`Future`](std::future::Future) that is [`Send`] and resolves to `T`.
 ///
