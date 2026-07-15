@@ -112,7 +112,14 @@ pub fn context_from_block(block: &Block) -> CurrentZainoContext {
                 .orchard
                 .actions
                 .iter()
-                .map(|a| (a.nullifier, a.cmx, a.ephemeral_key, a.enc_ciphertext.clone()))
+                .map(|a| {
+                    (
+                        a.nullifier,
+                        a.cmx,
+                        a.ephemeral_key,
+                        a.enc_ciphertext.clone(),
+                    )
+                })
                 .collect(),
         })
         .collect();
@@ -123,6 +130,78 @@ pub fn context_from_block(block: &Block) -> CurrentZainoContext {
         prev_hash: block.header.prev_hash,
         time: block.header.time,
         bits: block.header.bits,
+        txids,
+        spends,
+        txid_locations,
+        transparent_txs,
+        sapling_txs,
+        orchard_txs,
+    }
+}
+
+
+/// Build context from a domain [`CompactBlock`](zaino_primitives::types::CompactBlock).
+///
+/// Same output as [`context_from_block`] but sourced from the compact
+/// representation that skips proof/signature deserialization.
+pub fn context_from_compact_block(
+    cb: &zaino_primitives::types::CompactBlock,
+) -> CurrentZainoContext {
+    use zaino_primitives::types::EncryptedCiphertext;
+    let height = BlockHeight::new(u64::from(cb.height));
+
+    let mut txids = Vec::with_capacity(cb.transactions.len());
+    let mut spends = Vec::new();
+    let mut txid_locations = Vec::with_capacity(cb.transactions.len());
+    let mut transparent_txs = Vec::with_capacity(cb.transactions.len());
+    let mut sapling_txs = Vec::with_capacity(cb.transactions.len());
+    let mut orchard_txs = Vec::with_capacity(cb.transactions.len());
+
+    for (tx_index, ctx) in cb.transactions.iter().enumerate() {
+        txids.push(ctx.txid);
+        txid_locations.push((ctx.txid, height, tx_index as u32));
+
+        for inp in &ctx.transparent_inputs {
+            spends.push((inp.prev_txid, inp.prev_index, ctx.txid));
+        }
+
+        transparent_txs.push(TransparentTxCompact {
+            inputs: ctx
+                .transparent_inputs
+                .iter()
+                .map(|inp| (inp.prev_txid, inp.prev_index))
+                .collect(),
+            outputs: ctx
+                .transparent_outputs
+                .iter()
+                .map(|out| (out.value, out.script.clone()))
+                .collect(),
+        });
+
+        sapling_txs.push(SaplingTxCompact {
+            nullifiers: ctx.sapling_nullifiers.clone(),
+            outputs: ctx
+                .sapling_outputs
+                .iter()
+                .map(|o| (o.cmu, o.ephemeral_key, o.enc_ciphertext.clone()))
+                .collect(),
+        });
+
+        orchard_txs.push(OrchardTxCompact {
+            actions: ctx
+                .orchard_actions
+                .iter()
+                .map(|a| (a.nullifier, a.cmx, a.ephemeral_key, a.enc_ciphertext.clone()))
+                .collect(),
+        });
+    }
+
+    CurrentZainoContext {
+        height,
+        hash: cb.hash,
+        prev_hash: cb.prev_hash,
+        time: cb.time,
+        bits: cb.bits,
         txids,
         spends,
         txid_locations,

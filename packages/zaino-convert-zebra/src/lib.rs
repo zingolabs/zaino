@@ -4,10 +4,12 @@
 //! The `block_from_zebra` entry point composes them.
 
 use zaino_primitives::types::{
-    Block, BlockCommitments, BlockHash, BlockHeader, ChainMetadata, EncryptedCiphertext,
-    EphemeralKey, Height, MerkleRoot, NoteCommitment, Nullifier, OrchardAction, OrchardData,
-    SaplingData, SaplingOutput, SaplingSpend, Script, SignedZatoshis, Transaction,
-    TransactionHash, TransparentData, TransparentInput, TransparentOutput, Zatoshis,
+    Block, BlockCommitments, BlockHash, BlockHeader, ChainMetadata, CompactBlock,
+    CompactOrchardAction, CompactSaplingOutput, CompactTransaction, CompactTransparentInput,
+    CompactTransparentOutput, EncryptedCiphertext, EphemeralKey, Height, MerkleRoot,
+    NoteCommitment, Nullifier, OrchardAction, OrchardData, SaplingData, SaplingOutput,
+    SaplingSpend, Script, SignedZatoshis, Transaction, TransactionHash, TransparentData,
+    TransparentInput, TransparentOutput, Zatoshis,
 };
 
 /// Errors during conversion from zebra types.
@@ -149,6 +151,72 @@ fn sapling_from_zebra(tx: &zebra_chain::transaction::Transaction) -> SaplingData
         value_balance: SignedZatoshis::new(
             i64::from(tx.sapling_value_balance().sapling_amount()),
         ),
+    }
+}
+
+/// Convert a zebra compact block into a domain [`CompactBlock`].
+pub fn compact_block_from_zebra(
+    cb: &zebra_chain::transaction::compact::CompactBlock,
+) -> CompactBlock {
+    CompactBlock {
+        hash: BlockHash::from(cb.hash.0),
+        prev_hash: BlockHash::from(cb.header.previous_block_hash.0),
+        height: cb.height.0,
+        time: cb.header.time.timestamp() as u32,
+        bits: u32::from_be_bytes(cb.header.difficulty_threshold.bytes_in_display_order()),
+        transactions: cb
+            .transactions
+            .iter()
+            .map(compact_transaction_from_zebra)
+            .collect(),
+    }
+}
+
+fn compact_transaction_from_zebra(
+    ctx: &zebra_chain::transaction::compact::CompactTransaction,
+) -> CompactTransaction {
+    CompactTransaction {
+        txid: TransactionHash::from(ctx.txid.0),
+        transparent_inputs: ctx
+            .transparent_inputs
+            .iter()
+            .map(|inp| CompactTransparentInput {
+                prev_txid: TransactionHash::from(inp.hash.0),
+                prev_index: inp.index,
+            })
+            .collect(),
+        transparent_outputs: ctx
+            .transparent_outputs
+            .iter()
+            .map(|out| CompactTransparentOutput {
+                value: Zatoshis::new(out.value).expect("valid zatoshis from zebra"),
+                script: Script::new(out.script.clone()),
+            })
+            .collect(),
+        sapling_nullifiers: ctx
+            .sapling_nullifiers
+            .iter()
+            .map(|nf| Nullifier::from(*nf))
+            .collect(),
+        sapling_outputs: ctx
+            .sapling_outputs
+            .iter()
+            .map(|o| CompactSaplingOutput {
+                cmu: NoteCommitment::from(o.cmu),
+                ephemeral_key: EphemeralKey::from(o.ephemeral_key),
+                enc_ciphertext: EncryptedCiphertext::new(o.enc_ciphertext_head.to_vec()),
+            })
+            .collect(),
+        orchard_actions: ctx
+            .orchard_actions
+            .iter()
+            .map(|a| CompactOrchardAction {
+                nullifier: Nullifier::from(a.nullifier),
+                cmx: NoteCommitment::from(a.cmx),
+                ephemeral_key: EphemeralKey::from(a.ephemeral_key),
+                enc_ciphertext: EncryptedCiphertext::new(a.enc_ciphertext_head.to_vec()),
+            })
+            .collect(),
     }
 }
 

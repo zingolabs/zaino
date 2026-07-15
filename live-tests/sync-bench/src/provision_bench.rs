@@ -20,7 +20,7 @@ use std::time::Instant;
 
 use futures::StreamExt;
 use zaino_primitives::types::Height;
-use zaino_source::GetBlock;
+use zaino_source::{GetBlock, GetCompactBlock};
 use zaino_source_zebra_readstate::ZebraReadStateAdapter;
 
 const TARGET: &str = "provision_bench";

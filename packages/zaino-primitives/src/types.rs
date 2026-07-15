@@ -5,6 +5,7 @@ mod address_delta;
 mod aliases;
 mod block;
 mod block_commitments;
+mod compact_block;
 mod block_hash;
 mod block_verbose;
 mod chain_work;
@@ -35,6 +36,10 @@ pub use aliases::{
     SubtreeIndex, TreeSize, TxIndex,
 };
 pub use block::{Block, BlockHeader, ChainMetadata};
+pub use compact_block::{
+    CompactBlock, CompactOrchardAction, CompactSaplingOutput, CompactTransaction,
+    CompactTransparentInput, CompactTransparentOutput,
+};
 pub use block_commitments::BlockCommitments;
 pub use block_hash::BlockHash;
 pub use block_verbose::BlockVerbose;

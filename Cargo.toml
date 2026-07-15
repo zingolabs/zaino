@@ -232,6 +232,6 @@ debug = true
 # Tracking: zaino#<TODO-revert-zebra-fork>.
 # TEMPORARY: pointing at nachog00/zebra fork for ReadRequest::CompactBlock prototype.
 # Revert to ZcashFoundation/zebra once upstream merges the feature.
-zebra-chain = { git = "https://github.com/nachog00/zebra.git", rev = "86a386041" }
-zebra-rpc = { git = "https://github.com/nachog00/zebra.git", rev = "86a386041" }
-zebra-state = { git = "https://github.com/nachog00/zebra.git", rev = "86a386041" }
+zebra-chain = { git = "https://github.com/nachog00/zebra.git", rev = "d3f426b35" }
+zebra-rpc = { git = "https://github.com/nachog00/zebra.git", rev = "d3f426b35" }
+zebra-state = { git = "https://github.com/nachog00/zebra.git", rev = "d3f426b35" }

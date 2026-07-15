@@ -5138,7 +5138,7 @@ dependencies = [
 [[package]]
 name = "tower-batch-control"
 version = "1.0.1"
-source = "git+https://github.com/nachog00/zebra.git?rev=86a386041#86a3860411d576357d6d2c2d1cbbb6d7c65e6c09"
+source = "git+https://github.com/nachog00/zebra.git?rev=d3f426b35#d3f426b3566da64cc7bdd5f1c2e5d64ac6838fff"
 dependencies = [
  "futures",
  "futures-core",
@@ -5166,7 +5166,7 @@ dependencies = [
 [[package]]
 name = "tower-fallback"
 version = "0.2.41"
-source = "git+https://github.com/nachog00/zebra.git?rev=86a386041#86a3860411d576357d6d2c2d1cbbb6d7c65e6c09"
+source = "git+https://github.com/nachog00/zebra.git?rev=d3f426b35#d3f426b3566da64cc7bdd5f1c2e5d64ac6838fff"
 dependencies = [
  "futures-core",
  "pin-project",
@@ -6666,7 +6666,7 @@ dependencies = [
 [[package]]
 name = "zebra-chain"
 version = "10.1.0"
-source = "git+https://github.com/nachog00/zebra.git?rev=86a386041#86a3860411d576357d6d2c2d1cbbb6d7c65e6c09"
+source = "git+https://github.com/nachog00/zebra.git?rev=d3f426b35#d3f426b3566da64cc7bdd5f1c2e5d64ac6838fff"
 dependencies = [
  "bech32",
  "bitflags 2.13.0",
@@ -6777,7 +6777,7 @@ dependencies = [
 [[package]]
 name = "zebra-consensus"
 version = "9.0.1"
-source = "git+https://github.com/nachog00/zebra.git?rev=86a386041#86a3860411d576357d6d2c2d1cbbb6d7c65e6c09"
+source = "git+https://github.com/nachog00/zebra.git?rev=d3f426b35#d3f426b3566da64cc7bdd5f1c2e5d64ac6838fff"
 dependencies = [
  "bellman",
  "blake2b_simd",
@@ -6801,8 +6801,8 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tower 0.4.13",
- "tower-batch-control 1.0.1 (git+https://github.com/nachog00/zebra.git?rev=86a386041)",
- "tower-fallback 0.2.41 (git+https://github.com/nachog00/zebra.git?rev=86a386041)",
+ "tower-batch-control 1.0.1 (git+https://github.com/nachog00/zebra.git?rev=d3f426b35)",
+ "tower-fallback 0.2.41 (git+https://github.com/nachog00/zebra.git?rev=d3f426b35)",
  "tracing",
  "tracing-futures",
  "zcash_primitives",
@@ -6857,7 +6857,7 @@ dependencies = [
 [[package]]
 name = "zebra-network"
 version = "9.0.0"
-source = "git+https://github.com/nachog00/zebra.git?rev=86a386041#86a3860411d576357d6d2c2d1cbbb6d7c65e6c09"
+source = "git+https://github.com/nachog00/zebra.git?rev=d3f426b35#d3f426b3566da64cc7bdd5f1c2e5d64ac6838fff"
 dependencies = [
  "bitflags 2.13.0",
  "byteorder",
@@ -6910,7 +6910,7 @@ dependencies = [
 [[package]]
 name = "zebra-node-services"
 version = "8.0.0"
-source = "git+https://github.com/nachog00/zebra.git?rev=86a386041#86a3860411d576357d6d2c2d1cbbb6d7c65e6c09"
+source = "git+https://github.com/nachog00/zebra.git?rev=d3f426b35#d3f426b3566da64cc7bdd5f1c2e5d64ac6838fff"
 dependencies = [
  "color-eyre",
  "jsonrpsee-types",
@@ -6985,7 +6985,7 @@ dependencies = [
 [[package]]
 name = "zebra-rpc"
 version = "10.0.1"
-source = "git+https://github.com/nachog00/zebra.git?rev=86a386041#86a3860411d576357d6d2c2d1cbbb6d7c65e6c09"
+source = "git+https://github.com/nachog00/zebra.git?rev=d3f426b35#d3f426b3566da64cc7bdd5f1c2e5d64ac6838fff"
 dependencies = [
  "base64",
  "chrono",
@@ -7058,7 +7058,7 @@ dependencies = [
 [[package]]
 name = "zebra-script"
 version = "9.0.0"
-source = "git+https://github.com/nachog00/zebra.git?rev=86a386041#86a3860411d576357d6d2c2d1cbbb6d7c65e6c09"
+source = "git+https://github.com/nachog00/zebra.git?rev=d3f426b35#d3f426b3566da64cc7bdd5f1c2e5d64ac6838fff"
 dependencies = [
  "libzcash_script",
  "rand 0.8.6",
@@ -7109,7 +7109,7 @@ dependencies = [
 [[package]]
 name = "zebra-state"
 version = "9.0.1"
-source = "git+https://github.com/nachog00/zebra.git?rev=86a386041#86a3860411d576357d6d2c2d1cbbb6d7c65e6c09"
+source = "git+https://github.com/nachog00/zebra.git?rev=d3f426b35#d3f426b3566da64cc7bdd5f1c2e5d64ac6838fff"
 dependencies = [
  "bincode",
  "chrono",
@@ -7146,7 +7146,7 @@ dependencies = [
 [[package]]
 name = "zebra-test"
 version = "3.0.0"
-source = "git+https://github.com/nachog00/zebra.git?rev=86a386041#86a3860411d576357d6d2c2d1cbbb6d7c65e6c09"
+source = "git+https://github.com/nachog00/zebra.git?rev=d3f426b35#d3f426b3566da64cc7bdd5f1c2e5d64ac6838fff"
 dependencies = [
  "color-eyre",
  "futures",
