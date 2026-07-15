@@ -413,6 +413,23 @@ where
         &self.descriptor
     }
 
+    /// Load the accumulator state from persisted entries.
+    ///
+    /// # Current implementation
+    ///
+    /// Calls `scan(namespace)` which reads ALL key-value pairs from the
+    /// index's namespace, then reconstructs the accumulator via
+    /// `Schema::from_entries`. This is correct but O(n) in the index size.
+    ///
+    /// # Future improvement
+    ///
+    /// SC indexes that persist per-height snapshots (key=height,
+    /// value=state) only need the latest entry to resume — not the full
+    /// history. Adding `BackendReader::get_last(namespace)` or a range
+    /// scan would make restart O(1) instead of O(n). The Schema for such
+    /// indexes should be designed to persist minimal state (e.g. a tree
+    /// frontier, not the full tree), so `from_entries` on the latest
+    /// entry reconstructs the accumulator cheaply.
     fn load_state(&self, reader: &dyn BackendReader) -> Result<(), PipelineError> {
         let raw_entries = reader
             .scan(I::NAME.into())
