@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, StorageConfig};
-use zaino_proto::proto::utils::{compact_block_with_pool_types, PoolTypeFilter};
+use zaino_proto::proto::utils::{prune_compact_block, PoolTypeFilter};
 
 use crate::chain_index::finalised_state::finalised_source::FinalisedSource;
 use crate::chain_index::finalised_state::reader::DbReader;
@@ -427,20 +427,16 @@ async fn get_compact_blocks() {
             .get_compact_block(height, PoolTypeFilter::default())
             .await
             .unwrap();
-        let default_compact_block = compact_block_with_pool_types(
-            compact_block.clone(),
-            &PoolTypeFilter::default().to_pool_types_vector(),
-        );
+        let default_compact_block =
+            prune_compact_block(compact_block.clone(), &PoolTypeFilter::default());
         assert_eq!(default_compact_block, reader_compact_block_default);
 
         let reader_compact_block_all_data = db_reader
             .get_compact_block(height, PoolTypeFilter::includes_all())
             .await
             .unwrap();
-        let all_data_compact_block = compact_block_with_pool_types(
-            compact_block,
-            &PoolTypeFilter::includes_all().to_pool_types_vector(),
-        );
+        let all_data_compact_block =
+            prune_compact_block(compact_block, &PoolTypeFilter::includes_all());
         assert_eq!(all_data_compact_block, reader_compact_block_all_data);
 
         println!("CompactBlock at height {} OK", height.0);

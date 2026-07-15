@@ -16,7 +16,7 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, StorageConfig};
-use zaino_proto::proto::utils::{compact_block_with_pool_types, PoolTypeFilter};
+use zaino_proto::proto::utils::{prune_compact_block, PoolTypeFilter};
 
 use crate::chain_index::finalised_state::FinalisedState;
 use crate::chain_index::source::mockchain_source::MockchainSource;
@@ -138,20 +138,15 @@ async fn reader_compact_blocks_match_source() {
             .get_compact_block(height, PoolTypeFilter::default())
             .await
             .unwrap();
-        let expected_default = compact_block_with_pool_types(
-            compact_block.clone(),
-            &PoolTypeFilter::default().to_pool_types_vector(),
-        );
+        let expected_default =
+            prune_compact_block(compact_block.clone(), &PoolTypeFilter::default());
         assert_eq!(expected_default, reader_default);
 
         let reader_all = reader
             .get_compact_block(height, PoolTypeFilter::includes_all())
             .await
             .unwrap();
-        let expected_all = compact_block_with_pool_types(
-            compact_block,
-            &PoolTypeFilter::includes_all().to_pool_types_vector(),
-        );
+        let expected_all = prune_compact_block(compact_block, &PoolTypeFilter::includes_all());
         assert_eq!(expected_all, reader_all);
     }
 }

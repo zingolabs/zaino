@@ -49,7 +49,7 @@ use zaino_fetch::jsonrpsee::response::{
     EmptyTxOutSetInfo, GetNetworkSolPsResponse, GetSpentInfoRequest, GetSpentInfoResponse,
     GetTxOutResponse, GetTxOutSetInfo, GetTxOutSetInfoResponse,
 };
-use zaino_proto::proto::utils::{compact_block_with_pool_types, PoolTypeFilter};
+use zaino_proto::proto::utils::{prune_compact_block, PoolTypeFilter};
 use zebra_chain::parameters::ConsensusBranchId;
 pub use zebra_chain::parameters::Network as ZebraNetwork;
 use zebra_chain::serialization::ZcashSerialize;
@@ -1321,9 +1321,9 @@ async fn compact_block_from_source<Source: BlockchainSource>(
             ))
         })?;
 
-    Ok(Some(compact_block_with_pool_types(
+    Ok(Some(prune_compact_block(
         indexed_block.to_compact_block(),
-        &pool_types.to_pool_types_vector(),
+        pool_types,
     )))
 }
 
@@ -2489,10 +2489,7 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
             } => {
                 if height <= non_finalized_snapshot.best_tip.height {
                     Ok(Some(match snapshot.get_chainblock_by_height(&height) {
-                        Some(block) => compact_block_with_pool_types(
-                            block.to_compact_block(),
-                            &pool_types.to_pool_types_vector(),
-                        ),
+                        Some(block) => prune_compact_block(block.to_compact_block(), &pool_types),
                         None => {
                             match self
                                 .finalized_state
@@ -2561,8 +2558,6 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
         if !is_ascending && start_height > chain_tip_height {
             return Ok(None);
         }
-
-        let pool_types_vector = pool_types.to_pool_types_vector();
 
         // For ascending requests that extend past the tip: cap the streaming range at the tip,
         // then append a trailing out_of_range error after all valid blocks have been sent.
@@ -2677,10 +2672,8 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
                             }
                         }
                     };
-                    let compact_block = compact_block_with_pool_types(
-                        indexed_block.to_compact_block(),
-                        &pool_types_vector,
-                    );
+                    let compact_block =
+                        prune_compact_block(indexed_block.to_compact_block(), &pool_types);
                     if channel_sender.send(Ok(compact_block)).await.is_err() {
                         return;
                     }
@@ -2734,10 +2727,8 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
                                 }
                             }
                         };
-                        let compact_block = compact_block_with_pool_types(
-                            indexed_block.to_compact_block(),
-                            &pool_types_vector,
-                        );
+                        let compact_block =
+                            prune_compact_block(indexed_block.to_compact_block(), &pool_types);
                         if channel_sender.send(Ok(compact_block)).await.is_err() {
                             return;
                         }

@@ -233,17 +233,7 @@ impl DbV1 {
                     // TODO: Re-evaluate whether omitting "empty-for-filter" transactions is the desired API behaviour.
                     //       Some clients may expect a position-preserving representation (one entry per txid), even if
                     //       the per-pool fields are empty for a given filter.
-                    if spends.is_empty()
-                        && outputs.is_empty()
-                        && actions.is_empty()
-                        && ironwood_actions.is_empty()
-                        && vin.is_empty()
-                        && vout.is_empty()
-                    {
-                        return None;
-                    }
-
-                    Some(zaino_proto::proto::compact_formats::CompactTx {
+                    let compact_tx = zaino_proto::proto::compact_formats::CompactTx {
                         index: i as u64,
                         txid: txid.0.to_vec(),
                         fee: 0,
@@ -253,7 +243,8 @@ impl DbV1 {
                         ironwood_actions,
                         vin,
                         vout,
-                    })
+                    };
+                    compact_tx.has_pool_data().then_some(compact_tx)
                 })
                 .collect();
 
@@ -1154,17 +1145,7 @@ impl DbV1 {
                         // `CompactTx.index` rather than assuming contiguous ordering.
                         //
                         // TODO: Re-evaluate whether omission is the desired API behaviour for all consumers.
-                        if spends.is_empty()
-                            && outputs.is_empty()
-                            && actions.is_empty()
-                            && ironwood_actions.is_empty()
-                            && vin.is_empty()
-                            && vout.is_empty()
-                        {
-                            continue;
-                        }
-
-                        vtx.push(zaino_proto::proto::compact_formats::CompactTx {
+                        let compact_tx = zaino_proto::proto::compact_formats::CompactTx {
                             index: i as u64,
                             txid: txid.0.to_vec(),
                             fee: 0,
@@ -1174,7 +1155,12 @@ impl DbV1 {
                             ironwood_actions,
                             vin,
                             vout,
-                        });
+                        };
+                        if !compact_tx.has_pool_data() {
+                            continue;
+                        }
+
+                        vtx.push(compact_tx);
                     }
 
                     // ----- Decode commitment tree data and construct block -----

@@ -123,11 +123,7 @@ impl TryFrom<RpcError> for GetBlockHeaderError {
     fn try_from(value: RpcError) -> Result<Self, Self::Error> {
         // If the block is not in Zebra's state, returns
         // [error code `-8`.](https://github.com/zcash/zcash/issues/5758)
-        if value.code == -8 {
-            Ok(Self::MissingBlock(value.message))
-        } else {
-            Err(value)
-        }
+        crate::jsonrpsee::response::rpc_error_code_map(value, -8, Self::MissingBlock)
     }
 }
 
