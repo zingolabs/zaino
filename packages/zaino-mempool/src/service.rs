@@ -56,6 +56,14 @@ pub struct MempoolService<S: MempoolSource, N: NfsEpochObserver> {
     task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
+impl<S: MempoolSource, N: NfsEpochObserver> std::fmt::Debug for MempoolService<S, N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MempoolService")
+            .field("status", &self.status.load())
+            .finish_non_exhaustive()
+    }
+}
+
 impl<S: MempoolSource, N: NfsEpochObserver> MempoolService<S, N> {
     /// Spawn the service and its background update task.
     pub fn spawn(source: S, nfs: N, config: MempoolConfig, cancel: CancellationToken) -> Arc<Self> {

@@ -25,6 +25,9 @@ arc-swap = { workspace = true }
 # Tracing
 tracing = { workspace = true }
 
+# Streams
+async-stream = "0.3"
+
 # Utility
 thiserror = { workspace = true }
 

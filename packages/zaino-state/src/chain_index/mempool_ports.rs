@@ -7,11 +7,6 @@
 //! non-finalized state. Dependencies point inward: these adapters know about the
 //! mempool core; the core never names a `zaino-state` type.
 
-// The adapters are constructed and wired into `NodeBackedChainIndex` in Stage 2
-// of the mempool rework (when `MempoolService` replaces the old `Mempool`).
-// Until then they are defined but not yet referenced.
-#![allow(dead_code)]
-
 use std::sync::Arc;
 
 use arc_swap::ArcSwapOption;
@@ -19,6 +14,11 @@ use arc_swap::ArcSwapOption;
 use crate::chain_index::non_finalised_state::NonFinalizedState;
 use crate::chain_index::source::BlockchainSource;
 use crate::chain_index::types::BlockIndex;
+
+/// The concrete mempool service the ChainIndex owns: the `zaino-mempool` service
+/// driven by this crate's source and non-finalized-state adapters.
+pub(crate) type ChainIndexMempool<Source> =
+    zaino_mempool::MempoolService<MempoolSourceAdapter<Source>, NfsEpochAdapter<Source>>;
 
 /// Maps a `zaino-state` [`BlockchainSourceError`](crate::chain_index::source::BlockchainSourceError)
 /// (or any boxable adapter error) into a [`zaino_mempool::MempoolError`].

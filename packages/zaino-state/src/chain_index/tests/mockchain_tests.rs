@@ -52,6 +52,52 @@ async fn wait_for_indexer_tip(
     .await;
 }
 
+/// Polls the indexer until its mempool read model reflects exactly the
+/// `expected` txids, or panics after a 10 s budget.
+///
+/// The mempool is an eventually-consistent read model refreshed by a background
+/// poll loop, so — like [`wait_for_indexer_tip`] for the chain tip — tests must
+/// wait for it to converge on the current tip before asserting on mempool data.
+async fn wait_for_mempool_txids(
+    index_reader: &NodeBackedChainIndexSubscriber<MockchainSource>,
+    expected: &std::collections::HashSet<TransactionHash>,
+) {
+    poll_until(
+        "mempool to reflect expected txids",
+        Duration::from_secs(10),
+        Duration::from_millis(25),
+        || async {
+            let txids: std::collections::HashSet<TransactionHash> = index_reader
+                .get_mempool_txids()
+                .await
+                .ok()?
+                .into_iter()
+                .collect();
+            (txids == *expected).then_some(())
+        },
+    )
+    .await;
+}
+
+/// The expected mempool txids for the active mockchain: the non-coinbase txs of
+/// the block at `tip + 1` (the mockchain models these as the mempool).
+fn expected_mempool_txids(
+    block_data: &[zebra_chain::block::Block],
+    mockchain_tip: u32,
+) -> std::collections::HashSet<TransactionHash> {
+    block_data
+        .get(mockchain_tip as usize + 1)
+        .map(|block| {
+            block
+                .transactions
+                .iter()
+                .filter(|tx| !tx.is_coinbase())
+                .map(|tx| TransactionHash::from(tx.hash()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn faucet_transparent_address() -> String {
     let vector_data = load_test_vectors().unwrap();
 
@@ -219,6 +265,11 @@ async fn get_mempool_transaction() {
 
     let mockchain_tip = mockchain.active_height();
     wait_for_indexer_tip(&index_reader, mockchain_tip).await;
+    wait_for_mempool_txids(
+        &index_reader,
+        &expected_mempool_txids(&block_data, mockchain_tip),
+    )
+    .await;
 
     let mempool_height = (mockchain_tip as usize) + 1;
 
@@ -267,6 +318,11 @@ async fn get_mempool_transaction_status() {
 
     let mockchain_tip = mockchain.active_height();
     wait_for_indexer_tip(&index_reader, mockchain_tip).await;
+    wait_for_mempool_txids(
+        &index_reader,
+        &expected_mempool_txids(&block_data, mockchain_tip),
+    )
+    .await;
 
     let mempool_height = (mockchain_tip as usize) + 1;
 
@@ -313,6 +369,11 @@ async fn get_mempool_transactions() {
 
     let mockchain_tip = mockchain.active_height();
     wait_for_indexer_tip(&index_reader, mockchain_tip).await;
+    wait_for_mempool_txids(
+        &index_reader,
+        &expected_mempool_txids(&block_data, mockchain_tip),
+    )
+    .await;
 
     let mempool_height = (mockchain_tip as usize) + 1;
     let mut mempool_transactions: Vec<_> = block_data
@@ -359,6 +420,11 @@ async fn get_filtered_mempool_transactions() {
 
     let mockchain_tip = mockchain.active_height();
     wait_for_indexer_tip(&index_reader, mockchain_tip).await;
+    wait_for_mempool_txids(
+        &index_reader,
+        &expected_mempool_txids(&block_data, mockchain_tip),
+    )
+    .await;
 
     let mempool_height = (mockchain_tip as usize) + 1;
     let mut mempool_transactions: Vec<_> = block_data
@@ -409,6 +475,11 @@ async fn get_mempool_stream_no_expected_chain_tip_snapshot() {
 
     let mockchain_tip = mockchain.active_height();
     wait_for_indexer_tip(&index_reader, mockchain_tip).await;
+    wait_for_mempool_txids(
+        &index_reader,
+        &expected_mempool_txids(&block_data, mockchain_tip),
+    )
+    .await;
 
     let next_mempool_height_index = (mockchain_tip as usize) + 1;
     let mut mempool_transactions: Vec<_> = block_data
@@ -470,6 +541,11 @@ async fn get_mempool_stream_correct_expected_chain_tip_snapshot() {
 
     let mockchain_tip = mockchain.active_height();
     wait_for_indexer_tip(&index_reader, mockchain_tip).await;
+    wait_for_mempool_txids(
+        &index_reader,
+        &expected_mempool_txids(&block_data, mockchain_tip),
+    )
+    .await;
 
     let next_mempool_height_index = (mockchain_tip as usize) + 1;
     let mut mempool_transactions: Vec<_> = block_data

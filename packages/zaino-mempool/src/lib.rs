@@ -43,7 +43,7 @@ pub use snapshot::{
     FreezeReason, MempoolCompleteness, MempoolMode, MempoolSnapshot, ObservedTips, TipChange,
     ValidatorTip,
 };
-pub use subscriber::{MempoolFilterError, MempoolInfo, MempoolSubscriber, TxIdPrefix};
+pub use subscriber::{MempoolFilterError, MempoolInfo, MempoolSubscriber, TxIdExcludeSuffix};
 
 /// A [`Future`](std::future::Future) that is [`Send`] and resolves to `T`.
 ///

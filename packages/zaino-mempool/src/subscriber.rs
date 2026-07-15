@@ -11,6 +11,7 @@ use zebra_chain::transaction::Hash as TxHash;
 use crate::config::MempoolConfig;
 use crate::entry::MempoolEntry;
 use crate::event::MempoolEvent;
+use crate::ports::NonFinalizedEpoch;
 use crate::snapshot::MempoolSnapshot;
 
 /// Aggregate mempool metrics for `getmempoolinfo`.
@@ -24,10 +25,16 @@ pub struct MempoolInfo {
     pub usage: u64,
 }
 
-/// A validated, canonical-endian txid prefix used to filter the mempool.
+/// A validated client-supplied exclude suffix.
+///
+/// The lightwallet protocol's `exclude_txid_suffixes` are the trailing bytes of
+/// the txid in internal (little-endian) byte order; a transaction is excluded
+/// when its txid **ends with** these bytes (equivalently, its big-endian display
+/// hex starts with the reversed bytes — the form lightwalletd matches). The
+/// bytes are stored exactly as supplied and matched with [`slice::ends_with`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TxIdPrefix {
-    canonical_prefix: Vec<u8>,
+pub struct TxIdExcludeSuffix {
+    suffix: Vec<u8>,
 }
 
 /// Errors validating a client-supplied exclude list.
@@ -140,7 +147,7 @@ impl MempoolSubscriber {
     pub fn validate_exclude_suffixes(
         &self,
         exclude_suffixes_client_endian: &[Vec<u8>],
-    ) -> Result<Vec<TxIdPrefix>, MempoolFilterError> {
+    ) -> Result<Vec<TxIdExcludeSuffix>, MempoolFilterError> {
         if exclude_suffixes_client_endian.len() > self.config.max_exclude_count {
             return Err(MempoolFilterError::TooManyExcludes {
                 actual: exclude_suffixes_client_endian.len(),
@@ -163,9 +170,11 @@ impl MempoolSubscriber {
                         max: self.config.max_exclude_suffix_len,
                     });
                 }
-                let mut canonical_prefix = suffix.clone();
-                canonical_prefix.reverse();
-                Ok(TxIdPrefix { canonical_prefix })
+                // Stored verbatim; matched with `ends_with` against internal txid
+                // bytes (see `TxIdExcludeSuffix`).
+                Ok(TxIdExcludeSuffix {
+                    suffix: suffix.clone(),
+                })
             })
             .collect()
     }
@@ -173,18 +182,20 @@ impl MempoolSubscriber {
     /// The current snapshot's entries (in deterministic order) with the uniquely
     /// matched excluded txids removed.
     ///
-    /// A prefix that uniquely matches one txid excludes it; a prefix matching
-    /// zero txids is ignored; a prefix matching multiple txids excludes none
-    /// (the lightwallet shortened-txid contract). Matching uses a binary range
-    /// lookup over the sorted txids, so cost is `O(excludes · log n)`.
-    pub fn get_filtered_entries(&self, exclude_prefixes: &[TxIdPrefix]) -> Vec<Arc<MempoolEntry>> {
+    /// A suffix that uniquely matches one txid excludes it; a suffix matching
+    /// zero txids is ignored; a suffix matching multiple txids excludes none (the
+    /// lightwallet shortened-txid contract). Cost is `O(excludes · n)`, which is
+    /// bounded because `validate_exclude_suffixes` caps the exclude count and the
+    /// snapshot is cost-bounded — the linear scan is intentional and safe here.
+    pub fn get_filtered_entries(
+        &self,
+        exclude_suffixes: &[TxIdExcludeSuffix],
+    ) -> Vec<Arc<MempoolEntry>> {
         let snapshot = self.snapshot();
 
         let mut excluded: HashSet<TxHash> = HashSet::new();
-        for prefix in exclude_prefixes {
-            if let Some(txid) =
-                unique_prefix_match(&snapshot.txids_sorted, &prefix.canonical_prefix)
-            {
+        for exclude in exclude_suffixes {
+            if let Some(txid) = unique_suffix_match(&snapshot.txids_sorted, &exclude.suffix) {
                 excluded.insert(txid);
             }
         }
@@ -196,27 +207,89 @@ impl MempoolSubscriber {
             .cloned()
             .collect()
     }
+
+    /// A live stream of serialized mempool transactions.
+    ///
+    /// Yields the current snapshot's transactions first, then each subsequently
+    /// added transaction, until the set freezes, closes, the caller falls behind
+    /// the bounded event buffer, or (when `expected_epoch` is given) the live
+    /// epoch changes. Returns `None` immediately if `expected_epoch` does not
+    /// match the current snapshot — the caller's chain tip is stale and should
+    /// re-snapshot.
+    pub fn stream_raw_transactions(
+        &self,
+        expected_epoch: Option<NonFinalizedEpoch>,
+    ) -> Option<impl futures::Stream<Item = Vec<u8>>> {
+        // Subscribe before snapshotting so no event between the snapshot load and
+        // the subscribe is missed; events at or below `start_sequence` are then
+        // discarded as already reflected in the initial snapshot.
+        let mut receiver = self.subscribe_events();
+        let snapshot = self.snapshot();
+
+        if let Some(expected) = expected_epoch {
+            if !snapshot.is_valid_for_snapshot(expected) {
+                return None;
+            }
+        }
+
+        let start_sequence = snapshot.event_sequence;
+        let initial_entries = snapshot.entries_in_order.clone();
+
+        let stream = async_stream::stream! {
+            for entry in initial_entries.iter() {
+                yield entry.serialized_bytes().to_vec();
+            }
+
+            loop {
+                let event = match receiver.recv().await {
+                    Ok(event) => event,
+                    // Fell behind the bounded buffer, or the service closed.
+                    Err(broadcast::error::RecvError::Lagged(_)) => break,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                };
+
+                match event.as_ref() {
+                    MempoolEvent::Added {
+                        sequence,
+                        valid_for,
+                        entry,
+                    } => {
+                        if *sequence <= start_sequence {
+                            continue;
+                        }
+                        if let Some(expected) = expected_epoch {
+                            if *valid_for != expected {
+                                break;
+                            }
+                        }
+                        yield entry.serialized_bytes().to_vec();
+                    }
+                    // Raw streams do not emit removals.
+                    MempoolEvent::Removed { .. } => {}
+                    // Freeze or shutdown ends the stream; the client re-opens.
+                    MempoolEvent::Frozen { .. } | MempoolEvent::Closing { .. } => break,
+                    // Snapshot-level metadata only.
+                    MempoolEvent::Live { .. } => {}
+                }
+            }
+        };
+
+        Some(stream)
+    }
 }
 
-/// If exactly one txid in `sorted_txids` starts with `prefix`, return it;
-/// otherwise (zero or multiple matches) return `None`.
-///
-/// `sorted_txids` must be sorted ascending by canonical txid bytes.
-fn unique_prefix_match(sorted_txids: &[TxHash], prefix: &[u8]) -> Option<TxHash> {
-    if prefix.is_empty() || prefix.len() > 32 {
+/// If exactly one txid in `txids` ends with `suffix`, return it; otherwise (zero
+/// or multiple matches) return `None`.
+fn unique_suffix_match(txids: &[TxHash], suffix: &[u8]) -> Option<TxHash> {
+    if suffix.is_empty() || suffix.len() > 32 {
         return None;
     }
 
-    // First index whose leading `prefix.len()` bytes are >= `prefix`.
-    let start = sorted_txids.partition_point(|txid| txid.0[..prefix.len()] < *prefix);
-
-    let first = sorted_txids.get(start)?;
-    if &first.0[..prefix.len()] != prefix {
-        return None; // zero matches
-    }
-    match sorted_txids.get(start + 1) {
-        Some(second) if &second.0[..prefix.len()] == prefix => None, // ambiguous
-        _ => Some(*first),
+    let mut matches = txids.iter().filter(|txid| txid.0.ends_with(suffix));
+    let first = *matches.next()?;
+    match matches.next() {
+        Some(_) => None, // ambiguous: two or more matches
+        None => Some(first),
     }
 }
 
@@ -229,28 +302,26 @@ mod tests {
     }
 
     #[test]
-    fn unique_prefix_match_semantics() {
-        let mut ids = vec![
-            txid([0x11; 32]),
-            txid([0x22; 32]),
-            txid([
-                0x22, 0x22, 0x22, 0x99, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0,
-            ]),
-            txid([0x33; 32]),
-        ];
-        ids.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    fn unique_suffix_match_semantics() {
+        // Two txids share the trailing bytes `.. 0x22 0x22`.
+        let mut a = [0u8; 32];
+        a[30] = 0x22;
+        a[31] = 0x22;
+        let mut b = [0x99; 32];
+        b[30] = 0x22;
+        b[31] = 0x22;
+        let ids = vec![txid([0x11; 32]), txid(a), txid(b), txid([0x33; 32])];
 
-        // Unique prefix -> that txid.
+        // Unique suffix -> that txid (only [0x11; 32] ends with 0x11 0x11).
         assert_eq!(
-            unique_prefix_match(&ids, &[0x11, 0x11]),
+            unique_suffix_match(&ids, &[0x11, 0x11]),
             Some(txid([0x11; 32]))
         );
         // Zero matches -> None.
-        assert_eq!(unique_prefix_match(&ids, &[0xAB, 0xCD]), None);
-        // Ambiguous prefix (two txids start 0x22 0x22) -> None.
-        assert_eq!(unique_prefix_match(&ids, &[0x22, 0x22]), None);
-        // Empty prefix -> None (never matches everything).
-        assert_eq!(unique_prefix_match(&ids, &[]), None);
+        assert_eq!(unique_suffix_match(&ids, &[0xAB, 0xCD]), None);
+        // Ambiguous suffix (two txids end 0x22 0x22) -> None.
+        assert_eq!(unique_suffix_match(&ids, &[0x22, 0x22]), None);
+        // Empty suffix -> None (never matches everything).
+        assert_eq!(unique_suffix_match(&ids, &[]), None);
     }
 }

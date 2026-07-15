@@ -70,7 +70,6 @@ pub use chain_index::{
 pub use chain_index::source::{BlockchainSource, State, ValidatorConnector};
 // Supporting types
 pub use chain_index::encoding::*;
-pub use chain_index::mempool::Mempool;
 pub use chain_index::non_finalised_state::{
     ChainIndexSnapshot, InitError, NodeConnectionError, NonFinalizedState, SyncError, UpdateError,
 };
@@ -84,8 +83,6 @@ pub use chain_index::types::{
     ShardIndex, ShardRoot, TransactionHash, TransparentCompactTx, TransparentTxList, TreeRootData,
     TxInCompact, TxLocation, TxOutCompact, TxidList,
 };
-
-pub use chain_index::mempool::{MempoolKey, MempoolValue};
 
 #[cfg(feature = "test_dependencies")]
 /// allow public access to additional APIs, for testing
@@ -119,7 +116,5 @@ pub use stream::{
     AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
     SubtreeRootReplyStream, UtxoReplyStream,
 };
-
-pub(crate) mod broadcast;
 
 pub(crate) mod utils;

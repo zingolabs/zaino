@@ -536,31 +536,6 @@ impl ChainIndexError {
             source: None,
         }
     }
-
-    pub(crate) fn child_process_status_error(process: &str, status_err: StatusError) -> Self {
-        use crate::status::StatusType;
-
-        let message = match status_err.server_status {
-            StatusType::Spawning => format!("{process} status: Spawning (not ready yet)"),
-            StatusType::Syncing => format!("{process} status: Syncing (not ready yet)"),
-            StatusType::Ready => format!("{process} status: Ready (unexpected error path)"),
-            StatusType::Busy => format!("{process} status: Busy (temporarily unavailable)"),
-            StatusType::Closing => format!("{process} status: Closing (shutting down)"),
-            StatusType::Offline => format!("{process} status: Offline (not available)"),
-            StatusType::RecoverableError => {
-                format!("{process} status: RecoverableError (retry may succeed)")
-            }
-            StatusType::CriticalError => {
-                format!("{process} status: CriticalError (requires operator action)")
-            }
-        };
-
-        ChainIndexError {
-            kind: ChainIndexErrorKind::InternalServerError,
-            message,
-            source: Some(Box::new(status_err)),
-        }
-    }
 }
 
 impl From<FinalisedStateError> for ChainIndexError {

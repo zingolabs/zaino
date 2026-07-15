@@ -94,6 +94,12 @@ impl ChainIndexSnapshot {
             ChainIndexSnapshot::StillSyncingFinalizedState { .. } => None,
         }
     }
+
+    /// The mempool-coherence epoch of the underlying non-finalized snapshot, if
+    /// the non-finalized state exists.
+    pub(crate) fn nfs_epoch(&self) -> Option<zaino_mempool::NonFinalizedEpoch> {
+        self.get_nfs_snapshot().map(|snapshot| snapshot.epoch())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -127,9 +133,6 @@ impl NonfinalizedBlockCacheSnapshot {
     ///
     /// Returns the mempool port's [`NonFinalizedEpoch`] so the mempool core can
     /// gate coherence without depending on `zaino-state` types.
-    // Consumed by the mempool adapter (`NfsEpochAdapter`) and the Stage-3
-    // epoch-gated ChainIndex read methods; both land later in the mempool rework.
-    #[allow(dead_code)]
     pub(crate) fn epoch(&self) -> zaino_mempool::NonFinalizedEpoch {
         zaino_mempool::NonFinalizedEpoch {
             generation: self.generation,
@@ -750,11 +753,19 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             .await
             .map_err(|_e| UpdateError::DatabaseHole)?;
 
-        // Bump the publication generation exactly once per published snapshot.
-        // `new_snapshot` was cloned from `initial_state`, so it currently carries
-        // the old generation; set it to old + 1 before the CAS. The CAS ensures a
-        // single winner, so generation increments monotonically on each publish.
-        new_snapshot.generation = initial_state.generation.saturating_add(1);
+        // Bump the publication generation only when the best tip actually
+        // changes. The sync loop republishes the snapshot every iteration (to
+        // trim finalized blocks etc.) even when the tip is unchanged; bumping
+        // generation on those no-op republishes would make the mempool-coherence
+        // epoch churn every cycle and defeat the freeze/thaw agreement checks.
+        // Keying generation to tip changes gives a stable epoch for a stable tip
+        // while still distinguishing successive tips (including same-height
+        // reorgs, which change the tip hash).
+        new_snapshot.generation = if new_snapshot.best_tip != initial_state.best_tip {
+            initial_state.generation.saturating_add(1)
+        } else {
+            initial_state.generation
+        };
 
         // Need to get best hash at some point in this process
         let stored = self
