@@ -230,6 +230,8 @@ debug = true
 # inherits it through the single lock; Cargo honours `[patch.crates-io]` only
 # from the workspace root. See docs/updating_zebra_crates.md.
 # Tracking: zaino#<TODO-revert-zebra-fork>.
-zebra-chain = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "9a27f886a5bfb143f65d1712e912cef252426800" }
-zebra-rpc = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "9a27f886a5bfb143f65d1712e912cef252426800" }
-zebra-state = { git = "https://github.com/ZcashFoundation/zebra.git", rev = "9a27f886a5bfb143f65d1712e912cef252426800" }
+# TEMPORARY: pointing at nachog00/zebra fork for ReadRequest::CompactBlock prototype.
+# Revert to ZcashFoundation/zebra once upstream merges the feature.
+zebra-chain = { git = "https://github.com/nachog00/zebra.git", rev = "86a386041" }
+zebra-rpc = { git = "https://github.com/nachog00/zebra.git", rev = "86a386041" }
+zebra-state = { git = "https://github.com/nachog00/zebra.git", rev = "86a386041" }

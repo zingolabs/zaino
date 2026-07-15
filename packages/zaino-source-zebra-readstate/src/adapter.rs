@@ -38,6 +38,39 @@ impl ZebraReadStateAdapter {
     }
 }
 
+impl ZebraReadStateAdapter {
+    /// Fetch a compact block — skips proofs, signatures, and input scripts.
+    ///
+    /// This is a prototype method for benchmarking the compact deserialization
+    /// path. Returns zebra-chain's CompactBlock directly (no domain conversion).
+    pub async fn get_compact_block(
+        &self,
+        height: Height,
+    ) -> Result<zebra_chain::transaction::compact::CompactBlock, QueryError<GetBlockError>> {
+        let zebra_height = zebra_chain::block::Height(u32::from(height));
+        let request = ReadRequest::CompactBlock(zebra_height.into());
+
+        let response = self
+            .state
+            .clone()
+            .oneshot(request)
+            .await
+            .map_err(|e| FetchError::new(FailureMode::Connection, format!("state service: {e}")))?;
+
+        match response {
+            ReadResponse::CompactBlock(Some(compact)) => Ok(compact),
+            ReadResponse::CompactBlock(None) => {
+                Err(QueryError::Domain(GetBlockError::HeightNotFound(height)))
+            }
+            _ => Err(FetchError::new(
+                FailureMode::Parse,
+                "unexpected response variant".to_string(),
+            )
+            .into()),
+        }
+    }
+}
+
 impl zaino_source::GetBlock for ZebraReadStateAdapter {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(h = u32::from(height))))]
     async fn get_block(

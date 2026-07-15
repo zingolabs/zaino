@@ -29,6 +29,7 @@ const TARGET: &str = "provision_bench";
 #[strum(serialize_all = "snake_case")]
 enum BenchMode {
     RawBlock,
+    CompactBlock,
     HeadersOnly,
     HeadersSpends,
     CurrentZaino,
@@ -165,6 +166,7 @@ async fn main() {
     let modes = match bench_mode {
         BenchMode::All => vec![
             BenchMode::RawBlock,
+            BenchMode::CompactBlock,
             BenchMode::HeadersOnly,
             BenchMode::HeadersSpends,
             BenchMode::CurrentZaino,
@@ -189,6 +191,19 @@ async fn main() {
                         }
                     },
                     sync_from, sync_to, concurrency, BenchMode::RawBlock,
+                ).await
+            }
+            BenchMode::CompactBlock => {
+                let a = Arc::clone(&adapter);
+                run_provision(
+                    move |h| {
+                        let a = Arc::clone(&a);
+                        async move {
+                            let height = Height::try_from(h).expect("valid");
+                            let _compact = a.get_compact_block(height).await.expect("get_compact_block");
+                        }
+                    },
+                    sync_from, sync_to, concurrency, BenchMode::CompactBlock,
                 ).await
             }
             BenchMode::HeadersOnly => {

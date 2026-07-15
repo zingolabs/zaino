@@ -4711,6 +4711,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "strum",
  "tokio",
  "tracing",
  "tracing-opentelemetry",
@@ -5137,7 +5138,7 @@ dependencies = [
 [[package]]
 name = "tower-batch-control"
 version = "1.0.1"
-source = "git+https://github.com/ZcashFoundation/zebra.git?rev=9a27f886a5bfb143f65d1712e912cef252426800#9a27f886a5bfb143f65d1712e912cef252426800"
+source = "git+https://github.com/nachog00/zebra.git?rev=86a386041#86a3860411d576357d6d2c2d1cbbb6d7c65e6c09"
 dependencies = [
  "futures",
  "futures-core",
@@ -5165,7 +5166,7 @@ dependencies = [
 [[package]]
 name = "tower-fallback"
 version = "0.2.41"
-source = "git+https://github.com/ZcashFoundation/zebra.git?rev=9a27f886a5bfb143f65d1712e912cef252426800#9a27f886a5bfb143f65d1712e912cef252426800"
+source = "git+https://github.com/nachog00/zebra.git?rev=86a386041#86a3860411d576357d6d2c2d1cbbb6d7c65e6c09"
 dependencies = [
  "futures-core",
  "pin-project",
@@ -6665,7 +6666,7 @@ dependencies = [
 [[package]]
 name = "zebra-chain"
 version = "10.1.0"
-source = "git+https://github.com/ZcashFoundation/zebra.git?rev=9a27f886a5bfb143f65d1712e912cef252426800#9a27f886a5bfb143f65d1712e912cef252426800"
+source = "git+https://github.com/nachog00/zebra.git?rev=86a386041#86a3860411d576357d6d2c2d1cbbb6d7c65e6c09"
 dependencies = [
  "bech32",
  "bitflags 2.13.0",
@@ -6776,7 +6777,7 @@ dependencies = [
 [[package]]
 name = "zebra-consensus"
 version = "9.0.1"
-source = "git+https://github.com/ZcashFoundation/zebra.git?rev=9a27f886a5bfb143f65d1712e912cef252426800#9a27f886a5bfb143f65d1712e912cef252426800"
+source = "git+https://github.com/nachog00/zebra.git?rev=86a386041#86a3860411d576357d6d2c2d1cbbb6d7c65e6c09"
 dependencies = [
  "bellman",
  "blake2b_simd",
@@ -6800,8 +6801,8 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tower 0.4.13",
- "tower-batch-control 1.0.1 (git+https://github.com/ZcashFoundation/zebra.git?rev=9a27f886a5bfb143f65d1712e912cef252426800)",
- "tower-fallback 0.2.41 (git+https://github.com/ZcashFoundation/zebra.git?rev=9a27f886a5bfb143f65d1712e912cef252426800)",
+ "tower-batch-control 1.0.1 (git+https://github.com/nachog00/zebra.git?rev=86a386041)",
+ "tower-fallback 0.2.41 (git+https://github.com/nachog00/zebra.git?rev=86a386041)",
  "tracing",
  "tracing-futures",
  "zcash_primitives",
@@ -6856,7 +6857,7 @@ dependencies = [
 [[package]]
 name = "zebra-network"
 version = "9.0.0"
-source = "git+https://github.com/ZcashFoundation/zebra.git?rev=9a27f886a5bfb143f65d1712e912cef252426800#9a27f886a5bfb143f65d1712e912cef252426800"
+source = "git+https://github.com/nachog00/zebra.git?rev=86a386041#86a3860411d576357d6d2c2d1cbbb6d7c65e6c09"
 dependencies = [
  "bitflags 2.13.0",
  "byteorder",
@@ -6909,7 +6910,7 @@ dependencies = [
 [[package]]
 name = "zebra-node-services"
 version = "8.0.0"
-source = "git+https://github.com/ZcashFoundation/zebra.git?rev=9a27f886a5bfb143f65d1712e912cef252426800#9a27f886a5bfb143f65d1712e912cef252426800"
+source = "git+https://github.com/nachog00/zebra.git?rev=86a386041#86a3860411d576357d6d2c2d1cbbb6d7c65e6c09"
 dependencies = [
  "color-eyre",
  "jsonrpsee-types",
@@ -6984,7 +6985,7 @@ dependencies = [
 [[package]]
 name = "zebra-rpc"
 version = "10.0.1"
-source = "git+https://github.com/ZcashFoundation/zebra.git?rev=9a27f886a5bfb143f65d1712e912cef252426800#9a27f886a5bfb143f65d1712e912cef252426800"
+source = "git+https://github.com/nachog00/zebra.git?rev=86a386041#86a3860411d576357d6d2c2d1cbbb6d7c65e6c09"
 dependencies = [
  "base64",
  "chrono",
@@ -7057,7 +7058,7 @@ dependencies = [
 [[package]]
 name = "zebra-script"
 version = "9.0.0"
-source = "git+https://github.com/ZcashFoundation/zebra.git?rev=9a27f886a5bfb143f65d1712e912cef252426800#9a27f886a5bfb143f65d1712e912cef252426800"
+source = "git+https://github.com/nachog00/zebra.git?rev=86a386041#86a3860411d576357d6d2c2d1cbbb6d7c65e6c09"
 dependencies = [
  "libzcash_script",
  "rand 0.8.6",
@@ -7108,7 +7109,7 @@ dependencies = [
 [[package]]
 name = "zebra-state"
 version = "9.0.1"
-source = "git+https://github.com/ZcashFoundation/zebra.git?rev=9a27f886a5bfb143f65d1712e912cef252426800#9a27f886a5bfb143f65d1712e912cef252426800"
+source = "git+https://github.com/nachog00/zebra.git?rev=86a386041#86a3860411d576357d6d2c2d1cbbb6d7c65e6c09"
 dependencies = [
  "bincode",
  "chrono",
@@ -7145,7 +7146,7 @@ dependencies = [
 [[package]]
 name = "zebra-test"
 version = "3.0.0"
-source = "git+https://github.com/ZcashFoundation/zebra.git?rev=9a27f886a5bfb143f65d1712e912cef252426800#9a27f886a5bfb143f65d1712e912cef252426800"
+source = "git+https://github.com/nachog00/zebra.git?rev=86a386041#86a3860411d576357d6d2c2d1cbbb6d7c65e6c09"
 dependencies = [
  "color-eyre",
  "futures",
