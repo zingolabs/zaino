@@ -5930,6 +5930,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "zaino-common",
+ "zaino-proto",
  "zebra-chain",
 ]
 

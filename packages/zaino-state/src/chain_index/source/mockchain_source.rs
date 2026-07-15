@@ -848,6 +848,33 @@ impl BlockchainSource for MockchainSource {
         Ok(Some(txids))
     }
 
+    async fn get_mempool_metadata(
+        &self,
+    ) -> BlockchainSourceResult<Option<Vec<zaino_mempool::MempoolTxMeta>>> {
+        let active_chain_height = self.active_height() as usize;
+        let mempool_height = active_chain_height + 1;
+        // The mock has no verbose listing; the tip-at-entry height for its
+        // simulated mempool (the block at active tip + 1) is the active tip.
+        let entry_height = zebra_chain::block::Height(active_chain_height as u32);
+
+        let entries = if mempool_height < self.blocks.len() {
+            self.blocks[mempool_height]
+                .transactions
+                .iter()
+                .filter(|tx| !tx.is_coinbase())
+                .map(|tx| zaino_mempool::MempoolTxMeta {
+                    txid: tx.hash(),
+                    entry_height,
+                    entry_time: None,
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+
+        Ok(Some(entries))
+    }
+
     async fn get_raw_mempool_transaction(
         &self,
         txid: zebra_chain::transaction::Hash,

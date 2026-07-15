@@ -1247,6 +1247,16 @@ impl BlockchainSource for ProptestMockchain {
         Ok(Some(Vec::new()))
     }
 
+    async fn get_mempool_metadata(
+        &self,
+    ) -> BlockchainSourceResult<Option<Vec<zaino_mempool::MempoolTxMeta>>> {
+        if let Some(delay) = self.delay {
+            tokio::time::sleep(delay).await;
+        }
+        // This proptest mock keeps an empty mempool.
+        Ok(Some(Vec::new()))
+    }
+
     async fn get_raw_mempool_transaction(
         &self,
         _txid: zebra_chain::transaction::Hash,

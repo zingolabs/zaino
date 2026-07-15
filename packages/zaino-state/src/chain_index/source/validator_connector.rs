@@ -852,6 +852,42 @@ impl BlockchainSource for ValidatorConnector {
         Ok(Some(txids))
     }
 
+    async fn get_mempool_metadata(
+        &self,
+    ) -> BlockchainSourceResult<Option<Vec<zaino_mempool::MempoolTxMeta>>> {
+        let mempool_fetcher = match self {
+            ValidatorConnector::State(state) => &state.mempool_fetcher,
+            ValidatorConnector::Fetch(fetch) => fetch,
+        };
+
+        let verbose = mempool_fetcher
+            .get_raw_mempool_verbose()
+            .await
+            .map_err(|e| {
+                BlockchainSourceError::unrecoverable_context("could not fetch verbose mempool", e)
+            })?;
+
+        let entries = verbose
+            .0
+            .into_iter()
+            .map(|(txid_str, meta)| {
+                let txid = zebra_chain::transaction::Hash::from_str(&txid_str).map_err(|e| {
+                    BlockchainSourceError::unrecoverable_context(
+                        format!("invalid transaction id '{txid_str}'"),
+                        e,
+                    )
+                })?;
+                Ok(zaino_mempool::MempoolTxMeta {
+                    txid,
+                    entry_height: zebra_chain::block::Height(meta.height),
+                    entry_time: Some(meta.time),
+                })
+            })
+            .collect::<Result<Vec<_>, BlockchainSourceError>>()?;
+
+        Ok(Some(entries))
+    }
+
     async fn get_raw_mempool_transaction(
         &self,
         txid: zebra_chain::transaction::Hash,

@@ -21,11 +21,22 @@
 //! `BlockIndex`, `BlockchainSource`, and the non-finalized state into shared
 //! crates) has happened.
 
+pub mod config;
+pub mod entry;
 pub mod error;
+pub mod event;
 pub mod ports;
+pub mod snapshot;
 
+pub use config::MempoolConfig;
+pub use entry::MempoolEntry;
 pub use error::MempoolError;
-pub use ports::{BlockRef, MempoolSource, NfsEpochObserver, NonFinalizedEpoch};
+pub use event::MempoolEvent;
+pub use ports::{BlockRef, MempoolSource, MempoolTxMeta, NfsEpochObserver, NonFinalizedEpoch};
+pub use snapshot::{
+    FreezeReason, MempoolCompleteness, MempoolMode, MempoolSnapshot, ObservedTips, TipChange,
+    ValidatorTip,
+};
 
 /// A [`Future`](std::future::Future) that is [`Send`] and resolves to `T`.
 ///

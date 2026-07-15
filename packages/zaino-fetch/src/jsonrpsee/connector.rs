@@ -40,7 +40,7 @@ use crate::jsonrpsee::{
         GetSpentInfoError, GetSpentInfoRequest, GetSpentInfoResponse, GetSubtreesError,
         GetSubtreesResponse, GetTransactionResponse, GetTreestateError, GetTreestateResponse,
         GetTxOutResponse, GetUtxosError, GetUtxosResponse, SendTransactionError,
-        SendTransactionResponse, TxidsError, TxidsResponse,
+        SendTransactionResponse, TxidsError, TxidsResponse, VerboseMempoolResponse,
     },
 };
 
@@ -764,6 +764,23 @@ impl JsonRpSeeConnector {
     /// tags: blockchain
     pub async fn get_raw_mempool(&self) -> Result<TxidsResponse, RpcRequestError<TxidsError>> {
         self.send_request::<(), TxidsResponse>("getrawmempool", ())
+            .await
+    }
+
+    /// Returns per-entry mempool metadata via `getrawmempool` with
+    /// `verbose = true`: a map of txid to `{ height, time, .. }`.
+    ///
+    /// `height` is the validator's authoritative tip height when each
+    /// transaction entered the mempool — used to stamp Zaino's mempool entries
+    /// protocol-correctly rather than deriving the height locally.
+    ///
+    /// zcashd reference: [`getrawmempool`](https://zcash.github.io/rpc/getrawmempool.html)
+    /// method: post
+    /// tags: blockchain
+    pub async fn get_raw_mempool_verbose(
+        &self,
+    ) -> Result<VerboseMempoolResponse, RpcRequestError<Infallible>> {
+        self.send_request::<_, VerboseMempoolResponse>("getrawmempool", (true,))
             .await
     }
 

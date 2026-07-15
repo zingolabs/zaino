@@ -11,6 +11,7 @@ version = "0.1.0"
 [dependencies]
 # Shared Zaino
 zaino-common = { workspace = true }
+zaino-proto = { workspace = true }
 
 # Zebra
 zebra-chain = { workspace = true }

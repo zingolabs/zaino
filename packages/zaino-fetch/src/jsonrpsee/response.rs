@@ -82,6 +82,7 @@ impl_infallible_response_to_error!(
     GetBlockCountResponse,
     ValidateAddressResponse,
     RawMempoolResponse,
+    VerboseMempoolResponse,
     GetTransactionResponse,
     GetMempoolInfoResponse,
 );
@@ -1368,6 +1369,26 @@ pub struct RawMempoolResponse {
     /// Vec of txids.
     pub transactions: Vec<String>,
 }
+
+/// One mempool entry's metadata, as returned by `getrawmempool` with
+/// `verbose = true`.
+///
+/// Only the fields Zaino currently mirrors are captured; `serde` ignores the
+/// rest of the validator's verbose entry (fee, depends, descendant stats).
+#[derive(Clone, Debug, Deserialize)]
+pub struct MempoolEntryVerbose {
+    /// Chain tip height when the transaction entered the mempool — the
+    /// validator's authoritative "tip at entry" (Zebra's
+    /// `VerifiedUnminedTx.height`, zcashd's `nHeight`).
+    pub height: u32,
+    /// Unix time (seconds) the transaction entered the mempool.
+    pub time: i64,
+}
+
+/// Response for `getrawmempool` with `verbose = true`: a map of txid (hex) to
+/// that transaction's [`MempoolEntryVerbose`] metadata.
+#[derive(Clone, Debug, Deserialize)]
+pub struct VerboseMempoolResponse(pub std::collections::HashMap<String, MempoolEntryVerbose>);
 
 impl<'de> serde::Deserialize<'de> for TxidsResponse {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>

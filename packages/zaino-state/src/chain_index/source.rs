@@ -128,6 +128,17 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
         &self,
     ) -> impl SendFut<BlockchainSourceResult<Option<Vec<zebra_chain::transaction::Hash>>>>;
 
+    /// Returns per-transaction metadata for the whole current mempool.
+    ///
+    /// This is the mempool read-model's authoritative listing: each entry
+    /// carries its txid and the validator's tip-at-entry height, so the mempool
+    /// stamps entries protocol-correctly instead of deriving the height. For the
+    /// JSON-RPC sources this maps to `getrawmempool verbose`; sources without a
+    /// verbose listing (e.g. the mock) supply the tip-at-entry height locally.
+    fn get_mempool_metadata(
+        &self,
+    ) -> impl SendFut<BlockchainSourceResult<Option<Vec<zaino_mempool::MempoolTxMeta>>>>;
+
     /// Directly fetches one raw mempool transaction by txid.
     ///
     /// This is the mempool read-model's per-transaction fetch path. It must not
