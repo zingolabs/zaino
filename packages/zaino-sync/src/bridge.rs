@@ -74,6 +74,7 @@ impl sealed::Sealed for (BlockLocal, Append) {}
 impl sealed::Sealed for (BlockLocal, Monoidal) {}
 impl sealed::Sealed for (BlockLocal, Fold) {}
 
+impl sealed::Sealed for (SelfCumulative, Append) {}
 impl sealed::Sealed for (SelfCumulative, Monoidal) {}
 impl sealed::Sealed for (SelfCumulative, Fold) {}
 
@@ -113,6 +114,20 @@ where
 {
     fn dispatch() -> Box<dyn IndexPipeline<Ctx>> {
         Box::new(LocalBridge::<I, FoldStrategy>::new())
+    }
+}
+
+impl<I, Ctx> BridgeDispatch<I, Ctx> for (SelfCumulative, Append)
+where
+    I: ExtractCumulative<PriorState = <AppendStrategy as MergeStrategy<I>>::MergedState>
+        + MergeAppend
+        + Schema<<AppendStrategy as MergeStrategy<I>>::MergedState>
+        + IndexDef<Scope = SelfCumulative, Composition = Append>,
+    <AppendStrategy as MergeStrategy<I>>::MergedState: Clone,
+    Ctx: ProvideContext<I::BlockContext> + Send + Sync + 'static,
+{
+    fn dispatch() -> Box<dyn IndexPipeline<Ctx>> {
+        Box::new(CumulativeBridge::<I, AppendStrategy>::new())
     }
 }
 

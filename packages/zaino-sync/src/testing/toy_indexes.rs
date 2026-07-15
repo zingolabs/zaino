@@ -12,6 +12,8 @@
 //! [`ProvideContext`]: crate::traits::ProvideContext
 
 pub mod count_index;
+pub mod cumulative_log_index;
+pub mod cumulative_max_index;
 pub mod cumulative_sum_index;
 pub mod running_sum_index;
 pub mod value_index;
@@ -54,6 +56,22 @@ impl ProvideContext<cumulative_sum_index::Context> for TestBlockContext {
     }
 }
 
+impl ProvideContext<cumulative_log_index::Context> for TestBlockContext {
+    fn context(&self) -> cumulative_log_index::Context {
+        cumulative_log_index::Context {
+            label: format!("block_{}", self.height),
+        }
+    }
+}
+
+impl ProvideContext<cumulative_max_index::Context> for TestBlockContext {
+    fn context(&self) -> cumulative_max_index::Context {
+        cumulative_max_index::Context {
+            value: self.value,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // End-to-end tests
 // ---------------------------------------------------------------------------
@@ -70,6 +88,8 @@ mod tests {
     use crate::primitives::BatchIndex;
 
     use count_index::CountIndex;
+    use cumulative_log_index::CumulativeLogIndex;
+    use cumulative_max_index::CumulativeMaxIndex;
     use cumulative_sum_index::CumulativeSumIndex;
     use running_sum_index::RunningSumIndex;
     use value_index::ValueIndex;
@@ -431,5 +451,168 @@ mod tests {
         let watermark = SyncEngine::<TestBlockContext, InMemoryBackend>::committed_height(&backend)
             .expect("read succeeds");
         assert!(watermark.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // SelfCumulative x Append (CumulativeLogIndex)
+    // -----------------------------------------------------------------------
+
+    fn build_engine_with_log(
+        backend: InMemoryBackend,
+        batch_size: u32,
+    ) -> SyncEngine<TestBlockContext, InMemoryBackend> {
+        let set = IndexSet::new()
+            .with::<CumulativeLogIndex>();
+
+        SyncEngine::from_index_set(
+            set, backend,
+            EngineConfig { batch_size, start_height: BlockHeight::new(0) },
+        ).expect("valid index set")
+    }
+
+    fn read_log_entries(backend: &InMemoryBackend) -> Vec<String> {
+        let entries = backend.entries(cumulative_log_index::ID.into());
+        let mut sorted: Vec<_> = entries.iter().collect();
+        sorted.sort_by_key(|(k, _)| k.clone());
+        sorted
+            .iter()
+            .map(|(_, v)| String::from_utf8(v.to_vec()).expect("utf8"))
+            .collect()
+    }
+
+    #[test]
+    fn cumulative_log_single_batch() {
+        // 4 blocks, batch size 10 (single batch).
+        // Log starts empty (even length), so first block gets "E:" prefix.
+        // Expected: E:block_0, O:block_1, E:block_2, O:block_3
+        let blocks: Vec<_> = (0u64..=3)
+            .map(|h| TestBlockContext { height: h, value: h as u32 })
+            .collect();
+
+        let backend = InMemoryBackend::new();
+        let mut engine = build_engine_with_log(backend.clone(), 10);
+        engine.sync_range(blocks).expect("sync succeeds");
+
+        let entries = read_log_entries(&backend);
+        assert_eq!(entries, vec!["E:block_0", "O:block_1", "E:block_2", "O:block_3"]);
+    }
+
+    #[test]
+    fn cumulative_log_deterministic_across_batch_sizes() {
+        let expected = {
+            let blocks: Vec<_> = (0u64..=7)
+                .map(|h| TestBlockContext { height: h, value: h as u32 })
+                .collect();
+            let backend = InMemoryBackend::new();
+            let mut engine = build_engine_with_log(backend.clone(), 20);
+            engine.sync_range(blocks).expect("sync succeeds");
+            read_log_entries(&backend)
+        };
+
+        for batch_size in [1, 2, 3, 4, 5, 8] {
+            let blocks: Vec<_> = (0u64..=7)
+                .map(|h| TestBlockContext { height: h, value: h as u32 })
+                .collect();
+            let backend = InMemoryBackend::new();
+            let mut engine = build_engine_with_log(backend.clone(), batch_size);
+            engine.sync_range(blocks).expect("sync succeeds");
+
+            assert_eq!(
+                read_log_entries(&backend),
+                expected,
+                "batch_size={batch_size} produced different log"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // SelfCumulative x Fold (CumulativeMaxIndex)
+    // -----------------------------------------------------------------------
+
+    fn build_engine_with_max(
+        backend: InMemoryBackend,
+        batch_size: u32,
+    ) -> SyncEngine<TestBlockContext, InMemoryBackend> {
+        let set = IndexSet::new()
+            .with::<CumulativeMaxIndex>();
+
+        SyncEngine::from_index_set(
+            set, backend,
+            EngineConfig { batch_size, start_height: BlockHeight::new(0) },
+        ).expect("valid index set")
+    }
+
+    fn read_max(backend: &InMemoryBackend) -> u64 {
+        let bytes = backend
+            .get_value(cumulative_max_index::ID.into(), b"max")
+            .expect("max exists");
+        u64::from_le_bytes(bytes.as_slice().try_into().expect("8 bytes"))
+    }
+
+    #[test]
+    fn cumulative_max_single_batch() {
+        // Blocks with values [5, 10, 25, 3, 15].
+        // Halving threshold = 20.
+        //   block 0: prior_max=0,  delta=5          → max=5
+        //   block 1: prior_max=5,  delta=10         → max=10
+        //   block 2: prior_max=10, delta=25         → max=25
+        //   block 3: prior_max=25, delta=3/2=1      → max=25  (prior>20, halved)
+        //   block 4: prior_max=25, delta=15/2=7     → max=25  (prior>20, halved)
+        let values = [5u32, 10, 25, 3, 15];
+        let blocks: Vec<_> = values.iter().enumerate()
+            .map(|(i, &v)| TestBlockContext { height: i as u64, value: v })
+            .collect();
+
+        let backend = InMemoryBackend::new();
+        let mut engine = build_engine_with_max(backend.clone(), 20);
+        engine.sync_range(blocks).expect("sync succeeds");
+
+        assert_eq!(read_max(&backend), 25);
+    }
+
+    #[test]
+    fn cumulative_max_deterministic_across_batch_sizes() {
+        let values = [5u32, 10, 25, 3, 15, 30, 2, 8];
+
+        let expected = {
+            let blocks: Vec<_> = values.iter().enumerate()
+                .map(|(i, &v)| TestBlockContext { height: i as u64, value: v })
+                .collect();
+            let backend = InMemoryBackend::new();
+            let mut engine = build_engine_with_max(backend.clone(), 20);
+            engine.sync_range(blocks).expect("sync succeeds");
+            read_max(&backend)
+        };
+
+        for batch_size in [1, 2, 3, 4, 5, 8] {
+            let blocks: Vec<_> = values.iter().enumerate()
+                .map(|(i, &v)| TestBlockContext { height: i as u64, value: v })
+                .collect();
+            let backend = InMemoryBackend::new();
+            let mut engine = build_engine_with_max(backend.clone(), batch_size);
+            engine.sync_range(blocks).expect("sync succeeds");
+
+            assert_eq!(
+                read_max(&backend),
+                expected,
+                "batch_size={batch_size} produced different max"
+            );
+        }
+    }
+
+    #[test]
+    fn cumulative_max_state_threads_across_batches() {
+        // Batch size 2: [5,10], [25,3], [15].
+        // Same result as single batch.
+        let values = [5u32, 10, 25, 3, 15];
+        let blocks: Vec<_> = values.iter().enumerate()
+            .map(|(i, &v)| TestBlockContext { height: i as u64, value: v })
+            .collect();
+
+        let backend = InMemoryBackend::new();
+        let mut engine = build_engine_with_max(backend.clone(), 2);
+        engine.sync_range(blocks).expect("sync succeeds");
+
+        assert_eq!(read_max(&backend), 25);
     }
 }
