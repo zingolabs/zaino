@@ -87,6 +87,25 @@ impl zaino_source::GetChainTip for ZebraRpcAdapter {
     }
 }
 
+impl zaino_source::GetCompactBlock for ZebraRpcAdapter {
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(h = u32::from(height))))]
+    async fn get_compact_block(
+        &self,
+        height: Height,
+    ) -> Result<zaino_primitives::types::CompactBlock, QueryError<GetBlockError>> {
+        // RPC returns full block bytes — no way to request compact from the validator.
+        // We full-deserialize via zebra-chain then convert to our compact type.
+        // The savings vs get_block is skipping the domain Block intermediate —
+        // we go zebra Block → compact directly.
+        //
+        // TODO: once compact_deserialize supports streaming (Reader instead of
+        // &[u8]), we can skip the full zebra deserialize on this path too.
+        use zaino_source::GetBlock;
+        let block = self.get_block(height).await?;
+        Ok(zaino_primitives::types::CompactBlock::from(&block))
+    }
+}
+
 impl zaino_source::GetTreestate for ZebraRpcAdapter {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(h = u32::from(height))))]
     async fn get_treestate(

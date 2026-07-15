@@ -9,6 +9,67 @@ use super::{
     Nullifier, OutputIndex, Script, TransactionHash, Zatoshis,
 };
 
+impl From<&super::Block> for CompactBlock {
+    fn from(block: &super::Block) -> Self {
+        Self {
+            hash: block.header.hash,
+            prev_hash: block.header.prev_hash,
+            height: u32::from(block.header.height),
+            time: block.header.time,
+            bits: block.header.bits,
+            transactions: block.transactions.iter().map(CompactTransaction::from).collect(),
+        }
+    }
+}
+
+impl From<&super::transaction::Transaction> for CompactTransaction {
+    fn from(tx: &super::transaction::Transaction) -> Self {
+        Self {
+            txid: tx.txid,
+            transparent_inputs: tx
+                .transparent
+                .inputs
+                .iter()
+                .map(|inp| CompactTransparentInput {
+                    prev_txid: inp.prev_txid,
+                    prev_index: inp.prev_index,
+                })
+                .collect(),
+            transparent_outputs: tx
+                .transparent
+                .outputs
+                .iter()
+                .map(|out| CompactTransparentOutput {
+                    value: out.value,
+                    script: out.script.clone(),
+                })
+                .collect(),
+            sapling_nullifiers: tx.sapling.spends.iter().map(|s| s.nullifier).collect(),
+            sapling_outputs: tx
+                .sapling
+                .outputs
+                .iter()
+                .map(|o| CompactSaplingOutput {
+                    cmu: o.cmu,
+                    ephemeral_key: o.ephemeral_key,
+                    enc_ciphertext: o.enc_ciphertext.clone(),
+                })
+                .collect(),
+            orchard_actions: tx
+                .orchard
+                .actions
+                .iter()
+                .map(|a| CompactOrchardAction {
+                    nullifier: a.nullifier,
+                    cmx: a.cmx,
+                    ephemeral_key: a.ephemeral_key,
+                    enc_ciphertext: a.enc_ciphertext.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+
 /// A compact block: header fields + compact transactions.
 #[derive(Debug, Clone)]
 pub struct CompactBlock {
