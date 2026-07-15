@@ -39,6 +39,31 @@ impl ZebraReadStateAdapter {
 }
 
 impl ZebraReadStateAdapter {
+    /// Fetch just the block header — no transaction deserialization at all.
+    pub async fn get_block_header(
+        &self,
+        height: Height,
+    ) -> Result<zebra_chain::block::Header, QueryError<GetBlockError>> {
+        let zebra_height = zebra_chain::block::Height(u32::from(height));
+        let request = ReadRequest::BlockHeader(zebra_height.into());
+
+        let response = self
+            .state
+            .clone()
+            .oneshot(request)
+            .await
+            .map_err(|e| FetchError::new(FailureMode::Connection, format!("state service: {e}")))?;
+
+        match response {
+            ReadResponse::BlockHeader { header, .. } => Ok((*header).clone()),
+            _ => Err(FetchError::new(
+                FailureMode::Parse,
+                "unexpected response variant".to_string(),
+            )
+            .into()),
+        }
+    }
+
     /// Fetch a compact block — skips proofs, signatures, and input scripts.
     ///
     /// This is a prototype method for benchmarking the compact deserialization

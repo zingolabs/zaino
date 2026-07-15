@@ -207,45 +207,42 @@ async fn main() {
                 ).await
             }
             BenchMode::HeadersOnly => {
-                use zaino_indexes::sets::headers_only;
+                // Uses BlockHeader request — no transaction deserialization.
                 let a = Arc::clone(&adapter);
                 run_provision(
                     move |h| {
                         let a = Arc::clone(&a);
                         async move {
                             let height = Height::try_from(h).expect("valid");
-                            let block = a.get_block(height).await.expect("get_block");
-                            let _ = headers_only::context_from_block(&block);
+                            let _header = a.get_block_header(height).await.expect("get_block_header");
                         }
                     },
                     sync_from, sync_to, concurrency, BenchMode::HeadersOnly,
                 ).await
             }
             BenchMode::HeadersSpends => {
-                use zaino_indexes::sets::headers_and_spends;
+                // Uses CompactBlock — has transparent outpoints, no proofs/scripts.
                 let a = Arc::clone(&adapter);
                 run_provision(
                     move |h| {
                         let a = Arc::clone(&a);
                         async move {
                             let height = Height::try_from(h).expect("valid");
-                            let block = a.get_block(height).await.expect("get_block");
-                            let _ = headers_and_spends::context_from_block(&block);
+                            let _compact = a.get_compact_block(height).await.expect("get_compact_block");
                         }
                     },
                     sync_from, sync_to, concurrency, BenchMode::HeadersSpends,
                 ).await
             }
             BenchMode::CurrentZaino => {
-                use zaino_indexes::sets::current_zaino;
+                // Uses CompactBlock — has everything the current index set needs.
                 let a = Arc::clone(&adapter);
                 run_provision(
                     move |h| {
                         let a = Arc::clone(&a);
                         async move {
                             let height = Height::try_from(h).expect("valid");
-                            let block = a.get_block(height).await.expect("get_block");
-                            let _ = current_zaino::context_from_block(&block);
+                            let _compact = a.get_compact_block(height).await.expect("get_compact_block");
                         }
                     },
                     sync_from, sync_to, concurrency, BenchMode::CurrentZaino,
