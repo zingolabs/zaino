@@ -67,6 +67,9 @@ pub mod encoding;
 pub mod finalised_state;
 /// State in the mempool, not yet on-chain
 pub mod mempool;
+/// Adapters implementing the `zaino-mempool` ports over `zaino-state`'s
+/// blockchain source and non-finalized state.
+pub(crate) mod mempool_ports;
 /// State within [`OPERATIONAL_NFS_DEPTH`] blocks of the best-known chain tip;
 /// stored separately as it may be reorged.
 pub mod non_finalised_state;

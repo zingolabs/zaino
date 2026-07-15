@@ -2,6 +2,7 @@
 [workspace]
 members = [
     "packages/zaino-common",
+    "packages/zaino-mempool",
     "packages/zainod",
     "packages/zaino-serve",
     "packages/zaino-state",
@@ -18,6 +19,7 @@ members = [
 # when selected explicitly (`-p e2e` / `-p clientless`). See docs/adr/0002.
 default-members = [
     "packages/zaino-common",
+    "packages/zaino-mempool",
     "packages/zainod",
     "packages/zaino-serve",
     "packages/zaino-state",
@@ -123,6 +125,7 @@ tempfile = "3.2"
 # set is already empty. Enable zcashd end-to-end with `--features zcashd_support`.
 zainod = { path = "packages/zainod" }
 zaino-common = { path = "packages/zaino-common", version = "0.2.0" }
+zaino-mempool = { path = "packages/zaino-mempool", version = "0.1.0" }
 # default-features = false so the default-on `zcashd_support` feature can be
 # dropped end-to-end via `--no-default-features`; each consumer re-enables it
 # by forwarding `zcashd_support` in its own `default`. See

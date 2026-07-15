@@ -852,7 +852,57 @@ impl BlockchainSource for ValidatorConnector {
         Ok(Some(txids))
     }
 
+    async fn get_raw_mempool_transaction(
+        &self,
+        txid: zebra_chain::transaction::Hash,
+    ) -> BlockchainSourceResult<Option<zebra_chain::transaction::SerializedTransaction>> {
+        let mempool_fetcher = match self {
+            ValidatorConnector::State(state) => &state.mempool_fetcher,
+            ValidatorConnector::Fetch(fetch) => fetch,
+        };
+
+        match mempool_fetcher
+            .get_raw_transaction(txid.to_string(), Some(0))
+            .await
+        {
+            Ok(GetTransactionResponse::Raw(serialized_transaction)) => {
+                Ok(Some(serialized_transaction))
+            }
+            Ok(_) => Err(BlockchainSourceError::Unrecoverable(
+                "unexpected non-raw response fetching raw mempool transaction".to_string(),
+            )),
+            // The source responded but has no such transaction: it left the
+            // mempool (mined or evicted) between listing and fetch. Skip it
+            // rather than freezing the whole mempool on a normal race.
+            Err(RpcRequestError::UnexpectedErrorResponse(_)) => Ok(None),
+            Err(e) => Err(BlockchainSourceError::unrecoverable_context(
+                "could not fetch raw mempool transaction",
+                e,
+            )),
+        }
+    }
+
     // ********** Chain methods **********
+
+    async fn get_mempool_source_tip(&self) -> BlockchainSourceResult<Option<BlockIndex>> {
+        // The mempool's validator tip MUST come from the same source that
+        // supplies mempool txids (the JSON-RPC fetcher), not ReadStateService,
+        // so the observed tip and the mempool set stay coherent for the
+        // freeze/thaw check.
+        let mempool_fetcher = match self {
+            ValidatorConnector::State(state) => &state.mempool_fetcher,
+            ValidatorConnector::Fetch(fetch) => fetch,
+        };
+
+        let info = mempool_fetcher.get_blockchain_info().await.map_err(|e| {
+            BlockchainSourceError::unrecoverable_context("could not fetch mempool source tip", e)
+        })?;
+
+        Ok(Some(BlockIndex {
+            height: info.blocks.into(),
+            hash: info.best_block_hash.into(),
+        }))
+    }
 
     async fn get_best_block_hash(
         &self,

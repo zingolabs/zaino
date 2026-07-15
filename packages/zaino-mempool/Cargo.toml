@@ -1,0 +1,25 @@
+[package]
+name = "zaino-mempool"
+description = "Zaino's bounded, coherent local mempool read-model (hexagonal ports/adapters core)."
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+version = "0.1.0"
+
+[dependencies]
+# Shared Zaino
+zaino-common = { workspace = true }
+
+# Zebra
+zebra-chain = { workspace = true }
+
+# Runtime
+tokio = { workspace = true, features = ["full"] }
+
+# Utility
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util", "macros"] }

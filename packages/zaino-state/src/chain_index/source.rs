@@ -3,7 +3,7 @@
 use std::{error::Error, sync::Arc};
 
 use crate::chain_index::{
-    types::{BlockHash, TransactionHash},
+    types::{BlockHash, BlockIndex, TransactionHash},
     ShieldedPool,
 };
 use crate::SendFut;
@@ -128,7 +128,30 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
         &self,
     ) -> impl SendFut<BlockchainSourceResult<Option<Vec<zebra_chain::transaction::Hash>>>>;
 
+    /// Directly fetches one raw mempool transaction by txid.
+    ///
+    /// This is the mempool read-model's per-transaction fetch path. It must not
+    /// re-enter [`Self::get_transaction`] and must not re-fetch the full mempool
+    /// txid list (that re-entry is the O(N²) source the mempool rework removes).
+    ///
+    /// Returns `Ok(None)` when the source responds but has no such transaction —
+    /// it was mined or evicted between listing and fetch, a normal mempool race.
+    /// A transport/connection failure propagates as `Err`, so the mempool can
+    /// distinguish "tx gone" (skip it) from "source unavailable" (freeze).
+    fn get_raw_mempool_transaction(
+        &self,
+        txid: zebra_chain::transaction::Hash,
+    ) -> impl SendFut<BlockchainSourceResult<Option<zebra_chain::transaction::SerializedTransaction>>>;
+
     // ********** Chain methods **********
+
+    /// Returns the tip of the *source that supplies mempool data*.
+    ///
+    /// For [`ValidatorConnector::State`] this reads the JSON-RPC `mempool_fetcher`
+    /// (not `ReadStateService`), so the observed mempool-source tip and the
+    /// mempool txids come from one consistent source — required for the mempool
+    /// freeze/thaw coherence invariant.
+    fn get_mempool_source_tip(&self) -> impl SendFut<BlockchainSourceResult<Option<BlockIndex>>>;
 
     /// Returns the hash of the block at the tip of the best chain.
     fn get_best_block_hash(

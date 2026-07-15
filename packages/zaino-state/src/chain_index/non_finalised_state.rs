@@ -112,6 +112,33 @@ pub(crate) struct NonfinalizedBlockCacheSnapshot {
     // best_tip is a BestTip, which contains
     // a Height, and a BlockHash as named fields.
     pub best_tip: BlockIndex,
+    /// Monotonic publication generation.
+    ///
+    /// Increments exactly once for every successfully published non-finalized
+    /// snapshot (see [`NonFinalizedState::update`]). Two snapshots with the same
+    /// `best_tip` but different contents are still distinguishable by generation,
+    /// which is why the mempool keys coherence on the whole epoch rather than the
+    /// tip hash alone.
+    pub generation: u64,
+}
+
+impl NonfinalizedBlockCacheSnapshot {
+    /// The stable epoch identifying this published snapshot.
+    ///
+    /// Returns the mempool port's [`NonFinalizedEpoch`] so the mempool core can
+    /// gate coherence without depending on `zaino-state` types.
+    // Consumed by the mempool adapter (`NfsEpochAdapter`) and the Stage-3
+    // epoch-gated ChainIndex read methods; both land later in the mempool rework.
+    #[allow(dead_code)]
+    pub(crate) fn epoch(&self) -> zaino_mempool::NonFinalizedEpoch {
+        zaino_mempool::NonFinalizedEpoch {
+            generation: self.generation,
+            best_tip: zaino_mempool::BlockRef {
+                height: zebra_chain::block::Height(self.best_tip.height.0),
+                hash: self.best_tip.hash.into(),
+            },
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -234,6 +261,7 @@ impl NonfinalizedBlockCacheSnapshot {
             blocks,
             heights_to_hashes,
             best_tip,
+            generation: 0,
         }
     }
 
@@ -459,9 +487,12 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 anchor_height,
             )
             .await?;
-            self.current.swap(Arc::new(
-                NonfinalizedBlockCacheSnapshot::from_initial_block(anchor_block),
-            ));
+            // Preserve generation monotonicity across a re-anchor: a fresh
+            // `from_initial_block` starts at 0, so carry the old generation + 1.
+            let mut anchor_snapshot =
+                NonfinalizedBlockCacheSnapshot::from_initial_block(anchor_block);
+            anchor_snapshot.generation = initial_state.generation.saturating_add(1);
+            self.current.swap(Arc::new(anchor_snapshot));
             initial_state = self.get_snapshot()
         }
         let mut working_snapshot = initial_state.as_ref().clone();
@@ -718,6 +749,12 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         self.handle_reorg(&mut new_snapshot, best_block, 0)
             .await
             .map_err(|_e| UpdateError::DatabaseHole)?;
+
+        // Bump the publication generation exactly once per published snapshot.
+        // `new_snapshot` was cloned from `initial_state`, so it currently carries
+        // the old generation; set it to old + 1 before the CAS. The CAS ensures a
+        // single winner, so generation increments monotonically on each publish.
+        new_snapshot.generation = initial_state.generation.saturating_add(1);
 
         // Need to get best hash at some point in this process
         let stored = self

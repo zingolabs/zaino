@@ -30,7 +30,7 @@ use crate::{
         non_finalised_state::ChainIndexSnapshot,
         source::{BlockchainSourceResult, GetTransactionLocation},
         tests::{init_tracing, poll::poll_until, proptest_blockgen::proptest_helpers::add_segment},
-        types::BestChainLocation,
+        types::{BestChainLocation, BlockIndex},
         NonFinalizedSnapshot, OPERATIONAL_NFS_DEPTH,
     },
     BlockHash, BlockchainSource, ChainIndex, ChainIndexConfig, ChainIndexRpcExt, Height,
@@ -1247,6 +1247,17 @@ impl BlockchainSource for ProptestMockchain {
         Ok(Some(Vec::new()))
     }
 
+    async fn get_raw_mempool_transaction(
+        &self,
+        _txid: zebra_chain::transaction::Hash,
+    ) -> BlockchainSourceResult<Option<zebra_chain::transaction::SerializedTransaction>> {
+        if let Some(delay) = self.delay {
+            tokio::time::sleep(delay).await;
+        }
+        // This proptest mock keeps an empty mempool.
+        Ok(None)
+    }
+
     /// Returns the transaction by txid
     async fn get_transaction(
         &self,
@@ -1287,6 +1298,17 @@ impl BlockchainSource for ProptestMockchain {
                 .coinbase_height()
                 .unwrap(),
         ))
+    }
+
+    async fn get_mempool_source_tip(&self) -> BlockchainSourceResult<Option<BlockIndex>> {
+        if let Some(delay) = self.delay {
+            tokio::time::sleep(delay).await;
+        }
+        let tip = self.best_branch().last().unwrap();
+        Ok(Some(BlockIndex {
+            height: tip.coinbase_height().unwrap().into(),
+            hash: tip.hash().into(),
+        }))
     }
 
     /// Get a listener for new nonfinalized blocks,

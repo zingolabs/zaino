@@ -848,7 +848,55 @@ impl BlockchainSource for MockchainSource {
         Ok(Some(txids))
     }
 
+    async fn get_raw_mempool_transaction(
+        &self,
+        txid: zebra_chain::transaction::Hash,
+    ) -> BlockchainSourceResult<Option<zebra_chain::transaction::SerializedTransaction>> {
+        let mempool_height = self.active_height() as usize + 1;
+
+        let Some((stored_height, tx)) = self.txid_index.get(&txid) else {
+            return Ok(None);
+        };
+
+        if *stored_height == mempool_height {
+            Ok(Some(zebra_chain::transaction::SerializedTransaction::from(
+                tx.as_ref(),
+            )))
+        } else {
+            // Not (or no longer) a mempool transaction at the active tip.
+            Ok(None)
+        }
+    }
+
     // ********** Chain methods **********
+
+    async fn get_mempool_source_tip(&self) -> BlockchainSourceResult<Option<BlockIndex>> {
+        if self
+            .force_requests_against_source_to_fail
+            .load(Ordering::SeqCst)
+        {
+            return Err(BlockchainSourceError::Unrecoverable(
+                "forced source failure".into(),
+            ));
+        }
+        let active_chain_height = self.active_height() as usize;
+
+        if self.blocks.is_empty() || active_chain_height > self.max_chain_height() as usize {
+            return Ok(None);
+        }
+
+        let hash = self.blocks[active_chain_height].hash();
+        let Some(height) = self.blocks[active_chain_height].coinbase_height() else {
+            return Err(BlockchainSourceError::Unrecoverable(format!(
+                "active chain block at index {active_chain_height} has no coinbase height"
+            )));
+        };
+
+        Ok(Some(BlockIndex {
+            height: height.into(),
+            hash: hash.into(),
+        }))
+    }
 
     async fn get_best_block_hash(
         &self,
