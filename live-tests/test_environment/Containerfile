@@ -46,7 +46,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     clang=1:19.0-63 \
     cmake=3.31.6-2 \
     pkg-config=1.8.1-4 \
-    protobuf-compiler=3.21.12-11 \
+    protobuf-compiler=3.21.12-11+deb13u1 \
     libstdc++6=14.2.0-19
 WORKDIR /zebra
 # Single RUN (DL3059): clone, checkout, build, and stage the binary.
@@ -71,7 +71,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     autoconf=2.72-3.1 \
     libtool=2.5.4-4 \
     bsdmainutils=12.1.8 \
-    curl=8.14.1-2+deb13u3 \
+    curl=8.14.1-2+deb13u4 \
     ca-certificates=20250419 \
     netbase=6.5
 
@@ -99,7 +99,7 @@ ARG DEVTOOL_REV
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git=1:2.47.3-0+deb13u1 \
     pkg-config=1.8.1-4 \
-    protobuf-compiler=3.21.12-11 \
+    protobuf-compiler=3.21.12-11+deb13u1 \
     libsqlite3-dev=3.46.1-7+deb13u1
 WORKDIR /devtool
 # Single RUN (DL3059): clone, checkout, build, and stage the binary. The
@@ -140,12 +140,12 @@ LABEL org.zaino.test-artifacts.versions.rust="${RUST_VERSION}"
 # Versions pinned (DL3008) to the candidates in rust:1.95.0-trixie; bump
 # together with the base image (query with `apt-cache policy <pkg>`).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl=8.14.1-2+deb13u3 \
+    curl=8.14.1-2+deb13u4 \
     libclang-dev=1:19.0-63 \
     build-essential=12.12 \
     cmake=3.31.6-2 \
     librocksdb-dev=9.10.0-1+b1 \
-    protobuf-compiler=3.21.12-11 \
+    protobuf-compiler=3.21.12-11+deb13u1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Create container_user. The GID may already belong to a base-image group

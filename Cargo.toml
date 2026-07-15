@@ -40,17 +40,16 @@ license = "Apache-2.0"
 
 # Librustzcash
 incrementalmerkletree = "0.8"
-zcash_address = "0.13.0-pre.0"
-zcash_keys = "0.15.0-pre.0"
-zcash_protocol = "0.10.0-pre.0"
-zcash_primitives = "0.29.0-pre.0"
-zcash_transparent = "0.9.0-pre.0"
-zcash_client_backend = "0.24.0-pre.0"
+zcash_address = "0.13"
+zcash_keys = "0.15"
+zcash_protocol = "0.10"
+zcash_primitives = "0.29"
+zcash_transparent = "0.9"
 
 # Zebra
-zebra-chain = "11.0"
-zebra-state = "10.0"
-zebra-rpc = "11.0"
+zebra-chain = "11.1"
+zebra-state = "10.1"
+zebra-rpc = "11.1"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
@@ -115,7 +114,6 @@ blake2 = "0.10"
 hex = "0.4"
 toml = "1.1"
 primitive-types = "0.14"
-bs58 = "0.5"
 bitflags = "2.9"
 
 # Test
@@ -147,9 +145,7 @@ zcash_local_net = { git = "https://github.com/zingolabs/infrastructure.git", rev
 
 wire_serialized_transaction_test_data = "1.0.0"
 config = { version = "0.15", default-features = false, features = ["toml"] }
-nonempty = "0.12.0"
 proptest = "~1.11"
-zip32 = "0.2.1"
 anyhow = "1.0"
 arc-swap = "1.7.1"
 derive_more = "2.0.1"
