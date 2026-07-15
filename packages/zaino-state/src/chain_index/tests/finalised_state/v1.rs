@@ -331,15 +331,16 @@ async fn try_write_invalid_block() {
         ..
     } = blocks.last().unwrap().clone();
 
-    let metadata = BlockMetadata::new(
+    let metadata = BlockMetadata {
         sapling_root,
-        sapling_tree_size as u32,
+        sapling_size: sapling_tree_size as u32,
         orchard_root,
-        orchard_tree_size as u32,
-        None,
-        None, // no parent chainwork for this test
-        ActivationHeights::default().to_regtest_network(),
-    );
+        orchard_size: orchard_tree_size as u32,
+        ironwood: None,
+        // no parent chainwork for this test
+        parent_chainwork: None,
+        network: ActivationHeights::default().to_regtest_network(),
+    };
 
     let mut chain_block =
         IndexedBlock::try_from(BlockWithMetadata::new(&zebra_block, metadata)).unwrap();

@@ -2,6 +2,41 @@
 //!
 //! This crate also exposes test-vectors.
 
+/// Assert that `oracle` and `subject` return the same `getblockheader` response for
+/// the block at `height`: look the block up on the oracle (verbosity 1) to learn its
+/// hash, then compare the two servers' non-verbose header responses for that hash.
+/// Shared body of the per-backend `get_block_header` oracle tests.
+#[allow(deprecated)]
+pub async fn assert_get_block_header_matches<Oracle, Subject>(
+    oracle: &Oracle,
+    subject: &Subject,
+    height: u32,
+) where
+    Oracle: zaino_state::ZcashIndexer,
+    Subject: zaino_state::ZcashIndexer,
+{
+    let block = oracle
+        .z_get_block(height.to_string(), Some(1))
+        .await
+        .unwrap();
+
+    let block_hash = match block {
+        zebra_rpc::methods::GetBlock::Object(block) => block.hash(),
+        zebra_rpc::methods::GetBlock::Raw(_) => panic!("Expected block object"),
+    };
+
+    let oracle_header = oracle
+        .get_block_header(block_hash.to_string(), false)
+        .await
+        .unwrap();
+
+    let subject_header = subject
+        .get_block_header(block_hash.to_string(), false)
+        .await
+        .unwrap();
+    assert_eq!(oracle_header, subject_header);
+}
+
 pub mod rpc {
     pub mod json_rpc {
         pub const VALID_P2PKH_ADDRESS: &str = "tmVqEASZxBNKFTbmASZikGa5fPLkd68iJyx";

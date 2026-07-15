@@ -2044,37 +2044,11 @@ impl State {
 
     /// Median time past over the 11-block window ending at `start`, walking backwards via
     /// verbosity-1 `getblock` lookups against the `ReadStateService`.
-    // TODO(DRY): MockchainSource duplicates this walk; the only difference is the
-    // per-block fetch. A shared helper generic over an async block fetcher would unify them.
     async fn median_time_past(&self, start: &BlockObject) -> BlockchainSourceResult<i64> {
-        const MEDIAN_TIME_PAST_WINDOW: usize = 11;
-        let mut times = Vec::with_capacity(MEDIAN_TIME_PAST_WINDOW);
-        let start_time = start.time().ok_or_else(|| {
-            BlockchainSourceError::Unrecoverable("getblockdeltas: start block missing time".into())
-        })?;
-        times.push(start_time);
-
-        let mut prev = start.previous_block_hash();
-        for _ in 0..(MEDIAN_TIME_PAST_WINDOW - 1) {
-            let Some(hash) = prev else {
-                break; // genesis
-            };
-            match self
-                .get_block_inner(HashOrHeight::Hash(hash), Some(1))
-                .await
-            {
-                Ok(GetBlock::Object(object)) => {
-                    if let Some(time) = object.time() {
-                        times.push(time);
-                    }
-                    prev = object.previous_block_hash();
-                }
-                Ok(GetBlock::Raw(_)) => break,
-                Err(_) => break, // use values collected so far
-            }
-        }
-
-        median_of_block_times(times)
+        median_time_past_via(start, |hash| {
+            self.get_block_inner(HashOrHeight::Hash(hash), Some(1))
+        })
+        .await
     }
 
     /// Builds the `getblockchaininfo` response from the `ReadStateService`.
@@ -2386,6 +2360,46 @@ pub(crate) fn zebra_block_header_to_wire(
 ) -> BlockchainSourceResult<GetBlockHeader> {
     let value = serde_json::to_value(&header).map_err(BlockchainSourceError::unrecoverable)?;
     serde_json::from_value(value).map_err(BlockchainSourceError::unrecoverable)
+}
+
+/// Median time past over the 11-block window ending at `start`, walking parent hashes
+/// backwards via `fetch_prev` (a verbosity-1 `getblock` lookup against the caller's source).
+///
+/// The walk tolerates short histories: it stops at genesis, at a raw (non-verbose)
+/// response, or on a fetch error, and takes the median of the times collected so far.
+pub(crate) async fn median_time_past_via<Fetch, Fut, FetchError>(
+    start: &BlockObject,
+    fetch_prev: Fetch,
+) -> BlockchainSourceResult<i64>
+where
+    Fetch: Fn(zebra_chain::block::Hash) -> Fut,
+    Fut: std::future::Future<Output = Result<GetBlock, FetchError>>,
+{
+    const MEDIAN_TIME_PAST_WINDOW: usize = 11;
+    let mut times = Vec::with_capacity(MEDIAN_TIME_PAST_WINDOW);
+    let start_time = start.time().ok_or_else(|| {
+        BlockchainSourceError::Unrecoverable("getblockdeltas: start block missing time".into())
+    })?;
+    times.push(start_time);
+
+    let mut prev = start.previous_block_hash();
+    for _ in 0..(MEDIAN_TIME_PAST_WINDOW - 1) {
+        let Some(hash) = prev else {
+            break; // genesis
+        };
+        match fetch_prev(hash).await {
+            Ok(GetBlock::Object(object)) => {
+                if let Some(time) = object.time() {
+                    times.push(time);
+                }
+                prev = object.previous_block_hash();
+            }
+            Ok(GetBlock::Raw(_)) => break,
+            Err(_) => break, // use values collected so far
+        }
+    }
+
+    median_of_block_times(times)
 }
 
 /// Returns the median of a non-empty set of block times.
