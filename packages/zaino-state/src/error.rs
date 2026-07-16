@@ -192,29 +192,11 @@ impl<T: ToString> From<RpcRequestError<T>> for NodeBackedIndexerServiceError {
 /// in favor of a new type with the new chain cache is complete
 impl<T: ToString> From<RpcRequestError<T>> for MempoolError {
     fn from(value: RpcRequestError<T>) -> Self {
-        match value {
-            RpcRequestError::Transport(transport_error) => {
+        match RpcRequestFallback::classify(value) {
+            RpcRequestFallback::Transport(transport_error) => {
                 MempoolError::JsonRpcConnectorError(transport_error)
             }
-            RpcRequestError::JsonRpc(error) => {
-                MempoolError::Critical(format!("argument failed to serialze: {error}"))
-            }
-            RpcRequestError::InternalUnrecoverable(e) => {
-                MempoolError::Critical(format!("Internal unrecoverable error: {e}"))
-            }
-            RpcRequestError::ServerWorkQueueFull => MempoolError::Critical(
-                "Server queue full. Handling for this not yet implemented".to_string(),
-            ),
-            RpcRequestError::Method(e) => MempoolError::Critical(format!(
-                "unhandled rpc-specific {} error: {}",
-                type_name::<T>(),
-                e.to_string()
-            )),
-            RpcRequestError::UnexpectedErrorResponse(error) => MempoolError::Critical(format!(
-                "unhandled rpc-specific {} error: {}",
-                type_name::<T>(),
-                error
-            )),
+            RpcRequestFallback::Message(message) => MempoolError::Critical(message),
         }
     }
 }
@@ -320,35 +302,58 @@ pub enum NonFinalisedStateError {
     StatusError(StatusError),
 }
 
-/// These aren't the best conversions, but the NonFinalizedStateError should go away
-/// in favor of a new type with the new chain cache is complete
-impl<T: ToString> From<RpcRequestError<T>> for NonFinalisedStateError {
-    fn from(value: RpcRequestError<T>) -> Self {
+/// Either a transport error passed through intact, or the formatted message for the
+/// target error type's degraded catch-all variant.
+///
+/// Shared classification behind the `From<RpcRequestError<T>>` conversions for
+/// [`MempoolError`], [`NonFinalisedStateError`], and [`FinalisedStateError`]: all
+/// three map transport errors to their `JsonRpcConnectorError` variant and degrade
+/// every other case to a message-carrying variant (`Critical` or `Custom`).
+enum RpcRequestFallback {
+    Transport(zaino_fetch::jsonrpsee::error::TransportError),
+    Message(String),
+}
+
+impl RpcRequestFallback {
+    fn classify<T: ToString>(value: RpcRequestError<T>) -> Self {
         match value {
             RpcRequestError::Transport(transport_error) => {
-                NonFinalisedStateError::JsonRpcConnectorError(transport_error)
+                RpcRequestFallback::Transport(transport_error)
             }
             RpcRequestError::JsonRpc(error) => {
-                NonFinalisedStateError::Custom(format!("argument failed to serialze: {error}"))
+                RpcRequestFallback::Message(format!("argument failed to serialze: {error}"))
             }
             RpcRequestError::InternalUnrecoverable(e) => {
-                NonFinalisedStateError::Custom(format!("Internal unrecoverable error: {e}"))
+                RpcRequestFallback::Message(format!("Internal unrecoverable error: {e}"))
             }
-            RpcRequestError::ServerWorkQueueFull => NonFinalisedStateError::Custom(
+            RpcRequestError::ServerWorkQueueFull => RpcRequestFallback::Message(
                 "Server queue full. Handling for this not yet implemented".to_string(),
             ),
-            RpcRequestError::Method(e) => NonFinalisedStateError::Custom(format!(
+            RpcRequestError::Method(e) => RpcRequestFallback::Message(format!(
                 "unhandled rpc-specific {} error: {}",
                 type_name::<T>(),
                 e.to_string()
             )),
             RpcRequestError::UnexpectedErrorResponse(error) => {
-                NonFinalisedStateError::Custom(format!(
+                RpcRequestFallback::Message(format!(
                     "unhandled rpc-specific {} error: {}",
                     type_name::<T>(),
                     error
                 ))
             }
+        }
+    }
+}
+
+/// These aren't the best conversions, but the NonFinalizedStateError should go away
+/// in favor of a new type with the new chain cache is complete
+impl<T: ToString> From<RpcRequestError<T>> for NonFinalisedStateError {
+    fn from(value: RpcRequestError<T>) -> Self {
+        match RpcRequestFallback::classify(value) {
+            RpcRequestFallback::Transport(transport_error) => {
+                NonFinalisedStateError::JsonRpcConnectorError(transport_error)
+            }
+            RpcRequestFallback::Message(message) => NonFinalisedStateError::Custom(message),
         }
     }
 }
@@ -423,31 +428,11 @@ pub enum FinalisedStateError {
 /// in favor of a new type with the new chain cache is complete
 impl<T: ToString> From<RpcRequestError<T>> for FinalisedStateError {
     fn from(value: RpcRequestError<T>) -> Self {
-        match value {
-            RpcRequestError::Transport(transport_error) => {
+        match RpcRequestFallback::classify(value) {
+            RpcRequestFallback::Transport(transport_error) => {
                 FinalisedStateError::JsonRpcConnectorError(transport_error)
             }
-            RpcRequestError::JsonRpc(error) => {
-                FinalisedStateError::Custom(format!("argument failed to serialze: {error}"))
-            }
-            RpcRequestError::InternalUnrecoverable(e) => {
-                FinalisedStateError::Custom(format!("Internal unrecoverable error: {e}"))
-            }
-            RpcRequestError::ServerWorkQueueFull => FinalisedStateError::Custom(
-                "Server queue full. Handling for this not yet implemented".to_string(),
-            ),
-            RpcRequestError::Method(e) => FinalisedStateError::Custom(format!(
-                "unhandled rpc-specific {} error: {}",
-                type_name::<T>(),
-                e.to_string()
-            )),
-            RpcRequestError::UnexpectedErrorResponse(error) => {
-                FinalisedStateError::Custom(format!(
-                    "unhandled rpc-specific {} error: {}",
-                    type_name::<T>(),
-                    error
-                ))
-            }
+            RpcRequestFallback::Message(message) => FinalisedStateError::Custom(message),
         }
     }
 }

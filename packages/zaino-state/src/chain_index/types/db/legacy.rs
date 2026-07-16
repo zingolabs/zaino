@@ -793,28 +793,6 @@ pub struct BlockData {
 }
 
 impl BlockData {
-    /// Creates a new  BlockData instance.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        version: u32,
-        time: i64,
-        merkle_root: [u8; 32],
-        block_commitments: [u8; 32],
-        bits: CompactDifficulty,
-        nonse: [u8; 32],
-        solution: EquihashSolution,
-    ) -> Self {
-        Self {
-            version,
-            time,
-            merkle_root,
-            block_commitments,
-            bits,
-            nonce: nonse,
-            solution,
-        }
-    }
-
     /// Convert zebra block commitment to 32-byte array
     pub fn commitment_to_bytes(commitment: zebra_chain::block::Commitment) -> [u8; 32] {
         match commitment {
@@ -908,15 +886,15 @@ impl ZainoVersionedSerde for BlockData {
 
         let solution = EquihashSolution::deserialize(&mut r)?;
 
-        Ok(BlockData::new(
+        Ok(BlockData {
             version,
             time,
             merkle_root,
             block_commitments,
             bits,
-            nonse,
+            nonce: nonse,
             solution,
-        ))
+        })
     }
 }
 
@@ -1264,15 +1242,15 @@ impl
         );
 
         // --- Compute chainwork ---
-        let block_data = BlockData::new(
-            header.version() as u32,
-            header.time() as i64,
+        let block_data = BlockData {
+            version: header.version() as u32,
+            time: header.time() as i64,
             merkle_root,
             block_commitments,
             bits,
-            nonse,
+            nonce: nonse,
             solution,
-        );
+        };
 
         let block_work = block_data.bits.to_work();
         let chainwork = match parent_chainwork {

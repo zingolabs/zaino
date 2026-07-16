@@ -650,7 +650,6 @@ mod zebra {
     pub(crate) mod lightwallet_indexer {
         use futures::StreamExt as _;
         use zaino_proto::proto::service::{BlockId, BlockRange, GetSubtreeRootsArg};
-        use zebra_rpc::methods::GetBlock;
 
         use super::*;
 
@@ -712,32 +711,12 @@ mod zebra {
                     &services.fetch_subscriber,
                     &services.state_subscriber,
                     async |i| {
-                        let block = services
-                            .fetch_subscriber
-                            .z_get_block(i.to_string(), Some(1))
-                            .await
-                            .unwrap();
-
-                        let block_hash = match block {
-                            GetBlock::Object(block) => block.hash(),
-                            GetBlock::Raw(_) => panic!("Expected block object"),
-                        };
-
-                        let fetch_service_get_block_header = services
-                            .fetch_subscriber
-                            .get_block_header(block_hash.to_string(), false)
-                            .await
-                            .unwrap();
-
-                        let state_service_block_header_response = services
-                            .state_subscriber
-                            .get_block_header(block_hash.to_string(), false)
-                            .await
-                            .unwrap();
-                        assert_eq!(
-                            fetch_service_get_block_header,
-                            state_service_block_header_response
-                        );
+                        clientless::assert_get_block_header_matches(
+                            &services.fetch_subscriber,
+                            &services.state_subscriber,
+                            i,
+                        )
+                        .await;
                     },
                 )
                 .await;

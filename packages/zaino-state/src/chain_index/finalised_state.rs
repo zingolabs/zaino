@@ -332,7 +332,7 @@ pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
         || format!("block {block_hash}"),
     )?;
 
-    let metadata = BlockMetadata::new(
+    let metadata = BlockMetadata {
         sapling_root,
         sapling_size,
         orchard_root,
@@ -340,7 +340,7 @@ pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
         ironwood,
         parent_chainwork,
         network,
-    );
+    };
 
     let block_with_metadata = BlockWithMetadata::new(block.as_ref(), metadata);
     IndexedBlock::try_from(block_with_metadata).map_err(|_| {
@@ -1185,15 +1185,15 @@ impl<T: BlockchainSource> FinalisedState<T> {
                 || format!("block {block_hash}"),
             )?;
 
-            let metadata = BlockMetadata::new(
+            let metadata = BlockMetadata {
                 sapling_root,
                 sapling_size,
                 orchard_root,
                 orchard_size,
                 ironwood,
                 parent_chainwork,
-                cfg.network.clone(),
-            );
+                network: cfg.network.clone(),
+            };
             let block_with_metadata = BlockWithMetadata::new(block.as_ref(), metadata);
             let chain_block = IndexedBlock::try_from(block_with_metadata).map_err(|_| {
                 FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(

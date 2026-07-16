@@ -286,7 +286,6 @@ mod zcashd {
 
     pub(crate) mod zcash_indexer {
         use zaino_state::LightWalletIndexer;
-        use zebra_rpc::methods::GetBlock;
 
         use super::*;
 
@@ -453,29 +452,12 @@ mod zcashd {
                     &services.zaino_subscriber,
                     &services.zcashd_subscriber,
                     async |i| {
-                        let block = services
-                            .zcashd_subscriber
-                            .z_get_block(i.to_string(), Some(1))
-                            .await
-                            .unwrap();
-
-                        let block_hash = match block {
-                            GetBlock::Object(block) => block.hash(),
-                            GetBlock::Raw(_) => panic!("Expected block object"),
-                        };
-
-                        let zcashd_get_block_header = services
-                            .zcashd_subscriber
-                            .get_block_header(block_hash.to_string(), false)
-                            .await
-                            .unwrap();
-
-                        let zainod_block_header_response = services
-                            .zaino_subscriber
-                            .get_block_header(block_hash.to_string(), false)
-                            .await
-                            .unwrap();
-                        assert_eq!(zcashd_get_block_header, zainod_block_header_response);
+                        clientless::assert_get_block_header_matches(
+                            &services.zcashd_subscriber,
+                            &services.zaino_subscriber,
+                            i,
+                        )
+                        .await;
                     },
                 )
                 .await;

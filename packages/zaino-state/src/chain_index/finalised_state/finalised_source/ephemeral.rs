@@ -301,15 +301,16 @@ impl<T: BlockchainSource> EphemeralFinalisedState<T> {
                 format!("block at height {height}")
             })?;
 
-        let block_metadata = BlockMetadata::new(
+        let block_metadata = BlockMetadata {
             sapling_root,
             sapling_size,
             orchard_root,
             orchard_size,
             ironwood,
-            None, // ephemeral store does not track chainwork
-            self.network.clone(),
-        );
+            // ephemeral store does not track chainwork
+            parent_chainwork: None,
+            network: self.network.clone(),
+        };
         let block_with_metadata = BlockWithMetadata::new(block.as_ref(), block_metadata);
         let indexed_block = IndexedBlock::try_from(block_with_metadata).map_err(|error| {
             FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
