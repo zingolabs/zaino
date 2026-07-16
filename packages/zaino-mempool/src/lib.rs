@@ -37,7 +37,9 @@ pub use config::MempoolConfig;
 pub use entry::MempoolEntry;
 pub use error::MempoolError;
 pub use event::MempoolEvent;
-pub use ports::{BlockRef, MempoolSource, MempoolTxMeta, NfsEpochObserver, NonFinalizedEpoch};
+pub use ports::{
+    BlockRef, MempoolSource, MempoolTxMeta, NfsEpochObserver, NoNfs, NonFinalizedEpoch,
+};
 pub use service::MempoolService;
 pub use snapshot::{
     FreezeReason, MempoolCompleteness, MempoolMode, MempoolSnapshot, ObservedTips, TipChange,

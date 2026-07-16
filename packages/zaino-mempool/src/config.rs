@@ -103,7 +103,7 @@ mod tests {
     fn default_bound_sits_above_zebras_cost_limit() {
         // The DoS backstop must sit above Zebra's ZIP-401 default (80_000_000)
         // so healthy operation never reaches it.
-        assert!(DEFAULT_MAX_COST_BYTES > 80_000_000);
+        const { assert!(DEFAULT_MAX_COST_BYTES > 80_000_000) };
     }
 
     #[test]

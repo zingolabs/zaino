@@ -47,6 +47,12 @@ fn block_index_to_ref(block_index: BlockIndex) -> zaino_mempool::BlockRef {
 pub(crate) struct MempoolSourceAdapter<S>(pub(crate) S);
 
 impl<S: BlockchainSource> zaino_mempool::MempoolSource for MempoolSourceAdapter<S> {
+    async fn get_mempool_txids(
+        &self,
+    ) -> Result<Option<Vec<zebra_chain::transaction::Hash>>, zaino_mempool::MempoolError> {
+        self.0.get_mempool_txids().await.map_err(to_mempool_error)
+    }
+
     async fn get_mempool_metadata(
         &self,
     ) -> Result<Option<Vec<zaino_mempool::MempoolTxMeta>>, zaino_mempool::MempoolError> {

@@ -2,7 +2,7 @@
 
 use futures::StreamExt;
 use hex::FromHex;
-use std::{io::Cursor, str::FromStr, time};
+use std::{str::FromStr, time};
 use tokio::{sync::mpsc, time::timeout};
 use tracing::{info, instrument, warn};
 use zebra_state::HashOrHeight;
@@ -1642,72 +1642,44 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
                 time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
                     match mempool.get_mempool_transactions(exclude_suffixes).await {
-                        Ok(transactions) => {
-                            for serialized_transaction_bytes in transactions {
-                                // TODO: This implementation should be cleaned up
-                                // to not use parse_from_slice.
-                                // This could be done by implementing
-                                // try_from zebra_chain::transaction::Transaction for CompactTxData,
-                                // (which implements to_compact())
-                                // letting us avoid double parsing of transaction bytes.
-                                let transaction: zebra_chain::transaction::Transaction =
-                                    match zebra_chain::transaction::Transaction::zcash_deserialize(
-                                        &mut Cursor::new(&serialized_transaction_bytes),
-                                    ) {
-                                        Ok(transaction) => transaction,
-                                        Err(e) => {
-                                            // Mempool bytes come from the validator and should
-                                            // always deserialize; if one doesn't, skip it rather
-                                            // than panicking or corrupting the stream.
-                                            warn!(%e, "skipping undeserializable mempool transaction");
-                                            continue;
-                                        }
-                                    };
-                                // TODO: Check this is in the correct format and
-                                // does not need hex decoding or reversing.
-                                let txid = transaction.hash().0.to_vec();
-
-                                match <FullTransaction as ParseFromSlice>::parse_from_slice(
-                                    &serialized_transaction_bytes,
-                                    Some(vec![txid]),
-                                    None,
-                                ) {
-                                    Ok(transaction) => {
-                                        // ParseFromSlice returns any data left after the
-                                        // conversion to aFullTransaction, If the conversion
-                                        // has succeeded this should be empty.
-                                        if transaction.0.is_empty() {
-                                            if channel_tx
-                                                .send(transaction.1.to_compact(0).map_err(|e| {
-                                                    tonic::Status::unknown(e.to_string())
-                                                }))
-                                                .await
-                                                .is_err()
-                                            {
-                                                break;
-                                            }
-                                        } else {
-                                            // TODO: Hide server error from clients \
-                                            // before release. Currently useful for dev purposes.
-                                            if channel_tx
-                                                .send(Err(tonic::Status::unknown("Error: ")))
-                                                .await
-                                                .is_err()
-                                            {
-                                                break;
-                                            }
-                                        }
+                        Ok(entries) => {
+                            for entry in entries {
+                                // Reuse the entry's cached compact form; compute it
+                                // (once per transaction, shared across all clients)
+                                // only on the first access.
+                                let compact = entry.compact_tx_or_init(|| {
+                                    let txid = entry.txid.0.to_vec();
+                                    let (remaining, full) =
+                                        <FullTransaction as ParseFromSlice>::parse_from_slice(
+                                            entry.serialized_bytes(),
+                                            Some(vec![txid]),
+                                            None,
+                                        )
+                                        .map_err(|e| tonic::Status::unknown(e.to_string()))?;
+                                    // A successful full-transaction parse consumes all bytes.
+                                    if !remaining.is_empty() {
+                                        return Err(tonic::Status::unknown(
+                                            "Error: trailing bytes after mempool transaction",
+                                        ));
                                     }
-                                    Err(e) => {
-                                        // TODO: Hide server error from clients before \
-                                        // release. Currently useful for dev purposes.
+                                    full.to_compact(0)
+                                        .map(std::sync::Arc::new)
+                                        .map_err(|e| tonic::Status::unknown(e.to_string()))
+                                });
+
+                                match compact {
+                                    Ok(compact) => {
                                         if channel_tx
-                                            .send(Err(tonic::Status::unknown(e.to_string())))
+                                            .send(Ok(compact.as_ref().clone()))
                                             .await
                                             .is_err()
                                         {
                                             break;
                                         }
+                                    }
+                                    Err(status) => {
+                                        channel_tx.send(Err(status)).await.ok();
+                                        break;
                                     }
                                 }
                             }

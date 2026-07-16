@@ -393,8 +393,9 @@ async fn get_mempool_transactions() {
         .await
         .unwrap()
         .iter()
-        .map(|txn_bytes| {
-            txn_bytes
+        .map(|entry| {
+            entry
+                .serialized_bytes()
                 .zcash_deserialize_into::<zebra_chain::transaction::Transaction>()
                 .unwrap()
         })
@@ -448,8 +449,9 @@ async fn get_filtered_mempool_transactions() {
         .await
         .unwrap()
         .iter()
-        .map(|txn_bytes| {
-            txn_bytes
+        .map(|entry| {
+            entry
+                .serialized_bytes()
                 .zcash_deserialize_into::<zebra_chain::transaction::Transaction>()
                 .unwrap()
         })

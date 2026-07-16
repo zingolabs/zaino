@@ -65,14 +65,21 @@ pub struct MempoolTxMeta {
 /// Implementations must be cheap to `clone` — the mempool service clones the
 /// source to fan out bounded, concurrent raw-transaction fetches.
 pub trait MempoolSource: Clone + Send + Sync + 'static {
+    /// Returns just the txids currently in the source's mempool, or `None` if the
+    /// source cannot currently answer.
+    ///
+    /// This is the cheap per-poll listing used to diff the mempool set. Heights
+    /// for *new* transactions are then obtained from [`Self::get_mempool_metadata`],
+    /// which is only fetched when the diff shows additions.
+    fn get_mempool_txids(&self) -> impl SendFut<Result<Option<Vec<TxHash>>, MempoolError>>;
+
     /// Returns per-transaction metadata for the source's entire current mempool,
     /// or `None` if the source cannot currently answer.
     ///
-    /// This is the mempool's authoritative listing: it carries each txid *and*
-    /// the validator's tip-at-entry height (see [`MempoolTxMeta`]), so the read
-    /// model can stamp entries protocol-correctly. The mempool diffs this txid
-    /// set against its current snapshot and fetches raw bytes only for the
-    /// additions via [`Self::get_raw_mempool_transaction`].
+    /// Each entry carries its txid *and* the validator's tip-at-entry height (see
+    /// [`MempoolTxMeta`]), so the read model can stamp entries protocol-correctly.
+    /// This is the heavier verbose listing; the mempool fetches it only when
+    /// [`Self::get_mempool_txids`] shows additions.
     fn get_mempool_metadata(
         &self,
     ) -> impl SendFut<Result<Option<Vec<MempoolTxMeta>>, MempoolError>>;
@@ -109,4 +116,18 @@ pub trait MempoolSource: Clone + Send + Sync + 'static {
 pub trait NfsEpochObserver: Clone + Send + Sync + 'static {
     /// The epoch of the currently published non-finalized snapshot, if any.
     fn current_epoch(&self) -> Option<NonFinalizedEpoch>;
+}
+
+/// A placeholder [`NfsEpochObserver`] for validator-only mempools.
+///
+/// It is never consulted — the service synthesizes the epoch from the validator
+/// tip in validator-only mode — but supplies a concrete observer type for
+/// [`MempoolService::spawn_validator_only`](crate::MempoolService::spawn_validator_only).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoNfs;
+
+impl NfsEpochObserver for NoNfs {
+    fn current_epoch(&self) -> Option<NonFinalizedEpoch> {
+        None
+    }
 }

@@ -30,6 +30,7 @@ async-stream = "0.3"
 
 # Utility
 thiserror = { workspace = true }
+once_cell = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util", "macros"] }

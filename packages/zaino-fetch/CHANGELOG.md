@@ -11,6 +11,10 @@ and this library adheres to Rust's notion of
 - Ironwood (NU6.3) / V6 transaction support: ironwood value balances are
   read from parsed transactions, and compact-block construction populates
   `CompactTx.ironwoodActions` and the block's `ironwoodCommitmentTreeSize`.
+- `JsonRpSeeConnector::get_raw_mempool_verbose` and the `MempoolEntryVerbose` /
+  `VerboseMempoolResponse` types — `getrawmempool verbose=true`, exposing each
+  mempool entry's tip-at-entry `height` and `time` (used by the mempool read model
+  to stamp transactions with the validator's authoritative height).
 ### Changed
 - Transaction parsing delegates to
   `zebra_chain::transaction::Transaction::zcash_deserialize` (zebra-chain 11),

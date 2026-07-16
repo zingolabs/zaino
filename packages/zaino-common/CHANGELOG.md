@@ -20,6 +20,9 @@ and this library adheres to Rust's notion of
   from-genesis txout-set accumulator rebuild's spent set, kept **separate** from
   `sync_write_batch_size` so the two operations cannot inflate each other's peak
   memory.
+- `status::AtomicStatus` and `status::NamedAtomicStatus` (moved here from
+  `zaino-state`, alongside the existing `StatusType`) so lower-level crates
+  (e.g. `zaino-mempool`) can share them without depending on `zaino-state`.
 ### Changed
 - `crypto::ensure_default_crypto_provider` now installs rustls's
   **aws-lc-rs** provider (was ring) as the process-level default, and the

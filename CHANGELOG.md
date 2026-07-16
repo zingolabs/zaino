@@ -7,7 +7,17 @@ and this library adheres to Rust's notion of
 
 ## Unreleased
 
+### Added
+- New crate `zaino-mempool`: the mempool subsystem, reworked from the ground up
+  and separated from `zaino-state` behind ports/adapters — a bounded, coherent,
+  local read model of the validator's mempool with freeze/thaw dual-tip coherence,
+  and an optional validator-only mode (ADR-0007).
+
 ### Changed
+- The mempool is served by `zaino-mempool` (via the ChainIndex), replacing the old
+  `Broadcast`-based mempool: bounded inputs and memory, `O(N)` polling, lock-free
+  reads with shared entries, and a lazily-cached compact form reused across
+  clients.
 - `zaino-state`: `FetchService` and `StateService` are merged into a single
   generic `NodeBackedIndexerService<Source>` (module
   `zaino_state::indexer::node_backed_indexer`; the former `backends` module is
@@ -59,6 +69,13 @@ and this library adheres to Rust's notion of
 - Zaino no longer OOM-crashes during the txout-set accumulator rebuild when it
   reaches mainnet chain tip on memory-constrained hosts; the rebuild auto-shards
   its in-memory spent set to fit the configured `sync_write_batch_size` budget.
+- Mempool (unconfirmed) transactions are reported with wire height `0` on
+  `GetMempoolStream` / `GetTransaction` (matching lightwalletd), fixing the
+  previous stale/off-by-one chain-tip height.
+- `GetMempoolStream` now guards against a chain-tip change between snapshot and
+  stream-open (returns a retryable error instead of a stale-height stream), and
+  the mempool exclude filter is bounded — fixing an unbounded-work
+  denial-of-service.
 
 ## [0.4.1] - 2026-06-18
 - Bump zaino-proto 0.1.2 → 0.1.3 and zainod 0.4.0 → 0.4.1 to work around

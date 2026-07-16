@@ -1,5 +1,6 @@
 //! Cheap, cloneable read handle onto the mempool read model.
 
+use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -108,6 +109,17 @@ impl MempoolSubscriber {
         self.status.load()
     }
 
+    /// The current mempool memory bound (max total ZIP-401 cost), in bytes.
+    pub fn max_cost_bytes(&self) -> u64 {
+        self.config.max_cost_bytes()
+    }
+
+    /// Adjust the mempool memory bound at runtime. Shared with the service and
+    /// every other subscriber; takes effect on the next update.
+    pub fn set_max_cost_bytes(&self, bytes: u64) {
+        self.config.set_max_cost_bytes(bytes);
+    }
+
     /// Aggregate metrics for `getmempoolinfo`, from the local snapshot.
     pub fn get_mempool_info(&self) -> MempoolInfo {
         let snapshot = self.snapshot();
@@ -211,11 +223,14 @@ impl MempoolSubscriber {
     /// A live stream of serialized mempool transactions.
     ///
     /// Yields the current snapshot's transactions first, then each subsequently
-    /// added transaction, until the set freezes, closes, the caller falls behind
-    /// the bounded event buffer, or (when `expected_epoch` is given) the live
-    /// epoch changes. Returns `None` immediately if `expected_epoch` does not
-    /// match the current snapshot — the caller's chain tip is stale and should
-    /// re-snapshot.
+    /// added transaction, until the mempool becomes live for a **new epoch** (the
+    /// validator and non-finalized tips re-agreed at a new tip), the service
+    /// closes, or the caller falls behind the bounded event buffer. A transient
+    /// freeze does *not* end the stream — the last coherent set stays readable
+    /// until the tips re-agree, so the caller's next call (with the new tip)
+    /// finds a matching, live view. Returns `None` immediately if `expected_epoch`
+    /// does not match the current snapshot — the caller's chain tip is stale and
+    /// should re-snapshot.
     pub fn stream_raw_transactions(
         &self,
         expected_epoch: Option<NonFinalizedEpoch>,
@@ -234,6 +249,17 @@ impl MempoolSubscriber {
 
         let start_sequence = snapshot.event_sequence;
         let initial_entries = snapshot.entries_in_order.clone();
+
+        // The epoch this stream is serving. The stream closes only when the
+        // mempool becomes live for a *different* epoch — i.e. when the validator
+        // and non-finalized tips re-agree at a *new* tip. It deliberately does
+        // NOT close on a transient `Frozen` (the tips diverged but have not
+        // settled): the last coherent set stays readable until the new tip is
+        // ready. Closing at re-agreement guarantees the non-finalized tip is at
+        // the new tip, so the caller's next `get_mempool_stream` (with that new
+        // tip) finds a matching, live view instead of racing Zaino's
+        // convergence. A prolonged freeze is bounded by the RPC-layer timeout.
+        let stream_epoch = expected_epoch.or(snapshot.valid_for);
 
         let stream = async_stream::stream! {
             for entry in initial_entries.iter() {
@@ -257,19 +283,34 @@ impl MempoolSubscriber {
                         if *sequence <= start_sequence {
                             continue;
                         }
-                        if let Some(expected) = expected_epoch {
-                            if *valid_for != expected {
-                                break;
-                            }
+                        // A delta for a different epoch means the tips re-agreed
+                        // at a new tip: close so the caller re-syncs.
+                        match stream_epoch {
+                            Some(epoch) if *valid_for != epoch => break,
+                            _ => yield entry.serialized_bytes().to_vec(),
                         }
-                        yield entry.serialized_bytes().to_vec();
                     }
                     // Raw streams do not emit removals.
                     MempoolEvent::Removed { .. } => {}
-                    // Freeze or shutdown ends the stream; the client re-opens.
-                    MempoolEvent::Frozen { .. } | MempoolEvent::Closing { .. } => break,
-                    // Snapshot-level metadata only.
-                    MempoolEvent::Live { .. } => {}
+                    MempoolEvent::Live { snapshot, .. } => {
+                        // Reconciled to a live set: close only if it is a
+                        // different epoch than we opened at (a new tip). A
+                        // transient blip that resolved back to the same epoch
+                        // keeps the stream open.
+                        match stream_epoch {
+                            Some(epoch) if snapshot.valid_for != Some(epoch) => break,
+                            _ => {}
+                        }
+                    }
+                    // Transient: keep serving the last coherent set until the
+                    // tips re-agree (handled by `Live`, above). If the epoch
+                    // cannot be tracked, fall back to closing on freeze.
+                    MempoolEvent::Frozen { .. } => {
+                        if stream_epoch.is_none() {
+                            break;
+                        }
+                    }
+                    MempoolEvent::Closing { .. } => break,
                 }
             }
         };
@@ -278,18 +319,37 @@ impl MempoolSubscriber {
     }
 }
 
-/// If exactly one txid in `txids` ends with `suffix`, return it; otherwise (zero
-/// or multiple matches) return `None`.
-fn unique_suffix_match(txids: &[TxHash], suffix: &[u8]) -> Option<TxHash> {
+/// If exactly one txid in `txids_reversed_sorted` ends with `suffix`, return it;
+/// otherwise (zero or multiple matches) return `None`.
+///
+/// `txids_reversed_sorted` must be sorted by *reversed* txid bytes (as the
+/// snapshot's `txids_sorted` is). Matching on a suffix then becomes a prefix
+/// match over the reversed bytes, resolved by binary range search in
+/// `O(log n)` per suffix.
+fn unique_suffix_match(txids_reversed_sorted: &[TxHash], suffix: &[u8]) -> Option<TxHash> {
     if suffix.is_empty() || suffix.len() > 32 {
         return None;
     }
 
-    let mut matches = txids.iter().filter(|txid| txid.0.ends_with(suffix));
-    let first = *matches.next()?;
-    match matches.next() {
-        Some(_) => None, // ambiguous: two or more matches
-        None => Some(first),
+    // Compare `reverse(txid)[..suffix.len()]` against `reverse(suffix)`.
+    let cmp_rev_prefix = |txid: &TxHash| -> Ordering {
+        txid.0
+            .iter()
+            .rev()
+            .take(suffix.len())
+            .cmp(suffix.iter().rev())
+    };
+
+    let start =
+        txids_reversed_sorted.partition_point(|txid| cmp_rev_prefix(txid) == Ordering::Less);
+
+    let first = txids_reversed_sorted.get(start)?;
+    if cmp_rev_prefix(first) != Ordering::Equal {
+        return None; // zero matches
+    }
+    match txids_reversed_sorted.get(start + 1) {
+        Some(second) if cmp_rev_prefix(second) == Ordering::Equal => None, // ambiguous
+        _ => Some(*first),
     }
 }
 
@@ -310,7 +370,10 @@ mod tests {
         let mut b = [0x99; 32];
         b[30] = 0x22;
         b[31] = 0x22;
-        let ids = vec![txid([0x11; 32]), txid(a), txid(b), txid([0x33; 32])];
+        let mut ids = vec![txid([0x11; 32]), txid(a), txid(b), txid([0x33; 32])];
+        // `unique_suffix_match` requires the txids sorted by reversed bytes (as
+        // the live snapshot keeps them).
+        ids.sort_unstable_by(|x, y| x.0.iter().rev().cmp(y.0.iter().rev()));
 
         // Unique suffix -> that txid (only [0x11; 32] ends with 0x11 0x11).
         assert_eq!(

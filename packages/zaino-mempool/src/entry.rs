@@ -41,6 +41,15 @@ pub struct MempoolEntry {
 
     /// The mempool generation in which Zaino first observed this entry.
     pub first_seen_generation: u64,
+
+    /// Lazily-computed, shared compact-transaction form for `GetMempoolTx`.
+    ///
+    /// Entries are shared `Arc`s that persist across polls, so the compact form
+    /// is computed at most once per transaction and reused by every client,
+    /// rather than re-parsed on every `GetMempoolTx` call. Populated by the RPC
+    /// layer via [`Self::compact_tx_or_init`] (the compact conversion lives
+    /// there); the entry only owns the cache slot.
+    pub compact_tx: once_cell::sync::OnceCell<Arc<zaino_proto::proto::compact_formats::CompactTx>>,
 }
 
 impl MempoolEntry {
@@ -52,6 +61,20 @@ impl MempoolEntry {
     /// The raw serialized transaction bytes.
     pub fn serialized_bytes(&self) -> &[u8] {
         self.serialized_tx.as_ref().as_ref()
+    }
+
+    /// Returns the cached compact-transaction form, computing and caching it via
+    /// `init` on first access. The conversion runs at most once per entry; all
+    /// subsequent callers (across every client and snapshot that shares this
+    /// entry `Arc`) reuse the cached value. `init` errors are not cached.
+    pub fn compact_tx_or_init<F, E>(
+        &self,
+        init: F,
+    ) -> Result<Arc<zaino_proto::proto::compact_formats::CompactTx>, E>
+    where
+        F: FnOnce() -> Result<Arc<zaino_proto::proto::compact_formats::CompactTx>, E>,
+    {
+        self.compact_tx.get_or_try_init(init).cloned()
     }
 
     /// Convert to the lightclient [`RawTransaction`](zaino_proto::proto::service::RawTransaction)
@@ -83,6 +106,7 @@ mod tests {
             entry_height: Height(entry_height),
             entry_time: Some(1_700_000_000),
             first_seen_generation: 3,
+            compact_tx: once_cell::sync::OnceCell::new(),
         }
     }
 
@@ -97,6 +121,26 @@ mod tests {
         // never the protocol-internal entry_height.
         assert_eq!(raw.height, 0);
         assert_eq!(raw.data, bytes);
+    }
+
+    #[test]
+    fn compact_tx_is_computed_once_and_cached() {
+        use std::cell::Cell;
+        use zaino_proto::proto::compact_formats::CompactTx;
+
+        let entry = entry_with(vec![1, 2, 3], 100);
+        let calls = Cell::new(0u32);
+        let init = || {
+            calls.set(calls.get() + 1);
+            Ok::<_, ()>(Arc::new(CompactTx::default()))
+        };
+
+        let first = entry.compact_tx_or_init(init).unwrap();
+        let second = entry.compact_tx_or_init(init).unwrap();
+
+        // The conversion runs once; the second call returns the cached Arc.
+        assert_eq!(calls.get(), 1);
+        assert!(Arc::ptr_eq(&first, &second));
     }
 
     #[test]

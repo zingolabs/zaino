@@ -28,6 +28,16 @@ and this library adheres to Rust's notion of
 - `FinalisedState::wait_until_synced` — waits for in-progress background
   sync/migration to reach its target (distinct from `wait_until_ready`, which
   reflects serving-readiness).
+- The non-finalized snapshot carries a monotonic `generation` (incremented only
+  when the best tip changes), forming a `(generation, best_tip)` epoch used to
+  gate mempool coherence.
+- `BlockchainSource` gains `get_mempool_metadata` (per-transaction tip-at-entry
+  heights via `getrawmempool verbose`), `get_raw_mempool_transaction` (direct raw
+  fetch), and `get_mempool_source_tip` (the mempool source's tip, read from the
+  JSON-RPC fetcher not `ReadStateService`).
+- `ChainIndexError::invalid_argument` / `ChainIndexErrorKind::InvalidArgument`,
+  mapped to a gRPC `InvalidArgument` status (used for rejected mempool exclude
+  lists).
 ### Changed
 - `chain_index::finalised_state` renames (internal, `pub(crate)`):
   - facade type `ZainoDB` -> `FinalisedState`
@@ -48,9 +58,34 @@ and this library adheres to Rust's notion of
   dedicated `storage.database.accumulator_rebuild_memory_size` budget instead of
   reusing `sync_write_batch_size`, so the bulk-sync block buffer and the rebuild
   can no longer inflate each other's peak memory.
+- The mempool subsystem is reworked and moved into the new `zaino-mempool` crate,
+  wired in through ports/adapters (`chain_index::mempool_ports`); the ChainIndex
+  owns a `MempoolService` behind `NodeBackedChainIndex`. It is a bounded, coherent
+  read model with freeze/thaw dual-tip coherence (see
+  `docs/adr/0007-mempool-subsystem-separation.md`).
+- `ChainIndex::get_mempool_transactions` now takes raw client-endian txid suffix
+  bytes (`Vec<Vec<u8>>`, was hex `Vec<String>`) and returns shared mempool entries
+  (`Vec<Arc<zaino_mempool::MempoolEntry>>`, was `Vec<Vec<u8>>`) so callers reuse
+  each entry's cached compact form. Over-cap or malformed exclude lists are
+  rejected as `InvalidArgument`.
+- Combined mempool reads (`get_raw_transaction`, `get_transaction_status`,
+  `get_mempool_stream`) are gated on the caller's non-finalized-state epoch: they
+  serve mempool data only when the mempool is coherent with that snapshot.
 ### Deprecated
 ### Removed
+- The `broadcast` module and the old `Broadcast`-based mempool
+  (`chain_index::mempool::{Mempool, MempoolKey, MempoolValue}`) and their crate
+  re-exports (replaced by `zaino-mempool`).
 ### Fixed
+- `GetMempoolStream` / `GetTransaction` stamp mempool (unconfirmed) transactions
+  with wire height `0` (the "in the mempool" sentinel, matching lightwalletd),
+  fixing the previous stale/off-by-one chain-tip height.
+- `GetMempoolStream` activates the chain-tip guard (passes the captured snapshot),
+  so a tip change between snapshot and stream-open yields a retryable error rather
+  than a stream stamped with a stale height.
+- The mempool exclude filter is bounded (aggregate count + per-suffix length),
+  fixing an unbounded-work denial-of-service, and mempool polling is `O(N)` per
+  cycle (was `O(N²)`), with shared `Arc` entries (no per-subscriber byte clones).
 - The finalised-state txout-set accumulator rebuild at chain tip no longer
   OOM-crashes on memory-constrained hosts. It auto-shards its in-memory spent set
   by creating-txid prefix and now enforces the per-shard budget *strictly*: each

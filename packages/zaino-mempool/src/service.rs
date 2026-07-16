@@ -11,7 +11,7 @@
 //! disagreement, unavailability, or source error freezes the set: the last
 //! coherent snapshot stays readable and no live deltas are emitted.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
@@ -42,12 +42,29 @@ enum MempoolUpdateError {
     CapacityLimited,
 }
 
+/// Writer-local state for synthesizing a non-finalized epoch from the validator
+/// tip in validator-only mode: `generation` increments only when the validator
+/// tip hash changes, giving a stable epoch for a stable tip.
+#[derive(Default)]
+struct SynthesizedEpochState {
+    last_validator_hash: Option<zebra_chain::block::Hash>,
+    generation: u64,
+}
+
 /// The mempool read-model service.
 ///
 /// Generic over its two ports so the core has no `zaino-state` dependency.
+///
+/// The non-finalized-state observer is optional: with an observer
+/// ([`Self::spawn`]) the service enforces dual-tip coherence between the
+/// validator tip and Zaino's non-finalized-state tip; without one
+/// ([`Self::spawn_validator_only`]) it mirrors the validator alone (single-tip),
+/// synthesizing the epoch from the validator tip.
 pub struct MempoolService<S: MempoolSource, N: NfsEpochObserver> {
     source: S,
-    nfs: N,
+    nfs: Option<N>,
+    /// Synthesized-epoch counter, only used in validator-only mode.
+    synth_epoch: std::sync::Mutex<SynthesizedEpochState>,
     current: Arc<ArcSwap<MempoolSnapshot>>,
     events: broadcast::Sender<Arc<MempoolEvent>>,
     config: MempoolConfig,
@@ -64,14 +81,39 @@ impl<S: MempoolSource, N: NfsEpochObserver> std::fmt::Debug for MempoolService<S
     }
 }
 
+impl<S: MempoolSource> MempoolService<S, crate::ports::NoNfs> {
+    /// Spawn a validator-only mempool: it mirrors the validator's mempool without
+    /// coordinating with a non-finalized state. Coherence collapses to single-tip
+    /// (freeze on validator-tip change); the epoch is synthesized from the
+    /// validator tip.
+    pub fn spawn_validator_only(
+        source: S,
+        config: MempoolConfig,
+        cancel: CancellationToken,
+    ) -> Arc<Self> {
+        Self::spawn_inner(source, None, config, cancel)
+    }
+}
+
 impl<S: MempoolSource, N: NfsEpochObserver> MempoolService<S, N> {
-    /// Spawn the service and its background update task.
+    /// Spawn the service and its background update task with dual-tip coherence
+    /// against the given non-finalized-state observer.
     pub fn spawn(source: S, nfs: N, config: MempoolConfig, cancel: CancellationToken) -> Arc<Self> {
+        Self::spawn_inner(source, Some(nfs), config, cancel)
+    }
+
+    fn spawn_inner(
+        source: S,
+        nfs: Option<N>,
+        config: MempoolConfig,
+        cancel: CancellationToken,
+    ) -> Arc<Self> {
         let (events, _) = broadcast::channel(config.event_buffer_len);
 
         let service = Arc::new(Self {
             source,
             nfs,
+            synth_epoch: std::sync::Mutex::new(SynthesizedEpochState::default()),
             current: Arc::new(ArcSwap::from_pointee(MempoolSnapshot::empty_not_ready())),
             events,
             config,
@@ -105,9 +147,13 @@ impl<S: MempoolSource, N: NfsEpochObserver> MempoolService<S, N> {
         self.status.load()
     }
 
-    /// Signal shutdown and abort the background task.
+    /// Signal shutdown: publish the `Closing` snapshot/event, then stop the task.
+    ///
+    /// `Closing` is published synchronously here (rather than relying on the
+    /// background task to observe cancellation first) so subscribers reliably see
+    /// it even though the task is aborted immediately after.
     pub fn close(&self) {
-        self.status.store(StatusType::Closing);
+        self.publish_closing();
         self.cancel.cancel();
         if let Some(handle) = self.task.lock().expect("mempool task lock poisoned").take() {
             handle.abort();
@@ -188,10 +234,6 @@ impl<S: MempoolSource, N: NfsEpochObserver> MempoolService<S, N> {
 
     // ---- tip observation ------------------------------------------------
 
-    fn current_ns_epoch(&self) -> Option<NonFinalizedEpoch> {
-        self.nfs.current_epoch()
-    }
-
     async fn current_validator_tip(&self) -> Result<Option<ValidatorTip>, MempoolError> {
         Ok(self
             .source
@@ -200,11 +242,35 @@ impl<S: MempoolSource, N: NfsEpochObserver> MempoolService<S, N> {
             .map(|best_tip| ValidatorTip { best_tip }))
     }
 
+    /// In validator-only mode, synthesize a non-finalized epoch from the
+    /// validator tip. Its generation increments only when the validator tip hash
+    /// changes, so `agree()` holds while the validator tip is stable and the set
+    /// re-reconciles when it changes — a single-tip freeze/thaw.
+    fn synthesized_epoch(&self, validator_tip: crate::ports::BlockRef) -> NonFinalizedEpoch {
+        let mut state = self.synth_epoch.lock().expect("synth epoch lock poisoned");
+        if state.last_validator_hash != Some(validator_tip.hash) {
+            state.generation = state.generation.saturating_add(1);
+            state.last_validator_hash = Some(validator_tip.hash);
+        }
+        NonFinalizedEpoch {
+            generation: state.generation,
+            best_tip: validator_tip,
+        }
+    }
+
     async fn observe_tips(&self) -> Result<ObservedTips, MempoolError> {
-        // Observe NS first (cheap, local) then V (a source call), so the pair is
-        // as close to simultaneous as a single tick allows.
-        let non_finalized = self.current_ns_epoch();
+        // Fetch the validator tip first: in validator-only mode the non-finalized
+        // epoch is derived from it.
         let validator = self.current_validator_tip().await?;
+
+        let non_finalized = match &self.nfs {
+            // Dual-tip: the observer reports the ChainIndex epoch (`None` means the
+            // non-finalized state is unavailable, which freezes).
+            Some(observer) => observer.current_epoch(),
+            // Validator-only: mirror the validator tip as the epoch.
+            None => validator.map(|tip| self.synthesized_epoch(tip.best_tip)),
+        };
+
         Ok(ObservedTips {
             validator,
             non_finalized,
@@ -330,16 +396,18 @@ impl<S: MempoolSource, N: NfsEpochObserver> MempoolService<S, N> {
             });
         }
 
-        let metadata = self
+        // Diff against the cheap txid listing; only fetch the heavier verbose
+        // metadata when there are additions that need heights.
+        let txids = self
             .source
-            .get_mempool_metadata()
+            .get_mempool_txids()
             .await
             .map_err(|_| MempoolUpdateError::SourceError)?
             .ok_or(MempoolUpdateError::SourceError)?;
 
         let current = self.current.load_full();
 
-        let source_txids: HashSet<_> = metadata.iter().map(|meta| meta.txid).collect();
+        let source_txids: HashSet<_> = txids.iter().copied().collect();
 
         let removed: Vec<_> = current
             .by_txid
@@ -348,15 +416,36 @@ impl<S: MempoolSource, N: NfsEpochObserver> MempoolService<S, N> {
             .copied()
             .collect();
 
-        let added_meta: Vec<MempoolTxMeta> = metadata
+        let added_txids: Vec<_> = txids
             .into_iter()
-            .filter(|meta| !current.by_txid.contains_key(&meta.txid))
+            .filter(|txid| !current.by_txid.contains_key(txid))
             .collect();
 
-        if added_meta.is_empty() && removed.is_empty() && current.is_live_for(target_epoch) {
+        if added_txids.is_empty() && removed.is_empty() && current.is_live_for(target_epoch) {
             // Nothing changed and we're already live for this epoch: no publish.
             return Ok(());
         }
+
+        // Heights for new transactions come from the verbose listing, fetched
+        // only now (and only because there are additions).
+        let added_meta: Vec<MempoolTxMeta> = if added_txids.is_empty() {
+            Vec::new()
+        } else {
+            let metadata = self
+                .source
+                .get_mempool_metadata()
+                .await
+                .map_err(|_| MempoolUpdateError::SourceError)?
+                .ok_or(MempoolUpdateError::SourceError)?;
+            let meta_by_txid: HashMap<_, _> =
+                metadata.into_iter().map(|meta| (meta.txid, meta)).collect();
+            // A txid in the light list but absent from verbose raced away between
+            // the two calls; skip it (the raw fetch would skip it too).
+            added_txids
+                .into_iter()
+                .filter_map(|txid| meta_by_txid.get(&txid).copied())
+                .collect()
+        };
 
         let next_generation = current.mempool_generation.saturating_add(1);
         let added_entries = self
@@ -406,6 +495,7 @@ impl<S: MempoolSource, N: NfsEpochObserver> MempoolService<S, N> {
                     entry_height: meta.entry_height,
                     entry_time: meta.entry_time,
                     first_seen_generation: next_generation,
+                    compact_tx: once_cell::sync::OnceCell::new(),
                 })))
             })
             .buffer_unordered(concurrency)
@@ -450,8 +540,11 @@ impl<S: MempoolSource, N: NfsEpochObserver> MempoolService<S, N> {
             .map(|entry| entry.raw_len as u64)
             .sum();
 
+        // Sort by *reversed* txid bytes. This gives a deterministic order and,
+        // crucially, makes the lightwallet exclude filter (which matches on txid
+        // suffixes) a binary-searchable prefix match over the reversed bytes.
         let mut txids_sorted: Vec<_> = next_by_txid.keys().copied().collect();
-        txids_sorted.sort_unstable_by_key(|txid| txid.0);
+        txids_sorted.sort_unstable_by(|a, b| a.0.iter().rev().cmp(b.0.iter().rev()));
 
         let entries_in_order: Vec<_> = txids_sorted
             .iter()
