@@ -269,7 +269,7 @@ pub enum MempoolError {
 
     /// Unexpected status-related error.
     #[error("Status error: {0:?}")]
-    StatusError(StatusError),
+    StatusError(#[source] StatusError),
 }
 
 /// Errors related to the `BlockCache`.
@@ -337,7 +337,7 @@ pub enum NonFinalisedStateError {
 
     /// Unexpected status-related error.
     #[error("Status error: {0:?}")]
-    StatusError(StatusError),
+    StatusError(#[source] StatusError),
 }
 
 /// These aren't the best conversions, but the NonFinalizedStateError should go away
@@ -427,7 +427,7 @@ pub enum FinalisedStateError {
 
     /// Unexpected status-related error.
     #[error("Status error: {0:?}")]
-    StatusError(StatusError),
+    StatusError(#[source] StatusError),
 
     /// Error from JsonRpcConnector.
     // TODO: Remove when FinalisedState replaces legacy finalised state.
@@ -660,6 +660,45 @@ impl From<MempoolError> for ChainIndexError {
             message,
             source: Some(Box::new(value)),
         }
+    }
+}
+
+#[cfg(test)]
+mod status_error_wrappers {
+    use super::*;
+
+    fn status_error() -> StatusError {
+        StatusError {
+            server_status: crate::status::StatusType::CriticalError,
+        }
+    }
+
+    /// Asserts `error` exposes a [`StatusError`] via `source()`, the link the
+    /// serving surfaces' downcast walks need for attribution
+    /// (zingolabs/zaino#1408).
+    fn assert_status_error_reachable(error: &(dyn std::error::Error + 'static)) {
+        let source = error
+            .source()
+            .expect("the wrapped StatusError must be exposed via source()");
+        assert!(
+            source.downcast_ref::<StatusError>().is_some(),
+            "the source must downcast to the typed StatusError"
+        );
+    }
+
+    #[test]
+    fn mempool_error_exposes_status_error_via_source() {
+        assert_status_error_reachable(&MempoolError::StatusError(status_error()));
+    }
+
+    #[test]
+    fn non_finalised_state_error_exposes_status_error_via_source() {
+        assert_status_error_reachable(&NonFinalisedStateError::StatusError(status_error()));
+    }
+
+    #[test]
+    fn finalised_state_error_exposes_status_error_via_source() {
+        assert_status_error_reachable(&FinalisedStateError::StatusError(status_error()));
     }
 }
 

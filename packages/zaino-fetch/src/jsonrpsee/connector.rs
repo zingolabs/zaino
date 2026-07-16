@@ -165,8 +165,13 @@ pub enum RpcRequestError<MethodError> {
     Transport(#[from] TransportError),
 
     /// Error variant for errors related to the JSON-RPC method being called.
-    #[error("Method error: {0:?}")]
-    Method(MethodError),
+    ///
+    /// The payload is `#[source]` for the same reason as
+    /// [`RpcRequestError::UnexpectedErrorResponse`]'s: the typed rejection
+    /// must stay reachable through `source()` chains for the serving
+    /// surfaces' downcast walks (zingolabs/zaino#1408).
+    #[error("Method error: {0}")]
+    Method(#[source] MethodError),
 
     /// The provided input failed to serialize.
     #[error("request input failed to serialize: {0:?}")]
@@ -1104,6 +1109,25 @@ mod tests {
         assert_eq!(
             rpc_error.code,
             zebra_rpc::server::error::LegacyCode::Verify as i64
+        );
+    }
+
+    /// `Method` carries the typed method-specific rejection, so — like
+    /// `UnexpectedErrorResponse` — its payload must stay reachable through
+    /// `source()` for the serving surfaces' downcast walks to attribute the
+    /// rejection (zingolabs/zaino#1408).
+    #[test]
+    fn method_exposes_method_error_via_source() {
+        use crate::jsonrpsee::response::SendTransactionError;
+
+        let error: RpcRequestError<SendTransactionError> =
+            RpcRequestError::Method(SendTransactionError::MissingInputs);
+
+        let source = std::error::Error::source(&error)
+            .expect("the method error must be exposed via source()");
+        assert!(
+            source.downcast_ref::<SendTransactionError>().is_some(),
+            "the source must downcast to the typed method error"
         );
     }
 
