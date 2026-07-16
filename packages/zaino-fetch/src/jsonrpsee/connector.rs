@@ -184,8 +184,14 @@ pub enum RpcRequestError<MethodError> {
     /// wasn't accounted for as a MethodError. This means that either
     /// Zaino has not yet accounted for the possibilty of this error,
     /// or the Node returned an undocumented/malformed error response.
+    ///
+    /// The payload is `#[source]` so the node's typed rejection (usually an
+    /// [`RpcError`]) stays reachable through `source()` chains: the serving
+    /// surfaces recover rejection codes and messages by downcast-walking those
+    /// chains, and severing the link here masks every unmapped node rejection
+    /// as a generic internal error (zingolabs/zaino#1404).
     #[error("unexpected error response from server: {0}")]
-    UnexpectedErrorResponse(Box<dyn std::error::Error + Send + Sync + 'static>),
+    UnexpectedErrorResponse(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
 }
 
 /// JsonRpSee Client config data.
@@ -1069,6 +1075,37 @@ pub async fn test_node_and_return_url(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// zaino-serve attributes node rejections by downcast-walking `source()`
+    /// chains for the typed [`RpcError`] (see
+    /// `sendrawtransaction_error_object_from_indexer_error` in
+    /// `zaino-serve/src/rpc/jsonrpc/service.rs`). `UnexpectedErrorResponse` is
+    /// the variant that carries a node's structured rejection whenever no
+    /// method-specific mapping exists (every `impl_rpc_error_passthrough!`
+    /// type, including `sendrawtransaction`'s), so its boxed payload must stay
+    /// reachable through `source()`. Without the link, every such rejection is
+    /// masked as a generic internal error (zingolabs/zaino#1404).
+    #[test]
+    fn unexpected_error_response_exposes_rpc_error_via_source() {
+        use crate::jsonrpsee::response::SendTransactionError;
+
+        let rejection = RpcError::new_from_legacycode(
+            zebra_rpc::server::error::LegacyCode::Verify,
+            "failed to validate tx: transparent input not found",
+        );
+        let error: RpcRequestError<SendTransactionError> =
+            RpcRequestError::UnexpectedErrorResponse(Box::new(rejection));
+
+        let source = std::error::Error::source(&error)
+            .expect("the boxed node rejection must be exposed via source()");
+        let rpc_error = source
+            .downcast_ref::<RpcError>()
+            .expect("the source must downcast to the typed RpcError");
+        assert_eq!(
+            rpc_error.code,
+            zebra_rpc::server::error::LegacyCode::Verify as i64
+        );
+    }
 
     #[test]
     fn test_resolve_address_wraps_common_function() {

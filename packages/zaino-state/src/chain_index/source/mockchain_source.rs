@@ -807,8 +807,21 @@ impl BlockchainSource for MockchainSource {
         &self,
         _raw_transaction_hex: String,
     ) -> BlockchainSourceResult<zebra_rpc::methods::SentTransactionHash> {
-        // The mock chain has no mempool to accept submissions.
-        unimplemented!("MockchainSource cannot serve send_raw_transaction")
+        // The mock chain has no mempool to accept submissions, so every one is
+        // rejected — shaped exactly like a validator rejection (a typed
+        // `RpcError` inside `RpcRequestError::UnexpectedErrorResponse`) so tests
+        // can exercise the full rejection-attribution path a real zebrad
+        // rejection travels (zingolabs/zaino#1404).
+        Err(BlockchainSourceError::unrecoverable(
+            zaino_fetch::jsonrpsee::connector::RpcRequestError::<
+                zaino_fetch::jsonrpsee::response::SendTransactionError,
+            >::UnexpectedErrorResponse(Box::new(
+                zaino_fetch::jsonrpsee::connector::RpcError::new_from_legacycode(
+                    zebra_rpc::server::error::LegacyCode::Verify,
+                    "MockchainSource rejects all transaction submissions (static chain, no mempool)",
+                ),
+            )),
+        ))
     }
 
     async fn get_treestate_by_id(

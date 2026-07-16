@@ -114,6 +114,17 @@ impl From<GetBlockRangeError> for NodeBackedIndexerServiceError {
     }
 }
 
+/// The first typed JSON-RPC error in `error`'s `source()` chain, if any — the
+/// node's structured rejection that a generic wrapper message otherwise hides.
+/// The gRPC counterpart of zaino-serve's JSON-RPC error-code recovery walk
+/// (`sendrawtransaction_error_object_from_indexer_error`).
+fn rpc_error_in_source_chain<'error>(
+    error: &'error (dyn std::error::Error + 'static),
+) -> Option<&'error zaino_fetch::jsonrpsee::connector::RpcError> {
+    std::iter::successors(Some(error), |source| source.source())
+        .find_map(|source| source.downcast_ref())
+}
+
 #[allow(deprecated)]
 impl From<NodeBackedIndexerServiceError> for tonic::Status {
     fn from(error: NodeBackedIndexerServiceError) -> Self {
@@ -130,7 +141,16 @@ impl From<NodeBackedIndexerServiceError> for tonic::Status {
                 tonic::Status::internal(format!("RPC error: {err:?}"))
             }
             NodeBackedIndexerServiceError::ChainIndexError(err) => match err.kind {
-                ChainIndexErrorKind::InternalServerError => tonic::Status::internal(err.message),
+                // A `ChainIndexError`'s own message may be a generic wrapper (e.g.
+                // `backing_validator`'s fixed string), so recover the node's typed
+                // rejection from the source chain when one is present: wallets
+                // must be able to tell "the node rejected this, and here is why"
+                // apart from "the indexer's connection to the node broke"
+                // (zingolabs/zaino#1404).
+                ChainIndexErrorKind::InternalServerError => match rpc_error_in_source_chain(&err) {
+                    Some(rpc_error) => tonic::Status::internal(rpc_error.to_string()),
+                    None => tonic::Status::internal(err.message),
+                },
                 ChainIndexErrorKind::InvalidSnapshot => {
                     tonic::Status::failed_precondition(err.message)
                 }
@@ -640,5 +660,47 @@ impl From<MempoolError> for ChainIndexError {
             message,
             source: Some(Box::new(value)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tonic_status_from_service_error {
+    use super::*;
+    use crate::chain_index::source::BlockchainSourceError;
+    use zaino_fetch::jsonrpsee::connector::{RpcError, RpcRequestError};
+    use zaino_fetch::jsonrpsee::response::SendTransactionError;
+    use zebra_rpc::server::error::LegacyCode;
+
+    /// A zebrad `sendrawtransaction` rejection reaches the gRPC surface as
+    /// `RpcError` → `RpcRequestError::UnexpectedErrorResponse` →
+    /// `BlockchainSourceError::unrecoverable` → `ChainIndexError::backing_validator`
+    /// → [`NodeBackedIndexerServiceError`] → [`tonic::Status`]. The wallet-visible
+    /// status must still name the node's rejection reason and its legacy error
+    /// code; zainod 0.6.0 masked both as the fixed string "InternalServerError:
+    /// error receiving data from backing node" (zingolabs/zaino#1404).
+    #[test]
+    fn send_rejection_survives_conversion_to_tonic_status() {
+        let rejection = RpcError::new_from_legacycode(
+            LegacyCode::Verify,
+            "failed to validate tx: transparent input not found",
+        );
+        let request_error: RpcRequestError<SendTransactionError> =
+            RpcRequestError::UnexpectedErrorResponse(Box::new(rejection));
+        let source_error = BlockchainSourceError::unrecoverable(request_error);
+        let index_error = ChainIndexError::backing_validator(source_error);
+
+        let status = tonic::Status::from(NodeBackedIndexerServiceError::from(index_error));
+
+        assert_eq!(status.code(), tonic::Code::Internal);
+        assert!(
+            status.message().contains("failed to validate tx"),
+            "wallet-visible status must carry the node's rejection reason, got: {:?}",
+            status.message()
+        );
+        assert!(
+            status.message().contains("-25"),
+            "wallet-visible status must carry the legacy error code, got: {:?}",
+            status.message()
+        );
     }
 }
