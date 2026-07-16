@@ -815,12 +815,12 @@ impl BlockchainSource for MockchainSource {
         Err(BlockchainSourceError::unrecoverable(
             zaino_fetch::jsonrpsee::connector::RpcRequestError::<
                 zaino_fetch::jsonrpsee::response::SendTransactionError,
-            >::UnexpectedErrorResponse(Box::new(
+            >::UnexpectedErrorResponse(
                 zaino_fetch::jsonrpsee::connector::RpcError::new_from_legacycode(
                     zebra_rpc::server::error::LegacyCode::Verify,
                     "MockchainSource rejects all transaction submissions (static chain, no mempool)",
                 ),
-            )),
+            ),
         ))
     }
 
