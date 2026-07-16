@@ -78,7 +78,12 @@ pub struct RpcError {
     /// Error Message.
     pub message: String,
     /// Error Data.
-    pub data: Option<JsonRpcError>,
+    ///
+    /// Boxed to keep `RpcError` small: it rides in the `Err` variant of every
+    /// RPC-call `Result` (see [`RpcRequestError::UnexpectedErrorResponse`] and
+    /// the `TryFrom<RpcError>` impls), where a large payload bloats each such
+    /// `Result` even on the success path.
+    pub data: Option<Box<JsonRpcError>>,
 }
 
 impl RpcError {
@@ -148,8 +153,13 @@ enum AuthMethod {
 /// Trait to convert a JSON-RPC response to an error.
 pub trait ResponseToError: Sized {
     /// The error type.
-    type RpcError: std::fmt::Debug
-        + TryFrom<RpcError, Error: std::error::Error + Send + Sync + 'static>;
+    ///
+    /// The conversion error is pinned to [`RpcError`] (rather than any
+    /// `std::error::Error`) so an unmapped server rejection stays a statically
+    /// typed [`RpcError`] all the way into
+    /// [`RpcRequestError::UnexpectedErrorResponse`] — no boxing, and consumers
+    /// can match the payload directly instead of downcasting.
+    type RpcError: std::fmt::Debug + TryFrom<RpcError, Error = RpcError>;
 
     /// Converts a JSON-RPC response to an error.
     fn to_error(self) -> Result<Self, Self::RpcError> {
@@ -190,13 +200,15 @@ pub enum RpcRequestError<MethodError> {
     /// Zaino has not yet accounted for the possibilty of this error,
     /// or the Node returned an undocumented/malformed error response.
     ///
-    /// The payload is `#[source]` so the node's typed rejection (usually an
-    /// [`RpcError`]) stays reachable through `source()` chains: the serving
+    /// The payload is the node's rejection as a statically typed
+    /// [`RpcError`] (guaranteed by [`ResponseToError`]'s
+    /// `TryFrom<RpcError, Error = RpcError>` bound), and it is `#[source]` so
+    /// the rejection stays reachable through `source()` chains: the serving
     /// surfaces recover rejection codes and messages by downcast-walking those
     /// chains, and severing the link here masks every unmapped node rejection
     /// as a generic internal error (zingolabs/zaino#1404).
     #[error("unexpected error response from server: {0}")]
-    UnexpectedErrorResponse(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+    UnexpectedErrorResponse(#[source] RpcError),
 }
 
 /// JsonRpSee Client config data.
@@ -424,9 +436,8 @@ impl JsonRpSeeConnector {
 
                     match response.error {
                         Some(error) => Err(RpcRequestError::Method(
-                            R::RpcError::try_from(error).map_err(|e| {
-                                RpcRequestError::UnexpectedErrorResponse(Box::new(e))
-                            })?,
+                            R::RpcError::try_from(error)
+                                .map_err(RpcRequestError::UnexpectedErrorResponse)?,
                         )),
                         None => {
                             let result: R =
@@ -1087,7 +1098,7 @@ mod tests {
     /// `zaino-serve/src/rpc/jsonrpc/service.rs`). `UnexpectedErrorResponse` is
     /// the variant that carries a node's structured rejection whenever no
     /// method-specific mapping exists (every `impl_rpc_error_passthrough!`
-    /// type, including `sendrawtransaction`'s), so its boxed payload must stay
+    /// type, including `sendrawtransaction`'s), so its payload must stay
     /// reachable through `source()`. Without the link, every such rejection is
     /// masked as a generic internal error (zingolabs/zaino#1404).
     #[test]
@@ -1099,10 +1110,10 @@ mod tests {
             "failed to validate tx: transparent input not found",
         );
         let error: RpcRequestError<SendTransactionError> =
-            RpcRequestError::UnexpectedErrorResponse(Box::new(rejection));
+            RpcRequestError::UnexpectedErrorResponse(rejection);
 
         let source = std::error::Error::source(&error)
-            .expect("the boxed node rejection must be exposed via source()");
+            .expect("the node rejection must be exposed via source()");
         let rpc_error = source
             .downcast_ref::<RpcError>()
             .expect("the source must downcast to the typed RpcError");

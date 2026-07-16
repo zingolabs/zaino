@@ -724,7 +724,7 @@ mod tonic_status_from_service_error {
             "failed to validate tx: transparent input not found",
         );
         let request_error: RpcRequestError<SendTransactionError> =
-            RpcRequestError::UnexpectedErrorResponse(Box::new(rejection));
+            RpcRequestError::UnexpectedErrorResponse(rejection);
         let source_error = BlockchainSourceError::unrecoverable(request_error);
         let index_error = ChainIndexError::backing_validator(source_error);
 

@@ -88,10 +88,6 @@ impl_infallible_response_to_error!(
 
 /// Maps a JSON-RPC error carrying `code` to the RPC-specific variant `ctor`
 /// builds from its message, passing every other error through unchanged.
-// The Err type is fixed by the `TryFrom<RpcError>` impls this serves: their
-// `Error = RpcError` (unboxed) is the trait contract, so the large-Err lint
-// cannot be satisfied here without changing every impl's signature.
-#[allow(clippy::result_large_err)]
 pub(crate) fn rpc_error_code_map<T>(
     value: RpcError,
     code: i64,
