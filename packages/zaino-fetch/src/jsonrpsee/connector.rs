@@ -1092,35 +1092,70 @@ pub async fn test_node_and_return_url(
 mod tests {
     use super::*;
 
+    /// Asserts the `UnexpectedErrorResponse` source-reachability contract for
+    /// one `MethodError` instantiation: the node rejection must be exposed via
+    /// `source()` and downcast to the typed [`RpcError`] with its legacy code
+    /// intact.
+    fn assert_unexpected_error_response_exposes_rpc_error<MethodError>()
+    where
+        MethodError: std::error::Error + 'static,
+    {
+        let type_name = std::any::type_name::<MethodError>();
+        let rejection = RpcError::new_from_legacycode(
+            zebra_rpc::server::error::LegacyCode::Verify,
+            "failed to validate tx: transparent input not found",
+        );
+        let error: RpcRequestError<MethodError> =
+            RpcRequestError::UnexpectedErrorResponse(rejection);
+
+        let source = std::error::Error::source(&error).unwrap_or_else(|| {
+            panic!(
+                "RpcRequestError::<{type_name}>::UnexpectedErrorResponse \
+                 must expose the node rejection via source()"
+            )
+        });
+        let rpc_error = source.downcast_ref::<RpcError>().unwrap_or_else(|| {
+            panic!(
+                "the source for RpcRequestError::<{type_name}> must downcast to the typed RpcError"
+            )
+        });
+        assert_eq!(
+            rpc_error.code,
+            zebra_rpc::server::error::LegacyCode::Verify as i64,
+            "the legacy error code must survive for RpcRequestError::<{type_name}>"
+        );
+    }
+
     /// zaino-serve attributes node rejections by downcast-walking `source()`
     /// chains for the typed [`RpcError`] (see
     /// `sendrawtransaction_error_object_from_indexer_error` in
     /// `zaino-serve/src/rpc/jsonrpc/service.rs`). `UnexpectedErrorResponse` is
     /// the variant that carries a node's structured rejection whenever no
-    /// method-specific mapping exists (every `impl_rpc_error_passthrough!`
-    /// type, including `sendrawtransaction`'s), so its payload must stay
-    /// reachable through `source()`. Without the link, every such rejection is
-    /// masked as a generic internal error (zingolabs/zaino#1404).
+    /// method-specific mapping exists — every `impl_rpc_error_passthrough!`
+    /// type — so its boxed payload must stay reachable through `source()` for
+    /// each of them. Without the link, every such rejection is masked as a
+    /// generic internal error (zingolabs/zaino#1404, zingolabs/zaino#1406).
+    ///
+    /// When a type is added to an `impl_rpc_error_passthrough!` invocation, it
+    /// belongs in this list too.
     #[test]
-    fn unexpected_error_response_exposes_rpc_error_via_source() {
-        use crate::jsonrpsee::response::SendTransactionError;
+    fn unexpected_error_response_exposes_rpc_error_for_every_passthrough_type() {
+        use crate::jsonrpsee::response::{
+            address_deltas::GetAddressDeltasError, z_validate_address::ZValidateAddressError,
+            ChainWorkError, GetBalanceError, GetSubtreesError, GetTreestateError, GetUtxosError,
+            SendTransactionError, TxidsError,
+        };
 
-        let rejection = RpcError::new_from_legacycode(
-            zebra_rpc::server::error::LegacyCode::Verify,
-            "failed to validate tx: transparent input not found",
-        );
-        let error: RpcRequestError<SendTransactionError> =
-            RpcRequestError::UnexpectedErrorResponse(rejection);
-
-        let source = std::error::Error::source(&error)
-            .expect("the node rejection must be exposed via source()");
-        let rpc_error = source
-            .downcast_ref::<RpcError>()
-            .expect("the source must downcast to the typed RpcError");
-        assert_eq!(
-            rpc_error.code,
-            zebra_rpc::server::error::LegacyCode::Verify as i64
-        );
+        assert_unexpected_error_response_exposes_rpc_error::<std::convert::Infallible>();
+        assert_unexpected_error_response_exposes_rpc_error::<ChainWorkError>();
+        assert_unexpected_error_response_exposes_rpc_error::<GetBalanceError>();
+        assert_unexpected_error_response_exposes_rpc_error::<SendTransactionError>();
+        assert_unexpected_error_response_exposes_rpc_error::<TxidsError>();
+        assert_unexpected_error_response_exposes_rpc_error::<GetTreestateError>();
+        assert_unexpected_error_response_exposes_rpc_error::<GetSubtreesError>();
+        assert_unexpected_error_response_exposes_rpc_error::<GetUtxosError>();
+        assert_unexpected_error_response_exposes_rpc_error::<ZValidateAddressError>();
+        assert_unexpected_error_response_exposes_rpc_error::<GetAddressDeltasError>();
     }
 
     /// `Method` carries the typed method-specific rejection, so — like

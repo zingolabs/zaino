@@ -36,6 +36,11 @@ use super::connector::RpcError;
 /// Implements the pass-through `TryFrom<RpcError>` for RPC-specific error
 /// types that map no JSON-RPC error codes to variants of their own: every
 /// server-reported error surfaces unchanged as the generic [`RpcError`].
+///
+/// Every type listed in an invocation also belongs in the contract test
+/// `unexpected_error_response_exposes_rpc_error_for_every_passthrough_type`
+/// in `connector.rs`, which enforces that its rejections stay attributable
+/// via `source()` chains (zingolabs/zaino#1406).
 // TODO: attempt to convert RpcError into errors specific to each RPC
 // response, removing types from these invocations as mappings become known.
 macro_rules! impl_rpc_error_passthrough {
