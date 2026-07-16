@@ -134,6 +134,9 @@ impl From<NodeBackedIndexerServiceError> for tonic::Status {
                 ChainIndexErrorKind::InvalidSnapshot => {
                     tonic::Status::failed_precondition(err.message)
                 }
+                ChainIndexErrorKind::InvalidArgument => {
+                    tonic::Status::invalid_argument(err.message)
+                }
             },
             NodeBackedIndexerServiceError::BlockCacheError(err) => {
                 tonic::Status::internal(format!("BlockCache error: {err:?}"))
@@ -467,6 +470,9 @@ pub enum ChainIndexErrorKind {
     // whatever went wrong
     #[allow(dead_code)]
     InvalidSnapshot,
+    /// A client-supplied argument was invalid (e.g. an over-cap or malformed
+    /// mempool exclude list). Maps to a gRPC `InvalidArgument` status.
+    InvalidArgument,
 }
 
 impl Display for ChainIndexErrorKind {
@@ -474,6 +480,7 @@ impl Display for ChainIndexErrorKind {
         f.write_str(match self {
             ChainIndexErrorKind::InternalServerError => "internal server error",
             ChainIndexErrorKind::InvalidSnapshot => "invalid snapshot",
+            ChainIndexErrorKind::InvalidArgument => "invalid argument",
         })
     }
 }
@@ -490,6 +497,17 @@ impl ChainIndexError {
     pub(crate) fn internal(message: impl Into<String>) -> Self {
         Self {
             kind: ChainIndexErrorKind::InternalServerError,
+            message: message.into(),
+            source: None,
+        }
+    }
+
+    /// Constructs an `InvalidArgument`-kind error from a client-input failure
+    /// (e.g. an over-cap or malformed mempool exclude list). Surfaces as a gRPC
+    /// `InvalidArgument` status.
+    pub(crate) fn invalid_argument(message: impl Into<String>) -> Self {
+        Self {
+            kind: ChainIndexErrorKind::InvalidArgument,
             message: message.into(),
             source: None,
         }

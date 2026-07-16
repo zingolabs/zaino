@@ -434,12 +434,18 @@ pub trait ChainIndex {
         &self,
     ) -> impl std::future::Future<Output = Result<Vec<types::TransactionHash>, Self::Error>>;
 
-    /// Returns all transactions currently in the mempool, filtered by `exclude_list`.
+    /// Returns all transactions currently in the mempool, minus those excluded
+    /// by `exclude_suffixes`.
     ///
-    /// The `exclude_list` may contain shortened transaction ID hex prefixes (client-endian).
+    /// Each entry is a client-endian (internal, little-endian) txid suffix — the
+    /// trailing bytes of the txid the client already holds. A suffix that
+    /// uniquely matches one mempool txid excludes it; a suffix matching zero or
+    /// multiple txids excludes none. The exclude list is bounded (count and
+    /// per-suffix length); an over-cap or malformed list is an `InvalidArgument`
+    /// error.
     fn get_mempool_transactions(
         &self,
-        exclude_list: Vec<String>,
+        exclude_suffixes: Vec<Vec<u8>>,
     ) -> impl std::future::Future<Output = Result<Vec<Vec<u8>>, Self::Error>>;
 
     /// Returns a stream of mempool transactions, ending the stream when the chain tip block hash
@@ -2048,31 +2054,15 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     /// in the exclude list that don't exist in the mempool are ignored.
     async fn get_mempool_transactions(
         &self,
-        exclude_list: Vec<String>,
+        exclude_suffixes: Vec<Vec<u8>>,
     ) -> Result<Vec<Vec<u8>>, Self::Error> {
-        // The exclude list entries are big-endian (display) hex txid prefixes.
-        // The mempool matches on little-endian (internal) suffix bytes, so decode
-        // each hex string and reverse it to recover the client's suffix bytes.
-        // (Stage 4 passes the raw little-endian suffix bytes straight through and
-        // drops this round-trip.)
-        let client_suffixes: Vec<Vec<u8>> = exclude_list
-            .iter()
-            .map(|hex_prefix| {
-                let mut bytes =
-                    hex::decode(hex_prefix).map_err(ChainIndexError::backing_validator)?;
-                bytes.reverse();
-                Ok::<_, ChainIndexError>(bytes)
-            })
-            .collect::<Result<_, _>>()?;
-
         // Validation bounds the client-controlled exclude list (count + suffix
-        // length) before any work touches the mempool.
+        // length) before any work touches the mempool. An over-cap or malformed
+        // list is a client error, surfaced as InvalidArgument.
         let suffixes = self
             .mempool
-            .validate_exclude_suffixes(&client_suffixes)
-            // TODO(stage 4): surface this as an InvalidArgument status at the RPC
-            // boundary rather than a generic internal error.
-            .map_err(ChainIndexError::internal_from)?;
+            .validate_exclude_suffixes(&exclude_suffixes)
+            .map_err(|error| ChainIndexError::invalid_argument(error.to_string()))?;
 
         Ok(self
             .mempool

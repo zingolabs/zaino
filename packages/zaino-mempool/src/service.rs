@@ -451,7 +451,7 @@ impl<S: MempoolSource, N: NfsEpochObserver> MempoolService<S, N> {
             .sum();
 
         let mut txids_sorted: Vec<_> = next_by_txid.keys().copied().collect();
-        txids_sorted.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        txids_sorted.sort_unstable_by_key(|txid| txid.0);
 
         let entries_in_order: Vec<_> = txids_sorted
             .iter()

@@ -438,11 +438,13 @@ async fn get_filtered_mempool_transactions() {
         })
         .unwrap_or_default();
     let exclude_tx = mempool_transactions.pop().unwrap();
-    let exclude_txid = exclude_tx.hash().to_string();
+    // The exclude list is the client-endian (internal, little-endian) txid
+    // bytes; here the full 32-byte txid, which uniquely matches the one tx.
+    let exclude_suffix = exclude_tx.hash().0.to_vec();
     mempool_transactions.sort_by_key(|a| a.hash());
 
     let mut found_mempool_transactions: Vec<zebra_chain::transaction::Transaction> = index_reader
-        .get_mempool_transactions(vec![exclude_txid])
+        .get_mempool_transactions(vec![exclude_suffix])
         .await
         .unwrap()
         .iter()
