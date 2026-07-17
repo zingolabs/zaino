@@ -1265,6 +1265,18 @@ async fn chaintip_update_subscriber_absent_without_tip_stream() {
     );
 }
 
+/// The code of the first typed [`RpcError`](zaino_fetch::jsonrpsee::connector::RpcError)
+/// in `error`'s `source()` chain, if any — the same walk zaino-serve's
+/// `sendrawtransaction_error_object_from_indexer_error` performs to recover
+/// zcashd legacy error codes.
+fn rpc_error_code_in_source_chain(error: &(dyn std::error::Error + 'static)) -> Option<i64> {
+    std::iter::successors(Some(error), |source| source.source()).find_map(|source| {
+        source
+            .downcast_ref::<zaino_fetch::jsonrpsee::connector::RpcError>()
+            .map(|rpc_error| rpc_error.code)
+    })
+}
+
 /// `sendrawtransaction` rejections must carry zcashd's legacy error code:
 /// zaino-serve forwards the code by downcast-walking the `source()` chain for
 /// the typed `RpcError` (`sendrawtransaction_error_object_from_indexer_error`),
@@ -1273,7 +1285,8 @@ async fn chaintip_update_subscriber_absent_without_tip_stream() {
 ///
 /// Invalid hex fails in local validation before the source is consulted, so
 /// this also pins that the rejection happens without a validator round-trip
-/// (the mock's `send_raw_transaction` would panic if reached).
+/// (the mock's `send_raw_transaction` returns its own distinct rejection, code
+/// `-25`, so reaching it would fail the `-8` assertion below).
 #[tokio::test(flavor = "multi_thread")]
 async fn send_raw_transaction_invalid_hex_keeps_legacy_error_code() {
     let (_blocks, _indexer, index_reader, _mockchain) =
@@ -1284,20 +1297,43 @@ async fn send_raw_transaction_invalid_hex_keeps_legacy_error_code() {
         .await
         .expect_err("invalid hex must be rejected");
 
-    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(&error);
-    let mut rpc_error_code = None;
-    while let Some(source_error) = current {
-        if let Some(rpc_error) =
-            source_error.downcast_ref::<zaino_fetch::jsonrpsee::connector::RpcError>()
-        {
-            rpc_error_code = Some(rpc_error.code);
-            break;
-        }
-        current = source_error.source();
-    }
     assert_eq!(
-        rpc_error_code,
+        rpc_error_code_in_source_chain(&error),
         Some(zebra_rpc::server::error::LegacyCode::InvalidParameter as i64),
         "the typed RpcError (legacy code -8) must stay reachable via the source() chain"
+    );
+}
+
+/// A node rejection of `sendrawtransaction` must stay attributable end to end
+/// (zingolabs/zaino#1404): the typed `RpcError` reachable via `source()` for
+/// zaino-serve's JSON-RPC error-code recovery walk, and the rejection text
+/// present in the wallet-visible `tonic::Status` on the gRPC surface. zainod
+/// 0.6.0 masked both as the fixed string "InternalServerError: error receiving
+/// data from backing node". The mockchain source stands in for zebrad by
+/// rejecting every submission with a validator-shaped `-25` error.
+#[tokio::test(flavor = "multi_thread")]
+async fn send_raw_transaction_node_rejection_stays_attributable() {
+    let (_blocks, _indexer, index_reader, _mockchain) =
+        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
+
+    // Valid hex, so local validation passes and the (rejecting) source is consulted.
+    let error = index_reader
+        .send_raw_transaction("deadbeef".to_string())
+        .await
+        .expect_err("the mockchain source rejects every submission");
+
+    assert_eq!(
+        rpc_error_code_in_source_chain(&error),
+        Some(zebra_rpc::server::error::LegacyCode::Verify as i64),
+        "the node's typed RpcError (legacy code -25) must stay reachable via the source() chain"
+    );
+
+    let status = tonic::Status::from(crate::error::NodeBackedIndexerServiceError::from(error));
+    assert!(
+        status
+            .message()
+            .contains("rejects all transaction submissions"),
+        "wallet-visible status must carry the node's rejection reason, got: {:?}",
+        status.message()
     );
 }
