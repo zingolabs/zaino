@@ -59,6 +59,16 @@ _Avoid_: mixing vocabularies in one name or one sibling set (e.g. an
 `ORCHARD_ONLY_*` fixture whose sibling is `NU6_3_ACTIVE_*` — the sibling
 is `IRONWOOD_ONLY_*`)
 
+**Unfiltered pool set**:
+The pool set served when a client's `poolTypes` request field is empty —
+every shielded pool (Sapling, Orchard, Ironwood), transparent excluded.
+It has exactly one definition (`PoolTypeFilter::default`); serving any
+narrower backfill makes compact blocks disagree with their own
+`chainMetadata` tree sizes, which scanning wallets read as a phantom
+reorg.
+_Avoid_: default pools, backfill set, "Sapling and Orchard" (stale —
+predates Ironwood)
+
 **Cross-address restriction**:
 The post-NU6.3 rule the Orchard Action circuit enforces: "(g_d, pk_d)
 of the output note must equal (g_d, pk_d) of the spent note" — the

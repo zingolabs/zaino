@@ -2,7 +2,7 @@
 
 use super::validator_connector::{
     assemble_block_deltas, build_block_header_object, build_verbose_block,
-    confirmations_from_depth, final_orchard_root, final_sapling_root, median_of_block_times,
+    confirmations_from_depth, final_orchard_root, final_sapling_root, median_time_past_via,
     zebra_block_header_to_wire,
 };
 use super::*;
@@ -415,34 +415,10 @@ impl MockchainSource {
     /// Median time past over the 11-block window ending at `start`, walking backwards via
     /// verbosity-1 `getblock` lookups against the mock vectors.
     async fn median_time_past(&self, start: &BlockObject) -> BlockchainSourceResult<i64> {
-        const MEDIAN_TIME_PAST_WINDOW: usize = 11;
-        let mut times = Vec::with_capacity(MEDIAN_TIME_PAST_WINDOW);
-        let start_time = start.time().ok_or_else(|| {
-            BlockchainSourceError::Unrecoverable("getblockdeltas: start block missing time".into())
-        })?;
-        times.push(start_time);
-
-        let mut prev = start.previous_block_hash();
-        for _ in 0..(MEDIAN_TIME_PAST_WINDOW - 1) {
-            let Some(hash) = prev else {
-                break; // genesis
-            };
-            match self
-                .get_block_verbose(HashOrHeight::Hash(hash), Some(1))
-                .await
-            {
-                Ok(GetBlock::Object(object)) => {
-                    if let Some(time) = object.time() {
-                        times.push(time);
-                    }
-                    prev = object.previous_block_hash();
-                }
-                Ok(GetBlock::Raw(_)) => break,
-                Err(_) => break,
-            }
-        }
-
-        median_of_block_times(times)
+        median_time_past_via(start, |hash| {
+            self.get_block_verbose(HashOrHeight::Hash(hash), Some(1))
+        })
+        .await
     }
 
     fn block_height_at_index(&self, block_index: usize) -> Height {

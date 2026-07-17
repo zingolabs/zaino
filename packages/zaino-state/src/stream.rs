@@ -6,191 +6,46 @@ use zaino_proto::proto::{
     service::{Address, GetAddressUtxosReply, RawTransaction, SubtreeRoot},
 };
 
-/// Stream of RawTransactions, output type of get_taddress_txids.
+/// A stream of `Result<T, tonic::Status>` items read from a tokio mpsc receiver.
 #[derive(Debug)]
-pub struct RawTransactionStream {
-    inner: ReceiverStream<Result<RawTransaction, tonic::Status>>,
+pub struct ChannelStream<T> {
+    inner: ReceiverStream<Result<T, tonic::Status>>,
 }
 
-impl RawTransactionStream {
-    /// Returns new instance of RawTransactionStream.
-    pub fn new(rx: tokio::sync::mpsc::Receiver<Result<RawTransaction, tonic::Status>>) -> Self {
-        RawTransactionStream {
+impl<T> ChannelStream<T> {
+    /// Wraps the receiving half of an mpsc channel as a stream.
+    pub fn new(rx: tokio::sync::mpsc::Receiver<Result<T, tonic::Status>>) -> Self {
+        ChannelStream {
             inner: ReceiverStream::new(rx),
         }
     }
 }
 
-impl futures::Stream for RawTransactionStream {
-    type Item = Result<RawTransaction, tonic::Status>;
+impl<T> futures::Stream for ChannelStream<T> {
+    type Item = Result<T, tonic::Status>;
 
     fn poll_next(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        let poll = std::pin::Pin::new(&mut self.inner).poll_next(cx);
-        match poll {
-            std::task::Poll::Ready(Some(Ok(raw_tx))) => std::task::Poll::Ready(Some(Ok(raw_tx))),
-            std::task::Poll::Ready(Some(Err(e))) => std::task::Poll::Ready(Some(Err(e))),
-            std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
-            std::task::Poll::Pending => std::task::Poll::Pending,
-        }
+        std::pin::Pin::new(&mut self.inner).poll_next(cx)
     }
 }
 
-/// Stream of RawTransactions, output type of get_taddress_txids.
-pub struct CompactTransactionStream {
-    inner: ReceiverStream<Result<CompactTx, tonic::Status>>,
-}
+/// Stream of `RawTransaction` items, output type of get_taddress_txids.
+pub type RawTransactionStream = ChannelStream<RawTransaction>;
 
-impl CompactTransactionStream {
-    /// Returns new instance of RawTransactionStream.
-    pub fn new(rx: tokio::sync::mpsc::Receiver<Result<CompactTx, tonic::Status>>) -> Self {
-        CompactTransactionStream {
-            inner: ReceiverStream::new(rx),
-        }
-    }
-}
+/// Stream of `CompactTx` items, output type of get_mempool_tx.
+pub type CompactTransactionStream = ChannelStream<CompactTx>;
 
-impl futures::Stream for CompactTransactionStream {
-    type Item = Result<CompactTx, tonic::Status>;
+/// Stream of `CompactBlock` items, output type of get_block_range.
+pub type CompactBlockStream = ChannelStream<CompactBlock>;
 
-    fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        let poll = std::pin::Pin::new(&mut self.inner).poll_next(cx);
-        match poll {
-            std::task::Poll::Ready(Some(Ok(raw_tx))) => std::task::Poll::Ready(Some(Ok(raw_tx))),
-            std::task::Poll::Ready(Some(Err(e))) => std::task::Poll::Ready(Some(Err(e))),
-            std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
-            std::task::Poll::Pending => std::task::Poll::Pending,
-        }
-    }
-}
+/// Stream of `GetAddressUtxosReply` items, output type of get_address_utxos_stream.
+pub type UtxoReplyStream = ChannelStream<GetAddressUtxosReply>;
 
-/// Stream of CompactBlocks, output type of get_block_range.
-pub struct CompactBlockStream {
-    inner: ReceiverStream<Result<CompactBlock, tonic::Status>>,
-}
+/// Stream of `SubtreeRoot` items, output type of get_subtree_roots.
+pub type SubtreeRootReplyStream = ChannelStream<SubtreeRoot>;
 
-impl CompactBlockStream {
-    /// Returns new instance of CompactBlockStream.
-    pub fn new(rx: tokio::sync::mpsc::Receiver<Result<CompactBlock, tonic::Status>>) -> Self {
-        CompactBlockStream {
-            inner: ReceiverStream::new(rx),
-        }
-    }
-}
-
-impl futures::Stream for CompactBlockStream {
-    type Item = Result<CompactBlock, tonic::Status>;
-
-    fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        let poll = std::pin::Pin::new(&mut self.inner).poll_next(cx);
-        match poll {
-            std::task::Poll::Ready(Some(Ok(raw_tx))) => std::task::Poll::Ready(Some(Ok(raw_tx))),
-            std::task::Poll::Ready(Some(Err(e))) => std::task::Poll::Ready(Some(Err(e))),
-            std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
-            std::task::Poll::Pending => std::task::Poll::Pending,
-        }
-    }
-}
-
-/// Stream of CompactBlocks, output type of get_block_range.
-pub struct UtxoReplyStream {
-    inner: ReceiverStream<Result<GetAddressUtxosReply, tonic::Status>>,
-}
-
-impl UtxoReplyStream {
-    /// Returns new instance of CompactBlockStream.
-    pub fn new(
-        rx: tokio::sync::mpsc::Receiver<Result<GetAddressUtxosReply, tonic::Status>>,
-    ) -> Self {
-        UtxoReplyStream {
-            inner: ReceiverStream::new(rx),
-        }
-    }
-}
-
-impl futures::Stream for UtxoReplyStream {
-    type Item = Result<GetAddressUtxosReply, tonic::Status>;
-
-    fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        let poll = std::pin::Pin::new(&mut self.inner).poll_next(cx);
-        match poll {
-            std::task::Poll::Ready(Some(Ok(raw_tx))) => std::task::Poll::Ready(Some(Ok(raw_tx))),
-            std::task::Poll::Ready(Some(Err(e))) => std::task::Poll::Ready(Some(Err(e))),
-            std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
-            std::task::Poll::Pending => std::task::Poll::Pending,
-        }
-    }
-}
-
-/// Stream of CompactBlocks, output type of get_block_range.
-pub struct SubtreeRootReplyStream {
-    inner: ReceiverStream<Result<SubtreeRoot, tonic::Status>>,
-}
-
-impl SubtreeRootReplyStream {
-    /// Returns new instance of CompactBlockStream.
-    pub fn new(rx: tokio::sync::mpsc::Receiver<Result<SubtreeRoot, tonic::Status>>) -> Self {
-        SubtreeRootReplyStream {
-            inner: ReceiverStream::new(rx),
-        }
-    }
-}
-
-impl futures::Stream for SubtreeRootReplyStream {
-    type Item = Result<SubtreeRoot, tonic::Status>;
-
-    fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        let poll = std::pin::Pin::new(&mut self.inner).poll_next(cx);
-        match poll {
-            std::task::Poll::Ready(Some(Ok(raw_tx))) => std::task::Poll::Ready(Some(Ok(raw_tx))),
-            std::task::Poll::Ready(Some(Err(e))) => std::task::Poll::Ready(Some(Err(e))),
-            std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
-            std::task::Poll::Pending => std::task::Poll::Pending,
-        }
-    }
-}
-
-/// Stream of `Address`, input type for `get_taddress_balance_stream`.
-pub struct AddressStream {
-    inner: ReceiverStream<Result<Address, tonic::Status>>,
-}
-
-impl AddressStream {
-    /// Creates a new `AddressStream` instance.
-    pub fn new(rx: tokio::sync::mpsc::Receiver<Result<Address, tonic::Status>>) -> Self {
-        AddressStream {
-            inner: ReceiverStream::new(rx),
-        }
-    }
-}
-
-impl futures::Stream for AddressStream {
-    type Item = Result<Address, tonic::Status>;
-
-    fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        let poll = std::pin::Pin::new(&mut self.inner).poll_next(cx);
-        match poll {
-            std::task::Poll::Ready(Some(Ok(address))) => std::task::Poll::Ready(Some(Ok(address))),
-            std::task::Poll::Ready(Some(Err(e))) => std::task::Poll::Ready(Some(Err(e))),
-            std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
-            std::task::Poll::Pending => std::task::Poll::Pending,
-        }
-    }
-}
+/// Stream of `Address` items, input type for get_taddress_balance_stream.
+pub type AddressStream = ChannelStream<Address>;

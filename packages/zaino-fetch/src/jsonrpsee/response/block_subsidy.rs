@@ -1,11 +1,6 @@
 //! Types associated with the `getblocksubsidy` RPC request.
 
-use std::convert::Infallible;
-
-use crate::jsonrpsee::{
-    connector::ResponseToError,
-    response::common::amount::{Zatoshis, ZecAmount},
-};
+use crate::jsonrpsee::response::common::amount::{Zatoshis, ZecAmount};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
@@ -105,9 +100,7 @@ pub enum GetBlockSubsidy {
     Unknown(Value),
 }
 
-impl ResponseToError for GetBlockSubsidy {
-    type RpcError = Infallible;
-}
+crate::jsonrpsee::response::impl_infallible_response_to_error!(GetBlockSubsidy);
 
 impl<'de> Deserialize<'de> for GetBlockSubsidy {
     fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {

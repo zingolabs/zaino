@@ -250,3 +250,239 @@ impl Pool {
         }
     }
 }
+
+/// Launch a shielded-mining validator of `validator` kind (at `activation_heights`,
+/// or the kind's defaults on `None`) with Zaino serving gRPC, and build the devtool
+/// faucet/recipient wallets against it, without mining or syncing. The shared body
+/// of the per-validator `launch_*_and_build_clients` preambles in the devtool test
+/// binaries.
+pub async fn launch_and_build_devtool_clients<V, Conn>(
+    validator: &zaino_testutils::ValidatorKind,
+    activation_heights: Option<zaino_common::network::ActivationHeights>,
+) -> (zaino_testutils::TestManager<V, Conn>, DevtoolClients)
+where
+    V: zaino_testutils::ValidatorExt,
+    Conn: zaino_testutils::ValidatorConnectionMarker,
+{
+    let test_manager = zaino_testutils::TestManager::<V, Conn>::launch_mining_to(
+        zaino_testutils::SHIELDED_FUNDING_POOL,
+        validator,
+        None, // network -> Regtest
+        activation_heights,
+        None,  // no chain cache: build fresh
+        true,  // enable zaino
+        false, // no json-rpc server
+        false, // no clients (the devtool wallet is built separately)
+    )
+    .await
+    .expect("launch TestManager");
+
+    let clients = build_clients(
+        test_manager
+            .zaino_grpc_listen_address
+            .expect("zaino enabled")
+            .port(),
+        &test_manager.local_net,
+    )
+    .await;
+
+    (test_manager, clients)
+}
+
+/// The faucet sends 250_000 zatoshis to the recipient's `pool` address, the send is
+/// mined in, and the recipient's synced wallet shows the receipt in that pool.
+/// Shared body of the per-validator `send_to_pool` tests; the caller launches and
+/// funds the faucet first.
+pub async fn assert_send_to_pool<V, Conn>(
+    mut test_manager: zaino_testutils::TestManager<V, Conn>,
+    mut clients: DevtoolClients,
+    pool: Pool,
+) where
+    V: zaino_testutils::ValidatorExt,
+    Conn: zaino_testutils::ValidatorConnectionMarker,
+{
+    let recipient = clients.get_recipient_address(pool.address_kind()).await;
+    let txid = clients.send_from_faucet(&recipient, 250_000).await;
+    dbg!(txid);
+
+    test_manager
+        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+        .await;
+    clients.sync_recipient().await;
+
+    assert_eq!(
+        pool.spendable_balance(&clients.recipient_balance().await),
+        250_000
+    );
+
+    test_manager.close().await;
+}
+
+/// The recipient receives a transparent send, confirms it, shields it, and confirms
+/// the shielded balance net of the ZIP-317 fee (250_000 − 15_000 = 235_000) in
+/// `shielded_pool` — [`Pool::Ironwood`] under NU6.3-era heights (devtool routes
+/// `shield` there), [`Pool::Orchard`] under pre-NU6.3 heights. Shared body of the
+/// per-validator `shield` tests; the caller launches and funds the faucet first.
+pub async fn assert_shield_for_validator<V, Conn>(
+    mut test_manager: zaino_testutils::TestManager<V, Conn>,
+    mut clients: DevtoolClients,
+    shielded_pool: Pool,
+) where
+    V: zaino_testutils::ValidatorExt,
+    Conn: zaino_testutils::ValidatorConnectionMarker,
+{
+    let recipient_taddr = clients.get_recipient_address("transparent").await;
+    clients.send_from_faucet(&recipient_taddr, 250_000).await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+        .await;
+    clients.sync_recipient().await;
+
+    assert_eq!(
+        Pool::Transparent.spendable_balance(&clients.recipient_balance().await),
+        250_000
+    );
+
+    clients.shield_recipient().await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+        .await;
+    clients.sync_recipient().await;
+
+    assert_eq!(
+        shielded_pool.spendable_balance(&clients.recipient_balance().await),
+        235_000
+    );
+
+    test_manager.close().await;
+}
+
+/// A transparent send returns the same address txids from the non-finalized chain
+/// and again after a seam-deep advance lands it in the finalized DB. Shared body of
+/// the per-validator gated `send_to_transparent_finalization` tests; the caller
+/// launches and funds the faucet first. The advance mines shielded coinbase, so the
+/// callers stay `#[ignore]`d until per-call cheap filler mining lands.
+pub async fn assert_send_to_transparent_finalization<V, Conn>(
+    mut test_manager: zaino_testutils::TestManager<V, Conn>,
+    mut clients: DevtoolClients,
+) where
+    V: zaino_testutils::ValidatorExt,
+    Conn: zaino_testutils::ValidatorConnectionMarker,
+{
+    let recipient_taddr = clients.get_recipient_address("transparent").await;
+    clients.send_from_faucet(&recipient_taddr, 250_000).await;
+    test_manager
+        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+        .await;
+
+    let fetch_service = test_manager.full_node_jsonrpc_connector().await;
+    let height = fetch_service.get_blockchain_info().await.unwrap().blocks.0;
+    let unfinalised_transactions = fetch_service
+        .get_address_txids(vec![recipient_taddr.clone()], height, height)
+        .await
+        .unwrap();
+
+    // The load-bearing advance: these blocks push the send below the seam
+    // (`FAST_TEST_MAX_NONFINALISED_DEPTH`) into the finalized DB.
+    test_manager
+        .generate_blocks_bulk_and_wait_for_tips(
+            // Advance past the seam so the send crosses the finalised floor
+            // (`tip - seam`); a small margin above it keeps the boundary unambiguous.
+            zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH + 5,
+            test_manager.subscriber(),
+            test_manager.subscriber(),
+        )
+        .await;
+
+    let finalised_transactions = fetch_service
+        .get_address_txids(vec![recipient_taddr], height, height)
+        .await
+        .unwrap();
+
+    clients.sync_recipient().await;
+    assert_eq!(
+        Pool::Transparent.spendable_balance(&clients.recipient_balance().await),
+        250_000
+    );
+    assert_eq!(unfinalised_transactions, finalised_transactions);
+
+    test_manager.close().await;
+}
+
+/// Broadcast two unmined shielded sends, observe them in the validator mempool,
+/// then mine them in. Shared body of the per-validator gated
+/// `monitor_unverified_mempool` tests; the caller launches and funds the faucet
+/// (two notes — one per unmined send) first.
+///
+/// The unconfirmed/confirmed balance assertions of the zingolib original stay
+/// commented out: devtool's `WalletBalance` surfaces only `*_spendable` (its sync
+/// is block-based and never scans the mempool). Restore them and un-ignore the
+/// callers when devtool surfaces unconfirmed balances.
+pub async fn assert_monitor_unverified_mempool<V, Conn>(
+    mut test_manager: zaino_testutils::TestManager<V, Conn>,
+    mut clients: DevtoolClients,
+) where
+    V: zaino_testutils::ValidatorExt,
+    Conn: zaino_testutils::ValidatorConnectionMarker,
+{
+    let recipient_ua = clients.get_recipient_address("unified").await;
+    let txid_1 = clients.send_from_faucet(&recipient_ua, 250_000).await;
+    let recipient_zaddr = clients.get_recipient_address("sapling").await;
+    let txid_2 = clients.send_from_faucet(&recipient_zaddr, 250_000).await;
+
+    clients.rescan_recipient().await;
+
+    let fetch_service = test_manager.full_node_jsonrpc_connector().await;
+    let mempool_txids = fetch_service.get_raw_mempool().await.unwrap();
+    dbg!(txid_1);
+    dbg!(txid_2);
+    dbg!(mempool_txids.clone());
+
+    let _transaction_1 = dbg!(
+        fetch_service
+            .get_raw_transaction(mempool_txids.transactions[0].clone(), Some(1))
+            .await
+    );
+    let _transaction_2 = dbg!(
+        fetch_service
+            .get_raw_transaction(mempool_txids.transactions[1].clone(), Some(1))
+            .await
+    );
+
+    // Unconfirmed (mempool) balances — devtool's WalletBalance has no
+    // unconfirmed_* fields (block-based sync, no mempool scan):
+    // assert_eq!(
+    //     clients.recipient_balance().await.unconfirmed_orchard_balance.unwrap().into_u64(),
+    //     250_000
+    // );
+    // assert_eq!(
+    //     clients.recipient_balance().await.unconfirmed_sapling_balance.unwrap().into_u64(),
+    //     250_000
+    // );
+
+    test_manager
+        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+        .await;
+
+    let _transaction_1 = dbg!(
+        fetch_service
+            .get_raw_transaction(mempool_txids.transactions[0].clone(), Some(1))
+            .await
+    );
+    let _transaction_2 = dbg!(
+        fetch_service
+            .get_raw_transaction(mempool_txids.transactions[1].clone(), Some(1))
+            .await
+    );
+
+    clients.sync_recipient().await;
+
+    // Confirmed balances — original asserts WalletBalance::confirmed_orchard_balance,
+    // also absent on devtool. Restore as e.g.:
+    // assert_eq!(
+    //     Pool::Orchard.spendable_balance(&clients.recipient_balance().await),
+    //     250_000
+    // );
+
+    test_manager.close().await;
+}

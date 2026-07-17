@@ -100,29 +100,7 @@ async fn launch_and_build_clients<Conn>() -> (TestManager<Zebrad, Conn>, Devtool
 where
     Conn: zaino_testutils::ValidatorConnectionMarker,
 {
-    let test_manager = TestManager::<Zebrad, Conn>::launch_mining_to(
-        zaino_testutils::SHIELDED_FUNDING_POOL,
-        &ValidatorKind::Zebrad,
-        None,
-        None,
-        None,
-        true,
-        false,
-        false,
-    )
-    .await
-    .expect("launch TestManager");
-
-    let clients = e2e::devtool::build_clients(
-        test_manager
-            .zaino_grpc_listen_address
-            .expect("zaino enabled")
-            .port(),
-        &test_manager.local_net,
-    )
-    .await;
-
-    (test_manager, clients)
+    e2e::devtool::launch_and_build_devtool_clients(&ValidatorKind::Zebrad, None).await
 }
 
 /// Port of `connect_to_node_get_info` (wallet_to_validator, zebrad): the faucet
@@ -173,23 +151,8 @@ async fn send_to_pool<Conn>(pool: e2e::Pool)
 where
     Conn: zaino_testutils::ValidatorConnectionMarker,
 {
-    let (mut test_manager, mut clients) = launch_and_fund_faucet::<Conn>(1).await;
-
-    let recipient = clients.get_recipient_address(pool.address_kind()).await;
-    let txid = clients.send_from_faucet(&recipient, 250_000).await;
-    dbg!(txid);
-
-    test_manager
-        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
-        .await;
-    clients.sync_recipient().await;
-
-    assert_eq!(
-        pool.spendable_balance(&clients.recipient_balance().await),
-        250_000
-    );
-
-    test_manager.close().await;
+    let (test_manager, clients) = launch_and_fund_faucet::<Conn>(1).await;
+    e2e::devtool::assert_send_to_pool(test_manager, clients, pool).await;
 }
 
 /// Port of `send_to_all` (wallet_to_validator, zebrad): one faucet funds a send
@@ -243,32 +206,8 @@ async fn shield_for_validator<Conn>()
 where
     Conn: zaino_testutils::ValidatorConnectionMarker,
 {
-    let (mut test_manager, mut clients) = launch_and_fund_faucet::<Conn>(1).await;
-
-    let recipient_taddr = clients.get_recipient_address("transparent").await;
-    clients.send_from_faucet(&recipient_taddr, 250_000).await;
-    test_manager
-        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
-        .await;
-    clients.sync_recipient().await;
-
-    assert_eq!(
-        e2e::Pool::Transparent.spendable_balance(&clients.recipient_balance().await),
-        250_000
-    );
-
-    clients.shield_recipient().await;
-    test_manager
-        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
-        .await;
-    clients.sync_recipient().await;
-
-    assert_eq!(
-        e2e::Pool::Ironwood.spendable_balance(&clients.recipient_balance().await),
-        235_000
-    );
-
-    test_manager.close().await;
+    let (test_manager, clients) = launch_and_fund_faucet::<Conn>(1).await;
+    e2e::devtool::assert_shield_for_validator(test_manager, clients, e2e::Pool::Ironwood).await;
 }
 
 /// Launch, fund the faucet with two orchard notes, and broadcast (without
@@ -1550,47 +1489,8 @@ async fn send_to_transparent_finalization<Conn>()
 where
     Conn: zaino_testutils::ValidatorConnectionMarker,
 {
-    let (mut test_manager, mut clients) = launch_and_fund_faucet::<Conn>(1).await;
-
-    let recipient_taddr = clients.get_recipient_address("transparent").await;
-    clients.send_from_faucet(&recipient_taddr, 250_000).await;
-    test_manager
-        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
-        .await;
-
-    let fetch_service = test_manager.full_node_jsonrpc_connector().await;
-    let height = fetch_service.get_blockchain_info().await.unwrap().blocks.0;
-    let unfinalised_transactions = fetch_service
-        .get_address_txids(vec![recipient_taddr.clone()], height, height)
-        .await
-        .unwrap();
-
-    // The load-bearing advance: these blocks push the send below the seam
-    // (`FAST_TEST_MAX_NONFINALISED_DEPTH`) into the finalized DB. Orchard coinbase
-    // here (see #[ignore] rationale).
-    test_manager
-        .generate_blocks_bulk_and_wait_for_tips(
-            // Advance past the seam so the send crosses the finalised floor
-            // (`tip - seam`); a small margin above it keeps the boundary unambiguous.
-            zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH + 5,
-            test_manager.subscriber(),
-            test_manager.subscriber(),
-        )
-        .await;
-
-    let finalised_transactions = fetch_service
-        .get_address_txids(vec![recipient_taddr], height, height)
-        .await
-        .unwrap();
-
-    clients.sync_recipient().await;
-    assert_eq!(
-        e2e::Pool::Transparent.spendable_balance(&clients.recipient_balance().await),
-        250_000
-    );
-    assert_eq!(unfinalised_transactions, finalised_transactions);
-
-    test_manager.close().await;
+    let (test_manager, clients) = launch_and_fund_faucet::<Conn>(1).await;
+    e2e::devtool::assert_send_to_transparent_finalization(test_manager, clients).await;
 }
 
 /// Port of `zebra::get::address_deltas` (zebrad): `getaddressdeltas` over a
@@ -2115,68 +2015,9 @@ async fn monitor_unverified_mempool<Conn>()
 where
     Conn: zaino_testutils::ValidatorConnectionMarker,
 {
-    let (mut test_manager, mut clients) = launch_and_fund_faucet::<Conn>(2).await;
-
-    let recipient_ua = clients.get_recipient_address("unified").await;
-    let txid_1 = clients.send_from_faucet(&recipient_ua, 250_000).await;
-    let recipient_zaddr = clients.get_recipient_address("sapling").await;
-    let txid_2 = clients.send_from_faucet(&recipient_zaddr, 250_000).await;
-
-    clients.rescan_recipient().await;
-
-    let fetch_service = test_manager.full_node_jsonrpc_connector().await;
-    let mempool_txids = fetch_service.get_raw_mempool().await.unwrap();
-    dbg!(txid_1);
-    dbg!(txid_2);
-    dbg!(mempool_txids.clone());
-
-    let _transaction_1 = dbg!(
-        fetch_service
-            .get_raw_transaction(mempool_txids.transactions[0].clone(), Some(1))
-            .await
-    );
-    let _transaction_2 = dbg!(
-        fetch_service
-            .get_raw_transaction(mempool_txids.transactions[1].clone(), Some(1))
-            .await
-    );
-
-    // Unconfirmed (mempool) balances — devtool's WalletBalance has no
-    // unconfirmed_* fields (block-based sync, no mempool scan):
-    // assert_eq!(
-    //     clients.recipient_balance().await.unconfirmed_orchard_balance.unwrap().into_u64(),
-    //     250_000
-    // );
-    // assert_eq!(
-    //     clients.recipient_balance().await.unconfirmed_sapling_balance.unwrap().into_u64(),
-    //     250_000
-    // );
-
-    test_manager
-        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
-        .await;
-
-    let _transaction_1 = dbg!(
-        fetch_service
-            .get_raw_transaction(mempool_txids.transactions[0].clone(), Some(1))
-            .await
-    );
-    let _transaction_2 = dbg!(
-        fetch_service
-            .get_raw_transaction(mempool_txids.transactions[1].clone(), Some(1))
-            .await
-    );
-
-    clients.sync_recipient().await;
-
-    // Confirmed balances — original asserts WalletBalance::confirmed_orchard_balance,
-    // also absent on devtool. Restore as e.g.:
-    // assert_eq!(
-    //     e2e::Pool::Orchard.spendable_balance(&clients.recipient_balance().await),
-    //     250_000
-    // );
-
-    test_manager.close().await;
+    // Two orchard notes — one per unmined send.
+    let (test_manager, clients) = launch_and_fund_faucet::<Conn>(2).await;
+    e2e::devtool::assert_monitor_unverified_mempool(test_manager, clients).await;
 }
 
 /// Port of `test_get_mempool_info` (fetch_service, zebrad): `get_mempool_info`

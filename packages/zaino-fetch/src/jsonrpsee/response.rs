@@ -33,13 +33,87 @@ use crate::jsonrpsee::connector::ResponseToError;
 
 use super::connector::RpcError;
 
-impl TryFrom<RpcError> for Infallible {
-    type Error = RpcError;
+/// Implements the pass-through `TryFrom<RpcError>` for RPC-specific error
+/// types that map no JSON-RPC error codes to variants of their own: every
+/// server-reported error surfaces unchanged as the generic [`RpcError`].
+// TODO: attempt to convert RpcError into errors specific to each RPC
+// response, removing types from these invocations as mappings become known.
+macro_rules! impl_rpc_error_passthrough {
+    ($($error_type:ty),* $(,)?) => {
+        $(
+            impl TryFrom<$crate::jsonrpsee::connector::RpcError> for $error_type {
+                type Error = $crate::jsonrpsee::connector::RpcError;
 
-    fn try_from(err: RpcError) -> Result<Self, Self::Error> {
-        Err(err)
+                fn try_from(
+                    value: $crate::jsonrpsee::connector::RpcError,
+                ) -> Result<Self, Self::Error> {
+                    Err(value)
+                }
+            }
+        )*
+    };
+}
+pub(crate) use impl_rpc_error_passthrough;
+
+/// Implements [`ResponseToError`] with the infallible error type, for
+/// responses whose failures always surface as generic transport/RPC errors
+/// rather than method-specific ones.
+macro_rules! impl_infallible_response_to_error {
+    ($($response_type:ty),* $(,)?) => {
+        $(
+            impl crate::jsonrpsee::connector::ResponseToError for $response_type {
+                type RpcError = std::convert::Infallible;
+            }
+        )*
+    };
+}
+pub(crate) use impl_infallible_response_to_error;
+
+impl_infallible_response_to_error!(
+    GetInfoResponse,
+    GetDifficultyResponse,
+    GetTxOutResponse,
+    ErrorsTimestamp,
+    GetBlockchainInfoResponse,
+    GetNetworkSolPsResponse,
+    GetTxOutSetInfoResponse,
+    ChainBalance,
+    GetBlockHash,
+    GetBlockCountResponse,
+    ValidateAddressResponse,
+    RawMempoolResponse,
+    GetTransactionResponse,
+    GetMempoolInfoResponse,
+);
+
+/// Maps a JSON-RPC error carrying `code` to the RPC-specific variant `ctor`
+/// builds from its message, passing every other error through unchanged.
+// The Err type is fixed by the `TryFrom<RpcError>` impls this serves: their
+// `Error = RpcError` (unboxed) is the trait contract, so the large-Err lint
+// cannot be satisfied here without changing every impl's signature.
+#[allow(clippy::result_large_err)]
+pub(crate) fn rpc_error_code_map<T>(
+    value: RpcError,
+    code: i64,
+    ctor: impl FnOnce(String) -> T,
+) -> Result<T, RpcError> {
+    if value.code == code {
+        Ok(ctor(value.message))
+    } else {
+        Err(value)
     }
 }
+
+impl_rpc_error_passthrough!(
+    Infallible,
+    ChainWorkError,
+    GetBalanceError,
+    SendTransactionError,
+    TxidsError,
+    GetTreestateError,
+    GetSubtreesError,
+    GetUtxosError
+);
 
 /// Response to a `getinfo` RPC request.
 ///
@@ -99,14 +173,6 @@ pub struct GetInfoResponse {
     errors_timestamp: ErrorsTimestamp,
 }
 
-impl ResponseToError for GetInfoResponse {
-    type RpcError = Infallible;
-}
-
-impl ResponseToError for GetDifficultyResponse {
-    type RpcError = Infallible;
-}
-
 /// Response to a `gettxout` RPC request.
 ///
 /// The result is either the validator's output object or `null` when the
@@ -115,10 +181,6 @@ impl ResponseToError for GetDifficultyResponse {
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(transparent)]
 pub struct GetTxOutResponse(pub Option<serde_json::Value>);
-
-impl ResponseToError for GetTxOutResponse {
-    type RpcError = Infallible;
-}
 
 /// Request parameters for the `getspentinfo` RPC request.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -167,6 +229,22 @@ impl TryFrom<super::connector::RpcError> for GetSpentInfoError {
             -8 => Ok(Self::InvalidParameter(value.message)),
             _ => Err(value),
         }
+    }
+}
+
+/// Test helpers shared by the response modules' `#[cfg(test)]` suites.
+#[cfg(test)]
+pub(crate) mod test_util {
+    /// Verifies that a type can be serialized and deserialized with the same shape.
+    ///
+    /// If the type does not have the same shape after serialization and deserialization, this function will panic.
+    pub(crate) fn roundtrip<T>(value: &T)
+    where
+        T: serde::Serialize + for<'de> serde::Deserialize<'de> + std::fmt::Debug + PartialEq,
+    {
+        let s = serde_json::to_string(value).unwrap();
+        let back: T = serde_json::from_str(&s).unwrap();
+        assert_eq!(&back, value);
     }
 }
 
@@ -289,9 +367,6 @@ impl From<ErrorsTimestamp> for i64 {
     }
 }
 
-impl ResponseToError for ErrorsTimestamp {
-    type RpcError = Infallible;
-}
 impl std::fmt::Display for ErrorsTimestamp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -398,10 +473,6 @@ pub struct GetBlockchainInfoResponse {
     commitments: u64,
 }
 
-impl ResponseToError for GetBlockchainInfoResponse {
-    type RpcError = Infallible;
-}
-
 /// Response to a `getdifficulty` RPC request.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct GetDifficultyResponse(pub f64);
@@ -409,10 +480,6 @@ pub struct GetDifficultyResponse(pub f64);
 /// Response to a `getnetworksolps` RPC request.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct GetNetworkSolPsResponse(pub u64);
-
-impl ResponseToError for GetNetworkSolPsResponse {
-    type RpcError = Infallible;
-}
 
 /// Response to a `gettxoutsetinfo` RPC request.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -447,10 +514,6 @@ pub struct GetTxOutSetInfo {
 /// Empty `gettxoutsetinfo` response returned by zcashd when stats collection fails.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct EmptyTxOutSetInfo {}
-
-impl ResponseToError for GetTxOutSetInfoResponse {
-    type RpcError = Infallible;
-}
 
 #[cfg(test)]
 mod get_tx_out_set_info_tests {
@@ -631,15 +694,6 @@ pub enum ChainWorkError {}
 impl ResponseToError for ChainWork {
     type RpcError = ChainWorkError;
 }
-impl TryFrom<RpcError> for ChainWorkError {
-    type Error = RpcError;
-
-    fn try_from(value: RpcError) -> Result<Self, Self::Error> {
-        // TODO: attempt to convert RpcError into errors specific to this RPC response
-        Err(value)
-    }
-}
-
 impl TryFrom<ChainWork> for u64 {
     type Error = ParseIntError;
 
@@ -662,10 +716,6 @@ impl Default for ChainWork {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ChainBalance(GetBlockchainInfoBalance);
 
-impl ResponseToError for ChainBalance {
-    type RpcError = Infallible;
-}
-
 impl<'de> Deserialize<'de> for ChainBalance {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -684,7 +734,8 @@ impl<'de> Deserialize<'de> for ChainBalance {
             monitored: bool,
         }
         let temp = TempBalance::deserialize(deserializer)?;
-        let computed_zat = (temp.chain_value * 100_000_000.0).round() as u64;
+        let computed_zat =
+            (temp.chain_value * (common::amount::ZATS_PER_ZEC as f64)).round() as u64;
         if computed_zat != temp.chain_value_zat {
             return Err(D::Error::custom(format!(
                 "chainValue and chainValueZat mismatch: computed {} but got {}",
@@ -795,15 +846,6 @@ pub enum GetBalanceError {
 impl ResponseToError for GetBalanceResponse {
     type RpcError = GetBalanceError;
 }
-impl TryFrom<RpcError> for GetBalanceError {
-    type Error = RpcError;
-
-    fn try_from(value: RpcError) -> Result<Self, Self::Error> {
-        // TODO: attempt to convert RpcError into errors specific to this RPC response
-        Err(value)
-    }
-}
-
 impl From<GetBalanceResponse> for zebra_rpc::methods::AddressBalance {
     fn from(response: GetBalanceResponse) -> Self {
         zebra_rpc::methods::GetAddressBalanceResponse::new(response.balance, response.received)
@@ -845,15 +887,6 @@ pub enum SendTransactionError {
 impl ResponseToError for SendTransactionResponse {
     type RpcError = SendTransactionError;
 }
-impl TryFrom<RpcError> for SendTransactionError {
-    type Error = RpcError;
-
-    fn try_from(value: RpcError) -> Result<Self, Self::Error> {
-        // TODO: attempt to convert RpcError into errors specific to this RPC response
-        Err(value)
-    }
-}
-
 impl From<SendTransactionResponse> for zebra_rpc::methods::SentTransactionHash {
     fn from(value: SendTransactionResponse) -> Self {
         zebra_rpc::methods::SentTransactionHash::new(value.0)
@@ -868,10 +901,6 @@ impl From<SendTransactionResponse> for zebra_rpc::methods::SentTransactionHash {
 )]
 #[serde(transparent)]
 pub struct GetBlockHash(#[serde(with = "hex")] pub zebra_chain::block::Hash);
-
-impl ResponseToError for GetBlockHash {
-    type RpcError = Infallible;
-}
 
 impl Default for GetBlockHash {
     fn default() -> Self {
@@ -925,30 +954,39 @@ impl hex::FromHex for SerializedBlock {
     }
 }
 
+/// Deserializes a hex-encoded JSON string into its decoded bytes. Shared by
+/// the hex-wrapper newtypes whose `Deserialize` impls differ only in the
+/// wrapping constructor applied to the bytes.
+fn deserialize_hex_bytes<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct HexVisitor;
+
+    impl serde::de::Visitor<'_> for HexVisitor {
+        type Value = Vec<u8>;
+
+        fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
+            formatter.write_str("a hex-encoded string")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: DeserError,
+        {
+            hex::decode(value).map_err(DeserError::custom)
+        }
+    }
+
+    deserializer.deserialize_str(HexVisitor)
+}
+
 impl<'de> serde::Deserialize<'de> for SerializedBlock {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        struct HexVisitor;
-
-        impl serde::de::Visitor<'_> for HexVisitor {
-            type Value = SerializedBlock;
-
-            fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
-                formatter.write_str("a hex-encoded string")
-            }
-
-            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-            where
-                E: DeserError,
-            {
-                let bytes = hex::decode(value).map_err(DeserError::custom)?;
-                Ok(SerializedBlock::from(bytes))
-            }
-        }
-
-        deserializer.deserialize_str(HexVisitor)
+        deserialize_hex_bytes(deserializer).map(SerializedBlock::from)
     }
 }
 
@@ -1077,11 +1115,7 @@ impl TryFrom<RpcError> for GetBlockError {
     fn try_from(value: RpcError) -> Result<Self, Self::Error> {
         // If the block is not in Zebra's state, returns
         // [error code `-8`.](https://github.com/zcash/zcash/issues/5758)
-        if value.code == -8 {
-            Ok(Self::MissingBlock(value.message))
-        } else {
-            Err(value)
-        }
+        rpc_error_code_map(value, -8, Self::MissingBlock)
     }
 }
 
@@ -1129,18 +1163,10 @@ impl ResponseToError for GetBlockResponse {
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct GetBlockCountResponse(Height);
 
-impl ResponseToError for GetBlockCountResponse {
-    type RpcError = Infallible;
-}
-
 impl From<GetBlockCountResponse> for Height {
     fn from(value: GetBlockCountResponse) -> Self {
         value.0
     }
-}
-
-impl ResponseToError for ValidateAddressResponse {
-    type RpcError = Infallible;
 }
 
 /// A block object containing data and metadata about a block.
@@ -1334,15 +1360,6 @@ pub enum TxidsError {
 impl ResponseToError for TxidsResponse {
     type RpcError = TxidsError;
 }
-impl TryFrom<RpcError> for TxidsError {
-    type Error = RpcError;
-
-    fn try_from(value: RpcError) -> Result<Self, Self::Error> {
-        // TODO: attempt to convert RpcError into errors specific to this RPC response
-        Err(value)
-    }
-}
-
 /// Separate response for the `get_raw_mempool` RPC method.
 ///
 /// Even though the output type is the same as [`TxidsResponse`],
@@ -1350,14 +1367,6 @@ impl TryFrom<RpcError> for TxidsError {
 pub struct RawMempoolResponse {
     /// Vec of txids.
     pub transactions: Vec<String>,
-}
-
-impl ResponseToError for RawMempoolResponse {
-    type RpcError = Infallible;
-
-    fn to_error(self) -> Result<Self, Self::RpcError> {
-        Ok(self)
-    }
 }
 
 impl<'de> serde::Deserialize<'de> for TxidsResponse {
@@ -1428,15 +1437,6 @@ pub enum GetTreestateError {
 impl ResponseToError for GetTreestateResponse {
     type RpcError = GetTreestateError;
 }
-impl TryFrom<RpcError> for GetTreestateError {
-    type Error = RpcError;
-
-    fn try_from(value: RpcError) -> Result<Self, Self::Error> {
-        // TODO: attempt to convert RpcError into errors specific to this RPC response
-        Err(value)
-    }
-}
-
 impl TryFrom<GetTreestateResponse> for zebra_rpc::client::GetTreestateResponse {
     type Error = zebra_chain::serialization::SerializationError;
 
@@ -1480,10 +1480,6 @@ pub enum GetTransactionResponse {
     Raw(#[serde(with = "hex")] zebra_chain::transaction::SerializedTransaction),
     /// The transaction object.
     Object(Box<zebra_rpc::client::TransactionObject>),
-}
-
-impl ResponseToError for GetTransactionResponse {
-    type RpcError = Infallible;
 }
 
 impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
@@ -1808,15 +1804,6 @@ pub enum GetSubtreesError {
 impl ResponseToError for GetSubtreesResponse {
     type RpcError = GetSubtreesError;
 }
-impl TryFrom<RpcError> for GetSubtreesError {
-    type Error = RpcError;
-
-    fn try_from(value: RpcError) -> Result<Self, Self::Error> {
-        // TODO: attempt to convert RpcError into errors specific to this RPC response
-        Err(value)
-    }
-}
-
 impl From<GetSubtreesResponse> for zebra_rpc::client::GetSubtreesByIndexResponse {
     fn from(value: GetSubtreesResponse) -> Self {
         zebra_rpc::client::GetSubtreesByIndexResponse::new(
@@ -1881,14 +1868,8 @@ impl<'de> serde::Deserialize<'de> for Script {
     where
         D: serde::Deserializer<'de>,
     {
-        let v = serde_json::Value::deserialize(deserializer)?;
-        if let Some(hex_str) = v.as_str() {
-            let bytes = hex::decode(hex_str).map_err(DeserError::custom)?;
-            let inner = zebra_chain::transparent::Script::new(&bytes);
-            Ok(Script(inner))
-        } else {
-            Err(DeserError::custom("expected a hex string"))
-        }
+        let bytes = deserialize_hex_bytes(deserializer)?;
+        Ok(Script(zebra_chain::transparent::Script::new(&bytes)))
     }
 }
 
@@ -1928,15 +1909,6 @@ pub enum GetUtxosError {
 impl ResponseToError for GetUtxosResponse {
     type RpcError = GetUtxosError;
 }
-impl TryFrom<RpcError> for GetUtxosError {
-    type Error = RpcError;
-
-    fn try_from(value: RpcError) -> Result<Self, Self::Error> {
-        // TODO: attempt to convert RpcError into errors specific to this RPC response
-        Err(value)
-    }
-}
-
 impl ResponseToError for Vec<GetUtxosResponse> {
     type RpcError = GetUtxosError;
 }
@@ -1981,10 +1953,6 @@ pub struct GetMempoolInfoResponse {
     pub bytes: u64,
     /// Total memory usage for the mempool
     pub usage: u64,
-}
-
-impl ResponseToError for GetMempoolInfoResponse {
-    type RpcError = Infallible;
 }
 
 #[cfg(test)]

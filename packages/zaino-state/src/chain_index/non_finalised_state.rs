@@ -838,15 +838,15 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         let (sapling_root, sapling_size, orchard_root, orchard_size, ironwood) =
             tree_roots.clone().extract_with_defaults();
 
-        let metadata = BlockMetadata::new(
+        let metadata = BlockMetadata {
             sapling_root,
-            sapling_size as u32,
+            sapling_size: sapling_size as u32,
             orchard_root,
-            orchard_size as u32,
-            ironwood.map(|(root, size)| (root, size as u32)),
+            orchard_size: orchard_size as u32,
+            ironwood: ironwood.map(|(root, size)| (root, size as u32)),
             parent_chainwork,
             network,
-        );
+        };
 
         let block_with_metadata = BlockWithMetadata::new(block, metadata);
         IndexedBlock::try_from(block_with_metadata)

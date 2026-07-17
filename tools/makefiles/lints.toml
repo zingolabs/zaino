@@ -92,6 +92,11 @@ description = "Fail if any Dockerfile installs a libssl*/openssl* apt package. T
 command = "cargo"
 args = ["run", "-q", "--manifest-path", "tools/workbench/Cargo.toml", "--bin", "check-no-openssl-apt"]
 
+[tasks.lint-code-duplication]
+description = "Fail on any exact or near duplicate Rust logic (AST-normalized, min 50 nodes) in packages/ (minus generated zaino-proto and in-crate tests/), live-tests/, and tools/. Escape hatch: annotated entries in .dupes-ignore.toml."
+command = "cargo"
+args = ["run", "-q", "--manifest-path", "tools/workbench/Cargo.toml", "--bin", "check-code-duplication"]
+
 [tasks.deny]
 description = "Enforce deny.toml's crate bans (openssl/openssl-sys/boring*). Scoped to `bans`: advisories/licenses have pre-existing failures (e.g. RUSTSEC-2022-0001 lmdb) tracked separately."
 command = "cargo"
@@ -113,6 +118,7 @@ dependencies = [
     "lint-toolchain-pin",
     "lint-crypto-provider",
     "lint-no-openssl-apt",
+    "lint-code-duplication",
     "deny",
     "lint-shell",
 ]

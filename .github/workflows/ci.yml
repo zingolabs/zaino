@@ -61,8 +61,8 @@ jobs:
     name: Repo guards
     # GitHub-hosted runner so it runs on pull requests. Runs the workbench
     # repo guards: the rustc-pin check (Dockerfile.deterministic's pallet-rust
-    # tag == rust-toolchain.toml channel) and the no-OpenSSL-apt check, plus the
-    # crate's own fmt/clippy/tests.
+    # tag == rust-toolchain.toml channel), the no-OpenSSL-apt check, and the
+    # duplicate-Rust-logic check, plus the crate's own fmt/clippy/tests.
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -79,6 +79,9 @@ jobs:
 
       - name: Check no OpenSSL apt packages
         run: cargo run -q --manifest-path tools/workbench/Cargo.toml --bin check-no-openssl-apt
+
+      - name: Check for duplicate Rust logic
+        run: cargo run -q --manifest-path tools/workbench/Cargo.toml --bin check-code-duplication
 
   cargo-deny:
     name: cargo-deny
