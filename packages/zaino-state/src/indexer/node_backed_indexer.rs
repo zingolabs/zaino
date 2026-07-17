@@ -1644,10 +1644,11 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
                     match mempool.get_mempool_transactions(exclude_suffixes).await {
                         Ok(entries) => {
                             for entry in entries {
-                                // Reuse the entry's cached compact form; compute it
-                                // (once per transaction, shared across all clients)
-                                // only on the first access.
-                                let compact = entry.compact_tx_or_init(|| {
+                                // Convert the entry to its compact wire form at the
+                                // boundary (the foundational mempool holds no
+                                // RPC/wire structs). TODO: fold into the dedicated
+                                // conversions crate in the hexagonal switchover.
+                                let compact = (|| {
                                     let txid = entry.txid.0.to_vec();
                                     let (remaining, full) =
                                         <FullTransaction as ParseFromSlice>::parse_from_slice(
@@ -1663,17 +1664,12 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
                                         ));
                                     }
                                     full.to_compact(0)
-                                        .map(std::sync::Arc::new)
                                         .map_err(|e| tonic::Status::unknown(e.to_string()))
-                                });
+                                })();
 
                                 match compact {
                                     Ok(compact) => {
-                                        if channel_tx
-                                            .send(Ok(compact.as_ref().clone()))
-                                            .await
-                                            .is_err()
-                                        {
+                                        if channel_tx.send(Ok(compact)).await.is_err() {
                                             break;
                                         }
                                     }

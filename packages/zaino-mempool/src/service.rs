@@ -495,7 +495,6 @@ impl<S: MempoolSource, N: NfsEpochObserver> MempoolService<S, N> {
                     entry_height: meta.entry_height,
                     entry_time: meta.entry_time,
                     first_seen_generation: next_generation,
-                    compact_tx: once_cell::sync::OnceCell::new(),
                 })))
             })
             .buffer_unordered(concurrency)
