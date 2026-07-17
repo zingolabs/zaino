@@ -1,6 +1,6 @@
 [package]
 name = "zaino-mempool"
-description = "Zaino's bounded, coherent local mempool read-model (hexagonal ports/adapters core)."
+description = "Zaino's mempool ports and foundational types (hexagonal core)."
 authors = { workspace = true }
 repository = { workspace = true }
 homepage = { workspace = true }
@@ -9,26 +9,11 @@ license = { workspace = true }
 version = "0.1.0"
 
 [dependencies]
-# Shared Zaino
-zaino-common = { workspace = true }
-
 # Zebra
 zebra-chain = { workspace = true }
 
-# Runtime
-tokio = { workspace = true, features = ["full"] }
-tokio-util = { workspace = true }
-futures = { workspace = true }
-arc-swap = { workspace = true }
-
-# Tracing
-tracing = { workspace = true }
-
-# Streams
-async-stream = "0.3"
+# Runtime — ports express change notifications as `tokio::sync::watch`.
+tokio = { workspace = true, features = ["sync"] }
 
 # Utility
 thiserror = { workspace = true }
-
-[dev-dependencies]
-tokio = { workspace = true, features = ["full", "test-util", "macros"] }

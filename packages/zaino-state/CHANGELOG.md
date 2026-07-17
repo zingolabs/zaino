@@ -58,16 +58,17 @@ and this library adheres to Rust's notion of
   dedicated `storage.database.accumulator_rebuild_memory_size` budget instead of
   reusing `sync_write_batch_size`, so the bulk-sync block buffer and the rebuild
   can no longer inflate each other's peak memory.
-- The mempool subsystem is reworked and moved into the new `zaino-mempool` crate,
-  wired in through ports/adapters (`chain_index::mempool_ports`); the ChainIndex
-  owns a `MempoolService` behind `NodeBackedChainIndex`. It is a bounded, coherent
-  read model with freeze/thaw dual-tip coherence (see
+- The mempool subsystem is reworked and moved into the new `zaino-mempool` /
+  `zaino-mempool-rpc` crates, wired in through ports/adapters
+  (`chain_index::mempool_ports`); the ChainIndex owns a `zaino-mempool-rpc`
+  `MempoolService` behind `NodeBackedChainIndex`. It is a bounded, coherent read
+  model with freeze/thaw dual-tip coherence (see
   `docs/adr/0007-mempool-subsystem-separation.md`).
 - `ChainIndex::get_mempool_transactions` now takes raw client-endian txid suffix
   bytes (`Vec<Vec<u8>>`, was hex `Vec<String>`) and returns shared mempool entries
   (`Vec<Arc<zaino_mempool::MempoolEntry>>`, was `Vec<Vec<u8>>`) so callers reuse
-  each entry's cached compact form. Over-cap or malformed exclude lists are
-  rejected as `InvalidArgument`.
+  each shared entry; the compact/wire form is derived at the RPC boundary. Over-cap
+  or malformed exclude lists are rejected as `InvalidArgument`.
 - Combined mempool reads (`get_raw_transaction`, `get_transaction_status`,
   `get_mempool_stream`) are gated on the caller's non-finalized-state epoch: they
   serve mempool data only when the mempool is coherent with that snapshot.

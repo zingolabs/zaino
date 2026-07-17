@@ -9,11 +9,11 @@ use tokio::sync::broadcast;
 use zaino_common::status::{NamedAtomicStatus, StatusType};
 use zebra_chain::transaction::Hash as TxHash;
 
-use crate::config::MempoolConfig;
-use crate::entry::MempoolEntry;
-use crate::event::MempoolEvent;
-use crate::ports::NonFinalizedEpoch;
-use crate::snapshot::MempoolSnapshot;
+use zaino_mempool::config::MempoolConfig;
+use zaino_mempool::entry::MempoolEntry;
+use zaino_mempool::event::MempoolEvent;
+use zaino_mempool::ports::NonFinalizedEpoch;
+use zaino_mempool::snapshot::MempoolSnapshot;
 
 /// Aggregate mempool metrics for `getmempoolinfo`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

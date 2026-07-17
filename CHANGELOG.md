@@ -8,16 +8,19 @@ and this library adheres to Rust's notion of
 ## Unreleased
 
 ### Added
-- New crate `zaino-mempool`: the mempool subsystem, reworked from the ground up
-  and separated from `zaino-state` behind ports/adapters — a bounded, coherent,
-  local read model of the validator's mempool with freeze/thaw dual-tip coherence,
-  and an optional validator-only mode (ADR-0007).
+- New crates `zaino-mempool` and `zaino-mempool-rpc`: the mempool subsystem,
+  reworked from the ground up and separated from `zaino-state` behind
+  ports/adapters — a bounded, coherent, local read model of the validator's
+  mempool with freeze/thaw dual-tip coherence, and an optional validator-only mode
+  (ADR-0007). `zaino-mempool` holds the ports and foundational types;
+  `zaino-mempool-rpc` holds the concrete polling service and read handle.
 
 ### Changed
-- The mempool is served by `zaino-mempool` (via the ChainIndex), replacing the old
-  `Broadcast`-based mempool: bounded inputs and memory, `O(N)` polling, lock-free
-  reads with shared entries, and a lazily-cached compact form reused across
-  clients.
+- The mempool is served by `zaino-mempool` / `zaino-mempool-rpc` (via the
+  ChainIndex), replacing the old `Broadcast`-based mempool: bounded inputs and
+  memory, `O(N)` polling, and lock-free reads with shared entries. The mempool
+  entry now holds only the full unmined transaction; RPC/wire forms (compact
+  transaction, lightclient `RawTransaction`) are derived at the boundary.
 - `zaino-state`: `FetchService` and `StateService` are merged into a single
   generic `NodeBackedIndexerService<Source>` (module
   `zaino_state::indexer::node_backed_indexer`; the former `backends` module is

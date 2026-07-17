@@ -18,7 +18,7 @@ use crate::chain_index::types::BlockIndex;
 /// The concrete mempool service the ChainIndex owns: the `zaino-mempool` service
 /// driven by this crate's source and non-finalized-state adapters.
 pub(crate) type ChainIndexMempool<Source> =
-    zaino_mempool::MempoolService<MempoolSourceAdapter<Source>, NfsEpochAdapter<Source>>;
+    zaino_mempool_rpc::MempoolService<MempoolSourceAdapter<Source>, NfsEpochAdapter<Source>>;
 
 /// Maps a `zaino-state` [`BlockchainSourceError`](crate::chain_index::source::BlockchainSourceError)
 /// (or any boxable adapter error) into a [`zaino_mempool::MempoolError`].

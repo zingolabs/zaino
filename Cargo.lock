@@ -5949,14 +5949,23 @@ dependencies = [
 name = "zaino-mempool"
 version = "0.1.0"
 dependencies = [
+ "thiserror 2.0.18",
+ "tokio",
+ "zebra-chain",
+]
+
+[[package]]
+name = "zaino-mempool-rpc"
+version = "0.1.0"
+dependencies = [
  "arc-swap",
  "async-stream",
  "futures",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
- "tracing",
  "zaino-common",
+ "zaino-mempool",
  "zebra-chain",
 ]
 
@@ -6033,6 +6042,7 @@ dependencies = [
  "zaino-common",
  "zaino-fetch",
  "zaino-mempool",
+ "zaino-mempool-rpc",
  "zaino-proto",
  "zcash_address",
  "zcash_keys",

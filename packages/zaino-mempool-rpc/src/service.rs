@@ -20,16 +20,16 @@ use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use zaino_common::status::{NamedAtomicStatus, StatusType};
 
-use crate::config::MempoolConfig;
-use crate::entry::MempoolEntry;
-use crate::event::MempoolEvent;
-use crate::ports::{MempoolSource, MempoolTxMeta, NfsEpochObserver, NonFinalizedEpoch};
-use crate::snapshot::{
+use crate::subscriber::MempoolSubscriber;
+use zaino_mempool::config::MempoolConfig;
+use zaino_mempool::entry::MempoolEntry;
+use zaino_mempool::event::MempoolEvent;
+use zaino_mempool::ports::{MempoolSource, MempoolTxMeta, NfsEpochObserver, NonFinalizedEpoch};
+use zaino_mempool::snapshot::{
     FreezeReason, MempoolCompleteness, MempoolMode, MempoolSnapshot, ObservedTips, TipChange,
     ValidatorTip,
 };
-use crate::subscriber::MempoolSubscriber;
-use crate::MempoolError;
+use zaino_mempool::MempoolError;
 
 /// Internal outcome of an attempted transaction-set update.
 #[derive(Debug)]
@@ -81,7 +81,7 @@ impl<S: MempoolSource, N: NfsEpochObserver> std::fmt::Debug for MempoolService<S
     }
 }
 
-impl<S: MempoolSource> MempoolService<S, crate::ports::NoNfs> {
+impl<S: MempoolSource> MempoolService<S, zaino_mempool::ports::NoNfs> {
     /// Spawn a validator-only mempool: it mirrors the validator's mempool without
     /// coordinating with a non-finalized state. Coherence collapses to single-tip
     /// (freeze on validator-tip change); the epoch is synthesized from the
@@ -246,7 +246,10 @@ impl<S: MempoolSource, N: NfsEpochObserver> MempoolService<S, N> {
     /// validator tip. Its generation increments only when the validator tip hash
     /// changes, so `agree()` holds while the validator tip is stable and the set
     /// re-reconciles when it changes — a single-tip freeze/thaw.
-    fn synthesized_epoch(&self, validator_tip: crate::ports::BlockRef) -> NonFinalizedEpoch {
+    fn synthesized_epoch(
+        &self,
+        validator_tip: zaino_mempool::ports::BlockRef,
+    ) -> NonFinalizedEpoch {
         let mut state = self.synth_epoch.lock().expect("synth epoch lock poisoned");
         if state.last_validator_hash != Some(validator_tip.hash) {
             state.generation = state.generation.saturating_add(1);

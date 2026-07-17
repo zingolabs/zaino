@@ -3,6 +3,7 @@
 members = [
     "packages/zaino-common",
     "packages/zaino-mempool",
+    "packages/zaino-mempool-rpc",
     "packages/zainod",
     "packages/zaino-serve",
     "packages/zaino-state",
@@ -20,6 +21,7 @@ members = [
 default-members = [
     "packages/zaino-common",
     "packages/zaino-mempool",
+    "packages/zaino-mempool-rpc",
     "packages/zainod",
     "packages/zaino-serve",
     "packages/zaino-state",
@@ -126,6 +128,7 @@ tempfile = "3.2"
 zainod = { path = "packages/zainod" }
 zaino-common = { path = "packages/zaino-common", version = "0.2.0" }
 zaino-mempool = { path = "packages/zaino-mempool", version = "0.1.0" }
+zaino-mempool-rpc = { path = "packages/zaino-mempool-rpc", version = "0.1.0" }
 # default-features = false so the default-on `zcashd_support` feature can be
 # dropped end-to-end via `--no-default-features`; each consumer re-enables it
 # by forwarding `zcashd_support` in its own `default`. See

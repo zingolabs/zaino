@@ -943,7 +943,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         let non_finalized_state = Arc::new(ArcSwapOption::empty());
         let cancel_token = CancellationToken::new();
 
-        let mempool = zaino_mempool::MempoolService::spawn(
+        let mempool = zaino_mempool_rpc::MempoolService::spawn(
             MempoolSourceAdapter(source.clone()),
             NfsEpochAdapter::new(Arc::clone(&non_finalized_state)),
             zaino_mempool::MempoolConfig::default(),
@@ -1250,7 +1250,7 @@ impl<Source: BlockchainSource> Drop for NodeBackedChainIndex<Source> {
 /// [`NodeBackedChainIndexSubscriber`] can safely be cloned and dropped freely.
 #[derive(Clone, Debug)]
 pub struct NodeBackedChainIndexSubscriber<Source: BlockchainSource = ValidatorConnector> {
-    mempool: zaino_mempool::MempoolSubscriber,
+    mempool: zaino_mempool_rpc::MempoolSubscriber,
     non_finalized_state: Arc<ArcSwapOption<crate::NonFinalizedState<Source>>>,
     finalized_state: finalised_state::reader::DbReader<Source>,
     status: NamedAtomicStatus,
@@ -1355,7 +1355,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
     /// values directly off the mempool's entries. Production code goes through
     /// the `ChainIndex` mempool API.
     #[cfg(feature = "test_dependencies")]
-    pub(crate) fn mempool_subscriber(&self) -> &zaino_mempool::MempoolSubscriber {
+    pub(crate) fn mempool_subscriber(&self) -> &zaino_mempool_rpc::MempoolSubscriber {
         &self.mempool
     }
 

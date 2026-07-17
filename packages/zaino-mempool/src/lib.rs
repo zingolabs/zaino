@@ -8,16 +8,20 @@
 //!
 //! # Ports and adapters
 //!
-//! Following the hexagonal (ports/adapters) pattern, this crate depends on
-//! nothing in `zaino-state`. Everything it needs from the outside world it
-//! expresses as a *port* — a trait it defines itself (see [`ports`]). The outer
-//! `zaino-state` crate supplies the *adapters* (concrete implementations of
-//! [`ports::MempoolSource`] and [`ports::NfsEpochObserver`]) and injects them
-//! into the mempool service. Dependencies always point inward: adapters know
-//! about this core; this core never names a `zaino-state` type.
+//! Following the hexagonal (ports/adapters) pattern, this crate defines the
+//! *ports* (traits) and foundational *types* of the mempool subsystem and
+//! depends on nothing in `zaino-state`. Everything the mempool needs from the
+//! outside world it expresses as a port — a trait it defines itself (see
+//! [`ports`]). Concrete *adapters/implementations* live one layer out in
+//! [`zaino-mempool-rpc`](https://docs.rs/zaino-mempool-rpc) (the polling
+//! `MempoolService` and the `MempoolSubscriber` read handle), and the outer
+//! `zaino-state` crate supplies the input adapters (concrete implementations of
+//! [`ports::MempoolSource`] and [`ports::NfsEpochObserver`]). Dependencies
+//! always point inward: adapters know about this core; this core never names an
+//! adapter or a `zaino-state` type.
 //!
-//! Keeping the mempool behind these two small ports lets it live in its own
-//! crate today, before the larger `zaino-state` decomposition (relocating
+//! Keeping the mempool behind these small ports lets it live in its own crate
+//! today, before the larger `zaino-state` decomposition (relocating
 //! `BlockIndex`, `BlockchainSource`, and the non-finalized state into shared
 //! crates) has happened.
 
@@ -26,12 +30,7 @@ pub mod entry;
 pub mod error;
 pub mod event;
 pub mod ports;
-pub mod service;
 pub mod snapshot;
-pub mod subscriber;
-
-#[cfg(test)]
-mod tests;
 
 pub use config::MempoolConfig;
 pub use entry::MempoolEntry;
@@ -40,12 +39,10 @@ pub use event::MempoolEvent;
 pub use ports::{
     BlockRef, MempoolSource, MempoolTxMeta, NfsEpochObserver, NoNfs, NonFinalizedEpoch,
 };
-pub use service::MempoolService;
 pub use snapshot::{
     FreezeReason, MempoolCompleteness, MempoolMode, MempoolSnapshot, ObservedTips, TipChange,
     ValidatorTip,
 };
-pub use subscriber::{MempoolFilterError, MempoolInfo, MempoolSubscriber, TxIdExcludeSuffix};
 
 /// A [`Future`](std::future::Future) that is [`Send`] and resolves to `T`.
 ///

@@ -17,12 +17,15 @@ use zebra_chain::{
     transaction::{Hash as TxHash, SerializedTransaction},
 };
 
-use crate::config::MempoolConfig;
-use crate::event::MempoolEvent;
-use crate::ports::{BlockRef, MempoolSource, MempoolTxMeta, NfsEpochObserver, NonFinalizedEpoch};
-use crate::snapshot::{FreezeReason, MempoolCompleteness, MempoolMode, MempoolSnapshot};
 use crate::subscriber::MempoolSubscriber;
-use crate::{MempoolError, MempoolService};
+use crate::MempoolService;
+use zaino_mempool::config::MempoolConfig;
+use zaino_mempool::event::MempoolEvent;
+use zaino_mempool::ports::{
+    BlockRef, MempoolSource, MempoolTxMeta, NfsEpochObserver, NonFinalizedEpoch,
+};
+use zaino_mempool::snapshot::{FreezeReason, MempoolCompleteness, MempoolMode, MempoolSnapshot};
+use zaino_mempool::MempoolError;
 
 // ---- mock ports --------------------------------------------------------
 
@@ -265,7 +268,7 @@ fn freeze_reason(snapshot: &MempoolSnapshot) -> Option<FreezeReason> {
 
 #[test]
 fn observed_tips_agree_and_disagree() {
-    use crate::snapshot::{ObservedTips, ValidatorTip};
+    use zaino_mempool::snapshot::{ObservedTips, ValidatorTip};
 
     let v = ValidatorTip {
         best_tip: block_ref(100, 0xAB),
