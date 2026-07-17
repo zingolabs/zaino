@@ -3,6 +3,7 @@
 members = [
     "packages/zaino-primitives",
     "packages/zaino-source",
+    "packages/zallet-driving-port",
     "packages/zaino-persistence",
     "packages/zaino-backend-lmdb",
     "packages/zaino-rpc",
@@ -30,6 +31,7 @@ members = [
 default-members = [
     "packages/zaino-primitives",
     "packages/zaino-source",
+    "packages/zallet-driving-port",
     "packages/zaino-rpc",
     "packages/zaino-source-zebra-rpc",
     "packages/zaino-common",
@@ -130,6 +132,7 @@ rayon = "1.10"
 # Async
 async-stream = "0.3"
 futures = "0.3.30"
+futures-core = "0.3.30"
 
 # Metrics
 metrics = "0.24"
@@ -187,6 +190,7 @@ zaino-sync = { path = "packages/zaino-sync" }
 zaino-indexes = { path = "packages/zaino-indexes" }
 zaino-convert-zebra = { path = "packages/zaino-convert-zebra" }
 zaino-source-zebra-readstate = { path = "packages/zaino-source-zebra-readstate" }
+zallet-driving-port = { path = "packages/zallet-driving-port" }
 
 # Zingo-infra (validator launcher driving the live tests; not a prod dep).
 # TEMPORARY (zingolabs/infrastructure#269): pinned to an exact commit on the

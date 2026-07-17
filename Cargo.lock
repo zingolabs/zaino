@@ -6383,6 +6383,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "zallet-driving-port"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "futures-core",
+ "thiserror 2.0.18",
+ "tokio",
+ "zaino-primitives",
+]
+
+[[package]]
 name = "zcash_address"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

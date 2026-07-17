@@ -1,0 +1,38 @@
+[package]
+name = "zallet-driving-port"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+
+[features]
+# The scriptable in-memory mock and the conformance test-kit that every
+# implementation of the port must pass. Pulls in tokio for the mock's
+# coalescing channels and the kit's promise deadline, and the full
+# futures facade for their stream adapters.
+testing = ["dep:tokio", "dep:futures"]
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[dependencies]
+# The base contract needs only the Stream trait; the full futures
+# facade (with its proc-macro dependencies) is a testing-only cost.
+futures-core.workspace = true
+futures = { workspace = true, optional = true }
+thiserror.workspace = true
+# Deliberately not the workspace tokio: that spec enables "full", and
+# workspace feature inheritance is additive-only. The testing surface
+# needs exactly the watch channel and the timer.
+tokio = { version = "1.38", default-features = false, features = [
+    "sync",
+    "time",
+], optional = true }
+zaino-primitives.workspace = true
+
+[dev-dependencies]
+futures.workspace = true
+tokio = { workspace = true, features = ["rt", "macros"] }
