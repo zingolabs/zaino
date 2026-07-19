@@ -684,6 +684,49 @@ mod coherence {
     }
 
     #[tokio::test]
+    async fn tip_agnostic_core_stays_live_while_coherence_freezes() {
+        // The payoff of the split: during a tip transition the tip-agnostic core
+        // keeps serving the *live* validator mempool (GetMempoolTx / getrawmempool)
+        // while only the tip-coherent view freezes.
+        let h = spawn_coherent(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
+        let core = h.core.subscriber();
+        wait_for(&h.subscriber, is_live).await;
+
+        // The validator advances to a new tip and its mempool gains a transaction;
+        // Zaino's NS tip stays behind (V != NS).
+        h.source.set_tip(block_ref(101, 0xCD));
+        h.source.set_mempool(vec![mtx(1, 100), mtx(2, 101)]);
+
+        // The core reflects the new live mempool immediately — it never freezes.
+        let mut live = core.snapshot();
+        for _ in 0..1000 {
+            live = core.snapshot();
+            if live.tx_count == 2 && live.source_tip == Some(block_ref(101, 0xCD)) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            live.tx_count, 2,
+            "core must serve the live mempool during a transition"
+        );
+        assert_eq!(
+            live.completeness,
+            zaino_mempool::snapshot::MempoolCompleteness::Complete
+        );
+        assert!(live.by_txid.contains_key(&txid(2)));
+
+        // Meanwhile the coherent view freezes at the last coherent set: the new
+        // transaction is live in the core but not blessed for the stale NS tip.
+        let frozen = wait_for(&h.subscriber, is_frozen).await;
+        assert_eq!(freeze_reason(&frozen), Some(FreezeReason::TipsDiverged));
+        assert_eq!(frozen.set.tx_count, 1);
+        assert!(!frozen.set.by_txid.contains_key(&txid(2)));
+
+        h.close();
+    }
+
+    #[tokio::test]
     async fn nonfinalized_tip_change_freezes() {
         let h = spawn_coherent(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
         wait_for(&h.subscriber, is_live).await;
