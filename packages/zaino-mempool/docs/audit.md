@@ -7,11 +7,13 @@ changed (with reasoning).
 
 ## Verdict
 
-The architecture is well-suited to the workload. The serving (read) path is
-lock-free and copy-free; the update (write) path is a single low-frequency poller.
-The efficiency work below targets the paths that actually matter for many clients
-(compact-tx reuse, per-poll fetch weight) rather than micro-optimizing the cheap
-write clone.
+The architecture is well-suited to the workload. It is split into a tip-agnostic
+core (always-live mirror + change feed) and an optional tip-aware coherence layer
+(freeze/thaw), so the live reads never block on tip transitions. The serving (read)
+path is lock-free and copy-free; the update (write) path is a single low-frequency
+poller. The efficiency work below targets the paths that actually matter for many
+clients (per-poll fetch weight, bounded feed cost, boundary-only wire conversion)
+rather than micro-optimizing the cheap write clone.
 
 ## Read / serve path — optimal, unchanged
 
@@ -19,10 +21,18 @@ Reads go through an immutable [`MempoolSnapshot`] published behind an
 `ArcSwap`. A `MempoolSubscriber::snapshot()` is a lock-free atomic load returning a
 shared `Arc`; `get_transaction` / `contains_txid` are `O(1)` `HashMap` lookups on
 that snapshot. Entries are shared `Arc<MempoolEntry>` — no per-subscriber byte
-copies (fixes the historical Z-09 amplification). Deltas flow over a bounded
-`tokio::sync::broadcast` channel, so a slow client is dropped, never backpressures
-the writer or other clients. This is the right shape for many concurrent readers
-and is kept as-is.
+copies (fixes the historical Z-09 amplification). This is the right shape for many
+concurrent readers and is kept as-is.
+
+The change feed flows over a bounded `tokio::sync::broadcast` channel, so a slow
+client is lagged (dropped forward), never backpressures the writer or other clients
+— memory is capped at `event_buffer_len` slots regardless of subscriber count. Two
+properties make it safe at scale: (1) the feed is **lossless at the level of
+state** — a lagged consumer is told so explicitly (`MempoolUpdate::Lagged`, or the
+in-band signal on the `mempool_updates()` stream) and resyncs from the lock-free
+`current()`; (2) buffered updates carry **no snapshots** (`Reset` is a sequence-only
+batch boundary; coherent `Live`/`Frozen` events carry only `valid_for`/`reason`), so
+slots stay tiny and thousands of subscribers cannot inflate retained memory.
 
 ## `im::HashMap` (persistent map) — considered and rejected
 
@@ -39,13 +49,18 @@ path to save microseconds on the cold write path — a bad trade. **Kept
 
 ## Implemented efficiency improvements
 
-- **Compact-tx cache (`MempoolEntry::compact_tx`).** `GetMempoolTx` previously
-  re-parsed every transaction into its compact form on every call. Entries are
-  shared `Arc`s that persist across polls, so a `OnceCell<Arc<CompactTx>>` computes
-  the compact form at most once per transaction and reuses it across all clients
-  and snapshots. The conversion still lives in the RPC/`zaino-fetch` layer (via
-  `MempoolEntry::compact_tx_or_init`); the entry only owns the cache slot. This is
-  the largest win under many-client `GetMempoolTx` load.
+- **Foundational entry, wire shape at the boundary.** `MempoolEntry` holds only the
+  full unmined transaction (bytes + protocol metadata) and a `transaction()` parse;
+  it carries no RPC/wire forms. The compact / lightclient `RawTransaction`
+  conversions are derived on demand at the RPC boundary, which keeps `zaino-mempool`
+  free of `zaino-proto` and lets each layer own its own shape. (A shared compact
+  cache can return in the boundary/conversion layer if `GetMempoolTx` profiling
+  warrants it, without re-coupling the core to proto types.)
+- **Re-fetch-free coherence.** The tip-aware layer reuses the core's already-fetched
+  set (tagged with the validator tip `V`); it issues no source reads of its own,
+  computing freeze/thaw purely from `(core set + source_tip, NS)`.
+- **Slimmed feed payloads.** Change-feed and coherent-event slots carry no snapshots
+  (see the serve-path note), bounding retained memory under many subscribers.
 - **Light diff + verbose-on-additions.** The update loop diffs on the cheap
   `getrawmempool` txid list every poll and fetches the heavier
   `getrawmempool verbose` (for tip-at-entry heights) only when the diff shows
@@ -81,8 +96,13 @@ path to save microseconds on the cold write path — a bad trade. **Kept
 
 ## Correctness
 
-No defect was found. The two coherence guards (V == NS before and after the
-transaction fetch) plus generation-on-tip-change give a sound freeze/thaw model;
-the validator-tip-first observation ordering is self-correcting through the guards.
-The freeze/thaw and update rules are exercised by the `zaino-mempool` test matrix
-and the `zaino-state` mockchain integration tests.
+No defect was found. Coherence rests on the core tagging every set with the
+validator tip it was fetched at (`source_tip`), guarded by a tag-stability check
+(the tip must not move across the fetch window, else the poll is discarded) so the
+tag and the data are a single-source pair. The coherence layer then computes
+freeze/thaw as a pure function of `(core set + source_tip, NS)` — no re-fetch, no
+before/after guards — with generation-on-tip-change distinguishing epochs. The core
+never freezes, so the live reads stay correct through tip transitions. The
+freeze/thaw, change-feed (including the explicit lag signal), and update rules are
+exercised by the `zaino-mempool-rpc` test matrix (core and coherence suites, both
+feature modes) and the `zaino-state` mockchain integration tests.

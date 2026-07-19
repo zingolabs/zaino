@@ -79,6 +79,28 @@ async fn wait_for_mempool_txids(
     .await;
 }
 
+/// Wait until the tip-aware coherence layer has blessed the current mempool set
+/// for the current non-finalized snapshot — i.e. a coherent read/stream succeeds.
+///
+/// The tip-agnostic core populates its txids before the coherence layer
+/// reconciles `V == NS`, so tests exercising the *coherent* reads
+/// (`get_raw_transaction`, `get_transaction_status`, `get_mempool_stream`) must
+/// wait for this, not just for the core's txids ([`wait_for_mempool_txids`]).
+async fn wait_for_mempool_coherent(index_reader: &NodeBackedChainIndexSubscriber<MockchainSource>) {
+    poll_until(
+        "mempool coherence to bless the current tip",
+        Duration::from_secs(10),
+        Duration::from_millis(25),
+        || async {
+            let snapshot = index_reader.snapshot_nonfinalized_state().await.ok()?;
+            // A `Some` stream means coherence is valid for this snapshot's epoch,
+            // the same guard the coherent point reads use. Drop it immediately.
+            index_reader.get_mempool_stream(Some(&snapshot)).map(|_| ())
+        },
+    )
+    .await;
+}
+
 /// The expected mempool txids for the active mockchain: the non-coinbase txs of
 /// the block at `tip + 1` (the mockchain models these as the mempool).
 fn expected_mempool_txids(
@@ -270,6 +292,7 @@ async fn get_mempool_transaction() {
         &expected_mempool_txids(&block_data, mockchain_tip),
     )
     .await;
+    wait_for_mempool_coherent(&index_reader).await;
 
     let mempool_height = (mockchain_tip as usize) + 1;
 
@@ -323,6 +346,7 @@ async fn get_mempool_transaction_status() {
         &expected_mempool_txids(&block_data, mockchain_tip),
     )
     .await;
+    wait_for_mempool_coherent(&index_reader).await;
 
     let mempool_height = (mockchain_tip as usize) + 1;
 
@@ -374,6 +398,7 @@ async fn get_mempool_transactions() {
         &expected_mempool_txids(&block_data, mockchain_tip),
     )
     .await;
+    wait_for_mempool_coherent(&index_reader).await;
 
     let mempool_height = (mockchain_tip as usize) + 1;
     let mut mempool_transactions: Vec<_> = block_data
@@ -426,6 +451,7 @@ async fn get_filtered_mempool_transactions() {
         &expected_mempool_txids(&block_data, mockchain_tip),
     )
     .await;
+    wait_for_mempool_coherent(&index_reader).await;
 
     let mempool_height = (mockchain_tip as usize) + 1;
     let mut mempool_transactions: Vec<_> = block_data
@@ -484,6 +510,7 @@ async fn get_mempool_stream_no_expected_chain_tip_snapshot() {
         &expected_mempool_txids(&block_data, mockchain_tip),
     )
     .await;
+    wait_for_mempool_coherent(&index_reader).await;
 
     let next_mempool_height_index = (mockchain_tip as usize) + 1;
     let mut mempool_transactions: Vec<_> = block_data
@@ -550,6 +577,7 @@ async fn get_mempool_stream_correct_expected_chain_tip_snapshot() {
         &expected_mempool_txids(&block_data, mockchain_tip),
     )
     .await;
+    wait_for_mempool_coherent(&index_reader).await;
 
     let next_mempool_height_index = (mockchain_tip as usize) + 1;
     let mut mempool_transactions: Vec<_> = block_data

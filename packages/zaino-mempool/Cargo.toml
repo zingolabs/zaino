@@ -12,8 +12,19 @@ version = "0.1.0"
 # Zebra
 zebra-chain = { workspace = true }
 
-# Runtime — ports express change notifications as `tokio::sync::watch`.
+# Runtime — ports express the change feed as `tokio::sync::broadcast` and block
+# wake hints as `tokio::sync::watch`.
 tokio = { workspace = true, features = ["sync"] }
+
+# Streams — only the tip-aware `TipAwareMempool` port returns a `Stream`.
+futures = { workspace = true, optional = true }
 
 # Utility
 thiserror = { workspace = true }
+
+[features]
+# Opt-in tip-coherence layer: the NS-epoch observer port, the `TipAwareMempool`
+# port (whose stream method pulls in `futures`), and the coherent-view types
+# (`CoherentSnapshot`, freeze/thaw metadata). Off by default so the tip-agnostic
+# core can be used standalone.
+tip_aware_mempool = ["dep:futures"]

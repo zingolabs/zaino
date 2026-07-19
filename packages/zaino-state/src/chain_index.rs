@@ -11,7 +11,11 @@
 //!     - b. Build trasparent tx indexes efficiently
 //!   - NOTE: Full transaction and block data is served from the backend finalizer.
 
-use crate::chain_index::mempool_ports::{ChainIndexMempool, MempoolSourceAdapter, NfsEpochAdapter};
+use crate::chain_index::mempool_ports::{
+    ChainIndexCoherence, ChainIndexMempool, MempoolSourceAdapter, NfsEpochAdapter,
+};
+// The coherent mempool stream is a `TipAwareMempool` port method; bring the trait
+// into scope to call it on the concrete coherence subscriber.
 use crate::chain_index::non_finalised_state::ChainIndexSnapshot;
 use crate::chain_index::source::GetTransactionLocation;
 use crate::chain_index::types::db::metadata::MempoolInfo;
@@ -29,6 +33,7 @@ use crate::{IndexedBlock, Outpoint, TransactionHash};
 use std::collections::HashSet;
 use std::str::FromStr;
 use std::{sync::Arc, time::Duration};
+use zaino_mempool::TipAwareMempool as _;
 
 use arc_swap::ArcSwapOption;
 use futures::Stream;
@@ -848,6 +853,7 @@ pub trait ChainIndexRpcExt: ChainIndex {
 #[derive(Debug)]
 pub struct NodeBackedChainIndex<Source: BlockchainSource = ValidatorConnector> {
     mempool: std::sync::Arc<ChainIndexMempool<Source>>,
+    coherence: std::sync::Arc<ChainIndexCoherence<Source>>,
     non_finalized_state: Arc<ArcSwapOption<crate::NonFinalizedState<Source>>>,
     finalized_db: std::sync::Arc<finalised_state::FinalisedState<Source>>,
     sync_loop_handle: Option<tokio::task::JoinHandle<Result<(), SyncError>>>,
@@ -943,8 +949,17 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         let non_finalized_state = Arc::new(ArcSwapOption::empty());
         let cancel_token = CancellationToken::new();
 
+        // The tip-agnostic core mirrors the validator's mempool (never frozen);
+        // the coherence layer wraps its read handle plus the NFS epoch observer to
+        // serve the tip-coherent reads and stream. See ADR-0007 and the mempool
+        // `tip` module for why the core tags V and coherence layers on top.
         let mempool = zaino_mempool_rpc::MempoolService::spawn(
             MempoolSourceAdapter(source.clone()),
+            zaino_mempool::MempoolConfig::default(),
+            cancel_token.child_token(),
+        );
+        let coherence = zaino_mempool_rpc::CoherenceService::spawn(
+            mempool.subscriber(),
             NfsEpochAdapter::new(Arc::clone(&non_finalized_state)),
             zaino_mempool::MempoolConfig::default(),
             cancel_token.child_token(),
@@ -952,6 +967,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
 
         let mut chain_index = Self {
             mempool,
+            coherence,
             non_finalized_state,
             finalized_db,
             sync_loop_handle: None,
@@ -971,6 +987,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
     pub fn subscriber(&self) -> NodeBackedChainIndexSubscriber<Source> {
         NodeBackedChainIndexSubscriber {
             mempool: self.mempool.subscriber(),
+            coherence: self.coherence.subscriber(),
             non_finalized_state: self.non_finalized_state.clone(),
             finalized_state: self.finalized_db.to_reader(),
             status: self.status.clone(),
@@ -1008,6 +1025,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
     pub(crate) fn shutdown_sync_best_effort(&self) {
         self.cancel_token.cancel();
         self.status.store(StatusType::Closing);
+        self.coherence.close();
         self.mempool.close();
         self.source.shutdown();
     }
@@ -1251,6 +1269,7 @@ impl<Source: BlockchainSource> Drop for NodeBackedChainIndex<Source> {
 #[derive(Clone, Debug)]
 pub struct NodeBackedChainIndexSubscriber<Source: BlockchainSource = ValidatorConnector> {
     mempool: zaino_mempool_rpc::MempoolSubscriber,
+    coherence: zaino_mempool_rpc::CoherentSubscriber,
     non_finalized_state: Arc<ArcSwapOption<crate::NonFinalizedState<Source>>>,
     finalized_state: finalised_state::reader::DbReader<Source>,
     status: NamedAtomicStatus,
@@ -1871,10 +1890,10 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         // transaction would be mined in the block after the agreed tip, so its
         // consensus branch id is that of `tip + 1`.
         if let Some(caller_epoch) = snapshot.nfs_epoch() {
-            let mempool_snapshot = self.mempool.snapshot();
-            if mempool_snapshot.is_valid_for_snapshot(caller_epoch) {
+            let coherent_snapshot = self.coherence.coherent_snapshot();
+            if coherent_snapshot.is_valid_for_snapshot(caller_epoch) {
                 let mempool_txid = zebra_chain::transaction::Hash(txid.0);
-                if let Some(entry) = mempool_snapshot.by_txid.get(&mempool_txid) {
+                if let Some(entry) = coherent_snapshot.get(&mempool_txid) {
                     let bytes = entry.serialized_bytes().to_vec();
                     let branch_id = (caller_epoch.best_tip.height + 1)
                         .and_then(|height| ConsensusBranchId::current(&self.network, height))
@@ -1976,13 +1995,13 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                         })
                         .map(|block| NonBestChainLocation::Block(*block.hash(), block.height()))
                         .collect();
-                let mempool_snapshot = self.mempool.snapshot();
+                let coherent_snapshot = self.coherence.coherent_snapshot();
                 let mempool_txid = zebra_chain::transaction::Hash(txid.0);
-                if mempool_snapshot.by_txid.contains_key(&mempool_txid) {
+                if coherent_snapshot.set.by_txid.contains_key(&mempool_txid) {
                     // The mempool set is current for this caller only when its
                     // coherent epoch matches the caller's snapshot epoch.
                     let coherent = snapshot.nfs_epoch().is_some()
-                        && mempool_snapshot.valid_for == snapshot.nfs_epoch();
+                        && coherent_snapshot.valid_for == snapshot.nfs_epoch();
                     if coherent {
                         if best_chain_block.is_some() {
                             return Err(ChainIndexError {
@@ -2001,7 +2020,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                         // The mempool is coherent with a different tip than the
                         // caller's snapshot: report it as a non-best-chain
                         // mempool location at the mempool's own tip + 1.
-                        let target_height = mempool_snapshot
+                        let target_height = coherent_snapshot
                             .valid_for
                             .map(|epoch| types::Height::from(epoch.best_tip.height) + 1);
                         non_best_chain_blocks.insert(NonBestChainLocation::Mempool(target_height));
@@ -2092,7 +2111,9 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         // `None` here means the mempool is not (or no longer) valid for the
         // caller's epoch — the tip moved between snapshot and open. Surfacing
         // `None` lets the caller re-snapshot rather than receive a stale stream.
-        let raw_stream = self.mempool.stream_raw_transactions(expected_epoch)?;
+        let raw_stream = self
+            .coherence
+            .stream_transactions_until_tip_change(expected_epoch)?;
 
         // Box::pin so the returned stream is `Unpin` for `.next()`-loop consumers
         // (the `async-stream` generator is `!Unpin`).

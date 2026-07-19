@@ -4,44 +4,75 @@ How Zaino's mempool read model tracks the validator's mempool, which states it
 moves through, and how transactions enter and leave it. This is a *read model*: it
 mirrors the validator, it does not validate, gossip, or evict on its own policy.
 
+The subsystem is split into two layers:
+
+- **The tip-agnostic core** (`MempoolService`, always on) — mirrors the validator's
+  mempool as a live, never-frozen set. Serves `getrawmempool` / `getmempoolinfo` /
+  `GetMempoolTx` and the change feed.
+- **The tip-aware coherence layer** (`CoherenceService`, feature `tip_aware_mempool`)
+  — makes the core set coherent with Zaino's chain tip via freeze/thaw. Serves the
+  tip-coherent reads (`get_raw_transaction`, `get_transaction_status`) and the
+  raw-transaction stream.
+
 ## The two tips
 
-The mempool coordinates two chain tips:
+Coherence coordinates two chain tips:
 
 - **V — the validator / mempool-source tip.** The tip of the source that supplies
-  mempool data (`getrawmempool` / `getrawtransaction`). Observed via
-  `MempoolSource::get_mempool_source_tip`. Mempool transactions are only meaningful
+  mempool data (`getrawmempool` / `getrawtransaction`). The **core** reads it via
+  `MempoolSource::get_mempool_source_tip` and **tags every published snapshot** with
+  it (`MempoolSnapshot::source_tip`). Mempool transactions are only meaningful
   relative to the tip they are unconfirmed against.
 - **NS — the non-finalized-state tip.** Zaino's ChainIndex tip
-  (`NfsEpochObserver::current_epoch`, an `(generation, best_tip)` epoch). This is
-  the tip Zaino's block reads are served from.
+  (`NfsEpochObserver::current_epoch`, a `(generation, best_tip)` epoch). This is the
+  tip Zaino's block reads are served from. Observed only by the **coherence layer**.
 
 Zaino serves *combined* answers (ChainIndex blocks + mempool). If V is ahead of NS,
-serving mempool data from V mixed with block data from an older NS is incoherent.
-So the mempool only mutates its set while **V and NS agree** (same tip hash), and
-freezes otherwise, serving the last coherent set until they agree again.
+serving mempool data from V mixed with block data from an older NS is incoherent. So
+the coherence layer only blesses the set as coherent while **V and NS agree** (same
+tip hash), and freezes otherwise, serving the last coherent set until they agree
+again. Because the core tags each set with the V it was fetched at, this is a
+re-fetch-free comparison — see the ADR and the `tip` module.
 
 In **validator-only** mode (`spawn_validator_only`) there is no NS; NS is
 synthesized from V, so coherence collapses to a single tip — freeze on V change.
 
-## States
+## Core lifecycle — always live, never frozen
+
+The core never freezes; it always reflects the latest validator mempool. Its
+snapshots carry no freeze/thaw mode, only a `source_tip` tag and a completeness:
+
+- **`Complete`** — a full view of the validator's mempool at `source_tip`.
+- **`IncompleteSourceError`** — a source read failed this poll; the last set is
+  retained and marked, and the next poll retries. Never dropped.
+- **`IncompleteCapacityLimited`** — applying an addition would breach the cost bound
+  (`max_cost_bytes`, the DoS backstop); the addition is dropped and the set marked,
+  rather than exceeding the bound or claiming a complete-but-oversized view.
+
+Every set change is published as a bounded [`MempoolUpdate`] change feed —
+`Added` / `Removed` / `Reset{sequence}` (the batch boundary) / `Closing`, plus an
+in-band `Lagged{missed}` for a consumer that falls behind. The feed is **lossless
+at the level of state**: a lagged consumer resyncs from `current()` (see the
+`update` module contract). Consume it ergonomically via `mempool_updates()`.
+
+## Coherent view states (tip-aware layer)
 
 ```text
                 NS/V unavailable
              ┌──────────────────┐
-             │     NotReady     │  no coherent set yet
+             │     NotReady     │  no coherent view yet
              └────────┬─────────┘
                       │ V and NS known
-         ┌────────────▼─────────────┐   V != NS, a tip changed,
-         │          Frozen          │◄──┐ source error, or capacity
-         │  last coherent set kept  │   │ breach
+         ┌────────────▼─────────────┐   V != NS, a tip changed, or
+         │          Frozen          │◄──┐ the core set is incomplete
+         │  last coherent set kept  │   │
          └────────────┬─────────────┘   │
-                      │ V == NS          │
-                      │ (reconcile:      │
-                      │  fetch + diff)   │
+                      │ V == NS &&        │
+                      │ core Complete     │
+                      │ (bless core set)  │
          ┌────────────▼─────────────┐    │
          │           Live           │────┘
-         │   set == validator @ V   │
+         │  core set, valid_for NS  │
          └────────────┬─────────────┘
                       │ close()
              ┌────────▼─────────┐
@@ -49,27 +80,31 @@ synthesized from V, so coherence collapses to a single tip — freeze on V chang
              └──────────────────┘
 ```
 
-- **NotReady** — nothing coherent has been published; reads see an empty set.
-- **Live { valid_for }** — V and NS agree; the set equals the validator's mempool
-  at that epoch. Transaction additions/removals are applied and delta events emit.
-- **Frozen { valid_for, reason }** — the set is not mutated; the last coherent
-  snapshot stays readable and live delta streams close. `reason` is one of
-  `ValidatorTipUnavailable` / `NonFinalizedUnavailable`, `TipsDiverged` (V and NS
-  known but disagree — the common tip-change case), `BothTipsChanged` /
-  `ValidatorTipChanged` / `NonFinalizedTipChanged` (coherent transitions momentarily
-  frozen before reconciling), `SourceError`, or `CapacityLimited`.
-- **Closing** — shutdown; a final snapshot and `Closing` event are published.
+The coherence layer's reconcile is a pure function of `(core set + source_tip, NS)`
+with **no re-fetch**:
 
-Completeness travels with the snapshot: `Complete`, `IncompleteSourceError`, or
-`IncompleteCapacityLimited` — full-mempool APIs must never present an incomplete
-set as complete.
+- **NotReady** — nothing coherent has been published; coherent reads see an empty
+  view.
+- **Live { valid_for }** — V and NS agree and the core set is `Complete`; the
+  coherent view wraps the core's current set, keyed to that NS epoch. New additions
+  emit `Added` events on the coherent stream.
+- **Frozen { valid_for, reason }** — the coherent view is not advanced; the last
+  coherent snapshot stays readable and the coherent stream keeps serving it until
+  the tips re-agree. `reason` is one of `ValidatorTipUnavailable` /
+  `NonFinalizedUnavailable`, `TipsDiverged` (V and NS known but disagree — the common
+  tip-change case), `BothTipsChanged` / `ValidatorTipChanged` /
+  `NonFinalizedTipChanged` (coherent transitions momentarily frozen before
+  reconciling), or `CoreIncomplete` (the core set is not `Complete` — a source error
+  or capacity breach in the core, so it cannot be blessed).
+- **Closing** — shutdown; a final coherent snapshot and `Closing` event are
+  published.
 
 ## How a transaction is ADDED
 
-Per poll (interval or block-wake), while V and NS agree on epoch `E`:
+The **core** applies additions on every poll (interval or block-wake); it does *not*
+wait for tip agreement — that is the coherence layer's job:
 
-1. **Coherence guard (before).** Re-observe V and NS; abort if they no longer agree
-   on `E`.
+1. **Tag (before).** Read V — the validator tip this poll's data corresponds to.
 2. **Diff.** Fetch the light `getrawmempool` txid list and diff it against the
    current set → `added` / `removed` txids.
 3. **Heights.** If there are additions, fetch `getrawmempool verbose` to obtain each
@@ -79,15 +114,20 @@ Per poll (interval or block-wake), while V and NS agree on epoch `E`:
 4. **Raw fetch.** Fetch raw bytes for each added txid (bounded concurrency). A txid
    that disappeared between listing and fetch is skipped (a normal race), not an
    error.
-5. **Coherence guard (after).** Re-observe V and NS; if they no longer agree on `E`,
-   discard all fetched work and freeze — an update built against a tip that moved
-   mid-fetch is never published.
-6. **Publish.** Swap in a new immutable snapshot and emit `Added` (and `Removed`)
-   delta events, then a `Live` event.
+5. **Tag-stability guard (after).** Re-read V; if it moved across the fetch window,
+   this poll's data is smeared across two tips and cannot be soundly tagged — discard
+   and retry next poll. This is what makes `source_tip` a single-source pair with the
+   set, so coherence can trust `V == NS` without re-fetching.
+6. **Publish.** Swap in a new immutable snapshot tagged with V and emit `Added` /
+   `Removed` deltas then a `Reset` batch boundary.
+
+The **coherence layer** then reconciles (on the core's update or its own poll): if
+V == NS and the core set is `Complete`, it blesses the set `Live` for that NS epoch
+and emits `Added` on the coherent stream.
 
 Wire height for unconfirmed transactions is `0` (the "in the mempool" sentinel,
-matching lightwalletd); the stored `entry_height` is protocol metadata, and the
-consensus branch id for signing uses `tip + 1`.
+matching lightwalletd), derived at the RPC boundary; the stored `entry_height` is
+protocol metadata, and the consensus branch id for signing uses `tip + 1`.
 
 ## How a transaction is EVICTED
 
@@ -96,17 +136,21 @@ when:
 
 - **It leaves the validator's mempool** — mined into a block, or evicted by the
   validator (ZIP-401 cost eviction, expiry, or conflict). It disappears from the
-  next txid diff and is `Removed` from the next Live snapshot. This mirrors Zebra's
+  next txid diff and is `Removed` from the next core snapshot. This mirrors Zebra's
   own mempool eviction on `TipAction::Grow` (mined + conflicting + expired) and
   `Reset`.
-- **A tip changes** — the whole set freezes (it is stale relative to the new tip);
-  it is re-reconciled against the validator once the tips agree at the new tip.
-- **A capacity breach** — if applying an update would exceed the configured cost
+- **A capacity breach** — if applying an addition would exceed the configured cost
   bound (`max_cost_bytes`, a DoS backstop set above the validator's own ZIP-401
-  cap), the update is not applied; the prior set is kept and marked
-  `IncompleteCapacityLimited` (never dropped silently, never claimed complete).
-- **A source error** — the set freezes as `IncompleteSourceError`; the last
-  coherent set stays readable and updates resume when the source recovers.
+  cap), the addition is not applied; the prior set is kept and the core marks it
+  `IncompleteCapacityLimited` (never dropped silently, never claimed complete). The
+  coherence layer then holds `Frozen{CoreIncomplete}` until the core is `Complete`
+  again.
+- **A source error** — the core keeps the last set and marks it
+  `IncompleteSourceError`; updates resume when the source recovers. Coherence holds
+  `Frozen{CoreIncomplete}` meanwhile.
+
+Note that in the split model, a **tip change never evicts from the core** — the core
+stays live across tips; only the *coherent view* freezes until the tips re-agree.
 
 ## Cost accounting
 
@@ -114,3 +158,5 @@ Each entry's cost mirrors Zebra's ZIP-401 metric: `max(serialized_size, 10_000)`
 bytes. The snapshot's total cost is bounded by `max_cost_bytes` (default 128 MiB,
 runtime-adjustable) — deliberately above Zebra's 80 MB `tx_cost_limit` so the
 validator's own eviction keeps its mempool under Zaino's cap in healthy operation.
+
+[`MempoolUpdate`]: ../src/update.rs

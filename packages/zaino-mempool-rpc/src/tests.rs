@@ -1,31 +1,29 @@
-//! The mempool service test matrix, driven by in-crate mock ports.
+//! Test matrix for the mempool adapter layer, driven by in-crate mock ports.
 //!
-//! Covers the freeze/thaw tip-coherence rules, incremental update behaviour,
-//! capacity bounds, source errors, frozen serving, stream/subscriber semantics,
-//! validator-only mode, and (in the `concurrency` submodule) high-throughput /
-//! many-reader behaviour. Epoch-gated *combined* ChainIndex reads
-//! (`get_raw_transaction` etc.) are covered by `zaino-state`'s integration tests.
+//! Split into two suites:
+//! - [`core`] — the tip-agnostic [`MempoolService`]: set mirroring, incremental
+//!   updates, capacity/DoS bounds, source-error degradation, the exclude filter,
+//!   `getmempoolinfo`, the [`MempoolUpdate`] feed, and `source_tip` tagging.
+//! - [`coherence`] — the tip-aware [`CoherenceService`]: freeze/thaw against the
+//!   NS epoch, thaw-on-re-agreement, coherent reads, the raw-transaction stream,
+//!   and validator-only mode.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use futures::StreamExt as _;
 use tokio_util::sync::CancellationToken;
 use zebra_chain::{
     block::{Hash as BlockHash, Height},
     transaction::{Hash as TxHash, SerializedTransaction},
 };
 
-use crate::subscriber::MempoolSubscriber;
-use crate::MempoolService;
 use zaino_mempool::config::MempoolConfig;
-use zaino_mempool::event::MempoolEvent;
-use zaino_mempool::ports::{
-    BlockRef, MempoolSource, MempoolTxMeta, NfsEpochObserver, NonFinalizedEpoch,
-};
-use zaino_mempool::snapshot::{FreezeReason, MempoolCompleteness, MempoolMode, MempoolSnapshot};
+use zaino_mempool::ports::{BlockRef, MempoolSource, MempoolTxMeta};
 use zaino_mempool::MempoolError;
+
+#[cfg(feature = "tip_aware_mempool")]
+use zaino_mempool::ports::{NfsEpochObserver, NonFinalizedEpoch};
 
 // ---- mock ports --------------------------------------------------------
 
@@ -44,8 +42,6 @@ struct MockSourceState {
     /// Txids listed by metadata/txids but whose raw fetch returns `None`.
     phantom: HashSet<TxHash>,
     raw_fetch_counts: HashMap<TxHash, usize>,
-    /// If set, the next raw fetch advances the tip (once), racing the update.
-    advance_tip_on_next_fetch: Option<BlockRef>,
     /// If set, source calls fail with this message (a source outage).
     source_error: Option<String>,
 }
@@ -121,9 +117,6 @@ impl MempoolSource for MockSource {
     ) -> Result<Option<SerializedTransaction>, MempoolError> {
         let mut state = self.lock();
         *state.raw_fetch_counts.entry(txid).or_default() += 1;
-        if let Some(new_tip) = state.advance_tip_on_next_fetch.take() {
-            state.tip = Some(new_tip);
-        }
         if state.phantom.contains(&txid) {
             return Ok(None);
         }
@@ -142,11 +135,13 @@ impl MempoolSource for MockSource {
     }
 }
 
+#[cfg(feature = "tip_aware_mempool")]
 #[derive(Clone)]
 struct MockNfs {
     epoch: Arc<Mutex<Option<NonFinalizedEpoch>>>,
 }
 
+#[cfg(feature = "tip_aware_mempool")]
 impl MockNfs {
     fn new() -> Self {
         Self {
@@ -159,6 +154,7 @@ impl MockNfs {
     }
 }
 
+#[cfg(feature = "tip_aware_mempool")]
 impl NfsEpochObserver for MockNfs {
     fn current_epoch(&self) -> Option<NonFinalizedEpoch> {
         *self.epoch.lock().expect("mock nfs poisoned")
@@ -194,6 +190,7 @@ fn block_ref(height: u32, hash_byte: u8) -> BlockRef {
     }
 }
 
+#[cfg(feature = "tip_aware_mempool")]
 fn epoch(generation: u64, height: u32, hash_byte: u8) -> NonFinalizedEpoch {
     NonFinalizedEpoch {
         generation,
@@ -207,737 +204,313 @@ fn fast_config() -> MempoolConfig {
     config
 }
 
-fn spawn_agreeing(
-    height: u32,
-    hash_byte: u8,
-    generation: u64,
-    mempool: Vec<MockTx>,
-    config: MempoolConfig,
-) -> (
-    Arc<MempoolService<MockSource, MockNfs>>,
-    MempoolSubscriber,
-    MockSource,
-    MockNfs,
-) {
-    let source = MockSource::new();
-    let nfs = MockNfs::new();
-    source.set_tip(block_ref(height, hash_byte));
-    source.set_mempool(mempool);
-    nfs.set(epoch(generation, height, hash_byte));
+// ============================ CORE ============================
 
-    let service = MempoolService::spawn(
-        source.clone(),
-        nfs.clone(),
-        config,
-        CancellationToken::new(),
-    );
-    let subscriber = service.subscriber();
-    (service, subscriber, source, nfs)
-}
-
-async fn wait_for(
-    subscriber: &MempoolSubscriber,
-    predicate: impl Fn(&MempoolSnapshot) -> bool,
-) -> Arc<MempoolSnapshot> {
-    for _ in 0..1000 {
-        let snapshot = subscriber.snapshot();
-        if predicate(&snapshot) {
-            return snapshot;
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    panic!("mempool snapshot never satisfied the predicate");
-}
-
-fn is_live(snapshot: &MempoolSnapshot) -> bool {
-    matches!(snapshot.mode, MempoolMode::Live { .. })
-}
-
-fn is_frozen(snapshot: &MempoolSnapshot) -> bool {
-    matches!(snapshot.mode, MempoolMode::Frozen { .. })
-}
-
-fn freeze_reason(snapshot: &MempoolSnapshot) -> Option<FreezeReason> {
-    match snapshot.mode {
-        MempoolMode::Frozen { reason, .. } => Some(reason),
-        _ => None,
-    }
-}
-
-// ---- pure units --------------------------------------------------------
-
-#[test]
-fn observed_tips_agree_and_disagree() {
-    use zaino_mempool::snapshot::{ObservedTips, ValidatorTip};
-
-    let v = ValidatorTip {
-        best_tip: block_ref(100, 0xAB),
-    };
-    let ns_same = epoch(1, 100, 0xAB);
-    let ns_diff = epoch(1, 100, 0xCD);
-
-    // Both unknown.
-    let none = ObservedTips::none();
-    assert_eq!(none.agree(), None);
-    assert!(!none.disagree());
-
-    // One unknown.
-    let only_v = ObservedTips {
-        validator: Some(v),
-        non_finalized: None,
-    };
-    assert_eq!(only_v.agree(), None);
-    assert!(!only_v.disagree());
-
-    // Agree (same hash).
-    let agree = ObservedTips {
-        validator: Some(v),
-        non_finalized: Some(ns_same),
-    };
-    assert_eq!(agree.agree(), Some(ns_same));
-    assert!(!agree.disagree());
-
-    // Disagree (different hash).
-    let disagree = ObservedTips {
-        validator: Some(v),
-        non_finalized: Some(ns_diff),
-    };
-    assert_eq!(disagree.agree(), None);
-    assert!(disagree.disagree());
-}
-
-#[test]
-fn empty_not_ready_snapshot() {
-    let snapshot = MempoolSnapshot::empty_not_ready();
-    assert!(matches!(snapshot.mode, MempoolMode::NotReady));
-    assert_eq!(snapshot.completeness, MempoolCompleteness::NotReady);
-    assert_eq!(snapshot.valid_for, None);
-    assert_eq!(snapshot.tx_count, 0);
-    assert!(snapshot.by_txid.is_empty());
-}
-
-#[test]
-fn mempool_error_source_and_display() {
-    let error = MempoolError::source(std::io::Error::other("boom"));
-    assert!(matches!(error, MempoolError::Source(_)));
-    assert!(error.to_string().contains("boom"));
-    assert!(MempoolError::IncorrectChainTip
-        .to_string()
-        .contains("chain tip"));
-}
-
-// ---- tip coherence -----------------------------------------------------
-
-#[tokio::test]
-async fn agreement_publishes_a_live_snapshot() {
-    let (service, subscriber, _source, _nfs) =
-        spawn_agreeing(100, 0xAB, 7, vec![mtx(1, 100), mtx(2, 100)], fast_config());
-
-    let snapshot = wait_for(&subscriber, is_live).await;
-    assert!(snapshot.is_live_for(epoch(7, 100, 0xAB)));
-    assert_eq!(snapshot.tx_count, 2);
-    assert_eq!(snapshot.completeness, MempoolCompleteness::Complete);
-    assert_eq!(snapshot.by_txid[&txid(1)].entry_height, Height(100));
-
-    service.close();
-}
-
-#[tokio::test]
-async fn validator_tip_change_freezes_and_preserves_transactions() {
-    let (service, subscriber, source, _nfs) =
-        spawn_agreeing(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
-    wait_for(&subscriber, is_live).await;
-
-    source.set_tip(block_ref(101, 0xCD)); // V advances, NS stays
-
-    let snapshot = wait_for(&subscriber, is_frozen).await;
-    assert_eq!(snapshot.tx_count, 1); // last coherent set stays readable
-    assert!(snapshot.by_txid.contains_key(&txid(1)));
-    assert_eq!(snapshot.valid_for, Some(epoch(1, 100, 0xAB)));
-    // V and NS now point at different tip hashes, so the reason is TipsDiverged.
-    assert_eq!(freeze_reason(&snapshot), Some(FreezeReason::TipsDiverged));
-
-    service.close();
-}
-
-#[tokio::test]
-async fn nonfinalized_tip_change_freezes() {
-    let (service, subscriber, _source, nfs) =
-        spawn_agreeing(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
-    wait_for(&subscriber, is_live).await;
-
-    nfs.set(epoch(2, 101, 0xCD)); // NS advances, V stays
-
-    let snapshot = wait_for(&subscriber, is_frozen).await;
-    assert_eq!(snapshot.tx_count, 1);
-    // V and NS now disagree, so the reason is TipsDiverged.
-    assert_eq!(freeze_reason(&snapshot), Some(FreezeReason::TipsDiverged));
-    service.close();
-}
-
-#[tokio::test]
-async fn agreement_after_divergence_thaws_to_live() {
-    let source = MockSource::new();
-    let nfs = MockNfs::new();
-    source.set_tip(block_ref(100, 0xAA));
-    source.set_mempool(vec![mtx(1, 100)]);
-    nfs.set(epoch(1, 100, 0xBB)); // diverged
-
-    let service = MempoolService::spawn(
-        source.clone(),
-        nfs.clone(),
-        fast_config(),
-        CancellationToken::new(),
-    );
-    let subscriber = service.subscriber();
-
-    let frozen = wait_for(&subscriber, is_frozen).await;
-    assert_eq!(freeze_reason(&frozen), Some(FreezeReason::TipsDiverged));
-
-    nfs.set(epoch(2, 100, 0xAA)); // agree
-
-    let snapshot = wait_for(&subscriber, is_live).await;
-    assert_eq!(snapshot.tx_count, 1);
-    assert!(snapshot.is_live_for(epoch(2, 100, 0xAA)));
-    service.close();
-}
-
-#[tokio::test]
-async fn missing_nonfinalized_state_stays_not_ready() {
-    let source = MockSource::new();
-    let nfs = MockNfs::new();
-    source.set_tip(block_ref(100, 0xAA));
-    source.set_mempool(vec![mtx(1, 100)]);
-
-    let service = MempoolService::spawn(
-        source.clone(),
-        nfs.clone(),
-        fast_config(),
-        CancellationToken::new(),
-    );
-    let subscriber = service.subscriber();
-
-    tokio::time::sleep(Duration::from_millis(80)).await;
-    let snapshot = subscriber.snapshot();
-    assert!(!is_live(&snapshot));
-    assert_eq!(snapshot.tx_count, 0);
-    service.close();
-}
-
-#[tokio::test]
-async fn tip_change_during_fetch_discards_work() {
-    let source = MockSource::new();
-    let nfs = MockNfs::new();
-    source.set_tip(block_ref(100, 0xAA));
-    source.set_mempool(vec![mtx(1, 100)]);
-    nfs.set(epoch(1, 100, 0xAA));
-    source.lock().advance_tip_on_next_fetch = Some(block_ref(101, 0xCC));
-
-    let service = MempoolService::spawn(
-        source.clone(),
-        nfs.clone(),
-        fast_config(),
-        CancellationToken::new(),
-    );
-    let subscriber = service.subscriber();
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    let snapshot = subscriber.snapshot();
-    assert!(!snapshot.is_live_for(epoch(1, 100, 0xAA)));
-    assert_eq!(snapshot.tx_count, 0);
-    service.close();
-}
-
-// ---- source errors -----------------------------------------------------
-
-#[tokio::test]
-async fn source_tip_error_freezes_incomplete_source_error() {
-    let (service, subscriber, source, _nfs) =
-        spawn_agreeing(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
-    wait_for(&subscriber, is_live).await;
-
-    source.set_error(Some("validator unreachable"));
-
-    let snapshot = wait_for(&subscriber, is_frozen).await;
-    assert_eq!(
-        snapshot.completeness,
-        MempoolCompleteness::IncompleteSourceError
-    );
-    assert_eq!(freeze_reason(&snapshot), Some(FreezeReason::SourceError));
-    assert_eq!(snapshot.tx_count, 1); // prior set preserved
-    service.close();
-}
-
-// ---- transaction updates ----------------------------------------------
-
-#[tokio::test]
-async fn added_transaction_is_fetched_once() {
-    let (service, subscriber, source, _nfs) =
-        spawn_agreeing(100, 0xAB, 1, vec![mtx(1, 100), mtx(2, 100)], fast_config());
-    wait_for(&subscriber, |s| s.tx_count == 2).await;
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert_eq!(source.raw_fetch_count(&txid(1)), 1);
-    assert_eq!(source.raw_fetch_count(&txid(2)), 1);
-    service.close();
-}
-
-#[tokio::test]
-async fn removed_transaction_is_dropped_when_live() {
-    let (service, subscriber, source, _nfs) =
-        spawn_agreeing(100, 0xAB, 1, vec![mtx(1, 100), mtx(2, 100)], fast_config());
-    wait_for(&subscriber, |s| s.tx_count == 2).await;
-
-    source.set_mempool(vec![mtx(1, 100)]);
-
-    let snapshot = wait_for(&subscriber, |s| s.tx_count == 1).await;
-    assert!(snapshot.by_txid.contains_key(&txid(1)));
-    assert!(!snapshot.by_txid.contains_key(&txid(2)));
-    service.close();
-}
-
-#[tokio::test]
-async fn unchanged_set_does_not_republish() {
-    let (service, subscriber, _source, _nfs) =
-        spawn_agreeing(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
-    let live = wait_for(&subscriber, is_live).await;
-    let generation = live.mempool_generation;
-
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    let after = subscriber.snapshot();
-    assert!(is_live(&after));
-    assert_eq!(after.mempool_generation, generation);
-    service.close();
-}
-
-#[tokio::test]
-async fn transaction_that_disappears_before_fetch_is_skipped() {
-    let source = MockSource::new();
-    let nfs = MockNfs::new();
-    source.set_tip(block_ref(100, 0xAB));
-    source.set_mempool(vec![mtx(1, 100), mtx(2, 100)]);
-    source.lock().phantom.insert(txid(2));
-    nfs.set(epoch(1, 100, 0xAB));
-
-    let service = MempoolService::spawn(
-        source.clone(),
-        nfs.clone(),
-        fast_config(),
-        CancellationToken::new(),
-    );
-    let subscriber = service.subscriber();
-
-    let snapshot = wait_for(&subscriber, is_live).await;
-    assert_eq!(snapshot.tx_count, 1);
-    assert!(snapshot.by_txid.contains_key(&txid(1)));
-    assert!(!snapshot.by_txid.contains_key(&txid(2)));
-    service.close();
-}
-
-#[tokio::test]
-async fn entry_time_is_propagated() {
-    let source = MockSource::new();
-    let nfs = MockNfs::new();
-    source.set_tip(block_ref(100, 0xAB));
-    source.set_mempool(vec![MockTx {
-        txid: txid(1),
-        entry_height: 100,
-        entry_time: Some(1_700_000_000),
-        bytes: vec![1],
-    }]);
-    nfs.set(epoch(1, 100, 0xAB));
-
-    let service = MempoolService::spawn(
-        source.clone(),
-        nfs.clone(),
-        fast_config(),
-        CancellationToken::new(),
-    );
-    let subscriber = service.subscriber();
-
-    let snapshot = wait_for(&subscriber, is_live).await;
-    assert_eq!(snapshot.by_txid[&txid(1)].entry_time, Some(1_700_000_000));
-    service.close();
-}
-
-// ---- events ------------------------------------------------------------
-
-#[tokio::test]
-async fn events_added_removed_and_live_are_emitted() {
-    let (service, subscriber, source, _nfs) =
-        spawn_agreeing(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
-    wait_for(&subscriber, is_live).await;
-
-    let mut events = subscriber.subscribe_events();
-
-    // Add a transaction.
-    source.set_mempool(vec![mtx(1, 100), mtx(2, 100)]);
-    let mut saw_added = false;
-    let mut saw_live = false;
-    let mut last_sequence = 0u64;
-    for _ in 0..50 {
-        match tokio::time::timeout(Duration::from_millis(200), events.recv()).await {
-            Ok(Ok(event)) => match event.as_ref() {
-                MempoolEvent::Added { sequence, .. } => {
-                    saw_added = true;
-                    assert!(*sequence >= last_sequence);
-                    last_sequence = *sequence;
-                }
-                MempoolEvent::Live { sequence, .. } => {
-                    saw_live = true;
-                    assert!(*sequence >= last_sequence);
-                    last_sequence = *sequence;
-                    if saw_added {
-                        break;
-                    }
-                }
-                _ => {}
-            },
-            _ => break,
-        }
-    }
-    assert!(saw_added, "expected an Added event");
-    assert!(saw_live, "expected a Live event");
-
-    // Remove it.
-    source.set_mempool(vec![mtx(1, 100)]);
-    let mut saw_removed = false;
-    for _ in 0..50 {
-        match tokio::time::timeout(Duration::from_millis(200), events.recv()).await {
-            Ok(Ok(event)) => {
-                if let MempoolEvent::Removed { txid: removed, .. } = event.as_ref() {
-                    assert_eq!(*removed, txid(2));
-                    saw_removed = true;
-                    break;
-                }
-            }
-            _ => break,
-        }
-    }
-    assert!(saw_removed, "expected a Removed event");
-    service.close();
-}
-
-#[tokio::test]
-async fn close_publishes_closing_snapshot_and_event() {
-    let (service, subscriber, _source, _nfs) =
-        spawn_agreeing(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
-    wait_for(&subscriber, is_live).await;
-
-    let mut events = subscriber.subscribe_events();
-    service.close();
-
-    let snapshot = wait_for(&subscriber, |s| matches!(s.mode, MempoolMode::Closing)).await;
-    assert!(matches!(snapshot.mode, MempoolMode::Closing));
-
-    let mut saw_closing = false;
-    for _ in 0..20 {
-        match tokio::time::timeout(Duration::from_millis(200), events.recv()).await {
-            Ok(Ok(event)) => {
-                if matches!(event.as_ref(), MempoolEvent::Closing { .. }) {
-                    saw_closing = true;
-                    break;
-                }
-            }
-            _ => break,
-        }
-    }
-    assert!(saw_closing, "expected a Closing event");
-}
-
-// ---- capacity ----------------------------------------------------------
-
-#[tokio::test]
-async fn capacity_overrun_from_empty_marks_incomplete() {
-    let config = fast_config();
-    config.set_max_cost_bytes(1); // any tx (min cost 10_000) breaches it
-    let (service, subscriber, _source, _nfs) =
-        spawn_agreeing(100, 0xAB, 1, vec![mtx(1, 100)], config);
-
-    let snapshot = wait_for(&subscriber, |s| {
-        s.completeness == MempoolCompleteness::IncompleteCapacityLimited
-    })
-    .await;
-    assert!(!is_live(&snapshot));
-    assert_ne!(snapshot.completeness, MempoolCompleteness::Complete);
-    service.close();
-}
-
-#[tokio::test]
-async fn capacity_overrun_while_live_freezes_preserving_prior() {
-    let config = fast_config();
-    // Room for one min-cost (10_000) tx but not two.
-    config.set_max_cost_bytes(15_000);
-    let (service, subscriber, source, _nfs) =
-        spawn_agreeing(100, 0xAB, 1, vec![mtx(1, 100)], config);
-    wait_for(&subscriber, is_live).await;
-
-    // A second tx would breach the bound.
-    source.set_mempool(vec![mtx(1, 100), mtx(2, 100)]);
-
-    let snapshot = wait_for(&subscriber, |s| {
-        s.completeness == MempoolCompleteness::IncompleteCapacityLimited
-    })
-    .await;
-    // Prior set preserved; the over-cap addition is not applied.
-    assert_eq!(snapshot.tx_count, 1);
-    assert!(snapshot.by_txid.contains_key(&txid(1)));
-    assert_eq!(
-        freeze_reason(&snapshot),
-        Some(FreezeReason::CapacityLimited)
-    );
-    service.close();
-}
-
-#[tokio::test]
-async fn max_cost_bytes_is_runtime_adjustable_via_subscriber() {
-    let (service, subscriber, _source, _nfs) =
-        spawn_agreeing(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
-    wait_for(&subscriber, is_live).await;
-
-    let original = subscriber.max_cost_bytes();
-    subscriber.set_max_cost_bytes(42);
-    assert_eq!(subscriber.max_cost_bytes(), 42);
-    assert_ne!(original, 42);
-    service.close();
-}
-
-// ---- frozen serving, metrics, status ----------------------------------
-
-#[tokio::test]
-async fn frozen_snapshot_is_readable() {
-    let (service, subscriber, source, _nfs) =
-        spawn_agreeing(100, 0xAB, 1, vec![mtx(9, 100)], fast_config());
-    wait_for(&subscriber, is_live).await;
-
-    source.set_tip(block_ref(101, 0xCD));
-    wait_for(&subscriber, is_frozen).await;
-
-    assert!(subscriber.contains_txid(&txid(9)));
-    assert!(subscriber.get_transaction(&txid(9)).is_some());
-    assert_eq!(subscriber.get_txids().len(), 1);
-    service.close();
-}
-
-#[tokio::test]
-async fn get_mempool_info_reports_snapshot_metrics() {
-    let (service, subscriber, _source, _nfs) =
-        spawn_agreeing(100, 0xAB, 1, vec![mtx(1, 100), mtx(2, 100)], fast_config());
-    wait_for(&subscriber, |s| s.tx_count == 2).await;
-
-    let info = subscriber.get_mempool_info();
-    assert_eq!(info.size, 2);
-    // Two 1-byte txs; usage is the ZIP-401 cost total (>= 2 * 10_000 floor).
-    assert_eq!(info.bytes, 2);
-    assert!(info.usage >= 20_000);
-    service.close();
-}
-
-#[tokio::test]
-async fn status_reflects_lifecycle() {
-    let (service, subscriber, source, _nfs) =
-        spawn_agreeing(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
-    wait_for(&subscriber, is_live).await;
-    assert_eq!(subscriber.status(), zaino_common::status::StatusType::Ready);
-
-    source.set_tip(block_ref(101, 0xCD));
-    wait_for(&subscriber, is_frozen).await;
-    assert_eq!(
-        subscriber.status(),
-        zaino_common::status::StatusType::Syncing
-    );
-    service.close();
-}
-
-#[tokio::test]
-async fn subscribers_share_entry_arcs() {
-    let (service, subscriber_a, _source, _nfs) =
-        spawn_agreeing(100, 0xAB, 1, vec![mtx(9, 100)], fast_config());
-    let subscriber_b = service.subscriber();
-    wait_for(&subscriber_a, is_live).await;
-    wait_for(&subscriber_b, is_live).await;
-
-    let entry_a = subscriber_a.get_transaction(&txid(9)).unwrap();
-    let entry_b = subscriber_b.get_transaction(&txid(9)).unwrap();
-    assert!(Arc::ptr_eq(&entry_a, &entry_b));
-    service.close();
-}
-
-// ---- streaming ---------------------------------------------------------
-
-#[tokio::test]
-async fn stream_stays_open_on_freeze_then_closes_when_tips_reagree() {
-    let source = MockSource::new();
-    let nfs = MockNfs::new();
-    source.set_tip(block_ref(100, 0xAB));
-    source.set_mempool(vec![MockTx {
-        txid: txid(1),
-        entry_height: 100,
-        entry_time: None,
-        bytes: vec![0xAA, 0xBB],
-    }]);
-    nfs.set(epoch(1, 100, 0xAB));
-    let service = MempoolService::spawn(
-        source.clone(),
-        nfs.clone(),
-        fast_config(),
-        CancellationToken::new(),
-    );
-    let subscriber = service.subscriber();
-    wait_for(&subscriber, is_live).await;
-
-    let stream = subscriber
-        .stream_raw_transactions(None)
-        .expect("stream should open while live");
-    futures::pin_mut!(stream);
-
-    let first = tokio::time::timeout(Duration::from_secs(2), stream.next())
-        .await
-        .expect("stream should yield the initial entry in time");
-    assert_eq!(first, Some(vec![0xAA, 0xBB]));
-
-    // The validator tip advances while NS lags: the mempool freezes, but the
-    // stream must stay open (the tips have not re-agreed at the new tip).
-    source.set_tip(block_ref(101, 0xCD));
-    wait_for(&subscriber, is_frozen).await;
-    assert!(
-        tokio::time::timeout(Duration::from_millis(150), stream.next())
-            .await
-            .is_err(),
-        "stream must stay open while frozen (tips not yet re-agreed)"
-    );
-
-    // NS catches up so V and NS re-agree at the new tip; the mempool goes live at
-    // the new epoch and the stream closes so the caller re-syncs.
-    nfs.set(epoch(2, 101, 0xCD));
-    loop {
-        match tokio::time::timeout(Duration::from_secs(3), stream.next()).await {
-            Ok(Some(_)) => continue,
-            Ok(None) => break,
-            Err(_) => panic!("stream did not close after tips re-agreed at the new tip"),
-        }
-    }
-    service.close();
-}
-
-#[tokio::test]
-async fn stream_rejects_mismatched_expected_epoch() {
-    let (service, subscriber, _source, _nfs) =
-        spawn_agreeing(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
-    wait_for(&subscriber, is_live).await;
-
-    assert!(subscriber
-        .stream_raw_transactions(Some(epoch(999, 100, 0xAB)))
-        .is_none());
-    assert!(subscriber
-        .stream_raw_transactions(Some(epoch(1, 100, 0xAB)))
-        .is_some());
-    service.close();
-}
-
-// ---- exclude filter ----------------------------------------------------
-
-#[tokio::test]
-async fn exclude_list_bounds_are_enforced() {
-    let (service, subscriber, _source, _nfs) =
-        spawn_agreeing(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
-    wait_for(&subscriber, is_live).await;
-
-    assert!(subscriber
-        .validate_exclude_suffixes(&vec![vec![0u8; 8]; 1025])
-        .is_err()); // over count cap
-    assert!(subscriber
-        .validate_exclude_suffixes(&[vec![0u8; 3]])
-        .is_err()); // too short
-    assert!(subscriber
-        .validate_exclude_suffixes(&[vec![0u8; 33]])
-        .is_err()); // too long
-    assert!(subscriber
-        .validate_exclude_suffixes(&[vec![0u8; 8]])
-        .is_ok());
-    service.close();
-}
-
-#[tokio::test]
-async fn unique_exclude_suffix_filters_one_ambiguous_filters_none() {
-    // txid(1) is unique; the other two share their trailing four 0x22 bytes.
-    let mut shared_a = [0u8; 32];
-    let mut shared_b = [0x99u8; 32];
-    for i in 28..32 {
-        shared_a[i] = 0x22;
-        shared_b[i] = 0x22;
-    }
-    let make = |bytes: [u8; 32]| MockTx {
-        txid: TxHash(bytes),
-        entry_height: 100,
-        entry_time: None,
-        bytes: vec![1],
-    };
-
-    let (service, subscriber, _source, _nfs) = spawn_agreeing(
-        100,
-        0xAB,
-        1,
-        vec![make([1u8; 32]), make(shared_a), make(shared_b)],
-        fast_config(),
-    );
-    wait_for(&subscriber, |s| s.tx_count == 3).await;
-
-    let unique = subscriber
-        .validate_exclude_suffixes(&[txid(1).0.to_vec()])
-        .unwrap();
-    let remaining = subscriber.get_filtered_entries(&unique);
-    assert_eq!(remaining.len(), 2);
-    assert!(remaining.iter().all(|entry| entry.txid != txid(1)));
-
-    let ambiguous = subscriber
-        .validate_exclude_suffixes(&[vec![0x22u8; 4]])
-        .unwrap();
-    assert_eq!(subscriber.get_filtered_entries(&ambiguous).len(), 3);
-    service.close();
-}
-
-// ---- validator-only mode ----------------------------------------------
-
-#[tokio::test]
-async fn validator_only_tracks_validator_and_freezes_on_tip_change() {
-    let source = MockSource::new();
-    source.set_tip(block_ref(100, 0xAA));
-    source.set_mempool(vec![mtx(1, 100)]);
-
-    let service = MempoolService::spawn_validator_only(
-        source.clone(),
-        fast_config(),
-        CancellationToken::new(),
-    );
-    let subscriber = service.subscriber();
-
-    // Reaches Live tracking the validator alone (no NFS).
-    let snapshot = wait_for(&subscriber, is_live).await;
-    assert_eq!(snapshot.tx_count, 1);
-    let first_epoch = snapshot.valid_for.unwrap();
-
-    // A validator-tip change re-reconciles at the new tip (the synthesized epoch
-    // follows the validator, so any freeze is transient) — the new epoch differs.
-    source.set_tip(block_ref(101, 0xBB));
-    source.set_mempool(vec![mtx(1, 100), mtx(2, 101)]);
-    let snapshot = wait_for(&subscriber, |s| {
-        is_live(s) && s.tx_count == 2 && s.valid_for != Some(first_epoch)
-    })
-    .await;
-    assert!(snapshot.by_txid.contains_key(&txid(2)));
-    service.close();
-}
-
-// ---- high-throughput / concurrency ------------------------------------
-
-mod concurrency {
+mod core {
     use super::*;
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn large_mempool_reaches_live_fetching_each_once() {
-        let count = 5_000u32;
-        let mempool: Vec<MockTx> = (0..count)
+    use crate::{MempoolService, MempoolSubscriber};
+    use futures::StreamExt as _;
+    use zaino_mempool::snapshot::{MempoolCompleteness, MempoolSnapshot};
+    use zaino_mempool::update::MempoolUpdate;
+
+    fn spawn_core(
+        height: u32,
+        hash_byte: u8,
+        mempool: Vec<MockTx>,
+        config: MempoolConfig,
+    ) -> (
+        Arc<MempoolService<MockSource>>,
+        MempoolSubscriber,
+        MockSource,
+    ) {
+        let source = MockSource::new();
+        source.set_tip(block_ref(height, hash_byte));
+        source.set_mempool(mempool);
+        let service = MempoolService::spawn(source.clone(), config, CancellationToken::new());
+        let subscriber = service.subscriber();
+        (service, subscriber, source)
+    }
+
+    async fn wait_for(
+        subscriber: &MempoolSubscriber,
+        predicate: impl Fn(&MempoolSnapshot) -> bool,
+    ) -> Arc<MempoolSnapshot> {
+        for _ in 0..1000 {
+            let snapshot = subscriber.snapshot();
+            if predicate(&snapshot) {
+                return snapshot;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("core snapshot never satisfied the predicate");
+    }
+
+    #[tokio::test]
+    async fn mirrors_source_mempool_and_tags_the_tip() {
+        let (service, subscriber, _source) =
+            spawn_core(100, 0xAB, vec![mtx(1, 100), mtx(2, 100)], fast_config());
+
+        let snapshot = wait_for(&subscriber, |s| s.tx_count == 2).await;
+        assert_eq!(snapshot.completeness, MempoolCompleteness::Complete);
+        assert_eq!(snapshot.source_tip, Some(block_ref(100, 0xAB)));
+        assert_eq!(snapshot.by_txid[&txid(1)].entry_height, Height(100));
+
+        service.close();
+    }
+
+    #[tokio::test]
+    async fn does_not_freeze_on_validator_tip_change() {
+        // The core is tip-agnostic: a validator-tip advance re-tags the set but
+        // never freezes — the live view stays served.
+        let (service, subscriber, source) = spawn_core(100, 0xAB, vec![mtx(1, 100)], fast_config());
+        wait_for(&subscriber, |s| s.tx_count == 1).await;
+
+        source.set_tip(block_ref(101, 0xCD));
+
+        let snapshot = wait_for(&subscriber, |s| s.source_tip == Some(block_ref(101, 0xCD))).await;
+        assert_eq!(snapshot.completeness, MempoolCompleteness::Complete);
+        assert_eq!(snapshot.tx_count, 1);
+        service.close();
+    }
+
+    #[tokio::test]
+    async fn added_transaction_is_fetched_once() {
+        let (service, subscriber, source) =
+            spawn_core(100, 0xAB, vec![mtx(1, 100), mtx(2, 100)], fast_config());
+        wait_for(&subscriber, |s| s.tx_count == 2).await;
+
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert_eq!(source.raw_fetch_count(&txid(1)), 1);
+        assert_eq!(source.raw_fetch_count(&txid(2)), 1);
+        service.close();
+    }
+
+    #[tokio::test]
+    async fn removed_transaction_is_dropped() {
+        let (service, subscriber, source) =
+            spawn_core(100, 0xAB, vec![mtx(1, 100), mtx(2, 100)], fast_config());
+        wait_for(&subscriber, |s| s.tx_count == 2).await;
+
+        source.set_mempool(vec![mtx(1, 100)]);
+
+        let snapshot = wait_for(&subscriber, |s| s.tx_count == 1).await;
+        assert!(snapshot.by_txid.contains_key(&txid(1)));
+        assert!(!snapshot.by_txid.contains_key(&txid(2)));
+        service.close();
+    }
+
+    #[tokio::test]
+    async fn transaction_that_disappears_before_fetch_is_skipped() {
+        let (service, subscriber, source) =
+            spawn_core(100, 0xAB, vec![mtx(1, 100), mtx(2, 100)], fast_config());
+        source.lock().phantom.insert(txid(2));
+
+        let snapshot = wait_for(&subscriber, |s| s.tx_count == 1).await;
+        assert!(snapshot.by_txid.contains_key(&txid(1)));
+        assert!(!snapshot.by_txid.contains_key(&txid(2)));
+        service.close();
+    }
+
+    #[tokio::test]
+    async fn entry_time_is_propagated() {
+        let source = MockSource::new();
+        source.set_tip(block_ref(100, 0xAB));
+        source.set_mempool(vec![MockTx {
+            txid: txid(1),
+            entry_height: 100,
+            entry_time: Some(1_700_000_000),
+            bytes: vec![1],
+        }]);
+        let service =
+            MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
+        let subscriber = service.subscriber();
+
+        let snapshot = wait_for(&subscriber, |s| s.tx_count == 1).await;
+        assert_eq!(snapshot.by_txid[&txid(1)].entry_time, Some(1_700_000_000));
+        service.close();
+    }
+
+    #[tokio::test]
+    async fn source_error_keeps_set_and_marks_incomplete() {
+        let (service, subscriber, source) = spawn_core(100, 0xAB, vec![mtx(1, 100)], fast_config());
+        wait_for(&subscriber, |s| s.tx_count == 1).await;
+
+        source.set_error(Some("validator unreachable"));
+
+        let snapshot = wait_for(&subscriber, |s| {
+            s.completeness == MempoolCompleteness::IncompleteSourceError
+        })
+        .await;
+        assert_eq!(snapshot.tx_count, 1); // prior set preserved, never frozen away
+        service.close();
+    }
+
+    #[tokio::test]
+    async fn capacity_bound_drops_additions_and_marks_incomplete() {
+        // A memory bound below the cost of the additions: the core must not exceed
+        // it, so it drops the additions and marks the set capacity-limited.
+        let config = fast_config();
+        // Each tx costs the ZIP-401 floor (10_000). Bound at one tx worth.
+        config.set_max_cost_bytes(zaino_mempool::config::MEMPOOL_TRANSACTION_COST_THRESHOLD);
+        let (service, subscriber, _source) =
+            spawn_core(100, 0xAB, vec![mtx(1, 100), mtx(2, 100)], config);
+
+        let snapshot = wait_for(&subscriber, |s| {
+            s.completeness == MempoolCompleteness::IncompleteCapacityLimited
+        })
+        .await;
+        assert!(snapshot.tx_count <= 1);
+        service.close();
+    }
+
+    #[tokio::test]
+    async fn get_mempool_info_reports_totals() {
+        let (service, subscriber, _source) =
+            spawn_core(100, 0xAB, vec![mtx(1, 100), mtx(2, 100)], fast_config());
+        wait_for(&subscriber, |s| s.tx_count == 2).await;
+
+        let info = subscriber.get_mempool_info();
+        assert_eq!(info.size, 2);
+        assert_eq!(info.bytes, 2); // two 1-byte txs
+        service.close();
+    }
+
+    #[tokio::test]
+    async fn exclude_filter_semantics() {
+        // Two txs whose txids differ only in the leading byte; a suffix matching
+        // both excludes neither, a suffix matching one excludes it.
+        let mut a = [0u8; 32];
+        a[0] = 0x01;
+        let mut b = [0u8; 32];
+        b[0] = 0x02;
+        let source = MockSource::new();
+        source.set_tip(block_ref(100, 0xAB));
+        source.set_mempool(vec![
+            MockTx {
+                txid: TxHash(a),
+                entry_height: 100,
+                entry_time: None,
+                bytes: vec![1],
+            },
+            MockTx {
+                txid: TxHash(b),
+                entry_height: 100,
+                entry_time: None,
+                bytes: vec![2],
+            },
+        ]);
+        let service =
+            MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
+        let subscriber = service.subscriber();
+        wait_for(&subscriber, |s| s.tx_count == 2).await;
+
+        // Suffix `[0x00; 31]` (the shared trailing bytes) matches both -> excludes
+        // neither.
+        let shared = subscriber
+            .validate_exclude_suffixes(&[vec![0u8; 31]])
+            .expect("valid");
+        assert_eq!(subscriber.get_filtered_entries(&shared).len(), 2);
+
+        // A suffix that uniquely identifies `a` excludes just it.
+        let mut unique = vec![0u8; 32];
+        unique[0] = 0x01;
+        let unique = subscriber
+            .validate_exclude_suffixes(&[unique])
+            .expect("valid");
+        let kept = subscriber.get_filtered_entries(&unique);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].txid, TxHash(b));
+        service.close();
+    }
+
+    #[tokio::test]
+    async fn update_feed_emits_added_removed_and_reset() {
+        let (service, subscriber, source) = spawn_core(100, 0xAB, vec![mtx(1, 100)], fast_config());
+        wait_for(&subscriber, |s| s.tx_count == 1).await;
+
+        let mut updates = subscriber.subscribe_updates();
+        source.set_mempool(vec![mtx(2, 100)]); // remove 1, add 2
+
+        let mut saw_added = false;
+        let mut saw_removed = false;
+        let mut saw_reset = false;
+        for _ in 0..100 {
+            match tokio::time::timeout(Duration::from_millis(200), updates.recv()).await {
+                Ok(Ok(MempoolUpdate::Added { entry, .. })) if entry.txid == txid(2) => {
+                    saw_added = true;
+                }
+                Ok(Ok(MempoolUpdate::Removed { txid: t, .. })) if t == txid(1) => {
+                    saw_removed = true;
+                }
+                Ok(Ok(MempoolUpdate::Reset { .. })) => saw_reset = true,
+                Ok(Ok(_)) => {}
+                _ => break,
+            }
+            if saw_added && saw_removed && saw_reset {
+                break;
+            }
+        }
+        assert!(saw_added && saw_removed && saw_reset);
+        service.close();
+    }
+
+    #[tokio::test]
+    async fn mempool_updates_stream_yields_changes() {
+        // The ergonomic `mempool_updates()` Stream form delivers the same deltas.
+        let source = MockSource::new();
+        source.set_tip(block_ref(100, 0xAB));
+        let service =
+            MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
+        let subscriber = service.subscriber();
+        wait_for(&subscriber, |s| {
+            s.completeness == MempoolCompleteness::Complete
+        })
+        .await;
+
+        // Subscribe (via the stream) before mutating, per the consistency contract.
+        let mut updates = Box::pin(subscriber.mempool_updates());
+        source.set_mempool(vec![mtx(1, 100)]);
+
+        let mut saw_added = false;
+        let mut saw_reset = false;
+        for _ in 0..50 {
+            match tokio::time::timeout(Duration::from_millis(200), updates.next()).await {
+                Ok(Some(MempoolUpdate::Added { entry, .. })) if entry.txid == txid(1) => {
+                    saw_added = true;
+                }
+                Ok(Some(MempoolUpdate::Reset { .. })) => saw_reset = true,
+                Ok(Some(_)) => {}
+                _ => break,
+            }
+            if saw_added && saw_reset {
+                break;
+            }
+        }
+        assert!(saw_added && saw_reset);
+        service.close();
+    }
+
+    #[tokio::test]
+    async fn mempool_updates_reports_lag_explicitly() {
+        // A consumer that falls behind the bounded feed is told so *in band*
+        // (never a silent skip), so it can resync from `current()`.
+        let mut config = fast_config();
+        config.event_buffer_len = 2; // tiny buffer: one publish overflows it
+
+        let source = MockSource::new();
+        source.set_tip(block_ref(100, 0xAB));
+        let service = MempoolService::spawn(source.clone(), config, CancellationToken::new());
+        let subscriber = service.subscriber();
+        wait_for(&subscriber, |s| {
+            s.completeness == MempoolCompleteness::Complete
+        })
+        .await;
+
+        // Subscribe, then flood far more updates than the 2-slot buffer while the
+        // stream is not polled.
+        let mut updates = Box::pin(subscriber.mempool_updates());
+        let flood: Vec<MockTx> = (0..50)
             .map(|n| MockTx {
                 txid: txid_n(n),
                 entry_height: 100,
@@ -945,197 +518,359 @@ mod concurrency {
                 bytes: vec![(n % 251) as u8],
             })
             .collect();
-        let (service, subscriber, source, _nfs) =
-            spawn_agreeing(100, 0xAB, 1, mempool, fast_config());
+        source.set_mempool(flood);
+        tokio::time::sleep(Duration::from_millis(80)).await;
 
-        let snapshot = wait_for(&subscriber, |s| is_live(s) && s.tx_count == count as usize).await;
-        assert_eq!(snapshot.tx_count, count as usize);
-        // Every transaction was fetched exactly once (O(N), no re-fetch).
-        for n in 0..count {
-            assert_eq!(source.raw_fetch_count(&txid_n(n)), 1);
-        }
+        // The first delivered item is an explicit Lagged, not a dropped delta.
+        let first = tokio::time::timeout(Duration::from_millis(200), updates.next())
+            .await
+            .expect("stream produced an item")
+            .expect("stream not ended");
+        assert!(
+            matches!(first, MempoolUpdate::Lagged { .. }),
+            "expected explicit lag signal, got {first:?}"
+        );
         service.close();
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn many_readers_never_see_torn_state() {
-        // The mempool always holds one of two known sets; readers must only ever
-        // observe a valid set, never a partial one.
-        let set_a: Vec<MockTx> = (0..100).map(|n| mtx(n as u8, 100)).collect();
-        let set_b: Vec<MockTx> = (100..200).map(|n| mtx(n as u8, 100)).collect();
-        let valid_a: HashSet<TxHash> = set_a.iter().map(|t| t.txid).collect();
-        let valid_b: HashSet<TxHash> = set_b.iter().map(|t| t.txid).collect();
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn many_readers_see_a_growing_set() {
+        // multi_thread required: many reader tasks run concurrently with the
+        // writer task, exercising the lock-free ArcSwap serving path under load.
+        let source = MockSource::new();
+        source.set_tip(block_ref(100, 0xAB));
+        let mempool: Vec<MockTx> = (0..200)
+            .map(|n| MockTx {
+                txid: txid_n(n),
+                entry_height: 100,
+                entry_time: None,
+                bytes: vec![(n % 251) as u8],
+            })
+            .collect();
+        source.set_mempool(mempool);
+        let service =
+            MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
+        let subscriber = service.subscriber();
+        wait_for(&subscriber, |s| s.tx_count == 200).await;
 
-        let (service, subscriber, source, _nfs) =
-            spawn_agreeing(100, 0xAB, 1, set_a.clone(), fast_config());
-        wait_for(&subscriber, |s| s.tx_count == 100).await;
+        let mut handles = Vec::new();
+        for _ in 0..16 {
+            let sub = subscriber.clone();
+            handles.push(tokio::spawn(async move {
+                for _ in 0..500 {
+                    let snap = sub.snapshot();
+                    assert_eq!(snap.tx_count, snap.by_txid.len());
+                }
+            }));
+        }
+        for handle in handles {
+            handle.await.expect("reader task panicked");
+        }
+        service.close();
+    }
+}
 
-        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+// ============================ COHERENCE ============================
 
-        // Writer: flip between the two sets.
-        let flip_source = source.clone();
-        let flip_stop = Arc::clone(&stop);
-        let flipper = tokio::spawn(async move {
-            let mut toggle = false;
-            while !flip_stop.load(std::sync::atomic::Ordering::Relaxed) {
-                flip_source.set_mempool(if toggle { set_b.clone() } else { set_a.clone() });
-                toggle = !toggle;
-                tokio::time::sleep(Duration::from_millis(3)).await;
+#[cfg(feature = "tip_aware_mempool")]
+mod coherence {
+    use super::*;
+
+    use crate::{CoherenceService, CoherentSubscriber, MempoolService, MempoolSubscriber};
+    use futures::StreamExt as _;
+    use zaino_mempool::tip::{CoherentSnapshot, FreezeReason, MempoolMode};
+    use zaino_mempool::TipAwareMempool as _;
+
+    /// Keep the core service alive alongside the coherence layer under test.
+    struct Harness {
+        core: Arc<MempoolService<MockSource>>,
+        coherence: Arc<CoherenceService<MempoolSubscriber, MockNfs>>,
+        subscriber: CoherentSubscriber,
+        source: MockSource,
+        nfs: MockNfs,
+    }
+
+    impl Harness {
+        fn close(&self) {
+            self.coherence.close();
+            self.core.close();
+        }
+    }
+
+    fn spawn_coherent(
+        height: u32,
+        hash_byte: u8,
+        generation: u64,
+        mempool: Vec<MockTx>,
+        config: MempoolConfig,
+    ) -> Harness {
+        let source = MockSource::new();
+        let nfs = MockNfs::new();
+        source.set_tip(block_ref(height, hash_byte));
+        source.set_mempool(mempool);
+        nfs.set(epoch(generation, height, hash_byte));
+
+        let core = MempoolService::spawn(source.clone(), config.clone(), CancellationToken::new());
+        let coherence = CoherenceService::spawn(
+            core.subscriber(),
+            nfs.clone(),
+            config,
+            CancellationToken::new(),
+        );
+        let subscriber = coherence.subscriber();
+        Harness {
+            core,
+            coherence,
+            subscriber,
+            source,
+            nfs,
+        }
+    }
+
+    async fn wait_for(
+        subscriber: &CoherentSubscriber,
+        predicate: impl Fn(&CoherentSnapshot) -> bool,
+    ) -> Arc<CoherentSnapshot> {
+        for _ in 0..1000 {
+            let snapshot = subscriber.coherent_snapshot();
+            if predicate(&snapshot) {
+                return snapshot;
             }
-        });
-
-        // Readers: assert every non-empty snapshot is exactly one of the sets.
-        let mut readers = Vec::new();
-        for _ in 0..50 {
-            let reader = subscriber.clone();
-            let valid_a = valid_a.clone();
-            let valid_b = valid_b.clone();
-            let reader_stop = Arc::clone(&stop);
-            readers.push(tokio::spawn(async move {
-                while !reader_stop.load(std::sync::atomic::Ordering::Relaxed) {
-                    let ids: HashSet<TxHash> = reader.get_txids().iter().copied().collect();
-                    if !ids.is_empty() {
-                        assert!(
-                            ids == valid_a || ids == valid_b,
-                            "reader observed a torn set of size {}",
-                            ids.len()
-                        );
-                    }
-                    // Exercise other read paths for races/panics.
-                    let _ = reader.get_mempool_info();
-                    let _ = reader.snapshot();
-                    tokio::task::yield_now().await;
-                }
-            }));
-        }
-
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        flipper.await.unwrap();
-        for reader in readers {
-            reader.await.unwrap();
-        }
-        service.close();
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn many_stream_consumers_all_close_when_tips_reagree() {
-        let (service, subscriber, source, nfs) =
-            spawn_agreeing(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
-        wait_for(&subscriber, is_live).await;
-
-        let mut consumers = Vec::new();
-        for _ in 0..20 {
-            let stream = subscriber
-                .stream_raw_transactions(None)
-                .expect("stream should open while live");
-            consumers.push(tokio::spawn(async move {
-                futures::pin_mut!(stream);
-                // Drain until the stream closes (new epoch) or times out.
-                loop {
-                    match tokio::time::timeout(Duration::from_secs(5), stream.next()).await {
-                        Ok(Some(_)) => continue,
-                        Ok(None) => return true, // closed
-                        Err(_) => return false,  // hung
-                    }
-                }
-            }));
-        }
-
-        // Advance both tips so V and NS re-agree at a new tip: every stream should
-        // close (the mempool goes live at the new epoch).
-        source.set_tip(block_ref(101, 0xCD));
-        nfs.set(epoch(2, 101, 0xCD));
-
-        for consumer in consumers {
-            assert!(
-                consumer.await.unwrap(),
-                "a stream failed to close when the tips re-agreed at the new tip"
-            );
-        }
-        service.close();
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn slow_stream_consumer_is_dropped_on_lag() {
-        let mut config = fast_config();
-        config.event_buffer_len = 4; // tiny buffer to force lag
-        let (service, subscriber, source, _nfs) =
-            spawn_agreeing(100, 0xAB, 1, vec![mtx(0, 100)], config);
-        wait_for(&subscriber, is_live).await;
-
-        // Open a stream but don't poll it while many updates flow past.
-        let slow = subscriber
-            .stream_raw_transactions(None)
-            .expect("stream should open while live");
-
-        // Generate many published deltas (well beyond the 4-event buffer).
-        for n in 1..40u8 {
-            let set: Vec<MockTx> = (0..=n).map(|b| mtx(b, 100)).collect();
-            source.set_mempool(set);
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
-
-        // The lagging stream terminates rather than hanging or delivering all.
-        futures::pin_mut!(slow);
-        let mut delivered = 0usize;
-        loop {
-            match tokio::time::timeout(Duration::from_secs(2), slow.next()).await {
-                Ok(Some(_)) => {
-                    delivered += 1;
-                    assert!(delivered < 1_000, "lagging stream did not close");
-                }
-                Ok(None) => break, // closed on lag — expected
-                Err(_) => panic!("lagging stream hung instead of closing"),
-            }
-        }
-        service.close();
+        panic!("coherent snapshot never satisfied the predicate");
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn tip_flapping_converges_to_live() {
-        let (service, subscriber, source, nfs) =
-            spawn_agreeing(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
-        wait_for(&subscriber, is_live).await;
+    fn is_live(snapshot: &CoherentSnapshot) -> bool {
+        matches!(snapshot.mode, MempoolMode::Live { .. })
+    }
 
-        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    fn is_frozen(snapshot: &CoherentSnapshot) -> bool {
+        matches!(snapshot.mode, MempoolMode::Frozen { .. })
+    }
 
-        // Oscillate the validator tip (diverging from NS) under concurrent reads.
-        let flap_source = source.clone();
-        let flap_stop = Arc::clone(&stop);
-        let flapper = tokio::spawn(async move {
-            let mut toggle = false;
-            while !flap_stop.load(std::sync::atomic::Ordering::Relaxed) {
-                flap_source.set_tip(if toggle {
-                    block_ref(100, 0xCD)
-                } else {
-                    block_ref(100, 0xAB)
-                });
-                toggle = !toggle;
-                tokio::time::sleep(Duration::from_millis(2)).await;
-            }
-        });
+    fn freeze_reason(snapshot: &CoherentSnapshot) -> Option<FreezeReason> {
+        match snapshot.mode {
+            MempoolMode::Frozen { reason, .. } => Some(reason),
+            _ => None,
+        }
+    }
 
-        let reader = subscriber.clone();
-        let read_stop = Arc::clone(&stop);
-        let reader_task = tokio::spawn(async move {
-            while !read_stop.load(std::sync::atomic::Ordering::Relaxed) {
-                let _ = reader.snapshot();
-                let _ = reader.get_txids();
-                tokio::task::yield_now().await;
-            }
-        });
+    #[tokio::test]
+    async fn agreement_publishes_a_live_coherent_view() {
+        let h = spawn_coherent(100, 0xAB, 7, vec![mtx(1, 100), mtx(2, 100)], fast_config());
 
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        flapper.await.unwrap();
-        reader_task.await.unwrap();
+        let snapshot = wait_for(&h.subscriber, is_live).await;
+        assert!(snapshot.is_live_for(epoch(7, 100, 0xAB)));
+        assert_eq!(snapshot.set.tx_count, 2);
+        assert!(snapshot.is_valid_for_snapshot(epoch(7, 100, 0xAB)));
+        assert!(snapshot.get(&txid(1)).is_some());
+        h.close();
+    }
 
-        // Settle the tips in agreement; the service must converge back to Live.
-        source.set_tip(block_ref(100, 0xAB));
-        nfs.set(epoch(2, 100, 0xAB));
+    #[tokio::test]
+    async fn validator_tip_change_freezes_and_preserves_transactions() {
+        let h = spawn_coherent(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
+        wait_for(&h.subscriber, is_live).await;
+
+        h.source.set_tip(block_ref(101, 0xCD)); // V advances, NS stays
+
+        let snapshot = wait_for(&h.subscriber, is_frozen).await;
+        assert_eq!(snapshot.set.tx_count, 1); // last coherent set stays readable
+        assert!(snapshot.set.by_txid.contains_key(&txid(1)));
+        assert_eq!(snapshot.valid_for, Some(epoch(1, 100, 0xAB)));
+        assert_eq!(freeze_reason(&snapshot), Some(FreezeReason::TipsDiverged));
+        h.close();
+    }
+
+    #[tokio::test]
+    async fn nonfinalized_tip_change_freezes() {
+        let h = spawn_coherent(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
+        wait_for(&h.subscriber, is_live).await;
+
+        h.nfs.set(epoch(2, 101, 0xCD)); // NS advances, V stays
+
+        let snapshot = wait_for(&h.subscriber, is_frozen).await;
+        assert_eq!(snapshot.set.tx_count, 1);
+        assert_eq!(freeze_reason(&snapshot), Some(FreezeReason::TipsDiverged));
+        h.close();
+    }
+
+    #[tokio::test]
+    async fn agreement_after_divergence_thaws_to_live() {
+        let source = MockSource::new();
+        let nfs = MockNfs::new();
+        source.set_tip(block_ref(100, 0xAA));
+        source.set_mempool(vec![mtx(1, 100)]);
+        nfs.set(epoch(1, 100, 0xBB)); // diverged
+
+        let core = MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
+        let coherence = CoherenceService::spawn(
+            core.subscriber(),
+            nfs.clone(),
+            fast_config(),
+            CancellationToken::new(),
+        );
+        let subscriber = coherence.subscriber();
+
+        let frozen = wait_for(&subscriber, is_frozen).await;
+        assert_eq!(freeze_reason(&frozen), Some(FreezeReason::TipsDiverged));
+
+        nfs.set(epoch(2, 100, 0xAA)); // agree
+
         let snapshot = wait_for(&subscriber, is_live).await;
-        assert!(snapshot.by_txid.contains_key(&txid(1)));
-        service.close();
+        assert_eq!(snapshot.set.tx_count, 1);
+        assert!(snapshot.is_live_for(epoch(2, 100, 0xAA)));
+        coherence.close();
+        core.close();
+    }
+
+    #[tokio::test]
+    async fn missing_nonfinalized_state_stays_not_ready() {
+        let source = MockSource::new();
+        let nfs = MockNfs::new(); // never set: NS unavailable
+        source.set_tip(block_ref(100, 0xAA));
+        source.set_mempool(vec![mtx(1, 100)]);
+
+        let core = MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
+        let coherence = CoherenceService::spawn(
+            core.subscriber(),
+            nfs.clone(),
+            fast_config(),
+            CancellationToken::new(),
+        );
+        let subscriber = coherence.subscriber();
+
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let snapshot = subscriber.coherent_snapshot();
+        assert!(!is_live(&snapshot));
+        assert_eq!(snapshot.valid_for, None);
+        // Core is ready with data; coherence freezes on the missing NS tip.
+        assert_eq!(
+            freeze_reason(&snapshot),
+            Some(FreezeReason::NonFinalizedUnavailable)
+        );
+        coherence.close();
+        core.close();
+    }
+
+    #[tokio::test]
+    async fn core_source_error_freezes_coherent_view() {
+        let h = spawn_coherent(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
+        wait_for(&h.subscriber, is_live).await;
+
+        h.source.set_error(Some("validator unreachable"));
+
+        let snapshot = wait_for(&h.subscriber, is_frozen).await;
+        assert_eq!(freeze_reason(&snapshot), Some(FreezeReason::CoreIncomplete));
+        assert_eq!(snapshot.set.tx_count, 1); // last coherent set preserved
+        h.close();
+    }
+
+    #[tokio::test]
+    async fn stream_yields_initial_then_added() {
+        let h = spawn_coherent(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
+        wait_for(&h.subscriber, |s| is_live(s) && s.set.tx_count == 1).await;
+
+        let mut stream = Box::pin(
+            h.subscriber
+                .stream_transactions_until_tip_change(Some(epoch(1, 100, 0xAB)))
+                .expect("coherent for this epoch"),
+        );
+
+        // Initial set: the one transaction's bytes.
+        assert_eq!(stream.next().await, Some(vec![1]));
+
+        // Add a second transaction at the same epoch: it streams live.
+        h.source.set_mempool(vec![mtx(1, 100), mtx(2, 100)]);
+        assert_eq!(stream.next().await, Some(vec![2]));
+        h.close();
+    }
+
+    #[tokio::test]
+    async fn stream_is_none_for_stale_epoch() {
+        let h = spawn_coherent(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
+        wait_for(&h.subscriber, is_live).await;
+
+        // A caller whose epoch does not match the coherent view gets `None`.
+        assert!(h
+            .subscriber
+            .stream_transactions_until_tip_change(Some(epoch(9, 999, 0xFF)))
+            .is_none());
+        h.close();
+    }
+
+    #[tokio::test]
+    async fn validator_only_freezes_on_tip_change_and_thaws() {
+        // No NS observer: the epoch is synthesized from the validator tip, so a
+        // stable tip is live and a tip change is a single-tip freeze/thaw.
+        let source = MockSource::new();
+        source.set_tip(block_ref(100, 0xAA));
+        source.set_mempool(vec![mtx(1, 100)]);
+        let core = MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
+        let coherence = CoherenceService::spawn_validator_only(
+            core.subscriber(),
+            fast_config(),
+            CancellationToken::new(),
+        );
+        let subscriber = coherence.subscriber();
+
+        let live = wait_for(&subscriber, is_live).await;
+        assert_eq!(live.set.tx_count, 1);
+
+        source.set_tip(block_ref(101, 0xBB)); // tip change: re-synthesize, stay live
+        let snapshot = wait_for(&subscriber, |s| {
+            is_live(s)
+                && s.observed_tips.validator
+                    == Some(zaino_mempool::tip::ValidatorTip {
+                        best_tip: block_ref(101, 0xBB),
+                    })
+        })
+        .await;
+        assert!(is_live(&snapshot));
+        coherence.close();
+        core.close();
+    }
+
+    #[tokio::test]
+    async fn coherent_empty_not_ready() {
+        let snapshot = CoherentSnapshot::empty_not_ready();
+        assert!(matches!(snapshot.mode, MempoolMode::NotReady));
+        assert_eq!(snapshot.valid_for, None);
+        assert_eq!(snapshot.set.tx_count, 0);
+    }
+
+    #[test]
+    fn observed_tips_agree_and_disagree() {
+        use zaino_mempool::tip::{ObservedTips, ValidatorTip};
+
+        let v = ValidatorTip {
+            best_tip: block_ref(100, 0xAB),
+        };
+        let ns_same = epoch(1, 100, 0xAB);
+        let ns_diff = epoch(1, 100, 0xCD);
+
+        assert_eq!(ObservedTips::none().agree(), None);
+        assert!(!ObservedTips::none().disagree());
+
+        let only_v = ObservedTips {
+            validator: Some(v),
+            non_finalized: None,
+        };
+        assert_eq!(only_v.agree(), None);
+        assert!(!only_v.disagree());
+
+        let agree = ObservedTips {
+            validator: Some(v),
+            non_finalized: Some(ns_same),
+        };
+        assert_eq!(agree.agree(), Some(ns_same));
+
+        let disagree = ObservedTips {
+            validator: Some(v),
+            non_finalized: Some(ns_diff),
+        };
+        assert_eq!(disagree.agree(), None);
+        assert!(disagree.disagree());
     }
 }

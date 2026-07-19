@@ -15,10 +15,20 @@ use crate::chain_index::non_finalised_state::NonFinalizedState;
 use crate::chain_index::source::BlockchainSource;
 use crate::chain_index::types::BlockIndex;
 
-/// The concrete mempool service the ChainIndex owns: the `zaino-mempool` service
-/// driven by this crate's source and non-finalized-state adapters.
+/// The tip-agnostic core mempool the ChainIndex owns: the `zaino-mempool-rpc`
+/// service driven by this crate's source adapter. Serves the live, never-frozen
+/// reads (`getrawmempool`, `getmempoolinfo`, `GetMempoolTx`).
 pub(crate) type ChainIndexMempool<Source> =
-    zaino_mempool_rpc::MempoolService<MempoolSourceAdapter<Source>, NfsEpochAdapter<Source>>;
+    zaino_mempool_rpc::MempoolService<MempoolSourceAdapter<Source>>;
+
+/// The tip-aware coherence layer the ChainIndex owns: wraps the core mempool's
+/// read handle and this crate's non-finalized-state adapter to serve the
+/// tip-coherent reads (`get_raw_transaction`, `get_transaction_status`) and the
+/// coherent raw-transaction stream.
+pub(crate) type ChainIndexCoherence<Source> = zaino_mempool_rpc::CoherenceService<
+    zaino_mempool_rpc::MempoolSubscriber,
+    NfsEpochAdapter<Source>,
+>;
 
 /// Maps a `zaino-state` [`BlockchainSourceError`](crate::chain_index::source::BlockchainSourceError)
 /// (or any boxable adapter error) into a [`zaino_mempool::MempoolError`].

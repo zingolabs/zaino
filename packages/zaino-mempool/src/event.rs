@@ -1,56 +1,51 @@
-//! Bounded delta events published by the mempool service.
+//! Bounded coherent-stream events published by the tip-aware coherence layer.
 //!
-//! Events flow over a bounded broadcast channel. Live streams consume `Added`
-//! deltas and close on `Frozen`/`Closing`; `Live`/`Frozen` carry the freshly
-//! published snapshot for subscribers that want the whole set.
+//! Gated behind `tip_aware_mempool`. Where the tip-agnostic core publishes plain
+//! [`MempoolUpdate`](crate::update::MempoolUpdate) deltas, the coherence layer
+//! republishes them as tip-keyed [`MempoolEvent`]s so the raw-transaction stream
+//! can track the epoch it is serving: `Added` deltas carry `valid_for`, and the
+//! stream closes on `Frozen`/`Closing` or when a new coherent epoch is reached.
+//!
+//! Events carry only the small facts the stream needs (the entry, the epoch, the
+//! freeze reason) — never the whole `CoherentSnapshot`. Consumers that want the
+//! full coherent view read it from
+//! [`TipAwareMempool::coherent_snapshot`](crate::ports::TipAwareMempool::coherent_snapshot),
+//! keeping buffered events tiny under many subscribers.
 
 use std::sync::Arc;
 
-use zebra_chain::transaction::Hash as TxHash;
-
 use crate::entry::MempoolEntry;
 use crate::ports::NonFinalizedEpoch;
-use crate::snapshot::{FreezeReason, MempoolSnapshot};
+use crate::tip::FreezeReason;
 
-/// A mempool change event.
+/// A coherent mempool change event, keyed to an NS epoch.
 #[derive(Debug, Clone)]
 pub enum MempoolEvent {
-    /// A transaction was added to the live set. Never emitted while frozen.
+    /// A transaction was added to the coherent set. Never emitted while frozen.
     Added {
-        /// Event sequence of the publishing snapshot.
+        /// Event sequence of the publishing coherent snapshot.
         sequence: u64,
-        /// The epoch the live set is valid for.
+        /// The epoch the coherent set is valid for.
         valid_for: NonFinalizedEpoch,
         /// The added entry (shared; not cloned per subscriber).
         entry: Arc<MempoolEntry>,
     },
 
-    /// A transaction was removed from the live set. Never emitted while frozen.
-    Removed {
-        /// Event sequence of the publishing snapshot.
-        sequence: u64,
-        /// The epoch the live set is valid for.
-        valid_for: NonFinalizedEpoch,
-        /// The removed transaction's id.
-        txid: TxHash,
-    },
-
-    /// The transaction set was frozen. Live streams should close or resync.
+    /// The coherent view was frozen. Live streams keep serving the last coherent
+    /// set until the tips re-agree at a new epoch.
     Frozen {
         /// Event sequence of the frozen snapshot.
         sequence: u64,
-        /// The frozen snapshot.
-        snapshot: Arc<MempoolSnapshot>,
-        /// Why the set froze.
+        /// Why the view froze.
         reason: FreezeReason,
     },
 
-    /// A fully reconciled live snapshot was published.
+    /// A fully reconciled live coherent snapshot was published for `valid_for`.
     Live {
         /// Event sequence of the live snapshot.
         sequence: u64,
-        /// The live snapshot.
-        snapshot: Arc<MempoolSnapshot>,
+        /// The epoch the coherent set is now live for.
+        valid_for: NonFinalizedEpoch,
     },
 
     /// The service is closing.

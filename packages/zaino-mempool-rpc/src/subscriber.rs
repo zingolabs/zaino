@@ -1,4 +1,8 @@
-//! Cheap, cloneable read handle onto the mempool read model.
+//! Cheap, cloneable read handle onto the tip-agnostic core mempool.
+//!
+//! Serves the live set (never frozen): `getrawmempool` / `getmempoolinfo` /
+//! `GetMempoolTx`-style reads. The tip-*coherent* reads and the raw-transaction
+//! stream live in [`crate::coherence`], behind the `tip_aware_mempool` feature.
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
@@ -11,9 +15,9 @@ use zebra_chain::transaction::Hash as TxHash;
 
 use zaino_mempool::config::MempoolConfig;
 use zaino_mempool::entry::MempoolEntry;
-use zaino_mempool::event::MempoolEvent;
-use zaino_mempool::ports::NonFinalizedEpoch;
+use zaino_mempool::ports::Mempool;
 use zaino_mempool::snapshot::MempoolSnapshot;
+use zaino_mempool::update::MempoolUpdate;
 
 /// Aggregate mempool metrics for `getmempoolinfo`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,11 +71,11 @@ pub enum MempoolFilterError {
     },
 }
 
-/// A cheap, cloneable read handle onto the mempool.
+/// A cheap, cloneable read handle onto the core mempool.
 #[derive(Clone)]
 pub struct MempoolSubscriber {
     current: Arc<ArcSwap<MempoolSnapshot>>,
-    events: broadcast::Sender<Arc<MempoolEvent>>,
+    updates: broadcast::Sender<MempoolUpdate>,
     config: MempoolConfig,
     status: NamedAtomicStatus,
 }
@@ -87,13 +91,13 @@ impl std::fmt::Debug for MempoolSubscriber {
 impl MempoolSubscriber {
     pub(crate) fn new(
         current: Arc<ArcSwap<MempoolSnapshot>>,
-        events: broadcast::Sender<Arc<MempoolEvent>>,
+        updates: broadcast::Sender<MempoolUpdate>,
         config: MempoolConfig,
         status: NamedAtomicStatus,
     ) -> Self {
         Self {
             current,
-            events,
+            updates,
             config,
             status,
         }
@@ -140,22 +144,54 @@ impl MempoolSubscriber {
         self.snapshot().by_txid.get(txid).cloned()
     }
 
-    /// The current snapshot's txids, sorted by canonical byte order.
+    /// The current snapshot's txids, sorted by canonical (reversed) byte order.
     pub fn get_txids(&self) -> Arc<[TxHash]> {
         self.snapshot().txids_sorted.clone()
     }
 
-    /// Subscribe to the bounded mempool event stream.
-    pub fn subscribe_events(&self) -> broadcast::Receiver<Arc<MempoolEvent>> {
-        self.events.subscribe()
+    /// Subscribe to the bounded mempool change feed (the raw receiver).
+    ///
+    /// Prefer [`mempool_updates`](Self::mempool_updates) unless you need the raw
+    /// receiver: it surfaces a lag as `RecvError::Lagged`, which is easy to drop
+    /// silently. Honour the consistency contract in the `update` module either
+    /// way (subscribe before reading `snapshot`; resync on lag).
+    pub fn subscribe_updates(&self) -> broadcast::Receiver<MempoolUpdate> {
+        self.updates.subscribe()
+    }
+
+    /// The mempool change feed as an ergonomic, hard-to-misuse [`Stream`].
+    ///
+    /// Yields each [`MempoolUpdate`] in order and, when this consumer falls behind
+    /// the bounded feed, an explicit in-band [`MempoolUpdate::Lagged`] — never a
+    /// silent skip. On `Lagged` (and on each `Reset` batch boundary) resync from
+    /// [`snapshot`](Self::snapshot): no *state* is ever lost, only intermediate
+    /// deltas that the fresh snapshot already reflects. The stream ends when the
+    /// service closes.
+    ///
+    /// Subscribing happens when this method is called, so read `snapshot` *after*
+    /// calling it to avoid a gap (the module-level contract).
+    ///
+    /// [`Stream`]: futures::Stream
+    pub fn mempool_updates(&self) -> impl futures::Stream<Item = MempoolUpdate> + Send {
+        let mut receiver = self.updates.subscribe();
+        async_stream::stream! {
+            loop {
+                match receiver.recv().await {
+                    Ok(update) => yield update,
+                    Err(broadcast::error::RecvError::Lagged(missed)) => {
+                        yield MempoolUpdate::Lagged { missed };
+                    }
+                    Err(broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        }
     }
 
     /// Validate and canonicalize a client-supplied exclude list.
     ///
     /// Enforces the configured aggregate-count and per-suffix length bounds
-    /// before any work touches the mempool, then reverses each client-endian
-    /// suffix into canonical (internal) byte order for prefix lookup. Bounding
-    /// here is the fix for the unbounded-exclusion-filter denial of service.
+    /// before any work touches the mempool. Bounding here is the fix for the
+    /// unbounded-exclusion-filter denial of service.
     pub fn validate_exclude_suffixes(
         &self,
         exclude_suffixes_client_endian: &[Vec<u8>],
@@ -196,9 +232,9 @@ impl MempoolSubscriber {
     ///
     /// A suffix that uniquely matches one txid excludes it; a suffix matching
     /// zero txids is ignored; a suffix matching multiple txids excludes none (the
-    /// lightwallet shortened-txid contract). Cost is `O(excludes · n)`, which is
-    /// bounded because `validate_exclude_suffixes` caps the exclude count and the
-    /// snapshot is cost-bounded — the linear scan is intentional and safe here.
+    /// lightwallet shortened-txid contract). Cost is `O(excludes · log n)` via a
+    /// binary range search, bounded because `validate_exclude_suffixes` caps the
+    /// exclude count and the snapshot is cost-bounded.
     pub fn get_filtered_entries(
         &self,
         exclude_suffixes: &[TxIdExcludeSuffix],
@@ -219,103 +255,15 @@ impl MempoolSubscriber {
             .cloned()
             .collect()
     }
+}
 
-    /// A live stream of serialized mempool transactions.
-    ///
-    /// Yields the current snapshot's transactions first, then each subsequently
-    /// added transaction, until the mempool becomes live for a **new epoch** (the
-    /// validator and non-finalized tips re-agreed at a new tip), the service
-    /// closes, or the caller falls behind the bounded event buffer. A transient
-    /// freeze does *not* end the stream — the last coherent set stays readable
-    /// until the tips re-agree, so the caller's next call (with the new tip)
-    /// finds a matching, live view. Returns `None` immediately if `expected_epoch`
-    /// does not match the current snapshot — the caller's chain tip is stale and
-    /// should re-snapshot.
-    pub fn stream_raw_transactions(
-        &self,
-        expected_epoch: Option<NonFinalizedEpoch>,
-    ) -> Option<impl futures::Stream<Item = Vec<u8>>> {
-        // Subscribe before snapshotting so no event between the snapshot load and
-        // the subscribe is missed; events at or below `start_sequence` are then
-        // discarded as already reflected in the initial snapshot.
-        let mut receiver = self.subscribe_events();
-        let snapshot = self.snapshot();
+impl Mempool for MempoolSubscriber {
+    fn current(&self) -> Arc<MempoolSnapshot> {
+        self.snapshot()
+    }
 
-        if let Some(expected) = expected_epoch {
-            if !snapshot.is_valid_for_snapshot(expected) {
-                return None;
-            }
-        }
-
-        let start_sequence = snapshot.event_sequence;
-        let initial_entries = snapshot.entries_in_order.clone();
-
-        // The epoch this stream is serving. The stream closes only when the
-        // mempool becomes live for a *different* epoch — i.e. when the validator
-        // and non-finalized tips re-agree at a *new* tip. It deliberately does
-        // NOT close on a transient `Frozen` (the tips diverged but have not
-        // settled): the last coherent set stays readable until the new tip is
-        // ready. Closing at re-agreement guarantees the non-finalized tip is at
-        // the new tip, so the caller's next `get_mempool_stream` (with that new
-        // tip) finds a matching, live view instead of racing Zaino's
-        // convergence. A prolonged freeze is bounded by the RPC-layer timeout.
-        let stream_epoch = expected_epoch.or(snapshot.valid_for);
-
-        let stream = async_stream::stream! {
-            for entry in initial_entries.iter() {
-                yield entry.serialized_bytes().to_vec();
-            }
-
-            loop {
-                let event = match receiver.recv().await {
-                    Ok(event) => event,
-                    // Fell behind the bounded buffer, or the service closed.
-                    Err(broadcast::error::RecvError::Lagged(_)) => break,
-                    Err(broadcast::error::RecvError::Closed) => break,
-                };
-
-                match event.as_ref() {
-                    MempoolEvent::Added {
-                        sequence,
-                        valid_for,
-                        entry,
-                    } => {
-                        if *sequence <= start_sequence {
-                            continue;
-                        }
-                        // A delta for a different epoch means the tips re-agreed
-                        // at a new tip: close so the caller re-syncs.
-                        match stream_epoch {
-                            Some(epoch) if *valid_for != epoch => break,
-                            _ => yield entry.serialized_bytes().to_vec(),
-                        }
-                    }
-                    // Raw streams do not emit removals.
-                    MempoolEvent::Removed { .. } => {}
-                    MempoolEvent::Live { snapshot, .. } => {
-                        // Reconciled to a live set: close only if it is a
-                        // different epoch than we opened at (a new tip). A
-                        // transient blip that resolved back to the same epoch
-                        // keeps the stream open.
-                        match stream_epoch {
-                            Some(epoch) if snapshot.valid_for != Some(epoch) => break,
-                            _ => {}
-                        }
-                    }
-                    // Transient: keep serving the last coherent set until the
-                    // tips re-agree (handled by `Live`, above). If the epoch
-                    // cannot be tracked, fall back to closing on freeze.
-                    MempoolEvent::Frozen { .. } => {
-                        if stream_epoch.is_none() {
-                            break;
-                        }
-                    }
-                    MempoolEvent::Closing { .. } => break,
-                }
-            }
-        };
-
-        Some(stream)
+    fn subscribe_updates(&self) -> broadcast::Receiver<MempoolUpdate> {
+        self.updates.subscribe()
     }
 }
 

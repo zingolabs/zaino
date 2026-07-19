@@ -1,15 +1,22 @@
-//! The mempool service: a single writer task that maintains the coherent,
-//! bounded mempool read model and publishes it as immutable snapshots.
+//! The core mempool service: a single writer task that mirrors the validator's
+//! mempool as an immutable, bounded, **tip-agnostic** read model.
 //!
-//! # Coherence
+//! # Tip-agnostic, but tip-tagged
 //!
-//! The service tracks two chain tips: the validator/mempool-source tip ("V",
-//! from [`MempoolSource::get_mempool_source_tip`]) and the non-finalized-state
-//! epoch ("NS", from [`NfsEpochObserver::current_epoch`]). It mutates the
-//! transaction set **only while V and NS agree**, and re-checks agreement after
-//! fetching so an update built against a stale tip is discarded. Any tip change,
-//! disagreement, unavailability, or source error freezes the set: the last
-//! coherent snapshot stays readable and no live deltas are emitted.
+//! This service never freezes. Each poll it diffs the validator's current mempool
+//! against the held set and applies the delta, so tip-agnostic reads
+//! (`GetMempoolTx`, `getrawmempool`, `getmempoolinfo`) always serve the live set
+//! — even mid-reorg. It does, however, **tag** every published snapshot with the
+//! validator tip it was fetched at ([`MempoolSnapshot::source_tip`]), read from the
+//! *same* source that serves the mempool data. That single-source tag is what lets
+//! the optional coherence layer (`crate::coherence`) decide `V == NS` without
+//! re-fetching; without it, coherence would have to correlate the set and the tip
+//! across two independent reads — the race the rework closed.
+//!
+//! The only bound the core enforces itself is the ZIP-401 capacity backstop:
+//! additions that would breach `max_cost_bytes` are dropped and the set is marked
+//! [`IncompleteCapacityLimited`](MempoolCompleteness::IncompleteCapacityLimited)
+//! rather than exceeding the bound.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -23,57 +30,25 @@ use zaino_common::status::{NamedAtomicStatus, StatusType};
 use crate::subscriber::MempoolSubscriber;
 use zaino_mempool::config::MempoolConfig;
 use zaino_mempool::entry::MempoolEntry;
-use zaino_mempool::event::MempoolEvent;
-use zaino_mempool::ports::{MempoolSource, MempoolTxMeta, NfsEpochObserver, NonFinalizedEpoch};
-use zaino_mempool::snapshot::{
-    FreezeReason, MempoolCompleteness, MempoolMode, MempoolSnapshot, ObservedTips, TipChange,
-    ValidatorTip,
-};
-use zaino_mempool::MempoolError;
+use zaino_mempool::ports::{BlockRef, MempoolSource, MempoolTxMeta};
+use zaino_mempool::snapshot::{MempoolCompleteness, MempoolSnapshot};
+use zaino_mempool::update::MempoolUpdate;
 
-/// Internal outcome of an attempted transaction-set update.
-#[derive(Debug)]
-enum MempoolUpdateError {
-    /// V and NS no longer agree on the target epoch; discard and freeze.
-    CoherenceLost { observed_tips: ObservedTips },
-    /// The source failed; freeze the existing set.
-    SourceError,
-    /// Applying the update would breach a configured capacity bound.
-    CapacityLimited,
-}
-
-/// Writer-local state for synthesizing a non-finalized epoch from the validator
-/// tip in validator-only mode: `generation` increments only when the validator
-/// tip hash changes, giving a stable epoch for a stable tip.
-#[derive(Default)]
-struct SynthesizedEpochState {
-    last_validator_hash: Option<zebra_chain::block::Hash>,
-    generation: u64,
-}
-
-/// The mempool read-model service.
+/// The core mempool read-model service.
 ///
-/// Generic over its two ports so the core has no `zaino-state` dependency.
-///
-/// The non-finalized-state observer is optional: with an observer
-/// ([`Self::spawn`]) the service enforces dual-tip coherence between the
-/// validator tip and Zaino's non-finalized-state tip; without one
-/// ([`Self::spawn_validator_only`]) it mirrors the validator alone (single-tip),
-/// synthesizing the epoch from the validator tip.
-pub struct MempoolService<S: MempoolSource, N: NfsEpochObserver> {
+/// Generic over its one outbound port ([`MempoolSource`]) so the core has no
+/// `zaino-state` dependency and no chain-tip knowledge beyond the tag it stamps.
+pub struct MempoolService<S: MempoolSource> {
     source: S,
-    nfs: Option<N>,
-    /// Synthesized-epoch counter, only used in validator-only mode.
-    synth_epoch: std::sync::Mutex<SynthesizedEpochState>,
     current: Arc<ArcSwap<MempoolSnapshot>>,
-    events: broadcast::Sender<Arc<MempoolEvent>>,
+    updates: broadcast::Sender<MempoolUpdate>,
     config: MempoolConfig,
     status: NamedAtomicStatus,
     cancel: CancellationToken,
     task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
-impl<S: MempoolSource, N: NfsEpochObserver> std::fmt::Debug for MempoolService<S, N> {
+impl<S: MempoolSource> std::fmt::Debug for MempoolService<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MempoolService")
             .field("status", &self.status.load())
@@ -81,41 +56,15 @@ impl<S: MempoolSource, N: NfsEpochObserver> std::fmt::Debug for MempoolService<S
     }
 }
 
-impl<S: MempoolSource> MempoolService<S, zaino_mempool::ports::NoNfs> {
-    /// Spawn a validator-only mempool: it mirrors the validator's mempool without
-    /// coordinating with a non-finalized state. Coherence collapses to single-tip
-    /// (freeze on validator-tip change); the epoch is synthesized from the
-    /// validator tip.
-    pub fn spawn_validator_only(
-        source: S,
-        config: MempoolConfig,
-        cancel: CancellationToken,
-    ) -> Arc<Self> {
-        Self::spawn_inner(source, None, config, cancel)
-    }
-}
-
-impl<S: MempoolSource, N: NfsEpochObserver> MempoolService<S, N> {
-    /// Spawn the service and its background update task with dual-tip coherence
-    /// against the given non-finalized-state observer.
-    pub fn spawn(source: S, nfs: N, config: MempoolConfig, cancel: CancellationToken) -> Arc<Self> {
-        Self::spawn_inner(source, Some(nfs), config, cancel)
-    }
-
-    fn spawn_inner(
-        source: S,
-        nfs: Option<N>,
-        config: MempoolConfig,
-        cancel: CancellationToken,
-    ) -> Arc<Self> {
-        let (events, _) = broadcast::channel(config.event_buffer_len);
+impl<S: MempoolSource> MempoolService<S> {
+    /// Spawn the core service and its background poll task.
+    pub fn spawn(source: S, config: MempoolConfig, cancel: CancellationToken) -> Arc<Self> {
+        let (updates, _) = broadcast::channel(config.event_buffer_len);
 
         let service = Arc::new(Self {
             source,
-            nfs,
-            synth_epoch: std::sync::Mutex::new(SynthesizedEpochState::default()),
             current: Arc::new(ArcSwap::from_pointee(MempoolSnapshot::empty_not_ready())),
-            events,
+            updates,
             config,
             status: NamedAtomicStatus::new("Mempool", StatusType::Spawning),
             cancel,
@@ -132,11 +81,11 @@ impl<S: MempoolSource, N: NfsEpochObserver> MempoolService<S, N> {
         service
     }
 
-    /// A cheap, cloneable read handle onto the mempool.
+    /// A cheap, cloneable read handle onto the core mempool.
     pub fn subscriber(&self) -> MempoolSubscriber {
         MempoolSubscriber::new(
             Arc::clone(&self.current),
-            self.events.clone(),
+            self.updates.clone(),
             self.config.clone(),
             self.status.clone(),
         )
@@ -147,7 +96,7 @@ impl<S: MempoolSource, N: NfsEpochObserver> MempoolService<S, N> {
         self.status.load()
     }
 
-    /// Signal shutdown: publish the `Closing` snapshot/event, then stop the task.
+    /// Signal shutdown: publish the `Closing` update, then stop the task.
     ///
     /// `Closing` is published synchronously here (rather than relying on the
     /// background task to observe cancellation first) so subscribers reliably see
@@ -193,223 +142,20 @@ impl<S: MempoolSource, N: NfsEpochObserver> MempoolService<S, N> {
     }
 
     async fn tick(&self) {
-        let current = self.current.load_full();
-        let previous_tips = current.observed_tips;
-
-        let observed = match self.observe_tips().await {
-            Ok(tips) => tips,
-            Err(_) => {
-                self.publish_frozen_snapshot(previous_tips, FreezeReason::SourceError);
-                return;
-            }
+        // Tag: the validator tip at the start of this poll's fetch window.
+        let tip_before = match self.source.get_mempool_source_tip().await {
+            Ok(tip) => tip,
+            Err(_) => return self.publish_source_error(),
         };
 
-        let tips_changed = Self::classify_tip_change(previous_tips, observed) != TipChange::None;
-
-        if tips_changed {
-            let reason = Self::freeze_reason_from_tips(previous_tips, observed);
-            self.publish_frozen_snapshot(observed, reason);
-        }
-
-        let Some(target_epoch) = observed.agree() else {
-            if !tips_changed {
-                self.publish_frozen_snapshot(observed, FreezeReason::TipsDiverged);
-            }
-            return;
+        let txids = match self.source.get_mempool_txids().await {
+            Ok(Some(txids)) => txids,
+            // Source could not answer, or errored: keep the last set, mark it
+            // incomplete, and retry next poll. The core never freezes.
+            Ok(None) | Err(_) => return self.publish_source_error(),
         };
 
-        match self.update_for_epoch(target_epoch).await {
-            Ok(()) => {}
-            Err(MempoolUpdateError::CoherenceLost { observed_tips }) => {
-                self.publish_frozen_snapshot(observed_tips, FreezeReason::TipsDiverged);
-            }
-            Err(MempoolUpdateError::SourceError) => {
-                self.publish_frozen_snapshot(observed, FreezeReason::SourceError);
-            }
-            Err(MempoolUpdateError::CapacityLimited) => {
-                self.publish_frozen_snapshot(observed, FreezeReason::CapacityLimited);
-            }
-        }
-    }
-
-    // ---- tip observation ------------------------------------------------
-
-    async fn current_validator_tip(&self) -> Result<Option<ValidatorTip>, MempoolError> {
-        Ok(self
-            .source
-            .get_mempool_source_tip()
-            .await?
-            .map(|best_tip| ValidatorTip { best_tip }))
-    }
-
-    /// In validator-only mode, synthesize a non-finalized epoch from the
-    /// validator tip. Its generation increments only when the validator tip hash
-    /// changes, so `agree()` holds while the validator tip is stable and the set
-    /// re-reconciles when it changes — a single-tip freeze/thaw.
-    fn synthesized_epoch(
-        &self,
-        validator_tip: zaino_mempool::ports::BlockRef,
-    ) -> NonFinalizedEpoch {
-        let mut state = self.synth_epoch.lock().expect("synth epoch lock poisoned");
-        if state.last_validator_hash != Some(validator_tip.hash) {
-            state.generation = state.generation.saturating_add(1);
-            state.last_validator_hash = Some(validator_tip.hash);
-        }
-        NonFinalizedEpoch {
-            generation: state.generation,
-            best_tip: validator_tip,
-        }
-    }
-
-    async fn observe_tips(&self) -> Result<ObservedTips, MempoolError> {
-        // Fetch the validator tip first: in validator-only mode the non-finalized
-        // epoch is derived from it.
-        let validator = self.current_validator_tip().await?;
-
-        let non_finalized = match &self.nfs {
-            // Dual-tip: the observer reports the ChainIndex epoch (`None` means the
-            // non-finalized state is unavailable, which freezes).
-            Some(observer) => observer.current_epoch(),
-            // Validator-only: mirror the validator tip as the epoch.
-            None => validator.map(|tip| self.synthesized_epoch(tip.best_tip)),
-        };
-
-        Ok(ObservedTips {
-            validator,
-            non_finalized,
-        })
-    }
-
-    fn classify_tip_change(previous: ObservedTips, next: ObservedTips) -> TipChange {
-        let validator_changed = previous.validator != next.validator;
-        let ns_changed = previous.non_finalized != next.non_finalized;
-        match (validator_changed, ns_changed) {
-            (false, false) => TipChange::None,
-            (true, false) => TipChange::ValidatorChanged,
-            (false, true) => TipChange::NonFinalizedChanged,
-            (true, true) => TipChange::BothChanged,
-        }
-    }
-
-    fn freeze_reason_from_tips(old_tips: ObservedTips, new_tips: ObservedTips) -> FreezeReason {
-        if new_tips.non_finalized.is_none() {
-            return FreezeReason::NonFinalizedUnavailable;
-        }
-        if new_tips.validator.is_none() {
-            return FreezeReason::ValidatorTipUnavailable;
-        }
-        if new_tips.disagree() {
-            return FreezeReason::TipsDiverged;
-        }
-        match Self::classify_tip_change(old_tips, new_tips) {
-            TipChange::ValidatorChanged => FreezeReason::ValidatorTipChanged,
-            TipChange::NonFinalizedChanged => FreezeReason::NonFinalizedTipChanged,
-            TipChange::BothChanged => FreezeReason::BothTipsChanged,
-            TipChange::None => FreezeReason::TipsDiverged,
-        }
-    }
-
-    // ---- freeze / close publication ------------------------------------
-
-    fn publish_frozen_snapshot(&self, observed_tips: ObservedTips, reason: FreezeReason) {
         let current = self.current.load_full();
-        let next_sequence = current.event_sequence.saturating_add(1);
-
-        // Reuse every Arc; the transaction set is not mutated when frozen.
-        let completeness = match reason {
-            FreezeReason::SourceError => MempoolCompleteness::IncompleteSourceError,
-            FreezeReason::CapacityLimited => MempoolCompleteness::IncompleteCapacityLimited,
-            _ => current.completeness,
-        };
-
-        let frozen = Arc::new(MempoolSnapshot {
-            mode: MempoolMode::Frozen {
-                valid_for: current.valid_for,
-                reason,
-            },
-            valid_for: current.valid_for,
-            observed_tips,
-            mempool_generation: current.mempool_generation,
-            event_sequence: next_sequence,
-            by_txid: Arc::clone(&current.by_txid),
-            txids_sorted: Arc::clone(&current.txids_sorted),
-            entries_in_order: Arc::clone(&current.entries_in_order),
-            tx_count: current.tx_count,
-            raw_bytes: current.raw_bytes,
-            cost_bytes: current.cost_bytes,
-            completeness,
-        });
-
-        self.current.store(Arc::clone(&frozen));
-        let _ = self.events.send(Arc::new(MempoolEvent::Frozen {
-            sequence: next_sequence,
-            snapshot: frozen,
-            reason,
-        }));
-        self.status.store(StatusType::Syncing);
-    }
-
-    fn publish_closing(&self) {
-        let current = self.current.load_full();
-        let next_sequence = current.event_sequence.saturating_add(1);
-
-        let closing = Arc::new(MempoolSnapshot {
-            mode: MempoolMode::Closing,
-            valid_for: current.valid_for,
-            observed_tips: current.observed_tips,
-            mempool_generation: current.mempool_generation,
-            event_sequence: next_sequence,
-            by_txid: Arc::clone(&current.by_txid),
-            txids_sorted: Arc::clone(&current.txids_sorted),
-            entries_in_order: Arc::clone(&current.entries_in_order),
-            tx_count: current.tx_count,
-            raw_bytes: current.raw_bytes,
-            cost_bytes: current.cost_bytes,
-            completeness: current.completeness,
-        });
-
-        self.current.store(closing);
-        let _ = self.events.send(Arc::new(MempoolEvent::Closing {
-            sequence: next_sequence,
-        }));
-        self.status.store(StatusType::Closing);
-    }
-
-    // ---- live update / thaw --------------------------------------------
-
-    /// Reconcile (or incrementally update) the transaction set for `target_epoch`.
-    ///
-    /// The reconcile (`Frozen`/`NotReady` -> `Live`) and steady-state
-    /// incremental-update paths share one body: both diff the source mempool
-    /// against the current set under the two coherence guards. A `Frozen ->
-    /// Live` transition falls out naturally when the current set isn't already
-    /// live at this epoch.
-    async fn update_for_epoch(
-        &self,
-        target_epoch: NonFinalizedEpoch,
-    ) -> Result<(), MempoolUpdateError> {
-        // Guard 1: V == target NS before any mempool data fetch.
-        let before = self
-            .observe_tips()
-            .await
-            .map_err(|_| MempoolUpdateError::SourceError)?;
-        if before.agree() != Some(target_epoch) {
-            return Err(MempoolUpdateError::CoherenceLost {
-                observed_tips: before,
-            });
-        }
-
-        // Diff against the cheap txid listing; only fetch the heavier verbose
-        // metadata when there are additions that need heights.
-        let txids = self
-            .source
-            .get_mempool_txids()
-            .await
-            .map_err(|_| MempoolUpdateError::SourceError)?
-            .ok_or(MempoolUpdateError::SourceError)?;
-
-        let current = self.current.load_full();
-
         let source_txids: HashSet<_> = txids.iter().copied().collect();
 
         let removed: Vec<_> = current
@@ -424,22 +170,32 @@ impl<S: MempoolSource, N: NfsEpochObserver> MempoolService<S, N> {
             .filter(|txid| !current.by_txid.contains_key(txid))
             .collect();
 
-        if added_txids.is_empty() && removed.is_empty() && current.is_live_for(target_epoch) {
-            // Nothing changed and we're already live for this epoch: no publish.
-            return Ok(());
+        if added_txids.is_empty() && removed.is_empty() {
+            // The set is unchanged. Re-publish only if the tag or completeness
+            // moved, so the coherence layer still learns of a validator-tip
+            // advance over a steady mempool — but only once the tag is confirmed
+            // stable (below), never smeared across a mid-poll block.
+            if current.source_tip != tip_before
+                || current.completeness != MempoolCompleteness::Complete
+            {
+                if self.tip_is_stable(tip_before).await {
+                    self.publish_snapshot(&current, tip_before, Vec::new(), Vec::new());
+                }
+            } else {
+                self.status.store(StatusType::Ready);
+            }
+            return;
         }
 
-        // Heights for new transactions come from the verbose listing, fetched
-        // only now (and only because there are additions).
+        // Heights for new transactions come from the verbose listing, fetched only
+        // now (and only because there are additions).
         let added_meta: Vec<MempoolTxMeta> = if added_txids.is_empty() {
             Vec::new()
         } else {
-            let metadata = self
-                .source
-                .get_mempool_metadata()
-                .await
-                .map_err(|_| MempoolUpdateError::SourceError)?
-                .ok_or(MempoolUpdateError::SourceError)?;
+            let metadata = match self.source.get_mempool_metadata().await {
+                Ok(Some(metadata)) => metadata,
+                Ok(None) | Err(_) => return self.publish_source_error(),
+            };
             let meta_by_txid: HashMap<_, _> =
                 metadata.into_iter().map(|meta| (meta.txid, meta)).collect();
             // A txid in the light list but absent from verbose raced away between
@@ -451,41 +207,46 @@ impl<S: MempoolSource, N: NfsEpochObserver> MempoolService<S, N> {
         };
 
         let next_generation = current.mempool_generation.saturating_add(1);
-        let added_entries = self
+        let added_entries = match self
             .fetch_added_entries_bounded(added_meta, next_generation)
-            .await?;
-
-        // Guard 2: V and NS still agree on the same epoch after the fetch.
-        let after = self
-            .observe_tips()
             .await
-            .map_err(|_| MempoolUpdateError::SourceError)?;
-        if after.agree() != Some(target_epoch) {
-            return Err(MempoolUpdateError::CoherenceLost {
-                observed_tips: after,
-            });
+        {
+            Some(entries) => entries,
+            None => return self.publish_source_error(),
+        };
+
+        // Tag-stability guard: the validator tip must not have moved across the
+        // whole fetch window. If it did, this poll's data is smeared across two
+        // tips and cannot be soundly tagged with either — discard and retry. This
+        // is what makes `source_tip` a single-source pair with the set, so the
+        // coherence layer can trust `V == NS` without re-fetching.
+        if !self.tip_is_stable(tip_before).await {
+            return;
         }
 
-        self.publish_live_snapshot(target_epoch, after, added_entries, removed)
+        self.publish_snapshot(&current, tip_before, added_entries, removed);
+    }
+
+    /// Whether the validator tip is still `tip_before` after the fetch window —
+    /// i.e. no block arrived mid-poll to smear the set across two tips.
+    async fn tip_is_stable(&self, tip_before: Option<BlockRef>) -> bool {
+        matches!(self.source.get_mempool_source_tip().await, Ok(tip) if tip == tip_before)
     }
 
     async fn fetch_added_entries_bounded(
         &self,
         added: Vec<MempoolTxMeta>,
         next_generation: u64,
-    ) -> Result<Vec<Arc<MempoolEntry>>, MempoolUpdateError> {
+    ) -> Option<Vec<Arc<MempoolEntry>>> {
         let concurrency = self.config.max_concurrent_raw_fetches.max(1);
         let source = &self.source;
 
         let results = stream::iter(added)
             .map(|meta| async move {
-                let raw = source
-                    .get_raw_mempool_transaction(meta.txid)
-                    .await
-                    .map_err(|_| MempoolUpdateError::SourceError)?;
+                let raw = source.get_raw_mempool_transaction(meta.txid).await?;
 
                 // A `None` here is the normal race: the tx left the mempool
-                // between listing and fetch. Skip it, don't fail the update.
+                // between listing and fetch. Skip it, don't fail the poll.
                 let Some(serialized_tx) = raw else {
                     return Ok(None);
                 };
@@ -501,101 +262,153 @@ impl<S: MempoolSource, N: NfsEpochObserver> MempoolService<S, N> {
                 })))
             })
             .buffer_unordered(concurrency)
-            .collect::<Vec<Result<Option<Arc<MempoolEntry>>, MempoolUpdateError>>>()
+            .collect::<Vec<Result<Option<Arc<MempoolEntry>>, zaino_mempool::MempoolError>>>()
             .await;
 
         let mut entries = Vec::new();
         for result in results {
-            if let Some(entry) = result? {
-                entries.push(entry);
+            match result {
+                Ok(Some(entry)) => entries.push(entry),
+                Ok(None) => {}
+                // Any raw-fetch error aborts this poll's update; the last set
+                // stays readable and the next poll retries.
+                Err(_) => return None,
             }
         }
-        Ok(entries)
+        Some(entries)
     }
 
-    fn publish_live_snapshot(
+    // ---- publication ----------------------------------------------------
+
+    /// Build and publish the next snapshot from `current` plus the poll's deltas.
+    ///
+    /// Removals always apply (they only shrink the set). Additions apply only if
+    /// they keep the set within `max_cost_bytes`; otherwise they are dropped and
+    /// the set is marked capacity-limited — the core's DoS backstop.
+    fn publish_snapshot(
         &self,
-        target_epoch: NonFinalizedEpoch,
-        observed_tips: ObservedTips,
+        current: &MempoolSnapshot,
+        source_tip: Option<BlockRef>,
         added_entries: Vec<Arc<MempoolEntry>>,
         removed: Vec<zebra_chain::transaction::Hash>,
-    ) -> Result<(), MempoolUpdateError> {
-        let current = self.current.load_full();
-
+    ) {
         let mut next_by_txid = current.by_txid.as_ref().clone();
         for txid in &removed {
             next_by_txid.remove(txid);
         }
-        for entry in &added_entries {
-            next_by_txid.insert(entry.txid, Arc::clone(entry));
-        }
 
-        let cost_bytes: u64 = next_by_txid.values().map(|entry| entry.cost()).sum();
-        if cost_bytes > self.config.max_cost_bytes() {
-            // Applying this update would breach the DoS backstop. Freeze at the
-            // last coherent set and mark it incomplete rather than exceed the
-            // bound or claim a complete-but-oversized view.
-            return Err(MempoolUpdateError::CapacityLimited);
+        // Tentatively add, then check the bound.
+        let mut tentative = next_by_txid.clone();
+        for entry in &added_entries {
+            tentative.insert(entry.txid, Arc::clone(entry));
         }
-        let raw_bytes: u64 = next_by_txid
+        let tentative_cost: u64 = tentative.values().map(|entry| entry.cost()).sum();
+
+        let (final_by_txid, applied_entries, completeness) =
+            if tentative_cost > self.config.max_cost_bytes() && !added_entries.is_empty() {
+                // Applying the additions would breach the DoS backstop: keep the
+                // removals, drop the additions, and mark the set incomplete.
+                (
+                    next_by_txid,
+                    Vec::new(),
+                    MempoolCompleteness::IncompleteCapacityLimited,
+                )
+            } else {
+                (tentative, added_entries, MempoolCompleteness::Complete)
+            };
+
+        let cost_bytes: u64 = final_by_txid.values().map(|entry| entry.cost()).sum();
+        let raw_bytes: u64 = final_by_txid
             .values()
             .map(|entry| entry.raw_len as u64)
             .sum();
 
-        // Sort by *reversed* txid bytes. This gives a deterministic order and,
-        // crucially, makes the lightwallet exclude filter (which matches on txid
-        // suffixes) a binary-searchable prefix match over the reversed bytes.
-        let mut txids_sorted: Vec<_> = next_by_txid.keys().copied().collect();
+        // Sort by *reversed* txid bytes: deterministic order that makes the
+        // lightwallet exclude filter (which matches on txid suffixes) a
+        // binary-searchable prefix match over the reversed bytes.
+        let mut txids_sorted: Vec<_> = final_by_txid.keys().copied().collect();
         txids_sorted.sort_unstable_by(|a, b| a.0.iter().rev().cmp(b.0.iter().rev()));
 
         let entries_in_order: Vec<_> = txids_sorted
             .iter()
-            .map(|txid| Arc::clone(&next_by_txid[txid]))
+            .map(|txid| Arc::clone(&final_by_txid[txid]))
             .collect();
 
         let next_sequence = current.event_sequence.saturating_add(1);
         let next_generation = current.mempool_generation.saturating_add(1);
-        let tx_count = next_by_txid.len();
+        let tx_count = final_by_txid.len();
 
         let snapshot = Arc::new(MempoolSnapshot {
-            mode: MempoolMode::Live {
-                valid_for: target_epoch,
-            },
-            valid_for: Some(target_epoch),
-            observed_tips,
+            source_tip,
             mempool_generation: next_generation,
             event_sequence: next_sequence,
-            by_txid: Arc::new(next_by_txid),
+            by_txid: Arc::new(final_by_txid),
             txids_sorted: Arc::from(txids_sorted),
             entries_in_order: Arc::from(entries_in_order),
             tx_count,
             raw_bytes,
             cost_bytes,
-            completeness: MempoolCompleteness::Complete,
+            completeness,
         });
 
-        self.current.store(Arc::clone(&snapshot));
+        self.current.store(snapshot);
 
         for txid in removed {
-            let _ = self.events.send(Arc::new(MempoolEvent::Removed {
+            let _ = self.updates.send(MempoolUpdate::Removed {
                 sequence: next_sequence,
-                valid_for: target_epoch,
                 txid,
-            }));
+            });
         }
-        for entry in added_entries {
-            let _ = self.events.send(Arc::new(MempoolEvent::Added {
+        for entry in applied_entries {
+            let _ = self.updates.send(MempoolUpdate::Added {
                 sequence: next_sequence,
-                valid_for: target_epoch,
                 entry,
-            }));
+            });
         }
-        let _ = self.events.send(Arc::new(MempoolEvent::Live {
+        // The batch boundary; consumers read `current()` for the coherent whole.
+        let _ = self.updates.send(MempoolUpdate::Reset {
             sequence: next_sequence,
-            snapshot,
-        }));
+        });
 
         self.status.store(StatusType::Ready);
-        Ok(())
+    }
+
+    /// A source read failed this poll: retain the set but mark it incomplete and
+    /// re-publish so consumers see the degraded completeness.
+    fn publish_source_error(&self) {
+        let current = self.current.load_full();
+        if current.completeness == MempoolCompleteness::IncompleteSourceError {
+            self.status.store(StatusType::Syncing);
+            return;
+        }
+
+        let next_sequence = current.event_sequence.saturating_add(1);
+        let snapshot = Arc::new(MempoolSnapshot {
+            source_tip: current.source_tip,
+            mempool_generation: current.mempool_generation,
+            event_sequence: next_sequence,
+            by_txid: Arc::clone(&current.by_txid),
+            txids_sorted: Arc::clone(&current.txids_sorted),
+            entries_in_order: Arc::clone(&current.entries_in_order),
+            tx_count: current.tx_count,
+            raw_bytes: current.raw_bytes,
+            cost_bytes: current.cost_bytes,
+            completeness: MempoolCompleteness::IncompleteSourceError,
+        });
+
+        self.current.store(snapshot);
+        let _ = self.updates.send(MempoolUpdate::Reset {
+            sequence: next_sequence,
+        });
+        self.status.store(StatusType::Syncing);
+    }
+
+    fn publish_closing(&self) {
+        let current = self.current.load_full();
+        let next_sequence = current.event_sequence.saturating_add(1);
+        let _ = self.updates.send(MempoolUpdate::Closing {
+            sequence: next_sequence,
+        });
+        self.status.store(StatusType::Closing);
     }
 }

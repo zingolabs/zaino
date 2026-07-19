@@ -28,21 +28,28 @@
 pub mod config;
 pub mod entry;
 pub mod error;
-pub mod event;
 pub mod ports;
 pub mod snapshot;
+pub mod update;
+
+#[cfg(feature = "tip_aware_mempool")]
+pub mod event;
+#[cfg(feature = "tip_aware_mempool")]
+pub mod tip;
 
 pub use config::MempoolConfig;
 pub use entry::MempoolEntry;
 pub use error::MempoolError;
+pub use ports::{BlockRef, Mempool, MempoolSource, MempoolTxMeta};
+pub use snapshot::{MempoolCompleteness, MempoolSnapshot};
+pub use update::MempoolUpdate;
+
+#[cfg(feature = "tip_aware_mempool")]
 pub use event::MempoolEvent;
-pub use ports::{
-    BlockRef, MempoolSource, MempoolTxMeta, NfsEpochObserver, NoNfs, NonFinalizedEpoch,
-};
-pub use snapshot::{
-    FreezeReason, MempoolCompleteness, MempoolMode, MempoolSnapshot, ObservedTips, TipChange,
-    ValidatorTip,
-};
+#[cfg(feature = "tip_aware_mempool")]
+pub use ports::{NfsEpochObserver, NoNfs, NonFinalizedEpoch, TipAwareMempool};
+#[cfg(feature = "tip_aware_mempool")]
+pub use tip::{CoherentSnapshot, FreezeReason, MempoolMode, ObservedTips, TipChange, ValidatorTip};
 
 /// A [`Future`](std::future::Future) that is [`Send`] and resolves to `T`.
 ///

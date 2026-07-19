@@ -30,5 +30,10 @@ async-stream = "0.3"
 # Utility
 thiserror = { workspace = true }
 
+[features]
+# Opt-in tip-coherence layer: the `CoherenceService` and its coherent read/stream
+# handle, over the matching `zaino-mempool` feature.
+tip_aware_mempool = ["zaino-mempool/tip_aware_mempool"]
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util", "macros"] }

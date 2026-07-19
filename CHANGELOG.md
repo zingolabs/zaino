@@ -10,10 +10,14 @@ and this library adheres to Rust's notion of
 ### Added
 - New crates `zaino-mempool` and `zaino-mempool-rpc`: the mempool subsystem,
   reworked from the ground up and separated from `zaino-state` behind
-  ports/adapters — a bounded, coherent, local read model of the validator's
-  mempool with freeze/thaw dual-tip coherence, and an optional validator-only mode
-  (ADR-0007). `zaino-mempool` holds the ports and foundational types;
-  `zaino-mempool-rpc` holds the concrete polling service and read handle.
+  ports/adapters (ADR-0007). It is split into a **tip-agnostic core** (mirrors the
+  validator's mempool, never freezes, serves the live `getrawmempool` /
+  `getmempoolinfo` / `GetMempoolTx` reads and a `MempoolUpdate` change feed) and an
+  optional **tip-aware coherence layer** (feature `tip_aware_mempool`) that adds
+  freeze/thaw dual-tip coherence for `get_raw_transaction` /
+  `get_transaction_status` / the raw-transaction stream, plus a validator-only
+  mode. `zaino-mempool` holds the ports and foundational types; `zaino-mempool-rpc`
+  holds the concrete core service, coherence service, and read handles.
 
 ### Changed
 - The mempool is served by `zaino-mempool` / `zaino-mempool-rpc` (via the

@@ -60,10 +60,13 @@ and this library adheres to Rust's notion of
   can no longer inflate each other's peak memory.
 - The mempool subsystem is reworked and moved into the new `zaino-mempool` /
   `zaino-mempool-rpc` crates, wired in through ports/adapters
-  (`chain_index::mempool_ports`); the ChainIndex owns a `zaino-mempool-rpc`
-  `MempoolService` behind `NodeBackedChainIndex`. It is a bounded, coherent read
-  model with freeze/thaw dual-tip coherence (see
-  `docs/adr/0007-mempool-subsystem-separation.md`).
+  (`chain_index::mempool_ports`). The ChainIndex now owns two layers behind
+  `NodeBackedChainIndex`: a tip-agnostic core `MempoolService` (serving the live
+  `getrawmempool` / `getmempoolinfo` / `GetMempoolTx` reads) and a
+  `CoherenceService` (feature `tip_aware_mempool`) over the core plus the NFS-epoch
+  adapter, serving the tip-coherent `get_raw_transaction` /
+  `get_transaction_status` and the coherent mempool stream. See
+  `docs/adr/0007-mempool-subsystem-separation.md`.
 - `ChainIndex::get_mempool_transactions` now takes raw client-endian txid suffix
   bytes (`Vec<Vec<u8>>`, was hex `Vec<String>`) and returns shared mempool entries
   (`Vec<Arc<zaino_mempool::MempoolEntry>>`, was `Vec<Vec<u8>>`) so callers reuse

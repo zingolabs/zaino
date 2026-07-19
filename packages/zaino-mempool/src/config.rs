@@ -37,7 +37,15 @@ pub struct MempoolConfig {
     /// all clones of a config observe the change.
     max_cost_bytes: Arc<AtomicU64>,
 
-    /// Capacity of the bounded event broadcast channel.
+    /// Capacity of the bounded change-feed / event broadcast channels.
+    ///
+    /// This is a **lag-tolerance** knob, not a correctness one: it sets how many
+    /// undelivered updates a subscriber may fall behind before it is told to
+    /// resync (`MempoolUpdate::Lagged`). State-losslessness does not depend on it —
+    /// a lagged consumer recovers the full set from `current()` — so it can be kept
+    /// safely bounded. Since buffered updates carry no snapshots (only entries and
+    /// small facts), memory is `~capacity` small slots regardless of subscriber
+    /// count. The default trades a generous window for that bounded cost.
     pub event_buffer_len: usize,
 
     /// How often the update loop polls the source when no wake signal arrives.
