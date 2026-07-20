@@ -46,6 +46,12 @@ and this library adheres to Rust's notion of
 - `MempoolConfig`: cost-based (ZIP-401) bounds, memory bound (`max_cost_bytes`,
   runtime-adjustable, default 128 MiB), poll interval, fetch concurrency, and
   exclude-list caps.
+- `MempoolConfig::metadata_min_interval` — a floor between per-entry metadata
+  listings (`getrawmempool verbose`), which the validator answers by walking its
+  whole mempool. Defaults to `poll_interval`, i.e. no additional coalescing;
+  raising it trades mempool latency for validator load. Additions are never
+  admitted without their metadata, so a poll inside the floor publishes nothing
+  rather than an incomplete set. `DEFAULT_POLL_INTERVAL` is now a public constant.
 
 ### Notes
 - **Why the core tags `source_tip`.** Freeze/thaw coherence depends on knowing

@@ -513,7 +513,7 @@ impl NodeBackedIndexerServiceSubscriber<ValidatorConnector> {
     /// directly off the mempool's entries. Production code goes through the `ChainIndex`
     /// mempool API.
     #[cfg(feature = "test_dependencies")]
-    pub fn mempool(&self) -> &crate::chain_index::mempool::MempoolSubscriber {
+    pub fn mempool(&self) -> &zaino_mempool_rpc::MempoolSubscriber {
         self.indexer.mempool_subscriber()
     }
 }

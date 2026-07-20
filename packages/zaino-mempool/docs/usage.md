@@ -85,6 +85,24 @@ lightclient `RawTransaction` at wire height `0`) at your boundary.
 `IncompleteSourceError`, or `IncompleteCapacityLimited`. Never present an incomplete
 set as complete on a full-mempool API.
 
+## Bounds and back-pressure knobs
+
+Two `MempoolConfig` fields shape how the core behaves under load; both are safety
+bounds on Zaino, not validator mempool policy.
+
+- **`max_cost_bytes`** (default 128 MiB) — the ZIP-401 cost ceiling. Additions are
+  admitted in canonical order until the bound is reached; the rest are *refused*,
+  and the snapshot reports `IncompleteCapacityLimited`. Refusals are remembered so
+  they are not re-fetched every poll, and are retried once the set has fallen
+  below a low-water mark *and* has room for that specific transaction. Set it on
+  the service (it is not settable through a read handle).
+- **`metadata_min_interval`** (default: equal to `poll_interval`) — the floor
+  between per-entry metadata listings, which the validator answers by walking its
+  whole mempool. Additions are never admitted without their validator-sourced
+  metadata, so a poll inside the floor publishes *nothing* rather than a set
+  missing them. Raising it trades mempool latency (up to the interval) for load on
+  the validator.
+
 ## The coherent view (feature `tip_aware_mempool`)
 
 `TipAwareMempool::coherent_snapshot()` returns a `CoherentSnapshot`: the core set

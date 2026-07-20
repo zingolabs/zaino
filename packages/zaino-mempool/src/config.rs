@@ -23,6 +23,9 @@ pub const MEMPOOL_TRANSACTION_COST_THRESHOLD: u64 = 10_000;
 /// than silently dropping data.
 pub const DEFAULT_MAX_COST_BYTES: u64 = 128 * 1024 * 1024;
 
+/// Default source poll cadence, and the default floor between metadata listings.
+pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
 /// The ZIP-401 cost of a single transaction: `max(serialized_size, threshold)`.
 pub fn tx_cost(raw_len: u32) -> u64 {
     (raw_len as u64).max(MEMPOOL_TRANSACTION_COST_THRESHOLD)
@@ -50,6 +53,18 @@ pub struct MempoolConfig {
 
     /// How often the update loop polls the source when no wake signal arrives.
     pub poll_interval: Duration,
+
+    /// Minimum interval between per-entry metadata listings
+    /// (`getrawmempool verbose`), which the source answers by walking its whole
+    /// mempool.
+    ///
+    /// Additions cannot be admitted without their validator-sourced metadata, so
+    /// a poll that finds additions before this interval has elapsed publishes
+    /// *nothing* and retries — publishing the set without them would present an
+    /// incomplete view as complete. Raising it therefore trades mempool latency
+    /// (up to this interval) for load on the validator; the default equals
+    /// [`Self::poll_interval`], i.e. no additional coalescing.
+    pub metadata_min_interval: Duration,
 
     /// Maximum number of raw-transaction fetches issued concurrently when
     /// reconciling additions.
@@ -85,7 +100,10 @@ impl Default for MempoolConfig {
         Self {
             max_cost_bytes: Arc::new(AtomicU64::new(DEFAULT_MAX_COST_BYTES)),
             event_buffer_len: 16_384,
-            poll_interval: Duration::from_millis(500),
+            poll_interval: DEFAULT_POLL_INTERVAL,
+            // Equal to the poll interval: no coalescing beyond the poll cadence
+            // itself, so the default preserves minimum mempool latency.
+            metadata_min_interval: DEFAULT_POLL_INTERVAL,
             max_concurrent_raw_fetches: 32,
             max_exclude_count: 1_024,
             min_exclude_suffix_len: 4,

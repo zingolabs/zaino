@@ -114,14 +114,12 @@ impl MempoolSubscriber {
     }
 
     /// The current mempool memory bound (max total ZIP-401 cost), in bytes.
+    ///
+    /// Read-only here by design: the bound is a service-level safety knob, so
+    /// it is set on `MempoolService`, not on a read handle that every RPC path
+    /// holds a clone of.
     pub fn max_cost_bytes(&self) -> u64 {
         self.config.max_cost_bytes()
-    }
-
-    /// Adjust the mempool memory bound at runtime. Shared with the service and
-    /// every other subscriber; takes effect on the next update.
-    pub fn set_max_cost_bytes(&self, bytes: u64) {
-        self.config.set_max_cost_bytes(bytes);
     }
 
     /// Aggregate metrics for `getmempoolinfo`, from the local snapshot.

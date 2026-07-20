@@ -42,6 +42,8 @@ struct MockSourceState {
     /// Txids listed by metadata/txids but whose raw fetch returns `None`.
     phantom: HashSet<TxHash>,
     raw_fetch_counts: HashMap<TxHash, usize>,
+    /// Number of verbose metadata listings served.
+    metadata_fetch_count: usize,
     /// If set, source calls fail with this message (a source outage).
     source_error: Option<String>,
 }
@@ -78,6 +80,10 @@ impl MockSource {
         self.lock().raw_fetch_counts.get(txid).copied().unwrap_or(0)
     }
 
+    fn metadata_fetch_count(&self) -> usize {
+        self.lock().metadata_fetch_count
+    }
+
     fn error(&self) -> Option<MempoolError> {
         self.lock()
             .source_error
@@ -98,6 +104,7 @@ impl MempoolSource for MockSource {
         if let Some(error) = self.error() {
             return Err(error);
         }
+        self.lock().metadata_fetch_count += 1;
         Ok(Some(
             self.lock()
                 .mempool
@@ -201,6 +208,9 @@ fn epoch(generation: u64, height: u32, hash_byte: u8) -> NonFinalizedEpoch {
 fn fast_config() -> MempoolConfig {
     let mut config = MempoolConfig::default();
     config.poll_interval = Duration::from_millis(5);
+    // Keep the metadata floor at the poll cadence, as the default does — a test
+    // that wants coalescing raises it explicitly.
+    config.metadata_min_interval = config.poll_interval;
     config
 }
 
@@ -360,7 +370,78 @@ mod core {
             s.completeness == MempoolCompleteness::IncompleteCapacityLimited
         })
         .await;
-        assert!(snapshot.tx_count <= 1);
+        // Partial admission: the set fills up to the bound rather than dropping
+        // every addition.
+        assert_eq!(snapshot.tx_count, 1);
+        service.close();
+    }
+
+    #[tokio::test]
+    async fn refused_transactions_are_not_refetched_every_poll() {
+        // A transaction refused by the capacity backstop must be remembered, not
+        // rediscovered by the next diff and re-fetched forever.
+        let config = fast_config();
+        config.set_max_cost_bytes(zaino_mempool::config::MEMPOOL_TRANSACTION_COST_THRESHOLD);
+        let (service, subscriber, source) =
+            spawn_core(100, 0xAB, vec![mtx(1, 100), mtx(2, 100)], config);
+
+        wait_for(&subscriber, |s| {
+            s.completeness == MempoolCompleteness::IncompleteCapacityLimited
+        })
+        .await;
+
+        // Many poll intervals pass; the refused transaction is never re-fetched.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let fetches = source.raw_fetch_count(&txid(1)) + source.raw_fetch_count(&txid(2));
+        assert_eq!(fetches, 2, "each transaction fetched exactly once");
+        service.close();
+    }
+
+    #[tokio::test]
+    async fn refused_transactions_are_admitted_once_there_is_headroom() {
+        // Raising the bound clears the refusal memo (the set is now well below
+        // the low-water mark), so the refused transaction is admitted.
+        let config = fast_config();
+        config.set_max_cost_bytes(zaino_mempool::config::MEMPOOL_TRANSACTION_COST_THRESHOLD);
+        let (service, subscriber, _source) =
+            spawn_core(100, 0xAB, vec![mtx(1, 100), mtx(2, 100)], config);
+
+        wait_for(&subscriber, |s| {
+            s.completeness == MempoolCompleteness::IncompleteCapacityLimited
+        })
+        .await;
+
+        service.set_max_cost_bytes(1_000_000);
+
+        let snapshot = wait_for(&subscriber, |s| s.tx_count == 2).await;
+        assert_eq!(snapshot.completeness, MempoolCompleteness::Complete);
+        service.close();
+    }
+
+    #[tokio::test]
+    async fn metadata_listing_is_floored_by_min_interval() {
+        // The verbose listing is heavy on the source, so it is rate-floored. A
+        // poll that finds additions before the floor elapses must publish
+        // *nothing* — never the set without them, which would present an
+        // incomplete view as complete.
+        let mut config = fast_config();
+        config.metadata_min_interval = Duration::from_secs(30);
+        let (service, subscriber, source) = spawn_core(100, 0xAB, vec![mtx(1, 100)], config);
+
+        wait_for(&subscriber, |s| s.tx_count == 1).await;
+        let listings_after_startup = source.metadata_fetch_count();
+
+        source.set_mempool(vec![mtx(1, 100), mtx(2, 100)]);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert_eq!(
+            source.metadata_fetch_count(),
+            listings_after_startup,
+            "listing re-issued inside the floor"
+        );
+        let snapshot = subscriber.snapshot();
+        assert_eq!(snapshot.tx_count, 1);
+        assert_eq!(snapshot.completeness, MempoolCompleteness::Complete);
         service.close();
     }
 

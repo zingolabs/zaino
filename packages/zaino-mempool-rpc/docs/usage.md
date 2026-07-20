@@ -29,6 +29,21 @@ let mempool = core.subscriber(); // cheap, cloneable read handle
 `core.close()` publishes a final `Closing` update and stops the task;
 `core.status()` reports health.
 
+### Capacity control
+
+The memory bound lives on the **service**, not the read handle — it is a
+capacity-control knob for whoever owns the mempool:
+
+```rust
+core.set_max_cost_bytes(64 * 1024 * 1024); // takes effect next poll
+let bound = core.max_cost_bytes();         // also readable via mempool.max_cost_bytes()
+```
+
+Lowering it does not evict: the set shrinks as transactions are mined, and
+additions over the bound are refused meanwhile (snapshot `completeness` becomes
+`IncompleteCapacityLimited`). Refused transactions are fetched once, not once per
+poll, and are re-admitted automatically once there is room.
+
 ## Read the live mempool (tip-agnostic)
 
 `MempoolSubscriber` serves the never-frozen reads:

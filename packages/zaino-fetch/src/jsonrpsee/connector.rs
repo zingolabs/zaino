@@ -245,6 +245,16 @@ enum CookieSupport {
     Disabled,
 }
 
+/// Request timeout for the few JSON-RPC methods that are inherently heavy on the
+/// validator, overriding the client-wide 5s.
+///
+/// `getrawmempool verbose` is the motivating case: Zebra services it by loading
+/// full transactions and aggregating descendant stats over the whole mempool, so
+/// on a busy chain it legitimately takes longer than the default. Failing it
+/// leaves the mempool marked incomplete and freezes tip-coherent reads precisely
+/// when the chain is busiest, so a slow answer is far better than an error.
+const HEAVY_METHOD_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Builds the outbound JSON-RPC HTTP client shared by every connector
 /// entry point: 2s connect timeout, 5s request timeout, no redirects.
 fn build_rpc_client(cookies: CookieSupport) -> Result<Client, reqwest::Error> {
@@ -357,6 +367,29 @@ impl JsonRpSeeConnector {
     where
         R::RpcError: Send + Sync + 'static,
     {
+        self.send_request_with_timeout(method, params, None).await
+    }
+
+    /// [`Self::send_request`] with an optional per-request timeout that overrides
+    /// the client-wide one.
+    ///
+    /// The shared client's 5s timeout suits the small, fast RPCs that dominate
+    /// Zaino's traffic, but a few methods are inherently heavy on the validator
+    /// (see [`HEAVY_METHOD_TIMEOUT`]). Timing those out turns a slow-but-healthy
+    /// validator into a hard error, which upstream degrades into a stalled
+    /// mempool. Overriding per request keeps the tight default everywhere else.
+    async fn send_request_with_timeout<
+        T: std::fmt::Debug + Serialize,
+        R: std::fmt::Debug + for<'de> Deserialize<'de> + ResponseToError,
+    >(
+        &self,
+        method: &'static str,
+        params: T,
+        timeout: Option<Duration>,
+    ) -> Result<R, RpcRequestError<R::RpcError>>
+    where
+        R::RpcError: Send + Sync + 'static,
+    {
         let id = self.id_counter.fetch_add(1, Ordering::SeqCst);
         #[cfg(feature = "prometheus")]
         let rpc_start = std::time::Instant::now();
@@ -366,9 +399,12 @@ impl JsonRpSeeConnector {
         loop {
             attempts += 1;
 
-            let request_builder = self
+            let mut request_builder = self
                 .build_request(method, &params, id)
                 .map_err(RpcRequestError::JsonRpc)?;
+            if let Some(timeout) = timeout {
+                request_builder = request_builder.timeout(timeout);
+            }
 
             let response = request_builder
                 .send()
@@ -774,14 +810,22 @@ impl JsonRpSeeConnector {
     /// transaction entered the mempool — used to stamp Zaino's mempool entries
     /// protocol-correctly rather than deriving the height locally.
     ///
+    /// Issued with [`HEAVY_METHOD_TIMEOUT`]: the validator answers this by
+    /// walking its whole mempool, so the tight default timeout would turn a busy
+    /// validator into a source error and freeze tip-coherent reads.
+    ///
     /// zcashd reference: [`getrawmempool`](https://zcash.github.io/rpc/getrawmempool.html)
     /// method: post
     /// tags: blockchain
     pub async fn get_raw_mempool_verbose(
         &self,
     ) -> Result<VerboseMempoolResponse, RpcRequestError<Infallible>> {
-        self.send_request::<_, VerboseMempoolResponse>("getrawmempool", (true,))
-            .await
+        self.send_request_with_timeout::<_, VerboseMempoolResponse>(
+            "getrawmempool",
+            (true,),
+            Some(HEAVY_METHOD_TIMEOUT),
+        )
+        .await
     }
 
     /// Returns information about the given block's Sapling & Orchard tree state.

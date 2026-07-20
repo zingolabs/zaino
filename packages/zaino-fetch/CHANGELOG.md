@@ -14,8 +14,15 @@ and this library adheres to Rust's notion of
 - `JsonRpSeeConnector::get_raw_mempool_verbose` and the `MempoolEntryVerbose` /
   `VerboseMempoolResponse` types — `getrawmempool verbose=true`, exposing each
   mempool entry's tip-at-entry `height` and `time` (used by the mempool read model
-  to stamp transactions with the validator's authoritative height).
+  to stamp transactions with the validator's authoritative height). Issued with a
+  longer per-request timeout (see below).
 ### Changed
+- Outbound JSON-RPC requests may override the client-wide 5s timeout per request.
+  `getrawmempool verbose` now uses a 30s timeout: the validator services it by
+  walking its whole mempool, so on a busy chain the tight default turned a
+  slow-but-healthy validator into a source error — which upstream marked the
+  mempool incomplete and froze tip-coherent reads exactly when the chain was
+  busiest. Every other method keeps the 5s default.
 - Transaction parsing delegates to
   `zebra_chain::transaction::Transaction::zcash_deserialize` (zebra-chain 11),
   replacing the hand-rolled parser that rejected transactions above v5

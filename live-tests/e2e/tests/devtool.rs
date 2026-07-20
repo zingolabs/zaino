@@ -2041,12 +2041,15 @@ async fn get_mempool_info_fetch() {
     assert_eq!(info.size, values.len() as u64);
     assert!(info.size >= 1);
 
-    let expected_bytes: u64 = values.iter().map(|entry| entry.len() as u64).sum();
-    let expected_key_heap_bytes: u64 = keys
+    assert_eq!(keys.len(), values.len());
+
+    // `bytes` is the sum of serialized sizes; `usage` is the ZIP-401 cost total
+    // (each transaction floored at the cost threshold), not a heap estimate.
+    let expected_bytes: u64 = values
         .iter()
-        .map(|key| key.encode_hex::<String>().capacity() as u64)
+        .map(|entry| entry.serialized_bytes().len() as u64)
         .sum();
-    let expected_usage = expected_bytes.saturating_add(expected_key_heap_bytes);
+    let expected_usage: u64 = values.iter().map(|entry| entry.cost()).sum();
 
     assert!(info.bytes > 0);
     assert_eq!(info.bytes, expected_bytes);
@@ -2063,17 +2066,18 @@ async fn get_mempool_info_state() {
     let mut svc = fund_and_fill_mempool_dual().await;
 
     let info = svc.state_subscriber.get_mempool_info().await.unwrap();
-    let entries = svc.state_subscriber.mempool().get_mempool().await;
+    let snapshot = svc.state_subscriber.mempool().snapshot();
+    let entries = &snapshot.entries_in_order;
 
     assert_eq!(entries.len() as u64, info.size);
     assert!(info.size >= 1);
 
+    // As above: `usage` is the ZIP-401 cost total, not a heap estimate.
     let expected_bytes: u64 = entries
         .iter()
-        .map(|(_, v)| v.serialized_tx.as_ref().as_ref().len() as u64)
+        .map(|entry| entry.serialized_bytes().len() as u64)
         .sum();
-    let expected_key_heap_bytes: u64 = entries.iter().map(|(k, _)| k.txid.capacity() as u64).sum();
-    let expected_usage = expected_bytes.saturating_add(expected_key_heap_bytes);
+    let expected_usage: u64 = entries.iter().map(|entry| entry.cost()).sum();
 
     assert!(info.bytes > 0);
     assert_eq!(info.bytes, expected_bytes);

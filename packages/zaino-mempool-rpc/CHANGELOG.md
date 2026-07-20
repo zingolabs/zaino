@@ -18,7 +18,8 @@ and this library adheres to Rust's notion of
   published snapshot with the validator tip it was fetched at, discarding a poll
   whose tip moved mid-window (a tag-stability guard) so `source_tip` is a
   single-source pair with the set. Enforces the ZIP-401 capacity backstop itself
-  (over-bound additions dropped, set marked capacity-limited). Implements the
+  (additions admitted in canonical order up to the bound, the rest refused and
+  the set marked capacity-limited). Implements the
   `zaino-mempool` `Mempool` port via `MempoolSubscriber` and offers a
   `MempoolUpdate` change feed.
 - `MempoolSubscriber`: cheap, cloneable, lock-free tip-agnostic reads (`snapshot`,
@@ -26,8 +27,8 @@ and this library adheres to Rust's notion of
   feed as either the raw `subscribe_updates` receiver or the hard-to-misuse
   `mempool_updates()` `Stream` (which surfaces a lag as an in-band
   `MempoolUpdate::Lagged` rather than a silent skip), a bounded exclude filter
-  (`validate_exclude_suffixes` + `get_filtered_entries`), and a runtime-adjustable
-  memory bound (`set_max_cost_bytes`). Supporting types: `MempoolInfo`,
+  (`validate_exclude_suffixes` + `get_filtered_entries`) and a read-only view of
+  the memory bound (`max_cost_bytes`). Supporting types: `MempoolInfo`,
   `TxIdExcludeSuffix`, `MempoolFilterError`.
 - `CoherenceService<M, N>` + `CoherentSubscriber` (feature `tip_aware_mempool`):
   the tip-aware layer. It consumes a `Mempool` core and an `NfsEpochObserver` and
@@ -37,6 +38,25 @@ and this library adheres to Rust's notion of
   "stream the mempool until the tip moves" API). Modes: `NotReady` / `Live` /
   `Frozen{reason}` / `Closing`. Validator-only mode (`spawn_validator_only`)
   synthesizes the epoch from the validator tip (single-tip freeze/thaw).
+
+### Fixed
+- **Capacity refusals no longer loop.** Additions over `max_cost_bytes` were all
+  dropped and then rediscovered by the next diff, so refused transactions were
+  re-fetched from the validator on *every* poll, indefinitely, while the set
+  stayed capacity-limited. Additions are now admitted partially in canonical
+  order, and the refusals are remembered (with their cost) so they are fetched
+  once. They are retried only when the set has both fallen below a 90% low-water
+  mark and freed enough room for that specific transaction — hysteresis plus an
+  exact fit check, so a retry can never end in an immediate re-refusal.
+- **The metadata listing is rate-floored** by the new
+  `MempoolConfig::metadata_min_interval`. A poll that finds additions inside the
+  floor publishes *nothing* rather than a set missing them: an incomplete view
+  must never be published as complete, or the coherence layer would bless it.
+
+### Changed
+- `set_max_cost_bytes` moved from `MempoolSubscriber` to `MempoolService`. It is a
+  capacity-control knob for the mempool's owner; on the cloneable read handle that
+  every RPC path holds, it was effectively a process-wide freeze switch.
 
 ### Notes
 - The coherent raw-transaction stream closes only when V and NS re-agree at a *new*
