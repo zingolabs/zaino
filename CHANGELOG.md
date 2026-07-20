@@ -99,6 +99,21 @@ and this library adheres to Rust's notion of
 - Outbound JSON-RPC response bodies are size-capped, and an unmodelled validator
   error can no longer silently remove a transaction from the mempool set.
 
+### Testing
+- Mempool coverage is consolidated in the mempool crates (`zaino-mempool` /
+  `zaino-mempool-rpc`, 38 mock-driven tests), with `zaino-state` keeping only the
+  ChainIndex routing tests and the live suite only what needs a real validator.
+- Live mempool tests now assert against the **validator** rather than against
+  Zaino's own internals: `get_mempool_info` compares Zaino's `size` / `bytes`
+  with the validator's `getmempoolinfo` (`usage` is deliberately excluded — Zaino
+  reports the ZIP-401 cost total its memory bound is enforced against, the
+  validator reports a heap estimate). `get_transaction_mempool` now asserts the
+  unconfirmed-height sentinel (`height = 0`) and its flip to a real confirmation
+  height once mined.
+- Removed `monitor_unverified_mempool` (3 variants): permanently `#[ignore]`d and
+  assertion-free, and its subject — unconfirmed *wallet balances* — is a wallet-sync
+  concern rather than an indexer one. The module-level deferral note is retained.
+
 ### Wire compatibility
 
 Deliberate behaviour changes for clients of the lightwallet protocol:

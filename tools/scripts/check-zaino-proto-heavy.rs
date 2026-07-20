@@ -17,10 +17,15 @@
 
 use std::process::Command;
 
-// Workspaces whose test suites run with --no-default-features, by manifest path.
+// Manifests whose test suites run with --no-default-features.
+//
+// The tree is a single workspace (docs/adr/0002, 0003, 0004): the root manifest
+// covers the production members, and the live-test crates are members of it too.
+// `e2e` is checked through its own manifest as well, because it is the live
+// crate with the deepest `zaino-proto` dependency edges and is selected
+// explicitly (`-p e2e`) rather than by a bare workspace build.
 const WORKSPACES: &[(&str, &str)] = &[
     ("production", "Cargo.toml"),
-    ("live-tests", "live-tests/Cargo.toml"),
     ("e2e", "live-tests/e2e/Cargo.toml"),
 ];
 

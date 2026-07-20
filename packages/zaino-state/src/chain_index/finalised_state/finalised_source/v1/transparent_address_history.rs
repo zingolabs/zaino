@@ -1,5 +1,7 @@
 //! FinalisedState::V1 transparent address history indexing functionality.
 
+#[cfg(feature = "transparent_address_history_experimental")]
+use crate::chain_index::finalised_state::capability::AddrUtxo;
 use crate::chain_index::types::db::metadata::FinalisedTxOutSetInfoAccumulator;
 
 use super::*;
@@ -43,7 +45,7 @@ impl TransparentHistExt for DbV1 {
         addr_script: AddrScript,
         start_height: Height,
         end_height: Height,
-    ) -> Result<Option<Vec<(TxLocation, u16, u64)>>, FinalisedStateError> {
+    ) -> Result<Option<Vec<AddrUtxo>>, FinalisedStateError> {
         self.addr_utxos_by_range(addr_script, start_height, end_height)
             .await
     }
@@ -265,7 +267,7 @@ impl DbV1 {
         addr_script: AddrScript,
         start_height: Height,
         end_height: Height,
-    ) -> Result<Option<Vec<(TxLocation, u16, u64)>>, FinalisedStateError> {
+    ) -> Result<Option<Vec<AddrUtxo>>, FinalisedStateError> {
         let addr_bytes = addr_script.to_bytes()?;
 
         tokio::task::block_in_place(|| {

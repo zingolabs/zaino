@@ -401,7 +401,7 @@ impl DbWrite for DbV1 {
             for height_int in start_height..=height.0 {
                 let block = build_indexed_block_from_source(
                     source,
-                    network,
+                    zebra_network.clone(),
                     sapling_activation_height,
                     nu5_activation_height,
                     nu6_3_activation_height,
@@ -1538,8 +1538,10 @@ impl DbV1 {
                     let prev_tx_hash = TransactionHash(*prev_outpoint.prev_txid());
                     if txid_set.contains(&prev_tx_hash) {
                         // Locate the paired (txid, transparent_data) within this block.
-                        if let Some((tx_index, (_, Some(prev_transparent)))) = pool_lists
-                            .transactions
+                        // `transactions` holds the entries built so far in this
+                        // block, which suffices: a prev-output spent inside the
+                        // same block must belong to an earlier transaction.
+                        if let Some((tx_index, (_, Some(prev_transparent)))) = transactions
                             .iter()
                             .enumerate()
                             .find(|(_, (h, _))| h == &prev_tx_hash)

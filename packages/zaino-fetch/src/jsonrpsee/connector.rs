@@ -852,7 +852,7 @@ impl JsonRpSeeConnector {
     /// transaction entered the mempool — used to stamp Zaino's mempool entries
     /// protocol-correctly rather than deriving the height locally.
     ///
-    /// Issued with [`HEAVY_METHOD_TIMEOUT`]: the validator answers this by
+    /// Issued with a longer timeout than the client-wide default: the validator answers this by
     /// walking its whole mempool, so the tight default timeout would turn a busy
     /// validator into a source error and freeze tip-coherent reads.
     ///

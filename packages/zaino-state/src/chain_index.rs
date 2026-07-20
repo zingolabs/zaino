@@ -68,12 +68,12 @@ use zebra_rpc::{
 use zebra_state::HashOrHeight;
 
 pub mod encoding;
-/// All state below [`OPERATIONAL_NFS_DEPTH`] blocks of the best-known chain tip.
+/// All state below `OPERATIONAL_NFS_DEPTH` blocks of the best-known chain tip.
 pub mod finalised_state;
 /// Adapters implementing the `zaino-mempool` ports over `zaino-state`'s
 /// blockchain source and non-finalized state.
 pub(crate) mod mempool_ports;
-/// State within [`OPERATIONAL_NFS_DEPTH`] blocks of the best-known chain tip;
+/// State within `OPERATIONAL_NFS_DEPTH` blocks of the best-known chain tip;
 /// stored separately as it may be reorged.
 pub mod non_finalised_state;
 /// BlockchainSource
@@ -749,23 +749,23 @@ pub trait ChainIndexRpcExt: ChainIndex {
 ///
 /// Use [`NodeBackedChainIndex::new()`] with:
 /// - A [`ValidatorConnector`] source (State variant preferred, Fetch as fallback)
-/// - A [`crate::config::BlockCacheConfig`] containing cache and database settings
+/// - A [`crate::config::ChainIndexConfig`] containing storage, network and mempool settings
 ///
 /// # Example with StateService (Preferred)
 ///
 /// ```no_run
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use zaino_state::{NodeBackedChainIndex, ValidatorConnector, BlockCacheConfig};
+/// use zaino_state::{ChainIndexConfig, NodeBackedChainIndex, ValidatorConnector};
 /// use zaino_state::chain_index::source::State;
 /// use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 /// use zebra_state::{ReadStateService, Config as ZebraConfig};
-/// use std::path::PathBuf;
 ///
 /// // Create ReadStateService for direct database access
 /// let zebra_config = ZebraConfig::default();
 /// let read_state_service = ReadStateService::new(&zebra_config).await?;
 ///
-/// // Temporary: Create JSON-RPC connector for mempool access
+/// // The mempool is served over JSON-RPC even on the Direct backend, so that
+/// // the mempool set and the tip it is tagged with come from one source.
 /// let mempool_connector = JsonRpSeeConnector::new_from_config_parts(
 ///     false,
 ///     "127.0.0.1:8232".parse()?,
@@ -779,23 +779,19 @@ pub trait ChainIndexRpcExt: ChainIndex {
 ///     mempool_fetcher: mempool_connector,
 /// });
 ///
-/// // Configure the cache (extract these from your previous StateServiceConfig)
-/// let config = BlockCacheConfig {
-///     map_capacity: Some(1000),
-///     map_shard_amount: Some(16),
+/// let config = ChainIndexConfig {
+///     storage: Default::default(),
 ///     db_version: 1,
-///     db_path: PathBuf::from("/path/to/cache"),
-///     db_size: Some(10), // GB
 ///     network: zebra_chain::parameters::Network::Mainnet,
-///     no_sync: false,
-///     no_db: false,
+///     ephemeral: false,
+///     mempool: Default::default(),
 /// };
 ///
 /// let chain_index = NodeBackedChainIndex::new(source, config).await?;
-/// let subscriber = chain_index.subscriber().await;
+/// let subscriber = chain_index.subscriber();
 ///
 /// // Use the subscriber to access ChainIndex trait methods
-/// let snapshot = subscriber.snapshot_nonfinalized_state();
+/// let snapshot = subscriber.snapshot_nonfinalized_state().await?;
 /// # Ok(())
 /// # }
 /// ```

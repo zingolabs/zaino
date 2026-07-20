@@ -83,6 +83,8 @@ use crate::{
 };
 
 #[cfg(feature = "transparent_address_history_experimental")]
+use crate::chain_index::finalised_state::capability::AddrUtxo;
+#[cfg(feature = "transparent_address_history_experimental")]
 use crate::AddrScript;
 
 use lmdb::{Database, DatabaseFlags, Environment};
@@ -843,7 +845,7 @@ impl<T: BlockchainSource> TransparentHistExt for FinalisedSource<T> {
         script: AddrScript,
         start: Height,
         end: Height,
-    ) -> Result<Option<Vec<(TxLocation, u16, u64)>>, FinalisedStateError> {
+    ) -> Result<Option<Vec<AddrUtxo>>, FinalisedStateError> {
         match self {
             Self::V1(db) => db.addr_utxos_by_range(script, start, end).await,
             _ => Err(FinalisedStateError::FeatureUnavailable(

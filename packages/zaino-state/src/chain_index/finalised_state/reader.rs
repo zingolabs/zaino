@@ -60,6 +60,8 @@ use crate::{
 #[cfg(feature = "transparent_address_history_experimental")]
 use crate::{chain_index::types::AddrEventBytes, AddrScript};
 
+#[cfg(feature = "transparent_address_history_experimental")]
+use super::capability::AddrUtxo;
 use super::{
     capability::{
         BlockCoreExt, BlockShieldedExt, BlockTransparentExt, CompactBlockExt, DbMetadata,
@@ -434,7 +436,7 @@ impl<T: BlockchainSource> DbReader<T> {
         addr_script: AddrScript,
         start_height: Height,
         end_height: Height,
-    ) -> Result<Option<Vec<(TxLocation, u16, u64)>>, FinalisedStateError> {
+    ) -> Result<Option<Vec<AddrUtxo>>, FinalisedStateError> {
         self.db(CapabilityRequest::TransparentHistExt)?
             .addr_utxos_by_range(addr_script, start_height, end_height)
             .await

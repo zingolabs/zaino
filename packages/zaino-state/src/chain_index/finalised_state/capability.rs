@@ -998,6 +998,12 @@ pub trait IndexedBlockExt: Send + Sync {
     ) -> impl SendFut<Result<Option<IndexedBlock>, FinalisedStateError>>;
 }
 
+/// One unspent transparent output belonging to an address: the transaction that
+/// created it, its output index within that transaction, and its value in
+/// zatoshis.
+#[cfg(feature = "transparent_address_history_experimental")]
+pub(crate) type AddrUtxo = (TxLocation, u16, u64);
+
 /// Transparent address history indexing extension.
 ///
 /// This extension provides address-scoped queries backed by persisted indices built from the
@@ -1010,7 +1016,12 @@ pub trait IndexedBlockExt: Send + Sync {
 /// Range semantics:
 /// - Methods that accept `start_height` and `end_height` interpret the range as inclusive:
 ///   `[start_height, end_height]`
-pub trait TransparentHistExt: Send + Sync {
+///
+/// `pub(crate)`, not `pub`: under `transparent_address_history_experimental` this
+/// trait exposes the crate-private on-disk `AddrEventBytes`, and every consumer is
+/// inside this crate (`DbReader` and the backend impls). Widening the *type* to
+/// match a `pub` trait would publish a persistence-layer detail.
+pub(crate) trait TransparentHistExt: Send + Sync {
     /// Fetch all address history records for a given transparent address.
     ///
     /// Returns:
@@ -1066,7 +1077,7 @@ pub trait TransparentHistExt: Send + Sync {
         addr_script: AddrScript,
         start_height: Height,
         end_height: Height,
-    ) -> impl SendFut<Result<Option<Vec<(TxLocation, u16, u64)>>, FinalisedStateError>>;
+    ) -> impl SendFut<Result<Option<Vec<AddrUtxo>>, FinalisedStateError>>;
 
     /// Computes the transparent balance change for `addr_script` over the
     /// height range `[start_height, end_height]` (inclusive).
