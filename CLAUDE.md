@@ -193,3 +193,18 @@ rust-analyzer indexes the
 single workspace, so go-to-def / find-references resolve across production and
 test code in one pass — no linked-project swapping, and an empty result means
 "no references," not "the other workspace isn't loaded."
+
+## Documentation workbook: keep the per-crate usage guide current
+
+The workspace is documented by a **workbook** of per-crate usage guides —
+`packages/<crate>/docs/usage.md`, indexed from the root `README.md`'s
+"Documentation workbook" section (see docs/adr/0008). It is deliberately
+incomplete and filled in crate by crate.
+
+When a change adds or alters a crate's **public capability** (a new port,
+service, config knob, public method, or a behavioural contract consumers rely
+on), update that crate's `usage.md`: fold it into the relevant existing section,
+or add a new section if none fits. If the crate has no `usage.md` yet, create one
+(and add it to the README index). This mirrors the CHANGELOG discipline — the
+CHANGELOG records *what changed*; the workbook records *how to use it*. Scope the
+rule to public-surface changes; purely internal refactors need no workbook edit.

@@ -126,6 +126,17 @@ for full instructions.
 - [RPC API Spec](./docs/rpc_api.md): Holds a full specification of all of the RPC services served by Zaino.
 - [Cargo Docs](https://zingolabs.github.io/zaino/): Holds a full code specification for Zaino.
 
+### Documentation workbook (WIP)
+
+Per-crate, task-oriented "how do I use this?" guides, filled in crate by crate as
+the code is touched (see [ADR-0008](./docs/adr/0008-documentation-workbook.md) for
+the convention and the coverage ratchet). Complements the crate `//!` rustdoc (API
+reference) and `CHANGELOG.md` (what changed). Coverage so far:
+
+- [`zaino-mempool`](./packages/zaino-mempool/docs/usage.md) — mempool ports & types: the core / coherent-tip model and the change-feed contract.
+- [`zaino-mempool-rpc`](./packages/zaino-mempool-rpc/docs/usage.md) — mempool runtime: spawn the core, consume its reads/feed, layer coherence, stream the mempool.
+- _`zaino-state`, `zaino-fetch`, `zaino-serve`, `zaino-common`, `zainod`, `zaino-proto` — not yet written._
+
 
 ## Security Vulnerability Disclosure
 If you believe you have discovered a security issue, and it is time sensitive, please contact us online on Matrix. See our [CONTRIBUTING.md document](./CONTRIBUTING.md) for contact points.
