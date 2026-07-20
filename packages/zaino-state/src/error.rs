@@ -137,6 +137,7 @@ impl From<NodeBackedIndexerServiceError> for tonic::Status {
                 ChainIndexErrorKind::InvalidArgument => {
                     tonic::Status::invalid_argument(err.message)
                 }
+                ChainIndexErrorKind::Unavailable => tonic::Status::unavailable(err.message),
             },
             NodeBackedIndexerServiceError::BlockCacheError(err) => {
                 tonic::Status::internal(format!("BlockCache error: {err:?}"))
@@ -473,6 +474,14 @@ pub enum ChainIndexErrorKind {
     /// A client-supplied argument was invalid (e.g. an over-cap or malformed
     /// mempool exclude list). Maps to a gRPC `InvalidArgument` status.
     InvalidArgument,
+    /// The answer exists but Zaino cannot vouch for it *yet* — e.g. a
+    /// transaction is in the validator's mempool while the mempool view is
+    /// reconciling with the chain tip. Maps to a gRPC `Unavailable` status.
+    ///
+    /// Distinct from "not found" on purpose: reporting absence here would tell a
+    /// wallet its transaction does not exist, when the truthful answer is "ask
+    /// again shortly".
+    Unavailable,
 }
 
 impl Display for ChainIndexErrorKind {
@@ -481,6 +490,7 @@ impl Display for ChainIndexErrorKind {
             ChainIndexErrorKind::InternalServerError => "internal server error",
             ChainIndexErrorKind::InvalidSnapshot => "invalid snapshot",
             ChainIndexErrorKind::InvalidArgument => "invalid argument",
+            ChainIndexErrorKind::Unavailable => "temporarily unavailable",
         })
     }
 }
@@ -497,6 +507,17 @@ impl ChainIndexError {
     pub(crate) fn internal(message: impl Into<String>) -> Self {
         Self {
             kind: ChainIndexErrorKind::InternalServerError,
+            message: message.into(),
+            source: None,
+        }
+    }
+
+    /// Constructs an `Unavailable`-kind error: the data exists but Zaino cannot
+    /// vouch for it yet, so the caller should retry rather than treat it as
+    /// absent. Surfaces as a gRPC `Unavailable` status.
+    pub(crate) fn unavailable(message: impl Into<String>) -> Self {
+        Self {
+            kind: ChainIndexErrorKind::Unavailable,
             message: message.into(),
             source: None,
         }

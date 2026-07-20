@@ -61,6 +61,7 @@ async fn v1_2_1_cache_migrates_to_current_then_validates() {
             ..Default::default()
         },
         ephemeral: false,
+        mempool: Default::default(),
         db_version: 1,
         network: ActivationHeights::default().to_regtest_network(),
     };

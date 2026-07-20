@@ -51,6 +51,7 @@ indexmap = { workspace = true, features = ["serde"] }
 base64 = { workspace = true }
 jsonrpsee-types = { workspace = true }
 derive_more = { workspace = true, features = ["from"] }
+bytes = { workspace = true }
 
 [dev-dependencies]
 wire_serialized_transaction_test_data = { workspace = true }

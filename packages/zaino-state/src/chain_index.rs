@@ -449,7 +449,13 @@ pub trait ChainIndex {
     /// error.
     ///
     /// Returns the shared [`MempoolEntry`](zaino_mempool::MempoolEntry) `Arc`s
-    /// (not raw bytes) so callers can reuse each entry's cached compact form.
+    /// (not raw bytes), so no transaction data is copied per caller: the entry's
+    /// serialized bytes are a shared buffer.
+    ///
+    /// The entry holds no compact form — the mempool core is deliberately free of
+    /// wire types (ADR-0007) — so a caller needing `CompactTx` parses it at the
+    /// boundary, once per request. Known cost: a mempool-wide `GetMempoolTx` re-parses
+    /// every transaction. A cache belongs at that boundary, not in the core.
     fn get_mempool_transactions(
         &self,
         exclude_suffixes: Vec<Vec<u8>>,
@@ -463,7 +469,7 @@ pub trait ChainIndex {
     fn get_mempool_stream(
         &self,
         snapshot: Option<&Self::Snapshot>,
-    ) -> Option<impl futures::Stream<Item = Result<Vec<u8>, Self::Error>>>;
+    ) -> Option<impl futures::Stream<Item = Result<bytes::Bytes, Self::Error>>>;
 
     // ********** Chain methods **********
 
@@ -855,6 +861,11 @@ pub struct NodeBackedChainIndex<Source: BlockchainSource = ValidatorConnector> {
     mempool: std::sync::Arc<ChainIndexMempool<Source>>,
     coherence: std::sync::Arc<ChainIndexCoherence<Source>>,
     non_finalized_state: Arc<ArcSwapOption<crate::NonFinalizedState<Source>>>,
+    /// Fired by the sync loop whenever it publishes a non-finalized snapshot, so
+    /// the mempool coherence layer reconciles on the advance instead of waiting
+    /// out its poll tick (which would freeze tip-coherent reads after every
+    /// block, indefinitely if sync lags).
+    nfs_epoch_signal: tokio::sync::watch::Sender<()>,
     finalized_db: std::sync::Arc<finalised_state::FinalisedState<Source>>,
     sync_loop_handle: Option<tokio::task::JoinHandle<Result<(), SyncError>>>,
     status: NamedAtomicStatus,
@@ -947,21 +958,26 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         // service can observe its epoch through the shared handle. It starts
         // empty (the mempool sits NotReady/Frozen until the NFS is populated).
         let non_finalized_state = Arc::new(ArcSwapOption::empty());
+        let (nfs_epoch_signal, nfs_epoch_wake) = tokio::sync::watch::channel(());
         let cancel_token = CancellationToken::new();
 
         // The tip-agnostic core mirrors the validator's mempool (never frozen);
         // the coherence layer wraps its read handle plus the NFS epoch observer to
         // serve the tip-coherent reads and stream. See ADR-0007 and the mempool
         // `tip` module for why the core tags V and coherence layers on top.
+        //
+        // Both services take *clones of one* config, so the runtime-adjustable
+        // bound is a single knob: two independent `default()`s would silently
+        // give them separate atomics.
         let mempool = zaino_mempool_rpc::MempoolService::spawn(
             MempoolSourceAdapter(source.clone()),
-            zaino_mempool::MempoolConfig::default(),
+            config.mempool.clone(),
             cancel_token.child_token(),
         );
         let coherence = zaino_mempool_rpc::CoherenceService::spawn(
             mempool.subscriber(),
-            NfsEpochAdapter::new(Arc::clone(&non_finalized_state)),
-            zaino_mempool::MempoolConfig::default(),
+            NfsEpochAdapter::new(Arc::clone(&non_finalized_state), nfs_epoch_wake),
+            config.mempool.clone(),
             cancel_token.child_token(),
         );
 
@@ -969,6 +985,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             mempool,
             coherence,
             non_finalized_state,
+            nfs_epoch_signal,
             finalized_db,
             sync_loop_handle: None,
             status: NamedAtomicStatus::new("ChainIndex", StatusType::Spawning),
@@ -1043,10 +1060,28 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         combined_status
     }
 
+    /// The mempool coherence layer's health: its service status and the current
+    /// mode of the coherent view (`Live` / `Frozen{reason}` / …).
+    ///
+    /// Reported separately, and deliberately *not* folded into
+    /// [`status`](Self::status): the layer freezes briefly after every block by
+    /// design, so treating a freeze as un-readiness would flap the whole index's
+    /// readiness once per block. Tip-agnostic mempool reads keep serving
+    /// throughout. It is exposed because a *prolonged* freeze (e.g. sync
+    /// lagging the validator) is exactly what an operator needs to see, and it
+    /// is otherwise invisible.
+    pub fn mempool_coherence_health(&self) -> (StatusType, zaino_mempool::MempoolMode) {
+        (
+            self.coherence.status(),
+            self.coherence.subscriber().coherent_snapshot().mode,
+        )
+    }
+
     #[instrument(name = "ChainIndex::start_sync_loop", skip(self))]
     pub(super) fn start_sync_loop(&self) -> tokio::task::JoinHandle<Result<(), SyncError>> {
         info!("Starting ChainIndex sync loop");
         let nfs = self.non_finalized_state.clone();
+        let nfs_epoch_signal = self.nfs_epoch_signal.clone();
         let fs = self.finalized_db.clone();
         let status = self.status.clone();
         let source = self.source.clone();
@@ -1153,6 +1188,13 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         .sync(fs.clone(), chain_height.into())
                         .await?;
                     std::mem::drop(intermediate_nfs_for_scoping);
+
+                    // Wake the mempool coherence layer on the new snapshot
+                    // rather than leaving it to notice on its next tick. Send
+                    // unconditionally: `sync` may have republished at the same
+                    // epoch, and a redundant wake only costs one idempotent
+                    // reconcile, whereas a missed one costs a blackout.
+                    let _ = nfs_epoch_signal.send(());
 
                     Ok(())
                     } => r,
@@ -1366,6 +1408,16 @@ async fn compact_block_from_source<Source: BlockchainSource>(
 impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
     pub(crate) fn source(&self) -> &Source {
         &self.source
+    }
+
+    /// The mempool coherence layer's health, as
+    /// [`NodeBackedChainIndex::mempool_coherence_health`] reports it (see there
+    /// for why it is separate from the combined status).
+    pub fn mempool_coherence_health(&self) -> (StatusType, zaino_mempool::MempoolMode) {
+        (
+            self.coherence.status(),
+            self.coherence.coherent_snapshot().mode,
+        )
     }
 
     /// The indexer's mempool subscriber.
@@ -1913,33 +1965,42 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         };
         // as the reorg process cannot modify a transaction
         // it's safe to serve nonfinalized state directly here
-        let height = match location {
-            GetTransactionLocation::BestChain(height) => height,
-            GetTransactionLocation::NonbestChain => {
-                // if the tranasction isn't on the best chain
-                // check our indexes. We need to find out the height from our index
-                // to determine the consensus branch ID
-                let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
-                    // If we don't have a block containing the transaction
-                    // locally and the transaction's not on the validator's
-                    // best chain, we can't determine its consensus branch ID
-                    return Ok(None);
-                };
+        let height =
+            match location {
+                GetTransactionLocation::BestChain(height) => height,
+                GetTransactionLocation::NonbestChain => {
+                    // if the tranasction isn't on the best chain
+                    // check our indexes. We need to find out the height from our index
+                    // to determine the consensus branch ID
+                    let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+                        // If we don't have a block containing the transaction
+                        // locally and the transaction's not on the validator's
+                        // best chain, we can't determine its consensus branch ID
+                        return Ok(None);
+                    };
 
-                match self
-                    .blocks_containing_transaction(non_finalized_snapshot, txid.0)
-                    .await?
-                    .next()
-                {
-                    Some(block) => block.context.index.height.into(),
-                    // As above Ok(None)
-                    None => return Ok(None),
+                    match self
+                        .blocks_containing_transaction(non_finalized_snapshot, txid.0)
+                        .await?
+                        .next()
+                    {
+                        Some(block) => block.context.index.height.into(),
+                        // As above Ok(None)
+                        None => return Ok(None),
+                    }
                 }
-            }
-            // We've already checked the mempool. Should be unreachable?
-            // todo: error here?
-            GetTransactionLocation::Mempool => return Ok(None),
-        };
+                // The validator holds this transaction in its mempool, but the
+                // coherent view above did not serve it — the mempool is reconciling
+                // with the chain tip (a freeze), or the caller's snapshot predates
+                // the current epoch.
+                //
+                // `Ok(None)` here would tell the caller the transaction does not
+                // exist, which is false: it exists and will be servable shortly. Ask
+                // them to retry instead.
+                GetTransactionLocation::Mempool => return Err(ChainIndexError::unavailable(
+                    "transaction is in the mempool but not yet coherent with the chain tip; retry",
+                )),
+            };
 
         Ok(Some((
             zebra_chain::transaction::SerializedTransaction::from(transaction)
@@ -2095,7 +2156,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     fn get_mempool_stream(
         &self,
         snapshot: Option<&Self::Snapshot>,
-    ) -> Option<impl futures::Stream<Item = Result<Vec<u8>, Self::Error>>> {
+    ) -> Option<impl futures::Stream<Item = Result<bytes::Bytes, Self::Error>>> {
         // Require the mempool to be coherent with the caller's snapshot epoch. A
         // `None` snapshot streams the current mempool without an epoch guard.
         let expected_epoch = match snapshot {
@@ -2117,7 +2178,13 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
 
         // Box::pin so the returned stream is `Unpin` for `.next()`-loop consumers
         // (the `async-stream` generator is `!Unpin`).
-        Some(Box::pin(raw_stream.map(Ok)))
+        //
+        // A lag is surfaced as a retryable error rather than a silent end: the
+        // stream would otherwise finish exactly as it does on a normal tip
+        // change, and the client would take a partial mempool for the whole one.
+        Some(Box::pin(raw_stream.map(|item| {
+            item.map_err(|error| ChainIndexError::unavailable(error.to_string()))
+        })))
     }
 
     // ********** Chain methods **********

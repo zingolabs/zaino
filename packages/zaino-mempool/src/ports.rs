@@ -137,10 +137,14 @@ pub trait Mempool: Clone + Send + Sync + 'static {
 
 /// A stable identifier for a published non-finalized-state snapshot.
 ///
-/// `generation` increments exactly once per successfully published
-/// non-finalized snapshot, so two epochs with the same `best_tip` but different
-/// contents are still distinguishable. Hash-only matching is weaker; the coherence
-/// layer keys on the whole epoch.
+/// `generation` increments when the publisher's best tip *changes*, not on every
+/// republication: the sync loop republishes each iteration (to trim finalized
+/// blocks and so on) even when the tip has not moved, and bumping the generation
+/// on those no-op republishes would churn the epoch every cycle and defeat the
+/// coherence layer's agreement check. Keying it to tip changes gives a stable
+/// epoch for a stable tip while still distinguishing successive tips — including
+/// same-height reorgs, which change the tip hash. The coherence layer keys on
+/// the whole epoch (generation *and* tip); hash-only matching would be weaker.
 #[cfg(feature = "tip_aware_mempool")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NonFinalizedEpoch {
@@ -160,6 +164,19 @@ pub struct NonFinalizedEpoch {
 pub trait NfsEpochObserver: Clone + Send + Sync + 'static {
     /// The epoch of the currently published non-finalized snapshot, if any.
     fn current_epoch(&self) -> Option<NonFinalizedEpoch>;
+
+    /// An optional wake signal that fires when a new non-finalized snapshot is
+    /// published.
+    ///
+    /// Without it the coherence layer only notices an NS advance on its next
+    /// poll tick, so every block is followed by a blackout of that length in
+    /// which tip-coherent reads are frozen. Like
+    /// [`MempoolSource::subscribe_to_blocks_received`] this is a wake hint, not a
+    /// correctness guarantee — the epoch is re-read on every reconcile — so
+    /// implementations may return `None` and rely on the tick.
+    fn subscribe_epoch_changes(&self) -> Option<tokio::sync::watch::Receiver<()>> {
+        None
+    }
 }
 
 /// A placeholder [`NfsEpochObserver`] for validator-only coherence.
@@ -176,6 +193,24 @@ impl NfsEpochObserver for NoNfs {
     fn current_epoch(&self) -> Option<NonFinalizedEpoch> {
         None
     }
+}
+
+/// Why a tip-coherent transaction stream ended early.
+///
+/// The stream's normal ending — the chain tip moved on — is signalled by the
+/// stream simply finishing. This type exists so the *abnormal* ending is not
+/// mistaken for it.
+#[cfg(feature = "tip_aware_mempool")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum MempoolStreamError {
+    /// The consumer fell behind the bounded event feed, so transactions were
+    /// missed. The set delivered so far is incomplete; re-open the stream
+    /// against a fresh snapshot.
+    #[error("mempool stream lagged behind the event feed; {missed} events missed")]
+    Lagged {
+        /// Number of events the consumer fell behind by.
+        missed: u64,
+    },
 }
 
 /// Inbound port (coherence layer): the tip-coherent mempool read model.
@@ -202,10 +237,16 @@ pub trait TipAwareMempool: Clone + Send + Sync + 'static {
     /// `expected_epoch` does not match the current coherent view — the caller's
     /// chain tip is stale and should re-snapshot.
     ///
+    /// Items are `Result`s: a consumer that falls behind the bounded event feed
+    /// receives [`MempoolStreamError::Lagged`] and the stream ends. Ending
+    /// silently there would be indistinguishable from a normal tip-change close,
+    /// so the client would believe it had received the whole mempool when
+    /// transactions had in fact been skipped.
+    ///
     /// This is the single, ready-made "stream the mempool until the tip moves"
     /// loop; the caller just drives it with `StreamExt::next`.
     fn stream_transactions_until_tip_change(
         &self,
         expected_epoch: Option<NonFinalizedEpoch>,
-    ) -> Option<impl futures::Stream<Item = Vec<u8>> + Send>;
+    ) -> Option<impl futures::Stream<Item = Result<bytes::Bytes, MempoolStreamError>> + Send>;
 }

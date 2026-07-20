@@ -123,8 +123,12 @@ impl MempoolSubscriber {
     }
 
     /// Aggregate metrics for `getmempoolinfo`, from the local snapshot.
+    ///
+    /// Reads through a `load` guard rather than [`snapshot`](Self::snapshot):
+    /// the snapshot `Arc` does not escape, and taking one would touch the shared
+    /// refcount on a path every reader hits.
     pub fn get_mempool_info(&self) -> MempoolInfo {
-        let snapshot = self.snapshot();
+        let snapshot = self.current.load();
         MempoolInfo {
             size: snapshot.tx_count as u64,
             bytes: snapshot.raw_bytes,
@@ -134,17 +138,17 @@ impl MempoolSubscriber {
 
     /// Whether the current snapshot contains `txid`.
     pub fn contains_txid(&self, txid: &TxHash) -> bool {
-        self.snapshot().by_txid.contains_key(txid)
+        self.current.load().by_txid.contains_key(txid)
     }
 
     /// The entry for `txid` in the current snapshot, if present.
     pub fn get_transaction(&self, txid: &TxHash) -> Option<Arc<MempoolEntry>> {
-        self.snapshot().by_txid.get(txid).cloned()
+        self.current.load().by_txid.get(txid).cloned()
     }
 
     /// The current snapshot's txids, sorted by canonical (reversed) byte order.
     pub fn get_txids(&self) -> Arc<[TxHash]> {
-        self.snapshot().txids_sorted.clone()
+        self.current.load().txids_sorted.clone()
     }
 
     /// Subscribe to the bounded mempool change feed (the raw receiver).
@@ -237,7 +241,7 @@ impl MempoolSubscriber {
         &self,
         exclude_suffixes: &[TxIdExcludeSuffix],
     ) -> Vec<Arc<MempoolEntry>> {
-        let snapshot = self.snapshot();
+        let snapshot = self.current.load();
 
         let mut excluded: HashSet<TxHash> = HashSet::new();
         for exclude in exclude_suffixes {

@@ -86,6 +86,7 @@ reqwest = { version = "0.13", default-features = false, features = [
 tower = { version = "0.4", features = ["buffer", "util"] }
 tonic = { version = "0.14" }
 prost = "0.14"
+bytes = "1.12"
 serde = "1.0"
 serde_json = "1.0"
 jsonrpsee-types = "0.24"

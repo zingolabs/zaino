@@ -52,8 +52,29 @@ and this library adheres to Rust's notion of
   `MempoolConfig::metadata_min_interval`. A poll that finds additions inside the
   floor publishes *nothing* rather than a set missing them: an incomplete view
   must never be published as complete, or the coherence layer would bless it.
+- **The coherent stream no longer ends silently on a lag.** It yields
+  `Err(MempoolStreamError::Lagged)` first; ending quietly was indistinguishable
+  from the normal tip-change close, so a client took a partial mempool for the
+  complete one.
+- **Post-block coherence blackout.** The coherence layer now selects on the
+  NS-epoch observer's wake signal, so it reconciles when the non-finalized state
+  advances rather than on its next poll tick. The tick remains a fallback.
+- **A poll no longer does all its work before discarding it.** The tag-stability
+  guard also runs *before* the metadata listing and raw fetches, and after
+  `MAX_CONSECUTIVE_DISCARDS` (5) discards in a row the set is republished as
+  `IncompleteSourceError` so consumers learn the mempool is not converging.
 
 ### Changed
+- The coherence layer reconciles on the change feed's `Reset` batch boundary
+  only, not on every per-txid `Added`/`Removed`. Clearing a block of 1,000
+  transactions previously meant ~2,001 reconciles, each of which re-read the
+  core's snapshot wholesale anyway.
+- Snapshot publication maintains `cost_bytes` / `raw_bytes` incrementally and
+  reuses the existing collections when only the tip tag moved — that path also
+  keeps `mempool_generation` steady, where bumping it made the coherence layer
+  treat every re-tag as new contents.
+- Read handles use `ArcSwap::load` where the snapshot `Arc` does not escape,
+  keeping the hot read paths off the shared refcount.
 - `set_max_cost_bytes` moved from `MempoolSubscriber` to `MempoolService`. It is a
   capacity-control knob for the mempool's owner; on the cloneable read handle that
   every RPC path holds, it was effectively a process-wide freeze switch.

@@ -83,6 +83,32 @@ and this library adheres to Rust's notion of
   stream-open (returns a retryable error instead of a stale-height stream), and
   the mempool exclude filter is bounded — fixing an unbounded-work
   denial-of-service.
+- `GetMempoolStream` reports a lagging consumer as a retryable error rather than
+  ending the stream, which was indistinguishable from the normal tip-change close
+  and let a client treat a partial mempool as complete.
+- `GetTransaction` for a transaction that is in the validator's mempool but not
+  yet coherent with the caller's chain tip returns a retryable `Unavailable`
+  instead of "not found" — a wallet could previously be told its own transaction
+  did not exist.
+- Tip-coherent mempool reads no longer black out for a poll interval after every
+  block (indefinitely when sync lagged): the mempool is signalled when the
+  non-finalized state advances.
+- The mempool no longer re-fetches capacity-refused transactions on every poll,
+  and the heavy verbose-mempool listing no longer times out on a busy validator —
+  both previously left the mempool degraded exactly when the chain was busiest.
+- Outbound JSON-RPC response bodies are size-capped, and an unmodelled validator
+  error can no longer silently remove a transaction from the mempool set.
+
+### Wire compatibility
+
+Deliberate behaviour changes for clients of the lightwallet protocol:
+
+- `GetMempoolTx`'s exclude filter now excludes a transaction only when a
+  shortened txid matches it *uniquely* (matching lightwalletd); an ambiguous
+  suffix excludes nothing.
+- Exclude suffixes shorter than 4 bytes are rejected (`InvalidArgument`).
+- Mempool `RawTransaction.height` is `0` (the "unconfirmed" sentinel), not the
+  chain-tip height.
 
 ## [0.4.1] - 2026-06-18
 - Bump zaino-proto 0.1.2 → 0.1.3 and zainod 0.4.0 → 0.4.1 to work around

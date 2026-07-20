@@ -107,13 +107,21 @@ impl<S: BlockchainSource> zaino_mempool::MempoolSource for MempoolSourceAdapter<
 /// mutates the non-finalized state — it only reads its epoch.
 pub(crate) struct NfsEpochAdapter<Source: BlockchainSource> {
     non_finalized_state: Arc<ArcSwapOption<NonFinalizedState<Source>>>,
+    /// Fired by the ChainIndex sync loop on each publication; see
+    /// [`zaino_mempool::NfsEpochObserver::subscribe_epoch_changes`].
+    epoch_wake: tokio::sync::watch::Receiver<()>,
 }
 
 impl<Source: BlockchainSource> NfsEpochAdapter<Source> {
-    /// Wrap the ChainIndex's shared non-finalized-state handle.
-    pub(crate) fn new(non_finalized_state: Arc<ArcSwapOption<NonFinalizedState<Source>>>) -> Self {
+    /// Wrap the ChainIndex's shared non-finalized-state handle and its
+    /// publication signal.
+    pub(crate) fn new(
+        non_finalized_state: Arc<ArcSwapOption<NonFinalizedState<Source>>>,
+        epoch_wake: tokio::sync::watch::Receiver<()>,
+    ) -> Self {
         Self {
             non_finalized_state,
+            epoch_wake,
         }
     }
 }
@@ -122,6 +130,7 @@ impl<Source: BlockchainSource> Clone for NfsEpochAdapter<Source> {
     fn clone(&self) -> Self {
         Self {
             non_finalized_state: Arc::clone(&self.non_finalized_state),
+            epoch_wake: self.epoch_wake.clone(),
         }
     }
 }
@@ -130,5 +139,9 @@ impl<Source: BlockchainSource> zaino_mempool::NfsEpochObserver for NfsEpochAdapt
     fn current_epoch(&self) -> Option<zaino_mempool::NonFinalizedEpoch> {
         let non_finalized_state = self.non_finalized_state.load_full()?;
         Some(non_finalized_state.get_snapshot().epoch())
+    }
+
+    fn subscribe_epoch_changes(&self) -> Option<tokio::sync::watch::Receiver<()>> {
+        Some(self.epoch_wake.clone())
     }
 }

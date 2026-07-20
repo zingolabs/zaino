@@ -14,6 +14,12 @@ and this crate adheres to Rust's notion of
   `ironwoodActions` in served compact blocks (`zaino-proto`, on by
   default), and ironwood treestate roots in the chain index
   (`zaino-state`).
+- `[mempool]` config section — `max_cost_bytes` (default 128 MiB, the mempool
+  memory backstop), `poll_interval_ms` (default 500), `metadata_min_interval_ms`
+  (defaults to the poll interval; raising it trades mempool latency for validator
+  load) and `max_exclude_count` (default 1024). Every field is optional and an
+  absent section keeps the built-in bounds, so existing config files are
+  unaffected. This makes the mempool capacity bound operator-configurable.
 - `[storage.database]` config gains `sync_checkpoint_interval` (seconds, default
   120) — the bulk-sync write-batch flush interval, which also bounds the window of
   unflushed (`NO_SYNC`) writes at risk on a hard kill / eviction.

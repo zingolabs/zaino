@@ -177,6 +177,7 @@ mod chain_query_interface {
                         &test_manager.local_net.get_activation_heights().await,
                     )
                     .to_regtest_network(),
+                    mempool: Default::default(),
                 };
 
                 // **NOTE** The "fetch" backend is currently the backend used in the wild, and
@@ -224,6 +225,7 @@ mod chain_query_interface {
                         &test_manager.local_net.get_activation_heights().await,
                     )
                     .to_regtest_network(),
+                    mempool: Default::default(),
                 };
                 let chain_index = NodeBackedChainIndex::new(
                     ValidatorConnector::Fetch(json_service.clone()),

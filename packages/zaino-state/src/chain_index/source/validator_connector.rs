@@ -42,6 +42,14 @@ use crate::Height;
 
 use super::*;
 
+/// Maximum number of entries accepted from one verbose mempool listing.
+///
+/// A ZIP-401-bounded validator cannot hold anything close to this (the cost
+/// floor of 10,000 bytes per transaction caps an 80 MB mempool at ~8,000
+/// entries), so the bound only ever trips on a validator that is compromised,
+/// misconfigured, or impersonated.
+const MAX_MEMPOOL_METADATA_ENTRIES: usize = 1_000_000;
+
 macro_rules! expected_read_response {
     ($response:ident, $expected_variant:ident) => {
         match $response {
@@ -867,6 +875,17 @@ impl BlockchainSource for ValidatorConnector {
                 BlockchainSourceError::unrecoverable_context("could not fetch verbose mempool", e)
             })?;
 
+        // The transport caps the response *bytes*; this caps the *entries* it
+        // decodes to, so a pathological listing cannot make Zaino allocate a
+        // multi-million-entry map from one reply. Well above any mempool a
+        // ZIP-401-bounded validator can hold.
+        if verbose.0.len() > MAX_MEMPOOL_METADATA_ENTRIES {
+            return Err(BlockchainSourceError::Unrecoverable(format!(
+                "verbose mempool listing too large: {} entries > {MAX_MEMPOOL_METADATA_ENTRIES}",
+                verbose.0.len()
+            )));
+        }
+
         let entries = verbose
             .0
             .into_iter()
@@ -910,7 +929,14 @@ impl BlockchainSource for ValidatorConnector {
             // The source responded but has no such transaction: it left the
             // mempool (mined or evicted) between listing and fetch. Skip it
             // rather than freezing the whole mempool on a normal race.
-            Err(RpcRequestError::UnexpectedErrorResponse(_)) => Ok(None),
+            //
+            // Only this *modelled* error means "gone". Treating the
+            // undocumented/malformed catch-all as "gone" too would let any
+            // unmodelled validator error silently delete a transaction from a
+            // set that still publishes as complete.
+            Err(RpcRequestError::Method(
+                zaino_fetch::jsonrpsee::response::GetTransactionError::NoSuchTransaction(_),
+            )) => Ok(None),
             Err(e) => Err(BlockchainSourceError::unrecoverable_context(
                 "could not fetch raw mempool transaction",
                 e,

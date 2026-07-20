@@ -21,6 +21,7 @@ futures = { workspace = true, optional = true }
 
 # Utility
 thiserror = { workspace = true }
+bytes.workspace = true
 
 [features]
 # Opt-in tip-coherence layer: the NS-epoch observer port, the `TipAwareMempool`

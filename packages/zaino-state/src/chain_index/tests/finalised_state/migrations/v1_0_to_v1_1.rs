@@ -33,6 +33,7 @@ async fn v1_0_to_v1_1_metadata_migration() {
             ..Default::default()
         },
         ephemeral: false,
+        mempool: Default::default(),
         db_version: 1,
         network: ActivationHeights::default().to_regtest_network(),
     };
@@ -99,6 +100,7 @@ async fn v1_0_to_v1_1_mixed_blockheaderdata_formats() {
             ..Default::default()
         },
         ephemeral: false,
+        mempool: Default::default(),
         db_version: 1,
         network: ActivationHeights::default().to_regtest_network(),
     };

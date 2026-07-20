@@ -2024,7 +2024,6 @@ where
 /// matches values recomputed from the fetch subscriber's mempool internals.
 /// FetchService-only — the recompute reads `FetchServiceSubscriber.indexer`.
 async fn get_mempool_info_fetch() {
-    use hex::ToHex as _;
     use zaino_state::ChainIndex as _;
 
     let (mut test_manager, _transparent_txid, _unified_txid) = fund_and_fill_mempool::<Rpc>().await;

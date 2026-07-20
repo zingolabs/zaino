@@ -38,9 +38,10 @@ use crate::jsonrpsee::{
         GetBalanceError, GetBalanceResponse, GetBlockCountResponse, GetBlockError, GetBlockHash,
         GetBlockResponse, GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse,
         GetSpentInfoError, GetSpentInfoRequest, GetSpentInfoResponse, GetSubtreesError,
-        GetSubtreesResponse, GetTransactionResponse, GetTreestateError, GetTreestateResponse,
-        GetTxOutResponse, GetUtxosError, GetUtxosResponse, SendTransactionError,
-        SendTransactionResponse, TxidsError, TxidsResponse, VerboseMempoolResponse,
+        GetSubtreesResponse, GetTransactionError, GetTransactionResponse, GetTreestateError,
+        GetTreestateResponse, GetTxOutResponse, GetUtxosError, GetUtxosResponse,
+        SendTransactionError, SendTransactionResponse, TxidsError, TxidsResponse,
+        VerboseMempoolResponse,
     },
 };
 
@@ -255,6 +256,48 @@ enum CookieSupport {
 /// when the chain is busiest, so a slow answer is far better than an error.
 const HEAVY_METHOD_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Maximum JSON-RPC response body Zaino will buffer, in bytes.
+///
+/// Every response is deserialized into memory, so without a cap a validator that
+/// is compromised, misconfigured, or simply impersonated can drive Zaino out of
+/// memory with one reply — and the largest legitimate responses (a full block, a
+/// verbose mempool listing) are orders of magnitude below this, so the cap has
+/// generous headroom before it can affect healthy operation.
+const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+
+/// Reads a response body into memory, abandoning it if it exceeds `max`.
+///
+/// Chunk-wise rather than `Response::bytes()`, which would buffer the whole body
+/// before any size could be checked — the point is to never allocate the
+/// oversized body in the first place.
+async fn read_body_capped(
+    response: reqwest::Response,
+    max: usize,
+) -> Result<bytes::Bytes, TransportError> {
+    // A truthful Content-Length lets us reject before reading a single chunk;
+    // an absent or lying one is caught by the running total below.
+    if response
+        .content_length()
+        .is_some_and(|len| len > max as u64)
+    {
+        return Err(TransportError::ResponseBodyTooLarge { max });
+    }
+
+    let mut response = response;
+    let mut body = bytes::BytesMut::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(TransportError::ReqwestError)?
+    {
+        if body.len() + chunk.len() > max {
+            return Err(TransportError::ResponseBodyTooLarge { max });
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body.freeze())
+}
+
 /// Builds the outbound JSON-RPC HTTP client shared by every connector
 /// entry point: 2s connect timeout, 5s request timeout, no redirects.
 fn build_rpc_client(cookies: CookieSupport) -> Result<Client, reqwest::Error> {
@@ -413,10 +456,9 @@ impl JsonRpSeeConnector {
 
             let status = response.status();
 
-            let body_bytes = response
-                .bytes()
+            let body_bytes = read_body_capped(response, MAX_RESPONSE_BYTES)
                 .await
-                .map_err(|e| RpcRequestError::Transport(TransportError::ReqwestError(e)))?;
+                .map_err(RpcRequestError::Transport)?;
 
             let body_str = String::from_utf8_lossy(&body_bytes);
 
@@ -882,7 +924,7 @@ impl JsonRpSeeConnector {
         &self,
         txid_hex: String,
         verbose: Option<u8>,
-    ) -> Result<GetTransactionResponse, RpcRequestError<Infallible>> {
+    ) -> Result<GetTransactionResponse, RpcRequestError<GetTransactionError>> {
         // `verbose` defaults to 0 (hex-encoded data), matching the RPC contract.
         let params = vec![to_param(txid_hex)?, to_param(verbose.unwrap_or(0))?];
 

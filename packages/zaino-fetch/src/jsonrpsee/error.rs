@@ -55,6 +55,14 @@ pub enum TransportError {
         Box<dyn std::error::Error + Send + Sync + 'static>,
         &'static str,
     ),
+
+    /// The validator's response body exceeded the size Zaino is willing to
+    /// buffer, and was abandoned part-way rather than read into memory.
+    #[error("validator response body exceeded {max} bytes")]
+    ResponseBodyTooLarge {
+        /// The cap that was exceeded, in bytes.
+        max: usize,
+    },
 }
 
 impl TransportError {

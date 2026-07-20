@@ -27,8 +27,8 @@ pub const DEFAULT_MAX_COST_BYTES: u64 = 128 * 1024 * 1024;
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// The ZIP-401 cost of a single transaction: `max(serialized_size, threshold)`.
-pub fn tx_cost(raw_len: u32) -> u64 {
-    (raw_len as u64).max(MEMPOOL_TRANSACTION_COST_THRESHOLD)
+pub fn tx_cost(raw_len: u64) -> u64 {
+    raw_len.max(MEMPOOL_TRANSACTION_COST_THRESHOLD)
 }
 
 /// Configuration and safety bounds for the mempool read model.

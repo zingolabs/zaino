@@ -39,8 +39,12 @@ struct MockTx {
 struct MockSourceState {
     tip: Option<BlockRef>,
     mempool: Vec<MockTx>,
-    /// Txids listed by metadata/txids but whose raw fetch returns `None`.
+    /// Txids listed by metadata/txids but whose raw fetch returns `None`
+    /// (the "left the mempool between listing and fetch" race).
     phantom: HashSet<TxHash>,
+    /// Txids whose raw fetch fails outright (an error, *not* "no such
+    /// transaction").
+    raw_fetch_error: HashSet<TxHash>,
     raw_fetch_counts: HashMap<TxHash, usize>,
     /// Number of verbose metadata listings served.
     metadata_fetch_count: usize,
@@ -74,6 +78,10 @@ impl MockSource {
 
     fn set_error(&self, message: Option<&str>) {
         self.lock().source_error = message.map(str::to_string);
+    }
+
+    fn fail_raw_fetch_for(&self, txid: TxHash) {
+        self.lock().raw_fetch_error.insert(txid);
     }
 
     fn raw_fetch_count(&self, txid: &TxHash) -> usize {
@@ -124,6 +132,11 @@ impl MempoolSource for MockSource {
     ) -> Result<Option<SerializedTransaction>, MempoolError> {
         let mut state = self.lock();
         *state.raw_fetch_counts.entry(txid).or_default() += 1;
+        if state.raw_fetch_error.contains(&txid) {
+            return Err(MempoolError::source(std::io::Error::other(
+                "unmodelled validator error",
+            )));
+        }
         if state.phantom.contains(&txid) {
             return Ok(None);
         }
@@ -146,6 +159,8 @@ impl MempoolSource for MockSource {
 #[derive(Clone)]
 struct MockNfs {
     epoch: Arc<Mutex<Option<NonFinalizedEpoch>>>,
+    /// Publication signal, as the real `zaino-state` adapter supplies.
+    wake: Arc<tokio::sync::watch::Sender<()>>,
 }
 
 #[cfg(feature = "tip_aware_mempool")]
@@ -153,11 +168,13 @@ impl MockNfs {
     fn new() -> Self {
         Self {
             epoch: Arc::new(Mutex::new(None)),
+            wake: Arc::new(tokio::sync::watch::channel(()).0),
         }
     }
 
     fn set(&self, epoch: NonFinalizedEpoch) {
         *self.epoch.lock().expect("mock nfs poisoned") = Some(epoch);
+        let _ = self.wake.send(());
     }
 }
 
@@ -165,6 +182,10 @@ impl MockNfs {
 impl NfsEpochObserver for MockNfs {
     fn current_epoch(&self) -> Option<NonFinalizedEpoch> {
         *self.epoch.lock().expect("mock nfs poisoned")
+    }
+
+    fn subscribe_epoch_changes(&self) -> Option<tokio::sync::watch::Receiver<()>> {
+        Some(self.wake.subscribe())
     }
 }
 
@@ -353,6 +374,27 @@ mod core {
         })
         .await;
         assert_eq!(snapshot.tx_count, 1); // prior set preserved, never frozen away
+        service.close();
+    }
+
+    #[tokio::test]
+    async fn raw_fetch_error_degrades_completeness_and_keeps_the_set() {
+        // A raw fetch that *errors* is not a "no such transaction": the poll's
+        // update is abandoned, the held set survives, and the set is reported
+        // incomplete. Nothing is deleted on the strength of an unmodelled
+        // failure.
+        let (service, subscriber, source) = spawn_core(100, 0xAB, vec![mtx(1, 100)], fast_config());
+        wait_for(&subscriber, |s| s.tx_count == 1).await;
+
+        source.fail_raw_fetch_for(txid(2));
+        source.set_mempool(vec![mtx(1, 100), mtx(2, 100)]);
+
+        let snapshot = wait_for(&subscriber, |s| {
+            s.completeness == MempoolCompleteness::IncompleteSourceError
+        })
+        .await;
+        assert!(snapshot.by_txid.contains_key(&txid(1)));
+        assert!(!snapshot.by_txid.contains_key(&txid(2)));
         service.close();
     }
 
@@ -659,6 +701,7 @@ mod coherence {
 
     use crate::{CoherenceService, CoherentSubscriber, MempoolService, MempoolSubscriber};
     use futures::StreamExt as _;
+    use zaino_mempool::ports::MempoolStreamError;
     use zaino_mempool::tip::{CoherentSnapshot, FreezeReason, MempoolMode};
     use zaino_mempool::TipAwareMempool as _;
 
@@ -735,6 +778,46 @@ mod coherence {
             MempoolMode::Frozen { reason, .. } => Some(reason),
             _ => None,
         }
+    }
+
+    #[tokio::test]
+    async fn nfs_advance_reconciles_on_the_signal_not_the_tick() {
+        // The coherence layer must learn of an NS advance from the observer's
+        // signal. Waiting for its own tick means tip-coherent reads stay frozen
+        // for a whole poll interval after every block — indefinitely when sync
+        // lags. The poll interval here is far longer than the test's patience,
+        // so only the signal can satisfy it.
+        let source = MockSource::new();
+        let nfs = MockNfs::new();
+        source.set_tip(block_ref(100, 0xAB));
+        source.set_mempool(vec![mtx(1, 100)]);
+        nfs.set(epoch(1, 100, 0xAB));
+
+        let mut slow_tick = fast_config();
+        slow_tick.poll_interval = Duration::from_secs(30);
+
+        let core = MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
+        let coherence = CoherenceService::spawn(
+            core.subscriber(),
+            nfs.clone(),
+            slow_tick,
+            CancellationToken::new(),
+        );
+        let subscriber = coherence.subscriber();
+        wait_for(&subscriber, is_live).await;
+
+        // Advance *only* the NS epoch. The validator tip and the mempool set are
+        // untouched, so the core publishes nothing and its change feed cannot be
+        // what wakes the layer — the observer's signal is the only path left.
+        nfs.set(epoch(2, 101, 0xCD));
+
+        let snapshot = wait_for(&subscriber, is_frozen).await;
+        assert_eq!(freeze_reason(&snapshot), Some(FreezeReason::TipsDiverged));
+
+        // Without the signal this state change would wait out the 30s tick;
+        // arriving inside the wait above is the assertion.
+        coherence.close();
+        core.close();
     }
 
     #[tokio::test]
@@ -903,11 +986,66 @@ mod coherence {
         );
 
         // Initial set: the one transaction's bytes.
-        assert_eq!(stream.next().await, Some(vec![1]));
+        assert_eq!(
+            stream.next().await,
+            Some(Ok(bytes::Bytes::from_static(&[1])))
+        );
 
         // Add a second transaction at the same epoch: it streams live.
         h.source.set_mempool(vec![mtx(1, 100), mtx(2, 100)]);
-        assert_eq!(stream.next().await, Some(vec![2]));
+        assert_eq!(
+            stream.next().await,
+            Some(Ok(bytes::Bytes::from_static(&[2])))
+        );
+        h.close();
+    }
+
+    #[tokio::test]
+    async fn stream_surfaces_a_lag_as_an_error_not_a_silent_end() {
+        // A stream consumer that falls behind must be told. Ending silently is
+        // indistinguishable from the normal tip-change close, so the client
+        // would treat a partial mempool as the complete one.
+        let mut config = fast_config();
+        config.event_buffer_len = 2; // tiny buffer: a small flood overflows it
+
+        let h = spawn_coherent(100, 0xAB, 1, vec![mtx(1, 100)], config);
+        wait_for(&h.subscriber, |s| is_live(s) && s.set.tx_count == 1).await;
+
+        let mut stream = Box::pin(
+            h.subscriber
+                .stream_transactions_until_tip_change(Some(epoch(1, 100, 0xAB)))
+                .expect("coherent for this epoch"),
+        );
+        // Drain the initial set so the next item comes from the event feed.
+        assert_eq!(
+            stream.next().await,
+            Some(Ok(bytes::Bytes::from_static(&[1])))
+        );
+
+        // Flood far more coherent events than the buffer holds, without polling.
+        let flood: Vec<MockTx> = (0..50)
+            .map(|n| MockTx {
+                txid: txid_n(n),
+                entry_height: 100,
+                entry_time: None,
+                bytes: vec![(n % 251) as u8],
+            })
+            .collect();
+        h.source.set_mempool(flood);
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        // Collect until the stream ends; a lag must appear as an error item.
+        let mut saw_lag = false;
+        while let Some(item) = tokio::time::timeout(Duration::from_millis(200), stream.next())
+            .await
+            .unwrap_or(None)
+        {
+            if matches!(item, Err(MempoolStreamError::Lagged { .. })) {
+                saw_lag = true;
+                break;
+            }
+        }
+        assert!(saw_lag, "lag ended the stream without surfacing an error");
         h.close();
     }
 

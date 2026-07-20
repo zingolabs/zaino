@@ -83,7 +83,6 @@ impl_infallible_response_to_error!(
     ValidateAddressResponse,
     RawMempoolResponse,
     VerboseMempoolResponse,
-    GetTransactionResponse,
     GetMempoolInfoResponse,
 );
 
@@ -1503,6 +1502,38 @@ pub enum GetTransactionResponse {
     Object(Box<zebra_rpc::client::TransactionObject>),
 }
 
+/// Errors returned by `getrawtransaction`.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum GetTransactionError {
+    /// The validator has no such transaction, in its mempool or its chain.
+    ///
+    /// Modelled explicitly because callers must distinguish it from every other
+    /// failure: a mempool transaction that races away between listing and fetch
+    /// is a normal, skippable event, whereas an unmodelled error response means
+    /// the validator's answer is unknown and the caller must *not* conclude the
+    /// transaction is gone.
+    #[error("no such mempool or chain transaction: {0}")]
+    NoSuchTransaction(String),
+}
+
+impl ResponseToError for GetTransactionResponse {
+    type RpcError = GetTransactionError;
+}
+impl TryFrom<RpcError> for GetTransactionError {
+    type Error = RpcError;
+
+    fn try_from(value: RpcError) -> Result<Self, Self::Error> {
+        // Both zcashd and Zebra report a missing transaction with the legacy
+        // `InvalidAddressOrKey` code (-5); anything else stays unmodelled and
+        // surfaces as `RpcRequestError::UnexpectedErrorResponse`.
+        if value.code == zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey as i64 {
+            Ok(Self::NoSuchTransaction(value.message))
+        } else {
+            Err(value)
+        }
+    }
+}
+
 impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -2124,5 +2155,43 @@ mod get_block_response {
             ),
             "the conversion must pass the transaction object through"
         );
+    }
+}
+
+#[cfg(test)]
+mod get_transaction_error {
+    use super::{GetTransactionError, RpcError};
+
+    /// The only error that means "the validator does not have this
+    /// transaction". Callers skip a mempool transaction on this and *only* this,
+    /// so the mapping is the contract that keeps an unmodelled error from being
+    /// read as absence.
+    #[test]
+    fn only_the_not_found_code_is_modelled() {
+        let not_found = RpcError {
+            code: zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey as i64,
+            message: "No such mempool or main chain transaction".to_string(),
+            data: None,
+        };
+        assert_eq!(
+            GetTransactionError::try_from(not_found).ok(),
+            Some(GetTransactionError::NoSuchTransaction(
+                "No such mempool or main chain transaction".to_string()
+            ))
+        );
+
+        // Anything else stays unmodelled, so the connector surfaces it as
+        // `UnexpectedErrorResponse` rather than as a missing transaction.
+        for code in [-8, -32601, 0, 1] {
+            let other = RpcError {
+                code,
+                message: "some other failure".to_string(),
+                data: None,
+            };
+            assert!(
+                GetTransactionError::try_from(other).is_err(),
+                "code {code} must not be read as 'no such transaction'"
+            );
+        }
     }
 }

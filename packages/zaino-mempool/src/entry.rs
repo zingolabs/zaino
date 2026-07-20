@@ -6,12 +6,11 @@
 //! those conversions belong to the boundary/conversion layer, not the
 //! foundational mempool.
 
-use std::sync::Arc;
-
+use bytes::Bytes;
 use zebra_chain::{
     block::Height,
     serialization::{SerializationError, ZcashDeserialize as _},
-    transaction::{Hash as TxHash, SerializedTransaction, Transaction},
+    transaction::{Hash as TxHash, Transaction},
 };
 
 /// One unconfirmed transaction in Zaino's mempool read model.
@@ -27,10 +26,18 @@ pub struct MempoolEntry {
 
     /// Serialized transaction bytes, guaranteed to deserialize as a Zcash
     /// transaction (they came from the validator).
-    pub serialized_tx: Arc<SerializedTransaction>,
+    ///
+    /// Held as [`Bytes`] so serving the same transaction to many concurrent
+    /// stream consumers costs a refcount bump each, not a copy each: the buffer
+    /// is built once at ingest and shared all the way to the wire.
+    pub serialized_tx: Bytes,
 
     /// Length of `serialized_tx` in bytes.
-    pub raw_len: u32,
+    ///
+    /// `u64`, not `u32`: the cost accounting and the `getmempoolinfo` totals are
+    /// `u64`, and a narrowing cast at ingest would silently wrap rather than
+    /// bound anything.
+    pub raw_len: u64,
 
     /// Chain tip height when the transaction entered the mempool.
     ///
@@ -54,7 +61,16 @@ impl MempoolEntry {
 
     /// The raw serialized transaction bytes.
     pub fn serialized_bytes(&self) -> &[u8] {
-        self.serialized_tx.as_ref().as_ref()
+        self.serialized_tx.as_ref()
+    }
+
+    /// The raw serialized transaction as a shared [`Bytes`] buffer.
+    ///
+    /// Cloning is a refcount bump, so prefer this over
+    /// [`serialized_bytes`](Self::serialized_bytes)`.to_vec()` when handing the
+    /// transaction to a wire type or a stream consumer.
+    pub fn wire_bytes(&self) -> Bytes {
+        self.serialized_tx.clone()
     }
 
     /// Parse the entry into a [`zebra_chain::transaction::Transaction`].
@@ -73,10 +89,10 @@ mod tests {
     use super::*;
 
     fn entry_with(bytes: Vec<u8>, entry_height: u32) -> MempoolEntry {
-        let raw_len = bytes.len() as u32;
+        let raw_len = bytes.len() as u64;
         MempoolEntry {
             txid: TxHash([7u8; 32]),
-            serialized_tx: Arc::new(SerializedTransaction::from(bytes)),
+            serialized_tx: Bytes::from(bytes),
             raw_len,
             entry_height: Height(entry_height),
             entry_time: Some(1_700_000_000),

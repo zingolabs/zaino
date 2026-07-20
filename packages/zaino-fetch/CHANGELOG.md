@@ -17,6 +17,16 @@ and this library adheres to Rust's notion of
   to stamp transactions with the validator's authoritative height). Issued with a
   longer per-request timeout (see below).
 ### Changed
+- `getrawtransaction` models its "no such mempool or chain transaction" error
+  (`GetTransactionError::NoSuchTransaction`, legacy code -5) instead of
+  collapsing every error response into `UnexpectedErrorResponse`. Callers can now
+  distinguish "the validator does not have it" from "the validator's answer is
+  unknown" — the former is a skippable mempool race, the latter must never be
+  read as absence.
+- Response bodies are capped at 32 MiB and read chunk-wise, so an oversized reply
+  is abandoned rather than buffered into memory
+  (`TransportError::ResponseBodyTooLarge`). Previously every response was read
+  unbounded before any size could be checked.
 - Outbound JSON-RPC requests may override the client-wide 5s timeout per request.
   `getrawmempool verbose` now uses a 30s timeout: the validator services it by
   walking its whole mempool, so on a busy chain the tight default turned a

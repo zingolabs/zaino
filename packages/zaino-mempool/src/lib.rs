@@ -47,7 +47,7 @@ pub use update::MempoolUpdate;
 #[cfg(feature = "tip_aware_mempool")]
 pub use event::MempoolEvent;
 #[cfg(feature = "tip_aware_mempool")]
-pub use ports::{NfsEpochObserver, NoNfs, NonFinalizedEpoch, TipAwareMempool};
+pub use ports::{MempoolStreamError, NfsEpochObserver, NoNfs, NonFinalizedEpoch, TipAwareMempool};
 #[cfg(feature = "tip_aware_mempool")]
 pub use tip::{CoherentSnapshot, FreezeReason, MempoolMode, ObservedTips, TipChange, ValidatorTip};
 

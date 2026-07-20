@@ -46,12 +46,35 @@ and this library adheres to Rust's notion of
 - `MempoolConfig`: cost-based (ZIP-401) bounds, memory bound (`max_cost_bytes`,
   runtime-adjustable, default 128 MiB), poll interval, fetch concurrency, and
   exclude-list caps.
+- `NfsEpochObserver::subscribe_epoch_changes` — an optional wake signal (default
+  `None`) fired when a new non-finalized snapshot is published, so the coherence
+  layer reconciles on the advance instead of waiting out its poll tick. Without
+  it, tip-coherent reads were frozen for a poll interval after every block, and
+  indefinitely when sync lagged.
+- `MempoolStreamError` (feature `tip_aware_mempool`) — why a tip-coherent stream
+  ended early. `TipAwareMempool::stream_transactions_until_tip_change` now yields
+  `Result<Bytes, MempoolStreamError>`: a consumer that falls behind the event feed
+  gets `Lagged` instead of a silent end, which was indistinguishable from the
+  normal tip-change close and so let a partial mempool pass for the whole one.
+- `MempoolEntry::wire_bytes` — the transaction as a shared `Bytes` buffer.
 - `MempoolConfig::metadata_min_interval` — a floor between per-entry metadata
   listings (`getrawmempool verbose`), which the validator answers by walking its
   whole mempool. Defaults to `poll_interval`, i.e. no additional coalescing;
   raising it trades mempool latency for validator load. Additions are never
   admitted without their metadata, so a poll inside the floor publishes nothing
   rather than an incomplete set. `DEFAULT_POLL_INTERVAL` is now a public constant.
+
+### Changed
+- `MempoolEntry::serialized_tx` is a `bytes::Bytes` (was `Arc<SerializedTransaction>`),
+  built once at ingest and shared to the wire, so fanning one transaction out to
+  N stream consumers costs N refcount bumps rather than N copies.
+- `MempoolEntry::raw_len` and `tx_cost` take `u64` (was `u32`), which could
+  silently wrap on a narrowing cast at ingest.
+
+### Fixed
+- `NonFinalizedEpoch::generation` documentation: it increments when the
+  publisher's best tip *changes*, not on every republication. The code was
+  already correct; the doc claimed the opposite.
 
 ### Notes
 - **Why the core tags `source_tip`.** Freeze/thaw coherence depends on knowing

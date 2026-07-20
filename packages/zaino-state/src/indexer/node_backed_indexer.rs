@@ -1412,7 +1412,7 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
             };
 
             Ok(RawTransaction {
-                data: hex.as_ref().to_vec(),
+                data: bytes::Bytes::from(hex.as_ref().to_vec()),
                 height,
             })
         } else {
@@ -1744,6 +1744,12 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
                                         // Unconfirmed txs carry wire height 0 (the
                                         // "in mempool" sentinel), matching
                                         // lightwalletd — never the tip height.
+                                        //
+                                        // `transaction_bytes` is the mempool
+                                        // entry's shared buffer and the proto
+                                        // field is `Bytes`, so fanning the same
+                                        // transaction out to N streams costs N
+                                        // refcount bumps, not N copies.
                                         if channel_tx
                                             .send(Ok(RawTransaction {
                                                 data: transaction_bytes,

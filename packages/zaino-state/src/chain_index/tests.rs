@@ -132,6 +132,7 @@ async fn load_with_settings(
             ..Default::default()
         },
         ephemeral: false,
+        mempool: Default::default(),
         db_version: 1,
         network: ActivationHeights::default().to_regtest_network(),
     };
@@ -220,6 +221,7 @@ async fn v1_finalised_seed_dir(mode: MockchainMode) -> &'static Path {
                 ..Default::default()
             },
             ephemeral: false,
+            mempool: Default::default(),
             db_version: 1,
             network: ActivationHeights::default().to_regtest_network(),
         };

@@ -44,6 +44,7 @@ pub(crate) async fn spawn_ephemeral_finalised_state(
             ..Default::default()
         },
         ephemeral: true,
+        mempool: Default::default(),
         db_version: 1,
         network: ActivationHeights::default().to_regtest_network(),
     };

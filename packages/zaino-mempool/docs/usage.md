@@ -37,7 +37,10 @@ non-finalized-state tip (NS) agree.
   consistent source.
 - `NfsEpochObserver` *(feature `tip_aware_mempool`)* — reports Zaino's current
   non-finalized-state epoch (`Option<NonFinalizedEpoch>`); `None` while the NFS
-  does not yet exist. `NoNfs` is the no-op for validator-only mode.
+  does not yet exist. Implement `subscribe_epoch_changes` to hand back a
+  `watch::Receiver<()>` fired on each publication: without it the coherence layer
+  only notices an advance on its next poll tick, which freezes tip-coherent reads
+  for that long after every block. `NoNfs` is the no-op for validator-only mode.
 
 **Inbound (implemented by the runtime; you consume these):**
 
@@ -77,9 +80,11 @@ resync. State-losslessness does not depend on it.
 throughout). Key fields: `by_txid` (lookup), `txids_sorted` (reversed-byte order,
 for the shortened-txid exclude filter), `entries_in_order`, `tx_count`,
 `raw_bytes`, `cost_bytes`, `completeness`, and `source_tip`. Each `MempoolEntry`
-holds the full unmined transaction; call `serialized_bytes()` for the raw bytes or
-`transaction()` to parse. It carries no RPC/wire forms — derive those (compact tx,
-lightclient `RawTransaction` at wire height `0`) at your boundary.
+holds the full unmined transaction; call `serialized_bytes()` for a borrowed slice,
+`wire_bytes()` for the shared `Bytes` buffer (prefer this when handing it to a wire
+type — cloning is a refcount bump), or `transaction()` to parse. It carries no
+RPC/wire forms — derive those (compact tx, lightclient `RawTransaction` at wire
+height `0`) at your boundary.
 
 `completeness` tells you whether the set is a full view: `Complete`,
 `IncompleteSourceError`, or `IncompleteCapacityLimited`. Never present an incomplete
@@ -88,7 +93,8 @@ set as complete on a full-mempool API.
 ## Bounds and back-pressure knobs
 
 Two `MempoolConfig` fields shape how the core behaves under load; both are safety
-bounds on Zaino, not validator mempool policy.
+bounds on Zaino, not validator mempool policy, and both are settable by operators
+via `zainod`'s `[mempool]` config section.
 
 - **`max_cost_bytes`** (default 128 MiB) — the ZIP-401 cost ceiling. Additions are
   admitted in canonical order until the bound is reached; the rest are *refused*,
@@ -120,6 +126,12 @@ epoch) or the service closes. It returns `None` if `expected_epoch` no longer
 matches — the caller's tip is stale and should re-snapshot. A *transient* freeze
 does not end the stream; the last coherent set stays readable until the tips
 re-agree.
+
+Items are `Result<Bytes, MempoolStreamError>`. A consumer that falls behind the
+bounded event feed gets `Err(MempoolStreamError::Lagged)` and the stream ends:
+**treat that as an incomplete set and re-open against a fresh snapshot**, never as
+a normal close. The payload is a shared `Bytes` buffer, so forwarding it to the
+wire copies nothing.
 
 ## Feature flag
 

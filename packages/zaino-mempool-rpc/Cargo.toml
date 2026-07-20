@@ -29,6 +29,7 @@ async-stream = "0.3"
 
 # Utility
 thiserror = { workspace = true }
+bytes.workspace = true
 
 [features]
 # Opt-in tip-coherence layer: the `CoherenceService` and its coherent read/stream

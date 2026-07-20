@@ -822,6 +822,7 @@ where
                         ..Default::default()
                     },
                 },
+                mempool: Default::default(),
                 ephemeral_finalised_state: false,
                 zebra_db_path,
                 network: zaino_network_kind,

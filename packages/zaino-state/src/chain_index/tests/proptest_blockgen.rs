@@ -119,6 +119,7 @@ fn passthrough_test_on(
                     ..Default::default()
                 },
                 ephemeral: true,
+                mempool: Default::default(),
                 db_version: 1,
                 network: network.clone(),
 
@@ -821,6 +822,7 @@ fn make_chain() {
                     ..Default::default()
                 },
                 ephemeral: true,
+                mempool: Default::default(),
                 db_version: 1,
                 network: network.clone(),
 

@@ -331,6 +331,50 @@ async fn get_mempool_transaction() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn stale_snapshot_reports_mempool_transaction_as_unavailable_not_missing() {
+    // A transaction the validator holds in its mempool, queried with a snapshot
+    // the coherent view has moved past. Zaino cannot vouch for it against *that*
+    // snapshot, but it certainly exists — reporting `Ok(None)` would tell a
+    // wallet its transaction is gone. The caller gets a retryable error instead.
+    let (blocks, _indexer, index_reader, mockchain) =
+        load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
+    let block_data: Vec<zebra_chain::block::Block> = blocks
+        .iter()
+        .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
+        .collect();
+
+    let initial_tip = mockchain.active_height();
+    wait_for_indexer_tip(&index_reader, initial_tip).await;
+    wait_for_mempool_coherent(&index_reader).await;
+
+    // Snapshot at the old tip, then move the chain on so the coherent view is
+    // blessed for a *newer* epoch than this snapshot's.
+    let stale_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
+
+    mockchain.mine_blocks(1);
+    let new_tip = mockchain.active_height();
+    wait_for_indexer_tip(&index_reader, new_tip).await;
+    let new_mempool_txids = expected_mempool_txids(&block_data, new_tip);
+    wait_for_mempool_txids(&index_reader, &new_mempool_txids).await;
+    wait_for_mempool_coherent(&index_reader).await;
+
+    let Some(mempool_txid) = new_mempool_txids.into_iter().next() else {
+        // No mempool contents at this height; nothing to assert.
+        return;
+    };
+
+    let error = index_reader
+        .get_raw_transaction(&stale_snapshot, &mempool_txid)
+        .await
+        .expect_err("a mempool transaction must not read as absent");
+    assert!(
+        matches!(error.kind(), crate::error::ChainIndexErrorKind::Unavailable),
+        "expected a retryable Unavailable, got {:?}",
+        error.kind()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn get_mempool_transaction_status() {
     let (blocks, _indexer, index_reader, mockchain) =
         load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;

@@ -105,6 +105,13 @@ pub struct CommonBackendConfig {
     pub network: Network,
     /// Zcash donation UA address
     pub donation_address: Option<DonationAddress>,
+    /// Mempool read-model bounds (memory cap, poll cadence, exclude-list caps).
+    ///
+    /// Not a constructor argument: it defaults to the safe built-in bounds, and
+    /// an embedding binary overwrites it from its own config file. One instance
+    /// is threaded to *both* mempool services, so its shared atomics (notably
+    /// the memory bound) stay a single runtime knob.
+    pub mempool: zaino_mempool::MempoolConfig,
     /// Version of the indexer binary embedding this service.
     ///
     /// Reported on the wire via `LightdInfo.version`. Defaults to this
@@ -141,6 +148,7 @@ impl CommonBackendConfig {
             ephemeral_finalised_state,
             network,
             donation_address,
+            mempool: zaino_mempool::MempoolConfig::default(),
             indexer_version: env!("CARGO_PKG_VERSION").to_string(),
         }
     }
@@ -248,6 +256,9 @@ pub struct ChainIndexConfig {
     /// Note that full functionality is not available and
     /// performanc will be reduced in this configuration.
     pub ephemeral: bool,
+    /// Mempool read-model bounds, cloned into both mempool services so they
+    /// share one set of runtime-adjustable atomics.
+    pub mempool: zaino_mempool::MempoolConfig,
 }
 
 impl ChainIndexConfig {
@@ -265,6 +276,7 @@ impl ChainIndexConfig {
             db_version: 1,
             network,
             ephemeral: common.ephemeral_finalised_state,
+            mempool: common.mempool.clone(),
         }
     }
 }

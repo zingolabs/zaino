@@ -26,7 +26,9 @@ use zaino_common::status::{NamedAtomicStatus, StatusType};
 
 use zaino_mempool::config::MempoolConfig;
 use zaino_mempool::event::MempoolEvent;
-use zaino_mempool::ports::{Mempool, NfsEpochObserver, NoNfs, NonFinalizedEpoch};
+use zaino_mempool::ports::{
+    Mempool, MempoolStreamError, NfsEpochObserver, NoNfs, NonFinalizedEpoch,
+};
 use zaino_mempool::snapshot::{MempoolCompleteness, MempoolSnapshot};
 use zaino_mempool::tip::{
     CoherentSnapshot, FreezeReason, MempoolMode, ObservedTips, TipChange, ValidatorTip,
@@ -158,7 +160,13 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
 
         let mut updates = self.mempool.subscribe_updates();
         // The NS tip advances on Zaino's own sync, which does not always coincide
-        // with a core update; poll so an NS-only change is reconciled promptly.
+        // with a core update. Prefer the observer's wake signal — waiting for the
+        // tick instead would freeze tip-coherent reads for that long after every
+        // block — and keep the tick as a fallback for observers with no signal.
+        let mut epoch_wake = self
+            .nfs
+            .as_ref()
+            .and_then(|nfs| nfs.subscribe_epoch_changes());
         let mut interval = tokio::time::interval(self.config.poll_interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -173,17 +181,35 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
                 _ = interval.tick() => {
                     self.reconcile();
                 }
+                _ = async {
+                    match epoch_wake.as_mut() {
+                        Some(rx) => {
+                            let _ = rx.changed().await;
+                        }
+                        None => std::future::pending::<()>().await,
+                    }
+                } => {
+                    self.reconcile();
+                }
                 update = updates.recv() => {
                     match update {
                         Ok(MempoolUpdate::Closing { .. }) => {
                             self.publish_closing();
                             return;
                         }
-                        // Any core change (or falling behind its buffer) triggers
-                        // a fresh reconcile from the core's current snapshot.
-                        Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {
+                        // Reconcile on the batch boundary only. The core emits
+                        // one message per added/removed txid and closes every
+                        // batch with a `Reset`, so waking on each would mean
+                        // thousands of reconciles for a single cleared block —
+                        // and `reconcile` re-reads the core's snapshot wholesale
+                        // anyway, so the per-txid messages carry nothing extra.
+                        Ok(MempoolUpdate::Reset { .. })
+                        | Err(broadcast::error::RecvError::Lagged(_)) => {
                             self.reconcile();
                         }
+                        Ok(MempoolUpdate::Added { .. })
+                        | Ok(MempoolUpdate::Removed { .. })
+                        | Ok(MempoolUpdate::Lagged { .. }) => {}
                         Err(broadcast::error::RecvError::Closed) => return,
                     }
                 }
@@ -414,7 +440,7 @@ impl zaino_mempool::ports::TipAwareMempool for CoherentSubscriber {
     fn stream_transactions_until_tip_change(
         &self,
         expected_epoch: Option<NonFinalizedEpoch>,
-    ) -> Option<impl futures::Stream<Item = Vec<u8>> + Send> {
+    ) -> Option<impl futures::Stream<Item = Result<bytes::Bytes, MempoolStreamError>> + Send> {
         // Subscribe before snapshotting so no event between the snapshot load and
         // the subscribe is missed; events at or below `start_sequence` are then
         // discarded as already reflected in the initial snapshot.
@@ -440,13 +466,20 @@ impl zaino_mempool::ports::TipAwareMempool for CoherentSubscriber {
 
         let stream = async_stream::stream! {
             for entry in initial_entries.iter() {
-                yield entry.serialized_bytes().to_vec();
+                yield Ok(entry.wire_bytes());
             }
 
             loop {
                 let event = match receiver.recv().await {
                     Ok(event) => event,
-                    Err(broadcast::error::RecvError::Lagged(_)) => break,
+                    // Falling behind means transactions were missed. Ending here
+                    // without a word would look exactly like the normal
+                    // tip-change close, so the consumer would treat a partial
+                    // mempool as the whole one.
+                    Err(broadcast::error::RecvError::Lagged(missed)) => {
+                        yield Err(MempoolStreamError::Lagged { missed });
+                        break;
+                    }
                     Err(broadcast::error::RecvError::Closed) => break,
                 };
 
@@ -461,7 +494,7 @@ impl zaino_mempool::ports::TipAwareMempool for CoherentSubscriber {
                         }
                         match stream_epoch {
                             Some(epoch) if *valid_for != epoch => break,
-                            _ => yield entry.serialized_bytes().to_vec(),
+                            _ => yield Ok(entry.wire_bytes()),
                         }
                     }
                     MempoolEvent::Live { valid_for, .. } => {

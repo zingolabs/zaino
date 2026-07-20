@@ -7,7 +7,34 @@ and this library adheres to Rust's notion of
 
 ## [Unreleased]
 
+### Fixed
+- **`get_raw_transaction` no longer reports a live mempool transaction as
+  missing.** When the mempool view is not coherent with the caller's snapshot,
+  the transaction is present in the validator's mempool but not yet vouchable;
+  this returned `Ok(None)`, telling a wallet its transaction did not exist. It now
+  returns a retryable `Unavailable`.
+- **An unmodelled validator error can no longer delete a mempool transaction.**
+  `get_raw_mempool_transaction` treated the undocumented/malformed catch-all as
+  "transaction gone"; it now skips only on the modelled "no such transaction"
+  error, and any other failure degrades the set's completeness instead.
+- The verbose mempool listing is capped at 1,000,000 entries at the boundary, so
+  a pathological reply cannot drive an unbounded allocation.
+- The sync loop signals the mempool coherence layer on each non-finalized
+  publication, removing the post-block blackout in tip-coherent reads.
+
 ### Added
+- `ChainIndexConfig::mempool` / `CommonBackendConfig::mempool` — operator-facing
+  mempool bounds. **One** config instance is cloned into both mempool services, so
+  the runtime-adjustable memory bound is a single shared knob; they were previously
+  built from two independent `MempoolConfig::default()` calls, which silently gave
+  them separate atomics and left the bound unconfigurable.
+- `ChainIndexErrorKind::Unavailable` (gRPC `Unavailable`) — the answer exists but
+  Zaino cannot vouch for it yet.
+- `NodeBackedChainIndex::mempool_coherence_health` (and the subscriber's) — the
+  coherence layer's status and mode. Reported separately from the combined status
+  on purpose: the layer freezes briefly after every block by design, so folding it
+  in would flap the index's readiness once per block, while a *prolonged* freeze is
+  exactly what an operator needs to see.
 - The chain index tracks Ironwood (NU6.3) note-commitment treestate roots,
   storing `None` while the pool has no treestate rather than fabricating a
   root.

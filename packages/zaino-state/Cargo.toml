@@ -91,6 +91,7 @@ corez = { workspace = true }
 arc-swap = { workspace = true }
 reqwest.workspace = true
 bitflags = { workspace = true }
+bytes.workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }

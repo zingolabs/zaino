@@ -111,6 +111,14 @@ let coherent = coherence.subscriber(); // CoherentSubscriber
 Validator-only (no NS; synthesize the epoch from the validator tip, single-tip
 freeze/thaw): `CoherenceService::spawn_validator_only(core.subscriber(), config, cancel)`.
 
+Give the observer a `subscribe_epoch_changes` signal if you can. The layer also
+reconciles on its poll tick and on the core's change feed, but the tick alone
+leaves tip-coherent reads frozen for a poll interval after every block.
+
+Pass **clones of one** `MempoolConfig` to the core and the coherence service: the
+memory bound is a shared atomic, so two independent `default()`s would silently
+give them separate knobs.
+
 ## Tip-coherent reads and the stream
 
 Gate combined reads on the coherent view matching the caller's NS epoch:
@@ -126,7 +134,14 @@ if view.is_valid_for_snapshot(caller_epoch) {
 // Stream the mempool until the tip changes, then it closes:
 if let Some(stream) = coherent.stream_transactions_until_tip_change(Some(caller_epoch)) {
     let mut stream = std::pin::pin!(stream);
-    while let Some(tx_bytes) = stream.next().await { /* forward tx */ }
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(tx_bytes) => { /* forward tx; `Bytes`, so no copy */ }
+            // Fell behind the event feed: the set delivered is INCOMPLETE.
+            // Surface a retryable error; never treat this as a clean end.
+            Err(error) => { /* report and re-open against a fresh snapshot */ break }
+        }
+    }
 } // None => caller's tip is stale; re-snapshot and retry
 ```
 

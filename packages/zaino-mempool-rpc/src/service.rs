@@ -43,6 +43,15 @@ use zebra_chain::transaction::Hash as TxHash;
 /// single byte frees up would re-fetch refused transactions on every poll.
 const CAPACITY_LOW_WATER_PERCENT: u64 = 90;
 
+/// Consecutive polls the tag-stability guard may discard before the set is
+/// republished as incomplete.
+///
+/// Each discard means a block landed mid-poll, which is normal once in a while.
+/// A long run of them means the set is not converging (a block burst, regtest
+/// mining, a slow link), and consumers are better served by being told the view
+/// is stale than by an unchanging `Complete` set.
+const MAX_CONSECUTIVE_DISCARDS: u32 = 5;
+
 /// State owned by the single writer task across polls.
 ///
 /// Threaded through `&mut` rather than held behind a lock precisely because
@@ -63,6 +72,10 @@ struct PollState {
     /// keeping the cost is what makes the retry decision exact instead of a
     /// guess that can re-refuse in a loop.
     refused: HashMap<TxHash, u64>,
+
+    /// Polls discarded in a row by the tag-stability guard, for the
+    /// [`MAX_CONSECUTIVE_DISCARDS`] backstop.
+    consecutive_discards: u32,
 }
 
 /// The core mempool read-model service.
@@ -191,17 +204,21 @@ impl<S: MempoolSource> MempoolService<S> {
     }
 
     async fn tick(&self, state: &mut PollState) {
-        // Tag: the validator tip at the start of this poll's fetch window.
+        // Tag: the validator tip this poll's fetch window opens at.
+        //
+        // Read fresh every poll, never carried over from the last one: this read
+        // is also how a tip *change* is detected over an otherwise unchanged
+        // mempool, which the coherence layer depends on to thaw.
         let tip_before = match self.source.get_mempool_source_tip().await {
             Ok(tip) => tip,
-            Err(_) => return self.publish_source_error(),
+            Err(_) => return self.source_error(state),
         };
 
         let txids = match self.source.get_mempool_txids().await {
             Ok(Some(txids)) => txids,
             // Source could not answer, or errored: keep the last set, mark it
             // incomplete, and retry next poll. The core never freezes.
-            Ok(None) | Err(_) => return self.publish_source_error(),
+            Ok(None) | Err(_) => return self.source_error(state),
         };
 
         let current = self.current.load_full();
@@ -235,7 +252,7 @@ impl<S: MempoolSource> MempoolService<S> {
             if current.source_tip != tip_before
                 || current.completeness != Self::completeness_for(state)
             {
-                if self.tip_is_stable(tip_before).await {
+                if self.tip_is_stable(tip_before, state).await {
                     self.publish_snapshot(&current, tip_before, Vec::new(), Vec::new(), state);
                 }
             } else {
@@ -256,9 +273,17 @@ impl<S: MempoolSource> MempoolService<S> {
             if !self.metadata_fetch_is_due(state) {
                 return;
             }
+            // Re-check the tip *before* the expensive work, not only after it. A
+            // block that has already landed would make the guard below discard
+            // everything the listing and the raw fetches are about to cost —
+            // maximum work for zero progress, which on regtest or a block burst
+            // can repeat indefinitely.
+            if !self.tip_is_stable(tip_before, state).await {
+                return;
+            }
             let metadata = match self.source.get_mempool_metadata().await {
                 Ok(Some(metadata)) => metadata,
-                Ok(None) | Err(_) => return self.publish_source_error(),
+                Ok(None) | Err(_) => return self.source_error(state),
             };
             state.last_metadata_fetch = Some(Instant::now());
             let meta_by_txid: HashMap<_, _> =
@@ -277,7 +302,7 @@ impl<S: MempoolSource> MempoolService<S> {
             .await
         {
             Some(entries) => entries,
-            None => return self.publish_source_error(),
+            None => return self.source_error(state),
         };
 
         // Tag-stability guard: the validator tip must not have moved across the
@@ -285,17 +310,32 @@ impl<S: MempoolSource> MempoolService<S> {
         // tips and cannot be soundly tagged with either — discard and retry. This
         // is what makes `source_tip` a single-source pair with the set, so the
         // coherence layer can trust `V == NS` without re-fetching.
-        if !self.tip_is_stable(tip_before).await {
+        if !self.tip_is_stable(tip_before, state).await {
             return;
         }
 
         self.publish_snapshot(&current, tip_before, added_entries, removed, state);
     }
 
-    /// Whether the validator tip is still `tip_before` after the fetch window —
-    /// i.e. no block arrived mid-poll to smear the set across two tips.
-    async fn tip_is_stable(&self, tip_before: Option<BlockRef>) -> bool {
-        matches!(self.source.get_mempool_source_tip().await, Ok(tip) if tip == tip_before)
+    /// Whether the validator tip is still `tip_before` — i.e. no block arrived
+    /// mid-poll to smear the set across two tips.
+    ///
+    /// Counts discards in `state`: after [`MAX_CONSECUTIVE_DISCARDS`] in a row the set is
+    /// republished as [`IncompleteSourceError`](MempoolCompleteness::IncompleteSourceError),
+    /// so consumers are told the mempool is not converging instead of silently
+    /// serving an increasingly stale set.
+    async fn tip_is_stable(&self, tip_before: Option<BlockRef>, state: &mut PollState) -> bool {
+        let stable =
+            matches!(self.source.get_mempool_source_tip().await, Ok(tip) if tip == tip_before);
+        if stable {
+            state.consecutive_discards = 0;
+        } else {
+            state.consecutive_discards = state.consecutive_discards.saturating_add(1);
+            if state.consecutive_discards >= MAX_CONSECUTIVE_DISCARDS {
+                self.publish_source_error();
+            }
+        }
+        stable
     }
 
     /// Whether enough time has passed since the last metadata listing.
@@ -353,10 +393,12 @@ impl<S: MempoolSource> MempoolService<S> {
                     return Ok(None);
                 };
 
-                let raw_len = serialized_tx.as_ref().len() as u32;
+                let raw_len = serialized_tx.as_ref().len() as u64;
                 Ok(Some(Arc::new(MempoolEntry {
                     txid: meta.txid,
-                    serialized_tx: Arc::new(serialized_tx),
+                    // One copy out of the validator's response, shared from here
+                    // on (see `MempoolEntry::serialized_tx`).
+                    serialized_tx: bytes::Bytes::from(serialized_tx.as_ref().to_vec()),
                     raw_len,
                     entry_height: meta.entry_height,
                     entry_time: meta.entry_time,
@@ -397,16 +439,28 @@ impl<S: MempoolSource> MempoolService<S> {
         removed: Vec<TxHash>,
         state: &mut PollState,
     ) {
-        let mut final_by_txid = current.by_txid.as_ref().clone();
-        for txid in &removed {
-            final_by_txid.remove(txid);
+        // A republish that carries no delta only re-stamps the tag (and possibly
+        // the completeness). Reuse the existing collections and, crucially, keep
+        // `mempool_generation` — bumping it on an unchanged set would make the
+        // coherence layer treat every tip re-tag as new contents and redo its
+        // work.
+        if added_entries.is_empty() && removed.is_empty() {
+            self.publish_retagged(current, source_tip, Self::completeness_for(state));
+            return;
         }
 
-        let mut cost_bytes: u64 = final_by_txid.values().map(|entry| entry.cost()).sum();
-        let mut raw_bytes: u64 = final_by_txid
-            .values()
-            .map(|entry| entry.raw_len as u64)
-            .sum();
+        let mut final_by_txid = current.by_txid.as_ref().clone();
+        // Totals move with the delta rather than being re-summed over the whole
+        // set: the set is capped near 13k entries, so re-summing is not dangerous,
+        // but it is three needless O(N) passes per poll.
+        let mut cost_bytes = current.cost_bytes;
+        let mut raw_bytes = current.raw_bytes;
+        for txid in &removed {
+            if let Some(entry) = final_by_txid.remove(txid) {
+                cost_bytes = cost_bytes.saturating_sub(entry.cost());
+                raw_bytes = raw_bytes.saturating_sub(entry.raw_len);
+            }
+        }
 
         // Admit in the canonical (reversed-txid) order the snapshot is served
         // in, so which transactions make the cut is deterministic rather than an
@@ -424,7 +478,7 @@ impl<S: MempoolSource> MempoolService<S> {
                 continue;
             }
             cost_bytes += cost;
-            raw_bytes += entry.raw_len as u64;
+            raw_bytes += entry.raw_len;
             final_by_txid.insert(entry.txid, Arc::clone(&entry));
             applied_entries.push(entry);
         }
@@ -479,6 +533,45 @@ impl<S: MempoolSource> MempoolService<S> {
         });
 
         self.status.store(StatusType::Ready);
+    }
+
+    /// Re-publish the current set under a new tag / completeness, reusing every
+    /// collection and holding `mempool_generation` steady.
+    ///
+    /// The set itself did not change, so re-cloning the map, re-summing the
+    /// totals and re-sorting the txids would all reproduce what is already
+    /// there; and a generation bump would falsely tell the coherence layer the
+    /// contents moved.
+    fn publish_retagged(
+        &self,
+        current: &MempoolSnapshot,
+        source_tip: Option<BlockRef>,
+        completeness: MempoolCompleteness,
+    ) {
+        let next_sequence = current.event_sequence.saturating_add(1);
+        self.current.store(Arc::new(MempoolSnapshot {
+            source_tip,
+            mempool_generation: current.mempool_generation,
+            event_sequence: next_sequence,
+            by_txid: Arc::clone(&current.by_txid),
+            txids_sorted: Arc::clone(&current.txids_sorted),
+            entries_in_order: Arc::clone(&current.entries_in_order),
+            tx_count: current.tx_count,
+            raw_bytes: current.raw_bytes,
+            cost_bytes: current.cost_bytes,
+            completeness,
+        }));
+        let _ = self.updates.send(MempoolUpdate::Reset {
+            sequence: next_sequence,
+        });
+        self.status.store(StatusType::Ready);
+    }
+
+    /// A source read failed this poll: degrade completeness and reset the
+    /// discard run, which this failure interrupted.
+    fn source_error(&self, state: &mut PollState) {
+        state.consecutive_discards = 0;
+        self.publish_source_error();
     }
 
     /// A source read failed this poll: retain the set but mark it incomplete and

@@ -70,27 +70,48 @@ path to save microseconds on the cold write path — a bad trade. **Kept
   binary range search (`O(excludes·log n)` instead of `O(excludes·n)`). No extra
   index: the existing `txids_sorted` is simply ordered for this.
 - **Runtime-adjustable memory bound.** `MempoolConfig::max_cost_bytes` is held
-  behind a shared atomic and exposed via `MempoolSubscriber::set_max_cost_bytes`,
-  so the DoS backstop can be tuned per-process at runtime; all subscribers and the
-  service share the value.
+  behind a shared atomic and set via `MempoolService::set_max_cost_bytes` (on the
+  service, not the read handles), so the DoS backstop can be tuned at runtime with
+  one shared value across the core and coherence services.
+- **Zero-copy transaction fan-out.** The entry's bytes are a `bytes::Bytes` buffer
+  built once at ingest and carried unchanged to the wire (`RawTransaction.data` is
+  generated as `Bytes`), so serving one transaction to *K* streaming clients costs
+  *K* refcount bumps rather than *K* copies.
+- **Batch-boundary reconciles.** The coherence layer wakes on the change feed's
+  `Reset` only, not on each per-txid message: a cleared block of 1,000 transactions
+  is one reconcile instead of ~2,001, and `reconcile` re-reads the core snapshot
+  wholesale anyway.
+- **Incremental totals, tag-only republish.** `cost_bytes` / `raw_bytes` move with
+  the delta rather than being re-summed each publish, and a publish that only
+  re-stamps the tip tag reuses every collection and holds `mempool_generation`
+  steady (bumping it made coherence treat a re-tag as new contents).
+- **Guarded before the expensive work.** The tag-stability check also runs before
+  the metadata listing and raw fetches, so a poll that a mid-flight block will
+  invalidate is abandoned early rather than after paying in full.
 
 ## Documented trade-offs (not changed)
 
-- **Full-map clone + re-sort per publish** (`O(n) + O(n log n)`). Negligible at the
-  500 ms cadence and realistic sizes. If updates ever become far more frequent, a
-  persistent map or incremental sorted structures could revisit this — but see the
-  `im::` rejection above for why it is not warranted today.
+- **Full-map clone + re-sort per publish** (`O(n) + O(n log n)`) *on polls that
+  change the set*. Negligible at the 500 ms cadence and realistic sizes. If updates
+  ever become far more frequent, a persistent map or incremental sorted structures
+  could revisit this — but see the `im::` rejection above for why it is not
+  warranted today.
+- **Two validator-tip reads per poll** (opening tag + stability guard), three when
+  there are additions. The opening read cannot be carried over from the previous
+  poll — it is also how a tip *change* over an unchanged mempool is detected, which
+  the coherence layer needs in order to thaw. `getblockchaininfo` is cheap relative
+  to the mempool calls, so the guard is kept as-is.
+- **No compact-transaction cache.** `GetMempoolTx` re-parses each transaction into
+  its compact form per request. A cache belongs at the boundary (where the wire
+  types live), not in the core, and is deferred until profiling warrants it.
 - **`get_filtered_entries` output is inherently `O(n)`** (it returns all
   non-excluded entries), so the binary-search match only dominates when a client
   sends a large exclude list; the improvement is real but situational.
 
 ## Follow-ups (out of scope here)
 
-- **Config-file wiring.** The runtime bound is adjustable, but `MempoolConfig` is
-  still constructed from defaults at spawn (`chain_index.rs`). Threading a `mempool`
-  section from `ChainIndexConfig` is a mechanical follow-up (it touches ~10
-  `ChainIndexConfig` construction sites, so it was deferred to keep this change
-  focused).
+- **Compact-form cache at the RPC boundary**, if `GetMempoolTx` profiling warrants
+  it (see the trade-off above).
 - **Orphaned streamer `JoinHandle`** in the RPC layer (J-01 bug 2) is tracked under
   AP-02 (the generic streaming task-leak class), not here.
 
