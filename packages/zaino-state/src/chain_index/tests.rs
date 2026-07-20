@@ -77,7 +77,13 @@ async fn load_test_vectors_and_sync_chain_index(
     // `tokio::select!` against that token, the worker now exits at its
     // next await checkpoint on drop — the harness no longer needs to
     // bait the timing.
-    load_with_settings(mode, SyncTimings::default(), Duration::from_millis(25)).await
+    load_with_settings(
+        mode,
+        SyncTimings::default(),
+        Duration::from_millis(25),
+        Default::default(),
+    )
+    .await
 }
 
 async fn load_test_vectors_and_sync_chain_index_with_timings(
@@ -89,13 +95,20 @@ async fn load_test_vectors_and_sync_chain_index_with_timings(
     NodeBackedChainIndexSubscriber<MockchainSource>,
     MockchainSource,
 ) {
-    load_with_settings(mode, sync_timings, Duration::from_millis(25)).await
+    load_with_settings(
+        mode,
+        sync_timings,
+        Duration::from_millis(25),
+        Default::default(),
+    )
+    .await
 }
 
 async fn load_with_settings(
     mode: MockchainMode,
     sync_timings: SyncTimings,
     setup_poll_interval: Duration,
+    mempool: zaino_mempool::config::MempoolConfig,
 ) -> (
     Vec<vectors::TestVectorBlockData>,
     NodeBackedChainIndex<MockchainSource>,
@@ -132,7 +145,7 @@ async fn load_with_settings(
             ..Default::default()
         },
         ephemeral: false,
-        mempool: Default::default(),
+        mempool,
         db_version: 1,
         network: ActivationHeights::default().to_regtest_network(),
     };

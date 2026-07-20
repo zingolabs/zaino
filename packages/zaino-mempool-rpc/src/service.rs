@@ -20,7 +20,9 @@
 //! [`IncompleteCapacityLimited`](MempoolCompleteness::IncompleteCapacityLimited)
 //! rather than exceeding the bound.
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
+use std::hash::{BuildHasher as _, Hash as _, Hasher as _};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -36,7 +38,7 @@ use zaino_mempool::entry::MempoolEntry;
 use zaino_mempool::ports::{BlockRef, MempoolSource, MempoolTxMeta};
 use zaino_mempool::snapshot::{MempoolCompleteness, MempoolSnapshot};
 use zaino_mempool::update::MempoolUpdate;
-use zebra_chain::transaction::Hash as TxHash;
+use zebra_chain::{block::Height, transaction::Hash as TxHash};
 
 /// Fraction of `max_cost_bytes` the set must fall back below before previously
 /// refused transactions are retried at all. Hysteresis: retrying the instant a
@@ -51,6 +53,39 @@ const CAPACITY_LOW_WATER_PERCENT: u64 = 90;
 /// mining, a slow link), and consumers are better served by being told the view
 /// is stale than by an unchanging `Complete` set.
 const MAX_CONSECUTIVE_DISCARDS: u32 = 5;
+
+/// The order additions are admitted in when the set is at capacity.
+///
+/// Keyed on validator-assigned metadata first — arrival time, then tip-at-entry
+/// height — so a sender cannot buy priority. The txid only breaks ties, and only
+/// through a per-process salt, because the timestamp is whole-second granular:
+/// without the salt every transaction arriving in the same second would be
+/// ordered by raw txid bytes, which the sender *can* grind.
+///
+/// The honest claim is that admission is **unpredictable to the sender**, not
+/// that it is globally fair. An attacker flooding at capacity still lands in the
+/// same one-second bucket as the transactions they displace; the salt reduces
+/// that from "always wins" to "wins only by luck".
+///
+/// `entry_time: None` sorts last: an entry the source gave no timestamp for has
+/// no claim to priority over one it did.
+fn admission_key(
+    salt: u64,
+    entry_time: Option<i64>,
+    entry_height: Height,
+    txid: &TxHash,
+) -> (bool, i64, u32, u64) {
+    let mut hasher = DefaultHasher::new();
+    salt.hash(&mut hasher);
+    txid.0.hash(&mut hasher);
+    (
+        // `false` sorts before `true`, so "has a timestamp" comes first.
+        entry_time.is_none(),
+        entry_time.unwrap_or(i64::MAX),
+        entry_height.0,
+        hasher.finish(),
+    )
+}
 
 /// State owned by the single writer task across polls.
 ///
@@ -76,6 +111,29 @@ struct PollState {
     /// Polls discarded in a row by the tag-stability guard, for the
     /// [`MAX_CONSECUTIVE_DISCARDS`] backstop.
     consecutive_discards: u32,
+
+    /// Txids this poll saw in the source's listing but did not admit because the
+    /// metadata listing was deferred by `metadata_min_interval`.
+    ///
+    /// Distinct from [`refused`](Self::refused): these are not over the capacity
+    /// bound, only waiting for their metadata. Both feed
+    /// [`MempoolSnapshot::unadmitted`].
+    deferred: HashSet<TxHash>,
+}
+
+impl PollState {
+    /// Every txid the source reported that is not in the published set: refused
+    /// by the capacity bound, or deferred awaiting metadata.
+    ///
+    /// Bounded by the txid-listing cap. Consumers use it to tell "Zaino is short
+    /// this transaction, ask again" from "this transaction does not exist".
+    fn unadmitted(&self) -> HashSet<TxHash> {
+        self.refused
+            .keys()
+            .copied()
+            .chain(self.deferred.iter().copied())
+            .collect()
+    }
 }
 
 /// The core mempool read-model service.
@@ -90,6 +148,8 @@ pub struct MempoolService<S: MempoolSource> {
     status: NamedAtomicStatus,
     cancel: CancellationToken,
     task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Per-process salt for the admission tiebreak (see [`admission_key`]).
+    admission_salt: u64,
 }
 
 impl<S: MempoolSource> std::fmt::Debug for MempoolService<S> {
@@ -102,7 +162,29 @@ impl<S: MempoolSource> std::fmt::Debug for MempoolService<S> {
 
 impl<S: MempoolSource> MempoolService<S> {
     /// Spawn the core service and its background poll task.
+    ///
+    /// The admission tiebreak salt is drawn per process, so the order additions
+    /// take at capacity is not predictable to a transaction's sender (see the
+    /// `admission_key` tiebreak).
     pub fn spawn(source: S, config: MempoolConfig, cancel: CancellationToken) -> Arc<Self> {
+        // `RandomState` is the std hasher's per-process random seed; hashing a
+        // fixed value through it yields a stable random salt without pulling in
+        // an RNG dependency.
+        let salt = std::collections::hash_map::RandomState::new().hash_one(0u8);
+        Self::spawn_with_admission_salt(source, config, cancel, salt)
+    }
+
+    /// [`Self::spawn`] with an explicit admission salt.
+    ///
+    /// Exists so tests can pin the tiebreak and assert its *properties*
+    /// deterministically (same salt ⇒ same order, different salt ⇒ different
+    /// order) rather than by sampling a random one.
+    pub fn spawn_with_admission_salt(
+        source: S,
+        config: MempoolConfig,
+        cancel: CancellationToken,
+        admission_salt: u64,
+    ) -> Arc<Self> {
         let (updates, _) = broadcast::channel(config.event_buffer_len);
 
         let service = Arc::new(Self {
@@ -113,6 +195,7 @@ impl<S: MempoolSource> MempoolService<S> {
             status: NamedAtomicStatus::new("Mempool", StatusType::Spawning),
             cancel,
             task: std::sync::Mutex::new(None),
+            admission_salt,
         });
 
         let task_service = Arc::clone(&service);
@@ -236,65 +319,103 @@ impl<S: MempoolSource> MempoolService<S> {
         state.refused.retain(|txid, _| source_txids.contains(txid));
         self.retry_refused_that_now_fit(&current, state);
 
+        // Deferral is recomputed each poll: a txid deferred last poll is
+        // rediscovered by this diff and admitted as soon as the listing is due.
+        state.deferred.clear();
+
         let added_txids: Vec<_> = txids
             .into_iter()
             .filter(|txid| !current.by_txid.contains_key(txid) && !state.refused.contains_key(txid))
             .collect();
 
         if added_txids.is_empty() && removed.is_empty() {
-            // The set is unchanged. Re-publish only if the tag or completeness
-            // moved, so the coherence layer still learns of a validator-tip
-            // advance over a steady mempool — but only once the tag is confirmed
-            // stable (below), never smeared across a mid-poll block. Comparing
-            // against the completeness we *would* publish (rather than
-            // `Complete`) keeps a steady capacity-limited set from republishing
-            // on every poll.
-            if current.source_tip != tip_before
-                || current.completeness != Self::completeness_for(state)
-            {
-                if self.tip_is_stable(tip_before, state).await {
-                    self.publish_snapshot(&current, tip_before, Vec::new(), Vec::new(), state);
-                }
-            } else {
-                self.status.store(StatusType::Ready);
-            }
+            // The set is unchanged; re-publish only if what we would stamp on it
+            // moved.
+            self.republish_if_changed(&current, tip_before, state).await;
             return;
         }
 
-        // Heights for new transactions come from the verbose listing, fetched only
-        // now (and only because there are additions).
-        let added_meta: Vec<MempoolTxMeta> = if added_txids.is_empty() {
-            Vec::new()
-        } else {
-            // The listing is heavy on the source, so it is floored at
-            // `metadata_min_interval`. Additions cannot be admitted without it,
-            // and publishing the set without them would present an incomplete
-            // view as complete — so the whole poll waits, removals included.
-            if !self.metadata_fetch_is_due(state) {
-                return;
+        // Everything from here is about admitting additions. The capacity bound
+        // is applied to what we *fetch*, not only to what we retain: fetching
+        // first and refusing afterwards would perform the whole memory blow-up
+        // the bound exists to prevent.
+        let mut added_meta: Vec<MempoolTxMeta> = Vec::new();
+
+        if !added_txids.is_empty() {
+            // How many additions can possibly fit, assuming every one costs the
+            // ZIP-401 floor. An entry can only cost *more*, so this over-counts
+            // and the exact check in `publish_snapshot` still decides.
+            let max_cost_bytes = self.config.max_cost_bytes();
+            let headroom = max_cost_bytes.saturating_sub(current.cost_bytes);
+            let max_admissible =
+                (headroom / zaino_mempool::config::MEMPOOL_TRANSACTION_COST_THRESHOLD) as usize;
+
+            if max_admissible == 0 {
+                // The set is already at the bound. Refuse without fetching, and
+                // in particular without paying for the whole-mempool metadata
+                // walk to admit nothing.
+                for txid in added_txids {
+                    state.refused.insert(
+                        txid,
+                        zaino_mempool::config::MEMPOOL_TRANSACTION_COST_THRESHOLD,
+                    );
+                }
+            } else {
+                // The listing is heavy on the source (a whole-mempool walk), so
+                // it is floored at `metadata_min_interval`. Additions cannot be
+                // admitted without it — but the rest of this poll can still be
+                // published, so only the additions are deferred.
+                if !self.metadata_fetch_is_due(state) {
+                    state.deferred = added_txids.into_iter().collect();
+                } else {
+                    let metadata = match self.source.get_mempool_metadata().await {
+                        Ok(Some(metadata)) => metadata,
+                        Ok(None) | Err(_) => return self.source_error(state),
+                    };
+                    state.last_metadata_fetch = Some(Instant::now());
+                    let meta_by_txid: HashMap<_, _> =
+                        metadata.into_iter().map(|meta| (meta.txid, meta)).collect();
+                    // A txid in the light list but absent from verbose raced away
+                    // between the two calls; skip it (the raw fetch would too).
+                    added_meta = added_txids
+                        .into_iter()
+                        .filter_map(|txid| meta_by_txid.get(&txid).copied())
+                        .collect();
+
+                    // Admission order comes from validator-assigned metadata, so
+                    // it cannot be ground by a sender (see `admission_key`). This
+                    // is why the slice happens *after* the metadata fetch: the
+                    // ungrindable key does not exist before it.
+                    let salt = self.admission_salt;
+                    added_meta.sort_unstable_by_key(|meta| {
+                        admission_key(salt, meta.entry_time, meta.entry_height, &meta.txid)
+                    });
+
+                    // Refuse the tail without fetching it. The memo records the
+                    // floor cost rather than the true one, which only makes
+                    // `retry_refused_that_now_fit` conservative for these — it
+                    // can under-admit, never re-refuse in a loop. An entry whose
+                    // true cost exceeds the floor is re-refused with its real
+                    // cost on the retry that fetches it, so the memo
+                    // self-corrects after one wasted fetch.
+                    for meta in added_meta.split_off(max_admissible.min(added_meta.len())) {
+                        state.refused.insert(
+                            meta.txid,
+                            zaino_mempool::config::MEMPOOL_TRANSACTION_COST_THRESHOLD,
+                        );
+                    }
+                }
             }
-            // Re-check the tip *before* the expensive work, not only after it. A
-            // block that has already landed would make the guard below discard
-            // everything the listing and the raw fetches are about to cost —
-            // maximum work for zero progress, which on regtest or a block burst
-            // can repeat indefinitely.
-            if !self.tip_is_stable(tip_before, state).await {
-                return;
-            }
-            let metadata = match self.source.get_mempool_metadata().await {
-                Ok(Some(metadata)) => metadata,
-                Ok(None) | Err(_) => return self.source_error(state),
-            };
-            state.last_metadata_fetch = Some(Instant::now());
-            let meta_by_txid: HashMap<_, _> =
-                metadata.into_iter().map(|meta| (meta.txid, meta)).collect();
-            // A txid in the light list but absent from verbose raced away between
-            // the two calls; skip it (the raw fetch would skip it too).
-            added_txids
-                .into_iter()
-                .filter_map(|txid| meta_by_txid.get(&txid).copied())
-                .collect()
-        };
+        }
+
+        // A poll whose additions were all deferred or refused still has a
+        // removals-and-retag half worth publishing: coherence thaws on the
+        // re-tag, so withholding it would make `metadata_min_interval` extend
+        // the post-block freeze by its own length.
+        if added_meta.is_empty() && removed.is_empty() {
+            self.republish_if_changed(&current, tip_before, state).await;
+            return;
+        }
 
         let next_generation = current.mempool_generation.saturating_add(1);
         let added_entries = match self
@@ -315,6 +436,36 @@ impl<S: MempoolSource> MempoolService<S> {
         }
 
         self.publish_snapshot(&current, tip_before, added_entries, removed, state);
+    }
+
+    /// Re-stamp the current set when only the tag, completeness or unadmitted
+    /// list moved, so the coherence layer still learns of a validator-tip
+    /// advance over a steady mempool.
+    ///
+    /// Comparing against what we *would* publish (rather than against
+    /// `Complete`) is what keeps a steadily capacity-limited or
+    /// metadata-deferring mempool from republishing on every single poll: while
+    /// the short set stays the same short set, nothing is stamped and nothing
+    /// wakes the coherence layer.
+    async fn republish_if_changed(
+        &self,
+        current: &MempoolSnapshot,
+        tip_before: Option<BlockRef>,
+        state: &mut PollState,
+    ) {
+        let next_unadmitted = state.unadmitted();
+        if current.source_tip != tip_before
+            || current.completeness != Self::completeness_for(state)
+            || *current.unadmitted != next_unadmitted
+        {
+            // Only once the tag is confirmed stable — never smeared across a
+            // mid-poll block.
+            if self.tip_is_stable(tip_before, state).await {
+                self.publish_snapshot(current, tip_before, Vec::new(), Vec::new(), state);
+            }
+        } else {
+            self.status.store(StatusType::Ready);
+        }
     }
 
     /// Whether the validator tip is still `tip_before` — i.e. no block arrived
@@ -358,20 +509,30 @@ impl<S: MempoolSource> MempoolService<S> {
             return;
         }
         let max_cost_bytes = self.config.max_cost_bytes();
-        if current.cost_bytes >= max_cost_bytes / 100 * CAPACITY_LOW_WATER_PERCENT {
+        // Multiply first: `max / 100 * pct` truncates to zero for any bound
+        // below 100, which would make `cost_bytes >= 0` always true and strand
+        // every refusal forever.
+        if current.cost_bytes >= max_cost_bytes.saturating_mul(CAPACITY_LOW_WATER_PERCENT) / 100 {
             return;
         }
         let headroom = max_cost_bytes.saturating_sub(current.cost_bytes);
         state.refused.retain(|_, cost| *cost > headroom);
     }
 
-    /// The completeness the next published set carries: a non-empty refusal memo
-    /// means known transactions are missing from it.
+    /// The completeness the next published set carries.
+    ///
+    /// Both classes below are *short*, not *wrong* — the set accurately holds
+    /// what it holds — but they are reported separately so operator telemetry
+    /// attributes the shortfall to the right cause. The capacity bound wins when
+    /// both apply: it is the more serious of the two, and it does not clear on
+    /// its own the way a deferral does.
     fn completeness_for(state: &PollState) -> MempoolCompleteness {
-        if state.refused.is_empty() {
-            MempoolCompleteness::Complete
-        } else {
+        if !state.refused.is_empty() {
             MempoolCompleteness::IncompleteCapacityLimited
+        } else if !state.deferred.is_empty() {
+            MempoolCompleteness::IncompletePendingMetadata
+        } else {
+            MempoolCompleteness::Complete
         }
     }
 
@@ -445,7 +606,12 @@ impl<S: MempoolSource> MempoolService<S> {
         // coherence layer treat every tip re-tag as new contents and redo its
         // work.
         if added_entries.is_empty() && removed.is_empty() {
-            self.publish_retagged(current, source_tip, Self::completeness_for(state));
+            self.publish_retagged(
+                current,
+                source_tip,
+                Self::completeness_for(state),
+                state.unadmitted(),
+            );
             return;
         }
 
@@ -462,10 +628,15 @@ impl<S: MempoolSource> MempoolService<S> {
             }
         }
 
-        // Admit in the canonical (reversed-txid) order the snapshot is served
-        // in, so which transactions make the cut is deterministic rather than an
-        // artefact of fetch-completion order.
-        added_entries.sort_unstable_by(|a, b| a.txid.0.iter().rev().cmp(b.txid.0.iter().rev()));
+        // Admit on the same validator-assigned, salt-tiebroken key `tick` sliced
+        // by, so the exact check here agrees with the estimate that chose what to
+        // fetch — and so which transactions make the cut is deterministic without
+        // being predictable to their sender (see `admission_key`). *Not* the
+        // reversed-txid serving order: that one is grindable.
+        let salt = self.admission_salt;
+        added_entries.sort_unstable_by_key(|entry| {
+            admission_key(salt, entry.entry_time, entry.entry_height, &entry.txid)
+        });
 
         let max_cost_bytes = self.config.max_cost_bytes();
         let mut applied_entries = Vec::with_capacity(added_entries.len());
@@ -511,6 +682,7 @@ impl<S: MempoolSource> MempoolService<S> {
             raw_bytes,
             cost_bytes,
             completeness,
+            unadmitted: Arc::new(state.unadmitted()),
         });
 
         self.current.store(snapshot);
@@ -547,6 +719,7 @@ impl<S: MempoolSource> MempoolService<S> {
         current: &MempoolSnapshot,
         source_tip: Option<BlockRef>,
         completeness: MempoolCompleteness,
+        unadmitted: HashSet<TxHash>,
     ) {
         let next_sequence = current.event_sequence.saturating_add(1);
         self.current.store(Arc::new(MempoolSnapshot {
@@ -560,6 +733,10 @@ impl<S: MempoolSource> MempoolService<S> {
             raw_bytes: current.raw_bytes,
             cost_bytes: current.cost_bytes,
             completeness,
+            // Explicitly *not* reused from `current`: a re-tag can carry a fresh
+            // shortfall (a poll that deferred its additions publishes through
+            // here), and reusing the stale list would report nothing unadmitted.
+            unadmitted: Arc::new(unadmitted),
         }));
         let _ = self.updates.send(MempoolUpdate::Reset {
             sequence: next_sequence,
@@ -595,6 +772,12 @@ impl<S: MempoolSource> MempoolService<S> {
             raw_bytes: current.raw_bytes,
             cost_bytes: current.cost_bytes,
             completeness: MempoolCompleteness::IncompleteSourceError,
+            // Carried over: this poll failed before it could recompute the
+            // shortfall, so the previous list is the best information there is.
+            // It can name a txid that has since left the mempool, which yields a
+            // spurious "retry" until the next successful poll — bounded,
+            // self-correcting, and the safe direction to be wrong in. Not a leak.
+            unadmitted: Arc::clone(&current.unadmitted),
         });
 
         self.current.store(snapshot);

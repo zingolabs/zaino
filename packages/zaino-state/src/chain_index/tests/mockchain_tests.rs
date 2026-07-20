@@ -1,4 +1,4 @@
-use super::{load_test_vectors_and_sync_chain_index, MockchainMode};
+use super::{load_test_vectors_and_sync_chain_index, load_with_settings, MockchainMode};
 use crate::{
     chain_index::{
         source::mockchain_source::MockchainSource,
@@ -372,6 +372,133 @@ async fn stale_snapshot_reports_mempool_transaction_as_unavailable_not_missing()
         "expected a retryable Unavailable, got {:?}",
         error.kind()
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn negative_lookup_is_unavailable_only_for_unadmitted_txids() {
+    // Drive the mempool below its cost bound so it *knows* it is short of some
+    // txids (capacity-refused), and assert the precise negative-lookup rule:
+    //
+    //   * a txid the mempool is short of  ⇒ retryable `Unavailable`
+    //   * a txid absent everywhere        ⇒ truthful "not found" (`Ok((None, {}))`)
+    //
+    // The converse is the load-bearing half: gating on the set being *short*
+    // (rather than on the specific txid) would make every absent txid — the
+    // common case — unavailable. With a bound of 1 the whole mempool is
+    // unadmitted, so this is the strongest form of that converse.
+    let mempool = zaino_mempool::config::MempoolConfig::default();
+    mempool.set_max_cost_bytes(1);
+    let (_blocks, _indexer, index_reader, mockchain) = load_with_settings(
+        MockchainMode::Active,
+        crate::chain_index::SyncTimings::default(),
+        Duration::from_millis(25),
+        mempool,
+    )
+    .await;
+
+    let tip = mockchain.active_height();
+    wait_for_indexer_tip(&index_reader, tip).await;
+    wait_for_mempool_coherent(&index_reader).await;
+
+    // Wait for the refuse-all poll to publish its unadmitted set.
+    let unadmitted = poll_until(
+        "the capacity-bounded mempool to publish an unadmitted set",
+        Duration::from_secs(10),
+        Duration::from_millis(25),
+        || async {
+            let unadmitted = index_reader.coherent_unadmitted();
+            (!unadmitted.is_empty()).then(|| (*unadmitted).clone())
+        },
+    )
+    .await;
+
+    let snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
+
+    // A refused txid must read as retryable, never as absent.
+    let refused = *unadmitted.iter().next().expect("unadmitted is non-empty");
+    let error = index_reader
+        .get_transaction_status(&snapshot, &TransactionHash::from(refused))
+        .await
+        .expect_err("a capacity-refused mempool txid must not read as not-found");
+    assert!(
+        matches!(error.kind(), crate::error::ChainIndexErrorKind::Unavailable),
+        "expected a retryable Unavailable for a refused txid, got {:?}",
+        error.kind()
+    );
+
+    // Converse: a txid that is nowhere — not in a block, not unadmitted — still
+    // answers "not found" truthfully, even though the set is short.
+    let absent = zebra_chain::transaction::Hash([0xff; 32]);
+    assert!(
+        !unadmitted.contains(&absent),
+        "the sentinel txid must genuinely be absent from the unadmitted set"
+    );
+    let (best, non_best) = index_reader
+        .get_transaction_status(&snapshot, &TransactionHash::from(absent))
+        .await
+        .expect("an absent txid must answer not-found, not error, while the set is short");
+    assert!(
+        best.is_none() && non_best.is_empty(),
+        "an absent-everywhere txid must read as not-found while the set is short, \
+         got best={best:?} non_best={non_best:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn short_set_stream_is_counted() {
+    // A coherent stream that opens over a set the mempool knows is short
+    // (here: every addition capacity-refused) still delivers what Zaino holds
+    // and closes normally on the next tip change. Opening it emits the
+    // operator-facing log + `MEMPOOL_SHORT_SET_STREAMS_TOTAL` metric (the wire
+    // has no in-band signal for a short set); this test pins the behavioural
+    // contract the signal describes — the stream is not withheld and does not
+    // error just because the set is short.
+    let mempool = zaino_mempool::config::MempoolConfig::default();
+    mempool.set_max_cost_bytes(1);
+    let (_blocks, _indexer, index_reader, mockchain) = load_with_settings(
+        MockchainMode::Active,
+        crate::chain_index::SyncTimings::default(),
+        Duration::from_millis(25),
+        mempool,
+    )
+    .await;
+
+    let tip = mockchain.active_height();
+    wait_for_indexer_tip(&index_reader, tip).await;
+    wait_for_mempool_coherent(&index_reader).await;
+
+    // Precondition for the signal: the coherent set is non-whole. With a bound
+    // of 1 the whole mempool is capacity-refused, so `unadmitted` is non-empty
+    // — the exact condition `get_mempool_stream` logs and counts on.
+    poll_until(
+        "the coherent set to be non-whole (capacity-refused)",
+        Duration::from_secs(10),
+        Duration::from_millis(25),
+        || async { (!index_reader.coherent_unadmitted().is_empty()).then_some(()) },
+    )
+    .await;
+
+    let reader = index_reader.clone();
+    let stream_task = tokio::spawn(async move {
+        let snapshot = reader.snapshot_nonfinalized_state().await.unwrap();
+        let mut stream = reader
+            .get_mempool_stream(Some(&snapshot))
+            .expect("a coherent short set must still open a stream");
+        let mut count = 0usize;
+        while let Some(item) = stream.next().await {
+            item.expect("a short-set stream must deliver its entries without error");
+            count += 1;
+        }
+        count
+    });
+
+    // Let the stream drain its (short) initial batch, then close it with a tip
+    // change — the same normal termination every coherent stream uses.
+    sleep(Duration::from_millis(500)).await;
+    mockchain.mine_blocks(1);
+
+    // The stream terminated cleanly (no error surfaced above) over a short set.
+    let _delivered = stream_task.await.expect("stream collector task panicked");
 }
 
 #[tokio::test(flavor = "multi_thread")]

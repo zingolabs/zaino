@@ -59,11 +59,16 @@ pub struct MempoolConfig {
     /// mempool.
     ///
     /// Additions cannot be admitted without their validator-sourced metadata, so
-    /// a poll that finds additions before this interval has elapsed publishes
-    /// *nothing* and retries — publishing the set without them would present an
-    /// incomplete view as complete. Raising it therefore trades mempool latency
-    /// (up to this interval) for load on the validator; the default equals
-    /// [`Self::poll_interval`], i.e. no additional coalescing.
+    /// a poll that finds additions before this interval has elapsed *defers only
+    /// those additions* — marking the set [`IncompletePendingMetadata`] — while
+    /// still publishing the poll's removals and tip re-tag. Raising it therefore
+    /// trades **addition visibility** latency (up to this interval) for load on
+    /// the validator, and carries **no coherence penalty**: because the re-tag is
+    /// published on every poll, tip-coherent reads thaw after a block on the poll
+    /// cadence regardless of this value. The default equals [`Self::poll_interval`],
+    /// i.e. no additional coalescing.
+    ///
+    /// [`IncompletePendingMetadata`]: crate::snapshot::MempoolCompleteness::IncompletePendingMetadata
     pub metadata_min_interval: Duration,
 
     /// Maximum number of raw-transaction fetches issued concurrently when

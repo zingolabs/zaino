@@ -18,6 +18,7 @@
 //! `zaino-mempool`'s `tip` module docs.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use arc_swap::ArcSwap;
 use tokio::sync::broadcast;
@@ -29,7 +30,7 @@ use zaino_mempool::event::MempoolEvent;
 use zaino_mempool::ports::{
     Mempool, MempoolStreamError, NfsEpochObserver, NoNfs, NonFinalizedEpoch,
 };
-use zaino_mempool::snapshot::{MempoolCompleteness, MempoolSnapshot};
+use zaino_mempool::snapshot::MempoolSnapshot;
 use zaino_mempool::tip::{
     CoherentSnapshot, FreezeReason, MempoolMode, ObservedTips, TipChange, ValidatorTip,
 };
@@ -59,6 +60,12 @@ pub struct CoherenceService<M: Mempool, N: NfsEpochObserver> {
     events: broadcast::Sender<Arc<MempoolEvent>>,
     config: MempoolConfig,
     status: NamedAtomicStatus,
+    /// When the current continuous freeze began, or `None` when the view is
+    /// live/serving. Shared with every [`CoherentSubscriber`] so an operator can
+    /// escalate a freeze that outlasts normal block-driven thaw (see
+    /// [`CoherentSubscriber::frozen_for`]). Set on the transition *into* a freeze,
+    /// held across repeated freezes, cleared on thaw.
+    frozen_since: Arc<std::sync::Mutex<Option<Instant>>>,
     cancel: CancellationToken,
     task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
@@ -111,6 +118,7 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
             events,
             config,
             status: NamedAtomicStatus::new("MempoolCoherence", StatusType::Spawning),
+            frozen_since: Arc::new(std::sync::Mutex::new(None)),
             cancel,
             task: std::sync::Mutex::new(None),
         });
@@ -131,6 +139,7 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
             coherent: Arc::clone(&self.coherent),
             events: self.events.clone(),
             status: self.status.clone(),
+            frozen_since: Arc::clone(&self.frozen_since),
         }
     }
 
@@ -226,8 +235,16 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
         let observed = self.observe_tips(&core);
         let prev = self.coherent.load_full();
 
-        // The core set must be a complete view before it can be blessed.
-        if core.completeness != MempoolCompleteness::Complete {
+        // Freeze only when the set may be *wrong*, not merely *short*.
+        //
+        // Freezing does not make missing transactions appear — it withholds the
+        // ones the core does have on top of the ones it doesn't. A set that is
+        // short by a known, named list (capacity-refused or metadata-deferred;
+        // see `MempoolSnapshot::unadmitted`) is still an accurate view of what it
+        // holds and is tagged with a sound tip, so serving it is strictly more
+        // useful than a blackout. A set that may not reflect the source at all is
+        // the case a freeze is actually for.
+        if core.completeness.may_be_wrong() {
             self.freeze(&prev, observed, FreezeReason::CoreIncomplete);
             return;
         }
@@ -310,6 +327,9 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
         observed: ObservedTips,
         epoch: NonFinalizedEpoch,
     ) {
+        // Serving live: the freeze clock (if any) stops here.
+        *self.frozen_since.lock().expect("frozen_since poisoned") = None;
+
         // Already live for this epoch at this core generation: nothing to do.
         if prev.is_live_for(epoch)
             && prev.set.mempool_generation == core.mempool_generation
@@ -353,6 +373,13 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
     }
 
     fn freeze(&self, prev: &CoherentSnapshot, observed: ObservedTips, reason: FreezeReason) {
+        // Start the freeze clock on the transition *into* a freeze, and hold it
+        // across repeated freezes (a reason/tip change while still frozen keeps
+        // the original start). Cleared only on thaw in `publish_live`.
+        if !matches!(prev.mode, MempoolMode::Frozen { .. }) {
+            *self.frozen_since.lock().expect("frozen_since poisoned") = Some(Instant::now());
+        }
+
         // Already frozen for the same reason against the same tips: no re-publish.
         if matches!(prev.mode, MempoolMode::Frozen { reason: r, .. } if r == reason)
             && prev.observed_tips == observed
@@ -405,6 +432,7 @@ pub struct CoherentSubscriber {
     coherent: Arc<ArcSwap<CoherentSnapshot>>,
     events: broadcast::Sender<Arc<MempoolEvent>>,
     status: NamedAtomicStatus,
+    frozen_since: Arc<std::sync::Mutex<Option<Instant>>>,
 }
 
 impl std::fmt::Debug for CoherentSubscriber {
@@ -424,6 +452,19 @@ impl CoherentSubscriber {
     /// The coherence-layer status.
     pub fn status(&self) -> StatusType {
         self.status.load()
+    }
+
+    /// How long the coherent view has been *continuously* frozen, or `None` when
+    /// it is live/serving. A short freeze is normal — coherence freezes on every
+    /// block until the set is re-tagged and thaws within a poll — so this is the
+    /// signal a caller escalates on: a freeze that outlasts normal thaw means
+    /// tip-coherent reads have gone dark and stayed dark (validator unreachable,
+    /// NS stuck), which a bare `Frozen` mode cannot distinguish from a transient.
+    pub fn frozen_for(&self) -> Option<std::time::Duration> {
+        self.frozen_since
+            .lock()
+            .expect("frozen_since poisoned")
+            .map(|since| since.elapsed())
     }
 
     /// Subscribe to the bounded coherent event stream.

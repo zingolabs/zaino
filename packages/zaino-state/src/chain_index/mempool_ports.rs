@@ -53,20 +53,39 @@ fn block_index_to_ref(block_index: BlockIndex) -> zaino_mempool::BlockRef {
 ///
 /// A local newtype so the foreign-trait impl is orphan-safe and generic over the
 /// concrete source (`ValidatorConnector` in production, the mock in tests).
+///
+/// Carries a `block_wake` receiver fed by the ChainIndex sync loop (fired only
+/// when the chain height changes), so the mempool core has a push path even when
+/// the underlying source has none — `ValidatorConnector::subscribe_to_blocks_received`
+/// is `None` in production, so without this the core's addition latency would
+/// always be a full poll interval. The tip is still re-read from the source on
+/// every tick; this is a wake hint only, never a tip source.
 #[derive(Clone)]
-pub(crate) struct MempoolSourceAdapter<S>(pub(crate) S);
+pub(crate) struct MempoolSourceAdapter<S> {
+    source: S,
+    block_wake: tokio::sync::watch::Receiver<()>,
+}
+
+impl<S> MempoolSourceAdapter<S> {
+    pub(crate) fn new(source: S, block_wake: tokio::sync::watch::Receiver<()>) -> Self {
+        Self { source, block_wake }
+    }
+}
 
 impl<S: BlockchainSource> zaino_mempool::MempoolSource for MempoolSourceAdapter<S> {
     async fn get_mempool_txids(
         &self,
     ) -> Result<Option<Vec<zebra_chain::transaction::Hash>>, zaino_mempool::MempoolError> {
-        self.0.get_mempool_txids().await.map_err(to_mempool_error)
+        self.source
+            .get_mempool_txids()
+            .await
+            .map_err(to_mempool_error)
     }
 
     async fn get_mempool_metadata(
         &self,
     ) -> Result<Option<Vec<zaino_mempool::MempoolTxMeta>>, zaino_mempool::MempoolError> {
-        self.0
+        self.source
             .get_mempool_metadata()
             .await
             .map_err(to_mempool_error)
@@ -77,7 +96,7 @@ impl<S: BlockchainSource> zaino_mempool::MempoolSource for MempoolSourceAdapter<
         txid: zebra_chain::transaction::Hash,
     ) -> Result<Option<zebra_chain::transaction::SerializedTransaction>, zaino_mempool::MempoolError>
     {
-        self.0
+        self.source
             .get_raw_mempool_transaction(txid)
             .await
             .map_err(to_mempool_error)
@@ -87,7 +106,7 @@ impl<S: BlockchainSource> zaino_mempool::MempoolSource for MempoolSourceAdapter<
         &self,
     ) -> Result<Option<zaino_mempool::BlockRef>, zaino_mempool::MempoolError> {
         Ok(self
-            .0
+            .source
             .get_mempool_source_tip()
             .await
             .map_err(to_mempool_error)?
@@ -95,7 +114,11 @@ impl<S: BlockchainSource> zaino_mempool::MempoolSource for MempoolSourceAdapter<
     }
 
     fn subscribe_to_blocks_received(&self) -> Option<tokio::sync::watch::Receiver<()>> {
-        self.0.subscribe_to_blocks_received()
+        // The sync-loop-fed block-wake, not the underlying source's: the source
+        // (`ValidatorConnector`) has none in production, and the sync loop fires
+        // this only on a chain-height change, giving the core a block-driven push
+        // path instead of pure poll-interval latency.
+        Some(self.block_wake.clone())
     }
 }
 

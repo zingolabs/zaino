@@ -79,16 +79,27 @@ resync. State-losslessness does not depend on it.
 `MempoolSnapshot` (from `current()`) is immutable and cheap to hold (`Arc`s
 throughout). Key fields: `by_txid` (lookup), `txids_sorted` (reversed-byte order,
 for the shortened-txid exclude filter), `entries_in_order`, `tx_count`,
-`raw_bytes`, `cost_bytes`, `completeness`, and `source_tip`. Each `MempoolEntry`
+`raw_bytes`, `cost_bytes`, `completeness`, `unadmitted`, and `source_tip`. Each `MempoolEntry`
 holds the full unmined transaction; call `serialized_bytes()` for a borrowed slice,
 `wire_bytes()` for the shared `Bytes` buffer (prefer this when handing it to a wire
 type — cloning is a refcount bump), or `transaction()` to parse. It carries no
 RPC/wire forms — derive those (compact tx, lightclient `RawTransaction` at wire
 height `0`) at your boundary.
 
-`completeness` tells you whether the set is a full view: `Complete`,
-`IncompleteSourceError`, or `IncompleteCapacityLimited`. Never present an incomplete
-set as complete on a full-mempool API.
+`completeness` tells you whether the set is a full view, in two classes. **Short**
+(`IncompleteCapacityLimited`, `IncompletePendingMetadata`) — an *accurate* view
+that is missing some txids it knows about; `is_whole()` is false but the set is
+still safe to serve for positive results. **Possibly-wrong** (`IncompleteSourceError`,
+`NotReady`) — the set may not reflect the source; `may_be_wrong()` is true, and this
+is the only class the coherence layer freezes on. Never present an incomplete set as
+complete on a full-mempool API.
+
+`unadmitted` is the per-txid form of the short case: the exact txids the source
+reported that are not in `by_txid` (capacity-refused, or metadata-deferred),
+bounded by the txid-listing cap. Use it for precise negative lookups — a queried
+txid in `unadmitted` should read as retryable (`Unavailable`), while one that is
+simply absent reads as "not found" — rather than gating every absent txid on the
+set being short.
 
 ## Bounds and back-pressure knobs
 
@@ -96,18 +107,27 @@ Two `MempoolConfig` fields shape how the core behaves under load; both are safet
 bounds on Zaino, not validator mempool policy, and both are settable by operators
 via `zainod`'s `[mempool]` config section.
 
-- **`max_cost_bytes`** (default 128 MiB) — the ZIP-401 cost ceiling. Additions are
-  admitted in canonical order until the bound is reached; the rest are *refused*,
-  and the snapshot reports `IncompleteCapacityLimited`. Refusals are remembered so
-  they are not re-fetched every poll, and are retried once the set has fallen
-  below a low-water mark *and* has room for that specific transaction. Set it on
-  the service (it is not settable through a read handle).
+- **`max_cost_bytes`** (default 128 MiB) — the ZIP-401 cost ceiling. It bounds the
+  *fetch*, not only the retained set: a poll admits at most
+  `headroom / MEMPOOL_TRANSACTION_COST_THRESHOLD` additions and refuses the rest
+  *without fetching them*, so a non-conforming validator cannot make a poll
+  materialise more than the bound. Which additions are admitted is decided on a
+  key that is **unpredictable to the sender** (a per-process salted hash of the
+  txid within each arrival-time bucket), so a flooding sender cannot grind
+  low-sorting txids to displace honest ones from Zaino's view. The snapshot reports
+  `IncompleteCapacityLimited` and names the refused txids in `unadmitted`. Refusals
+  are remembered so they are not re-fetched every poll, and are retried once the
+  set has fallen below a low-water mark *and* has room for that specific
+  transaction. Set it on the service (it is not settable through a read handle).
 - **`metadata_min_interval`** (default: equal to `poll_interval`) — the floor
   between per-entry metadata listings, which the validator answers by walking its
   whole mempool. Additions are never admitted without their validator-sourced
-  metadata, so a poll inside the floor publishes *nothing* rather than a set
-  missing them. Raising it trades mempool latency (up to the interval) for load on
-  the validator.
+  metadata, so a poll inside the floor **defers only its additions** (marking the
+  set `IncompletePendingMetadata` and listing them in `unadmitted`) while still
+  publishing that poll's removals and tip re-tag. Raising it therefore trades
+  addition-visibility latency (up to the interval) for load on the validator, and
+  carries **no coherence penalty** — because the re-tag still publishes, tip-coherent
+  reads thaw after a block on the poll cadence regardless of this value.
 
 ## The coherent view (feature `tip_aware_mempool`)
 
@@ -132,6 +152,14 @@ bounded event feed gets `Err(MempoolStreamError::Lagged)` and the stream ends:
 **treat that as an incomplete set and re-open against a fresh snapshot**, never as
 a normal close. The payload is a shared `Bytes` buffer, so forwarding it to the
 wire copies nothing.
+
+A freeze on every block is normal — coherence freezes until the newly-tagged set is
+re-blessed, on the order of a poll — so `Frozen` alone is not an alert.
+`CoherentSubscriber::frozen_for()` returns how long the view has been *continuously*
+frozen (`None` when serving); escalate on a freeze that outlasts normal thaw, which
+means tip-coherent reads have gone dark and stayed dark (validator unreachable, NS
+stuck). `zaino-state`'s sync loop wires this to the
+`zaino.mempool.coherence_frozen_seconds` gauge.
 
 ## Feature flag
 

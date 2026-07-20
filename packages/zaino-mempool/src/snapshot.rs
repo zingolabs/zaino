@@ -10,7 +10,7 @@
 //! Zaino's non-finalized-state tip (see the `tip` module and
 //! `zaino-mempool-rpc`'s coherence service).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use zebra_chain::transaction::Hash as TxHash;
@@ -19,6 +19,18 @@ use crate::entry::MempoolEntry;
 use crate::ports::BlockRef;
 
 /// Whether the snapshot's transaction set is a complete view of the mempool.
+///
+/// The variants fall into two classes, and the distinction drives whether the
+/// tip-aware coherence layer freezes:
+///
+/// - **Short** — the set is missing transactions Zaino knows about, but what it
+///   holds is accurate ([`IncompleteCapacityLimited`](Self::IncompleteCapacityLimited),
+///   [`IncompletePendingMetadata`](Self::IncompletePendingMetadata)). Serving it
+///   is more useful than withholding it; the missing txids are named in
+///   [`MempoolSnapshot::unadmitted`].
+/// - **Possibly wrong** — the set may not reflect the source at all
+///   ([`IncompleteSourceError`](Self::IncompleteSourceError),
+///   [`NotReady`](Self::NotReady)). Only these justify a freeze.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MempoolCompleteness {
     /// No set has been built yet.
@@ -28,9 +40,39 @@ pub enum MempoolCompleteness {
     /// The set is intentionally not complete because a capacity bound was hit.
     /// Full-mempool APIs must not present it as complete.
     IncompleteCapacityLimited,
+    /// Additions were deferred by `metadata_min_interval`: their txids are known
+    /// but their validator metadata has not been fetched yet, so they cannot be
+    /// admitted. The rest of the poll (removals, tip re-tag) did apply.
+    ///
+    /// Distinct from [`IncompleteCapacityLimited`](Self::IncompleteCapacityLimited)
+    /// so operator telemetry attributes a short set to the right cause — it is
+    /// how the `metadata_min_interval` knob is tuned.
+    IncompletePendingMetadata,
     /// A source error occurred; the last set is still readable, but the latest
     /// poll could not be applied.
     IncompleteSourceError,
+}
+
+impl MempoolCompleteness {
+    /// Whether the set is a full view of the source mempool.
+    ///
+    /// Telemetry and the freeze decision only — do **not** gate reads on this.
+    /// A short set still answers positive lookups correctly, and gating negative
+    /// lookups on it would make every absent txid unavailable; use
+    /// [`MempoolSnapshot::unadmitted`] for the per-txid question instead.
+    pub fn is_whole(self) -> bool {
+        matches!(self, Self::Complete)
+    }
+
+    /// Whether the set may not reflect the source, as opposed to merely being
+    /// short of transactions Zaino knows it is missing.
+    ///
+    /// This is the freeze condition: withholding a *short* set adds nothing (the
+    /// missing transactions do not appear by hiding the present ones), but a set
+    /// that may be *wrong* must not be blessed as coherent.
+    pub fn may_be_wrong(self) -> bool {
+        matches!(self, Self::NotReady | Self::IncompleteSourceError)
+    }
 }
 
 /// An immutable, tip-agnostic snapshot of Zaino's mempool read model.
@@ -77,6 +119,20 @@ pub struct MempoolSnapshot {
 
     /// Completeness of the transaction set.
     pub completeness: MempoolCompleteness,
+
+    /// Txids the source reported that are **not** in [`by_txid`](Self::by_txid):
+    /// refused by the capacity bound, or deferred awaiting their metadata.
+    ///
+    /// This is the per-txid form of [`completeness`](Self::completeness), and the
+    /// one reads should consult. It lets a caller distinguish "Zaino is short
+    /// this transaction, ask again" from "this transaction does not exist" —
+    /// without that distinction a short set has to answer *every* absent txid as
+    /// unavailable, which is the common case and far worse than the rare wrong
+    /// answer it would be avoiding.
+    ///
+    /// Bounded by the source's txid-listing cap. Empty whenever the set is
+    /// [`Complete`](MempoolCompleteness::Complete).
+    pub unadmitted: Arc<HashSet<TxHash>>,
 }
 
 impl MempoolSnapshot {
@@ -93,6 +149,7 @@ impl MempoolSnapshot {
             raw_bytes: 0,
             cost_bytes: 0,
             completeness: MempoolCompleteness::NotReady,
+            unadmitted: Arc::new(HashSet::new()),
         }
     }
 }

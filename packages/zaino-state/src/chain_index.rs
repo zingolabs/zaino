@@ -105,6 +105,15 @@ pub(crate) const OPERATIONAL_NFS_DEPTH: u32 = zaino_common::consensus::MAX_NONFI
 pub(crate) const OPERATIONAL_NFS_DEPTH: u32 =
     zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
 
+/// How long the mempool coherence layer may stay *continuously* frozen before
+/// the sync loop escalates it (warn log + the freeze-duration gauge crosses this
+/// mark). A freeze is normal on every block — it lasts until the newly-tagged set
+/// is re-blessed, on the order of a poll interval — so the threshold sits well
+/// above that: a freeze this long means tip-coherent reads have gone dark and
+/// stayed dark (validator unreachable, NS stuck), not a transient block-driven
+/// one.
+const COHERENCE_FREEZE_ESCALATION: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// Lower bound on zaino's finalized-DB tip, derived from the current
 /// best-known chain tip.
 ///
@@ -862,6 +871,11 @@ pub struct NodeBackedChainIndex<Source: BlockchainSource = ValidatorConnector> {
     /// out its poll tick (which would freeze tip-coherent reads after every
     /// block, indefinitely if sync lags).
     nfs_epoch_signal: tokio::sync::watch::Sender<()>,
+    /// Fired by the sync loop when the chain height *changes* (not every
+    /// iteration), waking the tip-agnostic mempool core so a new block's mempool
+    /// changes land within a reconcile rather than a full poll interval. A wake
+    /// hint only: the core still re-reads the tip from its own source each tick.
+    block_wake_signal: tokio::sync::watch::Sender<()>,
     finalized_db: std::sync::Arc<finalised_state::FinalisedState<Source>>,
     sync_loop_handle: Option<tokio::task::JoinHandle<Result<(), SyncError>>>,
     status: NamedAtomicStatus,
@@ -955,6 +969,9 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         // empty (the mempool sits NotReady/Frozen until the NFS is populated).
         let non_finalized_state = Arc::new(ArcSwapOption::empty());
         let (nfs_epoch_signal, nfs_epoch_wake) = tokio::sync::watch::channel(());
+        // Separate from `nfs_epoch_signal`: this wakes the *core* on a new block,
+        // where the epoch signal wakes the *coherence* layer on every NFS publish.
+        let (block_wake_signal, block_wake) = tokio::sync::watch::channel(());
         let cancel_token = CancellationToken::new();
 
         // The tip-agnostic core mirrors the validator's mempool (never frozen);
@@ -966,7 +983,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         // bound is a single knob: two independent `default()`s would silently
         // give them separate atomics.
         let mempool = zaino_mempool_rpc::MempoolService::spawn(
-            MempoolSourceAdapter(source.clone()),
+            MempoolSourceAdapter::new(source.clone(), block_wake),
             config.mempool.clone(),
             cancel_token.child_token(),
         );
@@ -982,6 +999,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             coherence,
             non_finalized_state,
             nfs_epoch_signal,
+            block_wake_signal,
             finalized_db,
             sync_loop_handle: None,
             status: NamedAtomicStatus::new("ChainIndex", StatusType::Spawning),
@@ -1078,12 +1096,16 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         info!("Starting ChainIndex sync loop");
         let nfs = self.non_finalized_state.clone();
         let nfs_epoch_signal = self.nfs_epoch_signal.clone();
+        let block_wake_signal = self.block_wake_signal.clone();
         let fs = self.finalized_db.clone();
         let status = self.status.clone();
         let source = self.source.clone();
         let network = self.network.clone();
         let timings = self.sync_timings;
         let cancel_token = self.cancel_token.clone();
+        // Read handle onto the coherence layer, polled once per sync iteration to
+        // escalate a freeze that outlasts normal block-driven thaw (N2(e)).
+        let coherence = self.coherence.subscriber();
 
         tokio::task::spawn(async move {
             let status = status.clone();
@@ -1094,6 +1116,9 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             let mut change_rx = source.subscribe_to_blocks_received();
             let mut consecutive_failures: u32 = 0;
             let mut current_backoff = timings.initial_backoff;
+            // Last chain height the mempool core was woken for, so the block-wake
+            // fires only on an actual height change, not on every sync iteration.
+            let mut last_woken_height: Option<zebra_chain::block::Height> = None;
             #[cfg(feature = "prometheus")]
             let mut has_reached_tip = false;
 
@@ -1107,6 +1132,25 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                 status.store(StatusType::Syncing);
                 #[cfg(feature = "prometheus")]
                 let iteration_start = std::time::Instant::now();
+
+                // N2(e): once per iteration (block cadence), publish the coherence
+                // freeze duration and escalate a freeze that has outlasted normal
+                // thaw. A `Frozen` mode alone cannot tell a transient block-driven
+                // freeze from one that is stuck; the duration can.
+                let frozen = coherence.frozen_for();
+                #[cfg(feature = "prometheus")]
+                metrics::gauge!(MEMPOOL_COHERENCE_FROZEN_SECONDS)
+                    .set(frozen.map(|d| d.as_secs_f64()).unwrap_or(0.0));
+                if let Some(frozen) = frozen {
+                    if frozen >= COHERENCE_FREEZE_ESCALATION {
+                        tracing::warn!(
+                            frozen_secs = frozen.as_secs(),
+                            threshold_secs = COHERENCE_FREEZE_ESCALATION.as_secs(),
+                            "mempool coherence frozen past escalation threshold; \
+                             tip-coherent mempool reads are unavailable"
+                        );
+                    }
+                }
 
                 // Race the iter body against cancellation: any await inside
                 // — `source.get_best_block_height`, `fs.sync_to_height`,
@@ -1138,6 +1182,18 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         })?;
                     #[cfg(feature = "prometheus")]
                     metrics::gauge!("zaino.chain.tip_height").set(chain_height.0 as f64);
+
+                    // Wake the mempool core on a real height change (§6). The
+                    // validator already holds the new block's mempool, so waking
+                    // now — before Zaino finishes its own sync — is the earliest
+                    // correct point; the core re-reads the tip from its own source.
+                    // Gated on a change so a steady chain does not wake it every
+                    // iteration (that is what its own poll interval is for).
+                    if last_woken_height != Some(chain_height) {
+                        last_woken_height = Some(chain_height);
+                        let _ = block_wake_signal.send(());
+                    }
+
                     let finalised_height = finalized_height_floor(chain_height.0);
                     #[cfg(feature = "prometheus")]
                     {
@@ -1424,6 +1480,16 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
     #[cfg(feature = "test_dependencies")]
     pub(crate) fn mempool_subscriber(&self) -> &zaino_mempool_rpc::MempoolSubscriber {
         &self.mempool
+    }
+
+    /// The txids the coherent set knows it is short of (capacity-refused or
+    /// metadata-deferred). Unit-test hook for the precise negative-lookup rule
+    /// in [`Self::get_transaction_status`].
+    #[cfg(test)]
+    pub(crate) fn coherent_unadmitted(
+        &self,
+    ) -> Arc<std::collections::HashSet<zebra_chain::transaction::Hash>> {
+        Arc::clone(&self.coherence.coherent_snapshot().set.unadmitted)
     }
 
     /// Returns the combined status of all chain index components.
@@ -2082,6 +2148,22 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                             .map(|epoch| types::Height::from(epoch.best_tip.height) + 1);
                         non_best_chain_blocks.insert(NonBestChainLocation::Mempool(target_height));
                     }
+                } else if best_chain_block.is_none()
+                    && non_best_chain_blocks.is_empty()
+                    && coherent_snapshot.set.unadmitted.contains(&mempool_txid)
+                {
+                    // Found nowhere — but this is one of the transactions the
+                    // mempool knows it is short of (capacity-refused, or its
+                    // metadata deferred). Answering "not found" would tell a
+                    // wallet its transaction was dropped and should be
+                    // resubmitted, which is false.
+                    //
+                    // Keyed on the specific txid, not on the set being short:
+                    // gating on set-level completeness would make *every* absent
+                    // transaction unavailable, and absent is the common case.
+                    return Err(ChainIndexError::unavailable(
+                        "transaction is in the validator's mempool but not yet admitted by Zaino; retry",
+                    ));
                 }
                 Ok((best_chain_block, non_best_chain_blocks))
             }
@@ -2171,6 +2253,23 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         let raw_stream = self
             .coherence
             .stream_transactions_until_tip_change(expected_epoch)?;
+
+        // A coherent stream can still open over a set the mempool knows is
+        // short (capacity-refused or metadata-deferred additions). The stream
+        // faithfully delivers what Zaino holds — all `GetMempoolTx` has ever
+        // promised — but there is nowhere on the lightwalletd wire to signal
+        // "the set was short", and `MempoolStreamError` is terminal, so an
+        // in-band variant would kill the stream on every short mempool. The
+        // operator-facing signal is therefore log + metric only.
+        let completeness = self.coherence.coherent_snapshot().set.completeness;
+        if !completeness.is_whole() {
+            tracing::debug!(
+                ?completeness,
+                "opening a mempool stream over a set known to be incomplete"
+            );
+            #[cfg(feature = "prometheus")]
+            metrics::counter!(MEMPOOL_SHORT_SET_STREAMS_TOTAL).increment(1);
+        }
 
         // Box::pin so the returned stream is `Unpin` for `.next()`-loop consumers
         // (the `async-stream` generator is `!Unpin`).

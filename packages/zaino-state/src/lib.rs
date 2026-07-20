@@ -46,6 +46,8 @@ pub mod metric_names {
 
     pub const MEMPOOL_TRANSACTIONS: &str = "zaino.mempool.transactions";
     pub const MEMPOOL_TIP_CHANGES_TOTAL: &str = "zaino.mempool.tip_changes_total";
+    pub const MEMPOOL_SHORT_SET_STREAMS_TOTAL: &str = "zaino.mempool.short_set_streams_total";
+    pub const MEMPOOL_COHERENCE_FROZEN_SECONDS: &str = "zaino.mempool.coherence_frozen_seconds";
 }
 
 // Zaino's Indexer library frontend.

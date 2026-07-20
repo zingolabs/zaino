@@ -48,6 +48,12 @@ struct MockSourceState {
     raw_fetch_counts: HashMap<TxHash, usize>,
     /// Number of verbose metadata listings served.
     metadata_fetch_count: usize,
+    /// Number of `get_mempool_source_tip` reads served (C4: a poll must issue
+    /// at most two — one opening the fetch window, one confirming tip stability).
+    source_tip_reads: usize,
+    /// Number of `get_mempool_txids` listings served — one per poll, so it is
+    /// the poll counter the source-tip-read bound is measured against.
+    txid_list_count: usize,
     /// If set, source calls fail with this message (a source outage).
     source_error: Option<String>,
 }
@@ -55,13 +61,21 @@ struct MockSourceState {
 #[derive(Clone)]
 struct MockSource {
     state: Arc<Mutex<MockSourceState>>,
+    /// Push-path wake, as the `zaino-state` sync loop supplies in production
+    /// (§6). `fire_block_wake` models a block landing.
+    block_wake: Arc<tokio::sync::watch::Sender<()>>,
 }
 
 impl MockSource {
     fn new() -> Self {
         Self {
             state: Arc::new(Mutex::new(MockSourceState::default())),
+            block_wake: Arc::new(tokio::sync::watch::channel(()).0),
         }
+    }
+
+    fn fire_block_wake(&self) {
+        let _ = self.block_wake.send(());
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, MockSourceState> {
@@ -92,6 +106,14 @@ impl MockSource {
         self.lock().metadata_fetch_count
     }
 
+    fn source_tip_reads(&self) -> usize {
+        self.lock().source_tip_reads
+    }
+
+    fn txid_list_count(&self) -> usize {
+        self.lock().txid_list_count
+    }
+
     fn error(&self) -> Option<MempoolError> {
         self.lock()
             .source_error
@@ -105,7 +127,9 @@ impl MempoolSource for MockSource {
         if let Some(error) = self.error() {
             return Err(error);
         }
-        Ok(Some(self.lock().mempool.iter().map(|tx| tx.txid).collect()))
+        let mut state = self.lock();
+        state.txid_list_count += 1;
+        Ok(Some(state.mempool.iter().map(|tx| tx.txid).collect()))
     }
 
     async fn get_mempool_metadata(&self) -> Result<Option<Vec<MempoolTxMeta>>, MempoolError> {
@@ -148,10 +172,15 @@ impl MempoolSource for MockSource {
     }
 
     async fn get_mempool_source_tip(&self) -> Result<Option<BlockRef>, MempoolError> {
+        self.lock().source_tip_reads += 1;
         if let Some(error) = self.error() {
             return Err(error);
         }
         Ok(self.lock().tip)
+    }
+
+    fn subscribe_to_blocks_received(&self) -> Option<tokio::sync::watch::Receiver<()>> {
+        Some(self.block_wake.subscribe())
     }
 }
 
@@ -306,6 +335,78 @@ mod core {
     }
 
     #[tokio::test]
+    async fn source_tip_reads_are_bounded_to_two_per_poll() {
+        // C4: each poll opens its fetch window with one tip read and confirms
+        // tip stability with a second — never a third. The old pre-fetch read is
+        // gone. Measured as an invariant over a window of real polls, including
+        // ones that change the set (which take the full two-read path).
+        let (service, subscriber, source) = spawn_core(100, 0xAB, vec![mtx(1, 100)], fast_config());
+        wait_for(&subscriber, |s| s.tx_count == 1).await;
+
+        // Exercise the two-read path: a tip change and a set change each force a
+        // publish, whose tip-stability guard issues the second read.
+        source.set_tip(block_ref(101, 0xCD));
+        wait_for(&subscriber, |s| s.source_tip == Some(block_ref(101, 0xCD))).await;
+        source.set_mempool(vec![mtx(1, 100), mtx(2, 101)]);
+        wait_for(&subscriber, |s| s.tx_count == 2).await;
+
+        // Let several steady polls (one read each) accumulate too.
+        tokio::time::sleep(Duration::from_millis(60)).await;
+
+        let reads = source.source_tip_reads();
+        let polls = source.txid_list_count();
+        assert!(
+            polls >= 3,
+            "expected several polls to have elapsed, got {polls}"
+        );
+        // At most two reads per poll. The `+ 1` tolerates sampling mid-poll,
+        // after a poll's opening read but before that poll lists its txids.
+        assert!(
+            reads <= 2 * polls + 1,
+            "source-tip reads {reads} exceeded two per poll over {polls} polls"
+        );
+
+        service.close();
+    }
+
+    #[tokio::test]
+    async fn block_burst_wake_does_not_trip_the_discard_backstop() {
+        // §6: the sync-loop push path can fire block-wakes in a burst (rapid
+        // mining, catch-up). watch coalescing plus a fresh tip read per tick means
+        // the burst collapses to one stable tick — it must not drive the
+        // tag-stability guard to MAX_CONSECUTIVE_DISCARDS and republish the set as
+        // IncompleteSourceError.
+        let mut config = fast_config();
+        config.poll_interval = Duration::from_secs(30); // ticks are wake-driven, not timed
+        let (service, subscriber, source) = spawn_core(100, 0xAB, vec![mtx(1, 100)], config);
+
+        // The immediate first interval tick serves the initial set.
+        wait_for(&subscriber, |s| s.tx_count == 1).await;
+
+        // A burst: advance the tip many times and fire a wake each time, all with
+        // no `.await` between them, so the core task stays parked until the tip
+        // has settled. The wakes coalesce; the core reads only the final tip.
+        for i in 1..=20u8 {
+            source.set_tip(block_ref(100 + u32::from(i), 0xB0 + i));
+            source.fire_block_wake();
+        }
+        // Settle on a final, stable tip and a changed set.
+        source.set_tip(block_ref(200, 0xFF));
+        source.set_mempool(vec![mtx(1, 100), mtx(2, 200)]);
+        source.fire_block_wake();
+
+        // Converges to the final tip as a Complete set — the backstop never
+        // latched IncompleteSourceError.
+        let snapshot = wait_for(&subscriber, |s| {
+            s.source_tip == Some(block_ref(200, 0xFF)) && s.tx_count == 2
+        })
+        .await;
+        assert_eq!(snapshot.completeness, MempoolCompleteness::Complete);
+
+        service.close();
+    }
+
+    #[tokio::test]
     async fn added_transaction_is_fetched_once() {
         let (service, subscriber, source) =
             spawn_core(100, 0xAB, vec![mtx(1, 100), mtx(2, 100)], fast_config());
@@ -419,9 +520,12 @@ mod core {
     }
 
     #[tokio::test]
-    async fn refused_transactions_are_not_refetched_every_poll() {
-        // A transaction refused by the capacity backstop must be remembered, not
-        // rediscovered by the next diff and re-fetched forever.
+    async fn capacity_bound_limits_fetches_not_just_retention() {
+        // The bound must cap the *fetch*, not only the retained set: fetching
+        // everything and refusing afterwards performs the whole memory blow-up
+        // the bound exists to prevent. With room for one transaction, exactly one
+        // raw fetch may be issued — the other is refused sight unseen and
+        // remembered, so it is not rediscovered and re-fetched every poll either.
         let config = fast_config();
         config.set_max_cost_bytes(zaino_mempool::config::MEMPOOL_TRANSACTION_COST_THRESHOLD);
         let (service, subscriber, source) =
@@ -432,11 +536,135 @@ mod core {
         })
         .await;
 
-        // Many poll intervals pass; the refused transaction is never re-fetched.
+        // Many poll intervals pass without the refusal being retried.
         tokio::time::sleep(Duration::from_millis(100)).await;
+
         let fetches = source.raw_fetch_count(&txid(1)) + source.raw_fetch_count(&txid(2));
-        assert_eq!(fetches, 2, "each transaction fetched exactly once");
+        assert_eq!(
+            fetches, 1,
+            "only the admissible transaction may be fetched; the refused one \
+             must never be pulled into memory"
+        );
+
+        let snapshot = subscriber.snapshot();
+        assert_eq!(snapshot.tx_count, 1);
+        // The shortfall is named, so a caller can tell "short this one" from
+        // "no such transaction".
+        assert_eq!(snapshot.unadmitted.len(), 1);
         service.close();
+    }
+
+    #[tokio::test]
+    async fn set_at_bound_skips_the_metadata_walk() {
+        // At the bound there is nothing to admit, so the whole-mempool metadata
+        // listing must not be issued at all — it is the dominant per-poll cost
+        // and would buy nothing.
+        let config = fast_config();
+        config.set_max_cost_bytes(zaino_mempool::config::MEMPOOL_TRANSACTION_COST_THRESHOLD);
+        let (service, subscriber, source) = spawn_core(100, 0xAB, vec![mtx(1, 100)], config);
+
+        wait_for(&subscriber, |s| s.tx_count == 1).await;
+        let listings_once_full = source.metadata_fetch_count();
+
+        // A new arrival cannot fit: headroom is zero.
+        source.set_mempool(vec![mtx(1, 100), mtx(2, 100)]);
+        wait_for(&subscriber, |s| {
+            s.completeness == MempoolCompleteness::IncompleteCapacityLimited
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+
+        assert_eq!(
+            source.metadata_fetch_count(),
+            listings_once_full,
+            "metadata listing issued despite there being no headroom to admit into"
+        );
+        assert_eq!(source.raw_fetch_count(&txid(2)), 0);
+        service.close();
+    }
+
+    #[tokio::test]
+    async fn low_water_retry_works_for_small_bounds() {
+        // The low-water mark is `max * pct / 100`. Computed as `max / 100 * pct`
+        // it truncates to zero for any bound below 100, `cost_bytes >= 0` always
+        // holds, and refusals are stranded forever. Operator-reachable via
+        // `[mempool] max_cost_bytes`.
+        let config = fast_config();
+        config.set_max_cost_bytes(50);
+        let (service, subscriber, source) = spawn_core(100, 0xAB, vec![mtx(1, 100)], config);
+
+        // Nothing fits in 50 bytes (the ZIP-401 floor alone is 10,000), so the
+        // transaction is refused and remembered.
+        wait_for(&subscriber, |s| {
+            s.completeness == MempoolCompleteness::IncompleteCapacityLimited
+        })
+        .await;
+
+        // It leaves the mempool: the memo must let go of it rather than holding
+        // a permanently un-retryable entry.
+        source.set_mempool(Vec::new());
+        let snapshot = wait_for(&subscriber, |s| {
+            s.completeness == MempoolCompleteness::Complete
+        })
+        .await;
+        assert!(snapshot.unadmitted.is_empty());
+        service.close();
+    }
+
+    #[tokio::test]
+    async fn admission_tiebreak_depends_on_the_salt() {
+        // Admission order must not be predictable from the txid alone, or a
+        // sender can grind a low-sorting txid to displace honest transactions at
+        // capacity. Asserted as the deterministic property — same salt, same
+        // order; different salt, different order — rather than by sampling.
+        // Same salt twice: identical admission.
+        let first = admitted_txid_with_salt(7).await;
+        assert_eq!(
+            first,
+            admitted_txid_with_salt(7).await,
+            "the same salt must give the same admission order"
+        );
+
+        // Some other salt admits the other transaction: the order is a function
+        // of the salt, not of the txid bytes. Each salt is a fixed computation,
+        // so this is deterministic — it just walks a short list until one flips.
+        let mut flipped = false;
+        for salt in (0..32u64).map(|n| n.wrapping_mul(2_654_435_761)) {
+            if admitted_txid_with_salt(salt).await != first {
+                flipped = true;
+                break;
+            }
+        }
+        assert!(
+            flipped,
+            "no salt changed the admission order — the tiebreak is not salted"
+        );
+    }
+
+    /// Spawn a core with room for exactly one transaction and two competing
+    /// additions, and report which one was admitted under `salt`.
+    async fn admitted_txid_with_salt(salt: u64) -> TxHash {
+        let config = fast_config();
+        config.set_max_cost_bytes(zaino_mempool::config::MEMPOOL_TRANSACTION_COST_THRESHOLD);
+        let source = MockSource::new();
+        source.set_tip(block_ref(100, 0xAB));
+        // Same entry_time and height, so only the tiebreak separates them.
+        source.set_mempool(vec![mtx(1, 100), mtx(2, 100)]);
+        let service = MempoolService::spawn_with_admission_salt(
+            source,
+            config,
+            CancellationToken::new(),
+            salt,
+        );
+        let subscriber = service.subscriber();
+        let snapshot = wait_for(&subscriber, |s| s.tx_count == 1).await;
+        let admitted = *snapshot
+            .by_txid
+            .keys()
+            .next()
+            .expect("exactly one transaction admitted");
+        service.close();
+        admitted
     }
 
     #[tokio::test]
@@ -463,9 +691,8 @@ mod core {
     #[tokio::test]
     async fn metadata_listing_is_floored_by_min_interval() {
         // The verbose listing is heavy on the source, so it is rate-floored. A
-        // poll that finds additions before the floor elapses must publish
-        // *nothing* — never the set without them, which would present an
-        // incomplete view as complete.
+        // poll inside the floor defers the *additions* — and says so, rather than
+        // presenting a short set as complete.
         let mut config = fast_config();
         config.metadata_min_interval = Duration::from_secs(30);
         let (service, subscriber, source) = spawn_core(100, 0xAB, vec![mtx(1, 100)], config);
@@ -483,7 +710,42 @@ mod core {
         );
         let snapshot = subscriber.snapshot();
         assert_eq!(snapshot.tx_count, 1);
-        assert_eq!(snapshot.completeness, MempoolCompleteness::Complete);
+        assert_eq!(
+            snapshot.completeness,
+            MempoolCompleteness::IncompletePendingMetadata,
+            "a deferred addition must be reported as such, not as a complete set"
+        );
+        assert!(snapshot.unadmitted.contains(&txid(2)));
+        service.close();
+    }
+
+    #[tokio::test]
+    async fn metadata_deferral_still_publishes_removals_and_retag() {
+        // Deferring additions must not withhold the rest of the poll: coherence
+        // thaws on the tip re-tag, so holding it back would make
+        // `metadata_min_interval` extend the post-block freeze by its own length.
+        let mut config = fast_config();
+        config.metadata_min_interval = Duration::from_secs(30);
+        let (service, subscriber, source) =
+            spawn_core(100, 0xAB, vec![mtx(1, 100), mtx(2, 100)], config);
+
+        wait_for(&subscriber, |s| s.tx_count == 2).await;
+
+        // One transaction leaves, another arrives, and the tip advances — all in
+        // the same poll, with the metadata listing floored out.
+        source.set_mempool(vec![mtx(2, 100), mtx(3, 100)]);
+        source.set_tip(block_ref(101, 0xCD));
+
+        let snapshot = wait_for(&subscriber, |s| s.source_tip == Some(block_ref(101, 0xCD))).await;
+        assert!(
+            !snapshot.by_txid.contains_key(&txid(1)),
+            "the removal must apply even though the additions were deferred"
+        );
+        assert!(
+            !snapshot.by_txid.contains_key(&txid(3)),
+            "the addition must still be deferred"
+        );
+        assert!(snapshot.unadmitted.contains(&txid(3)));
         service.close();
     }
 
@@ -933,6 +1195,41 @@ mod coherence {
     }
 
     #[tokio::test]
+    async fn coherence_thaw_latency_unaffected_by_metadata_interval() {
+        // R2: a long `metadata_min_interval` defers additions, but the poll still
+        // publishes its removals and tip re-tag — and coherence thaws on the
+        // re-tag. So after a block the coherent view returns to `Live` on the
+        // poll cadence, *not* after the metadata interval. The interval here is
+        // far longer than the wait budget: if thaw waited for it, the wait times
+        // out and the test fails.
+        let mut config = fast_config();
+        config.metadata_min_interval = Duration::from_secs(10);
+        let h = spawn_coherent(100, 0xAB, 1, vec![mtx(1, 100)], config);
+        wait_for(&h.subscriber, is_live).await;
+
+        // A new block: validator tip and NS both advance, and a new transaction
+        // enters the mempool (an addition that needs metadata, so it defers).
+        h.source.set_tip(block_ref(101, 0xCD));
+        h.source.set_mempool(vec![mtx(1, 100), mtx(2, 101)]);
+        h.nfs.set(epoch(2, 101, 0xCD));
+
+        // Thaws to Live for the new epoch within the wait budget (~5s), well
+        // inside the 10s metadata interval.
+        let snapshot = wait_for(&h.subscriber, |s| s.is_live_for(epoch(2, 101, 0xCD))).await;
+
+        // The re-tag carried the new tip; the addition is deferred, not admitted,
+        // and the set says so — which is exactly why thaw did not wait for it.
+        assert_eq!(snapshot.set.source_tip, Some(block_ref(101, 0xCD)));
+        assert!(!snapshot.set.by_txid.contains_key(&txid(2)));
+        assert_eq!(
+            snapshot.set.completeness,
+            zaino_mempool::snapshot::MempoolCompleteness::IncompletePendingMetadata
+        );
+
+        h.close();
+    }
+
+    #[tokio::test]
     async fn missing_nonfinalized_state_stays_not_ready() {
         let source = MockSource::new();
         let nfs = MockNfs::new(); // never set: NS unavailable
@@ -971,6 +1268,68 @@ mod coherence {
         let snapshot = wait_for(&h.subscriber, is_frozen).await;
         assert_eq!(freeze_reason(&snapshot), Some(FreezeReason::CoreIncomplete));
         assert_eq!(snapshot.set.tx_count, 1); // last coherent set preserved
+        h.close();
+    }
+
+    #[tokio::test]
+    async fn capacity_limited_set_still_serves_coherent_reads() {
+        // A set that is *short* (capacity-refused) but tip-consistent is an
+        // accurate view of what it holds, so it must serve `Live` — freezing
+        // would withhold the transactions Zaino does have on top of the ones it
+        // doesn't. Only a set that may be *wrong* (source error) freezes.
+        let config = fast_config();
+        config.set_max_cost_bytes(1); // below the ZIP-401 floor: every addition refused
+        let h = spawn_coherent(100, 0xAB, 1, vec![mtx(1, 100), mtx(2, 100)], config);
+
+        // Short but blessed: the view is Live even though the set is incomplete.
+        let live = wait_for(&h.subscriber, is_live).await;
+        assert!(
+            !live.set.completeness.is_whole(),
+            "the capacity-bounded set must be short, got {:?}",
+            live.set.completeness
+        );
+        assert_eq!(
+            live.set.completeness,
+            zaino_mempool::snapshot::MempoolCompleteness::IncompleteCapacityLimited
+        );
+        assert!(
+            !live.set.unadmitted.is_empty(),
+            "a capacity-refused set must name the txids it is short of"
+        );
+
+        // A set that may be wrong (source error) still freezes.
+        h.source.set_error(Some("validator unreachable"));
+        let frozen = wait_for(&h.subscriber, is_frozen).await;
+        assert_eq!(freeze_reason(&frozen), Some(FreezeReason::CoreIncomplete));
+
+        h.close();
+    }
+
+    #[tokio::test]
+    async fn freeze_duration_is_tracked_and_cleared_on_thaw() {
+        // The freeze clock backing the N2(e) escalation signal: `None` while
+        // serving, `Some` while frozen, and back to `None` once thawed.
+        let h = spawn_coherent(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
+        wait_for(&h.subscriber, is_live).await;
+        assert!(
+            h.subscriber.frozen_for().is_none(),
+            "a live view is not frozen"
+        );
+
+        h.nfs.set(epoch(2, 101, 0xCD)); // NS advances, V stays: freeze
+        wait_for(&h.subscriber, is_frozen).await;
+        assert!(
+            h.subscriber.frozen_for().is_some(),
+            "a frozen view must report a freeze duration"
+        );
+
+        h.nfs.set(epoch(3, 100, 0xAB)); // re-agree with V: thaw
+        wait_for(&h.subscriber, is_live).await;
+        assert!(
+            h.subscriber.frozen_for().is_none(),
+            "the freeze clock must clear on thaw"
+        );
+
         h.close();
     }
 

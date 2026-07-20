@@ -98,6 +98,25 @@ and this library adheres to Rust's notion of
   both previously left the mempool degraded exactly when the chain was busiest.
 - Outbound JSON-RPC response bodies are size-capped, and an unmodelled validator
   error can no longer silently remove a transaction from the mempool set.
+- A negative mempool lookup is now precise: `get_transaction_status` /
+  `get_raw_transaction` for a transaction the mempool knows it is short of
+  (capacity-refused or its metadata deferred) returns a retryable `Unavailable`
+  where it previously answered `Ok(None)` / "not found"; a transaction that is
+  genuinely absent still answers "not found". This extends the "never tell a
+  wallet its own transaction is gone" guarantee to a capacity-limited mempool.
+- A capacity-limited or metadata-deferred mempool no longer freezes tip-coherent
+  reads chain-wide: a set that is short but consistent with the tip is served
+  live, and only a set that may not reflect the source at all freezes. A poll
+  that defers additions still publishes its removals and tip re-tag, so raising
+  `metadata_min_interval` no longer extends the post-block coherence freeze.
+- Under capacity, which additions Zaino admits is now unpredictable to the sender
+  (a per-process salted key), closing a grind that could displace honest
+  transactions from Zaino's view while the validator held both.
+- The mempool core is now woken on each new block, so a block's mempool changes
+  land within a reconcile rather than up to a full poll interval later.
+- New mempool observability: `zaino.mempool.short_set_streams_total` (streams
+  opened over a known-incomplete set) and `zaino.mempool.coherence_frozen_seconds`
+  (escalates a coherence freeze that outlasts normal thaw).
 
 ### Testing
 - Mempool coverage is consolidated in the mempool crates (`zaino-mempool` /

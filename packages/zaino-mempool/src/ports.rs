@@ -84,6 +84,19 @@ pub trait MempoolSource: Clone + Send + Sync + 'static {
     /// [`MempoolTxMeta`]), so the read model can stamp entries protocol-correctly.
     /// This is the heavier verbose listing; the mempool fetches it only when
     /// [`Self::get_mempool_txids`] shows additions.
+    ///
+    /// # Cost
+    ///
+    /// On a real validator this is a **whole-mempool walk** (`getrawmempool
+    /// verbose`), and it is the dominant per-poll cost of the mempool subsystem.
+    /// It is retained deliberately: the tip-at-entry height it returns is a
+    /// protocol field the validator owns, and Zaino must not substitute a locally
+    /// derived value (see the "explicitly not doing `entry_height` derivation"
+    /// note in `docs/audit.md`). The mitigation is coalescing —
+    /// [`metadata_min_interval`](crate::config::MempoolConfig::metadata_min_interval)
+    /// bounds how often the walk runs and defers additions between walks — not
+    /// removal; a metadata-by-txid source method would remove it, and is the lead
+    /// ask of the drafted upstream (Zebra) issue.
     fn get_mempool_metadata(
         &self,
     ) -> impl SendFut<Result<Option<Vec<MempoolTxMeta>>, MempoolError>>;

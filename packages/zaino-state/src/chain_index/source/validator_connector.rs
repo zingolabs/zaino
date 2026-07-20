@@ -42,13 +42,27 @@ use crate::Height;
 
 use super::*;
 
-/// Maximum number of entries accepted from one verbose mempool listing.
+/// Maximum number of entries accepted from one mempool listing, verbose or txid.
 ///
 /// A ZIP-401-bounded validator cannot hold anything close to this (the cost
 /// floor of 10,000 bytes per transaction caps an 80 MB mempool at ~8,000
 /// entries), so the bound only ever trips on a validator that is compromised,
 /// misconfigured, or impersonated.
 const MAX_MEMPOOL_METADATA_ENTRIES: usize = 1_000_000;
+
+/// Reject a mempool listing whose entry count exceeds
+/// [`MAX_MEMPOOL_METADATA_ENTRIES`] *before* it is decoded, so a pathological
+/// reply cannot drive a multi-million-entry allocation. `kind` names the listing
+/// in the error ("txid" / "verbose"). This is a belt on top of the transport's
+/// body cap, which alone would still admit ~480,000 txids.
+fn enforce_listing_cap(kind: &str, len: usize) -> BlockchainSourceResult<()> {
+    if len > MAX_MEMPOOL_METADATA_ENTRIES {
+        return Err(BlockchainSourceError::Unrecoverable(format!(
+            "{kind} mempool listing too large: {len} entries > {MAX_MEMPOOL_METADATA_ENTRIES}"
+        )));
+    }
+    Ok(())
+}
 
 macro_rules! expected_read_response {
     ($response:ident, $expected_variant:ident) => {
@@ -845,6 +859,10 @@ impl BlockchainSource for ValidatorConnector {
             })?
             .transactions;
 
+        // The same entry cap the verbose listing carries, applied before the
+        // diff: this listing is what drives the whole poll's work.
+        enforce_listing_cap("txid", txid_strings.len())?;
+
         let txids: Vec<zebra_chain::transaction::Hash> = txid_strings
             .into_iter()
             .map(|txid_str| {
@@ -877,14 +895,8 @@ impl BlockchainSource for ValidatorConnector {
 
         // The transport caps the response *bytes*; this caps the *entries* it
         // decodes to, so a pathological listing cannot make Zaino allocate a
-        // multi-million-entry map from one reply. Well above any mempool a
-        // ZIP-401-bounded validator can hold.
-        if verbose.0.len() > MAX_MEMPOOL_METADATA_ENTRIES {
-            return Err(BlockchainSourceError::Unrecoverable(format!(
-                "verbose mempool listing too large: {} entries > {MAX_MEMPOOL_METADATA_ENTRIES}",
-                verbose.0.len()
-            )));
-        }
+        // multi-million-entry map from one reply.
+        enforce_listing_cap("verbose", verbose.0.len())?;
 
         let entries = verbose
             .0
@@ -2708,6 +2720,26 @@ mod zebra_block_header_to_wire {
             .expect("the raw header shape must convert to the wire type");
 
         assert_eq!(wire, GetBlockHeader::Compact(hex::encode(header_bytes)));
+    }
+}
+
+#[cfg(test)]
+mod mempool_listing_cap {
+    use super::{enforce_listing_cap, MAX_MEMPOOL_METADATA_ENTRIES};
+
+    /// The listing cap rejects an over-cap count and passes an at-cap one. The
+    /// check runs on the *count* before any txid is decoded or fetched, so an
+    /// oversized listing is refused before it drives a single raw-transaction
+    /// fetch — bounding the poll's peak allocation, not just its retained set.
+    #[test]
+    fn oversized_txid_listing_is_rejected() {
+        // At the cap: accepted.
+        assert!(enforce_listing_cap("txid", MAX_MEMPOOL_METADATA_ENTRIES).is_ok());
+        // One over: rejected as a source error (the core turns this into a
+        // "keep last set, mark incomplete, retry" — no fetch is issued).
+        assert!(enforce_listing_cap("txid", MAX_MEMPOOL_METADATA_ENTRIES + 1).is_err());
+        // The verbose path shares the same guard.
+        assert!(enforce_listing_cap("verbose", MAX_MEMPOOL_METADATA_ENTRIES + 1).is_err());
     }
 }
 

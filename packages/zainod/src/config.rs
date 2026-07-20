@@ -67,7 +67,10 @@ pub struct MempoolSettings {
     /// the poll interval).
     ///
     /// The validator answers the listing by walking its whole mempool. Raising
-    /// this above the poll interval trades mempool latency for validator load.
+    /// this above the poll interval trades *addition-visibility* latency for
+    /// validator load: between listings, new transactions are deferred (not
+    /// dropped), while removals and the tip re-tag still apply — so tip-coherent
+    /// reads are unaffected.
     pub metadata_min_interval_ms: Option<u64>,
     /// Maximum exclude suffixes a client may send to a filtered mempool read
     /// (default 1024).
@@ -293,6 +296,22 @@ impl ZainodConfig {
                     "gRPC server and JsonRPC server must listen on different addresses."
                         .to_string(),
                 ));
+            }
+        }
+
+        // A mempool cost bound below the ZIP-401 per-transaction floor can never
+        // admit even one transaction — a misconfiguration worth naming at startup
+        // rather than leaving the operator with a silently empty mempool. (The
+        // arithmetic in the mempool itself already tolerates such a value safely;
+        // this is operator UX only.)
+        if let Some(max_cost_bytes) = self.mempool.max_cost_bytes {
+            let floor = zaino_mempool::config::MEMPOOL_TRANSACTION_COST_THRESHOLD;
+            if max_cost_bytes < floor {
+                return Err(IndexerError::ConfigError(format!(
+                    "mempool.max_cost_bytes ({max_cost_bytes}) is below the ZIP-401 \
+                     per-transaction floor ({floor}); it cannot admit a single \
+                     transaction. Raise it to at least {floor}."
+                )));
             }
         }
 
@@ -1391,6 +1410,23 @@ listen_address = "127.0.0.1:8137"
         json_config_with("[fc00::1]:8237")
             .check_config()
             .expect("IPv6 ULA JSON-RPC bind must be accepted");
+    }
+
+    #[test]
+    fn mempool_bound_below_the_zip401_floor_is_rejected() {
+        // Operator-UX guard (N3): a bound that cannot admit one floor-cost
+        // transaction is a misconfiguration named at startup.
+        let mut cfg = ZainodConfig::default();
+        cfg.mempool.max_cost_bytes =
+            Some(zaino_mempool::config::MEMPOOL_TRANSACTION_COST_THRESHOLD - 1);
+        cfg.check_config()
+            .expect_err("a sub-floor mempool bound must be rejected");
+
+        // Exactly at the floor is accepted.
+        cfg.mempool.max_cost_bytes =
+            Some(zaino_mempool::config::MEMPOOL_TRANSACTION_COST_THRESHOLD);
+        cfg.check_config()
+            .expect("a bound at the floor admits one transaction and is accepted");
     }
 
     #[test]

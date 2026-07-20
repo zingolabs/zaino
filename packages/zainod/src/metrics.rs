@@ -165,6 +165,17 @@ fn describe_metrics() {
         MEMPOOL_TIP_CHANGES_TOTAL,
         "Total mempool resets due to chain tip changes"
     );
+    metrics::describe_counter!(
+        MEMPOOL_SHORT_SET_STREAMS_TOTAL,
+        "Total mempool streams opened over a set known to be incomplete \
+         (capacity-refused or metadata-deferred)"
+    );
+    metrics::describe_gauge!(
+        MEMPOOL_COHERENCE_FROZEN_SECONDS,
+        "Seconds the mempool coherence layer has been continuously frozen \
+         (0 when serving); a sustained non-zero value means tip-coherent reads \
+         are unavailable"
+    );
 }
 
 /// Emit a constant gauge `zainod_build_info{version="x.y.z"} 1` so the
