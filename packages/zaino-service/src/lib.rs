@@ -21,6 +21,9 @@ mod controls;
 pub mod error;
 mod reads;
 
+#[cfg(feature = "testing")]
+pub mod testing;
+
 pub use bundle::{IndexerService, Snapshot};
 pub use controls::{
     Broadcast, MempoolSubscribe, ReportedUpgrades, Serviceable, TakeSnapshot, TipSubscribe,

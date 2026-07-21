@@ -8,3 +8,11 @@ description = "Zaino's inner driving surface: the segregated capability trait al
 [dependencies]
 zaino-core = { path = "../zaino-core" }
 futures = "0.3"
+
+[features]
+# In-crate scriptable mock of the driving surface, for testing outer clients
+# and adapters against a concrete IndexerService.
+testing = []
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
