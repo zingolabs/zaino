@@ -1,0 +1,10 @@
+[package]
+name = "zaino-service"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Zaino's inner driving surface: the segregated capability trait algebra the runtime implements and the outer clients consume."
+
+[dependencies]
+zaino-core = { path = "../zaino-core" }
+futures = "0.3"

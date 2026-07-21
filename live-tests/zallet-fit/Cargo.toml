@@ -1,0 +1,15 @@
+[package]
+name = "zallet-fit"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Compile-time proof that zaino-wallet can service zallet's Chain/ChainView trait. Scaffold: mirrors zallet's trait shape; swap for the real git dep once stable."
+
+[dependencies]
+zaino-wallet = { path = "../../packages/zaino-wallet" }
+zaino-service = { path = "../../packages/zaino-service" }
+futures = "0.3"
+
+# The real acid test — flip to this once the shapes stabilise and prove the impl
+# against zallet's ACTUAL trait rather than the mirror below:
+# zallet-core = { git = "https://github.com/zcash/zallet", branch = "main" }

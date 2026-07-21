@@ -1,0 +1,9 @@
+[package]
+name = "zaino-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Pure domain vocabulary + (future) pure logic for Zaino's inner driving surface. No async, no runtime."
+
+[dependencies]
+zaino-primitives = { path = "../zaino-primitives" }

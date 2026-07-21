@@ -1,0 +1,10 @@
+[package]
+name = "zaino-wallet"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Published full-wallet client over Zaino's inner service. Concrete builder + handle in churn-insulated bytes/id types (NOT a port; an adapter)."
+
+[dependencies]
+zaino-service = { path = "../zaino-service" }
+futures = "0.3"

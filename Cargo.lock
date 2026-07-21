@@ -6128,6 +6128,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-core"
+version = "0.1.0"
+dependencies = [
+ "zaino-primitives",
+]
+
+[[package]]
 name = "zaino-fetch"
 version = "0.2.1"
 dependencies = [
@@ -6222,6 +6229,14 @@ dependencies = [
  "zaino-state",
  "zebra-chain 10.1.0",
  "zebra-rpc 10.0.1",
+]
+
+[[package]]
+name = "zaino-service"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "zaino-core",
 ]
 
 [[package]]
@@ -6357,6 +6372,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-wallet"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "zaino-service",
+]
+
+[[package]]
 name = "zainod"
 version = "0.4.2"
 dependencies = [
@@ -6380,6 +6403,15 @@ dependencies = [
  "zcash_protocol",
  "zebra-chain 10.1.0",
  "zebra-state 9.0.1",
+]
+
+[[package]]
+name = "zallet-fit"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "zaino-service",
+ "zaino-wallet",
 ]
 
 [[package]]
