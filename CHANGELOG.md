@@ -10,7 +10,7 @@ and this library adheres to Rust's notion of
 ### Added
 - New crates `zaino-mempool` and `zaino-mempool-rpc`: the mempool subsystem,
   reworked from the ground up and separated from `zaino-state` behind
-  ports/adapters (ADR-0007). It is split into a **tip-agnostic core** (mirrors the
+  ports/adapters (ADR-0008). It is split into a **tip-agnostic core** (mirrors the
   validator's mempool, never freezes, serves the live `getrawmempool` /
   `getmempoolinfo` / `GetMempoolTx` reads and a `MempoolUpdate` change feed) and an
   optional **tip-aware coherence layer** (feature `tip_aware_mempool`) that adds

@@ -1,4 +1,4 @@
-# ADR 0007: Mempool subsystem separated into `zaino-mempool` behind ports
+# ADR 0008: Mempool subsystem separated into `zaino-mempool` behind ports
 
 - Status: accepted
 - Date: 2026-07-16

@@ -462,7 +462,7 @@ pub trait ChainIndex {
     /// serialized bytes are a shared buffer.
     ///
     /// The entry holds no compact form — the mempool core is deliberately free of
-    /// wire types (ADR-0007) — so a caller needing `CompactTx` parses it at the
+    /// wire types (ADR-0008) — so a caller needing `CompactTx` parses it at the
     /// boundary, once per request. Known cost: a mempool-wide `GetMempoolTx` re-parses
     /// every transaction. A cache belongs at that boundary, not in the core.
     fn get_mempool_transactions(
@@ -976,7 +976,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
 
         // The tip-agnostic core mirrors the validator's mempool (never frozen);
         // the coherence layer wraps its read handle plus the NFS epoch observer to
-        // serve the tip-coherent reads and stream. See ADR-0007 and the mempool
+        // serve the tip-coherent reads and stream. See ADR-0008 and the mempool
         // `tip` module for why the core tags V and coherence layers on top.
         //
         // Both services take *clones of one* config, so the runtime-adjustable

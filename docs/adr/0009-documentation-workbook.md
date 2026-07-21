@@ -1,4 +1,4 @@
-# ADR 0008: Documentation workbook — per-crate usage guides + coverage ratchet
+# ADR 0009: Documentation workbook — per-crate usage guides + coverage ratchet
 
 **Status:** Accepted; the workbook itself is **work in progress** (coverage is
 being filled in crate by crate).

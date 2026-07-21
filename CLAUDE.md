@@ -198,7 +198,7 @@ test code in one pass — no linked-project swapping, and an empty result means
 
 The workspace is documented by a **workbook** of per-crate usage guides —
 `packages/<crate>/docs/usage.md`, indexed from the root `README.md`'s
-"Documentation workbook" section (see docs/adr/0008). It is deliberately
+"Documentation workbook" section (see docs/adr/0009). It is deliberately
 incomplete and filled in crate by crate.
 
 When a change adds or alters a crate's **public capability** (a new port,

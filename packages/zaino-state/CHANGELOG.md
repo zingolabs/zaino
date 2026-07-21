@@ -93,7 +93,7 @@ and this library adheres to Rust's notion of
   `CoherenceService` (feature `tip_aware_mempool`) over the core plus the NFS-epoch
   adapter, serving the tip-coherent `get_raw_transaction` /
   `get_transaction_status` and the coherent mempool stream. See
-  `docs/adr/0007-mempool-subsystem-separation.md`.
+  `docs/adr/0008-mempool-subsystem-separation.md`.
 - `ChainIndex::get_mempool_transactions` now takes raw client-endian txid suffix
   bytes (`Vec<Vec<u8>>`, was hex `Vec<String>`) and returns shared mempool entries
   (`Vec<Arc<zaino_mempool::MempoolEntry>>`, was `Vec<Vec<u8>>`) so callers reuse

@@ -129,7 +129,7 @@ for full instructions.
 ### Documentation workbook (WIP)
 
 Per-crate, task-oriented "how do I use this?" guides, filled in crate by crate as
-the code is touched (see [ADR-0008](./docs/adr/0008-documentation-workbook.md) for
+the code is touched (see [ADR-0009](./docs/adr/0009-documentation-workbook.md) for
 the convention and the coverage ratchet). Complements the crate `//!` rustdoc (API
 reference) and `CHANGELOG.md` (what changed). Coverage so far:
 
