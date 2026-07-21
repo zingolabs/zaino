@@ -1,3 +1,12 @@
+//! Compare Zaino's state-service view against its fetch-service view.
+//!
+//! On dev this file ran two in-process subscribers (fetch + state) against one
+//! validator and asserted they agree. Under the ztest harness that dual setup
+//! is one zebrad validator plus two zaino indexers — a fetch-backed indexer and
+//! a state-backed indexer sharing the validator's persistent state volume — and
+//! the "subscribers agree" assertions become fetch-vs-state parity assertions
+//! across the two indexers.
+
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -6,43 +15,6 @@ use zaino_testutils::{assert_rpc_parity, ShieldedProtocol};
 use ztest::prelude::*;
 
 const READY: Duration = Duration::from_secs(90);
-
-async fn two_pods() -> Result<(TestEnv, ZebraValidator, ZainoIndexer, ZainoIndexer)> {
-    let mut env = TestEnv::builder().ready_timeout(READY);
-    let vol = env.shared_volume("zebra-db");
-    let validator = env.add_validator(
-        Validator::zebrad("6.2.0")
-            .regtest()
-            .persistent_state_in(&vol),
-    );
-    let fetch = env.add_indexer(
-        dev!(Indexer::Zainod, "../../Dockerfile")
-            .regtest()
-            .named("zaino-fetch"),
-    );
-    let state = env.add_indexer(
-        dev!(Indexer::Zainod, "../../Dockerfile")
-            .regtest_state_in(&vol, &validator)
-            .named("zaino-state"),
-    );
-    env.build().await?;
-    Ok((env, validator, fetch, state))
-}
-
-async fn mine_and_sync_both(
-    validator: &ZebraValidator,
-    fetch: &ZainoIndexer,
-    state: &ZainoIndexer,
-    n: u32,
-) -> Result<BlockHeight> {
-    let tip = validator.generate_blocks(n).await?;
-    for idx in [fetch, state] {
-        while idx.latest_block_height().await? != tip {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-    Ok(tip)
-}
 
 mod zebra {
 
@@ -55,12 +27,37 @@ mod zebra {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn regtest_no_cache() -> Result<()> {
-            let (_env, validator, fetch, state) = two_pods().await?;
-            mine_and_sync_both(&validator, &fetch, &state, 1).await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .persistent_state_in(&vol),
+            );
+            let fetch = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .named("zaino-fetch"),
+            );
+            let state = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest_state_in(&vol, &validator)
+                    .named("zaino-state"),
+            );
+            env.build().await?;
+
+            let tip = validator.generate_blocks(1).await?;
+            fetch.wait_for_block_num(tip, READY).await?;
+            state.wait_for_block_num(tip, READY).await?;
 
             let frpc = fetch.json_rpc().await?;
             let srpc = state.json_rpc().await?;
             assert_rpc_parity("getinfo", "", &frpc, &srpc, &["errorstimestamp"]).await?;
+            // TODO: Fix this! (ignored due to [https://github.com/zingolabs/zaino/issues/235]).
+            // assert_eq!(
+            //     fetch_service_blockchain_info.value_pools(),
+            //     state_service_blockchain_info.value_pools()
+            // );
             assert_rpc_parity(
                 "getblockchaininfo",
                 "",
@@ -80,9 +77,29 @@ mod zebra {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn state_service_chaintip_update_subscriber() -> Result<()> {
-            let (_env, validator, fetch, state) = two_pods().await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .persistent_state_in(&vol),
+            );
+            let fetch = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .named("zaino-fetch"),
+            );
+            let state = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest_state_in(&vol, &validator)
+                    .named("zaino-state"),
+            );
+            env.build().await?;
+
             for _ in 0..5 {
-                let tip = mine_and_sync_both(&validator, &fetch, &state, 1).await?;
+                let tip = validator.generate_blocks(1).await?;
+                fetch.wait_for_block_num(tip, READY).await?;
+                state.wait_for_block_num(tip, READY).await?;
                 let fetch_hash = fetch.get_block(tip).await?.hash;
                 let state_hash = state.get_block(tip).await?.hash;
                 assert_eq!(
@@ -97,8 +114,28 @@ mod zebra {
         #[tokio::test(flavor = "multi_thread")]
         #[ignore = "We no longer use chain caches. See zcashd::check_info::regtest_no_cache."]
         async fn regtest_with_cache() -> Result<()> {
-            let (_env, validator, fetch, state) = two_pods().await?;
-            mine_and_sync_both(&validator, &fetch, &state, 1).await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .persistent_state_in(&vol),
+            );
+            let fetch = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .named("zaino-fetch"),
+            );
+            let state = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest_state_in(&vol, &validator)
+                    .named("zaino-state"),
+            );
+            env.build().await?;
+
+            let tip = validator.generate_blocks(1).await?;
+            fetch.wait_for_block_num(tip, READY).await?;
+            state.wait_for_block_num(tip, READY).await?;
             Ok(())
         }
 
@@ -144,8 +181,28 @@ mod zebra {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn best_blockhash() -> Result<()> {
-            let (_env, validator, fetch, state) = two_pods().await?;
-            mine_and_sync_both(&validator, &fetch, &state, 2).await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .persistent_state_in(&vol),
+            );
+            let fetch = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .named("zaino-fetch"),
+            );
+            let state = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest_state_in(&vol, &validator)
+                    .named("zaino-state"),
+            );
+            env.build().await?;
+
+            let tip = validator.generate_blocks(2).await?;
+            fetch.wait_for_block_num(tip, READY).await?;
+            state.wait_for_block_num(tip, READY).await?;
             assert_rpc_parity(
                 "getbestblockhash",
                 "",
@@ -160,8 +217,28 @@ mod zebra {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn block_count() -> Result<()> {
-            let (_env, validator, fetch, state) = two_pods().await?;
-            mine_and_sync_both(&validator, &fetch, &state, 2).await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .persistent_state_in(&vol),
+            );
+            let fetch = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .named("zaino-fetch"),
+            );
+            let state = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest_state_in(&vol, &validator)
+                    .named("zaino-state"),
+            );
+            env.build().await?;
+
+            let tip = validator.generate_blocks(2).await?;
+            fetch.wait_for_block_num(tip, READY).await?;
+            state.wait_for_block_num(tip, READY).await?;
             assert_rpc_parity(
                 "getblockcount",
                 "",
@@ -176,12 +253,33 @@ mod zebra {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn mining_info() -> Result<()> {
-            let (_env, validator, fetch, state) = two_pods().await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .persistent_state_in(&vol),
+            );
+            let fetch = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .named("zaino-fetch"),
+            );
+            let state = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest_state_in(&vol, &validator)
+                    .named("zaino-state"),
+            );
+            env.build().await?;
+
             let frpc = fetch.json_rpc().await?;
             let srpc = state.json_rpc().await?;
             let ignore = &["networksolps", "errorstimestamp"];
             assert_rpc_parity("getmininginfo", "", &frpc, &srpc, ignore).await?;
-            mine_and_sync_both(&validator, &fetch, &state, 2).await?;
+
+            let tip = validator.generate_blocks(2).await?;
+            fetch.wait_for_block_num(tip, READY).await?;
+            state.wait_for_block_num(tip, READY).await?;
             assert_rpc_parity("getmininginfo", "", &frpc, &srpc, ignore).await?;
             Ok(())
         }
@@ -189,11 +287,32 @@ mod zebra {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn difficulty() -> Result<()> {
-            let (_env, validator, fetch, state) = two_pods().await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .persistent_state_in(&vol),
+            );
+            let fetch = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .named("zaino-fetch"),
+            );
+            let state = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest_state_in(&vol, &validator)
+                    .named("zaino-state"),
+            );
+            env.build().await?;
+
             let frpc = fetch.json_rpc().await?;
             let srpc = state.json_rpc().await?;
             assert_rpc_parity("getdifficulty", "", &frpc, &srpc, &[]).await?;
-            mine_and_sync_both(&validator, &fetch, &state, 2).await?;
+
+            let tip = validator.generate_blocks(2).await?;
+            fetch.wait_for_block_num(tip, READY).await?;
+            state.wait_for_block_num(tip, READY).await?;
             assert_rpc_parity("getdifficulty", "", &frpc, &srpc, &[]).await?;
             Ok(())
         }
@@ -201,8 +320,28 @@ mod zebra {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn get_network_sol_ps() -> Result<()> {
-            let (_env, validator, fetch, state) = two_pods().await?;
-            mine_and_sync_both(&validator, &fetch, &state, 2).await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .persistent_state_in(&vol),
+            );
+            let fetch = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .named("zaino-fetch"),
+            );
+            let state = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest_state_in(&vol, &validator)
+                    .named("zaino-state"),
+            );
+            env.build().await?;
+
+            let tip = validator.generate_blocks(2).await?;
+            fetch.wait_for_block_num(tip, READY).await?;
+            state.wait_for_block_num(tip, READY).await?;
             assert_rpc_parity(
                 "getnetworksolps",
                 "",
@@ -214,11 +353,33 @@ mod zebra {
             Ok(())
         }
 
+        /// A proper test would boot up multiple nodes at the same time, and ask each node
+        /// for information about its peers. In the current state, this test does nothing.
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn peer_info() -> Result<()> {
-            let (_env, validator, fetch, state) = two_pods().await?;
-            mine_and_sync_both(&validator, &fetch, &state, 2).await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .persistent_state_in(&vol),
+            );
+            let fetch = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .named("zaino-fetch"),
+            );
+            let state = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest_state_in(&vol, &validator)
+                    .named("zaino-state"),
+            );
+            env.build().await?;
+
+            let tip = validator.generate_blocks(2).await?;
+            fetch.wait_for_block_num(tip, READY).await?;
+            state.wait_for_block_num(tip, READY).await?;
             assert_rpc_parity(
                 "getpeerinfo",
                 "",
@@ -241,8 +402,28 @@ mod zebra {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn block_object_regtest() -> Result<()> {
-            let (_env, validator, fetch, state) = two_pods().await?;
-            mine_and_sync_both(&validator, &fetch, &state, 1).await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .persistent_state_in(&vol),
+            );
+            let fetch = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .named("zaino-fetch"),
+            );
+            let state = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest_state_in(&vol, &validator)
+                    .named("zaino-state"),
+            );
+            env.build().await?;
+
+            let tip = validator.generate_blocks(1).await?;
+            fetch.wait_for_block_num(tip, READY).await?;
+            state.wait_for_block_num(tip, READY).await?;
             let frpc = fetch.json_rpc().await?;
             let srpc = state.json_rpc().await?;
             let block = assert_rpc_parity("getblock", r#"["1", 1]"#, &frpc, &srpc, &[]).await?;
@@ -270,8 +451,28 @@ mod zebra {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn block_raw_regtest() -> Result<()> {
-            let (_env, validator, fetch, state) = two_pods().await?;
-            mine_and_sync_both(&validator, &fetch, &state, 1).await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .persistent_state_in(&vol),
+            );
+            let fetch = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .named("zaino-fetch"),
+            );
+            let state = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest_state_in(&vol, &validator)
+                    .named("zaino-state"),
+            );
+            env.build().await?;
+
+            let tip = validator.generate_blocks(1).await?;
+            fetch.wait_for_block_num(tip, READY).await?;
+            state.wait_for_block_num(tip, READY).await?;
             assert_rpc_parity(
                 "getblock",
                 r#"["1", 0]"#,
@@ -315,7 +516,25 @@ mod zebra {
             #[ztest::qos::integration]
             #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
             pub(crate) async fn z_validate_address() -> Result<()> {
-                let (_env, _validator, _fetch, state) = two_pods().await?;
+                let mut env = TestEnv::builder().ready_timeout(READY);
+                let vol = env.shared_volume("zebra-db");
+                let validator = env.add_validator(
+                    Validator::zebrad("6.2.0")
+                        .regtest()
+                        .persistent_state_in(&vol),
+                );
+                let _fetch = env.add_indexer(
+                    dev!(Indexer::Zainod, "../../Dockerfile")
+                        .regtest()
+                        .named("zaino-fetch"),
+                );
+                let state = env.add_indexer(
+                    dev!(Indexer::Zainod, "../../Dockerfile")
+                        .regtest_state_in(&vol, &validator)
+                        .named("zaino-state"),
+                );
+                env.build().await?;
+
                 clientless::rpc::z_validate_address::run_z_validate_for(
                     &state.json_rpc().await?,
                     clientless::rpc::z_validate_address::SaplingSuite::Standard,
@@ -350,8 +569,28 @@ mod zebra {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn get_latest_block() -> Result<()> {
-            let (_env, validator, fetch, state) = two_pods().await?;
-            let tip = mine_and_sync_both(&validator, &fetch, &state, 1).await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .persistent_state_in(&vol),
+            );
+            let fetch = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .named("zaino-fetch"),
+            );
+            let state = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest_state_in(&vol, &validator)
+                    .named("zaino-state"),
+            );
+            env.build().await?;
+
+            let tip = validator.generate_blocks(1).await?;
+            fetch.wait_for_block_num(tip, READY).await?;
+            state.wait_for_block_num(tip, READY).await?;
             assert_eq!(
                 fetch.latest_block_height().await?,
                 state.latest_block_height().await?,
@@ -368,8 +607,28 @@ mod zebra {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn get_block() -> Result<()> {
-            let (_env, validator, fetch, state) = two_pods().await?;
-            mine_and_sync_both(&validator, &fetch, &state, 2).await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .persistent_state_in(&vol),
+            );
+            let fetch = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .named("zaino-fetch"),
+            );
+            let state = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest_state_in(&vol, &validator)
+                    .named("zaino-state"),
+            );
+            env.build().await?;
+
+            let tip = validator.generate_blocks(2).await?;
+            fetch.wait_for_block_num(tip, READY).await?;
+            state.wait_for_block_num(tip, READY).await?;
 
             let by_height_f = fetch.get_block(BlockHeight::from(2u32)).await?;
             let by_height_s = state.get_block(BlockHeight::from(2u32)).await?;
@@ -391,12 +650,31 @@ mod zebra {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn get_block_header() -> Result<()> {
-            let (_env, validator, fetch, state) = two_pods().await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .persistent_state_in(&vol),
+            );
+            let fetch = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .named("zaino-fetch"),
+            );
+            let state = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest_state_in(&vol, &validator)
+                    .named("zaino-state"),
+            );
+            env.build().await?;
+
             let frpc = fetch.json_rpc().await?;
             let srpc = state.json_rpc().await?;
             for i in 0u32..10 {
-                let tip = mine_and_sync_both(&validator, &fetch, &state, 1).await?;
-                let _ = tip;
+                let tip = validator.generate_blocks(1).await?;
+                fetch.wait_for_block_num(tip, READY).await?;
+                state.wait_for_block_num(tip, READY).await?;
                 let blk = frpc
                     .call_value("getblock", json!([i.to_string(), 1]))
                     .await?;
@@ -414,8 +692,28 @@ mod zebra {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn get_tree_state() -> Result<()> {
-            let (_env, validator, fetch, state) = two_pods().await?;
-            let tip = mine_and_sync_both(&validator, &fetch, &state, 2).await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .persistent_state_in(&vol),
+            );
+            let fetch = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .named("zaino-fetch"),
+            );
+            let state = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest_state_in(&vol, &validator)
+                    .named("zaino-state"),
+            );
+            env.build().await?;
+
+            let tip = validator.generate_blocks(2).await?;
+            fetch.wait_for_block_num(tip, READY).await?;
+            state.wait_for_block_num(tip, READY).await?;
             assert_eq!(
                 fetch.get_tree_state(tip).await?,
                 state.get_tree_state(tip).await?,
@@ -427,8 +725,28 @@ mod zebra {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn get_subtree_roots() -> Result<()> {
-            let (_env, validator, fetch, state) = two_pods().await?;
-            mine_and_sync_both(&validator, &fetch, &state, 5).await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .persistent_state_in(&vol),
+            );
+            let fetch = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .named("zaino-fetch"),
+            );
+            let state = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest_state_in(&vol, &validator)
+                    .named("zaino-state"),
+            );
+            env.build().await?;
+
+            let tip = validator.generate_blocks(5).await?;
+            fetch.wait_for_block_num(tip, READY).await?;
+            state.wait_for_block_num(tip, READY).await?;
             assert_eq!(
                 fetch
                     .get_subtree_roots(2, ShieldedProtocol::Sapling, 0)
@@ -444,8 +762,28 @@ mod zebra {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn get_latest_tree_state() -> Result<()> {
-            let (_env, validator, fetch, state) = two_pods().await?;
-            mine_and_sync_both(&validator, &fetch, &state, 2).await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .persistent_state_in(&vol),
+            );
+            let fetch = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .named("zaino-fetch"),
+            );
+            let state = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest_state_in(&vol, &validator)
+                    .named("zaino-state"),
+            );
+            env.build().await?;
+
+            let tip = validator.generate_blocks(2).await?;
+            fetch.wait_for_block_num(tip, READY).await?;
+            state.wait_for_block_num(tip, READY).await?;
             assert_eq!(
                 fetch.get_latest_tree_state().await?,
                 state.get_latest_tree_state().await?,
@@ -457,8 +795,28 @@ mod zebra {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn get_block_range_full() -> Result<()> {
-            let (_env, validator, fetch, state) = two_pods().await?;
-            mine_and_sync_both(&validator, &fetch, &state, 6).await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .persistent_state_in(&vol),
+            );
+            let fetch = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .named("zaino-fetch"),
+            );
+            let state = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest_state_in(&vol, &validator)
+                    .named("zaino-state"),
+            );
+            env.build().await?;
+
+            let tip = validator.generate_blocks(6).await?;
+            fetch.wait_for_block_num(tip, READY).await?;
+            state.wait_for_block_num(tip, READY).await?;
             // Dev used all_pools_i32() = [Transparent, Sapling, Orchard, Ironwood].
             let all_pools = vec![1, 2, 3, 4];
             assert_eq!(
@@ -484,8 +842,29 @@ mod zebra {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn get_block_range_nullifiers() -> Result<()> {
-            let (_env, validator, fetch, state) = two_pods().await?;
-            mine_and_sync_both(&validator, &fetch, &state, 6).await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .persistent_state_in(&vol),
+            );
+            let fetch = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .named("zaino-fetch"),
+            );
+            let state = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest_state_in(&vol, &validator)
+                    .named("zaino-state"),
+            );
+            env.build().await?;
+
+            let tip = validator.generate_blocks(6).await?;
+            fetch.wait_for_block_num(tip, READY).await?;
+            state.wait_for_block_num(tip, READY).await?;
+            // TODO(#1088): replace deprecated nullifier-range client usage.
             assert_eq!(
                 fetch
                     .get_block_range_nullifiers(BlockHeight::from(2u32), BlockHeight::from(5u32))

@@ -1,5 +1,9 @@
-//! Compare zcashd's own JSON-RPC against Zaino's JSON-RPC server (fetch backend
-//! over the same zcashd). Entirely gated on `zcashd_support`.
+//! Tests that compare the output of both `zcashd` and `zainod` through the
+//! fetch backend.
+//!
+//! Entirely gated on `zcashd_support`: every test here launches a zcashd-backed
+//! validator alongside a zaino fetch indexer and compares their JSON-RPC. See
+//! docs/adr/0001-zcashd-support-feature-gate.md.
 #![cfg(feature = "zcashd_support")]
 
 use std::time::Duration;
@@ -11,56 +15,6 @@ use ztest::prelude::*;
 
 const READY: Duration = Duration::from_secs(90);
 
-async fn dual() -> Result<(TestEnv, ZcashdValidator, ZainoIndexer)> {
-    let mut env = TestEnv::builder().ready_timeout(READY);
-    let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest());
-    let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-    env.build().await?;
-    Ok((env, validator, indexer))
-}
-
-async fn mine_sync(
-    validator: &ZcashdValidator,
-    indexer: &ZainoIndexer,
-    n: u32,
-) -> Result<BlockHeight> {
-    let tip = validator.generate_blocks(n).await?;
-    while indexer.latest_block_height().await? != tip {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    Ok(tip)
-}
-
-async fn json_server_check_info() -> Result<()> {
-    let (_env, validator, indexer) = dual().await?;
-    let zrpc = validator.json_rpc().await?;
-    let irpc = indexer.json_rpc().await?;
-    assert_rpc_parity("getinfo", "", &zrpc, &irpc, &["errorstimestamp"]).await?;
-    // Parity with dev's `launch_json_server_check_info`: dev did NOT compare the
-    // whole getblockchaininfo object — it asserted exactly this field set
-    // (chain, blocks, bestblockhash, estimatedheight, valuePools, upgrades,
-    // consensus), deliberately omitting volatile/divergent fields such as
-    // chainSupply (see memory note #235). Compare that same set field-by-field.
-    let z = zrpc.call_value("getblockchaininfo", json!([])).await?;
-    let i = irpc.call_value("getblockchaininfo", json!([])).await?;
-    for field in [
-        "chain",
-        "blocks",
-        "bestblockhash",
-        "estimatedheight",
-        "valuePools",
-        "upgrades",
-        "consensus",
-    ] {
-        assert_eq!(
-            z.get(field),
-            i.get(field),
-            "getblockchaininfo.{field} differs from zcashd"
-        );
-    }
-    Ok(())
-}
-
 // TODO: This module should not be called `zcashd`
 mod zcashd {
     use super::*;
@@ -71,19 +25,83 @@ mod zcashd {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn check_info_no_cookie() -> Result<()> {
-            json_server_check_info().await
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest());
+            let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+            env.build().await?;
+
+            let zrpc = validator.json_rpc().await?;
+            let irpc = indexer.json_rpc().await?;
+            assert_rpc_parity("getinfo", "", &zrpc, &irpc, &["errorstimestamp"]).await?;
+            // Parity with dev's `launch_json_server_check_info`: dev did NOT compare the
+            // whole getblockchaininfo object — it asserted exactly this field set
+            // (chain, blocks, bestblockhash, estimatedheight, valuePools, upgrades,
+            // consensus), deliberately omitting volatile/divergent fields such as
+            // chainSupply (see memory note #235). Compare that same set field-by-field.
+            let z = zrpc.call_value("getblockchaininfo", json!([])).await?;
+            let i = irpc.call_value("getblockchaininfo", json!([])).await?;
+            for field in [
+                "chain",
+                "blocks",
+                "bestblockhash",
+                "estimatedheight",
+                "valuePools",
+                "upgrades",
+                "consensus",
+            ] {
+                assert_eq!(
+                    z.get(field),
+                    i.get(field),
+                    "getblockchaininfo.{field} differs from zcashd"
+                );
+            }
+            Ok(())
         }
 
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn check_info_with_cookie() -> Result<()> {
-            json_server_check_info().await
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest());
+            let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+            env.build().await?;
+
+            let zrpc = validator.json_rpc().await?;
+            let irpc = indexer.json_rpc().await?;
+            assert_rpc_parity("getinfo", "", &zrpc, &irpc, &["errorstimestamp"]).await?;
+            // Parity with dev's `launch_json_server_check_info`: dev did NOT compare the
+            // whole getblockchaininfo object — it asserted exactly this field set
+            // (chain, blocks, bestblockhash, estimatedheight, valuePools, upgrades,
+            // consensus), deliberately omitting volatile/divergent fields such as
+            // chainSupply (see memory note #235). Compare that same set field-by-field.
+            let z = zrpc.call_value("getblockchaininfo", json!([])).await?;
+            let i = irpc.call_value("getblockchaininfo", json!([])).await?;
+            for field in [
+                "chain",
+                "blocks",
+                "bestblockhash",
+                "estimatedheight",
+                "valuePools",
+                "upgrades",
+                "consensus",
+            ] {
+                assert_eq!(
+                    z.get(field),
+                    i.get(field),
+                    "getblockchaininfo.{field} differs from zcashd"
+                );
+            }
+            Ok(())
         }
 
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn get_best_blockhash() -> Result<()> {
-            let (_env, validator, indexer) = dual().await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest());
+            let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+            env.build().await?;
+
             assert_rpc_parity(
                 "getbestblockhash",
                 "",
@@ -98,7 +116,11 @@ mod zcashd {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn get_block_count() -> Result<()> {
-            let (_env, validator, indexer) = dual().await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest());
+            let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+            env.build().await?;
+
             assert_rpc_parity(
                 "getblockcount",
                 "",
@@ -110,16 +132,24 @@ mod zcashd {
             Ok(())
         }
 
-        /// Difficulty must agree across zcashd and zaino after each of 10 blocks.
+        /// Checks that the difficulty is the same between zcashd and zaino.
+        ///
+        /// This tests generates blocks and checks that the difficulty is the same between zcashd and zaino
+        /// after each block is generated.
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn get_difficulty() -> Result<()> {
-            let (_env, validator, indexer) = dual().await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest());
+            let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+            env.build().await?;
+
             let zrpc = validator.json_rpc().await?;
             let irpc = indexer.json_rpc().await?;
             for _ in 0..10 {
                 assert_rpc_parity("getdifficulty", "", &zrpc, &irpc, &[]).await?;
-                mine_sync(&validator, &indexer, 1).await?;
+                let tip = validator.generate_blocks(1).await?;
+                indexer.wait_for_block_num(tip, READY).await?;
             }
             Ok(())
         }
@@ -127,10 +157,15 @@ mod zcashd {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn get_block_deltas() -> Result<()> {
-            let (_env, validator, indexer) = dual().await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest());
+            let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+            env.build().await?;
+
             let zrpc = validator.json_rpc().await?;
             let irpc = indexer.json_rpc().await?;
             for _ in 0..10 {
+                // Note: we need an 'expected' block hash in order to query its deltas.
                 let hash = zrpc
                     .call_value("getbestblockhash", json!([]))
                     .await?
@@ -139,7 +174,8 @@ mod zcashd {
                     .to_string();
                 let params = format!(r#"["{hash}"]"#);
                 assert_rpc_parity("getblockdeltas", &params, &zrpc, &irpc, &[]).await?;
-                mine_sync(&validator, &indexer, 1).await?;
+                let tip = validator.generate_blocks(1).await?;
+                indexer.wait_for_block_num(tip, READY).await?;
             }
             Ok(())
         }
@@ -147,12 +183,17 @@ mod zcashd {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn get_mining_info() -> Result<()> {
-            let (_env, validator, indexer) = dual().await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest());
+            let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+            env.build().await?;
+
             let zrpc = validator.json_rpc().await?;
             let irpc = indexer.json_rpc().await?;
             for _ in 0..10 {
                 assert_rpc_parity("getmininginfo", "", &zrpc, &irpc, &[]).await?;
-                mine_sync(&validator, &indexer, 1).await?;
+                let tip = validator.generate_blocks(1).await?;
+                indexer.wait_for_block_num(tip, READY).await?;
             }
             Ok(())
         }
@@ -160,8 +201,13 @@ mod zcashd {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn get_tx_out_set_info() -> Result<()> {
-            let (_env, validator, indexer) = dual().await?;
-            mine_sync(&validator, &indexer, 1).await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest());
+            let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+            env.build().await?;
+
+            let tip = validator.generate_blocks(1).await?;
+            indexer.wait_for_block_num(tip, READY).await?;
 
             let z = validator
                 .json_rpc()
@@ -174,6 +220,9 @@ mod zcashd {
                 .call_value("gettxoutsetinfo", json!([]))
                 .await?;
 
+            // Structural parity with zcashd: height, bestblock, transactions, txouts and total_amount
+            // must match. `bytes_serialized` and `hash_serialized` are Zaino-defined and intentionally
+            // diverge from zcashd; only Zaino-internal invariants are asserted on those fields.
             for field in ["height", "bestblock", "transactions", "txouts"] {
                 assert_eq!(
                     z.get(field),
@@ -222,7 +271,11 @@ mod zcashd {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn get_peer_info() -> Result<()> {
-            let (_env, validator, indexer) = dual().await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest());
+            let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+            env.build().await?;
+
             assert_rpc_parity(
                 "getpeerinfo",
                 "",
@@ -231,15 +284,22 @@ mod zcashd {
                 &[],
             )
             .await?;
-            mine_sync(&validator, &indexer, 1).await?;
+            let tip = validator.generate_blocks(1).await?;
+            indexer.wait_for_block_num(tip, READY).await?;
             Ok(())
         }
 
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn get_block_subsidy() -> Result<()> {
-            let (_env, validator, indexer) = dual().await?;
-            mine_sync(&validator, &indexer, 1).await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest());
+            let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+            env.build().await?;
+
+            let tip = validator.generate_blocks(1).await?;
+            indexer.wait_for_block_num(tip, READY).await?;
+
             assert_rpc_parity(
                 "getblocksubsidy",
                 "[1]",
@@ -254,9 +314,14 @@ mod zcashd {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn validate_address() -> Result<()> {
-            let (_env, validator, indexer) = dual().await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest());
+            let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+            env.build().await?;
+
             let zrpc = validator.json_rpc().await?;
             let irpc = indexer.json_rpc().await?;
+            // A testnet transparent address, then an address backed by a script.
             for addr in [
                 "tmHMBeeYRuc2eVicLNfP15YLxbQsooCA6jb",
                 "t3TAfQ9eYmXWGe3oPae1XKhdTxm8JvsnFRL",
@@ -270,7 +335,11 @@ mod zcashd {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn z_validate_address() -> Result<()> {
-            let (_env, validator, _indexer) = dual().await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest());
+            let _indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+            env.build().await?;
+
             clientless::rpc::z_validate_address::run_z_validate_for(
                 &validator.json_rpc().await?,
                 clientless::rpc::z_validate_address::SaplingSuite::Standard,
@@ -281,7 +350,11 @@ mod zcashd {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn z_get_block() -> Result<()> {
-            let (_env, validator, indexer) = dual().await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest());
+            let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+            env.build().await?;
+
             let zrpc = validator.json_rpc().await?;
             let irpc = indexer.json_rpc().await?;
             assert_rpc_parity("getblock", r#"["1", 0]"#, &zrpc, &irpc, &[]).await?;
@@ -301,7 +374,11 @@ mod zcashd {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn get_block_header() -> Result<()> {
-            let (_env, validator, indexer) = dual().await?;
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest());
+            let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+            env.build().await?;
+
             let zrpc = validator.json_rpc().await?;
             let irpc = indexer.json_rpc().await?;
             for i in 0u32..10 {
@@ -315,7 +392,8 @@ mod zcashd {
                     .to_string();
                 let params = format!(r#"["{hash}", false]"#);
                 assert_rpc_parity("getblockheader", &params, &zrpc, &irpc, &[]).await?;
-                mine_sync(&validator, &indexer, 1).await?;
+                let tip = validator.generate_blocks(1).await?;
+                indexer.wait_for_block_num(tip, READY).await?;
             }
             Ok(())
         }
