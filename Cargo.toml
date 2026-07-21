@@ -7,11 +7,11 @@ members = [
     "packages/zaino-state",
     "packages/zaino-fetch",
     "packages/zaino-proto",
-    # Live-test suite (docs/adr/0002, docs/adr/0003, docs/adr/0004).
-    # zaino-testutils first: the e2e/clientless partitions depend on it.
-    "live-tests/zaino-testutils",
-    "live-tests/clientless",
-    "live-tests/e2e",
+    # NOTE: live-tests/ is now its own standalone workspace (see
+    # live-tests/Cargo.toml). It has been migrated onto the ztest k8s harness
+    # (sibling repo `../ztest` — a path dep carrying heavy deps + the zebra-fork
+    # patch), so it is intentionally excluded from the root workspace to keep the
+    # production build isolated from the test harness. Build it from live-tests/.
 ]
 # `container-test` runs a bare `cargo nextest run`, which operates on
 # default-members — so the heavy live-test crates are built and tested only

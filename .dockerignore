@@ -3,6 +3,10 @@ target/
 **/target/
 **/*.rs.bk
 
+# Nix build outputs (dangling store symlinks; must never enter the context)
+result
+result-*
+
 # VCS / CI
 .git/
 .gitignore

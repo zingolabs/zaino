@@ -1,6 +1,6 @@
 [package]
 name = "e2e"
-description = "End-to-end live tests: a zcash-devtool wallet client driving Zaino through its gRPC surface to a live validator."
+description = "End-to-end live tests: an in-process zingo wallet client driving Zaino over its gRPC surface to a live validator, on the ztest k8s harness."
 version = "0.2.0"
 authors.workspace = true
 repository.workspace = true
@@ -11,55 +11,18 @@ publish = false
 
 [features]
 default = []
-
-# Support for the zcashd test validator. Opt-in (default off, docs/adr/0005); being deprecated. Gates
-# the zcashd-backed wallet tests and forwards to the zaino crates. See
-# docs/adr/0001-zcashd-support-feature-gate.md.
-zcashd_support = [
-    "zaino-testutils/zcashd_support",
-    "zaino-state/zcashd_support",
-    "zaino-fetch/zcashd_support",
-    "zainod/zcashd_support",
-]
-
-# Single non-default gate for every devtool-incompatible / heavy test (the
-# finalization heavies, send_to_all, monitor_unverified_mempool, the
-# test-vector builder, address_deltas). They compile by default but are
-# `#[ignore]`'d unless this feature is on; run them with
-# `--features devtool-incompatible`. Each gated test's doc comment explains
-# why it's here.
+zcashd_support = []
 devtool-incompatible = []
 
 [dependencies]
-# Zaino test harness + packages, sourced from the root workspace manifest.
-# default-features = false (carried by the workspace entries) propagates the
-# zcashd_support drop; re-enabled by forwarding above. See docs/adr/0001.
-zaino-testutils = { workspace = true }
-zaino-state = { workspace = true, features = ["test_dependencies"] }
-zaino-common = { workspace = true }
-zaino-fetch = { workspace = true }
-zaino-proto = { workspace = true }
-zainod = { workspace = true }
-
-# zcash_local_net drives the zcash-devtool wallet client.
-zcash_local_net = { workspace = true }
-
-# Zebra
-zebra-chain = { workspace = true }
-zebra-rpc = { workspace = true }
-zebra-state = { workspace = true }
-
-# Runtime / misc
-tokio = { workspace = true }
-zcash_primitives = { workspace = true }
-futures = { workspace = true }
-hex = { workspace = true }
-corez = { workspace = true }
-tower = { workspace = true }
+ztest = { workspace = true }
+anyhow = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
-# Enable the tractable seam depth (fast-test-seam) so this crate's live tests can
-# exercise finalisation/eviction at small chain heights. Dev-dependency only — the
-# feature must never reach a shipped build (see the zaino-state feature comment).
-zaino-state = { workspace = true, features = ["fast-test-seam"] }
+zaino-testutils = { workspace = true }
+ztest = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+rstest = { workspace = true }

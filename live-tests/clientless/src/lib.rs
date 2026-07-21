@@ -2,41 +2,6 @@
 //!
 //! This crate also exposes test-vectors.
 
-/// Assert that `oracle` and `subject` return the same `getblockheader` response for
-/// the block at `height`: look the block up on the oracle (verbosity 1) to learn its
-/// hash, then compare the two servers' non-verbose header responses for that hash.
-/// Shared body of the per-backend `get_block_header` oracle tests.
-#[allow(deprecated)]
-pub async fn assert_get_block_header_matches<Oracle, Subject>(
-    oracle: &Oracle,
-    subject: &Subject,
-    height: u32,
-) where
-    Oracle: zaino_state::ZcashIndexer,
-    Subject: zaino_state::ZcashIndexer,
-{
-    let block = oracle
-        .z_get_block(height.to_string(), Some(1))
-        .await
-        .unwrap();
-
-    let block_hash = match block {
-        zebra_rpc::methods::GetBlock::Object(block) => block.hash(),
-        zebra_rpc::methods::GetBlock::Raw(_) => panic!("Expected block object"),
-    };
-
-    let oracle_header = oracle
-        .get_block_header(block_hash.to_string(), false)
-        .await
-        .unwrap();
-
-    let subject_header = subject
-        .get_block_header(block_hash.to_string(), false)
-        .await
-        .unwrap();
-    assert_eq!(oracle_header, subject_header);
-}
-
 pub mod rpc {
     pub mod json_rpc {
         pub const VALID_P2PKH_ADDRESS: &str = "tmVqEASZxBNKFTbmASZikGa5fPLkd68iJyx";
@@ -57,104 +22,104 @@ pub mod rpc {
     }
 
     pub mod z_validate_address {
-        use std::future::Future;
+        use anyhow::{Context, Result};
+        use serde_json::{json, Value};
+        use ztest::prelude::JsonRpcClient;
 
-        use crate::rpc::json_rpc::{
+        use super::json_rpc::{
             VALID_DIVERSIFIED_TRANSMISSION_KEY, VALID_DIVERSIFIER, VALID_P2PKH_ADDRESS,
             VALID_P2SH_ADDRESS, VALID_SAPLING_ADDRESS, VALID_UNIFIED_ADDRESS,
         };
-        use zaino_fetch::jsonrpsee::response::z_validate_address::{
-            KnownZValidateAddress, ValidZValidateAddress, ZValidateAddressResponse,
-        };
-        #[allow(deprecated)]
-        use zaino_state::ZcashIndexer;
 
-        pub fn assert_known_valid_eq(
-            resp: ZValidateAddressResponse,
-            expected: ValidZValidateAddress,
-            label: &str,
-        ) {
-            match resp {
-                ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(actual)) => {
-                    assert_eq!(actual, expected, "mismatch for {label}")
-                }
-                other => panic!(
-                    "Unexpected ZValidateAddressResponse for {label}: {:#?}",
-                    other
-                ),
-            }
+        pub enum SaplingSuite {
+            Standard,
+            ZebradPassthroughFetchService,
         }
 
-        pub async fn run_z_validate_suite<F, Fut>(rpc_call: &F)
-        where
-            // Any callable that takes an address and returns the response (you can unwrap inside)
-            F: Fn(String) -> Fut,
-            Fut: Future<Output = ZValidateAddressResponse>,
-        {
-            // P2PKH
-            let expected_p2pkh = ValidZValidateAddress::p2pkh(VALID_P2PKH_ADDRESS.to_string());
-            assert_known_valid_eq(
-                rpc_call(VALID_P2PKH_ADDRESS.to_string()).await,
-                expected_p2pkh,
+        async fn z_validate(irpc: &JsonRpcClient, addr: &str) -> Result<Value> {
+            irpc.call_value("z_validateaddress", json!([addr]))
+                .await
+                .with_context(|| format!("z_validateaddress {addr}"))
+        }
+
+        fn assert_valid(resp: &Value, addr: &str, label: &str) {
+            assert_eq!(
+                resp.get("isvalid").and_then(Value::as_bool),
+                Some(true),
+                "{label} ({addr}) must be valid: {resp:?}"
+            );
+            assert_eq!(
+                resp.get("address").and_then(Value::as_str),
+                Some(addr),
+                "{label} ({addr}) address echo: {resp:?}"
+            );
+        }
+
+        pub async fn run_z_validate_suite(irpc: &JsonRpcClient) -> Result<()> {
+            assert_valid(
+                &z_validate(irpc, VALID_P2PKH_ADDRESS).await?,
+                VALID_P2PKH_ADDRESS,
                 "P2PKH",
             );
-
-            // P2SH
-            let expected_p2sh = ValidZValidateAddress::p2sh(VALID_P2SH_ADDRESS.to_string());
-            assert_known_valid_eq(
-                rpc_call(VALID_P2SH_ADDRESS.to_string()).await,
-                expected_p2sh,
+            assert_valid(
+                &z_validate(irpc, VALID_P2SH_ADDRESS).await?,
+                VALID_P2SH_ADDRESS,
                 "P2SH",
             );
-
-            // Note: It could be the case that Zaino needs to support Sprout. For now, it's been disabled.
-
-            // let expected_sprout = ZValidateAddress::sprout("ztfhKyLouqi8sSwjRm4YMQdWPjTmrJ4QgtziVQ1Kd1e9EsRHYKofjoJdF438FwcUQnix8yrbSrzPpJJNABewgNffs5d4YZJ".to_string(), "c8e8797f1fb5e9cf6b2d000177c5994119279a2629970a4f669aed1362a4cca5".to_string(), "480f78d61bdd7fc4b4edeef9f6305b29753057ab1008d42ded1a3364dac2d83c".to_string());
-
-            // let fs_sprout = zcashd_subscriber
-            //     .z_validate_address("ztfhKyLouqi8sSwjRm4YMQdWPjTmrJ4QgtziVQ1Kd1e9EsRHYKofjoJdF438FwcUQnix8yrbSrzPpJJNABewgNffs5d4YZJ".to_string())
-            //     .await
-            //     .unwrap();
-
-            // assert_eq!(fs_sprout, expected_sprout);
-
-            // Sapling
-            let expected_sapling = ValidZValidateAddress::sapling(
-                VALID_SAPLING_ADDRESS.to_string(),
-                Some(VALID_DIVERSIFIER.to_string()),
-                Some(VALID_DIVERSIFIED_TRANSMISSION_KEY.to_string()),
-            );
-            assert_known_valid_eq(
-                rpc_call(VALID_SAPLING_ADDRESS.to_string()).await,
-                expected_sapling,
-                "Sapling",
-            );
-
-            // Unified (differs by validator)
-            let expected_unified =
-                ValidZValidateAddress::unified(VALID_UNIFIED_ADDRESS.to_string());
-            assert_known_valid_eq(
-                rpc_call(VALID_UNIFIED_ADDRESS.to_string()).await,
-                expected_unified,
+            assert_valid(
+                &z_validate(irpc, VALID_UNIFIED_ADDRESS).await?,
+                VALID_UNIFIED_ADDRESS,
                 "Unified",
             );
 
-            // Invalids
-            let by_len = rpc_call("t1123456789ABCDEFGHJKLMNPQRSTUVWXY".to_string()).await;
-            let all_zeroes = rpc_call("t1000000000000000000000000000000000".to_string()).await;
-            assert_eq!(by_len, ZValidateAddressResponse::invalid());
-            assert_eq!(all_zeroes, ZValidateAddressResponse::invalid());
+            for bad in [
+                "t1123456789ABCDEFGHJKLMNPQRSTUVWXY",
+                "t1000000000000000000000000000000000",
+            ] {
+                let resp = z_validate(irpc, bad).await?;
+                assert_eq!(
+                    resp.get("isvalid").and_then(Value::as_bool),
+                    Some(false),
+                    "{bad} must be invalid: {resp:?}"
+                );
+            }
+            Ok(())
         }
 
-        /// Build the `z_validate_address` rpc-call closure from `subscriber` and
-        /// run the shared validation suite. Factors the identical closure +
-        /// suite-call preamble shared by the four `z_validate_address` tests
-        /// (fetch_service zcashd/zebrad, state_service, json_server).
-        #[allow(deprecated)]
-        pub async fn run_z_validate_for<S: ZcashIndexer>(subscriber: &S) {
-            let rpc_call =
-                |addr: String| async move { subscriber.z_validate_address(addr).await.unwrap() };
-            run_z_validate_suite(&rpc_call).await;
+        pub async fn run_z_validate_for(irpc: &JsonRpcClient, sapling: SaplingSuite) -> Result<()> {
+            run_z_validate_suite(irpc).await?;
+
+            let s = z_validate(irpc, VALID_SAPLING_ADDRESS).await?;
+            assert_eq!(
+                s.get("isvalid").and_then(Value::as_bool),
+                Some(true),
+                "sapling must be valid: {s:?}"
+            );
+            match sapling {
+                SaplingSuite::Standard => {
+                    assert_eq!(
+                        s.get("diversifier").and_then(Value::as_str),
+                        Some(VALID_DIVERSIFIER),
+                        "sapling diversifier: {s:?}"
+                    );
+                    assert_eq!(
+                        s.get("diversifiedtransmissionkey").and_then(Value::as_str),
+                        Some(VALID_DIVERSIFIED_TRANSMISSION_KEY),
+                        "sapling diversifiedtransmissionkey: {s:?}"
+                    );
+                }
+                SaplingSuite::ZebradPassthroughFetchService => {
+                    assert!(
+                        s.get("diversifier").is_none(),
+                        "zebrad passthrough must omit diversifier: {s:?}"
+                    );
+                    assert!(
+                        s.get("diversifiedtransmissionkey").is_none(),
+                        "zebrad passthrough must omit diversifiedtransmissionkey: {s:?}"
+                    );
+                }
+            }
+            Ok(())
         }
     }
 }

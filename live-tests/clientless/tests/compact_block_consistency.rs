@@ -5,372 +5,307 @@
 //! actions/outputs each served block carries, so whenever a served block's tree-size
 //! delta disagrees with its served commitment count the wallet observes a tree-size
 //! discontinuity and treats it as a chain reorg. This walk pins that invariant per
-//! block, per pool, for the request shape real (including pre-Ironwood) light clients
-//! send: an empty `poolTypes` filter.
+//! block, per pool, for the request shape unfiltered light clients send: an empty
+//! `poolTypes` filter.
+//!
+//! Scope note (ztest port): the sapling/orchard walk runs today. The Ironwood / NU6.3
+//! walk ([`compact_blocks_carry_ironwood_after_nu6_3_zebrad`]) is fully ported against
+//! ztest's NU6.3 topology and ironwood proto, but is `#[ignore]`d until an NU6.3-capable
+//! validator image is wired into ztest (a real version filled into `ZEBRAD_NU6_3_RELEASE`
+//! and the zainod NU6.3 release). See <https://github.com/zingolabs/zaino/issues/1368>.
 
-use zaino_common::network::ActivationHeights;
-use zaino_fetch::jsonrpsee::response::GetBlockResponse;
-#[allow(deprecated)]
-use zaino_state::ZcashIndexer as _;
-use zaino_testutils::{
-    MinerPool, Rpc, TestManager, ValidatorKind, IRONWOOD_ONLY_ACTIVATION_HEIGHTS,
-    NU6_3_TRANSITION_BOUNDARY, ORCHARD_ONLY_ACTIVATION_HEIGHTS,
-    ORCHARD_THEN_IRONWOOD_ACTIVATION_HEIGHTS,
-};
-use zcash_local_net::validator::zebrad::Zebrad;
-use zebra_chain::serialization::ZcashDeserialize as _;
+use anyhow::{Context, Result};
+use serde_json::{json, Value};
+use std::time::Duration;
+use ztest::prelude::*;
 
-/// multi_thread required: the test manager spawns the validator and indexer services.
-#[allow(deprecated)]
+const READY: Duration = Duration::from_secs(120);
+
+/// The validator's own `(sapling, orchard, ironwood)` commitment-tree sizes at `height`,
+/// read from its verbose `getblock` `trees` field. This is the independent oracle:
+/// zebrad's answer, computed without reference to what zaino serves, so the comparison is
+/// not circular. zebra omits a pool's key when its tree is empty, so a missing key reads
+/// as size 0 — which is also how `ironwood` reads on a pre-NU6.3 node.
+async fn oracle_trees(validator: &impl ValidatorBackend, height: u64) -> Result<(u64, u64, u64)> {
+    let block = validator
+        .json_rpc()
+        .await?
+        .call_value("getblock", json!([height.to_string(), 1]))
+        .await?;
+    let trees = block
+        .get("trees")
+        .context("verbose getblock must carry a trees field")?;
+    let size = |pool: &str| {
+        trees
+            .get(pool)
+            .and_then(|t| t.get("size"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    };
+    Ok((size("sapling"), size("orchard"), size("ironwood")))
+}
+
+/// integration tier: spawns a zebrad validator + a zainod indexer and mines shielded
+/// coinbases (see [[ztest-validator-tests-need-integration-tier]] — the Basic tier
+/// OOM-kills zebrad).
+#[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
-async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() {
-    let mut test_manager = TestManager::<Zebrad, Rpc>::launch_mining_to(
-        // Shielded mining: from NU6.3 an orchard-receiver coinbase is built as Ironwood
-        // actions (the coinbase's Orchard component must be empty from NU6.3), so every
-        // generated block carries ironwood data for the walk to check. A transparent
-        // miner would leave the ironwood assertions vacuous.
-        MinerPool::Orchard,
-        &ValidatorKind::Zebrad,
-        None,
-        Some(IRONWOOD_ONLY_ACTIVATION_HEIGHTS),
-        None,
-        true,
-        false,
-        false,
-    )
-    .await
-    .unwrap();
-    let subscriber = test_manager.subscriber().clone();
+async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() -> Result<()> {
+    // Orchard-receiver coinbase: from NU5 every generated block carries orchard actions
+    // for the walk to check. A transparent miner would leave the orchard assertions
+    // vacuous.
+    //
+    // Pin the chain to NU6.1: the `zfnd/zebra:5.2.0` image bundles a zcash_protocol
+    // that predates the NU6.2 consensus branch-id, so its `coinbase_outputs_are_decryptable`
+    // check (`to_librustzcash(Nu6_2)` → `BranchId::try_from`) rejects a *shielded* coinbase
+    // at the NU6.2 activation height (7) — "block was rejected: Rejected". Transparent
+    // coinbases skip that check, so only shielded-coinbase walks hit it. Capping the ceiling
+    // at NU6.1 keeps every mined height on a branch-id the image understands. Drop the cap
+    // once the zebrad image is bumped to one linking zcash_protocol ≥ 0.9.0.
+    let mut env = TestEnv::builder().ready_timeout(READY);
+    let validator = env.add_validator(
+        Validator::zebrad("6.2.0")
+            .regtest()
+            .mine_to(Pool::Orchard)
+            .activate_through(NetworkUpgrade::Nu6_1),
+    );
+    let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+    env.build().await?;
 
-    test_manager
-        .generate_blocks_and_wait_for_tip(8, &subscriber)
-        .await;
-    let tip = u64::from(subscriber.chain_height().await.unwrap().0);
+    let tip = validator.generate_blocks(8).await?;
+    indexer.wait_for_block_num(tip, READY).await?;
 
-    // The empty pool filter is what unfiltered (pre-Ironwood) clients send; the served
-    // stream must include every shielded pool's actions.
-    let blocks = zaino_testutils::collect_block_range(&subscriber, 0, tip, vec![]).await;
+    // The empty pool filter is what unfiltered clients send; the served stream must
+    // include every shielded pool's commitments.
+    let start = BlockHeight::from(1u32);
+    let blocks = indexer.get_block_range(start, tip).await?;
     assert!(!blocks.is_empty(), "no compact blocks served");
 
-    let connector = test_manager.full_node_jsonrpc_connector().await;
-
-    let (mut prev_sapling, mut prev_orchard, mut prev_ironwood) = (0u32, 0u32, 0u32);
-    let mut total_orchard_actions = 0usize;
-    let mut total_ironwood_actions = 0usize;
+    // Seed the running totals from the validator's own trees at the height below the
+    // first served block, so the per-block delta check stays oracle-independent even
+    // though the pod gRPC serves from height 1 rather than genesis.
+    let (mut prev_sapling, mut prev_orchard, _) = oracle_trees(&validator, 0).await?;
+    let mut total_orchard_actions = 0u64;
     for (index, block) in blocks.iter().enumerate() {
+        // The served range starts at height 1, so the block at offset `index` must be
+        // at height `index + 1` for the walk's running totals to line up.
         assert_eq!(
-            block.height, index as u64,
-            "served blocks must be contiguous from genesis for the walk's running totals"
+            block.height,
+            index as u64 + 1,
+            "served blocks must be contiguous for the walk's running totals"
         );
+
         let metadata = block
             .chain_metadata
             .as_ref()
-            .expect("every served compact block carries chain metadata");
+            .context("every served compact block carries chain metadata")?;
+        let sapling_outputs: u64 = block.vtx.iter().map(|tx| tx.outputs.len() as u64).sum();
+        let orchard_actions: u64 = block.vtx.iter().map(|tx| tx.actions.len() as u64).sum();
+        total_orchard_actions += orchard_actions;
 
-        let sapling_outputs: u32 = block.vtx.iter().map(|tx| tx.outputs.len() as u32).sum();
-        let orchard_actions: u32 = block.vtx.iter().map(|tx| tx.actions.len() as u32).sum();
-        let ironwood_actions: u32 = block
-            .vtx
-            .iter()
-            .map(|tx| tx.ironwood_actions.len() as u32)
-            .sum();
-        total_orchard_actions += orchard_actions as usize;
-        total_ironwood_actions += ironwood_actions as usize;
+        let sapling_size = u64::from(metadata.sapling_commitment_tree_size);
+        let orchard_size = u64::from(metadata.orchard_commitment_tree_size);
 
+        // The regression this walk exists for: a served block whose metadata counts
+        // commitments from actions the block omits reads to a scanning wallet as a
+        // phantom chain reorg.
         assert_eq!(
-            metadata.sapling_commitment_tree_size,
+            sapling_size,
             prev_sapling + sapling_outputs,
             "sapling tree-size delta must equal the served output count at height {}",
             block.height
         );
         assert_eq!(
-            metadata.orchard_commitment_tree_size,
+            orchard_size,
             prev_orchard + orchard_actions,
             "orchard tree-size delta must equal the served action count at height {}",
-            block.height
-        );
-        // The regression this walk exists for: a served block whose metadata counts
-        // commitments from actions the block omits (e.g. ironwood stripped from an
-        // unfiltered request) reads to a scanning wallet as a phantom chain reorg.
-        assert_eq!(
-            metadata.ironwood_commitment_tree_size,
-            prev_ironwood + ironwood_actions,
-            "ironwood tree-size delta must equal the served action count at height {}",
             block.height
         );
 
         // Clientless-exclusive predicate — oracle parity: zebrad's verbose getblock
         // reports the validator's own per-block tree sizes, an independent
         // implementation's answer to compare zaino's served metadata against. Package
-        // tests cannot express this: their "source of truth" is the object being
-        // served, so any such comparison is circular.
-        // Verbosity 1: txids-as-strings plus the `trees` field the oracle needs
-        // (verbosity 2 returns full transaction objects, which BlockObject's
-        // string-typed `tx` field rejects).
-        let oracle_trees = match connector
-            .get_block(block.height.to_string(), Some(1))
-            .await
-            .expect("validator serves verbose blocks")
-        {
-            GetBlockResponse::Object(block_object) => block_object.trees,
-            other => panic!("verbosity-2 getblock must return a block object, got {other:?}"),
-        };
+        // tests cannot express this: their source of truth is the object being served,
+        // so any such comparison is circular.
+        let (oracle_sapling, oracle_orchard, _) = oracle_trees(&validator, block.height).await?;
         assert_eq!(
-            u64::from(metadata.sapling_commitment_tree_size),
-            oracle_trees.sapling(),
+            sapling_size, oracle_sapling,
             "served sapling tree size must match the validator's own at height {}",
             block.height
         );
         assert_eq!(
-            u64::from(metadata.orchard_commitment_tree_size),
-            oracle_trees.orchard(),
+            orchard_size, oracle_orchard,
+            "served orchard tree size must match the validator's own at height {}",
+            block.height
+        );
+
+        prev_sapling = sapling_size;
+        prev_orchard = orchard_size;
+    }
+
+    assert!(
+        total_orchard_actions > 0,
+        "the orchard-receiver fixture produced no orchard actions; the walk asserted \
+         nothing about orchard"
+    );
+
+    Ok(())
+}
+
+/// Ironwood / NU6.3 companion to the sapling/orchard walk above. Ports dev's
+/// `ironwood_*` coinbase-routing coverage and the ironwood tree-size delta onto ztest.
+///
+/// With NU6.3 active at ztest's canonical regtest height (8) and an orchard-receiver
+/// miner, the coinbase reward routes to Orchard actions through NU6.2 (heights 2..=7) and
+/// to Ironwood actions from NU6.3 (heights >= 8), its Orchard component then empty. So one
+/// `activate_through(Nu6_3)` chain exercises both eras and the flip at the boundary — the
+/// [#1368] disambiguator — without needing a caller-chosen activation height. This pins,
+/// per block: the ironwood tree-size delta equals the served ironwood-action count; oracle
+/// parity for the ironwood tree size against the validator's own `getblock` `.trees`; and
+/// the coinbase pool-routing flip.
+///
+/// `#[ignore]`d until an NU6.3-capable validator image is wired into ztest:
+/// `activate_through(Nu6_3)` errors at `env.build()` while every component's
+/// `*_NU6_3_RELEASE` is an unreachable sentinel (no image reports an NU6.3 ceiling, so the
+/// resolver floors the topology below NU6.3). Un-ignore once a real NU6.3 zebra image
+/// version is filled into ztest's `ZEBRAD_NU6_3_RELEASE` (and the zainod NU6.3 release),
+/// and the zebra `"NU6.3"` activation-heights render key is confirmed against the fork.
+/// See <https://github.com/zingolabs/zaino/issues/1368>.
+///
+/// [#1368]: https://github.com/zingolabs/zaino/issues/1368
+#[ignore = "needs an NU6.3-capable validator image wired into ztest — see #1368 and this fn's doc"]
+#[ztest::qos::integration]
+#[tokio::test(flavor = "multi_thread")]
+async fn compact_blocks_carry_ironwood_after_nu6_3_zebrad() -> Result<()> {
+    // NU6.3 active (canonical height 8) + orchard-receiver coinbase: heights 2..=7 carry
+    // Orchard actions, heights >= 8 carry Ironwood actions.
+    let mut env = TestEnv::builder().ready_timeout(READY);
+    let validator = env.add_validator(
+        Validator::zebrad("6.2.0")
+            .regtest()
+            .mine_to(Pool::Orchard)
+            .activate_through(NetworkUpgrade::Nu6_3),
+    );
+    let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+    env.build().await?;
+
+    // Mine past the NU6.3 activation height (8) so both eras carry more than one block.
+    let tip = validator.generate_blocks(10).await?;
+    indexer.wait_for_block_num(tip, READY).await?;
+
+    let start = BlockHeight::from(1u32);
+    let blocks = indexer.get_block_range(start, tip).await?;
+    assert!(!blocks.is_empty(), "no compact blocks served");
+
+    let (mut prev_sapling, mut prev_orchard, mut prev_ironwood) =
+        oracle_trees(&validator, 0).await?;
+    let mut total_orchard_actions = 0u64;
+    let mut total_ironwood_actions = 0u64;
+    for (index, block) in blocks.iter().enumerate() {
+        assert_eq!(
+            block.height,
+            index as u64 + 1,
+            "served blocks must be contiguous for the walk's running totals"
+        );
+
+        let metadata = block
+            .chain_metadata
+            .as_ref()
+            .context("every served compact block carries chain metadata")?;
+        let sapling_outputs: u64 = block.vtx.iter().map(|tx| tx.outputs.len() as u64).sum();
+        let orchard_actions: u64 = block.vtx.iter().map(|tx| tx.actions.len() as u64).sum();
+        let ironwood_actions: u64 = block
+            .vtx
+            .iter()
+            .map(|tx| tx.ironwood_actions.len() as u64)
+            .sum();
+        total_orchard_actions += orchard_actions;
+        total_ironwood_actions += ironwood_actions;
+
+        let sapling_size = u64::from(metadata.sapling_commitment_tree_size);
+        let orchard_size = u64::from(metadata.orchard_commitment_tree_size);
+        let ironwood_size = u64::from(metadata.ironwood_commitment_tree_size);
+
+        // Per-pool tree-size delta must equal the served commitment count (the
+        // phantom-reorg regression) — for all three shielded pools, including ironwood.
+        assert_eq!(
+            sapling_size,
+            prev_sapling + sapling_outputs,
+            "sapling tree-size delta must equal the served output count at height {}",
+            block.height
+        );
+        assert_eq!(
+            orchard_size,
+            prev_orchard + orchard_actions,
+            "orchard tree-size delta must equal the served action count at height {}",
+            block.height
+        );
+        assert_eq!(
+            ironwood_size,
+            prev_ironwood + ironwood_actions,
+            "ironwood tree-size delta must equal the served action count at height {}",
+            block.height
+        );
+
+        // Oracle parity against the validator's own tree sizes, including ironwood.
+        let (oracle_sapling, oracle_orchard, oracle_ironwood) =
+            oracle_trees(&validator, block.height).await?;
+        assert_eq!(
+            sapling_size, oracle_sapling,
+            "served sapling tree size must match the validator's own at height {}",
+            block.height
+        );
+        assert_eq!(
+            orchard_size, oracle_orchard,
             "served orchard tree size must match the validator's own at height {}",
             block.height
         );
         assert_eq!(
-            u64::from(metadata.ironwood_commitment_tree_size),
-            oracle_trees.ironwood(),
+            ironwood_size, oracle_ironwood,
             "served ironwood tree size must match the validator's own at height {}",
             block.height
         );
 
-        prev_sapling = metadata.sapling_commitment_tree_size;
-        prev_orchard = metadata.orchard_commitment_tree_size;
-        prev_ironwood = metadata.ironwood_commitment_tree_size;
+        // Coinbase pool-routing flip across the NU6.3 boundary. Blocks are coinbase-only,
+        // so the block's action totals are the coinbase's.
+        if (2..=7).contains(&block.height) {
+            assert!(
+                orchard_actions > 0,
+                "NU5..NU6.2 coinbase must carry Orchard actions at height {}",
+                block.height
+            );
+            assert_eq!(
+                ironwood_actions, 0,
+                "no Ironwood actions before NU6.3 at height {}",
+                block.height
+            );
+        } else if block.height >= 8 {
+            assert!(
+                ironwood_actions > 0,
+                "NU6.3 coinbase must carry Ironwood actions at height {}",
+                block.height
+            );
+            assert_eq!(
+                orchard_actions, 0,
+                "an NU6.3 orchard-receiver coinbase must have an empty Orchard component \
+                 at height {}",
+                block.height
+            );
+        }
+
+        prev_sapling = sapling_size;
+        prev_orchard = orchard_size;
+        prev_ironwood = ironwood_size;
     }
 
+    assert!(
+        total_orchard_actions > 0,
+        "the orchard era (NU5..NU6.2) produced no orchard actions"
+    );
     assert!(
         total_ironwood_actions > 0,
-        "the fixture produced no ironwood actions; the walk asserted nothing about ironwood"
-    );
-    // The counterpart of the guard above: the miner *asked* for Orchard, and from NU6.3
-    // consensus requires an empty Orchard coinbase component, routing the reward into
-    // Ironwood actions instead. With coinbase-only blocks, served orchard actions must
-    // therefore be exactly zero. Together the two totals distinguish failure modes:
-    // pool-swap (orchard > 0, ironwood == 0: ironwood served under the orchard field)
-    // vs pool-drop (both zero) vs a broken routing premise.
-    assert_eq!(
-        total_orchard_actions, 0,
-        "an Orchard-receiver coinbase must carry no Orchard actions from NU6.3"
+        "the ironwood era (NU6.3+) produced no ironwood actions"
     );
 
-    test_manager.close().await;
-}
-
-/// The shielded pool a miner's coinbase routes the reward to: Orchard in the
-/// NU5-through-NU6.2 era (transaction v5), Ironwood from NU6.3 (v6).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CoinbaseRewardPool {
-    Orchard,
-    Ironwood,
-}
-
-/// Shared body of the class-1 (consensus) coinbase predicates: the first
-/// transaction is a coinbase of the era's version, carries the reward as at least
-/// one action in `pool`, and has an empty sapling component and an empty
-/// other-shielded-pool component.
-///
-/// The action count uses `>= 1` rather than the padded exact count so the predicate
-/// does not couple to the Orchard bundle-padding rule.
-fn is_valid_shielded_coinbase(block: &zebra_chain::block::Block, pool: CoinbaseRewardPool) -> bool {
-    let Some(coinbase) = block.transactions.first() else {
-        return false;
-    };
-    let orchard_actions = coinbase.orchard_actions().count();
-    let ironwood_actions = coinbase.ironwood_actions().count();
-    let (version, rewarded_pool_actions, other_pool_actions) = match pool {
-        CoinbaseRewardPool::Orchard => (5, orchard_actions, ironwood_actions),
-        CoinbaseRewardPool::Ironwood => (6, ironwood_actions, orchard_actions),
-    };
-    coinbase.is_coinbase()
-        && coinbase.version() == version
-        && coinbase.sapling_outputs().count() == 0
-        && rewarded_pool_actions >= 1
-        && other_pool_actions == 0
-}
-
-/// Class-1 (consensus) predicate: in the NU5-through-NU6.2 era, a shielded
-/// (orchard-receiver) miner's coinbase carries the reward as Orchard actions.
-fn is_valid_orchard_coinbase(block: &zebra_chain::block::Block) -> bool {
-    is_valid_shielded_coinbase(block, CoinbaseRewardPool::Orchard)
-}
-
-/// Class-1 (consensus) predicate: from NU6.3 the same miner's coinbase must have an
-/// empty Orchard component, with the reward routed to Ironwood actions instead.
-///
-/// Known open question at the activation boundary: the first NU6.3 block's coinbase
-/// has been observed served as Orchard (one action, zero ironwood) — see
-/// <https://github.com/zingolabs/zaino/issues/1368> for the hypotheses (zebrad
-/// builder off-by-one vs missing routing vs a zaino pool-swap). This predicate over
-/// raw validator blocks is that issue's disambiguator.
-fn is_valid_ironwood_coinbase(block: &zebra_chain::block::Block) -> bool {
-    is_valid_shielded_coinbase(block, CoinbaseRewardPool::Ironwood)
-}
-
-/// One-line coinbase summary for assertion messages, so a predicate failure names the
-/// violated clause instead of reporting a bare boolean.
-fn describe_coinbase(block: &zebra_chain::block::Block) -> String {
-    match block.transactions.first() {
-        Some(coinbase) => format!(
-            "coinbase: v{}, sapling outputs {}, orchard actions {}, ironwood actions {}, txs in block {}",
-            coinbase.version(),
-            coinbase.sapling_outputs().count(),
-            coinbase.orchard_actions().count(),
-            coinbase.ironwood_actions().count(),
-            block.transactions.len(),
-        ),
-        None => "block has no transactions".to_string(),
-    }
-}
-
-/// Which shielded pool the fixture's coinbase reward must land in at a given height.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CoinbaseEra {
-    /// Below NU5: the shielded-receiver reward cannot land in either pool.
-    Neither,
-    /// NU5 through NU6.2: the orchard-receiver reward is paid as Orchard actions.
-    Orchard,
-    /// From NU6.3: the same receiver's reward is routed to Ironwood actions.
-    Ironwood,
-}
-
-/// Launches an orchard-receiver mining fixture on `activation_heights`, generates
-/// `blocks` blocks, and asserts each height's raw validator block satisfies exactly
-/// the era predicate `expected_era` assigns it. Raw blocks come straight from the
-/// validator — zaino runs (the harness needs its subscriber as the block-generation
-/// pollable) but is never consulted, so a failure here is a class-1
-/// (consensus/routing) or fixture fact, never a zaino one.
-///
-/// Mismatches are collected across the whole chain and reported together rather than
-/// aborting at the first failing height, so one run distinguishes the hypotheses of
-/// <https://github.com/zingolabs/zaino/issues/1368>: a boundary-only mismatch is the
-/// zebrad builder off-by-one (A1), every-post-activation-height mismatches mean the
-/// routing is absent (A2), and a clean pass here while the e2e wire tests fail moves
-/// the blame to a zaino pool-swap (B).
-async fn assert_coinbase_routing(
-    activation_heights: ActivationHeights,
-    blocks: u32,
-    expected_era: impl Fn(u64) -> CoinbaseEra,
-) {
-    #[allow(deprecated)]
-    let mut test_manager = TestManager::<Zebrad, Rpc>::launch_mining_to(
-        MinerPool::Orchard,
-        &ValidatorKind::Zebrad,
-        None,
-        Some(activation_heights),
-        None,
-        true,
-        false,
-        false,
-    )
-    .await
-    .unwrap();
-    let subscriber = test_manager.subscriber().clone();
-
-    test_manager
-        .generate_blocks_and_wait_for_tip(blocks, &subscriber)
-        .await;
-    let tip = u64::from(subscriber.chain_height().await.unwrap().0);
-
-    let connector = test_manager.full_node_jsonrpc_connector().await;
-    let mut violations: Vec<String> = Vec::new();
-    for height in 0..=tip {
-        let block = match connector
-            .get_block(height.to_string(), Some(0))
-            .await
-            .unwrap()
-        {
-            GetBlockResponse::Raw(raw) => {
-                zebra_chain::block::Block::zcash_deserialize(raw.as_ref())
-                    .expect("validator serves deserializable blocks")
-            }
-            other => panic!("verbosity-0 getblock must return a raw block, got {other:?}"),
-        };
-
-        let expected = expected_era(height);
-        let (want_orchard, want_ironwood) = match expected {
-            CoinbaseEra::Neither => (false, false),
-            CoinbaseEra::Orchard => (true, false),
-            CoinbaseEra::Ironwood => (false, true),
-        };
-        let got_orchard = is_valid_orchard_coinbase(&block);
-        let got_ironwood = is_valid_ironwood_coinbase(&block);
-        if got_orchard != want_orchard || got_ironwood != want_ironwood {
-            violations.push(format!(
-                "height {height}: expected {expected:?}, predicates say \
-                 (orchard: {got_orchard}, ironwood: {got_ironwood}) — {}",
-                describe_coinbase(&block)
-            ));
-        }
-    }
-
-    assert!(
-        violations.is_empty(),
-        "coinbase routing mismatches ({} of {} heights; see \
-         https://github.com/zingolabs/zaino/issues/1368 for the hypothesis map):\n{}",
-        violations.len(),
-        tip + 1,
-        violations.join("\n")
-    );
-
-    test_manager.close().await;
-}
-
-/// Orchard-only era: NU6.3 never activates, so every post-NU5 coinbase stays an
-/// Orchard coinbase and no ironwood ever appears. (The zebrad *default* heights are
-/// now the canonical NU6.3-at-2 set, so this fixture is explicit.)
-///
-/// multi_thread required: the test manager spawns the validator and indexer services.
-#[tokio::test(flavor = "multi_thread")]
-async fn orchard_only_coinbase_routing_zebrad() {
-    assert_coinbase_routing(ORCHARD_ONLY_ACTIVATION_HEIGHTS, 6, |height| {
-        if height >= 2 {
-            CoinbaseEra::Orchard
-        } else {
-            CoinbaseEra::Neither
-        }
-    })
-    .await;
-}
-
-/// Ironwood-only era: NU6.3 active from height 2 (with every prior upgrade), so every
-/// post-activation coinbase is an Ironwood coinbase and no Orchard coinbase ever
-/// appears.
-///
-/// multi_thread required: the test manager spawns the validator and indexer services.
-#[tokio::test(flavor = "multi_thread")]
-async fn ironwood_only_coinbase_routing_zebrad() {
-    assert_coinbase_routing(IRONWOOD_ONLY_ACTIVATION_HEIGHTS, 6, |height| {
-        if height >= 2 {
-            CoinbaseEra::Ironwood
-        } else {
-            CoinbaseEra::Neither
-        }
-    })
-    .await;
-}
-
-/// The transition: the same unchanged orchard-receiver miner produces Orchard
-/// coinbases through NU6.2 and Ironwood coinbases from the NU6.3 activation height —
-/// each predicate exactly delimiting its era, so a mis-timed flip fails on both sides
-/// of the boundary.
-///
-/// multi_thread required: the test manager spawns the validator and indexer services.
-#[tokio::test(flavor = "multi_thread")]
-async fn orchard_coinbase_routing_flips_to_ironwood_at_activation_zebrad() {
-    // Two blocks past the boundary, so both eras carry more than one block.
-    assert_coinbase_routing(
-        ORCHARD_THEN_IRONWOOD_ACTIVATION_HEIGHTS,
-        NU6_3_TRANSITION_BOUNDARY + 2,
-        |height| {
-            if height >= u64::from(NU6_3_TRANSITION_BOUNDARY) {
-                CoinbaseEra::Ironwood
-            } else if height >= 2 {
-                CoinbaseEra::Orchard
-            } else {
-                CoinbaseEra::Neither
-            }
-        },
-    )
-    .await;
+    Ok(())
 }
