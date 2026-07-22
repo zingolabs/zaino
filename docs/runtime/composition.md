@@ -58,8 +58,11 @@ their own currency.
 ### Layer 1 — Block spine (`zaino-store`-shaped)
 
 - `Chain` (in-memory, ~101 blocks, persistent vector, structural sharing) = NFS
-  blocks; `Freezer` (on-disk) = FS blocks. `freeze_horizon = tip − MAX_REORG_DEPTH`
-  is the one boundary.
+  blocks; `Freezer` (on-disk) = FS blocks. **Payload per height is a whole
+  `CompactBlock`** (Q4) — the canonical serving unit, `ChainMetadata` included;
+  the recent window additionally carries reorg metadata (chainwork), i.e. an
+  `IndexedBlock`-equivalent. `freeze_horizon = tip − MAX_REORG_DEPTH` is the one
+  boundary.
 - A companion **side-branch set** (`Arc<HashMap<BlockHash, Block>>`) retains
   recent non-best blocks for fork-serving queries (Q2, decided). Pinned by the
   Snapshot alongside the best-chain `Chain`.
@@ -71,9 +74,13 @@ their own currency.
 
 ### Layer 2 — Typed index layer (`zaino-sync` + `zaino-indexes`)
 
-- Typed indexes (headers, address history, spends, txid-location) built **only
-  over the spine's frozen (finalized, immutable) blocks**.
-- NFS-window typed queries **re-derive on demand** from the spine's in-memory
+- **Auxiliary reverse-lookup indexes only** — `hash_to_height`, `txid_location`,
+  `transparent_spends`, future address-history, and a lean `headers` for
+  fork-walking — built over the spine's frozen (finalized, immutable) blocks.
+  These are exactly the indexes queried *individually* that a block store can't
+  serve (Q4). The compact-block **body** is *not* decomposed — it's stored whole
+  in the spine.
+- NFS-window auxiliary queries **re-derive on demand** from the spine's in-memory
   `Chain` (~101 blocks — cheap).
 - Because it only ever indexes immutable blocks, it needs **no NFS/reorg
   machinery** — the exact thing that makes a purely index-centric design hard.
@@ -112,8 +119,9 @@ Hahn's store lives on `dev` with its own types; adapting it *inward*:
 ## Design decisions & open questions
 
 Pressure-tested against `zaino-store`'s code (`chain.rs`, `chain_stream.rs`,
-`state.rs`): **Q1 and Q2 resolve as additive to Hahn's design, not rewrites** —
-his `im::Vector` `Chain`, Lean-verified `sync_step`/`find_trim_index`, and
+`state.rs`) and the legacy serving code: **Q1, Q2 and Q4 are resolved** (Q1/Q2
+additive to Hahn's design; Q4 decided against body-decomposition). His
+`im::Vector` `Chain`, Lean-verified `sync_step`/`find_trim_index`, and
 lock-minimal concurrency are all keepers.
 
 ### Resolved
@@ -136,6 +144,23 @@ lock-minimal concurrency are all keepers.
   non-best blocks alongside it, pinned by the same `Snapshot`. Additive, moderate.
   Note: reorg *resolution* doesn't need this (`find_trim_index` re-fetches the
   fork from the source) — only *serving* fork-queries does.
+- **Q4 — Finalized store → whole `CompactBlock`s + auxiliary reverse indexes
+  only (decided; verified against serving code).** No client endpoint reads a
+  body index (`txids`/`sapling`/`orchard`/`transparent`) at height to serve —
+  those height-keyed reads occur *only* in reassembly (the ephemeral backend
+  rebuilding compact blocks) and the internal `get_tx_out_set_info` accumulator;
+  single-tx serving reads the body by tx-location, i.e. an index into the
+  height's list ("read the block, pick `tx_index`"). The reverse indices
+  (`hash_to_height`, `txid_location`, `transparent_spends`/spender) *are* called
+  individually throughout serving and a block store can't replace them. So the
+  spine stores **whole `CompactBlock`s** (`ChainMetadata` rides along — no
+  separate tree-size index; the stubbed body decoders become moot) and the index
+  layer builds **only the individually-queried auxiliary indexes**. The 8-way
+  body decomposition is dropped. *Orthogonal:* full `Block` / raw-tx / proofs
+  (what compact discards) still need a separate answer — a full-block store or
+  validator passthrough. *Minor:* `get_tx_out_set_info` walks `transparent` over
+  all heights — reads whole blocks under this model, or keeps a lean transparent
+  index (low-frequency internal JSON-RPC).
 
 ### Open
 
@@ -145,9 +170,6 @@ lock-minimal concurrency are all keepers.
   migration story. Candidate vehicle: the primary/shadow routing in PR #1347.
   The typed-index layer restores *some* integrity; the block-FS still needs its
   own answer.
-- **Q4 — Finalized source of truth.** Do we keep raw finalized blocks (Hahn's
-  Freezer) **and** typed indexes, or does a compact-block index subsume raw FS
-  block storage? What is the canonical finalized block/compact store?
 - **Q5 — Adopt vs re-implement.** How much of `zaino-store` is adopted verbatim
   (the Lean-verified `sync_step`/`find_trim_index` are the crown jewels) vs
   re-implemented against the new ports (Q-table above).
