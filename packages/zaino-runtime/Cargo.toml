@@ -11,3 +11,6 @@ zaino-service = { path = "../zaino-service" }
 zaino-fs = { path = "../zaino-fs" }
 zaino-nfs = { path = "../zaino-nfs" }
 futures = "0.3"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
