@@ -23,6 +23,7 @@ members = [
     "packages/zaino-service",
     "packages/zaino-fs",
     "packages/zaino-nfs",
+    "packages/zaino-runtime",
     "packages/zaino-wallet",
     # Live-test suite (docs/adr/0002, docs/adr/0003, docs/adr/0004).
     # zaino-testutils first: the e2e/clientless partitions depend on it.
