@@ -60,6 +60,9 @@ their own currency.
 - `Chain` (in-memory, ~101 blocks, persistent vector, structural sharing) = NFS
   blocks; `Freezer` (on-disk) = FS blocks. `freeze_horizon = tip − MAX_REORG_DEPTH`
   is the one boundary.
+- A companion **side-branch set** (`Arc<HashMap<BlockHash, Block>>`) retains
+  recent non-best blocks for fork-serving queries (Q2, decided). Pinned by the
+  Snapshot alongside the best-chain `Chain`.
 - **One** `sync_step`-style feed over a `BlockFetcher` port: early-exit /
   forward-fill / slow-sync (backward-walk fork-find). **Reorg is handled here,
   once, and is Lean-verified.**
@@ -77,11 +80,13 @@ their own currency.
 
 ### The Snapshot (spans both)
 
-`Snapshot = { pinned Arc<Chain>, finalized_watermark }`. Reads above the
-watermark hit the pinned `Chain` (reorg-bound, actively pinned); reads below hit
-the finalized store (append-only/immutable, passively coherent). This is the
-**FS-passive / NFS-pinned** asymmetry we derived independently, and it matches
-ADR-0003's cross-request pinning requirement.
+`Snapshot = { pinned Arc<Chain>, pinned Arc<side-branches>, finalized_watermark }`.
+Reads above the watermark hit the pinned `Chain` (reorg-bound, actively pinned);
+fork-serving queries (`getchaintips`, orphaned-fork tx-status, fork-point-by-hash)
+hit the pinned side-branch set; reads below the watermark hit the finalized store
+(append-only/immutable, passively coherent). This is the **FS-passive /
+NFS-pinned** asymmetry we derived independently, and it matches ADR-0003's
+cross-request pinning requirement.
 
 ## Why this beats either alone
 
@@ -104,17 +109,36 @@ Hahn's store lives on `dev` with its own types; adapting it *inward*:
 | `ChainState` (`RwLock<Arc<Chain>>`) | the **runtime-owned** NFS cell |
 | — | the runtime **implements** `zaino-service::IndexerService` |
 
-## Open questions (must resolve before building)
+## Design decisions & open questions
 
-- **Q1 — First-class snapshot.** The snapshot must be a **client-held,
-  multi-query, coherent** handle, held until release (ADR-0003; Nuttycombe;
-  idky137) — **not** Hahn's intra-stream cursor, and **contra** his rationale §3
-  "snapshots mostly unnecessary." His persistent vector *supports* this; we must
-  *expose* it. This resolves the Hahn-vs-reviewers dispute in favor of snapshots.
-- **Q2 — Side branches.** Hahn keeps best-chain only; idky137 flags non-best
-  blocks as load-bearing (`getchaintips`, fork transaction-status, fork-point
-  discovery, deterministic reorg). Retain a **bounded side-branch set** on the
-  spine, or accept the loss? Open.
+Pressure-tested against `zaino-store`'s code (`chain.rs`, `chain_stream.rs`,
+`state.rs`): **Q1 and Q2 resolve as additive to Hahn's design, not rewrites** —
+his `im::Vector` `Chain`, Lean-verified `sync_step`/`find_trim_index`, and
+lock-minimal concurrency are all keepers.
+
+### Resolved
+
+- **Q1 — First-class snapshot → ADD a `snapshot()` handle.** Structurally
+  supported: `ChainState` is `RwLock<Arc<Chain>>`, `Chain` is an immutable
+  `Arc<im::Vector>` (O(1) clone). Hahn exposes only per-call reads and
+  range-scoped `ChainStream`/`BlockIter`, never a captured handle — so no stable
+  view across related requests (the reviewer concern; `stream_snapshots_diverge_
+  after_reorg` proves the pin itself works). Add `fn snapshot(&self) -> Snapshot`
+  = one `chain.read().clone()` + LMDB handle + freeze-horizon, serving arbitrary
+  queries from the pinned `Chain` (≥ its start), falling through to append-only
+  LMDB below. Immutable finalized blocks make pinned-`Chain` + live-`Freezer`
+  coherent across the boundary. Adopts his structure, rejects his "snapshots
+  unnecessary" framing (ADR-0003).
+- **Q2 — Side branches → RETAIN them (decided).** We commit to serving
+  `getchaintips`, orphaned-fork transaction-status, and fork-point-by-hash from
+  memory, so non-best blocks must be kept. `Chain` is strictly best-chain (dense
+  vector), so add a **companion `Arc<HashMap<BlockHash, Block>>`** of recent
+  non-best blocks alongside it, pinned by the same `Snapshot`. Additive, moderate.
+  Note: reorg *resolution* doesn't need this (`find_trim_index` re-fetches the
+  fork from the source) — only *serving* fork-queries does.
+
+### Open
+
 - **Q3 — FS integrity + versioning.** Hahn's raw-block FS drops the current
   `FinalisedState` integrity/tamper model (record integrity, chain continuity,
   Merkle roots, spend/address indexes, FlyClient support) and has no
@@ -130,8 +154,6 @@ Hahn's store lives on `dev` with its own types; adapting it *inward*:
 
 ## Non-goals (not decided here)
 
-- The exact `Chain`/`NfsState` representation (persistent-vector best-chain vs a
-  branch-DAG) — pending **Q2**.
 - Mempool — a separate component that consumes the spine's tip signal.
 - Wire/serving projections (compact/proto/verbose) — outer adapters over the port.
 
