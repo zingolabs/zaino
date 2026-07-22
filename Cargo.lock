@@ -6164,11 +6164,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-fs"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "zaino-core",
+]
+
+[[package]]
 name = "zaino-indexes"
 version = "0.1.0"
 dependencies = [
  "zaino-primitives",
  "zaino-sync",
+]
+
+[[package]]
+name = "zaino-nfs"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "zaino-core",
 ]
 
 [[package]]

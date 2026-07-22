@@ -28,4 +28,7 @@ pub use bundle::{IndexerService, Snapshot};
 pub use controls::{
     Broadcast, MempoolSubscribe, ReportedUpgrades, Serviceable, TakeSnapshot, TipSubscribe,
 };
-pub use reads::{AddressRead, BlockRead, ForkReconcile, SpendRead, TransactionRead, TreestateRead};
+pub use reads::{
+    AddressRead, BlockRead, CompactBlockRead, ForkReconcile, SpendRead, TransactionRead,
+    TreestateRead,
+};

@@ -20,7 +20,7 @@ use futures::stream::{self, BoxStream, StreamExt};
 
 use zaino_core::{
     AddressBalance, AddressDelta, Block, BlockHeader, BlockHash, BlockId, BlockRef, Capability,
-    ForkPoint, Height, HeightRange, Locator, MempoolTx, Outpoint, ReportedUpgrade,
+    CompactBlock, ForkPoint, Height, HeightRange, Locator, MempoolTx, Outpoint, ReportedUpgrade,
     ServiceabilityManifest, ServiceableRange, ShieldedPool, SpendStatus, SubtreeRoot, Transaction,
     TransactionHash, TransparentAddress, Treestate, TxStatus, Utxo,
 };
@@ -30,9 +30,9 @@ use crate::error::{
     TreestateReadError, TxReadError,
 };
 use crate::{
-    AddressRead, BlockRead, Broadcast, ForkReconcile, IndexerService, MempoolSubscribe,
-    ReportedUpgrades, Serviceable, Snapshot, SpendRead, TakeSnapshot, TipSubscribe, TransactionRead,
-    TreestateRead,
+    AddressRead, BlockRead, Broadcast, CompactBlockRead, ForkReconcile, IndexerService,
+    MempoolSubscribe, ReportedUpgrades, Serviceable, Snapshot, SpendRead, TakeSnapshot, TipSubscribe,
+    TransactionRead, TreestateRead,
 };
 
 /// Scriptable chain state. Extend as tests need more; today it carries just
@@ -136,6 +136,21 @@ impl BlockRead for MockSnapshot {
         Ok(None)
     }
     fn stream_blocks(&self, _range: HeightRange) -> BoxStream<'_, Result<Block, ReadError>> {
+        stream::empty().boxed()
+    }
+}
+
+impl CompactBlockRead for MockSnapshot {
+    async fn compact_block(
+        &self,
+        _at: BlockRef,
+    ) -> Result<Option<CompactBlock>, BlockReadError> {
+        Ok(None)
+    }
+    fn stream_compact(
+        &self,
+        _range: HeightRange,
+    ) -> BoxStream<'_, Result<CompactBlock, ReadError>> {
         stream::empty().boxed()
     }
 }

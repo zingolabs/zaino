@@ -6,9 +6,9 @@ use std::future::Future;
 use futures::stream::BoxStream;
 
 use zaino_core::{
-    AddressBalance, AddressDelta, Block, BlockHeader, BlockHash, BlockId, BlockRef, ForkPoint,
-    Height, HeightRange, Locator, Outpoint, ShieldedPool, SpendStatus, SubtreeRoot, Transaction,
-    TransactionHash, TransparentAddress, Treestate, TxStatus, Utxo,
+    AddressBalance, AddressDelta, Block, BlockHeader, BlockHash, BlockId, BlockRef, CompactBlock,
+    ForkPoint, Height, HeightRange, Locator, Outpoint, ShieldedPool, SpendStatus, SubtreeRoot,
+    Transaction, TransactionHash, TransparentAddress, Treestate, TxStatus, Utxo,
 };
 
 use crate::error::{
@@ -28,6 +28,16 @@ pub trait BlockRead: Send + Sync {
         hash: BlockHash,
     ) -> impl Future<Output = Result<Option<Height>, BlockReadError>> + Send;
     fn stream_blocks(&self, range: HeightRange) -> BoxStream<'_, Result<Block, ReadError>>;
+}
+
+/// Backed by: the `compact_block` index (FS) or the NFS `Chain`. The
+/// lightwallet-facing block read — `BlockRead::block` (full) is passthrough.
+pub trait CompactBlockRead: Send + Sync {
+    fn compact_block(
+        &self,
+        at: BlockRef,
+    ) -> impl Future<Output = Result<Option<CompactBlock>, BlockReadError>> + Send;
+    fn stream_compact(&self, range: HeightRange) -> BoxStream<'_, Result<CompactBlock, ReadError>>;
 }
 
 /// Backed by: txid-location index.

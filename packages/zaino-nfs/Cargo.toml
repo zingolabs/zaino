@@ -1,0 +1,10 @@
+[package]
+name = "zaino-nfs"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Non-finalised-state component: the reorg-prone recent window. Adopts Hahn's zaino-store machinery narrowly (Chain + find_trim_index + snapshot + side branches), driven by a tip-follow loop. No LMDB."
+
+[dependencies]
+zaino-core = { path = "../zaino-core" }
+futures = "0.3"

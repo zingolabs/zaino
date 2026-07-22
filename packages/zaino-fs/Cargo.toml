@@ -1,0 +1,10 @@
+[package]
+name = "zaino-fs"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Finalised-state component: elevates the sync engine + indexes into finalised-state semantics (serve compact blocks + aux lookups, bulk-build + freeze). Hides zaino-sync internally."
+
+[dependencies]
+zaino-core = { path = "../zaino-core" }
+futures = "0.3"

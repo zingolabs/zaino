@@ -8,13 +8,15 @@ use crate::controls::{
     Broadcast, MempoolSubscribe, ReportedUpgrades, Serviceable, TakeSnapshot, TipSubscribe,
 };
 use crate::reads::{
-    AddressRead, BlockRead, ForkReconcile, SpendRead, TransactionRead, TreestateRead,
+    AddressRead, BlockRead, CompactBlockRead, ForkReconcile, SpendRead, TransactionRead,
+    TreestateRead,
 };
 
 /// A pinned, reorg-coherent view. Every read observes the chain as of the tip
 /// it was pinned to, for as long as any clone lives (ADR-0003).
 pub trait Snapshot:
     BlockRead
+    + CompactBlockRead
     + TransactionRead
     + TreestateRead
     + AddressRead

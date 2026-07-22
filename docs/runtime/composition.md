@@ -146,10 +146,16 @@ until dropped (Q1).
 - **Keep the sync engine (`zaino-sync`/`zaino-indexes`) whole**, change the index
   set: **add** `compact_block` (pre-index + `tree_sizes`), **keep** the aux
   reverse indexes, **drop** the 8-way body split.
-- **Placement:** NFS window → a small **`zaino-nfs`** crate (`im` + the tip-follow
-  loop; **no LMDB** — FS is the sync engine's backend). `zaino-core` stays pure.
-  `zaino-runtime` orchestrates bulk-build → tip-follow → freeze → serve and
-  implements `IndexerService`.
+- **Placement — a thin runtime + three delegated component crates**, each hiding
+  its infra behind domain semantics:
+  - **`zaino-fs`** — finalised state: elevates `zaino-sync`/`zaino-indexes` into
+    finalised-state semantics (serve compact blocks + aux, bulk-build, freeze);
+    hides the engine internally.
+  - **`zaino-nfs`** — reorg window: `Chain` + `find_trim_index` + snapshot +
+    side-branch set + tip-follow loop (`im`; **no LMDB**).
+  - **`zaino-mempool`** — tip-tagged mempool (deferred).
+  - **`zaino-runtime`** orchestrates the three and implements `IndexerService`;
+    **`zaino-core` stays pure**.
 
 ## Design decisions
 
