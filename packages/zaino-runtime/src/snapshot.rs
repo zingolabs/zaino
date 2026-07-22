@@ -11,7 +11,8 @@ use std::sync::Arc;
 
 use futures::stream::{self, BoxStream, StreamExt};
 
-use zaino_core::{BlockRef, CompactBlock, Height, HeightRange};
+use zaino_core::{BlockRef, Capability, CompactBlock, Height, HeightRange};
+use zaino_fs::error::HeightReadError;
 use zaino_fs::FinalisedState;
 use zaino_nfs::NfsSnapshot;
 use zaino_service::error::{BlockReadError, ReadError};
@@ -45,18 +46,17 @@ where
 {
     async fn compact_block(&self, at: BlockRef) -> Result<Option<CompactBlock>, BlockReadError> {
         match at {
-            // Finalised → the FS compact-block index.
-            BlockRef::Height(h) if h <= self.watermark => self
-                .fs
-                .compact_block(h)
-                .await
-                .map_err(|e| BlockReadError::Fatal(format!("fs: {e:?}"))),
-            // Recent → the pinned NFS window.
-            BlockRef::Height(h) => self
-                .nfs
-                .compact_block(h)
-                .await
-                .map_err(|e| BlockReadError::Fatal(format!("nfs: {e:?}"))),
+            // Finalised → the FS compact-block index (fallible: backend).
+            BlockRef::Height(h) if h <= self.watermark => {
+                self.fs.compact_block(h).await.map_err(|e| match e {
+                    HeightReadError::AboveWatermark(_) => {
+                        BlockReadError::NotServiceable(Capability::Blocks)
+                    }
+                    HeightReadError::Backend(s) => BlockReadError::Fatal(s),
+                })
+            }
+            // Recent → the pinned NFS window (infallible, in-memory).
+            BlockRef::Height(h) => Ok(self.nfs.compact_block(h)),
             // By hash → resolve height (NFS then FS), then route as above.
             BlockRef::Hash(_) => todo!("resolve hash -> height across NFS/FS, then route"),
         }

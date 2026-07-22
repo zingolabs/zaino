@@ -35,50 +35,43 @@ pub trait NonFinalisedState: Send + Sync {
     fn frozen(&self) -> BoxStream<'_, FrozenOut>;
 
     /// Run the tip-follow loop against `source` (a `zaino-source`-shaped
-    /// validator port — bounded in the impl). This is where `find_trim_index`
-    /// resolves reorgs, one block at a time.
+    /// validator port — bounded in the impl). Where `find_trim_index` resolves
+    /// reorgs, one block at a time.
     fn follow<S: Send + Sync>(
         &self,
         source: &S,
-    ) -> impl Future<Output = Result<(), NfsError>> + Send;
+    ) -> impl Future<Output = Result<(), FollowError>> + Send;
 }
 
-/// A pinned view over the reorg window. Reads are coherent for its lifetime,
-/// across reorgs (ADR-0003).
+/// A pinned view over the reorg window. Reads are **in-memory over the pinned
+/// `Chain`, so they are infallible** — a miss is `None` / a domain answer, not
+/// an error. (Contrast the FS component, whose reads hit a backend.) Coherent
+/// for the view's lifetime, across reorgs (ADR-0003).
 pub trait NfsSnapshot: Clone + Send + Sync {
     /// The pinned tip.
     fn tip(&self) -> BlockId;
     /// The height range this window covers: `[finalised + 1, tip]`.
     fn range(&self) -> (Height, Height);
 
-    fn compact_block(
-        &self,
-        height: Height,
-    ) -> impl Future<Output = Result<Option<CompactBlock>, NfsError>> + Send;
-    fn height_of(
-        &self,
-        hash: BlockHash,
-    ) -> impl Future<Output = Result<Option<Height>, NfsError>> + Send;
+    fn compact_block(&self, height: Height) -> Option<CompactBlock>;
+    fn height_of(&self, hash: BlockHash) -> Option<Height>;
     /// Re-derived from the window's blocks (no persistent NFS index).
-    fn spend_status(
-        &self,
-        outpoint: Outpoint,
-    ) -> impl Future<Output = Result<SpendStatus, NfsError>> + Send;
-    fn fork_point(
-        &self,
-        locator: Locator,
-    ) -> impl Future<Output = Result<Option<ForkPoint>, NfsError>> + Send;
+    fn spend_status(&self, outpoint: Outpoint) -> SpendStatus;
+    fn fork_point(&self, locator: Locator) -> Option<ForkPoint>;
 
     // --- side-branch (Q2) ---
     /// All current chain tips, including non-best branches (`getchaintips`).
     fn chain_tips(&self) -> Vec<BlockId>;
 }
 
-/// Non-finalised-state errors (placeholder).
+/// Errors from the tip-follow loop (`follow`).
 #[derive(Debug)]
-pub enum NfsError {
-    /// Likely to resolve on retry (e.g. a reorg mid-fetch).
-    Transient(String),
+pub enum FollowError {
+    /// The validator source failed (retryable).
+    Source(String),
+    /// A reorg deeper than the window (`find_trim_index` fuel exhausted) —
+    /// unresolvable by the loop; needs a resync.
+    ReorgTooDeep,
     /// Unrecoverable.
     Fatal(String),
 }

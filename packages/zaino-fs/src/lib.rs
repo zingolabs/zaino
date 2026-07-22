@@ -8,6 +8,8 @@
 //! Scaffold: capability algebra only. Implementations follow.
 #![forbid(unsafe_code)]
 
+pub mod error;
+
 use std::future::Future;
 
 use zaino_core::{
@@ -15,64 +17,62 @@ use zaino_core::{
     TransactionHash, TransactionLocation, TransparentAddress, Treestate, Utxo,
 };
 
+use error::{AddressReadError, BuildError, FreezeError, HeightReadError, LookupError};
+
 /// A block handed over the freeze boundary (NFS → FS): now final, to be indexed.
 /// Carries enough to store the compact block and extract the aux indexes.
 pub type FrozenBlock = PreIndexCompactBlock;
 
 /// The finalised-state component. Everything it answers is at or below
-/// [`FinalisedState::watermark`] and immutable — so no reorg machinery.
+/// [`FinalisedState::watermark`] and immutable — so no reorg machinery. Each
+/// method carries the error type appropriate to *its* failure modes.
 pub trait FinalisedState: Send + Sync {
-    /// The finalised tip. Reads are valid for heights `<= watermark`.
+    /// The finalised tip. Reads are valid for heights `<= watermark`. Infallible.
     fn watermark(&self) -> Height;
 
-    // --- reads (all <= watermark) ---
+    // --- height-keyed reads (can be above the watermark) ---
     fn compact_block(
         &self,
         height: Height,
-    ) -> impl Future<Output = Result<Option<CompactBlock>, FsError>> + Send;
-    fn height_of(
-        &self,
-        hash: BlockHash,
-    ) -> impl Future<Output = Result<Option<Height>, FsError>> + Send;
-    fn tx_location(
-        &self,
-        txid: TransactionHash,
-    ) -> impl Future<Output = Result<Option<TransactionLocation>, FsError>> + Send;
-    fn spend_status(
-        &self,
-        outpoint: Outpoint,
-    ) -> impl Future<Output = Result<SpendStatus, FsError>> + Send;
-    fn address_balance(
-        &self,
-        addr: &TransparentAddress,
-    ) -> impl Future<Output = Result<AddressBalance, FsError>> + Send;
-    fn address_unspent(
-        &self,
-        addr: &TransparentAddress,
-    ) -> impl Future<Output = Result<Vec<Utxo>, FsError>> + Send;
+    ) -> impl Future<Output = Result<Option<CompactBlock>, HeightReadError>> + Send;
     fn treestate(
         &self,
         height: Height,
-    ) -> impl Future<Output = Result<Treestate, FsError>> + Send;
+    ) -> impl Future<Output = Result<Treestate, HeightReadError>> + Send;
+
+    // --- lookups (miss is Ok, only the backend can fail) ---
+    fn height_of(
+        &self,
+        hash: BlockHash,
+    ) -> impl Future<Output = Result<Option<Height>, LookupError>> + Send;
+    fn tx_location(
+        &self,
+        txid: TransactionHash,
+    ) -> impl Future<Output = Result<Option<TransactionLocation>, LookupError>> + Send;
+    fn spend_status(
+        &self,
+        outpoint: Outpoint,
+    ) -> impl Future<Output = Result<SpendStatus, LookupError>> + Send;
+
+    // --- address-history reads (may be not-enabled in this deployment) ---
+    fn address_balance(
+        &self,
+        addr: &TransparentAddress,
+    ) -> impl Future<Output = Result<AddressBalance, AddressReadError>> + Send;
+    fn address_unspent(
+        &self,
+        addr: &TransparentAddress,
+    ) -> impl Future<Output = Result<Vec<Utxo>, AddressReadError>> + Send;
 
     // --- ingest ---
     /// Bulk-build the finalised state up to `target` (boot catch-up), pulling
     /// from `source` (a `zaino-source`-shaped validator port — bounded in the
-    /// impl). This is where the sync engine's parallel pipeline runs.
+    /// impl). Where the sync engine's parallel pipeline runs.
     fn bulk_build_to<S: Send + Sync>(
         &self,
         target: Height,
         source: &S,
-    ) -> impl Future<Output = Result<(), FsError>> + Send;
+    ) -> impl Future<Output = Result<(), BuildError>> + Send;
     /// Extend by one finalised block (steady-state freeze).
-    fn freeze(&self, block: FrozenBlock) -> impl Future<Output = Result<(), FsError>> + Send;
-}
-
-/// Finalised-state errors (placeholder).
-#[derive(Debug)]
-pub enum FsError {
-    /// Backend I/O or engine failure.
-    Backend(String),
-    /// The requested height is above the finalised watermark.
-    AboveWatermark(Height),
+    fn freeze(&self, block: FrozenBlock) -> impl Future<Output = Result<(), FreezeError>> + Send;
 }
