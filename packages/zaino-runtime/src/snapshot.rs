@@ -23,7 +23,9 @@ use zaino_service::CompactBlockRead;
 /// finalised watermark that splits them.
 pub struct RuntimeSnapshot<F, S> {
     pub(crate) fs: Arc<F>,
-    pub(crate) nfs: S,
+    /// `None` while the NFS window is still syncing — recent reads are then
+    /// `NotServiceable`, never a false `None`.
+    pub(crate) nfs: Option<S>,
     pub(crate) watermark: Height,
 }
 
@@ -55,8 +57,12 @@ where
                     HeightReadError::Backend(s) => BlockReadError::Fatal(s),
                 })
             }
-            // Recent → the pinned NFS window (infallible, in-memory).
-            BlockRef::Height(h) => Ok(self.nfs.compact_block(h)),
+            // Recent → the pinned NFS window (infallible, in-memory) when the
+            // window is ready; `NotServiceable` while it is still syncing.
+            BlockRef::Height(h) => match &self.nfs {
+                Some(nfs) => Ok(nfs.compact_block(h)),
+                None => Err(BlockReadError::NotServiceable(Capability::Blocks)),
+            },
             // By hash → resolve height (NFS then FS), then route as above.
             BlockRef::Hash(_) => todo!("resolve hash -> height across NFS/FS, then route"),
         }

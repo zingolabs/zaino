@@ -18,7 +18,7 @@ pub use snapshot::RuntimeSnapshot;
 use std::sync::Arc;
 
 use zaino_fs::FinalisedState;
-use zaino_nfs::NonFinalisedState;
+use zaino_nfs::{NfsView, NonFinalisedState};
 
 /// The running indexer: a finalised component + a non-finalised component.
 pub struct Runtime<F, N> {
@@ -35,10 +35,18 @@ where
     /// (shared handle) + a pinned NFS view, split at the current finalised
     /// watermark. Reads route FS (`≤ watermark`) vs NFS (`> watermark`).
     pub fn snapshot(&self) -> RuntimeSnapshot<F, N::Snapshot> {
+        let watermark = self.fs.watermark();
+        // A `Syncing` NFS contributes no recent coverage → recent reads become
+        // `NotServiceable`, never a false `None`. The readiness is enforced by
+        // the type, not by a runtime check we could forget.
+        let nfs = match self.nfs.snapshot() {
+            NfsView::Ready(s) => Some(s),
+            NfsView::Syncing { .. } => None,
+        };
         RuntimeSnapshot {
             fs: Arc::clone(&self.fs),
-            nfs: self.nfs.snapshot(),
-            watermark: self.fs.watermark(),
+            nfs,
+            watermark,
         }
     }
 }

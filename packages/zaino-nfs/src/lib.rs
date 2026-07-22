@@ -19,13 +19,29 @@ use zaino_core::{
 /// A block that has crossed the freeze horizon (the NFS → FS handoff).
 pub type FrozenOut = zaino_core::PreIndexCompactBlock;
 
+/// The result of pinning the reorg window. Encodes readiness in the type so a
+/// consumer *cannot* read a not-yet-synced window (locality of correctness) —
+/// there is no `S` to call reads on until the window is established.
+pub enum NfsView<S> {
+    /// The window is live; `S` is a coherent pinned snapshot.
+    Ready(S),
+    /// Not established yet (boot catch-up). Recent reads are unavailable; the
+    /// finalised state is caught up to `finalised`.
+    Syncing {
+        /// The finalised height the FS is caught up to.
+        finalised: Height,
+    },
+}
+
 /// The non-finalised-state component (the reorg window).
 pub trait NonFinalisedState: Send + Sync {
     /// A pinned view (Q1).
     type Snapshot: NfsSnapshot;
 
-    /// Pin the current reorg-window view.
-    fn snapshot(&self) -> Self::Snapshot;
+    /// Pin the current reorg-window view. Returns [`NfsView::Syncing`] until the
+    /// window is established (boot catch-up) — the not-ready state is in the
+    /// type, so recent reads can't be issued against an empty window.
+    fn snapshot(&self) -> NfsView<Self::Snapshot>;
 
     /// Explicit tip-change subscription (drives mempool re-validation etc.).
     fn subscribe_tip(&self) -> BoxStream<'_, TipEvent>;
