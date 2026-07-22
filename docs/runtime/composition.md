@@ -119,10 +119,10 @@ Hahn's store lives on `dev` with its own types; adapting it *inward*:
 ## Design decisions & open questions
 
 Pressure-tested against `zaino-store`'s code (`chain.rs`, `chain_stream.rs`,
-`state.rs`) and the legacy serving code: **Q1, Q2 and Q4 are resolved** (Q1/Q2
-additive to Hahn's design; Q4 decided against body-decomposition). His
-`im::Vector` `Chain`, Lean-verified `sync_step`/`find_trim_index`, and
-lock-minimal concurrency are all keepers.
+`state.rs`), the legacy serving code, and `sync.rs`: **Q1, Q2, Q4 and Q5 are
+resolved** — only Q3 (integrity/versioning) remains. His `im::Vector` `Chain`,
+Lean-verified `sync_step`/`find_trim_index`, and lock-minimal concurrency are all
+keepers.
 
 ### Resolved
 
@@ -156,11 +156,27 @@ lock-minimal concurrency are all keepers.
   spine stores **whole `CompactBlock`s** (`ChainMetadata` rides along — no
   separate tree-size index; the stubbed body decoders become moot) and the index
   layer builds **only the individually-queried auxiliary indexes**. The 8-way
-  body decomposition is dropped. *Orthogonal:* full `Block` / raw-tx / proofs
-  (what compact discards) still need a separate answer — a full-block store or
-  validator passthrough. *Minor:* `get_tx_out_set_info` walks `transparent` over
+  body decomposition is dropped. **Full `Block` / raw-tx / proofs** (what compact
+  discards) are served by **validator passthrough, not stored** — the legacy
+  pattern (`get_fullblock_bytes_from_node`, `get_raw_transaction` → node; the new
+  arch stores no full blocks either). A full-block cache is a future optimization
+  *only if* whole-chain full-block streaming (zallet scan) becomes a hot path.
+  *Minor:* `get_tx_out_set_info` walks `transparent` over
   all heights — reads whole blocks under this model, or keeps a lean transparent
   index (low-frequency internal JSON-RPC).
+- **Q5 — Adopt vs re-implement → ADOPT the algorithm, re-skin 3 seams (decided;
+  verified in `sync.rs`).** `sync_step`/`find_trim_index`/`BlockStoreSync` are
+  generic over `BlockFetcher` + `ChainState` and never touch LMDB or
+  serialization directly (that lives in `state.rs`/`lmdb.rs`), so the
+  Lean-mirrored algorithm ports near-verbatim. Re-skin: `BlockFetcher` → a
+  `zaino-source`-shaped port; `types.rs` `Block`/`Height`/`BlockHash` →
+  `zaino-primitives` (payload stays opaque = serialized `CompactBlock`, per Q4);
+  `state.rs`/`lmdb.rs` → keep his LMDB or map to `zaino-persistence`.
+  **Placement: a new `zaino-nfs` crate, *not* a `zaino-core` module** — it brings
+  `tokio`/`tokio-util`/`async-trait` (the async sync loop) and `lmdb`/`lmdb-sys`
+  (the freezer), neither of which may enter the async-free pure core. The pure
+  `Chain` stays inside `zaino-nfs`; `zaino-core` is untouched. (Bonus: his
+  `blake2` BLAKE2b checksums partially pre-answer Q3.)
 
 ### Open
 
@@ -170,9 +186,6 @@ lock-minimal concurrency are all keepers.
   migration story. Candidate vehicle: the primary/shadow routing in PR #1347.
   The typed-index layer restores *some* integrity; the block-FS still needs its
   own answer.
-- **Q5 — Adopt vs re-implement.** How much of `zaino-store` is adopted verbatim
-  (the Lean-verified `sync_step`/`find_trim_index` are the crown jewels) vs
-  re-implemented against the new ports (Q-table above).
 
 ## Non-goals (not decided here)
 
