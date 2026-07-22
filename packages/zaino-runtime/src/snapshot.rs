@@ -1,11 +1,9 @@
-//! The runtime's composed snapshot.
+//! The runtime's pinned read-context.
 //!
-//! FS (finalised, `≤ watermark`) + a pinned NFS view (recent, `> watermark`),
-//! routed by height. This is where the two delegated components meet to satisfy
-//! the read capabilities of `zaino-service::Snapshot`.
-//!
-//! Scaffold: `CompactBlockRead` is wired to show the routing pattern; the rest
-//! of the `Snapshot` bundle follows the same shape.
+//! `RuntimeSnapshot` holds a shared FS handle, a pinned NFS view (`None` while
+//! syncing), the finalised watermark, and the config. Its capability impls are
+//! thin: they consult [`crate::resolve`] for the composition decision (route /
+//! merge / passthrough) and do only the type-specific work.
 
 use std::sync::Arc;
 
@@ -21,15 +19,17 @@ use zaino_nfs::NfsSnapshot;
 use zaino_service::error::{AddressReadError as SvcAddressReadError, BlockReadError, ReadError};
 use zaino_service::{AddressRead, CompactBlockRead};
 
-/// A pinned, reorg-coherent view composed from both components. Holds a shared
-/// FS handle (finalised reads) + a pinned NFS snapshot (recent reads) + the
-/// finalised watermark that splits them.
+use crate::config::RuntimeConfig;
+use crate::resolve::{self, Tier};
+
+/// A pinned, reorg-coherent view composed from both components.
 pub struct RuntimeSnapshot<F, S> {
     pub(crate) fs: Arc<F>,
     /// `None` while the NFS window is still syncing — recent reads are then
     /// `NotServiceable`, never a false `None`.
     pub(crate) nfs: Option<S>,
     pub(crate) watermark: Height,
+    pub(crate) cfg: Arc<RuntimeConfig>,
 }
 
 // Manual Clone: `Arc<F>` clones regardless of `F`, so we don't want the derive's
@@ -40,6 +40,7 @@ impl<F, S: Clone> Clone for RuntimeSnapshot<F, S> {
             fs: Arc::clone(&self.fs),
             nfs: self.nfs.clone(),
             watermark: self.watermark,
+            cfg: Arc::clone(&self.cfg),
         }
     }
 }
@@ -50,30 +51,22 @@ where
     S: NfsSnapshot,
 {
     async fn compact_block(&self, at: BlockRef) -> Result<Option<CompactBlock>, BlockReadError> {
-        match at {
-            // Finalised → the FS compact-block index (fallible: backend).
-            BlockRef::Height(h) if h <= self.watermark => {
-                self.fs.compact_block(h).await.map_err(|e| match e {
-                    HeightReadError::AboveWatermark(_) => {
-                        BlockReadError::NotServiceable(Capability::Blocks)
-                    }
-                    HeightReadError::Backend(s) => BlockReadError::Fatal(s),
-                })
-            }
-            // Recent → the pinned NFS window (infallible, in-memory) when the
-            // window is ready; `NotServiceable` while it is still syncing.
-            BlockRef::Height(h) => match &self.nfs {
-                Some(nfs) => Ok(nfs.compact_block(h)),
+        let height = match at {
+            BlockRef::Height(h) => h,
+            BlockRef::Hash(_) => todo!("resolve hash -> height across NFS/FS, then route"),
+        };
+        // Route: one tier, by height at the watermark (the boundary is policy;
+        // recent-not-ready is our `Option`).
+        match resolve::tier_of(height, self.watermark) {
+            Tier::Finalised => self.fs.compact_block(height).await.map_err(fs_height_err),
+            Tier::Recent => match &self.nfs {
+                Some(nfs) => Ok(nfs.compact_block(height)),
                 None => Err(BlockReadError::NotServiceable(Capability::Blocks)),
             },
-            // By hash → resolve height (NFS then FS), then route as above.
-            BlockRef::Hash(_) => todo!("resolve hash -> height across NFS/FS, then route"),
         }
     }
 
     fn stream_compact(&self, _range: HeightRange) -> BoxStream<'_, Result<CompactBlock, ReadError>> {
-        // TODO: walk the range, routing each height at the watermark
-        // (FS index below, NFS Chain above).
         stream::empty().boxed()
     }
 }
@@ -87,16 +80,14 @@ where
         &self,
         addr: &TransparentAddress,
     ) -> Result<Vec<Utxo>, SvcAddressReadError> {
-        // US-1.3: an address's unspent set spans both tiers → a **merge**, not a
-        // route: finalised UTXOs (FS index) plus those created in the recent
-        // window (NFS, re-derived).
-        let mut utxos = self.fs.address_unspent(addr).await.map_err(map_fs_addr)?;
-        if let Some(nfs) = &self.nfs {
-            utxos.extend(nfs.address_unspent(addr));
-        }
-        // TODO(US-1.3): drop finalised UTXOs spent *within* the recent window —
-        // needs recent spends-by-address from NFS.
-        Ok(utxos)
+        // Merge: needs both tiers to be coherent, so it is unserviceable until
+        // the recent window is ready. The combine itself lives in `resolve`.
+        let Some(nfs) = &self.nfs else {
+            return Err(SvcAddressReadError::NotServiceable(Capability::AddressHistory));
+        };
+        let finalised = self.fs.address_unspent(addr).await.map_err(fs_addr_err)?;
+        let recent = nfs.address_unspent(addr);
+        Ok(resolve::merge_unspent(finalised, recent))
     }
 
     async fn balance(
@@ -104,25 +95,34 @@ where
         _addr: &TransparentAddress,
         _range: HeightRange,
     ) -> Result<AddressBalance, SvcAddressReadError> {
-        todo!("same FS ∪ NFS merge shape as unspent_outpoints")
+        todo!("Merge — same shape as unspent_outpoints")
     }
     async fn deltas(
         &self,
         _addr: &TransparentAddress,
         _range: HeightRange,
     ) -> Result<Vec<AddressDelta>, SvcAddressReadError> {
-        todo!("merge, same shape")
+        todo!("Merge")
     }
     async fn tx_ids(
         &self,
         _addr: &TransparentAddress,
         _range: HeightRange,
     ) -> Result<Vec<TransactionHash>, SvcAddressReadError> {
-        todo!("merge, same shape")
+        todo!("Merge")
     }
 }
 
-fn map_fs_addr(e: FsAddressReadError) -> SvcAddressReadError {
+// --- error mapping at the FS → service boundary ---
+
+fn fs_height_err(e: HeightReadError) -> BlockReadError {
+    match e {
+        HeightReadError::AboveWatermark(_) => BlockReadError::NotServiceable(Capability::Blocks),
+        HeightReadError::Backend(s) => BlockReadError::Fatal(s),
+    }
+}
+
+fn fs_addr_err(e: FsAddressReadError) -> SvcAddressReadError {
     match e {
         FsAddressReadError::Backend(s) => SvcAddressReadError::Fatal(s),
         FsAddressReadError::NotEnabled => {
