@@ -1,201 +1,194 @@
-# Runtime Composition — Block-Store Spine ⊕ Typed-Index Layer
+# Runtime Composition — FS Index Engine ⊕ NFS Reorg Window
 
-**Status:** design direction. Open questions below are unresolved — this is not
-yet an ADR, it's the shape we're converging on and the decisions still owed.
+**Status:** design direction. Q1, Q2, Q4, Q5 resolved; Q3 open. This supersedes
+the earlier "block-store spine ⊕ typed-index layer" framing — see **The key
+insight**.
 
 ## Problem
 
-The runtime (subdomain **C** — the orchestrator that implements the inner
-driving surface `zaino-service::IndexerService`) must own four things the
-current code splits badly:
+The runtime (subdomain **C** — the orchestrator implementing
+`zaino-service::IndexerService`) must handle the chain across **two operational
+states**:
 
-- a reorg-safe view of the recent chain (**NFS**),
-- an append-only finalized store (**FS**),
-- a single coherent **feed** that advances both,
-- a **snapshot** that serves coherent *cross-request* reads across both.
+- **Catch-up (bulk, on boot):** fetch the whole finalized history and build the
+  store + indexes. Throughput-bound, one-time, not fully operational
+  (passthrough covers the gap).
+- **Tip-follow (steady):** ingest one newly-mined block at a time, reorg-aware.
+  Latency-bound, forever.
 
-Three existing efforts each cover part of this; none covers all of it:
+Plus a **snapshot** for coherent cross-request reads spanning both. Legacy
+`NodeBackedChainIndex` does all this unsoundly (three validator pollers, a
+fragile single-writer, reorg-unsafe `height→hash` lookups, an undetected
+chain-shortening bug). Two efforts each cover part:
 
-- **`zaino-sync`** (new engine) builds *typed indexes* over finalized blocks
-  (batch/DAG). **FS only** — explicitly does not model NFS or reorg.
-- **Legacy `NodeBackedChainIndex`** (`zaino-state`) models NFS+FS+feed+snapshot,
-  but unsoundly: three independent validator pollers, a fragile single-writer
-  `load → mutate → store`, reorg-unsafe `height→hash` lookups, a two-tier seam,
-  and an undetected chain-shortening reorg bug (rationale §6 Case A; confirmed by
-  our own behavioural survey).
-- **Hahn's `zaino-store`** (PR #1378) is a two-tier reorg-safe **block** store
-  with a **Lean-verified** sync/reorg algorithm — but it is block-only (no typed
-  indexes / integrity model), best-chain-only, and argues snapshots are "mostly
-  unnecessary" (disputed by review).
+- **`zaino-sync`** — a parallel batch/DAG **index engine**. Great at bulk
+  indexing; models no NFS/reorg.
+- **Hahn's `zaino-store`** (PR #1378) — a two-tier block store with a
+  **Lean-verified reorg algorithm** (`find_trim_index`); block-only, no typed
+  indexes.
 
-## Decision (direction)
+## The key insight
 
-Build the runtime as two composed layers, split by **layer** (block-spine vs
-typed-index), **not** by **tier** (FS vs NFS). Both layers span both tiers, in
-their own currency.
+**The finalized block store is not a separate thing — it's one index in the
+sync engine.** A compact block is just `height → CompactBlock`; stored as an
+index it gives 1-read block serving inside the same backend as the aux indexes.
+The current 8-way body decomposition (headers/txids/sapling/orchard/transparent
+as separate indexes) is *coincidental* — nothing queries the pieces
+individually (verified against the serving code) — so collapse it into one
+compact-block index.
+
+That dissolves the "block store vs index engine" split for the finalized state:
+**the sync engine *is* the FS store.** And it collapses Hahn's role: with no
+separate finalized block store needed, **Hahn contributes only the reorg-prone
+window** — `Chain` + `find_trim_index` + snapshot. No `Freezer`, no forward-fill,
+no `sync_step`.
+
+## Decision
+
+Two engines, split by **operational state** and by **finalized vs reorg-prone**,
+meeting at the freeze horizon.
 
 ```
-                          incoming reads (zaino-service::IndexerService)
-                                          │
-   ┌──────────────────────────────────────┼───────────────────────────────┐
-   │  Snapshot = { pinned Arc<Chain>, finalized_watermark }                 │
-   │     above watermark → pinned Chain (NFS, reorg-bound, actively pinned) │
-   │     below watermark → finalized store (append-only, passively coherent)│
-   └──────────────────────────────────────┼───────────────────────────────┘
-                                           │
-   Layer 1 — BLOCK SPINE (zaino-store)     │   Layer 2 — TYPED INDEXES (zaino-sync)
-   ───────────────────────────────────    │   ──────────────────────────────────
-   Chain    : in-mem ~101 blocks (NFS)     │   headers / address / spends / txid-loc
-   Freezer  : on-disk blocks     (FS)      │   built ONLY over the spine's FROZEN
-   sync_step: one feed / BlockFetcher      │   (finalized, immutable) blocks.
-   reorg    : find_trim_index (Lean)       │   NFS-window typed queries RE-DERIVE
-   serves   : block / compact by height    │   on demand from the in-mem Chain.
-   hands out: the Snapshot (pins Chain)    │   → no NFS/reorg machinery needed.
-                                           │
-        blocks flow ─────────── freeze horizon ──────────▶ index over frozen blocks
+                     incoming reads (zaino-service::IndexerService)
+                                       │
+  ┌─────────────────────────────────────┼─────────────────────────────────────┐
+  │ Snapshot = { pinned NFS Chain (+ side branches), FS watermark }             │
+  │   recent (> watermark)   → pinned NFS Chain (reorg-bound, actively pinned)  │
+  │   finalized (≤ watermark)→ FS index reads (append-only, passively coherent) │
+  └─────────────────────────────────────┼─────────────────────────────────────┘
+                                         │
+  FS — sync engine (one backend)         │  NFS — reorg window (adopt Hahn)
+  ──────────────────────────────         │  ────────────────────────────────
+  compact_block : height → CompactBlock  │  Chain: in-mem ~101 blocks (im::Vector)
+    (= the block store; pre_index +      │  find_trim_index: reorg (Lean-verified)
+     tree_sizes fold, reassembled)       │  snapshot: pins the Chain
+  hash_to_height, txid_location,         │  side-branch set (Q2)
+  transparent_spends, address-history    │  aux queries here re-derive from Chain
+  built: BULK parallel on boot,          │  driven: TIP-FOLLOW loop (1 block/iter)
+         per-block at freeze             │
+                                         │
+       catch-up (bulk) ─────────── freeze horizon ─────────── tip-follow (steady)
 ```
 
-### Layer 1 — Block spine (`zaino-store`-shaped)
+### FS — the sync engine owns the finalized state (blocks + indexes)
 
-- `Chain` (in-memory, ~101 blocks, persistent vector, structural sharing) = NFS
-  blocks; `Freezer` (on-disk) = FS blocks. **Payload per height is a whole
-  `CompactBlock`** (Q4) — the canonical serving unit, `ChainMetadata` included;
-  the recent window additionally carries reorg metadata (chainwork), i.e. an
-  `IndexedBlock`-equivalent. `freeze_horizon = tip − MAX_REORG_DEPTH` is the one
-  boundary.
-- A companion **side-branch set** (`Arc<HashMap<BlockHash, Block>>`) retains
-  recent non-best blocks for fork-serving queries (Q2, decided). Pinned by the
-  Snapshot alongside the best-chain `Chain`.
-- **One** `sync_step`-style feed over a `BlockFetcher` port: early-exit /
-  forward-fill / slow-sync (backward-walk fork-find). **Reorg is handled here,
-  once, and is Lean-verified.**
-- Serves block/compact-by-height queries and hands out the **Snapshot** (pins an
-  `Arc<Chain>`).
+One backend, uniform indexes:
+- **`compact_block`** — `height → CompactBlock`; *this is the finalized block
+  store*. 1-read serving. (Realized as `pre_index_compact_block` (L-scope) + a
+  `tree_sizes` (S-scope) fold, reassembled at serve — see Q4.)
+- **aux reverse indexes** — `hash_to_height`, `txid_location`,
+  `transparent_spends`, address-history: the lookups a block store can't answer.
+- The 8-way body decomposition is **dropped**.
 
-### Layer 2 — Typed index layer (`zaino-sync` + `zaino-indexes`)
+Built by the sync engine's **parallel bulk pipeline on boot** (start-height →
+`tip−D`), extended **per-block at freeze** in steady state. Only ever indexes
+immutable (finalized) blocks — so it needs **no reorg machinery**.
 
-- **Auxiliary reverse-lookup indexes only** — `hash_to_height`, `txid_location`,
-  `transparent_spends`, future address-history, and a lean `headers` for
-  fork-walking — built over the spine's frozen (finalized, immutable) blocks.
-  These are exactly the indexes queried *individually* that a block store can't
-  serve (Q4). The compact-block **body** is *not* decomposed — it's stored whole
-  in the spine.
-- NFS-window auxiliary queries **re-derive on demand** from the spine's in-memory
-  `Chain` (~101 blocks — cheap).
-- Because it only ever indexes immutable blocks, it needs **no NFS/reorg
-  machinery** — the exact thing that makes a purely index-centric design hard.
+### NFS — adopt Hahn's reorg window, and only that
 
-### The Snapshot (spans both)
+The in-memory reorg-prone window:
+- **`Chain`** (`im::Vector`, ~101 blocks) + a **side-branch set** (Q2) for
+  fork-serving.
+- **`find_trim_index`** — the Lean-verified reorg/fork-find (adopted
+  near-verbatim).
+- **snapshot** — pin an `Arc<Chain>` (Q1).
+- Driven by a **tip-follow loop** (light: one block at a time).
+- NFS aux queries **re-derive** from the `Chain` (cheap over ~101 blocks) — no
+  persistent NFS index.
 
-`Snapshot = { pinned Arc<Chain>, pinned Arc<side-branches>, finalized_watermark }`.
-Reads above the watermark hit the pinned `Chain` (reorg-bound, actively pinned);
-fork-serving queries (`getchaintips`, orphaned-fork tx-status, fork-point-by-hash)
-hit the pinned side-branch set; reads below the watermark hit the finalized store
-(append-only/immutable, passively coherent). This is the **FS-passive /
-NFS-pinned** asymmetry we derived independently, and it matches ADR-0003's
-cross-request pinning requirement.
+### The boundary
 
-## Why this beats either alone
+The **freeze horizon** (`tip − D`). At boot the bulk build fills FS to `tip−D`,
+then the NFS `Chain` slow-syncs the last `D`. In steady state a block crossing
+the horizon **freezes**: the tip-follower hands the already-fetched block to the
+sync engine's per-block extract (block + aux → FS). **No redundant fetch** —
+bulk covers `[start, tip−D]`, the `Chain` covers `[tip−D, tip]` (disjoint);
+freeze reuses the fetched block.
 
-- **Reorg lives in one proven place** (the spine), not smeared across N indexes.
-- **Typed indexes only ever see immutable blocks** → simple, batch, no rollback.
-- The **dominant lightwallet workload** (compact-block-by-height streaming) is
-  served directly by the spine, reorg-safe, with an O(1) cursor.
-- **Snapshots are cheap** — an `Arc` pin over a persistent vector.
+## Ingestion & data flow
 
-## Mapping onto the new hexagonal arch
+- **Boot / catch-up:** the sync engine's parallel bulk pipeline builds FS
+  (compact-block index + aux) from the start height to `tip−D`. Passthrough
+  serves un-built ranges; **serviceability advertises the synced height** (partial
+  service during catch-up). Then the NFS `Chain` slow-syncs `tip−D → tip`.
+- **Tip-follow (steady):** the tip-follow loop extends/reorgs the `Chain` (via
+  `find_trim_index`) one block at a time. On freeze, the graduated block is
+  extracted into FS. Reorgs only ever touch the `Chain`.
+- **Single ingestor per range:** the bulk and tip paths are disjoint; freeze
+  reuses the fetched block. No two components fetch the same range.
 
-Hahn's store lives on `dev` with its own types; adapting it *inward*:
+## The Snapshot
 
-| Hahn's `zaino-store` | New-arch home |
-|---|---|
-| `BlockFetcher` trait | a `zaino-source`-shaped **driven port** |
-| `Block { data: Vec<u8> }` (opaque) | payload stays opaque bytes at the spine; typed decode happens in the index layer. Ids reconcile with `zaino-primitives` |
-| its own LMDB | `zaino-persistence` / a block backend (may stay **distinct** from the index backend) |
-| `sync_step` loop | one of the runtime's **producer tasks** |
-| `ChainState` (`RwLock<Arc<Chain>>`) | the **runtime-owned** NFS cell |
-| — | the runtime **implements** `zaino-service::IndexerService` |
+`Snapshot = { pinned Arc<Chain>, pinned Arc<side-branches>, FS watermark }`.
+Recent reads (> watermark) hit the pinned `Chain`; finalized reads (≤ watermark)
+hit the FS indexes (append-only, immutable — passively coherent, no versioning).
+**FS-passive / NFS-pinned**, matching ADR-0003. First-class, client-held, held
+until dropped (Q1).
 
-## Design decisions & open questions
+## Serving
 
-Pressure-tested against `zaino-store`'s code (`chain.rs`, `chain_stream.rs`,
-`state.rs`), the legacy serving code, and `sync.rs`: **Q1, Q2, Q4 and Q5 are
-resolved** — only Q3 (integrity/versioning) remains. His `im::Vector` `Chain`,
-Lean-verified `sync_step`/`find_trim_index`, and lock-minimal concurrency are all
-keepers.
+- **compact block by height** → FS `compact_block` index (finalized) or the NFS
+  `Chain` (recent).
+- **aux lookups** (hash→height, txid→loc, spend-status, address) → FS aux
+  indexes (finalized) or re-derive from the `Chain` (recent).
+- **fork queries** (getchaintips, orphaned-fork tx-status, fork-point) → the NFS
+  side-branch set (Q2).
+- **full `Block` / raw-tx / proofs** → **validator passthrough**, not stored
+  (legacy `get_fullblock_bytes_from_node`; Q4). A full-block cache is a future
+  optimization only if whole-chain full-block streaming (zallet scan) is hot.
 
-### Resolved
+## What we adopt vs keep
 
-- **Q1 — First-class snapshot → ADD a `snapshot()` handle.** Structurally
-  supported: `ChainState` is `RwLock<Arc<Chain>>`, `Chain` is an immutable
-  `Arc<im::Vector>` (O(1) clone). Hahn exposes only per-call reads and
-  range-scoped `ChainStream`/`BlockIter`, never a captured handle — so no stable
-  view across related requests (the reviewer concern; `stream_snapshots_diverge_
-  after_reorg` proves the pin itself works). Add `fn snapshot(&self) -> Snapshot`
-  = one `chain.read().clone()` + LMDB handle + freeze-horizon, serving arbitrary
-  queries from the pinned `Chain` (≥ its start), falling through to append-only
-  LMDB below. Immutable finalized blocks make pinned-`Chain` + live-`Freezer`
-  coherent across the boundary. Adopts his structure, rejects his "snapshots
-  unnecessary" framing (ADR-0003).
-- **Q2 — Side branches → RETAIN them (decided).** We commit to serving
-  `getchaintips`, orphaned-fork transaction-status, and fork-point-by-hash from
-  memory, so non-best blocks must be kept. `Chain` is strictly best-chain (dense
-  vector), so add a **companion `Arc<HashMap<BlockHash, Block>>`** of recent
-  non-best blocks alongside it, pinned by the same `Snapshot`. Additive, moderate.
-  Note: reorg *resolution* doesn't need this (`find_trim_index` re-fetches the
-  fork from the source) — only *serving* fork-queries does.
-- **Q4 — Finalized store → whole `CompactBlock`s + auxiliary reverse indexes
-  only (decided; verified against serving code).** No client endpoint reads a
-  body index (`txids`/`sapling`/`orchard`/`transparent`) at height to serve —
-  those height-keyed reads occur *only* in reassembly (the ephemeral backend
-  rebuilding compact blocks) and the internal `get_tx_out_set_info` accumulator;
-  single-tx serving reads the body by tx-location, i.e. an index into the
-  height's list ("read the block, pick `tx_index`"). The reverse indices
-  (`hash_to_height`, `txid_location`, `transparent_spends`/spender) *are* called
-  individually throughout serving and a block store can't replace them. So the
-  spine stores **whole `CompactBlock`s** (`ChainMetadata` rides along — no
-  separate tree-size index; the stubbed body decoders become moot) and the index
-  layer builds **only the individually-queried auxiliary indexes**. The 8-way
-  body decomposition is dropped. **Full `Block` / raw-tx / proofs** (what compact
-  discards) are served by **validator passthrough, not stored** — the legacy
-  pattern (`get_fullblock_bytes_from_node`, `get_raw_transaction` → node; the new
-  arch stores no full blocks either). A full-block cache is a future optimization
-  *only if* whole-chain full-block streaming (zallet scan) becomes a hot path.
-  *Minor:* `get_tx_out_set_info` walks `transparent` over
-  all heights — reads whole blocks under this model, or keeps a lean transparent
-  index (low-frequency internal JSON-RPC).
-- **Q5 — Adopt vs re-implement → ADOPT the algorithm, re-skin 3 seams (decided;
-  verified in `sync.rs`).** `sync_step`/`find_trim_index`/`BlockStoreSync` are
-  generic over `BlockFetcher` + `ChainState` and never touch LMDB or
-  serialization directly (that lives in `state.rs`/`lmdb.rs`), so the
-  Lean-mirrored algorithm ports near-verbatim. Re-skin: `BlockFetcher` → a
-  `zaino-source`-shaped port; `types.rs` `Block`/`Height`/`BlockHash` →
-  `zaino-primitives` (payload stays opaque = serialized `CompactBlock`, per Q4);
-  `state.rs`/`lmdb.rs` → keep his LMDB or map to `zaino-persistence`.
-  **Placement: a new `zaino-nfs` crate, *not* a `zaino-core` module** — it brings
-  `tokio`/`tokio-util`/`async-trait` (the async sync loop) and `lmdb`/`lmdb-sys`
-  (the freezer), neither of which may enter the async-free pure core. The pure
-  `Chain` stays inside `zaino-nfs`; `zaino-core` is untouched. (Bonus: his
-  `blake2` BLAKE2b checksums partially pre-answer Q3.)
+- **Adopt from Hahn (`zaino-store`) — narrow:** `Chain` (`im::Vector`),
+  `find_trim_index` (Lean-verified reorg), the snapshot pin. **Not** the
+  `Freezer`, forward-fill, or `sync_step` — superseded by the sync engine's bulk
+  build + FS index backend.
+- **Keep the sync engine (`zaino-sync`/`zaino-indexes`) whole**, change the index
+  set: **add** `compact_block` (pre-index + `tree_sizes`), **keep** the aux
+  reverse indexes, **drop** the 8-way body split.
+- **Placement:** NFS window → a small **`zaino-nfs`** crate (`im` + the tip-follow
+  loop; **no LMDB** — FS is the sync engine's backend). `zaino-core` stays pure.
+  `zaino-runtime` orchestrates bulk-build → tip-follow → freeze → serve and
+  implements `IndexerService`.
 
-### Open
+## Design decisions
 
-- **Q3 — FS integrity + versioning.** Hahn's raw-block FS drops the current
-  `FinalisedState` integrity/tamper model (record integrity, chain continuity,
-  Merkle roots, spend/address indexes, FlyClient support) and has no
-  migration story. Candidate vehicle: the primary/shadow routing in PR #1347.
-  The typed-index layer restores *some* integrity; the block-FS still needs its
-  own answer.
+Resolved (verified against `zaino-store` code + legacy serving code):
+
+- **Q1 — First-class snapshot.** Add a client-held `snapshot()` over the pinned
+  `Arc<Chain>`; `im::Vector` supports it trivially (contra Hahn's rationale §3,
+  per reviewers/ADR-0003).
+- **Q2 — Side branches.** Retain a companion side-branch set on the NFS window
+  for fork-serving.
+- **Q4 — Finalized store = the sync engine's compact-block index**
+  (`pre_index_compact_block` L-scope + `tree_sizes` S-scope, reassembled at
+  serve; 2 reads) **+ aux reverse indexes**. Body decomposition dropped, **no
+  separate Freezer**. (Full-`CompactBlock` 1-read serving needs X-scope deps,
+  not yet built — take the 2-read for now.)
+- **Q5 — Adopt only Hahn's NFS window** (`Chain` + `find_trim_index` + snapshot);
+  the FS/bulk path is the sync engine. `sync_step`/`Freezer`/forward-fill not
+  adopted.
+
+Open:
+
+- **Q3 — FS integrity + versioning.** The sync engine's FS has more structure
+  than Hahn's raw blocks (typed indexes), but still needs the integrity/tamper
+  model + migration story (candidate: PR #1347 primary/shadow routing).
 
 ## Non-goals (not decided here)
 
-- Mempool — a separate component that consumes the spine's tip signal.
+- Mempool — a separate component consuming the tip signal.
 - Wire/serving projections (compact/proto/verbose) — outer adapters over the port.
+- The `zaino-nfs` ↔ `zaino-sync` ↔ `zaino-runtime` seam traits — the next step
+  (capabilities algebra).
 
 ## Sources
 
-- Hahn `zaino-store`: `DESIGN.md`, `docs/block-store-rationale.md`, `docs/BlockStore.lean` (PR #1378, branch `store`).
-- PR #1378 review (K. Nuttycombe, idky137): snapshot coherence, side-branch retention, FS integrity, versioned-DB routing.
-- Legacy NFS behavioural survey (this design thread): intent-vs-structure map of `NodeBackedChainIndex`.
-- ADR-0003 (PR #1414): unconditional cross-request snapshot pinning — the requirement Q1 enforces.
-- `docs/sync-engine/*`: the FS typed-index engine.
+- Hahn `zaino-store` (PR #1378): `DESIGN.md`, `block-store-rationale.md`,
+  `BlockStore.lean` — adopted narrowly (Chain + find_trim_index + snapshot).
+- PR #1378 review (Nuttycombe, idky137): snapshot coherence, side-branch
+  retention, FS integrity.
+- Legacy NFS survey + block-type survey (this thread): intent + the
+  CompactBlock/IndexedBlock/index-decomposition map.
+- ADR-0003 (PR #1414): unconditional cross-request snapshot pinning.
+- `docs/sync-engine/*`: the index engine.
