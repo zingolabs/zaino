@@ -14,6 +14,7 @@ use futures::stream::BoxStream;
 
 use zaino_core::{
     BlockHash, BlockId, CompactBlock, ForkPoint, Height, Locator, Outpoint, SpendStatus, TipEvent,
+    TransparentAddress, Utxo,
 };
 
 /// A block that has crossed the freeze horizon (the NFS → FS handoff).
@@ -74,6 +75,11 @@ pub trait NfsSnapshot: Clone + Send + Sync {
     /// Re-derived from the window's blocks (no persistent NFS index).
     fn spend_status(&self, outpoint: Outpoint) -> SpendStatus;
     fn fork_point(&self, locator: Locator) -> Option<ForkPoint>;
+
+    /// Unspent outpoints for `addr` created within (and still unspent within)
+    /// this window — re-derived, infallible. Merged with the FS index by the
+    /// runtime for a snapshot-coherent unspent set (US-1.3).
+    fn address_unspent(&self, addr: &TransparentAddress) -> Vec<Utxo>;
 
     // --- side-branch (Q2) ---
     /// All current chain tips, including non-best branches (`getchaintips`).

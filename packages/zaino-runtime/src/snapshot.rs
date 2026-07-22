@@ -11,12 +11,15 @@ use std::sync::Arc;
 
 use futures::stream::{self, BoxStream, StreamExt};
 
-use zaino_core::{BlockRef, Capability, CompactBlock, Height, HeightRange};
-use zaino_fs::error::HeightReadError;
+use zaino_core::{
+    AddressBalance, AddressDelta, BlockRef, Capability, CompactBlock, Height, HeightRange,
+    TransactionHash, TransparentAddress, Utxo,
+};
+use zaino_fs::error::{AddressReadError as FsAddressReadError, HeightReadError};
 use zaino_fs::FinalisedState;
 use zaino_nfs::NfsSnapshot;
-use zaino_service::error::{BlockReadError, ReadError};
-use zaino_service::CompactBlockRead;
+use zaino_service::error::{AddressReadError as SvcAddressReadError, BlockReadError, ReadError};
+use zaino_service::{AddressRead, CompactBlockRead};
 
 /// A pinned, reorg-coherent view composed from both components. Holds a shared
 /// FS handle (finalised reads) + a pinned NFS snapshot (recent reads) + the
@@ -72,5 +75,58 @@ where
         // TODO: walk the range, routing each height at the watermark
         // (FS index below, NFS Chain above).
         stream::empty().boxed()
+    }
+}
+
+impl<F, S> AddressRead for RuntimeSnapshot<F, S>
+where
+    F: FinalisedState + 'static,
+    S: NfsSnapshot,
+{
+    async fn unspent_outpoints(
+        &self,
+        addr: &TransparentAddress,
+    ) -> Result<Vec<Utxo>, SvcAddressReadError> {
+        // US-1.3: an address's unspent set spans both tiers → a **merge**, not a
+        // route: finalised UTXOs (FS index) plus those created in the recent
+        // window (NFS, re-derived).
+        let mut utxos = self.fs.address_unspent(addr).await.map_err(map_fs_addr)?;
+        if let Some(nfs) = &self.nfs {
+            utxos.extend(nfs.address_unspent(addr));
+        }
+        // TODO(US-1.3): drop finalised UTXOs spent *within* the recent window —
+        // needs recent spends-by-address from NFS.
+        Ok(utxos)
+    }
+
+    async fn balance(
+        &self,
+        _addr: &TransparentAddress,
+        _range: HeightRange,
+    ) -> Result<AddressBalance, SvcAddressReadError> {
+        todo!("same FS ∪ NFS merge shape as unspent_outpoints")
+    }
+    async fn deltas(
+        &self,
+        _addr: &TransparentAddress,
+        _range: HeightRange,
+    ) -> Result<Vec<AddressDelta>, SvcAddressReadError> {
+        todo!("merge, same shape")
+    }
+    async fn tx_ids(
+        &self,
+        _addr: &TransparentAddress,
+        _range: HeightRange,
+    ) -> Result<Vec<TransactionHash>, SvcAddressReadError> {
+        todo!("merge, same shape")
+    }
+}
+
+fn map_fs_addr(e: FsAddressReadError) -> SvcAddressReadError {
+    match e {
+        FsAddressReadError::Backend(s) => SvcAddressReadError::Fatal(s),
+        FsAddressReadError::NotEnabled => {
+            SvcAddressReadError::NotServiceable(Capability::AddressHistory)
+        }
     }
 }

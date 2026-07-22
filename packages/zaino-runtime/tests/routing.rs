@@ -17,7 +17,7 @@ use zaino_fs::{FinalisedState, FrozenBlock};
 use zaino_nfs::{FollowError, FrozenOut, NfsSnapshot, NfsView, NonFinalisedState};
 use zaino_runtime::RuntimeBuilder;
 use zaino_service::error::BlockReadError;
-use zaino_service::CompactBlockRead;
+use zaino_service::{AddressRead, CompactBlockRead};
 
 // --- a shared call recorder, so we can see which tier answered ---
 
@@ -84,6 +84,7 @@ impl FinalisedState for MockFs {
         &self,
         _addr: &TransparentAddress,
     ) -> Result<Vec<Utxo>, AddressReadError> {
+        self.calls.record("addr-fs".to_string());
         Ok(Vec::new())
     }
     async fn bulk_build_to<S: Send + Sync>(
@@ -126,6 +127,10 @@ impl NfsSnapshot for MockNfsSnap {
     }
     fn fork_point(&self, _locator: Locator) -> Option<ForkPoint> {
         None
+    }
+    fn address_unspent(&self, _addr: &TransparentAddress) -> Vec<Utxo> {
+        self.calls.record("addr-nfs".to_string());
+        Vec::new()
     }
     fn chain_tips(&self) -> Vec<BlockId> {
         Vec::new()
@@ -227,4 +232,35 @@ async fn recent_reads_are_not_serviceable_while_nfs_syncs() {
         "NFS must not be read while syncing, got {:?}",
         calls.log()
     );
+}
+
+/// US-1.3: an address's unspent set is a merge of both tiers, not a route —
+/// both FS and NFS must be consulted.
+#[tokio::test]
+async fn address_unspent_merges_fs_and_nfs() {
+    let calls = Calls::default();
+    let fs = MockFs {
+        watermark: h(100),
+        calls: calls.clone(),
+    };
+    let nfs = MockNfs {
+        ready: true,
+        snap: MockNfsSnap {
+            tip: block_id(150, 0xAA),
+            range: (h(101), h(150)),
+            calls: calls.clone(),
+        },
+        finalised: h(100),
+    };
+
+    let runtime = RuntimeBuilder::new().init(fs, nfs, ()).await.expect("init");
+    let snap = runtime.snapshot();
+
+    let addr = TransparentAddress::new("t1example".to_string());
+    let utxos = snap.unspent_outpoints(&addr).await.expect("merge ok");
+    assert!(utxos.is_empty());
+
+    let log = calls.log();
+    assert!(log.contains(&"addr-fs".to_string()), "FS not consulted: {log:?}");
+    assert!(log.contains(&"addr-nfs".to_string()), "NFS not consulted: {log:?}");
 }
