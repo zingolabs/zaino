@@ -1,62 +1,69 @@
 //! The runtime's pinned read-context.
 //!
 //! `RuntimeSnapshot` holds a shared FS handle, a pinned NFS view (`None` while
-//! syncing), the finalised watermark, and the config. Its capability impls are
-//! thin: they consult [`crate::resolve`] for the composition decision (route /
-//! merge / passthrough) and do only the type-specific work.
+//! syncing), the finalised watermark, the passthrough handle, and the config.
+//! Its capability impls are thin: they consult [`crate::resolve`] for the
+//! composition decision (route / merge / passthrough) and do only the
+//! type-specific work.
 
 use std::sync::Arc;
 
 use futures::stream::{self, BoxStream, StreamExt};
 
 use zaino_core::{
-    AddressBalance, AddressDelta, BlockRef, Capability, CompactBlock, Height, HeightRange,
-    TransactionHash, TransparentAddress, Utxo,
+    AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockId, BlockRef, Capability,
+    CompactBlock, Height, HeightRange, Transaction, TransactionHash, TransparentAddress, TxStatus,
+    Utxo,
 };
-use zaino_fs::error::{AddressReadError as FsAddressReadError, HeightReadError};
+use zaino_fs::error::{AddressReadError as FsAddressReadError, HeightReadError, LookupError};
 use zaino_fs::FinalisedState;
 use zaino_nfs::NfsSnapshot;
-use zaino_service::error::{AddressReadError as SvcAddressReadError, BlockReadError, ReadError};
-use zaino_service::{AddressRead, CompactBlockRead};
+use zaino_service::error::{
+    AddressReadError as SvcAddressReadError, BlockReadError, ReadError, TxReadError,
+};
+use zaino_service::{AddressRead, BlockRead, CompactBlockRead, TransactionRead};
 
 use crate::config::RuntimeConfig;
+use crate::passthrough::Passthrough;
 use crate::resolve::{self, Tier};
 
-/// A pinned, reorg-coherent view composed from both components.
-pub struct RuntimeSnapshot<F, S> {
+/// A pinned, reorg-coherent view composed from both components + passthrough.
+pub struct RuntimeSnapshot<F, S, P> {
     pub(crate) fs: Arc<F>,
     /// `None` while the NFS window is still syncing — recent reads are then
     /// `NotServiceable`, never a false `None`.
     pub(crate) nfs: Option<S>,
     pub(crate) watermark: Height,
+    pub(crate) passthrough: Arc<P>,
     pub(crate) cfg: Arc<RuntimeConfig>,
 }
 
-// Manual Clone: `Arc<F>` clones regardless of `F`, so we don't want the derive's
-// spurious `F: Clone` bound.
-impl<F, S: Clone> Clone for RuntimeSnapshot<F, S> {
+// Manual Clone: the `Arc`s clone regardless of `F`/`P`, so we don't want the
+// derive's spurious `F: Clone` / `P: Clone` bounds.
+impl<F, S: Clone, P> Clone for RuntimeSnapshot<F, S, P> {
     fn clone(&self) -> Self {
         Self {
             fs: Arc::clone(&self.fs),
             nfs: self.nfs.clone(),
             watermark: self.watermark,
+            passthrough: Arc::clone(&self.passthrough),
             cfg: Arc::clone(&self.cfg),
         }
     }
 }
 
-impl<F, S> CompactBlockRead for RuntimeSnapshot<F, S>
+impl<F, S, P> CompactBlockRead for RuntimeSnapshot<F, S, P>
 where
     F: FinalisedState + 'static,
     S: NfsSnapshot,
+    P: Passthrough,
 {
     async fn compact_block(&self, at: BlockRef) -> Result<Option<CompactBlock>, BlockReadError> {
         let height = match at {
             BlockRef::Height(h) => h,
             BlockRef::Hash(_) => todo!("resolve hash -> height across NFS/FS, then route"),
         };
-        // Route: one tier, by height at the watermark (the boundary is policy;
-        // recent-not-ready is our `Option`).
+        // Route: one tier, by height at the watermark.
         match resolve::tier_of(height, self.watermark) {
             Tier::Finalised => self.fs.compact_block(height).await.map_err(fs_height_err),
             Tier::Recent => match &self.nfs {
@@ -71,17 +78,90 @@ where
     }
 }
 
-impl<F, S> AddressRead for RuntimeSnapshot<F, S>
+impl<F, S, P> BlockRead for RuntimeSnapshot<F, S, P>
 where
     F: FinalisedState + 'static,
     S: NfsSnapshot,
+    P: Passthrough,
+{
+    async fn tip(&self) -> Result<BlockId, BlockReadError> {
+        match &self.nfs {
+            Some(nfs) => Ok(nfs.tip()),
+            None => Err(BlockReadError::NotServiceable(Capability::Blocks)),
+        }
+    }
+
+    async fn block(&self, at: BlockRef) -> Result<Option<Block>, BlockReadError> {
+        // Passthrough: full blocks aren't stored. By hash for reorg-safety.
+        let hash = match at {
+            BlockRef::Hash(h) => h,
+            BlockRef::Height(_) => {
+                todo!("resolve hash-at-height as of the snapshot, then passthrough by hash")
+            }
+        };
+        if !resolve::passthrough_allowed(Capability::Blocks, &self.cfg) {
+            return Err(BlockReadError::NotServiceable(Capability::Blocks));
+        }
+        self.passthrough
+            .full_block(hash)
+            .await
+            .map_err(|e| BlockReadError::Transient(format!("passthrough: {e:?}")))
+    }
+
+    async fn block_header(&self, _at: BlockRef) -> Result<Option<BlockHeader>, BlockReadError> {
+        todo!("route to the stored compact header, or passthrough for the full header")
+    }
+
+    async fn block_height(&self, hash: BlockHash) -> Result<Option<Height>, BlockReadError> {
+        // Check recent (NFS, infallible) first, then finalised (FS index).
+        if let Some(nfs) = &self.nfs {
+            if let Some(h) = nfs.height_of(hash) {
+                return Ok(Some(h));
+            }
+        }
+        self.fs.height_of(hash).await.map_err(lookup_err)
+    }
+
+    fn stream_blocks(&self, _range: HeightRange) -> BoxStream<'_, Result<Block, ReadError>> {
+        stream::empty().boxed()
+    }
+}
+
+impl<F, S, P> TransactionRead for RuntimeSnapshot<F, S, P>
+where
+    F: FinalisedState + 'static,
+    S: NfsSnapshot,
+    P: Passthrough,
+{
+    async fn transaction(&self, id: TransactionHash) -> Result<Option<Transaction>, TxReadError> {
+        // Passthrough: raw transactions aren't stored. By txid (immutable →
+        // coherent).
+        if !resolve::passthrough_allowed(Capability::Transactions, &self.cfg) {
+            return Err(TxReadError::NotServiceable(Capability::Transactions));
+        }
+        self.passthrough
+            .raw_transaction(id)
+            .await
+            .map_err(|e| TxReadError::Transient(format!("passthrough: {e:?}")))
+    }
+
+    async fn transaction_status(&self, _id: TransactionHash) -> Result<TxStatus, TxReadError> {
+        todo!("route: tx_location -> height -> mined/orphaned status")
+    }
+}
+
+impl<F, S, P> AddressRead for RuntimeSnapshot<F, S, P>
+where
+    F: FinalisedState + 'static,
+    S: NfsSnapshot,
+    P: Passthrough,
 {
     async fn unspent_outpoints(
         &self,
         addr: &TransparentAddress,
     ) -> Result<Vec<Utxo>, SvcAddressReadError> {
         // Merge: needs both tiers to be coherent, so it is unserviceable until
-        // the recent window is ready. The combine itself lives in `resolve`.
+        // the recent window is ready. The combine lives in `resolve`.
         let Some(nfs) = &self.nfs else {
             return Err(SvcAddressReadError::NotServiceable(Capability::AddressHistory));
         };
@@ -128,5 +208,11 @@ fn fs_addr_err(e: FsAddressReadError) -> SvcAddressReadError {
         FsAddressReadError::NotEnabled => {
             SvcAddressReadError::NotServiceable(Capability::AddressHistory)
         }
+    }
+}
+
+fn lookup_err(e: LookupError) -> BlockReadError {
+    match e {
+        LookupError::Backend(s) => BlockReadError::Fatal(s),
     }
 }

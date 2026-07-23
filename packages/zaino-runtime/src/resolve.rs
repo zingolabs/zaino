@@ -58,7 +58,6 @@ pub(crate) fn tier_of(height: Height, watermark: Height) -> Tier {
 /// Whether a `Passthrough` read may hit the validator now, given config (the
 /// per-capability inherent decision is [`strategy`]; sync-state/coherence are
 /// the snapshot's; this is the config gate).
-#[allow(dead_code)]
 pub(crate) fn passthrough_allowed(cap: Capability, cfg: &RuntimeConfig) -> bool {
     cfg.passthrough_enabled && cfg.capability_enabled(cap)
 }
