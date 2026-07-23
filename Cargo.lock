@@ -6237,7 +6237,6 @@ dependencies = [
  "zaino-fs",
  "zaino-nfs",
  "zaino-service",
- "zaino-source",
 ]
 
 [[package]]

@@ -12,16 +12,13 @@ use futures::stream::{self, BoxStream, StreamExt};
 
 use zaino_core::{
     AddressBalance, Block, BlockHash, BlockId, CompactBlock, ForkPoint, Height, Locator, Outpoint,
-    SpendStatus, TipEvent, TransactionHash, TransactionLocation, TransparentAddress, Treestate, Utxo,
+    SpendStatus, TipEvent, Transaction, TransactionHash, TransactionLocation, TransparentAddress,
+    Treestate, Utxo,
 };
 use zaino_fs::error::{AddressReadError, BuildError, FreezeError, HeightReadError, LookupError};
 use zaino_fs::{FinalisedState, FrozenBlock};
 use zaino_nfs::{FollowError, FrozenOut, NfsSnapshot, NfsView, NonFinalisedState};
-use zaino_runtime::{Runtime, RuntimeBuilder, RuntimeConfig};
-use zaino_source::{
-    GetBlockByHash, GetBlockByHashError, GetTransaction, GetTransactionError, QueryError,
-    TransactionResponse,
-};
+use zaino_runtime::{PassthroughError, PassthroughSource, Runtime, RuntimeBuilder, RuntimeConfig};
 
 /// A shared call recorder, so a test can see which tier answered.
 #[derive(Clone, Default)]
@@ -172,33 +169,26 @@ impl NonFinalisedState for MockNfs {
 
 // --- mock validator Source (the passthrough provider) ---
 //
-// Implements the `zaino-source` read ports the runtime passes through to,
-// recording which query was made. A `NotFound` domain answer stands in for
-// "the validator has no such block/tx" (→ the runtime maps it to `None`); it
-// deliberately implements no synthetic-capability port, so the type system
-// forbids wiring an address-history fallback to it.
+// Implements the domain-shaped passthrough port the runtime reads through,
+// recording which query was made. Returns `None` for "the validator has no such
+// block/tx". It deliberately implements no synthetic-capability method, so the
+// type system forbids wiring an address-history fallback to it.
 
 pub struct MockSource {
     pub calls: Calls,
 }
 
-impl GetBlockByHash for MockSource {
-    async fn get_block_by_hash(
-        &self,
-        hash: BlockHash,
-    ) -> Result<Block, QueryError<GetBlockByHashError>> {
+impl PassthroughSource for MockSource {
+    async fn block_by_hash(&self, _hash: BlockHash) -> Result<Option<Block>, PassthroughError> {
         self.calls.record("source:block".to_string());
-        Err(QueryError::Domain(GetBlockByHashError::NotFound(hash)))
+        Ok(None)
     }
-}
-
-impl GetTransaction for MockSource {
-    async fn get_transaction(
+    async fn transaction(
         &self,
-        txid: TransactionHash,
-    ) -> Result<TransactionResponse, QueryError<GetTransactionError>> {
+        _txid: TransactionHash,
+    ) -> Result<Option<Transaction>, PassthroughError> {
         self.calls.record("source:tx".to_string());
-        Err(QueryError::Domain(GetTransactionError::NotFound(txid)))
+        Ok(None)
     }
 }
 

@@ -22,7 +22,6 @@ use zaino_service::error::{
     AddressReadError as SvcAddressReadError, BlockReadError, ReadError, TxReadError,
 };
 use zaino_service::{AddressRead, BlockRead, CompactBlockRead, TransactionRead};
-use zaino_source::{GetBlockByHashError, GetTransactionError, QueryError};
 
 use crate::config::RuntimeConfig;
 use crate::passthrough::PassthroughSource;
@@ -104,13 +103,13 @@ where
         if !resolve::passthrough_allowed(Capability::Blocks, &self.cfg) {
             return Err(BlockReadError::NotServiceable(Capability::Blocks));
         }
-        // Pass through to the validator source; a `NotFound` domain answer is a
-        // real `None`, transport failure is transient.
-        match self.source.get_block_by_hash(hash).await {
-            Ok(block) => Ok(Some(block)),
-            Err(QueryError::Domain(GetBlockByHashError::NotFound(_))) => Ok(None),
-            Err(QueryError::Fetch(e)) => Err(BlockReadError::Transient(format!("source: {e}"))),
-        }
+        // Pass through to the validator (a domain read; the adapter owns the
+        // transport). `None` is a real miss. Serving policy: an unavailable
+        // upstream projects to `Transient` — the consumer may retry.
+        self.source
+            .block_by_hash(hash)
+            .await
+            .map_err(|e| BlockReadError::Transient(format!("passthrough: {e:?}")))
     }
 
     async fn block_header(&self, _at: BlockRef) -> Result<Option<BlockHeader>, BlockReadError> {
@@ -144,14 +143,13 @@ where
         if !resolve::passthrough_allowed(Capability::Transactions, &self.cfg) {
             return Err(TxReadError::NotServiceable(Capability::Transactions));
         }
-        match self.source.get_transaction(id).await {
-            // The source answers with raw serialized bytes + location; the
-            // service surface is a parsed domain `Transaction`. That
-            // raw→parsed conversion is a distinct seam, not yet wired.
-            Ok(_resp) => todo!("parse TransactionResponse bytes -> domain Transaction"),
-            Err(QueryError::Domain(GetTransactionError::NotFound(_))) => Ok(None),
-            Err(QueryError::Fetch(e)) => Err(TxReadError::Transient(format!("source: {e}"))),
-        }
+        // Domain read: the adapter has already parsed raw bytes into a domain
+        // `Transaction`. `None` is a real miss. Serving policy: an unavailable
+        // upstream projects to `Transient` — the consumer may retry.
+        self.source
+            .transaction(id)
+            .await
+            .map_err(|e| TxReadError::Transient(format!("passthrough: {e:?}")))
     }
 
     async fn transaction_status(&self, _id: TransactionHash) -> Result<TxStatus, TxReadError> {
