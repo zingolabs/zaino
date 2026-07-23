@@ -17,9 +17,13 @@ pub(crate) enum Tier {
     Recent,
 }
 
-/// A capability's inherent composition strategy.
-// Passthrough policy (Strategy / strategy / passthrough_allowed): exercised by
-// the tests below; wired into reads when full-block/raw-tx passthrough lands.
+/// A capability's *local* serving strategy — how the index answers when it can.
+///
+/// Passthrough (the validator) is orthogonal: it is the only path for
+/// capabilities with no local index (`Passthrough` below), *and* the fallback
+/// for `Route`/`Merge` capabilities when their tier can't serve yet — gated by
+/// [`passthrough_allowed`] and, inside a pinned snapshot, constrained to by-hash
+/// reads for coherence.
 #[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Strategy {
@@ -27,11 +31,12 @@ pub(crate) enum Strategy {
     Route,
     /// Both tiers combined (address history, spend status).
     Merge,
-    /// Not stored — the validator answers, keyed by hash (full block, raw tx).
+    /// No local index — the validator is the only path, keyed by hash (full
+    /// block, raw tx). The limit case of the fallback: "not-yet-built" = never.
     Passthrough,
 }
 
-/// The static strategy for each capability.
+/// The static local strategy for each capability.
 #[allow(dead_code)]
 pub(crate) fn strategy(cap: Capability) -> Strategy {
     match cap {

@@ -1,216 +1,22 @@
 //! Exercises the compose seam: `Runtime` routes reads FS (`≤ watermark`) vs NFS
-//! (`> watermark`), and returns `NotServiceable` for recent reads while the NFS
-//! window is syncing. Component mocks record which tier they were asked, so the
-//! routing is asserted directly.
+//! (`> watermark`), merges where a capability spans both tiers, and passes
+//! through to the validator source for data it doesn't store. The mocks record
+//! which provider was asked, so routing is asserted directly — including that
+//! the *wrong* provider is never consulted.
 
-use std::sync::{Arc, Mutex};
+#[path = "support/mocks.rs"]
+mod mocks;
 
-use futures::stream::{self, BoxStream, StreamExt};
-
-use zaino_core::{
-    AddressBalance, Block, BlockHash, BlockId, BlockRef, CompactBlock, ForkPoint, Height, Locator,
-    Outpoint, SpendStatus, TipEvent, Transaction, TransactionHash, TransactionLocation,
-    TransparentAddress, Treestate, Utxo,
-};
-use zaino_fs::error::{AddressReadError, BuildError, FreezeError, HeightReadError, LookupError};
-use zaino_fs::{FinalisedState, FrozenBlock};
-use zaino_nfs::{FollowError, FrozenOut, NfsSnapshot, NfsView, NonFinalisedState};
-use zaino_runtime::{Passthrough, PassthroughError, RuntimeBuilder, RuntimeConfig};
+use zaino_core::{BlockHash, BlockRef, TransparentAddress};
 use zaino_service::error::BlockReadError;
 use zaino_service::{AddressRead, BlockRead, CompactBlockRead};
 
-// --- a shared call recorder, so we can see which tier answered ---
-
-#[derive(Clone, Default)]
-struct Calls(Arc<Mutex<Vec<String>>>);
-
-impl Calls {
-    fn record(&self, s: String) {
-        self.0.lock().expect("calls mutex").push(s);
-    }
-    fn log(&self) -> Vec<String> {
-        self.0.lock().expect("calls mutex").clone()
-    }
-}
-
-fn h(n: u32) -> Height {
-    Height::try_from(n).expect("valid height")
-}
-
-fn block_id(height: u32, tag: u8) -> BlockId {
-    BlockId {
-        height: h(height),
-        hash: BlockHash::from([tag; 32]),
-    }
-}
-
-// --- mock FinalisedState (records compact_block; rest is minimal) ---
-
-struct MockFs {
-    watermark: Height,
-    calls: Calls,
-}
-
-impl FinalisedState for MockFs {
-    fn watermark(&self) -> Height {
-        self.watermark
-    }
-    async fn compact_block(&self, height: Height) -> Result<Option<CompactBlock>, HeightReadError> {
-        self.calls.record(format!("fs:{}", u32::from(height)));
-        Ok(None)
-    }
-    async fn treestate(&self, _height: Height) -> Result<Treestate, HeightReadError> {
-        unimplemented!("not exercised by the routing test")
-    }
-    async fn height_of(&self, _hash: BlockHash) -> Result<Option<Height>, LookupError> {
-        Ok(None)
-    }
-    async fn tx_location(
-        &self,
-        _txid: TransactionHash,
-    ) -> Result<Option<TransactionLocation>, LookupError> {
-        Ok(None)
-    }
-    async fn spend_status(&self, _outpoint: Outpoint) -> Result<SpendStatus, LookupError> {
-        Ok(SpendStatus::NoSuchOutput)
-    }
-    async fn address_balance(
-        &self,
-        _addr: &TransparentAddress,
-    ) -> Result<AddressBalance, AddressReadError> {
-        Err(AddressReadError::NotEnabled)
-    }
-    async fn address_unspent(
-        &self,
-        _addr: &TransparentAddress,
-    ) -> Result<Vec<Utxo>, AddressReadError> {
-        self.calls.record("addr-fs".to_string());
-        Ok(Vec::new())
-    }
-    async fn bulk_build_to<S: Send + Sync>(
-        &self,
-        _target: Height,
-        _source: &S,
-    ) -> Result<(), BuildError> {
-        Ok(())
-    }
-    async fn freeze(&self, _block: FrozenBlock) -> Result<(), FreezeError> {
-        Ok(())
-    }
-}
-
-// --- mock NfsSnapshot (records compact_block; infallible in-memory reads) ---
-
-#[derive(Clone)]
-struct MockNfsSnap {
-    tip: BlockId,
-    range: (Height, Height),
-    calls: Calls,
-}
-
-impl NfsSnapshot for MockNfsSnap {
-    fn tip(&self) -> BlockId {
-        self.tip
-    }
-    fn range(&self) -> (Height, Height) {
-        self.range
-    }
-    fn compact_block(&self, height: Height) -> Option<CompactBlock> {
-        self.calls.record(format!("nfs:{}", u32::from(height)));
-        None
-    }
-    fn height_of(&self, _hash: BlockHash) -> Option<Height> {
-        None
-    }
-    fn spend_status(&self, _outpoint: Outpoint) -> SpendStatus {
-        SpendStatus::NoSuchOutput
-    }
-    fn fork_point(&self, _locator: Locator) -> Option<ForkPoint> {
-        None
-    }
-    fn address_unspent(&self, _addr: &TransparentAddress) -> Vec<Utxo> {
-        self.calls.record("addr-nfs".to_string());
-        Vec::new()
-    }
-    fn chain_tips(&self) -> Vec<BlockId> {
-        Vec::new()
-    }
-}
-
-// --- mock NonFinalisedState (Ready vs Syncing) ---
-
-struct MockNfs {
-    ready: bool,
-    snap: MockNfsSnap,
-    finalised: Height,
-}
-
-impl NonFinalisedState for MockNfs {
-    type Snapshot = MockNfsSnap;
-    fn snapshot(&self) -> NfsView<MockNfsSnap> {
-        if self.ready {
-            NfsView::Ready(self.snap.clone())
-        } else {
-            NfsView::Syncing {
-                finalised: self.finalised,
-            }
-        }
-    }
-    fn subscribe_tip(&self) -> BoxStream<'_, TipEvent> {
-        stream::empty().boxed()
-    }
-    fn frozen(&self) -> BoxStream<'_, FrozenOut> {
-        stream::empty().boxed()
-    }
-    async fn follow<S: Send + Sync>(&self, _source: &S) -> Result<(), FollowError> {
-        Ok(())
-    }
-}
-
-// --- mock Passthrough (records which validator query was made) ---
-
-struct MockPassthrough {
-    calls: Calls,
-}
-
-impl Passthrough for MockPassthrough {
-    async fn full_block(&self, _hash: BlockHash) -> Result<Option<Block>, PassthroughError> {
-        self.calls.record("passthrough:block".to_string());
-        Ok(None)
-    }
-    async fn raw_transaction(
-        &self,
-        _txid: TransactionHash,
-    ) -> Result<Option<Transaction>, PassthroughError> {
-        self.calls.record("passthrough:tx".to_string());
-        Ok(None)
-    }
-}
+use mocks::{build_runtime, h, Calls};
 
 #[tokio::test]
 async fn routes_finalised_to_fs_and_recent_to_nfs() {
     let calls = Calls::default();
-    let fs = MockFs {
-        watermark: h(100),
-        calls: calls.clone(),
-    };
-    let nfs = MockNfs {
-        ready: true,
-        snap: MockNfsSnap {
-            tip: block_id(150, 0xAA),
-            range: (h(101), h(150)),
-            calls: calls.clone(),
-        },
-        finalised: h(100),
-    };
-    let source = MockPassthrough {
-        calls: calls.clone(),
-    };
-
-    let runtime = RuntimeBuilder::new()
-        .init(fs, nfs, source)
-        .await
-        .expect("init");
+    let runtime = build_runtime(&calls, 100, true, true).await;
     let snap = runtime.snapshot();
 
     // Finalised height (<= watermark) → FS.
@@ -232,27 +38,7 @@ async fn routes_finalised_to_fs_and_recent_to_nfs() {
 #[tokio::test]
 async fn recent_reads_are_not_serviceable_while_nfs_syncs() {
     let calls = Calls::default();
-    let fs = MockFs {
-        watermark: h(100),
-        calls: calls.clone(),
-    };
-    let nfs = MockNfs {
-        ready: false, // still catching up
-        snap: MockNfsSnap {
-            tip: block_id(0, 0),
-            range: (h(0), h(0)),
-            calls: calls.clone(),
-        },
-        finalised: h(100),
-    };
-    let source = MockPassthrough {
-        calls: calls.clone(),
-    };
-
-    let runtime = RuntimeBuilder::new()
-        .init(fs, nfs, source)
-        .await
-        .expect("init");
+    let runtime = build_runtime(&calls, 100, false, true).await;
     let snap = runtime.snapshot();
 
     // Recent read while the window is syncing → NotServiceable, and NFS is never
@@ -271,27 +57,7 @@ async fn recent_reads_are_not_serviceable_while_nfs_syncs() {
 #[tokio::test]
 async fn address_unspent_merges_fs_and_nfs() {
     let calls = Calls::default();
-    let fs = MockFs {
-        watermark: h(100),
-        calls: calls.clone(),
-    };
-    let nfs = MockNfs {
-        ready: true,
-        snap: MockNfsSnap {
-            tip: block_id(150, 0xAA),
-            range: (h(101), h(150)),
-            calls: calls.clone(),
-        },
-        finalised: h(100),
-    };
-    let source = MockPassthrough {
-        calls: calls.clone(),
-    };
-
-    let runtime = RuntimeBuilder::new()
-        .init(fs, nfs, source)
-        .await
-        .expect("init");
+    let runtime = build_runtime(&calls, 100, true, true).await;
     let snap = runtime.snapshot();
 
     let addr = TransparentAddress::new("t1example".to_string());
@@ -303,38 +69,14 @@ async fn address_unspent_merges_fs_and_nfs() {
     assert!(log.contains(&"addr-nfs".to_string()), "NFS not consulted: {log:?}");
 }
 
-// --- US-1.7: full blocks and raw txs are passthrough (not stored), by hash ---
+// --- US-1.7: full blocks and raw txs pass through to the validator, by hash ---
 
-fn ready_nfs(calls: &Calls) -> MockNfs {
-    MockNfs {
-        ready: true,
-        snap: MockNfsSnap {
-            tip: block_id(150, 0xAA),
-            range: (h(101), h(150)),
-            calls: calls.clone(),
-        },
-        finalised: h(100),
-    }
-}
-
-/// A full `Block` is not stored — it goes to the validator, keyed by hash, so
-/// the answer is reorg-coherent. Neither tier is consulted.
+/// A full `Block` is not stored — it goes to the validator source, keyed by
+/// hash, so the answer is reorg-coherent. Neither cache tier is consulted.
 #[tokio::test]
 async fn full_block_passes_through_by_hash() {
     let calls = Calls::default();
-    let fs = MockFs {
-        watermark: h(100),
-        calls: calls.clone(),
-    };
-    let nfs = ready_nfs(&calls);
-    let source = MockPassthrough {
-        calls: calls.clone(),
-    };
-
-    let runtime = RuntimeBuilder::new()
-        .init(fs, nfs, source)
-        .await
-        .expect("init");
+    let runtime = build_runtime(&calls, 100, true, true).await;
     let snap = runtime.snapshot();
 
     let block = snap
@@ -343,31 +85,15 @@ async fn full_block_passes_through_by_hash() {
         .expect("passthrough ok");
     assert!(block.is_none());
 
-    let log = calls.log();
-    assert_eq!(log, vec!["passthrough:block".to_string()]);
+    assert_eq!(calls.log(), vec!["source:block".to_string()]);
 }
 
 /// With passthrough disabled by config, a full-block read is `NotServiceable`
-/// and the validator is never hit.
+/// and the validator source is never hit.
 #[tokio::test]
 async fn passthrough_disabled_is_not_serviceable() {
     let calls = Calls::default();
-    let fs = MockFs {
-        watermark: h(100),
-        calls: calls.clone(),
-    };
-    let nfs = ready_nfs(&calls);
-    let source = MockPassthrough {
-        calls: calls.clone(),
-    };
-
-    let runtime = RuntimeBuilder::new()
-        .config(RuntimeConfig {
-            passthrough_enabled: false,
-        })
-        .init(fs, nfs, source)
-        .await
-        .expect("init");
+    let runtime = build_runtime(&calls, 100, true, false).await;
     let snap = runtime.snapshot();
 
     let res = snap.block(BlockRef::Hash(BlockHash::from([0xBB; 32]))).await;

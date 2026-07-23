@@ -22,41 +22,43 @@ use zaino_service::error::{
     AddressReadError as SvcAddressReadError, BlockReadError, ReadError, TxReadError,
 };
 use zaino_service::{AddressRead, BlockRead, CompactBlockRead, TransactionRead};
+use zaino_source::{GetBlockByHashError, GetTransactionError, QueryError};
 
 use crate::config::RuntimeConfig;
-use crate::passthrough::Passthrough;
+use crate::passthrough::PassthroughSource;
 use crate::resolve::{self, Tier};
 
-/// A pinned, reorg-coherent view composed from both components + passthrough.
-pub struct RuntimeSnapshot<F, S, P> {
+/// A pinned, reorg-coherent view composed from both components + the validator
+/// source (passthrough).
+pub struct RuntimeSnapshot<F, S, Src> {
     pub(crate) fs: Arc<F>,
     /// `None` while the NFS window is still syncing — recent reads are then
     /// `NotServiceable`, never a false `None`.
     pub(crate) nfs: Option<S>,
     pub(crate) watermark: Height,
-    pub(crate) passthrough: Arc<P>,
+    pub(crate) source: Arc<Src>,
     pub(crate) cfg: Arc<RuntimeConfig>,
 }
 
-// Manual Clone: the `Arc`s clone regardless of `F`/`P`, so we don't want the
-// derive's spurious `F: Clone` / `P: Clone` bounds.
-impl<F, S: Clone, P> Clone for RuntimeSnapshot<F, S, P> {
+// Manual Clone: the `Arc`s clone regardless of `F`/`Src`, so we don't want the
+// derive's spurious `F: Clone` / `Src: Clone` bounds.
+impl<F, S: Clone, Src> Clone for RuntimeSnapshot<F, S, Src> {
     fn clone(&self) -> Self {
         Self {
             fs: Arc::clone(&self.fs),
             nfs: self.nfs.clone(),
             watermark: self.watermark,
-            passthrough: Arc::clone(&self.passthrough),
+            source: Arc::clone(&self.source),
             cfg: Arc::clone(&self.cfg),
         }
     }
 }
 
-impl<F, S, P> CompactBlockRead for RuntimeSnapshot<F, S, P>
+impl<F, S, Src> CompactBlockRead for RuntimeSnapshot<F, S, Src>
 where
     F: FinalisedState + 'static,
     S: NfsSnapshot,
-    P: Passthrough,
+    Src: PassthroughSource,
 {
     async fn compact_block(&self, at: BlockRef) -> Result<Option<CompactBlock>, BlockReadError> {
         let height = match at {
@@ -78,11 +80,11 @@ where
     }
 }
 
-impl<F, S, P> BlockRead for RuntimeSnapshot<F, S, P>
+impl<F, S, Src> BlockRead for RuntimeSnapshot<F, S, Src>
 where
     F: FinalisedState + 'static,
     S: NfsSnapshot,
-    P: Passthrough,
+    Src: PassthroughSource,
 {
     async fn tip(&self) -> Result<BlockId, BlockReadError> {
         match &self.nfs {
@@ -102,10 +104,13 @@ where
         if !resolve::passthrough_allowed(Capability::Blocks, &self.cfg) {
             return Err(BlockReadError::NotServiceable(Capability::Blocks));
         }
-        self.passthrough
-            .full_block(hash)
-            .await
-            .map_err(|e| BlockReadError::Transient(format!("passthrough: {e:?}")))
+        // Pass through to the validator source; a `NotFound` domain answer is a
+        // real `None`, transport failure is transient.
+        match self.source.get_block_by_hash(hash).await {
+            Ok(block) => Ok(Some(block)),
+            Err(QueryError::Domain(GetBlockByHashError::NotFound(_))) => Ok(None),
+            Err(QueryError::Fetch(e)) => Err(BlockReadError::Transient(format!("source: {e}"))),
+        }
     }
 
     async fn block_header(&self, _at: BlockRef) -> Result<Option<BlockHeader>, BlockReadError> {
@@ -127,11 +132,11 @@ where
     }
 }
 
-impl<F, S, P> TransactionRead for RuntimeSnapshot<F, S, P>
+impl<F, S, Src> TransactionRead for RuntimeSnapshot<F, S, Src>
 where
     F: FinalisedState + 'static,
     S: NfsSnapshot,
-    P: Passthrough,
+    Src: PassthroughSource,
 {
     async fn transaction(&self, id: TransactionHash) -> Result<Option<Transaction>, TxReadError> {
         // Passthrough: raw transactions aren't stored. By txid (immutable →
@@ -139,10 +144,14 @@ where
         if !resolve::passthrough_allowed(Capability::Transactions, &self.cfg) {
             return Err(TxReadError::NotServiceable(Capability::Transactions));
         }
-        self.passthrough
-            .raw_transaction(id)
-            .await
-            .map_err(|e| TxReadError::Transient(format!("passthrough: {e:?}")))
+        match self.source.get_transaction(id).await {
+            // The source answers with raw serialized bytes + location; the
+            // service surface is a parsed domain `Transaction`. That
+            // raw→parsed conversion is a distinct seam, not yet wired.
+            Ok(_resp) => todo!("parse TransactionResponse bytes -> domain Transaction"),
+            Err(QueryError::Domain(GetTransactionError::NotFound(_))) => Ok(None),
+            Err(QueryError::Fetch(e)) => Err(TxReadError::Transient(format!("source: {e}"))),
+        }
     }
 
     async fn transaction_status(&self, _id: TransactionHash) -> Result<TxStatus, TxReadError> {
@@ -150,11 +159,11 @@ where
     }
 }
 
-impl<F, S, P> AddressRead for RuntimeSnapshot<F, S, P>
+impl<F, S, Src> AddressRead for RuntimeSnapshot<F, S, Src>
 where
     F: FinalisedState + 'static,
     S: NfsSnapshot,
-    P: Passthrough,
+    Src: PassthroughSource,
 {
     async fn unspent_outpoints(
         &self,

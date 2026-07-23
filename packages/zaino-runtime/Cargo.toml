@@ -10,6 +10,7 @@ zaino-core = { path = "../zaino-core" }
 zaino-service = { path = "../zaino-service" }
 zaino-fs = { path = "../zaino-fs" }
 zaino-nfs = { path = "../zaino-nfs" }
+zaino-source = { path = "../zaino-source" }
 futures = "0.3"
 
 [dev-dependencies]
