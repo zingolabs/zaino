@@ -16,7 +16,7 @@ use zaino_core::{
     Utxo,
 };
 use zaino_fs::error::{AddressReadError as FsAddressReadError, HeightReadError, LookupError};
-use zaino_fs::FinalisedState;
+use zaino_fs::{AddressIndex, FinalisedSpine};
 use zaino_nfs::NfsSnapshot;
 use zaino_service::error::{
     AddressReadError as SvcAddressReadError, BlockReadError, ReadError, TxReadError,
@@ -55,9 +55,9 @@ impl<F, S: Clone, Src> Clone for RuntimeSnapshot<F, S, Src> {
 
 impl<F, S, Src> CompactBlockRead for RuntimeSnapshot<F, S, Src>
 where
-    F: FinalisedState + 'static,
+    F: FinalisedSpine + 'static,
     S: NfsSnapshot,
-    Src: PassthroughSource,
+    Src: Send + Sync, // captured in the `Send` future, but compact blocks aren't passthrough
 {
     async fn compact_block(&self, at: BlockRef) -> Result<Option<CompactBlock>, BlockReadError> {
         let height = match at {
@@ -81,7 +81,7 @@ where
 
 impl<F, S, Src> BlockRead for RuntimeSnapshot<F, S, Src>
 where
-    F: FinalisedState + 'static,
+    F: FinalisedSpine + 'static,
     S: NfsSnapshot,
     Src: PassthroughSource,
 {
@@ -133,7 +133,10 @@ where
 
 impl<F, S, Src> TransactionRead for RuntimeSnapshot<F, S, Src>
 where
-    F: FinalisedState + 'static,
+    // Only passthrough today; wiring `transaction_status` will add
+    // `+ TxLocationIndex` on F (and NFS's recent-tx capability). F/S are only
+    // captured in the `Send` future for now.
+    F: FinalisedSpine + 'static,
     S: NfsSnapshot,
     Src: PassthroughSource,
 {
@@ -159,9 +162,12 @@ where
 
 impl<F, S, Src> AddressRead for RuntimeSnapshot<F, S, Src>
 where
-    F: FinalisedState + 'static,
+    // The variant payoff: `AddressRead` exists only when the FS builds the
+    // address index. A minimal FS (no `AddressIndex`) → this impl is absent →
+    // the capability is unrepresentable, not a runtime miss.
+    F: AddressIndex + 'static,
     S: NfsSnapshot,
-    Src: PassthroughSource,
+    Src: Send + Sync, // captured in the `Send` future; address history isn't passthrough
 {
     async fn unspent_outpoints(
         &self,

@@ -16,7 +16,7 @@ use zaino_core::{
     Treestate, Utxo,
 };
 use zaino_fs::error::{AddressReadError, BuildError, FreezeError, HeightReadError, LookupError};
-use zaino_fs::{FinalisedState, FrozenBlock};
+use zaino_fs::{AddressIndex, FinalisedSpine, FrozenBlock, SpendIndex, TxLocationIndex};
 use zaino_nfs::{FollowError, FrozenOut, NfsSnapshot, NfsView, NonFinalisedState};
 use zaino_runtime::{PassthroughError, PassthroughSource, Runtime, RuntimeBuilder, RuntimeConfig};
 
@@ -51,7 +51,7 @@ pub struct MockFs {
     pub calls: Calls,
 }
 
-impl FinalisedState for MockFs {
+impl FinalisedSpine for MockFs {
     fn watermark(&self) -> Height {
         self.watermark
     }
@@ -65,15 +65,34 @@ impl FinalisedState for MockFs {
     async fn height_of(&self, _hash: BlockHash) -> Result<Option<Height>, LookupError> {
         Ok(None)
     }
+    async fn bulk_build_to<S: Send + Sync>(
+        &self,
+        _target: Height,
+        _source: &S,
+    ) -> Result<(), BuildError> {
+        Ok(())
+    }
+    async fn freeze(&self, _block: FrozenBlock) -> Result<(), FreezeError> {
+        Ok(())
+    }
+}
+
+impl TxLocationIndex for MockFs {
     async fn tx_location(
         &self,
         _txid: TransactionHash,
     ) -> Result<Option<TransactionLocation>, LookupError> {
         Ok(None)
     }
+}
+
+impl SpendIndex for MockFs {
     async fn spend_status(&self, _outpoint: Outpoint) -> Result<SpendStatus, LookupError> {
         Ok(SpendStatus::NoSuchOutput)
     }
+}
+
+impl AddressIndex for MockFs {
     async fn address_balance(
         &self,
         _addr: &TransparentAddress,
@@ -86,16 +105,6 @@ impl FinalisedState for MockFs {
     ) -> Result<Vec<Utxo>, AddressReadError> {
         self.calls.record("addr-fs".to_string());
         Ok(Vec::new())
-    }
-    async fn bulk_build_to<S: Send + Sync>(
-        &self,
-        _target: Height,
-        _source: &S,
-    ) -> Result<(), BuildError> {
-        Ok(())
-    }
-    async fn freeze(&self, _block: FrozenBlock) -> Result<(), FreezeError> {
-        Ok(())
     }
 }
 

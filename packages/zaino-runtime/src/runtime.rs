@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use zaino_fs::FinalisedState;
+use zaino_fs::FinalisedSpine;
 use zaino_nfs::{NfsView, NonFinalisedState};
 
 use crate::config::RuntimeConfig;
@@ -26,7 +26,7 @@ pub struct Runtime<F, N, Src> {
 
 impl<F, N, Src> Runtime<F, N, Src>
 where
-    F: FinalisedState + 'static,
+    F: FinalisedSpine + 'static,
     N: NonFinalisedState + 'static,
     Src: PassthroughSource + 'static,
 {
@@ -76,7 +76,7 @@ impl RuntimeBuilder {
         source: Src,
     ) -> Result<Runtime<F, N, Src>, RuntimeError>
     where
-        F: FinalisedState + 'static,
+        F: FinalisedSpine + 'static,
         N: NonFinalisedState + 'static,
         Src: PassthroughSource + 'static,
     {
