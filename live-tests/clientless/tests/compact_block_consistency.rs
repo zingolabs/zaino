@@ -7,17 +7,6 @@
 //! discontinuity and treats it as a chain reorg. This walk pins that invariant per
 //! block, per pool, for the request shape real (including pre-Ironwood) light clients
 //! send: an empty `poolTypes` filter.
-//!
-//! ztest port note: the clientless crate links no zebra/zaino production code, so the
-//! coinbase-routing predicates cannot deserialize a raw validator block to read the
-//! coinbase's transaction version (dev's `is_valid_shielded_coinbase` /
-//! `zebra_chain::block::Block::zcash_deserialize`). The routing era is instead read from
-//! the *served* wire signal — the compact block's per-pool action counts
-//! (`vtx[].actions` for Orchard, `vtx[].ironwood_actions` for Ironwood) — which for
-//! coinbase-only regtest blocks are exactly the coinbase's, and the tree-size oracle
-//! parity is read from the validator's own verbose `getblock` `.trees`. The pod gRPC
-//! serves compact blocks from height 1 (not genesis), so the running totals are seeded
-//! from the validator's trees at the height below the first served block.
 
 use std::time::Duration;
 
@@ -88,9 +77,7 @@ async fn oracle_trees(validator: &impl ValidatorBackend, height: u64) -> Result<
     Ok((size("sapling"), size("orchard"), size("ironwood")))
 }
 
-/// integration tier: spawns a zebrad validator + a zainod indexer and mines shielded
-/// coinbases (see [[ztest-validator-tests-need-integration-tier]] — the Basic tier
-/// OOM-kills zebrad).
+/// multi_thread required: the test manager spawns the validator and indexer services.
 #[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
 async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() -> Result<()> {
@@ -98,9 +85,6 @@ async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() -> Result<()> {
     // actions (the coinbase's Orchard component must be empty from NU6.3), so every
     // generated block carries ironwood data for the walk to check. A transparent
     // miner would leave the ironwood assertions vacuous.
-    //
-    // The default NU6.3-capable zebrad regtest activates NU6.3 from height 2 (dev's
-    // IRONWOOD_ONLY_ACTIVATION_HEIGHTS), so no `activate_through` cap is applied.
     let mut env = TestEnv::builder().ready_timeout(READY);
     let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(Pool::Orchard));
     let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
@@ -115,22 +99,16 @@ async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() -> Result<()> {
     let blocks = indexer.get_block_range(start, tip).await?;
     assert!(!blocks.is_empty(), "no compact blocks served");
 
-    // Seed the running totals from the validator's own trees at the height below the
-    // first served block, so the per-block delta check stays oracle-independent even
-    // though the pod gRPC serves from height 1 rather than genesis.
     let (mut prev_sapling, mut prev_orchard, mut prev_ironwood) =
         oracle_trees(&validator, 0).await?;
     let mut total_orchard_actions = 0u64;
     let mut total_ironwood_actions = 0u64;
     for (index, block) in blocks.iter().enumerate() {
-        // The served range starts at height 1, so the block at offset `index` must be
-        // at height `index + 1` for the walk's running totals to line up.
         assert_eq!(
             block.height,
             index as u64 + 1,
             "served blocks must be contiguous for the walk's running totals"
         );
-
         let metadata = block
             .chain_metadata
             .as_ref()
@@ -235,11 +213,6 @@ enum CoinbaseEra {
 /// Orchard actions (`vtx[].actions`, no ironwood), an Ironwood-era coinbase as Ironwood
 /// actions (`vtx[].ironwood_actions`, no orchard).
 ///
-/// dev read this from the raw validator block's coinbase transaction version (5 = Orchard
-/// era, 6 = Ironwood era) via `zebra_chain::block::Block::zcash_deserialize`; the
-/// clientless crate links no zebra production code, so the ztest port reads the equivalent
-/// routing fact off the served wire signal instead.
-///
 /// Mismatches are collected across the whole chain and reported together rather than
 /// aborting at the first failing height, so one run distinguishes the hypotheses of
 /// <https://github.com/zingolabs/zaino/issues/1368>: a boundary-only mismatch is the
@@ -293,17 +266,12 @@ fn assert_coinbase_routing(
 
 /// Orchard-only era: NU6.3 never activates, so every post-NU5 coinbase stays an
 /// Orchard coinbase and no ironwood ever appears. (The zebrad *default* heights are
-/// now the canonical NU6.3-at-2 set, so this fixture pins an explicit schedule with
-/// NU6.3 never activating to suppress it.)
+/// now the canonical NU6.3-at-2 set, so this fixture is explicit.)
 ///
-/// integration tier: spawns a zebrad validator + a zainod indexer and mines shielded
-/// coinbases (see [[ztest-validator-tests-need-integration-tier]] — the Basic tier
-/// OOM-kills zebrad).
+/// multi_thread required: the test manager spawns the validator and indexer services.
 #[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
 async fn orchard_only_coinbase_routing_zebrad() -> Result<()> {
-    // Orchard-only: an explicit schedule with NU6.3 never activating, so the
-    // orchard-receiver reward stays in Orchard actions for every block.
     let mut env = TestEnv::builder()
         .ready_timeout(READY)
         .activation_heights(orchard_only());
@@ -332,14 +300,10 @@ async fn orchard_only_coinbase_routing_zebrad() -> Result<()> {
 /// post-activation coinbase is an Ironwood coinbase and no Orchard coinbase ever
 /// appears.
 ///
-/// integration tier: spawns a zebrad validator + a zainod indexer and mines shielded
-/// coinbases (see [[ztest-validator-tests-need-integration-tier]] — the Basic tier
-/// OOM-kills zebrad).
+/// multi_thread required: the test manager spawns the validator and indexer services.
 #[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
 async fn ironwood_only_coinbase_routing_zebrad() -> Result<()> {
-    // Ironwood-only: the default NU6.3-capable zebrad regtest activates NU6.3 from
-    // height 2, so no `activate_through` cap is applied.
     let mut env = TestEnv::builder().ready_timeout(READY);
     let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(Pool::Orchard));
     let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
@@ -365,21 +329,12 @@ async fn ironwood_only_coinbase_routing_zebrad() -> Result<()> {
 /// The transition: the same unchanged orchard-receiver miner produces Orchard
 /// coinbases through NU6.2 and Ironwood coinbases from the NU6.3 activation height —
 /// each predicate exactly delimiting its era, so a mis-timed flip fails on both sides
-/// of the boundary. Pins a mid-chain NU6.3 schedule (Orchard era `[2, 6)`, Ironwood
-/// from 6) via `activation_heights`, mines two blocks past the boundary so both eras
-/// carry more than one block, and asserts the served coinbase routing at every height.
+/// of the boundary.
 ///
-/// integration tier: spawns a zebrad validator + a zainod indexer and mines shielded
-/// coinbases (see [[ztest-validator-tests-need-integration-tier]] — the Basic tier
-/// OOM-kills zebrad).
-//
-// TODO: published zebrad("6.2.0") may lack the NU6.3 branch id to mine an Ironwood
-// coinbase at the boundary; swap in a NU6.3-capable dev! image if it fails on -25.
+/// multi_thread required: the test manager spawns the validator and indexer services.
 #[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
 async fn orchard_coinbase_routing_flips_to_ironwood_at_activation_zebrad() -> Result<()> {
-    // Mid-chain transition: NU6.3 pinned at NU6_3_TRANSITION_BOUNDARY, so the
-    // orchard-receiver coinbase is Orchard in [2, 6) and Ironwood from 6.
     let mut env = TestEnv::builder()
         .ready_timeout(READY)
         .activation_heights(orchard_then_ironwood_at(NU6_3_TRANSITION_BOUNDARY));

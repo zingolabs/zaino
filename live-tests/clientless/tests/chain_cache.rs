@@ -1,32 +1,3 @@
-//! Chain-index engine tests.
-//!
-//! Migration note: dev drove Zaino's **in-process** `NodeBackedChainIndex` /
-//! `NodeBackedChainIndexSubscriber` library API directly. Under ztest Zaino
-//! runs in a pod and is only reachable over its lightwallet gRPC / JSON-RPC
-//! surface. The tests split into two groups:
-//!
-//! * Behaviour that is *observable* over the pod boundary — block-range reads,
-//!   subtree roots, large-chain range reads, and the mempool-stream
-//!   fresh-snapshot loop — is ported 1:1 as real ztest tests, preserving dev's
-//!   exact mine counts, ranges, pools, indices and count/contiguity assertions
-//!   (re-expressed against the gRPC surface, e.g. `indexer.get_block_range`
-//!   yields compact blocks rather than raw block bytes, so "each block
-//!   deserializes" becomes "each block has a 32-byte hash at a contiguous
-//!   height").
-//!
-//! * Behaviour that is *only* the in-process `ChainIndex` API
-//!   (`snapshot_nonfinalized_state`, `find_fork_point`, `best_chaintip`, the
-//!   ephemeral no-persistence-directory filesystem assertion) has no
-//!   gRPC/JSON-RPC surface. dev runs these tests, so they are NOT left ignored:
-//!   each is ported to the closest pod-observable flow — an ephemeral (no
-//!   persistent state volume) indexer serving finalised blocks, and a
-//!   steady-state mine/track loop — with a `// TODO` recording the exact
-//!   in-process invariant that the pod surface cannot express, so it can be
-//!   re-homed to an in-process `packages/zaino-state` unit test later.
-//!
-//! dev's `#[cfg(feature = "zcashd_support")]` gating and `#[ignore]` attributes
-//! are mirrored: only the zcashd variants dev ignores keep `#[ignore]`.
-
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -102,38 +73,17 @@ mod chain_query_interface {
         Ok(())
     }
 
-    /// Ephemeral mode: a chain index with no persistent finalised-state database
-    /// serves finalised reads straight from the validator via the ephemeral
-    /// passthrough. dev runs this (not ignored), so it is a real test here.
-    ///
-    /// TODO: dev drove the in-process `NodeBackedChainIndex` in `ephemeral: true`
-    /// mode and asserted invariants with no gRPC/JSON-RPC surface — `db_height
-    /// == 0`, the non-finalised cache retaining blocks only down to `tip -
-    /// FAST_TEST_MAX_NONFINALISED_DEPTH`, a compact-block stream across the
-    /// finalised/non-finalised boundary, and (crucially) that ephemeral mode
-    /// persists *nothing*: no `chain-index-zaino` DB directory on disk. ztest
-    /// exposes no in-process ChainIndex over the pod boundary and cannot inspect
-    /// the pod's filesystem, so only the served-block invariant is checked here:
-    /// a default (ephemeral — no persistent state volume) indexer serves the
-    /// finalised block range, and a finalised block fetched by height equals the
-    /// same block fetched by its hash (dev's `get_indexed_block_by_height` ==
-    /// `get_indexed_block_by_hash`). Re-home the persistence/boundary assertions
-    /// to an in-process `packages/zaino-state` unit test.
+    /// Ephemeral mode on regtest: the chain index opens no persistent
+    /// finalised-state database and serves finalised reads straight from the
+    /// validator via the ephemeral passthrough.
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     async fn ephemeral_serves_finalised_blocks_zebrad() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let validator = env.add_validator(Validator::zebrad("6.2.0").regtest());
-        // Default indexer: no persistent state volume, mirroring dev's ephemeral
-        // (no-persistence-on-disk) chain index.
         let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
         env.build().await?;
 
-        // Mine well past the non-finalised retention window so low heights are
-        // genuinely finalised and served by the ephemeral finalised passthrough.
-        // dev sized this as `FAST_TEST_MAX_NONFINALISED_DEPTH + 50`; the clientless
-        // crate links no zaino production code, so that seam const is unavailable
-        // and a fixed offset stands in for it.
         const FINALISED_MARGIN: u32 = 60;
         let tip = validator.generate_blocks(FINALISED_MARGIN).await?;
         indexer.wait_for_block_num(tip, READY).await?;
@@ -156,9 +106,7 @@ mod chain_query_interface {
             assert_eq!(block.hash.len(), 32, "block hash must be 32 bytes");
         }
 
-        // A finalised block (height 2, far below the tip) fetched by height must
-        // be the same block fetched by its hash — dev's fetch-by-height ==
-        // fetch-by-hash passthrough invariant, over the pod surface.
+        // --- chain (indexed) block: fetch by height, then by its hash ---
         let by_height = indexer.get_block(BlockHeight::from(2u32)).await?;
         let hash_bytes: [u8; 32] = by_height
             .hash
@@ -510,24 +458,6 @@ mod chain_query_interface {
         Ok(())
     }
 
-    /// zallet's steady state: repeatedly advance the tip and confirm the indexer
-    /// tracks it and serves the newly mined blocks. dev runs this (not ignored),
-    /// so it is a real test here.
-    ///
-    /// TODO: dev drove the in-process `NodeBackedChainIndex` steady-state API —
-    /// `snapshot_nonfinalized_state` + `best_chaintip` to read the tip,
-    /// `find_fork_point(snapshot, prev_tip.hash)` to locate the fork point (which
-    /// must be at or below the current tip), applying the block range
-    /// `[fork_point + 1, current_tip]` and asserting `applied_blocks.len() ==
-    /// current_tip - fork_point`, plus a per-iteration mempool stream that closes
-    /// on tip change. ztest exposes no in-process ChainIndex (no snapshot / fork
-    /// point / chaintip API) over the pod boundary, so only the served-block
-    /// invariant is checked here: over each steady-state iteration the indexer's
-    /// latest height tracks the validator's new tip, and — with no reorgs the
-    /// fork point is the previous tip — the served range `[prev_tip + 1,
-    /// current_tip]` covers exactly the newly mined blocks, contiguously.
-    /// Re-home the fork-point/mempool-stream assertions to an in-process
-    /// `packages/zaino-state` unit test.
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     async fn zallet_like_steady_state_loop_zebrad() -> Result<()> {
@@ -543,19 +473,12 @@ mod chain_query_interface {
             let current_tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(current_tip, READY).await?;
 
-            // dev read `best_chaintip` off the snapshot; over the pod surface the
-            // indexer's latest height must equal the validator's new tip.
             assert_eq!(
                 indexer.latest_block_height().await?,
                 current_tip,
                 "indexer must track the advancing tip on iteration {iteration}"
             );
 
-            // dev applied the block range `[fork_point + 1, current_tip]` and
-            // asserted its length equalled `current_tip - fork_point`. With no
-            // reorgs the fork point is `prev_tip`, so the served range
-            // `[prev_tip + 1, current_tip]` must cover exactly the newly mined
-            // blocks, contiguously.
             let prev = u32::from(prev_tip);
             let current = u32::from(current_tip);
             let applied = indexer
@@ -579,12 +502,6 @@ mod chain_query_interface {
         Ok(())
     }
 
-    /// BLOCKED-STUB. zcashd variant of [`zallet_like_steady_state_loop_zebrad`].
-    /// Same in-process `find_fork_point`/`snapshot_nonfinalized_state` invariants
-    /// (origin/dev `live-tests/clientless/tests/chain_cache.rs:625`), gated
-    /// `#[cfg(feature = "zcashd_support")]` and `#[ignore]`d on dev.
-    ///
-    /// Re-home target: an in-process `packages/zaino-state` unit test.
     #[cfg(feature = "zcashd_support")]
     #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[test]

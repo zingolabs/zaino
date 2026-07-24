@@ -1,23 +1,4 @@
-//! Proof-of-concept ported to ztest: a wallet against a **zcashd**-backed Zaino.
-//!
-//! Migration note: dev's `devtool_zcashd.rs` drove an in-process devtool wallet
-//! (`DevtoolClients`) and compared two in-process `FetchService` subscribers
-//! (`zcashd_subscriber` vs `zaino_subscriber`). Under ztest zcashd and zainod
-//! each run in a pod: the wallet is `Wallet::librustzcash()`, and the
-//! `json_server` oracle tests compare zcashd's own JSON-RPC
-//! (`validator.json_rpc()`) against zaino's JSON-RPC (`indexer.json_rpc()`) as
-//! `serde_json::Value` via [`assert_rpc_parity`] (the same approach as
-//! `clientless::json_server`). Test names, module tree, `#[ignore]` /
-//! `cfg_attr` gating, funding amounts, pools, and the sent-txid checks are
-//! preserved 1:1.
-//!
-//! The load-bearing consensus/routing facts from dev's PoC still hold: zcashd
-//! mines a valid ORCHARD coinbase to the abandon-art faucet address, so the
-//! faucet is funded from orchard shielded coinbase directly (`mine_to(FUND)`,
-//! `FUND = Pool::Orchard`); pre-NU6.3 on zcashd a `shield` lands in orchard, not
-//! ironwood; and zcashd rejects orchard→sapling, so dev's UA send (which routes
-//! orchard on zcashd) is reproduced as an orchard-address send and no sapling
-//! send is introduced.
+//! Proof-of-concept: a devtool wallet against a **zcashd**-backed Zaino.
 
 // The entire zcashd matrix depends on the zcashd validator + its zaino-testutils
 // launchers, all gated behind `zcashd_support`. Gate the whole binary so it
@@ -38,9 +19,7 @@ const SHIELD_FEE: u64 = 15_000;
 /// the faucet is funded from orchard shielded coinbase directly.
 const FUND: Pool = Pool::Orchard;
 /// Blocks to mine past a transaction's block to bury it below the finalisation
-/// seam (so it crosses `tip - seam`). Mirrors dev's
-/// `FAST_TEST_MAX_NONFINALISED_DEPTH` (100) plus a small margin; the e2e crate
-/// links no production code, so the seam depth is inlined here.
+/// seam (so it crosses `tip - seam`).
 const SEAM_ADVANCE: u32 = 105;
 
 /// Launch zcashd, fund the faucet with two orchard coinbase notes, and assert
@@ -69,21 +48,6 @@ async fn faucet_receives_zcashd_orchard_reward() -> Result<()> {
 /// Devtool ports of the `json_server` oracle tests: zaino's answer must equal
 /// zcashd's own answer over the same funded state — balances / utxos / txids /
 /// mempool / treestate / subtrees / rawtx / gettxout.
-///
-/// Harness swap only: dev ran two in-process `FetchService` subscribers (one on
-/// zcashd, one on zaino) and compared typed structs; here it is
-/// `validator.json_rpc()` vs `indexer.json_rpc()` compared as `serde_json::Value`
-/// via [`assert_rpc_parity`] (the same approach as `clientless::json_server`).
-/// Assertions, funding amounts, pools, and the sent-txid checks are preserved 1:1.
-///
-/// Funding pattern (dev's inlined `jsonrpc_fund`): fund the faucet with orchard
-/// coinbase notes, fetch the recipient's transparent + orchard addresses, and
-/// where a send is exercised, send 250_000 to that pool's recipient address and
-/// mine it in. The send=None mempool tests broadcast two unmined sends off the
-/// faucet, so they fund two spendable notes. The abandon-art faucet is funded
-/// from orchard coinbase and zcashd rejects orchard→sapling, so dev's UA send
-/// (which routes orchard on zcashd) is reproduced as an orchard-address send;
-/// no sapling send is introduced (dev avoided it too).
 mod json_server {
     use super::*;
 
@@ -510,8 +474,8 @@ mod wallet_to_validator {
     }
 
     /// zcashd analogue of devtool.rs's `shield_for_validator`: the recipient
-    /// receives a transparent send, then shields it into orchard (235_000 after
-    /// the ZIP-317 shielding fee).
+    /// receives a transparent send, then shields it into orchard (235_000 after the
+    /// ZIP-317 shielding fee).
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     async fn shield() -> Result<()> {
@@ -574,14 +538,11 @@ mod wallet_to_validator {
         let tip = validator.generate_blocks(1).await?;
         indexer.wait_for_block_num(tip, READY).await?;
 
-        // The send's block, queried while it is still in the non-finalised window.
         let irpc = indexer.json_rpc().await?;
         let height = u32::from(indexer.latest_block_height().await?);
         let params = json!([{ "addresses": [recipient_taddr], "start": height, "end": height }]);
         let unfinalised_txids = irpc.call_value("getaddresstxids", params.clone()).await?;
 
-        // The load-bearing advance: push the send below the seam so it crosses
-        // the finalised floor (`tip - seam`) into the finalized DB.
         let tip = validator.generate_blocks(SEAM_ADVANCE).await?;
         indexer.wait_for_block_num(tip, READY).await?;
         let finalised_txids = irpc.call_value("getaddresstxids", params).await?;
@@ -639,12 +600,7 @@ mod wallet_to_validator {
 
     /// zcashd analogue of devtool.rs's `monitor_unverified_mempool`: broadcast
     /// two unmined sends, observe them in the mempool, then mine them in and
-    /// confirm the balances. dev additionally asserted the *unconfirmed*
-    /// (mempool) pool balances; ztest's librustzcash wallet exposes no
-    /// pending/unconfirmed pool-balance accessor, so that split is left as a TODO
-    /// and the confirmed balance stands in. Ignored-by-default, as on dev. The
-    /// faucet is funded from orchard coinbase and zcashd rejects orchard→sapling,
-    /// so both sends route to the recipient's orchard address (no sapling send).
+    /// confirm the balances.
     #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     #[cfg_attr(
@@ -658,7 +614,6 @@ mod wallet_to_validator {
         let wallet = env.add_wallet(Wallet::librustzcash());
         env.build().await?;
 
-        // Two orchard notes — one per unmined send.
         let faucet = wallet
             .funded_faucet_with_notes(&validator, &indexer, 2)
             .await?;
@@ -678,7 +633,6 @@ mod wallet_to_validator {
             .expect("send returns a txid");
         tokio::time::sleep(Duration::from_secs(1)).await;
 
-        // Both unmined sends must be observable in the mempool.
         let irpc = indexer.json_rpc().await?;
         let mempool = irpc.call_value("getrawmempool", json!([])).await?;
         let mempool_txids: Vec<String> = mempool
@@ -694,10 +648,6 @@ mod wallet_to_validator {
                 && mempool_txids.contains(&txid_2.to_string()),
             "both unmined sends must be visible in the mempool: {mempool_txids:?}"
         );
-
-        // TODO: ztest's Wallet::librustzcash exposes no unconfirmed/pending
-        // pool-balance accessor; assert the unconfirmed orchard balance here
-        // (dev's `WalletBalance::unconfirmed_*`) once it does.
 
         let tip = validator.generate_blocks(1).await?;
         indexer.wait_for_block_num(tip, READY).await?;

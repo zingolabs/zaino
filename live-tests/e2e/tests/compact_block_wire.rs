@@ -9,18 +9,6 @@
 //! On top of fidelity, each test asserts the era composition of the served stream for
 //! the unfiltered request shape (empty `poolTypes`): orchard-only, ironwood-only, and
 //! the orchard→ironwood transition at the NU6.3 activation boundary.
-//!
-//! ztest port note: under ztest there is no in-process subscriber to differ from — the
-//! e2e crate links no zaino-state code, and `indexer.get_block_range(1..=tip)` already
-//! streams over zainod's real gRPC `CompactTxStreamer` (the `ZainoIndexer` handle opens
-//! the tonic channel internally). The protobuf encode → network → decode boundary is
-//! therefore crossed by every block-range call, so the "wire == in-process" fidelity
-//! predicate collapses to the identity and each test's load-bearing assertion is the
-//! era composition of that real-wire stream. The routing era is read from the served
-//! wire signal — the compact block's per-pool action counts (`vtx[].actions` for
-//! Orchard, `vtx[].ironwood_actions` for Ironwood) — matching
-//! `clientless/tests/compact_block_consistency.rs`, since the e2e crate cannot
-//! deserialize a raw validator block to read the coinbase's transaction version.
 
 use std::time::Duration;
 
@@ -86,11 +74,6 @@ enum CoinbaseEra {
 /// coinbase's: an Orchard-era coinbase pays the reward as Orchard actions
 /// (`vtx[].actions`, no ironwood), an Ironwood-era coinbase as Ironwood actions
 /// (`vtx[].ironwood_actions`, no orchard).
-///
-/// dev read this from the raw validator block's coinbase transaction version via
-/// `zebra_chain::block::Block::zcash_deserialize`; the e2e crate links no zebra
-/// production code, so the ztest port reads the equivalent routing fact off the served
-/// wire signal instead.
 fn assert_wire_served_eras(blocks: &[CompactBlock], expected_era: impl Fn(u64) -> CoinbaseEra) {
     // Era composition of the served stream. Observed failing at the first
     // ironwood-era height (served orchard 1 / ironwood 0) — hypotheses and the
@@ -129,8 +112,6 @@ fn assert_wire_served_eras(blocks: &[CompactBlock], expected_era: impl Fn(u64) -
 #[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
 async fn orchard_only_wire_serving_zebrad() -> Result<()> {
-    // Orchard-only: an explicit schedule with NU6.3 never activating, so the
-    // orchard-receiver reward stays in Orchard actions for every block.
     let mut env = TestEnv::builder()
         .ready_timeout(READY)
         .activation_heights(orchard_only());
@@ -141,8 +122,6 @@ async fn orchard_only_wire_serving_zebrad() -> Result<()> {
     let tip = validator.generate_blocks(6).await?;
     indexer.wait_for_block_num(tip, READY).await?;
 
-    // The unfiltered request shape real (including pre-Ironwood) clients send: an empty
-    // `poolTypes` filter, streamed over zainod's real gRPC `CompactTxStreamer`.
     let blocks = indexer
         .get_block_range(BlockHeight::from(1u32), tip)
         .await?;
@@ -165,8 +144,6 @@ async fn orchard_only_wire_serving_zebrad() -> Result<()> {
 #[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
 async fn ironwood_only_wire_serving_zebrad() -> Result<()> {
-    // Ironwood-only: the default NU6.3-capable zebrad regtest activates NU6.3 from
-    // height 2, so no `activate_through` cap is applied.
     let mut env = TestEnv::builder().ready_timeout(READY);
     let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(Pool::Orchard));
     let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
@@ -175,8 +152,6 @@ async fn ironwood_only_wire_serving_zebrad() -> Result<()> {
     let tip = validator.generate_blocks(6).await?;
     indexer.wait_for_block_num(tip, READY).await?;
 
-    // The unfiltered request shape real (including pre-Ironwood) clients send: an empty
-    // `poolTypes` filter, streamed over zainod's real gRPC `CompactTxStreamer`.
     let blocks = indexer
         .get_block_range(BlockHeight::from(1u32), tip)
         .await?;
@@ -194,20 +169,12 @@ async fn ironwood_only_wire_serving_zebrad() -> Result<()> {
 
 /// The transition over the wire: the same unchanged orchard-receiver miner's served
 /// stream flips from Orchard to Ironwood actions exactly at the NU6.3 activation
-/// height. Pins a mid-chain NU6.3 schedule (Orchard era `[2, 6)`, Ironwood from 6)
-/// via `activation_heights`, generates two blocks past the boundary so both eras
-/// carry more than one block, and asserts the served era at every height.
+/// height.
 ///
 /// multi_thread required: the test manager spawns the validator, indexer, and zainod.
-//
-// TODO: the published `zebrad("6.2.0")` image may not carry the NU6.3 branch id
-// needed to mine/validate an Ironwood coinbase at the boundary; if this fails on
-// `-25 incorrect consensus branch id`, swap in a NU6.3-capable `dev!` zebra image.
 #[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
 async fn orchard_to_ironwood_transition_wire_serving_zebrad() -> Result<()> {
-    // Mid-chain transition: NU6.3 pinned at NU6_3_TRANSITION_BOUNDARY, so the
-    // orchard-receiver coinbase is Orchard in [2, 6) and Ironwood from 6.
     let mut env = TestEnv::builder()
         .ready_timeout(READY)
         .activation_heights(orchard_then_ironwood_at(NU6_3_TRANSITION_BOUNDARY));

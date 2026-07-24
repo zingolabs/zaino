@@ -23,25 +23,17 @@
 //!
 //! Era composition of the *served* chain (coinbase routing, compact-block
 //! action fields) is covered clientless in
-//! `clientless/tests/compact_block_consistency.rs` and over the real gRPC wire
-//! in `compact_block_wire.rs`; this file owns the cells that need a wallet on
-//! both sides of the boundary.
+//! `clientless/tests/compact_block_consistency.rs` and over the real gRPC
+//! wire in `compact_block_wire.rs`; this file owns the cells that need a
+//! wallet on both sides of the boundary.
 //!
 //! The Public Testnet cannot host the migration cell for us: its pre-NU6.3
-//! epoch closed at height 4,134,000, no new value may enter Orchard from there
-//! (post-activation Orchard actions permit only same-receiver change or
-//! withdrawal — the cross-address restriction,
+//! epoch closed at height 4,134,000, no new value may enter Orchard from
+//! there (post-activation Orchard actions permit only same-receiver change
+//! or withdrawal — the cross-address restriction,
 //! <https://zcash.github.io/ironwood/design/action-circuit.html#the-cross-address-restriction>),
-//! and we hold no pre-activation Orchard TAZ — so this hermetic fixture is the
-//! only controlled venue for it.
-//!
-//! ztest port note: dev pinned the schedule in the zebrad launch config and
-//! drove a `zcash-devtool` wallet; here the schedule is the `TestEnv` builder's
-//! `activation_heights(orchard_then_ironwood_at(6))` (the mid-chain NU6.3
-//! transition is now a real ztest capability), the wallet is
-//! `Wallet::librustzcash()` (its balance summary tracks the Ironwood pool
-//! separately, unlike the zingo backend), and the per-height value-pool reads
-//! come off the served `getblockchaininfo` `valuePools` totals.
+//! and we hold no pre-activation Orchard TAZ — so this hermetic fixture is
+//! the only controlled venue for it.
 
 use std::time::Duration;
 
@@ -52,7 +44,7 @@ use e2e::{assert_pool_absent, assert_pool_present, Pool};
 
 /// Indexer sync / pod-ready timeout.
 const READY: Duration = Duration::from_secs(120);
-/// Standard transfer amount (zatoshis), matching dev's sends.
+/// Standard transfer amount (zatoshis).
 const SEND_AMOUNT: u64 = 250_000;
 /// zingolib's ZIP-317 fee for a single-note shield round under regtest.
 const SHIELD_FEE: u64 = 15_000;
@@ -79,8 +71,7 @@ fn orchard_then_ironwood_at(boundary: u32) -> ActivationHeights {
 }
 
 /// The served `chainValueZat` total for `pool_id` in `getblockchaininfo`'s
-/// `valuePools` at the indexer's current tip (0 when the pool is absent). This
-/// is the served-verbosity value-pool read dev asserted per height.
+/// `valuePools` at the indexer's current tip (0 when the pool is absent).
 async fn served_pool_zats(rpc: &JsonRpcClient, pool_id: &str) -> Result<u64> {
     let info = rpc
         .call_value("getblockchaininfo", serde_json::json!([]))
@@ -118,9 +109,6 @@ mod zebrad {
             let mut env = TestEnv::builder()
                 .ready_timeout(READY)
                 .activation_heights(orchard_then_ironwood_at(NU6_3_TRANSITION_BOUNDARY));
-            // TODO: published zebrad("6.2.0") may lack the NU6.3 branch id to
-            // mine/validate an Ironwood coinbase at the boundary; swap in a
-            // NU6.3-capable dev! image if it fails on -25.
             let validator = env.add_validator(
                 Validator::zebrad("6.2.0")
                     .regtest()
@@ -177,9 +165,6 @@ mod zebrad {
             let mut env = TestEnv::builder()
                 .ready_timeout(READY)
                 .activation_heights(orchard_then_ironwood_at(NU6_3_TRANSITION_BOUNDARY));
-            // TODO: published zebrad("6.2.0") may lack the NU6.3 branch id to
-            // mine/validate an Ironwood coinbase at the boundary; swap in a
-            // NU6.3-capable dev! image if it fails on -25.
             let validator = env.add_validator(
                 Validator::zebrad("6.2.0")
                     .regtest()
@@ -301,9 +286,6 @@ mod zebrad {
             let mut env = TestEnv::builder()
                 .ready_timeout(READY)
                 .activation_heights(orchard_then_ironwood_at(NU6_3_TRANSITION_BOUNDARY));
-            // TODO: published zebrad("6.2.0") may lack the NU6.3 branch id to
-            // mine/validate an Ironwood coinbase at the boundary; swap in a
-            // NU6.3-capable dev! image if it fails on -25.
             let validator = env.add_validator(
                 Validator::zebrad("6.2.0")
                     .regtest()
@@ -416,9 +398,6 @@ mod zebrad {
             let mut env = TestEnv::builder()
                 .ready_timeout(READY)
                 .activation_heights(orchard_then_ironwood_at(NU6_3_TRANSITION_BOUNDARY));
-            // TODO: published zebrad("6.2.0") may lack the NU6.3 branch id to
-            // mine/validate an Ironwood coinbase at the boundary; swap in a
-            // NU6.3-capable dev! image if it fails on -25.
             let validator = env.add_validator(
                 Validator::zebrad("6.2.0")
                     .regtest()
@@ -474,10 +453,6 @@ mod zebrad {
         ///
         /// multi_thread required: the test manager spawns the validator and
         /// indexer services.
-        // TODO: zaino StateService get_commitment_tree_roots reads the Ironwood
-        // tree unconditionally once NU6.3 is active, so pre-NU6.3 blocks in a
-        // mid-chain transition may stall the syncer; this test will fail until
-        // zaino gates that read on height >= nu6_3. Do NOT ignore.
         #[ztest::qos::wallet]
         #[tokio::test(flavor = "multi_thread")]
         async fn unified_receipt_lands_in_orchard_before_boundary() -> Result<()> {
@@ -485,9 +460,6 @@ mod zebrad {
                 .ready_timeout(READY)
                 .activation_heights(orchard_then_ironwood_at(NU6_3_TRANSITION_BOUNDARY));
             let vol = env.shared_volume("zebra-db");
-            // TODO: published zebrad("6.2.0") may lack the NU6.3 branch id to
-            // mine/validate an Ironwood coinbase at the boundary; swap in a
-            // NU6.3-capable dev! image if it fails on -25.
             let validator = env.add_validator(
                 Validator::zebrad("6.2.0")
                     .regtest()
@@ -535,10 +507,6 @@ mod zebrad {
         ///
         /// multi_thread required: the test manager spawns the validator and
         /// indexer services.
-        // TODO: zaino StateService get_commitment_tree_roots reads the Ironwood
-        // tree unconditionally once NU6.3 is active, so pre-NU6.3 blocks in a
-        // mid-chain transition may stall the syncer; this test will fail until
-        // zaino gates that read on height >= nu6_3. Do NOT ignore.
         #[ztest::qos::wallet]
         #[tokio::test(flavor = "multi_thread")]
         async fn orchard_note_spends_to_ironwood_across_boundary() -> Result<()> {
@@ -546,9 +514,6 @@ mod zebrad {
                 .ready_timeout(READY)
                 .activation_heights(orchard_then_ironwood_at(NU6_3_TRANSITION_BOUNDARY));
             let vol = env.shared_volume("zebra-db");
-            // TODO: published zebrad("6.2.0") may lack the NU6.3 branch id to
-            // mine/validate an Ironwood coinbase at the boundary; swap in a
-            // NU6.3-capable dev! image if it fails on -25.
             let validator = env.add_validator(
                 Validator::zebrad("6.2.0")
                     .regtest()
@@ -654,10 +619,6 @@ mod zebrad {
         ///
         /// multi_thread required: the test manager spawns the validator and
         /// indexer services.
-        // TODO: zaino StateService get_commitment_tree_roots reads the Ironwood
-        // tree unconditionally once NU6.3 is active, so pre-NU6.3 blocks in a
-        // mid-chain transition may stall the syncer; this test will fail until
-        // zaino gates that read on height >= nu6_3. Do NOT ignore.
         #[ztest::qos::wallet]
         #[tokio::test(flavor = "multi_thread")]
         async fn receipts_flip_pools_exactly_at_the_boundary() -> Result<()> {
@@ -665,9 +626,6 @@ mod zebrad {
                 .ready_timeout(READY)
                 .activation_heights(orchard_then_ironwood_at(NU6_3_TRANSITION_BOUNDARY));
             let vol = env.shared_volume("zebra-db");
-            // TODO: published zebrad("6.2.0") may lack the NU6.3 branch id to
-            // mine/validate an Ironwood coinbase at the boundary; swap in a
-            // NU6.3-capable dev! image if it fails on -25.
             let validator = env.add_validator(
                 Validator::zebrad("6.2.0")
                     .regtest()
@@ -769,10 +727,6 @@ mod zebrad {
         ///
         /// multi_thread required: the test manager spawns the validator and
         /// indexer services.
-        // TODO: zaino StateService get_commitment_tree_roots reads the Ironwood
-        // tree unconditionally once NU6.3 is active, so pre-NU6.3 blocks in a
-        // mid-chain transition may stall the syncer; this test will fail until
-        // zaino gates that read on height >= nu6_3. Do NOT ignore.
         #[ztest::qos::wallet]
         #[tokio::test(flavor = "multi_thread")]
         async fn shield_deposits_to_orchard_before_boundary() -> Result<()> {
@@ -780,9 +734,6 @@ mod zebrad {
                 .ready_timeout(READY)
                 .activation_heights(orchard_then_ironwood_at(NU6_3_TRANSITION_BOUNDARY));
             let vol = env.shared_volume("zebra-db");
-            // TODO: published zebrad("6.2.0") may lack the NU6.3 branch id to
-            // mine/validate an Ironwood coinbase at the boundary; swap in a
-            // NU6.3-capable dev! image if it fails on -25.
             let validator = env.add_validator(
                 Validator::zebrad("6.2.0")
                     .regtest()

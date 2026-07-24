@@ -2,20 +2,6 @@
 //! (faucet + recipient) drives a Zaino-in-a-pod over its gRPC / JSON-RPC
 //! surface.
 //!
-//! Migration note: dev's `devtool.rs` drove the zcash-devtool client
-//! (`DevtoolClients`) against a Zaino launched by `TestManager`, comparing
-//! in-process `FetchService` / `StateService` subscribers. Under ztest the
-//! validator (zebrad) and the indexer (zainod) each run in a pod, the wallet is
-//! `Wallet::librustzcash()`, and every query goes over the pod's gRPC / JSON-RPC
-//! surface via the `indexer` / `validator` handles. Test names, module tree,
-//! `#[cfg_attr]` / `#[ignore]` gating, funding amounts, pools, and the core
-//! assertions are preserved 1:1 with dev. dev's `<Service>` axis maps onto the
-//! module tree: `mod fetch_service` runs against a `regtest` zainod reading
-//! zebrad over RPC; `mod state_service` against a `tuning(ZainoTuning::State)` zainod
-//! (RocksDB secondary over a shared volume); the `*_fetch_vs_state` tests
-//! directly in `mod zebrad` stand up BOTH pods over one shared zebrad chain and
-//! assert the two backends agree.
-//!
 //! Covered (the full zebrad fetch + state query/send surface):
 //! - sends to each pool, `send_to_all`, shielding, mining-reward receipt;
 //! - `get_transaction` (mined / mempool), `get_raw_transaction`;
@@ -33,16 +19,6 @@
 //!
 //! Dual `*_fetch_vs_state` tests assert the fetch and state backends agree.
 //!
-//! Funding: dev funds the faucet from `SHIELDED_FUNDING_POOL` (orchard). The
-//! `zfnd/zebra` image can't mine a valid orchard coinbase for the send column
-//! (block-2+ fails the halo2 proof), so the send/mining-reward/mempool tests
-//! fund from **sapling** shielded coinbase — equivalent shielded funding (no
-//! maturity wait, chain stays short and off the finalised seam), and the
-//! send/balance invariants under test are independent of which pool funded the
-//! faucet. The `getblockdeltas` tests keep dev's `mine_to(Pool::Orchard)`
-//! (zebrad 6.2.0 links orchard 0.15 / zcash_protocol 0.10, matching the wallet
-//! and miner) — see the per-test notes.
-//!
 //! Deferred (documented `#[ignore]` stubs, names preserved — see each stub for
 //! the ztest gap and the re-home target):
 //! - `send_to_transparent_finalization` — heavy seam-deep advance;
@@ -59,7 +35,7 @@ use e2e::{assert_pool_absent, assert_pool_present, Pool};
 
 /// Indexer sync / pod-ready timeout.
 const READY: Duration = Duration::from_secs(120);
-/// Standard transfer amount (zatoshis), matching dev's sends.
+/// Standard transfer amount (zatoshis).
 const SEND_AMOUNT: u64 = 250_000;
 /// zingolib's ZIP-317 fee for a single-note shield round under regtest.
 const SHIELD_FEE: u64 = 15_000;
@@ -156,14 +132,12 @@ mod zebrad {
     use super::*;
 
     /// The FetchService column: a `regtest` zainod pod reading zebrad over RPC.
-    /// Each test stands up its own zebrad + zainod + librustzcash wallet inline
-    /// (dev's `<Service = FetchService>` instantiation, as pods).
+    /// Each test stands up its own zebrad + zainod + librustzcash wallet inline.
     mod fetch_service {
         use super::*;
 
         /// Port of `receives_mining_reward`: the faucet's synced wallet holds a
-        /// spendable shielded coinbase note. (dev asserts orchard coinbase; we
-        /// fund from sapling — see module note — so we assert the funding note.)
+        /// spendable shielded coinbase note.
         #[ztest::qos::wallet]
         #[tokio::test(flavor = "multi_thread")]
         async fn receives_mining_reward() -> Result<()> {
@@ -211,8 +185,7 @@ mod zebrad {
         /// recipient's unified address. The recipient's unified address exposes
         /// an Orchard receiver, but from NU6.3 librustzcash routes the output
         /// value to the Ironwood pool (Orchard is spend-locked), so the receipt
-        /// lands in — and is asserted against — the Ironwood balance. Verified
-        /// on-chain: the send credits `ironwood`, not `orchard`.
+        /// lands in — and is asserted against — the Ironwood balance.
         #[ztest::qos::wallet]
         #[tokio::test(flavor = "multi_thread")]
         async fn send_to_ironwood() -> Result<()> {
@@ -379,9 +352,8 @@ mod zebrad {
         /// Port of `send_to_transparent_finalization`: a transparent send returns
         /// the same address txids from the non-finalised chain and again after a
         /// seam-deep advance lands it in the finalised DB. Heavy: the advance
-        /// mines `SEAM_ADVANCE` (~105) shielded coinbase blocks to cross the seam;
-        /// with the zfnd/zebra image funding from sapling that is ~105 groth16
-        /// proofs. Gated + ignored-by-default, as on dev; un-ignore for manual /
+        /// mines `SEAM_ADVANCE` (~105) shielded coinbase blocks to cross the seam.
+        /// Gated + ignored-by-default; un-ignore for manual /
         /// dedicated CI, or once cheap transparent filler mining lands.
         #[ztest::qos::wallet]
         #[tokio::test(flavor = "multi_thread")]
@@ -461,8 +433,8 @@ mod zebrad {
 
         /// Port of `get_raw_mempool`: the indexer's `getrawmempool` matches the
         /// validator's, with two unmined transactions. `getrawmempool` returns
-        /// the mempool txid set in unspecified order, so dev sorted both sides
-        /// before comparing; sort both txid lists and compare as sets.
+        /// the mempool txid set in unspecified order; sort both txid lists and
+        /// compare as sets.
         #[ztest::qos::wallet]
         #[tokio::test(flavor = "multi_thread")]
         async fn get_raw_mempool() -> Result<()> {
@@ -543,7 +515,6 @@ mod zebrad {
 
             let mut all = indexer.get_mempool_tx(Vec::new()).await?;
             all.sort_by_key(|tx| tx.txid.clone());
-            // dev asserted the ordered contents of the 2-tx set, not just the length.
             assert_eq!(all.len(), 2, "both unmined txs must be present");
             assert_eq!(all[0].txid, want[0]);
             assert_eq!(all[1].txid, want[1]);
@@ -557,9 +528,9 @@ mod zebrad {
 
         /// Port of `get_mempool_stream` (smoke): a mempool subscription observes
         /// unmined transactions. zaino's GetMempoolStream snapshots the current
-        /// mempool then stays open until a block is mined, so dev spawned the
-        /// drain and mined concurrently (draining before mining hangs). Mirror
-        /// that: subscribe, mine to close, then collect.
+        /// mempool then stays open until a block is mined, so the drain is spawned
+        /// and a block mined concurrently (draining before mining hangs):
+        /// subscribe, mine to close, then collect.
         #[ztest::qos::wallet]
         #[tokio::test(flavor = "multi_thread")]
         async fn get_mempool_stream() -> Result<()> {
@@ -594,16 +565,11 @@ mod zebrad {
             Ok(())
         }
 
-        /// Port of `get_mempool_info` (dev's `get_mempool_info_fetch`):
-        /// `getmempoolinfo` matches values recomputed from the mempool's own
-        /// contents. dev recomputed `size`/`bytes`/`usage` from the in-process
-        /// subscriber internals; over a pod we recompute `size` and `bytes` from
-        /// the mempool-stream's serialized transactions. dev's exact
-        /// `usage == bytes + Σ txid-key heap-capacity` cannot be matched from a
-        /// pod (an in-process heap detail with no RPC surface), so we assert
-        /// `usage >= bytes` instead — the one place this port cannot reproduce
-        /// dev's assertion 1:1. The exact in-process recompute is preserved by
-        /// name as the ignored `get_mempool_info` stub families.
+        /// Port of `get_mempool_info`: `getmempoolinfo` matches values recomputed
+        /// from the mempool's own contents (`size` and `bytes` from the
+        /// mempool-stream's serialized transactions). `usage == bytes + Σ txid-key
+        /// heap-capacity` is an in-process detail with no pod surface, so we assert
+        /// `usage >= bytes` instead.
         #[ztest::qos::wallet]
         #[tokio::test(flavor = "multi_thread")]
         async fn get_mempool_info() -> Result<()> {
@@ -665,10 +631,10 @@ mod zebrad {
 
         /// Port of `monitor_unverified_mempool`: broadcast two unmined sends,
         /// observe them in the mempool, then mine them in and confirm the
-        /// balances. dev additionally asserted the *unconfirmed* (mempool) pool
-        /// balances; ztest's librustzcash wallet exposes no pending/unconfirmed
-        /// pool-balance accessor, so that split is left as a TODO and the
-        /// confirmed balances stand in. Ignored-by-default, as on dev.
+        /// balances. The *unconfirmed* (mempool) pool-balance split under test
+        /// cannot be asserted — ztest's librustzcash wallet exposes no
+        /// pending/unconfirmed pool-balance accessor — so the confirmed balances
+        /// stand in. Ignored-by-default.
         #[ztest::qos::wallet]
         #[tokio::test(flavor = "multi_thread")]
         #[cfg_attr(
@@ -713,10 +679,6 @@ mod zebrad {
                 "both unmined sends must be visible in the mempool: {mempool:?}"
             );
 
-            // TODO: ztest's Wallet::librustzcash exposes no unconfirmed/pending
-            // pool-balance accessor; assert the unconfirmed Ironwood/Sapling split
-            // here (dev's `WalletBalance::unconfirmed_*`) once it does.
-
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
             recipient.sync().await?;
@@ -727,8 +689,7 @@ mod zebrad {
         }
 
         /// Port of `get_address_tx_ids`: `getaddresstxids` over the recipient's
-        /// taddr returns the send's txid. dev asserted the send is the *first*
-        /// txid the address query returns.
+        /// taddr returns the send's txid (asserted as the first txid returned).
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn get_address_tx_ids() -> Result<()> {
@@ -1075,11 +1036,10 @@ mod zebrad {
     }
 
     // These compare a fetch-backend zainod pod against a state-backend zainod
-    // pod, both reading one shared zebrad regtest chain (dev ran both zaino
-    // services in-process). Each test stands up one zebrad on a shared volume, a
-    // fetch zainod (`regtest`) and a state zainod (`tuning(ZainoTuning::State)`) inline, and
-    // reproduces dev's exact `assert_eq!(fetch, state)` comparison over the pods'
-    // gRPC / JSON-RPC surface. dev ran these once (not per-`<Service>`).
+    // pod, both reading one shared zebrad regtest chain. Each test stands up one
+    // zebrad on a shared volume, a fetch zainod (`regtest`) and a state zainod
+    // (`tuning(ZainoTuning::State)`) inline, and reproduces the exact
+    // `assert_eq!(fetch, state)` comparison over the pods' gRPC / JSON-RPC surface.
 
     /// Port of `block_range_returns_default_pools`: `get_block_range` with no
     /// pools == requesting the shielded pools, fetch==state, and the tip block
@@ -1854,10 +1814,9 @@ mod zebrad {
     /// Ignored-by-default; re-home to a `packages/zaino-state` unit test, or
     /// un-ignore once zaino serves `getaddressdeltas` over the pod.
     ///
-    /// dev's assertions (devtool.rs `address_deltas`): Simple/Filtered/
-    /// WithChainInfo variants, the recipient send delta at output index 0,
-    /// multi-address deltas, start/end clamping to the tip, and empty deltas for
-    /// a non-existent address.
+    /// Intended assertions: Simple/Filtered/WithChainInfo variants, the recipient
+    /// send delta at output index 0, multi-address deltas, start/end clamping to
+    /// the tip, and empty deltas for a non-existent address.
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     #[cfg_attr(
@@ -1895,10 +1854,6 @@ mod zebrad {
         let tip = validator.generate_blocks(1).await?;
         indexer.wait_for_block_num(tip, READY).await?;
 
-        // TODO: `getaddressdeltas` has no pod JSON-RPC surface in zaino/zainod;
-        // assert the Simple/Filtered/WithChainInfo deltas, the send delta at
-        // output index 0, multi-address deltas, tip-clamped start/end, and the
-        // empty deltas for a non-existent address once it is exposed.
         Ok(())
     }
 
@@ -1922,19 +1877,19 @@ mod zebrad {
         // output is uniquely identifiable by its amount.
         const FUNDING_AMOUNT: i64 = 250_000;
 
-        // State-backend only, mirroring origin/dev: zebra serves no
-        // `getblockdeltas` RPC, so only the state backend — which synthesizes the
-        // deltas from a verbosity-2 block and resolves each spend's prevout via
-        // its `ReadStateService` — can answer it. There is no fetch path and no
-        // fetch-vs-state cross-check. The state zainod opens the validator's
-        // zebra-state DB as a RocksDB secondary over the shared volume, so the
-        // validator mounts the same `vol` (`.mount(&vol)`).
+        // State-backend only: zebra serves no `getblockdeltas` RPC, so only the
+        // state backend — which synthesizes the deltas from a verbosity-2 block
+        // and resolves each spend's prevout via its `ReadStateService` — can
+        // answer it. There is no fetch path and no fetch-vs-state cross-check. The
+        // state zainod opens the validator's zebra-state DB as a RocksDB secondary
+        // over the shared volume, so the validator mounts the same `vol`
+        // (`.mount(&vol)`).
         //
-        // Coinbase mines to Orchard, matching dev's `SHIELDED_FUNDING_POOL`.
-        // Orchard is invalid before NU5 (height 2) and the miner address pins the
-        // pool, so `funded_faucet_with_notes` warms the chain past NU5 before
-        // mining the faucet's notes. The coinbase is shielded, so the 250_000
-        // transparent send is the funding block's only transparent output.
+        // Coinbase mines to Orchard. Orchard is invalid before NU5 (height 2) and
+        // the miner address pins the pool, so `funded_faucet_with_notes` warms the
+        // chain past NU5 before mining the faucet's notes. The coinbase is
+        // shielded, so the 250_000 transparent send is the funding block's only
+        // transparent output.
         //
         // zebra must link the same orchard 0.15 / zcash_protocol 0.10 as the
         // wallet and miner to verify their proofs; an older 5.2.0 (orchard ~0.13)
@@ -2052,11 +2007,10 @@ mod zebrad {
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_block_deltas_coinbase_only_block_has_no_inputs() -> Result<()> {
-        // State-backend only, mirroring origin/dev (cf.
-        // `get_block_deltas_resolves_transparent_spend`): zebra serves no
-        // `getblockdeltas` RPC, so only the synthesizing state backend can answer
-        // it. Coinbase mines to Orchard (`SHIELDED_FUNDING_POOL`); see the sibling
-        // test for why the orchard version must match the wallet. This test has no
+        // State-backend only (cf. `get_block_deltas_resolves_transparent_spend`):
+        // zebra serves no `getblockdeltas` RPC, so only the synthesizing state
+        // backend can answer it. Coinbase mines to Orchard; see the sibling test
+        // for why the orchard version must match the wallet. This test has no
         // faucet, so it mines the NU5 warmup block itself (height 1, pre-NU5
         // fallback coinbase) and inspects the height-2 block — the first true
         // Orchard coinbase — which carries only its coinbase tx, so
@@ -2104,11 +2058,10 @@ mod zebrad {
     /// has no gRPC/JSON-RPC surface — not reachable from a ztest pod test.
     /// Re-home to a `packages/zaino-state` unit test.
     ///
-    /// dev's assertions (`get_outpoint_spenders_fetch_vs_state`): build three
-    /// transparent outpoints at the recipient taddr — one spent and buried past
-    /// the finalised seam (a small margin below `tip - seam`; ~105 blocks on the
-    /// operational chain), one spent but left in the non-finalised window, one
-    /// left unspent — then for BOTH backends:
+    /// Intended assertions: build three transparent outpoints at the recipient
+    /// taddr — one spent and buried past the finalised seam (a small margin below
+    /// `tip - seam`; ~105 blocks on the operational chain), one spent but left in
+    /// the non-finalised window, one left unspent — then for BOTH backends:
     ///   - `ChainScope::FullChain`  => vec![Some(spender_finalised), Some(spender_nonfinalised), None]
     ///   - `ChainScope::Finalised`  => vec![Some(spender_finalised), None, None]
     /// i.e. FullChain resolves both spends, Finalised only the buried one.
@@ -2187,13 +2140,6 @@ mod zebrad {
         fetch.wait_for_block_num(tip, READY).await?;
         state.wait_for_block_num(tip, READY).await?;
 
-        // TODO: the outpoint-spender lookup has no pod surface — dev drove the
-        // in-process `zaino_state::ChainIndex::get_outpoint_spenders` with
-        // `ChainScope::{FullChain, Finalised}` against a nonfinalized-state
-        // snapshot. Assert, for BOTH the fetch and state backends, once it is
-        // exposed over the pod:
-        //   - FullChain  => [Some(spender_finalised), Some(spender_nonfinalised), None]
-        //   - Finalised  => [Some(spender_finalised), None, None]
         Ok(())
     }
 
@@ -2362,7 +2308,7 @@ mod zebrad {
     /// The StateService column: a `tuning(ZainoTuning::State)` zainod pod reading zebrad's
     /// state DB as a RocksDB secondary over a shared volume. Each test stands up
     /// its own persistent-state zebrad + state zainod + librustzcash wallet
-    /// inline (dev's `<Service = StateService>` instantiation, as pods).
+    /// inline.
     mod state_service {
         use super::*;
 
@@ -2659,7 +2605,7 @@ mod zebrad {
         /// the same address txids from the non-finalised chain and again after a
         /// seam-deep advance lands it in the finalised DB. Heavy: the advance
         /// mines `SEAM_ADVANCE` (~105) shielded coinbase blocks to cross the seam.
-        /// Gated + ignored-by-default, as on dev; un-ignore for manual /
+        /// Gated + ignored-by-default; un-ignore for manual /
         /// dedicated CI, or once cheap transparent filler mining lands.
         #[ztest::qos::wallet]
         #[tokio::test(flavor = "multi_thread")]
@@ -2815,12 +2761,10 @@ mod zebrad {
             Ok(())
         }
 
-        /// Port of `get_mempool_info` (dev's `get_mempool_info_state`):
-        /// `getmempoolinfo` matches values recomputed from the mempool's own
-        /// contents. `usage == bytes + Σ txid-key heap-capacity` is an in-process
-        /// detail with no pod surface, so we assert `usage >= bytes` instead. The
-        /// exact in-process recompute is preserved by name as the ignored
-        /// `get_mempool_info` stub families.
+        /// Port of `get_mempool_info`: `getmempoolinfo` matches values recomputed
+        /// from the mempool's own contents. `usage == bytes + Σ txid-key
+        /// heap-capacity` is an in-process detail with no pod surface, so we assert
+        /// `usage >= bytes` instead.
         #[ztest::qos::wallet]
         #[tokio::test(flavor = "multi_thread")]
         async fn get_mempool_info() -> Result<()> {
@@ -2892,10 +2836,10 @@ mod zebrad {
 
         /// Port of `monitor_unverified_mempool`: broadcast two unmined sends,
         /// observe them in the mempool, then mine them in and confirm the
-        /// balances. dev additionally asserted the *unconfirmed* (mempool) pool
-        /// balances; ztest's librustzcash wallet exposes no pending/unconfirmed
-        /// pool-balance accessor, so that split is left as a TODO and the
-        /// confirmed balances stand in. Ignored-by-default, as on dev.
+        /// balances. The *unconfirmed* (mempool) pool-balance split under test
+        /// cannot be asserted — ztest's librustzcash wallet exposes no
+        /// pending/unconfirmed pool-balance accessor — so the confirmed balances
+        /// stand in. Ignored-by-default.
         #[ztest::qos::wallet]
         #[tokio::test(flavor = "multi_thread")]
         #[cfg_attr(
@@ -2950,10 +2894,6 @@ mod zebrad {
                     && mempool.contains(&sapling_txid.to_string()),
                 "both unmined sends must be visible in the mempool: {mempool:?}"
             );
-
-            // TODO: ztest's Wallet::librustzcash exposes no unconfirmed/pending
-            // pool-balance accessor; assert the unconfirmed Ironwood/Sapling split
-            // here (dev's `WalletBalance::unconfirmed_*`) once it does.
 
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;

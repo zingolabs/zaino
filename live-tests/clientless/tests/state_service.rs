@@ -1,12 +1,3 @@
-//! Compare Zaino's state-service view against its fetch-service view.
-//!
-//! On dev this file ran two in-process subscribers (fetch + state) against one
-//! validator and asserted they agree. Under the ztest harness that dual setup
-//! is one zebrad validator plus two zaino indexers — a fetch-backed indexer and
-//! a state-backed indexer sharing the validator's persistent state volume — and
-//! the "subscribers agree" assertions become fetch-vs-state parity assertions
-//! across the two indexers.
-
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -53,13 +44,6 @@ mod zebra {
             let srpc = state.json_rpc().await?;
             assert_rpc_parity("getinfo", "", &frpc, &srpc, &["errorstimestamp"]).await?;
 
-            // dev's allow-list: compare only the fields it asserted via typed
-            // accessors — chain, blocks, bestblockhash, estimatedheight,
-            // upgrades, consensus. This naturally excludes valuePools/chainSupply,
-            // which disagree between fetch and state
-            // (https://github.com/zingolabs/zaino/issues/235) and which dev
-            // therefore never compared; every other field (verificationprogress,
-            // size_on_disk, …) is simply left unasserted, matching dev.
             // TODO: Fix this! (ignored due to [https://github.com/zingolabs/zaino/issues/235]).
             // assert_eq!(
             //     fetch_service_blockchain_info.value_pools(),
@@ -87,13 +71,6 @@ mod zebra {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn state_service_chaintip_update_subscriber() -> Result<()> {
-            // TODO: ztest has no chaintip/tip-change subscriber stream; polling
-            // tip changes as the closest equivalent — restore the streaming
-            // assertion when ztest gains a tip subscriber. dev subscribed to the
-            // Direct connection's `chaintip_update_subscriber()` and asserted each
-            // `next_tip_hash()` matched the state subscriber's latest block hash;
-            // here we mine block-by-block and assert the state indexer's tip hash
-            // tracks the fetch indexer's at every new tip.
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mount(&vol));
@@ -170,8 +147,6 @@ mod zebra {
         #[ignore = "requires fully synced testnet."]
         #[tokio::test(flavor = "multi_thread")]
         async fn address_utxos_testnet() -> Result<()> {
-            // dev: z_get_address_utxos for tmAkxrvJCN75Ty9YkiHccqc1hJmGZpggo6i,
-            // fetch/state agreement on cached testnet chain.
             unimplemented!("testnet z_get_address_utxos parity — requires synced testnet zebrad")
         }
 
@@ -179,8 +154,6 @@ mod zebra {
         #[ignore = "requires fully synced testnet."]
         #[tokio::test(flavor = "multi_thread")]
         async fn address_tx_ids_testnet() -> Result<()> {
-            // dev: get_address_tx_ids for tmAkxrvJCN75Ty9YkiHccqc1hJmGZpggo6i over
-            // heights [2_000_000, 3_000_000], fetch/state agreement.
             unimplemented!("testnet get_address_tx_ids parity — requires synced testnet zebrad")
         }
 
@@ -188,8 +161,6 @@ mod zebra {
         #[ignore = "requires fully synced testnet."]
         #[tokio::test(flavor = "multi_thread")]
         async fn raw_transaction_testnet() -> Result<()> {
-            // dev: get_raw_transaction(txid, None) for
-            // abb0399df392130baa45644c421fab553670a2d0d399c4dd776a8f7862ec289d.
             unimplemented!("testnet get_raw_transaction parity — requires synced testnet zebrad")
         }
 
@@ -286,9 +257,6 @@ mod zebra {
 
             let frpc = fetch.json_rpc().await?;
             let srpc = state.json_rpc().await?;
-            // dev compared the full typed get_mining_info() with no field dropped;
-            // networksolps is deterministic given the same chain, so it is not
-            // dropped. Only the genuinely-volatile errors timestamp is ignored.
             let ignore = &["errorstimestamp"];
             assert_rpc_parity("getmininginfo", "", &frpc, &srpc, ignore).await?;
 
@@ -439,8 +407,6 @@ mod zebra {
             #[ignore = "requires fully synced testnet."]
             #[tokio::test(flavor = "multi_thread")]
             pub(crate) async fn subtrees_by_index_testnet() -> Result<()> {
-                // dev: z_get_subtrees_by_index for "sapling" and "orchard",
-                // start_index=0, limit=None, fetch/state agreement.
                 unimplemented!(
                     "testnet z_get_subtrees_by_index parity — requires synced testnet zebrad"
                 )
@@ -450,7 +416,6 @@ mod zebra {
             #[ignore = "requires fully synced testnet."]
             #[tokio::test(flavor = "multi_thread")]
             pub(crate) async fn treestate_testnet() -> Result<()> {
-                // dev: z_get_treestate("3000000"), fetch/state agreement.
                 unimplemented!("testnet z_get_treestate parity — requires synced testnet zebrad")
             }
         }
@@ -459,7 +424,6 @@ mod zebra {
         #[ignore = "requires fully synced testnet."]
         #[tokio::test(flavor = "multi_thread")]
         async fn raw_mempool_testnet() -> Result<()> {
-            // dev: get_raw_mempool, sorted, fetch/state agreement.
             unimplemented!("testnet get_raw_mempool parity — requires synced testnet zebrad")
         }
 
@@ -506,8 +470,6 @@ mod zebra {
         #[ignore = "requires fully synced testnet."]
         #[tokio::test(flavor = "multi_thread")]
         async fn block_object_testnet() -> Result<()> {
-            // dev: z_get_block("1000000", verbosity 1), by-height vs by-hash,
-            // fetch/state agreement.
             unimplemented!("testnet getblock(object) parity — requires synced testnet zebrad")
         }
 
@@ -550,7 +512,6 @@ mod zebra {
         #[ignore = "requires fully synced testnet."]
         #[tokio::test(flavor = "multi_thread")]
         async fn block_raw_testnet() -> Result<()> {
-            // dev: z_get_block("1000000", verbosity 0), fetch/state agreement.
             unimplemented!("testnet getblock(raw) parity — requires synced testnet zebrad")
         }
 
@@ -558,8 +519,6 @@ mod zebra {
         #[ignore = "requires fully synced testnet."]
         #[tokio::test(flavor = "multi_thread")]
         async fn address_balance_testnet() -> Result<()> {
-            // dev: z_get_address_balance for tmAkxrvJCN75Ty9YkiHccqc1hJmGZpggo6i,
-            // fetch/state agreement.
             unimplemented!("testnet z_get_address_balance parity — requires synced testnet zebrad")
         }
 
@@ -567,8 +526,6 @@ mod zebra {
         #[ignore = "requires fully synced testnet."]
         #[tokio::test]
         async fn address_deltas_testnet() -> Result<()> {
-            // dev: get_address_deltas for tmAkxrvJCN75Ty9YkiHccqc1hJmGZpggo6i over
-            // [2_000_000, 3_000_000], both chain_info=false and chain_info=true.
             unimplemented!("testnet get_address_deltas parity — requires synced testnet zebrad")
         }
     }
@@ -820,7 +777,6 @@ mod zebra {
             let tip = validator.generate_blocks(6).await?;
             fetch.wait_for_block_num(tip, READY).await?;
             state.wait_for_block_num(tip, READY).await?;
-            // Dev used all_pools_i32() = [Transparent, Sapling, Orchard, Ironwood].
             let all_pools = vec![1, 2, 3, 4];
             assert_eq!(
                 fetch
@@ -867,9 +823,6 @@ mod zebra {
             fetch.wait_for_block_num(tip, READY).await?;
             state.wait_for_block_num(tip, READY).await?;
             // TODO(#1088): replace deprecated nullifier-range client usage.
-            // Note: ztest's get_block_range_nullifiers takes no pool-types argument,
-            // so dev's all_pools_i32() filter is necessarily dropped here (forced by
-            // the pod API surface).
             assert_eq!(
                 fetch
                     .get_block_range_nullifiers(BlockHeight::from(2u32), BlockHeight::from(5u32))

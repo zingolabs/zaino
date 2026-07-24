@@ -37,8 +37,8 @@ const READY: Duration = Duration::from_secs(300);
 /// wrong validator pin — both worth failing loudly over.
 const OBSERVED_NU6_3_ACTIVATION_ON_THE_PUB_TESTNET: u32 = 4_134_000;
 
-/// The chain value (in zatoshis) of `pool_id` as of `height`, read from the
-/// validator's verbosity-2 `getblock` object.
+/// The chain value of `pool_id` as of `height`, from the validator's
+/// verbosity-2 block object.
 async fn pool_zats(rpc: &JsonRpcClient, height: u32, pool_id: &str) -> Result<i64> {
     let block = rpc
         .call_value("getblock", json!([height.to_string(), 2]))
@@ -73,11 +73,11 @@ async fn value_pools_respect_the_boundary_on_the_pub_testnet() -> Result<()> {
     env.build().await?;
 
     let vrpc = validator.json_rpc().await?;
-    let info = vrpc.call_value("getblockchaininfo", json!([])).await?;
+    let blockchain_info = vrpc.call_value("getblockchaininfo", json!([])).await?;
 
     // The validator's reported schedule is the source of truth for the
     // boundary; the recorded constant pins the real history of The Public Testnet.
-    let boundary = info
+    let boundary = blockchain_info
         .get("upgrades")
         .and_then(Value::as_object)
         .context("getblockchaininfo.upgrades")?
@@ -94,11 +94,7 @@ async fn value_pools_respect_the_boundary_on_the_pub_testnet() -> Result<()> {
         "the validator's NU6.3 height must match the observed activation on The Public Testnet"
     );
 
-    // Dev skipped at runtime when the host cache was short. Under ztest an
-    // absent snapshot fails at materialization, and a snapshot that stops below
-    // the boundary is exactly the missing fixture — fail loudly rather than
-    // silently pass.
-    let tip = info
+    let tip = blockchain_info
         .get("blocks")
         .and_then(Value::as_u64)
         .context("getblockchaininfo.blocks")? as u32;

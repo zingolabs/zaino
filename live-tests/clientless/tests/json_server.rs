@@ -32,11 +32,6 @@ mod zcashd {
             let zrpc = validator.json_rpc().await?;
             let irpc = indexer.json_rpc().await?;
             assert_rpc_parity("getinfo", "", &zrpc, &irpc, &["timestamp"]).await?;
-            // Parity with dev's `launch_json_server_check_info`: dev did NOT compare the
-            // whole getblockchaininfo object — it asserted exactly this field set
-            // (chain, blocks, bestblockhash, estimatedheight, valuePools, upgrades,
-            // consensus), deliberately omitting volatile/divergent fields such as
-            // chainSupply (see memory note #235). Compare that same set field-by-field.
             let z = zrpc.call_value("getblockchaininfo", json!([])).await?;
             let i = irpc.call_value("getblockchaininfo", json!([])).await?;
             for field in [
@@ -68,11 +63,6 @@ mod zcashd {
             let zrpc = validator.json_rpc().await?;
             let irpc = indexer.json_rpc().await?;
             assert_rpc_parity("getinfo", "", &zrpc, &irpc, &["timestamp"]).await?;
-            // Parity with dev's `launch_json_server_check_info`: dev did NOT compare the
-            // whole getblockchaininfo object — it asserted exactly this field set
-            // (chain, blocks, bestblockhash, estimatedheight, valuePools, upgrades,
-            // consensus), deliberately omitting volatile/divergent fields such as
-            // chainSupply (see memory note #235). Compare that same set field-by-field.
             let z = zrpc.call_value("getblockchaininfo", json!([])).await?;
             let i = irpc.call_value("getblockchaininfo", json!([])).await?;
             for field in [
@@ -164,7 +154,6 @@ mod zcashd {
             let zrpc = validator.json_rpc().await?;
             let irpc = indexer.json_rpc().await?;
             for _ in 0..10 {
-                // Note: we need an 'expected' block hash in order to query its deltas.
                 let hash = zrpc
                     .call_value("getbestblockhash", json!([]))
                     .await?
@@ -320,7 +309,7 @@ mod zcashd {
 
             let zrpc = validator.json_rpc().await?;
             let irpc = indexer.json_rpc().await?;
-            // A testnet transparent address, then an address backed by a script.
+            // Using a testnet transparent address
             for addr in [
                 "tmHMBeeYRuc2eVicLNfP15YLxbQsooCA6jb",
                 "t3TAfQ9eYmXWGe3oPae1XKhdTxm8JvsnFRL",
