@@ -27,6 +27,43 @@ use ztest::prelude::*;
 
 const READY: Duration = Duration::from_secs(120);
 
+/// The mid-chain NU6.3 (Ironwood) activation height for the transition fixture:
+/// an Orchard era `[2, 6)` that flips to Ironwood at height 6.
+const NU6_3_TRANSITION_BOUNDARY: u32 = 6;
+
+/// Orchard-only schedule: NU5..=NU6.2 active from height 2, NU6.3 never — the
+/// orchard-receiver coinbase stays in Orchard actions for every block.
+fn orchard_only() -> ActivationHeights {
+    ActivationHeights::builder()
+        .set_overwinter(Some(1))
+        .set_sapling(Some(1))
+        .set_blossom(Some(1))
+        .set_heartwood(Some(1))
+        .set_canopy(Some(1))
+        .set_nu5(Some(2))
+        .set_nu6(Some(2))
+        .set_nu6_1(Some(2))
+        .set_nu6_2(Some(2))
+        .build()
+}
+
+/// Mid-chain transition schedule: Orchard era `[2, boundary)`, Ironwood from
+/// `boundary`, so the same orchard-receiver coinbase flips pools at `boundary`.
+fn orchard_then_ironwood_at(boundary: u32) -> ActivationHeights {
+    ActivationHeights::builder()
+        .set_overwinter(Some(1))
+        .set_sapling(Some(1))
+        .set_blossom(Some(1))
+        .set_heartwood(Some(1))
+        .set_canopy(Some(1))
+        .set_nu5(Some(2))
+        .set_nu6(Some(2))
+        .set_nu6_1(Some(2))
+        .set_nu6_2(Some(2))
+        .set_nu6_3(Some(boundary))
+        .build()
+}
+
 /// The validator's own `(sapling, orchard, ironwood)` commitment-tree sizes at `height`,
 /// read from its verbose `getblock` `trees` field. This is the independent oracle:
 /// zebrad's answer, computed without reference to what zaino serves, so the comparison is
@@ -81,7 +118,8 @@ async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() -> Result<()> {
     // Seed the running totals from the validator's own trees at the height below the
     // first served block, so the per-block delta check stays oracle-independent even
     // though the pod gRPC serves from height 1 rather than genesis.
-    let (mut prev_sapling, mut prev_orchard, mut prev_ironwood) = oracle_trees(&validator, 0).await?;
+    let (mut prev_sapling, mut prev_orchard, mut prev_ironwood) =
+        oracle_trees(&validator, 0).await?;
     let mut total_orchard_actions = 0u64;
     let mut total_ironwood_actions = 0u64;
     for (index, block) in blocks.iter().enumerate() {
@@ -255,8 +293,8 @@ fn assert_coinbase_routing(
 
 /// Orchard-only era: NU6.3 never activates, so every post-NU5 coinbase stays an
 /// Orchard coinbase and no ironwood ever appears. (The zebrad *default* heights are
-/// now the canonical NU6.3-at-2 set, so this fixture caps the ceiling at NU6.2 to
-/// suppress NU6.3.)
+/// now the canonical NU6.3-at-2 set, so this fixture pins an explicit schedule with
+/// NU6.3 never activating to suppress it.)
 ///
 /// integration tier: spawns a zebrad validator + a zainod indexer and mines shielded
 /// coinbases (see [[ztest-validator-tests-need-integration-tier]] — the Basic tier
@@ -264,15 +302,12 @@ fn assert_coinbase_routing(
 #[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
 async fn orchard_only_coinbase_routing_zebrad() -> Result<()> {
-    // Orchard-only: `activate_through(Nu6_2)` lowers the NU ceiling so NU6.3 never
-    // activates; the orchard-receiver reward stays in Orchard actions for every block.
-    let mut env = TestEnv::builder().ready_timeout(READY);
-    let validator = env.add_validator(
-        Validator::zebrad("6.2.0")
-            .regtest()
-            .mine_to(Pool::Orchard)
-            .activate_through(NetworkUpgrade::Nu6_2),
-    );
+    // Orchard-only: an explicit schedule with NU6.3 never activating, so the
+    // orchard-receiver reward stays in Orchard actions for every block.
+    let mut env = TestEnv::builder()
+        .ready_timeout(READY)
+        .activation_heights(orchard_only());
+    let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(Pool::Orchard));
     let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
     env.build().await?;
 
@@ -330,30 +365,46 @@ async fn ironwood_only_coinbase_routing_zebrad() -> Result<()> {
 /// The transition: the same unchanged orchard-receiver miner produces Orchard
 /// coinbases through NU6.2 and Ironwood coinbases from the NU6.3 activation height —
 /// each predicate exactly delimiting its era, so a mis-timed flip fails on both sides
-/// of the boundary.
+/// of the boundary. Pins a mid-chain NU6.3 schedule (Orchard era `[2, 6)`, Ironwood
+/// from 6) via `activation_heights`, mines two blocks past the boundary so both eras
+/// carry more than one block, and asserts the served coinbase routing at every height.
 ///
-/// dev pinned this with `ORCHARD_THEN_IRONWOOD_ACTIVATION_HEIGHTS` (NU6.3 at
-/// `NU6_3_TRANSITION_BOUNDARY = 6`) and mined `NU6_3_TRANSITION_BOUNDARY + 2` blocks,
-/// asserting `CoinbaseEra::Ironwood` for `height >= 6`, `CoinbaseEra::Orchard` for
-/// `height >= 2`, and `CoinbaseEra::Neither` below — two blocks past the boundary so
-/// both eras carry more than one block.
-///
-/// ztest gap: ztest derives NU activation heights from the validator image version and
-/// can only *lower* the ceiling via `activate_through(NetworkUpgrade::_)`; it has no
-/// setter for a caller-chosen mid-chain NU6.3 activation height, so the ORCHARD→IRONWOOD
-/// transition at height 6 cannot be pinned. This assertion should be re-homed to a
-/// `packages/zaino-state` unit test that constructs the transition topology directly.
+/// integration tier: spawns a zebrad validator + a zainod indexer and mines shielded
+/// coinbases (see [[ztest-validator-tests-need-integration-tier]] — the Basic tier
+/// OOM-kills zebrad).
+//
+// TODO: published zebrad("6.2.0") may lack the NU6.3 branch id to mine an Ironwood
+// coinbase at the boundary; swap in a NU6.3-capable dev! image if it fails on -25.
 #[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "ztest gap: cannot pin a mid-chain NU6.3 transition (ORCHARD_THEN_IRONWOOD at height 6); re-home to a packages/zaino-state unit test"]
 async fn orchard_coinbase_routing_flips_to_ironwood_at_activation_zebrad() -> Result<()> {
-    // Assertion intent (from dev, un-expressible on ztest — see this fn's doc):
-    // launch an orchard-receiver miner on ORCHARD_THEN_IRONWOOD_ACTIVATION_HEIGHTS
-    // (NU6.3 at NU6_3_TRANSITION_BOUNDARY = 6), mine NU6_3_TRANSITION_BOUNDARY + 2
-    // blocks, then assert each height's coinbase routing:
-    //   height >= NU6_3_TRANSITION_BOUNDARY (6) -> CoinbaseEra::Ironwood
-    //   height >= 2                              -> CoinbaseEra::Orchard
-    //   otherwise                                -> CoinbaseEra::Neither
+    // Mid-chain transition: NU6.3 pinned at NU6_3_TRANSITION_BOUNDARY, so the
+    // orchard-receiver coinbase is Orchard in [2, 6) and Ironwood from 6.
+    let mut env = TestEnv::builder()
+        .ready_timeout(READY)
+        .activation_heights(orchard_then_ironwood_at(NU6_3_TRANSITION_BOUNDARY));
+    let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(Pool::Orchard));
+    let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+    env.build().await?;
+
     // Two blocks past the boundary, so both eras carry more than one block.
-    Ok(())
+    let tip = validator
+        .generate_blocks(NU6_3_TRANSITION_BOUNDARY + 2)
+        .await?;
+    indexer.wait_for_block_num(tip, READY).await?;
+
+    let blocks = indexer
+        .get_block_range(BlockHeight::from(1u32), tip)
+        .await?;
+    assert!(!blocks.is_empty(), "no compact blocks served");
+
+    assert_coinbase_routing(&blocks, |height| {
+        if height >= u64::from(NU6_3_TRANSITION_BOUNDARY) {
+            CoinbaseEra::Ironwood
+        } else if height >= 2 {
+            CoinbaseEra::Orchard
+        } else {
+            CoinbaseEra::Neither
+        }
+    })
 }

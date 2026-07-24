@@ -22,125 +22,196 @@
 //!    The mapping from that shape to adopted heights is unit-tested next to
 //!    `activation_heights_from_upgrades` in zaino-state.
 //!
-//! ---
-//!
-//! MIGRATION NOTE (ztest harness): both tests below launch an
-//! orchard-mining zebrad on `ORCHARD_THEN_IRONWOOD_ACTIVATION_HEIGHTS` — a
-//! mid-chain NU6.3 transition pinned at height 6 (`NU6_3_TRANSITION_BOUNDARY`).
-//! The ztest harness derives network-upgrade heights from the validator
-//! image version and can only *lower* the NU ceiling via
-//! `Validator::activate_through(NetworkUpgrade::_)`; it cannot pin a
-//! mid-chain NU6.3 transition at a chosen height. Both tests are therefore
-//! emitted as documented ignore-stubs (see reshape-spec.md capability gap
-//! #1). Their exact origin/dev assertions and expected values are preserved
-//! verbatim in the bodies below so the coverage intent is on record, and
-//! they should be re-homed to `packages/zaino-state` unit tests.
+//! ztest port note: the mid-chain NU6.3 transition schedule (Orchard era
+//! `[2, 6)`, Ironwood from 6) is pinned directly on the TestEnv builder via
+//! `activation_heights`, so both tests run the real fixture. The served era
+//! composition is read off the wire signal — the compact block's per-pool
+//! action fields (`vtx[].actions` for Orchard, `vtx[].ironwood_actions` for
+//! Ironwood) — the pod-surface equivalent of dev's `collect_block_range` era
+//! walk, since the clientless crate links no zebra production code to
+//! deserialize a raw block.
 
-use anyhow::Result;
+use std::collections::BTreeMap;
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use serde_json::{json, Value};
+use ztest::prelude::*;
+
+const READY: Duration = Duration::from_secs(120);
+
+/// The mid-chain NU6.3 (Ironwood) activation height for the transition fixture:
+/// an Orchard era `[2, 6)` that flips to Ironwood at height 6.
+const NU6_3_TRANSITION_BOUNDARY: u32 = 6;
+
+/// Mid-chain transition schedule (dev's `ORCHARD_THEN_IRONWOOD_ACTIVATION_HEIGHTS`):
+/// every upgrade through NU6.2 active by height 2, NU6.3 pinned at `boundary`, so an
+/// orchard-receiver miner's coinbase is Orchard in `[2, boundary)` and Ironwood from
+/// `boundary`.
+fn orchard_then_ironwood_at(boundary: u32) -> ActivationHeights {
+    ActivationHeights::builder()
+        .set_overwinter(Some(1))
+        .set_sapling(Some(1))
+        .set_blossom(Some(1))
+        .set_heartwood(Some(1))
+        .set_canopy(Some(1))
+        .set_nu5(Some(2))
+        .set_nu6(Some(2))
+        .set_nu6_1(Some(2))
+        .set_nu6_2(Some(2))
+        .set_nu6_3(Some(boundary))
+        .build()
+}
 
 /// Boundary sync + no-recompile proof: a kind-only-configured zainod adopts
 /// the NU6.3-at-6 schedule from the validator, syncs across the boundary,
 /// and serves era-correct compact blocks for both eras.
 ///
-/// multi_thread required: the test manager spawns the validator and indexer
-/// services.
+/// The served era composition proves the adopted schedule is the validator's,
+/// not zainod's canonical placeholder (NU6.3 at 2): under the placeholder the
+/// pre-boundary orchard coinbases would be misread as ironwood-era.
+///
+/// integration tier: spawns a zebrad validator + a zainod indexer and mines
+/// shielded coinbases (see [[ztest-validator-tests-need-integration-tier]] —
+/// the Basic tier OOM-kills zebrad).
+//
+// TODO: published zebrad("6.2.0") may lack the NU6.3 branch id to mine/validate
+// an Ironwood coinbase at the boundary; swap in a NU6.3-capable dev! image if
+// it fails on -25.
 #[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "ztest gap: requires ORCHARD_THEN_IRONWOOD activation heights (NU6.3 pinned at height 6); ztest derives NU heights from image version and cannot pin a mid-chain transition. Re-home to a packages/zaino-state unit test."]
 async fn zainod_syncs_a_schedule_its_config_never_saw() -> Result<()> {
-    // origin/dev body preserved verbatim as comments (see MIGRATION NOTE):
-    //
-    // let mut test_manager = launch_transition_validator().await;
-    // let subscriber = test_manager.subscriber().clone();
-    //
-    // // Two blocks past the boundary, so both eras carry more than one block.
-    // // Reaching the tip at all is the core regression: pre-adoption, the
-    // // chain-index sync died on the first block whose commitment scheme the
-    // // misconfigured heights got wrong.
-    // test_manager
-    //     .generate_blocks_and_wait_for_tip(NU6_3_TRANSITION_BOUNDARY + 1, &subscriber)
-    //     .await;
-    // let tip = u64::from(subscriber.chain_height().await.expect("chain height").0);
-    // assert!(
-    //     tip > u64::from(NU6_3_TRANSITION_BOUNDARY),
-    //     "sync must cross the boundary, tip is {tip}"
-    // );
-    //
-    // // Era composition of the served chain proves the adopted schedule is the
-    // // validator's, not the placeholder: under the placeholder (NU6.3 at 2)
-    // // the pre-boundary orchard coinbases would be misread as ironwood-era.
-    // let blocks = collect_block_range(&subscriber, 2, tip, all_pools_i32()).await;
-    // for block in &blocks {
-    //     let height = block.height;
-    //     let has_orchard = block.vtx.iter().any(|tx| !tx.actions.is_empty());
-    //     let has_ironwood = block.vtx.iter().any(|tx| !tx.ironwood_actions.is_empty());
-    //     if height >= u64::from(NU6_3_TRANSITION_BOUNDARY) {
-    //         assert!(
-    //             has_ironwood && !has_orchard,
-    //             "height {height} must be ironwood-era, got orchard={has_orchard} ironwood={has_ironwood}"
-    //         );
-    //     } else {
-    //         assert!(
-    //             has_orchard && !has_ironwood,
-    //             "height {height} must be orchard-era, got orchard={has_orchard} ironwood={has_ironwood}"
-    //         );
-    //     }
-    // }
-    //
-    // test_manager.close().await;
+    // The deliberate config/validator misalignment under test: zainod is handed
+    // only its kind-only regtest placeholder, while the validator runs the
+    // NU6.3-at-6 transition schedule; zainod must adopt the validator's schedule
+    // over getblockchaininfo and sync across the boundary.
+    let mut env = TestEnv::builder()
+        .ready_timeout(READY)
+        .activation_heights(orchard_then_ironwood_at(NU6_3_TRANSITION_BOUNDARY));
+    let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(Pool::Orchard));
+    let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+    env.build().await?;
+
+    // Two blocks past the boundary, so both eras carry more than one block.
+    // Reaching the tip at all is the core regression: pre-adoption, the
+    // chain-index sync died on the first block whose commitment scheme the
+    // misconfigured heights got wrong.
+    let tip = validator
+        .generate_blocks(NU6_3_TRANSITION_BOUNDARY + 1)
+        .await?;
+    indexer.wait_for_block_num(tip, READY).await?;
+    assert!(
+        u64::from(tip) > u64::from(NU6_3_TRANSITION_BOUNDARY),
+        "sync must cross the boundary, tip is {}",
+        u64::from(tip)
+    );
+
+    // Era composition of the served chain proves the adopted schedule is the
+    // validator's, not the placeholder. Walk from height 2 (the first shielded
+    // era) as dev's `collect_block_range(&subscriber, 2, tip, all_pools_i32())`.
+    let blocks = indexer
+        .get_block_range(BlockHeight::from(2u32), tip)
+        .await?;
+    assert!(!blocks.is_empty(), "no compact blocks served");
+    for block in &blocks {
+        let height = block.height;
+        let has_orchard = block.vtx.iter().any(|tx| !tx.actions.is_empty());
+        let has_ironwood = block.vtx.iter().any(|tx| !tx.ironwood_actions.is_empty());
+        if height >= u64::from(NU6_3_TRANSITION_BOUNDARY) {
+            assert!(
+                has_ironwood && !has_orchard,
+                "height {height} must be ironwood-era, got orchard={has_orchard} ironwood={has_ironwood}"
+            );
+        } else {
+            assert!(
+                has_orchard && !has_ironwood,
+                "height {height} must be orchard-era, got orchard={has_orchard} ironwood={has_ironwood}"
+            );
+        }
+    }
+
     Ok(())
 }
 
 /// The input contract for adoption: the `upgrades` map a live zebrad reports
-/// for the transition schedule, pinned exactly — upgrade set, order, and
-/// heights. Establishes (from real output, not reasoning) that nothing
-/// pre-Overwinter appears: the map is keyed by consensus branch ID, which
-/// pre-Overwinter eras don't have.
+/// for the transition schedule, pinned exactly — upgrade set and heights.
+/// Establishes (from real output, not reasoning) that nothing pre-Overwinter
+/// appears: the map is keyed by consensus branch ID, which pre-Overwinter eras
+/// don't have.
 ///
-/// multi_thread required: the test manager spawns the validator and indexer
-/// services.
+/// dev asserted an ordered `Vec<(NetworkUpgrade, u32)>` built from the typed
+/// `blockchain_info.upgrades` IndexMap; over the pod boundary the map arrives as
+/// JSON whose object key order is not guaranteed, so this port compares the set
+/// of `(name, activationheight)` entries — the order-robust equivalent, pinning
+/// the same upgrade set and the same heights.
+///
+/// integration tier: spawns a zebrad validator (see
+/// [[ztest-validator-tests-need-integration-tier]] — the Basic tier OOM-kills
+/// zebrad).
+//
+// TODO: published zebrad("6.2.0") may lack the NU6.3 branch id; if the reported
+// schedule omits NU6.3 or rejects the boundary, swap in a NU6.3-capable dev!
+// image.
 #[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "ztest gap: requires ORCHARD_THEN_IRONWOOD activation heights (NU6.3 pinned at height 6); ztest derives NU heights from image version and cannot pin a mid-chain transition. Re-home to a packages/zaino-state unit test."]
 async fn getblockchaininfo_reports_the_configured_schedule() -> Result<()> {
-    // origin/dev body preserved verbatim as comments (see MIGRATION NOTE):
-    //
-    // use zebra_chain::parameters::NetworkUpgrade;
-    //
-    // let mut test_manager = launch_transition_validator().await;
-    //
-    // let blockchain_info = test_manager
-    //     .full_node_jsonrpc_connector()
-    //     .await
-    //     .get_blockchain_info()
-    //     .await
-    //     .expect("getblockchaininfo");
-    //
-    // let reported: Vec<(NetworkUpgrade, u32)> = blockchain_info
-    //     .upgrades
-    //     .values()
-    //     .map(|upgrade_info| {
-    //         let (upgrade, height, _status) = upgrade_info.into_parts();
-    //         (upgrade, height.0)
-    //     })
-    //     .collect();
-    //
-    // assert_eq!(
-    //     reported,
-    //     vec![
-    //         (NetworkUpgrade::Overwinter, 1),
-    //         (NetworkUpgrade::Sapling, 1),
-    //         (NetworkUpgrade::Blossom, 1),
-    //         (NetworkUpgrade::Heartwood, 1),
-    //         (NetworkUpgrade::Canopy, 1),
-    //         (NetworkUpgrade::Nu5, 2),
-    //         (NetworkUpgrade::Nu6, 2),
-    //         (NetworkUpgrade::Nu6_1, 2),
-    //         (NetworkUpgrade::Nu6_2, 2),
-    //         (NetworkUpgrade::Nu6_3, 6),
-    //     ],
-    // );
-    //
-    // test_manager.close().await;
+    // The validator alone carries the input contract under test; zainod is not
+    // consulted here (its adoption of this schedule is covered by
+    // `zainod_syncs_a_schedule_its_config_never_saw`).
+    let mut env = TestEnv::builder()
+        .ready_timeout(READY)
+        .activation_heights(orchard_then_ironwood_at(NU6_3_TRANSITION_BOUNDARY));
+    let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(Pool::Orchard));
+    env.build().await?;
+
+    let blockchain_info = validator
+        .json_rpc()
+        .await?
+        .call_value("getblockchaininfo", json!([]))
+        .await?;
+    let upgrades = blockchain_info
+        .get("upgrades")
+        .and_then(Value::as_object)
+        .context("getblockchaininfo must carry an upgrades object")?;
+
+    // The map is keyed by consensus branch ID; the semantic identity of each
+    // entry is its (name, activationheight). Collect them into a set so the
+    // assertion pins the upgrade set and heights without depending on JSON key
+    // ordering.
+    let mut reported: BTreeMap<String, u64> = BTreeMap::new();
+    for entry in upgrades.values() {
+        let name = entry
+            .get("name")
+            .and_then(Value::as_str)
+            .context("each upgrade entry must carry a name")?
+            .to_string();
+        let height = entry
+            .get("activationheight")
+            .and_then(Value::as_u64)
+            .context("each upgrade entry must carry an activationheight")?;
+        reported.insert(name, height);
+    }
+
+    let expected: BTreeMap<String, u64> = [
+        ("Overwinter", 1),
+        ("Sapling", 1),
+        ("Blossom", 1),
+        ("Heartwood", 1),
+        ("Canopy", 1),
+        ("NU5", 2),
+        ("NU6", 2),
+        ("NU6.1", 2),
+        ("NU6.2", 2),
+        ("NU6.3", u64::from(NU6_3_TRANSITION_BOUNDARY)),
+    ]
+    .into_iter()
+    .map(|(name, height)| (name.to_string(), height))
+    .collect();
+
+    assert_eq!(
+        reported, expected,
+        "reported upgrade schedule must match the pinned transition heights"
+    );
+
     Ok(())
 }

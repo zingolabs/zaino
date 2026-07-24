@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
-use zaino_testutils::{assert_rpc_parity, ShieldedProtocol};
+use zaino_testutils::{assert_json_shape_matches, assert_rpc_parity, ShieldedProtocol};
 use ztest::prelude::*;
 
 const READY: Duration = Duration::from_secs(90);
@@ -29,19 +29,18 @@ mod zebra {
         async fn regtest_no_cache() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .persistent_state_in(&vol),
-            );
+            let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
+                    .tuning(ZainoTuning::Fetch)
                     .named("zaino-fetch"),
             );
             let state = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest_state_in(&vol, &validator)
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
                     .named("zaino-state"),
             );
             env.build().await?;
@@ -53,45 +52,62 @@ mod zebra {
             let frpc = fetch.json_rpc().await?;
             let srpc = state.json_rpc().await?;
             assert_rpc_parity("getinfo", "", &frpc, &srpc, &["errorstimestamp"]).await?;
+
+            // dev's allow-list: compare only the fields it asserted via typed
+            // accessors — chain, blocks, bestblockhash, estimatedheight,
+            // upgrades, consensus. This naturally excludes valuePools/chainSupply,
+            // which disagree between fetch and state
+            // (https://github.com/zingolabs/zaino/issues/235) and which dev
+            // therefore never compared; every other field (verificationprogress,
+            // size_on_disk, …) is simply left unasserted, matching dev.
             // TODO: Fix this! (ignored due to [https://github.com/zingolabs/zaino/issues/235]).
             // assert_eq!(
             //     fetch_service_blockchain_info.value_pools(),
             //     state_service_blockchain_info.value_pools()
             // );
-            assert_rpc_parity(
+            let fetch_info = frpc.call_value("getblockchaininfo", json!([])).await?;
+            let state_info = srpc.call_value("getblockchaininfo", json!([])).await?;
+            assert_json_shape_matches(
                 "getblockchaininfo",
-                "",
-                &frpc,
-                &srpc,
+                fetch_info,
+                state_info,
+                &[],
                 &[
-                    "valuePools",
-                    "chainSupply",
-                    "verificationprogress",
-                    "size_on_disk",
+                    "chain",
+                    "blocks",
+                    "bestblockhash",
+                    "estimatedheight",
+                    "upgrades",
+                    "consensus",
                 ],
-            )
-            .await?;
+            );
             Ok(())
         }
 
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn state_service_chaintip_update_subscriber() -> Result<()> {
+            // TODO: ztest has no chaintip/tip-change subscriber stream; polling
+            // tip changes as the closest equivalent — restore the streaming
+            // assertion when ztest gains a tip subscriber. dev subscribed to the
+            // Direct connection's `chaintip_update_subscriber()` and asserted each
+            // `next_tip_hash()` matched the state subscriber's latest block hash;
+            // here we mine block-by-block and assert the state indexer's tip hash
+            // tracks the fetch indexer's at every new tip.
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .persistent_state_in(&vol),
-            );
+            let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
+                    .tuning(ZainoTuning::Fetch)
                     .named("zaino-fetch"),
             );
             let state = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest_state_in(&vol, &validator)
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
                     .named("zaino-state"),
             );
             env.build().await?;
@@ -116,19 +132,18 @@ mod zebra {
         async fn regtest_with_cache() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .persistent_state_in(&vol),
-            );
+            let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
+                    .tuning(ZainoTuning::Fetch)
                     .named("zaino-fetch"),
             );
             let state = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest_state_in(&vol, &validator)
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
                     .named("zaino-state"),
             );
             env.build().await?;
@@ -183,19 +198,18 @@ mod zebra {
         async fn best_blockhash() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .persistent_state_in(&vol),
-            );
+            let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
+                    .tuning(ZainoTuning::Fetch)
                     .named("zaino-fetch"),
             );
             let state = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest_state_in(&vol, &validator)
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
                     .named("zaino-state"),
             );
             env.build().await?;
@@ -219,19 +233,18 @@ mod zebra {
         async fn block_count() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .persistent_state_in(&vol),
-            );
+            let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
+                    .tuning(ZainoTuning::Fetch)
                     .named("zaino-fetch"),
             );
             let state = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest_state_in(&vol, &validator)
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
                     .named("zaino-state"),
             );
             env.build().await?;
@@ -255,26 +268,28 @@ mod zebra {
         async fn mining_info() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .persistent_state_in(&vol),
-            );
+            let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
+                    .tuning(ZainoTuning::Fetch)
                     .named("zaino-fetch"),
             );
             let state = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest_state_in(&vol, &validator)
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
                     .named("zaino-state"),
             );
             env.build().await?;
 
             let frpc = fetch.json_rpc().await?;
             let srpc = state.json_rpc().await?;
-            let ignore = &["networksolps", "errorstimestamp"];
+            // dev compared the full typed get_mining_info() with no field dropped;
+            // networksolps is deterministic given the same chain, so it is not
+            // dropped. Only the genuinely-volatile errors timestamp is ignored.
+            let ignore = &["errorstimestamp"];
             assert_rpc_parity("getmininginfo", "", &frpc, &srpc, ignore).await?;
 
             let tip = validator.generate_blocks(2).await?;
@@ -289,19 +304,18 @@ mod zebra {
         async fn difficulty() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .persistent_state_in(&vol),
-            );
+            let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
+                    .tuning(ZainoTuning::Fetch)
                     .named("zaino-fetch"),
             );
             let state = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest_state_in(&vol, &validator)
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
                     .named("zaino-state"),
             );
             env.build().await?;
@@ -322,19 +336,18 @@ mod zebra {
         async fn get_network_sol_ps() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .persistent_state_in(&vol),
-            );
+            let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
+                    .tuning(ZainoTuning::Fetch)
                     .named("zaino-fetch"),
             );
             let state = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest_state_in(&vol, &validator)
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
                     .named("zaino-state"),
             );
             env.build().await?;
@@ -360,19 +373,18 @@ mod zebra {
         async fn peer_info() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .persistent_state_in(&vol),
-            );
+            let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
+                    .tuning(ZainoTuning::Fetch)
                     .named("zaino-fetch"),
             );
             let state = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest_state_in(&vol, &validator)
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
                     .named("zaino-state"),
             );
             env.build().await?;
@@ -391,6 +403,58 @@ mod zebra {
             Ok(())
         }
 
+        mod z {
+            use super::*;
+
+            #[ztest::qos::integration]
+            #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+            pub(crate) async fn z_validate_address() -> Result<()> {
+                let mut env = TestEnv::builder().ready_timeout(READY);
+                let vol = env.shared_volume("zebra-db");
+                let _validator =
+                    env.add_validator(Validator::zebrad("6.2.0").regtest().mount(&vol));
+                let _fetch = env.add_indexer(
+                    dev!(Indexer::Zainod, "../../Dockerfile")
+                        .regtest()
+                        .tuning(ZainoTuning::Fetch)
+                        .named("zaino-fetch"),
+                );
+                let state = env.add_indexer(
+                    dev!(Indexer::Zainod, "../../Dockerfile")
+                        .regtest()
+                        .tuning(ZainoTuning::State)
+                        .mount(&vol)
+                        .named("zaino-state"),
+                );
+                env.build().await?;
+
+                clientless::rpc::z_validate_address::run_z_validate_for(
+                    &state.json_rpc().await?,
+                    clientless::rpc::z_validate_address::SaplingSuite::Standard,
+                )
+                .await
+            }
+
+            #[ztest::qos::integration]
+            #[ignore = "requires fully synced testnet."]
+            #[tokio::test(flavor = "multi_thread")]
+            pub(crate) async fn subtrees_by_index_testnet() -> Result<()> {
+                // dev: z_get_subtrees_by_index for "sapling" and "orchard",
+                // start_index=0, limit=None, fetch/state agreement.
+                unimplemented!(
+                    "testnet z_get_subtrees_by_index parity — requires synced testnet zebrad"
+                )
+            }
+
+            #[ztest::qos::integration]
+            #[ignore = "requires fully synced testnet."]
+            #[tokio::test(flavor = "multi_thread")]
+            pub(crate) async fn treestate_testnet() -> Result<()> {
+                // dev: z_get_treestate("3000000"), fetch/state agreement.
+                unimplemented!("testnet z_get_treestate parity — requires synced testnet zebrad")
+            }
+        }
+
         #[ztest::qos::integration]
         #[ignore = "requires fully synced testnet."]
         #[tokio::test(flavor = "multi_thread")]
@@ -404,19 +468,18 @@ mod zebra {
         async fn block_object_regtest() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .persistent_state_in(&vol),
-            );
+            let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
+                    .tuning(ZainoTuning::Fetch)
                     .named("zaino-fetch"),
             );
             let state = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest_state_in(&vol, &validator)
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
                     .named("zaino-state"),
             );
             env.build().await?;
@@ -453,19 +516,18 @@ mod zebra {
         async fn block_raw_regtest() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .persistent_state_in(&vol),
-            );
+            let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
+                    .tuning(ZainoTuning::Fetch)
                     .named("zaino-fetch"),
             );
             let state = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest_state_in(&vol, &validator)
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
                     .named("zaino-state"),
             );
             env.build().await?;
@@ -509,58 +571,6 @@ mod zebra {
             // [2_000_000, 3_000_000], both chain_info=false and chain_info=true.
             unimplemented!("testnet get_address_deltas parity — requires synced testnet zebrad")
         }
-
-        mod z {
-            use super::*;
-
-            #[ztest::qos::integration]
-            #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-            pub(crate) async fn z_validate_address() -> Result<()> {
-                let mut env = TestEnv::builder().ready_timeout(READY);
-                let vol = env.shared_volume("zebra-db");
-                let validator = env.add_validator(
-                    Validator::zebrad("6.2.0")
-                        .regtest()
-                        .persistent_state_in(&vol),
-                );
-                let _fetch = env.add_indexer(
-                    dev!(Indexer::Zainod, "../../Dockerfile")
-                        .regtest()
-                        .named("zaino-fetch"),
-                );
-                let state = env.add_indexer(
-                    dev!(Indexer::Zainod, "../../Dockerfile")
-                        .regtest_state_in(&vol, &validator)
-                        .named("zaino-state"),
-                );
-                env.build().await?;
-
-                clientless::rpc::z_validate_address::run_z_validate_for(
-                    &state.json_rpc().await?,
-                    clientless::rpc::z_validate_address::SaplingSuite::Standard,
-                )
-                .await
-            }
-
-            #[ztest::qos::integration]
-            #[ignore = "requires fully synced testnet."]
-            #[tokio::test(flavor = "multi_thread")]
-            pub(crate) async fn subtrees_by_index_testnet() -> Result<()> {
-                // dev: z_get_subtrees_by_index for "sapling" and "orchard",
-                // start_index=0, limit=None, fetch/state agreement.
-                unimplemented!(
-                    "testnet z_get_subtrees_by_index parity — requires synced testnet zebrad"
-                )
-            }
-
-            #[ztest::qos::integration]
-            #[ignore = "requires fully synced testnet."]
-            #[tokio::test(flavor = "multi_thread")]
-            pub(crate) async fn treestate_testnet() -> Result<()> {
-                // dev: z_get_treestate("3000000"), fetch/state agreement.
-                unimplemented!("testnet z_get_treestate parity — requires synced testnet zebrad")
-            }
-        }
     }
 
     pub(crate) mod lightwallet_indexer {
@@ -571,19 +581,18 @@ mod zebra {
         async fn get_latest_block() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .persistent_state_in(&vol),
-            );
+            let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
+                    .tuning(ZainoTuning::Fetch)
                     .named("zaino-fetch"),
             );
             let state = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest_state_in(&vol, &validator)
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
                     .named("zaino-state"),
             );
             env.build().await?;
@@ -609,19 +618,18 @@ mod zebra {
         async fn get_block() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .persistent_state_in(&vol),
-            );
+            let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
+                    .tuning(ZainoTuning::Fetch)
                     .named("zaino-fetch"),
             );
             let state = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest_state_in(&vol, &validator)
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
                     .named("zaino-state"),
             );
             env.build().await?;
@@ -652,19 +660,18 @@ mod zebra {
         async fn get_block_header() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .persistent_state_in(&vol),
-            );
+            let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
+                    .tuning(ZainoTuning::Fetch)
                     .named("zaino-fetch"),
             );
             let state = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest_state_in(&vol, &validator)
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
                     .named("zaino-state"),
             );
             env.build().await?;
@@ -694,19 +701,18 @@ mod zebra {
         async fn get_tree_state() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .persistent_state_in(&vol),
-            );
+            let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
+                    .tuning(ZainoTuning::Fetch)
                     .named("zaino-fetch"),
             );
             let state = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest_state_in(&vol, &validator)
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
                     .named("zaino-state"),
             );
             env.build().await?;
@@ -727,19 +733,18 @@ mod zebra {
         async fn get_subtree_roots() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .persistent_state_in(&vol),
-            );
+            let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
+                    .tuning(ZainoTuning::Fetch)
                     .named("zaino-fetch"),
             );
             let state = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest_state_in(&vol, &validator)
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
                     .named("zaino-state"),
             );
             env.build().await?;
@@ -764,19 +769,18 @@ mod zebra {
         async fn get_latest_tree_state() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .persistent_state_in(&vol),
-            );
+            let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
+                    .tuning(ZainoTuning::Fetch)
                     .named("zaino-fetch"),
             );
             let state = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest_state_in(&vol, &validator)
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
                     .named("zaino-state"),
             );
             env.build().await?;
@@ -797,19 +801,18 @@ mod zebra {
         async fn get_block_range_full() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .persistent_state_in(&vol),
-            );
+            let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
+                    .tuning(ZainoTuning::Fetch)
                     .named("zaino-fetch"),
             );
             let state = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest_state_in(&vol, &validator)
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
                     .named("zaino-state"),
             );
             env.build().await?;
@@ -844,19 +847,18 @@ mod zebra {
         async fn get_block_range_nullifiers() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .persistent_state_in(&vol),
-            );
+            let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mount(&vol));
             let fetch = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
                     .regtest()
+                    .tuning(ZainoTuning::Fetch)
                     .named("zaino-fetch"),
             );
             let state = env.add_indexer(
                 dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest_state_in(&vol, &validator)
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
                     .named("zaino-state"),
             );
             env.build().await?;
@@ -865,6 +867,9 @@ mod zebra {
             fetch.wait_for_block_num(tip, READY).await?;
             state.wait_for_block_num(tip, READY).await?;
             // TODO(#1088): replace deprecated nullifier-range client usage.
+            // Note: ztest's get_block_range_nullifiers takes no pool-types argument,
+            // so dev's all_pools_i32() filter is necessarily dropped here (forced by
+            // the pod API surface).
             assert_eq!(
                 fetch
                     .get_block_range_nullifiers(BlockHeight::from(2u32), BlockHeight::from(5u32))

@@ -26,7 +26,7 @@ pub mod rpc {
         use serde_json::{json, Value};
         use ztest::prelude::JsonRpcClient;
 
-        use super::json_rpc::{
+        use crate::rpc::json_rpc::{
             VALID_DIVERSIFIED_TRANSMISSION_KEY, VALID_DIVERSIFIER, VALID_P2PKH_ADDRESS,
             VALID_P2SH_ADDRESS, VALID_SAPLING_ADDRESS, VALID_UNIFIED_ADDRESS,
         };

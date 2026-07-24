@@ -1,8 +1,7 @@
-//! Tests that compare the output of both `zcashd` and `zainod` through the
-//! fetch backend.
+//! Tests that compare the output of both `zcashd` and `zainod` through `FetchService`.
 //!
-//! Entirely gated on `zcashd_support`: every test here launches a zcashd-backed
-//! validator alongside a zaino fetch indexer and compares their JSON-RPC. See
+//! Entirely gated on `zcashd_support`: every test here launches the
+//! zcashd-backed dual fetch services. See
 //! docs/adr/0001-zcashd-support-feature-gate.md.
 #![cfg(feature = "zcashd_support")]
 
@@ -32,7 +31,7 @@ mod zcashd {
 
             let zrpc = validator.json_rpc().await?;
             let irpc = indexer.json_rpc().await?;
-            assert_rpc_parity("getinfo", "", &zrpc, &irpc, &["errorstimestamp"]).await?;
+            assert_rpc_parity("getinfo", "", &zrpc, &irpc, &["timestamp"]).await?;
             // Parity with dev's `launch_json_server_check_info`: dev did NOT compare the
             // whole getblockchaininfo object — it asserted exactly this field set
             // (chain, blocks, bestblockhash, estimatedheight, valuePools, upgrades,
@@ -68,7 +67,7 @@ mod zcashd {
 
             let zrpc = validator.json_rpc().await?;
             let irpc = indexer.json_rpc().await?;
-            assert_rpc_parity("getinfo", "", &zrpc, &irpc, &["errorstimestamp"]).await?;
+            assert_rpc_parity("getinfo", "", &zrpc, &irpc, &["timestamp"]).await?;
             // Parity with dev's `launch_json_server_check_info`: dev did NOT compare the
             // whole getblockchaininfo object — it asserted exactly this field set
             // (chain, blocks, bestblockhash, estimatedheight, valuePools, upgrades,

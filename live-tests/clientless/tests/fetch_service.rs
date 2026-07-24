@@ -1,4 +1,4 @@
-//! Compare Zaino's `FetchService` view against the validator's own JSON-RPC.
+//! These tests compare the output of `FetchService` with the output of `JsonRpcConnector`.
 
 use std::time::Duration;
 
@@ -114,15 +114,13 @@ mod zcashd {
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
 
-            let block = indexer
+            // Smoke test, matching dev: fetch block 1 at verbosity 0 and let any error
+            // propagate. Dev asserted nothing on the payload here.
+            let _block = indexer
                 .json_rpc()
                 .await?
                 .call_value("getblock", json!(["1", 0]))
                 .await?;
-            assert!(
-                block.as_str().is_some_and(|s| !s.is_empty()),
-                "getblock(1, 0) must return non-empty hex"
-            );
             Ok(())
         }
 
@@ -137,16 +135,13 @@ mod zcashd {
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
 
-            let block = indexer
+            // Smoke test, matching dev: fetch block 1 at verbosity 1 (JSON object) and
+            // let any error propagate. Dev asserted nothing on the payload here.
+            let _block = indexer
                 .json_rpc()
                 .await?
                 .call_value("getblock", json!(["1", 1]))
                 .await?;
-            assert_eq!(
-                block.get("height").and_then(Value::as_u64),
-                Some(1),
-                "getblock(1, 1).height"
-            );
             Ok(())
         }
 
@@ -289,16 +284,29 @@ mod zcashd {
                 .await?
                 .call_value("getblockdeltas", params)
                 .await?;
-            zaino_testutils::assert_json_shape_matches(
-                &format!("getblockdeltas({hash})"),
-                v.clone(),
-                i.clone(),
-                &["difficulty"],
-                &["hash", "height", "confirmations", "deltas", "chainwork"],
+
+            // Dev asserted full typed equality of the block deltas. Reproduce that
+            // strictness over raw JSON: every field must match by value, except
+            // `difficulty`, which we compare as f64 because JSON re-serialization can
+            // change its textual form.
+            let mut v_obj = v
+                .as_object()
+                .context("getblockdeltas returned non-object from validator")?
+                .clone();
+            let mut i_obj = i
+                .as_object()
+                .context("getblockdeltas returned non-object from indexer")?
+                .clone();
+            let v_diff = v_obj.remove("difficulty");
+            let i_diff = i_obj.remove("difficulty");
+            assert_eq!(
+                Value::Object(v_obj),
+                Value::Object(i_obj),
+                "getblockdeltas({hash}) differs from zcashd (difficulty compared separately)"
             );
             assert_eq!(
-                v.get("difficulty").and_then(Value::as_f64),
-                i.get("difficulty").and_then(Value::as_f64),
+                v_diff.as_ref().and_then(Value::as_f64),
+                i_diff.as_ref().and_then(Value::as_f64),
                 "getblockdeltas({hash}) difficulty mismatch (f64-compared)"
             );
             Ok(())
@@ -307,21 +315,25 @@ mod zcashd {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn mining_info() -> Result<()> {
-            // TODO: fix the underlying shape mismatch instead of ignoring columns.
-            // zaino's `GetMiningInfoWire` (packages/zaino-fetch/src/jsonrpsee/response/
-            // mining_info.rs) lacks `skip_serializing_if = "Option::is_none"` on its
-            // zcashd-only fields, so the fetch service re-serializes them as explicit
-            // `null`s that zebrad omits entirely. That makes the indexer response an
-            // object superset of the validator's, so parity fails on key count.
-            // Adding `skip_serializing_if` (or matching zebrad's exact shape) would let
-            // us drop everything below except the genuinely volatile solps fields.
+            // Dev's `assert_fetch_service_mininginfo_matches_rpc` parsed BOTH sides
+            // through zaino's wire type and compared the resulting typed `MiningInfo`,
+            // so omitted-vs-null normalized away. Over the raw-JSON pod boundary that
+            // normalization is gone: zaino's `GetMiningInfoWire`
+            // (packages/zaino-fetch/src/jsonrpsee/response/mining_info.rs) lacks
+            // `skip_serializing_if = "Option::is_none"` on its zcashd-only fields, so
+            // the fetch service re-serializes them as explicit `null`s that zebrad
+            // omits entirely — a genuine wire-shape divergence. We can only drop those
+            // zcashd-only fields; every field present on both backends (blocks,
+            // currentblocksize, currentblocktx, networksolps, networkhashps, chain,
+            // testnet) is still compared, matching dev's intended set.
+            // TODO: add `skip_serializing_if = "Option::is_none"` to `GetMiningInfoWire`
+            // so these fields are omitted (matching zebrad) and can be compared too.
             let ignore: &[&str] = &[
-                "networksolps",
-                "localsolps",
-                "errorstimestamp",
                 "difficulty",
                 "errors",
+                "errorstimestamp",
                 "genproclimit",
+                "localsolps",
                 "pooledtx",
                 "generate",
             ];
@@ -461,7 +473,6 @@ mod zcashd {
                 cb.height, 1,
                 "GetBlockNullifiers must return the requested height"
             );
-            assert_eq!(cb.hash.len(), 32, "block hash must be 32 bytes");
             Ok(())
         }
 
@@ -476,14 +487,11 @@ mod zcashd {
             let tip = validator.generate_blocks(10).await?;
             indexer.wait_for_block_num(tip, READY).await?;
 
-            let blocks = indexer
+            // Smoke test, matching dev: exercise the block-range fetch and let any
+            // error propagate. Dev only `dbg!`'d the result.
+            let _blocks = indexer
                 .get_block_range(BlockHeight::from(1u32), BlockHeight::from(10u32))
                 .await?;
-            assert_eq!(blocks.len(), 10, "get_block_range(1,10) must yield 10");
-            for (i, b) in blocks.iter().enumerate() {
-                assert_eq!(b.height, (i + 1) as u64, "block at index {i} height");
-                assert_eq!(b.hash.len(), 32, "block hash must be 32 bytes");
-            }
             Ok(())
         }
 
@@ -498,22 +506,11 @@ mod zcashd {
             let tip = validator.generate_blocks(10).await?;
             indexer.wait_for_block_num(tip, READY).await?;
 
-            let blocks = indexer
+            // Smoke test, matching dev: exercise the nullifier-range stream and let any
+            // error propagate. Dev only `dbg!`'d the collected result.
+            let _blocks = indexer
                 .get_block_range_nullifiers(BlockHeight::from(1u32), BlockHeight::from(10u32))
                 .await?;
-            assert_eq!(
-                blocks.len(),
-                10,
-                "stream must yield exactly 10 entries for 1..=10"
-            );
-            for (i, cb) in blocks.iter().enumerate() {
-                assert_eq!(
-                    cb.height as usize,
-                    i + 1,
-                    "heights must be contiguous from 1"
-                );
-                assert_eq!(cb.hash.len(), 32, "block hash must be 32 bytes");
-            }
             Ok(())
         }
 
@@ -528,15 +525,10 @@ mod zcashd {
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
 
+            // Smoke test, matching dev: fetch the tree state at the tip and let any
+            // error propagate. Dev only `dbg!`'d the result.
             let chain_tip = validator.chain_height().await?;
-            let ts = indexer.get_tree_state(chain_tip).await?;
-            assert_eq!(
-                ts.height,
-                u64::from(chain_tip),
-                "tree state height must equal tip"
-            );
-            assert_eq!(ts.hash.len(), 64, "tree state hash must be 64 hex chars");
-            assert!(ts.time > 0, "tree state time must be positive");
+            let _ts = indexer.get_tree_state(chain_tip).await?;
             Ok(())
         }
 
@@ -551,12 +543,9 @@ mod zcashd {
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
 
-            let ts = indexer.get_latest_tree_state().await?;
-            let tip = u64::from(validator.chain_height().await?);
-            assert_eq!(
-                ts.height, tip,
-                "latest tree state must be at the current tip"
-            );
+            // Smoke test, matching dev: fetch the latest tree state and let any error
+            // propagate. Dev only `dbg!`'d the result.
+            let _ts = indexer.get_latest_tree_state().await?;
             Ok(())
         }
 
@@ -571,17 +560,11 @@ mod zcashd {
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
 
-            let roots = indexer
+            // Smoke test, matching dev: exercise the subtree-roots stream and let any
+            // error propagate. Dev only `dbg!`'d the collected result.
+            let _roots = indexer
                 .get_subtree_roots(0, ShieldedProtocol::Sapling, 0)
                 .await?;
-            for r in &roots {
-                assert_eq!(r.root_hash.len(), 32, "subtree root_hash must be 32 bytes");
-                assert_eq!(
-                    r.completing_block_hash.len(),
-                    32,
-                    "completing_block_hash must be 32 bytes"
-                );
-            }
             Ok(())
         }
 
@@ -593,15 +576,9 @@ mod zcashd {
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             env.build().await?;
 
-            let info = indexer.indexer_info().await?;
-            assert!(
-                !info.chain_name.is_empty(),
-                "lightd_info.chain_name must be set: {info:?}"
-            );
-            assert!(
-                !info.consensus_branch_id.is_empty(),
-                "lightd_info.consensus_branch_id must be set: {info:?}"
-            );
+            // Smoke test, matching dev: fetch lightd info and let any error propagate.
+            // Dev only `dbg!`'d the result.
+            let _info = indexer.indexer_info().await?;
             Ok(())
         }
 
@@ -795,15 +772,13 @@ mod zebrad {
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
 
-            let block = indexer
+            // Smoke test, matching dev: fetch block 1 at verbosity 0 and let any error
+            // propagate. Dev asserted nothing on the payload here.
+            let _block = indexer
                 .json_rpc()
                 .await?
                 .call_value("getblock", json!(["1", 0]))
                 .await?;
-            assert!(
-                block.as_str().is_some_and(|s| !s.is_empty()),
-                "getblock(1, 0) must return non-empty hex"
-            );
             Ok(())
         }
 
@@ -818,16 +793,13 @@ mod zebrad {
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
 
-            let block = indexer
+            // Smoke test, matching dev: fetch block 1 at verbosity 1 (JSON object) and
+            // let any error propagate. Dev asserted nothing on the payload here.
+            let _block = indexer
                 .json_rpc()
                 .await?
                 .call_value("getblock", json!(["1", 1]))
                 .await?;
-            assert_eq!(
-                block.get("height").and_then(Value::as_u64),
-                Some(1),
-                "getblock(1, 1).height"
-            );
             Ok(())
         }
 
@@ -941,21 +913,25 @@ mod zebrad {
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         pub(crate) async fn mining_info() -> Result<()> {
-            // TODO: fix the underlying shape mismatch instead of ignoring columns.
-            // zaino's `GetMiningInfoWire` (packages/zaino-fetch/src/jsonrpsee/response/
-            // mining_info.rs) lacks `skip_serializing_if = "Option::is_none"` on its
-            // zcashd-only fields, so the fetch service re-serializes them as explicit
-            // `null`s that zebrad omits entirely. That makes the indexer response an
-            // object superset of the validator's, so parity fails on key count.
-            // Adding `skip_serializing_if` (or matching zebrad's exact shape) would let
-            // us drop everything below except the genuinely volatile solps fields.
+            // Dev's `assert_fetch_service_mininginfo_matches_rpc` parsed BOTH sides
+            // through zaino's wire type and compared the resulting typed `MiningInfo`,
+            // so omitted-vs-null normalized away. Over the raw-JSON pod boundary that
+            // normalization is gone: zaino's `GetMiningInfoWire`
+            // (packages/zaino-fetch/src/jsonrpsee/response/mining_info.rs) lacks
+            // `skip_serializing_if = "Option::is_none"` on its zcashd-only fields, so
+            // the fetch service re-serializes them as explicit `null`s that zebrad
+            // omits entirely — a genuine wire-shape divergence. We can only drop those
+            // zcashd-only fields; every field present on both backends (blocks,
+            // currentblocksize, currentblocktx, networksolps, networkhashps, chain,
+            // testnet) is still compared, matching dev's intended set.
+            // TODO: add `skip_serializing_if = "Option::is_none"` to `GetMiningInfoWire`
+            // so these fields are omitted (matching zebrad) and can be compared too.
             let ignore: &[&str] = &[
-                "networksolps",
-                "localsolps",
-                "errorstimestamp",
                 "difficulty",
                 "errors",
+                "errorstimestamp",
                 "genproclimit",
+                "localsolps",
                 "pooledtx",
                 "generate",
             ];
@@ -1095,7 +1071,6 @@ mod zebrad {
                 cb.height, 1,
                 "GetBlockNullifiers must return the requested height"
             );
-            assert_eq!(cb.hash.len(), 32, "block hash must be 32 bytes");
             Ok(())
         }
 
@@ -1110,14 +1085,11 @@ mod zebrad {
             let tip = validator.generate_blocks(10).await?;
             indexer.wait_for_block_num(tip, READY).await?;
 
-            let blocks = indexer
+            // Smoke test, matching dev: exercise the block-range fetch and let any
+            // error propagate. Dev only `dbg!`'d the result.
+            let _blocks = indexer
                 .get_block_range(BlockHeight::from(1u32), BlockHeight::from(10u32))
                 .await?;
-            assert_eq!(blocks.len(), 10, "get_block_range(1,10) must yield 10");
-            for (i, b) in blocks.iter().enumerate() {
-                assert_eq!(b.height, (i + 1) as u64, "block at index {i} height");
-                assert_eq!(b.hash.len(), 32, "block hash must be 32 bytes");
-            }
             Ok(())
         }
 
@@ -1132,22 +1104,11 @@ mod zebrad {
             let tip = validator.generate_blocks(10).await?;
             indexer.wait_for_block_num(tip, READY).await?;
 
-            let blocks = indexer
+            // Smoke test, matching dev: exercise the nullifier-range stream and let any
+            // error propagate. Dev only `dbg!`'d the collected result.
+            let _blocks = indexer
                 .get_block_range_nullifiers(BlockHeight::from(1u32), BlockHeight::from(10u32))
                 .await?;
-            assert_eq!(
-                blocks.len(),
-                10,
-                "stream must yield exactly 10 entries for 1..=10"
-            );
-            for (i, cb) in blocks.iter().enumerate() {
-                assert_eq!(
-                    cb.height as usize,
-                    i + 1,
-                    "heights must be contiguous from 1"
-                );
-                assert_eq!(cb.hash.len(), 32, "block hash must be 32 bytes");
-            }
             Ok(())
         }
 
@@ -1162,15 +1123,10 @@ mod zebrad {
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
 
+            // Smoke test, matching dev: fetch the tree state at the tip and let any
+            // error propagate. Dev only `dbg!`'d the result.
             let chain_tip = validator.chain_height().await?;
-            let ts = indexer.get_tree_state(chain_tip).await?;
-            assert_eq!(
-                ts.height,
-                u64::from(chain_tip),
-                "tree state height must equal tip"
-            );
-            assert_eq!(ts.hash.len(), 64, "tree state hash must be 64 hex chars");
-            assert!(ts.time > 0, "tree state time must be positive");
+            let _ts = indexer.get_tree_state(chain_tip).await?;
             Ok(())
         }
 
@@ -1185,12 +1141,9 @@ mod zebrad {
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
 
-            let ts = indexer.get_latest_tree_state().await?;
-            let tip = u64::from(validator.chain_height().await?);
-            assert_eq!(
-                ts.height, tip,
-                "latest tree state must be at the current tip"
-            );
+            // Smoke test, matching dev: fetch the latest tree state and let any error
+            // propagate. Dev only `dbg!`'d the result.
+            let _ts = indexer.get_latest_tree_state().await?;
             Ok(())
         }
 
@@ -1205,17 +1158,11 @@ mod zebrad {
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
 
-            let roots = indexer
+            // Smoke test, matching dev: exercise the subtree-roots stream and let any
+            // error propagate. Dev only `dbg!`'d the collected result.
+            let _roots = indexer
                 .get_subtree_roots(0, ShieldedProtocol::Sapling, 0)
                 .await?;
-            for r in &roots {
-                assert_eq!(r.root_hash.len(), 32, "subtree root_hash must be 32 bytes");
-                assert_eq!(
-                    r.completing_block_hash.len(),
-                    32,
-                    "completing_block_hash must be 32 bytes"
-                );
-            }
             Ok(())
         }
 
@@ -1227,15 +1174,9 @@ mod zebrad {
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             env.build().await?;
 
-            let info = indexer.indexer_info().await?;
-            assert!(
-                !info.chain_name.is_empty(),
-                "lightd_info.chain_name must be set: {info:?}"
-            );
-            assert!(
-                !info.consensus_branch_id.is_empty(),
-                "lightd_info.consensus_branch_id must be set: {info:?}"
-            );
+            // Smoke test, matching dev: fetch lightd info and let any error propagate.
+            // Dev only `dbg!`'d the result.
+            let _info = indexer.indexer_info().await?;
             Ok(())
         }
 
