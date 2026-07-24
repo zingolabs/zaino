@@ -5,17 +5,26 @@
 //! snapshot + a side-branch set (Q2), driven by a light tip-follow loop.
 //! Internally `im`; no LMDB. Consumers see non-finalised *state*.
 //!
+//! The pinned-view surface is decomposed like the FS side, for modelling
+//! clarity: a [`NfsSpine`] (window essentials + reorg queries) plus re-derived
+//! [`facts`] facets ([`NfsSpendFacts`], [`NfsAddressFacts`]). [`NfsSnapshot`] is
+//! the convenience bundle. Unlike FS, the facets are re-derived on demand (the
+//! window is tiny and reorg-churny), not persistent indexes — see [`facts`].
+//!
 //! Scaffold: capability algebra only. Implementations follow.
 #![forbid(unsafe_code)]
+
+pub mod facts;
+mod spine;
 
 use std::future::Future;
 
 use futures::stream::BoxStream;
 
-use zaino_core::{
-    BlockHash, BlockId, CompactBlock, ForkPoint, Height, Locator, Outpoint, SpendStatus, TipEvent,
-    TransparentAddress, Utxo,
-};
+use zaino_core::{Height, TipEvent};
+
+pub use facts::{NfsAddressFacts, NfsSpendFacts};
+pub use spine::NfsSpine;
 
 /// A block that has crossed the freeze horizon (the NFS → FS handoff).
 pub type FrozenOut = zaino_core::PreIndexCompactBlock;
@@ -60,31 +69,18 @@ pub trait NonFinalisedState: Send + Sync {
     ) -> impl Future<Output = Result<(), FollowError>> + Send;
 }
 
-/// A pinned view over the reorg window. Reads are **in-memory over the pinned
-/// `Chain`, so they are infallible** — a miss is `None` / a domain answer, not
-/// an error. (Contrast the FS component, whose reads hit a backend.) Coherent
-/// for the view's lifetime, across reorgs (ADR-0003).
-pub trait NfsSnapshot: Clone + Send + Sync {
-    /// The pinned tip.
-    fn tip(&self) -> BlockId;
-    /// The height range this window covers: `[finalised + 1, tip]`.
-    fn range(&self) -> (Height, Height);
+/// A pinned view over the reorg window: the full surface = spine + every recent
+/// facet. Reads are **in-memory over the pinned `Chain`, so infallible** — a
+/// miss is `None`, not an error (contrast the FS component, whose reads hit a
+/// backend). Coherent for the view's lifetime, across reorgs (ADR-0003).
+///
+/// A convenience bundle for a full deployment; per-capability consumers should
+/// bound on exactly the spine/facet traits they use (mirroring
+/// `zaino_fs::FinalisedState`), so a variant that omits a facet is a
+/// compile-time subset.
+pub trait NfsSnapshot: NfsSpine + NfsSpendFacts + NfsAddressFacts {}
 
-    fn compact_block(&self, height: Height) -> Option<CompactBlock>;
-    fn height_of(&self, hash: BlockHash) -> Option<Height>;
-    /// Re-derived from the window's blocks (no persistent NFS index).
-    fn spend_status(&self, outpoint: Outpoint) -> SpendStatus;
-    fn fork_point(&self, locator: Locator) -> Option<ForkPoint>;
-
-    /// Unspent outpoints for `addr` created within (and still unspent within)
-    /// this window — re-derived, infallible. Merged with the FS index by the
-    /// runtime for a snapshot-coherent unspent set (US-1.3).
-    fn address_unspent(&self, addr: &TransparentAddress) -> Vec<Utxo>;
-
-    // --- side-branch (Q2) ---
-    /// All current chain tips, including non-best branches (`getchaintips`).
-    fn chain_tips(&self) -> Vec<BlockId>;
-}
+impl<T: NfsSpine + NfsSpendFacts + NfsAddressFacts> NfsSnapshot for T {}
 
 /// Errors from the tip-follow loop (`follow`).
 #[derive(Debug)]

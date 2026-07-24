@@ -17,7 +17,7 @@ use zaino_core::{
 };
 use zaino_fs::error::{AddressReadError as FsAddressReadError, HeightReadError, LookupError};
 use zaino_fs::{AddressIndex, FinalisedSpine};
-use zaino_nfs::NfsSnapshot;
+use zaino_nfs::{NfsAddressFacts, NfsSpine};
 use zaino_service::error::{
     AddressReadError as SvcAddressReadError, BlockReadError, ReadError, TxReadError,
 };
@@ -56,7 +56,7 @@ impl<F, S: Clone, Src> Clone for RuntimeSnapshot<F, S, Src> {
 impl<F, S, Src> CompactBlockRead for RuntimeSnapshot<F, S, Src>
 where
     F: FinalisedSpine + 'static,
-    S: NfsSnapshot,
+    S: NfsSpine,
     Src: Send + Sync, // captured in the `Send` future, but compact blocks aren't passthrough
 {
     async fn compact_block(&self, at: BlockRef) -> Result<Option<CompactBlock>, BlockReadError> {
@@ -82,7 +82,7 @@ where
 impl<F, S, Src> BlockRead for RuntimeSnapshot<F, S, Src>
 where
     F: FinalisedSpine + 'static,
-    S: NfsSnapshot,
+    S: NfsSpine,
     Src: PassthroughSource,
 {
     async fn tip(&self) -> Result<BlockId, BlockReadError> {
@@ -134,10 +134,10 @@ where
 impl<F, S, Src> TransactionRead for RuntimeSnapshot<F, S, Src>
 where
     // Only passthrough today; wiring `transaction_status` will add
-    // `+ TxLocationIndex` on F (and NFS's recent-tx capability). F/S are only
+    // `+ TxLocationIndex` on F (and NFS's recent-tx facet). F/S are only
     // captured in the `Send` future for now.
     F: FinalisedSpine + 'static,
-    S: NfsSnapshot,
+    S: NfsSpine,
     Src: PassthroughSource,
 {
     async fn transaction(&self, id: TransactionHash) -> Result<Option<Transaction>, TxReadError> {
@@ -166,7 +166,7 @@ where
     // address index. A minimal FS (no `AddressIndex`) → this impl is absent →
     // the capability is unrepresentable, not a runtime miss.
     F: AddressIndex + 'static,
-    S: NfsSnapshot,
+    S: NfsAddressFacts,
     Src: Send + Sync, // captured in the `Send` future; address history isn't passthrough
 {
     async fn unspent_outpoints(

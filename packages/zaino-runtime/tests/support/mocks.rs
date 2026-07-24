@@ -17,7 +17,9 @@ use zaino_core::{
 };
 use zaino_fs::error::{AddressReadError, BuildError, FreezeError, HeightReadError, LookupError};
 use zaino_fs::{AddressIndex, FinalisedSpine, FrozenBlock, SpendIndex, TxLocationIndex};
-use zaino_nfs::{FollowError, FrozenOut, NfsSnapshot, NfsView, NonFinalisedState};
+use zaino_nfs::{
+    FollowError, FrozenOut, NfsAddressFacts, NfsSpendFacts, NfsSpine, NfsView, NonFinalisedState,
+};
 use zaino_runtime::{PassthroughError, PassthroughSource, Runtime, RuntimeBuilder, RuntimeConfig};
 
 /// A shared call recorder, so a test can see which tier answered.
@@ -117,7 +119,7 @@ pub struct MockNfsSnap {
     pub calls: Calls,
 }
 
-impl NfsSnapshot for MockNfsSnap {
+impl NfsSpine for MockNfsSnap {
     fn tip(&self) -> BlockId {
         self.tip
     }
@@ -131,17 +133,23 @@ impl NfsSnapshot for MockNfsSnap {
     fn height_of(&self, _hash: BlockHash) -> Option<Height> {
         None
     }
-    fn spend_status(&self, _outpoint: Outpoint) -> SpendStatus {
-        SpendStatus::NoSuchOutput
-    }
     fn fork_point(&self, _locator: Locator) -> Option<ForkPoint> {
         None
     }
-    fn address_unspent(&self, _addr: &TransparentAddress) -> Vec<Utxo> {
-        self.calls.record("addr-nfs".to_string());
+    fn chain_tips(&self) -> Vec<BlockId> {
         Vec::new()
     }
-    fn chain_tips(&self) -> Vec<BlockId> {
+}
+
+impl NfsSpendFacts for MockNfsSnap {
+    fn spend_status(&self, _outpoint: Outpoint) -> SpendStatus {
+        SpendStatus::NoSuchOutput
+    }
+}
+
+impl NfsAddressFacts for MockNfsSnap {
+    fn address_unspent(&self, _addr: &TransparentAddress) -> Vec<Utxo> {
+        self.calls.record("addr-nfs".to_string());
         Vec::new()
     }
 }
