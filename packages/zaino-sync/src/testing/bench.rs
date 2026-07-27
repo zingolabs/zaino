@@ -82,9 +82,8 @@ mod tests {
                 batch_size: 1_000,
                 start_height: BlockHeight::new(0),
             };
-            let mut engine =
-                SyncEngine::from_index_set(full_index_set(), backend, config)
-                    .expect("valid index set");
+            let mut engine = SyncEngine::from_index_set(full_index_set(), backend, config)
+                .expect("valid index set");
 
             let start = Instant::now();
             engine.sync_range(blocks).expect("sync succeeds");
@@ -103,9 +102,8 @@ mod tests {
                 batch_size: 1_000,
                 start_height: BlockHeight::new(0),
             };
-            let mut engine =
-                SyncEngine::from_index_set(full_index_set(), backend, config)
-                    .expect("valid index set");
+            let mut engine = SyncEngine::from_index_set(full_index_set(), backend, config)
+                .expect("valid index set");
 
             let blocks = (0..n).map(|h| TestBlockContext {
                 height: h,
@@ -135,9 +133,8 @@ mod tests {
                 batch_size,
                 start_height: BlockHeight::new(0),
             };
-            let mut engine =
-                SyncEngine::from_index_set(full_index_set(), backend, config)
-                    .expect("valid index set");
+            let mut engine = SyncEngine::from_index_set(full_index_set(), backend, config)
+                .expect("valid index set");
 
             let start = Instant::now();
             engine.sync_range(blocks).expect("sync succeeds");
@@ -163,9 +160,8 @@ mod tests {
                     batch_size,
                     start_height: BlockHeight::new(0),
                 };
-                let mut engine =
-                    SyncEngine::from_index_set(full_index_set(), backend, config)
-                        .expect("valid index set");
+                let mut engine = SyncEngine::from_index_set(full_index_set(), backend, config)
+                    .expect("valid index set");
 
                 let start = Instant::now();
                 engine.sync_range(blocks).expect("sync succeeds");
@@ -192,9 +188,8 @@ mod tests {
                     batch_size,
                     start_height: BlockHeight::new(0),
                 };
-                let mut engine =
-                    SyncEngine::from_index_set(full_index_set(), backend, config)
-                        .expect("valid index set");
+                let mut engine = SyncEngine::from_index_set(full_index_set(), backend, config)
+                    .expect("valid index set");
 
                 let start = Instant::now();
                 engine.sync_range(blocks).expect("sync succeeds");
@@ -222,9 +217,8 @@ mod tests {
                 batch_size: 1_000,
                 start_height: BlockHeight::new(0),
             };
-            let mut engine =
-                SyncEngine::from_index_set(full_index_set(), backend, config)
-                    .expect("valid index set");
+            let mut engine = SyncEngine::from_index_set(full_index_set(), backend, config)
+                .expect("valid index set");
 
             let (tx, rx) = tokio::sync::mpsc::channel(256);
             let delay = Duration::from_micros(50);
@@ -257,9 +251,8 @@ mod tests {
                 batch_size: 1_000,
                 start_height: BlockHeight::new(0),
             };
-            let mut engine =
-                SyncEngine::from_index_set(full_index_set(), backend, config)
-                    .expect("valid index set");
+            let mut engine = SyncEngine::from_index_set(full_index_set(), backend, config)
+                .expect("valid index set");
 
             let (tx, rx) = tokio::sync::mpsc::channel(1_024);
 
@@ -296,9 +289,8 @@ mod tests {
                 batch_size,
                 start_height: BlockHeight::new(0),
             };
-            let mut engine =
-                SyncEngine::from_index_set(full_index_set(), backend, config)
-                    .expect("valid index set");
+            let mut engine = SyncEngine::from_index_set(full_index_set(), backend, config)
+                .expect("valid index set");
 
             let (tx, rx) = tokio::sync::mpsc::channel(256);
             let delay = Duration::from_micros(50);

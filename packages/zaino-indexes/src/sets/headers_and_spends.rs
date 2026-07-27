@@ -2,7 +2,9 @@
 //!
 //! Set-wide context carries header fields + transparent spend data.
 
-use zaino_primitives::types::{Block, BlockHash, BlockTime, CompactDifficulty, OutputIndex, TransactionHash};
+use zaino_primitives::types::{
+    Block, BlockHash, BlockTime, CompactDifficulty, OutputIndex, TransactionHash,
+};
 use zaino_sync::index_set::IndexSet;
 use zaino_sync::primitives::BlockHeight;
 use zaino_sync::traits::ProvideContext;

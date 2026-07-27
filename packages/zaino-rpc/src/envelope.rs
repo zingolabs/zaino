@@ -21,8 +21,7 @@ pub(crate) fn build_request(method: &str, params: Vec<Value>, id: i64) -> Value 
 /// Returns the `result` field on success. Returns an `RpcError` if
 /// the response contains an error object or a null result.
 pub(crate) fn parse_response(body: &[u8]) -> Result<ResponseOutcome, RpcError> {
-    let envelope: RpcResponseEnvelope =
-        serde_json::from_slice(body).map_err(RpcError::Json)?;
+    let envelope: RpcResponseEnvelope = serde_json::from_slice(body).map_err(RpcError::Json)?;
 
     if let Some(err) = envelope.error {
         return Ok(ResponseOutcome::RpcError {
@@ -104,10 +103,7 @@ mod tests {
     #[test]
     fn parse_null_result_without_error_is_err() {
         let body = br#"{"id":1,"jsonrpc":"2.0","result":null}"#;
-        assert!(matches!(
-            parse_response(body),
-            Err(RpcError::NullResult)
-        ));
+        assert!(matches!(parse_response(body), Err(RpcError::NullResult)));
     }
 
     #[test]

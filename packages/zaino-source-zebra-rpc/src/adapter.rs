@@ -32,10 +32,7 @@ fn from_parse(e: parse::ParseError) -> FetchError {
 
 impl zaino_source::GetBlock for ZebraRpcAdapter {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(h = u32::from(height))))]
-    async fn get_block(
-        &self,
-        height: Height,
-    ) -> Result<Block, QueryError<GetBlockError>> {
+    async fn get_block(&self, height: Height) -> Result<Block, QueryError<GetBlockError>> {
         // Fetch raw hex block via getblock(height, 0).
         let params = vec![
             serde_json::Value::String(u32::from(height).to_string()),

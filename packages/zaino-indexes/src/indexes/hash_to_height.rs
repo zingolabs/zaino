@@ -39,7 +39,10 @@ impl IndexDef for HashToHeightIndex {
 
 impl ExtractLocal for HashToHeightIndex {
     fn extract(ctx: &HashToHeightCtx) -> Result<Self::Delta, ExtractError> {
-        Ok(HashToHeightEntry { hash: ctx.hash, height: ctx.height })
+        Ok(HashToHeightEntry {
+            hash: ctx.hash,
+            height: ctx.height,
+        })
     }
 }
 
@@ -54,7 +57,10 @@ impl Schema<Vec<HashToHeightEntry>> for HashToHeightIndex {
     }
 
     fn from_entries(entries: Vec<(Self::Key, Self::Value)>) -> Vec<HashToHeightEntry> {
-        entries.into_iter().map(|(hash, height)| HashToHeightEntry { hash, height }).collect()
+        entries
+            .into_iter()
+            .map(|(hash, height)| HashToHeightEntry { hash, height })
+            .collect()
     }
 
     fn encode_key(key: &BlockHash) -> Vec<u8> {
@@ -67,13 +73,20 @@ impl Schema<Vec<HashToHeightEntry>> for HashToHeightIndex {
 
     fn decode_key(bytes: &[u8]) -> Result<BlockHash, SchemaDecodeError> {
         let mut arr = [0u8; 32];
-        if bytes.len() != 32 { return Err(SchemaDecodeError::Invalid(format!("expected 32 bytes, got {}", bytes.len()))); }
+        if bytes.len() != 32 {
+            return Err(SchemaDecodeError::Invalid(format!(
+                "expected 32 bytes, got {}",
+                bytes.len()
+            )));
+        }
         arr.copy_from_slice(bytes);
         Ok(BlockHash::from(arr))
     }
 
     fn decode_value(bytes: &[u8]) -> Result<BlockHeight, SchemaDecodeError> {
-        let arr: [u8; 8] = bytes.try_into().map_err(|_| SchemaDecodeError::Invalid(format!("expected 8 bytes, got {}", bytes.len())))?;
+        let arr: [u8; 8] = bytes.try_into().map_err(|_| {
+            SchemaDecodeError::Invalid(format!("expected 8 bytes, got {}", bytes.len()))
+        })?;
         Ok(BlockHeight::new(u64::from_le_bytes(arr)))
     }
 }

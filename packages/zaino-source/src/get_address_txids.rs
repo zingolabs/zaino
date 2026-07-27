@@ -24,6 +24,5 @@ pub trait GetAddressTxids: Send + Sync {
         addresses: Vec<String>,
         start: Height,
         end: Height,
-    ) -> impl Future<Output = Result<Vec<TransactionHash>, QueryError<GetAddressTxidsError>>>
-           + Send;
+    ) -> impl Future<Output = Result<Vec<TransactionHash>, QueryError<GetAddressTxidsError>>> + Send;
 }

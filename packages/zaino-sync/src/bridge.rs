@@ -277,7 +277,10 @@ where
 
     fn extract_one(&self, ctx: &Ctx) -> Result<(), PipelineError> {
         let delta = I::extract(&ctx.context())?;
-        self.deltas.lock().expect("delta mutex poisoned").push(delta);
+        self.deltas
+            .lock()
+            .expect("delta mutex poisoned")
+            .push(delta);
         Ok(())
     }
 
@@ -384,21 +387,26 @@ where
         let entries: Vec<_> = raw_entries
             .into_iter()
             .map(|(k, v)| {
-                let key = I::decode_key(&k)
-                    .map_err(|e| PipelineError::Persist(e.to_string()))?;
-                let value = I::decode_value(&v)
-                    .map_err(|e| PipelineError::Persist(e.to_string()))?;
+                let key = I::decode_key(&k).map_err(|e| PipelineError::Persist(e.to_string()))?;
+                let value =
+                    I::decode_value(&v).map_err(|e| PipelineError::Persist(e.to_string()))?;
                 Ok((key, value))
             })
             .collect::<Result<_, PipelineError>>()?;
 
         let state = I::from_entries(entries);
-        *self.running_state.lock().expect("running state mutex poisoned") = state;
+        *self
+            .running_state
+            .lock()
+            .expect("running state mutex poisoned") = state;
         Ok(())
     }
 
     fn extract_one(&self, ctx: &Ctx) -> Result<(), PipelineError> {
-        let mut running = self.running_state.lock().expect("running state mutex poisoned");
+        let mut running = self
+            .running_state
+            .lock()
+            .expect("running state mutex poisoned");
         let delta = I::extract(&ctx.context(), &running)?;
         S::accumulate_one(&mut running, delta);
         Ok(())
@@ -434,4 +442,3 @@ where
         Ok(ops)
     }
 }
-

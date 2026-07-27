@@ -46,10 +46,17 @@ impl IndexDef for TxidLocationIndex {
 
 impl ExtractLocal for TxidLocationIndex {
     fn extract(ctx: &TxidLocationCtx) -> Result<Self::Delta, ExtractError> {
-        Ok(ctx.locations.iter().map(|(txid, height, idx)| TxidLocationEntry {
-            txid: *txid,
-            location: TxLocation { height: *height, tx_index: *idx },
-        }).collect())
+        Ok(ctx
+            .locations
+            .iter()
+            .map(|(txid, height, idx)| TxidLocationEntry {
+                txid: *txid,
+                location: TxLocation {
+                    height: *height,
+                    tx_index: *idx,
+                },
+            })
+            .collect())
     }
 }
 
@@ -60,11 +67,18 @@ impl Schema<Vec<Vec<TxidLocationEntry>>> for TxidLocationIndex {
     type Value = TxLocation;
 
     fn into_entries(batches: Vec<Vec<TxidLocationEntry>>) -> Vec<(Self::Key, Self::Value)> {
-        batches.into_iter().flatten().map(|e| (e.txid, e.location)).collect()
+        batches
+            .into_iter()
+            .flatten()
+            .map(|e| (e.txid, e.location))
+            .collect()
     }
 
     fn from_entries(entries: Vec<(Self::Key, Self::Value)>) -> Vec<Vec<TxidLocationEntry>> {
-        vec![entries.into_iter().map(|(txid, location)| TxidLocationEntry { txid, location }).collect()]
+        vec![entries
+            .into_iter()
+            .map(|(txid, location)| TxidLocationEntry { txid, location })
+            .collect()]
     }
 
     fn encode_key(key: &TransactionHash) -> Vec<u8> {
@@ -80,13 +94,23 @@ impl Schema<Vec<Vec<TxidLocationEntry>>> for TxidLocationIndex {
 
     fn decode_key(bytes: &[u8]) -> Result<TransactionHash, SchemaDecodeError> {
         let mut arr = [0u8; 32];
-        if bytes.len() != 32 { return Err(SchemaDecodeError::Invalid(format!("expected 32, got {}", bytes.len()))); }
+        if bytes.len() != 32 {
+            return Err(SchemaDecodeError::Invalid(format!(
+                "expected 32, got {}",
+                bytes.len()
+            )));
+        }
         arr.copy_from_slice(bytes);
         Ok(TransactionHash::from(arr))
     }
 
     fn decode_value(bytes: &[u8]) -> Result<TxLocation, SchemaDecodeError> {
-        if bytes.len() != 12 { return Err(SchemaDecodeError::Invalid(format!("expected 12, got {}", bytes.len()))); }
+        if bytes.len() != 12 {
+            return Err(SchemaDecodeError::Invalid(format!(
+                "expected 12, got {}",
+                bytes.len()
+            )));
+        }
         let height = BlockHeight::new(u64::from_le_bytes(bytes[0..8].try_into().expect("8")));
         let tx_index = u32::from_le_bytes(bytes[8..12].try_into().expect("4"));
         Ok(TxLocation { height, tx_index })

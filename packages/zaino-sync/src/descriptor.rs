@@ -150,11 +150,7 @@ pub struct Descriptor {
 
 impl core::fmt::Display for Descriptor {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(
-            f,
-            "{} ({} × {})",
-            self.name, self.scope, self.composition,
-        )?;
+        write!(f, "{} ({} × {})", self.name, self.scope, self.composition,)?;
         if !self.dependencies.is_empty() {
             write!(f, " deps=[")?;
             for (i, dep) in self.dependencies.iter().enumerate() {

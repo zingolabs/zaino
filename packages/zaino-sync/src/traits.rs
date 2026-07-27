@@ -7,8 +7,8 @@
 //! `combine` on an `Append` index.
 
 use crate::descriptor::{
-    Append, BlockLocal, Composition, CrossIndex, Descriptor, Fold, Monoidal, Scope,
-    SelfCumulative, SourceAccess,
+    Append, BlockLocal, Composition, CrossIndex, Descriptor, Fold, Monoidal, Scope, SelfCumulative,
+    SourceAccess,
 };
 use crate::primitives::IndexId;
 

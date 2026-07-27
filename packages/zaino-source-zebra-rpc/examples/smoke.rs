@@ -22,10 +22,7 @@ async fn main() {
     let adapter = ZebraRpcAdapter::new(rpc);
 
     // Fetch chain tip.
-    let (tip_hash, tip_height) = adapter
-        .get_chain_tip()
-        .await
-        .expect("get_chain_tip failed");
+    let (tip_hash, tip_height) = adapter.get_chain_tip().await.expect("get_chain_tip failed");
 
     println!("Chain tip: height={tip_height}, hash={tip_hash}");
 
@@ -35,8 +32,7 @@ async fn main() {
         .await
         .expect("get_block failed");
 
-    println!(
-        "Block {tip_height}:");
+    println!("Block {tip_height}:");
     println!("  hash:       {}", block.header.hash);
     println!("  prev_hash:  {}", block.header.prev_hash);
     println!("  time:       {}", block.header.time);

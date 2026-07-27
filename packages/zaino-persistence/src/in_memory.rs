@@ -95,7 +95,11 @@ impl BackendWriter for InMemoryWriter {
         let mut guard = self.data.lock().expect("mutex poisoned");
         for op in ops {
             match op {
-                WriteOp::Put { namespace, key, value } => {
+                WriteOp::Put {
+                    namespace,
+                    key,
+                    value,
+                } => {
                     guard.entry(namespace).or_default().insert(key, value);
                 }
                 WriteOp::Delete { namespace, key } => {

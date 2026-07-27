@@ -18,14 +18,14 @@ const BENCH_TARGET: &str = "sync_bench";
 
 static TRACER_PROVIDER: OnceLock<opentelemetry_sdk::trace::SdkTracerProvider> = OnceLock::new();
 use zaino_backend_lmdb::{LmdbBackend, LmdbConfig};
-use zaino_indexes::indexes::headers::ID as HEADERS_ID;
-use zaino_indexes::indexes::txids::ID as TXIDS_ID;
 use zaino_indexes::indexes::hash_to_height::ID as HASH_HEIGHT_ID;
-use zaino_indexes::indexes::txid_location::ID as TXID_LOC_ID;
-use zaino_indexes::indexes::transparent_data::ID as TDATA_ID;
-use zaino_indexes::indexes::sapling::ID as SAPLING_ID;
+use zaino_indexes::indexes::headers::ID as HEADERS_ID;
 use zaino_indexes::indexes::orchard::ID as ORCHARD_ID;
+use zaino_indexes::indexes::sapling::ID as SAPLING_ID;
+use zaino_indexes::indexes::transparent_data::ID as TDATA_ID;
 use zaino_indexes::indexes::transparent_spends::ID as SPENDS_ID;
+use zaino_indexes::indexes::txid_location::ID as TXID_LOC_ID;
+use zaino_indexes::indexes::txids::ID as TXIDS_ID;
 use zaino_indexes::sets::current_zaino::{self, CurrentZainoContext};
 use zaino_persistence::in_memory::InMemoryBackend;
 use zaino_persistence::{Backend, Namespace};
@@ -163,9 +163,7 @@ async fn main() {
                 .boxed()
         };
 
-        let registry = tracing_subscriber::registry()
-            .with(filter)
-            .with(fmt_layer);
+        let registry = tracing_subscriber::registry().with(filter).with(fmt_layer);
 
         if std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").is_ok() {
             use opentelemetry::trace::TracerProvider;
@@ -184,8 +182,8 @@ async fn main() {
                 )
                 .build();
 
-            let otel_layer = tracing_opentelemetry::layer()
-                .with_tracer(tracer_provider.tracer("sync-bench"));
+            let otel_layer =
+                tracing_opentelemetry::layer().with_tracer(tracer_provider.tracer("sync-bench"));
 
             registry.with(otel_layer).init();
 
@@ -196,8 +194,8 @@ async fn main() {
         }
     }
 
-    let rpc_url = std::env::var("ZEBRA_RPC_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:8232".to_string());
+    let rpc_url =
+        std::env::var("ZEBRA_RPC_URL").unwrap_or_else(|_| "http://127.0.0.1:8232".to_string());
     let state_dir = std::env::var("ZEBRA_STATE_DIR").ok().map(PathBuf::from);
     let db_path = std::env::var("ZAINO_DB_PATH").ok();
 
@@ -207,26 +205,24 @@ async fn main() {
     let batch_size: u32 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(50);
 
     // Determine provisioner and get chain tip.
-    let (provisioner_name, tip_hash, tip_height): (&str, BlockHash, Height) =
-        if let Some(ref dir) = state_dir {
-            let adapter = ZebraReadStateAdapter::open(
-                dir,
-                &zebra_chain::parameters::Network::Mainnet,
-            )
+    let (provisioner_name, tip_hash, tip_height): (&str, BlockHash, Height) = if let Some(ref dir) =
+        state_dir
+    {
+        let adapter = ZebraReadStateAdapter::open(dir, &zebra_chain::parameters::Network::Mainnet)
             .expect("open zebra readstate failed");
-            let (hash, height) = adapter.get_chain_tip().await.expect("get_chain_tip");
-            ("zebra-readstate", hash, height)
-        } else {
-            let rpc = RpcClient::new(RpcClientConfig {
-                url: rpc_url.clone(),
-                auth: None,
-                ..Default::default()
-            })
-            .expect("RPC client creation failed");
-            let adapter = ZebraRpcAdapter::new(rpc);
-            let (hash, height) = adapter.get_chain_tip().await.expect("get_chain_tip");
-            ("zebra-rpc", hash, height)
-        };
+        let (hash, height) = adapter.get_chain_tip().await.expect("get_chain_tip");
+        ("zebra-readstate", hash, height)
+    } else {
+        let rpc = RpcClient::new(RpcClientConfig {
+            url: rpc_url.clone(),
+            auth: None,
+            ..Default::default()
+        })
+        .expect("RPC client creation failed");
+        let adapter = ZebraRpcAdapter::new(rpc);
+        let (hash, height) = adapter.get_chain_tip().await.expect("get_chain_tip");
+        ("zebra-rpc", hash, height)
+    };
 
     let tip_u32 = u32::from(tip_height);
     // SYNC_FROM overrides the start height (for targeting specific chain ranges).
@@ -288,7 +284,17 @@ async fn main() {
             let backend = LmdbBackend::open(LmdbConfig {
                 path: lmdb_path.into(),
                 map_size_bytes: 120 << 30, // 120 GB
-                namespaces: vec![ns_headers, ns_spends, ns_txids, ns_hash_height, ns_txid_loc, ns_tdata, ns_sapling, ns_orchard, ns_meta],
+                namespaces: vec![
+                    ns_headers,
+                    ns_spends,
+                    ns_txids,
+                    ns_hash_height,
+                    ns_txid_loc,
+                    ns_tdata,
+                    ns_sapling,
+                    ns_orchard,
+                    ns_meta,
+                ],
             })
             .expect("LMDB open failed");
 
@@ -296,12 +302,23 @@ async fn main() {
                 let adapter = Arc::clone(&adapter);
                 async move {
                     let height = Height::try_from(h).expect("valid");
-                    let compact = adapter.get_pre_index_compact_block(height).await.expect("get_pre_index_compact_block");
+                    let compact = adapter
+                        .get_pre_index_compact_block(height)
+                        .await
+                        .expect("get_pre_index_compact_block");
                     current_zaino::context_from_pre_index_compact_block(&compact)
                 }
             };
-            run_sync(backend, fetch, sync_from, sync_to, concurrency, batch_size, Some(lmdb_path))
-                .await
+            run_sync(
+                backend,
+                fetch,
+                sync_from,
+                sync_to,
+                concurrency,
+                batch_size,
+                Some(lmdb_path),
+            )
+            .await
         }
         // ReadState + in-memory
         (Some(dir), None) => {
@@ -314,11 +331,23 @@ async fn main() {
                 let adapter = Arc::clone(&adapter);
                 async move {
                     let height = Height::try_from(h).expect("valid");
-                    let compact = adapter.get_pre_index_compact_block(height).await.expect("get_pre_index_compact_block");
+                    let compact = adapter
+                        .get_pre_index_compact_block(height)
+                        .await
+                        .expect("get_pre_index_compact_block");
                     current_zaino::context_from_pre_index_compact_block(&compact)
                 }
             };
-            run_sync(backend, fetch, sync_from, sync_to, concurrency, batch_size, None).await
+            run_sync(
+                backend,
+                fetch,
+                sync_from,
+                sync_to,
+                concurrency,
+                batch_size,
+                None,
+            )
+            .await
         }
         // RPC + LMDB
         (None, Some(lmdb_path)) => {
@@ -332,7 +361,17 @@ async fn main() {
             let backend = LmdbBackend::open(LmdbConfig {
                 path: lmdb_path.into(),
                 map_size_bytes: 120 << 30, // 120 GB
-                namespaces: vec![ns_headers, ns_spends, ns_txids, ns_hash_height, ns_txid_loc, ns_tdata, ns_sapling, ns_orchard, ns_meta],
+                namespaces: vec![
+                    ns_headers,
+                    ns_spends,
+                    ns_txids,
+                    ns_hash_height,
+                    ns_txid_loc,
+                    ns_tdata,
+                    ns_sapling,
+                    ns_orchard,
+                    ns_meta,
+                ],
             })
             .expect("LMDB open failed");
 
@@ -344,8 +383,16 @@ async fn main() {
                     current_zaino::context_from_block(&block)
                 }
             };
-            run_sync(backend, fetch, sync_from, sync_to, concurrency, batch_size, Some(lmdb_path))
-                .await
+            run_sync(
+                backend,
+                fetch,
+                sync_from,
+                sync_to,
+                concurrency,
+                batch_size,
+                Some(lmdb_path),
+            )
+            .await
         }
         // RPC + in-memory
         (None, None) => {
@@ -365,7 +412,16 @@ async fn main() {
                     current_zaino::context_from_block(&block)
                 }
             };
-            run_sync(backend, fetch, sync_from, sync_to, concurrency, batch_size, None).await
+            run_sync(
+                backend,
+                fetch,
+                sync_from,
+                sync_to,
+                concurrency,
+                batch_size,
+                None,
+            )
+            .await
         }
     };
 

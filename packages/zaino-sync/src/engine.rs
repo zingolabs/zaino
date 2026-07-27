@@ -211,7 +211,8 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
                     }
                 }
                 if !provisioner_done {
-                    self.scheduler.set_blocks_available(self.buffer.total_pushed());
+                    self.scheduler
+                        .set_blocks_available(self.buffer.total_pushed());
                 }
             }
 
@@ -275,10 +276,7 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     /// Non-blocking drain: pull all available blocks from the channel.
     ///
     /// Returns `true` if the channel disconnected (provisioner done).
-    fn drain_channel(
-        &mut self,
-        rx: &mut tokio::sync::mpsc::Receiver<Ctx>,
-    ) -> bool {
+    fn drain_channel(&mut self, rx: &mut tokio::sync::mpsc::Receiver<Ctx>) -> bool {
         loop {
             match rx.try_recv() {
                 Ok(ctx) => self.push_block(ctx),
@@ -288,8 +286,7 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
                     return false;
                 }
                 Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                    self.scheduler
-                        .provisioner_done(self.buffer.total_pushed());
+                    self.scheduler.provisioner_done(self.buffer.total_pushed());
                     return true;
                 }
             }
@@ -299,18 +296,14 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     /// Blocking wait for the next block from the channel.
     ///
     /// Returns `true` if the channel closed (provisioner done).
-    async fn await_block(
-        &mut self,
-        rx: &mut tokio::sync::mpsc::Receiver<Ctx>,
-    ) -> bool {
+    async fn await_block(&mut self, rx: &mut tokio::sync::mpsc::Receiver<Ctx>) -> bool {
         match rx.recv().await {
             Some(ctx) => {
                 self.push_block(ctx);
                 false
             }
             None => {
-                self.scheduler
-                    .provisioner_done(self.buffer.total_pushed());
+                self.scheduler.provisioner_done(self.buffer.total_pushed());
                 true
             }
         }
@@ -332,7 +325,10 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     fn dispatch_tasks(&mut self, tasks: Vec<Task>) -> Result<(), SyncError> {
         #[cfg(feature = "tracing")]
         {
-            let extracts = tasks.iter().filter(|t| matches!(t, Task::Extract(_))).count();
+            let extracts = tasks
+                .iter()
+                .filter(|t| matches!(t, Task::Extract(_)))
+                .count();
             let completes = tasks.len() - extracts;
             tracing::trace!(extracts, completes, buffer = self.buffer.len(), "dispatch");
         }
@@ -343,10 +339,7 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     }
 
     /// Handle all batch-completion tasks, return remaining extract jobs.
-    fn flush_batch_completions(
-        &mut self,
-        tasks: Vec<Task>,
-    ) -> Result<Vec<ExtractJob>, SyncError> {
+    fn flush_batch_completions(&mut self, tasks: Vec<Task>) -> Result<Vec<ExtractJob>, SyncError> {
         let mut extract_jobs = Vec::new();
         let mut handles = Vec::new();
 
@@ -354,7 +347,8 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
             match task {
                 Task::Extract(job) => extract_jobs.push(job),
                 Task::CompleteBatch { index, .. } => {
-                    if let Some(h) = self.scheduler
+                    if let Some(h) = self
+                        .scheduler
                         .ready_for_merge()
                         .into_iter()
                         .find(|h| h.index == index)
@@ -378,23 +372,29 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     /// fans out via `par_iter`. Borrows from `self` — no Arc cloning.
     #[cfg_attr(feature = "tracing", tracing::instrument(skip_all, fields(job_count = jobs.len())))]
     fn run_extractions_parallel(&self, jobs: &[ExtractJob]) -> Result<(), SyncError> {
-        let work: Vec<_> = jobs.iter().map(|job| {
-            let ctx = self.buffer.get(job.global_offset)
-                .expect("block available — scheduler verified watermark");
-            let pipeline = self.pipelines.get(&job.index)
-                .expect("scheduler only emits registered indexes");
-            (pipeline, ctx)
-        }).collect();
+        let work: Vec<_> = jobs
+            .iter()
+            .map(|job| {
+                let ctx = self
+                    .buffer
+                    .get(job.global_offset)
+                    .expect("block available — scheduler verified watermark");
+                let pipeline = self
+                    .pipelines
+                    .get(&job.index)
+                    .expect("scheduler only emits registered indexes");
+                (pipeline, ctx)
+            })
+            .collect();
 
         // Capture current span so rayon threads inherit the trace context.
         #[cfg(feature = "tracing")]
         let parent_span = tracing::Span::current();
-        work.par_iter()
-            .try_for_each(|(pipeline, ctx)| {
-                #[cfg(feature = "tracing")]
-                let _guard = parent_span.enter();
-                pipeline.extract_one(ctx)
-            })?;
+        work.par_iter().try_for_each(|(pipeline, ctx)| {
+            #[cfg(feature = "tracing")]
+            let _guard = parent_span.enter();
+            pipeline.extract_one(ctx)
+        })?;
 
         Ok(())
     }
@@ -433,7 +433,9 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
             .map(|handle| {
                 #[cfg(feature = "tracing")]
                 let _guard = parent_span.enter();
-                let pipeline = self.pipelines.get(&handle.index)
+                let pipeline = self
+                    .pipelines
+                    .get(&handle.index)
                     .expect("scheduler only emits registered indexes");
                 pipeline.merge()?;
                 let ops = pipeline.persist()?;
@@ -450,7 +452,9 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
 
         for (index_id, batch, ops) in merge_results {
             self.pending_ops.entry(batch).or_default().extend(ops);
-            let handle = self.scheduler.ready_for_merge()
+            let handle = self
+                .scheduler
+                .ready_for_merge()
                 .into_iter()
                 .find(|h| h.index == index_id)
                 .expect("handle must still be pending");
@@ -482,11 +486,9 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
 
             // Watermark: highest committed height for this batch.
             let batch_size = u64::from(self.scheduler.batch_size());
-            let max_offset =
-                ((u64::from(candidate.value()) + 1) * batch_size)
-                    .min(u64::from(self.buffer.total_pushed()));
-            let committed_height =
-                BlockHeight::new(self.start_height.value() + max_offset - 1);
+            let max_offset = ((u64::from(candidate.value()) + 1) * batch_size)
+                .min(u64::from(self.buffer.total_pushed()));
+            let committed_height = BlockHeight::new(self.start_height.value() + max_offset - 1);
 
             ops.push(WriteOp::Put {
                 namespace: METADATA_NS,
@@ -504,7 +506,8 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
 
             // Watermark must advance monotonically.
             debug_assert!(
-                self.evicted_through.map_or(true, |prev| candidate.value() > prev.value()),
+                self.evicted_through
+                    .map_or(true, |prev| candidate.value() > prev.value()),
                 "try_commit batch {} but already committed through {:?}",
                 candidate.value(),
                 self.evicted_through.map(|b| b.value()),
@@ -525,7 +528,8 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
     fn try_evict(&mut self, batch: BatchIndex) {
         // Eviction must be monotonic.
         debug_assert!(
-            self.evicted_through.map_or(true, |prev| batch.value() > prev.value()),
+            self.evicted_through
+                .map_or(true, |prev| batch.value() > prev.value()),
             "eviction must advance: evicting batch {} but already evicted through {:?}",
             batch.value(),
             self.evicted_through.map(|b| b.value()),
@@ -551,7 +555,10 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
             self.pending_ops.is_empty(),
             "pending_ops must be drained after sync, {} batches remain: {:?}",
             self.pending_ops.len(),
-            self.pending_ops.keys().map(|b| b.value()).collect::<Vec<_>>(),
+            self.pending_ops
+                .keys()
+                .map(|b| b.value())
+                .collect::<Vec<_>>(),
         );
 
         // If any blocks were processed, eviction must have covered all batches.

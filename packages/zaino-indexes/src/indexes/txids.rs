@@ -57,11 +57,20 @@ impl Schema<Vec<TxidsEntry>> for TxidsIndex {
     type Value = TxidsValue;
 
     fn into_entries(entries: Vec<TxidsEntry>) -> Vec<(Self::Key, Self::Value)> {
-        entries.into_iter().map(|e| (e.height, TxidsValue(e.txids))).collect()
+        entries
+            .into_iter()
+            .map(|e| (e.height, TxidsValue(e.txids)))
+            .collect()
     }
 
     fn from_entries(entries: Vec<(Self::Key, Self::Value)>) -> Vec<TxidsEntry> {
-        entries.into_iter().map(|(h, v)| TxidsEntry { height: h, txids: v.0 }).collect()
+        entries
+            .into_iter()
+            .map(|(h, v)| TxidsEntry {
+                height: h,
+                txids: v.0,
+            })
+            .collect()
     }
 
     fn encode_key(key: &BlockHeight) -> Vec<u8> {
@@ -77,19 +86,27 @@ impl Schema<Vec<TxidsEntry>> for TxidsIndex {
     }
 
     fn decode_key(bytes: &[u8]) -> Result<BlockHeight, SchemaDecodeError> {
-        let arr: [u8; 8] = bytes.try_into().map_err(|_| SchemaDecodeError::Invalid(format!("expected 8 bytes, got {}", bytes.len())))?;
+        let arr: [u8; 8] = bytes.try_into().map_err(|_| {
+            SchemaDecodeError::Invalid(format!("expected 8 bytes, got {}", bytes.len()))
+        })?;
         Ok(BlockHeight::new(u64::from_le_bytes(arr)))
     }
 
     fn decode_value(bytes: &[u8]) -> Result<TxidsValue, SchemaDecodeError> {
         if bytes.len() % 32 != 0 {
-            return Err(SchemaDecodeError::Invalid(format!("txids length {} not multiple of 32", bytes.len())));
+            return Err(SchemaDecodeError::Invalid(format!(
+                "txids length {} not multiple of 32",
+                bytes.len()
+            )));
         }
-        let txids = bytes.chunks_exact(32).map(|c| {
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(c);
-            TransactionHash::from(arr)
-        }).collect();
+        let txids = bytes
+            .chunks_exact(32)
+            .map(|c| {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(c);
+                TransactionHash::from(arr)
+            })
+            .collect();
         Ok(TxidsValue(txids))
     }
 }

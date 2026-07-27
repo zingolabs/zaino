@@ -69,7 +69,11 @@ impl From<&super::Block> for PreIndexCompactBlock {
             height: u32::from(block.header.height),
             time: block.header.time,
             bits: block.header.bits,
-            transactions: block.transactions.iter().map(PreIndexCompactTx::from).collect(),
+            transactions: block
+                .transactions
+                .iter()
+                .map(PreIndexCompactTx::from)
+                .collect(),
         }
     }
 }

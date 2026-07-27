@@ -5,10 +5,10 @@ mod address_delta;
 mod aliases;
 mod block;
 mod block_commitments;
-mod compact_block;
 mod block_hash;
 mod block_verbose;
 mod chain_work;
+mod compact_block;
 mod encrypted_ciphertext;
 mod ephemeral_key;
 mod height;
@@ -36,11 +36,11 @@ pub use aliases::{
     SubtreeIndex, TreeSize, TxIndex,
 };
 pub use block::{Block, BlockHeader, ChainMetadata};
-pub use compact_block::{CompactBlock, PreIndexCompactBlock, PreIndexCompactTx};
 pub use block_commitments::BlockCommitments;
 pub use block_hash::BlockHash;
 pub use block_verbose::BlockVerbose;
 pub use chain_work::ChainWork;
+pub use compact_block::{CompactBlock, PreIndexCompactBlock, PreIndexCompactTx};
 pub use encrypted_ciphertext::EncryptedCiphertext;
 pub use ephemeral_key::EphemeralKey;
 pub use height::{Height, HeightOverflow};

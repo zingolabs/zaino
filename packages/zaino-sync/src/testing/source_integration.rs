@@ -113,7 +113,10 @@ impl Schema<Vec<TxCountEntry>> for TxCountIndex {
     type Value = u32;
 
     fn into_entries(entries: Vec<TxCountEntry>) -> Vec<(Self::Key, Self::Value)> {
-        entries.into_iter().map(|e| (e.height, e.tx_count)).collect()
+        entries
+            .into_iter()
+            .map(|e| (e.height, e.tx_count))
+            .collect()
     }
 
     fn from_entries(entries: Vec<(Self::Key, Self::Value)>) -> Vec<TxCountEntry> {
@@ -123,8 +126,12 @@ impl Schema<Vec<TxCountEntry>> for TxCountIndex {
             .collect()
     }
 
-    fn encode_key(key: &Self::Key) -> Vec<u8> { key.encode() }
-    fn encode_value(value: &Self::Value) -> Vec<u8> { value.encode() }
+    fn encode_key(key: &Self::Key) -> Vec<u8> {
+        key.encode()
+    }
+    fn encode_value(value: &Self::Value) -> Vec<u8> {
+        value.encode()
+    }
     fn decode_key(bytes: &[u8]) -> Result<Self::Key, SchemaDecodeError> {
         BlockHeight::decode(bytes).map_err(|e| SchemaDecodeError::Invalid(e.to_string()))
     }
@@ -257,8 +264,12 @@ impl Schema<Vec<HeaderEntry>> for HeadersIndex {
             .collect()
     }
 
-    fn encode_key(key: &Self::Key) -> Vec<u8> { key.encode() }
-    fn encode_value(value: &Self::Value) -> Vec<u8> { value.encode() }
+    fn encode_key(key: &Self::Key) -> Vec<u8> {
+        key.encode()
+    }
+    fn encode_value(value: &Self::Value) -> Vec<u8> {
+        value.encode()
+    }
     fn decode_key(bytes: &[u8]) -> Result<Self::Key, SchemaDecodeError> {
         BlockHeight::decode(bytes).map_err(|e| SchemaDecodeError::Invalid(e.to_string()))
     }
@@ -307,7 +318,11 @@ mod tests {
         Block {
             header: BlockHeader {
                 hash: hash(h as u8),
-                prev_hash: if h == 0 { BlockHash::ZERO } else { hash((h - 1) as u8) },
+                prev_hash: if h == 0 {
+                    BlockHash::ZERO
+                } else {
+                    hash((h - 1) as u8)
+                },
                 height: height(h),
                 time: 1_000_000 + h,
                 merkle_root: MerkleRoot::from([0; 32]),
@@ -400,7 +415,11 @@ mod tests {
             let header = HeaderValue::decode(&val).expect("valid header encoding");
 
             assert_eq!(header.hash, hash(h as u8), "block {h} hash");
-            let expected_prev = if h == 0 { BlockHash::ZERO } else { hash((h - 1) as u8) };
+            let expected_prev = if h == 0 {
+                BlockHash::ZERO
+            } else {
+                hash((h - 1) as u8)
+            };
             assert_eq!(header.prev_hash, expected_prev, "block {h} prev_hash");
             assert_eq!(header.time, 1_000_000 + h, "block {h} time");
             assert_eq!(header.bits, 0x1d00ffff + h, "block {h} bits");

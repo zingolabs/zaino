@@ -5,7 +5,7 @@
 
 use std::future::Future;
 
-use zaino_primitives::types::{PreIndexCompactBlock, Height};
+use zaino_primitives::types::{Height, PreIndexCompactBlock};
 
 use super::QueryError;
 

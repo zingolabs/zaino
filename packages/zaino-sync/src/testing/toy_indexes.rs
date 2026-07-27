@@ -40,17 +40,13 @@ impl ProvideContext<()> for TestBlockContext {
 
 impl ProvideContext<running_sum_index::Context> for TestBlockContext {
     fn context(&self) -> running_sum_index::Context {
-        running_sum_index::Context {
-            value: self.value,
-        }
+        running_sum_index::Context { value: self.value }
     }
 }
 
 impl ProvideContext<cumulative_sum_index::Context> for TestBlockContext {
     fn context(&self) -> cumulative_sum_index::Context {
-        cumulative_sum_index::Context {
-            value: self.value,
-        }
+        cumulative_sum_index::Context { value: self.value }
     }
 }
 
@@ -94,8 +90,15 @@ mod tests {
             .with::<CountIndex>()
             .with::<RunningSumIndex>();
 
-        SyncEngine::from_index_set(set, backend, EngineConfig { batch_size, start_height })
-            .expect("valid index set")
+        SyncEngine::from_index_set(
+            set,
+            backend,
+            EngineConfig {
+                batch_size,
+                start_height,
+            },
+        )
+        .expect("valid index set")
     }
 
     /// Helper: build an engine that includes the CumulativeSumIndex.
@@ -119,8 +122,15 @@ mod tests {
             .with::<RunningSumIndex>()
             .with::<CumulativeSumIndex>();
 
-        SyncEngine::from_index_set(set, backend, EngineConfig { batch_size, start_height })
-            .expect("valid index set")
+        SyncEngine::from_index_set(
+            set,
+            backend,
+            EngineConfig {
+                batch_size,
+                start_height,
+            },
+        )
+        .expect("valid index set")
     }
 
     /// Read the cumulative sum from the backend.
@@ -216,8 +226,12 @@ mod tests {
 
         // Incremental arrival produces the same entry count as pre-loaded.
         assert_eq!(backend.entries(value_index::ID.into()).len(), 10);
-        assert!(backend.get_value(count_index::ID.into(), b"total").is_some());
-        assert!(backend.get_value(running_sum_index::ID.into(), b"sum").is_some());
+        assert!(backend
+            .get_value(count_index::ID.into(), b"total")
+            .is_some());
+        assert!(backend
+            .get_value(running_sum_index::ID.into(), b"sum")
+            .is_some());
 
         assert_eq!(engine.buffer_len(), 0);
         assert_eq!(engine.evicted_through(), Some(BatchIndex::new(3)));
@@ -244,8 +258,12 @@ mod tests {
         engine.sync_channel(rx).await.expect("sync succeeds");
 
         assert_eq!(backend.entries(value_index::ID.into()).len(), 10);
-        assert!(backend.get_value(count_index::ID.into(), b"total").is_some());
-        assert!(backend.get_value(running_sum_index::ID.into(), b"sum").is_some());
+        assert!(backend
+            .get_value(count_index::ID.into(), b"total")
+            .is_some());
+        assert!(backend
+            .get_value(running_sum_index::ID.into(), b"sum")
+            .is_some());
         assert_eq!(engine.buffer_len(), 0);
         assert_eq!(engine.evicted_through(), Some(BatchIndex::new(3)));
     }
@@ -376,7 +394,10 @@ mod tests {
         // Phase 1.
         {
             let blocks: Vec<_> = (0u64..=4)
-                .map(|h| TestBlockContext { height: h, value: h as u32 })
+                .map(|h| TestBlockContext {
+                    height: h,
+                    value: h as u32,
+                })
                 .collect();
             let mut engine = build_engine_with_cumulative(backend.clone(), 20);
             engine.sync_range(blocks).expect("phase 1 sync succeeds");
@@ -393,7 +414,10 @@ mod tests {
         {
             let start = BlockHeight::new(watermark.value() + 1);
             let blocks: Vec<_> = (5u64..=6)
-                .map(|h| TestBlockContext { height: h, value: h as u32 })
+                .map(|h| TestBlockContext {
+                    height: h,
+                    value: h as u32,
+                })
                 .collect();
             let mut engine = build_engine_with_cumulative_at(backend.clone(), 20, start);
             engine.sync_range(blocks).expect("phase 2 sync succeeds");
@@ -415,7 +439,10 @@ mod tests {
         let mut engine = build_engine(backend.clone(), 3);
 
         let blocks: Vec<_> = (0u64..=9)
-            .map(|h| TestBlockContext { height: h, value: h as u32 })
+            .map(|h| TestBlockContext {
+                height: h,
+                value: h as u32,
+            })
             .collect();
         engine.sync_range(blocks).expect("sync succeeds");
 

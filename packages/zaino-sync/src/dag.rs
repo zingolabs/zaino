@@ -92,11 +92,7 @@ impl DependencyDag {
         let raw_edges = collect_edges(&descriptors, &names)?;
         let phase_map = toposort_phases(&descriptors, &raw_edges)?;
 
-        let phase_count = phase_map
-            .values()
-            .map(|p| p.value() + 1)
-            .max()
-            .unwrap_or(0);
+        let phase_count = phase_map.values().map(|p| p.value() + 1).max().unwrap_or(0);
 
         let desc_map: HashMap<IndexId, &Descriptor> =
             descriptors.iter().map(|d| (d.name, d)).collect();
@@ -117,19 +113,28 @@ impl DependencyDag {
             .into_iter()
             .map(|desc| {
                 let phase = phase_map[&desc.name];
-                (desc.name, DagNode { descriptor: desc, phase })
+                (
+                    desc.name,
+                    DagNode {
+                        descriptor: desc,
+                        phase,
+                    },
+                )
             })
             .collect();
 
-        Ok(Self { nodes, edges, phase_count })
+        Ok(Self {
+            nodes,
+            edges,
+            phase_count,
+        })
     }
 
     /// Return indexes grouped by phase, in phase order.
     pub fn phases(&self) -> Vec<Vec<&DagNode>> {
         let mut result: Vec<Vec<&DagNode>> = (0..self.phase_count).map(|_| Vec::new()).collect();
         for node in self.nodes.values() {
-            let idx = usize::try_from(node.phase.value())
-                .expect("phase index fits in usize");
+            let idx = usize::try_from(node.phase.value()).expect("phase index fits in usize");
             result[idx].push(node);
         }
         result
@@ -159,10 +164,7 @@ impl DependencyDag {
     }
 
     /// Compute the scheduling properties of a given cell (scope × composition).
-    pub fn cell_properties(
-        scope: InputScope,
-        composition: CompositionType,
-    ) -> CellSchedulingProps {
+    pub fn cell_properties(scope: InputScope, composition: CompositionType) -> CellSchedulingProps {
         CellSchedulingProps {
             parallel_extract: matches!(scope, InputScope::BlockLocal),
             parallel_merge: matches!(composition, CompositionType::Monoidal),
@@ -258,9 +260,7 @@ fn toposort_phases(
             phase_map.insert(id, phase);
             if let Some(downstream) = dependents.get(&id) {
                 for &dep in downstream {
-                    let deg = in_degree
-                        .get_mut(&dep)
-                        .expect("all nodes in in_degree map");
+                    let deg = in_degree.get_mut(&dep).expect("all nodes in in_degree map");
                     *deg -= 1;
                     if *deg == 0 {
                         queue.push_back(dep);

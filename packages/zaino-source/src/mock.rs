@@ -61,11 +61,15 @@ impl MockChain {
     }
 
     fn maybe_fail<E: core::fmt::Debug + core::fmt::Display>(&self) -> Option<QueryError<E>> {
-        let prev = self.failures_remaining.fetch_update(
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-            |n| if n > 0 { Some(n - 1) } else { None },
-        );
+        let prev = self
+            .failures_remaining
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                if n > 0 {
+                    Some(n - 1)
+                } else {
+                    None
+                }
+            });
         match prev {
             Ok(_) => Some(QueryError::Fetch(FetchError::new(
                 self.failure_mode.clone(),

@@ -92,9 +92,7 @@ impl RpcClient {
             match outcome {
                 ResponseOutcome::Success(value) => return Ok(value),
                 ResponseOutcome::RpcError { code, message } => {
-                    if retry::is_retryable(code)
-                        && retry::should_retry(attempt, self.max_retries)
-                    {
+                    if retry::is_retryable(code) && retry::should_retry(attempt, self.max_retries) {
                         tokio::time::sleep(self.retry_delay).await;
                         continue;
                     }

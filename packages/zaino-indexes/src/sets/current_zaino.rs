@@ -139,7 +139,6 @@ pub fn context_from_block(block: &Block) -> CurrentZainoContext {
     }
 }
 
-
 /// Build context from a [`PreIndexCompactBlock`](zaino_primitives::types::PreIndexCompactBlock).
 ///
 /// Same output as [`context_from_block`] but sourced from the compact
@@ -191,7 +190,14 @@ pub fn context_from_pre_index_compact_block(
             actions: ctx
                 .orchard_actions
                 .iter()
-                .map(|a| (a.nullifier, a.cmx, a.ephemeral_key, a.enc_ciphertext.clone()))
+                .map(|a| {
+                    (
+                        a.nullifier,
+                        a.cmx,
+                        a.ephemeral_key,
+                        a.enc_ciphertext.clone(),
+                    )
+                })
                 .collect(),
         });
     }

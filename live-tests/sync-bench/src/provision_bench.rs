@@ -122,8 +122,8 @@ async fn main() {
         }
     }
 
-    let state_dir = std::env::var("ZEBRA_STATE_DIR")
-        .expect("ZEBRA_STATE_DIR is required for provision-bench");
+    let state_dir =
+        std::env::var("ZEBRA_STATE_DIR").expect("ZEBRA_STATE_DIR is required for provision-bench");
     let args: Vec<String> = std::env::args().collect();
     let n_blocks: u32 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(100_000);
     let concurrency: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(16);
@@ -190,8 +190,12 @@ async fn main() {
                             let _block = a.get_block(height).await.expect("get_block");
                         }
                     },
-                    sync_from, sync_to, concurrency, BenchMode::RawBlock,
-                ).await
+                    sync_from,
+                    sync_to,
+                    concurrency,
+                    BenchMode::RawBlock,
+                )
+                .await
             }
             BenchMode::CompactBlock => {
                 let a = Arc::clone(&adapter);
@@ -200,11 +204,18 @@ async fn main() {
                         let a = Arc::clone(&a);
                         async move {
                             let height = Height::try_from(h).expect("valid");
-                            let _compact = a.get_pre_index_compact_block(height).await.expect("get_pre_index_compact_block");
+                            let _compact = a
+                                .get_pre_index_compact_block(height)
+                                .await
+                                .expect("get_pre_index_compact_block");
                         }
                     },
-                    sync_from, sync_to, concurrency, BenchMode::CompactBlock,
-                ).await
+                    sync_from,
+                    sync_to,
+                    concurrency,
+                    BenchMode::CompactBlock,
+                )
+                .await
             }
             BenchMode::HeadersOnly => {
                 // Uses BlockHeader request — no transaction deserialization.
@@ -214,11 +225,16 @@ async fn main() {
                         let a = Arc::clone(&a);
                         async move {
                             let height = Height::try_from(h).expect("valid");
-                            let _header = a.get_block_header(height).await.expect("get_block_header");
+                            let _header =
+                                a.get_block_header(height).await.expect("get_block_header");
                         }
                     },
-                    sync_from, sync_to, concurrency, BenchMode::HeadersOnly,
-                ).await
+                    sync_from,
+                    sync_to,
+                    concurrency,
+                    BenchMode::HeadersOnly,
+                )
+                .await
             }
             BenchMode::HeadersSpends => {
                 // Uses CompactBlock — has transparent outpoints, no proofs/scripts.
@@ -228,11 +244,18 @@ async fn main() {
                         let a = Arc::clone(&a);
                         async move {
                             let height = Height::try_from(h).expect("valid");
-                            let _compact = a.get_pre_index_compact_block(height).await.expect("get_pre_index_compact_block");
+                            let _compact = a
+                                .get_pre_index_compact_block(height)
+                                .await
+                                .expect("get_pre_index_compact_block");
                         }
                     },
-                    sync_from, sync_to, concurrency, BenchMode::HeadersSpends,
-                ).await
+                    sync_from,
+                    sync_to,
+                    concurrency,
+                    BenchMode::HeadersSpends,
+                )
+                .await
             }
             BenchMode::CurrentZaino => {
                 // Uses CompactBlock — has everything the current index set needs.
@@ -242,11 +265,18 @@ async fn main() {
                         let a = Arc::clone(&a);
                         async move {
                             let height = Height::try_from(h).expect("valid");
-                            let _compact = a.get_pre_index_compact_block(height).await.expect("get_pre_index_compact_block");
+                            let _compact = a
+                                .get_pre_index_compact_block(height)
+                                .await
+                                .expect("get_pre_index_compact_block");
                         }
                     },
-                    sync_from, sync_to, concurrency, BenchMode::CurrentZaino,
-                ).await
+                    sync_from,
+                    sync_to,
+                    concurrency,
+                    BenchMode::CurrentZaino,
+                )
+                .await
             }
             BenchMode::All => unreachable!("expanded above"),
         };

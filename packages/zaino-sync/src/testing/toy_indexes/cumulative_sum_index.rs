@@ -130,8 +130,12 @@ impl Schema<CumulativeSum> for CumulativeSumIndex {
             .unwrap_or(CumulativeSum::new(0))
     }
 
-    fn encode_key(key: &Self::Key) -> Vec<u8> { key.encode() }
-    fn encode_value(value: &Self::Value) -> Vec<u8> { value.encode() }
+    fn encode_key(key: &Self::Key) -> Vec<u8> {
+        key.encode()
+    }
+    fn encode_value(value: &Self::Value) -> Vec<u8> {
+        value.encode()
+    }
     fn decode_key(bytes: &[u8]) -> Result<Self::Key, SchemaDecodeError> {
         CumSumKey::decode(bytes).map_err(|e| SchemaDecodeError::Invalid(e.to_string()))
     }

@@ -21,6 +21,5 @@ pub trait GetMempoolTxids: Send + Sync {
     /// Fetch mempool txids.
     fn get_mempool_txids(
         &self,
-    ) -> impl Future<Output = Result<Vec<TransactionHash>, QueryError<GetMempoolTxidsError>>>
-           + Send;
+    ) -> impl Future<Output = Result<Vec<TransactionHash>, QueryError<GetMempoolTxidsError>>> + Send;
 }

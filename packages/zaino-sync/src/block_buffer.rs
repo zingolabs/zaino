@@ -74,8 +74,7 @@ impl<Ctx> BlockBuffer<Ctx> {
     /// evicted ones). This is the watermark the engine passes to
     /// `scheduler.set_blocks_available()`.
     pub fn total_pushed(&self) -> u32 {
-        self.floor + u32::try_from(self.blocks.len())
-            .expect("buffer size fits in u32")
+        self.floor + u32::try_from(self.blocks.len()).expect("buffer size fits in u32")
     }
 
     /// Evict all blocks in batches up to and including `through_batch`.

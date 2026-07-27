@@ -208,11 +208,17 @@ impl Scheduler {
             // How many blocks to emit depends on the index's scope:
             // - BlockLocal: all available (fully parallel, no inter-block deps)
             // - SelfCumulative/CrossIndex: one at a time (sequential)
-            let is_parallel = self.dag.node(id)
+            let is_parallel = self
+                .dag
+                .node(id)
                 .map(|n| n.descriptor.scope == crate::descriptor::InputScope::BlockLocal)
                 .unwrap_or(false);
 
-            let limit = if is_parallel { effective } else { extracted + 1 };
+            let limit = if is_parallel {
+                effective
+            } else {
+                extracted + 1
+            };
 
             for offset in extracted..limit {
                 let global = batch.value() * self.batch_size + offset;
@@ -250,14 +256,19 @@ impl Scheduler {
         let batch = self.current_batch[&index];
         let effective = self.effective_batch_size(batch);
 
-        let count = self.extracted_in_batch.get_mut(&index)
+        let count = self
+            .extracted_in_batch
+            .get_mut(&index)
             .expect("index exists in scheduler");
         *count += 1;
 
         debug_assert!(
             *count <= effective,
             "extraction count {} exceeds effective batch size {} for index {} batch {}",
-            *count, effective, index, batch.value(),
+            *count,
+            effective,
+            index,
+            batch.value(),
         );
 
         if *count >= effective {
@@ -446,9 +457,9 @@ impl Scheduler {
     /// Whether all indexes have finished the given batch
     /// (committed through it).
     pub fn all_committed_through(&self, batch: BatchIndex) -> bool {
-        self.all_indexes.iter().all(|id| {
-            matches!(self.committed_through[id], Some(b) if b >= batch)
-        })
+        self.all_indexes
+            .iter()
+            .all(|id| matches!(self.committed_through[id], Some(b) if b >= batch))
     }
 
     /// Whether any index has work remaining (not all committed through
@@ -465,9 +476,7 @@ impl Scheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::descriptor::{
-        CompositionType, Descriptor, InputScope, SourceAccess,
-    };
+    use crate::descriptor::{CompositionType, Descriptor, InputScope, SourceAccess};
 
     fn desc(name: &'static str, deps: &'static [IndexId]) -> Descriptor {
         Descriptor {
@@ -487,8 +496,7 @@ mod tests {
 
     #[test]
     fn phase_zero_indexes_ready_immediately() {
-        let dag = DependencyDag::build(vec![desc("a", DEPS_NONE)])
-            .expect("valid dag");
+        let dag = DependencyDag::build(vec![desc("a", DEPS_NONE)]).expect("valid dag");
         let mut sched = Scheduler::new(dag, 3);
         sched.set_blocks_available(10);
 
@@ -503,8 +511,7 @@ mod tests {
 
     #[test]
     fn no_extractions_when_no_blocks_available() {
-        let dag = DependencyDag::build(vec![desc("a", DEPS_NONE)])
-            .expect("valid dag");
+        let dag = DependencyDag::build(vec![desc("a", DEPS_NONE)]).expect("valid dag");
         let sched = Scheduler::new(dag, 3);
 
         // No blocks supplied yet — nothing is ready.
@@ -514,8 +521,7 @@ mod tests {
 
     #[test]
     fn extractions_gate_on_availability() {
-        let dag = DependencyDag::build(vec![desc("a", DEPS_NONE)])
-            .expect("valid dag");
+        let dag = DependencyDag::build(vec![desc("a", DEPS_NONE)]).expect("valid dag");
         let mut sched = Scheduler::new(dag, 3);
 
         // Only 1 block available out of a batch of 3.
@@ -537,11 +543,8 @@ mod tests {
 
     #[test]
     fn downstream_blocked_until_upstream_commits() {
-        let dag = DependencyDag::build(vec![
-            desc("a", DEPS_NONE),
-            desc("b", DEPS_A),
-        ])
-        .expect("valid dag");
+        let dag =
+            DependencyDag::build(vec![desc("a", DEPS_NONE), desc("b", DEPS_A)]).expect("valid dag");
         let mut sched = Scheduler::new(dag, 2);
         sched.set_blocks_available(10);
 
@@ -554,11 +557,8 @@ mod tests {
 
     #[test]
     fn downstream_unblocks_after_upstream_commit() {
-        let dag = DependencyDag::build(vec![
-            desc("a", DEPS_NONE),
-            desc("b", DEPS_A),
-        ])
-        .expect("valid dag");
+        let dag =
+            DependencyDag::build(vec![desc("a", DEPS_NONE), desc("b", DEPS_A)]).expect("valid dag");
         let mut sched = Scheduler::new(dag, 2);
         sched.set_blocks_available(10);
 
@@ -584,8 +584,7 @@ mod tests {
 
     #[test]
     fn extraction_advances_through_batch() {
-        let dag = DependencyDag::build(vec![desc("a", DEPS_NONE)])
-            .expect("valid dag");
+        let dag = DependencyDag::build(vec![desc("a", DEPS_NONE)]).expect("valid dag");
         let mut sched = Scheduler::new(dag, 3);
         sched.set_blocks_available(10);
 
@@ -613,8 +612,7 @@ mod tests {
 
     #[test]
     fn commit_advances_to_next_batch() {
-        let dag = DependencyDag::build(vec![desc("a", DEPS_NONE)])
-            .expect("valid dag");
+        let dag = DependencyDag::build(vec![desc("a", DEPS_NONE)]).expect("valid dag");
         let mut sched = Scheduler::new(dag, 2);
         sched.set_blocks_available(10);
 
@@ -632,11 +630,8 @@ mod tests {
 
     #[test]
     fn independent_indexes_both_ready() {
-        let dag = DependencyDag::build(vec![
-            desc("a", DEPS_NONE),
-            desc("b", DEPS_NONE),
-        ])
-        .expect("valid dag");
+        let dag = DependencyDag::build(vec![desc("a", DEPS_NONE), desc("b", DEPS_NONE)])
+            .expect("valid dag");
         let mut sched = Scheduler::new(dag, 3);
         sched.set_blocks_available(10);
 
@@ -648,11 +643,8 @@ mod tests {
 
     #[test]
     fn ready_work_includes_both_extract_and_batch_tasks() {
-        let dag = DependencyDag::build(vec![
-            desc("a", DEPS_NONE),
-            desc("b", DEPS_NONE),
-        ])
-        .expect("valid dag");
+        let dag = DependencyDag::build(vec![desc("a", DEPS_NONE), desc("b", DEPS_NONE)])
+            .expect("valid dag");
         let mut sched = Scheduler::new(dag, 2);
         sched.set_blocks_available(10);
 
@@ -663,7 +655,9 @@ mod tests {
         // B still extracting. A is ready to merge.
         let tasks = sched.ready_work();
         let has_extract = tasks.iter().any(|t| matches!(t, Task::Extract(_)));
-        let has_batch = tasks.iter().any(|t| matches!(t, Task::CompleteBatch { .. }));
+        let has_batch = tasks
+            .iter()
+            .any(|t| matches!(t, Task::CompleteBatch { .. }));
         assert!(has_extract, "should have extract tasks for B");
         assert!(has_batch, "should have batch task for A");
     }

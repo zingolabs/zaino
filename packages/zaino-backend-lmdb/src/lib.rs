@@ -19,8 +19,8 @@ use lmdb::{
     Cursor, Database, DatabaseFlags, Environment, EnvironmentFlags, Transaction, WriteFlags,
 };
 use zaino_persistence::{
-    Backend, BackendReader, BackendWriter, CommitError, FlushError, Namespace, OpenError,
-    RawKey, RawValue, ReadError, WriteOp,
+    Backend, BackendReader, BackendWriter, CommitError, FlushError, Namespace, OpenError, RawKey,
+    RawValue, ReadError, WriteOp,
 };
 
 /// Configuration for [`LmdbBackend`].
@@ -315,8 +315,8 @@ mod tests {
     #[test]
     fn unknown_namespace_is_error() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let backend =
-            LmdbBackend::open(test_config(tmp.path(), vec![Namespace::new("known")])).expect("open");
+        let backend = LmdbBackend::open(test_config(tmp.path(), vec![Namespace::new("known")]))
+            .expect("open");
 
         let reader = backend.reader().expect("reader");
         let err = reader.get(Namespace::new("unknown"), b"key").unwrap_err();
@@ -400,10 +400,7 @@ mod tests {
         {
             let backend = LmdbBackend::open(test_config(tmp.path(), vec![ns])).expect("reopen");
             let reader = backend.reader().expect("reader");
-            let val = reader
-                .get(ns, b"durable")
-                .expect("get")
-                .expect("persisted");
+            let val = reader.get(ns, b"durable").expect("get").expect("persisted");
             assert_eq!(val, b"yes");
         }
     }

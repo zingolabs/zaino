@@ -127,10 +127,7 @@ async fn mock_zebra_rpc(listener: TcpListener, fixtures: HashMap<String, String>
             let body_str = String::from_utf8_lossy(&buf[..n]);
 
             // Find the JSON body after the blank line.
-            let json_body = body_str
-                .split("\r\n\r\n")
-                .nth(1)
-                .unwrap_or(&body_str);
+            let json_body = body_str.split("\r\n\r\n").nth(1).unwrap_or(&body_str);
 
             let req: serde_json::Value =
                 serde_json::from_str(json_body).expect("invalid JSON-RPC request");

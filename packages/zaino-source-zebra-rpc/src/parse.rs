@@ -59,7 +59,9 @@ pub(crate) fn parse_treestate(value: &serde_json::Value) -> Result<Treestate, Pa
         .map(|v| {
             v.as_str()
                 .ok_or_else(|| ParseError::unexpected("string", v))
-                .and_then(|hex_str| hex::decode(hex_str).map_err(|e| ParseError::Hex(e.to_string())))
+                .and_then(|hex_str| {
+                    hex::decode(hex_str).map_err(|e| ParseError::Hex(e.to_string()))
+                })
         })
         .transpose()?;
 

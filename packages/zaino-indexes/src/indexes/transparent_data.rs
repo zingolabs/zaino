@@ -70,10 +70,18 @@ impl Schema<Vec<TransparentDataEntry>> for TransparentDataIndex {
     }
 
     fn from_entries(entries: Vec<(Self::Key, Self::Value)>) -> Vec<TransparentDataEntry> {
-        entries.into_iter().map(|(h, v)| TransparentDataEntry { height: h, value: v }).collect()
+        entries
+            .into_iter()
+            .map(|(h, v)| TransparentDataEntry {
+                height: h,
+                value: v,
+            })
+            .collect()
     }
 
-    fn encode_key(key: &BlockHeight) -> Vec<u8> { key.value().to_le_bytes().to_vec() }
+    fn encode_key(key: &BlockHeight) -> Vec<u8> {
+        key.value().to_le_bytes().to_vec()
+    }
 
     fn encode_value(value: &TransparentBlockValue) -> Vec<u8> {
         let mut buf = Vec::new();
@@ -96,11 +104,15 @@ impl Schema<Vec<TransparentDataEntry>> for TransparentDataIndex {
     }
 
     fn decode_key(bytes: &[u8]) -> Result<BlockHeight, SchemaDecodeError> {
-        let arr: [u8; 8] = bytes.try_into().map_err(|_| SchemaDecodeError::Invalid("bad height".into()))?;
+        let arr: [u8; 8] = bytes
+            .try_into()
+            .map_err(|_| SchemaDecodeError::Invalid("bad height".into()))?;
         Ok(BlockHeight::new(u64::from_le_bytes(arr)))
     }
 
     fn decode_value(_bytes: &[u8]) -> Result<TransparentBlockValue, SchemaDecodeError> {
-        Err(SchemaDecodeError::Invalid("transparent_data decode not yet implemented".into()))
+        Err(SchemaDecodeError::Invalid(
+            "transparent_data decode not yet implemented".into(),
+        ))
     }
 }
