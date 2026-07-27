@@ -406,14 +406,12 @@ fn passthrough_get_block_range() {
 /// which is why the `passthrough_metadata_consistency_*` walks must inject
 /// `fake_v6_transaction` ironwood content instead of relying on generation.
 ///
-/// `should_panic` tracks the upstream gap: when a zebra upgrade starts generating V6,
-/// this test flips, and the `#[should_panic]` should be removed together with the
-/// fake-transaction injection in `inject_ironwood_transactions` (generation then covers
-/// it natively).
+/// As of the zebra-chain 11.2 upgrade (librustzcash 0.30 cohort), the stock
+/// strategy now generates V6 transactions natively for NU6.3, so this test runs
+/// as a normal (non-`should_panic`) assertion confirming that behaviour.
 ///
 /// [`Transaction`]: zebra_chain::transaction::Transaction
 #[test]
-#[should_panic(expected = "zebra's stock Transaction strategy generated no V6")]
 fn zebra_arbitrary_generates_v6_transactions_for_nu6_3() {
     use proptest::strategy::ValueTree as _;
     use proptest::test_runner::TestRunner;

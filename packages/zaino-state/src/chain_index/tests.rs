@@ -11,15 +11,18 @@ pub(crate) mod types;
 pub(crate) mod vectors;
 
 pub(crate) fn init_tracing() {
-    tracing_subscriber::fmt()
+    // Multiple tests in the same binary call this; the global default trace
+    // dispatcher can only be installed once per process. Ignore the
+    // `SetGlobalDefaultError` returned when it is already set so every test
+    // can safely request tracing init.
+    let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
         .with_target(true)
-        .try_init()
-        .unwrap();
+        .try_init();
 }
 
 use std::path::{Path, PathBuf};
