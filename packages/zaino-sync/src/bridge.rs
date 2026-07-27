@@ -234,6 +234,37 @@ where
 }
 
 // ===========================================================================
+// Shared persist step
+// ===========================================================================
+
+/// Turn a bridge's merged state into the index's [`WriteOp`]s.
+///
+/// The persist phase is identical for every bridge: take the merged
+/// state out of its slot, map it to typed entries via [`Schema`], and
+/// encode each entry. This is the serialization boundary.
+fn persist_merged<I, M>(merged: &Mutex<Option<M>>) -> Result<Vec<WriteOp>, PipelineError>
+where
+    I: Schema<M>,
+{
+    let state = merged
+        .lock()
+        .expect("merged mutex poisoned")
+        .take()
+        .ok_or_else(|| PipelineError::Persist("no merged state to persist".into()))?;
+
+    let ops = I::into_entries(state)
+        .into_iter()
+        .map(|(key, value)| WriteOp::Put {
+            namespace: I::NAME.into(),
+            key: I::encode_key(&key),
+            value: I::encode_value(&value),
+        })
+        .collect();
+
+    Ok(ops)
+}
+
+// ===========================================================================
 // LocalBridge — single struct for all BlockLocal compositions
 // ===========================================================================
 
@@ -298,23 +329,7 @@ where
     }
 
     fn persist(&self) -> Result<Vec<WriteOp>, PipelineError> {
-        let state = self
-            .merged
-            .lock()
-            .expect("merged mutex poisoned")
-            .take()
-            .ok_or_else(|| PipelineError::Persist("no merged state to persist".into()))?;
-
-        let ops = I::into_entries(state)
-            .into_iter()
-            .map(|(key, value)| WriteOp::Put {
-                namespace: I::NAME.into(),
-                key: I::encode_key(&key),
-                value: I::encode_value(&value),
-            })
-            .collect();
-
-        Ok(ops)
+        persist_merged::<I, S::MergedState>(&self.merged)
     }
 }
 
@@ -423,22 +438,6 @@ where
     }
 
     fn persist(&self) -> Result<Vec<WriteOp>, PipelineError> {
-        let state = self
-            .merged
-            .lock()
-            .expect("merged mutex poisoned")
-            .take()
-            .ok_or_else(|| PipelineError::Persist("no merged state to persist".into()))?;
-
-        let ops = I::into_entries(state)
-            .into_iter()
-            .map(|(key, value)| WriteOp::Put {
-                namespace: I::NAME.into(),
-                key: I::encode_key(&key),
-                value: I::encode_value(&value),
-            })
-            .collect();
-
-        Ok(ops)
+        persist_merged::<I, S::MergedState>(&self.merged)
     }
 }

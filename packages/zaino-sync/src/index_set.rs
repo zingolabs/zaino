@@ -7,6 +7,9 @@
 use crate::dag::{DagError, DependencyDag};
 use crate::pipeline::{IndexPipeline, IntoIndexPipeline};
 
+/// The dependency DAG and the boxed pipelines a built index set hands to the engine.
+type BuiltIndexSet<Ctx> = (DependencyDag, Vec<Box<dyn IndexPipeline<Ctx>>>);
+
 /// A collection of indexes to be processed by the sync engine.
 ///
 /// Built via the [`with`](Self::with) method, which accepts any type
@@ -53,9 +56,7 @@ impl<Ctx: Send + Sync + 'static> IndexSet<Ctx> {
     /// Build the dependency DAG and return the parts the engine needs.
     ///
     /// Validates uniqueness, dependency existence, and acyclicity.
-    pub(crate) fn build(
-        self,
-    ) -> Result<(DependencyDag, Vec<Box<dyn IndexPipeline<Ctx>>>), DagError> {
+    pub(crate) fn build(self) -> Result<BuiltIndexSet<Ctx>, DagError> {
         let descriptors: Vec<_> = self
             .pipelines
             .iter()

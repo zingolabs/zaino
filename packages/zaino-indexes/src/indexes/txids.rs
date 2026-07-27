@@ -93,7 +93,7 @@ impl Schema<Vec<TxidsEntry>> for TxidsIndex {
     }
 
     fn decode_value(bytes: &[u8]) -> Result<TxidsValue, SchemaDecodeError> {
-        if bytes.len() % 32 != 0 {
+        if !bytes.len().is_multiple_of(32) {
             return Err(SchemaDecodeError::Invalid(format!(
                 "txids length {} not multiple of 32",
                 bytes.len()

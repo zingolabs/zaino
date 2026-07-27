@@ -48,7 +48,7 @@ pub(crate) fn parse_treestate(value: &serde_json::Value) -> Result<Treestate, Pa
         .and_then(|s| s.get("commitments"))
         .and_then(|c| c.get("finalState"))
         .and_then(|v| v.as_str())
-        .map(|hex_str| hex::decode(hex_str))
+        .map(hex::decode)
         .transpose()
         .map_err(|e| ParseError::Hex(e.to_string()))?;
 

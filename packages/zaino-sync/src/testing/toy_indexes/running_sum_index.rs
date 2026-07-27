@@ -20,11 +20,6 @@ impl RunningSum {
     pub const fn new(sum: u64) -> Self {
         Self(sum)
     }
-
-    /// The raw numeric value.
-    pub const fn value(&self) -> u64 {
-        self.0
-    }
 }
 
 impl Encode for RunningSum {

@@ -146,7 +146,6 @@ pub fn context_from_block(block: &Block) -> CurrentZainoContext {
 pub fn context_from_pre_index_compact_block(
     cb: &zaino_primitives::types::PreIndexCompactBlock,
 ) -> CurrentZainoContext {
-    use zaino_primitives::types::EncryptedCiphertext;
     let height = BlockHeight::new(u64::from(cb.height));
 
     let mut txids = Vec::with_capacity(cb.transactions.len());

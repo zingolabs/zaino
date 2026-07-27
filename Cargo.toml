@@ -30,6 +30,8 @@ members = [
 default-members = [
     "packages/zaino-primitives",
     "packages/zaino-source",
+    "packages/zaino-persistence",
+    "packages/zaino-backend-lmdb",
     "packages/zaino-rpc",
     "packages/zaino-source-zebra-rpc",
     "packages/zaino-common",
@@ -39,6 +41,9 @@ default-members = [
     "packages/zaino-fetch",
     "packages/zaino-proto",
     "packages/zaino-sync",
+    "packages/zaino-indexes",
+    "packages/zaino-convert-zebra",
+    "packages/zaino-source-zebra-readstate",
 ]
 
 # Use the edition 2021 dependency resolver in the workspace, to match the crates

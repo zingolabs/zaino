@@ -43,7 +43,9 @@ pub enum DecodeError {
         /// Actual byte count.
         got: usize,
     },
-    /// A generic decode failure.
+    /// A generic decode failure. Gated to test builds: the toy indexes
+    /// are its only constructors.
+    #[cfg(test)]
     #[error("decode failed: {0}")]
     Failed(String),
 }

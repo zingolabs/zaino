@@ -89,13 +89,6 @@ impl LmdbBackend {
             dbs,
         })
     }
-
-    fn resolve_db(&self, namespace: Namespace) -> Result<Database, ReadError> {
-        self.dbs
-            .get(&namespace)
-            .copied()
-            .ok_or_else(|| ReadError::NamespaceNotFound(namespace.to_string()))
-    }
 }
 
 fn open_or_create_db(env: &Environment, name: &str) -> Result<Database, lmdb::Error> {

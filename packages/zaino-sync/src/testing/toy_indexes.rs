@@ -157,7 +157,7 @@ mod tests {
         let values = backend.entries(value_index::ID.into());
         assert_eq!(values.len(), 5);
         for h in 0u64..=4 {
-            let stored = values.get(&h.to_le_bytes().to_vec()).expect("key exists");
+            let stored = values.get(h.to_le_bytes().as_slice()).expect("key exists");
             let val = u32::from_le_bytes(stored.as_slice().try_into().expect("4 bytes"));
             assert_eq!(val, h as u32);
         }

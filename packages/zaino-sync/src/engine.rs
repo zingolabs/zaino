@@ -507,7 +507,7 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
             // Watermark must advance monotonically.
             debug_assert!(
                 self.evicted_through
-                    .map_or(true, |prev| candidate.value() > prev.value()),
+                    .is_none_or(|prev| candidate.value() > prev.value()),
                 "try_commit batch {} but already committed through {:?}",
                 candidate.value(),
                 self.evicted_through.map(|b| b.value()),
@@ -529,7 +529,7 @@ impl<Ctx: Send + Sync + 'static, B: Backend> SyncEngine<Ctx, B> {
         // Eviction must be monotonic.
         debug_assert!(
             self.evicted_through
-                .map_or(true, |prev| batch.value() > prev.value()),
+                .is_none_or(|prev| batch.value() > prev.value()),
             "eviction must advance: evicting batch {} but already evicted through {:?}",
             batch.value(),
             self.evicted_through.map(|b| b.value()),

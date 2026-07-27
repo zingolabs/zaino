@@ -319,7 +319,7 @@ impl Scheduler {
 
         // committed_through must advance monotonically per index.
         debug_assert!(
-            self.committed_through[&index].map_or(true, |prev| batch.value() > prev.value()),
+            self.committed_through[&index].is_none_or(|prev| batch.value() > prev.value()),
             "committed_through must advance for index {}: committing batch {} but already at {:?}",
             index,
             batch.value(),

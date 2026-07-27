@@ -23,11 +23,6 @@ impl BlockCount {
     pub const fn new(count: u64) -> Self {
         Self(count)
     }
-
-    /// The raw numeric value.
-    pub const fn value(&self) -> u64 {
-        self.0
-    }
 }
 
 impl Encode for BlockCount {
