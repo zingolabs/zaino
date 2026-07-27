@@ -29,6 +29,17 @@ jobs:
   trigger-integration:
     name: Trigger integration tests
     runs-on: ubuntu-latest
+    # Pull requests from a fork receive no repository secrets, so the app-token
+    # step below is handed empty `app-id` / `private-key` inputs and the job dies
+    # at its first step — failing every external contribution, which CONTRIBUTING.md
+    # asks to be made from a personal fork. Dispatching the integration suite is a
+    # zingolabs-internal action, not a gate on contributor code, so skip it on
+    # forks instead. The `push` clause is required: `github.event.pull_request` is
+    # null outside pull-request events, which would otherwise disable the
+    # merge-to-`dev` dispatch as well. See issue #991.
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - name: Generate app token
         id: app-token
