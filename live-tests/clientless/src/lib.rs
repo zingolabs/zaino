@@ -2,6 +2,41 @@
 //!
 //! This crate also exposes test-vectors.
 
+/// Assert that `oracle` and `subject` return the same `getblockheader` response for
+/// the block at `height`: look the block up on the oracle (verbosity 1) to learn its
+/// hash, then compare the two servers' non-verbose header responses for that hash.
+/// Shared body of the per-backend `get_block_header` oracle tests.
+#[allow(deprecated)]
+pub async fn assert_get_block_header_matches<Oracle, Subject>(
+    oracle: &Oracle,
+    subject: &Subject,
+    height: u32,
+) where
+    Oracle: zaino_state::ZcashIndexer,
+    Subject: zaino_state::ZcashIndexer,
+{
+    let block = oracle
+        .z_get_block(height.to_string(), Some(1))
+        .await
+        .unwrap();
+
+    let block_hash = match block {
+        zebra_rpc::methods::GetBlock::Object(block) => block.hash(),
+        zebra_rpc::methods::GetBlock::Raw(_) => panic!("Expected block object"),
+    };
+
+    let oracle_header = oracle
+        .get_block_header(block_hash.to_string(), false)
+        .await
+        .unwrap();
+
+    let subject_header = subject
+        .get_block_header(block_hash.to_string(), false)
+        .await
+        .unwrap();
+    assert_eq!(oracle_header, subject_header);
+}
+
 pub mod rpc {
     pub mod json_rpc {
         pub const VALID_P2PKH_ADDRESS: &str = "tmVqEASZxBNKFTbmASZikGa5fPLkd68iJyx";
@@ -83,7 +118,17 @@ pub mod rpc {
 
             // assert_eq!(fs_sprout, expected_sprout);
 
-            // Sapling (differs by validator)
+            // Sapling
+            let expected_sapling = ValidZValidateAddress::sapling(
+                VALID_SAPLING_ADDRESS.to_string(),
+                Some(VALID_DIVERSIFIER.to_string()),
+                Some(VALID_DIVERSIFIED_TRANSMISSION_KEY.to_string()),
+            );
+            assert_known_valid_eq(
+                rpc_call(VALID_SAPLING_ADDRESS.to_string()).await,
+                expected_sapling,
+                "Sapling",
+            );
 
             // Unified (differs by validator)
             let expected_unified =
@@ -101,70 +146,15 @@ pub mod rpc {
             assert_eq!(all_zeroes, ZValidateAddressResponse::invalid());
         }
 
-        pub async fn run_z_validate_sapling<F, Fut>(rpc_call: &F)
-        where
-            F: Fn(String) -> Fut,
-            Fut: Future<Output = ZValidateAddressResponse>,
-        {
-            let expected_sapling = ValidZValidateAddress::sapling(
-                VALID_SAPLING_ADDRESS.to_string(),
-                Some(VALID_DIVERSIFIER.to_string()),
-                Some(VALID_DIVERSIFIED_TRANSMISSION_KEY.to_string()),
-            );
-            assert_known_valid_eq(
-                rpc_call(VALID_SAPLING_ADDRESS.to_string()).await,
-                expected_sapling,
-                "Sapling",
-            );
-        }
-
-        /// zebrad's JSON-RPC passthrough (via FetchService) omits `diversifier`
-        /// and `diversifiedtransmissionkey` from the Sapling response. This is
-        /// the safer behavior: address component extraction should happen
-        /// client-side, not by delegating to a remote actor.
-        ///
-        /// See [`DEPRECATION_NOTICE`](zaino_fetch::jsonrpsee::response::z_validate_address::DEPRECATION_NOTICE).
-        pub async fn run_z_validate_sapling_zebrad_passthrough_fetchservice<F, Fut>(rpc_call: &F)
-        where
-            F: Fn(String) -> Fut,
-            Fut: Future<Output = ZValidateAddressResponse>,
-        {
-            let expected_sapling = ValidZValidateAddress::sapling(
-                VALID_SAPLING_ADDRESS.to_string(),
-                None::<String>,
-                None::<String>,
-            );
-            assert_known_valid_eq(
-                rpc_call(VALID_SAPLING_ADDRESS.to_string()).await,
-                expected_sapling,
-                "Sapling (zebrad passthrough via FetchService — keys omitted)",
-            );
-        }
-
-        /// Which sapling suite to run after the shared suite.
-        pub enum SaplingSuite {
-            /// Full response — diversifier and diversifiedtransmissionkey present.
-            Standard,
-            /// zebrad's JSON-RPC passthrough (via FetchService) omits those keys.
-            ZebradPassthroughFetchService,
-        }
-
         /// Build the `z_validate_address` rpc-call closure from `subscriber` and
-        /// run the shared validation suite plus the chosen sapling suite. Factors
-        /// the identical closure + suite-call preamble shared by the four
-        /// `z_validate_address` tests (fetch_service zcashd/zebrad, state_service,
-        /// json_server).
+        /// run the shared validation suite. Factors the identical closure +
+        /// suite-call preamble shared by the four `z_validate_address` tests
+        /// (fetch_service zcashd/zebrad, state_service, json_server).
         #[allow(deprecated)]
-        pub async fn run_z_validate_for<S: ZcashIndexer>(subscriber: &S, sapling: SaplingSuite) {
+        pub async fn run_z_validate_for<S: ZcashIndexer>(subscriber: &S) {
             let rpc_call =
                 |addr: String| async move { subscriber.z_validate_address(addr).await.unwrap() };
             run_z_validate_suite(&rpc_call).await;
-            match sapling {
-                SaplingSuite::Standard => run_z_validate_sapling(&rpc_call).await,
-                SaplingSuite::ZebradPassthroughFetchService => {
-                    run_z_validate_sapling_zebrad_passthrough_fetchservice(&rpc_call).await
-                }
-            }
         }
     }
 }

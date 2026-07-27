@@ -6,10 +6,8 @@ use tower::ServiceExt;
 use zebra_chain::parameters::Network;
 use zebra_state::{ReadRequest, ReadResponse, ReadStateService};
 
-use zaino_primitives::types::{Block, BlockHash, ChainMetadata, Height};
-use zaino_source::{
-    FailureMode, FetchError, GetBlockError, GetChainTipError, QueryError,
-};
+use zaino_primitives::types::{Block, BlockHash, Height};
+use zaino_source::{FailureMode, FetchError, GetBlockError, GetChainTipError, QueryError};
 
 /// Zebra ReadState adapter.
 ///
@@ -39,33 +37,17 @@ impl ZebraReadStateAdapter {
 }
 
 impl zaino_source::GetPreIndexCompactBlock for ZebraReadStateAdapter {
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(h = u32::from(height))))]
     async fn get_pre_index_compact_block(
         &self,
         height: Height,
     ) -> Result<zaino_primitives::types::PreIndexCompactBlock, QueryError<GetBlockError>> {
-        let zebra_height = zebra_chain::block::Height(u32::from(height));
-        let request = ReadRequest::CompactBlock(zebra_height.into());
-
-        let response = self
-            .state
-            .clone()
-            .oneshot(request)
-            .await
-            .map_err(|e| FetchError::new(FailureMode::Connection, format!("state service: {e}")))?;
-
-        match response {
-            ReadResponse::CompactBlock(Some(compact)) => {
-                Ok(zaino_convert_zebra::pre_index_compact_block_from_zebra(&compact))
-            }
-            ReadResponse::CompactBlock(None) => {
-                Err(QueryError::Domain(GetBlockError::HeightNotFound(height)))
-            }
-            _ => Err(FetchError::new(
-                FailureMode::Parse,
-                "unexpected response variant".to_string(),
-            )
-            .into()),
-        }
+        // Zebra's read-state service serves whole blocks only; there is no
+        // compact-block read request. Read the full block and strip it down
+        // through the domain `Block`, exactly as the RPC adapter does.
+        use zaino_source::GetBlock;
+        let block = self.get_block(height).await?;
+        Ok(zaino_primitives::types::PreIndexCompactBlock::from(&block))
     }
 }
 
@@ -78,15 +60,13 @@ impl ZebraReadStateAdapter {
         let zebra_height = zebra_chain::block::Height(u32::from(height));
         let request = ReadRequest::BlockHeader(zebra_height.into());
 
-        let response = self
-            .state
-            .clone()
-            .oneshot(request)
-            .await
-            .map_err(|e| FetchError::new(FailureMode::Connection, format!("state service: {e}")))?;
+        let response =
+            self.state.clone().oneshot(request).await.map_err(|e| {
+                FetchError::new(FailureMode::Connection, format!("state service: {e}"))
+            })?;
 
         match response {
-            ReadResponse::BlockHeader { header, .. } => Ok((*header).clone()),
+            ReadResponse::BlockHeader { header, .. } => Ok(*header),
             _ => Err(FetchError::new(
                 FailureMode::Parse,
                 "unexpected response variant".to_string(),
@@ -94,24 +74,18 @@ impl ZebraReadStateAdapter {
             .into()),
         }
     }
-
 }
 
 impl zaino_source::GetBlock for ZebraReadStateAdapter {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(h = u32::from(height))))]
-    async fn get_block(
-        &self,
-        height: Height,
-    ) -> Result<Block, QueryError<GetBlockError>> {
+    async fn get_block(&self, height: Height) -> Result<Block, QueryError<GetBlockError>> {
         let zebra_height = zebra_chain::block::Height(u32::from(height));
         let request = ReadRequest::Block(zebra_height.into());
 
-        let response = self
-            .state
-            .clone()
-            .oneshot(request)
-            .await
-            .map_err(|e| FetchError::new(FailureMode::Connection, format!("state service: {e}")))?;
+        let response =
+            self.state.clone().oneshot(request).await.map_err(|e| {
+                FetchError::new(FailureMode::Connection, format!("state service: {e}"))
+            })?;
 
         match response {
             ReadResponse::Block(Some(arc_block)) => {
@@ -133,9 +107,7 @@ impl zaino_source::GetBlock for ZebraReadStateAdapter {
 
 impl zaino_source::GetChainTip for ZebraReadStateAdapter {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
-    async fn get_chain_tip(
-        &self,
-    ) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
+    async fn get_chain_tip(&self) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
         let response = self
             .state
             .clone()
@@ -149,9 +121,7 @@ impl zaino_source::GetChainTip for ZebraReadStateAdapter {
                     .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?;
                 Ok((BlockHash::from(hash.0), h))
             }
-            ReadResponse::Tip(None) => {
-                Err(QueryError::Domain(GetChainTipError::NotReady))
-            }
+            ReadResponse::Tip(None) => Err(QueryError::Domain(GetChainTipError::NotReady)),
             _ => Err(FetchError::new(
                 FailureMode::Parse,
                 "unexpected response variant".to_string(),

@@ -5,9 +5,8 @@
 //! docs/adr/0001-zcashd-support-feature-gate.md.
 #![cfg(feature = "zcashd_support")]
 
-#[allow(deprecated)]
-use zaino_state::{FetchService, FetchServiceSubscriber, ZcashIndexer};
-use zaino_testutils::TestManager;
+use zaino_state::{NodeBackedIndexerServiceSubscriber, ZcashIndexer};
+use zaino_testutils::{Rpc, TestManager};
 use zcash_local_net::validator::zcashd::Zcashd;
 
 /// Assert that `query` returns the same value from the zcashd-backed and
@@ -16,11 +15,11 @@ use zcash_local_net::validator::zcashd::Zcashd;
 /// problem. The pure-compare building block of the json_server tests.
 #[allow(deprecated)]
 async fn assert_subscribers_agree<Q, Fut, T>(
-    zcashd_subscriber: &FetchServiceSubscriber,
-    zaino_subscriber: &FetchServiceSubscriber,
+    zcashd_subscriber: &NodeBackedIndexerServiceSubscriber,
+    zaino_subscriber: &NodeBackedIndexerServiceSubscriber,
     query: Q,
 ) where
-    Q: Fn(FetchServiceSubscriber) -> Fut,
+    Q: Fn(NodeBackedIndexerServiceSubscriber) -> Fut,
     Fut: std::future::Future<Output = T>,
     T: std::fmt::Debug + PartialEq,
 {
@@ -34,13 +33,13 @@ async fn assert_subscribers_agree<Q, Fut, T>(
 /// tests that check an invariant holds across the chain.
 #[allow(deprecated)]
 async fn compare_over_blocks<Q, Fut, T>(
-    test_manager: &TestManager<Zcashd, FetchService>,
-    zcashd_subscriber: &FetchServiceSubscriber,
-    zaino_subscriber: &FetchServiceSubscriber,
+    test_manager: &TestManager<Zcashd, Rpc>,
+    zcashd_subscriber: &NodeBackedIndexerServiceSubscriber,
+    zaino_subscriber: &NodeBackedIndexerServiceSubscriber,
     blocks: u32,
     query: Q,
 ) where
-    Q: Fn(FetchServiceSubscriber) -> Fut,
+    Q: Fn(NodeBackedIndexerServiceSubscriber) -> Fut,
     Fut: std::future::Future<Output = T>,
     T: std::fmt::Debug + PartialEq,
 {
@@ -287,7 +286,6 @@ mod zcashd {
 
     pub(crate) mod zcash_indexer {
         use zaino_state::LightWalletIndexer;
-        use zebra_rpc::methods::GetBlock;
 
         use super::*;
 
@@ -430,11 +428,8 @@ mod zcashd {
         async fn z_validate_address() {
             let mut services = zaino_testutils::launch_zcashd_dual_fetch_services().await;
 
-            clientless::rpc::z_validate_address::run_z_validate_for(
-                &services.zcashd_subscriber,
-                clientless::rpc::z_validate_address::SaplingSuite::Standard,
-            )
-            .await;
+            clientless::rpc::z_validate_address::run_z_validate_for(&services.zcashd_subscriber)
+                .await;
 
             services.test_manager.close().await;
         }
@@ -457,29 +452,12 @@ mod zcashd {
                     &services.zaino_subscriber,
                     &services.zcashd_subscriber,
                     async |i| {
-                        let block = services
-                            .zcashd_subscriber
-                            .z_get_block(i.to_string(), Some(1))
-                            .await
-                            .unwrap();
-
-                        let block_hash = match block {
-                            GetBlock::Object(block) => block.hash(),
-                            GetBlock::Raw(_) => panic!("Expected block object"),
-                        };
-
-                        let zcashd_get_block_header = services
-                            .zcashd_subscriber
-                            .get_block_header(block_hash.to_string(), false)
-                            .await
-                            .unwrap();
-
-                        let zainod_block_header_response = services
-                            .zaino_subscriber
-                            .get_block_header(block_hash.to_string(), false)
-                            .await
-                            .unwrap();
-                        assert_eq!(zcashd_get_block_header, zainod_block_header_response);
+                        clientless::assert_get_block_header_matches(
+                            &services.zcashd_subscriber,
+                            &services.zaino_subscriber,
+                            i,
+                        )
+                        .await;
                     },
                 )
                 .await;

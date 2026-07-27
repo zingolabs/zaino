@@ -8,10 +8,9 @@ use zaino_serve::{
     rpc::grpc_routes,
     server::{config::GrpcServerConfig, grpc::TonicServer, jsonrpc::JsonRpcServer},
 };
-#[allow(deprecated)]
 use zaino_state::{
-    BackendType, FetchService, FetchServiceConfig, IndexerService, LightWalletService,
-    StateService, StateServiceConfig, StatusType, ZcashIndexer, ZcashService,
+    IndexerService, LightWalletService, NodeBackedIndexerService, NodeBackedIndexerServiceConfig,
+    StatusType, ZcashIndexer, ZcashService,
 };
 
 use crate::{config::ZainodConfig, error::IndexerError};
@@ -61,21 +60,13 @@ pub async fn spawn_indexer(
 
     info!(uri = %zebrad_uri, "Connected to node via JsonRPSee");
 
-    #[allow(deprecated)]
-    match config.backend {
-        BackendType::State => {
-            let state_config = StateServiceConfig::try_from(config.clone())?;
-            Indexer::<StateService>::launch_inner(state_config, config)
-                .await
-                .map(|res| res.0)
-        }
-        BackendType::Fetch => {
-            let fetch_config = FetchServiceConfig::try_from(config.clone())?;
-            Indexer::<FetchService>::launch_inner(fetch_config, config)
-                .await
-                .map(|res| res.0)
-        }
-    }
+    // Both the JSON-RPC (`Rpc`) and direct-`ReadStateService` (`Direct`) connections are
+    // now served by the single `NodeBackedIndexerService`; the connection is selected
+    // inside the config conversion from `config.backend`.
+    let service_config = NodeBackedIndexerServiceConfig::try_from(config.clone())?;
+    Indexer::<NodeBackedIndexerService>::launch_inner(service_config, config)
+        .await
+        .map(|res| res.0)
 }
 
 impl<Service: ZcashService + LightWalletService + Send + Sync + 'static> Indexer<Service>

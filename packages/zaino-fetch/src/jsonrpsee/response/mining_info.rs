@@ -1,14 +1,10 @@
 //! Types associated with the `getmininginfo` RPC request.
 
-use std::{collections::HashMap, convert::Infallible};
+use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::jsonrpsee::connector::ResponseToError;
-
-impl ResponseToError for GetMiningInfoWire {
-    type RpcError = Infallible;
-}
+crate::jsonrpsee::response::impl_infallible_response_to_error!(GetMiningInfoWire);
 
 /// Wire superset compatible with `zcashd` and `zebrad`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -107,6 +103,7 @@ impl From<GetMiningInfoWire> for MiningInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::jsonrpsee::response::test_util::roundtrip;
     use serde_json::json;
 
     fn zebrad_json() -> String {
@@ -163,9 +160,7 @@ mod tests {
         assert!(wire.extras.contains_key("somefuture"));
         assert_eq!(wire.extras["somefuture"], json!({"x": 1}));
 
-        let str_from_wire = serde_json::to_string(&wire).unwrap();
-        let wire2: GetMiningInfoWire = serde_json::from_str(&str_from_wire).unwrap();
-        assert_eq!(wire, wire2);
+        roundtrip(&wire);
     }
 
     #[test]
@@ -190,9 +185,7 @@ mod tests {
         assert_eq!(wire.pooledtx, Some(5));
         assert_eq!(wire.generate, Some(false));
 
-        let s = serde_json::to_string(&wire).unwrap();
-        let wire2: GetMiningInfoWire = serde_json::from_str(&s).unwrap();
-        assert_eq!(wire, wire2);
+        roundtrip(&wire);
     }
 
     #[test]
@@ -213,9 +206,7 @@ mod tests {
         assert_eq!(wire.errors, None);
         assert!(wire.extras.is_empty());
 
-        let blocks_deserialized = serde_json::to_string(&wire).unwrap();
-        let wire2: GetMiningInfoWire = serde_json::from_str(&blocks_deserialized).unwrap();
-        assert_eq!(wire, wire2);
+        roundtrip(&wire);
     }
 
     #[test]

@@ -13,7 +13,7 @@ on:
     paths:
       - '.env.testing-artifacts'
       - 'rust-toolchain.toml'
-      - 'tools/scripts/get-rust-version.sh'
+      - 'tools/workbench/**'
       - 'live-tests/test_environment/*'
 
 jobs:
@@ -37,7 +37,7 @@ jobs:
       id: taggen
       run: |
         source .env.testing-artifacts
-        RUST_VERSION=$(./tools/scripts/get-rust-version.sh)
+        RUST_VERSION=$(cargo run -q --manifest-path tools/workbench/Cargo.toml --bin get-rust-version)
         export RUST_VERSION ZCASH_VERSION ZEBRA_VERSION DEVTOOL_VERSION
         TAG=$(./tools/scripts/get-ci-image-tag.sh)
         echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -48,11 +48,16 @@ jobs:
         set -a
         source .env.testing-artifacts
         set +a
-        RUST_VERSION=$(./tools/scripts/get-rust-version.sh)
+        RUST_VERSION=$(cargo run -q --manifest-path tools/workbench/Cargo.toml --bin get-rust-version)
+        # Resolve ZEBRA_VERSION (the Docker Hub tag) to the git ref the
+        # zebra-builder source stage checks out; fails the job here on an
+        # unresolvable value instead of mid-build.
+        ZEBRA_GIT_REF=$(cargo run -q --manifest-path tools/workbench/Cargo.toml --bin get-zebra-git-ref -- "$ZEBRA_VERSION")
         echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
         echo "RUST_VERSION=$RUST_VERSION" >> "$GITHUB_ENV"
         echo "ZCASH_VERSION=$ZCASH_VERSION" >> "$GITHUB_ENV"
         echo "ZEBRA_VERSION=$ZEBRA_VERSION" >> "$GITHUB_ENV"
+        echo "ZEBRA_GIT_REF=$ZEBRA_GIT_REF" >> "$GITHUB_ENV"
         echo "DEVTOOL_VERSION=$DEVTOOL_VERSION" >> "$GITHUB_ENV"
 
     - name: Define build target
@@ -79,4 +84,5 @@ jobs:
           RUST_VERSION=${{ env.RUST_VERSION }}
           ZCASH_VERSION=${{ env.ZCASH_VERSION }}
           ZEBRA_VERSION=${{ env.ZEBRA_VERSION }}
+          ZEBRA_GIT_REF=${{ env.ZEBRA_GIT_REF }}
           DEVTOOL_VERSION=${{ env.DEVTOOL_VERSION }}

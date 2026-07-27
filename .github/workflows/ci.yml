@@ -56,7 +56,51 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all -- --check
-        
+
+  repo-guards:
+    name: Repo guards
+    # GitHub-hosted runner so it runs on pull requests. Runs the workbench
+    # repo guards: the rustc-pin check (Dockerfile.deterministic's pallet-rust
+    # tag == rust-toolchain.toml channel), the no-OpenSSL-apt check, and the
+    # duplicate-Rust-logic check, plus the crate's own fmt/clippy/tests.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Lint and test the workbench crate
+        run: |
+          cargo fmt --manifest-path tools/workbench/Cargo.toml -- --check
+          cargo clippy --manifest-path tools/workbench/Cargo.toml --all-targets -- -D warnings
+          cargo test --manifest-path tools/workbench/Cargo.toml
+
+      - name: Check toolchain pin
+        run: cargo run -q --manifest-path tools/workbench/Cargo.toml --bin check-toolchain-pin
+
+      - name: Check no OpenSSL apt packages
+        run: cargo run -q --manifest-path tools/workbench/Cargo.toml --bin check-no-openssl-apt
+
+      - name: Check for duplicate Rust logic
+        run: cargo run -q --manifest-path tools/workbench/Cargo.toml --bin check-code-duplication
+
+  cargo-deny:
+    name: cargo-deny
+    # Enforces deny.toml — including the openssl / openssl-sys / boring* crate
+    # bans. The policy already existed but ran only in the nix dev shell; this
+    # executes it on pull requests so a forbidden crate fails CI.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: cargo-deny check bans
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          # Scoped to `bans` (the openssl/boring* crate prohibition). Full
+          # `check` also runs advisories/licenses, which have pre-existing
+          # failures (e.g. RUSTSEC-2022-0001 lmdb) handled separately.
+          command: check bans
+
   compute-tag:
     uses: ./.github/workflows/compute-tag.yml
 

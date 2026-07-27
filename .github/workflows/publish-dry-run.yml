@@ -1,0 +1,105 @@
+name: Publish dry-run
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'rc/**'
+      - stable
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  publish-dry-run:
+    name: cargo publish --dry-run
+    runs-on: ubuntu-latest
+    # Blocking context: direct pushes to rc/** or stable — the branch is in
+    # release-prep state and must publish cleanly.  Advisory context: everything
+    # else, including PRs that *target* rc/** or stable.  Those PRs carry
+    # unbumped dev code; version bumps happen on the RC branch after merge, so
+    # a publish failure at PR time is expected, not actionable.
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # rust-toolchain.toml auto-installs the pinned toolchain on first cargo
+      # invocation, so no explicit toolchain setup step is needed.
+
+      - name: Compute check mode
+        id: mode
+        run: |
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            target="${{ github.ref_name }}"
+          else
+            # PRs (including those targeting rc/** or stable) are always
+            # advisory — they carry pre-bump code by design.
+            target=""
+          fi
+          if [[ "$target" == rc/* || "$target" == stable ]]; then
+            echo "mode=blocking" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=advisory" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A publishable crate whose exact version is already on crates.io with
+      # different content cannot be released without a bump. Advisory mode
+      # warns (unbumped-but-changed is the normal bump-at-release state on
+      # feature branches); blocking mode fails. Also emits the `violations`
+      # output consumed by the dry-run step below.
+      - name: Check for version-reuse violations
+        id: version-check
+        run: |
+          cargo run --manifest-path tools/workbench/Cargo.toml \
+            --bin check-published-versions -- --mode "${{ steps.mode.outputs.mode }}"
+
+      # --workspace resolves sibling dependencies against a local overlay
+      # registry, so packaging succeeds even when members depend on
+      # unpublished sibling changes — emulating a real dependency-ordered
+      # release. A per-crate dry-run loop cannot do this: nothing is uploaded
+      # between iterations, so dependents resolve siblings from crates.io and
+      # any cross-crate change fails spuriously.
+      #
+      # The verify build is weaker than packaging: when a local crate reuses
+      # an already-published version number, the registry artifact shadows
+      # the overlay copy, so dependents verify-compile against the published
+      # content, not the tree's. While version-reuse violations exist
+      # (advisory contexts only — blocking contexts already failed above),
+      # verification is therefore meaningless and the dry-run degrades to
+      # packaging/resolution checks. Release prep bumps the versions, and the
+      # full verify then runs where this job gates.
+      - name: Dry-run publish (workspace overlay)
+        run: |
+          set -euo pipefail
+
+          verify_flag=""
+          if [[ "${{ steps.version-check.outputs.violations }}" == "true" ]]; then
+            verify_flag="--no-verify"
+            echo "Version-reuse violations present: packaged crates would verify-compile"
+            echo "against the already-published versions that shadow the workspace overlay."
+            echo "Running packaging and resolution checks only (--no-verify) until the"
+            echo "versions are bumped at release prep."
+            echo ""
+          fi
+
+          if ! cargo publish --workspace --dry-run $verify_flag 2>&1; then
+            echo ""
+            echo "============================================"
+            echo "cargo publish --workspace --dry-run FAILED"
+            echo "============================================"
+            echo ""
+            echo "The workspace does not publish cleanly as a set. Common causes:"
+            echo "  - a [patch.crates-io] override pulling in unreleased upstream"
+            echo "    code (published crates cannot depend on unpublished revisions)"
+            echo "  - a dependency on a git revision or path outside the workspace"
+            echo "  - a crate that does not compile from its packaged form"
+            echo "  - new cross-crate API or features that exist in the workspace but"
+            echo "    not in the published dependency; resolved by the version bump +"
+            echo "    publish of that dependency at the next release"
+            echo ""
+            if [[ "${{ steps.mode.outputs.mode }}" == "advisory" ]]; then
+              echo "::warning::publish dry-run failed — the workspace would not release cleanly. Advisory on this branch, but it must be resolved before the next release."
+              exit 0
+            fi
+            echo "::error::publish dry-run failed — the workspace would not release cleanly."
+            exit 1
+          fi

@@ -86,11 +86,9 @@ impl TryFrom<RpcError> for BlockDeltasError {
     type Error = RpcError;
 
     fn try_from(value: RpcError) -> Result<Self, Self::Error> {
-        if value.code == -8 {
-            Ok(Self::UnexpectedRawBlock)
-        } else {
-            Err(value)
-        }
+        // Same `-8` predicate as the getblock/getblockheader mappings, but
+        // the variant carries no message.
+        crate::jsonrpsee::response::rpc_error_code_map(value, -8, |_| Self::UnexpectedRawBlock)
     }
 }
 

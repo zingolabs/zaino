@@ -1490,11 +1490,11 @@ impl DbV1 {
             Err(lmdb::Error::NotFound) => return Ok(None),
             Err(error) => return Err(FinalisedStateError::LmdbError(error)),
         };
-        Ok(Self::find_txout_in_stored_transparent_tx_list(
+        Self::find_txout_in_stored_transparent_tx_list(
             stored,
             location.tx_index() as usize,
             outpoint.prev_index() as usize,
-        ))
+        )
     }
 
     /// Fetches the full [`TransparentCompactTx`] for `txid`, read through `txn` (no new txn).
@@ -1710,7 +1710,7 @@ mod tests {
     use std::sync::Arc;
     use tempfile::TempDir;
     use zaino_common::network::ActivationHeights;
-    use zaino_common::{DatabaseConfig, Network, StorageConfig, SyncWriteBatchSize};
+    use zaino_common::{DatabaseConfig, StorageConfig, SyncWriteBatchSize};
 
     fn p2pkh_out(value: u64) -> TxOutCompact {
         TxOutCompact::new(value, [0x11; 20], 0).expect("P2PKH script_type should be valid")
@@ -2111,7 +2111,7 @@ mod tests {
             },
             ephemeral: false,
             db_version: 1,
-            network: Network::Regtest(ActivationHeights::default()),
+            network: ActivationHeights::default().to_regtest_network(),
         };
 
         let zaino_db = FinalisedState::spawn(config, source.clone()).await.unwrap();
@@ -2161,7 +2161,7 @@ mod tests {
     /// by a small range (`write_blocks_to_height`'s steady-state branch) — must produce exactly the
     /// accumulator a full from-genesis rebuild produces at the same tip, for all five fields. This is
     /// the correctness gate for `update_tx_out_set_accumulator_for_range`: with regtest coinbase
-    /// maturity of 100, splitting the sync at height 100 guarantees the second segment spends outputs
+    /// maturity `COINBASE_MATURITY`, splitting the sync at that height guarantees the second segment spends outputs
     /// created in the first (exercising the `transactions` "Set B" decrement) as well as outputs both
     /// created and spent within the range (the XOR-cancel case).
     #[tokio::test(flavor = "multi_thread")]
@@ -2171,6 +2171,7 @@ mod tests {
         use crate::chain_index::finalised_state::capability::{
             CapabilityRequest, DbRead, TransparentHistExt,
         };
+        use zaino_common::consensus::COINBASE_MATURITY;
 
         let blocks = load_test_vectors().unwrap().blocks;
         let source = build_mockchain_source(blocks);
@@ -2185,14 +2186,17 @@ mod tests {
             },
             ephemeral: false,
             db_version: 1,
-            network: Network::Regtest(ActivationHeights::default()),
+            network: ActivationHeights::default().to_regtest_network(),
         };
 
         let zaino_db = FinalisedState::spawn(config, source.clone()).await.unwrap();
 
-        // First segment builds the accumulator to height 100 (no watermark yet => full rebuild),
-        // the second advances it by a 100-block range => the incremental update path under test.
-        zaino_db.sync_to_height(Height(100), &source).await.unwrap();
+        // First segment builds the accumulator to `COINBASE_MATURITY` (no watermark yet => full
+        // rebuild), the second advances it to the fixture tip => the incremental update path under test.
+        zaino_db
+            .sync_to_height(Height(COINBASE_MATURITY), &source)
+            .await
+            .unwrap();
         // Background catch-up (>LONG_RUNNING_SYNC_THRESHOLD); wait for the persistent build + watermark.
         zaino_db.wait_until_synced().await;
 
@@ -2200,15 +2204,15 @@ mod tests {
             .backend_for_cap(CapabilityRequest::WriteCore)
             .unwrap();
 
-        // The watermark must sit at 100 here: that (together with gap 100 <= the incremental cap)
-        // pins the next sync to the incremental branch rather than a silent rebuild fallback that
-        // would make the comparison below trivial.
+        // The watermark must sit at `COINBASE_MATURITY` here: that (together with the gap to the tip
+        // <= the incremental cap) pins the next sync to the incremental branch rather than a silent
+        // rebuild fallback that would make the comparison below trivial.
         assert_eq!(
             backend
                 .read_tx_out_set_accumulator_built_height()
                 .await
                 .unwrap(),
-            Some(Height(100)),
+            Some(Height(COINBASE_MATURITY)),
             "first segment must leave the accumulator watermark at the synced tip"
         );
 

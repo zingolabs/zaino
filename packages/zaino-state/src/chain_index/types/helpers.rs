@@ -14,6 +14,19 @@
 use super::db::legacy::*;
 use crate::chain_index::types::{BlockContext, ChainWork, CompactDifficulty};
 
+/// Selects how far [`ChainIndex::get_outpoint_spenders`] searches for a spend.
+///
+/// [`ChainIndex::get_outpoint_spenders`]: crate::chain_index::ChainIndex::get_outpoint_spenders
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChainScope {
+    /// Finalised DB only. Reorg-stable: never reports a spend that lives only in a
+    /// non-finalised block.
+    Finalised,
+    /// Non-finalised best chain first, then the finalised DB. Reports the latest known
+    /// spend but may include spends that a reorg could roll back.
+    FullChain,
+}
+
 /// The location of a transaction in the best chain
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub enum BestChainLocation {
@@ -47,6 +60,8 @@ pub struct TreeRootData {
     pub sapling: Option<(zebra_chain::sapling::tree::Root, u64)>,
     /// Orchard tree root and size
     pub orchard: Option<(zebra_chain::orchard::tree::Root, u64)>,
+    /// Orchard tree root and size
+    pub ironwood: Option<(zebra_chain::orchard::tree::Root, u64)>,
 }
 
 impl TreeRootData {
@@ -54,11 +69,20 @@ impl TreeRootData {
     pub fn new(
         sapling: Option<(zebra_chain::sapling::tree::Root, u64)>,
         orchard: Option<(zebra_chain::orchard::tree::Root, u64)>,
+        ironwood: Option<(zebra_chain::orchard::tree::Root, u64)>,
     ) -> Self {
-        Self { sapling, orchard }
+        Self {
+            sapling,
+            orchard,
+            ironwood,
+        }
     }
 
     /// Extract with defaults for genesis/sync use case
+    ///
+    /// Sapling and orchard roots default when absent (genesis). The ironwood component
+    /// passes through unchanged: `None` means the block has no ironwood treestate and
+    /// must be stored as `None`.
     pub fn extract_with_defaults(
         self,
     ) -> (
@@ -66,10 +90,17 @@ impl TreeRootData {
         u64,
         zebra_chain::orchard::tree::Root,
         u64,
+        Option<(zebra_chain::orchard::tree::Root, u64)>,
     ) {
         let (sapling_root, sapling_size) = self.sapling.unwrap_or_default();
         let (orchard_root, orchard_size) = self.orchard.unwrap_or_default();
-        (sapling_root, sapling_size, orchard_root, orchard_size)
+        (
+            sapling_root,
+            sapling_size,
+            orchard_root,
+            orchard_size,
+            self.ironwood,
+        )
     }
 }
 
@@ -84,31 +115,13 @@ pub struct BlockMetadata {
     pub orchard_root: zebra_chain::orchard::tree::Root,
     /// Orchard tree size
     pub orchard_size: u32,
+    /// Ironwood commitment tree root and size; `None` when the block has no ironwood
+    /// treestate (below NU6.3 activation, or a network with no NU6.3 activation height)
+    pub ironwood: Option<(zebra_chain::orchard::tree::Root, u32)>,
     /// Parent block's chainwork (`None` for genesis).
     pub parent_chainwork: Option<ChainWork>,
     /// Network for block validation
     pub network: zebra_chain::parameters::Network,
-}
-
-impl BlockMetadata {
-    /// Create new block metadata
-    pub fn new(
-        sapling_root: zebra_chain::sapling::tree::Root,
-        sapling_size: u32,
-        orchard_root: zebra_chain::orchard::tree::Root,
-        orchard_size: u32,
-        parent_chainwork: Option<ChainWork>,
-        network: zebra_chain::parameters::Network,
-    ) -> Self {
-        Self {
-            sapling_root,
-            sapling_size,
-            orchard_root,
-            orchard_size,
-            parent_chainwork,
-            network,
-        }
-    }
 }
 
 /// Intermediate type combining a block with its metadata
@@ -159,9 +172,16 @@ impl<'a> BlockWithMetadata<'a> {
             let transparent = self.extract_transparent_data(txn)?;
             let sapling = self.extract_sapling_data(txn);
             let orchard = self.extract_orchard_data(txn);
+            let ironwood = self.extract_ironwood_data(txn);
 
-            let txdata =
-                CompactTxData::new(i as u64, txn.hash().into(), transparent, sapling, orchard);
+            let txdata = CompactTxData::new(
+                i as u64,
+                txn.hash().into(),
+                transparent,
+                sapling,
+                orchard,
+                ironwood,
+            );
             transactions.push(txdata);
         }
 
@@ -204,18 +224,41 @@ impl<'a> BlockWithMetadata<'a> {
         Ok(TransparentCompactTx::new(inputs, outputs))
     }
 
+    /// Returns the first 52 bytes of a 580-byte encrypted note ciphertext: the prefix a
+    /// compact block carries, sufficient for trial decryption.
+    fn compact_ciphertext_prefix(enc_ciphertext: [u8; 580]) -> [u8; 52] {
+        std::array::from_fn(|i| enc_ciphertext[i])
+    }
+
+    /// Builds the Orchard-shaped compact transaction shared by the Orchard and Ironwood
+    /// pools from a value balance and the pool's actions.
+    fn extract_orchard_shaped_data<'t>(
+        value_balance: i64,
+        actions: impl Iterator<Item = &'t zebra_chain::orchard::Action>,
+    ) -> OrchardCompactTx {
+        OrchardCompactTx::new(
+            (value_balance != 0).then_some(value_balance),
+            actions
+                .map(|action| {
+                    CompactOrchardAction::new(
+                        <[u8; 32]>::from(action.nullifier),
+                        <[u8; 32]>::from(action.cm_x),
+                        <[u8; 32]>::from(action.ephemeral_key),
+                        Self::compact_ciphertext_prefix(<[u8; 580]>::from(action.enc_ciphertext)),
+                    )
+                })
+                .collect(),
+        )
+    }
+
     /// Extract sapling transaction data
     fn extract_sapling_data(
         &self,
         txn: &zebra_chain::transaction::Transaction,
     ) -> SaplingCompactTx {
         let sapling_value = {
-            let val = txn.sapling_value_balance().sapling_amount();
-            if val == 0 {
-                None
-            } else {
-                Some(i64::from(val))
-            }
+            let value = i64::from(txn.sapling_value_balance().sapling_amount());
+            (value != 0).then_some(value)
         };
 
         SaplingCompactTx::new(
@@ -225,13 +268,10 @@ impl<'a> BlockWithMetadata<'a> {
                 .collect(),
             txn.sapling_outputs()
                 .map(|output| {
-                    let cipher: [u8; 52] = <[u8; 580]>::from(output.enc_ciphertext)[..52]
-                        .try_into()
-                        .unwrap(); // TODO: Remove unwrap
                     CompactSaplingOutput::new(
                         output.cm_u.to_bytes(),
                         <[u8; 32]>::from(output.ephemeral_key),
-                        cipher,
+                        Self::compact_ciphertext_prefix(<[u8; 580]>::from(output.enc_ciphertext)),
                     )
                 })
                 .collect::<Vec<_>>(),
@@ -243,30 +283,20 @@ impl<'a> BlockWithMetadata<'a> {
         &self,
         txn: &zebra_chain::transaction::Transaction,
     ) -> OrchardCompactTx {
-        let orchard_value = {
-            let val = txn.orchard_value_balance().orchard_amount();
-            if val == 0 {
-                None
-            } else {
-                Some(i64::from(val))
-            }
-        };
+        Self::extract_orchard_shaped_data(
+            i64::from(txn.orchard_value_balance().orchard_amount()),
+            txn.orchard_actions(),
+        )
+    }
 
-        OrchardCompactTx::new(
-            orchard_value,
-            txn.orchard_actions()
-                .map(|action| {
-                    let cipher: [u8; 52] = <[u8; 580]>::from(action.enc_ciphertext)[..52]
-                        .try_into()
-                        .unwrap(); // TODO: Remove unwrap
-                    CompactOrchardAction::new(
-                        <[u8; 32]>::from(action.nullifier),
-                        <[u8; 32]>::from(action.cm_x),
-                        <[u8; 32]>::from(action.ephemeral_key),
-                        cipher,
-                    )
-                })
-                .collect::<Vec<_>>(),
+    /// Extract ironwood transaction data
+    fn extract_ironwood_data(
+        &self,
+        txn: &zebra_chain::transaction::Transaction,
+    ) -> OrchardCompactTx {
+        Self::extract_orchard_shaped_data(
+            i64::from(txn.ironwood_value_balance().ironwood_amount()),
+            txn.ironwood_actions(),
         )
     }
 
@@ -294,17 +324,21 @@ impl<'a> BlockWithMetadata<'a> {
 
         Ok(BlockContext::new(hash, parent_hash, chainwork, height))
     }
+}
 
-    /// Create commitment tree data from metadata
+impl BlockMetadata {
+    /// Create the stored commitment tree data for this block's metadata.
     fn create_commitment_tree_data(&self) -> super::db::CommitmentTreeData {
         let commitment_tree_roots = super::db::CommitmentTreeRoots::new(
-            <[u8; 32]>::from(self.metadata.sapling_root),
-            <[u8; 32]>::from(self.metadata.orchard_root),
+            <[u8; 32]>::from(self.sapling_root),
+            <[u8; 32]>::from(self.orchard_root),
+            self.ironwood.map(|(root, _)| <[u8; 32]>::from(root)),
         );
 
         let commitment_tree_size = super::db::CommitmentTreeSizes::new(
-            self.metadata.sapling_size,
-            self.metadata.orchard_size,
+            self.sapling_size,
+            self.orchard_size,
+            self.ironwood.map_or(0, |(_, size)| size),
         );
 
         super::db::CommitmentTreeData::new(commitment_tree_roots, commitment_tree_size)
@@ -319,7 +353,7 @@ impl TryFrom<BlockWithMetadata<'_>> for IndexedBlock {
         let data = block_with_metadata.extract_block_data()?;
         let transactions = block_with_metadata.extract_transactions()?;
         let context = block_with_metadata.create_block_context()?;
-        let commitment_tree_data = block_with_metadata.create_commitment_tree_data();
+        let commitment_tree_data = block_with_metadata.metadata.create_commitment_tree_data();
 
         Ok(IndexedBlock {
             context,
@@ -327,5 +361,40 @@ impl TryFrom<BlockWithMetadata<'_>> for IndexedBlock {
             transactions,
             commitment_tree_data,
         })
+    }
+}
+
+#[cfg(test)]
+mod create_commitment_tree_data {
+    use super::*;
+
+    /// Regression test: a block whose source reported no ironwood treestate (pre-NU6.3,
+    /// or a network with no NU6.3 activation height) must store its ironwood root as
+    /// `None` — the encoding the v1.2.1->v1.3.0 migration and the CommitmentTreeRoots V1
+    /// decode produce for the same state. The write path instead erased the `Option` via
+    /// `extract_with_defaults` and stored `Some([0; 32])`, so a freshly synced database
+    /// and a migrated database encoded identical pre-activation heights differently.
+    ///
+    #[test]
+    fn absent_ironwood_root_is_stored_as_none() {
+        let (sapling_root, sapling_size, orchard_root, orchard_size, ironwood) =
+            TreeRootData::new(None, None, None).extract_with_defaults();
+        let metadata = BlockMetadata {
+            sapling_root,
+            sapling_size: sapling_size as u32,
+            orchard_root,
+            orchard_size: orchard_size as u32,
+            ironwood: ironwood.map(|(root, size)| (root, size as u32)),
+            parent_chainwork: None,
+            network: zebra_chain::parameters::Network::Mainnet,
+        };
+
+        let commitment_tree_data = metadata.create_commitment_tree_data();
+
+        assert_eq!(
+            commitment_tree_data.roots().ironwood(),
+            &None,
+            "ironwood root must be stored as None when the source reported no ironwood treestate"
+        );
     }
 }

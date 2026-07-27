@@ -70,37 +70,30 @@ fn build() -> io::Result<()> {
         "src/proto/compact_formats.rs",
     )?;
 
-    // Build the gRPC types and client.
-    configure()
-        .build_server(true)
-        // .client_mod_attribute(
-        //     "cash.z.wallet.sdk.rpc",
-        //     r#"#[cfg(feature = "lightwalletd-tonic")]"#,
-        // )
-        .extern_path(
-            ".cash.z.wallet.sdk.rpc.ChainMetadata",
-            "crate::proto::compact_formats::ChainMetadata",
-        )
-        .extern_path(
-            ".cash.z.wallet.sdk.rpc.CompactBlock",
-            "crate::proto::compact_formats::CompactBlock",
-        )
-        .extern_path(
-            ".cash.z.wallet.sdk.rpc.CompactTx",
-            "crate::proto::compact_formats::CompactTx",
-        )
-        .extern_path(
-            ".cash.z.wallet.sdk.rpc.CompactSaplingSpend",
-            "crate::proto::compact_formats::CompactSaplingSpend",
-        )
-        .extern_path(
-            ".cash.z.wallet.sdk.rpc.CompactSaplingOutput",
-            "crate::proto::compact_formats::CompactSaplingOutput",
-        )
-        .extern_path(
-            ".cash.z.wallet.sdk.rpc.CompactOrchardAction",
-            "crate::proto::compact_formats::CompactOrchardAction",
-        )
+    // Build the gRPC types and client, remapping every compact-format type
+    // the service references onto the module compiled above.
+    const COMPACT_FORMAT_TYPES: [&str; 6] = [
+        "ChainMetadata",
+        "CompactBlock",
+        "CompactTx",
+        "CompactSaplingSpend",
+        "CompactSaplingOutput",
+        "CompactOrchardAction",
+    ];
+    // A gating attribute once considered for the generated client would be
+    // restored on this builder:
+    // .client_mod_attribute(
+    //     "cash.z.wallet.sdk.rpc",
+    //     r#"#[cfg(feature = "lightwalletd-tonic")]"#,
+    // )
+    COMPACT_FORMAT_TYPES
+        .iter()
+        .fold(configure().build_server(true), |builder, name| {
+            builder.extern_path(
+                format!(".cash.z.wallet.sdk.rpc.{name}"),
+                format!("crate::proto::compact_formats::{name}"),
+            )
+        })
         .compile_protos(&[SERVICE_PROTO], &["proto/"])?;
 
     // Build the proposal types.

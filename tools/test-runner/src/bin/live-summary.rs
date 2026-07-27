@@ -1,10 +1,12 @@
-//! `live-summary` — run both live-test partitions and print a combined summary.
+//! `live-summary` — run the test partitions and print a combined summary.
 //!
-//! Invoked from `makers test live` (and `makers test all`) as
-//! `cargo run --bin live-summary -- <args>`. Runs the `clientless` then `e2e`
-//! partition (each in its own CI container via its own `makers` task), streams
-//! each run's output while capturing it, parses the nextest summary line, and
-//! aggregates the totals.
+//! Invoked from `makers test live` as `cargo run --bin live-summary -- <args>`
+//! and from `makers test all` with the extra `--all` flag. The live set runs
+//! the `clientless` then `e2e` partition (each in its own CI container via its
+//! own `makers` task); `--all` first runs the `packages` set (`makers
+//! container-test`) and adds its row to the table. The runner streams each
+//! run's output while capturing it, parses the nextest summary line for
+//! tallies, and measures wall-clock duration via `Instant`.
 //!
 //! Unlike a cargo-make `dependencies` list (which is fail-fast), this runs BOTH
 //! partitions even when the first fails, so the summary reflects the whole
@@ -18,6 +20,15 @@
 use std::error::Error;
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
+/// Which partitions this invocation runs and summarizes.
+enum TestSet {
+    /// The two live partitions (`makers test live`).
+    Live,
+    /// The packages set plus the two live partitions (`makers test all`).
+    All,
+}
 
 /// One nextest run's tallies, zero where the summary line was absent.
 #[derive(Default)]
@@ -26,6 +37,8 @@ struct Summary {
     passed: u64,
     failed: u64,
     skipped: u64,
+    /// Wall-clock duration measured by the runner (includes build + test time).
+    elapsed: Duration,
 }
 
 impl Summary {
@@ -35,6 +48,7 @@ impl Summary {
             passed: self.passed + other.passed,
             failed: self.failed + other.failed,
             skipped: self.skipped + other.skipped,
+            elapsed: self.elapsed + other.elapsed,
         }
     }
 }
@@ -115,8 +129,7 @@ fn parse_summary(log: &str) -> Summary {
     let line = log
         .lines()
         .map(strip_ansi)
-        .filter(|l| l.contains("run:") && l.contains("test"))
-        .last()
+        .rfind(|l| l.contains("run:") && l.contains("test"))
         .unwrap_or_default();
 
     Summary {
@@ -125,37 +138,82 @@ fn parse_summary(log: &str) -> Summary {
         passed: count_before(&line, "passed"),
         failed: count_before(&line, "failed"),
         skipped: count_before(&line, "skipped"),
+        ..Summary::default()
     }
 }
 
 fn print_row(label: &str, s: &Summary) {
+    let total_secs = s.elapsed.as_secs();
+    let millis = s.elapsed.subsec_millis();
+    let secs = format!("{total_secs}.{millis:03}");
     println!(
-        "  {label:<18} {:>4} run, {:>4} passed, {:>4} failed, {:>4} skipped",
+        "  {label:<18} {:>4} run, {:>4} passed, {:>4} failed, {:>4} skipped, {secs:>10}s",
         s.run, s.passed, s.failed, s.skipped
     );
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
     let with_zcashd = std::env::args().any(|a| a == "--with-zcashd");
+    let set = if std::env::args().any(|a| a == "--all") {
+        TestSet::All
+    } else {
+        TestSet::Live
+    };
+
+    let packages = match set {
+        TestSet::All => {
+            println!(">>> all: running packages set");
+            let start = Instant::now();
+            let (rc, log) = run_partition("container-test", with_zcashd)?;
+            let elapsed = start.elapsed();
+            let mut s = parse_summary(&log);
+            s.elapsed = elapsed;
+            Some((rc, s))
+        }
+        TestSet::Live => None,
+    };
 
     println!(">>> live: running clientless partition");
+    let cl_start = Instant::now();
     let (cl_rc, cl_log) = run_partition("live-clientless", with_zcashd)?;
+    let cl_elapsed = cl_start.elapsed();
 
     println!(">>> live: running e2e partition");
+    let e2e_start = Instant::now();
     let (e2e_rc, e2e_log) = run_partition("live-e2e", with_zcashd)?;
+    let e2e_elapsed = e2e_start.elapsed();
 
-    let cl = parse_summary(&cl_log);
-    let e2e = parse_summary(&e2e_log);
+    let mut cl = parse_summary(&cl_log);
+    cl.elapsed = cl_elapsed;
+    let mut e2e = parse_summary(&e2e_log);
+    e2e.elapsed = e2e_elapsed;
+
+    let header = match packages {
+        Some(_) => "test summary",
+        None => "live summary",
+    };
+    let mut total = cl.add(&e2e);
+    if let Some((_, p)) = &packages {
+        total = total.add(p);
+    }
 
     println!();
-    println!("====================== live summary ==========================");
+    println!("====================== {header} ==========================");
+    if let Some((_, p)) = &packages {
+        print_row("packages:", p);
+    }
     print_row("clientless:", &cl);
     print_row("e2e:", &e2e);
-    print_row("TOTAL:", &cl.add(&e2e));
+    print_row("TOTAL:", &total);
     println!("==============================================================");
 
     // A partition that errored without producing a summary line likely failed
     // to build; call it out so the zeros above aren't read as "all clear".
+    if let Some((pkg_rc, p)) = &packages {
+        if *pkg_rc != 0 && p.run == 0 {
+            println!("  warning: packages produced no nextest summary (build failure?) — see output above.");
+        }
+    }
     if cl_rc != 0 && cl.run == 0 {
         println!("  warning: clientless produced no nextest summary (build failure?) — see output above.");
     }
@@ -163,8 +221,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("  warning: e2e produced no nextest summary (build failure?) — see output above.");
     }
 
-    // Fail the front door if either partition failed.
-    if cl_rc != 0 || e2e_rc != 0 {
+    // Fail the front door if any set failed.
+    let pkg_rc = packages.map_or(0, |(rc, _)| rc);
+    if pkg_rc != 0 || cl_rc != 0 || e2e_rc != 0 {
         std::process::exit(1);
     }
     Ok(())

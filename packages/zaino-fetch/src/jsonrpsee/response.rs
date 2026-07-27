@@ -33,13 +33,87 @@ use crate::jsonrpsee::connector::ResponseToError;
 
 use super::connector::RpcError;
 
-impl TryFrom<RpcError> for Infallible {
-    type Error = RpcError;
+/// Implements the pass-through `TryFrom<RpcError>` for RPC-specific error
+/// types that map no JSON-RPC error codes to variants of their own: every
+/// server-reported error surfaces unchanged as the generic [`RpcError`].
+// TODO: attempt to convert RpcError into errors specific to each RPC
+// response, removing types from these invocations as mappings become known.
+macro_rules! impl_rpc_error_passthrough {
+    ($($error_type:ty),* $(,)?) => {
+        $(
+            impl TryFrom<$crate::jsonrpsee::connector::RpcError> for $error_type {
+                type Error = $crate::jsonrpsee::connector::RpcError;
 
-    fn try_from(err: RpcError) -> Result<Self, Self::Error> {
-        Err(err)
+                fn try_from(
+                    value: $crate::jsonrpsee::connector::RpcError,
+                ) -> Result<Self, Self::Error> {
+                    Err(value)
+                }
+            }
+        )*
+    };
+}
+pub(crate) use impl_rpc_error_passthrough;
+
+/// Implements [`ResponseToError`] with the infallible error type, for
+/// responses whose failures always surface as generic transport/RPC errors
+/// rather than method-specific ones.
+macro_rules! impl_infallible_response_to_error {
+    ($($response_type:ty),* $(,)?) => {
+        $(
+            impl crate::jsonrpsee::connector::ResponseToError for $response_type {
+                type RpcError = std::convert::Infallible;
+            }
+        )*
+    };
+}
+pub(crate) use impl_infallible_response_to_error;
+
+impl_infallible_response_to_error!(
+    GetInfoResponse,
+    GetDifficultyResponse,
+    GetTxOutResponse,
+    ErrorsTimestamp,
+    GetBlockchainInfoResponse,
+    GetNetworkSolPsResponse,
+    GetTxOutSetInfoResponse,
+    ChainBalance,
+    GetBlockHash,
+    GetBlockCountResponse,
+    ValidateAddressResponse,
+    RawMempoolResponse,
+    GetTransactionResponse,
+    GetMempoolInfoResponse,
+);
+
+/// Maps a JSON-RPC error carrying `code` to the RPC-specific variant `ctor`
+/// builds from its message, passing every other error through unchanged.
+// The Err type is fixed by the `TryFrom<RpcError>` impls this serves: their
+// `Error = RpcError` (unboxed) is the trait contract, so the large-Err lint
+// cannot be satisfied here without changing every impl's signature.
+#[allow(clippy::result_large_err)]
+pub(crate) fn rpc_error_code_map<T>(
+    value: RpcError,
+    code: i64,
+    ctor: impl FnOnce(String) -> T,
+) -> Result<T, RpcError> {
+    if value.code == code {
+        Ok(ctor(value.message))
+    } else {
+        Err(value)
     }
 }
+
+impl_rpc_error_passthrough!(
+    Infallible,
+    ChainWorkError,
+    GetBalanceError,
+    SendTransactionError,
+    TxidsError,
+    GetTreestateError,
+    GetSubtreesError,
+    GetUtxosError
+);
 
 /// Response to a `getinfo` RPC request.
 ///
@@ -99,14 +173,6 @@ pub struct GetInfoResponse {
     errors_timestamp: ErrorsTimestamp,
 }
 
-impl ResponseToError for GetInfoResponse {
-    type RpcError = Infallible;
-}
-
-impl ResponseToError for GetDifficultyResponse {
-    type RpcError = Infallible;
-}
-
 /// Response to a `gettxout` RPC request.
 ///
 /// The result is either the validator's output object or `null` when the
@@ -115,10 +181,6 @@ impl ResponseToError for GetDifficultyResponse {
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(transparent)]
 pub struct GetTxOutResponse(pub Option<serde_json::Value>);
-
-impl ResponseToError for GetTxOutResponse {
-    type RpcError = Infallible;
-}
 
 /// Request parameters for the `getspentinfo` RPC request.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -167,6 +229,22 @@ impl TryFrom<super::connector::RpcError> for GetSpentInfoError {
             -8 => Ok(Self::InvalidParameter(value.message)),
             _ => Err(value),
         }
+    }
+}
+
+/// Test helpers shared by the response modules' `#[cfg(test)]` suites.
+#[cfg(test)]
+pub(crate) mod test_util {
+    /// Verifies that a type can be serialized and deserialized with the same shape.
+    ///
+    /// If the type does not have the same shape after serialization and deserialization, this function will panic.
+    pub(crate) fn roundtrip<T>(value: &T)
+    where
+        T: serde::Serialize + for<'de> serde::Deserialize<'de> + std::fmt::Debug + PartialEq,
+    {
+        let s = serde_json::to_string(value).unwrap();
+        let back: T = serde_json::from_str(&s).unwrap();
+        assert_eq!(&back, value);
     }
 }
 
@@ -289,9 +367,6 @@ impl From<ErrorsTimestamp> for i64 {
     }
 }
 
-impl ResponseToError for ErrorsTimestamp {
-    type RpcError = Infallible;
-}
 impl std::fmt::Display for ErrorsTimestamp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -361,7 +436,7 @@ pub struct GetBlockchainInfoResponse {
 
     /// Value pool balances
     #[serde(rename = "valuePools")]
-    value_pools: [ChainBalance; 5],
+    value_pools: Vec<ChainBalance>,
 
     /// Branch IDs of the current and upcoming consensus rules
     pub consensus: zebra_rpc::methods::TipConsensusBranch,
@@ -398,10 +473,6 @@ pub struct GetBlockchainInfoResponse {
     commitments: u64,
 }
 
-impl ResponseToError for GetBlockchainInfoResponse {
-    type RpcError = Infallible;
-}
-
 /// Response to a `getdifficulty` RPC request.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct GetDifficultyResponse(pub f64);
@@ -409,10 +480,6 @@ pub struct GetDifficultyResponse(pub f64);
 /// Response to a `getnetworksolps` RPC request.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct GetNetworkSolPsResponse(pub u64);
-
-impl ResponseToError for GetNetworkSolPsResponse {
-    type RpcError = Infallible;
-}
 
 /// Response to a `gettxoutsetinfo` RPC request.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -447,10 +514,6 @@ pub struct GetTxOutSetInfo {
 /// Empty `gettxoutsetinfo` response returned by zcashd when stats collection fails.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct EmptyTxOutSetInfo {}
-
-impl ResponseToError for GetTxOutSetInfoResponse {
-    type RpcError = Infallible;
-}
 
 #[cfg(test)]
 mod get_tx_out_set_info_tests {
@@ -539,6 +602,7 @@ mod get_tx_out_set_info_tests {
                 { "id": "sprout", "chainValue": 0.0, "chainValueZat": 0 },
                 { "id": "sapling", "chainValue": 0.0, "chainValueZat": 0 },
                 { "id": "orchard", "chainValue": 0.0, "chainValueZat": 0 },
+                { "id": "ironwood", "chainValue": 0.0, "chainValueZat": 0 },
                 { "id": "deferred", "chainValue": 0.0, "chainValueZat": 0 }
             ],
             "consensus": {
@@ -548,18 +612,63 @@ mod get_tx_out_set_info_tests {
         }"#;
 
         let parsed: GetBlockchainInfoResponse = serde_json::from_str(json).unwrap();
-        let (name, activation_height, status) = parsed
-            .upgrades
-            .values()
-            .next()
-            .unwrap()
-            .clone()
-            .into_parts();
+        let (name, activation_height, status) =
+            parsed.upgrades.values().next().unwrap().into_parts();
 
         assert_eq!(name, zebra_chain::parameters::NetworkUpgrade::Nu6_2);
         assert_eq!(activation_height, zebra_chain::block::Height(2));
         assert_eq!(status, zebra_rpc::methods::NetworkUpgradeStatus::Active);
         assert_eq!(parsed.consensus.into_parts(), (0x5437f330, 0x5437f330));
+    }
+}
+
+#[cfg(test)]
+mod get_blockchain_info_response {
+    use super::GetBlockchainInfoResponse;
+
+    /// Regression test: a validator that predates Ironwood (zcashd, or an unpatched
+    /// zebrad) reports five value pools — no "ironwood" entry. The response must still
+    /// deserialize. `value_pools` was a fixed `[ChainBalance; 6]`, so every
+    /// getblockchaininfo against such a validator failed outright with
+    /// "invalid length 5, expected an array of length 6".
+    ///
+    #[test]
+    fn parses_five_value_pools() {
+        let json = r#"{
+            "chain": "main",
+            "blocks": 2,
+            "bestblockhash": "0000000000000000000000000000000000000000000000000000000000000002",
+            "estimatedheight": 2,
+            "chainSupply": {
+                "chainValue": 0.0,
+                "chainValueZat": 0
+            },
+            "upgrades": {},
+            "valuePools": [
+                { "id": "transparent", "chainValue": 0.0, "chainValueZat": 0 },
+                { "id": "sprout", "chainValue": 0.0, "chainValueZat": 0 },
+                { "id": "sapling", "chainValue": 0.055, "chainValueZat": 5500000 },
+                { "id": "orchard", "chainValue": 0.0, "chainValueZat": 0 },
+                { "id": "lockbox", "chainValue": 0.0, "chainValueZat": 0 }
+            ],
+            "consensus": {
+                "chaintip": "c2d6d0b4",
+                "nextblock": "c2d6d0b4"
+            }
+        }"#;
+
+        let parsed = serde_json::from_str::<GetBlockchainInfoResponse>(json)
+            .expect("five-pool valuePools must deserialize (pre-Ironwood validator)");
+
+        let pools = super::value_pools_array(parsed.value_pools);
+        // Zebra's canonical order: transparent, sprout, sapling, orchard, deferred, ironwood.
+        assert_eq!(pools[2].id(), "sapling");
+        assert_eq!(pools[2].chain_value_zat().zatoshis(), 5_500_000);
+        // zcashd's "lockbox" entry lands in the deferred slot (zebra also names it "lockbox").
+        assert_eq!(pools[4].id(), "lockbox");
+        // The pool the validator did not report is back-filled with a zero balance.
+        assert_eq!(pools[5].id(), "ironwood");
+        assert_eq!(pools[5].chain_value_zat().zatoshis(), 0);
     }
 }
 
@@ -585,15 +694,6 @@ pub enum ChainWorkError {}
 impl ResponseToError for ChainWork {
     type RpcError = ChainWorkError;
 }
-impl TryFrom<RpcError> for ChainWorkError {
-    type Error = RpcError;
-
-    fn try_from(value: RpcError) -> Result<Self, Self::Error> {
-        // TODO: attempt to convert RpcError into errors specific to this RPC response
-        Err(value)
-    }
-}
-
 impl TryFrom<ChainWork> for u64 {
     type Error = ParseIntError;
 
@@ -616,10 +716,6 @@ impl Default for ChainWork {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ChainBalance(GetBlockchainInfoBalance);
 
-impl ResponseToError for ChainBalance {
-    type RpcError = Infallible;
-}
-
 impl<'de> Deserialize<'de> for ChainBalance {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -638,7 +734,8 @@ impl<'de> Deserialize<'de> for ChainBalance {
             monitored: bool,
         }
         let temp = TempBalance::deserialize(deserializer)?;
-        let computed_zat = (temp.chain_value * 100_000_000.0).round() as u64;
+        let computed_zat =
+            (temp.chain_value * (common::amount::ZATS_PER_ZEC as f64)).round() as u64;
         if computed_zat != temp.chain_value_zat {
             return Err(D::Error::custom(format!(
                 "chainValue and chainValueZat mismatch: computed {} but got {}",
@@ -658,6 +755,9 @@ impl<'de> Deserialize<'de> for ChainBalance {
                 amount, None, /*TODO: handle optional delta*/
             ))),
             "orchard" => Ok(ChainBalance(GetBlockchainInfoBalance::orchard(
+                amount, None, /*TODO: handle optional delta*/
+            ))),
+            "ironwood" => Ok(ChainBalance(GetBlockchainInfoBalance::ironwood(
                 amount, None, /*TODO: handle optional delta*/
             ))),
             // TODO: Investigate source of undocument 'lockbox' value
@@ -680,6 +780,21 @@ impl Default for ChainBalance {
     }
 }
 
+/// Fills zebra's canonical six-pool array from however many pools the validator
+/// reported, leaving zero balances for pools the validator does not know about
+/// (a pre-Ironwood validator reports five: no "ironwood" entry). Entries are
+/// matched by pool id, so the validator's ordering is irrelevant; ids outside
+/// zebra's six canonical pools are ignored.
+fn value_pools_array(pools: Vec<ChainBalance>) -> [GetBlockchainInfoBalance; 6] {
+    let mut canonical = GetBlockchainInfoBalance::zero_pools();
+    for ChainBalance(pool) in pools {
+        if let Some(slot) = canonical.iter_mut().find(|slot| slot.id() == pool.id()) {
+            *slot = pool;
+        }
+    }
+    canonical
+}
+
 impl TryFrom<GetBlockchainInfoResponse> for zebra_rpc::methods::GetBlockchainInfoResponse {
     fn try_from(response: GetBlockchainInfoResponse) -> Result<Self, ParseIntError> {
         Ok(zebra_rpc::methods::GetBlockchainInfoResponse::new(
@@ -688,7 +803,7 @@ impl TryFrom<GetBlockchainInfoResponse> for zebra_rpc::methods::GetBlockchainInf
             response.best_block_hash,
             response.estimated_height,
             response.chain_supply.0,
-            response.value_pools.map(|pool| pool.0),
+            value_pools_array(response.value_pools),
             response.upgrades,
             response.consensus,
             response.headers,
@@ -731,15 +846,6 @@ pub enum GetBalanceError {
 impl ResponseToError for GetBalanceResponse {
     type RpcError = GetBalanceError;
 }
-impl TryFrom<RpcError> for GetBalanceError {
-    type Error = RpcError;
-
-    fn try_from(value: RpcError) -> Result<Self, Self::Error> {
-        // TODO: attempt to convert RpcError into errors specific to this RPC response
-        Err(value)
-    }
-}
-
 impl From<GetBalanceResponse> for zebra_rpc::methods::AddressBalance {
     fn from(response: GetBalanceResponse) -> Self {
         zebra_rpc::methods::GetAddressBalanceResponse::new(response.balance, response.received)
@@ -781,15 +887,6 @@ pub enum SendTransactionError {
 impl ResponseToError for SendTransactionResponse {
     type RpcError = SendTransactionError;
 }
-impl TryFrom<RpcError> for SendTransactionError {
-    type Error = RpcError;
-
-    fn try_from(value: RpcError) -> Result<Self, Self::Error> {
-        // TODO: attempt to convert RpcError into errors specific to this RPC response
-        Err(value)
-    }
-}
-
 impl From<SendTransactionResponse> for zebra_rpc::methods::SentTransactionHash {
     fn from(value: SendTransactionResponse) -> Self {
         zebra_rpc::methods::SentTransactionHash::new(value.0)
@@ -804,10 +901,6 @@ impl From<SendTransactionResponse> for zebra_rpc::methods::SentTransactionHash {
 )]
 #[serde(transparent)]
 pub struct GetBlockHash(#[serde(with = "hex")] pub zebra_chain::block::Hash);
-
-impl ResponseToError for GetBlockHash {
-    type RpcError = Infallible;
-}
 
 impl Default for GetBlockHash {
     fn default() -> Self {
@@ -861,30 +954,39 @@ impl hex::FromHex for SerializedBlock {
     }
 }
 
+/// Deserializes a hex-encoded JSON string into its decoded bytes. Shared by
+/// the hex-wrapper newtypes whose `Deserialize` impls differ only in the
+/// wrapping constructor applied to the bytes.
+fn deserialize_hex_bytes<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct HexVisitor;
+
+    impl serde::de::Visitor<'_> for HexVisitor {
+        type Value = Vec<u8>;
+
+        fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
+            formatter.write_str("a hex-encoded string")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: DeserError,
+        {
+            hex::decode(value).map_err(DeserError::custom)
+        }
+    }
+
+    deserializer.deserialize_str(HexVisitor)
+}
+
 impl<'de> serde::Deserialize<'de> for SerializedBlock {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        struct HexVisitor;
-
-        impl serde::de::Visitor<'_> for HexVisitor {
-            type Value = SerializedBlock;
-
-            fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
-                formatter.write_str("a hex-encoded string")
-            }
-
-            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-            where
-                E: DeserError,
-            {
-                let bytes = hex::decode(value).map_err(DeserError::custom)?;
-                Ok(SerializedBlock::from(bytes))
-            }
-        }
-
-        deserializer.deserialize_str(HexVisitor)
+        deserialize_hex_bytes(deserializer).map(SerializedBlock::from)
     }
 }
 
@@ -904,6 +1006,14 @@ pub struct OrchardTrees {
     size: u64,
 }
 
+/// Ironwood note commitment tree information.
+///
+/// Wrapper struct for zebra's IronwoodTrees
+#[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct IronwoodTrees {
+    size: u64,
+}
+
 /// Information about the sapling and orchard note commitment trees if any.
 ///
 /// Wrapper struct for zebra's GetBlockTrees
@@ -913,6 +1023,8 @@ pub struct GetBlockTrees {
     sapling: Option<SaplingTrees>,
     #[serde(default)]
     orchard: Option<OrchardTrees>,
+    #[serde(default)]
+    ironwood: Option<IronwoodTrees>,
 }
 
 impl GetBlockTrees {
@@ -925,11 +1037,16 @@ impl GetBlockTrees {
     pub fn orchard(&self) -> u64 {
         self.orchard.map_or(0, |o| o.size)
     }
+
+    /// Returns ironwood data held by ['GetBlockTrees'].
+    pub fn ironwood(&self) -> u64 {
+        self.ironwood.map_or(0, |o| o.size)
+    }
 }
 
 impl From<GetBlockTrees> for zebra_rpc::methods::GetBlockTrees {
     fn from(val: GetBlockTrees) -> Self {
-        zebra_rpc::methods::GetBlockTrees::new(val.sapling(), val.orchard())
+        zebra_rpc::methods::GetBlockTrees::new(val.sapling(), val.orchard(), val.ironwood())
     }
 }
 
@@ -998,11 +1115,7 @@ impl TryFrom<RpcError> for GetBlockError {
     fn try_from(value: RpcError) -> Result<Self, Self::Error> {
         // If the block is not in Zebra's state, returns
         // [error code `-8`.](https://github.com/zcash/zcash/issues/5758)
-        if value.code == -8 {
-            Ok(Self::MissingBlock(value.message))
-        } else {
-            Err(value)
-        }
+        rpc_error_code_map(value, -8, Self::MissingBlock)
     }
 }
 
@@ -1050,18 +1163,10 @@ impl ResponseToError for GetBlockResponse {
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct GetBlockCountResponse(Height);
 
-impl ResponseToError for GetBlockCountResponse {
-    type RpcError = Infallible;
-}
-
 impl From<GetBlockCountResponse> for Height {
     fn from(value: GetBlockCountResponse) -> Self {
         value.0
     }
-}
-
-impl ResponseToError for ValidateAddressResponse {
-    type RpcError = Infallible;
 }
 
 /// A block object containing data and metadata about a block.
@@ -1134,8 +1239,10 @@ pub struct BlockObject {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub difficulty: Option<f64>,
 
-    /// List of transaction IDs in block order, hex-encoded.
-    pub tx: Vec<String>,
+    /// The block's transactions in block order: hex-encoded transaction IDs
+    /// at verbosity 1, full transaction objects at verbosity 2. Both shapes
+    /// share zebra-rpc's untagged enum.
+    pub tx: Vec<zebra_rpc::methods::GetBlockTransaction>,
 
     /// Chain supply balance
     #[serde(default)]
@@ -1144,7 +1251,7 @@ pub struct BlockObject {
     /// Value pool balances
     ///
     #[serde(rename = "valuePools")]
-    value_pools: Option<[ChainBalance; 5]>,
+    value_pools: Option<Vec<ChainBalance>>,
 
     /// Information about the note commitment trees.
     pub trees: GetBlockTrees,
@@ -1166,6 +1273,21 @@ pub struct BlockObject {
     pub next_block_hash: Option<GetBlockHash>,
 }
 
+impl BlockObject {
+    /// Per-pool chain value balances as of this block, when the validator
+    /// reports them (`getblock` verbosity 2).
+    pub fn value_pools(&self) -> Option<&[ChainBalance]> {
+        self.value_pools.as_deref()
+    }
+}
+
+impl ChainBalance {
+    /// The underlying per-pool balance entry.
+    pub fn balance(&self) -> &GetBlockchainInfoBalance {
+        &self.0
+    }
+}
+
 impl TryFrom<GetBlockResponse> for zebra_rpc::methods::GetBlock {
     type Error = zebra_chain::serialization::SerializationError;
 
@@ -1175,15 +1297,7 @@ impl TryFrom<GetBlockResponse> for zebra_rpc::methods::GetBlock {
                 Ok(zebra_rpc::methods::GetBlock::Raw(serialized_block.0))
             }
             GetBlockResponse::Object(block) => {
-                let tx: Result<Vec<_>, _> = block
-                    .tx
-                    .into_iter()
-                    .map(|txid| {
-                        txid.parse::<zebra_chain::transaction::Hash>()
-                            .map(zebra_rpc::methods::GetBlockTransaction::Hash)
-                    })
-                    .collect();
-                let tx = tx?;
+                let tx = block.tx;
 
                 Ok(zebra_rpc::methods::GetBlock::Object(Box::new(
                     zebra_rpc::client::BlockObject::new(
@@ -1204,11 +1318,7 @@ impl TryFrom<GetBlockResponse> for zebra_rpc::methods::GetBlock {
                         block.bits,
                         block.difficulty,
                         block.chain_supply.map(|supply| supply.0),
-                        block.value_pools.map(
-                            |[transparent, sprout, sapling, orchard, deferred]| {
-                                [transparent.0, sprout.0, sapling.0, orchard.0, deferred.0]
-                            },
-                        ),
+                        block.value_pools.map(value_pools_array),
                         block.trees.into(),
                         block.previous_block_hash.map(|hash| hash.0),
                         block.next_block_hash.map(|hash| hash.0),
@@ -1250,15 +1360,6 @@ pub enum TxidsError {
 impl ResponseToError for TxidsResponse {
     type RpcError = TxidsError;
 }
-impl TryFrom<RpcError> for TxidsError {
-    type Error = RpcError;
-
-    fn try_from(value: RpcError) -> Result<Self, Self::Error> {
-        // TODO: attempt to convert RpcError into errors specific to this RPC response
-        Err(value)
-    }
-}
-
 /// Separate response for the `get_raw_mempool` RPC method.
 ///
 /// Even though the output type is the same as [`TxidsResponse`],
@@ -1266,14 +1367,6 @@ impl TryFrom<RpcError> for TxidsError {
 pub struct RawMempoolResponse {
     /// Vec of txids.
     pub transactions: Vec<String>,
-}
-
-impl ResponseToError for RawMempoolResponse {
-    type RpcError = Infallible;
-
-    fn to_error(self) -> Result<Self, Self::RpcError> {
-        Ok(self)
-    }
 }
 
 impl<'de> serde::Deserialize<'de> for TxidsResponse {
@@ -1326,6 +1419,11 @@ pub struct GetTreestateResponse {
     /// (i.e. in regtest mode).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub orchard: Option<zebra_rpc::client::Treestate>,
+
+    /// A treestate containing an Ironwood note commitment tree, hex-encoded. Only present from
+    /// NU6.3, so that pre-NU6.3 responses are unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ironwood: Option<zebra_rpc::client::Treestate>,
 }
 
 /// Error type for the `get_treestate` RPC request.
@@ -1339,15 +1437,6 @@ pub enum GetTreestateError {
 impl ResponseToError for GetTreestateResponse {
     type RpcError = GetTreestateError;
 }
-impl TryFrom<RpcError> for GetTreestateError {
-    type Error = RpcError;
-
-    fn try_from(value: RpcError) -> Result<Self, Self::Error> {
-        // TODO: attempt to convert RpcError into errors specific to this RPC response
-        Err(value)
-    }
-}
-
 impl TryFrom<GetTreestateResponse> for zebra_rpc::client::GetTreestateResponse {
     type Error = zebra_chain::serialization::SerializationError;
 
@@ -1367,6 +1456,8 @@ impl TryFrom<GetTreestateResponse> for zebra_rpc::client::GetTreestateResponse {
             .clone()
             .unwrap_or_else(|| Treestate::new(Commitments::new(None, None)));
 
+        let ironwood = value.ironwood.clone();
+
         Ok(zebra_rpc::client::GetTreestateResponse::new(
             parsed_hash,
             zebra_chain::block::Height(height_u32),
@@ -1375,6 +1466,7 @@ impl TryFrom<GetTreestateResponse> for zebra_rpc::client::GetTreestateResponse {
             None,
             sapling,
             orchard,
+            ironwood,
         ))
     }
 }
@@ -1388,10 +1480,6 @@ pub enum GetTransactionResponse {
     Raw(#[serde(with = "hex")] zebra_chain::transaction::SerializedTransaction),
     /// The transaction object.
     Object(Box<zebra_rpc::client::TransactionObject>),
-}
-
-impl ResponseToError for GetTransactionResponse {
-    type RpcError = Infallible;
 }
 
 impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
@@ -1429,21 +1517,32 @@ impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
                 },
             };
 
+            // `let field: Kind = json;` reads the JSON key named exactly like the
+            // binding — the key cannot be restated, so sibling fields cannot be
+            // wired to each other's keys by copy-paste. Use the bracketed form
+            // `let field: Kind = json["jsonName"];` only when the JSON key differs
+            // from the binding (camelCase etc.).
             macro_rules! get_tx_value_fields{
-                ($(let $field:ident: $kind:ty = $transaction_json:ident[$field_name:literal]; )+) => {
-                    $(let $field = $transaction_json
+                () => {};
+                (let $field:ident: $kind:ty = $transaction_json:ident; $($rest:tt)*) => {
+                    let $field = $transaction_json
+                        .get(stringify!($field))
+                        .map(|v| ::serde_json::from_value::<$kind>(v.clone()))
+                        .transpose()
+                        .map_err(::serde::de::Error::custom)?;
+                    get_tx_value_fields! { $($rest)* }
+                };
+                (let $field:ident: $kind:ty = $transaction_json:ident[$field_name:literal]; $($rest:tt)*) => {
+                    let $field = $transaction_json
                         .get($field_name)
                         .map(|v| ::serde_json::from_value::<$kind>(v.clone()))
                         .transpose()
                         .map_err(::serde::de::Error::custom)?;
-                    )+
-                }
+                    get_tx_value_fields! { $($rest)* }
+                };
             }
 
-            let confirmations = tx_value
-                .get("confirmations")
-                .and_then(|v| v.as_u64())
-                .map(|v| v as u32);
+            let confirmations = tx_value.get("confirmations").and_then(|v| v.as_i64());
 
             // if let Some(vin_value) = tx_value.get("vin") {
             //     match serde_json::from_value::<Vec<Input>>(vin_value.clone()) {
@@ -1467,15 +1566,16 @@ impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
                 let outputs: Vec<Output> = tx_value["vout"];
                 let shielded_spends: Vec<ShieldedSpend> = tx_value["vShieldedSpend"];
                 let shielded_outputs: Vec<ShieldedOutput> = tx_value["vShieldedOutput"];
-                let orchard: Orchard = tx_value["orchard"];
+                let orchard: Orchard = tx_value;
+                let ironwood: Orchard = tx_value;
                 let value_balance: f64 = tx_value["valueBalance"];
                 let value_balance_zat: i64 = tx_value["valueBalanceZat"];
-                let size: i64 = tx_value["size"];
-                let time: i64 = tx_value["time"];
-                let txid: String = tx_value["txid"];
+                let size: i64 = tx_value;
+                let time: i64 = tx_value;
+                let txid: String = tx_value;
                 let auth_digest: String = tx_value["authdigest"];
-                let overwintered: bool = tx_value["overwintered"];
-                let version: u32 = tx_value["version"];
+                let overwintered: bool = tx_value;
+                let version: u32 = tx_value;
                 let version_group_id: String = tx_value["versiongroupid"];
                 let lock_time: u32 = tx_value["locktime"];
                 let expiry_height: Height = tx_value["expiryheight"];
@@ -1526,6 +1626,8 @@ impl<'de> serde::Deserialize<'de> for GetTransactionResponse {
                     None,
                     // optional
                     orchard,
+                    // optional
+                    ironwood,
                     // optional
                     value_balance,
                     // optional
@@ -1583,6 +1685,7 @@ impl From<GetTransactionResponse> for zebra_rpc::methods::GetRawTransaction {
                     None,
                     None,
                     obj.orchard().clone(),
+                    obj.ironwood().clone(),
                     obj.value_balance(),
                     obj.value_balance_zat(),
                     obj.size(),
@@ -1701,15 +1804,6 @@ pub enum GetSubtreesError {
 impl ResponseToError for GetSubtreesResponse {
     type RpcError = GetSubtreesError;
 }
-impl TryFrom<RpcError> for GetSubtreesError {
-    type Error = RpcError;
-
-    fn try_from(value: RpcError) -> Result<Self, Self::Error> {
-        // TODO: attempt to convert RpcError into errors specific to this RPC response
-        Err(value)
-    }
-}
-
 impl From<GetSubtreesResponse> for zebra_rpc::client::GetSubtreesByIndexResponse {
     fn from(value: GetSubtreesResponse) -> Self {
         zebra_rpc::client::GetSubtreesByIndexResponse::new(
@@ -1774,14 +1868,8 @@ impl<'de> serde::Deserialize<'de> for Script {
     where
         D: serde::Deserializer<'de>,
     {
-        let v = serde_json::Value::deserialize(deserializer)?;
-        if let Some(hex_str) = v.as_str() {
-            let bytes = hex::decode(hex_str).map_err(DeserError::custom)?;
-            let inner = zebra_chain::transparent::Script::new(&bytes);
-            Ok(Script(inner))
-        } else {
-            Err(DeserError::custom("expected a hex string"))
-        }
+        let bytes = deserialize_hex_bytes(deserializer)?;
+        Ok(Script(zebra_chain::transparent::Script::new(&bytes)))
     }
 }
 
@@ -1821,15 +1909,6 @@ pub enum GetUtxosError {
 impl ResponseToError for GetUtxosResponse {
     type RpcError = GetUtxosError;
 }
-impl TryFrom<RpcError> for GetUtxosError {
-    type Error = RpcError;
-
-    fn try_from(value: RpcError) -> Result<Self, Self::Error> {
-        // TODO: attempt to convert RpcError into errors specific to this RPC response
-        Err(value)
-    }
-}
-
 impl ResponseToError for Vec<GetUtxosResponse> {
     type RpcError = GetUtxosError;
 }
@@ -1876,6 +1955,153 @@ pub struct GetMempoolInfoResponse {
     pub usage: u64,
 }
 
-impl ResponseToError for GetMempoolInfoResponse {
-    type RpcError = Infallible;
+#[cfg(test)]
+mod get_transaction_response {
+    use super::GetTransactionResponse;
+
+    /// Regression test: the `ironwood` field must be read from the `"ironwood"` JSON key.
+    /// It was copy-pasted reading `"orchard"`, so a real ironwood bundle in a verbose
+    /// `getrawtransaction` response was silently dropped and the orchard bundle was
+    /// duplicated into the ironwood slot.
+    #[test]
+    fn ironwood_field_reads_ironwood_key() {
+        let tx_json = serde_json::json!({
+            "hex": "00",
+            "txid": "0000000000000000000000000000000000000000000000000000000000000001",
+            "version": 6,
+            "locktime": 0,
+            "orchard": {
+                "actions": [],
+                "valueBalance": -1.11,
+                "valueBalanceZat": -111,
+            },
+            "ironwood": {
+                "actions": [],
+                "valueBalance": -2.22,
+                "valueBalanceZat": -222,
+            },
+        });
+
+        let response: GetTransactionResponse =
+            serde_json::from_value(tx_json).expect("test transaction JSON deserializes");
+        let GetTransactionResponse::Object(tx_object) = response else {
+            panic!("verbose transaction JSON must deserialize to the Object variant");
+        };
+
+        let orchard = tx_object
+            .orchard()
+            .as_ref()
+            .expect("orchard bundle present in JSON");
+        assert_eq!(orchard.value_balance_zat(), -111);
+
+        let ironwood = tx_object
+            .ironwood()
+            .as_ref()
+            .expect("ironwood bundle present in JSON");
+        assert_eq!(
+            ironwood.value_balance_zat(),
+            -222,
+            "ironwood field must carry the \"ironwood\" JSON payload, not a copy of \"orchard\""
+        );
+    }
+}
+
+#[cfg(test)]
+mod get_block_response {
+    use super::GetBlockResponse;
+
+    /// Builds the `tx` entry of a verbosity-2 `getblock` response exactly as
+    /// zebrad serializes it, by round-tripping a real test-vector
+    /// transaction through zebra-rpc's own response types. Constructing the
+    /// fixture from zebra's serializer keeps it faithful to the wire across
+    /// zebra upgrades, with no hand-maintained JSON to drift.
+    fn verbosity_2_transaction_json() -> serde_json::Value {
+        use zebra_chain::serialization::ZcashDeserializeInto as _;
+
+        let vector = wire_serialized_transaction_test_data::transactions::get_test_vectors()
+            .first()
+            .cloned()
+            .expect("the test-vector crate provides at least one transaction");
+        let transaction: zebra_chain::transaction::Transaction = vector
+            .tx
+            .as_slice()
+            .zcash_deserialize_into()
+            .expect("test-vector transactions deserialize");
+        let txid = transaction.hash();
+        let tx_object = zebra_rpc::client::TransactionObject::from_transaction(
+            std::sync::Arc::new(transaction),
+            Some(zebra_chain::block::Height(2)),
+            Some(1),
+            &zebra_chain::parameters::Network::Mainnet,
+            None,
+            None,
+            None,
+            txid,
+        );
+        serde_json::to_value(zebra_rpc::methods::GetBlockTransaction::Object(Box::new(
+            tx_object,
+        )))
+        .expect("zebra's response types serialize")
+    }
+
+    fn block_json_with_tx(tx: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "hash": "0000000000000000000000000000000000000000000000000000000000000002",
+            "confirmations": 1,
+            "tx": [tx],
+            "trees": {},
+        })
+    }
+
+    /// A verbosity-1 `getblock` response carries txid strings in `tx`. This
+    /// pins the shape the type already handles, so the verbosity-2 fix below
+    /// cannot regress it.
+    #[test]
+    fn parses_verbosity_1_txid_strings() {
+        let block_json = block_json_with_tx(serde_json::json!(
+            "e85e5729b34c34e8e62aa639302cb3434bb961666e13191da6dc39fcf775b320"
+        ));
+
+        let parsed: GetBlockResponse =
+            serde_json::from_value(block_json).expect("verbosity-1 block objects deserialize");
+        let GetBlockResponse::Object(block) = parsed else {
+            panic!("a JSON block object must parse as the object variant");
+        };
+        assert_eq!(block.tx.len(), 1);
+    }
+
+    /// A verbosity-2 `getblock` response carries full transaction objects in
+    /// `tx`; the response type must deserialize that shape as well, and the
+    /// conversion into zebra-rpc's `GetBlock` must preserve the objects
+    /// (issue #1380).
+    #[test]
+    fn parses_verbosity_2_transaction_objects() {
+        let block_json = block_json_with_tx(verbosity_2_transaction_json());
+
+        let parsed: GetBlockResponse =
+            serde_json::from_value(block_json).expect("verbosity-2 block objects deserialize");
+        let GetBlockResponse::Object(ref block) = parsed else {
+            panic!("a JSON block object must parse as the object variant");
+        };
+        assert!(
+            matches!(
+                block.tx.as_slice(),
+                [zebra_rpc::methods::GetBlockTransaction::Object(_)]
+            ),
+            "the verbosity-2 entry must parse as a transaction object"
+        );
+
+        let converted: zebra_rpc::methods::GetBlock =
+            parsed.try_into().expect("the object form converts");
+        let zebra_rpc::methods::GetBlock::Object(converted) = converted else {
+            panic!("the conversion must keep the object variant");
+        };
+        assert!(
+            matches!(
+                converted.tx().as_slice(),
+                [zebra_rpc::methods::GetBlockTransaction::Object(_)]
+            ),
+            "the conversion must pass the transaction object through"
+        );
+    }
 }

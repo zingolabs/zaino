@@ -1,7 +1,7 @@
 use super::{
     finalised_state::{reader::DbReader, FinalisedState},
     source::BlockchainSource,
-    NON_FINALIZED_DEPTH,
+    OPERATIONAL_NFS_DEPTH,
 };
 #[cfg(feature = "prometheus")]
 use crate::metric_names::*;
@@ -26,14 +26,14 @@ use zebra_state::HashOrHeight;
 /// but that height can lag far behind the tip while the finalised DB syncs in the background, and
 /// is pinned at `0` in ephemeral mode. Without an independent floor the snapshot would grow by one
 /// block per new block indefinitely. This caps retention to a fixed window regardless, a small
-/// margin above [`NON_FINALIZED_DEPTH`] so it never trims inside the reorg-possible range.
+/// margin above [`OPERATIONAL_NFS_DEPTH`] so it never trims inside the reorg-possible range.
 ///
 /// It also bounds the non-finalised ancestry walkers ([`NonFinalizedState::handle_reorg`] and
 /// [`NonFinalizedState::add_nonbest_block`]): neither should recurse further back than the window
 /// they maintain. The bound is load-bearing for `add_nonbest_block` on the state backend, where
 /// `source.get_block` serves *any* block by hash (including finalised blocks below the window), so
 /// without it a side chain rooted below the anchor would recurse to genesis and overflow the stack.
-const MAX_NFS_DEPTH: u32 = NON_FINALIZED_DEPTH + 10;
+const MAX_NFS_DEPTH: u32 = OPERATIONAL_NFS_DEPTH + 10;
 
 /// Holds the block cache
 #[derive(Debug)]
@@ -99,7 +99,7 @@ impl ChainIndexSnapshot {
 #[derive(Debug, Clone)]
 /// A snapshot of the nonfinalized state as it existed when this was created.
 pub(crate) struct NonfinalizedBlockCacheSnapshot {
-    /// the set of all known blocks < 100 blocks old
+    /// the set of all known blocks less than `OPERATIONAL_NFS_DEPTH` blocks old
     /// this includes all blocks on-chain, as well as
     /// all blocks known to have been on-chain before being
     /// removed by a reorg. Blocks reorged away have no height.
@@ -320,7 +320,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             .map_err(|e| InitError::InvalidNodeData(Box::new(e)))?
             .ok_or_else(|| InitError::InvalidNodeData(Box::new(MissingGenesisBlock)))?;
 
-        let (sapling_root_and_len, orchard_root_and_len) = source
+        let (sapling_root_and_len, orchard_root_and_len, ironwood_root_and_len) = source
             .get_commitment_tree_roots(genesis_block.hash().into())
             .await
             .map_err(|e| InitError::InvalidNodeData(Box::new(e)))?;
@@ -328,6 +328,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         let tree_roots = TreeRootData {
             sapling: sapling_root_and_len,
             orchard: orchard_root_and_len,
+            ironwood: ironwood_root_and_len,
         };
 
         // Genesis has no parent — pass None so create_block_context computes
@@ -385,10 +386,14 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 ))
             })?;
 
-        let (sapling, orchard) = source
+        let (sapling, orchard, ironwood) = source
             .get_commitment_tree_roots(block.hash().into())
             .await?;
-        let tree_roots = TreeRootData { sapling, orchard };
+        let tree_roots = TreeRootData {
+            sapling,
+            orchard,
+            ironwood,
+        };
 
         Self::create_indexed_block_with_optional_roots(
             block.as_ref(),
@@ -433,7 +438,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
     ) -> Result<(), SyncError> {
         let mut initial_state = self.get_snapshot();
         let local_finalized_tip = finalized_db.to_reader().db_height().await?;
-        // Anchor floor: the non-finalised state must never start more than `NON_FINALIZED_DEPTH`
+        // Anchor floor: the non-finalised state must never start more than `OPERATIONAL_NFS_DEPTH`
         // blocks below the chain tip, even when the finalised DB tip lags far behind during
         // background catch-up. Without this floor a freshly-initialised (or genesis-fallback)
         // snapshot would try to bridge the entire gap from the finalised tip up to the chain tip one
@@ -444,7 +449,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             local_finalized_tip
                 .map(|height| height.0)
                 .unwrap_or(0)
-                .max(u32::from(chain_height).saturating_sub(NON_FINALIZED_DEPTH)),
+                .max(u32::from(chain_height).saturating_sub(OPERATIONAL_NFS_DEPTH)),
         );
         if initial_state.best_tip.height.0 < anchor_height.0 {
             let anchor_block = Self::resolve_anchor_block(
@@ -520,7 +525,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 // we need to work backwards from it and update heights_to_hashes
                 // with it and all its parents.
             }
-            if initial_state.best_tip.height + NON_FINALIZED_DEPTH
+            if initial_state.best_tip.height + OPERATIONAL_NFS_DEPTH
                 < working_snapshot.best_tip.height
             {
                 self.update(finalized_db.clone(), initial_state, working_snapshot)
@@ -606,7 +611,7 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         height_to_recurse_to: Option<Height>,
     ) -> Result<(), SyncError> {
         if height_to_recurse_to
-            .is_some_and(|height| height + 100 < working_snapshot.best_tip.height)
+            .is_some_and(|height| height + MAX_NFS_DEPTH < working_snapshot.best_tip.height)
         {
             return Err(SyncError::ReorgFailure(
                 "reorg detection recursed beyond reason".to_string(),
@@ -809,12 +814,13 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         &self,
         block_hash: BlockHash,
     ) -> Result<TreeRootData, super::source::BlockchainSourceError> {
-        let (sapling_root_and_len, orchard_root_and_len) =
+        let (sapling_root_and_len, orchard_root_and_len, ironwood_root_and_len) =
             self.source.get_commitment_tree_roots(block_hash).await?;
 
         Ok(TreeRootData {
             sapling: sapling_root_and_len,
             orchard: orchard_root_and_len,
+            ironwood: ironwood_root_and_len,
         })
     }
 
@@ -829,17 +835,18 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         parent_chainwork: Option<ChainWork>,
         network: Network,
     ) -> Result<IndexedBlock, String> {
-        let (sapling_root, sapling_size, orchard_root, orchard_size) =
+        let (sapling_root, sapling_size, orchard_root, orchard_size, ironwood) =
             tree_roots.clone().extract_with_defaults();
 
-        let metadata = BlockMetadata::new(
+        let metadata = BlockMetadata {
             sapling_root,
-            sapling_size as u32,
+            sapling_size: sapling_size as u32,
             orchard_root,
-            orchard_size as u32,
+            orchard_size: orchard_size as u32,
+            ironwood: ironwood.map(|(root, size)| (root, size as u32)),
             parent_chainwork,
             network,
-        );
+        };
 
         let block_with_metadata = BlockWithMetadata::new(block, metadata);
         IndexedBlock::try_from(block_with_metadata)

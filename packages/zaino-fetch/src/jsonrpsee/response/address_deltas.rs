@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use zebra_rpc::client::{Input, Output, TransactionObject};
 
-use crate::jsonrpsee::connector::{ResponseToError, RpcError};
+use crate::jsonrpsee::connector::ResponseToError;
 
 /// Request parameters for the `getaddressdeltas` RPC method.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
@@ -140,13 +140,7 @@ impl ResponseToError for GetAddressDeltasResponse {
     type RpcError = GetAddressDeltasError;
 }
 
-impl TryFrom<RpcError> for GetAddressDeltasError {
-    type Error = RpcError;
-
-    fn try_from(value: RpcError) -> Result<Self, Self::Error> {
-        Err(value)
-    }
-}
+crate::jsonrpsee::response::impl_rpc_error_passthrough!(GetAddressDeltasError);
 
 /// Represents a change in the balance of a transparent address.
 #[derive(Debug, Clone, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -278,7 +272,7 @@ mod tests {
 
     fn sample_delta_with_block_index(i: u32, bi: Option<u32>) -> AddressDelta {
         AddressDelta {
-            satoshis: if i % 2 == 0 { 1_000 } else { -500 },
+            satoshis: if i.is_multiple_of(2) { 1_000 } else { -500 },
             txid: format!("deadbeef{:02x}", i),
             index: i,
             height: 123_456 + i,

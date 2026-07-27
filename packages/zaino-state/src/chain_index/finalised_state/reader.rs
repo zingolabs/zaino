@@ -313,6 +313,37 @@ impl<T: BlockchainSource> DbReader<T> {
             .await
     }
 
+    /// Fetch the serialized ironwood (NU6.3) compact tx for the given TxLocation, if present.
+    pub(crate) async fn get_ironwood(
+        &self,
+        tx_location: TxLocation,
+    ) -> Result<Option<OrchardCompactTx>, FinalisedStateError> {
+        self.db(CapabilityRequest::BlockShieldedExt)?
+            .get_ironwood(tx_location)
+            .await
+    }
+
+    /// Fetch block ironwood transaction data by height.
+    pub(crate) async fn get_block_ironwood(
+        &self,
+        height: Height,
+    ) -> Result<OrchardTxList, FinalisedStateError> {
+        self.db(CapabilityRequest::BlockShieldedExt)?
+            .get_block_ironwood(height)
+            .await
+    }
+
+    /// Fetches block ironwood tx data for the given height range.
+    pub(crate) async fn get_block_range_ironwood(
+        &self,
+        start: Height,
+        end: Height,
+    ) -> Result<Vec<OrchardTxList>, FinalisedStateError> {
+        self.db(CapabilityRequest::BlockShieldedExt)?
+            .get_block_range_ironwood(start, end)
+            .await
+    }
+
     /// Fetch block commitment tree data by height.
     pub(crate) async fn get_block_commitment_tree_data(
         &self,

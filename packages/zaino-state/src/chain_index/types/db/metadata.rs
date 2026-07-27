@@ -102,10 +102,16 @@ impl ZainoVersionedSerde for MempoolInfo {
     }
 }
 
-/// 24 byte body.
+/// Fixed-length encoding metadata for `MempoolInfo`.
+///
+/// v1 consists of 8 byte size + 8 byte bytes + 8 byte usage
 impl FixedEncodedLen for MempoolInfo {
-    /// 8 byte size + 8 byte bytes + 8 byte usage
-    const ENCODED_LEN: usize = 8 + 8 + 8;
+    fn encoded_len(version: u8) -> Option<usize> {
+        match version {
+            version::V1 => Some(24),
+            _ => None,
+        }
+    }
 }
 
 impl From<zaino_fetch::jsonrpsee::response::GetMempoolInfoResponse> for MempoolInfo {
@@ -200,23 +206,34 @@ impl FinalisedTxOutSetInfoAccumulator {
         outpoint: &Outpoint,
         out: &TxOutCompact,
     ) -> Result<(), AccumulatorDeltaError> {
-        let digest = tx_out_set_entry_digest(outpoint, out);
+        self.apply_output_delta(outpoint, out, OutputDelta::Added)
+    }
+
+    /// Applies one output entering or leaving the set: XOR its digest into the multiset
+    /// commitment and step every per-output counter in the delta's direction.
+    fn apply_output_delta(
+        &mut self,
+        outpoint: &Outpoint,
+        out: &TxOutCompact,
+        delta: OutputDelta,
+    ) -> Result<(), AccumulatorDeltaError> {
+        self.xor_into_hash_serialized(&tx_out_set_entry_digest(outpoint, out));
+        self.transaction_outputs =
+            delta.step(self.transaction_outputs, 1, "transaction_outputs")?;
+        self.bytes_serialized = delta.step(
+            self.bytes_serialized,
+            ZAINO_TXOUTSET_ENTRY_LEN,
+            "bytes_serialized",
+        )?;
+        self.total_zatoshis = delta.step(self.total_zatoshis, out.value(), "total_zatoshis")?;
+        Ok(())
+    }
+
+    /// XORs `digest` into the multiset commitment (self-inverse and order-independent).
+    fn xor_into_hash_serialized(&mut self, digest: &[u8; 32]) {
         for (dst, src) in self.hash_serialized.iter_mut().zip(digest.iter()) {
             *dst ^= *src;
         }
-        self.transaction_outputs = self
-            .transaction_outputs
-            .checked_add(1)
-            .ok_or(AccumulatorDeltaError::Overflow("transaction_outputs"))?;
-        self.bytes_serialized = self
-            .bytes_serialized
-            .checked_add(ZAINO_TXOUTSET_ENTRY_LEN)
-            .ok_or(AccumulatorDeltaError::Overflow("bytes_serialized"))?;
-        self.total_zatoshis = self
-            .total_zatoshis
-            .checked_add(out.value())
-            .ok_or(AccumulatorDeltaError::Overflow("total_zatoshis"))?;
-        Ok(())
     }
 
     /// Folds another accumulator into this one: XOR the multiset commitments (self-inverse and
@@ -226,13 +243,7 @@ impl FinalisedTxOutSetInfoAccumulator {
     /// both commutative and associative, the recombined result is independent of the shard count and
     /// of the order shards are folded in.
     pub fn combine(&mut self, other: &Self) -> Result<(), AccumulatorDeltaError> {
-        for (dst, src) in self
-            .hash_serialized
-            .iter_mut()
-            .zip(other.hash_serialized.iter())
-        {
-            *dst ^= *src;
-        }
+        self.xor_into_hash_serialized(&other.hash_serialized);
         self.transactions = self
             .transactions
             .checked_add(other.transactions)
@@ -259,23 +270,35 @@ impl FinalisedTxOutSetInfoAccumulator {
         outpoint: &Outpoint,
         out: &TxOutCompact,
     ) -> Result<(), AccumulatorDeltaError> {
-        let digest = tx_out_set_entry_digest(outpoint, out);
-        for (dst, src) in self.hash_serialized.iter_mut().zip(digest.iter()) {
-            *dst ^= *src;
+        self.apply_output_delta(outpoint, out, OutputDelta::Removed)
+    }
+}
+
+/// Direction of a single-output change applied to the accumulator's counters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OutputDelta {
+    /// The output enters the UTXO set: counters are checked-added.
+    Added,
+    /// The output leaves the UTXO set: counters are checked-subtracted.
+    Removed,
+}
+
+impl OutputDelta {
+    /// Steps `field` by `amount` in this direction, naming `field_name` in the error.
+    fn step(
+        self,
+        field: u64,
+        amount: u64,
+        field_name: &'static str,
+    ) -> Result<u64, AccumulatorDeltaError> {
+        match self {
+            OutputDelta::Added => field
+                .checked_add(amount)
+                .ok_or(AccumulatorDeltaError::Overflow(field_name)),
+            OutputDelta::Removed => field
+                .checked_sub(amount)
+                .ok_or(AccumulatorDeltaError::Underflow(field_name)),
         }
-        self.transaction_outputs = self
-            .transaction_outputs
-            .checked_sub(1)
-            .ok_or(AccumulatorDeltaError::Underflow("transaction_outputs"))?;
-        self.bytes_serialized = self
-            .bytes_serialized
-            .checked_sub(ZAINO_TXOUTSET_ENTRY_LEN)
-            .ok_or(AccumulatorDeltaError::Underflow("bytes_serialized"))?;
-        self.total_zatoshis = self
-            .total_zatoshis
-            .checked_sub(out.value())
-            .ok_or(AccumulatorDeltaError::Underflow("total_zatoshis"))?;
-        Ok(())
     }
 }
 
@@ -328,9 +351,16 @@ impl ZainoVersionedSerde for FinalisedTxOutSetInfoAccumulator {
     }
 }
 
+/// Fixed-length encoding metadata for `FinalisedTxOutSetInfoAccumulator`.
+///
+/// v1 consists of 8 + 8 + 8 + 32 + 8 = 64 bytes
 impl FixedEncodedLen for FinalisedTxOutSetInfoAccumulator {
-    /// 8 + 8 + 8 + 32 + 8 = 64 bytes.
-    const ENCODED_LEN: usize = 8 + 8 + 8 + 32 + 8;
+    fn encoded_len(version: u8) -> Option<usize> {
+        match version {
+            version::V1 => Some(64),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -353,7 +383,7 @@ mod tests {
 
         assert_eq!(
             encoded_accumulator.len(),
-            FinalisedTxOutSetInfoAccumulator::VERSIONED_LEN
+            FinalisedTxOutSetInfoAccumulator::latest_versioned_len().unwrap()
         );
 
         let decoded_accumulator =

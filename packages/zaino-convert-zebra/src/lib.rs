@@ -6,9 +6,8 @@
 use zaino_primitives::types::{
     Block, BlockCommitments, BlockHash, BlockHeader, ChainMetadata, EncryptedCiphertext,
     EphemeralKey, Height, MerkleRoot, NoteCommitment, Nullifier, OrchardAction, OrchardData,
-    PreIndexCompactBlock, PreIndexCompactTx, SaplingData, SaplingOutput, SaplingSpend, Script,
-    SignedZatoshis, Transaction, TransactionHash, TransparentData, TransparentInput,
-    TransparentOutput, Zatoshis,
+    SaplingData, SaplingOutput, SaplingSpend, Script, SignedZatoshis, Transaction, TransactionHash,
+    TransparentData, TransparentInput, TransparentOutput, Zatoshis,
 };
 
 /// Errors during conversion from zebra types.
@@ -29,7 +28,7 @@ pub fn block_from_zebra(
     orchard_tree_size: u32,
 ) -> Result<Block, ConvertError> {
     Ok(Block {
-        header: header_from_zebra(&zb)?,
+        header: header_from_zebra(zb)?,
         transactions: zb
             .transactions
             .iter()
@@ -147,75 +146,7 @@ fn sapling_from_zebra(tx: &zebra_chain::transaction::Transaction) -> SaplingData
                 }
             })
             .collect(),
-        value_balance: SignedZatoshis::new(
-            i64::from(tx.sapling_value_balance().sapling_amount()),
-        ),
-    }
-}
-
-/// Convert a zebra compact block into a domain [`PreIndexCompactBlock`].
-pub fn pre_index_compact_block_from_zebra(
-    cb: &zebra_chain::transaction::compact::CompactBlock,
-) -> PreIndexCompactBlock {
-    PreIndexCompactBlock {
-        hash: BlockHash::from(cb.hash.0),
-        prev_hash: BlockHash::from(cb.header.previous_block_hash.0),
-        height: cb.height.0,
-        time: cb.header.time.timestamp() as u32,
-        bits: u32::from_be_bytes(cb.header.difficulty_threshold.bytes_in_display_order()),
-        transactions: cb
-            .transactions
-            .iter()
-            .map(pre_index_compact_tx_from_zebra)
-            .collect(),
-    }
-}
-
-fn pre_index_compact_tx_from_zebra(
-    ctx: &zebra_chain::transaction::compact::CompactTransaction,
-) -> PreIndexCompactTx {
-    PreIndexCompactTx {
-        txid: TransactionHash::from(ctx.txid.0),
-        transparent_inputs: ctx
-            .transparent_inputs
-            .iter()
-            .map(|inp| TransparentInput {
-                prev_txid: TransactionHash::from(inp.hash.0),
-                prev_index: inp.index,
-            })
-            .collect(),
-        transparent_outputs: ctx
-            .transparent_outputs
-            .iter()
-            .map(|out| TransparentOutput {
-                value: Zatoshis::new(out.value).expect("valid zatoshis from zebra"),
-                script: Script::new(out.script.clone()),
-            })
-            .collect(),
-        sapling_nullifiers: ctx
-            .sapling_nullifiers
-            .iter()
-            .map(|nf| Nullifier::from(*nf))
-            .collect(),
-        sapling_outputs: ctx
-            .sapling_outputs
-            .iter()
-            .map(|o| SaplingOutput {
-                cmu: NoteCommitment::from(o.cmu),
-                ephemeral_key: EphemeralKey::from(o.ephemeral_key),
-                enc_ciphertext: EncryptedCiphertext::new(o.enc_ciphertext_head.to_vec()),
-            })
-            .collect(),
-        orchard_actions: ctx
-            .orchard_actions
-            .iter()
-            .map(|a| OrchardAction {
-                nullifier: Nullifier::from(a.nullifier),
-                cmx: NoteCommitment::from(a.cmx),
-                ephemeral_key: EphemeralKey::from(a.ephemeral_key),
-                enc_ciphertext: EncryptedCiphertext::new(a.enc_ciphertext_head.to_vec()),
-            })
-            .collect(),
+        value_balance: SignedZatoshis::new(i64::from(tx.sapling_value_balance().sapling_amount())),
     }
 }
 
@@ -235,8 +166,6 @@ fn orchard_from_zebra(tx: &zebra_chain::transaction::Transaction) -> OrchardData
                 }
             })
             .collect(),
-        value_balance: SignedZatoshis::new(
-            i64::from(tx.orchard_value_balance().orchard_amount()),
-        ),
+        value_balance: SignedZatoshis::new(i64::from(tx.orchard_value_balance().orchard_amount())),
     }
 }

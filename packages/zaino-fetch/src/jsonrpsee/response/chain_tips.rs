@@ -1,10 +1,6 @@
 //! Types associated with the `getchaintips` RPC request.
 
-use std::convert::Infallible;
-
 use serde::{Deserialize, Serialize};
-
-use crate::jsonrpsee::connector::ResponseToError;
 
 /// Response to a `getchaintips` RPC request.
 pub type GetChainTipsResponse = Vec<ChainTip>;
@@ -52,6 +48,4 @@ pub enum ChainTipStatus {
     Unknown,
 }
 
-impl ResponseToError for GetChainTipsResponse {
-    type RpcError = Infallible;
-}
+crate::jsonrpsee::response::impl_infallible_response_to_error!(GetChainTipsResponse);
