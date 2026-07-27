@@ -31,11 +31,6 @@ pub mod rpc {
             VALID_P2SH_ADDRESS, VALID_SAPLING_ADDRESS, VALID_UNIFIED_ADDRESS,
         };
 
-        pub enum SaplingSuite {
-            Standard,
-            ZebradPassthroughFetchService,
-        }
-
         async fn z_validate(irpc: &JsonRpcClient, addr: &str) -> Result<Value> {
             irpc.call_value("z_validateaddress", json!([addr]))
                 .await
@@ -86,7 +81,7 @@ pub mod rpc {
             Ok(())
         }
 
-        pub async fn run_z_validate_for(irpc: &JsonRpcClient, sapling: SaplingSuite) -> Result<()> {
+        pub async fn run_z_validate_for(irpc: &JsonRpcClient) -> Result<()> {
             run_z_validate_suite(irpc).await?;
 
             let s = z_validate(irpc, VALID_SAPLING_ADDRESS).await?;
@@ -95,30 +90,22 @@ pub mod rpc {
                 Some(true),
                 "sapling must be valid: {s:?}"
             );
-            match sapling {
-                SaplingSuite::Standard => {
-                    assert_eq!(
-                        s.get("diversifier").and_then(Value::as_str),
-                        Some(VALID_DIVERSIFIER),
-                        "sapling diversifier: {s:?}"
-                    );
-                    assert_eq!(
-                        s.get("diversifiedtransmissionkey").and_then(Value::as_str),
-                        Some(VALID_DIVERSIFIED_TRANSMISSION_KEY),
-                        "sapling diversifiedtransmissionkey: {s:?}"
-                    );
-                }
-                SaplingSuite::ZebradPassthroughFetchService => {
-                    assert!(
-                        s.get("diversifier").is_none(),
-                        "zebrad passthrough must omit diversifier: {s:?}"
-                    );
-                    assert!(
-                        s.get("diversifiedtransmissionkey").is_none(),
-                        "zebrad passthrough must omit diversifiedtransmissionkey: {s:?}"
-                    );
-                }
-            }
+            // Mirror dev's `z_validate` suite exactly: the Sapling diversifier and
+            // diversified transmission key must be present for every backend. dev
+            // asserted this through zaino's (deprecated) typed
+            // `ZcashIndexer::z_validate_address`, which decodes the address and
+            // synthesizes these fields regardless of which validator backs the
+            // indexer; this asserts the same over zaino's JSON-RPC `z_validateaddress`.
+            assert_eq!(
+                s.get("diversifier").and_then(Value::as_str),
+                Some(VALID_DIVERSIFIER),
+                "sapling diversifier: {s:?}"
+            );
+            assert_eq!(
+                s.get("diversifiedtransmissionkey").and_then(Value::as_str),
+                Some(VALID_DIVERSIFIED_TRANSMISSION_KEY),
+                "sapling diversifiedtransmissionkey: {s:?}"
+            );
             Ok(())
         }
     }

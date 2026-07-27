@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use clientless::rpc::z_validate_address::{run_z_validate_for, SaplingSuite};
+use clientless::rpc::z_validate_address::run_z_validate_for;
 use serde_json::{json, Value};
 use zaino_testutils::{assert_json_equal_ignoring, assert_rpc_parity};
 use ztest::prelude::*;
@@ -96,7 +96,7 @@ mod zcashd {
             env.build().await?;
 
             let irpc = indexer.json_rpc().await?;
-            run_z_validate_for(&irpc, SaplingSuite::Standard).await
+            run_z_validate_for(&irpc).await
         }
     }
 
@@ -721,7 +721,7 @@ mod zebrad {
             env.build().await?;
 
             let irpc = indexer.json_rpc().await?;
-            run_z_validate_for(&irpc, SaplingSuite::ZebradPassthroughFetchService).await
+            run_z_validate_for(&irpc).await
         }
     }
 

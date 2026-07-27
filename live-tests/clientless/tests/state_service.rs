@@ -396,11 +396,8 @@ mod zebra {
                 );
                 env.build().await?;
 
-                clientless::rpc::z_validate_address::run_z_validate_for(
-                    &state.json_rpc().await?,
-                    clientless::rpc::z_validate_address::SaplingSuite::Standard,
-                )
-                .await
+                clientless::rpc::z_validate_address::run_z_validate_for(&state.json_rpc().await?)
+                    .await
             }
 
             #[ztest::qos::integration]

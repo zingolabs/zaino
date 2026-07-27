@@ -502,8 +502,16 @@ mod chain_query_interface {
         Ok(())
     }
 
+    // Stub: the zcashd variant of the steady-state loop is not yet ported to the
+    // ztest harness (chain-index integration). dev ran this `#[ignore]`d; here we
+    // leave the stub but let it fail loudly when run rather than pass silently as
+    // an empty test (no-stub migration directive).
     #[cfg(feature = "zcashd_support")]
-    #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[test]
-    fn zallet_like_steady_state_loop_zcashd() {}
+    fn zallet_like_steady_state_loop_zcashd() {
+        unimplemented!(
+            "zcashd zallet-like steady-state loop not yet ported to ztest \
+             (chain-index integration); dev ran this #[ignore]d"
+        )
+    }
 }

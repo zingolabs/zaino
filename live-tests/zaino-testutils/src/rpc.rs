@@ -1,4 +1,4 @@
-//! JSON-RPC parity helper and the address constants the parity tests share.
+//! JSON-RPC parity helper shared by the parity tests.
 
 use anyhow::Result;
 use serde_json::Value;

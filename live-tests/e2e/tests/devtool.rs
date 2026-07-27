@@ -39,8 +39,13 @@ const READY: Duration = Duration::from_secs(120);
 const SEND_AMOUNT: u64 = 250_000;
 /// zingolib's ZIP-317 fee for a single-note shield round under regtest.
 const SHIELD_FEE: u64 = 15_000;
-/// Shielded funding pool for the faucet coinbase (see module note).
-const FUND: Pool = Pool::Sapling;
+/// Shielded funding pool for the faucet coinbase. Mirrors dev's
+/// `SHIELDED_FUNDING_POOL = MinerPool::Orchard`: the miner coinbase pays the
+/// Orchard receiver of a unified address. Under this file's NU6.3-active regtest
+/// schedule (Ironwood live from height 2), that Orchard-receiver coinbase note
+/// is credited to the Ironwood pool — hence `receives_mining_reward` asserts an
+/// Ironwood balance.
+const FUND: Pool = Pool::Orchard;
 /// Blocks to mine past a transaction's block to bury it below the finalisation
 /// seam (so it crosses `tip - seam` into the finalized DB). Mirrors dev's
 /// `FAST_TEST_MAX_NONFINALISED_DEPTH` (100, under `fast-test-seam`) plus a small
@@ -153,8 +158,8 @@ mod zebrad {
                 .await?;
             let balances = faucet.balances().await?;
             assert!(
-                balances.get(FUND.ztest()) > 0,
-                "faucet must hold a spendable shielded coinbase note, got {balances:?}"
+                balances.get(Pool::Ironwood.ztest()) > 0,
+                "faucet must hold a spendable Ironwood coinbase note, got {balances:?}"
             );
             Ok(())
         }
@@ -2340,8 +2345,8 @@ mod zebrad {
                 .await?;
             let balances = faucet.balances().await?;
             assert!(
-                balances.get(FUND.ztest()) > 0,
-                "faucet must hold a spendable shielded coinbase note, got {balances:?}"
+                balances.get(Pool::Ironwood.ztest()) > 0,
+                "faucet must hold a spendable Ironwood coinbase note, got {balances:?}"
             );
             Ok(())
         }

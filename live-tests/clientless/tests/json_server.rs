@@ -328,11 +328,8 @@ mod zcashd {
             let _indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             env.build().await?;
 
-            clientless::rpc::z_validate_address::run_z_validate_for(
-                &validator.json_rpc().await?,
-                clientless::rpc::z_validate_address::SaplingSuite::Standard,
-            )
-            .await
+            clientless::rpc::z_validate_address::run_z_validate_for(&validator.json_rpc().await?)
+                .await
         }
 
         #[ztest::qos::integration]

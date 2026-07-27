@@ -22,7 +22,6 @@
 //!    The mapping from that shape to adopted heights is unit-tested next to
 //!    `activation_heights_from_upgrades` in zaino-state.
 
-use std::collections::BTreeMap;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -106,10 +105,10 @@ async fn zainod_syncs_a_schedule_its_config_never_saw() -> Result<()> {
 }
 
 /// The input contract for adoption: the `upgrades` map a live zebrad reports
-/// for the transition schedule, pinned exactly — upgrade set and heights.
-/// Establishes (from real output, not reasoning) that nothing pre-Overwinter
-/// appears: the map is keyed by consensus branch ID, which pre-Overwinter eras
-/// don't have.
+/// for the transition schedule, pinned exactly — upgrade set, order, and
+/// heights. Establishes (from real output, not reasoning) that nothing
+/// pre-Overwinter appears: the map is keyed by consensus branch ID, which
+/// pre-Overwinter eras don't have.
 ///
 /// multi_thread required: the test manager spawns the validator and indexer
 /// services.
@@ -132,7 +131,13 @@ async fn getblockchaininfo_reports_the_configured_schedule() -> Result<()> {
         .and_then(Value::as_object)
         .context("getblockchaininfo must carry an upgrades object")?;
 
-    let mut reported: BTreeMap<String, u64> = BTreeMap::new();
+    // `upgrades` is emitted by zebra in activation order (keyed by consensus
+    // branch id but serialized in order); serde_json's `preserve_order` feature
+    // keeps that iteration order after parsing. Collecting into a `Vec` and
+    // comparing against an ordered `Vec` pins the upgrade set, their heights,
+    // AND their order — exactly as dev did with `blockchain_info.upgrades.values()`
+    // against an ordered vec of `(NetworkUpgrade, height)`.
+    let mut reported: Vec<(String, u64)> = Vec::new();
     for entry in upgrades.values() {
         let name = entry
             .get("name")
@@ -143,10 +148,10 @@ async fn getblockchaininfo_reports_the_configured_schedule() -> Result<()> {
             .get("activationheight")
             .and_then(Value::as_u64)
             .context("each upgrade entry must carry an activationheight")?;
-        reported.insert(name, height);
+        reported.push((name, height));
     }
 
-    let expected: BTreeMap<String, u64> = [
+    let expected: Vec<(String, u64)> = [
         ("Overwinter", 1),
         ("Sapling", 1),
         ("Blossom", 1),
@@ -164,7 +169,7 @@ async fn getblockchaininfo_reports_the_configured_schedule() -> Result<()> {
 
     assert_eq!(
         reported, expected,
-        "reported upgrade schedule must match the pinned transition heights"
+        "reported upgrade schedule must match the pinned transition set, order, and heights"
     );
 
     Ok(())

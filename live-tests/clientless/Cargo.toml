@@ -2,6 +2,7 @@
 name = "clientless"
 description = "Clientless live tests: exercise Zaino's service layer over its gRPC/JSON-RPC surface against a live validator, on the ztest k8s harness (no wallet client)."
 publish = false
+
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true

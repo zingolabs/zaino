@@ -6,7 +6,7 @@ use ztest::prelude::{CompactBlock, TxId};
 
 /// A shielded/transparent pool, paired with the address kind that routes funds
 /// into it. Lets a send-and-check test take a single `Pool` instead of an
-/// address string plus a balance-field selector.
+/// address string plus a balance-field closure.
 #[derive(Clone, Copy, Debug)]
 pub enum Pool {
     /// Orchard (funds routed via a unified address through NU6.2; from NU6.3

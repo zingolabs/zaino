@@ -31,7 +31,11 @@ tokio = { version = "1.38", features = ["full"] }
 
 # Misc
 anyhow = "1.0"
-serde_json = "1.0"
+# `preserve_order`: keep JSON objects in wire (insertion) order rather than the
+# default key-sorted `BTreeMap`. `getblockchaininfo.upgrades` is emitted by zebra
+# in activation order (keyed by consensus branch id); the validator-heights test
+# asserts that order, which a key-sorted map would destroy.
+serde_json = { version = "1.0", features = ["preserve_order"] }
 
 # Test parameterization (fetch × state indexer-backend matrix).
 rstest = "0.23"
