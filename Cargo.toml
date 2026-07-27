@@ -1,28 +1,49 @@
 # Workspace Members are in dependency order, do not change this without prior consideration.
 [workspace]
 members = [
+    "packages/zaino-primitives",
+    "packages/zaino-source",
+    "packages/zaino-persistence",
+    "packages/zaino-backend-lmdb",
+    "packages/zaino-rpc",
+    "packages/zaino-source-zebra-rpc",
     "packages/zaino-common",
     "packages/zainod",
     "packages/zaino-serve",
     "packages/zaino-state",
     "packages/zaino-fetch",
     "packages/zaino-proto",
+    "packages/zaino-sync",
+    "packages/zaino-indexes",
+    "packages/zaino-convert-zebra",
+    "packages/zaino-source-zebra-readstate",
     # Live-test suite (docs/adr/0002, docs/adr/0003, docs/adr/0004).
     # zaino-testutils first: the e2e/clientless partitions depend on it.
     "live-tests/zaino-testutils",
     "live-tests/clientless",
     "live-tests/e2e",
+    "live-tests/sync-bench",
 ]
 # `container-test` runs a bare `cargo nextest run`, which operates on
 # default-members — so the heavy live-test crates are built and tested only
 # when selected explicitly (`-p e2e` / `-p clientless`). See docs/adr/0002.
 default-members = [
+    "packages/zaino-primitives",
+    "packages/zaino-source",
+    "packages/zaino-persistence",
+    "packages/zaino-backend-lmdb",
+    "packages/zaino-rpc",
+    "packages/zaino-source-zebra-rpc",
     "packages/zaino-common",
     "packages/zainod",
     "packages/zaino-serve",
     "packages/zaino-state",
     "packages/zaino-fetch",
     "packages/zaino-proto",
+    "packages/zaino-sync",
+    "packages/zaino-indexes",
+    "packages/zaino-convert-zebra",
+    "packages/zaino-source-zebra-readstate",
 ]
 
 # Use the edition 2021 dependency resolver in the workspace, to match the crates
@@ -67,6 +88,10 @@ tracing-subscriber = { version = "0.3.20", features = [
     "time",
     "json",
 ] }
+tracing-opentelemetry = "0.33"
+opentelemetry = "0.32"
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.32", features = ["grpc-tonic"] }
 tracing-tree = "0.4"
 nu-ansi-term = "0.50"
 time = { version = "0.3", features = ["macros", "formatting"] }
@@ -92,11 +117,18 @@ indexmap = "2.2.6"
 dashmap = "6.1"
 lmdb = "0.8"
 lmdb-sys = "0.8"
+
+# Parallelism
+rayon = "1.10"
+
 futures = "0.3.30"
 
 # Metrics
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false, features = ["http-listener"] }
+
+# Derive
+strum = { version = "0.27", features = ["derive"] }
 
 # Utility
 thiserror = "2.0"
@@ -132,6 +164,18 @@ zaino-proto = { path = "packages/zaino-proto", version = "0.1.3" }
 zaino-state = { path = "packages/zaino-state", version = "0.3.1", default-features = false }
 zaino-serve = { path = "packages/zaino-serve", version = "0.3.1", default-features = false }
 zaino-testutils = { path = "live-tests/zaino-testutils" }
+
+# New sync-engine crates (no published versions yet).
+zaino-primitives = { path = "packages/zaino-primitives" }
+zaino-source = { path = "packages/zaino-source" }
+zaino-persistence = { path = "packages/zaino-persistence" }
+zaino-backend-lmdb = { path = "packages/zaino-backend-lmdb" }
+zaino-rpc = { path = "packages/zaino-rpc" }
+zaino-source-zebra-rpc = { path = "packages/zaino-source-zebra-rpc" }
+zaino-sync = { path = "packages/zaino-sync" }
+zaino-indexes = { path = "packages/zaino-indexes" }
+zaino-convert-zebra = { path = "packages/zaino-convert-zebra" }
+zaino-source-zebra-readstate = { path = "packages/zaino-source-zebra-readstate" }
 
 # Zingo-infra (validator launcher driving the live tests; not a prod dep).
 # Pinned to an exact commit past zcash_local_net_v0.7.0: the v0.7.0 launcher's

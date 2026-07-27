@@ -1,0 +1,99 @@
+//! Transaction and per-pool data.
+
+use super::{
+    EncryptedCiphertext, EphemeralKey, NoteCommitment, Nullifier, OutputIndex, Script,
+    SignedZatoshis, TransactionHash, TxIndex, Zatoshis,
+};
+
+/// A transaction within a block.
+#[derive(Debug, Clone)]
+pub struct Transaction {
+    /// Transaction id.
+    pub txid: TransactionHash,
+    /// Position within the block (0-indexed).
+    pub index: TxIndex,
+    /// Transparent pool data.
+    pub transparent: TransparentData,
+    /// Sapling pool data.
+    pub sapling: SaplingData,
+    /// Orchard pool data.
+    pub orchard: OrchardData,
+}
+
+/// Transparent pool data within a transaction.
+#[derive(Debug, Clone, Default)]
+pub struct TransparentData {
+    /// Transparent inputs (spent outpoints).
+    pub inputs: Vec<TransparentInput>,
+    /// Transparent outputs.
+    pub outputs: Vec<TransparentOutput>,
+}
+
+/// A transparent input: reference to a previous output being spent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransparentInput {
+    /// Transaction containing the output being spent.
+    pub prev_txid: TransactionHash,
+    /// Index of the output being spent.
+    pub prev_index: OutputIndex,
+}
+
+/// A transparent output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransparentOutput {
+    /// Value in zatoshis.
+    pub value: Zatoshis,
+    /// Output script.
+    pub script: Script,
+}
+
+/// Sapling pool data within a transaction.
+#[derive(Debug, Clone, Default)]
+pub struct SaplingData {
+    /// Sapling spends (nullifiers).
+    pub spends: Vec<SaplingSpend>,
+    /// Sapling outputs.
+    pub outputs: Vec<SaplingOutput>,
+    /// Net value balance (positive = value flows out of the pool).
+    pub value_balance: SignedZatoshis,
+}
+
+/// A Sapling spend: the nullifier that marks a note as consumed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SaplingSpend {
+    /// Nullifier.
+    pub nullifier: Nullifier,
+}
+
+/// A Sapling output: commitment + detection material.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SaplingOutput {
+    /// Note commitment (cmu).
+    pub cmu: NoteCommitment,
+    /// Ephemeral key for recipient detection.
+    pub ephemeral_key: EphemeralKey,
+    /// Partial encrypted ciphertext (52 bytes, enough for scanning).
+    pub enc_ciphertext: EncryptedCiphertext,
+}
+
+/// Orchard pool data within a transaction.
+#[derive(Debug, Clone, Default)]
+pub struct OrchardData {
+    /// Orchard actions (each is both a spend and an output).
+    pub actions: Vec<OrchardAction>,
+    /// Net value balance (positive = value flows out of the pool).
+    pub value_balance: SignedZatoshis,
+}
+
+/// An Orchard action: nullifier + commitment + detection material.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrchardAction {
+    /// Nullifier.
+    pub nullifier: Nullifier,
+    /// Note commitment (cmx).
+    pub cmx: NoteCommitment,
+    /// Ephemeral key for recipient detection.
+    pub ephemeral_key: EphemeralKey,
+    /// Partial encrypted ciphertext (52 bytes, enough for scanning).
+    pub enc_ciphertext: EncryptedCiphertext,
+}

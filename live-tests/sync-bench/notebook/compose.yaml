@@ -1,0 +1,11 @@
+services:
+  jupyter:
+    image: quay.io/jupyter/scipy-notebook:latest
+    network_mode: host
+    volumes:
+      - ./work:/home/jovyan/work
+    environment:
+      # Start port-forward first:
+      #   kubectl port-forward svc/loki 3100:3100 -n monitoring &
+      LOKI_URL: "${LOKI_URL:-http://127.0.0.1:3100}"
+      JUPYTER_TOKEN: "zaino"

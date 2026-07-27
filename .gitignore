@@ -17,3 +17,12 @@ build/
 .failed-tests
 **/proptest-regressions/**
 /result
+bench-results/
+
+# Python / Jupyter
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Notebook logs (captured from k8s)
+live-tests/sync-bench/k8s/logs/
