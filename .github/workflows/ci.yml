@@ -101,6 +101,62 @@ jobs:
           # failures (e.g. RUSTSEC-2022-0001 lmdb) handled separately.
           command: check bans
 
+  hosted-clippy:
+    name: Clippy (hosted)
+    # GitHub-hosted, so it runs on every pull request including from forks.
+    # The arc-sh-runners lane below has had no runner assigned since ~2026-03-19
+    # (jobs queue until GitHub's 24h timeout and are cancelled), so it currently
+    # provides no signal at all. This job is purely additive: the self-hosted
+    # jobs are untouched and resume covering the tree if that pool returns.
+    runs-on: ubuntu-latest
+    # Drafts are excluded to conserve runner minutes, matching the draft check
+    # on the self-hosted jobs. `github.event.pull_request` is null outside
+    # pull-request events, so push / workflow_call runs are unaffected.
+    if: github.event.pull_request.draft != true
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # Caches ~/.cargo and target/. Fork pull requests cannot write to the
+      # base repository's cache but can restore from it, so forks get the warm
+      # path too. A distinct key from the test job: clippy and nextest build
+      # under different profiles, and one shared key would thrash.
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: hosted-clippy
+
+      # No protoc step: zaino-proto's build script no-ops when protoc is absent
+      # and uses the generated sources committed under src/proto/.
+      - name: Clippy
+        run: cargo clippy --no-default-features --all-targets -- -D warnings
+
+  hosted-test:
+    name: Tests (hosted)
+    # The production test set only — `cargo nextest run` without `--workspace`
+    # resolves to `default-members`, which excludes the validator-backed
+    # live-tests crates (docs/adr/0002). Equivalent to `makers test packages`.
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.draft != true
+    # Measured cold on a 2-core box: ~37 min, of which only ~100s is running
+    # tests — the lane is compile-bound, so a warm cache dominates the cost.
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: hosted-test
+
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Run tests
+        run: cargo nextest run --no-default-features --no-fail-fast
+
   compute-tag:
     uses: ./.github/workflows/compute-tag.yml
 
