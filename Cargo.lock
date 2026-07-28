@@ -5897,6 +5897,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-convert-zebra"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "zaino-primitives",
+ "zebra-chain",
+]
+
+[[package]]
 name = "zaino-fetch"
 version = "0.2.1"
 dependencies = [
@@ -5941,6 +5950,18 @@ dependencies = [
  "which",
  "zebra-chain",
  "zebra-state",
+]
+
+[[package]]
+name = "zaino-rpc"
+version = "0.1.0"
+dependencies = [
+ "reqwest 0.13.1",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "zaino-source",
 ]
 
 [[package]]
