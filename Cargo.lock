@@ -5996,6 +5996,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-source-zebra"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+ "zaino-primitives",
+ "zaino-source",
+ "zaino-source-zebra-readstate",
+ "zaino-source-zebra-rpc",
+]
+
+[[package]]
 name = "zaino-source-zebra-readstate"
 version = "0.1.0"
 dependencies = [
