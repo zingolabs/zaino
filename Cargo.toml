@@ -47,12 +47,13 @@ zcash_primitives = "0.30"
 zcash_transparent = "0.10"
 
 # Zebra
-# Version requirements are raised to match the zebra crates built against the
-# librustzcash 0.30/0.10 cohort (see [patch.crates-io] below): these are the
-# versions at ZcashFoundation/zebra#11111 head.
-zebra-chain = "11.2"
-zebra-state = "12.0"
-zebra-rpc = "14.0"
+# The first crates.io releases of the zebra crates built against the
+# librustzcash 0.30/0.10 cohort (zebra-chain 11.3 / zebra-state 12.0.1 /
+# zebra-rpc 15.0). Earlier published versions (11.2 / 12.0 / 14.0) are still
+# the older librustzcash 0.29/0.9 builds.
+zebra-chain = "11.3"
+zebra-state = "12.0.1"
+zebra-rpc = "15.0"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
@@ -157,12 +158,6 @@ derive_more = "2.0.1"
 opt-level = 3
 debug = true
 
-# The released zebra-* crates on crates.io are built against the librustzcash
-# 0.29/0.9 cohort. We are bumping to the librustzcash 0.30/0.10 cohort, whose
-# types must match the ones exposed through zebra-chain/zebra-state/zebra-rpc.
-# Until Zebra ships a release containing the 0.30.0 update, pin the zebra deps
-# to ZcashFoundation/zebra#11111 (zcash_primitives 0.30.0), head commit below.
-[patch.crates-io]
-zebra-chain = { git = "https://github.com/nuttycom/zebra.git", rev = "c9e60a02d43dd7bca14967c554eddb97aaa027e2" }
-zebra-state = { git = "https://github.com/nuttycom/zebra.git", rev = "c9e60a02d43dd7bca14967c554eddb97aaa027e2" }
-zebra-rpc = { git = "https://github.com/nuttycom/zebra.git", rev = "c9e60a02d43dd7bca14967c554eddb97aaa027e2" }
+# The zebra crates are now consumed from crates.io at the librustzcash
+# 0.30/0.10 versions (see the Zebra section above); no [patch.crates-io]
+# override is needed.
