@@ -41,15 +41,19 @@ license = "Apache-2.0"
 # Librustzcash
 incrementalmerkletree = "0.8"
 zcash_address = "0.13"
-zcash_keys = "0.15"
+zcash_keys = "0.16"
 zcash_protocol = "0.10"
-zcash_primitives = "0.29"
-zcash_transparent = "0.9"
+zcash_primitives = "0.30"
+zcash_transparent = "0.10"
 
 # Zebra
-zebra-chain = "11.1"
-zebra-state = "10.1"
-zebra-rpc = "11.1"
+# The first crates.io releases of the zebra crates built against the
+# librustzcash 0.30/0.10 cohort (zebra-chain 11.3 / zebra-state 12.0.1 /
+# zebra-rpc 15.0). Earlier published versions (11.2 / 12.0 / 14.0) are still
+# the older librustzcash 0.29/0.9 builds.
+zebra-chain = "11.3"
+zebra-state = "12.0.1"
+zebra-rpc = "15.0"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
@@ -122,15 +126,15 @@ tempfile = "3.2"
 # no longer need `default-features = false` to drop it: their default feature
 # set is already empty. Enable zcashd end-to-end with `--features zcashd_support`.
 zainod = { path = "packages/zainod" }
-zaino-common = { path = "packages/zaino-common", version = "0.2.0" }
+zaino-common = { path = "packages/zaino-common", version = "0.4.0" }
 # default-features = false so the default-on `zcashd_support` feature can be
 # dropped end-to-end via `--no-default-features`; each consumer re-enables it
 # by forwarding `zcashd_support` in its own `default`. See
 # docs/adr/0001-zcashd-support-feature-gate.md.
-zaino-fetch = { path = "packages/zaino-fetch", version = "0.2.1", default-features = false }
-zaino-proto = { path = "packages/zaino-proto", version = "0.1.3" }
-zaino-state = { path = "packages/zaino-state", version = "0.3.1", default-features = false }
-zaino-serve = { path = "packages/zaino-serve", version = "0.3.1", default-features = false }
+zaino-fetch = { path = "packages/zaino-fetch", version = "0.4.0", default-features = false }
+zaino-proto = { path = "packages/zaino-proto", version = "0.2.0" }
+zaino-state = { path = "packages/zaino-state", version = "0.5.0", default-features = false }
+zaino-serve = { path = "packages/zaino-serve", version = "0.5.0", default-features = false }
 zaino-testutils = { path = "live-tests/zaino-testutils" }
 
 # Zingo-infra (validator launcher driving the live tests; not a prod dep).
@@ -154,4 +158,6 @@ derive_more = "2.0.1"
 opt-level = 3
 debug = true
 
-[patch.crates-io]
+# The zebra crates are now consumed from crates.io at the librustzcash
+# 0.30/0.10 versions (see the Zebra section above); no [patch.crates-io]
+# override is needed.
