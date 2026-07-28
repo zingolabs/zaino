@@ -868,6 +868,22 @@ pub(crate) struct SyncTimings {
     pub(crate) initial_backoff: Duration,
     pub(crate) max_backoff: Duration,
     pub(crate) max_consecutive_failures: u32,
+    /// Failure budget applied *before the loop has ever completed an
+    /// iteration*, i.e. while waiting for the validator to become usable at
+    /// start-up.
+    ///
+    /// A validator that has not yet committed its genesis block reports no best
+    /// block height, which reaches the loop as the same
+    /// `SyncError::ErrorFromSource` a broken validator produces. The two are
+    /// indistinguishable here, so the steady-state budget — designed for a
+    /// validator that *was* working and then failed — used to give zaino only
+    /// ~40 s to wait for a node that was still starting up, after which the
+    /// worker returned and could never recover (issue #1006).
+    ///
+    /// Start-up therefore gets its own, much larger budget. It stays bounded so
+    /// a misconfigured validator address still fails loudly instead of hanging
+    /// the daemon forever.
+    pub(crate) startup_max_consecutive_failures: u32,
 }
 
 impl Default for SyncTimings {
@@ -877,6 +893,9 @@ impl Default for SyncTimings {
             initial_backoff: Duration::from_millis(250),
             max_backoff: Duration::from_secs(8),
             max_consecutive_failures: 10,
+            // ~10 minutes: 7.75 s of ramp (250 ms doubling to the 8 s cap)
+            // followed by 74 × 8 s.
+            startup_max_consecutive_failures: 80,
         }
     }
 }
@@ -890,6 +909,10 @@ impl SyncTimings {
             initial_backoff: Duration::from_millis(25),
             max_backoff: Duration::from_millis(800),
             max_consecutive_failures: 10,
+            // Only ~2× the steady-state budget, not the production 8×: start-up
+            // tests must observe the loop *outliving* the steady-state window
+            // without waiting a full production-scale grace period.
+            startup_max_consecutive_failures: 20,
         }
     }
 
@@ -899,9 +922,19 @@ impl SyncTimings {
     /// Sums backoff delays for failures `1..max_consecutive_failures` — the
     /// final failure sets CriticalError without sleeping.
     pub(crate) fn max_backoff_window(&self) -> Duration {
+        self.backoff_window_for(self.max_consecutive_failures)
+    }
+
+    /// [`Self::max_backoff_window`] for the start-up budget — the window before
+    /// the loop's *first* successful iteration.
+    pub(crate) fn max_startup_backoff_window(&self) -> Duration {
+        self.backoff_window_for(self.startup_max_consecutive_failures)
+    }
+
+    fn backoff_window_for(&self, failures: u32) -> Duration {
         let mut total = Duration::ZERO;
         let mut current = self.initial_backoff;
-        for _ in 0..self.max_consecutive_failures.saturating_sub(1) {
+        for _ in 0..failures.saturating_sub(1) {
             total += current;
             current = (current * 2).min(self.max_backoff);
         }
@@ -1029,6 +1062,10 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             let mut change_rx = source.subscribe_to_blocks_received();
             let mut consecutive_failures: u32 = 0;
             let mut current_backoff = timings.initial_backoff;
+            // False until the first iteration completes. While false the loop is
+            // still waiting for the validator to become usable, which gets the
+            // larger `startup_max_consecutive_failures` budget (issue #1006).
+            let mut has_completed_an_iteration = false;
             #[cfg(feature = "prometheus")]
             let mut has_reached_tip = false;
 
@@ -1128,6 +1165,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                     Ok(()) => {
                         consecutive_failures = 0;
                         current_backoff = timings.initial_backoff;
+                        has_completed_an_iteration = true;
                         status.store(StatusType::Ready);
                         #[cfg(feature = "prometheus")]
                         {
@@ -1165,7 +1203,20 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                             metrics::histogram!(SYNC_ITERATION_DURATION_SECONDS)
                                 .record(iteration_start.elapsed().as_secs_f64());
                         }
-                        if consecutive_failures >= timings.max_consecutive_failures {
+                        // Before the first successful iteration the validator
+                        // may simply not be up yet (a node that has not
+                        // committed genesis reports no best block height, which
+                        // arrives here as an ordinary source error). Waiting
+                        // that out is the whole point of the start-up budget;
+                        // once an iteration has succeeded, a validator that
+                        // fails really has broken and the steady-state budget
+                        // applies. See issue #1006.
+                        let failure_budget = if has_completed_an_iteration {
+                            timings.max_consecutive_failures
+                        } else {
+                            timings.startup_max_consecutive_failures
+                        };
+                        if consecutive_failures >= failure_budget {
                             #[cfg(feature = "prometheus")]
                             metrics::counter!(SYNC_ERRORS_TOTAL, "severity" => "critical")
                                 .increment(1);
@@ -1179,7 +1230,8 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         }
                         tracing::warn!(
                             consecutive_failures,
-                            max = timings.max_consecutive_failures,
+                            max = failure_budget,
+                            awaiting_first_sync = !has_completed_an_iteration,
                             backoff = ?current_backoff,
                             ?e,
                             "sync loop iteration failed, retrying"

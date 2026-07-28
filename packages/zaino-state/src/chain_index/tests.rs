@@ -93,6 +93,50 @@ async fn load_test_vectors_and_sync_chain_index_with_timings(
     load_with_settings(mode, sync_timings, Duration::from_millis(25)).await
 }
 
+/// Build a chain index over a caller-supplied source, returning as soon as
+/// construction completes and *without* waiting for the sync worker to bring the
+/// non-finalised state up.
+///
+/// Taking the source as a parameter lets a test configure it — in particular
+/// `set_failing(true)` — before construction begins, which the waiting helpers
+/// below cannot express: they build the source internally and then block until
+/// the index is synced. That is what the #1006 start-up scenario needs.
+async fn build_index_with_source(
+    source: MockchainSource,
+    mode: MockchainMode,
+    sync_timings: SyncTimings,
+) -> (
+    NodeBackedChainIndex<MockchainSource>,
+    NodeBackedChainIndexSubscriber<MockchainSource>,
+) {
+    init_tracing();
+
+    let temp_dir: TempDir = tempfile::tempdir().unwrap();
+    let db_path: PathBuf = temp_dir.path().to_path_buf();
+    let seed = v1_finalised_seed_dir(mode).await;
+    copy_dir_recursive(seed, &db_path).unwrap();
+
+    let config = ChainIndexConfig {
+        storage: StorageConfig {
+            database: DatabaseConfig {
+                path: db_path,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ephemeral: false,
+        db_version: 1,
+        network: ActivationHeights::default().to_regtest_network(),
+    };
+
+    let indexer = NodeBackedChainIndex::new_with_sync_timings(source, config, sync_timings)
+        .await
+        .unwrap();
+    let index_reader = indexer.subscriber();
+
+    (indexer, index_reader)
+}
+
 async fn load_with_settings(
     mode: MockchainMode,
     sync_timings: SyncTimings,
