@@ -40,6 +40,7 @@ mod get_treestate;
 mod get_treestate_by_hash;
 mod get_tx_out;
 mod lifecycle;
+mod polled_chain_tip;
 mod send_raw_transaction;
 mod subscribe_blocks;
 mod subscribe_chain_tip;
@@ -77,10 +78,11 @@ pub use get_treestate::{GetTreestate, GetTreestateError};
 pub use get_treestate_by_hash::{GetTreestateByHash, GetTreestateByHashError};
 pub use get_tx_out::{GetTxOut, GetTxOutError};
 pub use lifecycle::SourceLifecycle;
+pub use polled_chain_tip::PolledChainTip;
 pub use resilient::{Resilient, RetryPolicy};
 pub use send_raw_transaction::{SendRawTransaction, SendRawTransactionError};
 pub use subscribe_blocks::SubscribeBlocks;
-pub use subscribe_chain_tip::SubscribeChainTip;
+pub use subscribe_chain_tip::{SubscribeChainTip, TipObservation};
 
 #[cfg(feature = "testing")]
 pub mod mock;

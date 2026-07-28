@@ -5961,6 +5961,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+ "zaino-common",
  "zaino-source",
 ]
 
@@ -5992,6 +5993,37 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "zaino-primitives",
+]
+
+[[package]]
+name = "zaino-source-zebra-readstate"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+ "tower 0.4.13",
+ "tracing",
+ "zaino-convert-zebra",
+ "zaino-primitives",
+ "zaino-source",
+ "zebra-chain",
+ "zebra-state",
+]
+
+[[package]]
+name = "zaino-source-zebra-rpc"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "zaino-convert-zebra",
+ "zaino-primitives",
+ "zaino-rpc",
+ "zaino-source",
+ "zebra-chain",
 ]
 
 [[package]]

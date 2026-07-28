@@ -58,6 +58,14 @@ pub struct RpcClient {
 impl RpcClient {
     /// Create a new client from config.
     pub fn new(config: RpcClientConfig) -> Result<Self, RpcError> {
+        // This is a TLS boundary, so it must install the process-level rustls
+        // `CryptoProvider` before building the client. The workspace enables
+        // reqwest's `rustls-no-provider` feature, which never auto-selects one,
+        // so a client built without this panics with "No provider set" the
+        // moment it is constructed. First-install-wins, so an embedder that
+        // installed its own provider keeps it (ADR-0006).
+        zaino_common::crypto::ensure_default_crypto_provider();
+
         let client = reqwest::Client::builder()
             .connect_timeout(config.connect_timeout)
             .timeout(config.request_timeout)
