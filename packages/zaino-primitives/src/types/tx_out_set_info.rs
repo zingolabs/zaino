@@ -1,13 +1,17 @@
-//! `gettxoutsetinfo` — statistics over the whole unspent transparent output set.
+//! Statistics over the whole unspent transparent output set.
 
 use crate::types::{BlockHash, Height, Zatoshis};
 
 /// Statistics describing the transparent UTXO set at a given chain tip.
 ///
-/// Computing these requires a full pass over the UTXO set, so a validator may
-/// decline to answer — zcashd returns an empty object when collection fails.
-/// That is reported as no result rather than as a variant here, so this type
-/// always describes a real, complete measurement.
+/// A domain type rather than one of the proxied [`rpc`](super::rpc) shapes:
+/// Zaino answers `gettxoutsetinfo` from its own finalised-state accumulator,
+/// not by asking the validator, so there is no source port for it and no
+/// validator response to forward.
+///
+/// Computing these statistics requires a full pass over the UTXO set, so the
+/// answer may be unavailable — that is reported as no result rather than as a
+/// variant here, so this type always describes a real, complete measurement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TxOutSetInfo {
     /// Height the statistics were computed at.

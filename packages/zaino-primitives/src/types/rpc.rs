@@ -45,7 +45,6 @@ mod node_info;
 mod peer_info;
 mod spent_info;
 mod tx_out;
-mod tx_out_set_info;
 
 pub use block_deltas::{BlockDelta, BlockDeltas, InputDelta, OutputDelta};
 pub use block_header::BlockHeaderVerbose;
@@ -56,4 +55,3 @@ pub use node_info::NodeInfo;
 pub use peer_info::PeerInfo;
 pub use spent_info::{SpentInfo, SpentOutpoint};
 pub use tx_out::{ScriptPubKey, TxOut};
-pub use tx_out_set_info::TxOutSetInfo;
