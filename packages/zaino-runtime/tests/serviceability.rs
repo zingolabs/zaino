@@ -6,10 +6,11 @@
 #[path = "support/mocks.rs"]
 mod mocks;
 
-use zaino_core::{Capability, Height};
-use zaino_service::Serviceable;
+use zaino_core::{Capability, Height, TransparentAddress};
+use zaino_service::error::AddressReadError;
+use zaino_service::{AddressRead, Serviceable};
 
-use mocks::{build_runtime, h, Calls};
+use mocks::{assemble_runtime, build_runtime, h, Calls};
 
 fn answerable(runtime: &mocks::MockRuntime, cap: Capability) -> Option<Height> {
     runtime
@@ -42,4 +43,32 @@ async fn syncing_window_degrades_to_finalised_and_drops_the_merge() {
     assert_eq!(answerable(&runtime, Capability::Blocks), Some(h(100)));
     assert_eq!(answerable(&runtime, Capability::AddressHistory), None);
     assert_eq!(answerable(&runtime, Capability::Transactions), Some(h(100)));
+}
+
+/// The closed gap: a deployment that didn't opt into address history (even
+/// though the mock FS *type* can back it) neither **advertises** it (absent from
+/// the manifest) nor **answers** it (the read refuses) — one served set drives
+/// both, so they can't disagree.
+#[tokio::test]
+async fn unbacked_capability_is_neither_advertised_nor_answered() {
+    let calls = Calls::default();
+    // Ready window, passthrough on, but `serve_address = false`.
+    let runtime = assemble_runtime(&calls, 100, true, true, false).await;
+
+    // Not advertised: absent entirely (not "present but None").
+    let advertised = runtime
+        .serviceability()
+        .answerable
+        .iter()
+        .any(|(c, _)| *c == Capability::AddressHistory);
+    assert!(!advertised, "unbacked capability must be absent from the manifest");
+
+    // Not answered: the read refuses with the same verdict.
+    let snap = runtime.snapshot();
+    let addr = TransparentAddress::new("t1example".to_string());
+    let res = snap.unspent_outpoints(&addr).await;
+    assert!(matches!(
+        res,
+        Err(AddressReadError::NotServiceable(Capability::AddressHistory))
+    ));
 }

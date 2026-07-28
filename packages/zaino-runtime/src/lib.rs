@@ -26,5 +26,5 @@ mod snapshot;
 pub use config::RuntimeConfig;
 pub use error::RuntimeError;
 pub use passthrough::{PassthroughError, PassthroughSource};
-pub use runtime::{Runtime, RuntimeBuilder};
+pub use runtime::{Assembler, Runtime, RuntimeBuilder};
 pub use snapshot::RuntimeSnapshot;

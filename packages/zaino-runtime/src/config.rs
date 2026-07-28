@@ -1,6 +1,28 @@
 //! Runtime configuration consulted by the read-composition policy.
 
+use std::collections::HashSet;
+
 use zaino_core::Capability;
+
+/// The set of optional, index-backed capabilities a deployment serves.
+///
+/// A thin newtype over a std set: the representation stays ours, and the
+/// mutation surface stays narrow. It is populated **only** through the
+/// assembler's type-gated `serving_*` methods (`insert` is crate-internal), so
+/// it can never name a capability the components can't back. Both the manifest
+/// and the reads consult it, so *advertised* and *answerable* can't drift.
+#[derive(Clone, Default)]
+pub struct CapabilitySet(HashSet<Capability>);
+
+impl CapabilitySet {
+    pub(crate) fn insert(&mut self, cap: Capability) {
+        self.0.insert(cap);
+    }
+
+    pub(crate) fn contains(&self, cap: Capability) -> bool {
+        self.0.contains(&cap)
+    }
+}
 
 /// Deployment configuration that shapes read composition — whether validator
 /// passthrough is permitted, and (later) which capabilities this deployment

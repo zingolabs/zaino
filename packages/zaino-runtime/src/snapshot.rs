@@ -23,7 +23,7 @@ use zaino_service::error::{
 };
 use zaino_service::{AddressRead, BlockRead, CompactBlockRead, TransactionRead};
 
-use crate::config::RuntimeConfig;
+use crate::config::{CapabilitySet, RuntimeConfig};
 use crate::passthrough::PassthroughSource;
 use crate::resolve::{self, Tier};
 
@@ -37,6 +37,9 @@ pub struct RuntimeSnapshot<F, S, Src> {
     pub(crate) watermark: Height,
     pub(crate) source: Arc<Src>,
     pub(crate) cfg: Arc<RuntimeConfig>,
+    /// The deployment's served set — reads consult it so a capability is
+    /// answerable iff the manifest advertises it (same source of truth).
+    pub(crate) served: Arc<CapabilitySet>,
 }
 
 // Manual Clone: the `Arc`s clone regardless of `F`/`Src`, so we don't want the
@@ -49,6 +52,7 @@ impl<F, S: Clone, Src> Clone for RuntimeSnapshot<F, S, Src> {
             watermark: self.watermark,
             source: Arc::clone(&self.source),
             cfg: Arc::clone(&self.cfg),
+            served: Arc::clone(&self.served),
         }
     }
 }
@@ -173,6 +177,12 @@ where
         &self,
         addr: &TransparentAddress,
     ) -> Result<Vec<Utxo>, SvcAddressReadError> {
+        // Same served set as the manifest: if the deployment didn't opt in (the
+        // index isn't built), the read is `NotServiceable` — advertised and
+        // answerable stay in lockstep.
+        if !self.served.contains(Capability::AddressHistory) {
+            return Err(SvcAddressReadError::NotServiceable(Capability::AddressHistory));
+        }
         // Merge: needs both tiers to be coherent, so it is unserviceable until
         // the recent window is ready. The combine lives in `resolve`.
         let Some(nfs) = &self.nfs else {

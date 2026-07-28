@@ -216,14 +216,27 @@ impl PassthroughSource for MockSource {
 /// The wired-up runtime type these mocks produce.
 pub type MockRuntime = Runtime<MockFs, MockNfs, MockSource>;
 
-/// Assemble a runtime over the mocks against a single shared recorder. The
-/// axes that drive routing are explicit: the finalised `watermark`, whether the
-/// NFS window is `nfs_ready` or still syncing, and whether `passthrough_enabled`.
+/// Assemble a full-deployment runtime over the mocks (serves the address merge).
+/// The axes that drive routing are explicit: the finalised `watermark`, whether
+/// the NFS window is `nfs_ready` or still syncing, and whether `passthrough_enabled`.
 pub async fn build_runtime(
     calls: &Calls,
     watermark: u32,
     nfs_ready: bool,
     passthrough_enabled: bool,
+) -> MockRuntime {
+    assemble_runtime(calls, watermark, nfs_ready, passthrough_enabled, true).await
+}
+
+/// Like [`build_runtime`], but `serve_address` controls whether the deployment
+/// opts into the (type-gated) address-history merge. `false` models a minimal
+/// deployment that didn't build the index.
+pub async fn assemble_runtime(
+    calls: &Calls,
+    watermark: u32,
+    nfs_ready: bool,
+    passthrough_enabled: bool,
+    serve_address: bool,
 ) -> MockRuntime {
     let fs = MockFs {
         watermark: h(watermark),
@@ -241,11 +254,15 @@ pub async fn build_runtime(
     let source = MockSource {
         calls: calls.clone(),
     };
-    RuntimeBuilder::new()
+    let assembler = RuntimeBuilder::new()
         .config(RuntimeConfig {
             passthrough_enabled,
         })
-        .init(fs, nfs, source)
-        .await
-        .expect("init")
+        .assemble(fs, nfs, source);
+    let assembler = if serve_address {
+        assembler.serving_address_history()
+    } else {
+        assembler
+    };
+    assembler.finish().await.expect("assemble")
 }

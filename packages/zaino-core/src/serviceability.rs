@@ -7,7 +7,7 @@ use zaino_primitives::types::Height;
 ///
 /// `EnumIter` gives compiler-generated exhaustive iteration (manifest
 /// derivation) — a new variant is picked up automatically, no hand-kept list.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::EnumIter)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, strum::EnumIter)]
 pub enum Capability {
     Blocks,
     Transactions,

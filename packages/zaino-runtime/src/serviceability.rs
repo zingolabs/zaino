@@ -15,7 +15,7 @@ use strum::IntoEnumIterator;
 
 use zaino_core::{Capability, Height, ServiceabilityManifest};
 
-use crate::config::RuntimeConfig;
+use crate::config::{CapabilitySet, RuntimeConfig};
 use crate::resolve::{self, Strategy};
 
 /// The live state a manifest is derived from.
@@ -28,27 +28,45 @@ pub(crate) struct State {
 
 /// Derive the manifest: one entry per served capability, each with the height it
 /// is answerable up to now (`None` = not answerable now).
-pub(crate) fn manifest(cfg: &RuntimeConfig, state: &State) -> ServiceabilityManifest {
+pub(crate) fn manifest(
+    cfg: &RuntimeConfig,
+    served: &CapabilitySet,
+    state: &State,
+) -> ServiceabilityManifest {
     let answerable = Capability::iter()
-        .filter(|&cap| cfg.capability_enabled(cap))
-        .map(|cap| (cap, answerable_to(cap, cfg, state)))
+        .filter(|&cap| is_served(cap, cfg, served))
+        .map(|cap| (cap, answerable_to(cap, state)))
         .collect();
     ServiceabilityManifest { answerable }
 }
 
-/// The height `cap` is answerable up to now, per its composition strategy.
-fn answerable_to(cap: Capability, cfg: &RuntimeConfig, state: &State) -> Option<Height> {
+/// Whether the deployment offers `cap` at all — the *same* decision the reads
+/// make, so the manifest can't advertise what a read would refuse.
+fn is_served(cap: Capability, cfg: &RuntimeConfig, served: &CapabilitySet) -> bool {
+    match resolve::strategy(cap) {
+        // Route reads ride the always-present spine.
+        Strategy::Route => true,
+        // Merge reads need an opted-in (type-gated, index-backed) capability.
+        Strategy::Merge => served.contains(cap),
+        // Passthrough reads need the validator enabled. (Broadcast/mempool/
+        // reported-upgrades are coarsely grouped as `Passthrough` for now;
+        // refine when the control caps are modelled.)
+        Strategy::Passthrough => resolve::passthrough_allowed(cap, cfg),
+    }
+}
+
+/// The height `cap` is answerable up to now, per its composition strategy —
+/// assuming it is served (see [`is_served`]).
+fn answerable_to(cap: Capability, state: &State) -> Option<Height> {
     match resolve::strategy(cap) {
         // Finalised is answerable up to the watermark; the recent window extends
-        // it to the tip once ready (partial service while syncing — US-0.2).
-        Strategy::Route => Some(state.nfs_tip.unwrap_or(state.finalized_tip)),
+        // it to the tip once ready (partial service while syncing — US-0.2). The
+        // validator (passthrough) answers by hash, independent of sync.
+        Strategy::Route | Strategy::Passthrough => {
+            Some(state.nfs_tip.unwrap_or(state.finalized_tip))
+        }
         // Needs both tiers coherent → answerable only once the window is ready.
         Strategy::Merge => state.nfs_tip,
-        // The validator answers by hash, independent of sync — gated by config.
-        // (Broadcast/mempool/reported-upgrades are coarsely grouped as
-        // `Passthrough` for now; refine when the control caps are modelled.)
-        Strategy::Passthrough => resolve::passthrough_allowed(cap, cfg)
-            .then(|| state.nfs_tip.unwrap_or(state.finalized_tip)),
     }
 }
 
@@ -60,12 +78,18 @@ mod tests {
         Height::try_from(n).expect("valid height")
     }
 
-    fn answerable(m: &ServiceabilityManifest, cap: Capability) -> Option<Height> {
-        m.answerable
-            .iter()
-            .find(|(c, _)| *c == cap)
-            .unwrap_or_else(|| panic!("{cap:?} absent from manifest"))
-            .1
+    /// A served set that opts into the address merge (as a full deployment would
+    /// via the type-gated assembler).
+    fn serving_address() -> CapabilitySet {
+        let mut s = CapabilitySet::default();
+        s.insert(Capability::AddressHistory);
+        s
+    }
+
+    /// `Some(height)` if present-and-answerable, `Some(None)` if present-but-not-
+    /// now, `None` if the capability is **absent** (not served).
+    fn entry(m: &ServiceabilityManifest, cap: Capability) -> Option<Option<Height>> {
+        m.answerable.iter().find(|(c, _)| *c == cap).map(|(_, h)| *h)
     }
 
     #[test]
@@ -77,10 +101,10 @@ mod tests {
             finalized_tip: h(100),
             nfs_tip: Some(h(150)),
         };
-        let m = manifest(&cfg, &state);
-        assert_eq!(answerable(&m, Capability::Blocks), Some(h(150))); // route
-        assert_eq!(answerable(&m, Capability::AddressHistory), Some(h(150))); // merge
-        assert_eq!(answerable(&m, Capability::Transactions), Some(h(150))); // passthrough
+        let m = manifest(&cfg, &serving_address(), &state);
+        assert_eq!(entry(&m, Capability::Blocks), Some(Some(h(150)))); // route
+        assert_eq!(entry(&m, Capability::AddressHistory), Some(Some(h(150)))); // merge
+        assert_eq!(entry(&m, Capability::Transactions), Some(Some(h(150)))); // passthrough
     }
 
     #[test]
@@ -92,12 +116,12 @@ mod tests {
             finalized_tip: h(100),
             nfs_tip: None,
         };
-        let m = manifest(&cfg, &state);
-        // Route degrades to the watermark; merge is unanswerable; passthrough is
-        // sync-independent (best-known height is the watermark).
-        assert_eq!(answerable(&m, Capability::Blocks), Some(h(100)));
-        assert_eq!(answerable(&m, Capability::AddressHistory), None);
-        assert_eq!(answerable(&m, Capability::Transactions), Some(h(100)));
+        let m = manifest(&cfg, &serving_address(), &state);
+        // Route degrades to the watermark; merge is present but unanswerable;
+        // passthrough is sync-independent (best-known height is the watermark).
+        assert_eq!(entry(&m, Capability::Blocks), Some(Some(h(100))));
+        assert_eq!(entry(&m, Capability::AddressHistory), Some(None));
+        assert_eq!(entry(&m, Capability::Transactions), Some(Some(h(100))));
     }
 
     #[test]
@@ -109,10 +133,29 @@ mod tests {
             finalized_tip: h(100),
             nfs_tip: Some(h(150)),
         };
-        let m = manifest(&cfg, &state);
-        assert_eq!(answerable(&m, Capability::Transactions), None);
+        let m = manifest(&cfg, &serving_address(), &state);
+        // Passthrough caps drop out of the manifest entirely (not served now).
+        assert_eq!(entry(&m, Capability::Transactions), None);
         // Local tiers are unaffected by the passthrough toggle.
-        assert_eq!(answerable(&m, Capability::Blocks), Some(h(150)));
-        assert_eq!(answerable(&m, Capability::AddressHistory), Some(h(150)));
+        assert_eq!(entry(&m, Capability::Blocks), Some(Some(h(150))));
+        assert_eq!(entry(&m, Capability::AddressHistory), Some(Some(h(150))));
+    }
+
+    #[test]
+    fn a_merge_cap_not_opted_in_is_absent() {
+        let cfg = RuntimeConfig {
+            passthrough_enabled: true,
+        };
+        let state = State {
+            finalized_tip: h(100),
+            nfs_tip: Some(h(150)),
+        };
+        // Empty served set — the deployment didn't opt into any merge cap.
+        let m = manifest(&cfg, &CapabilitySet::default(), &state);
+        // Absent entirely — not "present but None". A minimal deployment simply
+        // doesn't claim address history.
+        assert_eq!(entry(&m, Capability::AddressHistory), None);
+        // Route/passthrough are unaffected.
+        assert_eq!(entry(&m, Capability::Blocks), Some(Some(h(150))));
     }
 }
