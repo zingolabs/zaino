@@ -7,3 +7,4 @@ description = "Pure domain vocabulary + (future) pure logic for Zaino's inner dr
 
 [dependencies]
 zaino-primitives = { path = "../zaino-primitives" }
+strum = { workspace = true }

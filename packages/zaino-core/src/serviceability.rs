@@ -4,7 +4,10 @@ use zaino_primitives::types::Height;
 
 /// The capability axis — one variant per capability trait, mirroring the index
 /// set that backs it. Serviceability is "is this capability's index built?".
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// `EnumIter` gives compiler-generated exhaustive iteration (manifest
+/// derivation) — a new variant is picked up automatically, no hand-kept list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, strum::EnumIter)]
 pub enum Capability {
     Blocks,
     Transactions,

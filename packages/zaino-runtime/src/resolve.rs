@@ -24,7 +24,6 @@ pub(crate) enum Tier {
 /// for `Route`/`Merge` capabilities when their tier can't serve yet — gated by
 /// [`passthrough_allowed`] and, inside a pinned snapshot, constrained to by-hash
 /// reads for coherence.
-#[allow(dead_code)]
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Strategy {
     /// One tier, chosen by height at the watermark (block, compact, treestate).
@@ -37,7 +36,6 @@ pub(crate) enum Strategy {
 }
 
 /// The static local strategy for each capability.
-#[allow(dead_code)]
 pub(crate) fn strategy(cap: Capability) -> Strategy {
     match cap {
         Capability::Blocks | Capability::Treestate | Capability::SubtreeRoots => Strategy::Route,

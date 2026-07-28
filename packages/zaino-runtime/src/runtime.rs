@@ -6,12 +6,15 @@
 
 use std::sync::Arc;
 
+use zaino_core::ServiceabilityManifest;
 use zaino_fs::FinalisedSpine;
-use zaino_nfs::{NfsView, NonFinalisedState};
+use zaino_nfs::{NfsSpine, NfsView, NonFinalisedState};
+use zaino_service::Serviceable;
 
 use crate::config::RuntimeConfig;
 use crate::error::RuntimeError;
 use crate::passthrough::PassthroughSource;
+use crate::serviceability::{self, State};
 use crate::snapshot::RuntimeSnapshot;
 
 /// The running indexer: a finalised component, a non-finalised component, and
@@ -45,6 +48,30 @@ where
             source: Arc::clone(&self.source),
             cfg: Arc::clone(&self.cfg),
         }
+    }
+}
+
+/// Serviceability is a **control** capability (live, not pinned): it reports
+/// what's answerable *now*. It reads the finalised watermark and the NFS
+/// readiness, then delegates the projection to [`serviceability`].
+impl<F, N, Src> Serviceable for Runtime<F, N, Src>
+where
+    F: FinalisedSpine + 'static,
+    N: NonFinalisedState + 'static,
+    Src: Send + Sync,
+{
+    fn serviceability(&self) -> ServiceabilityManifest {
+        let nfs_tip = match self.nfs.snapshot() {
+            NfsView::Ready(s) => Some(s.tip().height),
+            NfsView::Syncing { .. } => None,
+        };
+        serviceability::manifest(
+            &self.cfg,
+            &State {
+                finalized_tip: self.fs.watermark(),
+                nfs_tip,
+            },
+        )
     }
 }
 

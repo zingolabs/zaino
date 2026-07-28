@@ -33,7 +33,9 @@ Status key: ✅ served (impl + test) · 🟡 scaffolded (trait exists) · ⬜ no
 > while still syncing (finalised reads before the recent window exists), so I get
 > partial service instead of an all-or-nothing boot.
 > — capability: `Serviceable`; component: `NfsView` readiness + serviceability
-> manifest. Recent reads while `Syncing` → `NotServiceable`, never a false miss. ✅ (readiness path tested)
+> manifest. Recent reads while `Syncing` → `NotServiceable`, never a false miss.
+> ✅ (readiness path + manifest derivation tested — `Runtime: Serviceable`
+> projects finalised watermark + NFS readiness + config per capability)
 
 > **US-0.3 — Reorg safety.** As any consumer, reads must never return data for a
 > chain the snapshot isn't on; a reorg during my request must not corrupt my view.
@@ -121,3 +123,4 @@ read; validator passthrough serves US-1.7/3.1. The address **merge** (US-1.3/2.3
 | Date | Change |
 |------|--------|
 | 2026-07-22 | Initial draft. Actors + Levels 0–4, traced to capabilities. |
+| 2026-07-24 | US-1.7 served (passthrough). FS/NFS decomposed into spine + per-capability traits. US-0.2 manifest derivation landed (`Runtime: Serviceable`). |

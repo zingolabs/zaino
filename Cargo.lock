@@ -6131,6 +6131,7 @@ dependencies = [
 name = "zaino-core"
 version = "0.1.0"
 dependencies = [
+ "strum",
  "zaino-primitives",
 ]
 
@@ -6232,6 +6233,7 @@ name = "zaino-runtime"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "strum",
  "tokio",
  "zaino-core",
  "zaino-fs",

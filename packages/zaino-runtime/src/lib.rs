@@ -20,6 +20,7 @@ mod error;
 mod passthrough;
 mod resolve;
 mod runtime;
+mod serviceability;
 mod snapshot;
 
 pub use config::RuntimeConfig;

@@ -5,6 +5,10 @@
 //! answered* (and, crucially, who was **not** consulted). Included via
 //! `#[path = "support/mocks.rs"] mod mocks;` from each test binary (a
 //! subdirectory file, so cargo doesn't compile it as its own test target).
+//!
+//! Each binary uses a different subset of these helpers, so unused-per-binary
+//! items are expected.
+#![allow(dead_code)]
 
 use std::sync::{Arc, Mutex};
 
