@@ -42,10 +42,16 @@ pub struct BlockchainInfo {
 
     /// Total work in the best chain.
     ///
-    /// Full 256-bit width. The wire form declares itself hex-encoded but is
-    /// typed as a 64-bit integer upstream, which silently truncates every
-    /// mainnet value; carrying [`ChainWork`] here fixes that.
-    pub chain_work: ChainWork,
+    /// `None` when the validator does not track it. Zebra does not store
+    /// cumulative work per height (ZcashFoundation/zebra#7109) and reports zero
+    /// — which is not a possible amount of work for a real chain, so it is
+    /// carried as absence rather than as the number zero, which a consumer
+    /// might otherwise compare against.
+    ///
+    /// Full 256-bit width where it is reported. The wire form is a 64-bit
+    /// integer upstream despite documenting itself as hex-encoded, which would
+    /// truncate every mainnet value; [`ChainWork`] avoids that.
+    pub chain_work: Option<ChainWork>,
 
     /// Whether the validator has pruned block data.
     pub pruned: bool,

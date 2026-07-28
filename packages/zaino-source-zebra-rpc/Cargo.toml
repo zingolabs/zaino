@@ -19,6 +19,9 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
 tracing = { workspace = true, optional = true }
+incrementalmerkletree.workspace = true
+zcash_primitives.workspace = true
+sapling-crypto = "0.7.0"
 
 [features]
 tracing = ["dep:tracing"]

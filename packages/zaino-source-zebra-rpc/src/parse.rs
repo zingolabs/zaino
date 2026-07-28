@@ -24,6 +24,7 @@
 //! and "the response is garbled" are different facts, and conflating them makes
 //! a broken validator look like a pre-activation block.
 
+use incrementalmerkletree::frontier::CommitmentTree;
 use zaino_primitives::types::{
     rpc::{
         BlockDelta, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, ChainTip, ChainTipStatus,
@@ -654,45 +655,87 @@ pub(crate) fn parse_subtree_roots(
     })
 }
 
-/// Parse the per-pool roots and sizes out of a `z_gettreestate` response.
-pub(crate) fn parse_tree_roots(value: &serde_json::Value) -> Result<TreeRoots, ParseError> {
+/// Derive the per-pool roots and sizes from a `z_gettreestate` response.
+///
+/// # Why this deserialises a tree
+///
+/// `z_gettreestate` does not report roots or sizes directly. Zebra emits
+/// `finalRoot` as `null` — its own type documents the field as unused — and no
+/// `finalSize` field exists in the response at all. The only thing carried is
+/// `finalState`: the serialised note commitment tree.
+///
+/// So the root and the size are *computed* here by deserialising that tree,
+/// rather than read off the response. Reading the nominal fields would report
+/// every pool as inactive against every Zebra node.
+///
+/// A pool with no `finalState` is treated as an empty tree rather than an
+/// absent one: the pool exists at this height, it simply has no commitments
+/// yet, and an empty tree has a well-defined root.
+fn parse_tree_roots_inner(value: &serde_json::Value) -> Result<TreeRoots, ParseError> {
     Ok(TreeRoots {
-        sapling: parse_pool_root(value, "sapling")?,
-        orchard: parse_pool_root(value, "orchard")?,
-        ironwood: parse_pool_root(value, "ironwood")?,
+        sapling: sapling_pool_root(opt_field(value, "sapling"))?,
+        orchard: orchard_shaped_pool_root(opt_field(value, "orchard"))?,
+        ironwood: orchard_shaped_pool_root(opt_field(value, "ironwood"))?,
     })
 }
 
-/// Parse one pool's root and cumulative size.
-///
-/// `None` when the pool has no treestate at this block. A root without a size,
-/// or a size without a root, is a malformed response rather than an inactive
-/// pool — the two travel together or not at all.
-fn parse_pool_root(
-    value: &serde_json::Value,
-    pool: &str,
-) -> Result<Option<TreeRootInfo>, ParseError> {
-    let Some(commitments) = value.get(pool).and_then(|p| p.get("commitments")) else {
+/// Public entry point, kept under the original name used by the adapter.
+pub(crate) fn parse_tree_roots(value: &serde_json::Value) -> Result<TreeRoots, ParseError> {
+    parse_tree_roots_inner(value)
+}
+
+/// The serialised tree for one pool, if the response carries that pool at all.
+fn pool_final_state(pool: Option<&serde_json::Value>) -> Result<Option<Vec<u8>>, ParseError> {
+    let Some(pool) = pool else { return Ok(None) };
+    let Some(commitments) = opt_field(pool, "commitments") else {
         return Ok(None);
     };
-    match (
-        opt_field(commitments, "finalRoot"),
-        opt_field(commitments, "finalSize"),
-    ) {
-        (Some(root), Some(size)) => Ok(Some(TreeRootInfo {
-            root: as_tree_root(root)?,
-            size: as_u64(size)?,
-        })),
-        (None, None) => Ok(None),
-        (root, _) => Err(ParseError::Amount(format!(
-            "{pool} treestate has {} without its counterpart",
-            if root.is_some() {
-                "finalRoot"
-            } else {
-                "finalSize"
-            }
-        ))),
+    match opt_field(commitments, "finalState") {
+        Some(state) => Ok(Some(
+            hex::decode(as_str(state)?).map_err(|e| ParseError::Hex(e.to_string()))?,
+        )),
+        // The pool is present but empty — a well-defined state, not an absent
+        // pool, so it still yields a root below.
+        None => Ok(Some(Vec::new())),
     }
+}
+
+fn sapling_pool_root(pool: Option<&serde_json::Value>) -> Result<Option<TreeRootInfo>, ParseError> {
+    let Some(bytes) = pool_final_state(pool)? else {
+        return Ok(None);
+    };
+    let tree = read_tree::<sapling_crypto::Node>(&bytes)?;
+    Ok(Some(TreeRootInfo {
+        root: TreeRoot::new(tree.root().to_bytes()),
+        size: tree.size() as u64,
+    }))
+}
+
+/// Orchard and Ironwood share a node type and a root representation, so they
+/// share this reader — the pools differ only in which field they came from.
+fn orchard_shaped_pool_root(
+    pool: Option<&serde_json::Value>,
+) -> Result<Option<TreeRootInfo>, ParseError> {
+    let Some(bytes) = pool_final_state(pool)? else {
+        return Ok(None);
+    };
+    let tree = read_tree::<zebra_chain::orchard::tree::Node>(&bytes)?;
+    Ok(Some(TreeRootInfo {
+        root: TreeRoot::new(tree.root().to_repr()),
+        size: tree.size() as u64,
+    }))
+}
+
+/// Deserialise a note commitment tree, treating empty bytes as an empty tree.
+fn read_tree<N>(bytes: &[u8]) -> Result<CommitmentTree<N, 32>, ParseError>
+where
+    N: incrementalmerkletree::Hashable + Clone + zcash_primitives::merkle_tree::HashSer,
+{
+    if bytes.is_empty() {
+        return Ok(CommitmentTree::empty());
+    }
+    zcash_primitives::merkle_tree::read_commitment_tree(bytes)
+        .map_err(|e| ParseError::Deserialize(format!("note commitment tree: {e}")))
 }
 
 /// Parse a `getblockchaininfo` response.
@@ -713,7 +756,7 @@ pub(crate) fn parse_blockchain_info(
         best_block_hash: parse_block_hash(field(value, "bestblockhash")?)?,
         difficulty: as_f64(field(value, "difficulty")?)?,
         verification_progress: as_f64(field(value, "verificationprogress")?)?,
-        chain_work: as_chain_work_natural(field(value, "chainwork")?)?,
+        chain_work: parse_reported_chain_work(field(value, "chainwork")?)?,
         pruned: opt_field(value, "pruned")
             .map(as_bool)
             .transpose()?
@@ -742,9 +785,31 @@ pub(crate) fn parse_blockchain_info(
 /// and validators trim leading zeroes, so an early-chain response is genuinely
 /// short rather than malformed. Anything longer than 32 bytes is out of range
 /// for the protocol and is rejected.
-/// Cumulative chainwork. Natural order, and left-padded rather than fixed
-/// width: it is a big-endian integer, so validators trim leading zeroes and an
-/// early-chain response is genuinely short rather than malformed.
+/// Chainwork as reported in `getblockchaininfo`, where the two validators
+/// disagree on both the encoding and whether they track it at all.
+///
+/// zcashd sends a hex string. Zebra types the field as a 64-bit integer, so it
+/// arrives as a JSON number, and hardcodes it to zero because it does not store
+/// cumulative work per height. Zero is not a possible amount of work for a real
+/// chain, so it is read as "not reported" rather than as a value a consumer
+/// could compare.
+fn parse_reported_chain_work(value: &serde_json::Value) -> Result<Option<ChainWork>, ParseError> {
+    if let Some(number) = value.as_u64() {
+        if number == 0 {
+            return Ok(None);
+        }
+        let mut be = [0u8; 32];
+        be[24..].copy_from_slice(&number.to_be_bytes());
+        return Ok(Some(ChainWork::new(be)));
+    }
+
+    let work = as_chain_work_natural(value)?;
+    Ok((work != ChainWork::new([0u8; 32])).then_some(work))
+}
+
+/// Cumulative chainwork as a hex string. Natural order, and left-padded rather
+/// than fixed width: it is a big-endian integer, so validators trim leading
+/// zeroes and an early-chain response is genuinely short rather than malformed.
 fn as_chain_work_natural(value: &serde_json::Value) -> Result<ChainWork, ParseError> {
     let s = as_str(value)?;
     let s = s.strip_prefix("0x").unwrap_or(s);
@@ -1059,5 +1124,48 @@ mod tests {
         let bogus = json!({ "hex": "00", "height": -7 });
 
         assert!(parse_transaction(&bogus).is_err());
+    }
+
+    /// `z_gettreestate` reports neither a root nor a size — zebra sends
+    /// `finalRoot: null` and there is no `finalSize` field — so both are
+    /// derived from the serialised tree in `finalState`. Reading the nominal
+    /// fields instead would report every pool as inactive against every Zebra
+    /// node, which is what this pins against.
+    #[test]
+    fn tree_roots_are_derived_from_final_state_not_read_from_fields() {
+        // A pool present but with no commitments yet: an empty tree, which has
+        // a well-defined root, not an absent pool.
+        let empty_pools = json!({
+            "sapling": { "commitments": { "finalState": "" } },
+            "orchard": { "commitments": { "finalState": "" } },
+        });
+
+        let roots = parse_tree_roots(&empty_pools).expect("empty trees are valid");
+
+        let sapling = roots.sapling.expect("sapling pool present");
+        assert_eq!(sapling.size, 0, "an empty tree holds no commitments");
+        let orchard = roots.orchard.expect("orchard pool present");
+        assert_eq!(orchard.size, 0);
+        assert!(
+            roots.ironwood.is_none(),
+            "a pool absent from the response stays absent"
+        );
+    }
+
+    /// A response shaped the way the nominal fields suggest — carrying
+    /// `finalRoot` but no `finalState` — must not be silently read as a root.
+    #[test]
+    fn a_pool_without_final_state_is_still_an_empty_tree() {
+        let root_only = json!({
+            "sapling": { "commitments": { "finalRoot": "ab".repeat(32) } },
+        });
+
+        let roots = parse_tree_roots(&root_only).expect("parses");
+        let sapling = roots.sapling.expect("pool present");
+
+        assert_eq!(
+            sapling.size, 0,
+            "size comes from the tree, and there is no tree here"
+        );
     }
 }

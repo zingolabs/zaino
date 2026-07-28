@@ -5999,6 +5999,7 @@ dependencies = [
 name = "zaino-source-zebra-readstate"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "tokio",
  "tower 0.4.13",
  "tracing",
@@ -6006,6 +6007,7 @@ dependencies = [
  "zaino-primitives",
  "zaino-source",
  "zebra-chain",
+ "zebra-rpc",
  "zebra-state",
 ]
 
@@ -6014,6 +6016,8 @@ name = "zaino-source-zebra-rpc"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "incrementalmerkletree",
+ "sapling-crypto",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -6023,6 +6027,7 @@ dependencies = [
  "zaino-primitives",
  "zaino-rpc",
  "zaino-source",
+ "zcash_primitives",
  "zebra-chain",
 ]
 
