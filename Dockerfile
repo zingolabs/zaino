@@ -6,7 +6,12 @@
 # RUST_VERSION must be supplied via --build-arg. Canonical source is
 # rust-toolchain.toml's `channel`, surfaced by the workbench get-rust-version bin
 # — no default is set so a stale literal cannot drift from the workspace's
-# pinned toolchain. See README for the recommended build invocation.
+# pinned toolchain.
+#
+# Omitting it expands this to `rust:-bookworm` and fails with "invalid reference
+# format", which does not name the missing argument (issue #468). Prefer
+# `makers build-zainod-image`, which supplies the pin; see docs/docker.md
+# ("Building the image") for the raw docker invocation.
 ARG RUST_VERSION
 ARG UID=1000
 ARG GID=1000
@@ -37,7 +42,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       cmake=3.25.1-1 \
       make=4.3-4.1 \
       ca-certificates=20230311+deb12u1 \
-      protobuf-compiler=3.21.12-3 \
+      protobuf-compiler=3.21.12-3+deb12u1 \
   && rm -rf /var/lib/apt/lists/*
 
 # Copy entire workspace (prevents missing members)
