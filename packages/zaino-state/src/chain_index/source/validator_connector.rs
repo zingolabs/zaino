@@ -1630,8 +1630,10 @@ impl BlockchainSource for ValidatorConnector {
 
     async fn get_address_utxos(
         &self,
-        addresses: GetAddressBalanceRequest,
+        request: AddressUtxosRequest,
     ) -> BlockchainSourceResult<Vec<GetAddressUtxos>> {
+        let (addresses, start_height, max_entries) = request.into_parts();
+
         match self {
             ValidatorConnector::State(state) => {
                 let mut state = state.read_state_service.clone();
@@ -1651,47 +1653,66 @@ impl BlockchainSource for ValidatorConnector {
                 let mut last_output_location =
                     zebra_state::OutputLocation::from_usize(zebra_chain::block::Height(0), 0, 0);
 
-                Ok(utxos
-                    .utxos()
-                    .map(
-                        |(
-                            utxo_address,
-                            utxo_hash,
-                            utxo_output_location,
-                            utxo_transparent_output,
-                        )| {
-                            assert!(utxo_output_location > &last_output_location);
-                            last_output_location = *utxo_output_location;
-                            GetAddressUtxos::new(
-                                utxo_address,
-                                *utxo_hash,
-                                utxo_output_location.output_index(),
-                                utxo_transparent_output.lock_script.clone(),
-                                u64::from(utxo_transparent_output.value()),
-                                utxo_output_location.height(),
-                            )
-                        },
-                    )
-                    .collect())
+                let mut address_utxos = Vec::new();
+                for (utxo_address, utxo_hash, utxo_output_location, utxo_transparent_output) in
+                    utxos.utxos()
+                {
+                    assert!(utxo_output_location > &last_output_location);
+                    last_output_location = *utxo_output_location;
+
+                    if (utxo_output_location.height().0 as u64) < start_height {
+                        continue;
+                    }
+                    if let Some(limit) = max_entries {
+                        if address_utxos.len() >= limit as usize {
+                            break;
+                        }
+                    }
+
+                    address_utxos.push(GetAddressUtxos::new(
+                        utxo_address,
+                        *utxo_hash,
+                        utxo_output_location.output_index(),
+                        utxo_transparent_output.lock_script.clone(),
+                        u64::from(utxo_transparent_output.value()),
+                        utxo_output_location.height(),
+                    ));
+                }
+
+                Ok(address_utxos)
             }
-            ValidatorConnector::Fetch(fetch) => Ok(fetch
-                .get_address_utxos(
-                    addresses
-                        .valid_addresses()
-                        .map_err(|_error| {
-                            BlockchainSourceError::Unrecoverable(
-                                "Invalid address provided".to_string(),
-                            )
-                        })?
-                        .into_iter()
-                        .map(|address| address.to_string())
-                        .collect(),
-                )
-                .await
-                .map_err(BlockchainSourceError::unrecoverable)?
-                .into_iter()
-                .map(|utxos| utxos.into())
-                .collect()),
+            ValidatorConnector::Fetch(fetch) => {
+                let rpc_utxos = fetch
+                    .get_address_utxos(
+                        addresses
+                            .valid_addresses()
+                            .map_err(|_error| {
+                                BlockchainSourceError::Unrecoverable(
+                                    "Invalid address provided".to_string(),
+                                )
+                            })?
+                            .into_iter()
+                            .map(|address| address.to_string())
+                            .collect(),
+                    )
+                    .await
+                    .map_err(BlockchainSourceError::unrecoverable)?;
+
+                let mut address_utxos = Vec::new();
+                for utxo in rpc_utxos {
+                    if (utxo.height.0 as u64) < start_height {
+                        continue;
+                    }
+                    if let Some(limit) = max_entries {
+                        if address_utxos.len() >= limit as usize {
+                            break;
+                        }
+                    }
+                    address_utxos.push(utxo.into());
+                }
+
+                Ok(address_utxos)
+            }
         }
     }
 

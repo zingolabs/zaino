@@ -1878,7 +1878,14 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
     ) -> Result<GetAddressUtxosReplyList, Self::Error> {
         super::validate_utxo_address_count(request.addresses.len())?;
         let taddrs = GetAddressBalanceRequest::new(request.addresses);
-        let utxos = self.z_get_address_utxos(taddrs).await?;
+        let utxos = self
+            .indexer
+            .get_address_utxos_bounded(
+                taddrs,
+                request.start_height,
+                (request.max_entries > 0).then_some(request.max_entries),
+            )
+            .await?;
         let mut address_utxos: Vec<GetAddressUtxosReply> = Vec::new();
         let mut entries: u32 = 0;
         for utxo in utxos {
@@ -1936,7 +1943,14 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
     ) -> Result<UtxoReplyStream, Self::Error> {
         super::validate_utxo_address_count(request.addresses.len())?;
         let taddrs = GetAddressBalanceRequest::new(request.addresses);
-        let utxos = self.z_get_address_utxos(taddrs).await?;
+        let utxos = self
+            .indexer
+            .get_address_utxos_bounded(
+                taddrs,
+                request.start_height,
+                (request.max_entries > 0).then_some(request.max_entries),
+            )
+            .await?;
         let service_timeout = self.config.service.timeout;
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
         tokio::spawn(async move {

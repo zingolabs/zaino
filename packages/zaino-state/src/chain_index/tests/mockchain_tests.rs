@@ -1,7 +1,7 @@
 use super::{load_test_vectors_and_sync_chain_index, MockchainMode};
 use crate::{
     chain_index::{
-        source::mockchain_source::MockchainSource,
+        source::{mockchain_source::MockchainSource, AddressUtxosRequest},
         tests::{
             poll::poll_until,
             vectors::{indexed_block_chain, load_test_vectors, TestVectorBlockData},
@@ -777,19 +777,78 @@ async fn get_address_utxos() {
     let transparent_address = faucet_transparent_address();
 
     let expected_utxos = mockchain
+        .get_address_utxos(AddressUtxosRequest::unbounded(
+            GetAddressBalanceRequest::new(vec![transparent_address.clone()]),
+        ))
+        .await
+        .unwrap();
+
+    let indexer_utxos = index_reader
         .get_address_utxos(GetAddressBalanceRequest::new(vec![
             transparent_address.clone()
         ]))
         .await
         .unwrap();
 
-    let indexer_utxos = index_reader
-        .get_address_utxos(GetAddressBalanceRequest::new(vec![transparent_address]))
+    assert!(!indexer_utxos.is_empty());
+    assert_eq!(indexer_utxos, expected_utxos);
+    assert!(expected_utxos.len() > 1);
+
+    mockchain.reset_address_utxo_counters();
+    let capped_utxos = index_reader
+        .get_address_utxos_bounded(
+            GetAddressBalanceRequest::new(vec![transparent_address.clone()]),
+            0,
+            Some(1),
+        )
         .await
         .unwrap();
 
-    assert!(!indexer_utxos.is_empty());
-    assert_eq!(indexer_utxos, expected_utxos);
+    assert_eq!(capped_utxos, vec![expected_utxos[0].clone()]);
+    assert_eq!(mockchain.address_utxo_request_count(), 1);
+    assert_eq!(mockchain.address_utxo_conversion_count(), 1);
+
+    let (_, _, _, _, _, start_height) = expected_utxos[1].clone().into_parts();
+    let start_height = start_height.0 as u64;
+    let expected_from_start = expected_utxos
+        .iter()
+        .filter(|utxo| {
+            let (_, _, _, _, _, height) = (*utxo).clone().into_parts();
+            (height.0 as u64) >= start_height
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    mockchain.reset_address_utxo_counters();
+    let from_start = index_reader
+        .get_address_utxos_bounded(
+            GetAddressBalanceRequest::new(vec![transparent_address.clone()]),
+            start_height,
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(from_start, expected_from_start);
+    assert_eq!(mockchain.address_utxo_request_count(), 1);
+    assert_eq!(
+        mockchain.address_utxo_conversion_count(),
+        expected_from_start.len()
+    );
+
+    mockchain.reset_address_utxo_counters();
+    let from_start_capped = index_reader
+        .get_address_utxos_bounded(
+            GetAddressBalanceRequest::new(vec![transparent_address.clone()]),
+            start_height,
+            Some(1),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(from_start_capped, vec![expected_from_start[0].clone()]);
+    assert_eq!(mockchain.address_utxo_request_count(), 1);
+    assert_eq!(mockchain.address_utxo_conversion_count(), 1);
 
     let invalid_address_result = index_reader
         .get_address_utxos(GetAddressBalanceRequest::new(vec![
@@ -798,6 +857,105 @@ async fn get_address_utxos() {
         .await;
 
     assert!(invalid_address_result.is_err());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn address_utxo_handlers_apply_identical_bounds_before_source_conversion() {
+    use crate::indexer::node_backed_indexer::NodeBackedIndexerServiceSubscriber;
+    use crate::LightWalletIndexer as _;
+    use zaino_common::network::ActivationHeights;
+    use zaino_proto::proto::service::GetAddressUtxosArg;
+
+    let (_blocks, _indexer, index_reader, mockchain) =
+        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
+    let transparent_address = faucet_transparent_address();
+    let source_utxos = mockchain
+        .get_address_utxos(AddressUtxosRequest::unbounded(
+            GetAddressBalanceRequest::new(vec![transparent_address.clone()]),
+        ))
+        .await
+        .unwrap();
+    let (_, _, _, _, _, start_height) = source_utxos[1].clone().into_parts();
+    let service = NodeBackedIndexerServiceSubscriber::new_for_test(
+        index_reader,
+        ActivationHeights::default().to_regtest_network(),
+    );
+
+    let bounded_request = GetAddressUtxosArg {
+        addresses: vec![transparent_address.clone()],
+        start_height: start_height.0 as u64,
+        max_entries: 1,
+    };
+
+    mockchain.reset_address_utxo_counters();
+    let unary = service
+        .get_address_utxos(bounded_request.clone())
+        .await
+        .unwrap()
+        .address_utxos;
+
+    assert_eq!(unary.len(), 1);
+    assert_eq!(mockchain.address_utxo_request_count(), 1);
+    assert_eq!(mockchain.address_utxo_conversion_count(), 1);
+
+    mockchain.reset_address_utxo_counters();
+    let streamed = service
+        .get_address_utxos_stream(bounded_request)
+        .await
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .await
+        .unwrap();
+
+    assert_eq!(streamed, unary);
+    assert_eq!(mockchain.address_utxo_request_count(), 1);
+    assert_eq!(mockchain.address_utxo_conversion_count(), 1);
+
+    mockchain.reset_address_utxo_counters();
+    let unrestricted = service
+        .get_address_utxos(GetAddressUtxosArg {
+            addresses: vec![transparent_address.clone()],
+            start_height: 0,
+            max_entries: 0,
+        })
+        .await
+        .unwrap()
+        .address_utxos;
+
+    assert!(unrestricted.len() > 1);
+    assert_eq!(mockchain.address_utxo_request_count(), 1);
+    assert_eq!(
+        mockchain.address_utxo_conversion_count(),
+        unrestricted.len()
+    );
+
+    let over_limit_request = GetAddressUtxosArg {
+        addresses: vec![transparent_address; 1001],
+        start_height: 0,
+        max_entries: 1,
+    };
+
+    mockchain.reset_address_utxo_counters();
+    let unary_error = match service.get_address_utxos(over_limit_request.clone()).await {
+        Ok(_) => panic!(),
+        Err(error) => error,
+    };
+    let unary_status: tonic::Status = unary_error.into();
+
+    assert_eq!(unary_status.code(), tonic::Code::InvalidArgument);
+    assert_eq!(mockchain.address_utxo_request_count(), 0);
+    assert_eq!(mockchain.address_utxo_conversion_count(), 0);
+
+    mockchain.reset_address_utxo_counters();
+    let stream_error = match service.get_address_utxos_stream(over_limit_request).await {
+        Ok(_) => panic!(),
+        Err(error) => error,
+    };
+    let stream_status: tonic::Status = stream_error.into();
+
+    assert_eq!(stream_status.code(), tonic::Code::InvalidArgument);
+    assert_eq!(mockchain.address_utxo_request_count(), 0);
+    assert_eq!(mockchain.address_utxo_conversion_count(), 0);
 }
 
 /// Walks zaino's own indexed view of the test-vector chain and derives, for every

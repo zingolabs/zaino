@@ -9,7 +9,7 @@ use super::*;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr as _;
 use std::sync::{
-    atomic::{AtomicU32, Ordering},
+    atomic::{AtomicU32, AtomicUsize, Ordering},
     Arc, Mutex,
 };
 use zaino_common::network::ActivationHeights;
@@ -158,6 +158,10 @@ pub(crate) struct MockchainSource {
     >,
     active_chain_height: Arc<AtomicU32>,
     force_requests_against_source_to_fail: Arc<std::sync::atomic::AtomicBool>,
+    /// Number of transparent-UTXO source calls, shared across clones for tests.
+    address_utxo_request_count: Arc<AtomicUsize>,
+    /// Number of transparent-UTXO rows converted after bounds are applied.
+    address_utxo_conversion_count: Arc<AtomicUsize>,
     /// One-shot test hook: fires on the first `get_block(HashOrHeight::Height(_))`
     /// call after [`Self::arm_one_shot_get_block_hook`], regardless of which
     /// height is requested. Used by race regression tests (#1126) to inject
@@ -247,6 +251,8 @@ impl MockchainSource {
             force_requests_against_source_to_fail: Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
             )),
+            address_utxo_request_count: Arc::new(AtomicUsize::new(0)),
+            address_utxo_conversion_count: Arc::new(AtomicUsize::new(0)),
             get_block_hook: Arc::new(Mutex::new(None)),
             blocks_received_broadcaster: tokio::sync::watch::channel(()).0,
             shutdown_called: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -264,6 +270,23 @@ impl MockchainSource {
     pub(crate) fn set_failing(&self, fail: bool) {
         self.force_requests_against_source_to_fail
             .store(fail, Ordering::SeqCst);
+    }
+
+    /// Resets transparent-UTXO source-call and conversion counters.
+    pub(crate) fn reset_address_utxo_counters(&self) {
+        self.address_utxo_request_count.store(0, Ordering::SeqCst);
+        self.address_utxo_conversion_count
+            .store(0, Ordering::SeqCst);
+    }
+
+    /// Returns the number of transparent-UTXO source calls since the last reset.
+    pub(crate) fn address_utxo_request_count(&self) -> usize {
+        self.address_utxo_request_count.load(Ordering::SeqCst)
+    }
+
+    /// Returns the number of transparent-UTXO rows converted since the last reset.
+    pub(crate) fn address_utxo_conversion_count(&self) -> usize {
+        self.address_utxo_conversion_count.load(Ordering::SeqCst)
     }
 
     /// Advances `active_chain_height` by up to `blocks`, capped at
@@ -1240,8 +1263,11 @@ impl BlockchainSource for MockchainSource {
 
     async fn get_address_utxos(
         &self,
-        address_strings: GetAddressBalanceRequest,
+        request: AddressUtxosRequest,
     ) -> BlockchainSourceResult<Vec<GetAddressUtxos>> {
+        self.address_utxo_request_count
+            .fetch_add(1, Ordering::SeqCst);
+        let (address_strings, start_height, max_entries) = request.into_parts();
         let valid_addresses = address_strings.valid_addresses().map_err(|error| {
             BlockchainSourceError::Unrecoverable(format!("invalid address: {error}"))
         })?;
@@ -1265,7 +1291,13 @@ impl BlockchainSource for MockchainSource {
 
         let utxos = unspent_outputs
             .into_iter()
+            .filter(|(_outpoint, matching_output)| {
+                (matching_output.height.0 as u64) >= start_height
+            })
+            .take(max_entries.map_or(usize::MAX, |limit| limit as usize))
             .map(|(_outpoint, matching_output)| {
+                self.address_utxo_conversion_count
+                    .fetch_add(1, Ordering::SeqCst);
                 GetAddressUtxos::new(
                     matching_output.address,
                     matching_output.transaction_hash,

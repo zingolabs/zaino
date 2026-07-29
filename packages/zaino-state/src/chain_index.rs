@@ -33,7 +33,7 @@ use arc_swap::ArcSwapOption;
 use futures::{FutureExt, Stream};
 use hex::FromHex as _;
 use non_finalised_state::NonfinalizedBlockCacheSnapshot;
-use source::{BlockchainSource, ValidatorConnector};
+use source::{AddressUtxosRequest, BlockchainSource, ValidatorConnector};
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, instrument};
@@ -512,6 +512,17 @@ pub trait ChainIndex {
     fn get_address_utxos(
         &self,
         address_strings: GetAddressBalanceRequest,
+    ) -> impl std::future::Future<Output = Result<Vec<GetAddressUtxos>, Self::Error>>;
+
+    /// Returns a bounded subset of unspent transparent outputs for the given addresses.
+    ///
+    /// `start_height` is inclusive. `max_entries = None` leaves the result unrestricted.
+    /// These bounds apply to Zaino's converted result, not the backing validator's query work.
+    fn get_address_utxos_bounded(
+        &self,
+        address_strings: GetAddressBalanceRequest,
+        start_height: u64,
+        max_entries: Option<u32>,
     ) -> impl std::future::Future<Output = Result<Vec<GetAddressUtxos>, Self::Error>>;
 
     /// For each outpoint, returns the txid of the transaction that spent it on the best
@@ -2340,8 +2351,23 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         &self,
         address_strings: GetAddressBalanceRequest,
     ) -> Result<Vec<GetAddressUtxos>, Self::Error> {
+        self.get_address_utxos_bounded(address_strings, 0, None)
+            .await
+    }
+
+    /// Returns a bounded subset of unspent transparent outputs for the given addresses.
+    async fn get_address_utxos_bounded(
+        &self,
+        address_strings: GetAddressBalanceRequest,
+        start_height: u64,
+        max_entries: Option<u32>,
+    ) -> Result<Vec<GetAddressUtxos>, Self::Error> {
         self.source()
-            .get_address_utxos(address_strings)
+            .get_address_utxos(AddressUtxosRequest::new(
+                address_strings,
+                start_height,
+                max_entries,
+            ))
             .await
             .map_err(ChainIndexError::backing_validator)
     }

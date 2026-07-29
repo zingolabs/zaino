@@ -40,6 +40,45 @@ pub(crate) mod mockchain_source;
 pub mod validator_connector;
 pub use validator_connector::*;
 
+/// A transparent-UTXO query with response-conversion bounds.
+///
+/// The backing validator interfaces currently accept only the address set, so
+/// `start_height` and `max_entries` bound the rows converted and returned by
+/// Zaino, not the validator's query work or its initial response.
+#[derive(Clone, Debug)]
+pub struct AddressUtxosRequest {
+    addresses: GetAddressBalanceRequest,
+    start_height: u64,
+    max_entries: Option<u32>,
+}
+
+impl AddressUtxosRequest {
+    /// Creates a transparent-UTXO query with an inclusive minimum height and
+    /// an optional global result cap.
+    pub fn new(
+        addresses: GetAddressBalanceRequest,
+        start_height: u64,
+        max_entries: Option<u32>,
+    ) -> Self {
+        Self {
+            addresses,
+            start_height,
+            max_entries,
+        }
+    }
+
+    /// Creates the unbounded query used by the zcash-compatible RPC surface.
+    pub fn unbounded(addresses: GetAddressBalanceRequest) -> Self {
+        Self::new(addresses, 0, None)
+    }
+
+    /// Returns the address set, inclusive minimum height, and optional global
+    /// result cap.
+    pub fn into_parts(self) -> (GetAddressBalanceRequest, u64, Option<u32>) {
+        (self.addresses, self.start_height, self.max_entries)
+    }
+}
+
 /// One pool's treestate for a block, as reported by the backing validator.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PoolTreestate {
@@ -327,7 +366,7 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     /// <https://github.com/zcash/lightwalletd/blob/master/frontend/service.go#L402>
     fn get_address_utxos(
         &self,
-        address_strings: GetAddressBalanceRequest,
+        request: AddressUtxosRequest,
     ) -> impl SendFut<BlockchainSourceResult<Vec<GetAddressUtxos>>>;
 
     // ********** Utility methods **********
