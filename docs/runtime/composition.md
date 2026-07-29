@@ -137,6 +137,29 @@ until dropped (Q1).
   (legacy `get_fullblock_bytes_from_node`; Q4). A full-block cache is a future
   optimization only if whole-chain full-block streaming (zallet scan) is hot.
 
+## Composition algebra
+
+The equations are the spec; the crate/method names are incidental to them.
+`F` = finalised tier, `N` = recent tier, `V` = validator; `wm` = finalised
+watermark, `tip` = recent tip. `F` answers heights `(-inf, wm]`, `N` answers
+`(wm, tip]` — disjoint domains. (`⊥` = not answerable now.)
+
+```text
+route(h)          = F(h)                      if h <= wm
+                  = N(h)                      if h  > wm        -- disjoint by height
+merge.unspent(a)  = (F.unspent(a) \ spentN) ∪ N.created_unspent(a)
+                                              -- spentN = outpoints spent in (wm, tip]
+passthrough(id)   = V(id)                     -- by immutable id, tier-independent
+
+answerable(cap) per strategy:
+  route       -> tip  if window ready else wm
+  merge       -> tip  if window ready else ⊥
+  passthrough -> tip-or-wm  if enabled  else ⊥
+```
+
+Mirrored on the code: `zaino-runtime::resolve` (module doc + each fn) and
+`serviceability::answerable_to`.
+
 ## What we adopt vs keep
 
 - **Adopt from Hahn (`zaino-store`) — narrow:** `Chain` (`im::Vector`),

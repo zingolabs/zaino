@@ -55,8 +55,14 @@ fn is_served(cap: Capability, cfg: &RuntimeConfig, served: &CapabilitySet) -> bo
     }
 }
 
-/// The height `cap` is answerable up to now, per its composition strategy —
-/// assuming it is served (see [`is_served`]).
+/// The height `cap` is answerable up to now, assuming it is served ([`is_served`]).
+/// Per strategy (`wm` = finalised watermark, `tip` = recent tip, ⊥ = not now):
+///
+/// ```text
+/// route       -> tip  if window ready else wm      -- finalised always, extended to tip
+/// merge       -> tip  if window ready else ⊥       -- needs both tiers coherent
+/// passthrough -> tip-or-wm                          -- by hash, sync-independent
+/// ```
 fn answerable_to(cap: Capability, state: &State) -> Option<Height> {
     match resolve::strategy(cap) {
         // Finalised is answerable up to the watermark; the recent window extends

@@ -5,6 +5,23 @@
 //! here, in one place, so neither the supervisor nor the per-capability
 //! type-specific code re-derives the decision — one policy, tested once
 //! (locality of correctness).
+//!
+//! # Composition algebra
+//!
+//! Let `F` be the finalised tier, `N` the recent (non-finalised) tier, `V` the
+//! validator; `wm` the finalised watermark, `tip` the recent tip. `F` answers
+//! heights `(-inf, wm]`, `N` answers `(wm, tip]` — disjoint domains.
+//!
+//! ```text
+//! route(h)       = F(h)                     if h <= wm
+//!                = N(h)                      if h  > wm          -- disjoint by height
+//! merge.unspent(a) = (F.unspent(a) \ spentN) ∪ N.created_unspent(a)
+//!                                            -- spentN = outpoints spent in (wm, tip]
+//! passthrough(id) = V(id)                    -- by immutable id, tier-independent
+//! ```
+//!
+//! Each function below is one line of this algebra; the equation is the spec,
+//! the code names are incidental to it.
 
 use zaino_core::{Capability, Height, Outpoint, Utxo};
 
@@ -47,9 +64,9 @@ pub(crate) fn strategy(cap: Capability) -> Strategy {
     }
 }
 
-/// For a `Route` read: which tier owns `height`. The recent-not-ready case is
-/// the snapshot's concern (it holds the pinned NFS `Option`); this is the pure
-/// boundary at the watermark.
+/// The `route(h)` domain split: `F` owns `h <= wm`, `N` owns `h > wm`. The
+/// recent-not-ready case is the snapshot's concern (it holds the pinned NFS
+/// `Option`); this is the pure boundary at the watermark.
 pub(crate) fn tier_of(height: Height, watermark: Height) -> Tier {
     if height <= watermark {
         Tier::Finalised
@@ -74,10 +91,11 @@ pub(crate) fn outpoint_of(utxo: &Utxo) -> Outpoint {
     }
 }
 
-/// Combine an address's finalised and recent unspent outpoints (US-1.3): the
-/// finalised UTXOs *not* spent within the recent window, plus the recent
-/// still-unspent UTXOs. `spent_in_window(op)` reports whether the recent window
-/// spent `op` (the NFS spend facet, at the call site).
+/// `merge.unspent(a) = (F.unspent(a) \ spentN) ∪ N.created_unspent(a)` (US-1.3).
+///
+/// The finalised UTXOs *not* spent within the recent window (`\ spentN`), plus
+/// the recent still-unspent creates (`∪ N.created_unspent`). `spent_in_window`
+/// is `op ∈ spentN` — the NFS spend facet, supplied at the call site.
 pub(crate) fn merge_unspent(
     finalised: Vec<Utxo>,
     recent: Vec<Utxo>,
