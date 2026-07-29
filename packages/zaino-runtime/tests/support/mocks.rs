@@ -55,6 +55,8 @@ pub fn block_id(height: u32, tag: u8) -> BlockId {
 pub struct MockFs {
     pub watermark: Height,
     pub calls: Calls,
+    /// Finalised unspent outpoints returned by `address_unspent` (default empty).
+    pub finalised_utxos: Vec<Utxo>,
 }
 
 impl FinalisedSpine for MockFs {
@@ -110,7 +112,7 @@ impl AddressIndex for MockFs {
         _addr: &TransparentAddress,
     ) -> Result<Vec<Utxo>, AddressReadError> {
         self.calls.record("addr-fs".to_string());
-        Ok(Vec::new())
+        Ok(self.finalised_utxos.clone())
     }
 }
 
@@ -121,6 +123,10 @@ pub struct MockNfsSnap {
     pub tip: BlockId,
     pub range: (Height, Height),
     pub calls: Calls,
+    /// Recent unspent outpoints returned by `address_unspent` (default empty).
+    pub recent_utxos: Vec<Utxo>,
+    /// Outpoints the window reports as spent (default empty).
+    pub recent_spends: Vec<Outpoint>,
 }
 
 impl NfsSpine for MockNfsSnap {
@@ -146,7 +152,12 @@ impl NfsSpine for MockNfsSnap {
 }
 
 impl NfsSpendFacts for MockNfsSnap {
-    fn spend_status(&self, _outpoint: Outpoint) -> SpendStatus {
+    fn spend_status(&self, outpoint: Outpoint) -> SpendStatus {
+        if self.recent_spends.contains(&outpoint) {
+            return SpendStatus::Spent {
+                by: TransactionHash::from([0xFF; 32]),
+            };
+        }
         SpendStatus::NoSuchOutput
     }
 }
@@ -154,7 +165,7 @@ impl NfsSpendFacts for MockNfsSnap {
 impl NfsAddressFacts for MockNfsSnap {
     fn address_unspent(&self, _addr: &TransparentAddress) -> Vec<Utxo> {
         self.calls.record("addr-nfs".to_string());
-        Vec::new()
+        self.recent_utxos.clone()
     }
 }
 
@@ -241,6 +252,7 @@ pub async fn assemble_runtime(
     let fs = MockFs {
         watermark: h(watermark),
         calls: calls.clone(),
+        finalised_utxos: Vec::new(),
     };
     let nfs = MockNfs {
         ready: nfs_ready,
@@ -248,6 +260,8 @@ pub async fn assemble_runtime(
             tip: block_id(150, 0xAA),
             range: (h(watermark + 1), h(150)),
             calls: calls.clone(),
+            recent_utxos: Vec::new(),
+            recent_spends: Vec::new(),
         },
         finalised: h(watermark),
     };

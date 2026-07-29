@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use zaino_core::{Capability, ServiceabilityManifest};
 use zaino_fs::{AddressIndex, FinalisedSpine};
-use zaino_nfs::{NfsAddressFacts, NfsSpine, NfsView, NonFinalisedState};
+use zaino_nfs::{NfsAddressFacts, NfsSpendFacts, NfsSpine, NfsView, NonFinalisedState};
 use zaino_service::Serviceable;
 
 use crate::config::{CapabilitySet, RuntimeConfig};
@@ -145,7 +145,7 @@ where
     pub fn serving_address_history(mut self) -> Self
     where
         F: AddressIndex,
-        N::Snapshot: NfsAddressFacts,
+        N::Snapshot: NfsAddressFacts + NfsSpendFacts,
     {
         self.served.insert(Capability::AddressHistory);
         self

@@ -40,6 +40,8 @@ impl NonFinalisedState for LiveNfs {
             tip: block_id(tip, 0xAA),
             range: (h(self.finalised + 1), h(tip)),
             calls: self.calls.clone(),
+            recent_utxos: Vec::new(),
+            recent_spends: Vec::new(),
         })
     }
     fn subscribe_tip(&self) -> BoxStream<'_, TipEvent> {
@@ -60,6 +62,7 @@ async fn a_snapshot_is_pinned_across_live_advancement() {
     let fs = MockFs {
         watermark: h(100),
         calls: calls.clone(),
+        finalised_utxos: Vec::new(),
     };
     let nfs = LiveNfs {
         live_tip: Arc::clone(&live_tip),

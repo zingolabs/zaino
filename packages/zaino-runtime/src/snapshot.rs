@@ -12,12 +12,12 @@ use futures::stream::{self, BoxStream, StreamExt};
 
 use zaino_core::{
     AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, BlockId, BlockRef, Capability,
-    CompactBlock, Height, HeightRange, Transaction, TransactionHash, TransparentAddress, TxStatus,
-    Utxo,
+    CompactBlock, Height, HeightRange, SpendStatus, Transaction, TransactionHash,
+    TransparentAddress, TxStatus, Utxo,
 };
 use zaino_fs::error::{AddressReadError as FsAddressReadError, HeightReadError, LookupError};
 use zaino_fs::{AddressIndex, FinalisedSpine};
-use zaino_nfs::{NfsAddressFacts, NfsSpine};
+use zaino_nfs::{NfsAddressFacts, NfsSpendFacts, NfsSpine};
 use zaino_service::error::{
     AddressReadError as SvcAddressReadError, BlockReadError, ReadError, TxReadError,
 };
@@ -170,7 +170,7 @@ where
     // address index. A minimal FS (no `AddressIndex`) → this impl is absent →
     // the capability is unrepresentable, not a runtime miss.
     F: AddressIndex + 'static,
-    S: NfsAddressFacts,
+    S: NfsAddressFacts + NfsSpendFacts,
     Src: Send + Sync, // captured in the `Send` future; address history isn't passthrough
 {
     async fn unspent_outpoints(
@@ -190,7 +190,14 @@ where
         };
         let finalised = self.fs.address_unspent(addr).await.map_err(fs_addr_err)?;
         let recent = nfs.address_unspent(addr);
-        Ok(resolve::merge_unspent(finalised, recent))
+        // Drop finalised UTXOs the recent window shows spent — the NFS spend
+        // facet is the source of truth for spends inside the window.
+        Ok(resolve::merge_unspent(finalised, recent, |op| {
+            matches!(
+                nfs.spend_status(*op),
+                SpendStatus::Spent { .. } | SpendStatus::SpentSpenderUnknown
+            )
+        }))
     }
 
     async fn balance(

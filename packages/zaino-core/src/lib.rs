@@ -9,9 +9,9 @@
 
 // Domain data + identifiers — the real vocabulary, from the zero-dependency crate.
 pub use zaino_primitives::types::{
-    AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, CompactBlock, Height,
-    PreIndexCompactBlock, ShieldedPool, SubtreeRoot, Transaction, TransactionHash,
-    TransactionLocation, TransparentAddress, Treestate, Utxo,
+    AddressBalance, AddressDelta, Block, BlockHash, BlockHeader, CompactBlock, Height, OutputIndex,
+    PreIndexCompactBlock, Script, ShieldedPool, SubtreeRoot, Transaction, TransactionHash,
+    TransactionLocation, TransparentAddress, Treestate, Utxo, Zatoshis,
 };
 
 mod events;

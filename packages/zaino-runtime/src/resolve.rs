@@ -6,7 +6,7 @@
 //! type-specific code re-derives the decision — one policy, tested once
 //! (locality of correctness).
 
-use zaino_core::{Capability, Height, Utxo};
+use zaino_core::{Capability, Height, Outpoint, Utxo};
 
 use crate::config::RuntimeConfig;
 
@@ -65,21 +65,71 @@ pub(crate) fn passthrough_allowed(cap: Capability, cfg: &RuntimeConfig) -> bool 
     cfg.passthrough_enabled && cfg.capability_enabled(cap)
 }
 
-/// Combine an address's finalised and recent unspent outpoints (US-1.3).
-///
-/// TODO(US-1.3): also drop finalised UTXOs spent within the recent window —
-/// needs recent spends-by-address from NFS.
-pub(crate) fn merge_unspent(mut finalised: Vec<Utxo>, recent: Vec<Utxo>) -> Vec<Utxo> {
-    finalised.extend(recent);
-    finalised
+/// The outpoint identifying a UTXO. Business↔business (not a persistence/wire
+/// boundary), so a plain fn rather than a `From`/`TryFrom`.
+pub(crate) fn outpoint_of(utxo: &Utxo) -> Outpoint {
+    Outpoint {
+        txid: utxo.txid,
+        index: utxo.output_index,
+    }
+}
+
+/// Combine an address's finalised and recent unspent outpoints (US-1.3): the
+/// finalised UTXOs *not* spent within the recent window, plus the recent
+/// still-unspent UTXOs. `spent_in_window(op)` reports whether the recent window
+/// spent `op` (the NFS spend facet, at the call site).
+pub(crate) fn merge_unspent(
+    finalised: Vec<Utxo>,
+    recent: Vec<Utxo>,
+    spent_in_window: impl Fn(&Outpoint) -> bool,
+) -> Vec<Utxo> {
+    let mut out: Vec<Utxo> = finalised
+        .into_iter()
+        .filter(|utxo| !spent_in_window(&outpoint_of(utxo)))
+        .collect();
+    out.extend(recent);
+    out
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
+    use zaino_core::{Script, TransactionHash, TransparentAddress, Zatoshis};
+
     use super::*;
 
     fn h(n: u32) -> Height {
         Height::try_from(n).expect("valid height")
+    }
+
+    /// A minimal UTXO distinguished only by its outpoint `(txid, index)`.
+    fn utxo(txid_tag: u8, index: u32) -> Utxo {
+        Utxo {
+            address: TransparentAddress::new("t1example".to_string()),
+            txid: TransactionHash::from([txid_tag; 32]),
+            output_index: index,
+            script: Script::new(Vec::new()),
+            satoshis: Zatoshis::new(1000).expect("valid amount"),
+            height: h(50),
+        }
+    }
+
+    #[test]
+    fn merge_drops_finalised_outpoints_spent_in_the_recent_window() {
+        // Finalised: A and B unspent as of the watermark.
+        let a = utxo(0xA1, 0);
+        let b = utxo(0xB2, 0);
+        // Recent window: created C (still unspent) and spent A.
+        let c = utxo(0xC3, 0);
+        let spent: HashSet<Outpoint> = std::iter::once(outpoint_of(&a)).collect();
+
+        let merged = merge_unspent(vec![a, b.clone()], vec![c.clone()], |op| spent.contains(op));
+
+        // A dropped (spent in the window); B kept; C added.
+        let got: HashSet<Outpoint> = merged.iter().map(outpoint_of).collect();
+        let want: HashSet<Outpoint> = [outpoint_of(&b), outpoint_of(&c)].into_iter().collect();
+        assert_eq!(got, want);
     }
 
     #[test]
