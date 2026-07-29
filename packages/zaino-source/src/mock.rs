@@ -234,6 +234,9 @@ mod tests {
     #[tokio::test]
     async fn treestate_roundtrip() {
         let ts = Treestate {
+            block_hash: hash(1),
+            height: height(0),
+            time: 0,
             sapling: Some(vec![1, 2, 3]),
             orchard: None,
             ironwood: None,

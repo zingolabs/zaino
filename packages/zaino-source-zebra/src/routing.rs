@@ -142,6 +142,23 @@ impl GetBlockByHash for ZebraValidator {
     }
 }
 
+impl GetRawBlock for ZebraValidator {
+    async fn get_raw_block(&self, height: Height) -> Result<Vec<u8>, QueryError<GetBlockError>> {
+        fast_or_slow!(self, get_raw_block, height)
+    }
+}
+
+impl GetRawBlockByHash for ZebraValidator {
+    async fn get_raw_block_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Vec<u8>, QueryError<GetBlockByHashError>> {
+        // Same side-chain gap as `GetBlockByHash`: the finalized state does not
+        // hold blocks off the best chain.
+        fast_then_slow!(self, get_raw_block_by_hash, hash)
+    }
+}
+
 impl GetChainTip for ZebraValidator {
     async fn get_chain_tip(&self) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
         fast_or_slow!(self, get_chain_tip)
@@ -312,6 +329,15 @@ impl GetBlockVerbose for ZebraValidator {
         height: Height,
     ) -> Result<BlockVerbose, QueryError<GetBlockVerboseError>> {
         self.rpc.get_block_verbose(height).await
+    }
+}
+
+impl GetBlockVerboseByHash for ZebraValidator {
+    async fn get_block_verbose_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<BlockVerbose, QueryError<GetBlockVerboseError>> {
+        self.rpc.get_block_verbose_by_hash(hash).await
     }
 }
 

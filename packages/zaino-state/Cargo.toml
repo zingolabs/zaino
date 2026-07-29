@@ -89,6 +89,9 @@ corez = { workspace = true }
 arc-swap = { workspace = true }
 reqwest.workspace = true
 bitflags = { workspace = true }
+zaino-source.workspace = true
+zaino-source-zebra.workspace = true
+zaino-primitives.workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }

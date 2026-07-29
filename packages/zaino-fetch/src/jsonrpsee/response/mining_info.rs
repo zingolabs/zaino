@@ -100,6 +100,39 @@ impl From<GetMiningInfoWire> for MiningInfo {
     }
 }
 
+impl From<MiningInfo> for GetMiningInfoWire {
+    /// Rebuild the wire form from the internal representation.
+    ///
+    /// The inverse of the existing `From<GetMiningInfoWire> for MiningInfo`.
+    /// Both directions are needed once a caller *produces* mining info rather
+    /// than only consuming it — which is the case while Zaino serves this RPC
+    /// from its own source layer and has to render the response itself.
+    ///
+    /// The zcashd-only local-miner fields (`genproclimit`, `localsolps`,
+    /// `generate`, `errorstimestamp`, `pooledtx`) have no counterpart in
+    /// [`MiningInfo`] and are emitted as absent. They describe a mining daemon,
+    /// which Zaino is not, so there is nothing truthful to put in them.
+    fn from(info: MiningInfo) -> Self {
+        Self {
+            tip_height: info.tip_height,
+            current_block_size: info.current_block_size,
+            current_block_tx: info.current_block_tx,
+            networksolps: info.network_solution_rate,
+            networkhashps: info.network_hash_rate,
+            chain: info.chain,
+            testnet: info.testnet,
+            difficulty: info.difficulty,
+            errors: info.errors,
+            errorstimestamp: None,
+            genproclimit: None,
+            localsolps: None,
+            pooledtx: None,
+            generate: None,
+            extras: info.extras,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

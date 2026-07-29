@@ -24,3 +24,17 @@ pub trait GetBlockVerbose: Send + Sync {
         height: Height,
     ) -> impl Future<Output = Result<BlockVerbose, QueryError<GetBlockVerboseError>>> + Send;
 }
+
+/// Fetch a block's chain-state facts, addressed by hash.
+///
+/// Separate from [`GetBlockVerbose`] for the same reason as
+/// [`GetBlockByHash`](super::GetBlockByHash): a height names a best-chain
+/// block, whereas a hash can name one on a side chain — where `confirmations`
+/// is negative and there is no next block.
+pub trait GetBlockVerboseByHash: Send + Sync {
+    /// Fetch verbose metadata by block hash.
+    fn get_block_verbose_by_hash(
+        &self,
+        hash: zaino_primitives::types::BlockHash,
+    ) -> impl Future<Output = Result<BlockVerbose, QueryError<GetBlockVerboseError>>> + Send;
+}

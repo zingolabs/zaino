@@ -42,7 +42,7 @@ pub use aliases::{
 pub use block::{Block, BlockHeader, ChainMetadata};
 pub use block_commitments::BlockCommitments;
 pub use block_hash::BlockHash;
-pub use block_verbose::BlockVerbose;
+pub use block_verbose::{BlockTreeSizes, BlockVerbose};
 pub use blockchain_info::{BlockchainInfo, ValuePoolBalance};
 pub use chain_work::ChainWork;
 pub use compact_block::{CompactBlock, PreIndexCompactBlock, PreIndexCompactTx};

@@ -608,11 +608,30 @@ impl ZebraReadStateAdapter {
         &self,
         id: zebra_state::HashOrHeight,
     ) -> Result<zaino_primitives::types::Treestate, FetchError> {
-        let (sapling, orchard, ironwood) = tokio::join!(
+        // The header read identifies the block the trees belong to. A treestate
+        // is only meaningful against one block, so it is fetched alongside
+        // rather than left for the caller to pair up.
+        let (header, sapling, orchard, ironwood) = tokio::join!(
+            read(&self.state, ReadRequest::BlockHeader(id)),
             read(&self.state, ReadRequest::SaplingTree(id)),
             read(&self.state, ReadRequest::OrchardTree(id)),
             read(&self.state, ReadRequest::IronwoodTree(id)),
         );
+
+        let (block_hash, height, time) = match header? {
+            ReadResponse::BlockHeader {
+                header,
+                hash,
+                height,
+                ..
+            } => (
+                BlockHash::from(hash.0),
+                Height::try_from(height.0)
+                    .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?,
+                header.time.timestamp() as u32,
+            ),
+            _ => return Err(unexpected_response("BlockHeader")),
+        };
 
         // A pool with no tree at this block is absent rather than empty: the
         // block predates its activation. That distinction is why every pool is
@@ -631,6 +650,9 @@ impl ZebraReadStateAdapter {
         };
 
         Ok(zaino_primitives::types::Treestate {
+            block_hash,
+            height,
+            time,
             sapling,
             orchard,
             ironwood,
@@ -870,5 +892,53 @@ impl zaino_source::GetBlockchainInfo for ZebraReadStateAdapter {
                 next_block: branch_at(next_height),
             },
         })
+    }
+}
+
+/// Serialize a block held by the state service back to its canonical bytes.
+///
+/// The state service hands back a parsed block, so the bytes are reproduced
+/// rather than passed through. Zebra's serialization is the inverse of the
+/// deserialization that produced the block, so the result is byte-identical to
+/// what the hash commits to.
+fn serialize_block(block: &zebra_chain::block::Block) -> Result<Vec<u8>, FetchError> {
+    use zebra_chain::serialization::ZcashSerialize;
+    block
+        .zcash_serialize_to_vec()
+        .map_err(|e| FetchError::new(FailureMode::Parse, format!("serialize block: {e}")))
+}
+
+impl zaino_source::GetRawBlock for ZebraReadStateAdapter {
+    async fn get_raw_block(
+        &self,
+        height: Height,
+    ) -> Result<Vec<u8>, QueryError<zaino_source::GetBlockError>> {
+        let zebra_height = zebra_chain::block::Height(u32::from(height));
+
+        match read(&self.state, ReadRequest::Block(zebra_height.into())).await? {
+            ReadResponse::Block(Some(block)) => Ok(serialize_block(&block)?),
+            ReadResponse::Block(None) => Err(QueryError::Domain(
+                zaino_source::GetBlockError::HeightNotFound(height),
+            )),
+            _ => Err(unexpected_response("Block").into()),
+        }
+    }
+}
+
+impl zaino_source::GetRawBlockByHash for ZebraReadStateAdapter {
+    async fn get_raw_block_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Vec<u8>, QueryError<zaino_source::GetBlockByHashError>> {
+        match read(&self.state, ReadRequest::Block(hash_or_height(hash))).await? {
+            ReadResponse::Block(Some(block)) => Ok(serialize_block(&block)?),
+            // As with `GetBlockByHash`: absent here means "not in the finalized
+            // state", so a composite retries over JSON-RPC before concluding
+            // the block does not exist.
+            ReadResponse::Block(None) => Err(QueryError::Domain(
+                zaino_source::GetBlockByHashError::NotFound(hash),
+            )),
+            _ => Err(unexpected_response("Block").into()),
+        }
     }
 }

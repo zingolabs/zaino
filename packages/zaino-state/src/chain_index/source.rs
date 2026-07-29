@@ -1,4 +1,30 @@
-//! Traits and types for the blockchain source thats serves zaino, commonly a validator connection.
+//! ChainIndex's driven port onto the backing validator.
+//!
+//! # This is temporary scaffolding
+//!
+//! [`BlockchainSource`] is not the abstraction Zaino wants over a validator. It
+//! is declared in the transport's vocabulary — its methods return
+//! `zebra_chain`, `zebra_rpc` and `zaino_fetch` types — so anything depending on
+//! it inherits that whole graph. That is why no subsystem could be extracted
+//! from `zaino-state` without dragging those crates along, and it is the reason
+//! the `zaino-source` ports exist.
+//!
+//! The real port layer now lives in `zaino-source`: one trait per question a
+//! consumer can ask, in domain vocabulary, with per-query errors. The composite
+//! in `zaino-source-zebra` routes each question to whichever transport can
+//! answer it.
+//!
+//! This trait survives only as an **anti-corruption layer**, so that ChainIndex
+//! and everything above it keep working while the new stack is wired in
+//! underneath. Its single implementation,
+//! [`ZebraValidatorSource`](crate::chain_index::zebra_validator_source::ZebraValidatorSource),
+//! delegates to that composite and converts back into the shapes these
+//! signatures still demand.
+//!
+//! **Do not extend it.** A new capability belongs in `zaino-source`, where it
+//! can be expressed as its own question and implemented only by the transports
+//! that can answer it. This module shrinks as each ChainIndex subsystem is
+//! isolated onto the real ports, and is deleted with the last of them.
 
 use std::{error::Error, sync::Arc};
 
@@ -69,9 +95,12 @@ pub(crate) type ShieldedTreeRoots = (
 pub(crate) type NonfinalizedBlockReceiver =
     tokio::sync::mpsc::Receiver<(zebra_chain::block::Hash, Arc<zebra_chain::block::Block>)>;
 
-/// A trait for accessing blockchain data from different backends.
+/// ChainIndex's driven port onto the backing validator.
 ///
-/// TODO: Explore whether this should be split into separate capability based traits.
+/// Temporary scaffolding — see the [module docs](self). The capability-based
+/// split this once carried a TODO for now exists in `zaino-source`; this trait
+/// remains only so ChainIndex can keep its current shape while the new stack is
+/// wired in beneath it.
 pub trait BlockchainSource: Clone + Send + Sync + 'static {
     // ********** Block methods **********
 

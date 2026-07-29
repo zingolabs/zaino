@@ -74,6 +74,7 @@ pub mod non_finalised_state;
 pub mod source;
 /// Common types used by the rest of this module
 pub mod types;
+pub mod zebra_validator_source;
 
 #[cfg(test)]
 mod tests;

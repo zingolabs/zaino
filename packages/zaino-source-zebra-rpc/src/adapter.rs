@@ -213,8 +213,26 @@ impl zaino_source::GetBlockVerbose for ZebraRpcAdapter {
         height: Height,
     ) -> Result<zaino_primitives::types::BlockVerbose, QueryError<zaino_source::GetBlockVerboseError>>
     {
+        // Verbosity 1 rather than 2: this reads only chain-state facts, none of
+        // which live in the transaction list, so asking for full transaction
+        // objects would cost the validator work the answer discards.
         let params = vec![
             serde_json::Value::String(u32::from(height).to_string()),
+            serde_json::Value::Number(1.into()),
+        ];
+        self.call_parsed("getblock", params, parse::parse_block_verbose)
+            .await
+    }
+}
+
+impl zaino_source::GetBlockVerboseByHash for ZebraRpcAdapter {
+    async fn get_block_verbose_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<zaino_primitives::types::BlockVerbose, QueryError<zaino_source::GetBlockVerboseError>>
+    {
+        let params = vec![
+            serde_json::Value::String(hash_to_display_hex(hash)),
             serde_json::Value::Number(1.into()),
         ];
         self.call_parsed("getblock", params, parse::parse_block_verbose)
@@ -566,6 +584,34 @@ impl zaino_source::GetTransaction for ZebraRpcAdapter {
             serde_json::Value::Number(1.into()),
         ];
         self.call_parsed("getrawtransaction", params, parse::parse_transaction)
+            .await
+    }
+}
+
+impl zaino_source::GetRawBlock for ZebraRpcAdapter {
+    async fn get_raw_block(
+        &self,
+        height: Height,
+    ) -> Result<Vec<u8>, QueryError<zaino_source::GetBlockError>> {
+        let params = vec![
+            serde_json::Value::String(u32::from(height).to_string()),
+            serde_json::Value::Number(0.into()),
+        ];
+        self.call_parsed("getblock", params, parse::parse_raw_block)
+            .await
+    }
+}
+
+impl zaino_source::GetRawBlockByHash for ZebraRpcAdapter {
+    async fn get_raw_block_by_hash(
+        &self,
+        hash: BlockHash,
+    ) -> Result<Vec<u8>, QueryError<zaino_source::GetBlockByHashError>> {
+        let params = vec![
+            serde_json::Value::String(hash_to_display_hex(hash)),
+            serde_json::Value::Number(0.into()),
+        ];
+        self.call_parsed("getblock", params, parse::parse_raw_block)
             .await
     }
 }

@@ -31,9 +31,9 @@ use zaino_primitives::types::{
         FundingStream, InputDelta, LockboxStream, MiningInfo, NodeInfo, OutputDelta, PeerInfo,
         ScriptPubKey, SpentInfo, TxOut,
     },
-    AddressBalance, AddressDelta, BlockCommitments, BlockHash, BlockVerbose, BlockchainInfo,
-    ChainWork, ConsensusBranchId, ConsensusBranchIds, Height, MerkleRoot, NetworkUpgradeInfo,
-    NetworkUpgradeStatus, Script, SignedZatoshis, SubtreeRoot, TransactionHash,
+    AddressBalance, AddressDelta, BlockCommitments, BlockHash, BlockTreeSizes, BlockVerbose,
+    BlockchainInfo, ChainWork, ConsensusBranchId, ConsensusBranchIds, Height, MerkleRoot,
+    NetworkUpgradeInfo, NetworkUpgradeStatus, Script, SignedZatoshis, SubtreeRoot, TransactionHash,
     TransactionLocation, TransparentAddress, TreeRoot, TreeRootInfo, TreeRoots, Treestate, Utxo,
     ValuePoolBalance, Zatoshis,
 };
@@ -248,6 +248,9 @@ fn parse_pool_final_state(
 /// Parse a `z_gettreestate` response.
 pub(crate) fn parse_treestate(value: &serde_json::Value) -> Result<Treestate, ParseError> {
     Ok(Treestate {
+        block_hash: parse_block_hash(field(value, "hash")?)?,
+        height: as_height(field(value, "height")?)?,
+        time: as_u32(field(value, "time")?)?,
         sapling: parse_pool_final_state(value, "sapling")?,
         orchard: parse_pool_final_state(value, "orchard")?,
         ironwood: parse_pool_final_state(value, "ironwood")?,
@@ -888,13 +891,47 @@ fn parse_upgrades(
         .collect()
 }
 
-/// Parse the cumulative-state fields of a verbose `getblock` response.
+/// Parse the chain-state fields of a verbose `getblock` response.
+///
+/// Reads only what cannot be derived from the block's own bytes — see
+/// [`BlockVerbose`]. Everything else in the response is deliberately ignored
+/// here rather than duplicated into a second source of the same fact.
 pub(crate) fn parse_block_verbose(value: &serde_json::Value) -> Result<BlockVerbose, ParseError> {
+    let trees = opt_field(value, "trees");
     Ok(BlockVerbose {
-        chainwork: as_chain_work_natural(field(value, "chainwork")?)?,
-        difficulty: as_f64(field(value, "difficulty")?)?,
         confirmations: as_i64(field(value, "confirmations")?)?,
+        difficulty: as_f64(field(value, "difficulty")?)?,
+        chainwork: opt_field(value, "chainwork")
+            .map(parse_reported_chain_work)
+            .transpose()?
+            .flatten(),
+        chain_supply: opt_field(value, "chainSupply")
+            .map(parse_value_pool)
+            .transpose()?,
+        value_pools: parse_optional_list(value, "valuePools", parse_value_pool)?,
+        tree_sizes: BlockTreeSizes {
+            sapling: pool_tree_size(trees, "sapling")?,
+            orchard: pool_tree_size(trees, "orchard")?,
+            ironwood: pool_tree_size(trees, "ironwood")?,
+        },
+        next_block_hash: opt_field(value, "nextblockhash")
+            .map(parse_block_hash)
+            .transpose()?,
     })
+}
+
+/// One pool's cumulative tree size from the `trees` object.
+///
+/// Absent means the pool is not active at this block, which is a size of zero
+/// rather than unknown — a pool with no activation has committed no notes.
+fn pool_tree_size(trees: Option<&serde_json::Value>, pool: &str) -> Result<u64, ParseError> {
+    let Some(size) = trees
+        .and_then(|t| t.get(pool))
+        .and_then(|p| opt_field(p, "size"))
+    else {
+        return Ok(0);
+    };
+    as_u64(size)
 }
 
 /// Parse a `getblockdeltas` response.
