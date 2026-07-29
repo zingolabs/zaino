@@ -7,8 +7,8 @@ use std::future::Future;
 use tempfile::TempDir;
 
 use crate::chain_index::finalised_state::FinalisedState;
-use crate::chain_index::source::mockchain_source::MockchainSource;
 use crate::chain_index::tests::init_tracing;
+use crate::chain_index::tests::vectors::MockSource;
 use crate::chain_index::tests::vectors::{build_mockchain_source, load_test_vectors};
 use crate::error::FinalisedStateError;
 use crate::BlockchainSource;
@@ -20,7 +20,7 @@ use crate::BlockchainSource;
 /// background handle is awaited, not padded with an unconditional sleep.
 async fn assert_shutdown_returns_promptly<F, Fut, T>(version_label: &str, spawn_fn: F)
 where
-    F: FnOnce(MockchainSource) -> Fut,
+    F: FnOnce(MockSource) -> Fut,
     Fut: Future<Output = Result<(TempDir, FinalisedState<T>), FinalisedStateError>>,
     T: BlockchainSource,
 {

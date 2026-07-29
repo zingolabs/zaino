@@ -80,6 +80,13 @@ fn out_of_order(index: &'static str) -> FetchError {
 /// zero serialization overhead.
 pub struct ZebraReadStateAdapter {
     state: ReadStateService,
+
+    /// The syncer feeding `state`, when this adapter launched one.
+    ///
+    /// Held so shutdown can stop it: a syncer outliving the indexer would keep
+    /// writing to a database nothing is reading. `None` when the service was
+    /// opened read-only, which starts no syncer of its own.
+    syncer: Option<std::sync::Arc<tokio::task::JoinHandle<()>>>,
     /// Retained because difficulty is network-relative: the same threshold
     /// means a different multiple of the minimum on each network, so it cannot
     /// be computed from the tip alone.
@@ -102,8 +109,39 @@ impl ZebraReadStateAdapter {
 
         Ok(Self {
             state,
+            syncer: None,
             network: network.clone(),
         })
+    }
+}
+
+impl ZebraReadStateAdapter {
+    /// Wrap a `ReadStateService` that a caller has already launched.
+    ///
+    /// The read-only [`open`](Self::open) path starts no syncer and so has no
+    /// tip stream; a caller that needs one launches the service itself and
+    /// hands it here, along with the syncer task so this adapter can stop it.
+    pub fn from_service(
+        state: ReadStateService,
+        network: &Network,
+        syncer: Option<std::sync::Arc<tokio::task::JoinHandle<()>>>,
+    ) -> Self {
+        Self {
+            state,
+            syncer,
+            network: network.clone(),
+        }
+    }
+}
+
+#[cfg(feature = "test_dependencies")]
+impl ZebraReadStateAdapter {
+    /// The underlying service.
+    ///
+    /// Test-only escape hatch: live tests recompute expected chain data
+    /// straight off the state service. Production code goes through the ports.
+    pub fn read_state_service(&self) -> &ReadStateService {
+        &self.state
     }
 }
 
@@ -492,6 +530,119 @@ impl zaino_source::GetAddressTxids for ZebraReadStateAdapter {
     }
 }
 
+/// Deltas are synthesised from the address index rather than fetched.
+///
+/// Zebra has no `getaddressdeltas` RPC — the method is zcashd's — so on a Zebra
+/// validator this is the only implementation there is. It rebuilds the answer
+/// from two things the state service does have: the transparent address index,
+/// which maps an address and height range to the transactions touching it, and
+/// the transactions themselves.
+///
+/// # What this reports, and what it does not
+///
+/// Only *receives* (outputs paying a requested address) are reported. A spend
+/// is an input naming a previous output, and the state service does not resolve
+/// that outpoint back to the address and value it paid; recovering spends would
+/// mean fetching every spent transaction as well. zcashd reports both, so a
+/// caller comparing against it sees the receive half of each address's history.
+/// This matches the behaviour of the connector this replaced, which built the
+/// same answer through a verbose-transaction shape whose inputs likewise
+/// carried no address.
+impl zaino_source::GetAddressDeltas for ZebraReadStateAdapter {
+    async fn get_address_deltas(
+        &self,
+        addresses: Vec<String>,
+        start: Height,
+        end: Height,
+    ) -> Result<
+        Vec<zaino_primitives::types::AddressDelta>,
+        QueryError<zaino_source::GetAddressDeltasError>,
+    > {
+        use zaino_primitives::types::{
+            AddressDelta, SignedZatoshis, TransactionHash, TransparentAddress,
+        };
+
+        if start > end {
+            return Err(QueryError::Domain(
+                zaino_source::GetAddressDeltasError::InvalidRange { start, end },
+            ));
+        }
+
+        let request = ReadRequest::TransactionIdsByAddresses {
+            addresses: parse_addresses(addresses.clone())?,
+            height_range: zebra_chain::block::Height(u32::from(start))
+                ..=zebra_chain::block::Height(u32::from(end)),
+        };
+
+        let located = match read(&self.state, request).await? {
+            ReadResponse::AddressesTransactionIds(located) => located,
+            _ => return Err(unexpected_response("TransactionIdsByAddresses").into()),
+        };
+
+        // The index gives each transaction's location, so the height and the
+        // position within the block come from it rather than from a second
+        // lookup. Only the transaction body still has to be fetched.
+        let mut deltas: Vec<(u32, AddressDelta)> = Vec::new();
+
+        for (location, txid) in located.iter() {
+            let response =
+                read(&self.state, ReadRequest::AnyChainTransaction(txid.0.into())).await?;
+
+            let transaction = match response {
+                ReadResponse::AnyChainTransaction(Some(zebra_state::AnyTx::Mined(mined))) => {
+                    mined.tx
+                }
+                // The address index covers the best chain only, so a
+                // transaction it named must be mined there. Anything else means
+                // the index and the chain disagree.
+                ReadResponse::AnyChainTransaction(_) => {
+                    return Err(FetchError::new(
+                        FailureMode::Parse,
+                        format!("address index names a transaction the chain lacks: {txid:?}"),
+                    )
+                    .into())
+                }
+                _ => return Err(unexpected_response("AnyChainTransaction").into()),
+            };
+
+            let height = Height::try_from(location.height.0)
+                .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?;
+            let delta_txid = TransactionHash::from(txid.0);
+
+            for (index, output) in transaction.outputs().iter().enumerate() {
+                let Some(address) = output.address(&self.network) else {
+                    continue;
+                };
+                let address = address.to_string();
+                if !addresses.iter().any(|requested| requested == &address) {
+                    continue;
+                }
+
+                deltas.push((
+                    u32::from(location.index.index()),
+                    AddressDelta {
+                        satoshis: SignedZatoshis::new(output.value.zatoshis()),
+                        txid: delta_txid,
+                        index: index as u32,
+                        height,
+                        address: TransparentAddress::new(address),
+                    },
+                ));
+            }
+        }
+
+        // zcashd orders deltas by (height, position in block, index within the
+        // transaction). The position is carried alongside each delta only for
+        // this sort — the domain type does not model it, because it describes
+        // where the transaction sits rather than what the address received.
+        deltas.sort_by_key(|(block_index, delta)| {
+            (u32::from(delta.height), *block_index, delta.index)
+        });
+
+        Ok(deltas.into_iter().map(|(_, delta)| delta).collect())
+    }
+}
+
 /// The ReadState adapter observes the chain directly, so it can offer a real
 /// tip stream rather than a synthesised one.
 impl zaino_source::SubscribeChainTip for ZebraReadStateAdapter {
@@ -506,9 +657,17 @@ impl zaino_source::SubscribeChainTip for ZebraReadStateAdapter {
     }
 }
 
-/// The read-only state service owns its database handle, which is released when
-/// the adapter drops. There is no background task to abort.
-impl zaino_source::SourceLifecycle for ZebraReadStateAdapter {}
+impl zaino_source::SourceLifecycle for ZebraReadStateAdapter {
+    /// Stop the syncer, if this adapter launched one.
+    ///
+    /// The database handle is released when the adapter drops, but a spawned
+    /// syncer would outlive it and keep writing, so it is aborted explicitly.
+    fn shutdown(&self) {
+        if let Some(syncer) = &self.syncer {
+            syncer.abort();
+        }
+    }
+}
 
 /// Reading the state directly gives no push notification of new blocks — that
 /// signal belongs to the syncer, not the read handle.

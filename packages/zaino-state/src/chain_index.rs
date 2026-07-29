@@ -33,7 +33,7 @@ use arc_swap::ArcSwapOption;
 use futures::{FutureExt, Stream};
 use hex::FromHex as _;
 use non_finalised_state::NonfinalizedBlockCacheSnapshot;
-use source::{BlockchainSource, ValidatorConnector};
+use source::BlockchainSource;
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, instrument};
@@ -67,14 +67,17 @@ pub mod encoding;
 pub mod finalised_state;
 /// State in the mempool, not yet on-chain
 pub mod mempool;
+mod network_adoption;
 /// State within [`OPERATIONAL_NFS_DEPTH`] blocks of the best-known chain tip;
 /// stored separately as it may be reorged.
 pub mod non_finalised_state;
-/// BlockchainSource
+/// ChainIndex's driven port onto the validator. Temporary scaffolding — see
+/// the module docs.
 pub mod source;
+pub mod source_ports;
 /// Common types used by the rest of this module
 pub mod types;
-pub mod zebra_validator_source;
+pub mod validator_source;
 
 #[cfg(test)]
 mod tests;
@@ -838,7 +841,9 @@ pub trait ChainIndexRpcExt: ChainIndex {
 /// - Automatic synchronization between state layers
 /// - Snapshot-based consistency for queries
 #[derive(Debug)]
-pub struct NodeBackedChainIndex<Source: BlockchainSource = ValidatorConnector> {
+pub struct NodeBackedChainIndex<
+    Source: BlockchainSource = crate::chain_index::validator_source::ZebraValidatorSource,
+> {
     #[allow(dead_code)]
     mempool: std::sync::Arc<mempool::Mempool<Source>>,
     non_finalized_state: Arc<ArcSwapOption<crate::NonFinalizedState<Source>>>,
@@ -1234,7 +1239,9 @@ impl<Source: BlockchainSource> Drop for NodeBackedChainIndex<Source> {
 ///
 /// [`NodeBackedChainIndexSubscriber`] can safely be cloned and dropped freely.
 #[derive(Clone, Debug)]
-pub struct NodeBackedChainIndexSubscriber<Source: BlockchainSource = ValidatorConnector> {
+pub struct NodeBackedChainIndexSubscriber<
+    Source: BlockchainSource = crate::chain_index::validator_source::ZebraValidatorSource,
+> {
     mempool: mempool::MempoolSubscriber,
     non_finalized_state: Arc<ArcSwapOption<crate::NonFinalizedState<Source>>>,
     finalized_state: finalised_state::reader::DbReader<Source>,

@@ -57,10 +57,7 @@ use zaino_proto::proto::{
 #[allow(deprecated)]
 use crate::{
     chain_index::chain_tips_from_nonfinalized_snapshot,
-    chain_index::{
-        source::{BlockchainSource, ValidatorConnector},
-        types,
-    },
+    chain_index::{source::BlockchainSource, types, validator_source::ZebraValidatorSource},
     config::{
         ChainIndexConfig, CommonBackendConfig, DonationAddress, NodeBackedIndexerServiceConfig,
         ValidatorConnectionType,
@@ -87,7 +84,7 @@ use crate::{
 /// Replaces the former `FetchService` / `StateService` split: the JSON-RPC (`Rpc`) and
 /// direct-`ReadStateService` (`Direct`) backends are now one type selected at runtime
 /// via [`NodeBackedIndexerServiceConfig`]. Production instantiates the default
-/// `Source = ValidatorConnector` (which itself carries the `Rpc`/`Direct` arm); tests
+/// `Source = ZebraValidatorSource` (which itself carries the `Rpc`/`Direct` arm); tests
 /// may instantiate over a mock source.
 ///
 /// This service is a central service — create a [`NodeBackedIndexerServiceSubscriber`]
@@ -97,7 +94,9 @@ use crate::{
 /// NOTE: We do not implement `Clone` for the central service: it owns and closes its
 /// child processes. Subscribers are the clone-safe read handles.
 #[derive(Debug)]
-pub struct NodeBackedIndexerService<Source: BlockchainSource = ValidatorConnector> {
+pub struct NodeBackedIndexerService<
+    Source: BlockchainSource = crate::chain_index::validator_source::ZebraValidatorSource,
+> {
     /// Core indexer.
     indexer: NodeBackedChainIndex<Source>,
     /// Service metadata.
@@ -139,8 +138,8 @@ impl<Source: BlockchainSource> NodeBackedIndexerService<Source> {
     }
 }
 
-impl ZcashService for NodeBackedIndexerService<ValidatorConnector> {
-    type Subscriber = NodeBackedIndexerServiceSubscriber<ValidatorConnector>;
+impl ZcashService for NodeBackedIndexerService<ZebraValidatorSource> {
+    type Subscriber = NodeBackedIndexerServiceSubscriber<ZebraValidatorSource>;
     type Config = NodeBackedIndexerServiceConfig;
 
     /// Initializes a new [`NodeBackedIndexerService`] and starts its sync process.
@@ -158,9 +157,9 @@ impl ZcashService for NodeBackedIndexerService<ValidatorConnector> {
         // the validator `getinfo` used for service metadata, and the runtime network
         // (activation schedule adopted from the validator at first contact, zaino#1076).
         let (source, zebra_build_data, network) = match &config.connection {
-            ValidatorConnectionType::Rpc => ValidatorConnector::spawn_fetch(&config.common).await,
+            ValidatorConnectionType::Rpc => ZebraValidatorSource::spawn_rpc(&config.common).await,
             ValidatorConnectionType::Direct(direct) => {
-                ValidatorConnector::spawn_state(&config.common, direct).await
+                ZebraValidatorSource::spawn_direct(&config.common, direct).await
             }
         }
         .map_err(|error| NodeBackedIndexerServiceError::Critical(error.to_string()))?;
@@ -207,7 +206,7 @@ impl ZcashService for NodeBackedIndexerService<ValidatorConnector> {
     /// Returns a [`NodeBackedIndexerServiceSubscriber`].
     fn get_subscriber(
         &self,
-    ) -> IndexerSubscriber<NodeBackedIndexerServiceSubscriber<ValidatorConnector>> {
+    ) -> IndexerSubscriber<NodeBackedIndexerServiceSubscriber<ZebraValidatorSource>> {
         IndexerSubscriber::new(NodeBackedIndexerServiceSubscriber {
             indexer: self.indexer.subscriber(),
             data: self.data.clone(),
@@ -230,7 +229,9 @@ impl<Source: BlockchainSource> Drop for NodeBackedIndexerService<Source> {
 
 /// A clone-safe, read-only subscriber to a [`NodeBackedIndexerService`].
 #[derive(Debug, Clone)]
-pub struct NodeBackedIndexerServiceSubscriber<Source: BlockchainSource = ValidatorConnector> {
+pub struct NodeBackedIndexerServiceSubscriber<
+    Source: BlockchainSource = crate::chain_index::validator_source::ZebraValidatorSource,
+> {
     /// Core indexer.
     pub indexer: NodeBackedChainIndexSubscriber<Source>,
     /// Service metadata.
@@ -490,10 +491,10 @@ impl<Source: BlockchainSource> NodeBackedIndexerServiceSubscriber<Source> {
     }
 }
 
-/// Methods available only on the production (`ValidatorConnector`-backed) subscriber:
+/// Methods available only on the production (`ZebraValidatorSource`-backed) subscriber:
 /// the `Direct` connection owns a `ReadStateService` that the generic source
 /// abstraction does not expose.
-impl NodeBackedIndexerServiceSubscriber<ValidatorConnector> {
+impl NodeBackedIndexerServiceSubscriber<ZebraValidatorSource> {
     /// The backing Zebra [`zebra_state::ReadStateService`] (`Direct` connection only).
     ///
     /// Test-only escape hatch: live tests recompute expected chain data directly off the

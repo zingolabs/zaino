@@ -39,8 +39,8 @@ mod chain_query_interface {
     use zaino_common::{CacheConfig, DatabaseConfig, ServiceConfig, StorageConfig};
     use zaino_state::{
         chain_index::{
-            source::ValidatorConnector, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
-            ShieldedPool,
+            validator_source::ZebraValidatorSource, NodeBackedChainIndex,
+            NodeBackedChainIndexSubscriber, ShieldedPool,
         },
         test_dependencies::{
             chain_index::{ChainIndex, ChainIndexRpcExt},
@@ -183,12 +183,12 @@ mod chain_query_interface {
                 // by zallet, although we want to push the community to transition to the
                 // "state" backend these tests using the "fetch" backend is currently useful
                 // for debugging bugs raised byt zallet devs.
-                let source = ValidatorConnector::Fetch(json_service.clone());
-                // let source = ValidatorConnector::State(chain_index::source::State {
-                //     read_state_service: state_service.read_state_service().clone(),
-                //     mempool_fetcher: json_service.clone(),
-                //     network: config.network,
-                // });
+                let source = ZebraValidatorSource::rpc_only(
+                    &test_manager.full_node_rpc_listen_address.to_string(),
+                    Some(("xxxxxx".to_string(), "xxxxxx".to_string())),
+                    config.network.clone(),
+                )
+                .unwrap();
                 let chain_index = NodeBackedChainIndex::new(source, config).await.unwrap();
 
                 let index_reader = chain_index.subscriber();
@@ -225,12 +225,13 @@ mod chain_query_interface {
                     )
                     .to_regtest_network(),
                 };
-                let chain_index = NodeBackedChainIndex::new(
-                    ValidatorConnector::Fetch(json_service.clone()),
-                    config,
+                let source = ZebraValidatorSource::rpc_only(
+                    &test_manager.full_node_rpc_listen_address.to_string(),
+                    Some(("xxxxxx".to_string(), "xxxxxx".to_string())),
+                    config.network.clone(),
                 )
-                .await
                 .unwrap();
+                let chain_index = NodeBackedChainIndex::new(source, config).await.unwrap();
                 let index_reader = chain_index.subscriber();
                 tokio::time::sleep(Duration::from_secs(3)).await;
 

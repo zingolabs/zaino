@@ -28,7 +28,7 @@ zcashd_support = ["zaino-fetch/zcashd_support"]
 prometheus = ["metrics"]
 
 # test_dependencies - Exposes internal functionality for testing.
-test_dependencies = []
+test_dependencies = ["zaino-source-zebra/test_dependencies"]
 
 # **Experimental and alpha features**
 # Exposes the **complete** set of experimental / alpha features currently implemented in Zaino.
@@ -92,6 +92,9 @@ bitflags = { workspace = true }
 zaino-source.workspace = true
 zaino-source-zebra.workspace = true
 zaino-primitives.workspace = true
+zaino-rpc.workspace = true
+zaino-source-zebra-rpc.workspace = true
+zaino-source-zebra-readstate.workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }

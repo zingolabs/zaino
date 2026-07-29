@@ -17,7 +17,7 @@
 //! This trait survives only as an **anti-corruption layer**, so that ChainIndex
 //! and everything above it keep working while the new stack is wired in
 //! underneath. Its single implementation,
-//! [`ZebraValidatorSource`](crate::chain_index::zebra_validator_source::ZebraValidatorSource),
+//! [`ZebraValidatorSource`](crate::chain_index::validator_source::ZebraValidatorSource),
 //! delegates to that composite and converts back into the shapes these
 //! signatures still demand.
 //!
@@ -33,24 +33,13 @@ use crate::chain_index::{
     ShieldedPool,
 };
 use crate::SendFut;
-use futures::TryFutureExt as _;
-use incrementalmerkletree::frontier::CommitmentTree;
-use tower::{Service, ServiceExt as _};
-use zaino_fetch::jsonrpsee::{
-    connector::{JsonRpSeeConnector, RpcRequestError},
-    response::{
-        address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
-        block_header::GetBlockHeader,
-        block_subsidy::GetBlockSubsidy,
-        mining_info::GetMiningInfoWire,
-        peer_info::GetPeerInfo,
-        GetBlockError, GetBlockResponse, GetNetworkSolPsResponse, GetSpentInfoRequest,
-        GetSpentInfoResponse, GetTransactionResponse, GetTreestateResponse, GetTxOutResponse,
-    },
-};
-use zcash_primitives::merkle_tree::{read_commitment_tree, write_commitment_tree};
-use zebra_chain::{
-    block::TryIntoHeight, serialization::ZcashDeserialize, subtree::NoteCommitmentSubtreeIndex,
+use zaino_fetch::jsonrpsee::response::{
+    address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
+    block_header::GetBlockHeader,
+    block_subsidy::GetBlockSubsidy,
+    mining_info::GetMiningInfoWire,
+    peer_info::GetPeerInfo,
+    GetNetworkSolPsResponse, GetSpentInfoRequest, GetSpentInfoResponse, GetTxOutResponse,
 };
 use zebra_rpc::{
     client::{GetAddressBalanceRequest, GetAddressTxIdsRequest},
@@ -58,13 +47,10 @@ use zebra_rpc::{
         AddressBalance, GetAddressUtxos, GetBlockchainInfoResponse, GetInfo, SentTransactionHash,
     },
 };
-use zebra_state::{HashOrHeight, ReadRequest, ReadResponse, ReadStateService};
+use zebra_state::HashOrHeight;
 
 #[cfg(test)]
 pub(crate) mod mockchain_source;
-
-pub mod validator_connector;
-pub use validator_connector::*;
 
 /// One pool's treestate for a block, as reported by the backing validator.
 #[derive(Clone, Debug, PartialEq, Eq)]

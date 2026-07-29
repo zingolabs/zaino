@@ -15,6 +15,10 @@ zaino-source-zebra-rpc.workspace = true
 zaino-source-zebra-readstate.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 
+[features]
+# Forwards the state-handle escape hatch used by live tests.
+test_dependencies = ["zaino-source-zebra-readstate/test_dependencies"]
+
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"

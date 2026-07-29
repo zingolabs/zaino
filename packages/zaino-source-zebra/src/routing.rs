@@ -81,6 +81,12 @@ impl ZebraValidator {
     fn fast(&self) -> Option<&ZebraReadStateAdapter> {
         self.readstate.as_ref()
     }
+
+    /// The state adapter, exposed for tests that read the database directly.
+    #[cfg(feature = "test_dependencies")]
+    pub fn read_state(&self) -> Option<&ZebraReadStateAdapter> {
+        self.readstate.as_ref()
+    }
 }
 
 /// Route a query to the state service, falling back to JSON-RPC on a domain
@@ -290,11 +296,21 @@ impl GetAddressDeltas for ZebraValidator {
         start: Height,
         end: Height,
     ) -> Result<Vec<AddressDelta>, QueryError<GetAddressDeltasError>> {
-        // Always JSON-RPC, even where the state database is available. Deltas
-        // are derived from every transaction in the range, including unmined
-        // ones the state service cannot see; deriving them from the fast path
-        // would silently omit those. The validator computes this itself.
-        self.rpc.get_address_deltas(addresses, start, end).await
+        // The state service first where there is one. This inverts the usual
+        // reasoning — deltas cover every transaction in a height range, so
+        // asking the validator to compute them would be the natural choice —
+        // but `getaddressdeltas` is a zcashd method that Zebra does not
+        // implement. Against Zebra the state service is not an accelerator
+        // here; it is the only thing that can answer at all.
+        //
+        // Both paths report mined transactions only, so the routing does not
+        // change which transactions are covered. Against zcashd the RPC path
+        // additionally reports spends, which the state service cannot resolve
+        // (see the readstate implementation).
+        match self.fast() {
+            Some(fast) => fast.get_address_deltas(addresses, start, end).await,
+            None => self.rpc.get_address_deltas(addresses, start, end).await,
+        }
     }
 }
 

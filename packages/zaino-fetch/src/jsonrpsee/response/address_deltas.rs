@@ -1,7 +1,6 @@
 //! Types associated with the `getaddressdeltas` RPC request.
 
 use serde::{Deserialize, Serialize};
-use zebra_rpc::client::{Input, Output, TransactionObject};
 
 use crate::jsonrpsee::connector::ResponseToError;
 
@@ -72,57 +71,7 @@ pub enum GetAddressDeltasResponse {
     },
 }
 
-impl GetAddressDeltasResponse {
-    /// Processes transaction objects into address deltas for specific addresses.
-    /// This is a pure function that can be easily unit tested.
-    pub fn process_transactions_to_deltas(
-        transactions: &[Box<TransactionObject>],
-        target_addresses: &[String],
-    ) -> Vec<AddressDelta> {
-        let mut deltas: Vec<AddressDelta> = transactions
-            .iter()
-            .filter(|tx| tx.height().unwrap_or(0) > 0)
-            .flat_map(|tx| {
-                let txid = tx.txid().to_string();
-                let height = tx.height().unwrap(); // height > 0 due to previous filter
-
-                // Inputs (negative deltas)
-                let input_deltas = tx.inputs().iter().enumerate().filter_map({
-                    let input_txid = txid.clone();
-                    move |(input_index, input)| {
-                        AddressDelta::from_input(
-                            input,
-                            input_index as u32,
-                            &input_txid,
-                            height as u32, // Height is known to be non-negative
-                            target_addresses,
-                            None,
-                        )
-                    }
-                });
-
-                // Outputs (positive deltas)
-                let output_deltas = tx.outputs().iter().flat_map({
-                    let output_txid = txid;
-                    move |output| {
-                        AddressDelta::from_output(
-                            output,
-                            &output_txid,
-                            height as u32, // Height is known to be non-negative
-                            target_addresses,
-                            None,
-                        )
-                    }
-                });
-
-                input_deltas.chain(output_deltas)
-            })
-            .collect();
-        // zcashd-like ordering: (height ASC, blockindex ASC, index ASC)
-        deltas.sort_by_key(|d| (d.height, d.block_index.unwrap_or(u32::MAX), d.index));
-        deltas
-    }
-}
+impl GetAddressDeltasResponse {}
 
 /// Error type used for the `getaddressdeltas` RPC request.
 #[derive(Debug, thiserror::Error)]
@@ -187,65 +136,6 @@ impl AddressDelta {
             height,
             address,
             block_index,
-        }
-    }
-
-    /// Create a delta from a transaction input (spend - negative value)
-    pub fn from_input(
-        input: &Input,
-        input_index: u32,
-        txid: &str,
-        height: u32,
-        target_addresses: &[String],
-        block_index: Option<u32>,
-    ) -> Option<Self> {
-        match input {
-            Input::NonCoinbase {
-                address: Some(addr),
-                value_zat: Some(value),
-                ..
-            } => {
-                // Check if this address is in our target addresses
-                if target_addresses.iter().any(|req_addr| req_addr == addr) {
-                    Some(AddressDelta {
-                        satoshis: -value, // Negative for inputs (spends)
-                        txid: txid.to_string(),
-                        index: input_index,
-                        height,
-                        address: addr.clone(),
-                        block_index,
-                    })
-                } else {
-                    None
-                }
-            }
-            _ => None, // Skip coinbase inputs or inputs without address/value
-        }
-    }
-
-    /// Create a delta from a transaction output (receive - positive value)
-    pub fn from_output(
-        output: &Output,
-        txid: &str,
-        height: u32,
-        target_addresses: &[String],
-        block_index: Option<u32>,
-    ) -> Vec<Self> {
-        if let Some(output_addresses) = &output.script_pub_key().addresses() {
-            output_addresses
-                .iter()
-                .filter(|addr| target_addresses.iter().any(|req_addr| req_addr == *addr))
-                .map(|addr| AddressDelta {
-                    satoshis: output.value_zat(), // Positive for outputs (receives)
-                    txid: txid.to_string(),
-                    index: output.n(),
-                    height,
-                    address: addr.clone(),
-                    block_index,
-                })
-                .collect()
-        } else {
-            Vec::new()
         }
     }
 }

@@ -1,7 +1,7 @@
 use super::{load_test_vectors_and_sync_chain_index, MockchainMode};
 use crate::{
     chain_index::{
-        source::mockchain_source::MockchainSource,
+        tests::vectors::MockSource,
         tests::{
             poll::poll_until,
             vectors::{indexed_block_chain, load_test_vectors, TestVectorBlockData},
@@ -30,7 +30,7 @@ use zebra_state::HashOrHeight;
 /// publishes new tips asynchronously via its background loop, and under
 /// full-suite parallel load those updates can lag well past 2 s.
 async fn wait_for_indexer_tip(
-    index_reader: &NodeBackedChainIndexSubscriber<MockchainSource>,
+    index_reader: &NodeBackedChainIndexSubscriber<MockSource>,
     expected: u32,
 ) {
     poll_until(
@@ -185,12 +185,12 @@ async fn sync_blocks_after_startup() {
     )
     .height
     .0;
-    let active_mockchain_tip = dbg!(mockchain.active_height());
+    let active_mockchain_tip = dbg!(mockchain.source().active_height());
     assert_eq!(active_mockchain_tip, indexer_tip);
 
     for _ in 0..20 {
-        mockchain.mine_blocks(1);
-        wait_for_indexer_tip(&index_reader, mockchain.active_height()).await;
+        mockchain.source().mine_blocks(1);
+        wait_for_indexer_tip(&index_reader, mockchain.source().active_height()).await;
     }
 
     let indexer_tip = dbg!(
@@ -204,7 +204,7 @@ async fn sync_blocks_after_startup() {
     )
     .height
     .0;
-    let active_mockchain_tip = dbg!(mockchain.active_height());
+    let active_mockchain_tip = dbg!(mockchain.source().active_height());
     assert_eq!(active_mockchain_tip, indexer_tip);
 }
 
@@ -217,7 +217,7 @@ async fn get_mempool_transaction() {
         .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
         .collect();
 
-    let mockchain_tip = mockchain.active_height();
+    let mockchain_tip = mockchain.source().active_height();
     wait_for_indexer_tip(&index_reader, mockchain_tip).await;
 
     let mempool_height = (mockchain_tip as usize) + 1;
@@ -265,7 +265,7 @@ async fn get_mempool_transaction_status() {
         .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
         .collect();
 
-    let mockchain_tip = mockchain.active_height();
+    let mockchain_tip = mockchain.source().active_height();
     wait_for_indexer_tip(&index_reader, mockchain_tip).await;
 
     let mempool_height = (mockchain_tip as usize) + 1;
@@ -311,7 +311,7 @@ async fn get_mempool_transactions() {
         .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
         .collect();
 
-    let mockchain_tip = mockchain.active_height();
+    let mockchain_tip = mockchain.source().active_height();
     wait_for_indexer_tip(&index_reader, mockchain_tip).await;
 
     let mempool_height = (mockchain_tip as usize) + 1;
@@ -357,7 +357,7 @@ async fn get_filtered_mempool_transactions() {
         .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
         .collect();
 
-    let mockchain_tip = mockchain.active_height();
+    let mockchain_tip = mockchain.source().active_height();
     wait_for_indexer_tip(&index_reader, mockchain_tip).await;
 
     let mempool_height = (mockchain_tip as usize) + 1;
@@ -407,7 +407,7 @@ async fn get_mempool_stream_no_expected_chain_tip_snapshot() {
         .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
         .collect();
 
-    let mockchain_tip = mockchain.active_height();
+    let mockchain_tip = mockchain.source().active_height();
     wait_for_indexer_tip(&index_reader, mockchain_tip).await;
 
     let next_mempool_height_index = (mockchain_tip as usize) + 1;
@@ -444,7 +444,7 @@ async fn get_mempool_stream_no_expected_chain_tip_snapshot() {
 
     sleep(Duration::from_millis(500)).await;
 
-    mockchain.mine_blocks(1);
+    mockchain.source().mine_blocks(1);
 
     let indexer_mempool_stream_transactions =
         mempool_stream_task.await.expect("collector task failed");
@@ -468,7 +468,7 @@ async fn get_mempool_stream_correct_expected_chain_tip_snapshot() {
         .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
         .collect();
 
-    let mockchain_tip = mockchain.active_height();
+    let mockchain_tip = mockchain.source().active_height();
     wait_for_indexer_tip(&index_reader, mockchain_tip).await;
 
     let next_mempool_height_index = (mockchain_tip as usize) + 1;
@@ -506,7 +506,7 @@ async fn get_mempool_stream_correct_expected_chain_tip_snapshot() {
 
     sleep(Duration::from_millis(500)).await;
 
-    mockchain.mine_blocks(1);
+    mockchain.source().mine_blocks(1);
 
     let indexer_mempool_stream_transactions =
         mempool_stream_task.await.expect("collector task failed");
@@ -524,12 +524,12 @@ async fn get_mempool_stream_correct_expected_chain_tip_snapshot() {
 async fn get_mempool_stream_for_stale_snapshot() {
     let (_blocks, _indexer, index_reader, mockchain) =
         load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
-    wait_for_indexer_tip(&index_reader, mockchain.active_height()).await;
+    wait_for_indexer_tip(&index_reader, mockchain.source().active_height()).await;
 
     let stale_nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
 
-    mockchain.mine_blocks(1);
-    wait_for_indexer_tip(&index_reader, mockchain.active_height()).await;
+    mockchain.source().mine_blocks(1);
+    wait_for_indexer_tip(&index_reader, mockchain.source().active_height()).await;
 
     // `wait_for_indexer_tip` only confirms the chain-index NFS has caught
     // up; the mempool serve loop polls `get_best_block_hash` on its own
@@ -626,7 +626,7 @@ async fn get_address_deltas() {
         load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
 
     let transparent_address = faucet_transparent_address();
-    let active_height = mockchain.active_height();
+    let active_height = mockchain.source().active_height();
 
     let expected_response = mockchain
         .get_address_deltas(GetAddressDeltasParams::new_filtered(
@@ -725,7 +725,7 @@ async fn get_address_txids() {
         load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
 
     let transparent_address = faucet_transparent_address();
-    let active_height = mockchain.active_height();
+    let active_height = mockchain.source().active_height();
 
     let expected_txids = mockchain
         .get_address_txids(GetAddressTxIdsRequest::new(
@@ -915,7 +915,7 @@ async fn get_outpoint_spenders_empty_and_single() {
 async fn z_get_block() {
     let (_blocks, _indexer, index_reader, mockchain) =
         load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
-    let active_height = mockchain.active_height();
+    let active_height = mockchain.source().active_height();
 
     for height in [1u32, active_height / 2, active_height] {
         let id = HashOrHeight::Height(zebra_chain::block::Height(height));
@@ -961,7 +961,7 @@ async fn z_get_block() {
 async fn get_block_header() {
     let (_blocks, _indexer, index_reader, mockchain) =
         load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
-    let active_height = mockchain.active_height();
+    let active_height = mockchain.source().active_height();
 
     for height in [1u32, active_height / 2, active_height] {
         let id = HashOrHeight::Height(zebra_chain::block::Height(height));
@@ -1003,7 +1003,7 @@ async fn get_block_header() {
 async fn get_block_deltas() {
     let (_blocks, _indexer, index_reader, mockchain) =
         load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
-    let active_height = mockchain.active_height();
+    let active_height = mockchain.source().active_height();
 
     let mut saw_delta_entries = false;
     for height in [1u32, active_height / 2, active_height] {
@@ -1050,7 +1050,7 @@ async fn get_difficulty() {
 }
 
 /// Drives the merged [`NodeBackedIndexerServiceSubscriber`] RPC layer over a
-/// `MockchainSource`, confirming the service delegates to its chain index: the
+/// `MockSource`, confirming the service delegates to its chain index: the
 /// service's `get_latest_block` reports the same tip the mockchain was synced to.
 #[tokio::test(flavor = "multi_thread")]
 async fn node_backed_indexer_service_serves_latest_block() {
@@ -1084,12 +1084,12 @@ async fn dropping_the_chain_index_releases_the_source() {
         load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
 
     assert!(
-        !mockchain.shutdown_called(),
+        !mockchain.source().shutdown_called(),
         "the source must not be shut down while the index is live"
     );
     drop(indexer);
     assert!(
-        mockchain.shutdown_called(),
+        mockchain.source().shutdown_called(),
         "dropping the index must release source-owned background work"
     );
 }

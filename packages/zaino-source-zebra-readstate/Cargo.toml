@@ -23,6 +23,10 @@ chrono.workspace = true
 [features]
 tracing = ["dep:tracing"]
 
+# Exposes the raw state handle for live tests that recompute expected chain
+# data directly. Never enabled in production builds.
+test_dependencies = []
+
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"

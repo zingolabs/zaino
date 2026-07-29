@@ -31,29 +31,30 @@ use std::sync::Arc;
 
 #[cfg(test)]
 use hex::FromHex as _;
-use zaino_source::{
-    GetAddressBalance as _, GetAddressDeltas as _, GetAddressTxids as _, GetAddressUtxos as _,
-    GetBestBlockHeight as _, GetBlockDeltas as _, GetBlockHeader as _, GetBlockSubsidy as _,
-    GetBlockVerboseByHash as _, GetBlockchainInfo as _, GetChainTip as _, GetChainTips as _,
-    GetCommitmentTreeRoots as _, GetDifficulty as _, GetMempoolTxids as _, GetMiningInfo as _,
-    GetNetworkSolPs as _, GetNodeInfo as _, GetPeerInfo as _, GetRawBlock as _,
-    GetRawBlockByHash as _, GetRawBlockHeader as _, GetSpentInfo as _, GetSubtreeRoots as _,
-    GetTransaction as _, GetTreestate as _, GetTreestateByHash as _, GetTxOut as _, QueryError,
-    SendRawTransaction as _, SourceLifecycle as _, SubscribeBlocks as _,
-};
+use zaino_source::QueryError;
 use zaino_source_zebra::ZebraValidator;
 use zebra_chain::serialization::BytesInDisplayOrder as _;
 use zebra_rpc::methods::ValidateAddresses as _;
 use zebra_state::HashOrHeight;
 
 use super::source::{BlockchainSource, BlockchainSourceError, BlockchainSourceResult};
+use super::source_ports::ChainIndexSourcePorts;
 
 /// ChainIndex's validator source, backed by the `zaino-source` stack.
-#[derive(Clone)]
-pub struct ZebraValidatorSource {
-    /// Shared because the port requires `Clone` and the composite owns
+///
+/// The single adapter between ChainIndex's driven port
+/// ([`BlockchainSource`], still in wire types) and the driving ports
+/// ([`zaino_source`], in domain types). It is generic over the source so that
+/// conversion is written once: the production composite and the test mocks
+/// reach ChainIndex through the same code, which makes the mock-backed suites
+/// coverage of the conversion layer rather than of a parallel implementation
+/// of it.
+///
+/// [`ZebraValidatorSource`] is the production instantiation.
+pub struct ValidatorSource<V> {
+    /// Shared because the port requires `Clone` and a source may own
     /// connections and a database handle that must not be duplicated.
-    validator: Arc<ZebraValidator>,
+    validator: Arc<V>,
 
     /// Needed to render verbose transactions: their presentation depends on the
     /// network's consensus branch schedule, which zebra's builder takes as an
@@ -70,10 +71,13 @@ pub struct ZebraValidatorSource {
     chain_tip_change: Option<zebra_state::ChainTipChange>,
 }
 
-impl ZebraValidatorSource {
-    /// Wrap a composite validator as ChainIndex's source.
+/// ChainIndex's source as deployed against a Zebra validator.
+pub type ZebraValidatorSource = ValidatorSource<ZebraValidator>;
+
+impl<V: ChainIndexSourcePorts> ValidatorSource<V> {
+    /// Wrap anything answering ChainIndex's questions as its source.
     pub fn new(
-        validator: ZebraValidator,
+        validator: V,
         network: zebra_chain::parameters::Network,
         chain_tip_change: Option<zebra_state::ChainTipChange>,
     ) -> Self {
@@ -83,11 +87,46 @@ impl ZebraValidatorSource {
             chain_tip_change,
         }
     }
+
+    /// The backing source.
+    ///
+    /// Tests drive a mock through a control surface that is deliberately not
+    /// on any port — mining blocks is something a test fixture does, not a
+    /// question a validator answers — so they need the concrete type back.
+    pub fn source(&self) -> &V {
+        &self.validator
+    }
 }
 
-impl std::fmt::Debug for ZebraValidatorSource {
+#[cfg(feature = "test_dependencies")]
+impl ZebraValidatorSource {
+    /// The backing state service, when this deployment reads the database.
+    ///
+    /// Test-only escape hatch, carried over from `ValidatorConnector`: live
+    /// tests recompute expected chain data straight off the service.
+    pub fn read_state_service(&self) -> Option<&zebra_state::ReadStateService> {
+        self.validator
+            .read_state()
+            .map(|adapter| adapter.read_state_service())
+    }
+}
+
+/// Written out rather than derived: `derive(Clone)` would demand `V: Clone`,
+/// but the source is held behind an `Arc` precisely so it need not be — it owns
+/// connections and a database handle that must not be duplicated.
+impl<V> Clone for ValidatorSource<V> {
+    fn clone(&self) -> Self {
+        Self {
+            validator: Arc::clone(&self.validator),
+            network: self.network.clone(),
+            chain_tip_change: self.chain_tip_change.clone(),
+        }
+    }
+}
+
+impl<V> std::fmt::Debug for ValidatorSource<V> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ZebraValidatorSource")
+        f.debug_struct("ValidatorSource")
             .field("network", &self.network)
             .field("has_tip_stream", &self.chain_tip_change.is_some())
             .finish_non_exhaustive()
@@ -99,6 +138,17 @@ impl std::fmt::Debug for ZebraValidatorSource {
 /// The ports distinguish a domain rejection from a transport fault; this error
 /// cannot represent that, so the kind is kept in the message rather than lost.
 /// The distinction becomes usable again as consumers move onto the port errors.
+///
+/// The transport fault is carried as the error's `source` rather than only
+/// formatted into the message. `zaino-serve` recovers zcashd-compatible RPC
+/// error codes by downcast-walking [`std::error::Error::source`] (see
+/// `getblock_error_object_from_indexer_error` in
+/// `zaino-serve/src/rpc/jsonrpc/service.rs`), so flattening a [`FetchError`] to
+/// a string would strip the [`FailureMode::RpcError`] code those clients key
+/// on. Domain rejections have no code to recover and stay flattened.
+///
+/// [`FetchError`]: zaino_source::FetchError
+/// [`FailureMode::RpcError`]: zaino_source::FailureMode::RpcError
 fn err<E>(error: QueryError<E>) -> BlockchainSourceError
 where
     E: std::fmt::Debug + std::fmt::Display,
@@ -108,7 +158,7 @@ where
             BlockchainSourceError::Unrecoverable(format!("validator rejected the query: {e}"))
         }
         QueryError::Fetch(e) => {
-            BlockchainSourceError::Unrecoverable(format!("validator unreachable: {e}"))
+            BlockchainSourceError::unrecoverable_context("validator unreachable", e)
         }
     }
 }
@@ -177,14 +227,13 @@ fn invalid(message: String) -> BlockchainSourceError {
     BlockchainSourceError::Unrecoverable(message)
 }
 
-impl ZebraValidatorSource {
+impl<V: ChainIndexSourcePorts> ValidatorSource<V> {
     /// Identify the block at a height, for the chaininfo delta form.
     async fn block_info(
         &self,
         height: u32,
     ) -> Result<zaino_fetch::jsonrpsee::response::address_deltas::BlockInfo, BlockchainSourceError>
     {
-        use zaino_source::GetRawBlock as _;
         let bytes = self
             .validator
             .get_raw_block(domain_height(height)?)
@@ -330,7 +379,7 @@ fn value_pool_array(
     Ok(slots)
 }
 
-impl BlockchainSource for ZebraValidatorSource {
+impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
     // ***** Blocks *****
 
     async fn get_block(
@@ -485,9 +534,16 @@ impl BlockchainSource for ZebraValidatorSource {
             GetAddressDeltasParams::Address(address) => (vec![address.clone()], 0, 0, false),
         };
 
+        // The interface's range is open-ended and unvalidated; the port's is
+        // neither, so the bounds are resolved against the tip here.
+        let tip = zaino_source::GetBestBlockHeight::get_best_block_height(&*self.validator)
+            .await
+            .map_err(err)?;
+        let (start, end) = clamp_deltas_range_to_tip(tip, start, end)?;
+
         let deltas = self
             .validator
-            .get_address_deltas(addresses, domain_height(start)?, domain_height(end)?)
+            .get_address_deltas(addresses, start, end)
             .await
             .map_err(err)?;
 
@@ -508,11 +564,19 @@ impl BlockchainSource for ZebraValidatorSource {
             })
             .collect();
 
+        // The chaininfo form additionally names the range's bounding blocks.
+        //
+        // Both bounds name a real block by this point, genesis included. The
+        // connector this replaced also required `start > 0 && end > 0`, but
+        // that was standing in for "no range was given" — the single-address
+        // form arrived here as `0..=0` before anything clamped it. The clamp
+        // above resolves that case, so a zero bound now means genesis and
+        // nothing else, and genesis is as nameable as any other block.
+        let (start, end) = (u32::from(start), u32::from(end));
         if !chain_info {
             return Ok(GetAddressDeltasResponse::Simple(deltas));
         }
 
-        // The chaininfo form additionally names the range's bounding blocks.
         Ok(GetAddressDeltasResponse::WithChainInfo {
             deltas,
             start: self.block_info(start).await?,
@@ -906,8 +970,6 @@ impl BlockchainSource for ZebraValidatorSource {
         &self,
         id: super::types::BlockHash,
     ) -> BlockchainSourceResult<super::source::TreestateBytes> {
-        use super::source::PoolTreestate;
-
         let block = zaino_primitives::types::BlockHash::from(id.0);
 
         // Two reads: the serialized trees, and the roots. The interface reports
@@ -928,27 +990,10 @@ impl BlockchainSource for ZebraValidatorSource {
             },
         )?;
 
-        // A pool is reported only when it has a tree at this block. Its root is
-        // attached when the validator also reported one — Zebra does not, so
-        // the field is genuinely absent rather than zeroed.
-        let pool = |state: Option<Vec<u8>>, root: Option<zaino_primitives::types::TreeRootInfo>| {
-            state.map(|final_state| PoolTreestate {
-                final_root: root.map(|info| {
-                    // The interface writes roots in display order, and the
-                    // domain holds them internally, so this reverses on the
-                    // way out — as `display_hex` does for identifiers.
-                    let mut bytes = <[u8; 32]>::from(info.root);
-                    bytes.reverse();
-                    bytes.to_vec()
-                }),
-                final_state,
-            })
-        };
-
         Ok((
-            pool(trees.sapling, roots.sapling),
-            pool(trees.orchard, roots.orchard),
-            pool(trees.ironwood, roots.ironwood),
+            pool_treestate_slot(trees.sapling, roots.sapling),
+            pool_treestate_slot(trees.orchard, roots.orchard),
+            pool_treestate_slot(trees.ironwood, roots.ironwood),
         ))
     }
 
@@ -1336,6 +1381,233 @@ impl BlockchainSource for ZebraValidatorSource {
     }
 }
 
+impl ZebraValidatorSource {
+    /// Build an RPC-only source from a validator endpoint.
+    ///
+    /// Skips the startup handshake that [`spawn_rpc`](Self::spawn_rpc) performs
+    /// — no first-block wait, no network adoption — so the caller must already
+    /// know the network and that the validator is serving. Intended for tests
+    /// and for embedders that have done both themselves.
+    pub fn rpc_only(
+        rpc_address: &str,
+        auth: Option<(String, String)>,
+        network: zebra_chain::parameters::Network,
+    ) -> Result<Self, BlockchainSourceError> {
+        let client = zaino_rpc::RpcClient::new(zaino_rpc::RpcClientConfig {
+            url: format!("http://{rpc_address}"),
+            auth,
+            ..Default::default()
+        })
+        .map_err(|e| invalid(format!("cannot build the validator RPC client: {e}")))?;
+
+        Ok(Self::new(
+            zaino_source_zebra::ZebraValidator::rpc_only(
+                zaino_source_zebra_rpc::ZebraRpcAdapter::new(client),
+            ),
+            network,
+            None,
+        ))
+    }
+
+    /// Connect to a validator over JSON-RPC alone.
+    ///
+    /// Blocks until the validator can serve a tip. A freshly started validator
+    /// answers RPC before it has committed its first block — Zebra serves
+    /// `getblockchaininfo` and an empty mempool while `getbestblockhash` still
+    /// reports no blocks, which can take minutes of peer discovery. Everything
+    /// downstream assumes a servable tip, so waiting here is what stops spawn
+    /// failing and exit-looping the whole process.
+    pub async fn spawn_rpc(
+        common: &crate::config::CommonBackendConfig,
+    ) -> Result<
+        (
+            Self,
+            zaino_fetch::jsonrpsee::response::GetInfoResponse,
+            zebra_chain::parameters::Network,
+        ),
+        BlockchainSourceError,
+    > {
+        let legacy = legacy_connector(common).await?;
+        let info = legacy
+            .get_info()
+            .await
+            .map_err(BlockchainSourceError::unrecoverable)?;
+
+        while let Err(e) = legacy.get_best_blockhash().await {
+            tracing::info!(%e, "Waiting for validator to serve its first block");
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        }
+
+        // Adopted before anything consumes a `Network`, so the index and its
+        // validator cannot disagree about where an upgrade activates.
+        let network = super::network_adoption::adopt_network(common, &legacy).await?;
+
+        let validator = zaino_source_zebra::ZebraValidator::rpc_only(rpc_adapter(common).await?);
+
+        Ok((Self::new(validator, network.clone(), None), info, network))
+    }
+
+    /// Connect to a validator and additionally read its state database directly.
+    ///
+    /// Launches the chain syncer and waits for it to catch up before returning.
+    /// The wait compares tip **hash** as well as height: the same height can
+    /// name different blocks during a reorg, so height alone would report a
+    /// false match and hand back a service that disagrees with the validator.
+    pub async fn spawn_direct(
+        common: &crate::config::CommonBackendConfig,
+        direct: &crate::config::DirectConnectionConfig,
+    ) -> Result<
+        (
+            Self,
+            zaino_fetch::jsonrpsee::response::GetInfoResponse,
+            zebra_chain::parameters::Network,
+        ),
+        BlockchainSourceError,
+    > {
+        use futures::TryFutureExt as _;
+        use tower::{Service as _, ServiceExt as _};
+        use zebra_state::{ReadRequest, ReadResponse};
+
+        let legacy = legacy_connector(common).await?;
+        let info = legacy
+            .get_info()
+            .await
+            .map_err(BlockchainSourceError::unrecoverable)?;
+
+        let network = super::network_adoption::adopt_network(common, &legacy).await?;
+
+        tracing::info!(
+            grpc_address = %direct.validator_grpc_address,
+            "Launching Chain Syncer"
+        );
+        let (mut read_state_service, _latest_chain_tip, chain_tip_change, sync_task_handle) =
+            zebra_rpc::sync::init_read_state_with_syncer(
+                direct.validator_state_config.clone(),
+                &network,
+                direct.validator_grpc_address,
+            )
+            .await
+            .map_err(|e| invalid(e.to_string()))?
+            .map_err(|e| invalid(e.to_string()))?;
+
+        tracing::info!("Chain syncer launched");
+
+        loop {
+            let blockchain_info = legacy
+                .get_blockchain_info()
+                .await
+                .map_err(BlockchainSourceError::unrecoverable)?;
+
+            let response = read_state_service
+                .ready()
+                .and_then(|service| service.call(ReadRequest::Tip))
+                .await
+                .map_err(BlockchainSourceError::unrecoverable)?;
+
+            let ReadResponse::Tip(tip) = response else {
+                return Err(invalid("unexpected response to a Tip request".to_string()));
+            };
+
+            // As above: the syncer has no tip until genesis arrives, so this is
+            // a wait rather than a failure.
+            let Some((syncer_height, syncer_tip_hash)) = tip else {
+                tracing::info!("Waiting for validator to serve its first block");
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                continue;
+            };
+
+            if blockchain_info.blocks == syncer_height
+                && blockchain_info.best_block_hash == syncer_tip_hash
+            {
+                tracing::info!(
+                    height = syncer_height.0,
+                    tip_hash = %syncer_tip_hash,
+                    "ReadStateService synced with Zebra"
+                );
+                break;
+            }
+
+            tracing::info!(
+                syncer_height = syncer_height.0,
+                validator_height = blockchain_info.blocks.0,
+                syncer_tip_hash = %syncer_tip_hash,
+                validator_tip_hash = %blockchain_info.best_block_hash,
+                "ReadStateService syncing with Zebra"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        }
+
+        let validator = zaino_source_zebra::ZebraValidator::with_read_state(
+            rpc_adapter(common).await?,
+            zaino_source_zebra_readstate::ZebraReadStateAdapter::from_service(
+                read_state_service,
+                &network,
+                Some(Arc::new(sync_task_handle)),
+            ),
+        );
+
+        Ok((
+            Self::new(validator, network.clone(), Some(chain_tip_change)),
+            info,
+            network,
+        ))
+    }
+}
+
+/// The JSON-RPC adapter for the new source stack.
+///
+/// Cookie auth is resolved to a credential pair here. The previous connector
+/// read the cookie file once at construction and stored the token, and
+/// `Basic` auth over `("__cookie__", token)` produces the identical header, so
+/// this preserves that behaviour exactly rather than re-reading per request.
+async fn rpc_adapter(
+    common: &crate::config::CommonBackendConfig,
+) -> Result<zaino_source_zebra_rpc::ZebraRpcAdapter, BlockchainSourceError> {
+    let auth = match &common.validator_cookie_path {
+        Some(path) => {
+            let contents = std::fs::read_to_string(path).map_err(|e| {
+                invalid(format!(
+                    "cannot read validator cookie {}: {e}",
+                    path.display()
+                ))
+            })?;
+            let token = contents.trim();
+            let token = token.strip_prefix("__cookie__:").unwrap_or(token);
+            Some(("__cookie__".to_string(), token.to_string()))
+        }
+        None => Some((
+            common.validator_rpc_user.clone(),
+            common.validator_rpc_password.clone(),
+        )),
+    };
+
+    let client = zaino_rpc::RpcClient::new(zaino_rpc::RpcClientConfig {
+        url: format!("http://{}", common.validator_rpc_address),
+        auth,
+        ..Default::default()
+    })
+    .map_err(|e| invalid(format!("cannot build the validator RPC client: {e}")))?;
+
+    Ok(zaino_source_zebra_rpc::ZebraRpcAdapter::new(client))
+}
+
+/// The legacy connector, still used for startup handshakes and network adoption.
+///
+/// Both are the last callers of `zaino-fetch`'s connector here; they go with the
+/// scaffolding when network adoption moves onto the ports.
+async fn legacy_connector(
+    common: &crate::config::CommonBackendConfig,
+) -> Result<zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector, BlockchainSourceError> {
+    zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector::new_from_config_parts(
+        &common.validator_rpc_address,
+        common.validator_rpc_user.clone(),
+        common.validator_rpc_password.clone(),
+        common.validator_cookie_path.clone(),
+    )
+    .await
+    .map_err(BlockchainSourceError::unrecoverable)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1504,5 +1776,226 @@ mod tests {
 
         assert!(sapling_root(impossible.clone()).is_err());
         assert!(orchard_root(impossible).is_err());
+    }
+}
+
+/// Clamps a `getaddressdeltas` height range to the current best tip.
+///
+/// The interface's range is open-ended in a way the port's is not: `end == 0`
+/// means "to the tip", and either bound may name a height the chain has not
+/// reached. Both clamp down to the tip, so a caller asking past the end of the
+/// chain gets the chain rather than an error — and, in particular, the
+/// single-address form (which carries no range at all, and so arrives as
+/// `0..=0`) means the whole chain rather than genesis alone.
+fn clamp_deltas_range_to_tip(
+    tip: zaino_primitives::types::Height,
+    start_raw: u32,
+    end_raw: u32,
+) -> Result<
+    (
+        zaino_primitives::types::Height,
+        zaino_primitives::types::Height,
+    ),
+    BlockchainSourceError,
+> {
+    let tip_raw = u32::from(tip);
+    let end = if end_raw == 0 || end_raw > tip_raw {
+        tip
+    } else {
+        domain_height(end_raw)?
+    };
+    let start = if start_raw > tip_raw {
+        tip
+    } else {
+        domain_height(start_raw)?
+    };
+    Ok((start, end))
+}
+
+/// Maps one pool's reported tree and root onto the interface's treestate slot.
+///
+/// A pool is reported only when it has a tree at this block, so an absent
+/// `state` is an absent slot rather than an empty tree — emitting a serialized
+/// empty tree would claim the pool is active when it is not, which is what
+/// `z_gettreestate` keys on to omit pre-activation pools. The root is attached
+/// only when the validator reported one; Zebra does not, so the field is
+/// genuinely absent rather than zeroed.
+fn pool_treestate_slot(
+    state: Option<Vec<u8>>,
+    root: Option<zaino_primitives::types::TreeRootInfo>,
+) -> Option<super::source::PoolTreestate> {
+    state.map(|final_state| super::source::PoolTreestate {
+        final_root: root.map(|info| {
+            // The interface writes roots in display order, and the domain holds
+            // them internally, so this reverses on the way out — as
+            // `display_hex` does for identifiers.
+            let mut bytes = <[u8; 32]>::from(info.root);
+            bytes.reverse();
+            bytes.to_vec()
+        }),
+        final_state,
+    })
+}
+
+#[cfg(test)]
+mod pool_treestate_slot_tests {
+    use super::pool_treestate_slot;
+    use zaino_primitives::types::{TreeRoot, TreeRootInfo};
+
+    fn root_info(byte: u8) -> TreeRootInfo {
+        TreeRootInfo {
+            root: TreeRoot::from([byte; 32]),
+            size: 1,
+        }
+    }
+
+    /// The validator's root must reach the slot. Zebra populates a root for
+    /// every pool it serves, and dropping it left every `z_gettreestate`
+    /// response with no `finalRoot` for any pool.
+    #[test]
+    fn final_root_passes_through() {
+        let slot = pool_treestate_slot(Some(vec![1u8, 2, 3]), Some(root_info(7)))
+            .expect("a reported tree maps to a populated slot");
+
+        assert_eq!(slot.final_state, vec![1u8, 2, 3]);
+        assert_eq!(
+            slot.final_root,
+            Some(vec![7u8; 32]),
+            "the validator's root must pass through to the treestate slot"
+        );
+    }
+
+    /// Roots cross to the interface in display order, which is the reverse of
+    /// how the domain holds them.
+    #[test]
+    fn root_is_reversed_into_display_order() {
+        let mut internal = [0u8; 32];
+        internal[0] = 0xaa;
+        internal[31] = 0xbb;
+
+        let slot = pool_treestate_slot(
+            Some(vec![0]),
+            Some(TreeRootInfo {
+                root: TreeRoot::from(internal),
+                size: 1,
+            }),
+        )
+        .expect("a reported tree maps to a populated slot");
+
+        let emitted = slot.final_root.expect("a reported root reaches the slot");
+        assert_eq!(emitted[0], 0xbb);
+        assert_eq!(emitted[31], 0xaa);
+    }
+
+    /// A pool the validator did not report stays absent — for ironwood this is
+    /// every height before NU6.3, where back-filling an empty tree would emit
+    /// the field on networks that never activate it.
+    #[test]
+    fn absent_tree_maps_to_absent_slot() {
+        assert_eq!(pool_treestate_slot(None, None), None);
+        assert_eq!(
+            pool_treestate_slot(None, Some(root_info(7))),
+            None,
+            "a root without a tree is not a pool this block has"
+        );
+    }
+
+    /// A tree without a root is still a pool this block has; the root is
+    /// reported absent rather than zeroed.
+    #[test]
+    fn tree_without_root_keeps_the_slot() {
+        let slot = pool_treestate_slot(Some(vec![9u8]), None).expect("a reported tree is a slot");
+        assert_eq!(slot.final_root, None);
+    }
+}
+
+#[cfg(test)]
+mod error_source_chain {
+    use super::*;
+
+    /// `zaino-serve` recovers zcashd-compatible RPC error codes by
+    /// downcast-walking [`std::error::Error::source`] chains (see
+    /// `getblock_error_object_from_indexer_error` and
+    /// `sendrawtransaction_error_object_from_indexer_error` in
+    /// `zaino-serve/src/rpc/jsonrpc/service.rs`). This boundary must therefore
+    /// preserve the typed cause instead of flattening it to a string, or
+    /// failures surface as generic internal errors rather than the legacy codes
+    /// lightwalletd-family clients key on.
+    #[tokio::test]
+    async fn transport_error_stays_reachable_through_source() {
+        // Port 1 refuses connections, so the request fails at the transport
+        // layer without contacting any validator.
+        let source = ZebraValidatorSource::rpc_only(
+            "127.0.0.1:1",
+            None,
+            zebra_chain::parameters::Network::new_regtest(Default::default()),
+        )
+        .expect("client construction is network-free");
+
+        let error = BlockchainSource::get_best_block_hash(&source)
+            .await
+            .expect_err("a request to a closed port must fail");
+
+        let reached = std::iter::successors(
+            Some(&error as &(dyn std::error::Error + 'static)),
+            |error| error.source(),
+        )
+        .any(|error| error.downcast_ref::<zaino_source::FetchError>().is_some());
+
+        assert!(
+            reached,
+            "the typed FetchError must stay reachable via the source() chain; \
+             stringifying it strips the FailureMode the serve layer recovers"
+        );
+    }
+}
+
+#[cfg(test)]
+mod clamp_deltas_range_to_tip_tests {
+    use super::clamp_deltas_range_to_tip;
+    use zaino_primitives::types::Height;
+
+    fn height(h: u32) -> Height {
+        Height::try_from(h).expect("valid test height")
+    }
+
+    /// `end == 0` means "to the tip", and both bounds clamp down to it.
+    #[test]
+    fn bounds_clamp_to_tip() {
+        let tip = height(100);
+
+        assert_eq!(
+            clamp_deltas_range_to_tip(tip, 5, 0).expect("a present tip clamps"),
+            (height(5), height(100))
+        );
+        assert_eq!(
+            clamp_deltas_range_to_tip(tip, 5, 400).expect("a present tip clamps"),
+            (height(5), height(100))
+        );
+        assert_eq!(
+            clamp_deltas_range_to_tip(tip, 300, 50).expect("a present tip clamps"),
+            (height(100), height(50))
+        );
+    }
+
+    /// The single-address form carries no range, so it arrives as `0..=0` and
+    /// must mean the whole chain. Forwarding it verbatim would report only
+    /// genesis — the regression this clamp exists to prevent.
+    #[test]
+    fn absent_range_covers_the_whole_chain() {
+        assert_eq!(
+            clamp_deltas_range_to_tip(height(100), 0, 0).expect("a present tip clamps"),
+            (height(0), height(100)),
+            "an absent range must span the chain, not genesis alone"
+        );
+    }
+
+    /// A range already inside the chain is untouched.
+    #[test]
+    fn in_range_bounds_pass_through() {
+        assert_eq!(
+            clamp_deltas_range_to_tip(height(100), 10, 20).expect("a present tip clamps"),
+            (height(10), height(20))
+        );
     }
 }
