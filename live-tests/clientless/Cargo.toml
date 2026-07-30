@@ -25,4 +25,5 @@ ztest = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
+rstest.workspace = true
 

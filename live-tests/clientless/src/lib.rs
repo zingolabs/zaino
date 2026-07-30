@@ -90,12 +90,8 @@ pub mod rpc {
                 Some(true),
                 "sapling must be valid: {s:?}"
             );
-            // Mirror dev's `z_validate` suite exactly: the Sapling diversifier and
-            // diversified transmission key must be present for every backend. dev
-            // asserted this through zaino's (deprecated) typed
-            // `ZcashIndexer::z_validate_address`, which decodes the address and
-            // synthesizes these fields regardless of which validator backs the
-            // indexer; this asserts the same over zaino's JSON-RPC `z_validateaddress`.
+
+            // Assert the Sapling diversifier and diversified transmission key are present
             assert_eq!(
                 s.get("diversifier").and_then(Value::as_str),
                 Some(VALID_DIVERSIFIER),

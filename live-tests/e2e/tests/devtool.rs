@@ -136,16 +136,16 @@ async fn address_tx_ids(
 mod zebrad {
     use super::*;
 
-    /// The FetchService column: a `regtest` zainod pod reading zebrad over RPC.
-    /// Each test stands up its own zebrad + zainod + librustzcash wallet inline.
-    mod fetch_service {
+    /// Wallet-driven flows. Tests with a StateService twin are split into
+    /// `*_fetch` / `*_state` variants; the rest are FetchService-only.
+    mod wallet {
         use super::*;
 
-        /// Port of `receives_mining_reward`: the faucet's synced wallet holds a
-        /// spendable shielded coinbase note.
+        /// Port of `receives_mining_reward` (FetchService): the faucet's synced
+        /// wallet holds a spendable shielded coinbase note.
         #[ztest::qos::wallet]
         #[tokio::test(flavor = "multi_thread")]
-        async fn receives_mining_reward() -> Result<()> {
+        async fn receives_mining_reward_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
                 env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
@@ -164,16 +164,83 @@ mod zebrad {
             Ok(())
         }
 
-        /// Port of `connect_to_node_get_info`: faucet and recipient wallets
-        /// connect and sync without error, and the indexer reports node info
-        /// (smoke).
+        /// Port of `receives_mining_reward` (StateService): the faucet's synced
+        /// wallet holds a spendable shielded coinbase note.
         #[ztest::qos::wallet]
         #[tokio::test(flavor = "multi_thread")]
-        async fn connect_to_node_get_info() -> Result<()> {
+        async fn receives_mining_reward_state() -> Result<()> {
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .mine_to(FUND.ztest())
+                    .mount(&vol),
+            );
+            let indexer = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
+                    .named("zaino-state"),
+            );
+            let wallet = env.add_wallet(Wallet::librustzcash());
+            env.build().await?;
+
+            let faucet = wallet
+                .funded_faucet_with_notes(&validator, &indexer, 1)
+                .await?;
+            let balances = faucet.balances().await?;
+            assert!(
+                balances.get(Pool::Ironwood.ztest()) > 0,
+                "faucet must hold a spendable Ironwood coinbase note, got {balances:?}"
+            );
+            Ok(())
+        }
+
+        /// Port of `connect_to_node_get_info` (FetchService): faucet and recipient
+        /// wallets connect and sync without error, and the indexer reports node
+        /// info (smoke).
+        #[ztest::qos::wallet]
+        #[tokio::test(flavor = "multi_thread")]
+        async fn connect_to_node_get_info_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
                 env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+            let wallet = env.add_wallet(Wallet::librustzcash());
+            env.build().await?;
+
+            let _faucet = wallet
+                .funded_faucet_with_notes(&validator, &indexer, 1)
+                .await?;
+            let recipient = wallet.recipient(&validator, &indexer).await?;
+            recipient.sync().await?;
+            indexer.indexer_info().await?;
+            Ok(())
+        }
+
+        /// Port of `connect_to_node_get_info` (StateService): faucet and recipient
+        /// wallets connect and sync without error, and the indexer reports node
+        /// info (smoke).
+        #[ztest::qos::wallet]
+        #[tokio::test(flavor = "multi_thread")]
+        async fn connect_to_node_get_info_state() -> Result<()> {
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .mine_to(FUND.ztest())
+                    .mount(&vol),
+            );
+            let indexer = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
+                    .named("zaino-state"),
+            );
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
 
@@ -193,7 +260,7 @@ mod zebrad {
         /// lands in — and is asserted against — the Ironwood balance.
         #[ztest::qos::wallet]
         #[tokio::test(flavor = "multi_thread")]
-        async fn send_to_ironwood() -> Result<()> {
+        async fn send_to_ironwood_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
                 env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
@@ -219,10 +286,53 @@ mod zebrad {
         }
 
         /// Port of the `send_to_pool` family: the faucet sends 250_000 to the
+        /// recipient's unified address. The recipient's unified address exposes
+        /// an Orchard receiver, but from NU6.3 librustzcash routes the output
+        /// value to the Ironwood pool (Orchard is spend-locked), so the receipt
+        /// lands in — and is asserted against — the Ironwood balance.
+        #[ztest::qos::wallet]
+        #[tokio::test(flavor = "multi_thread")]
+        async fn send_to_ironwood_state() -> Result<()> {
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .mine_to(FUND.ztest())
+                    .mount(&vol),
+            );
+            let indexer = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
+                    .named("zaino-state"),
+            );
+            let wallet = env.add_wallet(Wallet::librustzcash());
+            env.build().await?;
+
+            let faucet = wallet
+                .funded_faucet_with_notes(&validator, &indexer, 1)
+                .await?;
+            let recipient = wallet.recipient(&validator, &indexer).await?;
+            let addr = recipient.address(Pool::Ironwood.ztest()).await?;
+            faucet.send(&addr, SEND_AMOUNT).await?;
+            let tip = validator.generate_blocks(1).await?;
+            indexer.wait_for_block_num(tip, READY).await?;
+            recipient.sync().await?;
+            assert_eq!(
+                recipient.balances().await?.get(Pool::Ironwood.ztest()),
+                SEND_AMOUNT,
+                "recipient Ironwood balance must equal the send"
+            );
+            Ok(())
+        }
+
+        /// Port of the `send_to_pool` family: the faucet sends 250_000 to the
         /// recipient's sapling address; the recipient's synced wallet shows it.
         #[ztest::qos::wallet]
         #[tokio::test(flavor = "multi_thread")]
-        async fn send_to_sapling() -> Result<()> {
+        async fn send_to_sapling_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
                 env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
@@ -248,11 +358,51 @@ mod zebrad {
         }
 
         /// Port of the `send_to_pool` family: the faucet sends 250_000 to the
+        /// recipient's sapling address; the recipient's synced wallet shows it.
+        #[ztest::qos::wallet]
+        #[tokio::test(flavor = "multi_thread")]
+        async fn send_to_sapling_state() -> Result<()> {
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .mine_to(FUND.ztest())
+                    .mount(&vol),
+            );
+            let indexer = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
+                    .named("zaino-state"),
+            );
+            let wallet = env.add_wallet(Wallet::librustzcash());
+            env.build().await?;
+
+            let faucet = wallet
+                .funded_faucet_with_notes(&validator, &indexer, 1)
+                .await?;
+            let recipient = wallet.recipient(&validator, &indexer).await?;
+            let addr = recipient.address(Pool::Sapling.ztest()).await?;
+            faucet.send(&addr, SEND_AMOUNT).await?;
+            let tip = validator.generate_blocks(1).await?;
+            indexer.wait_for_block_num(tip, READY).await?;
+            recipient.sync().await?;
+            assert_eq!(
+                recipient.balances().await?.get(Pool::Sapling.ztest()),
+                SEND_AMOUNT,
+                "recipient Sapling balance must equal the send"
+            );
+            Ok(())
+        }
+
+        /// Port of the `send_to_pool` family: the faucet sends 250_000 to the
         /// recipient's transparent address; the recipient's synced wallet shows
         /// it.
         #[ztest::qos::wallet]
         #[tokio::test(flavor = "multi_thread")]
-        async fn send_to_transparent() -> Result<()> {
+        async fn send_to_transparent_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
                 env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
@@ -277,11 +427,52 @@ mod zebrad {
             Ok(())
         }
 
-        /// Port of `send_to_all`: one faucet funds a send to all three pools;
-        /// each recipient pool reports 250_000.
+        /// Port of the `send_to_pool` family: the faucet sends 250_000 to the
+        /// recipient's transparent address; the recipient's synced wallet shows
+        /// it.
         #[ztest::qos::wallet]
         #[tokio::test(flavor = "multi_thread")]
-        async fn send_to_all() -> Result<()> {
+        async fn send_to_transparent_state() -> Result<()> {
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .mine_to(FUND.ztest())
+                    .mount(&vol),
+            );
+            let indexer = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
+                    .named("zaino-state"),
+            );
+            let wallet = env.add_wallet(Wallet::librustzcash());
+            env.build().await?;
+
+            let faucet = wallet
+                .funded_faucet_with_notes(&validator, &indexer, 1)
+                .await?;
+            let recipient = wallet.recipient(&validator, &indexer).await?;
+            let addr = recipient.address(Pool::Transparent.ztest()).await?;
+            faucet.send(&addr, SEND_AMOUNT).await?;
+            let tip = validator.generate_blocks(1).await?;
+            indexer.wait_for_block_num(tip, READY).await?;
+            recipient.sync().await?;
+            assert_eq!(
+                recipient.balances().await?.get(Pool::Transparent.ztest()),
+                SEND_AMOUNT,
+                "recipient Transparent balance must equal the send"
+            );
+            Ok(())
+        }
+
+        /// Port of `send_to_all` (FetchService): one faucet funds a send to all
+        /// three pools; each recipient pool reports 250_000.
+        #[ztest::qos::wallet]
+        #[tokio::test(flavor = "multi_thread")]
+        async fn send_to_all_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
                 env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
@@ -314,12 +505,60 @@ mod zebrad {
             Ok(())
         }
 
-        /// Port of `shield_for_validator`: the recipient receives a transparent
-        /// 250_000, shields it (to Ironwood from NU6.3), and reports 250_000 −
-        /// 15_000 fee.
+        /// Port of `send_to_all` (StateService): one faucet funds a send to all
+        /// three pools; each recipient pool reports 250_000.
         #[ztest::qos::wallet]
         #[tokio::test(flavor = "multi_thread")]
-        async fn shield_for_validator() -> Result<()> {
+        async fn send_to_all_state() -> Result<()> {
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .mine_to(FUND.ztest())
+                    .mount(&vol),
+            );
+            let indexer = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
+                    .named("zaino-state"),
+            );
+            let wallet = env.add_wallet(Wallet::librustzcash());
+            env.build().await?;
+
+            // Three notes — one per send (no chaining of unconfirmed change).
+            let faucet = wallet
+                .funded_faucet_with_notes(&validator, &indexer, 3)
+                .await?;
+            let recipient = wallet.recipient(&validator, &indexer).await?;
+            // NU6.3: the unified-address (Orchard-receiver) output routes to Ironwood.
+            for pool in [Pool::Ironwood, Pool::Sapling, Pool::Transparent] {
+                let addr = recipient.address(pool.ztest()).await?;
+                faucet.send(&addr, SEND_AMOUNT).await?;
+            }
+            let tip = validator.generate_blocks(1).await?;
+            indexer.wait_for_block_num(tip, READY).await?;
+            recipient.sync().await?;
+
+            let balances = recipient.balances().await?;
+            assert_eq!(balances.get(Pool::Ironwood.ztest()), SEND_AMOUNT);
+            // From NU6.3 the unified-address output routes to Ironwood; the
+            // orchard pool must stay empty (a nonzero orchard here means the
+            // receipt was mislabelled, not merely misrouted).
+            assert_eq!(balances.get(Pool::Orchard.ztest()), 0);
+            assert_eq!(balances.get(Pool::Sapling.ztest()), SEND_AMOUNT);
+            assert_eq!(balances.get(Pool::Transparent.ztest()), SEND_AMOUNT);
+            Ok(())
+        }
+
+        /// Port of `shield_for_validator` (FetchService): the recipient receives a
+        /// transparent 250_000, shields it (to Ironwood from NU6.3), and reports
+        /// 250_000 − 15_000 fee.
+        #[ztest::qos::wallet]
+        #[tokio::test(flavor = "multi_thread")]
+        async fn shield_for_validator_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
                 env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
@@ -354,11 +593,62 @@ mod zebrad {
             Ok(())
         }
 
-        /// Port of `send_to_transparent_finalization`: a transparent send returns
-        /// the same address txids from the non-finalised chain and again after a
-        /// seam-deep advance lands it in the finalised DB. Heavy: the advance
-        /// mines `SEAM_ADVANCE` (~105) shielded coinbase blocks to cross the seam.
-        /// Gated + ignored-by-default; un-ignore for manual /
+        /// Port of `shield_for_validator` (StateService): the recipient receives a
+        /// transparent 250_000, shields it (to Ironwood from NU6.3), and reports
+        /// 250_000 − 15_000 fee.
+        #[ztest::qos::wallet]
+        #[tokio::test(flavor = "multi_thread")]
+        async fn shield_for_validator_state() -> Result<()> {
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .mine_to(FUND.ztest())
+                    .mount(&vol),
+            );
+            let indexer = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
+                    .named("zaino-state"),
+            );
+            let wallet = env.add_wallet(Wallet::librustzcash());
+            env.build().await?;
+
+            let faucet = wallet
+                .funded_faucet_with_notes(&validator, &indexer, 1)
+                .await?;
+            let recipient = wallet.recipient(&validator, &indexer).await?;
+            let taddr = recipient.address(Pool::Transparent.ztest()).await?;
+            faucet.send(&taddr, SEND_AMOUNT).await?;
+            let tip = validator.generate_blocks(1).await?;
+            indexer.wait_for_block_num(tip, READY).await?;
+            recipient.sync().await?;
+            assert_eq!(
+                recipient.balances().await?.get(Pool::Transparent.ztest()),
+                SEND_AMOUNT
+            );
+
+            recipient.shield().await?;
+            let tip = validator.generate_blocks(1).await?;
+            indexer.wait_for_block_num(tip, READY).await?;
+            recipient.sync().await?;
+            assert_eq!(
+                recipient.balances().await?.get(Pool::Ironwood.ztest()),
+                SEND_AMOUNT - SHIELD_FEE,
+                "shielded balance must be the send net of the ZIP-317 fee \
+                 (NU6.3 shields transparent funds into the Ironwood pool)"
+            );
+            Ok(())
+        }
+
+        /// Port of `send_to_transparent_finalization` (FetchService): a transparent
+        /// send returns the same address txids from the non-finalised chain and
+        /// again after a seam-deep advance lands it in the finalised DB. Heavy: the
+        /// advance mines `SEAM_ADVANCE` (~105) shielded coinbase blocks to cross
+        /// the seam. Gated + ignored-by-default; un-ignore for manual /
         /// dedicated CI, or once cheap transparent filler mining lands.
         #[ztest::qos::wallet]
         #[tokio::test(flavor = "multi_thread")]
@@ -366,7 +656,7 @@ mod zebrad {
             not(feature = "devtool-incompatible"),
             ignore = "heavy: mines ~105 shielded-coinbase blocks (~105 groth16 proofs) to bury the send below the finalisation seam; un-ignore for manual / dedicated CI or when cheap transparent filler mining lands"
         )]
-        async fn send_to_transparent_finalization() -> Result<()> {
+        async fn send_to_transparent_finalization_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
                 env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
@@ -407,11 +697,75 @@ mod zebrad {
             Ok(())
         }
 
-        /// Port of `get_transaction_mined` (smoke): the indexer serves
-        /// `get_transaction` for the mined orchard send by txid.
+        /// Port of `send_to_transparent_finalization` (StateService): a transparent
+        /// send returns the same address txids from the non-finalised chain and
+        /// again after a seam-deep advance lands it in the finalised DB. Heavy: the
+        /// advance mines `SEAM_ADVANCE` (~105) shielded coinbase blocks to cross
+        /// the seam. Gated + ignored-by-default; un-ignore for manual /
+        /// dedicated CI, or once cheap transparent filler mining lands.
+        #[ztest::qos::wallet]
+        #[tokio::test(flavor = "multi_thread")]
+        #[cfg_attr(
+            not(feature = "devtool-incompatible"),
+            ignore = "heavy: mines ~105 shielded-coinbase blocks (~105 groth16 proofs) to bury the send below the finalisation seam; un-ignore for manual / dedicated CI or when cheap transparent filler mining lands"
+        )]
+        async fn send_to_transparent_finalization_state() -> Result<()> {
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .mine_to(FUND.ztest())
+                    .mount(&vol),
+            );
+            let indexer = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
+                    .named("zaino-state"),
+            );
+            let wallet = env.add_wallet(Wallet::librustzcash());
+            env.build().await?;
+
+            let faucet = wallet
+                .funded_faucet_with_notes(&validator, &indexer, 1)
+                .await?;
+            let recipient = wallet.recipient(&validator, &indexer).await?;
+            let taddr = recipient.address(Pool::Transparent.ztest()).await?;
+            faucet.send(&taddr, SEND_AMOUNT).await?;
+            let tip = validator.generate_blocks(1).await?;
+            indexer.wait_for_block_num(tip, READY).await?;
+
+            // The send's block, queried while it is still in the non-finalised window.
+            let irpc = indexer.json_rpc().await?;
+            let height = u32::from(indexer.latest_block_height().await?);
+            let unfinalised_txids = address_tx_ids(&irpc, &taddr, height, height).await?;
+
+            // The load-bearing advance: push the send below the seam so it crosses
+            // the finalised floor (`tip - seam`) into the finalized DB.
+            let tip = validator.generate_blocks(SEAM_ADVANCE).await?;
+            indexer.wait_for_block_num(tip, READY).await?;
+            let finalised_txids = address_tx_ids(&irpc, &taddr, height, height).await?;
+
+            recipient.sync().await?;
+            assert_eq!(
+                recipient.balances().await?.get(Pool::Transparent.ztest()),
+                SEND_AMOUNT,
+                "the transparent send must still be served after it finalizes"
+            );
+            assert_eq!(
+                unfinalised_txids, finalised_txids,
+                "the address txids must be identical across the finalisation seam"
+            );
+            Ok(())
+        }
+
+        /// Port of `get_transaction_mined` (smoke, FetchService): the indexer
+        /// serves `get_transaction` for the mined orchard send by txid.
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
-        async fn get_transaction_mined() -> Result<()> {
+        async fn get_transaction_mined_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
                 env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
@@ -436,17 +790,115 @@ mod zebrad {
             Ok(())
         }
 
-        /// Port of `get_raw_mempool`: the indexer's `getrawmempool` matches the
-        /// validator's, with two unmined transactions. `getrawmempool` returns
-        /// the mempool txid set in unspecified order; sort both txid lists and
-        /// compare as sets.
+        /// Port of `get_transaction_mined` (smoke, StateService): the indexer
+        /// serves `get_transaction` for the mined orchard send by txid.
+        #[ztest::qos::integration]
+        #[tokio::test(flavor = "multi_thread")]
+        async fn get_transaction_mined_state() -> Result<()> {
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .mine_to(FUND.ztest())
+                    .mount(&vol),
+            );
+            let indexer = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
+                    .named("zaino-state"),
+            );
+            let wallet = env.add_wallet(Wallet::librustzcash());
+            env.build().await?;
+
+            let faucet = wallet
+                .funded_faucet_with_notes(&validator, &indexer, 1)
+                .await?;
+            let recipient = wallet.recipient(&validator, &indexer).await?;
+            let addr = recipient.address(Pool::Orchard.ztest()).await?;
+            let txid = faucet
+                .send(&addr, SEND_AMOUNT)
+                .await?
+                .into_iter()
+                .next()
+                .expect("send returns a txid");
+            let tip = validator.generate_blocks(1).await?;
+            indexer.wait_for_block_num(tip, READY).await?;
+            let _ = indexer.get_transaction(txid).await?;
+            Ok(())
+        }
+
+        /// Port of `get_raw_mempool` (FetchService): the indexer's `getrawmempool`
+        /// matches the validator's, with two unmined transactions. `getrawmempool`
+        /// returns the mempool txid set in unspecified order; sort both txid lists
+        /// and compare as sets.
         #[ztest::qos::wallet]
         #[tokio::test(flavor = "multi_thread")]
-        async fn get_raw_mempool() -> Result<()> {
+        async fn get_raw_mempool_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
                 env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+            let wallet = env.add_wallet(Wallet::librustzcash());
+            env.build().await?;
+
+            let faucet = wallet
+                .funded_faucet_with_notes(&validator, &indexer, 2)
+                .await?;
+            let recipient = wallet.recipient(&validator, &indexer).await?;
+            let taddr = recipient.address(Pool::Transparent.ztest()).await?;
+            let ua = recipient.address(Pool::Orchard.ztest()).await?;
+            faucet.send(&taddr, SEND_AMOUNT).await?;
+            faucet.send(&ua, SEND_AMOUNT).await?;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+
+            let mut validator_txids = json_string_array(
+                validator
+                    .json_rpc()
+                    .await?
+                    .call_value("getrawmempool", serde_json::json!([]))
+                    .await?,
+            );
+            let mut indexer_txids = json_string_array(
+                indexer
+                    .json_rpc()
+                    .await?
+                    .call_value("getrawmempool", serde_json::json!([]))
+                    .await?,
+            );
+            validator_txids.sort();
+            indexer_txids.sort();
+            assert_eq!(
+                validator_txids, indexer_txids,
+                "getrawmempool txid sets must agree (order-insensitive)"
+            );
+            Ok(())
+        }
+
+        /// Port of `get_raw_mempool` (StateService): the indexer's `getrawmempool`
+        /// matches the validator's, with two unmined transactions. `getrawmempool`
+        /// returns the mempool txid set in unspecified order; sort both txid lists
+        /// and compare as sets.
+        #[ztest::qos::wallet]
+        #[tokio::test(flavor = "multi_thread")]
+        async fn get_raw_mempool_state() -> Result<()> {
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .mine_to(FUND.ztest())
+                    .mount(&vol),
+            );
+            let indexer = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
+                    .named("zaino-state"),
+            );
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
 
@@ -570,14 +1022,14 @@ mod zebrad {
             Ok(())
         }
 
-        /// Port of `get_mempool_info`: `getmempoolinfo` matches values recomputed
-        /// from the mempool's own contents (`size` and `bytes` from the
-        /// mempool-stream's serialized transactions). `usage == bytes + Σ txid-key
-        /// heap-capacity` is an in-process detail with no pod surface, so we assert
-        /// `usage >= bytes` instead.
+        /// Port of `get_mempool_info` (FetchService): `getmempoolinfo` matches
+        /// values recomputed from the mempool's own contents (`size` and `bytes`
+        /// from the mempool-stream's serialized transactions). `usage == bytes + Σ
+        /// txid-key heap-capacity` is an in-process detail with no pod surface, so
+        /// we assert `usage >= bytes` instead.
         #[ztest::qos::wallet]
         #[tokio::test(flavor = "multi_thread")]
-        async fn get_mempool_info() -> Result<()> {
+        async fn get_mempool_info_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
                 env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
@@ -634,10 +1086,85 @@ mod zebrad {
             Ok(())
         }
 
-        /// Port of `monitor_unverified_mempool`: broadcast two unmined sends,
-        /// observe them in the mempool, then mine them in and confirm the
-        /// balances. The *unconfirmed* (mempool) pool-balance split under test
-        /// cannot be asserted — ztest's librustzcash wallet exposes no
+        /// Port of `get_mempool_info` (StateService): `getmempoolinfo` matches
+        /// values recomputed from the mempool's own contents (`size` and `bytes`
+        /// from the mempool-stream's serialized transactions). `usage == bytes + Σ
+        /// txid-key heap-capacity` is an in-process detail with no pod surface, so
+        /// we assert `usage >= bytes` instead.
+        #[ztest::qos::wallet]
+        #[tokio::test(flavor = "multi_thread")]
+        async fn get_mempool_info_state() -> Result<()> {
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .mine_to(FUND.ztest())
+                    .mount(&vol),
+            );
+            let indexer = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
+                    .named("zaino-state"),
+            );
+            let wallet = env.add_wallet(Wallet::librustzcash());
+            env.build().await?;
+
+            let faucet = wallet
+                .funded_faucet_with_notes(&validator, &indexer, 2)
+                .await?;
+            let recipient = wallet.recipient(&validator, &indexer).await?;
+            let taddr = recipient.address(Pool::Transparent.ztest()).await?;
+            let ua = recipient.address(Pool::Orchard.ztest()).await?;
+            faucet.send(&taddr, SEND_AMOUNT).await?;
+            faucet.send(&ua, SEND_AMOUNT).await?;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+
+            // Query getmempoolinfo while the two txs are still unmined (mining
+            // below clears the mempool, so this must come first).
+            let info = indexer
+                .json_rpc()
+                .await?
+                .call_value("getmempoolinfo", serde_json::json!([]))
+                .await?;
+
+            // The mempool-stream carries each unmined tx's serialized bytes;
+            // recompute the expected byte total from them. As above, spawn the
+            // drain and mine concurrently; draining before mining hangs.
+            let drain = tokio::spawn({
+                let indexer = indexer.clone();
+                async move { indexer.get_mempool_stream().await }
+            });
+            let tip = validator.generate_blocks(1).await?;
+            indexer.wait_for_block_num(tip, READY).await?;
+            let txs = drain.await.expect("mempool-stream drain task joins")?;
+            let expected_bytes: u64 = txs.iter().map(|tx| tx.data.len() as u64).sum();
+
+            let size = info.get("size").and_then(serde_json::Value::as_u64);
+            let bytes = info.get("bytes").and_then(serde_json::Value::as_u64);
+            let usage = info.get("usage").and_then(serde_json::Value::as_u64);
+
+            assert_eq!(size, Some(txs.len() as u64), "size must equal the tx count");
+            assert!(size.is_some_and(|s| s >= 1), "size must be at least one");
+            assert!(bytes.is_some_and(|b| b > 0), "bytes must be positive");
+            assert_eq!(
+                bytes,
+                Some(expected_bytes),
+                "bytes must equal Σ serialized-tx lengths"
+            );
+            assert!(
+                matches!((usage, bytes), (Some(u), Some(b)) if u >= b),
+                "usage must be at least bytes: {info:?}"
+            );
+            Ok(())
+        }
+
+        /// Port of `monitor_unverified_mempool` (FetchService): broadcast two
+        /// unmined sends, observe them in the mempool, then mine them in and
+        /// confirm the balances. The *unconfirmed* (mempool) pool-balance split
+        /// under test cannot be asserted — ztest's librustzcash wallet exposes no
         /// pending/unconfirmed pool-balance accessor — so the confirmed balances
         /// stand in. Ignored-by-default.
         #[ztest::qos::wallet]
@@ -646,11 +1173,81 @@ mod zebrad {
             not(feature = "devtool-incompatible"),
             ignore = "ztest's Wallet::librustzcash exposes no unconfirmed/pending pool-balance accessor, so the unconfirmed-vs-confirmed balance split under test cannot be asserted yet — un-ignore when ztest surfaces unconfirmed balances"
         )]
-        async fn monitor_unverified_mempool() -> Result<()> {
+        async fn monitor_unverified_mempool_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
                 env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+            let wallet = env.add_wallet(Wallet::librustzcash());
+            env.build().await?;
+
+            // Two shielded notes — one per unmined send.
+            let faucet = wallet
+                .funded_faucet_with_notes(&validator, &indexer, 2)
+                .await?;
+            let recipient = wallet.recipient(&validator, &indexer).await?;
+            let ua = recipient.address(Pool::Ironwood.ztest()).await?;
+            let zaddr = recipient.address(Pool::Sapling.ztest()).await?;
+            let ua_txid = faucet
+                .send(&ua, SEND_AMOUNT)
+                .await?
+                .into_iter()
+                .next()
+                .expect("send returns a txid");
+            let sapling_txid = faucet
+                .send(&zaddr, SEND_AMOUNT)
+                .await?
+                .into_iter()
+                .next()
+                .expect("send returns a txid");
+            tokio::time::sleep(Duration::from_secs(1)).await;
+
+            // Both unmined sends must be observable in the mempool.
+            let irpc = indexer.json_rpc().await?;
+            let mempool = sorted_raw_mempool(&irpc).await?;
+            assert!(
+                mempool.contains(&ua_txid.to_string())
+                    && mempool.contains(&sapling_txid.to_string()),
+                "both unmined sends must be visible in the mempool: {mempool:?}"
+            );
+
+            let tip = validator.generate_blocks(1).await?;
+            indexer.wait_for_block_num(tip, READY).await?;
+            recipient.sync().await?;
+            let balances = recipient.balances().await?;
+            assert_eq!(balances.get(Pool::Ironwood.ztest()), SEND_AMOUNT);
+            assert_eq!(balances.get(Pool::Sapling.ztest()), SEND_AMOUNT);
+            Ok(())
+        }
+
+        /// Port of `monitor_unverified_mempool` (StateService): broadcast two
+        /// unmined sends, observe them in the mempool, then mine them in and
+        /// confirm the balances. The *unconfirmed* (mempool) pool-balance split
+        /// under test cannot be asserted — ztest's librustzcash wallet exposes no
+        /// pending/unconfirmed pool-balance accessor — so the confirmed balances
+        /// stand in. Ignored-by-default.
+        #[ztest::qos::wallet]
+        #[tokio::test(flavor = "multi_thread")]
+        #[cfg_attr(
+            not(feature = "devtool-incompatible"),
+            ignore = "ztest's Wallet::librustzcash exposes no unconfirmed/pending pool-balance accessor, so the unconfirmed-vs-confirmed balance split under test cannot be asserted yet — un-ignore when ztest surfaces unconfirmed balances"
+        )]
+        async fn monitor_unverified_mempool_state() -> Result<()> {
+            let mut env = TestEnv::builder().ready_timeout(READY);
+            let vol = env.shared_volume("zebra-db");
+            let validator = env.add_validator(
+                Validator::zebrad("6.2.0")
+                    .regtest()
+                    .mine_to(FUND.ztest())
+                    .mount(&vol),
+            );
+            let indexer = env.add_indexer(
+                dev!(Indexer::Zainod, "../../Dockerfile")
+                    .regtest()
+                    .tuning(ZainoTuning::State)
+                    .mount(&vol)
+                    .named("zaino-state"),
+            );
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
 
@@ -2308,611 +2905,5 @@ mod zebrad {
         assert!(state_errored, "state stream should terminate with an error");
         assert!(fetch_errored, "fetch stream should terminate with an error");
         Ok(())
-    }
-
-    /// The StateService column: a `tuning(ZainoTuning::State)` zainod pod reading zebrad's
-    /// state DB as a RocksDB secondary over a shared volume. Each test stands up
-    /// its own persistent-state zebrad + state zainod + librustzcash wallet
-    /// inline.
-    mod state_service {
-        use super::*;
-
-        /// Port of `receives_mining_reward`: the faucet's synced wallet holds a
-        /// spendable shielded coinbase note.
-        #[ztest::qos::wallet]
-        #[tokio::test(flavor = "multi_thread")]
-        async fn receives_mining_reward() -> Result<()> {
-            let mut env = TestEnv::builder().ready_timeout(READY);
-            let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .mine_to(FUND.ztest())
-                    .mount(&vol),
-            );
-            let indexer = env.add_indexer(
-                dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest()
-                    .tuning(ZainoTuning::State)
-                    .mount(&vol)
-                    .named("zaino-state"),
-            );
-            let wallet = env.add_wallet(Wallet::librustzcash());
-            env.build().await?;
-
-            let faucet = wallet
-                .funded_faucet_with_notes(&validator, &indexer, 1)
-                .await?;
-            let balances = faucet.balances().await?;
-            assert!(
-                balances.get(Pool::Ironwood.ztest()) > 0,
-                "faucet must hold a spendable Ironwood coinbase note, got {balances:?}"
-            );
-            Ok(())
-        }
-
-        /// Port of `connect_to_node_get_info`: faucet and recipient wallets
-        /// connect and sync without error, and the indexer reports node info
-        /// (smoke).
-        #[ztest::qos::wallet]
-        #[tokio::test(flavor = "multi_thread")]
-        async fn connect_to_node_get_info() -> Result<()> {
-            let mut env = TestEnv::builder().ready_timeout(READY);
-            let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .mine_to(FUND.ztest())
-                    .mount(&vol),
-            );
-            let indexer = env.add_indexer(
-                dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest()
-                    .tuning(ZainoTuning::State)
-                    .mount(&vol)
-                    .named("zaino-state"),
-            );
-            let wallet = env.add_wallet(Wallet::librustzcash());
-            env.build().await?;
-
-            let _faucet = wallet
-                .funded_faucet_with_notes(&validator, &indexer, 1)
-                .await?;
-            let recipient = wallet.recipient(&validator, &indexer).await?;
-            recipient.sync().await?;
-            indexer.indexer_info().await?;
-            Ok(())
-        }
-
-        /// Port of the `send_to_pool` family: the recipient's unified address
-        /// exposes an Orchard receiver, but from NU6.3 librustzcash routes the
-        /// output value to the Ironwood pool (Orchard is spend-locked), so the
-        /// receipt lands in — and is asserted against — the Ironwood balance.
-        #[ztest::qos::wallet]
-        #[tokio::test(flavor = "multi_thread")]
-        async fn send_to_ironwood() -> Result<()> {
-            let mut env = TestEnv::builder().ready_timeout(READY);
-            let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .mine_to(FUND.ztest())
-                    .mount(&vol),
-            );
-            let indexer = env.add_indexer(
-                dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest()
-                    .tuning(ZainoTuning::State)
-                    .mount(&vol)
-                    .named("zaino-state"),
-            );
-            let wallet = env.add_wallet(Wallet::librustzcash());
-            env.build().await?;
-
-            let faucet = wallet
-                .funded_faucet_with_notes(&validator, &indexer, 1)
-                .await?;
-            let recipient = wallet.recipient(&validator, &indexer).await?;
-            let addr = recipient.address(Pool::Ironwood.ztest()).await?;
-            faucet.send(&addr, SEND_AMOUNT).await?;
-            let tip = validator.generate_blocks(1).await?;
-            indexer.wait_for_block_num(tip, READY).await?;
-            recipient.sync().await?;
-            assert_eq!(
-                recipient.balances().await?.get(Pool::Ironwood.ztest()),
-                SEND_AMOUNT,
-                "recipient Ironwood balance must equal the send"
-            );
-            Ok(())
-        }
-
-        /// Port of the `send_to_pool` family: the faucet sends 250_000 to the
-        /// recipient's sapling address; the recipient's synced wallet shows it.
-        #[ztest::qos::wallet]
-        #[tokio::test(flavor = "multi_thread")]
-        async fn send_to_sapling() -> Result<()> {
-            let mut env = TestEnv::builder().ready_timeout(READY);
-            let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .mine_to(FUND.ztest())
-                    .mount(&vol),
-            );
-            let indexer = env.add_indexer(
-                dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest()
-                    .tuning(ZainoTuning::State)
-                    .mount(&vol)
-                    .named("zaino-state"),
-            );
-            let wallet = env.add_wallet(Wallet::librustzcash());
-            env.build().await?;
-
-            let faucet = wallet
-                .funded_faucet_with_notes(&validator, &indexer, 1)
-                .await?;
-            let recipient = wallet.recipient(&validator, &indexer).await?;
-            let addr = recipient.address(Pool::Sapling.ztest()).await?;
-            faucet.send(&addr, SEND_AMOUNT).await?;
-            let tip = validator.generate_blocks(1).await?;
-            indexer.wait_for_block_num(tip, READY).await?;
-            recipient.sync().await?;
-            assert_eq!(
-                recipient.balances().await?.get(Pool::Sapling.ztest()),
-                SEND_AMOUNT,
-                "recipient Sapling balance must equal the send"
-            );
-            Ok(())
-        }
-
-        /// Port of the `send_to_pool` family: the faucet sends 250_000 to the
-        /// recipient's transparent address; the recipient's synced wallet shows
-        /// it.
-        #[ztest::qos::wallet]
-        #[tokio::test(flavor = "multi_thread")]
-        async fn send_to_transparent() -> Result<()> {
-            let mut env = TestEnv::builder().ready_timeout(READY);
-            let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .mine_to(FUND.ztest())
-                    .mount(&vol),
-            );
-            let indexer = env.add_indexer(
-                dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest()
-                    .tuning(ZainoTuning::State)
-                    .mount(&vol)
-                    .named("zaino-state"),
-            );
-            let wallet = env.add_wallet(Wallet::librustzcash());
-            env.build().await?;
-
-            let faucet = wallet
-                .funded_faucet_with_notes(&validator, &indexer, 1)
-                .await?;
-            let recipient = wallet.recipient(&validator, &indexer).await?;
-            let addr = recipient.address(Pool::Transparent.ztest()).await?;
-            faucet.send(&addr, SEND_AMOUNT).await?;
-            let tip = validator.generate_blocks(1).await?;
-            indexer.wait_for_block_num(tip, READY).await?;
-            recipient.sync().await?;
-            assert_eq!(
-                recipient.balances().await?.get(Pool::Transparent.ztest()),
-                SEND_AMOUNT,
-                "recipient Transparent balance must equal the send"
-            );
-            Ok(())
-        }
-
-        /// Port of `send_to_all`: one faucet funds a send to all three pools;
-        /// each recipient pool reports 250_000.
-        #[ztest::qos::wallet]
-        #[tokio::test(flavor = "multi_thread")]
-        async fn send_to_all() -> Result<()> {
-            let mut env = TestEnv::builder().ready_timeout(READY);
-            let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .mine_to(FUND.ztest())
-                    .mount(&vol),
-            );
-            let indexer = env.add_indexer(
-                dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest()
-                    .tuning(ZainoTuning::State)
-                    .mount(&vol)
-                    .named("zaino-state"),
-            );
-            let wallet = env.add_wallet(Wallet::librustzcash());
-            env.build().await?;
-
-            // Three notes — one per send (no chaining of unconfirmed change).
-            let faucet = wallet
-                .funded_faucet_with_notes(&validator, &indexer, 3)
-                .await?;
-            let recipient = wallet.recipient(&validator, &indexer).await?;
-            // NU6.3: the unified-address (Orchard-receiver) output routes to Ironwood.
-            for pool in [Pool::Ironwood, Pool::Sapling, Pool::Transparent] {
-                let addr = recipient.address(pool.ztest()).await?;
-                faucet.send(&addr, SEND_AMOUNT).await?;
-            }
-            let tip = validator.generate_blocks(1).await?;
-            indexer.wait_for_block_num(tip, READY).await?;
-            recipient.sync().await?;
-
-            let balances = recipient.balances().await?;
-            assert_eq!(balances.get(Pool::Ironwood.ztest()), SEND_AMOUNT);
-            // From NU6.3 the unified-address output routes to Ironwood; the
-            // orchard pool must stay empty (a nonzero orchard here means the
-            // receipt was mislabelled, not merely misrouted).
-            assert_eq!(balances.get(Pool::Orchard.ztest()), 0);
-            assert_eq!(balances.get(Pool::Sapling.ztest()), SEND_AMOUNT);
-            assert_eq!(balances.get(Pool::Transparent.ztest()), SEND_AMOUNT);
-            Ok(())
-        }
-
-        /// Port of `shield_for_validator`: the recipient receives a transparent
-        /// 250_000, shields it (to Ironwood from NU6.3), and reports 250_000 −
-        /// 15_000 fee.
-        #[ztest::qos::wallet]
-        #[tokio::test(flavor = "multi_thread")]
-        async fn shield_for_validator() -> Result<()> {
-            let mut env = TestEnv::builder().ready_timeout(READY);
-            let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .mine_to(FUND.ztest())
-                    .mount(&vol),
-            );
-            let indexer = env.add_indexer(
-                dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest()
-                    .tuning(ZainoTuning::State)
-                    .mount(&vol)
-                    .named("zaino-state"),
-            );
-            let wallet = env.add_wallet(Wallet::librustzcash());
-            env.build().await?;
-
-            let faucet = wallet
-                .funded_faucet_with_notes(&validator, &indexer, 1)
-                .await?;
-            let recipient = wallet.recipient(&validator, &indexer).await?;
-            let taddr = recipient.address(Pool::Transparent.ztest()).await?;
-            faucet.send(&taddr, SEND_AMOUNT).await?;
-            let tip = validator.generate_blocks(1).await?;
-            indexer.wait_for_block_num(tip, READY).await?;
-            recipient.sync().await?;
-            assert_eq!(
-                recipient.balances().await?.get(Pool::Transparent.ztest()),
-                SEND_AMOUNT
-            );
-
-            recipient.shield().await?;
-            let tip = validator.generate_blocks(1).await?;
-            indexer.wait_for_block_num(tip, READY).await?;
-            recipient.sync().await?;
-            assert_eq!(
-                recipient.balances().await?.get(Pool::Ironwood.ztest()),
-                SEND_AMOUNT - SHIELD_FEE,
-                "shielded balance must be the send net of the ZIP-317 fee \
-                 (NU6.3 shields transparent funds into the Ironwood pool)"
-            );
-            Ok(())
-        }
-
-        /// Port of `send_to_transparent_finalization`: a transparent send returns
-        /// the same address txids from the non-finalised chain and again after a
-        /// seam-deep advance lands it in the finalised DB. Heavy: the advance
-        /// mines `SEAM_ADVANCE` (~105) shielded coinbase blocks to cross the seam.
-        /// Gated + ignored-by-default; un-ignore for manual /
-        /// dedicated CI, or once cheap transparent filler mining lands.
-        #[ztest::qos::wallet]
-        #[tokio::test(flavor = "multi_thread")]
-        #[cfg_attr(
-            not(feature = "devtool-incompatible"),
-            ignore = "heavy: mines ~105 shielded-coinbase blocks (~105 groth16 proofs) to bury the send below the finalisation seam; un-ignore for manual / dedicated CI or when cheap transparent filler mining lands"
-        )]
-        async fn send_to_transparent_finalization() -> Result<()> {
-            let mut env = TestEnv::builder().ready_timeout(READY);
-            let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .mine_to(FUND.ztest())
-                    .mount(&vol),
-            );
-            let indexer = env.add_indexer(
-                dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest()
-                    .tuning(ZainoTuning::State)
-                    .mount(&vol)
-                    .named("zaino-state"),
-            );
-            let wallet = env.add_wallet(Wallet::librustzcash());
-            env.build().await?;
-
-            let faucet = wallet
-                .funded_faucet_with_notes(&validator, &indexer, 1)
-                .await?;
-            let recipient = wallet.recipient(&validator, &indexer).await?;
-            let taddr = recipient.address(Pool::Transparent.ztest()).await?;
-            faucet.send(&taddr, SEND_AMOUNT).await?;
-            let tip = validator.generate_blocks(1).await?;
-            indexer.wait_for_block_num(tip, READY).await?;
-
-            // The send's block, queried while it is still in the non-finalised window.
-            let irpc = indexer.json_rpc().await?;
-            let height = u32::from(indexer.latest_block_height().await?);
-            let unfinalised_txids = address_tx_ids(&irpc, &taddr, height, height).await?;
-
-            // The load-bearing advance: push the send below the seam so it crosses
-            // the finalised floor (`tip - seam`) into the finalized DB.
-            let tip = validator.generate_blocks(SEAM_ADVANCE).await?;
-            indexer.wait_for_block_num(tip, READY).await?;
-            let finalised_txids = address_tx_ids(&irpc, &taddr, height, height).await?;
-
-            recipient.sync().await?;
-            assert_eq!(
-                recipient.balances().await?.get(Pool::Transparent.ztest()),
-                SEND_AMOUNT,
-                "the transparent send must still be served after it finalizes"
-            );
-            assert_eq!(
-                unfinalised_txids, finalised_txids,
-                "the address txids must be identical across the finalisation seam"
-            );
-            Ok(())
-        }
-
-        /// Port of `get_transaction_mined` (smoke): the indexer serves
-        /// `get_transaction` for the mined orchard send by txid.
-        #[ztest::qos::integration]
-        #[tokio::test(flavor = "multi_thread")]
-        async fn get_transaction_mined() -> Result<()> {
-            let mut env = TestEnv::builder().ready_timeout(READY);
-            let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .mine_to(FUND.ztest())
-                    .mount(&vol),
-            );
-            let indexer = env.add_indexer(
-                dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest()
-                    .tuning(ZainoTuning::State)
-                    .mount(&vol)
-                    .named("zaino-state"),
-            );
-            let wallet = env.add_wallet(Wallet::librustzcash());
-            env.build().await?;
-
-            let faucet = wallet
-                .funded_faucet_with_notes(&validator, &indexer, 1)
-                .await?;
-            let recipient = wallet.recipient(&validator, &indexer).await?;
-            let addr = recipient.address(Pool::Orchard.ztest()).await?;
-            let txid = faucet
-                .send(&addr, SEND_AMOUNT)
-                .await?
-                .into_iter()
-                .next()
-                .expect("send returns a txid");
-            let tip = validator.generate_blocks(1).await?;
-            indexer.wait_for_block_num(tip, READY).await?;
-            let _ = indexer.get_transaction(txid).await?;
-            Ok(())
-        }
-
-        /// Port of `get_raw_mempool`: the indexer's `getrawmempool` matches the
-        /// validator's, with two unmined transactions (order-insensitive).
-        #[ztest::qos::wallet]
-        #[tokio::test(flavor = "multi_thread")]
-        async fn get_raw_mempool() -> Result<()> {
-            let mut env = TestEnv::builder().ready_timeout(READY);
-            let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .mine_to(FUND.ztest())
-                    .mount(&vol),
-            );
-            let indexer = env.add_indexer(
-                dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest()
-                    .tuning(ZainoTuning::State)
-                    .mount(&vol)
-                    .named("zaino-state"),
-            );
-            let wallet = env.add_wallet(Wallet::librustzcash());
-            env.build().await?;
-
-            let faucet = wallet
-                .funded_faucet_with_notes(&validator, &indexer, 2)
-                .await?;
-            let recipient = wallet.recipient(&validator, &indexer).await?;
-            let taddr = recipient.address(Pool::Transparent.ztest()).await?;
-            let ua = recipient.address(Pool::Orchard.ztest()).await?;
-            faucet.send(&taddr, SEND_AMOUNT).await?;
-            faucet.send(&ua, SEND_AMOUNT).await?;
-            tokio::time::sleep(Duration::from_secs(1)).await;
-
-            let mut validator_txids = json_string_array(
-                validator
-                    .json_rpc()
-                    .await?
-                    .call_value("getrawmempool", serde_json::json!([]))
-                    .await?,
-            );
-            let mut indexer_txids = json_string_array(
-                indexer
-                    .json_rpc()
-                    .await?
-                    .call_value("getrawmempool", serde_json::json!([]))
-                    .await?,
-            );
-            validator_txids.sort();
-            indexer_txids.sort();
-            assert_eq!(
-                validator_txids, indexer_txids,
-                "getrawmempool txid sets must agree (order-insensitive)"
-            );
-            Ok(())
-        }
-
-        /// Port of `get_mempool_info`: `getmempoolinfo` matches values recomputed
-        /// from the mempool's own contents. `usage == bytes + Σ txid-key
-        /// heap-capacity` is an in-process detail with no pod surface, so we assert
-        /// `usage >= bytes` instead.
-        #[ztest::qos::wallet]
-        #[tokio::test(flavor = "multi_thread")]
-        async fn get_mempool_info() -> Result<()> {
-            let mut env = TestEnv::builder().ready_timeout(READY);
-            let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .mine_to(FUND.ztest())
-                    .mount(&vol),
-            );
-            let indexer = env.add_indexer(
-                dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest()
-                    .tuning(ZainoTuning::State)
-                    .mount(&vol)
-                    .named("zaino-state"),
-            );
-            let wallet = env.add_wallet(Wallet::librustzcash());
-            env.build().await?;
-
-            let faucet = wallet
-                .funded_faucet_with_notes(&validator, &indexer, 2)
-                .await?;
-            let recipient = wallet.recipient(&validator, &indexer).await?;
-            let taddr = recipient.address(Pool::Transparent.ztest()).await?;
-            let ua = recipient.address(Pool::Orchard.ztest()).await?;
-            faucet.send(&taddr, SEND_AMOUNT).await?;
-            faucet.send(&ua, SEND_AMOUNT).await?;
-            tokio::time::sleep(Duration::from_secs(1)).await;
-
-            // Query getmempoolinfo while the two txs are still unmined (mining
-            // below clears the mempool, so this must come first).
-            let info = indexer
-                .json_rpc()
-                .await?
-                .call_value("getmempoolinfo", serde_json::json!([]))
-                .await?;
-
-            // The mempool-stream carries each unmined tx's serialized bytes;
-            // spawn the drain and mine concurrently (draining before mining hangs).
-            let drain = tokio::spawn({
-                let indexer = indexer.clone();
-                async move { indexer.get_mempool_stream().await }
-            });
-            let tip = validator.generate_blocks(1).await?;
-            indexer.wait_for_block_num(tip, READY).await?;
-            let txs = drain.await.expect("mempool-stream drain task joins")?;
-            let expected_bytes: u64 = txs.iter().map(|tx| tx.data.len() as u64).sum();
-
-            let size = info.get("size").and_then(serde_json::Value::as_u64);
-            let bytes = info.get("bytes").and_then(serde_json::Value::as_u64);
-            let usage = info.get("usage").and_then(serde_json::Value::as_u64);
-
-            assert_eq!(size, Some(txs.len() as u64), "size must equal the tx count");
-            assert!(size.is_some_and(|s| s >= 1), "size must be at least one");
-            assert!(bytes.is_some_and(|b| b > 0), "bytes must be positive");
-            assert_eq!(
-                bytes,
-                Some(expected_bytes),
-                "bytes must equal Σ serialized-tx lengths"
-            );
-            assert!(
-                matches!((usage, bytes), (Some(u), Some(b)) if u >= b),
-                "usage must be at least bytes: {info:?}"
-            );
-            Ok(())
-        }
-
-        /// Port of `monitor_unverified_mempool`: broadcast two unmined sends,
-        /// observe them in the mempool, then mine them in and confirm the
-        /// balances. The *unconfirmed* (mempool) pool-balance split under test
-        /// cannot be asserted — ztest's librustzcash wallet exposes no
-        /// pending/unconfirmed pool-balance accessor — so the confirmed balances
-        /// stand in. Ignored-by-default.
-        #[ztest::qos::wallet]
-        #[tokio::test(flavor = "multi_thread")]
-        #[cfg_attr(
-            not(feature = "devtool-incompatible"),
-            ignore = "ztest's Wallet::librustzcash exposes no unconfirmed/pending pool-balance accessor, so the unconfirmed-vs-confirmed balance split under test cannot be asserted yet — un-ignore when ztest surfaces unconfirmed balances"
-        )]
-        async fn monitor_unverified_mempool() -> Result<()> {
-            let mut env = TestEnv::builder().ready_timeout(READY);
-            let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
-                    .regtest()
-                    .mine_to(FUND.ztest())
-                    .mount(&vol),
-            );
-            let indexer = env.add_indexer(
-                dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest()
-                    .tuning(ZainoTuning::State)
-                    .mount(&vol)
-                    .named("zaino-state"),
-            );
-            let wallet = env.add_wallet(Wallet::librustzcash());
-            env.build().await?;
-
-            // Two shielded notes — one per unmined send.
-            let faucet = wallet
-                .funded_faucet_with_notes(&validator, &indexer, 2)
-                .await?;
-            let recipient = wallet.recipient(&validator, &indexer).await?;
-            let ua = recipient.address(Pool::Ironwood.ztest()).await?;
-            let zaddr = recipient.address(Pool::Sapling.ztest()).await?;
-            let ua_txid = faucet
-                .send(&ua, SEND_AMOUNT)
-                .await?
-                .into_iter()
-                .next()
-                .expect("send returns a txid");
-            let sapling_txid = faucet
-                .send(&zaddr, SEND_AMOUNT)
-                .await?
-                .into_iter()
-                .next()
-                .expect("send returns a txid");
-            tokio::time::sleep(Duration::from_secs(1)).await;
-
-            // Both unmined sends must be observable in the mempool.
-            let irpc = indexer.json_rpc().await?;
-            let mempool = sorted_raw_mempool(&irpc).await?;
-            assert!(
-                mempool.contains(&ua_txid.to_string())
-                    && mempool.contains(&sapling_txid.to_string()),
-                "both unmined sends must be visible in the mempool: {mempool:?}"
-            );
-
-            let tip = validator.generate_blocks(1).await?;
-            indexer.wait_for_block_num(tip, READY).await?;
-            recipient.sync().await?;
-            let balances = recipient.balances().await?;
-            assert_eq!(balances.get(Pool::Ironwood.ztest()), SEND_AMOUNT);
-            assert_eq!(balances.get(Pool::Sapling.ztest()), SEND_AMOUNT);
-            Ok(())
-        }
-
-        // No get_mempool_tx here: the state backend returns mempool-tx txids
-        // in display (reversed) byte order while the fetch backend returns
-        // internal order, so the cross-backend txid comparison fails on
-        // state (zingolabs/zaino#1225). The original test was FetchService-
-        // only; re-enable once that bug is fixed.
     }
 }
