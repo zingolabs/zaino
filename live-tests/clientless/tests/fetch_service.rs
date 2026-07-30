@@ -15,8 +15,8 @@ mod launch {
     use super::*;
 
     #[rstest]
-    #[case(Validator::zebrad("6.2.0"))]
-    #[cfg_attr(feature = "zcashd_support", case(Validator::zcashd("v6.20.0")))]
+    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn regtest_no_cache<B: ValidatorConfig>(
@@ -36,8 +36,8 @@ mod launch {
     }
 
     #[rstest]
-    #[case(Validator::zebrad("6.2.0"))]
-    #[cfg_attr(feature = "zcashd_support", case(Validator::zcashd("v6.20.0")))]
+    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[ignore = "We no longer use chain caches. See launch::regtest_no_cache."]
     #[tokio::test(flavor = "multi_thread")]
@@ -62,8 +62,8 @@ mod validation {
     use super::*;
 
     #[rstest]
-    #[case(Validator::zebrad("6.2.0"))]
-    #[cfg_attr(feature = "zcashd_support", case(Validator::zcashd("v6.20.0")))]
+    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn validate_address<B: ValidatorConfig>(
@@ -100,8 +100,8 @@ mod validation {
     }
 
     #[rstest]
-    #[case(Validator::zebrad("6.2.0"))]
-    #[cfg_attr(feature = "zcashd_support", case(Validator::zcashd("v6.20.0")))]
+    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     pub(crate) async fn z_validate_address<B: ValidatorConfig>(
@@ -121,8 +121,8 @@ mod get {
     use super::*;
 
     #[rstest]
-    #[case(Validator::zebrad("6.2.0"))]
-    #[cfg_attr(feature = "zcashd_support", case(Validator::zcashd("v6.20.0")))]
+    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn block_raw<B: ValidatorConfig>(
@@ -145,8 +145,8 @@ mod get {
     }
 
     #[rstest]
-    #[case(Validator::zebrad("6.2.0"))]
-    #[cfg_attr(feature = "zcashd_support", case(Validator::zcashd("v6.20.0")))]
+    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn block_object<B: ValidatorConfig>(
@@ -169,8 +169,8 @@ mod get {
     }
 
     #[rstest]
-    #[case(Validator::zebrad("6.2.0"))]
-    #[cfg_attr(feature = "zcashd_support", case(Validator::zcashd("v6.20.0")))]
+    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn latest_block<B: ValidatorConfig>(
@@ -209,8 +209,8 @@ mod get {
     }
 
     #[rstest]
-    #[case(Validator::zebrad("6.2.0"))]
-    #[cfg_attr(feature = "zcashd_support", case(Validator::zcashd("v6.20.0")))]
+    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn block<B: ValidatorConfig>(#[case] validator: Validator<B>) -> Result<()> {
@@ -241,8 +241,8 @@ mod get {
     }
 
     #[rstest]
-    #[case(Validator::zebrad("6.2.0"))]
-    #[cfg_attr(feature = "zcashd_support", case(Validator::zcashd("v6.20.0")))]
+    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn block_header<B: ValidatorConfig>(
@@ -275,8 +275,8 @@ mod get {
     }
 
     #[rstest]
-    #[case(Validator::zebrad("6.2.0"))]
-    #[cfg_attr(feature = "zcashd_support", case(Validator::zcashd("v6.20.0")))]
+    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn difficulty<B: ValidatorConfig>(
@@ -294,8 +294,8 @@ mod get {
     }
 
     #[rstest]
-    #[case(Validator::zebrad("6.2.0"))]
-    #[cfg_attr(feature = "zcashd_support", case(Validator::zcashd("v6.20.0")))]
+    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn mining_info<B: ValidatorConfig>(
@@ -331,8 +331,8 @@ mod get {
     }
 
     #[rstest]
-    #[case(Validator::zebrad("6.2.0"))]
-    #[cfg_attr(feature = "zcashd_support", case(Validator::zcashd("v6.20.0")))]
+    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn peer_info<B: ValidatorConfig>(
@@ -350,8 +350,8 @@ mod get {
     }
 
     #[rstest]
-    #[case(Validator::zebrad("6.2.0"))]
-    #[cfg_attr(feature = "zcashd_support", case(Validator::zcashd("v6.20.0")))]
+    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn block_subsidy<B: ValidatorConfig>(
@@ -383,8 +383,8 @@ mod get {
     }
 
     #[rstest]
-    #[case(Validator::zebrad("6.2.0"))]
-    #[cfg_attr(feature = "zcashd_support", case(Validator::zcashd("v6.20.0")))]
+    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn best_blockhash<B: ValidatorConfig>(
@@ -421,8 +421,8 @@ mod get {
     }
 
     #[rstest]
-    #[case(Validator::zebrad("6.2.0"))]
-    #[cfg_attr(feature = "zcashd_support", case(Validator::zcashd("v6.20.0")))]
+    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn block_count<B: ValidatorConfig>(
@@ -449,8 +449,8 @@ mod get {
     }
 
     #[rstest]
-    #[case(Validator::zebrad("6.2.0"))]
-    #[cfg_attr(feature = "zcashd_support", case(Validator::zcashd("v6.20.0")))]
+    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn block_nullifiers<B: ValidatorConfig>(
@@ -475,8 +475,8 @@ mod get {
     }
 
     #[rstest]
-    #[case(Validator::zebrad("6.2.0"))]
-    #[cfg_attr(feature = "zcashd_support", case(Validator::zcashd("v6.20.0")))]
+    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn block_range<B: ValidatorConfig>(
@@ -497,8 +497,8 @@ mod get {
     }
 
     #[rstest]
-    #[case(Validator::zebrad("6.2.0"))]
-    #[cfg_attr(feature = "zcashd_support", case(Validator::zcashd("v6.20.0")))]
+    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn block_range_nullifiers<B: ValidatorConfig>(
@@ -519,8 +519,8 @@ mod get {
     }
 
     #[rstest]
-    #[case(Validator::zebrad("6.2.0"))]
-    #[cfg_attr(feature = "zcashd_support", case(Validator::zcashd("v6.20.0")))]
+    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn tree_state<B: ValidatorConfig>(
@@ -540,8 +540,8 @@ mod get {
     }
 
     #[rstest]
-    #[case(Validator::zebrad("6.2.0"))]
-    #[cfg_attr(feature = "zcashd_support", case(Validator::zcashd("v6.20.0")))]
+    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn latest_tree_state<B: ValidatorConfig>(
@@ -560,8 +560,8 @@ mod get {
     }
 
     #[rstest]
-    #[case(Validator::zebrad("6.2.0"))]
-    #[cfg_attr(feature = "zcashd_support", case(Validator::zcashd("v6.20.0")))]
+    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn subtree_roots<B: ValidatorConfig>(
@@ -582,8 +582,8 @@ mod get {
     }
 
     #[rstest]
-    #[case(Validator::zebrad("6.2.0"))]
-    #[cfg_attr(feature = "zcashd_support", case(Validator::zcashd("v6.20.0")))]
+    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn lightd_info<B: ValidatorConfig>(
@@ -599,8 +599,8 @@ mod get {
     }
 
     #[rstest]
-    #[case(Validator::zebrad("6.2.0"))]
-    #[cfg_attr(feature = "zcashd_support", case(Validator::zcashd("v6.20.0")))]
+    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     pub(crate) async fn get_network_sol_ps<B: ValidatorConfig>(

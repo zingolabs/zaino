@@ -11,8 +11,8 @@ mod chain_query_interface {
     use super::*;
 
     #[rstest]
-    #[case(Validator::zebrad("6.2.0"))]
-    #[cfg_attr(feature = "zcashd_support", case(Validator::zcashd("v6.20.0")))]
+    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_block_range<B: ValidatorConfig>(#[case] validator: Validator<B>) -> Result<()> {
@@ -104,8 +104,8 @@ mod chain_query_interface {
     }
 
     #[rstest]
-    #[case(Validator::zebrad("6.2.0"))]
-    #[cfg_attr(feature = "zcashd_support", case(Validator::zcashd("v6.20.0")))]
+    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     async fn sync_large_chain<B: ValidatorConfig>(#[case] validator: Validator<B>) -> Result<()> {
@@ -196,8 +196,8 @@ mod chain_query_interface {
     }
 
     #[rstest]
-    #[case(Validator::zebrad("6.2.0"))]
-    #[cfg_attr(feature = "zcashd_support", case(Validator::zcashd("v6.20.0")))]
+    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_subtree_roots<B: ValidatorConfig>(#[case] validator: Validator<B>) -> Result<()> {
@@ -257,8 +257,8 @@ mod chain_query_interface {
     }
 
     #[rstest]
-    #[case(Validator::zebrad("6.2.0"))]
-    #[cfg_attr(feature = "zcashd_support", case(Validator::zcashd("v6.20.0")))]
+    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_mempool_stream_fresh_snapshot_repeated<B: ValidatorConfig>(
@@ -299,8 +299,8 @@ mod chain_query_interface {
     }
 
     #[rstest]
-    #[case(Validator::zebrad("6.2.0"))]
-    #[cfg_attr(feature = "zcashd_support", case(Validator::zcashd("v6.20.0")))]
+    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
     async fn zallet_like_steady_state_loop<B: ValidatorConfig>(
