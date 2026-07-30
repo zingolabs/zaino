@@ -95,6 +95,7 @@ zaino-primitives.workspace = true
 zaino-rpc.workspace = true
 zaino-source-zebra-rpc.workspace = true
 zaino-source-zebra-readstate.workspace = true
+zaino-address = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

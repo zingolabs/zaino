@@ -11,7 +11,6 @@ pub mod chain_tips;
 pub mod common;
 pub mod mining_info;
 pub mod peer_info;
-pub mod z_validate_address;
 
 use std::{convert::Infallible, num::ParseIntError};
 

@@ -673,6 +673,7 @@ dependencies = [
  "hex",
  "tokio",
  "wire_serialized_transaction_test_data",
+ "zaino-address",
  "zaino-common",
  "zaino-fetch",
  "zaino-proto",
@@ -5884,6 +5885,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-address"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "sapling-crypto",
+ "tracing",
+ "zcash_address",
+ "zcash_keys",
+ "zcash_protocol",
+ "zcash_transparent",
+]
+
+[[package]]
 name = "zaino-common"
 version = "0.2.0"
 dependencies = [
@@ -5970,14 +5984,17 @@ name = "zaino-serve"
 version = "0.3.1"
 dependencies = [
  "futures",
+ "hex",
  "jsonrpsee",
  "metrics",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tonic",
  "tower 0.4.13",
  "tracing",
+ "zaino-address",
  "zaino-common",
  "zaino-fetch",
  "zaino-proto",
@@ -6078,6 +6095,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "whoami",
+ "zaino-address",
  "zaino-common",
  "zaino-fetch",
  "zaino-primitives",

@@ -13,7 +13,7 @@ use zebra_chain::{
 use zebra_rpc::{
     client::{
         GetAddressBalanceRequest, GetSubtreesByIndexResponse, GetTreestateResponse,
-        TransactionObject, ValidateAddressResponse,
+        TransactionObject,
     },
     methods::{
         AddressBalance, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock, GetBlockHashResponse,
@@ -21,6 +21,7 @@ use zebra_rpc::{
     },
 };
 
+use zaino_address::{ValidatedAddress, ZValidatedAddress};
 use zaino_fetch::{
     chain::{transaction::FullTransaction, utils::ParseFromSlice},
     jsonrpsee::{
@@ -33,7 +34,6 @@ use zaino_fetch::{
             chain_tips::GetChainTipsResponse,
             mining_info::GetMiningInfoWire,
             peer_info::GetPeerInfo,
-            z_validate_address::ZValidateAddressResponse,
             GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSpentInfoRequest,
             GetSpentInfoResponse, GetTxOutResponse, GetTxOutSetInfoResponse,
         },
@@ -775,23 +775,17 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
     /// zcashd reference: [`validateaddress`](https://zcash.github.io/rpc/validateaddress.html)
     /// method: post
     /// tags: blockchain
-    async fn validate_address(
-        &self,
-        address: String,
-    ) -> Result<ValidateAddressResponse, Self::Error> {
+    async fn validate_address(&self, address: String) -> Result<ValidatedAddress, Self::Error> {
         #[allow(deprecated)]
         let network = self.data.network();
-        Ok(crate::indexer::validate_address(address, &network))
+        Ok(zaino_address::validate_address(address, &network))
     }
 
     #[allow(deprecated)]
-    async fn z_validate_address(
-        &self,
-        address: String,
-    ) -> Result<ZValidateAddressResponse, Self::Error> {
+    async fn z_validate_address(&self, address: String) -> Result<ZValidatedAddress, Self::Error> {
         #[allow(deprecated)]
         let network = self.data.network();
-        Ok(crate::indexer::z_validate_address(address, &network))
+        Ok(zaino_address::z_validate_address(address, &network))
     }
 
     /// Returns all transaction ids in the memory pool, as a JSON array.

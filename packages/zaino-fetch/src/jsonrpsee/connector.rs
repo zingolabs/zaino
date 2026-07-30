@@ -34,7 +34,6 @@ use crate::jsonrpsee::{
         chain_tips::GetChainTipsResponse,
         mining_info::GetMiningInfoWire,
         peer_info::GetPeerInfo,
-        z_validate_address::{ZValidateAddressError, ZValidateAddressResponse},
         GetBalanceError, GetBalanceResponse, GetBlockCountResponse, GetBlockError, GetBlockHash,
         GetBlockResponse, GetBlockchainInfoResponse, GetInfoResponse, GetMempoolInfoResponse,
         GetSpentInfoError, GetSpentInfoRequest, GetSpentInfoResponse, GetSubtreesError,
@@ -734,27 +733,6 @@ impl JsonRpSeeConnector {
         address: String,
     ) -> Result<ValidateAddressResponse, RpcRequestError<Infallible>> {
         self.send_one_param("validateaddress", address).await
-    }
-
-    /// Return information about the given address.
-    ///
-    /// # Parameters
-    /// - `address`: (string, required) The address to validate.
-    ///
-    /// # Deprecation
-    ///
-    /// See [`DEPRECATION_NOTICE`](super::response::z_validate_address::DEPRECATION_NOTICE).
-    ///
-    /// zcashd reference: [`z_validateaddress`](https://zcash.github.io/rpc/z_validateaddress.html)
-    /// method: post
-    /// tags: util
-    #[deprecated(note = "https://github.com/zingolabs/zaino/issues/992#issuecomment-4245596178")]
-    pub async fn z_validate_address(
-        &self,
-        address: String,
-    ) -> Result<ZValidateAddressResponse, RpcRequestError<ZValidateAddressError>> {
-        tracing::debug!("Sending jsonrpsee connecter z_validate_address.");
-        self.send_one_param("z_validateaddress", address).await
     }
 
     /// Returns all transaction ids in the memory pool, as a JSON array.

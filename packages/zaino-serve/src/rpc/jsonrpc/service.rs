@@ -1,14 +1,12 @@
 //! Zcash RPC implementations.
 
+use zaino_address::DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION;
 use zaino_fetch::jsonrpsee::response::block_deltas::BlockDeltas;
 use zaino_fetch::jsonrpsee::response::block_header::GetBlockHeader;
 use zaino_fetch::jsonrpsee::response::block_subsidy::GetBlockSubsidy;
 use zaino_fetch::jsonrpsee::response::chain_tips::GetChainTipsResponse;
 use zaino_fetch::jsonrpsee::response::mining_info::GetMiningInfoWire;
 use zaino_fetch::jsonrpsee::response::peer_info::GetPeerInfo;
-use zaino_fetch::jsonrpsee::response::z_validate_address::{
-    ZValidateAddressResponse, DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION,
-};
 use zaino_fetch::jsonrpsee::response::{
     GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSpentInfoRequest, GetSpentInfoResponse,
     GetTxOutResponse, GetTxOutSetInfoResponse,
@@ -28,6 +26,7 @@ use zebra_rpc::methods::{
 use jsonrpsee::types::ErrorObjectOwned;
 use jsonrpsee::{proc_macros::rpc, types::ErrorCode};
 
+use crate::rpc::jsonrpc::wire::address::{validate_address_from_domain, ZValidateAddressWire};
 use crate::rpc::JsonRpcClient;
 
 /// Zcash RPC method signatures.
@@ -180,7 +179,7 @@ pub trait ZcashIndexerRpc {
     ///
     /// # Deprecation
     ///
-    /// See [`DEPRECATION_NOTICE`](zaino_fetch::jsonrpsee::response::z_validate_address::DEPRECATION_NOTICE).
+    /// See [`DEPRECATION_NOTICE`](zaino_address::DEPRECATION_NOTICE).
     ///
     /// # Parameters
     /// - `address`: (string, required) The address to validate.
@@ -192,7 +191,7 @@ pub trait ZcashIndexerRpc {
     async fn z_validate_address(
         &self,
         address: String,
-    ) -> Result<ZValidateAddressResponse, ErrorObjectOwned>;
+    ) -> Result<ZValidateAddressWire, ErrorObjectOwned>;
 
     /// Returns the total balance of a provided `addresses` in an [`AddressBalance`] instance.
     ///
@@ -667,6 +666,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .validate_address(address)
             .await
+            .map(validate_address_from_domain)
             .map_err(invalid_params_error_object)
     }
 
@@ -674,12 +674,13 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
     async fn z_validate_address(
         &self,
         address: String,
-    ) -> Result<ZValidateAddressResponse, ErrorObjectOwned> {
+    ) -> Result<ZValidateAddressWire, ErrorObjectOwned> {
         tracing::warn!("{}", Z_VALIDATE_DEPRECATION);
         self.service_subscriber
             .inner_ref()
             .z_validate_address(address)
             .await
+            .map(ZValidateAddressWire::from_domain)
             .map_err(invalid_params_error_object)
     }
 

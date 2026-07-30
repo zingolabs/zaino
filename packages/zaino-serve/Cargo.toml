@@ -60,3 +60,8 @@ jsonrpsee = { workspace = true, features = ["server", "macros"] }
 serde = { workspace = true, features = ["derive"] }
 tower = { workspace = true }
 zaino-common.workspace = true
+zaino-address = { workspace = true }
+hex.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

@@ -2,6 +2,7 @@
 
 use clientless::rpc::z_validate_address::run_z_validate_for;
 use futures::StreamExt as _;
+use zaino_address::ValidatedAddress;
 use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 use zaino_proto::proto::compact_formats::CompactBlock;
 use zaino_proto::proto::service::{BlockId, BlockRange, GetSubtreeRootsArg};
@@ -10,7 +11,6 @@ use zaino_state::{
 };
 use zaino_testutils::{Rpc, TestManager, ValidatorExt, ValidatorKind};
 use zebra_chain::parameters::subsidy::ParameterSubsidy as _;
-use zebra_rpc::client::ValidateAddressResponse;
 use zebra_rpc::methods::{GetBlock, GetBlockHash};
 
 async fn launch_fetch_service<V: ValidatorExt>(
@@ -381,11 +381,10 @@ async fn fetch_service_validate_address<V: ValidatorExt>(validator: &ValidatorKi
         zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
 
     // scriptpubkey: "76a914000000000000000000000000000000000000000088ac"
-    let expected_validation = ValidateAddressResponse::new(
-        true,
-        Some("tm9iMLAuYMzJ6jtFLcA7rzUmfreGuKvr7Ma".to_string()),
-        Some(false),
-    );
+    let expected_validation = ValidatedAddress::Transparent {
+        address: "tm9iMLAuYMzJ6jtFLcA7rzUmfreGuKvr7Ma".to_string(),
+        is_script: false,
+    };
     let fetch_service_validate_address = fetch_service_subscriber
         .validate_address("tm9iMLAuYMzJ6jtFLcA7rzUmfreGuKvr7Ma".to_string())
         .await
@@ -394,11 +393,10 @@ async fn fetch_service_validate_address<V: ValidatorExt>(validator: &ValidatorKi
     assert_eq!(fetch_service_validate_address, expected_validation);
 
     // scriptpubkey: "a914000000000000000000000000000000000000000087"
-    let expected_validation_script = ValidateAddressResponse::new(
-        true,
-        Some("t26YoyZ1iPgiMEWL4zGUm74eVWfhyDMXzY2".to_string()),
-        Some(true),
-    );
+    let expected_validation_script = ValidatedAddress::Transparent {
+        address: "t26YoyZ1iPgiMEWL4zGUm74eVWfhyDMXzY2".to_string(),
+        is_script: true,
+    };
 
     let fetch_service_validate_address_script = fetch_service_subscriber
         .validate_address("t26YoyZ1iPgiMEWL4zGUm74eVWfhyDMXzY2".to_string())
