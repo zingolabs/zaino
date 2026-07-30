@@ -31,11 +31,8 @@ use zaino_fetch::{
             block_deltas::BlockDeltas,
             block_header::GetBlockHeader,
             block_subsidy::GetBlockSubsidy,
-            chain_tips::GetChainTipsResponse,
             mining_info::GetMiningInfoWire,
             peer_info::GetPeerInfo,
-            GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSpentInfoRequest,
-            GetSpentInfoResponse, GetTxOutResponse, GetTxOutSetInfoResponse,
         },
     },
 };
@@ -267,7 +264,7 @@ impl<Source: BlockchainSource> NodeBackedIndexerServiceSubscriber<Source> {
 pub(crate) async fn chain_tips_for_snapshot<Source: BlockchainSource>(
     snapshot: &ChainIndexSnapshot,
     source: &Source,
-) -> Result<GetChainTipsResponse, NodeBackedIndexerServiceError> {
+) -> Result<Vec<zaino_primitives::types::rpc::ChainTip>, NodeBackedIndexerServiceError> {
     match snapshot.get_nfs_snapshot() {
         Some(non_finalized_snapshot) => Ok(chain_tips_from_nonfinalized_snapshot(
             non_finalized_snapshot,
@@ -586,8 +583,10 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
     /// Canonical source code implementation: [`getmempoolinfo`](https://github.com/zcash/zcash/blob/18238d90cd0b810f5b07d5aaa1338126aa128c06/src/rpc/blockchain.cpp#L1555)
     ///
     /// Zebra does not support this RPC call directly.
-    async fn get_mempool_info(&self) -> Result<GetMempoolInfoResponse, Self::Error> {
-        Ok(self.indexer.get_mempool_info().await.into())
+    async fn get_mempool_info(
+        &self,
+    ) -> Result<crate::chain_index::types::db::metadata::MempoolInfo, Self::Error> {
+        Ok(self.indexer.get_mempool_info().await)
     }
 
     async fn get_peer_info(&self) -> Result<GetPeerInfo, Self::Error> {
@@ -721,7 +720,9 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
     /// zcashd reference: [`gettxoutsetinfo`](https://zcash.github.io/rpc/gettxoutsetinfo.html)
     /// method: post
     /// tags: blockchain
-    async fn get_tx_out_set_info(&self) -> Result<GetTxOutSetInfoResponse, Self::Error> {
+    async fn get_tx_out_set_info(
+        &self,
+    ) -> Result<Option<zaino_primitives::types::TxOutSetInfo>, Self::Error> {
         Ok(self.indexer.get_tx_out_set_info().await?)
     }
 
@@ -762,7 +763,9 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
     }
 
     #[allow(deprecated)]
-    async fn get_chain_tips(&self) -> Result<GetChainTipsResponse, Self::Error> {
+    async fn get_chain_tips(
+        &self,
+    ) -> Result<Vec<zaino_primitives::types::rpc::ChainTip>, Self::Error> {
         let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
         chain_tips_for_snapshot(&snapshot, self.indexer.source()).await
     }
@@ -1058,15 +1061,15 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
         txid: String,
         n: u32,
         include_mempool: Option<bool>,
-    ) -> Result<GetTxOutResponse, Self::Error> {
+    ) -> Result<Option<zaino_primitives::types::rpc::TxOut>, Self::Error> {
         Ok(self.indexer.get_tx_out(txid, n, include_mempool).await?)
     }
 
     async fn get_spent_info(
         &self,
-        request: GetSpentInfoRequest,
-    ) -> Result<GetSpentInfoResponse, Self::Error> {
-        Ok(self.indexer.get_spent_info(request).await?)
+        outpoint: zaino_primitives::types::rpc::SpentOutpoint,
+    ) -> Result<zaino_primitives::types::rpc::SpentInfo, Self::Error> {
+        Ok(self.indexer.get_spent_info(outpoint).await?)
     }
 
     async fn chain_height(&self) -> Result<Height, Self::Error> {
@@ -1141,7 +1144,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
         &self,
         blocks: Option<i32>,
         height: Option<i32>,
-    ) -> Result<GetNetworkSolPsResponse, Self::Error> {
+    ) -> Result<u64, Self::Error> {
         Ok(self.indexer.get_network_sol_ps(blocks, height).await?)
     }
 }

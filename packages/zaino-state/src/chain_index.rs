@@ -28,6 +28,7 @@ use crate::{IndexedBlock, Outpoint, TransactionHash};
 use std::collections::HashSet;
 use std::str::FromStr;
 use std::{sync::Arc, time::Duration};
+use zaino_primitives::types::TxOutSetInfo;
 
 use arc_swap::ArcSwapOption;
 use futures::{FutureExt, Stream};
@@ -43,11 +44,8 @@ use zaino_fetch::jsonrpsee::response::{
     block_deltas::BlockDeltas,
     block_header::GetBlockHeader,
     block_subsidy::GetBlockSubsidy,
-    chain_tips::{ChainTip, ChainTipStatus, GetChainTipsResponse},
     mining_info::GetMiningInfoWire,
     peer_info::GetPeerInfo,
-    EmptyTxOutSetInfo, GetNetworkSolPsResponse, GetSpentInfoRequest, GetSpentInfoResponse,
-    GetTxOutResponse, GetTxOutSetInfo, GetTxOutSetInfoResponse,
 };
 use zaino_proto::proto::utils::{prune_compact_block, PoolTypeFilter};
 use zebra_chain::parameters::ConsensusBranchId;
@@ -134,7 +132,9 @@ pub(crate) fn unix_now_secs() -> f64 {
 /// this conversion can currently emit.
 pub(crate) fn chain_tips_from_nonfinalized_snapshot(
     snapshot: &NonfinalizedBlockCacheSnapshot,
-) -> GetChainTipsResponse {
+) -> Vec<zaino_primitives::types::rpc::ChainTip> {
+    use zaino_primitives::types::rpc::{ChainTip, ChainTipStatus};
+
     let parent_hashes = snapshot
         .blocks
         .values()
@@ -159,26 +159,42 @@ pub(crate) fn chain_tips_from_nonfinalized_snapshot(
             } else {
                 ChainTipStatus::ValidFork
             };
-            let branchlen = if is_active_tip {
+            let branch_len = if is_active_tip {
                 0
             } else {
                 branch_len_to_active_chain(snapshot, block)
             };
 
-            ChainTip::new(
-                u32::from(block.height()),
-                block.hash().to_rpc_hex(),
-                branchlen,
+            // Every height in the index passed `Height::try_from` when the block
+            // was ingested, so an out-of-range value here means the index itself
+            // is corrupt. Propagating would make a pure snapshot read fallible
+            // and ripple through its callers for a state that cannot arise.
+            let height = zaino_primitives::types::Height::try_from(u32::from(block.height()))
+                .expect("an indexed block's height is within the protocol maximum");
+
+            ChainTip {
+                height,
+                hash: zaino_primitives::types::BlockHash::from(block.hash().0),
+                branch_len,
                 status,
-            )
+            }
         })
         .collect::<Vec<_>>();
 
+    // Descending height, then ascending hash. The tie-break compares
+    // *display-order* bytes, which is the ordering the hex strings this
+    // previously sorted on would produce — hashes are byte-reversed for display,
+    // so sorting internal bytes would silently reorder equal-height tips.
     tips.sort_by(|left, right| {
+        let display_order = |hash: zaino_primitives::types::BlockHash| {
+            let mut bytes = <[u8; 32]>::from(hash);
+            bytes.reverse();
+            bytes
+        };
         right
             .height
             .cmp(&left.height)
-            .then_with(|| left.hash.cmp(&right.hash))
+            .then_with(|| display_order(left.hash).cmp(&display_order(right.hash)))
     });
     tips
 }
@@ -663,20 +679,22 @@ pub trait ChainIndexRpcExt: ChainIndex {
         txid: String,
         n: u32,
         include_mempool: Option<bool>,
-    ) -> impl std::future::Future<Output = Result<GetTxOutResponse, Self::Error>>;
+    ) -> impl std::future::Future<
+        Output = Result<Option<zaino_primitives::types::rpc::TxOut>, Self::Error>,
+    >;
 
     /// Returns the `getspentinfo` response for the given request.
     fn get_spent_info(
         &self,
-        request: GetSpentInfoRequest,
-    ) -> impl std::future::Future<Output = Result<GetSpentInfoResponse, Self::Error>>;
+        outpoint: zaino_primitives::types::rpc::SpentOutpoint,
+    ) -> impl std::future::Future<Output = Result<zaino_primitives::types::rpc::SpentInfo, Self::Error>>;
 
     /// Returns the `getnetworksolps` response.
     fn get_network_sol_ps(
         &self,
         blocks: Option<i32>,
         height: Option<i32>,
-    ) -> impl std::future::Future<Output = Result<GetNetworkSolPsResponse, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<u64, Self::Error>>;
 
     /// Submits a raw transaction to the network (`sendrawtransaction`).
     fn send_raw_transaction(
@@ -710,11 +728,12 @@ pub trait ChainIndexRpcExt: ChainIndex {
     /// Returns the full `gettxoutsetinfo` response, folding the non-finalised state on top of
     /// the finalised txout-set accumulator.
     ///
-    /// Returns [`GetTxOutSetInfoResponse::Empty`] while the indexer is still syncing the
-    /// finalised state (the accumulator's spent-index invariants are not yet established).
+    /// Returns `None` while the indexer is still syncing the finalised state (the
+    /// accumulator's spent-index invariants are not yet established). The wire
+    /// layer renders that as zcashd's empty object.
     fn get_tx_out_set_info(
         &self,
-    ) -> impl std::future::Future<Output = Result<GetTxOutSetInfoResponse, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<Option<TxOutSetInfo>, Self::Error>>;
 }
 
 /// The combined index. Contains a view of the mempool, and the full
@@ -2859,7 +2878,7 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
         txid: String,
         n: u32,
         include_mempool: Option<bool>,
-    ) -> Result<GetTxOutResponse, Self::Error> {
+    ) -> Result<Option<zaino_primitives::types::rpc::TxOut>, Self::Error> {
         self.source()
             .get_tx_out(txid, n, include_mempool)
             .await
@@ -2868,10 +2887,10 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
 
     async fn get_spent_info(
         &self,
-        request: GetSpentInfoRequest,
-    ) -> Result<GetSpentInfoResponse, Self::Error> {
+        outpoint: zaino_primitives::types::rpc::SpentOutpoint,
+    ) -> Result<zaino_primitives::types::rpc::SpentInfo, Self::Error> {
         self.source()
-            .get_spent_info(request)
+            .get_spent_info(outpoint)
             .await
             .map_err(ChainIndexError::backing_validator)
     }
@@ -2880,7 +2899,7 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
         &self,
         blocks: Option<i32>,
         height: Option<i32>,
-    ) -> Result<GetNetworkSolPsResponse, Self::Error> {
+    ) -> Result<u64, Self::Error> {
         self.source()
             .get_network_sol_ps(blocks, height)
             .await
@@ -2928,7 +2947,7 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
         self.mempool.get_mempool_info().await
     }
 
-    async fn get_tx_out_set_info(&self) -> Result<GetTxOutSetInfoResponse, Self::Error> {
+    async fn get_tx_out_set_info(&self) -> Result<Option<TxOutSetInfo>, Self::Error> {
         use crate::chain_index::types::db::metadata::{
             is_unspendable_tx_out, ZAINO_TXOUTSET_ENTRY_LEN,
         };
@@ -2945,7 +2964,7 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
             ChainIndexSnapshot::StillSyncingFinalizedState { .. } => {
                 // Accumulator invariants are not established until the finalised state catches
                 // up. Match zcashd's "stats collection failed" empty-object shape.
-                return Ok(GetTxOutSetInfoResponse::Empty(EmptyTxOutSetInfo {}));
+                return Ok(None);
             }
         };
 
@@ -3095,18 +3114,18 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
             )));
         }
 
-        let total_amount = accumulator.total_zatoshis as f64 / 1e8;
-        let hash_serialized: String = accumulator.hash_serialized.encode_hex();
-        let best_block: String = best_tip.hash.encode_hex();
-
-        Ok(GetTxOutSetInfoResponse::Info(GetTxOutSetInfo {
-            height: best_tip.height.0.into(),
-            best_block,
+        // ZEC denomination and display-order hex are the wire's business; this
+        // hands over integer zatoshis and the hash bytes as they are.
+        Ok(Some(TxOutSetInfo {
+            height: zaino_primitives::types::Height::try_from(best_tip.height.0)
+                .map_err(|e| ChainIndexError::internal(e.to_string()))?,
+            best_block: zaino_primitives::types::BlockHash::from(best_tip.hash.0),
             transactions: accumulator.transactions,
-            txouts: accumulator.transaction_outputs,
+            tx_outs: accumulator.transaction_outputs,
             bytes_serialized: accumulator.bytes_serialized,
-            hash_serialized,
-            total_amount,
+            hash_serialized: accumulator.hash_serialized.encode_hex(),
+            total_amount: zaino_primitives::types::Zatoshis::new(accumulator.total_zatoshis)
+                .map_err(|e| ChainIndexError::internal(e.to_string()))?,
         }))
     }
 }

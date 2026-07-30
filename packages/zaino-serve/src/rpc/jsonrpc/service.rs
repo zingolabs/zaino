@@ -4,13 +4,8 @@ use zaino_address::DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION;
 use zaino_fetch::jsonrpsee::response::block_deltas::BlockDeltas;
 use zaino_fetch::jsonrpsee::response::block_header::GetBlockHeader;
 use zaino_fetch::jsonrpsee::response::block_subsidy::GetBlockSubsidy;
-use zaino_fetch::jsonrpsee::response::chain_tips::GetChainTipsResponse;
 use zaino_fetch::jsonrpsee::response::mining_info::GetMiningInfoWire;
 use zaino_fetch::jsonrpsee::response::peer_info::GetPeerInfo;
-use zaino_fetch::jsonrpsee::response::{
-    GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSpentInfoRequest, GetSpentInfoResponse,
-    GetTxOutResponse, GetTxOutSetInfoResponse,
-};
 use zaino_state::{LightWalletIndexer, ZcashIndexer};
 
 use zebra_chain::{block::Height, subtree::NoteCommitmentSubtreeIndex};
@@ -27,6 +22,11 @@ use jsonrpsee::types::ErrorObjectOwned;
 use jsonrpsee::{proc_macros::rpc, types::ErrorCode};
 
 use crate::rpc::jsonrpc::wire::address::{validate_address_from_domain, ZValidateAddressWire};
+use crate::rpc::jsonrpc::wire::chain_tips::{chain_tips_from_domain, GetChainTipsResponse};
+use crate::rpc::jsonrpc::wire::misc::{
+    MempoolInfoWire, NetworkSolPsWire, SpentInfoRequestWire, SpentInfoWire, TxOutSetInfoWire,
+    TxOutWire,
+};
 use crate::rpc::JsonRpcClient;
 
 /// Zcash RPC method signatures.
@@ -72,7 +72,7 @@ pub trait ZcashIndexerRpc {
     ///
     /// Canonical source code implementation: [`getmempoolinfo`](https://github.com/zcash/zcash/blob/18238d90cd0b810f5b07d5aaa1338126aa128c06/src/rpc/blockchain.cpp#L1555)
     #[method(name = "getmempoolinfo")]
-    async fn get_mempool_info(&self) -> Result<GetMempoolInfoResponse, ErrorObjectOwned>;
+    async fn get_mempool_info(&self) -> Result<MempoolInfoWire, ErrorObjectOwned>;
 
     /// Returns a json object containing mining-related information.
     ///
@@ -86,7 +86,7 @@ pub trait ZcashIndexerRpc {
     /// method: post
     /// tags: blockchain
     #[method(name = "gettxoutsetinfo")]
-    async fn get_tx_out_set_info(&self) -> Result<GetTxOutSetInfoResponse, ErrorObjectOwned>;
+    async fn get_tx_out_set_info(&self) -> Result<TxOutSetInfoWire, ErrorObjectOwned>;
 
     /// Returns the hash of the best block (tip) of the longest chain.
     /// zcashd reference: [`getbestblockhash`](https://zcash.github.io/rpc/getbestblockhash.html)
@@ -392,7 +392,7 @@ pub trait ZcashIndexerRpc {
         txid: String,
         n: u32,
         include_mempool: Option<bool>,
-    ) -> Result<GetTxOutResponse, ErrorObjectOwned>;
+    ) -> Result<TxOutWire, ErrorObjectOwned>;
 
     /// Returns the txid, input index, and block height where an output is spent.
     ///
@@ -411,8 +411,8 @@ pub trait ZcashIndexerRpc {
     #[method(name = "getspentinfo")]
     async fn get_spent_info(
         &self,
-        request: GetSpentInfoRequest,
-    ) -> Result<GetSpentInfoResponse, ErrorObjectOwned>;
+        request: SpentInfoRequestWire,
+    ) -> Result<SpentInfoWire, ErrorObjectOwned>;
 
     /// Returns the transaction ids made by the provided transparent addresses.
     ///
@@ -472,7 +472,7 @@ pub trait ZcashIndexerRpc {
         &self,
         blocks: Option<i32>,
         height: Option<i32>,
-    ) -> Result<GetNetworkSolPsResponse, ErrorObjectOwned>;
+    ) -> Result<NetworkSolPsWire, ErrorObjectOwned>;
 }
 
 /// Maps an indexer error to the JSON-RPC error object every plain-delegation
@@ -578,11 +578,12 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .map_err(invalid_params_error_object)
     }
 
-    async fn get_tx_out_set_info(&self) -> Result<GetTxOutSetInfoResponse, ErrorObjectOwned> {
+    async fn get_tx_out_set_info(&self) -> Result<TxOutSetInfoWire, ErrorObjectOwned> {
         self.service_subscriber
             .inner_ref()
             .get_tx_out_set_info()
             .await
+            .map(TxOutSetInfoWire::from_domain)
             .map_err(invalid_params_error_object)
     }
 
@@ -602,11 +603,12 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .map_err(invalid_params_error_object)
     }
 
-    async fn get_mempool_info(&self) -> Result<GetMempoolInfoResponse, ErrorObjectOwned> {
+    async fn get_mempool_info(&self) -> Result<MempoolInfoWire, ErrorObjectOwned> {
         self.service_subscriber
             .inner_ref()
             .get_mempool_info()
             .await
+            .map(MempoolInfoWire::from_domain)
             .map_err(invalid_params_error_object)
     }
 
@@ -655,6 +657,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .get_chain_tips()
             .await
+            .map(chain_tips_from_domain)
             .map_err(invalid_params_error_object)
     }
 
@@ -779,22 +782,28 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
         txid: String,
         n: u32,
         include_mempool: Option<bool>,
-    ) -> Result<GetTxOutResponse, ErrorObjectOwned> {
+    ) -> Result<TxOutWire, ErrorObjectOwned> {
         self.service_subscriber
             .inner_ref()
             .get_tx_out(txid, n, include_mempool)
             .await
+            .map(TxOutWire::from_domain)
             .map_err(invalid_params_error_object)
     }
 
     async fn get_spent_info(
         &self,
-        request: GetSpentInfoRequest,
-    ) -> Result<GetSpentInfoResponse, ErrorObjectOwned> {
+        request: SpentInfoRequestWire,
+    ) -> Result<SpentInfoWire, ErrorObjectOwned> {
+        // A client-supplied txid is external input; rejecting it here keeps the
+        // malformed case out of the indexer entirely.
+        let outpoint = request.into_domain().map_err(invalid_params_error_object)?;
+
         self.service_subscriber
             .inner_ref()
-            .get_spent_info(request)
+            .get_spent_info(outpoint)
             .await
+            .map(SpentInfoWire::from_domain)
             .map_err(invalid_params_error_object)
     }
 
@@ -824,11 +833,12 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
         &self,
         blocks: Option<i32>,
         height: Option<i32>,
-    ) -> Result<GetNetworkSolPsResponse, ErrorObjectOwned> {
+    ) -> Result<NetworkSolPsWire, ErrorObjectOwned> {
         self.service_subscriber
             .inner_ref()
             .get_network_sol_ps(blocks, height)
             .await
+            .map(NetworkSolPsWire)
             .map_err(invalid_params_error_object)
     }
 }

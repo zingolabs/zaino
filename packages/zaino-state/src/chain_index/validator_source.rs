@@ -1121,32 +1121,8 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
 
     async fn get_chain_tips(
         &self,
-    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::chain_tips::GetChainTipsResponse>
-    {
-        use zaino_fetch::jsonrpsee::response::chain_tips::{ChainTip, ChainTipStatus};
-        use zaino_primitives::types::rpc::ChainTipStatus as DomainStatus;
-
-        let tips = self.validator.get_chain_tips().await.map_err(err)?;
-
-        Ok(tips
-            .into_iter()
-            .map(|tip| {
-                let status = match tip.status {
-                    DomainStatus::Active => ChainTipStatus::Active,
-                    DomainStatus::ValidFork => ChainTipStatus::ValidFork,
-                    DomainStatus::ValidHeaders => ChainTipStatus::ValidHeaders,
-                    DomainStatus::HeadersOnly => ChainTipStatus::HeadersOnly,
-                    DomainStatus::Invalid => ChainTipStatus::Invalid,
-                    DomainStatus::Unknown => ChainTipStatus::Unknown,
-                };
-                ChainTip::new(
-                    tip.height.into(),
-                    display_hex(<[u8; 32]>::from(tip.hash)),
-                    tip.branch_len,
-                    status,
-                )
-            })
-            .collect())
+    ) -> BlockchainSourceResult<Vec<zaino_primitives::types::rpc::ChainTip>> {
+        self.validator.get_chain_tips().await.map_err(err)
     }
 
     async fn get_mining_info(
@@ -1228,7 +1204,7 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
         &self,
         blocks: Option<i32>,
         height: Option<i32>,
-    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::GetNetworkSolPsResponse> {
+    ) -> BlockchainSourceResult<u64> {
         // Negative values are how this interface spells "use your default", so
         // they become absence rather than an error.
         let blocks = blocks.and_then(|b| u32::try_from(b).ok());
@@ -1237,15 +1213,10 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
             None => None,
         };
 
-        let rate = self
-            .validator
+        self.validator
             .get_network_sol_ps(blocks, height)
             .await
-            .map_err(err)?;
-
-        Ok(zaino_fetch::jsonrpsee::response::GetNetworkSolPsResponse(
-            rate,
-        ))
+            .map_err(err)
     }
 
     async fn send_raw_transaction(
@@ -1268,27 +1239,15 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
 
     async fn get_spent_info(
         &self,
-        request: zaino_fetch::jsonrpsee::response::GetSpentInfoRequest,
-    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::GetSpentInfoResponse> {
-        use zaino_primitives::types::rpc::SpentOutpoint;
-
-        let outpoint = SpentOutpoint {
-            txid: parse_display_txid(&request.txid)?,
-            index: request.index,
-        };
-
-        let spent = self
-            .validator
+        outpoint: zaino_primitives::types::rpc::SpentOutpoint,
+    ) -> BlockchainSourceResult<zaino_primitives::types::rpc::SpentInfo> {
+        // The port answers "was it spent?" with an `Option`; the interface has no
+        // way to say "no", so absence becomes an error here.
+        self.validator
             .get_spent_info(outpoint)
             .await
             .map_err(err)?
-            .ok_or_else(|| invalid("output is unspent or unknown".to_string()))?;
-
-        Ok(zaino_fetch::jsonrpsee::response::GetSpentInfoResponse {
-            txid: display_hex(<[u8; 32]>::from(spent.txid)),
-            index: spent.index,
-            height: spent.height.into(),
-        })
+            .ok_or_else(|| invalid("output is unspent or unknown".to_string()))
     }
 
     async fn get_tx_out(
@@ -1296,66 +1255,18 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
         txid: String,
         n: u32,
         include_mempool: Option<bool>,
-    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::GetTxOutResponse> {
-        let out = self
-            .validator
+    ) -> BlockchainSourceResult<Option<zaino_primitives::types::rpc::TxOut>> {
+        // `include_mempool` defaults to true, matching the interface: a caller
+        // that does not say otherwise wants unconfirmed outputs counted.
+        self.validator
             .get_tx_out(
                 parse_display_txid(&txid)?,
                 n,
                 include_mempool.unwrap_or(true),
             )
             .await
-            .map_err(err)?;
-
-        // This response is untyped on the wire, so the JSON is built here from
-        // the modelled value rather than forwarded. A spent or unknown outpoint
-        // is JSON `null`, which is the interface's real answer to "is this
-        // unspent?" rather than an error.
-        let Some(out) = out else {
-            return Ok(zaino_fetch::jsonrpsee::response::GetTxOutResponse(None));
-        };
-
-        let mut script = serde_json::Map::new();
-        script.insert(
-            "hex".to_string(),
-            serde_json::Value::String(hex::encode(Vec::<u8>::from(out.script_pub_key.script))),
-        );
-        if let Some(asm) = out.script_pub_key.asm {
-            script.insert("asm".to_string(), serde_json::Value::String(asm));
-        }
-        if let Some(kind) = out.script_pub_key.script_type {
-            script.insert("type".to_string(), serde_json::Value::String(kind));
-        }
-        if let Some(req_sigs) = out.script_pub_key.required_signatures {
-            script.insert("reqSigs".to_string(), serde_json::Value::from(req_sigs));
-        }
-        if !out.script_pub_key.addresses.is_empty() {
-            script.insert(
-                "addresses".to_string(),
-                serde_json::Value::Array(
-                    out.script_pub_key
-                        .addresses
-                        .into_iter()
-                        .map(|a| serde_json::Value::String(String::from(a)))
-                        .collect(),
-                ),
-            );
-        }
-
-        Ok(zaino_fetch::jsonrpsee::response::GetTxOutResponse(Some(
-            serde_json::json!({
-                "bestblock": display_hex(<[u8; 32]>::from(out.best_block)),
-                "confirmations": out.confirmations,
-                "value": zats_to_zec(out.value),
-                "valueZat": u64::from(out.value),
-                "scriptPubKey": serde_json::Value::Object(script),
-                "coinbase": out.coinbase,
-            }),
-        )))
+            .map_err(err)
     }
-
-    // ***** Lifecycle *****
-
     async fn nonfinalized_listener(
         &self,
     ) -> Result<

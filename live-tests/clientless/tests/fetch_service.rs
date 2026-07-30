@@ -574,7 +574,10 @@ async fn assert_fetch_service_getnetworksols_matches_rpc<V: ValidatorExt>(
     assert_subscriber_matches_rpc::<V, _, _, _>(
         validator,
         |sub| async move { sub.get_network_sol_ps(None, None).await.unwrap() },
-        |client| async move { client.get_network_sol_ps(None, None).await.unwrap() },
+        // The raw connector still answers in `zaino-fetch`'s newtype; the
+        // subscriber now answers with the bare rate. Unwrap the newtype so the
+        // two sides are comparable.
+        |client| async move { client.get_network_sol_ps(None, None).await.unwrap().0 },
     )
     .await;
 }

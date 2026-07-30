@@ -39,7 +39,6 @@ use zaino_fetch::jsonrpsee::response::{
     block_subsidy::GetBlockSubsidy,
     mining_info::GetMiningInfoWire,
     peer_info::GetPeerInfo,
-    GetNetworkSolPsResponse, GetSpentInfoRequest, GetSpentInfoResponse, GetTxOutResponse,
 };
 use zebra_rpc::{
     client::{GetAddressBalanceRequest, GetAddressTxIdsRequest},
@@ -188,9 +187,7 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     /// finalised state and has no non-finalised snapshot to answer from.
     fn get_chain_tips(
         &self,
-    ) -> impl SendFut<
-        BlockchainSourceResult<zaino_fetch::jsonrpsee::response::chain_tips::GetChainTipsResponse>,
-    >;
+    ) -> impl SendFut<BlockchainSourceResult<Vec<zaino_primitives::types::rpc::ChainTip>>>;
 
     /// Returns the `getblocksubsidy` response at the given height.
     fn get_block_subsidy(
@@ -207,20 +204,20 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
         txid: String,
         n: u32,
         include_mempool: Option<bool>,
-    ) -> impl SendFut<BlockchainSourceResult<GetTxOutResponse>>;
+    ) -> impl SendFut<BlockchainSourceResult<Option<zaino_primitives::types::rpc::TxOut>>>;
 
     /// Returns the `getspentinfo` response for the given request.
     fn get_spent_info(
         &self,
-        request: GetSpentInfoRequest,
-    ) -> impl SendFut<BlockchainSourceResult<GetSpentInfoResponse>>;
+        outpoint: zaino_primitives::types::rpc::SpentOutpoint,
+    ) -> impl SendFut<BlockchainSourceResult<zaino_primitives::types::rpc::SpentInfo>>;
 
     /// Returns the `getnetworksolps` response.
     fn get_network_sol_ps(
         &self,
         blocks: Option<i32>,
         height: Option<i32>,
-    ) -> impl SendFut<BlockchainSourceResult<GetNetworkSolPsResponse>>;
+    ) -> impl SendFut<BlockchainSourceResult<u64>>;
 
     /// Submits a raw transaction to the network via the validator's mempool
     /// (`sendrawtransaction`).

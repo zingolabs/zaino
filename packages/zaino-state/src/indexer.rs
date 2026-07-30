@@ -15,11 +15,9 @@ use zaino_fetch::jsonrpsee::response::{
     block_deltas::BlockDeltas,
     block_header::GetBlockHeader,
     block_subsidy::GetBlockSubsidy,
-    chain_tips::GetChainTipsResponse,
     mining_info::GetMiningInfoWire,
     peer_info::GetPeerInfo,
-    GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSpentInfoRequest, GetSpentInfoResponse,
-    GetSubtreesResponse, GetTxOutSetInfoResponse,
+    GetSubtreesResponse,
 };
 use zaino_proto::proto::{
     compact_formats::CompactBlock,
@@ -230,7 +228,9 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// tags: mempool
     ///
     /// Original implementation: [`getmempoolinfo`](https://github.com/zcash/zcash/blob/18238d90cd0b810f5b07d5aaa1338126aa128c06/src/rpc/blockchain.cpp#L1555)
-    fn get_mempool_info(&self) -> impl SendFut<Result<GetMempoolInfoResponse, Self::Error>>;
+    fn get_mempool_info(
+        &self,
+    ) -> impl SendFut<Result<crate::chain_index::types::db::metadata::MempoolInfo, Self::Error>>;
 
     /// Returns data about each connected network node as a json array of objects.
     ///
@@ -357,7 +357,9 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// zcashd builds the response from all block-index leaves, always includes the active
     /// tip, sorts by descending height, and classifies leaves as `invalid`, `headers-only`,
     /// `valid-headers`, `valid-fork`, `active`, or `unknown`.
-    fn get_chain_tips(&self) -> impl SendFut<Result<GetChainTipsResponse, Self::Error>>;
+    fn get_chain_tips(
+        &self,
+    ) -> impl SendFut<Result<Vec<zaino_primitives::types::rpc::ChainTip>, Self::Error>>;
 
     /// Return information about the given Zcash address.
     ///
@@ -495,7 +497,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         txid: String,
         n: u32,
         include_mempool: Option<bool>,
-    ) -> impl SendFut<Result<zaino_fetch::jsonrpsee::response::GetTxOutResponse, Self::Error>>;
+    ) -> impl SendFut<Result<Option<zaino_primitives::types::rpc::TxOut>, Self::Error>>;
 
     /// Returns the txid, input index, and block height where an output is spent.
     ///
@@ -513,8 +515,8 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// the documented `txid` and `index` fields.
     fn get_spent_info(
         &self,
-        request: GetSpentInfoRequest,
-    ) -> impl SendFut<Result<GetSpentInfoResponse, Self::Error>>;
+        outpoint: zaino_primitives::types::rpc::SpentOutpoint,
+    ) -> impl SendFut<Result<zaino_primitives::types::rpc::SpentInfo, Self::Error>>;
 
     /// Returns the transaction ids made by the provided transparent addresses.
     ///
@@ -567,7 +569,9 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// zcashd reference: [`gettxoutsetinfo`](https://zcash.github.io/rpc/gettxoutsetinfo.html)
     /// method: post
     /// tags: blockchain
-    fn get_tx_out_set_info(&self) -> impl SendFut<Result<GetTxOutSetInfoResponse, Self::Error>>;
+    fn get_tx_out_set_info(
+        &self,
+    ) -> impl SendFut<Result<Option<zaino_primitives::types::TxOutSetInfo>, Self::Error>>;
 
     /// Returns the estimated network solutions per second based on the last n blocks.
     ///
@@ -586,7 +590,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         &self,
         blocks: Option<i32>,
         height: Option<i32>,
-    ) -> impl SendFut<Result<GetNetworkSolPsResponse, Self::Error>>;
+    ) -> impl SendFut<Result<u64, Self::Error>>;
 
     /// Helper function to get the chain height
     fn chain_height(&self) -> impl SendFut<Result<Height, Self::Error>>;

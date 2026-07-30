@@ -1188,7 +1188,8 @@ async fn get_chain_tips_falls_back_to_source_while_syncing() {
 
     let blocks = load_test_vectors().unwrap().blocks;
     let tip_height = (blocks.len() as u32) - 1;
-    let expected_tip_hash = blocks[tip_height as usize].zebra_block.hash().to_string();
+    let expected_tip_hash =
+        zaino_primitives::types::BlockHash::from(blocks[tip_height as usize].zebra_block.hash().0);
     let mock = build_mockchain_source(blocks);
 
     let syncing_snapshot = ChainIndexSnapshot::StillSyncingFinalizedState {
@@ -1201,12 +1202,12 @@ async fn get_chain_tips_falls_back_to_source_while_syncing() {
 
     assert_eq!(
         tips,
-        vec![zaino_fetch::jsonrpsee::response::chain_tips::ChainTip::new(
-            tip_height,
-            expected_tip_hash,
-            0,
-            zaino_fetch::jsonrpsee::response::chain_tips::ChainTipStatus::Active,
-        )]
+        vec![zaino_primitives::types::rpc::ChainTip {
+            height: zaino_primitives::types::Height::try_from(tip_height).unwrap(),
+            hash: expected_tip_hash,
+            branch_len: 0,
+            status: zaino_primitives::types::rpc::ChainTipStatus::Active,
+        }]
     );
 }
 
