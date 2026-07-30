@@ -19,7 +19,7 @@ pub use rpc::assert_rpc_parity;
 
 /// Generate one discoverable `#[tokio::test]` per `name => helper` pair, each
 /// building a fresh validator from the `$ctor` expression (e.g.
-/// `Validator::zebrad("6.2.0")`, re-evaluated per test) and awaiting the
+/// `Validator::zebrad("6.2.3")`, re-evaluated per test) and awaiting the
 /// helper. `$ctor` and `ztest` resolve in the invoking module's scope.
 #[macro_export]
 macro_rules! validator_tests {

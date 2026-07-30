@@ -68,7 +68,7 @@ async fn value_pools_respect_the_boundary_on_the_pub_testnet() -> Result<()> {
     // materialization until such a fixture lands. See ztest
     // fixtures/testnet/README.md.
     let mut env = TestEnv::builder().ready_timeout(READY);
-    let validator = env.add_validator(Validator::zebrad("6.2.0").testnet("orchard"));
+    let validator = env.add_validator(Validator::zebrad("6.2.3").testnet("orchard"));
     let _indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").testnet("orchard"));
     env.build().await?;
 

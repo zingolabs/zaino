@@ -148,7 +148,7 @@ mod zebrad {
         async fn receives_mining_reward_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -172,7 +172,7 @@ mod zebrad {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
+                Validator::zebrad("6.2.3")
                     .regtest()
                     .mine_to(FUND.ztest())
                     .mount(&vol),
@@ -206,7 +206,7 @@ mod zebrad {
         async fn connect_to_node_get_info_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -229,7 +229,7 @@ mod zebrad {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
+                Validator::zebrad("6.2.3")
                     .regtest()
                     .mine_to(FUND.ztest())
                     .mount(&vol),
@@ -263,7 +263,7 @@ mod zebrad {
         async fn send_to_ironwood_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -296,7 +296,7 @@ mod zebrad {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
+                Validator::zebrad("6.2.3")
                     .regtest()
                     .mine_to(FUND.ztest())
                     .mount(&vol),
@@ -335,7 +335,7 @@ mod zebrad {
         async fn send_to_sapling_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -365,7 +365,7 @@ mod zebrad {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
+                Validator::zebrad("6.2.3")
                     .regtest()
                     .mine_to(FUND.ztest())
                     .mount(&vol),
@@ -405,7 +405,7 @@ mod zebrad {
         async fn send_to_transparent_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -436,7 +436,7 @@ mod zebrad {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
+                Validator::zebrad("6.2.3")
                     .regtest()
                     .mine_to(FUND.ztest())
                     .mount(&vol),
@@ -475,7 +475,7 @@ mod zebrad {
         async fn send_to_all_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -513,7 +513,7 @@ mod zebrad {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
+                Validator::zebrad("6.2.3")
                     .regtest()
                     .mine_to(FUND.ztest())
                     .mount(&vol),
@@ -561,7 +561,7 @@ mod zebrad {
         async fn shield_for_validator_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -602,7 +602,7 @@ mod zebrad {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
+                Validator::zebrad("6.2.3")
                     .regtest()
                     .mine_to(FUND.ztest())
                     .mount(&vol),
@@ -659,7 +659,7 @@ mod zebrad {
         async fn send_to_transparent_finalization_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -713,7 +713,7 @@ mod zebrad {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
+                Validator::zebrad("6.2.3")
                     .regtest()
                     .mine_to(FUND.ztest())
                     .mount(&vol),
@@ -768,7 +768,7 @@ mod zebrad {
         async fn get_transaction_mined_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -798,7 +798,7 @@ mod zebrad {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
+                Validator::zebrad("6.2.3")
                     .regtest()
                     .mine_to(FUND.ztest())
                     .mount(&vol),
@@ -839,7 +839,7 @@ mod zebrad {
         async fn get_raw_mempool_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -887,7 +887,7 @@ mod zebrad {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
+                Validator::zebrad("6.2.3")
                     .regtest()
                     .mine_to(FUND.ztest())
                     .mount(&vol),
@@ -942,7 +942,7 @@ mod zebrad {
         async fn get_mempool_tx() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -993,7 +993,7 @@ mod zebrad {
         async fn get_mempool_stream() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -1032,7 +1032,7 @@ mod zebrad {
         async fn get_mempool_info_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -1097,7 +1097,7 @@ mod zebrad {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
+                Validator::zebrad("6.2.3")
                     .regtest()
                     .mine_to(FUND.ztest())
                     .mount(&vol),
@@ -1176,7 +1176,7 @@ mod zebrad {
         async fn monitor_unverified_mempool_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -1236,7 +1236,7 @@ mod zebrad {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
+                Validator::zebrad("6.2.3")
                     .regtest()
                     .mine_to(FUND.ztest())
                     .mount(&vol),
@@ -1297,7 +1297,7 @@ mod zebrad {
         async fn get_address_tx_ids() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -1341,7 +1341,7 @@ mod zebrad {
         async fn get_address_utxos() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -1377,7 +1377,7 @@ mod zebrad {
         async fn z_get_treestate() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -1403,7 +1403,7 @@ mod zebrad {
         async fn z_get_subtrees_by_index() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -1430,7 +1430,7 @@ mod zebrad {
         async fn get_raw_transaction() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -1467,7 +1467,7 @@ mod zebrad {
         async fn get_taddress_txids() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -1494,7 +1494,7 @@ mod zebrad {
         async fn get_taddress_utxos() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -1521,7 +1521,7 @@ mod zebrad {
         async fn get_taddress_utxos_stream() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -1548,7 +1548,7 @@ mod zebrad {
         async fn get_transaction_mempool() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -1576,7 +1576,7 @@ mod zebrad {
         async fn get_address_balance() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -1613,7 +1613,7 @@ mod zebrad {
         async fn get_taddress_balance() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -1652,7 +1652,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.0")
+            Validator::zebrad("6.2.3")
                 .regtest()
                 .mine_to(FUND.ztest())
                 .mount(&vol),
@@ -1727,7 +1727,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.0")
+            Validator::zebrad("6.2.3")
                 .regtest()
                 .mine_to(FUND.ztest())
                 .mount(&vol),
@@ -1801,7 +1801,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.0")
+            Validator::zebrad("6.2.3")
                 .regtest()
                 .mine_to(FUND.ztest())
                 .mount(&vol),
@@ -1848,7 +1848,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.0")
+            Validator::zebrad("6.2.3")
                 .regtest()
                 .mine_to(FUND.ztest())
                 .mount(&vol),
@@ -1898,7 +1898,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.0")
+            Validator::zebrad("6.2.3")
                 .regtest()
                 .mine_to(FUND.ztest())
                 .mount(&vol),
@@ -1959,7 +1959,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.0")
+            Validator::zebrad("6.2.3")
                 .regtest()
                 .mine_to(FUND.ztest())
                 .mount(&vol),
@@ -2013,7 +2013,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.0")
+            Validator::zebrad("6.2.3")
                 .regtest()
                 .mine_to(FUND.ztest())
                 .mount(&vol),
@@ -2065,7 +2065,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.0")
+            Validator::zebrad("6.2.3")
                 .regtest()
                 .mine_to(FUND.ztest())
                 .mount(&vol),
@@ -2112,7 +2112,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.0")
+            Validator::zebrad("6.2.3")
                 .regtest()
                 .mine_to(FUND.ztest())
                 .mount(&vol),
@@ -2162,7 +2162,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.0")
+            Validator::zebrad("6.2.3")
                 .regtest()
                 .mine_to(Pool::Transparent.ztest())
                 .mount(&vol),
@@ -2218,7 +2218,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.0")
+            Validator::zebrad("6.2.3")
                 .regtest()
                 .mine_to(Pool::Transparent.ztest())
                 .mount(&vol),
@@ -2264,7 +2264,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.0")
+            Validator::zebrad("6.2.3")
                 .regtest()
                 .mine_to(Pool::Transparent.ztest())
                 .mount(&vol),
@@ -2311,7 +2311,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.0")
+            Validator::zebrad("6.2.3")
                 .regtest()
                 .mine_to(Pool::Transparent.ztest())
                 .mount(&vol),
@@ -2362,7 +2362,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.0")
+            Validator::zebrad("6.2.3")
                 .regtest()
                 .mine_to(Pool::Transparent.ztest())
                 .mount(&vol),
@@ -2429,7 +2429,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.0")
+            Validator::zebrad("6.2.3")
                 .regtest()
                 .mine_to(Pool::Transparent.ztest())
                 .mount(&vol),
@@ -2499,7 +2499,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.0")
+            Validator::zebrad("6.2.3")
                 .regtest()
                 .mine_to(Pool::Orchard.ztest())
                 .mount(&vol),
@@ -2620,7 +2620,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.0")
+            Validator::zebrad("6.2.3")
                 .regtest()
                 .mine_to(Pool::Orchard.ztest())
                 .mount(&vol),
@@ -2681,7 +2681,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.0")
+            Validator::zebrad("6.2.3")
                 .regtest()
                 .mine_to(FUND.ztest())
                 .mount(&vol),
@@ -2753,7 +2753,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.0")
+            Validator::zebrad("6.2.3")
                 .regtest()
                 .mine_to(FUND.ztest())
                 .mount(&vol),
@@ -2812,7 +2812,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.0")
+            Validator::zebrad("6.2.3")
                 .regtest()
                 .mine_to(Pool::Transparent.ztest())
                 .mount(&vol),
@@ -2865,7 +2865,7 @@ mod zebrad {
         let mut env = TestEnv::builder().ready_timeout(READY);
         let vol = env.shared_volume("zebra-db");
         let validator = env.add_validator(
-            Validator::zebrad("6.2.0")
+            Validator::zebrad("6.2.3")
                 .regtest()
                 .mine_to(Pool::Transparent.ztest())
                 .mount(&vol),

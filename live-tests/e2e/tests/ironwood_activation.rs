@@ -110,7 +110,7 @@ mod zebrad {
                 .ready_timeout(READY)
                 .activation_heights(orchard_then_ironwood_at(NU6_3_TRANSITION_BOUNDARY));
             let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
+                Validator::zebrad("6.2.3")
                     .regtest()
                     .mine_to(Pool::Orchard.ztest()),
             );
@@ -166,7 +166,7 @@ mod zebrad {
                 .ready_timeout(READY)
                 .activation_heights(orchard_then_ironwood_at(NU6_3_TRANSITION_BOUNDARY));
             let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
+                Validator::zebrad("6.2.3")
                     .regtest()
                     .mine_to(Pool::Orchard.ztest()),
             );
@@ -287,7 +287,7 @@ mod zebrad {
                 .ready_timeout(READY)
                 .activation_heights(orchard_then_ironwood_at(NU6_3_TRANSITION_BOUNDARY));
             let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
+                Validator::zebrad("6.2.3")
                     .regtest()
                     .mine_to(Pool::Orchard.ztest()),
             );
@@ -399,7 +399,7 @@ mod zebrad {
                 .ready_timeout(READY)
                 .activation_heights(orchard_then_ironwood_at(NU6_3_TRANSITION_BOUNDARY));
             let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
+                Validator::zebrad("6.2.3")
                     .regtest()
                     .mine_to(Pool::Orchard.ztest()),
             );
@@ -461,7 +461,7 @@ mod zebrad {
                 .activation_heights(orchard_then_ironwood_at(NU6_3_TRANSITION_BOUNDARY));
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
+                Validator::zebrad("6.2.3")
                     .regtest()
                     .mine_to(Pool::Orchard.ztest())
                     .mount(&vol),
@@ -515,7 +515,7 @@ mod zebrad {
                 .activation_heights(orchard_then_ironwood_at(NU6_3_TRANSITION_BOUNDARY));
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
+                Validator::zebrad("6.2.3")
                     .regtest()
                     .mine_to(Pool::Orchard.ztest())
                     .mount(&vol),
@@ -627,7 +627,7 @@ mod zebrad {
                 .activation_heights(orchard_then_ironwood_at(NU6_3_TRANSITION_BOUNDARY));
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
+                Validator::zebrad("6.2.3")
                     .regtest()
                     .mine_to(Pool::Orchard.ztest())
                     .mount(&vol),
@@ -735,7 +735,7 @@ mod zebrad {
                 .activation_heights(orchard_then_ironwood_at(NU6_3_TRANSITION_BOUNDARY));
             let vol = env.shared_volume("zebra-db");
             let validator = env.add_validator(
-                Validator::zebrad("6.2.0")
+                Validator::zebrad("6.2.3")
                     .regtest()
                     .mine_to(Pool::Orchard.ztest())
                     .mount(&vol),

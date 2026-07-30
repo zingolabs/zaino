@@ -20,7 +20,7 @@ async fn create_200_block_regtest_chain_vectors() -> Result<()> {
     let mut env = TestEnv::builder().ready_timeout(READY);
     let vol = env.shared_volume("zebra-db");
     let validator = env.add_validator(
-        Validator::zebrad("6.2.0")
+        Validator::zebrad("6.2.3")
             .regtest()
             .mine_to(Pool::Transparent)
             .mount(&vol),

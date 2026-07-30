@@ -11,7 +11,7 @@ mod chain_query_interface {
     use super::*;
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
     #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
@@ -61,7 +61,7 @@ mod chain_query_interface {
     #[tokio::test(flavor = "multi_thread")]
     async fn ephemeral_serves_finalised_blocks_zebrad() -> Result<()> {
         let mut env = TestEnv::builder().ready_timeout(READY);
-        let validator = env.add_validator(Validator::zebrad("6.2.0").regtest());
+        let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
         let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
         env.build().await?;
 
@@ -104,7 +104,7 @@ mod chain_query_interface {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
     #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
@@ -196,7 +196,7 @@ mod chain_query_interface {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
     #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
@@ -257,7 +257,7 @@ mod chain_query_interface {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
     #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
@@ -299,7 +299,7 @@ mod chain_query_interface {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
     #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]

@@ -59,7 +59,7 @@ async fn zainod_syncs_a_schedule_its_config_never_saw() -> Result<()> {
     let mut env = TestEnv::builder()
         .ready_timeout(READY)
         .activation_heights(orchard_then_ironwood_at(NU6_3_TRANSITION_BOUNDARY));
-    let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(Pool::Orchard));
+    let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
     let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
     env.build().await?;
 
@@ -118,7 +118,7 @@ async fn getblockchaininfo_reports_the_configured_schedule() -> Result<()> {
     let mut env = TestEnv::builder()
         .ready_timeout(READY)
         .activation_heights(orchard_then_ironwood_at(NU6_3_TRANSITION_BOUNDARY));
-    let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(Pool::Orchard));
+    let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
     env.build().await?;
 
     let blockchain_info = validator

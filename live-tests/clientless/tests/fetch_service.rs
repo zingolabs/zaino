@@ -15,7 +15,7 @@ mod launch {
     use super::*;
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
     #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
@@ -36,7 +36,7 @@ mod launch {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
     #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[ignore = "We no longer use chain caches. See launch::regtest_no_cache."]
@@ -62,7 +62,7 @@ mod validation {
     use super::*;
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
     #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
@@ -100,7 +100,7 @@ mod validation {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
     #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -121,7 +121,7 @@ mod get {
     use super::*;
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
     #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
@@ -145,7 +145,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
     #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
@@ -169,7 +169,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
     #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
@@ -209,7 +209,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
     #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
@@ -241,7 +241,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
     #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
@@ -275,7 +275,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
     #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
@@ -294,7 +294,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
     #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
@@ -331,7 +331,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
     #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
@@ -350,7 +350,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
     #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
@@ -383,7 +383,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
     #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
@@ -421,7 +421,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
     #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
@@ -449,7 +449,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
     #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
@@ -475,7 +475,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
     #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
@@ -497,7 +497,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
     #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
@@ -519,7 +519,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
     #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
@@ -540,7 +540,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
     #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
@@ -560,7 +560,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
     #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
@@ -582,7 +582,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
     #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
@@ -599,7 +599,7 @@ mod get {
     }
 
     #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.0"))]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
     #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
     #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]

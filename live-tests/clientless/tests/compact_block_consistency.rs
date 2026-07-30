@@ -86,7 +86,7 @@ async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() -> Result<()> {
     // generated block carries ironwood data for the walk to check. A transparent
     // miner would leave the ironwood assertions vacuous.
     let mut env = TestEnv::builder().ready_timeout(READY);
-    let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(Pool::Orchard));
+    let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
     let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
     env.build().await?;
 
@@ -275,7 +275,7 @@ async fn orchard_only_coinbase_routing_zebrad() -> Result<()> {
     let mut env = TestEnv::builder()
         .ready_timeout(READY)
         .activation_heights(orchard_only());
-    let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(Pool::Orchard));
+    let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
     let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
     env.build().await?;
 
@@ -305,7 +305,7 @@ async fn orchard_only_coinbase_routing_zebrad() -> Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn ironwood_only_coinbase_routing_zebrad() -> Result<()> {
     let mut env = TestEnv::builder().ready_timeout(READY);
-    let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(Pool::Orchard));
+    let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
     let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
     env.build().await?;
 
@@ -338,7 +338,7 @@ async fn orchard_coinbase_routing_flips_to_ironwood_at_activation_zebrad() -> Re
     let mut env = TestEnv::builder()
         .ready_timeout(READY)
         .activation_heights(orchard_then_ironwood_at(NU6_3_TRANSITION_BOUNDARY));
-    let validator = env.add_validator(Validator::zebrad("6.2.0").regtest().mine_to(Pool::Orchard));
+    let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
     let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
     env.build().await?;
 
