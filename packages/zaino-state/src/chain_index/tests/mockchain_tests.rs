@@ -655,6 +655,32 @@ async fn get_address_deltas() {
             assert!(!deltas.is_empty());
             assert_eq!(start.height, 0);
             assert_eq!(end.height, active_height);
+
+            // zcashd reports each delta's `blockindex` and documents the
+            // ordering as `(height, blockindex, index)`. A source that knows the
+            // transaction's position in its block must report it: dropping it
+            // both omits a field zcashd sends and makes the documented order
+            // unverifiable.
+            assert!(
+                deltas.iter().all(|delta| delta.block_index.is_some()),
+                "every delta from a source that indexes transaction locations \
+                 must carry its blockindex: {deltas:?}"
+            );
+
+            let sort_key =
+                |delta: &zaino_fetch::jsonrpsee::response::address_deltas::AddressDelta| {
+                    (
+                        delta.height,
+                        delta.block_index.unwrap_or(u32::MAX),
+                        delta.index,
+                    )
+                };
+            assert!(
+                deltas
+                    .windows(2)
+                    .all(|pair| sort_key(&pair[0]) <= sort_key(&pair[1])),
+                "deltas must be ordered by (height, blockindex, index): {deltas:?}"
+            );
         }
         GetAddressDeltasResponse::Simple(_) => {
             panic!("expected get_address_deltas response with chain info")

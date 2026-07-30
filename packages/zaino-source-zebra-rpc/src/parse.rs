@@ -614,6 +614,12 @@ pub(crate) fn parse_address_deltas(
                 index: as_u32(field(d, "index")?)?,
                 height: as_height(field(d, "height")?)?,
                 address: TransparentAddress::new(as_str(field(d, "address")?)?.to_owned()),
+                // zcashd emits `blockindex`; a validator that does not is
+                // reported as not knowing it rather than as position zero.
+                block_index: match opt_field(d, "blockindex") {
+                    Some(v) => Some(as_u32(v)?),
+                    None => None,
+                },
             })
         })
         .collect()

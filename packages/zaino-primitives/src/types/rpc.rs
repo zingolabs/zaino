@@ -36,6 +36,7 @@
 //! zcashd, which is being deprecated, are modelled only where they carry
 //! information a consumer can actually use.
 
+mod address_deltas;
 mod block_deltas;
 mod block_header;
 mod block_subsidy;
@@ -44,8 +45,10 @@ mod mining_info;
 mod node_info;
 mod peer_info;
 mod spent_info;
+mod subtree_roots;
 mod tx_out;
 
+pub use address_deltas::{AddressDeltas, AddressDeltasRequest, BlockRef};
 pub use block_deltas::{BlockDelta, BlockDeltas, InputDelta, OutputDelta};
 pub use block_header::BlockHeaderVerbose;
 pub use block_subsidy::{BlockSubsidy, FundingStream, LockboxStream};
@@ -54,4 +57,5 @@ pub use mining_info::MiningInfo;
 pub use node_info::NodeInfo;
 pub use peer_info::PeerInfo;
 pub use spent_info::{SpentInfo, SpentOutpoint};
+pub use subtree_roots::SubtreeRoots;
 pub use tx_out::{ScriptPubKey, TxOut};

@@ -1232,7 +1232,7 @@ impl zaino_source::GetAddressDeltas for MockchainSource {
         // Receives only, matching every other implementation of this port: a
         // spend names an outpoint rather than an address, and attributing it
         // needs the spent transaction rather than this one.
-        let mut deltas: Vec<(u32, domain::AddressDelta)> = Vec::new();
+        let mut deltas: Vec<domain::AddressDelta> = Vec::new();
         for txid in txids {
             let zebra_txid = zebra_chain::transaction::Hash(<[u8; 32]>::from(txid));
             let Some((block_index, transaction)) = self.txid_index.get(&zebra_txid) else {
@@ -1248,24 +1248,26 @@ impl zaino_source::GetAddressDeltas for MockchainSource {
                 if !requested.iter().any(|wanted| wanted == &address) {
                     continue;
                 }
-                deltas.push((
-                    *block_index as u32,
-                    domain::AddressDelta {
-                        satoshis: domain::SignedZatoshis::new(i64::from(output.value())),
-                        txid,
-                        index: output_index as u32,
-                        height: domain::Height::try_from(height.0)
-                            .map_err(|e| port_fault(e.to_string()))?,
-                        address: domain::TransparentAddress::new(address),
-                    },
-                ));
+                deltas.push(domain::AddressDelta {
+                    satoshis: domain::SignedZatoshis::new(i64::from(output.value())),
+                    txid,
+                    index: output_index as u32,
+                    height: domain::Height::try_from(height.0)
+                        .map_err(|e| port_fault(e.to_string()))?,
+                    address: domain::TransparentAddress::new(address),
+                    block_index: Some(*block_index as u32),
+                });
             }
         }
 
-        deltas.sort_by_key(|(block_index, delta)| {
-            (u32::from(delta.height), *block_index, delta.index)
+        deltas.sort_by_key(|delta| {
+            (
+                u32::from(delta.height),
+                delta.block_index.unwrap_or(u32::MAX),
+                delta.index,
+            )
         });
-        Ok(deltas.into_iter().map(|(_, delta)| delta).collect())
+        Ok(deltas)
     }
 }
 

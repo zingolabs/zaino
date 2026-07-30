@@ -556,10 +556,7 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
                     delta.index,
                     u32::from(delta.height),
                     String::from(delta.address),
-                    // The port does not carry the transaction's position within
-                    // its block; the interface marks it optional, so it is
-                    // reported absent rather than guessed.
-                    None,
+                    delta.block_index,
                 )
             })
             .collect();

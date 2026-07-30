@@ -582,7 +582,7 @@ impl zaino_source::GetAddressDeltas for ZebraReadStateAdapter {
         // The index gives each transaction's location, so the height and the
         // position within the block come from it rather than from a second
         // lookup. Only the transaction body still has to be fetched.
-        let mut deltas: Vec<(u32, AddressDelta)> = Vec::new();
+        let mut deltas: Vec<AddressDelta> = Vec::new();
 
         for (location, txid) in located.iter() {
             let response =
@@ -618,28 +618,33 @@ impl zaino_source::GetAddressDeltas for ZebraReadStateAdapter {
                     continue;
                 }
 
-                deltas.push((
-                    u32::from(location.index.index()),
-                    AddressDelta {
-                        satoshis: SignedZatoshis::new(output.value.zatoshis()),
-                        txid: delta_txid,
-                        index: index as u32,
-                        height,
-                        address: TransparentAddress::new(address),
-                    },
-                ));
+                deltas.push(AddressDelta {
+                    satoshis: SignedZatoshis::new(output.value.zatoshis()),
+                    txid: delta_txid,
+                    index: index as u32,
+                    height,
+                    address: TransparentAddress::new(address),
+                    block_index: Some(u32::from(location.index.index())),
+                });
             }
         }
 
         // zcashd orders deltas by (height, position in block, index within the
-        // transaction). The position is carried alongside each delta only for
-        // this sort — the domain type does not model it, because it describes
-        // where the transaction sits rather than what the address received.
-        deltas.sort_by_key(|(block_index, delta)| {
-            (u32::from(delta.height), *block_index, delta.index)
+        // transaction). The address index carries each transaction's real
+        // location, so this is the documented order rather than an
+        // approximation of it.
+        // `unwrap_or(MAX)` rather than letting `None` sort first: a delta whose
+        // position in its block is unknown cannot be placed among those that
+        // know theirs, so it goes last. Matches the ordering this replaced.
+        deltas.sort_by_key(|delta| {
+            (
+                u32::from(delta.height),
+                delta.block_index.unwrap_or(u32::MAX),
+                delta.index,
+            )
         });
 
-        Ok(deltas.into_iter().map(|(_, delta)| delta).collect())
+        Ok(deltas)
     }
 }
 
