@@ -28,7 +28,7 @@ use crate::{
     chain_index::{
         finalized_height_floor,
         non_finalised_state::ChainIndexSnapshot,
-        source::{BlockchainSourceResult, GetTransactionLocation},
+        source::{AddressUtxosRequest, BlockchainSourceResult, GetTransactionLocation},
         tests::{init_tracing, poll::poll_until, proptest_blockgen::proptest_helpers::add_segment},
         types::BestChainLocation,
         NonFinalizedSnapshot, OPERATIONAL_NFS_DEPTH,
@@ -1350,7 +1350,7 @@ impl BlockchainSource for ProptestMockchain {
 
     async fn get_address_utxos(
         &self,
-        _address_strings: GetAddressBalanceRequest,
+        _request: AddressUtxosRequest,
     ) -> BlockchainSourceResult<Vec<GetAddressUtxos>> {
         //
         todo!()

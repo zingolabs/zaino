@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use tokio::sync::OnceCell;
 use tokio::time::Duration;
-use zaino_common::{network::ActivationHeights, DatabaseConfig, StorageConfig};
+use zaino_common::{network::ActivationHeights, DatabaseConfig, DatabaseSize, StorageConfig};
 
 use crate::{
     chain_index::{
@@ -128,6 +128,7 @@ async fn load_with_settings(
         storage: StorageConfig {
             database: DatabaseConfig {
                 path: db_path,
+                size: DatabaseSize(1),
                 ..Default::default()
             },
             ..Default::default()
@@ -216,6 +217,7 @@ async fn v1_finalised_seed_dir(mode: MockchainMode) -> &'static Path {
             storage: StorageConfig {
                 database: DatabaseConfig {
                     path: temp_dir.path().to_path_buf(),
+                    size: DatabaseSize(1),
                     ..Default::default()
                 },
                 ..Default::default()

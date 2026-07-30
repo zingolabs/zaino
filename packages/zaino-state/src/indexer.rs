@@ -922,7 +922,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
     /// Ignores all utxos below block height [GetAddressUtxosArg.start_height].
     /// Returns max [GetAddressUtxosArg.max_entries] utxos, or unrestricted if [GetAddressUtxosArg.max_entries] = 0.
     /// max_entries bounds the response size, not the backend work; the address list is
-    /// capped server-side to bound backend fan-out (see UTXO_MAX_ADDRESSES in backends).
+    /// capped server-side by [`UTXO_MAX_ADDRESSES`] to bound backend fan-out.
     /// Utxos are collected and returned as a single Vec.
     fn get_address_utxos(
         &self,
@@ -934,7 +934,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
     /// Ignores all utxos below block height [GetAddressUtxosArg.start_height].
     /// Returns max [GetAddressUtxosArg.max_entries] utxos, or unrestricted if [GetAddressUtxosArg.max_entries] = 0.
     /// max_entries bounds the response size, not the backend work; the address list is
-    /// capped server-side to bound backend fan-out (see UTXO_MAX_ADDRESSES in backends).
+    /// capped server-side by [`UTXO_MAX_ADDRESSES`] to bound backend fan-out.
     /// Utxos are returned in a stream.
     fn get_address_utxos_stream(
         &self,
