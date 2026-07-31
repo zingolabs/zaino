@@ -914,3 +914,85 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .map_err(invalid_params_error_object)
     }
 }
+
+#[cfg(test)]
+mod legacy_code_recovery {
+    use super::*;
+
+    /// The recovery this replaced matched `zaino-fetch`'s connector type, which
+    /// the new source stack never constructs — so it silently recovered
+    /// nothing, and every validator error code reached clients as a generic
+    /// internal error. The defect was invisible because a downcast that never
+    /// matches simply falls through. These tests exist so a future retarget
+    /// cannot repeat it: they assert the *walker* recovers a code, not merely
+    /// that the typed error is reachable (which
+    /// `validator_source::error_source_chain` covers from the other side).
+    #[test]
+    fn a_validator_error_code_is_recovered_from_a_fetch_error() {
+        let error = zaino_source::FetchError::new(
+            zaino_source::FailureMode::RpcError(-8),
+            "Block not found",
+        );
+
+        assert_eq!(
+            legacy_code_from_error_source(&error),
+            Some((-8, "Block not found".to_string())),
+            "a code the validator returned must survive to the served response"
+        );
+    }
+
+    /// Zaino's own rejections carry a code too, and never reached a validator.
+    #[test]
+    fn zainos_own_rejection_is_recovered_from_a_legacy_rpc_error() {
+        let error = zaino_state::LegacyRpcError::new(
+            zebra_rpc::server::error::LegacyCode::InvalidParameter,
+            "block identifier is not hex",
+        );
+
+        assert_eq!(
+            legacy_code_from_error_source(&error),
+            Some((
+                zebra_rpc::server::error::LegacyCode::InvalidParameter as i32,
+                "block identifier is not hex".to_string()
+            ))
+        );
+    }
+
+    /// A transport fault names no code the interface can report, so it must
+    /// fall through to the generic internal error rather than inventing one.
+    #[test]
+    fn a_transport_fault_yields_no_code() {
+        let error = zaino_source::FetchError::new(
+            zaino_source::FailureMode::Connection,
+            "connection refused",
+        );
+
+        assert_eq!(legacy_code_from_error_source(&error), None);
+    }
+
+    /// The code has to be recoverable from *inside* a chain, not just when it
+    /// is the outermost error: in production it always arrives wrapped by the
+    /// scaffolding boundary and then by the indexer's own error type.
+    #[test]
+    fn a_code_is_recovered_through_an_intervening_wrapper() {
+        #[derive(Debug, thiserror::Error)]
+        #[error("wrapped: {source}")]
+        struct Wrapper {
+            #[from]
+            source: zaino_source::FetchError,
+        }
+
+        let wrapper = Wrapper::from(zaino_source::FetchError::new(
+            zaino_source::FailureMode::RpcError(-25),
+            "rejected",
+        ));
+
+        let recovered = std::iter::successors(
+            Some(&wrapper as &(dyn std::error::Error + 'static)),
+            |error| error.source(),
+        )
+        .find_map(legacy_code_from_error_source);
+
+        assert_eq!(recovered, Some((-25, "rejected".to_string())));
+    }
+}

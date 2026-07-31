@@ -557,7 +557,7 @@ pub trait ChainIndexRpcExt: ChainIndex {
     /// Returns the raw serialised header of the block with the given hash.
     ///
     /// The non-verbose half of `getblockheader`; see
-    /// [`BlockchainSource::get_raw_block_header`](crate::chain_index::source::BlockchainSource::get_raw_block_header).
+    /// [`BlockchainSource::get_raw_block_header`].
     fn get_raw_block_header(
         &self,
         hash: String,
@@ -793,8 +793,12 @@ impl SyncTimings {
 }
 
 impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
-    /// Creates a new chainindex from a connection to a validator
-    /// Currently this is a ReadStateService or JsonRpSeeConnector
+    /// Creates a new chainindex from a connection to a validator.
+    ///
+    /// In production `Source` is
+    /// [`ZebraValidatorSource`](crate::chain_index::validator_source::ZebraValidatorSource),
+    /// which routes each query to Zebra's read-state service or its JSON-RPC
+    /// interface according to which can answer it.
     pub async fn new(
         source: Source,
         config: crate::config::ChainIndexConfig,

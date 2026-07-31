@@ -15,8 +15,9 @@ use zaino_proto::proto::utils::GetBlockRangeError;
 /// transaction — that must reach a client as the specific legacy code
 /// lightwalletd-family clients key on, rather than a generic internal error.
 /// Carried as a typed `source` through the error chain so the serving layer can
-/// downcast to it; see
-/// [`ChainIndexError::internal_from`](crate::error::ChainIndexError::internal_from).
+/// downcast to it — `ChainIndexError::internal_from` is what preserves it on
+/// the way out, and `legacy_code_from_error_source` in
+/// `zaino-serve/src/rpc/jsonrpc/service.rs` is what recovers it.
 ///
 /// Distinct from [`FetchError`](zaino_source::FetchError), which carries a code
 /// the *validator* produced. This one is Zaino's.

@@ -86,5 +86,11 @@ pub use send_raw_transaction::{SendRawTransaction, SendRawTransactionError};
 pub use subscribe_blocks::SubscribeBlocks;
 pub use subscribe_chain_tip::{SubscribeChainTip, TipObservation};
 
-#[cfg(feature = "testing")]
+// `cfg(test)` as well as the feature: without it this crate's own tests never
+// compile the mock, so neither its tests nor `Resilient`'s integration tests
+// run in a bare `cargo test` — nothing in the workspace enables `testing`, and
+// the gap is invisible because a module that is not compiled reports no
+// failures. The feature stays so downstream crates can opt in; `cfg(test)`
+// makes the mock's own coverage unconditional.
+#[cfg(any(test, feature = "testing"))]
 pub mod mock;

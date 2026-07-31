@@ -249,7 +249,8 @@ mod tests {
     // Integration tests: Resilient<MockChain> with failure injection
     // ---------------------------------------------------------------
 
-    #[cfg(feature = "testing")]
+    // The mock is compiled for this crate's own tests as well as behind the
+    // `testing` feature, so these need no gate of their own.
     mod integration {
         use super::*;
         use crate::mock::MockChain;

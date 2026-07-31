@@ -237,7 +237,7 @@ mod tests {
             block_hash: hash(1),
             height: height(0),
             time: 0,
-            sapling: Some(crate::PoolTreestate {
+            sapling: Some(zaino_primitives::types::PoolTreestate {
                 final_root: None,
                 final_state: vec![1, 2, 3],
             }),

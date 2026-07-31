@@ -504,7 +504,7 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
         let tip = zaino_source::GetBestBlockHeight::get_best_block_height(&*self.validator)
             .await
             .map_err(err)?;
-        let (start, end) = clamp_deltas_range_to_tip(tip, start, end)?;
+        let (start, end) = clamp_deltas_range_to_tip(tip, start, end);
 
         let deltas = self
             .validator
@@ -1321,29 +1321,38 @@ mod tests {
 /// chain gets the chain rather than an error — and, in particular, the
 /// single-address form (which carries no range at all, and so arrives as
 /// `0..=0`) means the whole chain rather than genesis alone.
+///
+/// Total, and the clamp is what makes it so. A bound only reaches
+/// [`Height::try_from`](zaino_primitives::types::Height) when it is at or below
+/// `tip`, and `tip` is already a `Height` — so the value is in range by
+/// construction and the conversion cannot fail. This used to return a `Result`
+/// whose `Err` was unreachable; a `Result` nobody can provoke is a test that
+/// can never be written, so the totality is expressed in the signature instead.
 fn clamp_deltas_range_to_tip(
     tip: zaino_primitives::types::Height,
     start_raw: u32,
     end_raw: u32,
-) -> Result<
-    (
-        zaino_primitives::types::Height,
-        zaino_primitives::types::Height,
-    ),
-    BlockchainSourceError,
-> {
-    let tip_raw = u32::from(tip);
-    let end = if end_raw == 0 || end_raw > tip_raw {
+) -> (
+    zaino_primitives::types::Height,
+    zaino_primitives::types::Height,
+) {
+    let end = if end_raw == 0 {
         tip
     } else {
-        domain_height(end_raw)?
+        clamp_to_tip(end_raw, tip)
     };
-    let start = if start_raw > tip_raw {
-        tip
-    } else {
-        domain_height(start_raw)?
-    };
-    Ok((start, end))
+    (clamp_to_tip(start_raw, tip), end)
+}
+
+/// A raw height clamped to `tip`, hence always a valid
+/// [`Height`](zaino_primitives::types::Height).
+fn clamp_to_tip(raw: u32, tip: zaino_primitives::types::Height) -> zaino_primitives::types::Height {
+    match zaino_primitives::types::Height::try_from(raw) {
+        Ok(height) => height.min(tip),
+        // Above the protocol maximum is above any tip, so the clamp applies
+        // just as it does to a merely-too-large value. Not an error case.
+        Err(_) => tip,
+    }
 }
 
 /// Maps one pool's reported tree and root onto the interface's treestate slot.
@@ -1552,17 +1561,25 @@ mod clamp_deltas_range_to_tip_tests {
     fn bounds_clamp_to_tip() {
         let tip = height(100);
 
+        assert_eq!(clamp_deltas_range_to_tip(tip, 5, 0), (height(5), tip));
+        assert_eq!(clamp_deltas_range_to_tip(tip, 5, 400), (height(5), tip));
+        assert_eq!(clamp_deltas_range_to_tip(tip, 300, 50), (tip, height(50)));
+    }
+
+    /// The clamp is what makes this total, so the value that would otherwise
+    /// fail conversion has to land on the tip like any other over-large bound.
+    ///
+    /// This replaces `absent_tip_is_a_typed_error`, which the port's move made
+    /// unrepresentable: `get_best_block_height` returns a `Height`, not an
+    /// `Option<Height>`, so a tip cannot be absent here any more. The failure
+    /// mode that remained worth pinning is the one at the other end.
+    #[test]
+    fn a_bound_past_the_protocol_maximum_clamps_rather_than_failing() {
+        let tip = height(100);
+
         assert_eq!(
-            clamp_deltas_range_to_tip(tip, 5, 0).expect("a present tip clamps"),
-            (height(5), height(100))
-        );
-        assert_eq!(
-            clamp_deltas_range_to_tip(tip, 5, 400).expect("a present tip clamps"),
-            (height(5), height(100))
-        );
-        assert_eq!(
-            clamp_deltas_range_to_tip(tip, 300, 50).expect("a present tip clamps"),
-            (height(100), height(50))
+            clamp_deltas_range_to_tip(tip, u32::MAX, u32::MAX),
+            (tip, tip)
         );
     }
 
@@ -1572,7 +1589,7 @@ mod clamp_deltas_range_to_tip_tests {
     #[test]
     fn absent_range_covers_the_whole_chain() {
         assert_eq!(
-            clamp_deltas_range_to_tip(height(100), 0, 0).expect("a present tip clamps"),
+            clamp_deltas_range_to_tip(height(100), 0, 0),
             (height(0), height(100)),
             "an absent range must span the chain, not genesis alone"
         );
@@ -1582,7 +1599,7 @@ mod clamp_deltas_range_to_tip_tests {
     #[test]
     fn in_range_bounds_pass_through() {
         assert_eq!(
-            clamp_deltas_range_to_tip(height(100), 10, 20).expect("a present tip clamps"),
+            clamp_deltas_range_to_tip(height(100), 10, 20),
             (height(10), height(20))
         );
     }
