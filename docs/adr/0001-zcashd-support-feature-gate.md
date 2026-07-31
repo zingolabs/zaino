@@ -35,13 +35,17 @@ first two and deliberately leaves the third alone:
    "Cannot use state backend with zcashd" guard. Downstream test crates
    (`walletless-tests`, wallet-tests) inherit the gate.
 
-2. **Production connection-parsing** (`zaino-fetch`): the
+2. **The zcashd-shaped `getpeerinfo` response** (`zaino-serve`'s
+   `rpc/jsonrpc/wire/peer_info.rs`): the
    `GetPeerInfo::Zcashd(Vec<ZcashdPeerInfo>)` variant and the `ZcashdPeerInfo`
-   struct — the serde path that lets `FetchService` parse a live zcashd node's
-   `getpeerinfo` response. This is self-contained: the only consumers of the
-   variant live inside `peer_info.rs` (the custom `Deserialize` impl plus
-   tests), so gating it simply makes a no-zcashd build fall through to the
-   zebrad parse branch.
+   struct. This is self-contained: the only consumers of the variant live
+   inside `peer_info.rs`, so gating it simply makes a no-zcashd build fall
+   through to the zebrad branch.
+
+   > This lived in `zaino-fetch` when the ADR was written, where it was an
+   > *inbound* parse of a live zcashd node's reply. `zaino-fetch` was deleted
+   > by ADR-0008 and the type moved to the served-schema module, so it is now
+   > an *outbound* shape. The feature gates the same fields either way.
 
 3. **Frozen wire fields** (`zaino-proto`, populated in `zaino-state`):
    `zcashd_build` / `zcashd_subversion` in the `LightdInfo` message. These are

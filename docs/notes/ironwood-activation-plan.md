@@ -163,7 +163,8 @@ Audit facts grounding the implementation:
   programmatically (e.g. by `TestManager`) and consumed via
   `config.get_network()` → `to_zebra_network()`.
 - The validator channel already exists in zaino's types:
-  `GetBlockchainInfoResponse.upgrades` is parsed (zaino-fetch
+  `GetBlockchainInfoResponse.upgrades` is parsed (zaino-source-zebra-rpc's
+  `parse.rs` since ADR-0008; zaino-fetch
   `jsonrpsee/response.rs`) and consumed (`backends/fetch.rs`,
   `latest_network_upgrade`). The work is deriving the runtime
   `zebra_chain::parameters::Network` from that response at startup and

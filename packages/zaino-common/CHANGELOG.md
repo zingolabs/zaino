@@ -20,6 +20,10 @@ and this library adheres to Rust's notion of
   from-genesis txout-set accumulator rebuild's spent set, kept **separate** from
   `sync_write_batch_size` so the two operations cannot inflate each other's peak
   memory.
+- `consensus::validate_raw_transaction_hex` / `validate_raw_transaction_bytes`,
+  `RawTransactionError` and `MAX_BLOCK_BYTES` — moved from `zaino-fetch`. This
+  is a consensus-limit check, which is what this module exists for; the
+  `LegacyCode` mapping that travelled with it stays in `zaino-serve`.
 ### Changed
 - `crypto::ensure_default_crypto_provider` now installs rustls's
   **aws-lc-rs** provider (was ring) as the process-level default, and the

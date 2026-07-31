@@ -103,8 +103,10 @@ where
 /// `height`, read from the served verbosity-1 block object — the same
 /// per-height `valuePools` a zcashd `getblock` reports. Verbosity 1, not 2:
 /// the fetch backend cannot deserialize a verbosity-2 block object (its
-/// `tx` entries are maps where zaino-fetch expects txid strings), and the
-/// value pools ride along at verbosity 1.
+/// `tx` entries are maps where the caller expects txid strings — a
+/// `zaino-fetch` limitation originally, preserved here because the
+/// verbosity-1 read is what this assertion wants anyway), and the value
+/// pools ride along at verbosity 1.
 async fn pool_zats_at_height<S>(subscriber: &S, height: u32, pool_id: &str) -> i64
 where
     S: ZcashIndexer,

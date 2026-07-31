@@ -31,9 +31,21 @@ and this crate adheres to Rust's notion of
 - **Breaking** — unknown keys under `[storage.database]` now fail config parsing
   loudly (e.g. a stale `sync_write_batch_bytes`) instead of being silently ignored
   and falling back to the default budget.
+- The daemon builds on the new source stack (`zaino-source-zebra`) via
+  `zaino-state`. No configuration change: the `[validator] connection` selector
+  (`rpc` / `direct`) means the same thing, and now chooses whether the composite
+  is constructed with a read-state adapter alongside its RPC one.
 ### Deprecated
 ### Removed
+- The outbound RPC metric *names* moved to `zaino-rpc`, which is the crate that
+  emits them. Registration and the metric descriptions stay here, so the
+  exported metrics are unchanged.
+- `zcashd_support` no longer forwards to `zaino-state`, which gates nothing
+  under it; it forwards to `zaino-serve` alone.
 ### Fixed
+- The startup validator probe returns an error instead of calling
+  `std::process::exit(1)` from inside a library, so the daemon controls its own
+  shutdown path on an unreachable validator.
 - Zaino no longer silently falls back to a large default write/rebuild budget when
   an old `[storage.database]` key is present — the silent fallback to the (former
   32 GiB) default is what OOM-killed nodes at mainnet chain tip (e.g. a 16 GiB
