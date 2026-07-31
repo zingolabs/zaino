@@ -380,11 +380,13 @@ impl GetBlockDeltas for ZebraValidator {
         &self,
         hash: BlockHash,
     ) -> Result<rpc::BlockDeltas, QueryError<GetBlockDeltasError>> {
-        // The validator computes this in one call. Deriving it from the state
-        // service would mean resolving every referenced previous output and
-        // walking an 11-block median-time-past window — a second copy of logic
-        // the validator already has, for no capability gain.
-        self.rpc.get_block_deltas(hash).await
+        // State service first, and it is not merely a preference: `getblockdeltas`
+        // is a zcashd method that **zebrad does not implement** — it answers
+        // `-32601 Method not found` — so on a zebrad-backed deployment the
+        // derivation in the state adapter is the only implementation there is.
+        // The RPC path remains for zcashd, and for a side-chain block the
+        // finalized state does not hold.
+        fast_then_slow!(self, get_block_deltas, hash)
     }
 }
 

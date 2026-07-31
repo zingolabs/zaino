@@ -5989,6 +5989,7 @@ name = "zaino-source-zebra-readstate"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "serde_json",
  "tokio",
  "tower 0.4.13",
  "tracing",

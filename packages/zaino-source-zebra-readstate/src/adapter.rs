@@ -3,7 +3,7 @@
 //! # Capabilities this adapter does not claim
 //!
 //! Each trait here answers one question with one read of the state service.
-//! Three questions are deliberately left unimplemented because they cannot be
+//! Two questions are deliberately left unimplemented because they cannot be
 //! answered that way, and pretending otherwise would either duplicate logic or
 //! silently return less than the caller asked for:
 //!
@@ -12,17 +12,17 @@
 //!   needs the mempool, which the state service does not have — an
 //!   implementation here would quietly omit unconfirmed deltas. It belongs
 //!   above the adapters, where both transports are in reach.
-//! - **`GetBlockDeltas`** likewise composes a verbose block, a lookup of every
-//!   referenced previous output, and an 11-block median-time-past walk. The
-//!   JSON-RPC interface exposes `getblockdeltas` as a single call the validator
-//!   computes itself, so implementing the derivation here would mean
-//!   maintaining a second copy of it for no capability gain.
 //! - **`SubscribeChainTip`** needs a `ChainTipChange`, which the read-only
 //!   construction path does not produce (see the impl below).
 //!
 //! Leaving them out is the capability model working: a composite routes each to
 //! whichever transport can answer it, rather than every adapter growing a
 //! partial version.
+//!
+//! `GetBlockDeltas` *is* implemented here, and was once on this list on the
+//! grounds that the validator computes it in one call. That was wrong: zebrad
+//! does not implement `getblockdeltas` at all, so the derivation below is the
+//! only implementation a zebrad-backed deployment has.
 
 use std::path::Path;
 
@@ -839,6 +839,24 @@ impl ZebraReadStateAdapter {
     }
 }
 
+/// The name a validator puts on the wire for a network upgrade.
+///
+/// Zebra's `Display` is its `Debug`, which spells NU5 as `Nu5` and NU6.1 as
+/// `Nu6_1`. Neither is what a validator sends: the wire name comes from the
+/// enum's serde renames, so it is read from there.
+///
+/// This has to agree with what the RPC adapter parses out of a validator's
+/// reply, or the same chain gets two different upgrade names depending on which
+/// transport answered — which `getlightdinfo` then reports to wallets.
+fn upgrade_wire_name(upgrade: zebra_chain::parameters::NetworkUpgrade) -> String {
+    match serde_json::to_value(upgrade) {
+        Ok(serde_json::Value::String(name)) => name,
+        // Unreachable for a unit variant, but a debug spelling is a better
+        // answer than a panic in a field that is only ever displayed.
+        _ => format!("{upgrade:?}"),
+    }
+}
+
 /// Address a block by hash for the state service.
 fn hash_or_height(hash: BlockHash) -> zebra_state::HashOrHeight {
     zebra_state::HashOrHeight::Hash(zebra_chain::block::Hash(hash.into()))
@@ -981,7 +999,7 @@ impl zaino_source::GetBlockchainInfo for ZebraReadStateAdapter {
                     Height::try_from(activation_height.0)
                         .map(|activation_height| NetworkUpgradeInfo {
                             branch_id: ConsensusBranchId::new(u32::from(branch_id)),
-                            name: format!("{upgrade:?}"),
+                            name: upgrade_wire_name(upgrade),
                             activation_height,
                             status,
                         })
@@ -1119,5 +1137,289 @@ impl zaino_source::GetRawBlockByHash for ZebraReadStateAdapter {
             )),
             _ => Err(unexpected_response("Block").into()),
         }
+    }
+}
+
+/// The block's difficulty as a multiple of the network's minimum.
+///
+/// The same calculation zebra serves on `getdifficulty` and on a verbose
+/// block: divide the network's proof-of-work limit by the block's expanded
+/// target, using the high 128 bits of each. Both are 256-bit values whose low
+/// half is insignificant once converted to an `f64` mantissa, so the shift
+/// costs nothing and keeps the division in range.
+///
+/// A target that does not expand is reported as `0.0`, matching zebra. That
+/// branch is unreachable in practice — zebra's `CompactDifficulty` rejects an
+/// unexpandable threshold at construction, so no such value can be built or
+/// deserialized — but `to_expanded` is fallible in the type system and a
+/// division by a zero target is not an option.
+fn block_difficulty(
+    threshold: zebra_chain::work::difficulty::CompactDifficulty,
+    network: &Network,
+) -> f64 {
+    // Zebra's own `U256`, not `primitive_types`': the difficulty types convert
+    // into this one, and mixing the two would need a byte round trip.
+    use zebra_chain::work::difficulty::ParameterDifficulty as _;
+    use zebra_chain::work::difficulty::U256;
+
+    let Some(expanded) = threshold.to_expanded() else {
+        return 0.0;
+    };
+
+    let limit: U256 = network.target_difficulty_limit().into();
+    let limit = (limit >> 128).as_u128() as f64;
+    let target = (U256::from(expanded) >> 128).as_u128() as f64;
+
+    limit / target
+}
+
+/// The number of blocks `getblockdeltas` reports a median time over.
+///
+/// Consensus's median-time-past window: this block and the ten before it.
+const MEDIAN_TIME_PAST_WINDOW: usize = 11;
+
+impl ZebraReadStateAdapter {
+    /// The median time past at `block`: the median timestamp of it and up to
+    /// the ten blocks before it.
+    ///
+    /// Walks backwards by parent hash rather than by height so it follows the
+    /// chain the block is actually on. A short walk is not an error — near
+    /// genesis there simply are fewer than eleven blocks, and the median of
+    /// what exists is the answer.
+    async fn median_time_past(&self, block: &zebra_chain::block::Block) -> Result<u32, FetchError> {
+        let mut times = Vec::with_capacity(MEDIAN_TIME_PAST_WINDOW);
+        times.push(block.header.time.timestamp());
+
+        let mut previous = block.header.previous_block_hash;
+        for _ in 1..MEDIAN_TIME_PAST_WINDOW {
+            // Genesis's parent hash is all zeroes and names no block, so the
+            // read below simply misses and ends the walk.
+            match read(&self.state, ReadRequest::Block(previous.into())).await? {
+                ReadResponse::Block(Some(parent)) => {
+                    times.push(parent.header.time.timestamp());
+                    previous = parent.header.previous_block_hash;
+                }
+                ReadResponse::Block(None) => break,
+                _ => return Err(unexpected_response("Block")),
+            }
+        }
+
+        times.sort_unstable();
+        let median = times[times.len() / 2];
+        u32::try_from(median).map_err(|e| {
+            FetchError::new(
+                FailureMode::Parse,
+                format!("median time past out of range: {e}"),
+            )
+        })
+    }
+
+    /// The transaction a spend refers to, for resolving the spent output's
+    /// address and value.
+    async fn prevout_transaction(
+        &self,
+        txid: zebra_chain::transaction::Hash,
+    ) -> Result<Option<std::sync::Arc<zebra_chain::transaction::Transaction>>, FetchError> {
+        match read(&self.state, ReadRequest::AnyChainTransaction(txid)).await? {
+            ReadResponse::AnyChainTransaction(Some(zebra_state::AnyTx::Mined(mined))) => {
+                Ok(Some(mined.tx))
+            }
+            ReadResponse::AnyChainTransaction(_) => Ok(None),
+            _ => Err(unexpected_response("AnyChainTransaction")),
+        }
+    }
+}
+
+impl zaino_source::GetBlockDeltas for ZebraReadStateAdapter {
+    /// Derives `getblockdeltas` from the state service.
+    ///
+    /// # Why this is derived rather than proxied
+    ///
+    /// `getblockdeltas` is a zcashd method. **zebrad does not implement it** —
+    /// it answers `-32601 Method not found` — so on a zebrad-backed deployment
+    /// this derivation is the only implementation there is, not a second copy
+    /// of one the validator already has.
+    ///
+    /// # What is attributed, and what is not
+    ///
+    /// Only inputs and outputs with exactly one derivable transparent address
+    /// are reported, matching zcashd. A nonstandard script has no address to
+    /// credit, and a bare multisig has no single owner; zcashd omits both
+    /// rather than crediting the first address. So the deltas do not sum to a
+    /// transaction's transparent balance and must not be used to derive one.
+    async fn get_block_deltas(
+        &self,
+        hash: BlockHash,
+    ) -> Result<
+        zaino_primitives::types::rpc::BlockDeltas,
+        QueryError<zaino_source::GetBlockDeltasError>,
+    > {
+        use zaino_primitives::types::{
+            rpc::{BlockDelta, BlockDeltas, InputDelta, OutputDelta},
+            MerkleRoot, SignedZatoshis, TransactionHash, TransparentAddress, Zatoshis,
+        };
+        use zebra_chain::serialization::ZcashSerialize as _;
+
+        let zebra_hash = zebra_chain::block::Hash(hash.into());
+        let block = match read(&self.state, ReadRequest::Block(zebra_hash.into())).await? {
+            ReadResponse::Block(Some(block)) => block,
+            // As elsewhere: the read state holds the best chain only, so a miss
+            // here is "not in the finalized state". The composite decides
+            // whether to ask another transport before concluding it is absent.
+            ReadResponse::Block(None) => {
+                return Err(QueryError::Domain(
+                    zaino_source::GetBlockDeltasError::BlockNotFound(hash),
+                ))
+            }
+            _ => return Err(unexpected_response("Block").into()),
+        };
+
+        let parse = |e: String| FetchError::new(FailureMode::Parse, e);
+
+        let height = block
+            .coinbase_height()
+            .ok_or_else(|| parse("block has no coinbase height".to_string()))?;
+        let domain_height = Height::try_from(height.0).map_err(|e| parse(e.to_string()))?;
+
+        let tip = match read(&self.state, ReadRequest::Tip).await? {
+            ReadResponse::Tip(Some((tip_height, _))) => tip_height,
+            ReadResponse::Tip(None) => {
+                return Err(parse("state service has no tip".to_string()).into())
+            }
+            _ => return Err(unexpected_response("Tip").into()),
+        };
+
+        let next_block_hash = match read(
+            &self.state,
+            ReadRequest::BestChainBlockHash(zebra_chain::block::Height(height.0 + 1)),
+        )
+        .await?
+        {
+            ReadResponse::BlockHash(next) => next.map(|next| BlockHash::from(next.0)),
+            _ => return Err(unexpected_response("BlockHash").into()),
+        };
+
+        let mut deltas = Vec::with_capacity(block.transactions.len());
+        for (tx_index, transaction) in block.transactions.iter().enumerate() {
+            let mut inputs = Vec::new();
+            for (index, input) in transaction.inputs().iter().enumerate() {
+                // A coinbase input creates value rather than moving it, and
+                // names no previous output to attribute.
+                let Some(outpoint) = input.outpoint() else {
+                    continue;
+                };
+
+                let previous = self
+                    .prevout_transaction(outpoint.hash)
+                    .await?
+                    .ok_or_else(|| {
+                        parse(format!(
+                            "getblockdeltas: prevout tx {} not in the chain",
+                            outpoint.hash
+                        ))
+                    })?;
+                let output = previous
+                    .outputs()
+                    .get(outpoint.index as usize)
+                    .ok_or_else(|| {
+                        parse(format!(
+                            "getblockdeltas: prevout index {} out of range for {}",
+                            outpoint.index, outpoint.hash
+                        ))
+                    })?;
+
+                let Some(address) = output.address(&self.network) else {
+                    continue;
+                };
+
+                inputs.push(InputDelta {
+                    address: TransparentAddress::new(address.to_string()),
+                    // A spend debits the address, so the value leaves it.
+                    satoshis: SignedZatoshis::new(-output.value.zatoshis()),
+                    index: index as u32,
+                    prev_txid: TransactionHash::from(outpoint.hash.0),
+                    prev_output: outpoint.index,
+                });
+            }
+
+            let mut outputs = Vec::new();
+            for (index, output) in transaction.outputs().iter().enumerate() {
+                let Some(address) = output.address(&self.network) else {
+                    continue;
+                };
+                outputs.push(OutputDelta {
+                    address: TransparentAddress::new(address.to_string()),
+                    satoshis: Zatoshis::new(u64::from(output.value))
+                        .map_err(|e| parse(e.to_string()))?,
+                    index: index as u32,
+                });
+            }
+
+            deltas.push(BlockDelta {
+                txid: TransactionHash::from(transaction.hash().0),
+                index: tx_index as u32,
+                inputs,
+                outputs,
+            });
+        }
+
+        Ok(BlockDeltas {
+            hash,
+            confirmations: i64::from(tip.0.saturating_sub(height.0)) + 1,
+            size: block
+                .zcash_serialized_size()
+                .try_into()
+                .map_err(|e: std::num::TryFromIntError| parse(e.to_string()))?,
+            height: domain_height,
+            version: block.header.version,
+            merkle_root: MerkleRoot::from(block.header.merkle_root.0),
+            deltas,
+            time: u32::try_from(block.header.time.timestamp())
+                .map_err(|e| parse(format!("block time out of range: {e}")))?,
+            median_time: self.median_time_past(&block).await?,
+            nonce: *block.header.nonce,
+            // Same conversion `zaino-convert-zebra` uses for a block header:
+            // zebra has no `CompactDifficulty::to_bits()`, so the nBits value
+            // is recovered from its display-order bytes.
+            bits: u32::from_be_bytes(block.header.difficulty_threshold.bytes_in_display_order()),
+            difficulty: block_difficulty(block.header.difficulty_threshold, &self.network),
+            previous_block_hash: Some(BlockHash::from(block.header.previous_block_hash.0)),
+            next_block_hash,
+        })
+    }
+}
+
+#[cfg(test)]
+mod block_difficulty_tests {
+    use super::block_difficulty;
+    use zebra_chain::parameters::Network;
+    use zebra_chain::work::difficulty::ParameterDifficulty as _;
+
+    /// A block mined at exactly the network minimum is difficulty 1.0 — the
+    /// unit the whole figure is expressed in, so getting it wrong rescales
+    /// every other block's reported difficulty.
+    #[test]
+    fn the_network_minimum_is_difficulty_one() {
+        let network = Network::new_regtest(Default::default());
+        let minimum = network.target_difficulty_limit().to_compact();
+
+        assert_eq!(block_difficulty(minimum, &network), 1.0);
+    }
+
+    /// Difficulty is inverse to the target: a harder block has a smaller
+    /// target and a larger difficulty. An inverted division would still return
+    /// plausible positive numbers, so the direction is pinned explicitly.
+    #[test]
+    fn a_harder_target_reports_a_higher_difficulty() {
+        let network = Network::new_regtest(Default::default());
+        let limit = network.target_difficulty_limit();
+        let harder = (limit / 4).to_compact();
+
+        let difficulty = block_difficulty(harder, &network);
+
+        assert!(
+            difficulty > 1.0,
+            "a target below the network minimum must report difficulty above 1.0, got {difficulty}"
+        );
     }
 }

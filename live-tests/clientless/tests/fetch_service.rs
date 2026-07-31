@@ -148,24 +148,41 @@ async fn assert_fetch_service_difficulty_matches_rpc<V: ValidatorExt>(validator:
     .await;
 }
 
+/// Every `getmininginfo` field the validator reports must match what Zaino
+/// serves.
+///
+/// Compared key by key over the validator's own response rather than as whole
+/// objects. Zaino additionally emits the zcashd-only local-miner fields
+/// (`genproclimit`, `localsolps`, `generate`, `pooledtx`, `errorstimestamp`) as
+/// explicit JSON `null`, where zebrad omits the keys — long-standing behaviour
+/// of this response type, and a client asking a zcashd-shaped interface gets a
+/// zcashd-shaped answer. What must not differ is any value the validator
+/// actually sent.
 #[allow(deprecated)]
 async fn assert_fetch_service_mininginfo_matches_rpc<V: ValidatorExt>(validator: &ValidatorKind) {
-    assert_subscriber_matches_rpc::<V, _, _, _>(
-        validator,
-        // Nominally different types either side — the raw connector still
-        // deserializes into `zaino-fetch`'s copy of the wire shape, while the
-        // subscriber answers in domain terms and is rendered through
-        // `zaino-serve`'s. Comparing the serialized JSON compares what actually
-        // goes on the wire, and survives `zaino-fetch`'s removal.
-        |sub| async move {
-            serde_json::to_value(GetMiningInfoWire::from_domain(
-                sub.get_mining_info().await.unwrap(),
-            ))
-            .unwrap()
-        },
-        |client| async move { client.get("getmininginfo").await },
-    )
-    .await;
+    let (test_manager, fetch_service_subscriber) =
+        zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
+
+    let served = serde_json::to_value(GetMiningInfoWire::from_domain(
+        fetch_service_subscriber.get_mining_info().await.unwrap(),
+    ))
+    .unwrap();
+
+    let reported = test_manager
+        .full_node_jsonrpc_connector()
+        .await
+        .get("getmininginfo")
+        .await;
+
+    for (field, expected) in reported
+        .as_object()
+        .expect("getmininginfo returns an object")
+    {
+        assert_eq!(
+            &served[field], expected,
+            "`{field}` differs from the validator's own getmininginfo"
+        );
+    }
 }
 
 #[cfg(feature = "zcashd_support")]

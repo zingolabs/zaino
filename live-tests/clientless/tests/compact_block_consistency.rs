@@ -116,11 +116,9 @@ async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() {
             )
             .await["trees"]
             .clone();
-        let oracle_tree_size = |pool: &str| {
-            oracle_trees[pool]["size"]
-                .as_u64()
-                .unwrap_or_else(|| panic!("validator reports a {pool} tree size: {oracle_trees}"))
-        };
+        // Zebra omits a pool's entry entirely while its tree is empty, so an
+        // absent entry is a size of zero rather than a missing answer.
+        let oracle_tree_size = |pool: &str| oracle_trees[pool]["size"].as_u64().unwrap_or(0);
         assert_eq!(
             u64::from(metadata.sapling_commitment_tree_size),
             oracle_tree_size("sapling"),

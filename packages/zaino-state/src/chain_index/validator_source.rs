@@ -336,7 +336,11 @@ fn pool_balance(
         "sprout" => GetBlockchainInfoBalance::sprout(value, delta),
         "sapling" => GetBlockchainInfoBalance::sapling(value, delta),
         "orchard" => GetBlockchainInfoBalance::orchard(value, delta),
-        "deferred" => GetBlockchainInfoBalance::deferred(value, delta),
+        // zebra names this pool `lockbox` on the wire; `deferred` is zcashd's
+        // name for the same pool, and zebra's own constructor is still called
+        // `deferred`. Both spellings are accepted so the answer does not depend
+        // on which validator is behind the adapter.
+        "lockbox" | "deferred" => GetBlockchainInfoBalance::deferred(value, delta),
         "ironwood" => GetBlockchainInfoBalance::ironwood(value, delta),
         // `chainSupply` is a total rather than a pool, and arrives unnamed.
         "" => GetBlockchainInfoBalance::chain_supply(Default::default()),
@@ -358,7 +362,7 @@ fn value_pool_array(
             "sprout" => 1,
             "sapling" => 2,
             "orchard" => 3,
-            "deferred" => 4,
+            "lockbox" | "deferred" => 4,
             "ironwood" => 5,
             other => return Err(invalid(format!("unknown value pool `{other}`"))),
         };
