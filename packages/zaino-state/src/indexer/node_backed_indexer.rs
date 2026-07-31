@@ -11,14 +11,8 @@ use zebra_chain::{
     block::Height, serialization::ZcashDeserialize as _, subtree::NoteCommitmentSubtreeIndex,
 };
 use zebra_rpc::{
-    client::{
-        GetAddressBalanceRequest, GetSubtreesByIndexResponse, GetTreestateResponse,
-        TransactionObject,
-    },
-    methods::{
-        AddressBalance, GetAddressTxIdsRequest, GetAddressUtxos, GetBlock, GetBlockHashResponse,
-        GetBlockchainInfoResponse, GetInfo, GetRawTransaction, SentTransactionHash,
-    },
+    client::{GetAddressBalanceRequest, GetTreestateResponse, TransactionObject},
+    methods::{GetAddressTxIdsRequest, GetBlock, GetBlockHashResponse, GetRawTransaction},
 };
 
 use zaino_address::{ValidatedAddress, ZValidatedAddress};
@@ -28,7 +22,7 @@ use zaino_fetch::{
 };
 use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
-    PeerInfo,
+    NodeInfo, PeerInfo,
 };
 
 use zaino_proto::proto::{
@@ -550,7 +544,11 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
     /// [The zcashd reference](https://zcash.github.io/rpc/getinfo.html) might not show some fields
     /// in Zebra's [`GetInfo`]. Zebra uses the field names and formats from the
     /// [zcashd code](https://github.com/zcash/zcash/blob/v4.6.0-1/src/rpc/misc.cpp#L86-L87).
-    async fn get_info(&self) -> Result<GetInfo, Self::Error> {
+    fn network(&self) -> zebra_chain::parameters::Network {
+        self.data.network()
+    }
+
+    async fn get_info(&self) -> Result<NodeInfo, Self::Error> {
         Ok(self.indexer.get_info().await?)
     }
 
@@ -564,7 +562,9 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
     ///
     /// Some fields from the zcashd reference are missing from Zebra's [`GetBlockchainInfoResponse`]. It only contains the fields
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L72-L89)
-    async fn get_blockchain_info(&self) -> Result<GetBlockchainInfoResponse, Self::Error> {
+    async fn get_blockchain_info(
+        &self,
+    ) -> Result<zaino_primitives::types::BlockchainInfo, Self::Error> {
         Ok(self.indexer.get_blockchain_info().await?)
     }
 
@@ -625,7 +625,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
     async fn z_get_address_balance(
         &self,
         address_strings: GetAddressBalanceRequest,
-    ) -> Result<AddressBalance, Self::Error> {
+    ) -> Result<zaino_primitives::types::AddressBalance, Self::Error> {
         Ok(self.indexer.get_address_balance(address_strings).await?)
     }
 
@@ -647,7 +647,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
     async fn send_raw_transaction(
         &self,
         raw_transaction_hex: String,
-    ) -> Result<SentTransactionHash, Self::Error> {
+    ) -> Result<zaino_primitives::types::TransactionHash, Self::Error> {
         Ok(self
             .indexer
             .send_raw_transaction(raw_transaction_hex)
@@ -917,33 +917,53 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
     #[allow(deprecated)]
     async fn z_get_subtrees_by_index(
         &self,
-        pool: String,
+        pool: zaino_primitives::types::ShieldedPool,
         start_index: NoteCommitmentSubtreeIndex,
         limit: Option<NoteCommitmentSubtreeIndex>,
-    ) -> Result<GetSubtreesByIndexResponse, Self::Error> {
-        let shielded_pool = match pool.as_str() {
-            "sapling" => crate::chain_index::ShieldedPool::Sapling,
-            "orchard" => crate::chain_index::ShieldedPool::Orchard,
-            otherwise => {
-                return Err(NodeBackedIndexerServiceError::RpcError(
-                    RpcError::new_from_legacycode(
-                        zebra_rpc::server::error::LegacyCode::Misc,
-                        format!(
-                            "invalid pool name \"{otherwise}\", must be \"sapling\" or \"orchard\""
-                        ),
-                    ),
-                ))
+    ) -> Result<zaino_primitives::types::rpc::SubtreeRoots, Self::Error> {
+        // The pool name arrived as a string and was parsed at the serving
+        // boundary, so there is nothing left to reject here.
+        // The index's own pool enum, which is not the domain's; the two are
+        // matched by hand so a fourth pool breaks this at compile time.
+        let index_pool = match pool {
+            zaino_primitives::types::ShieldedPool::Sapling => {
+                crate::chain_index::ShieldedPool::Sapling
+            }
+            zaino_primitives::types::ShieldedPool::Orchard => {
+                crate::chain_index::ShieldedPool::Orchard
+            }
+            zaino_primitives::types::ShieldedPool::Ironwood => {
+                crate::chain_index::ShieldedPool::Ironwood
             }
         };
+
         let roots = self
             .indexer
-            .get_subtree_roots(shielded_pool, start_index.0, limit.map(|index| index.0))
+            .get_subtree_roots(index_pool, start_index.0, limit.map(|index| index.0))
             .await?;
-        Ok(crate::indexer::build_subtrees_by_index_response(
+
+        // Built with a loop rather than a fallible closure: the error type is
+        // large enough that `Result`-returning closures trip
+        // `clippy::result_large_err` here.
+        let mut subtrees = Vec::with_capacity(roots.len());
+        for (root, end_height) in roots {
+            let end_height =
+                zaino_primitives::types::Height::try_from(end_height).map_err(|e| {
+                    NodeBackedIndexerServiceError::TonicStatusError(tonic::Status::internal(
+                        format!("subtree end height out of range: {e}"),
+                    ))
+                })?;
+            subtrees.push(zaino_primitives::types::SubtreeRoot {
+                root: zaino_primitives::types::TreeRoot::from(root),
+                end_height,
+            });
+        }
+
+        Ok(zaino_primitives::types::rpc::SubtreeRoots {
             pool,
-            start_index,
-            roots,
-        ))
+            start_index: start_index.0,
+            subtrees,
+        })
     }
 
     /// Returns the raw transaction data, as a [`GetRawTransaction`] JSON string or structure.
@@ -1117,7 +1137,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
     async fn z_get_address_utxos(
         &self,
         addresses: GetAddressBalanceRequest,
-    ) -> Result<Vec<GetAddressUtxos>, Self::Error> {
+    ) -> Result<Vec<zaino_primitives::types::Utxo>, Self::Error> {
         Ok(self.indexer.get_address_utxos(addresses).await?)
     }
 
@@ -1426,7 +1446,9 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
 
         Ok(SendResponse {
             error_code: 0,
-            error_message: tx_output.hash().to_string(),
+            // The domain hash's `Display` is already RPC display order, the
+            // same as the wire type's was.
+            error_message: tx_output.to_string(),
         })
     }
 
@@ -1489,7 +1511,7 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
     async fn get_taddress_balance(&self, request: AddressList) -> Result<Balance, Self::Error> {
         let taddrs = GetAddressBalanceRequest::new(request.addresses);
         let balance = self.z_get_address_balance(taddrs).await?;
-        let checked_balance: i64 = match i64::try_from(balance.balance()) {
+        let checked_balance: i64 = match i64::try_from(u64::from(balance.balance)) {
             Ok(balance) => balance,
             Err(_) => {
                 return Err(NodeBackedIndexerServiceError::TonicStatusError(
@@ -1522,7 +1544,7 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
                             Some(taddr) => {
                                 let taddrs = GetAddressBalanceRequest::new(vec![taddr]);
                                 let balance = service_clone.z_get_address_balance(taddrs).await?;
-                                total_balance += balance.balance();
+                                total_balance += u64::from(balance.balance);
                             }
                             None => {
                                 return Ok(total_balance);
@@ -1874,15 +1896,22 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
         let mut address_utxos: Vec<GetAddressUtxosReply> = Vec::new();
         let mut entries: u32 = 0;
         for utxo in utxos {
-            let (address, tx_hash, output_index, script, satoshis, height) = utxo.into_parts();
-            if (height.0 as u64) < request.start_height {
+            let zaino_primitives::types::Utxo {
+                address,
+                txid,
+                output_index,
+                script,
+                satoshis,
+                height,
+            } = utxo;
+            if u64::from(u32::from(height)) < request.start_height {
                 continue;
             }
             entries += 1;
             if request.max_entries > 0 && entries > request.max_entries {
                 break;
             }
-            let checked_index = match i32::try_from(output_index.index()) {
+            let checked_index = match i32::try_from(output_index) {
                 Ok(index) => index,
                 Err(_) => {
                     return Err(NodeBackedIndexerServiceError::TonicStatusError(
@@ -1892,7 +1921,7 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
                     ));
                 }
             };
-            let checked_satoshis = match i64::try_from(satoshis) {
+            let checked_satoshis = match i64::try_from(u64::from(satoshis)) {
                 Ok(satoshis) => satoshis,
                 Err(_) => {
                     return Err(NodeBackedIndexerServiceError::TonicStatusError(
@@ -1903,12 +1932,12 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
                 }
             };
             let utxo_reply = GetAddressUtxosReply {
-                address: address.to_string(),
-                txid: tx_hash.0.to_vec(),
+                address: String::from(address),
+                txid: <[u8; 32]>::from(txid).to_vec(),
                 index: checked_index,
-                script: script.as_raw_bytes().to_vec(),
+                script: Vec::<u8>::from(script),
                 value_zat: checked_satoshis,
-                height: height.0 as u64,
+                height: u64::from(u32::from(height)),
             };
             address_utxos.push(utxo_reply)
         }
@@ -1937,16 +1966,22 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
                 async {
                     let mut entries: u32 = 0;
                     for utxo in utxos {
-                        let (address, tx_hash, output_index, script, satoshis, height) =
-                            utxo.into_parts();
-                        if (height.0 as u64) < request.start_height {
+                        let zaino_primitives::types::Utxo {
+                            address,
+                            txid,
+                            output_index,
+                            script,
+                            satoshis,
+                            height,
+                        } = utxo;
+                        if u64::from(u32::from(height)) < request.start_height {
                             continue;
                         }
                         entries += 1;
                         if request.max_entries > 0 && entries > request.max_entries {
                             break;
                         }
-                        let checked_index = match i32::try_from(output_index.index()) {
+                        let checked_index = match i32::try_from(output_index) {
                             Ok(index) => index,
                             Err(_) => {
                                 let _ = channel_tx
@@ -1957,7 +1992,7 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
                                 return;
                             }
                         };
-                        let checked_satoshis = match i64::try_from(satoshis) {
+                        let checked_satoshis = match i64::try_from(u64::from(satoshis)) {
                             Ok(satoshis) => satoshis,
                             Err(_) => {
                                 let _ = channel_tx
@@ -1969,12 +2004,12 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
                             }
                         };
                         let utxo_reply = GetAddressUtxosReply {
-                            address: address.to_string(),
-                            txid: tx_hash.0.to_vec(),
+                            address: String::from(address),
+                            txid: <[u8; 32]>::from(txid).to_vec(),
                             index: checked_index,
-                            script: script.as_raw_bytes().to_vec(),
+                            script: Vec::<u8>::from(script),
                             value_zat: checked_satoshis,
-                            height: height.0 as u64,
+                            height: u64::from(u32::from(height)),
                         };
                         if channel_tx.send(Ok(utxo_reply)).await.is_err() {
                             return;
@@ -2001,46 +2036,42 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
     /// Return information about this lightwalletd instance and the blockchain
     async fn get_lightd_info(&self) -> Result<LightdInfo, Self::Error> {
         let blockchain_info = self.get_blockchain_info().await?;
-        let sapling_id = zebra_rpc::methods::ConsensusBranchIdHex::new(
-            zebra_chain::parameters::ConsensusBranchId::from_hex("76b809bb")
-                .map_err(|_e| {
-                    tonic::Status::internal(
-                        "Internal Error - Consesnsus Branch ID hex conversion failed",
-                    )
-                })?
-                .into(),
-        );
+
+        // Sapling's consensus branch id is protocol-fixed; the domain names
+        // upgrades by branch id, so it is matched directly rather than through
+        // a hex-string key.
+        const SAPLING_BRANCH_ID: u32 = 0x76b8_09bb;
 
         let sapling_activation_height = blockchain_info
-            .upgrades()
-            .get(&sapling_id)
-            .map_or(Height(1), |sapling_json| sapling_json.into_parts().1);
+            .upgrades
+            .iter()
+            .find(|upgrade| u32::from(upgrade.branch_id) == SAPLING_BRANCH_ID)
+            .map_or(1, |upgrade| u32::from(upgrade.activation_height));
 
-        let consensus_branch_id = zebra_chain::parameters::ConsensusBranchId::from(
-            blockchain_info.consensus().into_parts().0,
-        )
+        let consensus_branch_id = zebra_chain::parameters::ConsensusBranchId::from(u32::from(
+            blockchain_info.consensus.chain_tip,
+        ))
         .to_string();
 
-        let latest_upgrade = super::latest_network_upgrade(blockchain_info.upgrades())
-            .map_err(NodeBackedIndexerServiceError::TonicStatusError)?
-            .into_parts();
-
-        let nu_name = latest_upgrade.0;
-        let nu_height = latest_upgrade.1;
+        // The upgrade name is now the validator's own, carried through the
+        // domain type, rather than this build's `NetworkUpgrade` rendering of
+        // the same branch id.
+        let latest_upgrade = super::latest_network_upgrade(&blockchain_info.upgrades)
+            .map_err(NodeBackedIndexerServiceError::TonicStatusError)?;
 
         Ok(LightdInfo {
             version: self.data.build_info().version(),
             vendor: "ZingoLabs ZainoD".to_string(),
             taddr_support: true,
-            chain_name: blockchain_info.chain().clone(),
-            sapling_activation_height: sapling_activation_height.0 as u64,
+            chain_name: blockchain_info.chain.clone(),
+            sapling_activation_height: u64::from(sapling_activation_height),
             consensus_branch_id,
-            block_height: blockchain_info.blocks().0 as u64,
+            block_height: u64::from(u32::from(blockchain_info.blocks)),
             git_commit: self.data.build_info().commit_hash(),
             branch: self.data.build_info().branch(),
             build_date: self.data.build_info().build_date(),
             build_user: self.data.build_info().build_user(),
-            estimated_height: blockchain_info.estimated_height().0 as u64,
+            estimated_height: u64::from(u32::from(blockchain_info.estimated_height)),
             zcashd_build: self.data.zebra_build(),
             zcashd_subversion: self.data.zebra_subversion(),
             donation_address: self
@@ -2049,8 +2080,8 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
                 .as_ref()
                 .map(DonationAddress::encode)
                 .unwrap_or_default(),
-            upgrade_name: nu_name.to_string(),
-            upgrade_height: nu_height.0 as u64,
+            upgrade_name: latest_upgrade.name.clone(),
+            upgrade_height: u64::from(u32::from(latest_upgrade.activation_height)),
             lightwallet_protocol_version: "v0.5.0".to_string(),
         })
     }

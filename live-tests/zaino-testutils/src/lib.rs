@@ -41,7 +41,6 @@ use zcash_local_net::validator::ValidatorConfig as _;
 pub use zcash_local_net::MinerPool;
 use zcash_local_net::{logs::LogsToStdoutAndStderr, process::Process};
 use zebra_chain::parameters::NetworkKind;
-use zebra_rpc::methods::GetInfo;
 
 #[cfg(test)]
 use zaino_proto::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
@@ -1368,40 +1367,14 @@ pub async fn launch_zcashd_dual_fetch_services_at(
     }
 }
 
-/// Return a copy of `info` with its final (timestamp) field zeroed, so two
-/// `getinfo` responses from different sources can be compared without spurious
-/// timestamp differences.
-pub fn get_info_with_zeroed_timestamp(info: GetInfo) -> GetInfo {
-    let (
-        version,
-        build,
-        subversion,
-        protocol_version,
-        blocks,
-        connections,
-        proxy,
-        difficulty,
-        testnet,
-        pay_tx_fee,
-        relay_fee,
-        errors,
-        _,
-    ) = info.into_parts();
-    GetInfo::new(
-        version,
-        build,
-        subversion,
-        protocol_version,
-        blocks,
-        connections,
-        proxy,
-        difficulty,
-        testnet,
-        pay_tx_fee,
-        relay_fee,
-        errors,
-        0,
-    )
+/// Return a copy of `info` with its error timestamp cleared, so two `getinfo`
+/// responses from different sources can be compared without spurious timestamp
+/// differences.
+pub fn get_info_with_zeroed_timestamp(
+    mut info: zaino_primitives::types::rpc::NodeInfo,
+) -> zaino_primitives::types::rpc::NodeInfo {
+    info.errors_timestamp = None;
+    info
 }
 
 /// Launch a fetch-backend [`TestManager`] and return it together with its own

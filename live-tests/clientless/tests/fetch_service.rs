@@ -26,11 +26,13 @@ async fn launch_fetch_service<V: ValidatorExt>(
     assert_eq!(fetch_service_subscriber.status(), StatusType::Ready);
     dbg!(fetch_service_subscriber.data.clone());
     dbg!(fetch_service_subscriber.get_info().await.unwrap());
-    dbg!(fetch_service_subscriber
-        .get_blockchain_info()
-        .await
-        .unwrap()
-        .blocks());
+    dbg!(
+        fetch_service_subscriber
+            .get_blockchain_info()
+            .await
+            .unwrap()
+            .blocks
+    );
 
     test_manager.close().await;
 }

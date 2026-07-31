@@ -567,6 +567,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .get_info()
             .await
+            .map(crate::rpc::jsonrpc::wire::node_info::from_domain)
             .map_err(invalid_params_error_object)
     }
 
@@ -602,6 +603,13 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .get_blockchain_info()
             .await
             .map_err(invalid_params_error_object)
+            .and_then(|info| {
+                crate::rpc::jsonrpc::wire::blockchain_info::from_domain(
+                    info,
+                    &self.service_subscriber.inner_ref().network(),
+                )
+                .map_err(invalid_params_error_object)
+            })
     }
 
     async fn get_mempool_info(&self) -> Result<MempoolInfoWire, ErrorObjectOwned> {
@@ -705,6 +713,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .z_get_address_balance(address_strings)
             .await
+            .map(crate::rpc::jsonrpc::wire::address_queries::address_balance_from_domain)
             .map_err(invalid_params_error_object)
     }
 
@@ -716,6 +725,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .send_raw_transaction(raw_transaction_hex)
             .await
+            .map(crate::rpc::jsonrpc::wire::hashes::sent_transaction_hash_from_domain)
             .map_err(sendrawtransaction_error_object_from_indexer_error)
     }
 
@@ -781,10 +791,16 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
         start_index: NoteCommitmentSubtreeIndex,
         limit: Option<NoteCommitmentSubtreeIndex>,
     ) -> Result<GetSubtreesByIndexResponse, ErrorObjectOwned> {
+        // The pool name is client input, so it is validated here rather than
+        // inside the indexer.
+        let pool = crate::rpc::jsonrpc::wire::subtrees::pool_into_domain(&pool)
+            .map_err(invalid_params_error_object)?;
+
         self.service_subscriber
             .inner_ref()
             .z_get_subtrees_by_index(pool, start_index, limit)
             .await
+            .map(crate::rpc::jsonrpc::wire::subtrees::from_domain)
             .map_err(invalid_params_error_object)
     }
 
@@ -850,6 +866,10 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .z_get_address_utxos(address_strings)
             .await
             .map_err(invalid_params_error_object)
+            .and_then(|utxos| {
+                crate::rpc::jsonrpc::wire::address_queries::address_utxos_from_domain(utxos)
+                    .map_err(invalid_params_error_object)
+            })
     }
 
     async fn get_network_sol_ps(

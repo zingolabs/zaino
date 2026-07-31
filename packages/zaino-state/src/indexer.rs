@@ -10,10 +10,9 @@ use crate::SendFut;
 use tokio::{sync::mpsc, time::timeout};
 use tracing::warn;
 use zaino_address::{ValidatedAddress, ZValidatedAddress};
-use zaino_fetch::jsonrpsee::response::GetSubtreesResponse;
 use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
-    PeerInfo,
+    NodeInfo, PeerInfo,
 };
 use zaino_proto::proto::{
     compact_formats::CompactBlock,
@@ -28,11 +27,9 @@ use zebra_chain::{
     block::Height, serialization::BytesInDisplayOrder as _, subtree::NoteCommitmentSubtreeIndex,
 };
 use zebra_rpc::{
-    client::{GetSubtreesByIndexResponse, GetTreestateResponse, SubtreeRpcData},
+    client::GetTreestateResponse,
     methods::{
-        AddressBalance, GetAddressBalanceRequest, GetAddressTxIdsRequest, GetAddressUtxos,
-        GetBlock, GetBlockHash, GetBlockchainInfoResponse, GetInfo, GetRawTransaction,
-        SentTransactionHash,
+        GetAddressBalanceRequest, GetAddressTxIdsRequest, GetBlock, GetBlockHash, GetRawTransaction,
     },
 };
 
@@ -165,7 +162,17 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// Some fields from the zcashd reference are missing from Zebra's [`GetInfo`]. It only contains the fields
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L91-L95)
-    fn get_info(&self) -> impl SendFut<Result<GetInfo, Self::Error>>;
+    fn get_info(&self) -> impl SendFut<Result<NodeInfo, Self::Error>>;
+
+    /// The network this indexer serves, carrying the activation schedule
+    /// adopted from the validator (zaino#1076).
+    ///
+    /// Not an RPC method. It is on this port because a consumer rendering
+    /// [`get_blockchain_info`](Self::get_blockchain_info) needs it: the domain
+    /// names network upgrades by consensus branch id — the protocol-defined
+    /// identity — while the served JSON names them by their enum variant, and
+    /// only the activation schedule maps one to the other.
+    fn network(&self) -> zebra_chain::parameters::Network;
 
     /// Returns all changes for an address.
     ///
@@ -197,7 +204,9 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// Some fields from the zcashd reference are missing from Zebra's [`GetBlockchainInfoResponse`]. It only contains the fields
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L72-L89)
-    fn get_blockchain_info(&self) -> impl SendFut<Result<GetBlockchainInfoResponse, Self::Error>>;
+    fn get_blockchain_info(
+        &self,
+    ) -> impl SendFut<Result<zaino_primitives::types::BlockchainInfo, Self::Error>>;
 
     /// Returns the proof-of-work difficulty as a multiple of the minimum difficulty.
     ///
@@ -261,7 +270,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     fn z_get_address_balance(
         &self,
         address_strings: GetAddressBalanceRequest,
-    ) -> impl SendFut<Result<AddressBalance, Self::Error>>;
+    ) -> impl SendFut<Result<zaino_primitives::types::AddressBalance, Self::Error>>;
 
     /// Sends the raw bytes of a signed transaction to the local node's mempool, if the transaction is valid.
     /// Returns the [`SentTransactionHash`] for the transaction, as a JSON string.
@@ -281,7 +290,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     fn send_raw_transaction(
         &self,
         raw_transaction_hex: String,
-    ) -> impl SendFut<Result<SentTransactionHash, Self::Error>>;
+    ) -> impl SendFut<Result<zaino_primitives::types::TransactionHash, Self::Error>>;
 
     /// If verbose is false, returns a string that is serialized, hex-encoded data for blockheader `hash`.
     /// If verbose is true, returns an Object with information about blockheader `hash`.
@@ -455,10 +464,10 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// available yet. (But `zcashd` does its rebuild before syncing any blocks.)
     fn z_get_subtrees_by_index(
         &self,
-        pool: String,
+        pool: zaino_primitives::types::ShieldedPool,
         start_index: NoteCommitmentSubtreeIndex,
         limit: Option<NoteCommitmentSubtreeIndex>,
-    ) -> impl SendFut<Result<GetSubtreesByIndexResponse, Self::Error>>;
+    ) -> impl SendFut<Result<zaino_primitives::types::rpc::SubtreeRoots, Self::Error>>;
 
     /// Returns the raw transaction data, as a [`GetRawTransaction`] JSON string or structure.
     ///
@@ -561,7 +570,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     fn z_get_address_utxos(
         &self,
         address_strings: GetAddressBalanceRequest,
-    ) -> impl SendFut<Result<Vec<GetAddressUtxos>, Self::Error>>;
+    ) -> impl SendFut<Result<Vec<zaino_primitives::types::Utxo>, Self::Error>>;
 
     /// Returns a json object containing mining-related information.
     ///
@@ -768,7 +777,8 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
     ) -> impl SendFut<Result<SubtreeRootReplyStream, <Self as ZcashIndexer>::Error>> {
         async move {
             let pool = match ShieldedProtocol::try_from(request.shielded_protocol) {
-                Ok(protocol) => protocol.as_str_name(),
+                Ok(ShieldedProtocol::Sapling) => zaino_primitives::types::ShieldedPool::Sapling,
+                Ok(ShieldedProtocol::Orchard) => zaino_primitives::types::ShieldedPool::Orchard,
                 Err(_) => {
                     return Err(<Self as ZcashIndexer>::Error::from(
                         tonic::Status::invalid_argument("Error: Invalid shielded protocol value."),
@@ -802,7 +812,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
             let service_clone = self.clone();
             let subtrees = service_clone
                 .z_get_subtrees_by_index(
-                    pool.to_string(),
+                    pool,
                     NoteCommitmentSubtreeIndex(start_index),
                     limit.map(NoteCommitmentSubtreeIndex),
                 )
@@ -813,9 +823,9 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                 let timeout = timeout(
                 std::time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
-                    for subtree in subtrees.subtrees() {
+                    for subtree in &subtrees.subtrees {
                         match service_clone
-                            .z_get_block(subtree.end_height.0.to_string(), Some(1))
+                            .z_get_block(u32::from(subtree.end_height).to_string(), Some(1))
                             .await
                         {
                             Ok(GetBlock::Object(block_object)) => {
@@ -839,29 +849,14 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                                         }
                                     }
                                 };
-                                let checked_root_hash = match hex::decode(&subtree.root) {
-                                    Ok(hash) => hash,
-                                    Err(e) => {
-                                        match channel_tx
-                                            .send(Err(tonic::Status::unknown(format!(
-                                                "Error: Failed to hex decode root hash: {e}."
-                                            ))))
-                                            .await
-                                        {
-                                            Ok(_) => break,
-                                            Err(e) => {
-                                                warn!(
-                                                    %e,
-                                                    "GetSubtreeRoots channel closed unexpectedly"
-                                                );
-                                                break;
-                                            }
-                                        }
-                                    }
-                                };
                                 if channel_tx
                                     .send(Ok(SubtreeRoot {
-                                        root_hash: checked_root_hash,
+                                        // The domain carries the root as
+                                        // bytes, so the hex round-trip this
+                                        // path used to do — and its
+                                        // unreachable decode-failure arm — are
+                                        // gone.
+                                        root_hash: <[u8; 32]>::from(subtree.root).to_vec(),
                                         completing_block_hash: block_object
                                             .hash()
                                             .bytes_in_display_order()
@@ -891,7 +886,8 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                                 if channel_tx
                                     .send(Err(tonic::Status::unknown(format!(
                                         "Error: Could not fetch block at height [{}] from node: {}",
-                                        subtree.end_height.0, e
+                                        u32::from(subtree.end_height),
+                                        e
                                     ))))
                                     .await
                                     .is_err()
@@ -993,40 +989,6 @@ pub(crate) async fn handle_raw_transaction<Indexer: LightWalletIndexer>(
     }
 }
 
-/// Shapes a `z_getsubtreesbyindex` JSON-RPC response from raw subtree roots.
-///
-/// The `(root, end_height)` pairs from [`ChainIndex::get_subtree_roots`] are already in
-/// the byte order the JSON-RPC uses (sapling `to_bytes`, orchard `to_repr` — zcashd's
-/// `z_getsubtreesbyindex` does not reverse orchard subtree roots), so they are hex-encoded
-/// as-is. Shared by both backends so the shaping lives in one place.
-///
-/// [`ChainIndex::get_subtree_roots`]: crate::ChainIndex::get_subtree_roots
-pub(crate) fn build_subtrees_by_index_response(
-    pool: String,
-    start_index: NoteCommitmentSubtreeIndex,
-    roots: Vec<([u8; 32], u32)>,
-) -> GetSubtreesByIndexResponse {
-    use hex::ToHex as _;
-
-    let subtrees = roots
-        .into_iter()
-        .map(|(root, end_height)| {
-            SubtreeRpcData {
-                root: root.encode_hex(),
-                end_height: Height(end_height),
-            }
-            .into()
-        })
-        .collect();
-
-    GetSubtreesResponse {
-        pool,
-        start_index,
-        subtrees,
-    }
-    .into()
-}
-
 /// Builds the gRPC [`TreeState`](zaino_proto::proto::service::TreeState) from a
 /// `z_gettreestate` response: hex-encoded per-pool final states (the ironwood field is
 /// the empty string below NU6.3 activation, matching lightwalletd behaviour).
@@ -1110,17 +1072,6 @@ fn build_treestate_response(
     )
 }
 
-fn latest_network_upgrade(
-    upgrades: &indexmap::IndexMap<
-        zebra_rpc::methods::ConsensusBranchIdHex,
-        zebra_rpc::methods::NetworkUpgradeInfo,
-    >,
-) -> Result<&zebra_rpc::methods::NetworkUpgradeInfo, tonic::Status> {
-    upgrades.last().map(|(_, upgrade)| upgrade).ok_or_else(|| {
-        tonic::Status::failed_precondition("validator returned no network upgrade metadata")
-    })
-}
-
 /// Maximum number of addresses a single `get_address_utxos` / `get_address_utxos_stream`
 /// request may carry.
 ///
@@ -1147,14 +1098,25 @@ fn validate_utxo_address_count(count: usize) -> Result<(), tonic::Status> {
     Ok(())
 }
 
+/// The most recently activated network upgrade the validator reported.
+///
+/// The domain preserves the validator's ordering, so the last entry is the
+/// newest. An empty list is a failure rather than a default: `getlightdinfo`
+/// reports the upgrade name and height to wallets, and inventing either would
+/// have them believe they are on a chain they are not.
+fn latest_network_upgrade(
+    upgrades: &[zaino_primitives::types::NetworkUpgradeInfo],
+) -> Result<&zaino_primitives::types::NetworkUpgradeInfo, tonic::Status> {
+    upgrades.last().ok_or_else(|| {
+        tonic::Status::failed_precondition("validator returned no network upgrade metadata")
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn latest_network_upgrade_rejects_empty_metadata() {
-        let upgrades = indexmap::IndexMap::new();
-        let err = super::latest_network_upgrade(&upgrades).expect_err("empty upgrades must fail");
+        let err = super::latest_network_upgrade(&[]).expect_err("empty upgrades must fail");
 
         assert_eq!(err.code(), tonic::Code::FailedPrecondition);
         assert_eq!(
@@ -1175,25 +1137,5 @@ mod tests {
             .expect_err("over-limit address count must fail");
 
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
-    }
-
-    #[test]
-    fn build_subtrees_by_index_response_hex_encodes_roots() {
-        let roots = vec![([0xabu8; 32], 100u32), ([0xcdu8; 32], 200u32)];
-        let response = build_subtrees_by_index_response(
-            "orchard".to_string(),
-            NoteCommitmentSubtreeIndex(5),
-            roots,
-        );
-
-        assert_eq!(response.pool().as_str(), "orchard");
-        assert_eq!(response.start_index(), NoteCommitmentSubtreeIndex(5));
-
-        let subtrees = response.subtrees();
-        assert_eq!(subtrees.len(), 2);
-        assert_eq!(subtrees[0].root, hex::encode([0xabu8; 32]));
-        assert_eq!(subtrees[0].end_height, Height(100));
-        assert_eq!(subtrees[1].root, hex::encode([0xcdu8; 32]));
-        assert_eq!(subtrees[1].end_height, Height(200));
     }
 }

@@ -103,33 +103,33 @@ async fn state_service_check_info<V: ValidatorExt>(
     assert_eq!(cleaned_fetch_info, cleaned_state_info);
 
     assert_eq!(
-        fetch_service_blockchain_info.chain(),
-        state_service_blockchain_info.chain()
+        fetch_service_blockchain_info.chain,
+        state_service_blockchain_info.chain
     );
     assert_eq!(
-        fetch_service_blockchain_info.blocks(),
-        state_service_blockchain_info.blocks()
+        fetch_service_blockchain_info.blocks,
+        state_service_blockchain_info.blocks
     );
     assert_eq!(
-        fetch_service_blockchain_info.best_block_hash(),
-        state_service_blockchain_info.best_block_hash()
+        fetch_service_blockchain_info.best_block_hash,
+        state_service_blockchain_info.best_block_hash
     );
     assert_eq!(
-        fetch_service_blockchain_info.estimated_height(),
-        state_service_blockchain_info.estimated_height()
+        fetch_service_blockchain_info.estimated_height,
+        state_service_blockchain_info.estimated_height
     );
     // TODO: Fix this! (ignored due to [https://github.com/zingolabs/zaino/issues/235]).
     // assert_eq!(
-    //     fetch_service_blockchain_info.value_pools(),
-    //     state_service_blockchain_info.value_pools()
+    //     fetch_service_blockchain_info.value_pools,
+    //     state_service_blockchain_info.value_pools
     // );
     assert_eq!(
-        fetch_service_blockchain_info.upgrades(),
-        state_service_blockchain_info.upgrades()
+        fetch_service_blockchain_info.upgrades,
+        state_service_blockchain_info.upgrades
     );
     assert_eq!(
-        fetch_service_blockchain_info.consensus(),
-        state_service_blockchain_info.consensus()
+        fetch_service_blockchain_info.consensus,
+        state_service_blockchain_info.consensus
     );
 
     services.test_manager.close().await;
@@ -261,14 +261,22 @@ async fn state_service_z_get_subtrees_by_index_testnet() {
     assert_subscribers_agree(
         &services,
         |f| async move {
-            f.z_get_subtrees_by_index("sapling".to_string(), 0.into(), None)
-                .await
-                .unwrap()
+            f.z_get_subtrees_by_index(
+                zaino_primitives::types::ShieldedPool::Sapling,
+                0.into(),
+                None,
+            )
+            .await
+            .unwrap()
         },
         |s| async move {
-            s.z_get_subtrees_by_index("sapling".to_string(), 0.into(), None)
-                .await
-                .unwrap()
+            s.z_get_subtrees_by_index(
+                zaino_primitives::types::ShieldedPool::Sapling,
+                0.into(),
+                None,
+            )
+            .await
+            .unwrap()
         },
     )
     .await;
@@ -276,14 +284,22 @@ async fn state_service_z_get_subtrees_by_index_testnet() {
     assert_subscribers_agree(
         &services,
         |f| async move {
-            f.z_get_subtrees_by_index("orchard".to_string(), 0.into(), None)
-                .await
-                .unwrap()
+            f.z_get_subtrees_by_index(
+                zaino_primitives::types::ShieldedPool::Orchard,
+                0.into(),
+                None,
+            )
+            .await
+            .unwrap()
         },
         |s| async move {
-            s.z_get_subtrees_by_index("orchard".to_string(), 0.into(), None)
-                .await
-                .unwrap()
+            s.z_get_subtrees_by_index(
+                zaino_primitives::types::ShieldedPool::Orchard,
+                0.into(),
+                None,
+            )
+            .await
+            .unwrap()
         },
     )
     .await;

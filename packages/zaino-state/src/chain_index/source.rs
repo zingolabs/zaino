@@ -35,14 +35,9 @@ use crate::chain_index::{
 use crate::SendFut;
 use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
-    PeerInfo,
+    NodeInfo, PeerInfo,
 };
-use zebra_rpc::{
-    client::{GetAddressBalanceRequest, GetAddressTxIdsRequest},
-    methods::{
-        AddressBalance, GetAddressUtxos, GetBlockchainInfoResponse, GetInfo, SentTransactionHash,
-    },
-};
+use zebra_rpc::client::{GetAddressBalanceRequest, GetAddressTxIdsRequest};
 use zebra_state::HashOrHeight;
 
 #[cfg(test)]
@@ -169,7 +164,7 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     /// Returns the `getblockchaininfo` response.
     fn get_blockchain_info(
         &self,
-    ) -> impl SendFut<BlockchainSourceResult<GetBlockchainInfoResponse>>;
+    ) -> impl SendFut<BlockchainSourceResult<zaino_primitives::types::BlockchainInfo>>;
 
     // ********** Node-passthrough methods **********
     //
@@ -177,7 +172,7 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     // JSON-RPC interface.
 
     /// Returns the `getinfo` response.
-    fn get_info(&self) -> impl SendFut<BlockchainSourceResult<GetInfo>>;
+    fn get_info(&self) -> impl SendFut<BlockchainSourceResult<NodeInfo>>;
 
     /// Returns the `getpeerinfo` response.
     fn get_peer_info(&self) -> impl SendFut<BlockchainSourceResult<Vec<PeerInfo>>>;
@@ -221,7 +216,7 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     fn send_raw_transaction(
         &self,
         raw_transaction_hex: String,
-    ) -> impl SendFut<BlockchainSourceResult<SentTransactionHash>>;
+    ) -> impl SendFut<BlockchainSourceResult<zaino_primitives::types::TransactionHash>>;
 
     /// Returns the full `z_gettreestate` response for the given hash-or-height string.
     ///
@@ -296,7 +291,7 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     fn get_address_balance(
         &self,
         address_strings: GetAddressBalanceRequest,
-    ) -> impl SendFut<BlockchainSourceResult<AddressBalance>>;
+    ) -> impl SendFut<BlockchainSourceResult<zaino_primitives::types::AddressBalance>>;
 
     /// Returns the transaction ids made by the provided transparent addresses.
     ///
@@ -337,7 +332,7 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     fn get_address_utxos(
         &self,
         address_strings: GetAddressBalanceRequest,
-    ) -> impl SendFut<BlockchainSourceResult<Vec<GetAddressUtxos>>>;
+    ) -> impl SendFut<BlockchainSourceResult<Vec<zaino_primitives::types::Utxo>>>;
 
     // ********** Utility methods **********
 

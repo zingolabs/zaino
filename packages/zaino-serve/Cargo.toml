@@ -64,3 +64,4 @@ zaino-address = { workspace = true }
 hex.workspace = true
 zaino-primitives.workspace = true
 serde_json.workspace = true
+indexmap.workspace = true

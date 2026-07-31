@@ -42,14 +42,19 @@
 
 pub mod address;
 pub mod address_deltas;
+pub mod address_queries;
 pub mod block_deltas;
 pub mod block_header;
 pub mod block_subsidy;
+pub mod blockchain_info;
 pub mod chain_tips;
 pub mod common;
+pub mod hashes;
 pub mod mining_info;
 pub mod misc;
+pub mod node_info;
 pub mod peer_info;
+pub mod subtrees;
 
 /// Renders a 32-byte identifier as hex in RPC display order.
 ///
@@ -100,12 +105,16 @@ mod tests {
         assert_eq!(parsed.0, bytes, "one reversal too many or too few");
     }
 
+    /// Amounts cross the port as exact zatoshis and this interface wants ZEC.
+    /// The conversion must be exact for every value the protocol allows,
+    /// including a single dust zatoshi at the bottom of the range.
     #[test]
     fn zats_to_zec_converts_at_the_wire_boundary() {
         use zaino_primitives::types::Zatoshis;
 
         assert_eq!(zats_to_zec(Zatoshis::ZERO), 0.0);
-        assert_eq!(zats_to_zec(Zatoshis::new(100_000_000).unwrap()), 1.0);
+        assert_eq!(zats_to_zec(Zatoshis::new(1).unwrap()), 0.000_000_01);
         assert_eq!(zats_to_zec(Zatoshis::new(50_000_000).unwrap()), 0.5);
+        assert_eq!(zats_to_zec(Zatoshis::new(100_000_000).unwrap()), 1.0);
     }
 }

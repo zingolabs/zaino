@@ -300,7 +300,7 @@ where
         .z_get_address_utxos(GetAddressBalanceRequest::new(vec![recipient_taddr]))
         .await
         .unwrap();
-    let (_, utxo_txid, ..) = utxos[0].into_parts();
+    let utxo_txid = utxos[0].txid;
 
     dbg!(&txid_hex, &utxo_txid);
     assert_eq!(txid_hex.trim(), utxo_txid.to_string());
@@ -338,7 +338,11 @@ where
 
     dbg!(test_manager
         .subscriber()
-        .z_get_subtrees_by_index("orchard".to_string(), NoteCommitmentSubtreeIndex(0), None)
+        .z_get_subtrees_by_index(
+            zaino_primitives::types::ShieldedPool::Orchard,
+            NoteCommitmentSubtreeIndex(0),
+            None
+        )
         .await
         .unwrap());
 
@@ -856,9 +860,9 @@ where
         .await
         .unwrap();
 
-    dbg!(balance);
+    dbg!(&balance);
     // The fixture sent exactly 250_000 to the recipient taddr.
-    assert_eq!(balance.balance(), 250_000);
+    assert_eq!(u64::from(balance.balance), 250_000);
 
     test_manager.close().await;
 }
@@ -952,12 +956,20 @@ async fn z_get_subtrees_by_index_fetch_vs_state() {
 
     let fetch = svc
         .fetch_subscriber
-        .z_get_subtrees_by_index("orchard".to_string(), NoteCommitmentSubtreeIndex(0), None)
+        .z_get_subtrees_by_index(
+            zaino_primitives::types::ShieldedPool::Orchard,
+            NoteCommitmentSubtreeIndex(0),
+            None,
+        )
         .await
         .unwrap();
     let state = svc
         .state_subscriber
-        .z_get_subtrees_by_index("orchard".to_string(), NoteCommitmentSubtreeIndex(0), None)
+        .z_get_subtrees_by_index(
+            zaino_primitives::types::ShieldedPool::Orchard,
+            NoteCommitmentSubtreeIndex(0),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(fetch, state);
@@ -1030,13 +1042,13 @@ async fn get_address_utxos_fetch_vs_state() {
         .z_get_address_utxos(GetAddressBalanceRequest::new(vec![recipient_taddr.clone()]))
         .await
         .unwrap();
-    let (_, fetch_txid, ..) = fetch_utxos[0].into_parts();
+    let fetch_txid = fetch_utxos[0].txid;
     let state_utxos = svc
         .state_subscriber
         .z_get_address_utxos(GetAddressBalanceRequest::new(vec![recipient_taddr]))
         .await
         .unwrap();
-    let (_, state_txid, ..) = state_utxos[0].into_parts();
+    let state_txid = state_utxos[0].txid;
 
     assert_eq!(txid_hex.trim(), fetch_txid.to_string());
     assert_eq!(fetch_txid.to_string(), state_txid.to_string());
@@ -1205,7 +1217,7 @@ async fn get_address_balance_fetch_vs_state() {
         .unwrap();
 
     // The fixture sent exactly 250_000 to the recipient taddr.
-    assert_eq!(fetch.balance(), 250_000);
+    assert_eq!(u64::from(fetch.balance), 250_000);
     assert_eq!(fetch, state);
 
     svc.test_manager.close().await;
@@ -1858,8 +1870,8 @@ async fn sole_recipient_outpoint(
         1,
         "recipient taddr should hold exactly one funding UTXO"
     );
-    let (_, txid, output_index, ..) = utxos[0].into_parts();
-    zaino_state::chain_index::types::Outpoint::new(txid.0, output_index.index())
+    let (txid, output_index) = (utxos[0].txid, utxos[0].output_index);
+    zaino_state::chain_index::types::Outpoint::new(<[u8; 32]>::from(txid), output_index)
 }
 
 /// The single transaction touching `recipient_taddr` at `height` — the shield

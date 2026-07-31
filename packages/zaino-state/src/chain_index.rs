@@ -41,7 +41,7 @@ use tracing::{info, instrument};
 use zaino_fetch::jsonrpsee::raw_transaction::validate_raw_transaction_hex;
 use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
-    PeerInfo,
+    NodeInfo, PeerInfo,
 };
 use zaino_proto::proto::utils::{prune_compact_block, PoolTypeFilter};
 use zebra_chain::parameters::ConsensusBranchId;
@@ -49,10 +49,7 @@ pub use zebra_chain::parameters::Network as ZebraNetwork;
 use zebra_chain::serialization::ZcashSerialize;
 use zebra_rpc::{
     client::{GetAddressBalanceRequest, GetAddressTxIdsRequest},
-    methods::{
-        AddressBalance, GetAddressUtxos, GetBlock, GetBlockchainInfoResponse, GetInfo,
-        SentTransactionHash,
-    },
+    methods::GetBlock,
 };
 use zebra_state::HashOrHeight;
 
@@ -516,7 +513,7 @@ pub trait ChainIndex {
     fn get_address_balance(
         &self,
         address_strings: GetAddressBalanceRequest,
-    ) -> impl std::future::Future<Output = Result<AddressBalance, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<zaino_primitives::types::AddressBalance, Self::Error>>;
 
     /// Returns the transaction ids made by the given transparent addresses.
     fn get_address_txids(
@@ -528,7 +525,7 @@ pub trait ChainIndex {
     fn get_address_utxos(
         &self,
         address_strings: GetAddressBalanceRequest,
-    ) -> impl std::future::Future<Output = Result<Vec<GetAddressUtxos>, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<Vec<zaino_primitives::types::Utxo>, Self::Error>>;
 
     /// For each outpoint, returns the txid of the transaction that spent it on the best
     /// chain, or `None` if the outpoint is unspent or unknown.
@@ -656,12 +653,12 @@ pub trait ChainIndexRpcExt: ChainIndex {
     // No local-index equivalent; always delegate to the backing validator.
 
     /// Returns the `getinfo` response.
-    fn get_info(&self) -> impl std::future::Future<Output = Result<GetInfo, Self::Error>>;
+    fn get_info(&self) -> impl std::future::Future<Output = Result<NodeInfo, Self::Error>>;
 
     /// Returns the `getblockchaininfo` response.
     fn get_blockchain_info(
         &self,
-    ) -> impl std::future::Future<Output = Result<GetBlockchainInfoResponse, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<zaino_primitives::types::BlockchainInfo, Self::Error>>;
 
     /// Returns the `getpeerinfo` response.
     fn get_peer_info(
@@ -705,7 +702,7 @@ pub trait ChainIndexRpcExt: ChainIndex {
     fn send_raw_transaction(
         &self,
         raw_transaction_hex: String,
-    ) -> impl std::future::Future<Output = Result<SentTransactionHash, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<zaino_primitives::types::TransactionHash, Self::Error>>;
 
     /// Returns the full `z_gettreestate` response for the given hash-or-height, via the
     /// backing validator (node-passthrough fallback for treestates not locally serviceable).
@@ -2349,7 +2346,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     async fn get_address_balance(
         &self,
         address_strings: GetAddressBalanceRequest,
-    ) -> Result<AddressBalance, Self::Error> {
+    ) -> Result<zaino_primitives::types::AddressBalance, Self::Error> {
         self.source()
             .get_address_balance(address_strings)
             .await
@@ -2371,7 +2368,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     async fn get_address_utxos(
         &self,
         address_strings: GetAddressBalanceRequest,
-    ) -> Result<Vec<GetAddressUtxos>, Self::Error> {
+    ) -> Result<Vec<zaino_primitives::types::Utxo>, Self::Error> {
         self.source()
             .get_address_utxos(address_strings)
             .await
@@ -2843,7 +2840,7 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
             .map_err(ChainIndexError::backing_validator)
     }
 
-    async fn get_info(&self) -> Result<GetInfo, Self::Error> {
+    async fn get_info(&self) -> Result<NodeInfo, Self::Error> {
         self.source()
             .get_info()
             .await
@@ -2853,7 +2850,9 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
     // `getblockchaininfo` needs cumulative pool value balances (TipPoolValues) and on-disk
     // size, which are not in the ChainIndex's indexed data, so it cannot be built
     // internally: always delegate to the backing validator.
-    async fn get_blockchain_info(&self) -> Result<GetBlockchainInfoResponse, Self::Error> {
+    async fn get_blockchain_info(
+        &self,
+    ) -> Result<zaino_primitives::types::BlockchainInfo, Self::Error> {
         self.source()
             .get_blockchain_info()
             .await
@@ -2917,7 +2916,7 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
     async fn send_raw_transaction(
         &self,
         raw_transaction_hex: String,
-    ) -> Result<SentTransactionHash, Self::Error> {
+    ) -> Result<zaino_primitives::types::TransactionHash, Self::Error> {
         validate_raw_transaction_hex(&raw_transaction_hex)
             .map_err(ChainIndexError::internal_from)?;
         self.source()

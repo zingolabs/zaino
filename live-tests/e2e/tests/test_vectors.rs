@@ -420,16 +420,24 @@ async fn create_200_block_regtest_chain_vectors() {
             .await
             .unwrap();
 
-        let faucet_utxos = state_service_subscriber
-            .z_get_address_utxos(GetAddressBalanceRequest::new(vec![faucet_taddr.clone()]))
-            .await
+        // The vectors are a JSON file format, so they hold the served wire
+        // shape rather than the serde-free domain type.
+        let faucet_utxos =
+            zaino_serve::rpc::jsonrpc::wire::address_queries::address_utxos_from_domain(
+                state_service_subscriber
+                    .z_get_address_utxos(GetAddressBalanceRequest::new(vec![faucet_taddr.clone()]))
+                    .await
+                    .unwrap(),
+            )
             .unwrap();
 
-        let faucet_balance = state_service_subscriber
-            .z_get_address_balance(GetAddressBalanceRequest::new(vec![faucet_taddr.clone()]))
-            .await
-            .unwrap()
-            .balance();
+        let faucet_balance = u64::from(
+            state_service_subscriber
+                .z_get_address_balance(GetAddressBalanceRequest::new(vec![faucet_taddr.clone()]))
+                .await
+                .unwrap()
+                .balance,
+        );
 
         (faucet_txids, faucet_utxos, faucet_balance)
     };
@@ -445,16 +453,26 @@ async fn create_200_block_regtest_chain_vectors() {
             .await
             .unwrap();
 
-        let recipient_utxos = state_service_subscriber
-            .z_get_address_utxos(GetAddressBalanceRequest::new(vec![recipient_taddr.clone()]))
-            .await
+        // The vectors are a JSON file format, so they hold the served wire
+        // shape rather than the serde-free domain type.
+        let recipient_utxos =
+            zaino_serve::rpc::jsonrpc::wire::address_queries::address_utxos_from_domain(
+                state_service_subscriber
+                    .z_get_address_utxos(GetAddressBalanceRequest::new(vec![
+                        recipient_taddr.clone()
+                    ]))
+                    .await
+                    .unwrap(),
+            )
             .unwrap();
 
-        let recipient_balance = state_service_subscriber
-            .z_get_address_balance(GetAddressBalanceRequest::new(vec![recipient_taddr.clone()]))
-            .await
-            .unwrap()
-            .balance();
+        let recipient_balance = u64::from(
+            state_service_subscriber
+                .z_get_address_balance(GetAddressBalanceRequest::new(vec![recipient_taddr.clone()]))
+                .await
+                .unwrap()
+                .balance,
+        );
 
         (recipient_txids, recipient_utxos, recipient_balance)
     };

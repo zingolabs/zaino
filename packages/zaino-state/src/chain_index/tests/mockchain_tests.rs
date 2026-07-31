@@ -747,10 +747,7 @@ async fn get_address_balance() {
         .await
         .unwrap();
 
-    assert_eq!(
-        serde_json::to_value(indexer_balance).unwrap(),
-        serde_json::to_value(expected_balance).unwrap()
-    );
+    assert_eq!(indexer_balance, expected_balance);
 
     let invalid_address_result = index_reader
         .get_address_balance(GetAddressBalanceRequest::new(vec![

@@ -66,6 +66,7 @@ http = { workspace = true }
 once_cell = { workspace = true }
 tokio = { workspace = true }
 tracing.workspace = true
+zaino-primitives.workspace = true
 
 [dev-dependencies]
 tonic.workspace = true

@@ -74,33 +74,27 @@ async fn launch_json_server_check_info() {
 
     assert_eq!(cleaned_zcashd_info, cleaned_zaino_info);
 
+    assert_eq!(zcashd_blockchain_info.chain, zaino_blockchain_info.chain);
+    assert_eq!(zcashd_blockchain_info.blocks, zaino_blockchain_info.blocks);
     assert_eq!(
-        zcashd_blockchain_info.chain(),
-        zaino_blockchain_info.chain()
+        zcashd_blockchain_info.best_block_hash,
+        zaino_blockchain_info.best_block_hash
     );
     assert_eq!(
-        zcashd_blockchain_info.blocks(),
-        zaino_blockchain_info.blocks()
+        zcashd_blockchain_info.estimated_height,
+        zaino_blockchain_info.estimated_height
     );
     assert_eq!(
-        zcashd_blockchain_info.best_block_hash(),
-        zaino_blockchain_info.best_block_hash()
+        zcashd_blockchain_info.value_pools,
+        zaino_blockchain_info.value_pools
     );
     assert_eq!(
-        zcashd_blockchain_info.estimated_height(),
-        zaino_blockchain_info.estimated_height()
+        zcashd_blockchain_info.upgrades,
+        zaino_blockchain_info.upgrades
     );
     assert_eq!(
-        zcashd_blockchain_info.value_pools(),
-        zaino_blockchain_info.value_pools()
-    );
-    assert_eq!(
-        zcashd_blockchain_info.upgrades(),
-        zaino_blockchain_info.upgrades()
-    );
-    assert_eq!(
-        zcashd_blockchain_info.consensus(),
-        zaino_blockchain_info.consensus()
+        zcashd_blockchain_info.consensus,
+        zaino_blockchain_info.consensus
     );
 
     services.test_manager.close().await;

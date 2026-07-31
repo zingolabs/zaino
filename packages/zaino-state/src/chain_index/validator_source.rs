@@ -230,11 +230,6 @@ impl<V: ChainIndexSourcePorts> ValidatorSource<V> {
     }
 }
 
-/// Zatoshis rendered as the ZEC decimal this interface expects.
-fn zats_to_zec(amount: zaino_primitives::types::Zatoshis) -> f64 {
-    u64::from(amount) as f64 / 100_000_000.0
-}
-
 /// Parse a txid written in RPC display order.
 fn parse_display_txid(
     hex_str: &str,
@@ -434,17 +429,11 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
     async fn get_address_balance(
         &self,
         address_strings: zebra_rpc::client::GetAddressBalanceRequest,
-    ) -> BlockchainSourceResult<zebra_rpc::methods::AddressBalance> {
-        let balance = self
-            .validator
+    ) -> BlockchainSourceResult<zaino_primitives::types::AddressBalance> {
+        self.validator
             .get_address_balance(address_strings_to_vec(&address_strings)?)
             .await
-            .map_err(err)?;
-
-        Ok(zebra_rpc::methods::AddressBalance::new(
-            u64::from(balance.balance),
-            u64::from(balance.received),
-        ))
+            .map_err(err)
     }
 
     async fn get_address_txids(
@@ -468,29 +457,11 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
     async fn get_address_utxos(
         &self,
         address_strings: zebra_rpc::client::GetAddressBalanceRequest,
-    ) -> BlockchainSourceResult<Vec<zebra_rpc::methods::GetAddressUtxos>> {
-        let utxos = self
-            .validator
+    ) -> BlockchainSourceResult<Vec<zaino_primitives::types::Utxo>> {
+        self.validator
             .get_address_utxos(address_strings_to_vec(&address_strings)?)
             .await
-            .map_err(err)?;
-
-        utxos
-            .into_iter()
-            .map(|utxo| {
-                Ok(zebra_rpc::methods::GetAddressUtxos::new(
-                    utxo.address
-                        .as_str()
-                        .parse()
-                        .map_err(|e| invalid(format!("utxo address: {e}")))?,
-                    zebra_chain::transaction::Hash::from(<[u8; 32]>::from(utxo.txid)),
-                    zebra_chain::transparent::OutputIndex::from_index(utxo.output_index),
-                    zebra_chain::transparent::Script::new(&Vec::<u8>::from(utxo.script)),
-                    u64::from(utxo.satoshis),
-                    zebra_chain::block::Height(utxo.height.into()),
-                ))
-            })
-            .collect()
+            .map_err(err)
     }
 
     async fn get_address_deltas(
@@ -749,85 +720,8 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
 
     async fn get_blockchain_info(
         &self,
-    ) -> BlockchainSourceResult<zebra_rpc::methods::GetBlockchainInfoResponse> {
-        use zebra_rpc::methods::{
-            ConsensusBranchIdHex, NetworkUpgradeInfo, NetworkUpgradeStatus, TipConsensusBranch,
-        };
-
-        let info = self.validator.get_blockchain_info().await.map_err(err)?;
-
-        let upgrades: indexmap::IndexMap<_, _> = info
-            .upgrades
-            .into_iter()
-            .map(|upgrade| {
-                let branch =
-                    zebra_chain::parameters::ConsensusBranchId::from(u32::from(upgrade.branch_id));
-                let status = match upgrade.status {
-                    zaino_primitives::types::NetworkUpgradeStatus::Active => {
-                        NetworkUpgradeStatus::Active
-                    }
-                    zaino_primitives::types::NetworkUpgradeStatus::Pending => {
-                        NetworkUpgradeStatus::Pending
-                    }
-                    zaino_primitives::types::NetworkUpgradeStatus::Disabled => {
-                        NetworkUpgradeStatus::Disabled
-                    }
-                };
-                // The interface names upgrades by their enum, the port by their
-                // consensus branch id — the protocol-defined identity. There is
-                // no direct conversion, so the network's own activation list is
-                // the lookup. An upgrade this build does not know about is
-                // rejected rather than guessed: Zaino adopts this schedule as
-                // its activation heights, and a wrong entry would put it on
-                // different consensus rules from its validator.
-                let named = self
-                    .network
-                    .full_activation_list()
-                    .into_iter()
-                    .find_map(|(_height, upgrade)| {
-                        (upgrade.branch_id() == Some(branch)).then_some(upgrade)
-                    })
-                    .ok_or_else(|| {
-                        invalid(format!(
-                            "validator reported consensus branch {branch:?}, \
-                             which this build does not recognise"
-                        ))
-                    })?;
-                Ok((
-                    ConsensusBranchIdHex::new(branch.into()),
-                    NetworkUpgradeInfo::from_parts(
-                        named,
-                        zebra_chain::block::Height(upgrade.activation_height.into()),
-                        status,
-                    ),
-                ))
-            })
-            .collect::<Result<_, BlockchainSourceError>>()?;
-
-        Ok(zebra_rpc::methods::GetBlockchainInfoResponse::new(
-            info.chain,
-            zebra_chain::block::Height(info.blocks.into()),
-            zebra_chain::block::Hash(info.best_block_hash.into()),
-            zebra_chain::block::Height(info.estimated_height.into()),
-            pool_balance(Some(&info.chain_supply))?,
-            value_pool_array(&info.value_pools)?,
-            upgrades,
-            TipConsensusBranch::from_parts(
-                ConsensusBranchIdHex::new(u32::from(info.consensus.chain_tip)).inner(),
-                ConsensusBranchIdHex::new(u32::from(info.consensus.next_block)).inner(),
-            ),
-            zebra_chain::block::Height(info.headers.into()),
-            info.difficulty,
-            info.verification_progress,
-            // The interface types cumulative work as a 64-bit integer, which
-            // cannot hold a real mainnet value. The port reports `None` where
-            // the validator does not track it; zero is what this field has
-            // always carried in that case.
-            0,
-            info.pruned,
-            info.size_on_disk,
-            info.commitments,
-        ))
+    ) -> BlockchainSourceResult<zaino_primitives::types::BlockchainInfo> {
+        self.validator.get_blockchain_info().await.map_err(err)
     }
 
     // ***** Shielded trees *****
@@ -946,26 +840,8 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
     // ports model them as typed data rather than opaque JSON, so each method
     // here is a shape translation and nothing more.
 
-    async fn get_info(&self) -> BlockchainSourceResult<zebra_rpc::methods::GetInfo> {
-        let info = self.validator.get_node_info().await.map_err(err)?;
-
-        Ok(zebra_rpc::methods::GetInfo::new(
-            info.version,
-            info.build,
-            info.subversion,
-            info.protocol_version,
-            info.blocks.into(),
-            info.connections as usize,
-            info.proxy,
-            info.difficulty,
-            info.testnet,
-            zats_to_zec(info.pay_tx_fee),
-            zats_to_zec(info.relay_fee),
-            // The port normalises "healthy" to absence; this interface signals
-            // it with a sentinel string, so the sentinel is restored here.
-            info.errors.unwrap_or_else(|| "no errors".to_string()),
-            info.errors_timestamp.unwrap_or_default(),
-        ))
+    async fn get_info(&self) -> BlockchainSourceResult<zaino_primitives::types::rpc::NodeInfo> {
+        self.validator.get_node_info().await.map_err(err)
     }
 
     async fn get_peer_info(
@@ -1018,19 +894,14 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
     async fn send_raw_transaction(
         &self,
         raw_transaction_hex: String,
-    ) -> BlockchainSourceResult<zebra_rpc::methods::SentTransactionHash> {
+    ) -> BlockchainSourceResult<zaino_primitives::types::TransactionHash> {
         let bytes = hex::decode(&raw_transaction_hex)
             .map_err(|e| invalid(format!("transaction is not hex: {e}")))?;
 
-        let txid = self
-            .validator
+        self.validator
             .send_raw_transaction(bytes)
             .await
-            .map_err(err)?;
-
-        Ok(zebra_rpc::methods::SentTransactionHash::new(
-            zebra_chain::transaction::Hash::from(<[u8; 32]>::from(txid)),
-        ))
+            .map_err(err)
     }
 
     async fn get_spent_info(
@@ -1413,19 +1284,6 @@ mod tests {
             parse_display_txid("aabb").is_err(),
             "a short txid must not be silently accepted"
         );
-    }
-
-    /// Amounts cross the port as exact zatoshis and this interface wants ZEC.
-    /// The conversion must be exact for values the protocol allows.
-    #[test]
-    fn zatoshi_to_zec_conversion_is_exact() {
-        let one_zec = zaino_primitives::types::Zatoshis::new(100_000_000).expect("valid");
-        assert_eq!(zats_to_zec(one_zec), 1.0);
-
-        let dust = zaino_primitives::types::Zatoshis::new(1).expect("valid");
-        assert_eq!(zats_to_zec(dust), 0.000_000_01);
-
-        assert_eq!(zats_to_zec(zaino_primitives::types::Zatoshis::ZERO), 0.0);
     }
 
     /// The pool enums share a name and their variants but not a role, so the

@@ -5990,6 +5990,7 @@ version = "0.3.1"
 dependencies = [
  "futures",
  "hex",
+ "indexmap 2.14.0",
  "jsonrpsee",
  "metrics",
  "serde",
@@ -6133,6 +6134,7 @@ dependencies = [
  "tracing",
  "zaino-common",
  "zaino-fetch",
+ "zaino-primitives",
  "zaino-proto",
  "zaino-serve",
  "zaino-state",
