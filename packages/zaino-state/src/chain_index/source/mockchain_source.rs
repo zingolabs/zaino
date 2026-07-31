@@ -1369,7 +1369,7 @@ impl zaino_source::GetSpentInfo for MockchainSource {
     async fn get_spent_info(
         &self,
         _outpoint: domain::rpc::SpentOutpoint,
-    ) -> Result<Option<domain::rpc::SpentInfo>, PortError<zaino_source::GetSpentInfoError>> {
+    ) -> Result<domain::rpc::SpentInfo, PortError<zaino_source::GetSpentInfoError>> {
         unimplemented!(
             "MockchainSource cannot serve get_spent_info until test vectors are extended"
         )

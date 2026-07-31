@@ -172,6 +172,53 @@ where
     }
 }
 
+/// Flatten a `getspentinfo` port error, preserving zcashd's own error code.
+///
+/// The generic [`err`] reports every domain rejection as `InvalidParameter`
+/// (`-8`), which is right where the interface has no more specific code to
+/// offer. `getspentinfo` does: zcashd answers "no spend on record" with `-5`
+/// (`InvalidAddressOrKey`) and the message `Unable to get spent info`, and that
+/// is the pair a client matches on.
+///
+/// Neither Zaino nor its predecessor served `-5` here. The old path consumed the
+/// code into a typed error, destroying the `RpcError` the serving layer walks
+/// for, so a not-spent answer arrived as a generic internal error; the first
+/// rewrite of this method then reported `-8`. Both are wrong in the same
+/// direction — the code the client is looking for never reached it.
+///
+/// `Unsupported` has no zcashd code, because zcashd always implements the
+/// method. It is reported as `-32601`, the envelope's own "method not found",
+/// which is what the client would have seen had it asked the validator
+/// directly — and is deliberately *not* `-5`: "this node cannot answer" must
+/// not be read as "the output is unspent".
+fn spent_info_err(error: QueryError<zaino_source::GetSpentInfoError>) -> BlockchainSourceError {
+    use zaino_source::GetSpentInfoError;
+
+    let (code, message) = match error {
+        QueryError::Domain(rejection @ GetSpentInfoError::NotSpent) => (
+            zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey as i64,
+            rejection.to_string(),
+        ),
+        QueryError::Domain(rejection @ GetSpentInfoError::Unsupported) => {
+            (METHOD_NOT_FOUND, rejection.to_string())
+        }
+        // A transport fault is not an answer; `err` already carries it with the
+        // typed cause the serving layer needs.
+        fetch @ QueryError::Fetch(_) => return err(fetch),
+    };
+
+    BlockchainSourceError::unrecoverable_context(
+        "validator rejected the query",
+        crate::error::LegacyRpcError { code, message },
+    )
+}
+
+/// The JSON-RPC envelope's "method not found".
+///
+/// Not a zcashd legacy code: zcashd implements every method Zaino forwards, so
+/// this only arises when the backing validator is not zcashd.
+const METHOD_NOT_FOUND: i64 = -32601;
+
 /// A domain height from a zebra one, rejecting values the protocol disallows.
 fn height(
     h: zebra_chain::block::Height,
@@ -910,13 +957,13 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
         &self,
         outpoint: zaino_primitives::types::rpc::SpentOutpoint,
     ) -> BlockchainSourceResult<zaino_primitives::types::rpc::SpentInfo> {
-        // The port answers "was it spent?" with an `Option`; the interface has no
-        // way to say "no", so absence becomes an error here.
+        // Not `err`, which reports every domain rejection as `InvalidParameter`.
+        // `getspentinfo` has two rejections that mean different things, and
+        // zcashd gives one of them a specific code that clients key on.
         self.validator
             .get_spent_info(outpoint)
             .await
-            .map_err(err)?
-            .ok_or_else(|| invalid("output is unspent or unknown".to_string()))
+            .map_err(spent_info_err)
     }
 
     async fn get_tx_out(
@@ -1516,6 +1563,71 @@ mod error_source_chain {
             Some(zebra_rpc::server::error::LegacyCode::InvalidParameter as i64),
             "a domain rejection must stay downcastable to its legacy code"
         );
+    }
+
+    /// Recovers the legacy code a rejection carries, the way `zaino-serve`
+    /// does: by walking the `source()` chain and downcasting.
+    fn recovered_code(error: &BlockchainSourceError) -> Option<i64> {
+        std::iter::successors(Some(error as &(dyn std::error::Error + 'static)), |error| {
+            error.source()
+        })
+        .find_map(|source| {
+            source
+                .downcast_ref::<crate::error::LegacyRpcError>()
+                .map(|rejection| rejection.code)
+        })
+    }
+
+    /// zcashd answers "no spend on record" with `-5 Unable to get spent info`,
+    /// and that pair is what a client matches on. Neither this method's first
+    /// rewrite nor the connector it replaced actually served it — the former
+    /// reported `-8`, the latter consumed the code into a typed error and
+    /// served a generic internal error. Both lost the only part the client uses.
+    #[test]
+    fn an_unspent_output_reports_zcashds_own_code() {
+        let rejected = spent_info_err(QueryError::Domain(
+            zaino_source::GetSpentInfoError::NotSpent,
+        ));
+
+        assert_eq!(
+            recovered_code(&rejected),
+            Some(zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey as i64)
+        );
+        assert!(
+            rejected.to_string().contains("Unable to get spent info"),
+            "zcashd's message travels with its code: {rejected}"
+        );
+    }
+
+    /// `getspentinfo` is zcashd-only, so a zebrad-backed deployment cannot
+    /// answer it at all. That has to stay distinguishable from "unspent" all
+    /// the way to the wire — served as `-5`, it would tell every client that
+    /// every output is unspent.
+    #[test]
+    fn an_unsupported_method_does_not_masquerade_as_unspent() {
+        let rejected = spent_info_err(QueryError::Domain(
+            zaino_source::GetSpentInfoError::Unsupported,
+        ));
+
+        assert_eq!(recovered_code(&rejected), Some(METHOD_NOT_FOUND));
+        assert_ne!(
+            recovered_code(&rejected),
+            Some(zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey as i64)
+        );
+    }
+
+    /// A transport fault is not an answer about the outpoint, so it must keep
+    /// the typed `FetchError` rather than acquiring a legacy code that would
+    /// tell the client something about the output.
+    #[test]
+    fn a_transport_fault_on_spent_info_stays_a_fetch_failure() {
+        let rejected = spent_info_err(QueryError::Fetch(zaino_source::FetchError::new(
+            zaino_source::FailureMode::Connection,
+            "refused",
+        )));
+
+        assert_eq!(recovered_code(&rejected), None);
+        assert!(rejected.to_string().contains("unreachable"));
     }
 
     #[tokio::test]

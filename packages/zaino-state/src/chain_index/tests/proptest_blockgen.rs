@@ -1500,10 +1500,8 @@ impl zaino_source::GetSpentInfo for ProptestMockchain {
     async fn get_spent_info(
         &self,
         _outpoint: zaino_primitives::types::rpc::SpentOutpoint,
-    ) -> Result<
-        Option<zaino_primitives::types::rpc::SpentInfo>,
-        PortError<zaino_source::GetSpentInfoError>,
-    > {
+    ) -> Result<zaino_primitives::types::rpc::SpentInfo, PortError<zaino_source::GetSpentInfoError>>
+    {
         unimplemented!()
     }
 }

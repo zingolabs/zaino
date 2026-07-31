@@ -442,7 +442,10 @@ impl GetSpentInfo for ZebraValidator {
     async fn get_spent_info(
         &self,
         outpoint: rpc::SpentOutpoint,
-    ) -> Result<Option<rpc::SpentInfo>, QueryError<GetSpentInfoError>> {
+    ) -> Result<rpc::SpentInfo, QueryError<GetSpentInfoError>> {
+        // RPC only, and not merely by preference: `getspentinfo` reads a spent
+        // index that the read-state service does not expose, so there is no
+        // faster path to prefer. Against zebrad this answers `Unsupported`.
         self.rpc.get_spent_info(outpoint).await
     }
 }

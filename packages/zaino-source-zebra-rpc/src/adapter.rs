@@ -67,6 +67,20 @@ const NOT_FOUND_CODES: [i64; 2] = [-5, -8];
 /// the caller's address being wrong, and must surface as a failure.
 const INVALID_ADDRESS_CODE: i64 = -5;
 
+/// `getspentinfo`'s answer for an outpoint with no spend on record.
+///
+/// The same `-5` as [`INVALID_ADDRESS_CODE`], named separately because it says
+/// something different: on `getspentinfo` there is no address to reject, and
+/// zcashd uses this code for "unspent, unknown, or no spent index" alike.
+const NO_SPEND_ON_RECORD: i64 = -5;
+
+/// The JSON-RPC standard code for a method the server does not implement.
+///
+/// Not a zcashd legacy code — it comes from the envelope, not the application.
+/// Relevant because `getspentinfo` is zcashd-only, so a zebrad-backed
+/// deployment answers every call with this.
+const METHOD_NOT_FOUND: i64 = -32601;
+
 /// Whether an error is the validator rejecting one of the addresses asked about.
 fn is_invalid_address(error: &FetchError) -> bool {
     matches!(error.mode, FailureMode::RpcError(INVALID_ADDRESS_CODE))
@@ -111,6 +125,24 @@ fn submission_rejection(error: &FetchError) -> Option<zaino_source::SendRawTrans
     match error.mode {
         FailureMode::RpcError(-22) => Some(Rejection::Malformed(error.message.clone())),
         FailureMode::RpcError(-27..=-25) => Some(Rejection::Rejected(error.message.clone())),
+        _ => None,
+    }
+}
+
+/// The codes `getspentinfo` answers with rather than fails with.
+///
+/// `-5` is zcashd saying it has no spend on record; `-32601` is a validator
+/// saying it does not implement the method, which for this zcashd-only method
+/// means the backing node is zebrad. Both are answers about the question, so a
+/// client should see the reason rather than a generic transport error — and
+/// they must stay distinct, because reading "I cannot answer" as "the output is
+/// unspent" would report a spent output as unspent.
+fn spent_info_rejection(error: &FetchError) -> Option<zaino_source::GetSpentInfoError> {
+    use zaino_source::GetSpentInfoError as Rejection;
+
+    match error.mode {
+        FailureMode::RpcError(NO_SPEND_ON_RECORD) => Some(Rejection::NotSpent),
+        FailureMode::RpcError(METHOD_NOT_FOUND) => Some(Rejection::Unsupported),
         _ => None,
     }
 }
@@ -320,10 +352,14 @@ impl ZebraRpcAdapter {
     /// [`call_parsed`](Self::call_parsed), but reporting the validator's
     /// not-found codes as `Ok(None)`.
     ///
-    /// For the two methods whose *ordinary* answer is already optional —
-    /// `gettxout` and `getspentinfo` — where "no such thing" and "nothing to
-    /// report" are the same answer to the caller. zcashd returns JSON `null`
-    /// for these and zebrad returns a not-found code; both mean absent.
+    /// For `gettxout`, whose *ordinary* answer is already optional: an unspent
+    /// output is a successful query with nothing to report. zcashd returns JSON
+    /// `null` and zebrad returns a not-found code; both mean absent.
+    ///
+    /// `getspentinfo` used to share this, and should not have: it has no null
+    /// answer in the interface, so absence is a domain rejection carrying its
+    /// own code rather than an `Ok(None)`. See
+    /// [`GetSpentInfo`](zaino_source::GetSpentInfo).
     async fn call_parsed_optional<T, E>(
         &self,
         method: &str,
@@ -664,16 +700,33 @@ impl zaino_source::GetSpentInfo for ZebraRpcAdapter {
     async fn get_spent_info(
         &self,
         outpoint: zaino_primitives::types::rpc::SpentOutpoint,
-    ) -> Result<
-        Option<zaino_primitives::types::rpc::SpentInfo>,
-        QueryError<zaino_source::GetSpentInfoError>,
-    > {
+    ) -> Result<zaino_primitives::types::rpc::SpentInfo, QueryError<zaino_source::GetSpentInfoError>>
+    {
+        use zaino_source::GetSpentInfoError;
+
         let params = vec![serde_json::json!({
             "txid": txid_to_display_hex(outpoint.txid),
             "index": outpoint.index,
         })];
-        self.call_parsed_optional("getspentinfo", params, parse::parse_spent_info)
+
+        let value = self
+            .rpc
+            .call("getspentinfo", params)
             .await
+            .map_err(|error| {
+                let error: FetchError = error.into();
+                match spent_info_rejection(&error) {
+                    Some(rejection) => QueryError::Domain(rejection),
+                    None => QueryError::Fetch(error),
+                }
+            })?;
+
+        // A `null` body would be the same fact by a different route. zcashd
+        // does not send one, but reading it as "no spend on record" keeps the
+        // two spellings from producing different answers.
+        parse::parse_spent_info(&value)
+            .map_err(|e| QueryError::Fetch(from_parse(e)))?
+            .ok_or(QueryError::Domain(GetSpentInfoError::NotSpent))
     }
 }
 
@@ -983,5 +1036,41 @@ mod classification_tests {
             submission_rejection(&rpc(-28, "warming up").into()).is_none(),
             "a warming-up validator has not considered the transaction at all"
         );
+    }
+
+    /// `getspentinfo` is zcashd-only, so a zebrad-backed deployment answers
+    /// every call `-32601`. That must not be read as "unspent": one says the
+    /// output has no spend on record, the other says this node cannot tell you
+    /// either way, and collapsing them reports spent outputs as unspent.
+    #[test]
+    fn an_unsupported_method_is_not_an_unspent_output() {
+        use zaino_source::GetSpentInfoError;
+
+        assert_eq!(
+            spent_info_rejection(&rpc(-5, "Unable to get spent info").into()),
+            Some(GetSpentInfoError::NotSpent)
+        );
+        assert_eq!(
+            spent_info_rejection(&rpc(-32601, "Method not found").into()),
+            Some(GetSpentInfoError::Unsupported)
+        );
+    }
+
+    /// Everything else is a failure to reach or be served by the node, and must
+    /// stay retryable rather than becoming a claim about the outpoint.
+    #[test]
+    fn other_spent_info_codes_stay_fetch_failures() {
+        for code in [-8, -28, -1, -32603] {
+            assert!(
+                spent_info_rejection(&rpc(code, "something else").into()).is_none(),
+                "code {code} says nothing about whether the output was spent"
+            );
+        }
+
+        assert!(spent_info_rejection(&FetchError::new(
+            zaino_source::FailureMode::Timeout,
+            "timed out"
+        ))
+        .is_none());
     }
 }
