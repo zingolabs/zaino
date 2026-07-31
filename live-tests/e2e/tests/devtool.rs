@@ -475,7 +475,9 @@ where
     let json_service = test_manager.full_node_jsonrpc_connector().await;
 
     let mut zaino_mempool = test_manager.subscriber().get_raw_mempool().await.unwrap();
-    let mut validator_mempool = json_service.get_raw_mempool().await.unwrap().transactions;
+    let mut validator_mempool: Vec<String> =
+        serde_json::from_value(json_service.get("getrawmempool").await)
+            .expect("getrawmempool returns an array of txids");
 
     dbg!(&zaino_mempool);
     dbg!(&validator_mempool);

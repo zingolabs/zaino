@@ -5,11 +5,11 @@
 //! `Network` from it — so an indexer and its validator cannot disagree about
 //! where an upgrade activates, which would silently corrupt the index.
 //!
-//! # Still on the old transport, deliberately
+//! # Still off the ports, deliberately
 //!
-//! This module reaches the validator through `zaino-fetch`'s connector rather
-//! than the `zaino-source` ports, and moved here unchanged when
-//! `ValidatorConnector` was deleted.
+//! This module asks the validator for `getblockchaininfo` over the raw
+//! JSON-RPC transport and reads the answer as zebra's own type, rather than
+//! going through the `zaino-source` ports.
 //!
 //! Porting it is not mechanical. The ports report upgrades keyed by consensus
 //! branch id — the protocol-defined identity — whereas this code needs zebra's
@@ -21,7 +21,6 @@
 
 use indexmap::IndexMap;
 use tracing::info;
-use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 use zebra_rpc::methods::{ConsensusBranchIdHex, NetworkUpgradeInfo};
 
 use crate::chain_index::source::BlockchainSourceError;
@@ -46,19 +45,33 @@ use crate::config::CommonBackendConfig;
 /// without being re-detected here.
 pub(crate) async fn adopt_network(
     common: &CommonBackendConfig,
-    rpc_client: &JsonRpSeeConnector,
+    rpc_client: &zaino_rpc::RpcClient,
 ) -> Result<zebra_chain::parameters::Network, BlockchainSourceError> {
-    let blockchain_info = rpc_client.get_blockchain_info().await.map_err(|error| {
-        BlockchainSourceError::Unrecoverable(format!(
-            "cannot fetch activation heights from the validator at {}: {error}",
-            common.validator_rpc_address
-        ))
-    })?;
+    let raw = rpc_client
+        .call("getblockchaininfo", Vec::new())
+        .await
+        .map_err(|error| {
+            BlockchainSourceError::Unrecoverable(format!(
+                "cannot fetch activation heights from the validator at {}: {error}",
+                common.validator_rpc_address
+            ))
+        })?;
+
+    // Read as zebra's own response type rather than the domain's: the
+    // activation slots below are keyed by zebra's `NetworkUpgrade` enum, which
+    // the domain deliberately does not carry — see the module docs.
+    let blockchain_info: zebra_rpc::methods::GetBlockchainInfoResponse =
+        serde_json::from_value(raw).map_err(|error| {
+            BlockchainSourceError::Unrecoverable(format!(
+                "the validator at {} returned an unreadable getblockchaininfo: {error}",
+                common.validator_rpc_address
+            ))
+        })?;
 
     // Shared by the Mainnet / The Public Testnet arms: the compiled network is only
     // trusted after the validator's report agrees with it.
     let verified = |network: zebra_chain::parameters::Network| {
-        verify_reported_upgrades(&network, &blockchain_info.upgrades).map_err(|reason| {
+        verify_reported_upgrades(&network, blockchain_info.upgrades()).map_err(|reason| {
             BlockchainSourceError::Unrecoverable(format!(
                 "the validator at {} disagrees with the compiled {network} parameters: {reason}",
                 common.validator_rpc_address
@@ -74,7 +87,7 @@ pub(crate) async fn adopt_network(
         }
         zaino_common::Network::Regtest => {
             let heights =
-                activation_heights_from_upgrades(&blockchain_info.upgrades).map_err(|reason| {
+                activation_heights_from_upgrades(blockchain_info.upgrades()).map_err(|reason| {
                     BlockchainSourceError::Unrecoverable(format!(
                         "cannot adopt activation heights from the validator at {}: {reason}",
                         common.validator_rpc_address

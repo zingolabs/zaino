@@ -4,7 +4,7 @@
 //!
 //! [`BlockchainSource`] is not the abstraction Zaino wants over a validator. It
 //! is declared in the transport's vocabulary — its methods return
-//! `zebra_chain`, `zebra_rpc` and `zaino_fetch` types — so anything depending on
+//! `zebra_chain` and `zebra_rpc` types — so anything depending on
 //! it inherits that whole graph. That is why no subsystem could be extracted
 //! from `zaino-state` without dragging those crates along, and it is the reason
 //! the `zaino-source` ports exist.
@@ -263,7 +263,7 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
         params: AddressDeltasRequest,
     ) -> impl SendFut<BlockchainSourceResult<AddressDeltas>>;
 
-    /// Returns the total balance of a provided `addresses` in an [`AddressBalance`] instance.
+    /// Returns the total balance of a provided `addresses` in an [`AddressBalance`](zaino_primitives::types::AddressBalance) instance.
     ///
     /// zcashd reference: [`getaddressbalance`](https://zcash.github.io/rpc/getaddressbalance.html)
     /// method: post
@@ -363,9 +363,9 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     /// Release any long-lived resources the source owns (e.g. a background
     /// syncer task feeding a `ReadStateService`).
     ///
-    /// Default is a no-op — poll-only sources (`JsonRpSeeConnector`) and test
+    /// Default is a no-op — poll-only sources (the RPC adapter) and test
     /// mockchains own nothing to tear down. Sources that spawn their own
-    /// validator plumbing (the `State` arm of `ValidatorConnector`, which owns
+    /// validator plumbing (the read-state adapter, which owns
     /// the Zebra syncer task) override this to abort that task on shutdown.
     fn shutdown(&self) {}
 }

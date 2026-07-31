@@ -1,6 +1,6 @@
 //! Transaction fetching and deserialization functionality.
 
-use crate::{chain::error::ParseError, utils::ParseFromSlice};
+use crate::legacy_parser::{error::ParseError, utils::ParseFromSlice};
 use std::sync::Arc;
 use zaino_proto::proto::{
     compact_formats::{
@@ -74,9 +74,9 @@ impl ParseFromSlice for FullTransaction {
         txid: Option<Vec<Vec<u8>>>,
         tx_version: Option<u32>,
     ) -> Result<(&[u8], Self), ParseError> {
-        crate::utils::reject_tx_version(tx_version, "FullTransaction")?;
+        crate::legacy_parser::utils::reject_tx_version(tx_version, "FullTransaction")?;
 
-        let (transaction, consumed) = crate::utils::zcash_deserialize_consumed::<
+        let (transaction, consumed) = crate::legacy_parser::utils::zcash_deserialize_consumed::<
             zebra_chain::transaction::Transaction,
         >(data)?;
         let tx_id = txid

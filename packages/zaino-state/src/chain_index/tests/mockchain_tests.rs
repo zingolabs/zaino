@@ -1171,9 +1171,7 @@ async fn z_get_block_invalid_identifier_keeps_legacy_error_code() {
     let mut current: Option<&(dyn std::error::Error + 'static)> = Some(&error);
     let mut rpc_error_code = None;
     while let Some(source_error) = current {
-        if let Some(rpc_error) =
-            source_error.downcast_ref::<zaino_fetch::jsonrpsee::connector::RpcError>()
-        {
+        if let Some(rpc_error) = source_error.downcast_ref::<crate::error::LegacyRpcError>() {
             rpc_error_code = Some(rpc_error.code);
             break;
         }
@@ -1182,7 +1180,7 @@ async fn z_get_block_invalid_identifier_keeps_legacy_error_code() {
     assert_eq!(
         rpc_error_code,
         Some(zebra_rpc::server::error::LegacyCode::InvalidParameter as i64),
-        "the typed RpcError (legacy code -8) must stay reachable via the source() chain"
+        "the typed LegacyRpcError (legacy code -8) must stay reachable via the source() chain"
     );
 }
 
@@ -1325,9 +1323,7 @@ async fn send_raw_transaction_invalid_hex_keeps_legacy_error_code() {
     let mut current: Option<&(dyn std::error::Error + 'static)> = Some(&error);
     let mut rpc_error_code = None;
     while let Some(source_error) = current {
-        if let Some(rpc_error) =
-            source_error.downcast_ref::<zaino_fetch::jsonrpsee::connector::RpcError>()
-        {
+        if let Some(rpc_error) = source_error.downcast_ref::<crate::error::LegacyRpcError>() {
             rpc_error_code = Some(rpc_error.code);
             break;
         }
@@ -1336,6 +1332,6 @@ async fn send_raw_transaction_invalid_hex_keeps_legacy_error_code() {
     assert_eq!(
         rpc_error_code,
         Some(zebra_rpc::server::error::LegacyCode::InvalidParameter as i64),
-        "the typed RpcError (legacy code -8) must stay reachable via the source() chain"
+        "the typed LegacyRpcError (legacy code -8) must stay reachable via the source() chain"
     );
 }

@@ -432,7 +432,7 @@ impl MockchainSource {
 // ---------------------------------------------------------------------------
 // Response builders
 //
-// These moved here with the deletion of `ValidatorConnector`, which was their
+// These moved here with the deletion of the old validator connector, which was their
 // only other caller. They build the wire shapes the scaffolding port still
 // returns, from a mock chain's own blocks.
 //

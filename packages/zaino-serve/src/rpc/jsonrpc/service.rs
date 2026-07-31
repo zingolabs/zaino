@@ -489,16 +489,38 @@ fn invalid_params_error_object(error: impl std::fmt::Display) -> ErrorObjectOwne
 // Currently all errors are hidden from downstream client, a full fix should be implemented. this is a temporary fix to
 // get zaino working, propagating a 500 error code to "block not found". This is still not the full correct behaviour
 // but fixes the current bugs in zaino and gets tests running.
-fn rpc_error_from_error_source<'a>(
-    error_source: &'a (dyn std::error::Error + 'static),
-) -> Option<&'a zaino_fetch::jsonrpsee::connector::RpcError> {
-    error_source.downcast_ref::<zaino_fetch::jsonrpsee::connector::RpcError>()
-}
 
-fn error_object_from_rpc_error(
-    rpc_error: &zaino_fetch::jsonrpsee::connector::RpcError,
-) -> ErrorObjectOwned {
-    ErrorObjectOwned::owned(rpc_error.code as i32, rpc_error.message.clone(), None::<()>)
+/// Recovers a zcashd-compatible legacy error code from one link of an error
+/// chain.
+///
+/// Two things can carry one, and both must be caught:
+///
+/// - [`LegacyRpcError`] — Zaino's *own* rejection, e.g. a malformed block
+///   identifier or an oversized raw transaction, which never reached a
+///   validator.
+/// - [`FetchError`] with [`FailureMode::RpcError`] — a code the *validator*
+///   returned, classified by the source layer.
+///
+/// Before this PR only `zaino-fetch`'s connector type was matched. The new
+/// source stack never produced it, so this recovery was **silently inert**: a
+/// zcashd error code reached the client as a generic internal error. Catching
+/// both closes that.
+fn legacy_code_from_error_source(
+    error_source: &(dyn std::error::Error + 'static),
+) -> Option<(i32, String)> {
+    if let Some(rejection) = error_source.downcast_ref::<zaino_state::LegacyRpcError>() {
+        return Some((rejection.code as i32, rejection.message.clone()));
+    }
+
+    match error_source.downcast_ref::<zaino_source::FetchError>() {
+        Some(fetch_error) => match fetch_error.mode {
+            zaino_source::FailureMode::RpcError(code) => {
+                Some((code as i32, fetch_error.message.clone()))
+            }
+            _ => None,
+        },
+        None => None,
+    }
 }
 
 /// Walks `error`'s `source` chain and returns the first error object `map`
@@ -532,21 +554,26 @@ where
     Error: std::error::Error + 'static,
 {
     error_object_from_source_chain(error, |error_source| {
-        if let Some(zaino_fetch::jsonrpsee::error::TransportError::ErrorStatusCode(500)) =
-            error_source.downcast_ref::<zaino_fetch::jsonrpsee::error::TransportError>()
+        // A 500 from the validator on a `getblock` means the block is not
+        // there. The source layer classifies HTTP status separately from RPC
+        // error codes, so this reads the status rather than a code.
+        //
+        // Reported with zcashd's `InvalidParameter`, which is what clients key
+        // on for a missing block — not the 500 itself.
+        if let Some(zaino_source::FetchError {
+            mode: zaino_source::FailureMode::HttpStatus(500),
+            ..
+        }) = error_source.downcast_ref::<zaino_source::FetchError>()
         {
-            Some(ErrorObjectOwned::owned(
-                zaino_fetch::jsonrpsee::connector::RpcError::new_from_legacycode(
-                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                    "block not found",
-                )
-                .code as i32,
+            return Some(ErrorObjectOwned::owned(
+                zebra_rpc::server::error::LegacyCode::InvalidParameter as i32,
                 "block not found",
                 None::<()>,
-            ))
-        } else {
-            None
+            ));
         }
+
+        legacy_code_from_error_source(error_source)
+            .map(|(code, message)| ErrorObjectOwned::owned(code, message, None::<()>))
     })
 }
 
@@ -555,7 +582,8 @@ where
     Error: std::error::Error + 'static,
 {
     error_object_from_source_chain(error, |error_source| {
-        rpc_error_from_error_source(error_source).map(error_object_from_rpc_error)
+        legacy_code_from_error_source(error_source)
+            .map(|(code, message)| ErrorObjectOwned::owned(code, message, None::<()>))
     })
 }
 

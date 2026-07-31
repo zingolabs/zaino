@@ -1220,4 +1220,70 @@ mod tests {
             "size comes from the tree, and there is no tree here"
         );
     }
+
+    /// Every pool the validator reports must reach the domain, keyed by its own
+    /// `id`. The list is positional on the wire, so a dropped or misordered
+    /// entry silently attributes value to the wrong pool.
+    ///
+    /// This covers what `zaino-fetch`'s `parses_five_value_pools` covered before
+    /// its crate was deleted; the parse it exercised now lives here.
+    #[test]
+    fn every_reported_value_pool_reaches_the_domain() {
+        let info = parse_blockchain_info(&serde_json::json!({
+            "chain": "regtest",
+            "blocks": 100,
+            "headers": 100,
+            "estimatedheight": 100,
+            "bestblockhash": "00".repeat(32),
+            "difficulty": 1.0,
+            "verificationprogress": 1.0,
+            "chainwork": "00",
+            "chainSupply": { "chainValueZat": 1_000u64 },
+            "valuePools": [
+                { "id": "transparent", "chainValueZat": 1u64 },
+                { "id": "sprout", "chainValueZat": 2u64 },
+                { "id": "sapling", "chainValueZat": 3u64 },
+                { "id": "orchard", "chainValueZat": 4u64 },
+                { "id": "ironwood", "chainValueZat": 5u64 },
+            ],
+            "consensus": { "chaintip": "00000000", "nextblock": "00000000" },
+        }))
+        .expect("a well-formed getblockchaininfo parses");
+
+        assert_eq!(
+            info.value_pools
+                .iter()
+                .map(|pool| (pool.id.as_str(), u64::from(pool.chain_value)))
+                .collect::<Vec<_>>(),
+            vec![
+                ("transparent", 1),
+                ("sprout", 2),
+                ("sapling", 3),
+                ("orchard", 4),
+                ("ironwood", 5),
+            ]
+        );
+        assert_eq!(u64::from(info.chain_supply.chain_value), 1_000);
+    }
+
+    /// A validator that reports no pools at all is not an error: the field is
+    /// optional, and an empty list says exactly that.
+    #[test]
+    fn absent_value_pools_parse_as_an_empty_list() {
+        let info = parse_blockchain_info(&serde_json::json!({
+            "chain": "regtest",
+            "blocks": 0,
+            "headers": 0,
+            "estimatedheight": 0,
+            "bestblockhash": "00".repeat(32),
+            "difficulty": 1.0,
+            "verificationprogress": 1.0,
+            "chainwork": "00",
+            "chainSupply": { "chainValueZat": 0u64 },
+            "consensus": { "chaintip": "00000000", "nextblock": "00000000" },
+        }))
+        .expect("a getblockchaininfo without pools parses");
+
+        assert!(info.value_pools.is_empty());
+    }
 }

@@ -1,8 +1,7 @@
 //! Block fetching and deserialization functionality.
 
-use crate::{
-    chain::{error::ParseError, transaction::FullTransaction},
-    utils::ParseFromSlice,
+use crate::legacy_parser::{
+    error::ParseError, transaction::FullTransaction, utils::ParseFromSlice,
 };
 use std::sync::Arc;
 use zaino_proto::proto::{
@@ -100,10 +99,11 @@ impl ParseFromSlice for FullBlock {
         txid: Option<Vec<Vec<u8>>>,
         tx_version: Option<u32>,
     ) -> Result<(&[u8], Self), ParseError> {
-        crate::utils::reject_tx_version(tx_version, "FullBlock")?;
+        crate::legacy_parser::utils::reject_tx_version(tx_version, "FullBlock")?;
 
-        let (block, consumed) =
-            crate::utils::zcash_deserialize_consumed::<zebra_chain::block::Block>(data)?;
+        let (block, consumed) = crate::legacy_parser::utils::zcash_deserialize_consumed::<
+            zebra_chain::block::Block,
+        >(data)?;
         let txids = txid.unwrap_or_default();
 
         if !txids.is_empty() && txids.len() != block.transactions.len() {

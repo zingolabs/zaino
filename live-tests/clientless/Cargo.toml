@@ -55,7 +55,6 @@ zaino-state = { workspace = true, features = ["fast-test-seam"] }
 # zainod/transparent_address_history_experimental in the spawned daemon.
 zainod = { workspace = true }
 zaino-testutils = { workspace = true }
-zaino-fetch = { workspace = true }
 zaino-proto = { workspace = true }
 zaino-common = { workspace = true }
 wire_serialized_transaction_test_data = { workspace = true }
@@ -77,3 +76,4 @@ zcash_local_net = { workspace = true }
 zaino-serve = { workspace = true }
 serde_json.workspace = true
 zaino-primitives.workspace = true
+zaino-rpc.workspace = true

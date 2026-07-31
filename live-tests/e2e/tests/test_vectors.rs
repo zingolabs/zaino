@@ -13,9 +13,9 @@ use zaino_state::read_u32_le;
 use zaino_state::read_u64_le;
 use zaino_state::write_u32_le;
 use zaino_state::write_u64_le;
+use zaino_state::ChainWork;
 use zaino_state::CompactSize;
 use zaino_state::ZcashIndexer;
-use zaino_state::{ChainWork, IndexedBlock};
 use zaino_testutils::{Direct, TestManager, ValidatorKind};
 use zcash_local_net::validator::zebrad::Zebrad;
 use zebra_chain::serialization::{ZcashDeserialize, ZcashSerialize};
@@ -365,13 +365,13 @@ async fn create_200_block_regtest_chain_vectors() {
                 .unwrap();
 
                 // Build block data
-                let full_block = zaino_fetch::chain::block::FullBlock::parse_from_hex(
+                let full_block = zaino_testutils::legacy_parser::block::FullBlock::parse_from_hex(
                     block_data.as_ref(),
                     Some(display_txids_to_server(tx.clone())),
                 )
                 .unwrap();
 
-                let chain_block = IndexedBlock::try_from((
+                let chain_block = zaino_testutils::legacy_parser::indexed_block_from_full_block(
                     full_block.clone(),
                     parent_chain_work,
                     sapling_root.0.into(),
@@ -380,7 +380,7 @@ async fn create_200_block_regtest_chain_vectors() {
                     parent_block_sapling_tree_size,
                     parent_block_orchard_tree_size,
                     parent_block_ironwood_tree_size,
-                ))
+                )
                 .unwrap();
 
                 let zebra_block =

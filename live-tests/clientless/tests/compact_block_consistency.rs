@@ -9,7 +9,6 @@
 //! send: an empty `poolTypes` filter.
 
 use zaino_common::network::ActivationHeights;
-use zaino_fetch::jsonrpsee::response::GetBlockResponse;
 #[allow(deprecated)]
 use zaino_state::ZcashIndexer as _;
 use zaino_testutils::{
@@ -107,29 +106,36 @@ async fn unfiltered_compact_blocks_match_chain_metadata_zebrad() {
         // Verbosity 1: txids-as-strings plus the `trees` field the oracle needs
         // (verbosity 2 returns full transaction objects, which BlockObject's
         // string-typed `tx` field rejects).
-        let oracle_trees = match connector
-            .get_block(block.height.to_string(), Some(1))
-            .await
-            .expect("validator serves verbose blocks")
-        {
-            GetBlockResponse::Object(block_object) => block_object.trees,
-            other => panic!("verbosity-2 getblock must return a block object, got {other:?}"),
+        let oracle_trees = connector
+            .call(
+                "getblock",
+                vec![
+                    serde_json::json!(block.height.to_string()),
+                    serde_json::json!(1),
+                ],
+            )
+            .await["trees"]
+            .clone();
+        let oracle_tree_size = |pool: &str| {
+            oracle_trees[pool]["size"]
+                .as_u64()
+                .unwrap_or_else(|| panic!("validator reports a {pool} tree size: {oracle_trees}"))
         };
         assert_eq!(
             u64::from(metadata.sapling_commitment_tree_size),
-            oracle_trees.sapling(),
+            oracle_tree_size("sapling"),
             "served sapling tree size must match the validator's own at height {}",
             block.height
         );
         assert_eq!(
             u64::from(metadata.orchard_commitment_tree_size),
-            oracle_trees.orchard(),
+            oracle_tree_size("orchard"),
             "served orchard tree size must match the validator's own at height {}",
             block.height
         );
         assert_eq!(
             u64::from(metadata.ironwood_commitment_tree_size),
-            oracle_trees.ironwood(),
+            oracle_tree_size("ironwood"),
             "served ironwood tree size must match the validator's own at height {}",
             block.height
         );
@@ -275,17 +281,20 @@ async fn assert_coinbase_routing(
     let connector = test_manager.full_node_jsonrpc_connector().await;
     let mut violations: Vec<String> = Vec::new();
     for height in 0..=tip {
-        let block = match connector
-            .get_block(height.to_string(), Some(0))
-            .await
-            .unwrap()
-        {
-            GetBlockResponse::Raw(raw) => {
-                zebra_chain::block::Block::zcash_deserialize(raw.as_ref())
-                    .expect("validator serves deserializable blocks")
-            }
-            other => panic!("verbosity-0 getblock must return a raw block, got {other:?}"),
-        };
+        // Verbosity 0 is the serialised block as a hex string.
+        let raw = connector
+            .call(
+                "getblock",
+                vec![serde_json::json!(height.to_string()), serde_json::json!(0)],
+            )
+            .await;
+        let raw = hex::decode(
+            raw.as_str()
+                .expect("verbosity-0 getblock returns a hex string"),
+        )
+        .expect("verbosity-0 getblock returns valid hex");
+        let block = zebra_chain::block::Block::zcash_deserialize(raw.as_slice())
+            .expect("validator serves deserializable blocks");
 
         let expected = expected_era(height);
         let (want_orchard, want_ironwood) = match expected {

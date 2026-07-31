@@ -16,7 +16,6 @@ use zebra_rpc::{
 };
 
 use zaino_address::{ValidatedAddress, ZValidatedAddress};
-use zaino_fetch::jsonrpsee::connector::RpcError;
 use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
     NodeInfo, PeerInfo,
@@ -607,7 +606,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
         Ok(self.indexer.get_address_deltas(params).await?)
     }
 
-    /// Returns software information from the RPC server, as a [`GetInfo`] JSON struct.
+    /// Returns software information from the RPC server, as a [`NodeInfo`] JSON struct.
     ///
     /// zcashd reference: [`getinfo`](https://zcash.github.io/rpc/getinfo.html)
     /// method: post
@@ -616,7 +615,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
     /// # Notes
     ///
     /// [The zcashd reference](https://zcash.github.io/rpc/getinfo.html) might not show some fields
-    /// in Zebra's [`GetInfo`]. Zebra uses the field names and formats from the
+    /// in Zebra's [`NodeInfo`]. Zebra uses the field names and formats from the
     /// [zcashd code](https://github.com/zcash/zcash/blob/v4.6.0-1/src/rpc/misc.cpp#L86-L87).
     fn network(&self) -> zebra_chain::parameters::Network {
         self.data.network()
@@ -626,7 +625,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
         Ok(self.indexer.get_info().await?)
     }
 
-    /// Returns blockchain state information, as a [`GetBlockchainInfoResponse`] JSON struct.
+    /// Returns blockchain state information, as a [`BlockchainInfo`](zaino_primitives::types::BlockchainInfo) JSON struct.
     ///
     /// zcashd reference: [`getblockchaininfo`](https://zcash.github.io/rpc/getblockchaininfo.html)
     /// method: post
@@ -634,7 +633,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
     ///
     /// # Notes
     ///
-    /// Some fields from the zcashd reference are missing from Zebra's [`GetBlockchainInfoResponse`]. It only contains the fields
+    /// Some fields from the zcashd reference are missing from Zebra's [`BlockchainInfo`](zaino_primitives::types::BlockchainInfo). It only contains the fields
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L72-L89)
     async fn get_blockchain_info(
         &self,
@@ -674,7 +673,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
         Ok(self.indexer.get_block_subsidy(height).await?)
     }
 
-    /// Returns the total balance of a provided `addresses` in an [`AddressBalance`] instance.
+    /// Returns the total balance of a provided `addresses` in an [`AddressBalance`](zaino_primitives::types::AddressBalance) instance.
     ///
     /// zcashd reference: [`getaddressbalance`](https://zcash.github.io/rpc/getaddressbalance.html)
     /// method: post
@@ -704,7 +703,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
     }
 
     /// Sends the raw bytes of a signed transaction to the local node's mempool, if the transaction is valid.
-    /// Returns the [`SentTransactionHash`] for the transaction, as a JSON string.
+    /// Returns the [`TransactionHash`](zaino_primitives::types::TransactionHash) for the transaction, as a JSON string.
     ///
     /// zcashd reference: [`sendrawtransaction`](https://zcash.github.io/rpc/sendrawtransaction.html)
     /// method: post
@@ -915,7 +914,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
                     .await?
                     .ok_or(
                         #[allow(deprecated)]
-                        NodeBackedIndexerServiceError::RpcError(RpcError::new_from_legacycode(
+                        NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
                             zebra_rpc::server::error::LegacyCode::InvalidParameter,
                             "Failed to fetch block data.",
                         )),
@@ -926,7 +925,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
                     .await?
                     .ok_or(
                         #[allow(deprecated)]
-                        NodeBackedIndexerServiceError::RpcError(RpcError::new_from_legacycode(
+                        NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
                             zebra_rpc::server::error::LegacyCode::InvalidParameter,
                             "Failed to fetch block data.",
                         )),
@@ -936,7 +935,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
             let treestates = self.indexer.get_treestate(block_data.hash()).await?;
             let time: u32 = block_data.data().time().try_into().map_err(|_error| {
                 #[allow(deprecated)]
-                NodeBackedIndexerServiceError::RpcError(RpcError::new_from_legacycode(
+                NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
                     zebra_rpc::server::error::LegacyCode::InvalidParameter,
                     "Block time is out of range for u32.",
                 ))
@@ -1070,7 +1069,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
     ) -> Result<GetRawTransaction, Self::Error> {
         #[allow(deprecated)]
         let txid = types::TransactionHash::from_hex(&txid_hex).map_err(|error| {
-            NodeBackedIndexerServiceError::RpcError(RpcError::new_from_legacycode(
+            NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
                 zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey,
                 error.to_string(),
             ))
@@ -1078,7 +1077,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
 
         #[allow(deprecated)]
         let not_found_error = || {
-            NodeBackedIndexerServiceError::RpcError(RpcError::new_from_legacycode(
+            NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
                 zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey,
                 "No such mempool or main chain transaction",
             ))

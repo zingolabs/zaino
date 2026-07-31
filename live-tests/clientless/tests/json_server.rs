@@ -232,43 +232,51 @@ async fn get_tx_out_set_info_inner() {
     // Structural parity with zcashd: height, bestblock, transactions, txouts and total_amount
     // must match. `bytes_serialized` and `hash_serialized` are Zaino-defined and intentionally
     // diverge from zcashd; only Zaino-internal invariants are asserted on those fields.
-    use zaino_fetch::jsonrpsee::response::GetTxOutSetInfoResponse;
-    let (zaino, zcashd) = match (zaino_txoutset_info, zcashd_txoutset_info) {
-        (GetTxOutSetInfoResponse::Info(z), GetTxOutSetInfoResponse::Info(r)) => (z, r),
-        other => panic!("expected non-empty gettxoutsetinfo from both sides, got {other:?}"),
+    // Both sides are Zaino subscribers here, so both are rendered through the
+    // served wire shape and compared as JSON.
+    let render = |info| {
+        serde_json::to_value(
+            zaino_serve::rpc::jsonrpc::wire::misc::TxOutSetInfoWire::from_domain(info),
+        )
+        .unwrap()
     };
-
-    assert_eq!(zaino.height, zcashd.height, "`height` differs from zcashd");
-    assert_eq!(
-        zaino.best_block, zcashd.best_block,
-        "`bestblock` differs from zcashd"
-    );
-    assert_eq!(
-        zaino.transactions, zcashd.transactions,
-        "`transactions` count differs from zcashd"
-    );
-    assert_eq!(zaino.txouts, zcashd.txouts, "`txouts` differs from zcashd");
+    let (zaino, zcashd) = (render(zaino_txoutset_info), render(zcashd_txoutset_info));
     assert!(
-        (zaino.total_amount - zcashd.total_amount).abs() < 1e-8,
+        zaino.get("height").is_some() && zcashd.get("height").is_some(),
+        "expected non-empty gettxoutsetinfo from both sides, got {zaino:?} / {zcashd:?}"
+    );
+
+    for field in ["height", "bestblock", "transactions", "txouts"] {
+        assert_eq!(zaino[field], zcashd[field], "`{field}` differs from zcashd");
+    }
+    let amount = |value: &serde_json::Value| {
+        value["total_amount"]
+            .as_f64()
+            .expect("gettxoutsetinfo reports total_amount as a number")
+    };
+    assert!(
+        (amount(&zaino) - amount(&zcashd)).abs() < 1e-8,
         "`total_amount` differs from zcashd: zaino={} zcashd={}",
-        zaino.total_amount,
-        zcashd.total_amount
+        amount(&zaino),
+        amount(&zcashd)
     );
 
     assert_eq!(
-        zaino.bytes_serialized,
-        zaino.txouts * 65,
+        zaino["bytes_serialized"].as_u64().expect("a byte count"),
+        zaino["txouts"].as_u64().expect("a txout count") * 65,
         "`bytes_serialized` must equal txouts * 65 under Zaino's UTXO entry encoding"
     );
+    let hash_serialized = zaino["hash_serialized"]
+        .as_str()
+        .expect("`hash_serialized` is a string");
     assert_eq!(
-        zaino.hash_serialized.len(),
+        hash_serialized.len(),
         64,
         "`hash_serialized` must be 64 lowercase hex chars"
     );
     assert!(
-        zaino.hash_serialized.chars().all(|c| c.is_ascii_hexdigit()),
-        "`hash_serialized` must be hex: got {}",
-        zaino.hash_serialized
+        hash_serialized.chars().all(|c| c.is_ascii_hexdigit()),
+        "`hash_serialized` must be hex: got {hash_serialized}"
     );
 
     services.test_manager.close().await;

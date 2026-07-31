@@ -1,6 +1,6 @@
 //! Shared utility functionality for zaino-fetch.
 
-use crate::chain::error::ParseError;
+use crate::legacy_parser::error::ParseError;
 
 /// Used for decoding Zcash structures from a bytestring.
 pub trait ParseFromSlice {

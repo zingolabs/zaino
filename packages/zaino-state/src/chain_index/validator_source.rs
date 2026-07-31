@@ -7,10 +7,11 @@
 //!
 //! # What this file is doing
 //!
-//! Translating *back*. The port's signatures still return `zebra-rpc` and
-//! `zaino-fetch` wire shapes, because ChainIndex has not moved off them yet.
-//! The composite answers in domain types. So roughly half the methods here
-//! convert domain → wire, undoing part of what the adapters below did.
+//! Translating *back*, for what is left of it. The port's signatures now carry
+//! domain types almost throughout; the exceptions are `z_getblock` and
+//! `getrawtransaction`, which are still assembled into `zebra-rpc` shapes here
+//! because those presentation forms are built from a block's own bytes plus a
+//! few chain facts, and the ports deliberately do not model them.
 //!
 //! That is deliberate and temporary. It is the price of leaving ChainIndex
 //! untouched while the new stack is proven end to end underneath it, and every
@@ -99,7 +100,7 @@ impl<V: ChainIndexSourcePorts> ValidatorSource<V> {
 impl ZebraValidatorSource {
     /// The backing state service, when this deployment reads the database.
     ///
-    /// Test-only escape hatch, carried over from `ValidatorConnector`: live
+    /// Test-only escape hatch, carried over from the deleted connector: live
     /// tests recompute expected chain data straight off the service.
     pub fn read_state_service(&self) -> Option<&zebra_state::ReadStateService> {
         self.validator
@@ -983,27 +984,26 @@ impl ZebraValidatorSource {
     ) -> Result<
         (
             Self,
-            zaino_fetch::jsonrpsee::response::GetInfoResponse,
+            zaino_primitives::types::rpc::NodeInfo,
             zebra_chain::parameters::Network,
         ),
         BlockchainSourceError,
     > {
-        let legacy = legacy_connector(common).await?;
-        let info = legacy
-            .get_info()
+        let adapter = rpc_adapter(common)?;
+        let info = zaino_source::GetNodeInfo::get_node_info(&adapter)
             .await
-            .map_err(BlockchainSourceError::unrecoverable)?;
+            .map_err(err)?;
 
-        while let Err(e) = legacy.get_best_blockhash().await {
+        while let Err(e) = zaino_source::GetChainTip::get_chain_tip(&adapter).await {
             tracing::info!(%e, "Waiting for validator to serve its first block");
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         }
 
         // Adopted before anything consumes a `Network`, so the index and its
         // validator cannot disagree about where an upgrade activates.
-        let network = super::network_adoption::adopt_network(common, &legacy).await?;
+        let network = super::network_adoption::adopt_network(common, &rpc_client(common)?).await?;
 
-        let validator = zaino_source_zebra::ZebraValidator::rpc_only(rpc_adapter(common).await?);
+        let validator = zaino_source_zebra::ZebraValidator::rpc_only(adapter);
 
         Ok((Self::new(validator, network.clone(), None), info, network))
     }
@@ -1020,7 +1020,7 @@ impl ZebraValidatorSource {
     ) -> Result<
         (
             Self,
-            zaino_fetch::jsonrpsee::response::GetInfoResponse,
+            zaino_primitives::types::rpc::NodeInfo,
             zebra_chain::parameters::Network,
         ),
         BlockchainSourceError,
@@ -1029,13 +1029,12 @@ impl ZebraValidatorSource {
         use tower::{Service as _, ServiceExt as _};
         use zebra_state::{ReadRequest, ReadResponse};
 
-        let legacy = legacy_connector(common).await?;
-        let info = legacy
-            .get_info()
+        let adapter = rpc_adapter(common)?;
+        let info = zaino_source::GetNodeInfo::get_node_info(&adapter)
             .await
-            .map_err(BlockchainSourceError::unrecoverable)?;
+            .map_err(err)?;
 
-        let network = super::network_adoption::adopt_network(common, &legacy).await?;
+        let network = super::network_adoption::adopt_network(common, &rpc_client(common)?).await?;
 
         tracing::info!(
             grpc_address = %direct.validator_grpc_address,
@@ -1054,10 +1053,10 @@ impl ZebraValidatorSource {
         tracing::info!("Chain syncer launched");
 
         loop {
-            let blockchain_info = legacy
-                .get_blockchain_info()
-                .await
-                .map_err(BlockchainSourceError::unrecoverable)?;
+            let (validator_hash, validator_height) =
+                zaino_source::GetChainTip::get_chain_tip(&adapter)
+                    .await
+                    .map_err(err)?;
 
             let response = read_state_service
                 .ready()
@@ -1077,8 +1076,8 @@ impl ZebraValidatorSource {
                 continue;
             };
 
-            if blockchain_info.blocks == syncer_height
-                && blockchain_info.best_block_hash == syncer_tip_hash
+            if u32::from(validator_height) == syncer_height.0
+                && <[u8; 32]>::from(validator_hash) == syncer_tip_hash.0
             {
                 tracing::info!(
                     height = syncer_height.0,
@@ -1090,16 +1089,16 @@ impl ZebraValidatorSource {
 
             tracing::info!(
                 syncer_height = syncer_height.0,
-                validator_height = blockchain_info.blocks.0,
+                validator_height = u32::from(validator_height),
                 syncer_tip_hash = %syncer_tip_hash,
-                validator_tip_hash = %blockchain_info.best_block_hash,
+                validator_tip_hash = ?validator_hash,
                 "ReadStateService syncing with Zebra"
             );
             tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
         }
 
         let validator = zaino_source_zebra::ZebraValidator::with_read_state(
-            rpc_adapter(common).await?,
+            adapter,
             zaino_source_zebra_readstate::ZebraReadStateAdapter::from_service(
                 read_state_service,
                 &network,
@@ -1115,58 +1114,37 @@ impl ZebraValidatorSource {
     }
 }
 
-/// The JSON-RPC adapter for the new source stack.
+/// The JSON-RPC client for the new source stack.
 ///
-/// Cookie auth is resolved to a credential pair here. The previous connector
-/// read the cookie file once at construction and stored the token, and
+/// Cookie auth is resolved to a credential pair here. The connector this
+/// replaced read the cookie file once at construction and stored the token, and
 /// `Basic` auth over `("__cookie__", token)` produces the identical header, so
 /// this preserves that behaviour exactly rather than re-reading per request.
-async fn rpc_adapter(
+fn rpc_client(
     common: &crate::config::CommonBackendConfig,
-) -> Result<zaino_source_zebra_rpc::ZebraRpcAdapter, BlockchainSourceError> {
-    let auth = match &common.validator_cookie_path {
-        Some(path) => {
-            let contents = std::fs::read_to_string(path).map_err(|e| {
-                invalid(format!(
-                    "cannot read validator cookie {}: {e}",
-                    path.display()
-                ))
-            })?;
-            let token = contents.trim();
-            let token = token.strip_prefix("__cookie__:").unwrap_or(token);
-            Some(("__cookie__".to_string(), token.to_string()))
-        }
-        None => Some((
-            common.validator_rpc_user.clone(),
-            common.validator_rpc_password.clone(),
-        )),
-    };
+) -> Result<zaino_rpc::RpcClient, BlockchainSourceError> {
+    let auth = zaino_rpc::auth_from_parts(
+        common.validator_cookie_path.as_deref(),
+        Some(common.validator_rpc_user.clone()),
+        Some(common.validator_rpc_password.clone()),
+    )
+    .map_err(|e| invalid(e.to_string()))?;
 
-    let client = zaino_rpc::RpcClient::new(zaino_rpc::RpcClientConfig {
+    zaino_rpc::RpcClient::new(zaino_rpc::RpcClientConfig {
         url: format!("http://{}", common.validator_rpc_address),
         auth,
         ..Default::default()
     })
-    .map_err(|e| invalid(format!("cannot build the validator RPC client: {e}")))?;
-
-    Ok(zaino_source_zebra_rpc::ZebraRpcAdapter::new(client))
+    .map_err(|e| invalid(format!("cannot build the validator RPC client: {e}")))
 }
 
-/// The legacy connector, still used for startup handshakes and network adoption.
-///
-/// Both are the last callers of `zaino-fetch`'s connector here; they go with the
-/// scaffolding when network adoption moves onto the ports.
-async fn legacy_connector(
+/// The JSON-RPC adapter for the new source stack.
+fn rpc_adapter(
     common: &crate::config::CommonBackendConfig,
-) -> Result<zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector, BlockchainSourceError> {
-    zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector::new_from_config_parts(
-        &common.validator_rpc_address,
-        common.validator_rpc_user.clone(),
-        common.validator_rpc_password.clone(),
-        common.validator_cookie_path.clone(),
-    )
-    .await
-    .map_err(BlockchainSourceError::unrecoverable)
+) -> Result<zaino_source_zebra_rpc::ZebraRpcAdapter, BlockchainSourceError> {
+    Ok(zaino_source_zebra_rpc::ZebraRpcAdapter::new(rpc_client(
+        common,
+    )?))
 }
 
 #[cfg(test)]

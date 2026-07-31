@@ -113,7 +113,7 @@ pub use config::{
 
 pub(crate) mod error;
 
-pub use error::NodeBackedIndexerServiceError;
+pub use error::{LegacyRpcError, NodeBackedIndexerServiceError};
 
 pub(crate) mod status;
 

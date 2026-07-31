@@ -38,7 +38,7 @@ use source::BlockchainSource;
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, instrument};
-use zaino_fetch::jsonrpsee::raw_transaction::validate_raw_transaction_hex;
+use zaino_common::consensus::validate_raw_transaction_hex;
 use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
     NodeInfo, PeerInfo,
@@ -226,113 +226,43 @@ fn branch_len_to_active_chain(
 /// - Direct read access to a zebrad database via `ReadStateService` (preferred)
 /// - A JSON-RPC connection to a validator node (zcashd, zebrad, or another zainod)
 ///
-/// # Example with ReadStateService (Preferred)
+/// # Constructing one
+///
+/// Both backends are selected by config and built through
+/// [`NodeBackedIndexerService`](crate::NodeBackedIndexerService), which
+/// resolves the connection type, probes the validator, adopts its activation
+/// schedule and waits for the initial sync:
 ///
 /// ```no_run
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use zaino_state::{ChainIndex, NodeBackedChainIndex, ValidatorConnector, BlockCacheConfig};
-/// use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
-/// use zebra_state::{ReadStateService, Config as ZebraConfig};
-/// use std::path::PathBuf;
+/// use zaino_state::{
+///     LightWalletService, NodeBackedIndexerService, NodeBackedIndexerServiceConfig, ZcashService,
+/// };
 ///
-/// // Create a ReadStateService for direct database access
-/// let zebra_config = ZebraConfig::default();
-/// let read_state_service = ReadStateService::new(&zebra_config).await?;
-///
-/// // Create a JSON-RPC connector for mempool access (temporary requirement)
-/// let mempool_connector = JsonRpSeeConnector::new_from_config_parts(
-///     false, // no cookie auth
-///     "127.0.0.1:8232".parse()?,
-///     "user".to_string(),
-///     "password".to_string(),
-///     None,  // no cookie path
-/// ).await?;
-///
-/// // Create the State source combining both services
-/// let source = ValidatorConnector::State(zaino_state::chain_index::source::State {
-///     read_state_service,
-///     mempool_fetcher: mempool_connector,
-/// });
-///
-/// // Configure the block cache
-/// let config = BlockCacheConfig::new(
-///     None,  // map capacity
-///     None,  // shard amount
-///     1,     // db version
-///     PathBuf::from("/path/to/cache"),
-///     None,  // db size
-///     zebra_chain::parameters::Network::Mainnet,
-///     false, // sync enabled
-///     false, // db enabled
-/// );
-///
-/// // Create the chain index and get a subscriber for queries
-/// let chain_index = NodeBackedChainIndex::new(source, config).await?;
-/// let subscriber = chain_index.subscriber().await;
-///
-/// // Take a snapshot for consistent queries
-/// let snapshot = subscriber.snapshot_nonfinalized_state();
-///
-/// // Query blocks in a range using the subscriber
-/// if let Some(stream) = subscriber.get_block_range(
-///     &snapshot,
-///     zaino_state::Height(100000),
-///     Some(zaino_state::Height(100010))
-/// ) {
-///     // Process the block stream...
-/// }
+/// // `ValidatorConnectionType::Rpc` reaches the validator over JSON-RPC only;
+/// // `Direct` additionally reads its state database, and is preferred where
+/// // available.
+/// let config = NodeBackedIndexerServiceConfig::default();
+/// let service = NodeBackedIndexerService::spawn(config).await?;
 /// # Ok(())
 /// # }
 /// ```
 ///
-/// # Example with JSON-RPC Only (Fallback)
+/// Consumers then query through the service's subscriber, which implements this
+/// trait. A snapshot pins the non-finalised state so a sequence of queries sees
+/// one consistent chain:
 ///
 /// ```no_run
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use zaino_state::{ChainIndex, NodeBackedChainIndex, ValidatorConnector, BlockCacheConfig};
-/// use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
-/// use std::path::PathBuf;
+/// # async fn example(
+/// #     subscriber: impl zaino_state::ChainIndex,
+/// # ) -> Result<(), Box<dyn std::error::Error>> {
+/// use zaino_state::ChainIndex as _;
 ///
-/// // Create a JSON-RPC connector to your validator node
-/// let connector = JsonRpSeeConnector::new_from_config_parts(
-///     false, // no cookie auth
-///     "127.0.0.1:8232".parse()?,
-///     "user".to_string(),
-///     "password".to_string(),
-///     None,  // no cookie path
-/// ).await?;
-///
-/// // Wrap the connector for use with ChainIndex
-/// let source = ValidatorConnector::Fetch(connector);
-///
-/// // Configure the block cache (same as above)
-/// let config = BlockCacheConfig::new(
-///     None,  // map capacity
-///     None,  // shard amount
-///     1,     // db version
-///     PathBuf::from("/path/to/cache"),
-///     None,  // db size
-///     zebra_chain::parameters::Network::Mainnet,
-///     false, // sync enabled
-///     false, // db enabled
-/// );
-///
-/// // Create the chain index and get a subscriber for queries
-/// let chain_index = NodeBackedChainIndex::new(source, config).await?;
-/// let subscriber = chain_index.subscriber().await;
-///
-/// // Use the subscriber to access ChainIndex trait methods
-/// let snapshot = subscriber.snapshot_nonfinalized_state();
+/// let snapshot = subscriber.snapshot_nonfinalized_state().await?;
+/// let tip = subscriber.best_chaintip(&snapshot).await?;
 /// # Ok(())
 /// # }
 /// ```
-///
-/// # Migrating from FetchService or StateService
-///
-/// If you were previously using `FetchService::spawn()` or `StateService::spawn()`:
-/// 1. Extract the relevant fields from your service config into a `BlockCacheConfig`
-/// 2. Create the appropriate `ValidatorConnector` variant (State or Fetch)
-/// 3. Call `NodeBackedChainIndex::new(source, config).await`
 ///
 /// When a call asks for info (e.g. a block), Zaino selects sources in this order:
 #[doc = simple_mermaid::mermaid!("chain_index_passthrough.mmd")]
@@ -753,107 +683,33 @@ pub trait ChainIndexRpcExt: ChainIndex {
 /// # Construction
 ///
 /// Use [`NodeBackedChainIndex::new()`] with:
-/// - A [`ValidatorConnector`] source (State variant preferred, Fetch as fallback)
-/// - A [`crate::config::BlockCacheConfig`] containing cache and database settings
-///
-/// # Example with StateService (Preferred)
+/// - A source implementing [`BlockchainSource`] — in production
+///   [`ZebraValidatorSource`](crate::chain_index::validator_source::ZebraValidatorSource),
+///   built by `spawn_rpc` or `spawn_direct` from the backend config
+/// - A [`ChainIndexConfig`](crate::ChainIndexConfig) containing cache and database settings
 ///
 /// ```no_run
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use zaino_state::{NodeBackedChainIndex, ValidatorConnector, BlockCacheConfig};
-/// use zaino_state::chain_index::source::State;
-/// use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
-/// use zebra_state::{ReadStateService, Config as ZebraConfig};
-/// use std::path::PathBuf;
+/// use zaino_state::chain_index::validator_source::ZebraValidatorSource;
+/// use zaino_state::{ChainIndexConfig, NodeBackedChainIndex};
 ///
-/// // Create ReadStateService for direct database access
-/// let zebra_config = ZebraConfig::default();
-/// let read_state_service = ReadStateService::new(&zebra_config).await?;
+/// # let common = unimplemented!();
+/// // `spawn_rpc` reaches the validator over JSON-RPC only; `spawn_direct`
+/// // additionally reads its state database, and is preferred where available.
+/// // Both adopt the validator's activation schedule at first contact.
+/// let (source, _node_info, network) = ZebraValidatorSource::spawn_rpc(common).await?;
 ///
-/// // Temporary: Create JSON-RPC connector for mempool access
-/// let mempool_connector = JsonRpSeeConnector::new_from_config_parts(
-///     false,
-///     "127.0.0.1:8232".parse()?,
-///     "user".to_string(),
-///     "password".to_string(),
-///     None,
-/// ).await?;
-///
-/// let source = ValidatorConnector::State(State {
-///     read_state_service,
-///     mempool_fetcher: mempool_connector,
-/// });
-///
-/// // Configure the cache (extract these from your previous StateServiceConfig)
-/// let config = BlockCacheConfig {
-///     map_capacity: Some(1000),
-///     map_shard_amount: Some(16),
-///     db_version: 1,
-///     db_path: PathBuf::from("/path/to/cache"),
-///     db_size: Some(10), // GB
-///     network: zebra_chain::parameters::Network::Mainnet,
-///     no_sync: false,
-///     no_db: false,
-/// };
-///
-/// let chain_index = NodeBackedChainIndex::new(source, config).await?;
+/// let chain_index =
+///     NodeBackedChainIndex::new(source, ChainIndexConfig::from_backend_config(common, network))
+///         .await?;
 /// let subscriber = chain_index.subscriber().await;
-///
-/// // Use the subscriber to access ChainIndex trait methods
-/// let snapshot = subscriber.snapshot_nonfinalized_state();
 /// # Ok(())
 /// # }
 /// ```
 ///
-/// # Example with JSON-RPC Only (Fallback)
-///
-/// ```no_run
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use zaino_state::{NodeBackedChainIndex, ValidatorConnector, BlockCacheConfig};
-/// use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
-/// use std::path::PathBuf;
-///
-/// // For JSON-RPC backend (replaces FetchService::spawn)
-/// let connector = JsonRpSeeConnector::new_from_config_parts(
-///     false,
-///     "127.0.0.1:8232".parse()?,
-///     "user".to_string(),
-///     "password".to_string(),
-///     None,
-/// ).await?;
-/// let source = ValidatorConnector::Fetch(connector);
-///
-/// // Configure the cache (extract these from your previous FetchServiceConfig)
-/// let config = BlockCacheConfig {
-///     map_capacity: Some(1000),
-///     map_shard_amount: Some(16),
-///     db_version: 1,
-///     db_path: PathBuf::from("/path/to/cache"),
-///     db_size: Some(10), // GB
-///     network: zebra_chain::parameters::Network::Mainnet,
-///     no_sync: false,
-///     no_db: false,
-/// };
-///
-/// let chain_index = NodeBackedChainIndex::new(source, config).await?;
-/// let subscriber = chain_index.subscriber().await;
-///
-/// // Use the subscriber to access ChainIndex trait methods
-/// # Ok(())
-/// # }
-/// ```
-///
-/// # Migration from StateService/FetchService
-///
-/// If migrating from `StateService::spawn(config)`:
-/// 1. Create a `ReadStateService` and temporary JSON-RPC connector for mempool
-/// 2. Convert config to `BlockCacheConfig` (or use `From` impl)
-/// 3. Call `NodeBackedChainIndex::new(ValidatorConnector::State(...), block_config)`
-///
-/// If migrating from `FetchService::spawn(config)`:
-/// 1. Create a `JsonRpSeeConnector` using the RPC fields from your `FetchServiceConfig`
-/// 2. Convert remaining config fields to `BlockCacheConfig` (or use `From` impl)
-/// 3. Call `NodeBackedChainIndex::new(ValidatorConnector::Fetch(connector), block_config)`
+/// Most consumers should not build one directly:
+/// [`NodeBackedIndexerService`](crate::NodeBackedIndexerService) does all of the
+/// above from config, and additionally waits for the initial sync to complete.
 ///
 /// # Current Features
 ///
@@ -2792,12 +2648,10 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
         let snapshot = self.snapshot_nonfinalized_state().await?;
         let tip = self.best_chaintip(&snapshot).await?;
         let id = HashOrHeight::new(&hash_or_height, Some(tip.height.into())).map_err(|error| {
-            ChainIndexError::internal_from(
-                zaino_fetch::jsonrpsee::connector::RpcError::new_from_legacycode(
-                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                    error,
-                ),
-            )
+            ChainIndexError::internal_from(crate::error::LegacyRpcError::new(
+                zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                error,
+            ))
         })?;
         self.source()
             .get_block_verbose(id, verbosity)
@@ -2917,8 +2771,17 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
         &self,
         raw_transaction_hex: String,
     ) -> Result<zaino_primitives::types::TransactionHash, Self::Error> {
-        validate_raw_transaction_hex(&raw_transaction_hex)
-            .map_err(ChainIndexError::internal_from)?;
+        // A local rejection, before the validator round trip. It carries
+        // zcashd's `InvalidParameter` so the client sees the same code it
+        // would have got from the validator, rather than a generic internal
+        // error — the serving layer recovers it by downcasting the source
+        // chain.
+        validate_raw_transaction_hex(&raw_transaction_hex).map_err(|error| {
+            ChainIndexError::internal_from(crate::error::LegacyRpcError::new(
+                zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                error.to_string(),
+            ))
+        })?;
         self.source()
             .send_raw_transaction(raw_transaction_hex)
             .await

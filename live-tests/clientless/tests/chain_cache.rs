@@ -1,6 +1,47 @@
 use zaino_common::network::ActivationHeights;
-use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 use zaino_testutils::{Direct, Rpc, TestManager, ValidatorExt, ValidatorKind};
+
+/// The validator's own `z_getsubtreesbyindex` answer, as `(root, end_height)`
+/// pairs.
+///
+/// Read from the raw JSON rather than through a Zaino type: this is the oracle
+/// side, and deserializing it through the type under test would make the two
+/// sides agree by construction on exactly the encoding being checked.
+async fn oracle_subtree_roots(
+    oracle: &zaino_testutils::ValidatorOracle,
+    pool: &str,
+    start_index: u16,
+    max_entries: Option<u16>,
+) -> Vec<([u8; 32], u32)> {
+    let mut params = vec![serde_json::json!(pool), serde_json::json!(start_index)];
+    if let Some(limit) = max_entries {
+        params.push(serde_json::json!(limit));
+    }
+
+    let response = oracle.call("z_getsubtreesbyindex", params).await;
+    response["subtrees"]
+        .as_array()
+        .expect("z_getsubtreesbyindex returns a subtrees array")
+        .iter()
+        .map(|subtree| {
+            let bytes = hex::decode(
+                subtree["root"]
+                    .as_str()
+                    .expect("subtree root from validator is a string"),
+            )
+            .expect("subtree root from validator is not valid hex");
+            let root: [u8; 32] = bytes
+                .as_slice()
+                .try_into()
+                .expect("received subtree root that is not 32 bytes");
+            let end_height = subtree["end_height"]
+                .as_u64()
+                .expect("subtree end_height from validator is a number")
+                as u32;
+            (root, end_height)
+        })
+        .collect()
+}
 
 #[allow(deprecated)]
 async fn create_test_manager_and_connector<T, Conn>(
@@ -9,7 +50,7 @@ async fn create_test_manager_and_connector<T, Conn>(
     chain_cache: Option<std::path::PathBuf>,
     enable_zaino: bool,
     enable_clients: bool,
-) -> (TestManager<T, Conn>, JsonRpSeeConnector)
+) -> (TestManager<T, Conn>, zaino_testutils::ValidatorOracle)
 where
     T: ValidatorExt,
     Conn: zaino_testutils::ValidatorConnectionMarker,
@@ -70,7 +111,7 @@ mod chain_query_interface {
         ephemeral: bool,
     ) -> (
         TestManager<C, Conn>,
-        JsonRpSeeConnector,
+        zaino_testutils::ValidatorOracle,
         Option<NodeBackedIndexerService>,
         NodeBackedChainIndex,
         NodeBackedChainIndexSubscriber,
@@ -317,7 +358,9 @@ mod chain_query_interface {
             .generate_blocks_and_wait_for_tip(seam + 50, &indexer)
             .await;
         let snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
-        let chain_height: u32 = json_service.get_blockchain_info().await.unwrap().blocks.0;
+        let chain_height: u32 = json_service.get("getblockchaininfo").await["blocks"]
+            .as_u64()
+            .expect("a chain height") as u32;
 
         // `start_height` is comfortably below the retention window → evicted from the NFS
         // cache, served by the passthrough; `end_height` is above the finalised floor
@@ -418,7 +461,9 @@ mod chain_query_interface {
         tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
 
         let snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
-        let chain_height = json_service.get_blockchain_info().await.unwrap().blocks.0;
+        let chain_height = json_service.get("getblockchaininfo").await["blocks"]
+            .as_u64()
+            .expect("a chain height") as u32;
 
         // Finalised floor is `tip - seam`; pick a range straddling it.
         let seam = zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
@@ -489,25 +534,13 @@ mod chain_query_interface {
                 .await
                 .unwrap();
 
-            let valid_validator_subtree_roots_response = json_service
-                .get_subtrees_by_index(pool.pool_string(), valid_start_index, max_entries)
-                .await
-                .unwrap();
-            let formatted_valid_validator_subtree_roots: Vec<([u8; 32], u32)> =
-                valid_validator_subtree_roots_response
-                    .subtrees
-                    .into_iter()
-                    .map(|subtree| {
-                        // subtree.root is a hex string; decode to bytes and convert to array
-                        let bytes = hex::decode(&subtree.root)
-                            .expect("subtree root from validator is not valid hex");
-                        let array: [u8; 32] = bytes
-                            .as_slice()
-                            .try_into()
-                            .expect("received subtree root that is not 32 bytes");
-                        (array, subtree.end_height.0)
-                    })
-                    .collect();
+            let formatted_valid_validator_subtree_roots = super::oracle_subtree_roots(
+                &json_service,
+                &pool.pool_string(),
+                valid_start_index,
+                max_entries,
+            )
+            .await;
 
             assert_eq!(
                 valid_chain_index_subtree_roots_response,
@@ -524,29 +557,13 @@ mod chain_query_interface {
             .await
             .unwrap();
 
-        let valid_validator_subtree_roots_response = json_service
-            .get_subtrees_by_index(
-                test_pools[1].pool_string(),
-                invalid_start_index,
-                max_entries,
-            )
-            .await
-            .unwrap();
-        let formatted_valid_validator_subtree_roots: Vec<([u8; 32], u32)> =
-            valid_validator_subtree_roots_response
-                .subtrees
-                .into_iter()
-                .map(|subtree| {
-                    // subtree.root is a hex string; decode to bytes and convert to array
-                    let bytes = hex::decode(&subtree.root)
-                        .expect("subtree root from validator is not valid hex");
-                    let array: [u8; 32] = bytes
-                        .as_slice()
-                        .try_into()
-                        .expect("received subtree root that is not 32 bytes");
-                    (array, subtree.end_height.0)
-                })
-                .collect();
+        let formatted_valid_validator_subtree_roots = super::oracle_subtree_roots(
+            &json_service,
+            &test_pools[1].pool_string(),
+            invalid_start_index,
+            max_entries,
+        )
+        .await;
 
         assert_eq!(
             valid_chain_index_subtree_roots_response,

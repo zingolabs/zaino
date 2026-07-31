@@ -18,7 +18,6 @@ default = []
 zcashd_support = [
     "zaino-testutils/zcashd_support",
     "zaino-state/zcashd_support",
-    "zaino-fetch/zcashd_support",
     "zainod/zcashd_support",
 ]
 
@@ -37,7 +36,6 @@ devtool-incompatible = []
 zaino-testutils = { workspace = true }
 zaino-state = { workspace = true, features = ["test_dependencies"] }
 zaino-common = { workspace = true }
-zaino-fetch = { workspace = true }
 zaino-proto = { workspace = true }
 zainod = { workspace = true }
 

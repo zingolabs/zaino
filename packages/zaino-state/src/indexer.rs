@@ -145,7 +145,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         + Sync
         + 'static;
 
-    /// Returns software information from the RPC server, as a [`GetInfo`] JSON struct.
+    /// Returns software information from the RPC server, as a [`NodeInfo`] JSON struct.
     ///
     /// zcashd reference: [`getinfo`](https://zcash.github.io/rpc/getinfo.html)
     /// method: post
@@ -154,10 +154,10 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// # Notes
     ///
     /// [The zcashd reference](https://zcash.github.io/rpc/getinfo.html) might not show some fields
-    /// in Zebra's [`GetInfo`]. Zebra uses the field names and formats from the
+    /// in Zebra's [`NodeInfo`]. Zebra uses the field names and formats from the
     /// [zcashd code](https://github.com/zcash/zcash/blob/v4.6.0-1/src/rpc/misc.cpp#L86-L87).
     ///
-    /// Some fields from the zcashd reference are missing from Zebra's [`GetInfo`]. It only contains the fields
+    /// Some fields from the zcashd reference are missing from Zebra's [`NodeInfo`]. It only contains the fields
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L91-L95)
     fn get_info(&self) -> impl SendFut<Result<NodeInfo, Self::Error>>;
 
@@ -191,7 +191,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         params: AddressDeltasRequest,
     ) -> impl SendFut<Result<AddressDeltas, Self::Error>>;
 
-    /// Returns blockchain state information, as a [`GetBlockchainInfoResponse`] JSON struct.
+    /// Returns blockchain state information, as a [`BlockchainInfo`](zaino_primitives::types::BlockchainInfo) JSON struct.
     ///
     /// zcashd reference: [`getblockchaininfo`](https://zcash.github.io/rpc/getblockchaininfo.html)
     /// method: post
@@ -199,7 +199,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// # Notes
     ///
-    /// Some fields from the zcashd reference are missing from Zebra's [`GetBlockchainInfoResponse`]. It only contains the fields
+    /// Some fields from the zcashd reference are missing from Zebra's [`BlockchainInfo`](zaino_primitives::types::BlockchainInfo). It only contains the fields
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L72-L89)
     fn get_blockchain_info(
         &self,
@@ -242,7 +242,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// Current `zebrad` does not include the same fields as `zcashd`.
     fn get_peer_info(&self) -> impl SendFut<Result<Vec<PeerInfo>, Self::Error>>;
 
-    /// Returns the total balance of a provided `addresses` in an [`AddressBalance`] instance.
+    /// Returns the total balance of a provided `addresses` in an [`AddressBalance`](zaino_primitives::types::AddressBalance) instance.
     ///
     /// zcashd reference: [`getaddressbalance`](https://zcash.github.io/rpc/getaddressbalance.html)
     /// method: post
@@ -270,7 +270,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ) -> impl SendFut<Result<zaino_primitives::types::AddressBalance, Self::Error>>;
 
     /// Sends the raw bytes of a signed transaction to the local node's mempool, if the transaction is valid.
-    /// Returns the [`SentTransactionHash`] for the transaction, as a JSON string.
+    /// Returns the [`TransactionHash`](zaino_primitives::types::TransactionHash) for the transaction, as a JSON string.
     ///
     /// zcashd reference: [`sendrawtransaction`](https://zcash.github.io/rpc/sendrawtransaction.html)
     /// method: post

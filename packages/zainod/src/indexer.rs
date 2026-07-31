@@ -3,7 +3,7 @@
 use tokio::time::Instant;
 use tracing::info;
 
-use zaino_fetch::jsonrpsee::connector::test_node_and_return_url;
+use zaino_rpc::probe_node;
 use zaino_serve::{
     rpc::grpc_routes,
     server::{config::GrpcServerConfig, grpc::TonicServer, jsonrpc::JsonRpcServer},
@@ -50,9 +50,9 @@ pub async fn spawn_indexer(
     if let Some(donation_address) = &config.donation_address {
         info!(%donation_address, "instance donation address");
     }
-    let zebrad_uri = test_node_and_return_url(
+    let zebrad_uri = probe_node(
         &config.validator_settings.validator_jsonrpc_listen_address,
-        config.validator_settings.validator_cookie_path.clone(),
+        config.validator_settings.validator_cookie_path.as_deref(),
         config.validator_settings.validator_user.clone(),
         config.validator_settings.validator_password.clone(),
     )

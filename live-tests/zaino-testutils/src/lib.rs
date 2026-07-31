@@ -3,6 +3,11 @@
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
+pub mod legacy_parser;
+pub mod validator_oracle;
+
+pub use validator_oracle::ValidatorOracle;
+
 use futures::StreamExt as _;
 use once_cell::sync::Lazy;
 use std::{
@@ -21,7 +26,6 @@ use zaino_common::{
     validator::ValidatorConfig,
     CacheConfig, DatabaseConfig, Network, ServiceConfig, StorageConfig,
 };
-use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
 use zaino_proto::proto::compact_formats::CompactBlock;
 use zaino_proto::proto::service::{BlockId, BlockRange};
 use zaino_serve::server::config::{GrpcServerConfig, JsonRpcServerConfig};
@@ -1034,23 +1038,13 @@ where
         }
     }
 
-    /// Build a JSON-RPC connector to the backing validator's RPC port, using
-    /// the regtest test cookie credentials. For tests that compare Zaino's
-    /// output against the validator's own JSON-RPC.
-    pub async fn full_node_jsonrpc_connector(&self) -> JsonRpSeeConnector {
-        JsonRpSeeConnector::new_with_basic_auth(
-            test_node_and_return_url(
-                &self.full_node_rpc_listen_address.to_string(),
-                None,
-                Some("xxxxxx".to_string()),
-                Some("xxxxxx".to_string()),
-            )
-            .await
-            .unwrap(),
-            "xxxxxx".to_string(),
-            "xxxxxx".to_string(),
-        )
-        .unwrap()
+    /// A raw JSON-RPC line to the backing validator, for tests that compare
+    /// Zaino's output against the validator's own.
+    ///
+    /// Answers are raw JSON: see [`ValidatorOracle`] for why the oracle side
+    /// deliberately does not go through a Zaino type.
+    pub async fn full_node_jsonrpc_connector(&self) -> ValidatorOracle {
+        ValidatorOracle::new(&self.full_node_rpc_listen_address.to_string())
     }
 
     /// Closes the TestManager.
