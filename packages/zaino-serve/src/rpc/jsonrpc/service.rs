@@ -782,6 +782,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .z_get_treestate(hash_or_height)
             .await
+            .map(crate::rpc::jsonrpc::wire::treestate::from_domain)
             .map_err(invalid_params_error_object)
     }
 

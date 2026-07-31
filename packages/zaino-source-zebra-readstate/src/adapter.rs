@@ -800,16 +800,31 @@ impl ZebraReadStateAdapter {
         // A pool with no tree at this block is absent rather than empty: the
         // block predates its activation. That distinction is why every pool is
         // an `Option` — see `Treestate`.
+        // `final_root` is left absent here, matching the RPC adapter: roots are
+        // answered by `get_commitment_tree_roots`, so a treestate carries the
+        // tree and a caller that wants the root asks for it. Populating it on
+        // one adapter only would make the answer depend on the transport.
+        let pool = |final_state: Vec<u8>| zaino_primitives::types::PoolTreestate {
+            final_root: None,
+            final_state,
+        };
+
         let sapling = match sapling? {
-            ReadResponse::SaplingTree(tree) => tree.as_deref().map(|tree| tree.to_rpc_bytes()),
+            ReadResponse::SaplingTree(tree) => {
+                tree.as_deref().map(|tree| pool(tree.to_rpc_bytes()))
+            }
             _ => return Err(unexpected_response("SaplingTree")),
         };
         let orchard = match orchard? {
-            ReadResponse::OrchardTree(tree) => tree.as_deref().map(|tree| tree.to_rpc_bytes()),
+            ReadResponse::OrchardTree(tree) => {
+                tree.as_deref().map(|tree| pool(tree.to_rpc_bytes()))
+            }
             _ => return Err(unexpected_response("OrchardTree")),
         };
         let ironwood = match ironwood? {
-            ReadResponse::IronwoodTree(tree) => tree.as_deref().map(|tree| tree.to_rpc_bytes()),
+            ReadResponse::IronwoodTree(tree) => {
+                tree.as_deref().map(|tree| pool(tree.to_rpc_bytes()))
+            }
             _ => return Err(unexpected_response("IronwoodTree")),
         };
 

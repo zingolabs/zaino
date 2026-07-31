@@ -26,11 +26,8 @@ use zaino_proto::proto::{
 use zebra_chain::{
     block::Height, serialization::BytesInDisplayOrder as _, subtree::NoteCommitmentSubtreeIndex,
 };
-use zebra_rpc::{
-    client::GetTreestateResponse,
-    methods::{
-        GetAddressBalanceRequest, GetAddressTxIdsRequest, GetBlock, GetBlockHash, GetRawTransaction,
-    },
+use zebra_rpc::methods::{
+    GetAddressBalanceRequest, GetAddressTxIdsRequest, GetBlock, GetBlockHash, GetRawTransaction,
 };
 
 use crate::{
@@ -442,7 +439,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     fn z_get_treestate(
         &self,
         hash_or_height: String,
-    ) -> impl SendFut<Result<GetTreestateResponse, Self::Error>>;
+    ) -> impl SendFut<Result<zaino_primitives::types::Treestate, Self::Error>>;
 
     /// Returns information about a range of Sapling or Orchard subtrees.
     ///
@@ -990,86 +987,51 @@ pub(crate) async fn handle_raw_transaction<Indexer: LightWalletIndexer>(
 }
 
 /// Builds the gRPC [`TreeState`](zaino_proto::proto::service::TreeState) from a
-/// `z_gettreestate` response: hex-encoded per-pool final states (the ironwood field is
+/// `z_gettreestate` answer: hex-encoded per-pool final states (the ironwood field is
 /// the empty string below NU6.3 activation, matching lightwalletd behaviour).
 fn tree_state_from_treestate_response(
     network: String,
-    treestate_response: zebra_rpc::client::GetTreestateResponse,
+    treestate: zaino_primitives::types::Treestate,
 ) -> zaino_proto::proto::service::TreeState {
-    let sapling_tree = hex::encode(
-        treestate_response
-            .sapling()
-            .commitments()
-            .final_state()
-            .clone()
-            .unwrap_or_default(),
-    );
-    let orchard_tree = hex::encode(
-        treestate_response
-            .orchard()
-            .commitments()
-            .final_state()
-            .clone()
-            .unwrap_or_default(),
-    );
-    let ironwood_tree = treestate_response
-        .ironwood()
-        .clone()
-        .and_then(|treestate| treestate.commitments().final_state().clone())
-        .map(hex::encode)
-        .unwrap_or_default();
+    fn final_state(pool: Option<zaino_primitives::types::PoolTreestate>) -> String {
+        pool.map(|pool| hex::encode(pool.final_state))
+            .unwrap_or_default()
+    }
 
     zaino_proto::proto::service::TreeState {
         network,
-        height: treestate_response.height().0 as u64,
-        hash: treestate_response.hash().to_string(),
-        time: treestate_response.time(),
-        sapling_tree,
-        orchard_tree,
-        ironwood_tree,
+        height: u64::from(u32::from(treestate.height)),
+        hash: treestate.block_hash.to_string(),
+        time: treestate.time,
+        sapling_tree: final_state(treestate.sapling),
+        orchard_tree: final_state(treestate.orchard),
+        ironwood_tree: final_state(treestate.ironwood),
     }
 }
 
-/// Builds the `z_gettreestate` response from the per-pool treestates the chain index
+/// Builds the `z_gettreestate` answer from the per-pool treestates the chain index
 /// reported.
 ///
-/// `Commitments::new(final_root, final_state)`: the note-commitment tree is the
-/// `final_state`. The ironwood treestate is `Some` only from NU6.3 activation, so
-/// pre-NU6.3 responses omit the field exactly as zebrad does.
+/// The ironwood treestate is `Some` only from NU6.3 activation, so pre-NU6.3
+/// answers omit the pool exactly as zebrad does.
 fn build_treestate_response(
-    hash: zebra_chain::block::Hash,
-    height: zebra_chain::block::Height,
+    hash: zaino_primitives::types::BlockHash,
+    height: zaino_primitives::types::Height,
     time: u32,
     (sapling, orchard, ironwood): (
-        Option<crate::chain_index::source::PoolTreestate>,
-        Option<crate::chain_index::source::PoolTreestate>,
-        Option<crate::chain_index::source::PoolTreestate>,
+        Option<zaino_primitives::types::PoolTreestate>,
+        Option<zaino_primitives::types::PoolTreestate>,
+        Option<zaino_primitives::types::PoolTreestate>,
     ),
-) -> zebra_rpc::client::GetTreestateResponse {
-    fn treestate(
-        pool: Option<crate::chain_index::source::PoolTreestate>,
-    ) -> zebra_rpc::client::Treestate {
-        let (final_root, final_state) = match pool {
-            Some(pool) => (pool.final_root, Some(pool.final_state)),
-            None => (None, None),
-        };
-        zebra_rpc::client::Treestate::new(zebra_rpc::client::Commitments::new(
-            final_root,
-            final_state,
-        ))
-    }
-
-    let sprout_treestate = None;
-    let ironwood_treestate = ironwood.map(|pool| treestate(Some(pool)));
-    zebra_rpc::client::GetTreestateResponse::new(
-        hash,
+) -> zaino_primitives::types::Treestate {
+    zaino_primitives::types::Treestate {
+        block_hash: hash,
         height,
         time,
-        sprout_treestate,
-        treestate(sapling),
-        treestate(orchard),
-        ironwood_treestate,
-    )
+        sapling,
+        orchard,
+        ironwood,
+    }
 }
 
 /// Maximum number of addresses a single `get_address_utxos` / `get_address_utxos_stream`

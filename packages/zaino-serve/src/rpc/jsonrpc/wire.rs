@@ -55,6 +55,7 @@ pub mod misc;
 pub mod node_info;
 pub mod peer_info;
 pub mod subtrees;
+pub mod treestate;
 
 /// Renders a 32-byte identifier as hex in RPC display order.
 ///

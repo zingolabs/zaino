@@ -773,8 +773,16 @@ impl zaino_source::GetTreestateByHash for MockchainSource {
             block_hash: hash,
             height: domain::Height::try_from(height.0).map_err(|e| port_fault(e.to_string()))?,
             time: block.header.time.timestamp() as u32,
-            sapling: Some(sapling.clone()),
-            orchard: Some(orchard.clone()),
+            // The vectors carry trees but no roots, matching what both
+            // production adapters answer with.
+            sapling: Some(domain::PoolTreestate {
+                final_root: None,
+                final_state: sapling.clone(),
+            }),
+            orchard: Some(domain::PoolTreestate {
+                final_root: None,
+                final_state: orchard.clone(),
+            }),
             // The test vectors carry no ironwood tree.
             ironwood: None,
         })

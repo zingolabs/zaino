@@ -237,7 +237,10 @@ mod tests {
             block_hash: hash(1),
             height: height(0),
             time: 0,
-            sapling: Some(vec![1, 2, 3]),
+            sapling: Some(crate::PoolTreestate {
+                final_root: None,
+                final_state: vec![1, 2, 3],
+            }),
             orchard: None,
             ironwood: None,
         };
@@ -247,7 +250,10 @@ mod tests {
         let result = crate::GetTreestate::get_treestate(&mock, height(0))
             .await
             .expect("treestate exists");
-        assert_eq!(result.sapling, Some(vec![1, 2, 3]));
+        assert_eq!(
+            result.sapling.map(|pool| pool.final_state),
+            Some(vec![1, 2, 3])
+        );
         assert!(result.orchard.is_none());
     }
 

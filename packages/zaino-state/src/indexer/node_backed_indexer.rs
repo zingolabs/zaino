@@ -11,7 +11,7 @@ use zebra_chain::{
     block::Height, serialization::ZcashDeserialize as _, subtree::NoteCommitmentSubtreeIndex,
 };
 use zebra_rpc::{
-    client::{GetAddressBalanceRequest, GetTreestateResponse, TransactionObject},
+    client::{GetAddressBalanceRequest, TransactionObject},
     methods::{GetAddressTxIdsRequest, GetBlock, GetBlockHashResponse, GetRawTransaction},
 };
 
@@ -828,9 +828,9 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
     async fn z_get_treestate(
         &self,
         hash_or_height: String,
-    ) -> Result<GetTreestateResponse, Self::Error> {
+    ) -> Result<zaino_primitives::types::Treestate, Self::Error> {
         let fallback_hash_or_height = hash_or_height.clone();
-        let local_result: Result<GetTreestateResponse, Self::Error> = async {
+        let local_result: Result<zaino_primitives::types::Treestate, Self::Error> = async {
             let hash_or_height_struct: HashOrHeight = HashOrHeight::from_str(&hash_or_height)?;
             let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
 
@@ -869,8 +869,12 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
             })?;
 
             Ok(super::build_treestate_response(
-                (*block_data.hash()).into(),
-                block_data.height().into(),
+                zaino_primitives::types::BlockHash::from(block_data.hash().0),
+                zaino_primitives::types::Height::try_from(block_data.height().0).map_err(|e| {
+                    NodeBackedIndexerServiceError::TonicStatusError(tonic::Status::internal(
+                        format!("indexed block height out of range: {e}"),
+                    ))
+                })?,
                 time,
                 treestates,
             ))

@@ -43,14 +43,11 @@ use zebra_state::HashOrHeight;
 #[cfg(test)]
 pub(crate) mod mockchain_source;
 
-/// One pool's treestate for a block, as reported by the backing validator.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PoolTreestate {
-    /// The pool's note commitment tree root (32 bytes), when the validator reports one.
-    pub final_root: Option<Vec<u8>>,
-    /// The pool's serialized note commitment tree.
-    pub final_state: Vec<u8>,
-}
+/// One pool's treestate for a block.
+///
+/// Re-exported from the domain vocabulary so the scaffolding port and the
+/// driving ports name the same type.
+pub use zaino_primitives::types::PoolTreestate;
 
 /// Per-pool treestates `(sapling, orchard, ironwood)`, each `None` when the pool has no
 /// treestate at the queried block.
@@ -224,7 +221,7 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     fn get_treestate_by_id(
         &self,
         hash_or_height: String,
-    ) -> impl SendFut<BlockchainSourceResult<zebra_rpc::client::GetTreestateResponse>>;
+    ) -> impl SendFut<BlockchainSourceResult<zaino_primitives::types::Treestate>>;
 
     /// Returns the sapling and orchard treestate by hash
     fn get_treestate(&self, id: BlockHash) -> impl SendFut<BlockchainSourceResult<TreestateBytes>>;

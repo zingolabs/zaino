@@ -1,6 +1,6 @@
 //! Commitment tree state at a block.
 
-use super::{BlockHash, BlockTime, Height};
+use super::{BlockHash, BlockTime, Height, TreeRoot};
 
 /// Serialized commitment tree bytes for one pool.
 ///
@@ -9,6 +9,28 @@ use super::{BlockHash, BlockTime, Height};
 /// deserializing into a tree) is the consumer's business, so it crosses as
 /// bytes rather than as a structure this crate would have to model.
 pub type TreeBytes = Vec<u8>;
+
+/// One pool's commitment tree at a block.
+///
+/// The tree and its root are kept together because a root without its tree is
+/// not a treestate, and the interface reports them as one object per pool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PoolTreestate {
+    /// Root of the pool's note commitment tree after this block.
+    ///
+    /// `None` when the answering source does not report one. Zebra does not —
+    /// its own response type documents the field as unused — so this is
+    /// genuinely absent rather than zeroed, and a consumer must render it as an
+    /// absent field rather than inventing a value.
+    ///
+    /// Held in internal byte order, like every other identifier in this crate.
+    /// `z_gettreestate` writes it in display order, so the reversal belongs at
+    /// the wire boundary.
+    pub final_root: Option<TreeRoot>,
+
+    /// The pool's serialized note commitment tree.
+    pub final_state: TreeBytes,
+}
 
 /// The commitment trees as of a block, and which block that is.
 ///
@@ -27,13 +49,16 @@ pub struct Treestate {
     /// Block time, in seconds since the Unix epoch.
     pub time: BlockTime,
 
-    /// Serialized Sapling commitment tree, if the pool is active at this height.
-    pub sapling: Option<TreeBytes>,
+    /// Sapling commitment tree, if the pool is active at this height.
+    ///
+    /// `None` is the pool having no tree at this block, not an empty tree:
+    /// `z_gettreestate` keys on absence to omit pre-activation pools, so
+    /// reporting a serialized empty tree would claim the pool is active.
+    pub sapling: Option<PoolTreestate>,
 
-    /// Serialized Orchard commitment tree, if the pool is active at this height.
-    pub orchard: Option<TreeBytes>,
+    /// Orchard commitment tree, if the pool is active at this height.
+    pub orchard: Option<PoolTreestate>,
 
-    /// Serialized Ironwood commitment tree, if the pool is active at this
-    /// height (NU6.3).
-    pub ironwood: Option<TreeBytes>,
+    /// Ironwood commitment tree, if the pool is active at this height (NU6.3).
+    pub ironwood: Option<PoolTreestate>,
 }

@@ -709,7 +709,7 @@ pub trait ChainIndexRpcExt: ChainIndex {
     fn get_treestate_by_id(
         &self,
         hash_or_height: String,
-    ) -> impl std::future::Future<Output = Result<zebra_rpc::client::GetTreestateResponse, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<zaino_primitives::types::Treestate, Self::Error>>;
 
     // ********** Transparent address history methods **********
 
@@ -2928,7 +2928,7 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
     async fn get_treestate_by_id(
         &self,
         hash_or_height: String,
-    ) -> Result<zebra_rpc::client::GetTreestateResponse, Self::Error> {
+    ) -> Result<zaino_primitives::types::Treestate, Self::Error> {
         self.source()
             .get_treestate_by_id(hash_or_height)
             .await

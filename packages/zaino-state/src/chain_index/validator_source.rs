@@ -760,17 +760,19 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
     async fn get_treestate_by_id(
         &self,
         hash_or_height: String,
-    ) -> BlockchainSourceResult<zebra_rpc::client::GetTreestateResponse> {
-        use zebra_rpc::client::{Commitments, Treestate};
-
+    ) -> BlockchainSourceResult<zaino_primitives::types::Treestate> {
         // The scaffolding takes an unparsed identifier; the port takes one or
         // the other, so it is resolved here.
-        let trees = match hash_or_height.parse::<u32>() {
+        //
+        // `final_root` stays absent on this path, unlike `get_treestate`: this
+        // is the validator-passthrough fallback and no roots read accompanies
+        // it, matching Zebra, whose own type documents the field as unused.
+        match hash_or_height.parse::<u32>() {
             Ok(height) => self
                 .validator
                 .get_treestate(domain_height(height)?)
                 .await
-                .map_err(err)?,
+                .map_err(err),
             Err(_) => {
                 let hash = zaino_primitives::types::BlockHash::from(parse_display_hash32(
                     &hash_or_height,
@@ -778,25 +780,9 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
                 self.validator
                     .get_treestate_by_hash(hash)
                     .await
-                    .map_err(err)?
+                    .map_err(err)
             }
-        };
-
-        // `finalRoot` is left absent, matching Zebra, whose own type documents
-        // the field as unused. The trees themselves are the answer.
-        let pool = |state: Option<Vec<u8>>| Treestate::new(Commitments::new(None, state));
-
-        Ok(zebra_rpc::client::GetTreestateResponse::new(
-            zebra_chain::block::Hash(trees.block_hash.into()),
-            zebra_chain::block::Height(trees.height.into()),
-            trees.time,
-            // Sprout is never served: Zaino does not index it, and reporting an
-            // empty tree would claim knowledge it does not have.
-            None,
-            pool(trees.sapling),
-            pool(trees.orchard),
-            Some(pool(trees.ironwood)),
-        ))
+        }
     }
 
     async fn get_subtree_roots(
@@ -1376,19 +1362,15 @@ fn clamp_deltas_range_to_tip(
 /// only when the validator reported one; Zebra does not, so the field is
 /// genuinely absent rather than zeroed.
 fn pool_treestate_slot(
-    state: Option<Vec<u8>>,
+    pool: Option<zaino_primitives::types::PoolTreestate>,
     root: Option<zaino_primitives::types::TreeRootInfo>,
-) -> Option<super::source::PoolTreestate> {
-    state.map(|final_state| super::source::PoolTreestate {
-        final_root: root.map(|info| {
-            // The interface writes roots in display order, and the domain holds
-            // them internally, so this reverses on the way out — as
-            // `display_hex` does for identifiers.
-            let mut bytes = <[u8; 32]>::from(info.root);
-            bytes.reverse();
-            bytes.to_vec()
-        }),
-        final_state,
+) -> Option<zaino_primitives::types::PoolTreestate> {
+    // The tree port answers with the root absent — see its adapters — so the
+    // root read is what fills it. Both are held in internal byte order; the
+    // display-order reversal `z_gettreestate` wants happens at the wire.
+    pool.map(|pool| zaino_primitives::types::PoolTreestate {
+        final_root: root.map(|info| info.root),
+        ..pool
     })
 }
 
@@ -1407,29 +1389,45 @@ mod pool_treestate_slot_tests {
     /// The validator's root must reach the slot. Zebra populates a root for
     /// every pool it serves, and dropping it left every `z_gettreestate`
     /// response with no `finalRoot` for any pool.
+    ///
+    /// The root now stays in internal byte order here; the display-order
+    /// reversal `z_gettreestate` wants happens at the wire boundary, and is
+    /// pinned there.
     #[test]
     fn final_root_passes_through() {
-        let slot = pool_treestate_slot(Some(vec![1u8, 2, 3]), Some(root_info(7)))
-            .expect("a reported tree maps to a populated slot");
+        let slot = pool_treestate_slot(
+            Some(zaino_primitives::types::PoolTreestate {
+                final_root: None,
+                final_state: vec![1u8, 2, 3],
+            }),
+            Some(root_info(7)),
+        )
+        .expect("a reported tree maps to a populated slot");
 
         assert_eq!(slot.final_state, vec![1u8, 2, 3]);
         assert_eq!(
             slot.final_root,
-            Some(vec![7u8; 32]),
+            Some(zaino_primitives::types::TreeRoot::from([7u8; 32])),
             "the validator's root must pass through to the treestate slot"
         );
     }
 
-    /// Roots cross to the interface in display order, which is the reverse of
-    /// how the domain holds them.
+    /// Roots stay in internal byte order here. `z_gettreestate` writes
+    /// `finalRoot` in display order, but that reversal is the wire boundary's —
+    /// see `zaino-serve`'s `wire::treestate::final_root_is_written_in_display_order`.
+    /// Reversing in both places, or in neither, would emit valid-looking hex
+    /// naming a root that does not exist.
     #[test]
-    fn root_is_reversed_into_display_order() {
+    fn root_keeps_internal_byte_order() {
         let mut internal = [0u8; 32];
         internal[0] = 0xaa;
         internal[31] = 0xbb;
 
         let slot = pool_treestate_slot(
-            Some(vec![0]),
+            Some(zaino_primitives::types::PoolTreestate {
+                final_root: None,
+                final_state: vec![0],
+            }),
             Some(TreeRootInfo {
                 root: TreeRoot::from(internal),
                 size: 1,
@@ -1437,9 +1435,11 @@ mod pool_treestate_slot_tests {
         )
         .expect("a reported tree maps to a populated slot");
 
-        let emitted = slot.final_root.expect("a reported root reaches the slot");
-        assert_eq!(emitted[0], 0xbb);
-        assert_eq!(emitted[31], 0xaa);
+        let emitted = <[u8; 32]>::from(slot.final_root.expect("a reported root reaches the slot"));
+        assert_eq!(
+            emitted, internal,
+            "the reversal belongs at the wire, not here"
+        );
     }
 
     /// A pool the validator did not report stays absent — for ironwood this is
@@ -1459,7 +1459,14 @@ mod pool_treestate_slot_tests {
     /// reported absent rather than zeroed.
     #[test]
     fn tree_without_root_keeps_the_slot() {
-        let slot = pool_treestate_slot(Some(vec![9u8]), None).expect("a reported tree is a slot");
+        let slot = pool_treestate_slot(
+            Some(zaino_primitives::types::PoolTreestate {
+                final_root: None,
+                final_state: vec![9u8],
+            }),
+            None,
+        )
+        .expect("a reported tree is a slot");
         assert_eq!(slot.final_root, None);
     }
 }

@@ -230,7 +230,7 @@ pub(crate) fn parse_height(value: &serde_json::Value) -> Result<Height, ParseErr
 fn parse_pool_final_state(
     value: &serde_json::Value,
     pool: &str,
-) -> Result<Option<Vec<u8>>, ParseError> {
+) -> Result<Option<zaino_primitives::types::PoolTreestate>, ParseError> {
     value
         .get(pool)
         .and_then(|p| p.get("commitments"))
@@ -240,6 +240,15 @@ fn parse_pool_final_state(
                 .ok_or_else(|| ParseError::unexpected("string", v))
                 .and_then(|hex_str| {
                     hex::decode(hex_str).map_err(|e| ParseError::Hex(e.to_string()))
+                })
+                .map(|final_state| zaino_primitives::types::PoolTreestate {
+                    // `finalRoot` is not read back from the validator's reply.
+                    // Zebra's own type documents the field as unused, so
+                    // trusting it here would make the answer depend on which
+                    // validator is behind the adapter. Roots come from
+                    // `get_commitment_tree_roots`, which every adapter answers.
+                    final_root: None,
+                    final_state,
                 })
         })
         .transpose()
