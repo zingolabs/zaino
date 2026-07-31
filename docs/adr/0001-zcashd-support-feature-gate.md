@@ -74,8 +74,17 @@ not in this feature.
 `zcashd_support` is declared and forwarded through every crate in both chains,
 mirroring the existing `transparent_address_history_experimental` pattern:
 
-- production: `zaino-fetch` → `zaino-state` → `zaino-serve` → `zainod`
-- test: `zaino-testutils` → `walletless-tests` / wallet-tests
+- production: `zaino-serve` → `zainod`
+- test: `zaino-testutils` → `clientless` / `e2e`
+
+> The production chain was originally `zaino-fetch` → `zaino-state` →
+> `zaino-serve` → `zainod`. `zaino-fetch` has since been deleted, and the
+> zcashd-shaped response types it carried now live in `zaino-serve`'s wire
+> module, which gates them directly. `zaino-state` gated nothing once that
+> move landed, so its declaration was removed rather than left as an empty
+> pass-through: a feature that forwards to nothing still has to be threaded
+> through every consumer's manifest, and reads as coverage it does not
+> provide. `zaino-serve` is now the only crate where the feature gates code.
 
 Each crate carries it in `default = [...]`. It is **not** placed under the
 `experimental_features` umbrella — that umbrella is for opt-in alpha features,

@@ -22,12 +22,6 @@ fast-test-seam = []
 # Support for connecting to a zcashd validator node. Opt-in (default off, docs/adr/0005); being
 # deprecated. See docs/adr/0001-zcashd-support-feature-gate.md.
 #
-# Gates nothing in this crate any more: the zcashd-only response parsing it used
-# to forward to now lives in `zaino-serve`'s wire module, which gates it
-# directly. Kept so the forwarding chain from the live-test crates still
-# resolves, and because a zcashd-specific path here is likely again.
-zcashd_support = []
-
 # Prometheus metrics emission (gauge! calls in sync paths).
 prometheus = ["metrics"]
 

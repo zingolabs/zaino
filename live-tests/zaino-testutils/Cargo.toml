@@ -18,7 +18,6 @@ default = []
 # forwards to the zaino libs. See
 # docs/adr/0001-zcashd-support-feature-gate.md.
 zcashd_support = [
-    "zaino-state/zcashd_support",
     "zaino-serve/zcashd_support",
     "zainod/zcashd_support",
 ]

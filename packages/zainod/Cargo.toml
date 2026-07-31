@@ -28,10 +28,7 @@ test_dependencies = ["zaino-serve/test_dependencies"]
 # deprecated. Forwards to the zaino libs. Build with `--no-default-features`
 # to compile zcashd out end-to-end. See
 # docs/adr/0001-zcashd-support-feature-gate.md.
-zcashd_support = [
-  "zaino-state/zcashd_support",
-  "zaino-serve/zcashd_support",
-]
+zcashd_support = ["zaino-serve/zcashd_support"]
 
 # Removes network restrictions.
 no_tls_use_unencrypted_traffic = ["zaino-serve/no_tls_use_unencrypted_traffic"]
