@@ -6104,6 +6104,7 @@ dependencies = [
  "whoami",
  "zaino-address",
  "zaino-common",
+ "zaino-convert-zebra",
  "zaino-fetch",
  "zaino-primitives",
  "zaino-proto",

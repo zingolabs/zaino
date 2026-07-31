@@ -84,7 +84,16 @@ pub fn header_from_parts(
     })
 }
 
-fn transaction_from_zebra(
+/// Convert one zebra transaction into the domain's.
+///
+/// `index` is the transaction's position within its block. A transaction with
+/// no block — a mempool transaction — passes `0`, matching what the light-wallet
+/// protocol serves for one.
+///
+/// Public because the mempool stream converts a single transaction rather than
+/// a whole block; every other caller reaches this through
+/// [`block_from_zebra`].
+pub fn transaction_from_zebra(
     tx: &zebra_chain::transaction::Transaction,
     index: u32,
 ) -> Result<Transaction, ConvertError> {

@@ -16,10 +16,7 @@ use zebra_rpc::{
 };
 
 use zaino_address::{ValidatedAddress, ZValidatedAddress};
-use zaino_fetch::{
-    chain::{transaction::FullTransaction, utils::ParseFromSlice},
-    jsonrpsee::connector::RpcError,
-};
+use zaino_fetch::jsonrpsee::connector::RpcError;
 use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
     NodeInfo, PeerInfo,
@@ -242,6 +239,83 @@ impl<Source: BlockchainSource> NodeBackedIndexerServiceSubscriber<Source> {
     /// adopted from the validator (zaino#1076).
     pub fn network(&self) -> zebra_chain::parameters::Network {
         self.data.network()
+    }
+}
+
+/// Renders a compact transaction in the light-wallet protocol's proto shape.
+///
+/// The mempool stream's only conversion. Blocks reach the same proto type
+/// through the finalised state, which builds it from the indexed persistence
+/// types instead — one shape, two producers, because a mempool transaction has
+/// no indexed form to read from.
+///
+/// Every byte string here is in protocol (internal) order, as the proto
+/// comments require. The domain holds identifiers the same way, so nothing is
+/// reversed on this path.
+fn compact_tx_to_proto(
+    tx: &zaino_primitives::types::PreIndexCompactTx,
+) -> zaino_proto::proto::compact_formats::CompactTx {
+    use zaino_proto::proto::compact_formats::{
+        CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend, CompactTx, CompactTxIn,
+        TxOut,
+    };
+
+    // Ironwood actions are packed into `CompactOrchardAction` deliberately:
+    // they are the same shape, kept in a separate field rather than a separate
+    // type.
+    let orchard_action = |action: &zaino_primitives::types::OrchardAction| CompactOrchardAction {
+        nullifier: <[u8; 32]>::from(action.nullifier).to_vec(),
+        cmx: <[u8; 32]>::from(action.cmx).to_vec(),
+        ephemeral_key: <[u8; 32]>::from(action.ephemeral_key).to_vec(),
+        ciphertext: Vec::<u8>::from(action.enc_ciphertext.clone()),
+    };
+
+    CompactTx {
+        // A mempool transaction is in no block, so it has no position in one.
+        index: 0,
+        txid: <[u8; 32]>::from(tx.txid).to_vec(),
+        // Not computable without the spent outputs, which a stateless
+        // conversion does not have. The proto documents the field as optional
+        // for exactly this case.
+        fee: 0,
+        spends: tx
+            .sapling_nullifiers
+            .iter()
+            .map(|nullifier| CompactSaplingSpend {
+                nf: <[u8; 32]>::from(*nullifier).to_vec(),
+            })
+            .collect(),
+        outputs: tx
+            .sapling_outputs
+            .iter()
+            .map(|output| CompactSaplingOutput {
+                cmu: <[u8; 32]>::from(output.cmu).to_vec(),
+                ephemeral_key: <[u8; 32]>::from(output.ephemeral_key).to_vec(),
+                // Already truncated to the compact head at the domain
+                // boundary, so there is no second truncation here.
+                ciphertext: Vec::<u8>::from(output.enc_ciphertext.clone()),
+            })
+            .collect(),
+        actions: tx.orchard_actions.iter().map(orchard_action).collect(),
+        ironwood_actions: tx.ironwood_actions.iter().map(orchard_action).collect(),
+        // A coinbase transaction's single null-outpoint input is already absent
+        // from the domain, which is what the proto asks for.
+        vin: tx
+            .transparent_inputs
+            .iter()
+            .map(|input| CompactTxIn {
+                prevout_txid: <[u8; 32]>::from(input.prev_txid).to_vec(),
+                prevout_index: input.prev_index,
+            })
+            .collect(),
+        vout: tx
+            .transparent_outputs
+            .iter()
+            .map(|output| TxOut {
+                value: u64::from(output.value),
+                script_pub_key: Vec::<u8>::from(output.script.clone()),
+            })
+            .collect(),
     }
 }
 
@@ -1680,63 +1754,40 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
                     match mempool.get_mempool_transactions(exclude_txids).await {
                         Ok(transactions) => {
                             for serialized_transaction_bytes in transactions {
-                                // TODO: This implementation should be cleaned up
-                                // to not use parse_from_slice.
-                                // This could be done by implementing
-                                // try_from zebra_chain::transaction::Transaction for CompactTxData,
-                                // (which implements to_compact())
-                                // letting us avoid double parsing of transaction bytes.
-                                let transaction: zebra_chain::transaction::Transaction =
+                                // One parse, not two. This used to deserialize
+                                // the same bytes into a `zebra_chain`
+                                // transaction and then again into
+                                // `zaino-fetch`'s `FullTransaction`, purely to
+                                // reach the latter's `to_compact`. The domain
+                                // conversion reaches the same compact shape
+                                // from the zebra transaction directly, which is
+                                // what the TODO this replaces asked for.
+                                let compact =
                                     zebra_chain::transaction::Transaction::zcash_deserialize(
                                         &mut Cursor::new(&serialized_transaction_bytes),
                                     )
-                                    .unwrap();
-                                // TODO: Check this is in the correct format and
-                                // does not need hex decoding or reversing.
-                                let txid = transaction.hash().0.to_vec();
+                                    .map_err(|e| {
+                                        tonic::Status::unknown(format!(
+                                            "mempool transaction did not deserialize: {e}"
+                                        ))
+                                    })
+                                    .and_then(|transaction| {
+                                        // Index 0: a mempool transaction is in no
+                                        // block, and this field is its position
+                                        // within one.
+                                        zaino_convert_zebra::transaction_from_zebra(&transaction, 0)
+                                            .map_err(|e| tonic::Status::unknown(e.to_string()))
+                                    })
+                                    .map(|transaction| {
+                                        compact_tx_to_proto(
+                                            &zaino_primitives::types::PreIndexCompactTx::from(
+                                                &transaction,
+                                            ),
+                                        )
+                                    });
 
-                                match <FullTransaction as ParseFromSlice>::parse_from_slice(
-                                    &serialized_transaction_bytes,
-                                    Some(vec![txid]),
-                                    None,
-                                ) {
-                                    Ok(transaction) => {
-                                        // ParseFromSlice returns any data left after the
-                                        // conversion to aFullTransaction, If the conversion
-                                        // has succeeded this should be empty.
-                                        if transaction.0.is_empty() {
-                                            if channel_tx
-                                                .send(transaction.1.to_compact(0).map_err(|e| {
-                                                    tonic::Status::unknown(e.to_string())
-                                                }))
-                                                .await
-                                                .is_err()
-                                            {
-                                                break;
-                                            }
-                                        } else {
-                                            // TODO: Hide server error from clients \
-                                            // before release. Currently useful for dev purposes.
-                                            if channel_tx
-                                                .send(Err(tonic::Status::unknown("Error: ")))
-                                                .await
-                                                .is_err()
-                                            {
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        // TODO: Hide server error from clients before \
-                                        // release. Currently useful for dev purposes.
-                                        if channel_tx
-                                            .send(Err(tonic::Status::unknown(e.to_string())))
-                                            .await
-                                            .is_err()
-                                        {
-                                            break;
-                                        }
-                                    }
+                                if channel_tx.send(compact).await.is_err() {
+                                    break;
                                 }
                             }
                         }
@@ -2101,5 +2152,101 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
             (https://github.com/zingolabs/zaino.git).",
             ),
         ))
+    }
+}
+
+#[cfg(test)]
+mod compact_tx_to_proto_tests {
+    use super::compact_tx_to_proto;
+    use zaino_primitives::types::{
+        EncryptedCiphertext, OrchardAction, PreIndexCompactTx, Script, TransactionHash,
+        TransparentInput, TransparentOutput, Zatoshis,
+    };
+
+    fn action(tag: u8) -> OrchardAction {
+        OrchardAction {
+            nullifier: [tag; 32].into(),
+            cmx: [tag.wrapping_add(1); 32].into(),
+            ephemeral_key: [tag.wrapping_add(2); 32].into(),
+            enc_ciphertext: EncryptedCiphertext::new(vec![tag; 52]),
+        }
+    }
+
+    fn sample() -> PreIndexCompactTx {
+        PreIndexCompactTx {
+            txid: TransactionHash::from([0xaa; 32]),
+            transparent_inputs: vec![TransparentInput {
+                prev_txid: TransactionHash::from([0xbb; 32]),
+                prev_index: 3,
+            }],
+            transparent_outputs: vec![TransparentOutput {
+                value: Zatoshis::new(50_000).unwrap(),
+                script: Script::new(vec![0x76, 0xa9]),
+            }],
+            sapling_nullifiers: vec![[0xcc; 32].into()],
+            sapling_outputs: Vec::new(),
+            orchard_actions: vec![action(1)],
+            ironwood_actions: vec![action(2)],
+        }
+    }
+
+    /// The proto documents every byte string on this message as protocol
+    /// order, explicitly not reversed. The domain holds identifiers the same
+    /// way, so this path must not reverse — a reversal here would hand wallets
+    /// txids that name nothing.
+    #[test]
+    fn identifiers_stay_in_protocol_order() {
+        let proto = compact_tx_to_proto(&sample());
+
+        assert_eq!(proto.txid, vec![0xaa; 32]);
+        assert_eq!(proto.vin[0].prevout_txid, vec![0xbb; 32]);
+        assert_eq!(proto.spends[0].nf, vec![0xcc; 32]);
+    }
+
+    /// A mempool transaction is in no block, so it has no position in one, and
+    /// its fee is not computable without the outputs it spends. Both fields are
+    /// zero by contract rather than by accident.
+    #[test]
+    fn a_mempool_transaction_has_no_index_or_fee() {
+        let proto = compact_tx_to_proto(&sample());
+
+        assert_eq!(proto.index, 0);
+        assert_eq!(proto.fee, 0);
+    }
+
+    /// Ironwood actions share `CompactOrchardAction`'s shape but not its field.
+    /// Merging them would misattribute notes to the wrong pool, which a wallet
+    /// cannot detect.
+    #[test]
+    fn ironwood_actions_stay_in_their_own_field() {
+        let proto = compact_tx_to_proto(&sample());
+
+        assert_eq!(proto.actions.len(), 1);
+        assert_eq!(proto.ironwood_actions.len(), 1);
+        assert_eq!(proto.actions[0].nullifier, vec![1u8; 32]);
+        assert_eq!(proto.ironwood_actions[0].nullifier, vec![2u8; 32]);
+    }
+
+    #[test]
+    fn transparent_outputs_carry_value_and_script() {
+        let proto = compact_tx_to_proto(&sample());
+
+        assert_eq!(proto.vout[0].value, 50_000);
+        assert_eq!(proto.vout[0].script_pub_key, vec![0x76, 0xa9]);
+    }
+
+    /// A coinbase transaction's null-outpoint input is dropped at the domain
+    /// boundary, which is what the proto asks for: clients test `index == 0`
+    /// instead of looking for the input.
+    #[test]
+    fn a_transaction_with_no_spends_emits_empty_lists() {
+        let mut tx = sample();
+        tx.transparent_inputs.clear();
+        tx.sapling_nullifiers.clear();
+
+        let proto = compact_tx_to_proto(&tx);
+
+        assert!(proto.vin.is_empty());
+        assert!(proto.spends.is_empty());
     }
 }
