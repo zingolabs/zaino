@@ -932,12 +932,13 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
         let shielded_pool = match pool.as_str() {
             "sapling" => crate::chain_index::ShieldedPool::Sapling,
             "orchard" => crate::chain_index::ShieldedPool::Orchard,
+            "ironwood" => crate::chain_index::ShieldedPool::Ironwood,
             otherwise => {
                 return Err(NodeBackedIndexerServiceError::RpcError(
                     RpcError::new_from_legacycode(
                         zebra_rpc::server::error::LegacyCode::Misc,
                         format!(
-                            "invalid pool name \"{otherwise}\", must be \"sapling\" or \"orchard\""
+                            "invalid pool name \"{otherwise}\", must be \"sapling\", \"orchard\", or \"ironwood\""
                         ),
                     ),
                 ))
