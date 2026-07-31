@@ -43,6 +43,41 @@ impl GetAddressDeltasParams {
     pub fn new_address(addr: impl Into<String>) -> Self {
         GetAddressDeltasParams::Address(addr.into())
     }
+
+    /// Reads the client's request into the domain vocabulary.
+    ///
+    /// Infallible, unlike the other request conversions in this module. The two
+    /// things that could be rejected here are not rejected by this interface:
+    /// the height range is open-ended by design — zcashd reads `0` in either
+    /// position as "unbounded" — and is resolved against the tip by the
+    /// answering adapter, which is the only layer that knows the tip; and
+    /// [`TransparentAddress`](zaino_primitives::types::TransparentAddress) is
+    /// an opaque string, so there is nothing to parse.
+    ///
+    /// Validating the addresses here is now possible — `zaino-address` can
+    /// classify them — but it would start rejecting requests this method
+    /// currently answers with an empty list, which is a served-behaviour change
+    /// and does not belong in a rewire.
+    pub fn into_domain(self) -> zaino_primitives::types::rpc::AddressDeltasRequest {
+        use zaino_primitives::types::{rpc::AddressDeltasRequest, TransparentAddress};
+
+        match self {
+            Self::Address(address) => {
+                AddressDeltasRequest::Address(TransparentAddress::new(address))
+            }
+            Self::Filtered {
+                addresses,
+                start,
+                end,
+                chain_info,
+            } => AddressDeltasRequest::Filtered {
+                addresses: addresses.into_iter().map(TransparentAddress::new).collect(),
+                start,
+                end,
+                chain_info,
+            },
+        }
+    }
 }
 
 /// Response to a `getaddressdeltas` RPC request.
@@ -69,7 +104,25 @@ pub enum GetAddressDeltasResponse {
     },
 }
 
-impl GetAddressDeltasResponse {}
+impl GetAddressDeltasResponse {
+    /// Renders the domain answer as the served JSON shape.
+    ///
+    /// Which variant is emitted follows the domain value, which in turn follows
+    /// the request — a `chainInfo` request with no deltas still answers the
+    /// extended shape with an empty list.
+    pub fn from_domain(deltas: zaino_primitives::types::rpc::AddressDeltas) -> Self {
+        use zaino_primitives::types::rpc::AddressDeltas;
+
+        match deltas {
+            AddressDeltas::Simple(deltas) => Self::Simple(AddressDelta::vec_from_domain(deltas)),
+            AddressDeltas::WithChainInfo { deltas, start, end } => Self::WithChainInfo {
+                deltas: AddressDelta::vec_from_domain(deltas),
+                start: BlockInfo::from_domain(start),
+                end: BlockInfo::from_domain(end),
+            },
+        }
+    }
+}
 
 /// Represents a change in the balance of a transparent address.
 #[derive(Debug, Clone, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -118,6 +171,24 @@ impl AddressDelta {
             block_index,
         }
     }
+
+    /// Renders a run of domain deltas as the served JSON shape.
+    ///
+    /// Ordering is the source's — zcashd's documented `(height, blockindex,
+    /// index)` — and is not re-sorted here.
+    fn vec_from_domain(deltas: Vec<zaino_primitives::types::AddressDelta>) -> Vec<Self> {
+        deltas
+            .into_iter()
+            .map(|delta| Self {
+                satoshis: delta.satoshis.into(),
+                txid: super::display_hex(delta.txid.into()),
+                index: delta.index,
+                height: delta.height.into(),
+                address: delta.address.into(),
+                block_index: delta.block_index,
+            })
+            .collect()
+    }
 }
 
 /// Block information for `getaddressdeltas` responses with `chaininfo = true`.
@@ -133,6 +204,145 @@ impl BlockInfo {
     /// Creates a new BlockInfo from a hash in hex-encoded display order and height.
     pub fn new(hash: String, height: u32) -> Self {
         Self { hash, height }
+    }
+
+    /// Renders a domain block reference as the served JSON shape.
+    fn from_domain(block: zaino_primitives::types::rpc::BlockRef) -> Self {
+        Self {
+            hash: super::display_hex(block.hash.into()),
+            height: block.height.into(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod domain_tests {
+    use super::*;
+    use zaino_primitives::types::{self as domain, Height, SignedZatoshis, TransparentAddress};
+
+    /// Asymmetric under reversal, so a missing or doubled byte-reversal shows up.
+    const ASYMMETRIC: [u8; 32] = [
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
+        0xff, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+        0xee, 0x01,
+    ];
+
+    fn delta() -> domain::AddressDelta {
+        domain::AddressDelta {
+            satoshis: SignedZatoshis::new(-1_000),
+            txid: domain::TransactionHash::from(ASYMMETRIC),
+            index: 2,
+            height: Height::try_from(99u32).unwrap(),
+            address: TransparentAddress::new("t1address".to_string()),
+            block_index: Some(4),
+        }
+    }
+
+    #[test]
+    fn simple_response_is_a_bare_array_with_display_order_txids() {
+        let json = serde_json::to_value(GetAddressDeltasResponse::from_domain(
+            domain::rpc::AddressDeltas::Simple(vec![delta()]),
+        ))
+        .unwrap();
+
+        let mut display_order = ASYMMETRIC;
+        display_order.reverse();
+
+        assert!(
+            json.is_array(),
+            "the simple form is not wrapped in an object"
+        );
+        assert_eq!(json[0]["txid"], hex::encode(display_order));
+        assert_eq!(json[0]["satoshis"], -1_000i64);
+        assert_eq!(json[0]["index"], 2);
+        assert_eq!(json[0]["height"], 99);
+        assert_eq!(json[0]["address"], "t1address");
+        assert_eq!(json[0]["blockindex"], 4);
+    }
+
+    /// The chaininfo form's endpoints name blocks by hash, in display order —
+    /// the same encoding as a delta's txid, from a different domain type.
+    #[test]
+    fn chain_info_response_names_its_endpoints() {
+        let block = |height: u32| domain::rpc::BlockRef {
+            hash: domain::BlockHash::from(ASYMMETRIC),
+            height: Height::try_from(height).unwrap(),
+        };
+
+        let json = serde_json::to_value(GetAddressDeltasResponse::from_domain(
+            domain::rpc::AddressDeltas::WithChainInfo {
+                deltas: vec![delta()],
+                start: block(1),
+                end: block(99),
+            },
+        ))
+        .unwrap();
+
+        let mut display_order = ASYMMETRIC;
+        display_order.reverse();
+
+        assert_eq!(json["start"]["height"], 1);
+        assert_eq!(json["start"]["hash"], hex::encode(display_order));
+        assert_eq!(json["end"]["height"], 99);
+        assert_eq!(json["deltas"][0]["satoshis"], -1_000i64);
+    }
+
+    /// A `chainInfo` request with no deltas still answers the extended shape:
+    /// the variant follows the request, not what the data turned out to be.
+    #[test]
+    fn an_empty_chain_info_answer_keeps_its_shape() {
+        let block = domain::rpc::BlockRef {
+            hash: domain::BlockHash::from(ASYMMETRIC),
+            height: Height::try_from(1u32).unwrap(),
+        };
+
+        let json = serde_json::to_value(GetAddressDeltasResponse::from_domain(
+            domain::rpc::AddressDeltas::WithChainInfo {
+                deltas: Vec::new(),
+                start: block,
+                end: block,
+            },
+        ))
+        .unwrap();
+
+        assert_eq!(json["deltas"], serde_json::json!([]));
+        assert!(json["start"].is_object());
+    }
+
+    /// The request's height range reaches the domain unresolved: `0` still
+    /// means "unbounded" here, because only the answering adapter knows the tip.
+    #[test]
+    fn request_range_is_carried_through_unclamped() {
+        let request = GetAddressDeltasParams::new_filtered(
+            vec!["t1a".to_string(), "t1b".to_string()],
+            0,
+            0,
+            true,
+        )
+        .into_domain();
+
+        let domain::rpc::AddressDeltasRequest::Filtered {
+            addresses,
+            start,
+            end,
+            chain_info,
+        } = request
+        else {
+            panic!("a filtered request must stay filtered");
+        };
+        assert_eq!(addresses.len(), 2);
+        assert_eq!((start, end, chain_info), (0, 0, true));
+    }
+
+    /// The single-address form has no range at all, and must not acquire one.
+    #[test]
+    fn single_address_request_stays_rangeless() {
+        let request = GetAddressDeltasParams::new_address("t1a").into_domain();
+
+        assert!(matches!(
+            request,
+            domain::rpc::AddressDeltasRequest::Address(_)
+        ));
     }
 }
 

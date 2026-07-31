@@ -24,17 +24,11 @@ use zebra_rpc::{
 use zaino_address::{ValidatedAddress, ZValidatedAddress};
 use zaino_fetch::{
     chain::{transaction::FullTransaction, utils::ParseFromSlice},
-    jsonrpsee::{
-        connector::RpcError,
-        response::{
-            address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
-            block_deltas::BlockDeltas,
-            block_header::GetBlockHeader,
-            block_subsidy::GetBlockSubsidy,
-            mining_info::GetMiningInfoWire,
-            peer_info::GetPeerInfo,
-        },
-    },
+    jsonrpsee::connector::RpcError,
+};
+use zaino_primitives::types::rpc::{
+    AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
+    PeerInfo,
 };
 
 use zaino_proto::proto::{
@@ -540,8 +534,8 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
     /// tags: address
     async fn get_address_deltas(
         &self,
-        params: GetAddressDeltasParams,
-    ) -> Result<GetAddressDeltasResponse, Self::Error> {
+        params: AddressDeltasRequest,
+    ) -> Result<AddressDeltas, Self::Error> {
         Ok(self.indexer.get_address_deltas(params).await?)
     }
 
@@ -589,7 +583,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
         Ok(self.indexer.get_mempool_info().await)
     }
 
-    async fn get_peer_info(&self) -> Result<GetPeerInfo, Self::Error> {
+    async fn get_peer_info(&self) -> Result<Vec<PeerInfo>, Self::Error> {
         Ok(self.indexer.get_peer_info().await?)
     }
 
@@ -602,7 +596,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
         Ok(self.indexer.get_difficulty().await?)
     }
 
-    async fn get_block_subsidy(&self, height: u32) -> Result<GetBlockSubsidy, Self::Error> {
+    async fn get_block_subsidy(&self, height: u32) -> Result<BlockSubsidy, Self::Error> {
         Ok(self.indexer.get_block_subsidy(height).await?)
     }
 
@@ -703,15 +697,15 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
         Ok(self.indexer.get_block_deltas(hash).await?)
     }
 
-    async fn get_block_header(
-        &self,
-        hash: String,
-        verbose: bool,
-    ) -> Result<GetBlockHeader, Self::Error> {
-        Ok(self.indexer.get_block_header(hash, verbose).await?)
+    async fn get_block_header(&self, hash: String) -> Result<BlockHeaderVerbose, Self::Error> {
+        Ok(self.indexer.get_block_header(hash).await?)
     }
 
-    async fn get_mining_info(&self) -> Result<GetMiningInfoWire, Self::Error> {
+    async fn get_raw_block_header(&self, hash: String) -> Result<Vec<u8>, Self::Error> {
+        Ok(self.indexer.get_raw_block_header(hash).await?)
+    }
+
+    async fn get_mining_info(&self) -> Result<MiningInfo, Self::Error> {
         Ok(self.indexer.get_mining_info().await?)
     }
 

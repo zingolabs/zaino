@@ -10,14 +10,10 @@ use crate::SendFut;
 use tokio::{sync::mpsc, time::timeout};
 use tracing::warn;
 use zaino_address::{ValidatedAddress, ZValidatedAddress};
-use zaino_fetch::jsonrpsee::response::{
-    address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
-    block_deltas::BlockDeltas,
-    block_header::GetBlockHeader,
-    block_subsidy::GetBlockSubsidy,
-    mining_info::GetMiningInfoWire,
-    peer_info::GetPeerInfo,
-    GetSubtreesResponse,
+use zaino_fetch::jsonrpsee::response::GetSubtreesResponse;
+use zaino_primitives::types::rpc::{
+    AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
+    PeerInfo,
 };
 use zaino_proto::proto::{
     compact_formats::CompactBlock,
@@ -188,8 +184,8 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// tags: address
     fn get_address_deltas(
         &self,
-        params: GetAddressDeltasParams,
-    ) -> impl SendFut<Result<GetAddressDeltasResponse, Self::Error>>;
+        params: AddressDeltasRequest,
+    ) -> impl SendFut<Result<AddressDeltas, Self::Error>>;
 
     /// Returns blockchain state information, as a [`GetBlockchainInfoResponse`] JSON struct.
     ///
@@ -219,7 +215,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// # Parameters
     ///
     /// - `height`: (number, optional) The block height. If not provided, defaults to the current height of the chain.
-    fn get_block_subsidy(&self, height: u32) -> impl SendFut<Result<GetBlockSubsidy, Self::Error>>;
+    fn get_block_subsidy(&self, height: u32) -> impl SendFut<Result<BlockSubsidy, Self::Error>>;
 
     /// Returns details on the active state of the TX memory pool.
     ///
@@ -238,7 +234,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// tags: network
     ///
     /// Current `zebrad` does not include the same fields as `zcashd`.
-    fn get_peer_info(&self) -> impl SendFut<Result<GetPeerInfo, Self::Error>>;
+    fn get_peer_info(&self) -> impl SendFut<Result<Vec<PeerInfo>, Self::Error>>;
 
     /// Returns the total balance of a provided `addresses` in an [`AddressBalance`] instance.
     ///
@@ -301,8 +297,16 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     fn get_block_header(
         &self,
         hash: String,
-        verbose: bool,
-    ) -> impl SendFut<Result<GetBlockHeader, Self::Error>>;
+    ) -> impl SendFut<Result<BlockHeaderVerbose, Self::Error>>;
+
+    /// Returns the raw serialised header of the block with the given hash.
+    ///
+    /// The non-verbose half of `getblockheader`. Verbosity is a property of the
+    /// request, so it selects between two questions rather than making one
+    /// answer polymorphic; the serving layer picks which to ask.
+    ///
+    /// zcashd reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
+    fn get_raw_block_header(&self, hash: String) -> impl SendFut<Result<Vec<u8>, Self::Error>>;
 
     /// Returns the requested block by hash or height, as a [`GetBlock`] JSON string.
     /// If the block is not in Zebra's state, returns
@@ -562,7 +566,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// Returns a json object containing mining-related information.
     ///
     /// `zcashd` reference (may be outdated): [`getmininginfo`](https://zcash.github.io/rpc/getmininginfo.html)
-    fn get_mining_info(&self) -> impl SendFut<Result<GetMiningInfoWire, Self::Error>>;
+    fn get_mining_info(&self) -> impl SendFut<Result<MiningInfo, Self::Error>>;
 
     /// Returns statistics about the unspent transaction output set.
     ///

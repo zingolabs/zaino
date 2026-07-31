@@ -33,12 +33,9 @@ use crate::chain_index::{
     ShieldedPool,
 };
 use crate::SendFut;
-use zaino_fetch::jsonrpsee::response::{
-    address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
-    block_header::GetBlockHeader,
-    block_subsidy::GetBlockSubsidy,
-    mining_info::GetMiningInfoWire,
-    peer_info::GetPeerInfo,
+use zaino_primitives::types::rpc::{
+    AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
+    PeerInfo,
 };
 use zebra_rpc::{
     client::{GetAddressBalanceRequest, GetAddressTxIdsRequest},
@@ -112,15 +109,18 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     fn get_block_header(
         &self,
         hash: String,
-        verbose: bool,
-    ) -> impl SendFut<BlockchainSourceResult<GetBlockHeader>>;
+    ) -> impl SendFut<BlockchainSourceResult<BlockHeaderVerbose>>;
+
+    /// Returns the raw serialised header of the block with the given hash.
+    ///
+    /// The non-verbose half of `getblockheader`. Verbosity is chosen by the
+    /// caller, so it selects between two questions here rather than making one
+    /// answer polymorphic; the serving layer picks which to ask.
+    fn get_raw_block_header(&self, hash: String) -> impl SendFut<BlockchainSourceResult<Vec<u8>>>;
 
     /// Returns the `getblockdeltas`-shaped transparent input/output deltas for the block
     /// with the given hash.
-    fn get_block_deltas(
-        &self,
-        hash: String,
-    ) -> impl SendFut<BlockchainSourceResult<zaino_fetch::jsonrpsee::response::block_deltas::BlockDeltas>>;
+    fn get_block_deltas(&self, hash: String) -> impl SendFut<BlockchainSourceResult<BlockDeltas>>;
 
     // ********** Transaction methods **********
 
@@ -180,7 +180,7 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     fn get_info(&self) -> impl SendFut<BlockchainSourceResult<GetInfo>>;
 
     /// Returns the `getpeerinfo` response.
-    fn get_peer_info(&self) -> impl SendFut<BlockchainSourceResult<GetPeerInfo>>;
+    fn get_peer_info(&self) -> impl SendFut<BlockchainSourceResult<Vec<PeerInfo>>>;
 
     /// Returns the validator's `getchaintips` response. Serves as the
     /// `getchaintips` fallback while the local index is still building its
@@ -190,13 +190,10 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     ) -> impl SendFut<BlockchainSourceResult<Vec<zaino_primitives::types::rpc::ChainTip>>>;
 
     /// Returns the `getblocksubsidy` response at the given height.
-    fn get_block_subsidy(
-        &self,
-        height: u32,
-    ) -> impl SendFut<BlockchainSourceResult<GetBlockSubsidy>>;
+    fn get_block_subsidy(&self, height: u32) -> impl SendFut<BlockchainSourceResult<BlockSubsidy>>;
 
     /// Returns the `getmininginfo` response.
-    fn get_mining_info(&self) -> impl SendFut<BlockchainSourceResult<GetMiningInfoWire>>;
+    fn get_mining_info(&self) -> impl SendFut<BlockchainSourceResult<MiningInfo>>;
 
     /// Returns the `gettxout` response for the given outpoint.
     fn get_tx_out(
@@ -271,8 +268,8 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     /// tags: address
     fn get_address_deltas(
         &self,
-        params: GetAddressDeltasParams,
-    ) -> impl SendFut<BlockchainSourceResult<GetAddressDeltasResponse>>;
+        params: AddressDeltasRequest,
+    ) -> impl SendFut<BlockchainSourceResult<AddressDeltas>>;
 
     /// Returns the total balance of a provided `addresses` in an [`AddressBalance`] instance.
     ///

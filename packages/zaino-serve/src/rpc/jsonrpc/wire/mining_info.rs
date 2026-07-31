@@ -98,21 +98,21 @@ impl From<GetMiningInfoWire> for MiningInfo {
     }
 }
 
-impl From<MiningInfo> for GetMiningInfoWire {
-    /// Rebuild the wire form from the internal representation.
-    ///
-    /// The inverse of the existing `From<GetMiningInfoWire> for MiningInfo`.
-    /// Both directions are needed once a caller *produces* mining info rather
-    /// than only consuming it — which is the case while Zaino serves this RPC
-    /// from its own source layer and has to render the response itself.
+impl GetMiningInfoWire {
+    /// Renders the domain type as the served JSON shape.
     ///
     /// The zcashd-only local-miner fields (`genproclimit`, `localsolps`,
-    /// `generate`, `errorstimestamp`, `pooledtx`) have no counterpart in
-    /// [`MiningInfo`] and are emitted as absent. They describe a mining daemon,
-    /// which Zaino is not, so there is nothing truthful to put in them.
-    fn from(info: MiningInfo) -> Self {
+    /// `generate`, `errorstimestamp`, `pooledtx`) have no counterpart in the
+    /// domain type and are emitted as absent. They describe a mining daemon,
+    /// which Zaino is not, so there is nothing truthful to put in them — see
+    /// [`zaino_primitives::types::rpc::MiningInfo`] for the full reasoning.
+    ///
+    /// `extras` is likewise empty: the source layer drops fields it does not
+    /// model rather than carrying opaque values through, so there is nothing to
+    /// pass on.
+    pub fn from_domain(info: zaino_primitives::types::rpc::MiningInfo) -> Self {
         Self {
-            tip_height: info.tip_height,
+            tip_height: info.tip_height.into(),
             current_block_size: info.current_block_size,
             current_block_tx: info.current_block_tx,
             networksolps: info.network_solution_rate,
@@ -126,8 +126,84 @@ impl From<MiningInfo> for GetMiningInfoWire {
             localsolps: None,
             pooledtx: None,
             generate: None,
-            extras: info.extras,
+            extras: HashMap::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod from_domain_tests {
+    use super::*;
+
+    fn sample() -> zaino_primitives::types::rpc::MiningInfo {
+        zaino_primitives::types::rpc::MiningInfo {
+            tip_height: zaino_primitives::types::Height::try_from(1_234u32).unwrap(),
+            chain: "regtest".to_string(),
+            testnet: true,
+            current_block_size: Some(2_000),
+            current_block_tx: Some(3),
+            network_solution_rate: Some(500),
+            network_hash_rate: Some(600),
+            difficulty: Some(1.5),
+            errors: Some("something".to_string()),
+        }
+    }
+
+    /// Pins zcashd's field names. `blocks`, `currentblocksize` and
+    /// `currentblocktx` are all renames, so a struct-field rename here would
+    /// otherwise silently change the served JSON.
+    #[test]
+    fn renders_zcashd_field_names() {
+        let json = serde_json::to_value(GetMiningInfoWire::from_domain(sample())).unwrap();
+
+        assert_eq!(json["blocks"], 1_234);
+        assert_eq!(json["currentblocksize"], 2_000);
+        assert_eq!(json["currentblocktx"], 3);
+        assert_eq!(json["networksolps"], 500);
+        assert_eq!(json["networkhashps"], 600);
+        assert_eq!(json["chain"], "regtest");
+        assert_eq!(json["testnet"], true);
+        assert_eq!(json["difficulty"], 1.5);
+        assert_eq!(json["errors"], "something");
+    }
+
+    /// The local-miner fields describe a component Zaino does not have, so they
+    /// are emitted as JSON null rather than being given a plausible value.
+    #[test]
+    fn emits_the_local_miner_fields_as_absent() {
+        let json = serde_json::to_value(GetMiningInfoWire::from_domain(sample())).unwrap();
+
+        for field in [
+            "genproclimit",
+            "localsolps",
+            "generate",
+            "pooledtx",
+            "errorstimestamp",
+        ] {
+            assert!(
+                json[field].is_null(),
+                "{field} describes a mining daemon and must not be invented"
+            );
+        }
+    }
+
+    /// The domain type's `None`s survive as nulls rather than becoming zeros —
+    /// "the validator does not report this" and "the value is zero" are
+    /// different answers.
+    #[test]
+    fn absent_domain_values_stay_absent() {
+        let mut info = sample();
+        info.current_block_size = None;
+        info.network_solution_rate = None;
+        info.difficulty = None;
+        info.errors = None;
+
+        let json = serde_json::to_value(GetMiningInfoWire::from_domain(info)).unwrap();
+
+        assert!(json["currentblocksize"].is_null());
+        assert!(json["networksolps"].is_null());
+        assert!(json["difficulty"].is_null());
+        assert!(json["errors"].is_null());
     }
 }
 

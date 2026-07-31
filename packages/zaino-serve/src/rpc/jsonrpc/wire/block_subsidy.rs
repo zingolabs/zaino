@@ -100,6 +100,51 @@ pub enum GetBlockSubsidy {
     Unknown(Value),
 }
 
+impl GetBlockSubsidy {
+    /// Renders the domain type as the served JSON shape.
+    ///
+    /// Always the `Known` variant: the domain type *is* the recognised shape,
+    /// so there is nothing left to be unrecognised. `Unknown` exists for the
+    /// deserializing direction, where a validator may answer with something
+    /// this type does not model.
+    ///
+    /// Each amount is emitted twice, in ZEC and in zatoshis, because the
+    /// interface specifies both. The domain type carries integer zatoshis
+    /// only; the lossy ZEC rendering happens here and nowhere earlier.
+    pub fn from_domain(subsidy: zaino_primitives::types::rpc::BlockSubsidy) -> Self {
+        let zec = |amount: zaino_primitives::types::Zatoshis| ZecAmount::from_zats(amount.into());
+
+        Self::Known(BlockSubsidy {
+            miner: zec(subsidy.miner),
+            founders: zec(subsidy.founders),
+            funding_streams_total: zec(subsidy.funding_streams_total),
+            lockbox_total: zec(subsidy.lockbox_total),
+            total_block_subsidy: zec(subsidy.total_block_subsidy),
+            funding_streams: subsidy
+                .funding_streams
+                .into_iter()
+                .map(|stream| FundingStream {
+                    recipient: stream.recipient,
+                    specification: stream.specification,
+                    value: zec(stream.value),
+                    value_zat: Zatoshis(stream.value.into()),
+                    address: stream.address,
+                })
+                .collect(),
+            lockbox_streams: subsidy
+                .lockbox_streams
+                .into_iter()
+                .map(|stream| LockBoxStream {
+                    recipient: stream.recipient,
+                    specification: stream.specification,
+                    value: zec(stream.value),
+                    value_zat: Zatoshis(stream.value.into()),
+                })
+                .collect(),
+        })
+    }
+}
+
 impl<'de> Deserialize<'de> for GetBlockSubsidy {
     fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
         let v = Value::deserialize(de)?;
@@ -108,6 +153,82 @@ impl<'de> Deserialize<'de> for GetBlockSubsidy {
         } else {
             Ok(GetBlockSubsidy::Unknown(v))
         }
+    }
+}
+
+#[cfg(test)]
+mod from_domain_tests {
+    use super::*;
+    use zaino_primitives::types::{rpc, Zatoshis};
+
+    fn zats(amount: u64) -> Zatoshis {
+        Zatoshis::new(amount).expect("within the money range")
+    }
+
+    fn sample() -> rpc::BlockSubsidy {
+        rpc::BlockSubsidy {
+            miner: zats(250_000_000),
+            founders: zats(0),
+            funding_streams_total: zats(62_500_000),
+            lockbox_total: zats(12_500_000),
+            total_block_subsidy: zats(312_500_000),
+            funding_streams: vec![rpc::FundingStream {
+                recipient: "Zcash Community Grants".to_string(),
+                specification: "https://zips.z.cash/zip-1014".to_string(),
+                value: zats(62_500_000),
+                address: Some("t3address".to_string()),
+            }],
+            lockbox_streams: vec![rpc::LockboxStream {
+                recipient: "Deferred Development Fund".to_string(),
+                specification: "https://zips.z.cash/zip-1015".to_string(),
+                value: zats(12_500_000),
+            }],
+        }
+    }
+
+    /// Every amount appears twice: ZEC under the plain name, zatoshis under
+    /// `valueZat`. The domain type carries only the integer, so the ZEC figure
+    /// is derived here — and must be derived correctly, since it is the field
+    /// most clients read.
+    #[test]
+    fn renders_both_denominations() {
+        let json = serde_json::to_value(GetBlockSubsidy::from_domain(sample())).unwrap();
+
+        assert_eq!(json["miner"], 2.5);
+        assert_eq!(json["founders"], 0.0);
+        assert_eq!(json["fundingstreamstotal"], 0.625);
+        assert_eq!(json["lockboxtotal"], 0.125);
+        assert_eq!(json["totalblocksubsidy"], 3.125);
+
+        assert_eq!(json["fundingstreams"][0]["value"], 0.625);
+        assert_eq!(json["fundingstreams"][0]["valueZat"], 62_500_000u64);
+        assert_eq!(json["fundingstreams"][0]["address"], "t3address");
+
+        assert_eq!(json["lockboxstreams"][0]["value"], 0.125);
+        assert_eq!(json["lockboxstreams"][0]["valueZat"], 12_500_000u64);
+    }
+
+    /// A lockbox has no recipient address at all, which is why it is a separate
+    /// type — the field must not appear on it.
+    #[test]
+    fn a_lockbox_stream_has_no_address_field() {
+        let json = serde_json::to_value(GetBlockSubsidy::from_domain(sample())).unwrap();
+
+        assert!(json["lockboxstreams"][0].get("address").is_none());
+    }
+
+    /// Heights with no active streams omit both arrays rather than emitting
+    /// empty ones, matching the wire type's `skip_serializing_if`.
+    #[test]
+    fn omits_empty_stream_arrays() {
+        let mut subsidy = sample();
+        subsidy.funding_streams.clear();
+        subsidy.lockbox_streams.clear();
+
+        let json = serde_json::to_value(GetBlockSubsidy::from_domain(subsidy)).unwrap();
+
+        assert!(json.get("fundingstreams").is_none());
+        assert!(json.get("lockboxstreams").is_none());
     }
 }
 

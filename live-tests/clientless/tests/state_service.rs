@@ -1,4 +1,14 @@
-use zaino_fetch::jsonrpsee::response::address_deltas::GetAddressDeltasParams;
+use zaino_primitives::types::{rpc::AddressDeltasRequest, TransparentAddress};
+
+/// A `getaddressdeltas` request over a height range, from a plain address string.
+fn deltas_request(address: &str, start: u32, end: u32, chain_info: bool) -> AddressDeltasRequest {
+    AddressDeltasRequest::Filtered {
+        addresses: vec![TransparentAddress::new(address.to_string())],
+        start,
+        end,
+        chain_info,
+    }
+}
 
 use zaino_state::{LightWalletIndexer, NodeBackedIndexerServiceSubscriber, ZcashIndexer};
 use zaino_testutils::{StateAndFetchServices, ValidatorExt};
@@ -338,8 +348,7 @@ async fn state_service_get_address_deltas_testnet() {
     let address = "tmAkxrvJCN75Ty9YkiHccqc1hJmGZpggo6i";
 
     // Test simple response
-    let simple_request =
-        GetAddressDeltasParams::new_filtered(vec![address.to_string()], 2000000, 3000000, false);
+    let simple_request = deltas_request(address, 2000000, 3000000, false);
     let state_simple_request = simple_request.clone();
 
     assert_subscribers_agree(
@@ -350,8 +359,7 @@ async fn state_service_get_address_deltas_testnet() {
     .await;
 
     // Test response with chain info
-    let chain_info_params =
-        GetAddressDeltasParams::new_filtered(vec![address.to_string()], 2000000, 3000000, true);
+    let chain_info_params = deltas_request(address, 2000000, 3000000, true);
     let state_chain_info_params = chain_info_params.clone();
 
     assert_subscribers_agree(

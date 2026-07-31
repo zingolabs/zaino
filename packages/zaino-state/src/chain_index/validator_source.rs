@@ -29,11 +29,8 @@
 
 use std::sync::Arc;
 
-#[cfg(test)]
-use hex::FromHex as _;
 use zaino_source::QueryError;
 use zaino_source_zebra::ZebraValidator;
-use zebra_chain::serialization::BytesInDisplayOrder as _;
 use zebra_rpc::methods::ValidateAddresses as _;
 use zebra_state::HashOrHeight;
 
@@ -214,15 +211,6 @@ fn domain_height(h: u32) -> Result<zaino_primitives::types::Height, BlockchainSo
         .map_err(|e| BlockchainSourceError::Unrecoverable(e.to_string()))
 }
 
-/// Render a 32-byte identifier in RPC display order.
-///
-/// Hashes and txids are byte-reversed on this interface; the domain types hold
-/// them in internal order, so the reversal happens on the way out.
-fn display_hex(mut bytes: [u8; 32]) -> String {
-    bytes.reverse();
-    hex::encode(bytes)
-}
-
 fn invalid(message: String) -> BlockchainSourceError {
     BlockchainSourceError::Unrecoverable(message)
 }
@@ -231,21 +219,14 @@ impl<V: ChainIndexSourcePorts> ValidatorSource<V> {
     /// Identify the block at a height, for the chaininfo delta form.
     async fn block_info(
         &self,
-        height: u32,
-    ) -> Result<zaino_fetch::jsonrpsee::response::address_deltas::BlockInfo, BlockchainSourceError>
-    {
-        let bytes = self
-            .validator
-            .get_raw_block(domain_height(height)?)
-            .await
-            .map_err(err)?;
+        height: zaino_primitives::types::Height,
+    ) -> Result<zaino_primitives::types::rpc::BlockRef, BlockchainSourceError> {
+        let bytes = self.validator.get_raw_block(height).await.map_err(err)?;
         let block = block_from_bytes(bytes)?;
-        Ok(
-            zaino_fetch::jsonrpsee::response::address_deltas::BlockInfo::new(
-                hex::encode(block.hash().bytes_in_display_order()),
-                height,
-            ),
-        )
+        Ok(zaino_primitives::types::rpc::BlockRef {
+            hash: zaino_primitives::types::BlockHash::from(block.hash().0),
+            height,
+        })
     }
 }
 
@@ -514,25 +495,22 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
 
     async fn get_address_deltas(
         &self,
-        params: zaino_fetch::jsonrpsee::response::address_deltas::GetAddressDeltasParams,
-    ) -> BlockchainSourceResult<
-        zaino_fetch::jsonrpsee::response::address_deltas::GetAddressDeltasResponse,
-    > {
-        use zaino_fetch::jsonrpsee::response::address_deltas::{
-            AddressDelta, GetAddressDeltasParams, GetAddressDeltasResponse,
-        };
+        params: zaino_primitives::types::rpc::AddressDeltasRequest,
+    ) -> BlockchainSourceResult<zaino_primitives::types::rpc::AddressDeltas> {
+        use zaino_primitives::types::rpc::{AddressDeltas, AddressDeltasRequest};
 
-        let (addresses, start, end, chain_info) = match &params {
-            GetAddressDeltasParams::Filtered {
+        let (addresses, start, end, chain_info) = match params {
+            AddressDeltasRequest::Filtered {
                 addresses,
                 start,
                 end,
                 chain_info,
-            } => (addresses.clone(), *start, *end, *chain_info),
+            } => (addresses, start, end, chain_info),
             // The single-address form carries no range, which the interface
             // reads as "the whole chain".
-            GetAddressDeltasParams::Address(address) => (vec![address.clone()], 0, 0, false),
+            AddressDeltasRequest::Address(address) => (vec![address], 0, 0, false),
         };
+        let addresses: Vec<String> = addresses.into_iter().map(String::from).collect();
 
         // The interface's range is open-ended and unvalidated; the port's is
         // neither, so the bounds are resolved against the tip here.
@@ -547,19 +525,9 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
             .await
             .map_err(err)?;
 
-        let deltas: Vec<AddressDelta> = deltas
-            .into_iter()
-            .map(|delta| {
-                AddressDelta::new(
-                    i64::from(delta.satoshis),
-                    display_hex(<[u8; 32]>::from(delta.txid)),
-                    delta.index,
-                    u32::from(delta.height),
-                    String::from(delta.address),
-                    delta.block_index,
-                )
-            })
-            .collect();
+        if !chain_info {
+            return Ok(AddressDeltas::Simple(deltas));
+        }
 
         // The chaininfo form additionally names the range's bounding blocks.
         //
@@ -569,12 +537,7 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
         // form arrived here as `0..=0` before anything clamped it. The clamp
         // above resolves that case, so a zero bound now means genesis and
         // nothing else, and genesis is as nameable as any other block.
-        let (start, end) = (u32::from(start), u32::from(end));
-        if !chain_info {
-            return Ok(GetAddressDeltasResponse::Simple(deltas));
-        }
-
-        Ok(GetAddressDeltasResponse::WithChainInfo {
+        Ok(AddressDeltas::WithChainInfo {
             deltas,
             start: self.block_info(start).await?,
             end: self.block_info(end).await?,
@@ -754,128 +717,34 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
     async fn get_block_header(
         &self,
         hash: String,
-        verbose: bool,
-    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::block_header::GetBlockHeader>
-    {
-        use zaino_fetch::jsonrpsee::response::block_header::{GetBlockHeader, VerboseBlockHeader};
-
-        let block_hash = zaino_primitives::types::BlockHash::from(parse_display_hash32(&hash)?);
-
-        // Verbosity is a request parameter, so the port splits it into two
-        // questions rather than returning something the caller must match on.
-        if !verbose {
-            let raw = self
-                .validator
-                .get_raw_block_header(block_hash)
-                .await
-                .map_err(err)?;
-            return Ok(GetBlockHeader::Compact(hex::encode(raw)));
-        }
-
-        let header = self
-            .validator
-            .get_block_header(block_hash)
+    ) -> BlockchainSourceResult<zaino_primitives::types::rpc::BlockHeaderVerbose> {
+        self.validator
+            .get_block_header(zaino_primitives::types::BlockHash::from(
+                parse_display_hash32(&hash)?,
+            ))
             .await
-            .map_err(err)?;
+            .map_err(err)
+    }
 
-        Ok(GetBlockHeader::Verbose(VerboseBlockHeader {
-            hash: zebra_chain::block::Hash(header.hash.into()),
-            confirmations: header.confirmations,
-            height: header.height.into(),
-            version: header.version,
-            merkle_root: zebra_chain::block::merkle::Root(header.merkle_root.into()),
-            block_commitments: header.block_commitments.map(<[u8; 32]>::from),
-            final_sapling_root: header.final_sapling_root.map(<[u8; 32]>::from),
-            time: i64::from(header.time),
-            nonce: hex::encode(header.nonce),
-            solution: hex::encode(header.solution),
-            bits: format!("{:08x}", header.bits),
-            difficulty: header.difficulty,
-            chainwork: header
-                .chainwork
-                .map(|work| hex::encode(<[u8; 32]>::from(work))),
-            previous_block_hash: header
-                .previous_block_hash
-                .map(|h| display_hex(<[u8; 32]>::from(h))),
-            next_block_hash: header
-                .next_block_hash
-                .map(|h| display_hex(<[u8; 32]>::from(h))),
-        }))
+    async fn get_raw_block_header(&self, hash: String) -> BlockchainSourceResult<Vec<u8>> {
+        self.validator
+            .get_raw_block_header(zaino_primitives::types::BlockHash::from(
+                parse_display_hash32(&hash)?,
+            ))
+            .await
+            .map_err(err)
     }
 
     async fn get_block_deltas(
         &self,
         hash: String,
-    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::block_deltas::BlockDeltas> {
-        use zaino_fetch::jsonrpsee::response::block_deltas::{
-            BlockDelta, BlockDeltas, InputDelta, OutputDelta,
-        };
-
-        let deltas = self
-            .validator
+    ) -> BlockchainSourceResult<zaino_primitives::types::rpc::BlockDeltas> {
+        self.validator
             .get_block_deltas(zaino_primitives::types::BlockHash::from(
                 parse_display_hash32(&hash)?,
             ))
             .await
-            .map_err(err)?;
-
-        Ok(BlockDeltas {
-            hash: display_hex(<[u8; 32]>::from(deltas.hash)),
-            confirmations: deltas.confirmations,
-            size: deltas.size as i64,
-            height: deltas.height.into(),
-            version: deltas.version,
-            merkle_root: display_hex(<[u8; 32]>::from(deltas.merkle_root)),
-            time: i64::from(deltas.time),
-            median_time: i64::from(deltas.median_time),
-            nonce: hex::encode(deltas.nonce),
-            bits: format!("{:08x}", deltas.bits),
-            difficulty: deltas.difficulty,
-            previous_block_hash: deltas
-                .previous_block_hash
-                .map(|h| display_hex(<[u8; 32]>::from(h))),
-            next_block_hash: deltas
-                .next_block_hash
-                .map(|h| display_hex(<[u8; 32]>::from(h))),
-            deltas: deltas
-                .deltas
-                .into_iter()
-                .map(|delta| {
-                    Ok(BlockDelta {
-                        txid: display_hex(<[u8; 32]>::from(delta.txid)),
-                        index: delta.index,
-                        inputs: delta
-                            .inputs
-                            .into_iter()
-                            .map(|input| {
-                                Ok(InputDelta {
-                                    address: String::from(input.address),
-                                    satoshis: amount(i64::from(input.satoshis))?,
-                                    index: input.index,
-                                    prevtxid: display_hex(<[u8; 32]>::from(input.prev_txid)),
-                                    prevout: input.prev_output,
-                                })
-                            })
-                            .collect::<Result<Vec<_>, BlockchainSourceError>>()?,
-                        outputs: delta
-                            .outputs
-                            .into_iter()
-                            .map(|output| {
-                                Ok(OutputDelta {
-                                    address: String::from(output.address),
-                                    satoshis: amount(
-                                        i64::try_from(u64::from(output.satoshis)).map_err(
-                                            |_| invalid("output value out of range".to_string()),
-                                        )?,
-                                    )?,
-                                    index: output.index,
-                                })
-                            })
-                            .collect::<Result<Vec<_>, BlockchainSourceError>>()?,
-                    })
-                })
-                .collect::<Result<Vec<_>, BlockchainSourceError>>()?,
-        })
+            .map_err(err)
     }
 
     async fn get_blockchain_info(
@@ -1101,22 +970,8 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
 
     async fn get_peer_info(
         &self,
-    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::peer_info::GetPeerInfo> {
-        use zaino_fetch::jsonrpsee::response::peer_info::{GetPeerInfo, ZebradPeerInfo};
-
-        let peers = self.validator.get_peer_info().await.map_err(err)?;
-
-        // Always the zebrad shape: the port models the two fields every
-        // validator reports, which is exactly that variant.
-        Ok(GetPeerInfo::Zebrad(
-            peers
-                .into_iter()
-                .map(|peer| ZebradPeerInfo {
-                    addr: peer.addr,
-                    inbound: peer.inbound,
-                })
-                .collect(),
-        ))
+    ) -> BlockchainSourceResult<Vec<zaino_primitives::types::rpc::PeerInfo>> {
+        self.validator.get_peer_info().await.map_err(err)
     }
 
     async fn get_chain_tips(
@@ -1127,77 +982,18 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
 
     async fn get_mining_info(
         &self,
-    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::mining_info::GetMiningInfoWire>
-    {
-        use zaino_fetch::jsonrpsee::response::mining_info::MiningInfo;
-
-        let info = self.validator.get_mining_info().await.map_err(err)?;
-
-        // Two hops: the wire type's fields are private, so it is reached
-        // through `zaino-fetch`'s own internal representation.
-        Ok(MiningInfo {
-            tip_height: info.tip_height.into(),
-            current_block_size: info.current_block_size,
-            current_block_tx: info.current_block_tx,
-            network_solution_rate: info.network_solution_rate,
-            network_hash_rate: info.network_hash_rate,
-            chain: info.chain,
-            testnet: info.testnet,
-            difficulty: info.difficulty,
-            errors: info.errors,
-            // The port drops fields it does not model rather than carrying
-            // opaque values; there is nothing to restore here.
-            extras: Default::default(),
-        }
-        .into())
+    ) -> BlockchainSourceResult<zaino_primitives::types::rpc::MiningInfo> {
+        self.validator.get_mining_info().await.map_err(err)
     }
 
     async fn get_block_subsidy(
         &self,
         height: u32,
-    ) -> BlockchainSourceResult<zaino_fetch::jsonrpsee::response::block_subsidy::GetBlockSubsidy>
-    {
-        use zaino_fetch::jsonrpsee::response::block_subsidy::{
-            BlockSubsidy, FundingStream, GetBlockSubsidy, LockBoxStream,
-        };
-        use zaino_fetch::jsonrpsee::response::common::amount::{Zatoshis, ZecAmount};
-
-        let subsidy = self
-            .validator
+    ) -> BlockchainSourceResult<zaino_primitives::types::rpc::BlockSubsidy> {
+        self.validator
             .get_block_subsidy(domain_height(height)?)
             .await
-            .map_err(err)?;
-
-        let zec = |amount: zaino_primitives::types::Zatoshis| ZecAmount::from_zats(amount.into());
-
-        Ok(GetBlockSubsidy::Known(BlockSubsidy {
-            miner: zec(subsidy.miner),
-            founders: zec(subsidy.founders),
-            funding_streams_total: zec(subsidy.funding_streams_total),
-            lockbox_total: zec(subsidy.lockbox_total),
-            total_block_subsidy: zec(subsidy.total_block_subsidy),
-            funding_streams: subsidy
-                .funding_streams
-                .into_iter()
-                .map(|stream| FundingStream {
-                    recipient: stream.recipient,
-                    specification: stream.specification,
-                    value: zec(stream.value),
-                    value_zat: Zatoshis(stream.value.into()),
-                    address: stream.address,
-                })
-                .collect(),
-            lockbox_streams: subsidy
-                .lockbox_streams
-                .into_iter()
-                .map(|stream| LockBoxStream {
-                    recipient: stream.recipient,
-                    specification: stream.specification,
-                    value: zec(stream.value),
-                    value_zat: Zatoshis(stream.value.into()),
-                })
-                .collect(),
-        }))
+            .map_err(err)
     }
 
     async fn get_network_sol_ps(
@@ -1530,23 +1326,6 @@ mod tests {
         0xee, 0x01,
     ];
 
-    /// Identifiers are byte-reversed on this interface but held in internal
-    /// order by the domain types, so the reversal belongs on the way out — and
-    /// must be exactly one reversal, not zero and not two.
-    #[test]
-    fn display_hex_reverses_exactly_once() {
-        let rendered = display_hex(ASYMMETRIC);
-
-        let mut expected = ASYMMETRIC;
-        expected.reverse();
-        assert_eq!(rendered, hex::encode(expected));
-
-        // Round-tripping back through zebra's own display-order parser must
-        // recover the bytes we started with.
-        let parsed = zebra_chain::block::Hash::from_hex(&rendered).expect("valid hash hex");
-        assert_eq!(parsed.0, ASYMMETRIC, "one reversal too many or too few");
-    }
-
     /// The domain and zebra hash types hold the same internal order, so this
     /// conversion must *not* reverse — the opposite of `display_hex`.
     #[test]
@@ -1592,6 +1371,16 @@ mod tests {
     #[test]
     fn malformed_block_bytes_are_rejected() {
         assert!(block_from_bytes(vec![0x00, 0x01, 0x02]).is_err());
+    }
+
+    /// The inverse of the display-order parsers under test.
+    ///
+    /// Production rendering moved to `zaino-serve`'s wire module along with the
+    /// responses that need it; what remains here is parsing. This oracle stays
+    /// so the parsers can still be pinned against a round trip.
+    fn display_hex(mut bytes: [u8; 32]) -> String {
+        bytes.reverse();
+        hex::encode(bytes)
     }
 
     /// A txid arrives from the interface in display order and must reach the

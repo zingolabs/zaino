@@ -6,6 +6,10 @@ use zaino_address::ValidatedAddress;
 use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 use zaino_proto::proto::compact_formats::CompactBlock;
 use zaino_proto::proto::service::{BlockId, BlockRange, GetSubtreeRootsArg};
+use zaino_serve::rpc::jsonrpc::wire::{
+    block_header::GetBlockHeader, block_subsidy::GetBlockSubsidy, mining_info::GetMiningInfoWire,
+    peer_info::GetPeerInfo,
+};
 use zaino_state::{
     LightWalletIndexer, NodeBackedIndexerServiceSubscriber, Status, StatusType, ZcashIndexer,
 };
@@ -124,8 +128,20 @@ async fn assert_fetch_service_difficulty_matches_rpc<V: ValidatorExt>(validator:
 async fn assert_fetch_service_mininginfo_matches_rpc<V: ValidatorExt>(validator: &ValidatorKind) {
     assert_subscriber_matches_rpc::<V, _, _, _>(
         validator,
-        |sub| async move { sub.get_mining_info().await.unwrap() },
-        |client| async move { client.get_mining_info().await.unwrap() },
+        // Nominally different types either side — the raw connector still
+        // deserializes into `zaino-fetch`'s copy of the wire shape, while the
+        // subscriber answers in domain terms and is rendered through
+        // `zaino-serve`'s. Comparing the serialized JSON compares what actually
+        // goes on the wire, and survives `zaino-fetch`'s removal.
+        |sub| async move {
+            serde_json::to_value(GetMiningInfoWire::from_domain(
+                sub.get_mining_info().await.unwrap(),
+            ))
+            .unwrap()
+        },
+        |client| async move {
+            serde_json::to_value(client.get_mining_info().await.unwrap()).unwrap()
+        },
     )
     .await;
 }
@@ -196,8 +212,13 @@ async fn assert_fetch_service_gettxoutsetinfo_matches_rpc<V: ValidatorExt>(
 async fn assert_fetch_service_peerinfo_matches_rpc<V: ValidatorExt>(validator: &ValidatorKind) {
     assert_subscriber_matches_rpc::<V, _, _, _>(
         validator,
-        |sub| async move { sub.get_peer_info().await.unwrap() },
-        |client| async move { client.get_peer_info().await.unwrap() },
+        |sub| async move {
+            serde_json::to_value(GetPeerInfo::from_domain(sub.get_peer_info().await.unwrap()))
+                .unwrap()
+        },
+        |client| async move {
+            serde_json::to_value(client.get_peer_info().await.unwrap()).unwrap()
+        },
     )
     .await;
 }
@@ -226,7 +247,13 @@ async fn fetch_service_get_block_subsidy<V: ValidatorExt>(validator: &ValidatorK
             .unwrap();
 
         let rpc_block_subsidy_response = jsonrpc_client.get_block_subsidy(height).await.unwrap();
-        assert_eq!(fetch_service_get_block_subsidy, rpc_block_subsidy_response);
+        assert_eq!(
+            serde_json::to_value(GetBlockSubsidy::from_domain(
+                fetch_service_get_block_subsidy
+            ))
+            .unwrap(),
+            serde_json::to_value(rpc_block_subsidy_response).unwrap()
+        );
     }
 }
 
@@ -284,30 +311,37 @@ async fn fetch_service_get_block_header<V: ValidatorExt>(validator: &ValidatorKi
                     GetBlock::Raw(_) => panic!("Expected block object"),
                 };
 
-                let fetch_service_get_block_header = fetch_service_subscriber
-                    .get_block_header(block_hash.to_string(), false)
-                    .await
-                    .unwrap();
+                let fetch_service_get_block_header = GetBlockHeader::compact_from_domain(
+                    fetch_service_subscriber
+                        .get_raw_block_header(block_hash.to_string())
+                        .await
+                        .unwrap(),
+                );
 
                 let rpc_block_header_response = jsonrpc_client
                     .get_block_header(block_hash.to_string(), false)
                     .await
                     .unwrap();
 
-                let fetch_service_get_block_header_verbose = fetch_service_subscriber
-                    .get_block_header(block_hash.to_string(), true)
-                    .await
-                    .unwrap();
+                let fetch_service_get_block_header_verbose = GetBlockHeader::verbose_from_domain(
+                    fetch_service_subscriber
+                        .get_block_header(block_hash.to_string())
+                        .await
+                        .unwrap(),
+                );
 
                 let rpc_block_header_response_verbose = jsonrpc_client
                     .get_block_header(block_hash.to_string(), true)
                     .await
                     .unwrap();
 
-                assert_eq!(fetch_service_get_block_header, rpc_block_header_response);
                 assert_eq!(
-                    fetch_service_get_block_header_verbose,
-                    rpc_block_header_response_verbose
+                    serde_json::to_value(fetch_service_get_block_header).unwrap(),
+                    serde_json::to_value(rpc_block_header_response).unwrap()
+                );
+                assert_eq!(
+                    serde_json::to_value(fetch_service_get_block_header_verbose).unwrap(),
+                    serde_json::to_value(rpc_block_header_response_verbose).unwrap()
                 );
             },
         )
@@ -585,6 +619,8 @@ async fn assert_fetch_service_getnetworksols_matches_rpc<V: ValidatorExt>(
 #[cfg(feature = "zcashd_support")]
 #[allow(deprecated)]
 async fn fetch_service_get_block_deltas<V: ValidatorExt>(validator: &ValidatorKind) {
+    use zaino_serve::rpc::jsonrpc::wire::block_deltas::BlockDeltas;
+
     let (test_manager, fetch_service_subscriber) =
         zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
 
@@ -608,7 +644,11 @@ async fn fetch_service_get_block_deltas<V: ValidatorExt>(validator: &ValidatorKi
         .await
         .unwrap();
 
-    assert_eq!(fetch_service_block_deltas, rpc_block_deltas);
+    assert_eq!(
+        serde_json::to_value(BlockDeltas::from_domain(fetch_service_block_deltas).unwrap())
+            .unwrap(),
+        serde_json::to_value(rpc_block_deltas).unwrap()
+    );
 }
 
 #[cfg(feature = "zcashd_support")]

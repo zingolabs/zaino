@@ -29,6 +29,26 @@ pub enum GetPeerInfo {
     Unknown(Vec<Value>),
 }
 
+impl GetPeerInfo {
+    /// Renders the domain listing as the served JSON shape.
+    ///
+    /// Always the zebrad variant. The domain type models the two fields every
+    /// validator reports, which is exactly that shape; the richer zcashd
+    /// listing has no domain counterpart to render from. See
+    /// [`zaino_primitives::types::rpc::PeerInfo`] for why.
+    pub fn from_domain(peers: Vec<zaino_primitives::types::rpc::PeerInfo>) -> Self {
+        Self::Zebrad(
+            peers
+                .into_iter()
+                .map(|peer| ZebradPeerInfo {
+                    addr: peer.addr,
+                    inbound: peer.inbound,
+                })
+                .collect(),
+        )
+    }
+}
+
 /// Response to a `getpeerinfo` RPC request coming from `zebrad`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -233,6 +253,39 @@ pub struct PeerStateStats {
 mod tests {
     use super::*;
     // use pretty_assertions::assert_eq;
+
+    /// A domain listing always renders as the zebrad shape, with zcashd's field
+    /// names and no wrapper object around the array.
+    #[test]
+    fn from_domain_renders_the_zebrad_shape() {
+        let wire = GetPeerInfo::from_domain(vec![
+            zaino_primitives::types::rpc::PeerInfo {
+                addr: "127.0.0.1:8233".to_string(),
+                inbound: false,
+            },
+            zaino_primitives::types::rpc::PeerInfo {
+                addr: "example.onion:8233".to_string(),
+                inbound: true,
+            },
+        ]);
+
+        assert_eq!(
+            serde_json::to_value(&wire).unwrap(),
+            serde_json::json!([
+                { "addr": "127.0.0.1:8233", "inbound": false },
+                { "addr": "example.onion:8233", "inbound": true },
+            ])
+        );
+    }
+
+    /// No peers is an empty array, not a null or an absent field.
+    #[test]
+    fn from_domain_renders_no_peers_as_an_empty_array() {
+        assert_eq!(
+            serde_json::to_value(GetPeerInfo::from_domain(Vec::new())).unwrap(),
+            serde_json::json!([])
+        );
+    }
 
     // TODO: get a real testvector
     #[cfg(feature = "zcashd_support")]

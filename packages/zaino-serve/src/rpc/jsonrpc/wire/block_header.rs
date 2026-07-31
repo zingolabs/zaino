@@ -19,6 +19,21 @@ pub enum GetBlockHeader {
     Unknown(serde_json::Value),
 }
 
+impl GetBlockHeader {
+    /// Renders the raw serialised header as the non-verbose response.
+    pub fn compact_from_domain(raw: Vec<u8>) -> Self {
+        Self::Compact(hex::encode(raw))
+    }
+
+    /// Renders the domain type as the verbose response.
+    ///
+    /// Never `Unknown`: that variant exists for the deserialising direction,
+    /// where a validator may answer with a shape this type does not model.
+    pub fn verbose_from_domain(header: zaino_primitives::types::rpc::BlockHeaderVerbose) -> Self {
+        Self::Verbose(VerboseBlockHeader::from_domain(header))
+    }
+}
+
 /// Verbose response to a `getblockheader` RPC request.
 ///
 /// See the notes for the `get_block_header` method.
@@ -97,6 +112,128 @@ pub struct VerboseBlockHeader {
         skip_serializing_if = "Option::is_none"
     )]
     pub next_block_hash: Option<String>,
+}
+
+impl VerboseBlockHeader {
+    /// Renders the domain type as the served JSON shape.
+    ///
+    /// Note the two hash encodings side by side. `hash` is a
+    /// `zebra_chain::block::Hash`, whose `hex` serde impl already reverses into
+    /// display order; the neighbouring hashes are plain strings, so they are
+    /// reversed here explicitly. `nonce` and `solution` are *not* reversed —
+    /// they are opaque header bytes, not identifiers.
+    pub fn from_domain(header: zaino_primitives::types::rpc::BlockHeaderVerbose) -> Self {
+        Self {
+            hash: zebra_chain::block::Hash(header.hash.into()),
+            confirmations: header.confirmations,
+            height: header.height.into(),
+            version: header.version,
+            merkle_root: zebra_chain::block::merkle::Root(header.merkle_root.into()),
+            block_commitments: header.block_commitments.map(<[u8; 32]>::from),
+            final_sapling_root: header.final_sapling_root.map(<[u8; 32]>::from),
+            time: i64::from(header.time),
+            nonce: hex::encode(header.nonce),
+            solution: hex::encode(header.solution),
+            bits: format!("{:08x}", header.bits),
+            difficulty: header.difficulty,
+            chainwork: header
+                .chainwork
+                .map(|work| hex::encode(<[u8; 32]>::from(work))),
+            previous_block_hash: header
+                .previous_block_hash
+                .map(|h| super::display_hex(h.into())),
+            next_block_hash: header.next_block_hash.map(|h| super::display_hex(h.into())),
+        }
+    }
+}
+
+#[cfg(test)]
+mod from_domain_tests {
+    use super::*;
+    use zaino_primitives::types::{self as domain, Height};
+
+    /// Asymmetric under reversal, so a missing or doubled byte-reversal shows up.
+    const ASYMMETRIC: [u8; 32] = [
+        0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
+        0xff, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+        0xee, 0x01,
+    ];
+
+    fn sample() -> domain::rpc::BlockHeaderVerbose {
+        domain::rpc::BlockHeaderVerbose {
+            hash: domain::BlockHash::from(ASYMMETRIC),
+            confirmations: 10,
+            height: Height::try_from(123_456u32).unwrap(),
+            version: 4,
+            merkle_root: domain::MerkleRoot::from([0xaa; 32]),
+            time: 1_700_000_000,
+            nonce: [0xcc; 32],
+            solution: vec![0xde, 0xad, 0xbe, 0xef],
+            bits: 0x1d00_ffff,
+            difficulty: 1.0,
+            block_commitments: Some(domain::BlockCommitments::from([0x11; 32])),
+            final_sapling_root: Some(domain::TreeRoot::from([0x22; 32])),
+            chainwork: Some(domain::ChainWork::from([0x33; 32])),
+            previous_block_hash: Some(domain::BlockHash::from(ASYMMETRIC)),
+            next_block_hash: None,
+        }
+    }
+
+    /// Two hash encodings live side by side in this type, and they must agree.
+    /// `hash` goes through zebra's `hex` serde impl, which reverses into display
+    /// order; the neighbouring hashes are plain strings reversed by hand. If the
+    /// two ever diverge, a response names two different blocks for one block.
+    #[test]
+    fn both_hash_encodings_agree_on_display_order() {
+        let json = serde_json::to_value(GetBlockHeader::verbose_from_domain(sample())).unwrap();
+
+        let mut display_order = ASYMMETRIC;
+        display_order.reverse();
+        let expected = hex::encode(display_order);
+
+        assert_eq!(json["hash"], expected);
+        assert_eq!(json["previousblockhash"], expected);
+    }
+
+    /// Tree roots, nonces, commitments and chainwork are not identifiers, so
+    /// they are emitted in their natural byte order — reversing them would be a
+    /// silent corruption that still looks like valid hex.
+    #[test]
+    fn non_identifier_bytes_are_not_reversed() {
+        let json = serde_json::to_value(GetBlockHeader::verbose_from_domain(sample())).unwrap();
+
+        assert_eq!(json["nonce"], hex::encode([0xcc; 32]));
+        assert_eq!(json["solution"], "deadbeef");
+        assert_eq!(json["merkleroot"], hex::encode([0xaa; 32]));
+        assert_eq!(json["finalsaplingroot"], hex::encode([0x22; 32]));
+        assert_eq!(json["blockcommitments"], hex::encode([0x11; 32]));
+        assert_eq!(json["chainwork"], hex::encode([0x33; 32]));
+    }
+
+    #[test]
+    fn renders_zcashd_field_names() {
+        let json = serde_json::to_value(GetBlockHeader::verbose_from_domain(sample())).unwrap();
+
+        assert_eq!(json["confirmations"], 10);
+        assert_eq!(json["height"], 123_456);
+        assert_eq!(json["version"], 4);
+        assert_eq!(json["time"], 1_700_000_000i64);
+        assert_eq!(json["bits"], "1d00ffff");
+        assert_eq!(json["difficulty"], 1.0);
+        assert!(
+            json.get("nextblockhash").is_none(),
+            "a tip block omits nextblockhash rather than sending null"
+        );
+    }
+
+    /// The non-verbose form is the raw header hex and nothing else — not an
+    /// object with one field.
+    #[test]
+    fn compact_form_is_bare_hex() {
+        let wire = GetBlockHeader::compact_from_domain(vec![0xde, 0xad, 0xbe, 0xef]);
+
+        assert_eq!(serde_json::to_value(wire).unwrap(), "deadbeef");
+    }
 }
 
 #[cfg(test)]

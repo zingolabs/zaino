@@ -13,10 +13,7 @@ use crate::{
 };
 use tokio::time::{sleep, Duration};
 use tokio_stream::StreamExt as _;
-use zaino_fetch::jsonrpsee::response::address_deltas::{
-    GetAddressDeltasParams, GetAddressDeltasResponse,
-};
-use zaino_fetch::jsonrpsee::response::block_header::GetBlockHeader;
+use zaino_primitives::types::rpc::{AddressDeltas, AddressDeltasRequest};
 use zebra_chain::serialization::{ZcashDeserializeInto, ZcashSerialize as _};
 use zebra_rpc::client::{GetAddressBalanceRequest, GetAddressTxIdsRequest};
 use zebra_rpc::methods::GetBlock;
@@ -620,6 +617,24 @@ async fn get_treestate() {
         .contains("not found in local chain index"));
 }
 
+/// A `getaddressdeltas` request over a height range, from plain address strings.
+fn filtered_deltas_request(
+    addresses: Vec<String>,
+    start: u32,
+    end: u32,
+    chain_info: bool,
+) -> AddressDeltasRequest {
+    AddressDeltasRequest::Filtered {
+        addresses: addresses
+            .into_iter()
+            .map(zaino_primitives::types::TransparentAddress::new)
+            .collect(),
+        start,
+        end,
+        chain_info,
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn get_address_deltas() {
     let (_blocks, _indexer, index_reader, mockchain) =
@@ -629,7 +644,7 @@ async fn get_address_deltas() {
     let active_height = mockchain.source().active_height();
 
     let expected_response = mockchain
-        .get_address_deltas(GetAddressDeltasParams::new_filtered(
+        .get_address_deltas(filtered_deltas_request(
             vec![transparent_address.clone()],
             0,
             active_height,
@@ -639,7 +654,7 @@ async fn get_address_deltas() {
         .unwrap();
 
     let indexer_response = index_reader
-        .get_address_deltas(GetAddressDeltasParams::new_filtered(
+        .get_address_deltas(filtered_deltas_request(
             vec![transparent_address.clone()],
             0,
             active_height,
@@ -651,10 +666,10 @@ async fn get_address_deltas() {
     assert_eq!(indexer_response, expected_response);
 
     match indexer_response {
-        GetAddressDeltasResponse::WithChainInfo { deltas, start, end } => {
+        AddressDeltas::WithChainInfo { deltas, start, end } => {
             assert!(!deltas.is_empty());
-            assert_eq!(start.height, 0);
-            assert_eq!(end.height, active_height);
+            assert_eq!(u32::from(start.height), 0);
+            assert_eq!(u32::from(end.height), active_height);
 
             // zcashd reports each delta's `blockindex` and documents the
             // ordering as `(height, blockindex, index)`. A source that knows the
@@ -667,14 +682,13 @@ async fn get_address_deltas() {
                  must carry its blockindex: {deltas:?}"
             );
 
-            let sort_key =
-                |delta: &zaino_fetch::jsonrpsee::response::address_deltas::AddressDelta| {
-                    (
-                        delta.height,
-                        delta.block_index.unwrap_or(u32::MAX),
-                        delta.index,
-                    )
-                };
+            let sort_key = |delta: &zaino_primitives::types::AddressDelta| {
+                (
+                    u32::from(delta.height),
+                    delta.block_index.unwrap_or(u32::MAX),
+                    delta.index,
+                )
+            };
             assert!(
                 deltas
                     .windows(2)
@@ -682,14 +696,16 @@ async fn get_address_deltas() {
                 "deltas must be ordered by (height, blockindex, index): {deltas:?}"
             );
         }
-        GetAddressDeltasResponse::Simple(_) => {
+        AddressDeltas::Simple(_) => {
             panic!("expected get_address_deltas response with chain info")
         }
     }
 
     let invalid_address_result = index_reader
-        .get_address_deltas(GetAddressDeltasParams::new_address(
-            "not_a_valid_transparent_address",
+        .get_address_deltas(AddressDeltasRequest::Address(
+            zaino_primitives::types::TransparentAddress::new(
+                "not_a_valid_transparent_address".to_string(),
+            ),
         ))
         .await;
 
@@ -701,7 +717,7 @@ async fn get_address_deltas() {
     );
 
     let invalid_range_result = index_reader
-        .get_address_deltas(GetAddressDeltasParams::new_filtered(
+        .get_address_deltas(filtered_deltas_request(
             vec![transparent_address],
             active_height,
             active_height - 1,
@@ -994,32 +1010,26 @@ async fn get_block_header() {
         let block = mockchain.get_block(id).await.unwrap().unwrap();
         let hash = block.hash().to_string();
 
-        // Non-verbose: the compact hex decodes to the block header's serialization.
-        let GetBlockHeader::Compact(compact) = index_reader
-            .get_block_header(hash.clone(), false)
+        // Non-verbose: the raw header bytes are the block header's serialization.
+        let raw = index_reader
+            .get_raw_block_header(hash.clone())
             .await
-            .unwrap()
-        else {
-            panic!("expected a compact header when verbose = false");
-        };
-        assert_eq!(
-            hex::decode(compact).unwrap(),
-            block.header.zcash_serialize_to_vec().unwrap()
-        );
+            .unwrap();
+        assert_eq!(raw, block.header.zcash_serialize_to_vec().unwrap());
 
         // Verbose: the ChainIndex delegates to the source and reports hash / height.
-        let via_index = index_reader
-            .get_block_header(hash.clone(), true)
-            .await
-            .unwrap();
-        let via_source = mockchain
-            .get_block_header(hash.clone(), true)
-            .await
-            .unwrap();
-        let value = serde_json::to_value(&via_index).unwrap();
-        assert_eq!(value, serde_json::to_value(&via_source).unwrap());
-        assert_eq!(value["hash"].as_str().unwrap(), hash);
-        assert_eq!(value["height"].as_u64().unwrap(), u64::from(height));
+        let via_index = index_reader.get_block_header(hash.clone()).await.unwrap();
+        let via_source = mockchain.get_block_header(hash.clone()).await.unwrap();
+        assert_eq!(via_index, via_source);
+        assert_eq!(
+            {
+                let mut bytes = <[u8; 32]>::from(via_index.hash);
+                bytes.reverse();
+                hex::encode(bytes)
+            },
+            hash
+        );
+        assert_eq!(u32::from(via_index.height), height);
     }
 }
 
@@ -1039,12 +1049,16 @@ async fn get_block_deltas() {
 
         let via_index = index_reader.get_block_deltas(hash.clone()).await.unwrap();
         let via_source = mockchain.get_block_deltas(hash.clone()).await.unwrap();
+        assert_eq!(via_index, via_source);
         assert_eq!(
-            serde_json::to_value(&via_index).unwrap(),
-            serde_json::to_value(&via_source).unwrap()
+            {
+                let mut bytes = <[u8; 32]>::from(via_index.hash);
+                bytes.reverse();
+                hex::encode(bytes)
+            },
+            hash
         );
-        assert_eq!(via_index.hash, hash);
-        assert_eq!(via_index.height, height);
+        assert_eq!(u32::from(via_index.height), height);
         if via_index
             .deltas
             .iter()

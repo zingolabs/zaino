@@ -71,3 +71,9 @@ tokio = { workspace = true }
 
 # Zingo-infra
 zcash_local_net = { workspace = true }
+# The served JSON schema. These tests compare Zaino's domain answers against a
+# raw JSON-RPC oracle, so they render the domain side through the same wire
+# types the server uses.
+zaino-serve = { workspace = true }
+serde_json.workspace = true
+zaino-primitives.workspace = true

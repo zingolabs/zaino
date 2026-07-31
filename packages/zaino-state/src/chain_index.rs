@@ -39,13 +39,9 @@ use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, instrument};
 use zaino_fetch::jsonrpsee::raw_transaction::validate_raw_transaction_hex;
-use zaino_fetch::jsonrpsee::response::{
-    address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
-    block_deltas::BlockDeltas,
-    block_header::GetBlockHeader,
-    block_subsidy::GetBlockSubsidy,
-    mining_info::GetMiningInfoWire,
-    peer_info::GetPeerInfo,
+use zaino_primitives::types::rpc::{
+    AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
+    PeerInfo,
 };
 use zaino_proto::proto::utils::{prune_compact_block, PoolTypeFilter};
 use zebra_chain::parameters::ConsensusBranchId;
@@ -629,8 +625,16 @@ pub trait ChainIndexRpcExt: ChainIndex {
     fn get_block_header(
         &self,
         hash: String,
-        verbose: bool,
-    ) -> impl std::future::Future<Output = Result<GetBlockHeader, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<BlockHeaderVerbose, Self::Error>>;
+
+    /// Returns the raw serialised header of the block with the given hash.
+    ///
+    /// The non-verbose half of `getblockheader`; see
+    /// [`BlockchainSource::get_raw_block_header`](crate::chain_index::source::BlockchainSource::get_raw_block_header).
+    fn get_raw_block_header(
+        &self,
+        hash: String,
+    ) -> impl std::future::Future<Output = Result<Vec<u8>, Self::Error>>;
 
     /// Returns the `getblockdeltas`-shaped transparent input/output deltas for the block
     /// with the given hash.
@@ -660,18 +664,19 @@ pub trait ChainIndexRpcExt: ChainIndex {
     ) -> impl std::future::Future<Output = Result<GetBlockchainInfoResponse, Self::Error>>;
 
     /// Returns the `getpeerinfo` response.
-    fn get_peer_info(&self) -> impl std::future::Future<Output = Result<GetPeerInfo, Self::Error>>;
+    fn get_peer_info(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<PeerInfo>, Self::Error>>;
 
     /// Returns the `getblocksubsidy` response at the given height.
     fn get_block_subsidy(
         &self,
         height: u32,
-    ) -> impl std::future::Future<Output = Result<GetBlockSubsidy, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<BlockSubsidy, Self::Error>>;
 
     /// Returns the `getmininginfo` response.
-    fn get_mining_info(
-        &self,
-    ) -> impl std::future::Future<Output = Result<GetMiningInfoWire, Self::Error>>;
+    fn get_mining_info(&self)
+        -> impl std::future::Future<Output = Result<MiningInfo, Self::Error>>;
 
     /// Returns the `gettxout` response for the given outpoint.
     fn get_tx_out(
@@ -714,8 +719,8 @@ pub trait ChainIndexRpcExt: ChainIndex {
     /// Returns all changes for the given transparent addresses.
     fn get_address_deltas(
         &self,
-        params: GetAddressDeltasParams,
-    ) -> impl std::future::Future<Output = Result<GetAddressDeltasResponse, Self::Error>>;
+        params: AddressDeltasRequest,
+    ) -> impl std::future::Future<Output = Result<AddressDeltas, Self::Error>>;
 
     // ********** Metadata methods **********
 
@@ -2803,13 +2808,16 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
             .map_err(ChainIndexError::backing_validator)
     }
 
-    async fn get_block_header(
-        &self,
-        hash: String,
-        verbose: bool,
-    ) -> Result<GetBlockHeader, Self::Error> {
+    async fn get_block_header(&self, hash: String) -> Result<BlockHeaderVerbose, Self::Error> {
         self.source()
-            .get_block_header(hash, verbose)
+            .get_block_header(hash)
+            .await
+            .map_err(ChainIndexError::backing_validator)
+    }
+
+    async fn get_raw_block_header(&self, hash: String) -> Result<Vec<u8>, Self::Error> {
+        self.source()
+            .get_raw_block_header(hash)
             .await
             .map_err(ChainIndexError::backing_validator)
     }
@@ -2852,21 +2860,21 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
             .map_err(ChainIndexError::backing_validator)
     }
 
-    async fn get_peer_info(&self) -> Result<GetPeerInfo, Self::Error> {
+    async fn get_peer_info(&self) -> Result<Vec<PeerInfo>, Self::Error> {
         self.source()
             .get_peer_info()
             .await
             .map_err(ChainIndexError::backing_validator)
     }
 
-    async fn get_block_subsidy(&self, height: u32) -> Result<GetBlockSubsidy, Self::Error> {
+    async fn get_block_subsidy(&self, height: u32) -> Result<BlockSubsidy, Self::Error> {
         self.source()
             .get_block_subsidy(height)
             .await
             .map_err(ChainIndexError::backing_validator)
     }
 
-    async fn get_mining_info(&self) -> Result<GetMiningInfoWire, Self::Error> {
+    async fn get_mining_info(&self) -> Result<MiningInfo, Self::Error> {
         self.source()
             .get_mining_info()
             .await
@@ -2931,8 +2939,8 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
     /// Returns all changes for the given transparent addresses.
     async fn get_address_deltas(
         &self,
-        params: GetAddressDeltasParams,
-    ) -> Result<GetAddressDeltasResponse, Self::Error> {
+        params: AddressDeltasRequest,
+    ) -> Result<AddressDeltas, Self::Error> {
         self.source()
             .get_address_deltas(params)
             .await

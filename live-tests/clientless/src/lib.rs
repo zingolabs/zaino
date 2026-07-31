@@ -26,12 +26,12 @@ pub async fn assert_get_block_header_matches<Oracle, Subject>(
     };
 
     let oracle_header = oracle
-        .get_block_header(block_hash.to_string(), false)
+        .get_raw_block_header(block_hash.to_string())
         .await
         .unwrap();
 
     let subject_header = subject
-        .get_block_header(block_hash.to_string(), false)
+        .get_raw_block_header(block_hash.to_string())
         .await
         .unwrap();
     assert_eq!(oracle_header, subject_header);

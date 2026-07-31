@@ -1,11 +1,11 @@
 //! Zcash RPC implementations.
 
+use crate::rpc::jsonrpc::wire::block_deltas::BlockDeltas;
+use crate::rpc::jsonrpc::wire::block_header::GetBlockHeader;
+use crate::rpc::jsonrpc::wire::block_subsidy::GetBlockSubsidy;
+use crate::rpc::jsonrpc::wire::mining_info::GetMiningInfoWire;
+use crate::rpc::jsonrpc::wire::peer_info::GetPeerInfo;
 use zaino_address::DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION;
-use zaino_fetch::jsonrpsee::response::block_deltas::BlockDeltas;
-use zaino_fetch::jsonrpsee::response::block_header::GetBlockHeader;
-use zaino_fetch::jsonrpsee::response::block_subsidy::GetBlockSubsidy;
-use zaino_fetch::jsonrpsee::response::mining_info::GetMiningInfoWire;
-use zaino_fetch::jsonrpsee::response::peer_info::GetPeerInfo;
 use zaino_state::{LightWalletIndexer, ZcashIndexer};
 
 use zebra_chain::{block::Height, subtree::NoteCommitmentSubtreeIndex};
@@ -575,6 +575,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .get_mining_info()
             .await
+            .map(GetMiningInfoWire::from_domain)
             .map_err(invalid_params_error_object)
     }
 
@@ -621,11 +622,18 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
     }
 
     async fn get_block_deltas(&self, hash: String) -> Result<BlockDeltas, ErrorObjectOwned> {
-        self.service_subscriber
+        let deltas = self
+            .service_subscriber
             .inner_ref()
             .get_block_deltas(hash)
             .await
-            .map_err(invalid_params_error_object)
+            .map_err(invalid_params_error_object)?;
+
+        // The only method here whose rendering can fail; see
+        // [`DeltaAmountOutOfRange`](crate::rpc::jsonrpc::wire::block_deltas::DeltaAmountOutOfRange)
+        // for why. Mapped like every other failure on this interface, which
+        // currently hides its kind from the client.
+        BlockDeltas::from_domain(deltas).map_err(invalid_params_error_object)
     }
 
     async fn get_peer_info(&self) -> Result<GetPeerInfo, ErrorObjectOwned> {
@@ -633,6 +641,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .get_peer_info()
             .await
+            .map(GetPeerInfo::from_domain)
             .map_err(invalid_params_error_object)
     }
 
@@ -641,6 +650,7 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .get_block_subsidy(height)
             .await
+            .map(GetBlockSubsidy::from_domain)
             .map_err(invalid_params_error_object)
     }
 
@@ -726,11 +736,24 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
         hash: String,
         verbose: bool,
     ) -> Result<GetBlockHeader, ErrorObjectOwned> {
-        self.service_subscriber
-            .inner_ref()
-            .get_block_header(hash, verbose)
-            .await
-            .map_err(invalid_params_error_object)
+        // Verbosity is a wire concern: it selects which of the two questions to
+        // ask, rather than making one answer polymorphic. This is the only
+        // layer that knows the caller asked for it.
+        if verbose {
+            self.service_subscriber
+                .inner_ref()
+                .get_block_header(hash)
+                .await
+                .map(GetBlockHeader::verbose_from_domain)
+                .map_err(invalid_params_error_object)
+        } else {
+            self.service_subscriber
+                .inner_ref()
+                .get_raw_block_header(hash)
+                .await
+                .map(GetBlockHeader::compact_from_domain)
+                .map_err(invalid_params_error_object)
+        }
     }
 
     async fn get_raw_mempool(&self) -> Result<Vec<String>, ErrorObjectOwned> {

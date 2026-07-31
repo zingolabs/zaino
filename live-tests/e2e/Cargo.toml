@@ -59,6 +59,11 @@ tower = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+zaino-primitives.workspace = true
+# The served JSON schema. These tests compare Zaino's domain answers against a
+# raw JSON-RPC oracle, so they render the domain side through the same wire
+# types the server uses.
+zaino-serve = { workspace = true }
 # Enable the tractable seam depth (fast-test-seam) so this crate's live tests can
 # exercise finalisation/eviction at small chain heights. Dev-dependency only — the
 # feature must never reach a shipped build (see the zaino-state feature comment).
