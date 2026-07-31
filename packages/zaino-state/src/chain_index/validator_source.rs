@@ -143,7 +143,14 @@ impl<V> std::fmt::Debug for ValidatorSource<V> {
 /// `getblock_error_object_from_indexer_error` in
 /// `zaino-serve/src/rpc/jsonrpc/service.rs`), so flattening a [`FetchError`] to
 /// a string would strip the [`FailureMode::RpcError`] code those clients key
-/// on. Domain rejections have no code to recover and stay flattened.
+/// on.
+///
+/// A domain rejection is carried the same way, as a typed
+/// [`LegacyRpcError`](crate::error::LegacyRpcError) with zcashd's
+/// `InvalidParameter`. That is the code zcashd itself answers "not found" with,
+/// and it is what reached clients before the adapters learned to tell a missing
+/// object from an unreachable node — the reclassification must not cost the
+/// served interface its error code.
 ///
 /// [`FetchError`]: zaino_source::FetchError
 /// [`FailureMode::RpcError`]: zaino_source::FailureMode::RpcError
@@ -152,9 +159,13 @@ where
     E: std::fmt::Debug + std::fmt::Display,
 {
     match error {
-        QueryError::Domain(e) => {
-            BlockchainSourceError::Unrecoverable(format!("validator rejected the query: {e}"))
-        }
+        QueryError::Domain(e) => BlockchainSourceError::unrecoverable_context(
+            "validator rejected the query",
+            crate::error::LegacyRpcError::new(
+                zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                e.to_string(),
+            ),
+        ),
         QueryError::Fetch(e) => {
             BlockchainSourceError::unrecoverable_context("validator unreachable", e)
         }
@@ -1461,6 +1472,39 @@ mod error_source_chain {
     /// preserve the typed cause instead of flattening it to a string, or
     /// failures surface as generic internal errors rather than the legacy codes
     /// lightwalletd-family clients key on.
+    /// A domain rejection must reach the serving layer with a code too.
+    ///
+    /// Before the adapters learned to distinguish a missing object from an
+    /// unreachable node, "block not found" arrived here as a `Fetch` error
+    /// carrying `-8`, and `zaino-serve` recovered that code. Now it arrives as
+    /// a `Domain` rejection, so this boundary must attach the code itself —
+    /// otherwise the reclassification would silently downgrade every
+    /// not-found response to a generic internal error.
+    #[test]
+    fn domain_rejection_carries_a_legacy_code_through_source() {
+        let flattened = err::<zaino_source::GetBlockError>(QueryError::Domain(
+            zaino_source::GetBlockError::HeightNotFound(
+                zaino_primitives::types::Height::try_from(42u32).expect("valid height"),
+            ),
+        ));
+
+        let mut current: Option<&(dyn std::error::Error + 'static)> = Some(&flattened);
+        let mut code = None;
+        while let Some(source) = current {
+            if let Some(rejection) = source.downcast_ref::<crate::error::LegacyRpcError>() {
+                code = Some(rejection.code);
+                break;
+            }
+            current = source.source();
+        }
+
+        assert_eq!(
+            code,
+            Some(zebra_rpc::server::error::LegacyCode::InvalidParameter as i64),
+            "a domain rejection must stay downcastable to its legacy code"
+        );
+    }
+
     #[tokio::test]
     async fn transport_error_stays_reachable_through_source() {
         // Port 1 refuses connections, so the request fails at the transport

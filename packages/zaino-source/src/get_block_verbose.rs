@@ -2,7 +2,7 @@
 
 use std::future::Future;
 
-use zaino_primitives::types::{BlockVerbose, Height};
+use zaino_primitives::types::{BlockHash, BlockVerbose, Height};
 
 use super::QueryError;
 
@@ -12,6 +12,15 @@ pub enum GetBlockVerboseError {
     /// No block exists at this height.
     #[error("no block at height {0}")]
     HeightNotFound(Height),
+
+    /// No block with this hash exists.
+    ///
+    /// Distinct from [`HeightNotFound`](Self::HeightNotFound) because
+    /// [`GetBlockVerboseByHash`] shares this error type and has no height to
+    /// report — naming the block by a height it was never asked about would
+    /// misreport which lookup failed.
+    #[error("no block with hash {0}")]
+    BlockNotFound(BlockHash),
 }
 
 /// Fetch verbose block metadata at a given height.

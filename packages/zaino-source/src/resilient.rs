@@ -54,13 +54,26 @@ impl RetryPolicy {
     }
 }
 
+/// The validator's work queue is full — it is up, but busy.
+const WORK_QUEUE_FULL: i64 = -1;
+
+/// The validator is still warming up and not yet serving.
+///
+/// A transient startup condition, not a rejection: it ends on its own once the
+/// node finishes loading. Retrying is the only correct response — failing
+/// immediately makes a validator that is merely slow to start look permanently
+/// broken to everything downstream.
+const IN_WARMUP: i64 = -28;
+
 /// Whether a transport error kind is worth retrying.
 fn is_retryable(kind: &FailureMode) -> bool {
     match kind {
         FailureMode::Connection => true,
         FailureMode::Timeout => true,
         FailureMode::HttpStatus(code) => *code >= 500,
-        FailureMode::RpcError(code) => *code == -1, // work-queue-full
+        // Everything else the validator answers with a code is its considered
+        // reply, and asking again will produce the same one.
+        FailureMode::RpcError(code) => *code == WORK_QUEUE_FULL || *code == IN_WARMUP,
         FailureMode::Parse => false,
         FailureMode::Auth => false,
     }
@@ -184,6 +197,13 @@ mod tests {
     #[test]
     fn work_queue_full_is_retryable() {
         assert!(is_retryable(&FailureMode::RpcError(-1)));
+    }
+
+    /// A warming-up validator is starting, not broken. Failing immediately here
+    /// makes a slow start look like a permanent fault to every consumer.
+    #[test]
+    fn in_warmup_is_retryable() {
+        assert!(is_retryable(&FailureMode::RpcError(-28)));
     }
 
     #[test]
