@@ -1,7 +1,7 @@
 use super::{load_test_vectors_and_sync_chain_index, MockchainMode};
 use crate::{
     chain_index::{
-        source::mockchain_source::MockchainSource,
+        tests::vectors::MockSource,
         tests::{
             poll::poll_until,
             vectors::{indexed_block_chain, load_test_vectors, TestVectorBlockData},
@@ -13,10 +13,7 @@ use crate::{
 };
 use tokio::time::{sleep, Duration};
 use tokio_stream::StreamExt as _;
-use zaino_fetch::jsonrpsee::response::address_deltas::{
-    GetAddressDeltasParams, GetAddressDeltasResponse,
-};
-use zaino_fetch::jsonrpsee::response::block_header::GetBlockHeader;
+use zaino_primitives::types::rpc::{AddressDeltas, AddressDeltasRequest};
 use zebra_chain::serialization::{ZcashDeserializeInto, ZcashSerialize as _};
 use zebra_rpc::client::{GetAddressBalanceRequest, GetAddressTxIdsRequest};
 use zebra_rpc::methods::GetBlock;
@@ -30,7 +27,7 @@ use zebra_state::HashOrHeight;
 /// publishes new tips asynchronously via its background loop, and under
 /// full-suite parallel load those updates can lag well past 2 s.
 async fn wait_for_indexer_tip(
-    index_reader: &NodeBackedChainIndexSubscriber<MockchainSource>,
+    index_reader: &NodeBackedChainIndexSubscriber<MockSource>,
     expected: u32,
 ) {
     poll_until(
@@ -185,12 +182,12 @@ async fn sync_blocks_after_startup() {
     )
     .height
     .0;
-    let active_mockchain_tip = dbg!(mockchain.active_height());
+    let active_mockchain_tip = dbg!(mockchain.source().active_height());
     assert_eq!(active_mockchain_tip, indexer_tip);
 
     for _ in 0..20 {
-        mockchain.mine_blocks(1);
-        wait_for_indexer_tip(&index_reader, mockchain.active_height()).await;
+        mockchain.source().mine_blocks(1);
+        wait_for_indexer_tip(&index_reader, mockchain.source().active_height()).await;
     }
 
     let indexer_tip = dbg!(
@@ -204,7 +201,7 @@ async fn sync_blocks_after_startup() {
     )
     .height
     .0;
-    let active_mockchain_tip = dbg!(mockchain.active_height());
+    let active_mockchain_tip = dbg!(mockchain.source().active_height());
     assert_eq!(active_mockchain_tip, indexer_tip);
 }
 
@@ -217,7 +214,7 @@ async fn get_mempool_transaction() {
         .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
         .collect();
 
-    let mockchain_tip = mockchain.active_height();
+    let mockchain_tip = mockchain.source().active_height();
     wait_for_indexer_tip(&index_reader, mockchain_tip).await;
 
     let mempool_height = (mockchain_tip as usize) + 1;
@@ -265,7 +262,7 @@ async fn get_mempool_transaction_status() {
         .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
         .collect();
 
-    let mockchain_tip = mockchain.active_height();
+    let mockchain_tip = mockchain.source().active_height();
     wait_for_indexer_tip(&index_reader, mockchain_tip).await;
 
     let mempool_height = (mockchain_tip as usize) + 1;
@@ -311,7 +308,7 @@ async fn get_mempool_transactions() {
         .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
         .collect();
 
-    let mockchain_tip = mockchain.active_height();
+    let mockchain_tip = mockchain.source().active_height();
     wait_for_indexer_tip(&index_reader, mockchain_tip).await;
 
     let mempool_height = (mockchain_tip as usize) + 1;
@@ -357,7 +354,7 @@ async fn get_filtered_mempool_transactions() {
         .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
         .collect();
 
-    let mockchain_tip = mockchain.active_height();
+    let mockchain_tip = mockchain.source().active_height();
     wait_for_indexer_tip(&index_reader, mockchain_tip).await;
 
     let mempool_height = (mockchain_tip as usize) + 1;
@@ -407,7 +404,7 @@ async fn get_mempool_stream_no_expected_chain_tip_snapshot() {
         .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
         .collect();
 
-    let mockchain_tip = mockchain.active_height();
+    let mockchain_tip = mockchain.source().active_height();
     wait_for_indexer_tip(&index_reader, mockchain_tip).await;
 
     let next_mempool_height_index = (mockchain_tip as usize) + 1;
@@ -444,7 +441,7 @@ async fn get_mempool_stream_no_expected_chain_tip_snapshot() {
 
     sleep(Duration::from_millis(500)).await;
 
-    mockchain.mine_blocks(1);
+    mockchain.source().mine_blocks(1);
 
     let indexer_mempool_stream_transactions =
         mempool_stream_task.await.expect("collector task failed");
@@ -468,7 +465,7 @@ async fn get_mempool_stream_correct_expected_chain_tip_snapshot() {
         .map(|TestVectorBlockData { zebra_block, .. }| zebra_block.clone())
         .collect();
 
-    let mockchain_tip = mockchain.active_height();
+    let mockchain_tip = mockchain.source().active_height();
     wait_for_indexer_tip(&index_reader, mockchain_tip).await;
 
     let next_mempool_height_index = (mockchain_tip as usize) + 1;
@@ -506,7 +503,7 @@ async fn get_mempool_stream_correct_expected_chain_tip_snapshot() {
 
     sleep(Duration::from_millis(500)).await;
 
-    mockchain.mine_blocks(1);
+    mockchain.source().mine_blocks(1);
 
     let indexer_mempool_stream_transactions =
         mempool_stream_task.await.expect("collector task failed");
@@ -524,12 +521,12 @@ async fn get_mempool_stream_correct_expected_chain_tip_snapshot() {
 async fn get_mempool_stream_for_stale_snapshot() {
     let (_blocks, _indexer, index_reader, mockchain) =
         load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
-    wait_for_indexer_tip(&index_reader, mockchain.active_height()).await;
+    wait_for_indexer_tip(&index_reader, mockchain.source().active_height()).await;
 
     let stale_nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
 
-    mockchain.mine_blocks(1);
-    wait_for_indexer_tip(&index_reader, mockchain.active_height()).await;
+    mockchain.source().mine_blocks(1);
+    wait_for_indexer_tip(&index_reader, mockchain.source().active_height()).await;
 
     // `wait_for_indexer_tip` only confirms the chain-index NFS has caught
     // up; the mempool serve loop polls `get_best_block_hash` on its own
@@ -620,16 +617,34 @@ async fn get_treestate() {
         .contains("not found in local chain index"));
 }
 
+/// A `getaddressdeltas` request over a height range, from plain address strings.
+fn filtered_deltas_request(
+    addresses: Vec<String>,
+    start: u32,
+    end: u32,
+    chain_info: bool,
+) -> AddressDeltasRequest {
+    AddressDeltasRequest::Filtered {
+        addresses: addresses
+            .into_iter()
+            .map(zaino_primitives::types::TransparentAddress::new)
+            .collect(),
+        start,
+        end,
+        chain_info,
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn get_address_deltas() {
     let (_blocks, _indexer, index_reader, mockchain) =
         load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
 
     let transparent_address = faucet_transparent_address();
-    let active_height = mockchain.active_height();
+    let active_height = mockchain.source().active_height();
 
     let expected_response = mockchain
-        .get_address_deltas(GetAddressDeltasParams::new_filtered(
+        .get_address_deltas(filtered_deltas_request(
             vec![transparent_address.clone()],
             0,
             active_height,
@@ -639,7 +654,7 @@ async fn get_address_deltas() {
         .unwrap();
 
     let indexer_response = index_reader
-        .get_address_deltas(GetAddressDeltasParams::new_filtered(
+        .get_address_deltas(filtered_deltas_request(
             vec![transparent_address.clone()],
             0,
             active_height,
@@ -651,19 +666,46 @@ async fn get_address_deltas() {
     assert_eq!(indexer_response, expected_response);
 
     match indexer_response {
-        GetAddressDeltasResponse::WithChainInfo { deltas, start, end } => {
+        AddressDeltas::WithChainInfo { deltas, start, end } => {
             assert!(!deltas.is_empty());
-            assert_eq!(start.height, 0);
-            assert_eq!(end.height, active_height);
+            assert_eq!(u32::from(start.height), 0);
+            assert_eq!(u32::from(end.height), active_height);
+
+            // zcashd reports each delta's `blockindex` and documents the
+            // ordering as `(height, blockindex, index)`. A source that knows the
+            // transaction's position in its block must report it: dropping it
+            // both omits a field zcashd sends and makes the documented order
+            // unverifiable.
+            assert!(
+                deltas.iter().all(|delta| delta.block_index.is_some()),
+                "every delta from a source that indexes transaction locations \
+                 must carry its blockindex: {deltas:?}"
+            );
+
+            let sort_key = |delta: &zaino_primitives::types::AddressDelta| {
+                (
+                    u32::from(delta.height),
+                    delta.block_index.unwrap_or(u32::MAX),
+                    delta.index,
+                )
+            };
+            assert!(
+                deltas
+                    .windows(2)
+                    .all(|pair| sort_key(&pair[0]) <= sort_key(&pair[1])),
+                "deltas must be ordered by (height, blockindex, index): {deltas:?}"
+            );
         }
-        GetAddressDeltasResponse::Simple(_) => {
+        AddressDeltas::Simple(_) => {
             panic!("expected get_address_deltas response with chain info")
         }
     }
 
     let invalid_address_result = index_reader
-        .get_address_deltas(GetAddressDeltasParams::new_address(
-            "not_a_valid_transparent_address",
+        .get_address_deltas(AddressDeltasRequest::Address(
+            zaino_primitives::types::TransparentAddress::new(
+                "not_a_valid_transparent_address".to_string(),
+            ),
         ))
         .await;
 
@@ -675,7 +717,7 @@ async fn get_address_deltas() {
     );
 
     let invalid_range_result = index_reader
-        .get_address_deltas(GetAddressDeltasParams::new_filtered(
+        .get_address_deltas(filtered_deltas_request(
             vec![transparent_address],
             active_height,
             active_height - 1,
@@ -705,10 +747,7 @@ async fn get_address_balance() {
         .await
         .unwrap();
 
-    assert_eq!(
-        serde_json::to_value(indexer_balance).unwrap(),
-        serde_json::to_value(expected_balance).unwrap()
-    );
+    assert_eq!(indexer_balance, expected_balance);
 
     let invalid_address_result = index_reader
         .get_address_balance(GetAddressBalanceRequest::new(vec![
@@ -725,7 +764,7 @@ async fn get_address_txids() {
         load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
 
     let transparent_address = faucet_transparent_address();
-    let active_height = mockchain.active_height();
+    let active_height = mockchain.source().active_height();
 
     let expected_txids = mockchain
         .get_address_txids(GetAddressTxIdsRequest::new(
@@ -915,7 +954,7 @@ async fn get_outpoint_spenders_empty_and_single() {
 async fn z_get_block() {
     let (_blocks, _indexer, index_reader, mockchain) =
         load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
-    let active_height = mockchain.active_height();
+    let active_height = mockchain.source().active_height();
 
     for height in [1u32, active_height / 2, active_height] {
         let id = HashOrHeight::Height(zebra_chain::block::Height(height));
@@ -961,39 +1000,33 @@ async fn z_get_block() {
 async fn get_block_header() {
     let (_blocks, _indexer, index_reader, mockchain) =
         load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
-    let active_height = mockchain.active_height();
+    let active_height = mockchain.source().active_height();
 
     for height in [1u32, active_height / 2, active_height] {
         let id = HashOrHeight::Height(zebra_chain::block::Height(height));
         let block = mockchain.get_block(id).await.unwrap().unwrap();
         let hash = block.hash().to_string();
 
-        // Non-verbose: the compact hex decodes to the block header's serialization.
-        let GetBlockHeader::Compact(compact) = index_reader
-            .get_block_header(hash.clone(), false)
+        // Non-verbose: the raw header bytes are the block header's serialization.
+        let raw = index_reader
+            .get_raw_block_header(hash.clone())
             .await
-            .unwrap()
-        else {
-            panic!("expected a compact header when verbose = false");
-        };
-        assert_eq!(
-            hex::decode(compact).unwrap(),
-            block.header.zcash_serialize_to_vec().unwrap()
-        );
+            .unwrap();
+        assert_eq!(raw, block.header.zcash_serialize_to_vec().unwrap());
 
         // Verbose: the ChainIndex delegates to the source and reports hash / height.
-        let via_index = index_reader
-            .get_block_header(hash.clone(), true)
-            .await
-            .unwrap();
-        let via_source = mockchain
-            .get_block_header(hash.clone(), true)
-            .await
-            .unwrap();
-        let value = serde_json::to_value(&via_index).unwrap();
-        assert_eq!(value, serde_json::to_value(&via_source).unwrap());
-        assert_eq!(value["hash"].as_str().unwrap(), hash);
-        assert_eq!(value["height"].as_u64().unwrap(), u64::from(height));
+        let via_index = index_reader.get_block_header(hash.clone()).await.unwrap();
+        let via_source = mockchain.get_block_header(hash.clone()).await.unwrap();
+        assert_eq!(via_index, via_source);
+        assert_eq!(
+            {
+                let mut bytes = <[u8; 32]>::from(via_index.hash);
+                bytes.reverse();
+                hex::encode(bytes)
+            },
+            hash
+        );
+        assert_eq!(u32::from(via_index.height), height);
     }
 }
 
@@ -1003,7 +1036,7 @@ async fn get_block_header() {
 async fn get_block_deltas() {
     let (_blocks, _indexer, index_reader, mockchain) =
         load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
-    let active_height = mockchain.active_height();
+    let active_height = mockchain.source().active_height();
 
     let mut saw_delta_entries = false;
     for height in [1u32, active_height / 2, active_height] {
@@ -1013,12 +1046,16 @@ async fn get_block_deltas() {
 
         let via_index = index_reader.get_block_deltas(hash.clone()).await.unwrap();
         let via_source = mockchain.get_block_deltas(hash.clone()).await.unwrap();
+        assert_eq!(via_index, via_source);
         assert_eq!(
-            serde_json::to_value(&via_index).unwrap(),
-            serde_json::to_value(&via_source).unwrap()
+            {
+                let mut bytes = <[u8; 32]>::from(via_index.hash);
+                bytes.reverse();
+                hex::encode(bytes)
+            },
+            hash
         );
-        assert_eq!(via_index.hash, hash);
-        assert_eq!(via_index.height, height);
+        assert_eq!(u32::from(via_index.height), height);
         if via_index
             .deltas
             .iter()
@@ -1050,7 +1087,7 @@ async fn get_difficulty() {
 }
 
 /// Drives the merged [`NodeBackedIndexerServiceSubscriber`] RPC layer over a
-/// `MockchainSource`, confirming the service delegates to its chain index: the
+/// `MockSource`, confirming the service delegates to its chain index: the
 /// service's `get_latest_block` reports the same tip the mockchain was synced to.
 #[tokio::test(flavor = "multi_thread")]
 async fn node_backed_indexer_service_serves_latest_block() {
@@ -1084,12 +1121,12 @@ async fn dropping_the_chain_index_releases_the_source() {
         load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
 
     assert!(
-        !mockchain.shutdown_called(),
+        !mockchain.source().shutdown_called(),
         "the source must not be shut down while the index is live"
     );
     drop(indexer);
     assert!(
-        mockchain.shutdown_called(),
+        mockchain.source().shutdown_called(),
         "dropping the index must release source-owned background work"
     );
 }
@@ -1134,9 +1171,7 @@ async fn z_get_block_invalid_identifier_keeps_legacy_error_code() {
     let mut current: Option<&(dyn std::error::Error + 'static)> = Some(&error);
     let mut rpc_error_code = None;
     while let Some(source_error) = current {
-        if let Some(rpc_error) =
-            source_error.downcast_ref::<zaino_fetch::jsonrpsee::connector::RpcError>()
-        {
+        if let Some(rpc_error) = source_error.downcast_ref::<crate::error::LegacyRpcError>() {
             rpc_error_code = Some(rpc_error.code);
             break;
         }
@@ -1145,7 +1180,7 @@ async fn z_get_block_invalid_identifier_keeps_legacy_error_code() {
     assert_eq!(
         rpc_error_code,
         Some(zebra_rpc::server::error::LegacyCode::InvalidParameter as i64),
-        "the typed RpcError (legacy code -8) must stay reachable via the source() chain"
+        "the typed LegacyRpcError (legacy code -8) must stay reachable via the source() chain"
     );
 }
 
@@ -1162,7 +1197,8 @@ async fn get_chain_tips_falls_back_to_source_while_syncing() {
 
     let blocks = load_test_vectors().unwrap().blocks;
     let tip_height = (blocks.len() as u32) - 1;
-    let expected_tip_hash = blocks[tip_height as usize].zebra_block.hash().to_string();
+    let expected_tip_hash =
+        zaino_primitives::types::BlockHash::from(blocks[tip_height as usize].zebra_block.hash().0);
     let mock = build_mockchain_source(blocks);
 
     let syncing_snapshot = ChainIndexSnapshot::StillSyncingFinalizedState {
@@ -1175,12 +1211,12 @@ async fn get_chain_tips_falls_back_to_source_while_syncing() {
 
     assert_eq!(
         tips,
-        vec![zaino_fetch::jsonrpsee::response::chain_tips::ChainTip::new(
-            tip_height,
-            expected_tip_hash,
-            0,
-            zaino_fetch::jsonrpsee::response::chain_tips::ChainTipStatus::Active,
-        )]
+        vec![zaino_primitives::types::rpc::ChainTip {
+            height: zaino_primitives::types::Height::try_from(tip_height).unwrap(),
+            hash: expected_tip_hash,
+            branch_len: 0,
+            status: zaino_primitives::types::rpc::ChainTipStatus::Active,
+        }]
     );
 }
 
@@ -1287,9 +1323,7 @@ async fn send_raw_transaction_invalid_hex_keeps_legacy_error_code() {
     let mut current: Option<&(dyn std::error::Error + 'static)> = Some(&error);
     let mut rpc_error_code = None;
     while let Some(source_error) = current {
-        if let Some(rpc_error) =
-            source_error.downcast_ref::<zaino_fetch::jsonrpsee::connector::RpcError>()
-        {
+        if let Some(rpc_error) = source_error.downcast_ref::<crate::error::LegacyRpcError>() {
             rpc_error_code = Some(rpc_error.code);
             break;
         }
@@ -1298,6 +1332,6 @@ async fn send_raw_transaction_invalid_hex_keeps_legacy_error_code() {
     assert_eq!(
         rpc_error_code,
         Some(zebra_rpc::server::error::LegacyCode::InvalidParameter as i64),
-        "the typed RpcError (legacy code -8) must stay reachable via the source() chain"
+        "the typed LegacyRpcError (legacy code -8) must stay reachable via the source() chain"
     );
 }

@@ -375,12 +375,23 @@ pub async fn assert_send_to_transparent_finalization<V, Conn>(
         .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
         .await;
 
-    let fetch_service = test_manager.full_node_jsonrpc_connector().await;
-    let height = fetch_service.get_blockchain_info().await.unwrap().blocks.0;
-    let unfinalised_transactions = fetch_service
-        .get_address_txids(vec![recipient_taddr.clone()], height, height)
-        .await
-        .unwrap();
+    let oracle = test_manager.full_node_jsonrpc_connector().await;
+    let height = oracle.get("getblockchaininfo").await["blocks"]
+        .as_u64()
+        .expect("a chain height") as u32;
+    let address_txids = async |address: &str| {
+        oracle
+            .call(
+                "getaddresstxids",
+                vec![serde_json::json!({
+                    "addresses": [address],
+                    "start": height,
+                    "end": height,
+                })],
+            )
+            .await
+    };
+    let unfinalised_transactions = address_txids(&recipient_taddr).await;
 
     // The load-bearing advance: these blocks push the send below the seam
     // (`FAST_TEST_MAX_NONFINALISED_DEPTH`) into the finalized DB.
@@ -394,10 +405,7 @@ pub async fn assert_send_to_transparent_finalization<V, Conn>(
         )
         .await;
 
-    let finalised_transactions = fetch_service
-        .get_address_txids(vec![recipient_taddr], height, height)
-        .await
-        .unwrap();
+    let finalised_transactions = address_txids(&recipient_taddr).await;
 
     clients.sync_recipient().await;
     assert_eq!(
@@ -432,22 +440,23 @@ pub async fn assert_monitor_unverified_mempool<V, Conn>(
 
     clients.rescan_recipient().await;
 
-    let fetch_service = test_manager.full_node_jsonrpc_connector().await;
-    let mempool_txids = fetch_service.get_raw_mempool().await.unwrap();
+    let oracle = test_manager.full_node_jsonrpc_connector().await;
+    let mempool_txids = oracle.get("getrawmempool").await;
     dbg!(txid_1);
     dbg!(txid_2);
     dbg!(mempool_txids.clone());
 
-    let _transaction_1 = dbg!(
-        fetch_service
-            .get_raw_transaction(mempool_txids.transactions[0].clone(), Some(1))
+    let raw_transaction = async |index: usize| {
+        oracle
+            .call(
+                "getrawtransaction",
+                vec![mempool_txids[index].clone(), serde_json::json!(1)],
+            )
             .await
-    );
-    let _transaction_2 = dbg!(
-        fetch_service
-            .get_raw_transaction(mempool_txids.transactions[1].clone(), Some(1))
-            .await
-    );
+    };
+
+    let _transaction_1 = dbg!(raw_transaction(0).await);
+    let _transaction_2 = dbg!(raw_transaction(1).await);
 
     // Unconfirmed (mempool) balances — devtool's WalletBalance has no
     // unconfirmed_* fields (block-based sync, no mempool scan):
@@ -464,16 +473,8 @@ pub async fn assert_monitor_unverified_mempool<V, Conn>(
         .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
         .await;
 
-    let _transaction_1 = dbg!(
-        fetch_service
-            .get_raw_transaction(mempool_txids.transactions[0].clone(), Some(1))
-            .await
-    );
-    let _transaction_2 = dbg!(
-        fetch_service
-            .get_raw_transaction(mempool_txids.transactions[1].clone(), Some(1))
-            .await
-    );
+    let _transaction_1 = dbg!(raw_transaction(0).await);
+    let _transaction_2 = dbg!(raw_transaction(1).await);
 
     clients.sync_recipient().await;
 

@@ -63,6 +63,13 @@ http = { workspace = true }
 once_cell = { workspace = true }
 tokio = { workspace = true }
 tracing.workspace = true
+zaino-primitives.workspace = true
+thiserror.workspace = true
+hex.workspace = true
+prost.workspace = true
+zaino-rpc.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 tonic.workspace = true
+wire_serialized_transaction_test_data.workspace = true
