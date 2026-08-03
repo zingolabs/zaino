@@ -6,10 +6,17 @@ Zaino is developed on a `dev` branch. Features are PRed against `dev`. Anything 
 for release, in the order it landed. We do not cherry-pick from `dev` to cut
 releases -- the release is always a **prefix** of `dev`'s history.
 
-There are 6 publishable crates (`zainod`, `zaino-serve`, `zaino-state`,
-`zaino-fetch`, `zaino-proto`, `zaino-common`) and 3 internal-only
-(`e2e`, `integration`, `zaino-testutils`). Each public crate is versioned and
+There are 13 publishable crates (`zainod`, `zaino-serve`, `zaino-state`,
+`zaino-proto`, `zaino-common`, `zaino-primitives`, `zaino-address`,
+`zaino-source`, `zaino-rpc`, `zaino-convert-zebra`, `zaino-source-zebra-rpc`,
+`zaino-source-zebra-readstate`, `zaino-source-zebra`) and 3 internal-only
+(`e2e`, `clientless`, `zaino-testutils`). Each public crate is versioned and
 released independently.
+
+> This document was written when the list was 6, including `zaino-fetch`. That
+> crate was deleted and the source stack added by ADR-0008; the release
+> *mechanism* below is unchanged, but the per-crate tables in the worked
+> examples name the old set.
 
 ### Relationship to ADR 003
 

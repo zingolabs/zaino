@@ -8,8 +8,9 @@ merged)
 ## Context and decision
 
 Zaino installs a rustls `CryptoProvider` as the process-wide default at
-its two TLS boundaries (`zaino-serve`'s gRPC server, `zaino-fetch`'s
-jsonrpsee connector) via `zaino_common::crypto::ensure_default_crypto_provider`
+its two TLS boundaries (`zaino-serve`'s gRPC server, and the outbound
+JSON-RPC client — `zaino-fetch`'s jsonrpsee connector when this was written,
+`zaino-rpc` since ADR-0008) via `zaino_common::crypto::ensure_default_crypto_provider`
 (zingolabs/zaino#1360). The provider was initially pinned to **ring** for
 two reasons: zebra used ring (shared attack surface across the deployed
 stack), and ring avoided the `aws-lc-sys` + `cmake` build dependencies.

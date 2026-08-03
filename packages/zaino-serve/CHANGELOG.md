@@ -8,12 +8,45 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- `rpc::jsonrpc::wire` — **this crate now owns the served JSON schema**
+  (ADR-0009). Serde structs carrying zcashd's exact field names, one module per
+  response family (`address`, `address_deltas`, `address_queries`,
+  `block_deltas`, `block_header`, `block_subsidy`, `blockchain_info`,
+  `chain_tips`, `common`, `hashes`, `mining_info`, `misc`, `node_info`,
+  `peer_info`, `subtrees`, `treestate`), each with a `from_domain` conversion
+  and its own golden serialization tests.
+- Interface asymmetries are now recorded and tested where they are served:
+  `z_gettreestate`'s `finalRoot` is display-order, `z_getsubtreesbyindex`'s
+  subtree roots are not.
 ### Changed
 - tonic's TLS provider feature switches from `tls-ring` to `tls-aws-lc`,
   following the workspace's aws-lc-rs preferred CryptoProvider (ADR-0006).
+- **Breaking** — the JSON-RPC handlers now take domain types from
+  `ZcashIndexer` and apply `from_domain` at the boundary, so the served
+  response types are this crate's rather than `zaino-fetch`'s or
+  `zebra-rpc`'s. Downstream implementors of `ZcashIndexerRpcServer` see new
+  return types on `get_spent_info`, `get_tx_out`, `get_tx_out_set_info`,
+  `get_chain_tips`, `get_block_deltas`, `get_peer_info`, `get_mining_info`,
+  `get_block_subsidy`, `get_block_header` and `get_mempool_info`.
+- `zcashd_support` gates the zcashd-shaped peer-info types in this crate's wire
+  module and forwards nowhere — it is now the only place in the workspace the
+  feature gates anything.
 ### Deprecated
 ### Removed
 ### Fixed
+- **zcashd error-code recovery was silently inert.** The error-chain downcast
+  matched `zaino_fetch`'s connector type, which the new source stack never
+  constructs, so every validator error code reached the client as a generic
+  internal error. It now matches `zaino_source::FetchError`'s
+  `FailureMode::RpcError(i64)` (the validator's code) and
+  `zaino_state::LegacyRpcError` (Zaino's own), and is tested directly rather
+  than only from the far side.
+- `getspentinfo` reports zcashd's own `-5` / `Unable to get spent info` for an
+  output with no spend on record. Neither this crate nor its predecessor served
+  that code: the old path consumed it into a typed error, destroying the
+  `RpcError` the recovery walks for, and the first rewrite reported `-8`.
+- `getblockchaininfo` no longer fails against zebra 6.0, which serialises the
+  deferred-development-fund value pool as `lockbox` rather than `deferred`.
 
 ## [0.3.0] - 2026-06-17
 
