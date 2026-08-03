@@ -1,0 +1,24 @@
+[package]
+name = "zaino-address"
+description = "Zcash address parsing and classification. Answers the questions Zaino's address-validation RPCs ask, without touching the chain."
+version = "0.1.0"
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sapling-crypto.workspace = true
+tracing.workspace = true
+zcash_address.workspace = true
+zcash_keys = { workspace = true, features = ["sapling"] }
+zcash_protocol.workspace = true
+zcash_transparent.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[dev-dependencies]
+hex.workspace = true
