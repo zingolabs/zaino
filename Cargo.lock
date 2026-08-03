@@ -5910,6 +5910,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-convert-zebra"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "zaino-primitives",
+ "zebra-chain",
+]
+
+[[package]]
 name = "zaino-fetch"
 version = "0.2.1"
 dependencies = [
