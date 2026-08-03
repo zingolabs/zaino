@@ -1,6 +1,7 @@
 # Workspace Members are in dependency order, do not change this without prior consideration.
 [workspace]
 members = [
+    "packages/zaino-primitives",
     "packages/zaino-common",
     "packages/zainod",
     "packages/zaino-serve",
@@ -17,6 +18,7 @@ members = [
 # default-members — so the heavy live-test crates are built and tested only
 # when selected explicitly (`-p e2e` / `-p clientless`). See docs/adr/0002.
 default-members = [
+    "packages/zaino-primitives",
     "packages/zaino-common",
     "packages/zainod",
     "packages/zaino-serve",
@@ -122,6 +124,10 @@ tempfile = "3.2"
 # no longer need `default-features = false` to drop it: their default feature
 # set is already empty. Enable zcashd end-to-end with `--features zcashd_support`.
 zainod = { path = "packages/zainod" }
+# Zero-dependency domain vocabulary. Every crate that needs chain-level types
+# (heights, hashes, blocks, transactions) depends on this rather than on
+# `zebra-chain` or on another zaino crate. See docs/adr/0010.
+zaino-primitives = { path = "packages/zaino-primitives", version = "0.1.0" }
 zaino-common = { path = "packages/zaino-common", version = "0.2.0" }
 # default-features = false so the default-on `zcashd_support` feature can be
 # dropped end-to-end via `--no-default-features`; each consumer re-enables it
