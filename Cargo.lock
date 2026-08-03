@@ -5900,8 +5900,10 @@ dependencies = [
 name = "zaino-common"
 version = "0.2.0"
 dependencies = [
+ "hex",
  "rustls",
  "serde",
+ "thiserror 2.0.18",
  "time",
  "tracing",
  "tracing-subscriber",
@@ -6007,6 +6009,26 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "zaino-primitives",
+]
+
+[[package]]
+name = "zaino-source-zebra-rpc"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "incrementalmerkletree",
+ "sapling-crypto",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "zaino-convert-zebra",
+ "zaino-primitives",
+ "zaino-rpc",
+ "zaino-source",
+ "zcash_primitives",
+ "zebra-chain",
 ]
 
 [[package]]
