@@ -5957,6 +5957,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-rpc"
+version = "0.1.0"
+dependencies = [
+ "reqwest 0.13.1",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "zaino-common",
+ "zaino-source",
+]
+
+[[package]]
 name = "zaino-serve"
 version = "0.3.1"
 dependencies = [
