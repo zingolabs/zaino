@@ -6012,6 +6012,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-source-zebra-readstate"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde_json",
+ "tokio",
+ "tower 0.4.13",
+ "tracing",
+ "zaino-convert-zebra",
+ "zaino-primitives",
+ "zaino-source",
+ "zebra-chain",
+ "zebra-rpc",
+ "zebra-state",
+]
+
+[[package]]
 name = "zaino-source-zebra-rpc"
 version = "0.1.0"
 dependencies = [
