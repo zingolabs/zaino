@@ -3,6 +3,7 @@
 members = [
     "packages/zaino-primitives",
     "packages/zaino-address",
+    "packages/zaino-source",
     "packages/zaino-common",
     "packages/zainod",
     "packages/zaino-serve",
@@ -21,6 +22,7 @@ members = [
 default-members = [
     "packages/zaino-primitives",
     "packages/zaino-address",
+    "packages/zaino-source",
     "packages/zaino-common",
     "packages/zainod",
     "packages/zaino-serve",
@@ -134,6 +136,10 @@ zaino-primitives = { path = "packages/zaino-primitives", version = "0.1.0" }
 # Zcash address parsing and classification, for the two address-validation RPCs.
 # A leaf: it isolates the librustzcash address stack from everything else.
 zaino-address = { path = "packages/zaino-address", version = "0.1.0" }
+# Driven port traits for validator access: one trait per question a consumer can
+# ask, so each consumer's bound names exactly the capabilities it uses and an
+# adapter that cannot answer a question simply does not implement it.
+zaino-source = { path = "packages/zaino-source", version = "0.1.0" }
 zaino-common = { path = "packages/zaino-common", version = "0.2.0" }
 # default-features = false so the default-on `zcashd_support` feature can be
 # dropped end-to-end via `--no-default-features`; each consumer re-enables it

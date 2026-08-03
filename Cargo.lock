@@ -5978,6 +5978,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-source"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "tokio",
+ "zaino-primitives",
+]
+
+[[package]]
 name = "zaino-state"
 version = "0.3.1"
 dependencies = [
