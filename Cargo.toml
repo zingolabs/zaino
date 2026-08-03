@@ -8,6 +8,7 @@ members = [
     "packages/zaino-convert-zebra",
     "packages/zaino-source-zebra-rpc",
     "packages/zaino-source-zebra-readstate",
+    "packages/zaino-source-zebra",
     "packages/zaino-common",
     "packages/zainod",
     "packages/zaino-serve",
@@ -31,6 +32,7 @@ default-members = [
     "packages/zaino-convert-zebra",
     "packages/zaino-source-zebra-rpc",
     "packages/zaino-source-zebra-readstate",
+    "packages/zaino-source-zebra",
     "packages/zaino-common",
     "packages/zainod",
     "packages/zaino-serve",
@@ -157,6 +159,9 @@ zaino-convert-zebra = { path = "packages/zaino-convert-zebra", version = "0.1.0"
 # in-process state can serve, and simply does not implement the rest.
 zaino-source-zebra-rpc = { path = "packages/zaino-source-zebra-rpc", version = "0.1.0" }
 zaino-source-zebra-readstate = { path = "packages/zaino-source-zebra-readstate", version = "0.1.0" }
+# Composite over the two adapters: capability decides what each can answer,
+# this decides which to ask.
+zaino-source-zebra = { path = "packages/zaino-source-zebra", version = "0.1.0" }
 zaino-common = { path = "packages/zaino-common", version = "0.2.0" }
 # default-features = false so the default-on `zcashd_support` feature can be
 # dropped end-to-end via `--no-default-features`; each consumer re-enables it
