@@ -32,7 +32,6 @@ transparent_address_history_experimental = [
 ]
 
 [dependencies]
-zaino-fetch = { workspace = true }
 zaino-testutils = { workspace = true }
 # The lib's z_validate helper calls `ZcashIndexer::z_validate_address`.
 zaino-state = { workspace = true, features = ["test_dependencies"] }
@@ -52,7 +51,6 @@ zaino-state = { workspace = true, features = ["fast-test-seam"] }
 # zainod/transparent_address_history_experimental in the spawned daemon.
 zainod = { workspace = true }
 zaino-testutils = { workspace = true }
-zaino-fetch = { workspace = true }
 zaino-proto = { workspace = true }
 zaino-common = { workspace = true }
 wire_serialized_transaction_test_data = { workspace = true }

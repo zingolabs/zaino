@@ -674,7 +674,6 @@ dependencies = [
  "tokio",
  "wire_serialized_transaction_test_data",
  "zaino-common",
- "zaino-fetch",
  "zaino-proto",
  "zaino-state",
  "zaino-testutils",
@@ -1056,27 +1055,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "derive_more"
-version = "2.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d751e9e49156b02b44f9c1815bcb94b984cdcc4396ecc32521c739452808b134"
-dependencies = [
- "derive_more-impl",
-]
-
-[[package]]
-name = "derive_more-impl"
-version = "2.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "799a97264921d8623a957f6c3b9011f3b5492f557bbb7a5a19b7fa6d06ba8dcb"
-dependencies = [
- "proc-macro2",
- "quote",
- "rustc_version",
- "syn 2.0.118",
-]
-
-[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1188,7 +1166,6 @@ dependencies = [
  "tokio",
  "tower 0.4.13",
  "zaino-common",
- "zaino-fetch",
  "zaino-proto",
  "zaino-state",
  "zaino-testutils",
@@ -5921,33 +5898,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "zaino-fetch"
-version = "0.2.1"
-dependencies = [
- "base64",
- "derive_more",
- "hex",
- "http",
- "indexmap 2.14.0",
- "jsonrpsee-types",
- "metrics",
- "prost",
- "reqwest 0.13.1",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tonic",
- "tracing",
- "url",
- "wire_serialized_transaction_test_data",
- "zaino-common",
- "zaino-proto",
- "zebra-chain",
- "zebra-rpc",
-]
-
-[[package]]
 name = "zaino-primitives"
 version = "0.1.0"
 dependencies = [
@@ -6131,7 +6081,6 @@ dependencies = [
  "tonic",
  "tracing",
  "zaino-common",
- "zaino-fetch",
  "zaino-proto",
  "zaino-serve",
  "zaino-state",
