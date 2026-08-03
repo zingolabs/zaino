@@ -22,10 +22,6 @@ This baseline will tell you which tests are currently passing, failing
 and their performance. This will help you identify regressions when
 updating these or any other dependencies.
 
-## update `.env.testing-artifacts` to the corresponding version of Zebra
-Instructions on how to do this can be found in [testing](./testing.md)
-documentation.
-
 ## Finding out which crates depend on Zebra crates.
 Find out which dependencies use `zebra-*` crates by running
 `cargo tree` and spotting the usage of Zebra crates.

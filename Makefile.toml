@@ -3,18 +3,13 @@ extend = [
     { path = "tools/makefiles/notify.toml" },
     { path = "tools/makefiles/rocksdb.toml" },
 ]
-env_files = [".env.testing-artifacts"]
-
 [config]
 default_to_workspace = false
 
 [env]
 IMAGE_NAME = "zingodevops/zaino-ci"
-TEST_BINARIES_DIR = "/home/container_user/artifacts"
-CONTAINERS_CONF_OVERRIDE = "${CARGO_MAKE_WORKING_DIRECTORY}/.config/containers.conf"
 # Single source of truth: rust-toolchain.toml's `channel`, extracted via the
-# workbench `get-rust-version` binary. Replaces RUST_VERSION in
-# .env.testing-artifacts.
+# workbench `get-rust-version` binary.
 RUST_VERSION = { script = ["cargo run -q --manifest-path tools/workbench/Cargo.toml --bin get-rust-version"] }
 
 [tasks.help]
@@ -36,13 +31,6 @@ script.post = ""
 
 # -------------------------------------------------------------------
 
-[tasks.init-podman-volumes]
-description = "Initialize named podman volumes for container builds"
-script_runner = "bash"
-script = 'source "./tools/scripts/init-podman-volumes.sh"'
-
-# -------------------------------------------------------------------
-
 [tasks.compute-image-tag]
 description = "Compute image tag from version vars"
 script_runner = "bash"
@@ -57,7 +45,6 @@ script = 'source "./tools/scripts/get-podman-hash.sh"'
 
 [tasks.ensure-image-exists]
 description = "Ensure the image exists locally, building if needed"
-dependencies = ["init-podman-volumes"]
 script_runner = "bash"
 extend = "base-script"
 script.main = 'source "./tools/scripts/ensure-image-exists.sh"'
@@ -72,9 +59,10 @@ script.main = 'source "./tools/scripts/pull-ci-image.sh"'
 # -------------------------------------------------------------------
 
 [tasks.build-image]
-description = "Build the container image for testing artifacts"
-# Note: This task builds the container image from the live-tests/test_environment
-# directory, which contains the Containerfile and entrypoint.sh for the CI/test environment.
+description = "Build the CI container image (Rust build environment)"
+# Note: builds from live-tests/test_environment/, which holds the Containerfile
+# for the CI build-environment image (Rust toolchain + protoc + RocksDB +
+# cargo-nextest; no validator binaries — see docs/testing.md).
 script_runner = "bash"
 extend = "base-script"
 script.main = 'source "./tools/scripts/build-image.sh"'
@@ -91,82 +79,59 @@ script.main = 'source "./tools/scripts/push-image.sh"'
 
 # -------------------------------------------------------------------
 
-[tasks.container-test]
-clear = true
-description = "Engine: run nextest in the local CI container, forwarding args (zcashd_support OFF by default; --with-zcashd adds --features zcashd_support). Devs use `makers test [packages|e2e|clientless|live|all]`; live-clientless / live-e2e and the `test` front door call this."
-# This task runs tests inside the container built from live-tests/test_environment.
-# The entrypoint.sh script in the container sets up test binaries (zcashd, zebrad, zcash-cli)
-# by creating symlinks from /home/container_user/artifacts to the expected live-tests/test_binaries/bins location.
-dependencies = ["init-podman-volumes", "ensure-image-exists"]
-script_runner = "bash"
-extend = "base-script"
-# The container-test binary (tools/test-runner, a std-only cargo crate — no
-# rust-script needed) owns the podman run; `set -e` makes a test failure abort
-# the script (so `script.post = notify` is skipped on failure, as before).
-script.main = '''
-set -euo pipefail
-cargo run -q --manifest-path tools/test-runner/Cargo.toml --bin container-test -- "${@}"
-'''
-script.post = "makers notify"
-
-# -------------------------------------------------------------------
-
-[tasks.live-clientless]
-description = "Run the `clientless` live-test partition inside the CI container (forwards extra args to `cargo nextest run`)"
-env = { PACKAGE = "clientless", PACKAGE_DESC = "clientless partition" }
-script_runner = "bash"
-extend = "base-script"
-script.main = 'source "./tools/scripts/container-nextest-workspace.sh"'
-
-# -------------------------------------------------------------------
-
-[tasks.live-e2e]
-description = "Run the `e2e` live-test partition inside the CI container (forwards extra args to `cargo nextest run`)"
-env = { PACKAGE = "e2e", PACKAGE_DESC = "e2e partition" }
-script_runner = "bash"
-extend = "base-script"
-script.main = 'source "./tools/scripts/container-nextest-workspace.sh"'
-
-# -------------------------------------------------------------------
-
 # ===================================================================
 # Developer-facing test front door: a single `makers test [SET]` task.
 #
 #   makers test                packages (the default)
 #   makers test packages       packages/* production-crate tests (no validator)
-#   makers test e2e            the e2e live partition
-#   makers test clientless     the clientless live partition
-#   makers test live           both live partitions + combined summary
+#   makers test e2e            the e2e live partition (ztest / k8s)
+#   makers test clientless     the clientless live partition (ztest / k8s)
+#   makers test live           both live partitions (ztest / k8s)
 #   makers test all            packages then live (everything)
+#   makers test ironwood       the ironwood tests of every set
 #
-# SET names mirror the crate/dir names (`e2e`, `clientless`); `packages`,
-# `live`, and `all` are the groupings. `live` = all non-packages tests; `all`
-# = `packages` + `live` (see live-tests/CONTEXT.md). Each set delegates to an
-# existing engine rather than re-implementing a run. `--with-zcashd` (handled
-# by the engines) adds the zcashd-backed tests to any set.
+# `packages` (the root workspace `default-members`, no validator) runs via plain
+# `cargo nextest run`. The live partitions live in the standalone live-tests/
+# workspace and run on the ztest Kubernetes harness — the front door shells out
+# to the `ztest run` CLI from the sibling checkout that live-tests/Cargo.toml
+# already pins (../../ztest, relative to live-tests/), with live-tests/ as the
+# working directory so `ztest run` locates that workspace. The live sets need a
+# reachable cluster (KUBECONFIG / kube context) and image build/registry access;
+# see docs/testing.md and the ztest docs. Extra args are forwarded to the
+# underlying `cargo nextest run` / `ztest run`; e.g. add zcashd-backed package
+# tests with `makers test packages --features zcashd_support` (docs/adr/0005).
 # ===================================================================
 
 [tasks.test]
 # clear = true fully replaces cargo-make's built-in `test` task (which runs
 # `cargo test`); without it our `script` would merge with the builtin `command`.
 clear = true
-description = "Run a test set: `makers test [packages|e2e|clientless|live|all|ironwood]` (default: packages). Pass --with-zcashd for the zcashd-backed tests."
+description = "Run a test set: `makers test [packages|e2e|clientless|live|all|ironwood]` (default: packages)."
 script_runner = "bash"
 script = '''
 set -uo pipefail
 
 usage() {
-  echo "usage: makers test [packages|e2e|clientless|live|all|ironwood] [-- nextest args]" >&2
+  echo "usage: makers test [packages|e2e|clientless|live|all|ironwood] [-- extra args]" >&2
   echo "  packages (default) packages/* tests, no live validator" >&2
-  echo "  e2e | clientless   that single live partition" >&2
-  echo "  live               both live partitions + combined summary" >&2
+  echo "  e2e | clientless   that single live partition (ztest / k8s)" >&2
+  echo "  live               both live partitions (ztest / k8s)" >&2
   echo "  all                packages then live (everything)" >&2
-  echo "  ironwood           the ironwood tests of every set, packages then clientless then e2e" >&2
+  echo "  ironwood           the ironwood tests of every set" >&2
+}
+
+# The live partitions run on the ztest harness. ztest is not installed into this
+# repo; it lives in the sibling checkout that live-tests/Cargo.toml already pins
+# (../../ztest relative to live-tests/). Run it with live-tests/ as cwd so
+# `ztest run` locates the live-tests workspace; args are forwarded verbatim to
+# the wrapped `cargo nextest run`.
+ztest_run() {
+  ( cd live-tests && cargo run -q --manifest-path ../../ztest/Cargo.toml --bin ztest -- run "$@" )
 }
 
 # A non-flag first arg selects the set and must be a known name; a flag first
-# arg (or none) keeps the default `packages` and is forwarded to nextest. So
-# `makers test --with-zcashd` runs packages with the flag, while a mistyped set
+# arg (or none) keeps the default `packages` and is forwarded downstream. So
+# `makers test --features foo` runs packages with the flag, while a mistyped set
 # name errors instead of silently running the default.
 set="packages"
 if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then
@@ -177,91 +142,31 @@ if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then
 fi
 
 case "$set" in
-  packages)   exec makers container-test "$@" ;;
-  e2e)        exec makers live-e2e "$@" ;;
-  clientless) exec makers live-clientless "$@" ;;
-  live)       exec cargo run -q --manifest-path tools/test-runner/Cargo.toml --bin live-summary -- "$@" ;;
+  packages)   exec cargo nextest run "$@" ;;
+  e2e)        ztest_run -p e2e "$@" ;;
+  clientless) ztest_run -p clientless "$@" ;;
+  live)       ztest_run -p clientless -p e2e "$@" ;;
   all)
-    # The summary runner's --all mode runs the packages set and both live
-    # partitions (each set runs even when an earlier one fails, and the exit
-    # code reflects any failure), so the combined table covers everything.
-    exec cargo run -q --manifest-path tools/test-runner/Cargo.toml --bin live-summary -- --all "$@" ;;
+    # Run every set even when an earlier one fails; the exit code reflects any
+    # failure.
+    rc=0
+    cargo nextest run "$@" || rc=1
+    ztest_run -p clientless -p e2e "$@" || rc=1
+    exit "$rc" ;;
   ironwood)
-    # The one definition of the ironwood selection: the two dedicated test
+    # The one definition of the ironwood selection: the two dedicated live test
     # binaries, plus every test whose name carries the pool's name (the
-    # CONTEXT.md era-naming convention keeps new ironwood tests inside this
-    # net). The same expression serves every engine — a selector naming a
-    # binary a partition lacks simply matches nothing there. The engines are
-    # invoked directly rather than through the `live` summary runner, which
-    # forwards no nextest args. Run every set even if an earlier one fails,
-    # as in `all`.
+    # naming convention that keeps new ironwood tests inside this
+    # net). The same expression serves both sets — a selector naming a binary a
+    # set lacks simply matches nothing there. Run every set even if an earlier
+    # one fails, as in `all`.
     ironwood_filter='binary(ironwood_activation) | binary(the_pub_testnet_ironwood_boundary) | test(ironwood)'
     rc=0
-    makers container-test -E "$ironwood_filter" "$@" || rc=1
-    makers live-clientless -E "$ironwood_filter" "$@" || rc=1
-    makers live-e2e -E "$ironwood_filter" "$@" || rc=1
+    cargo nextest run -E "$ironwood_filter" "$@" || rc=1
+    ztest_run -p clientless -p e2e -E "$ironwood_filter" "$@" || rc=1
     exit "$rc" ;;
 esac
 '''
-
-# -------------------------------------------------------------------
-
-[tasks.zcashd_test]
-description = "Convenience: the whole suite with the zcashd-backed tests (`makers test all --with-zcashd`)"
-# Delegates to the `test all` front door with the explicit flag — there is no
-# implicit/env-var path to enable zcashd (docs/adr/0005).
-script_runner = "bash"
-script = 'exec makers test all --with-zcashd'
-
-# -------------------------------------------------------------------
-
-[tasks.check-matching-zebras]
-description = "Check that zebra versions in .env.testing-artifacts match what's in Cargo.toml"
-extend = "base-script"
-script_runner = "bash"
-script.main = 'source "./tools/scripts/check-matching-zebras.sh"'
-
-# -------------------------------------------------------------------
-
-[tasks.validate-makefile-tasks]
-description = "Validate all tasks work correctly with minimal execution"
-dependencies = ["init-podman-volumes"]
-script_runner = "@rust"
-script = { file = "tools/scripts/validate-makefile-tasks.rs" }
-
-# -------------------------------------------------------------------
-
-[tasks.validate-test-targets]
-description = "Validate that nextest targets match CI workflow matrix"
-script_runner = "bash"
-extend = "base-script"
-script.main = 'source "./tools/scripts/validate-test-targets.sh"'
-
-# -------------------------------------------------------------------
-
-[tasks.update-test-targets]
-description = "Update CI workflow matrix to match nextest targets"
-script_runner = "bash"
-extend = "base-script"
-script.main = 'source "./tools/scripts/update-test-targets.sh"'
-
-# -------------------------------------------------------------------
-
-[tasks.container-test-save-failures]
-description = "Run container-test and save failed test names for later retry"
-script_runner = "bash"
-extend = "base-script"
-script.main = 'source "./tools/scripts/container-test-save-failures.sh"'
-script.post = "makers notify"
-
-# -------------------------------------------------------------------
-
-[tasks.container-test-retry-failures]
-description = "Rerun only failed tests from previous container-test-save-failures"
-script_runner = "bash"
-extend = "base-script"
-script.main = 'source "./tools/scripts/container-test-retry-failures.sh"'
-script.post = "makers notify"
 
 # -------------------------------------------------------------------
 
@@ -274,8 +179,9 @@ script = 'source "./tools/scripts/verify-all.sh"'
 
 # Verify the no-zcashd build compiles: `zcashd_support` is opt-in and being
 # deprecated (docs/adr/0001, 0005), so the default --no-default-features build
-# must stay green or it bit-rots. The reunified workspace (production +
-# live-test crates) is checked in a single pass.
+# must stay green or it bit-rots. `--workspace` covers the production crates;
+# the live-test suite is a separate standalone workspace under live-tests/ and
+# is checked there on the ztest harness.
 [tasks.check-no-zcashd-packages]
 description = "cargo check --no-default-features across the whole workspace (zcashd_support off)"
 command = "cargo"
