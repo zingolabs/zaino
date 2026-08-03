@@ -71,9 +71,13 @@ pub use chain_index::source::{BlockchainSource, State, ValidatorConnector};
 // Supporting types
 pub use chain_index::encoding::*;
 pub use chain_index::mempool::Mempool;
+// Mempool statistics for `getmempoolinfo`. Currently an on-disk shape in
+// `types/db/metadata.rs`; moving it into `zaino-primitives` belongs with the
+// persistence rework.
 pub use chain_index::non_finalised_state::{
     ChainIndexSnapshot, InitError, NodeConnectionError, NonFinalizedState, SyncError, UpdateError,
 };
+pub use chain_index::types::db::metadata::MempoolInfo;
 // NOTE: Should these be pub at all?
 pub use chain_index::types::{
     AddrHistRecord, AddrScript, BlockContext, BlockData, BlockHash, BlockHeaderData, BlockMetadata,
