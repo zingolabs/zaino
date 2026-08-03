@@ -11,7 +11,7 @@ use tracing::info;
 // Metric names are owned by the crates that emit them, so the `describe_*`
 // registrations below share one source of truth with the emit sites and can
 // never drift.
-use zaino_fetch::metric_names::*;
+use zaino_rpc::metric_names::*;
 use zaino_serve::metric_names::*;
 use zaino_state::metric_names::*;
 

@@ -67,7 +67,9 @@ pub use chain_index::{
     ChainIndex, ChainIndexRpcExt, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
 };
 // Source types for ChainIndex backends
-pub use chain_index::source::{BlockchainSource, State, ValidatorConnector};
+pub use chain_index::source::BlockchainSource;
+pub use chain_index::source_ports::ChainIndexSourcePorts;
+pub use chain_index::validator_source::{ValidatorSource, ZebraValidatorSource};
 // Supporting types
 pub use chain_index::encoding::*;
 pub use chain_index::mempool::Mempool;
@@ -111,7 +113,7 @@ pub use config::{
 
 pub(crate) mod error;
 
-pub use error::NodeBackedIndexerServiceError;
+pub use error::{LegacyRpcError, NodeBackedIndexerServiceError};
 
 pub(crate) mod status;
 
@@ -127,3 +129,5 @@ pub use stream::{
 pub(crate) mod broadcast;
 
 pub(crate) mod utils;
+
+pub mod source_caps;

@@ -5,10 +5,40 @@
 
 use crate::BlockHash;
 
-use std::{any::type_name, fmt::Display};
+use std::fmt::Display;
 
-use zaino_fetch::jsonrpsee::connector::RpcRequestError;
 use zaino_proto::proto::utils::GetBlockRangeError;
+
+/// A rejection carrying a zcashd-compatible legacy RPC error code.
+///
+/// Zaino's *own* rejections — a malformed block identifier, an oversized raw
+/// transaction — that must reach a client as the specific legacy code
+/// lightwalletd-family clients key on, rather than a generic internal error.
+/// Carried as a typed `source` through the error chain so the serving layer can
+/// downcast to it — `ChainIndexError::internal_from` is what preserves it on
+/// the way out, and `legacy_code_from_error_source` in
+/// `zaino-serve/src/rpc/jsonrpc/service.rs` is what recovers it.
+///
+/// Distinct from [`FetchError`](zaino_source::FetchError), which carries a code
+/// the *validator* produced. This one is Zaino's.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{message}")]
+pub struct LegacyRpcError {
+    /// The zcashd legacy error code.
+    pub code: i64,
+    /// Human-readable description.
+    pub message: String,
+}
+
+impl LegacyRpcError {
+    /// Construct a rejection from zebra's `LegacyCode` enum.
+    pub fn new(code: zebra_rpc::server::error::LegacyCode, message: impl Into<String>) -> Self {
+        Self {
+            code: code as i64,
+            message: message.into(),
+        }
+    }
+}
 
 /// Errors returned by the [`NodeBackedIndexerService`](crate::NodeBackedIndexerService)
 /// subscriber's `ZcashIndexer` / `LightWalletIndexer` methods.
@@ -30,13 +60,9 @@ pub enum NodeBackedIndexerServiceError {
     #[error("Join error: {0}")]
     JoinError(#[from] tokio::task::JoinError),
 
-    /// Error from JsonRpcConnector.
-    #[error("JsonRpcConnector error: {0}")]
-    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::TransportError),
-
-    /// RPC error in compatibility with zcashd.
+    /// A rejection carrying a zcashd-compatible legacy RPC error code.
     #[error("RPC error: {0:?}")]
-    RpcError(#[from] zaino_fetch::jsonrpsee::connector::RpcError),
+    RpcError(#[from] LegacyRpcError),
 
     /// Chain index error.
     #[error("Chain index error: {0}")]
@@ -123,9 +149,6 @@ impl From<NodeBackedIndexerServiceError> for tonic::Status {
             NodeBackedIndexerServiceError::JoinError(err) => {
                 tonic::Status::internal(format!("Join error: {err}"))
             }
-            NodeBackedIndexerServiceError::JsonRpcConnectorError(err) => {
-                tonic::Status::internal(format!("JsonRpcConnector error: {err}"))
-            }
             NodeBackedIndexerServiceError::RpcError(err) => {
                 tonic::Status::internal(format!("RPC error: {err:?}"))
             }
@@ -167,40 +190,6 @@ impl From<NodeBackedIndexerServiceError> for tonic::Status {
     }
 }
 
-impl<T: ToString> From<RpcRequestError<T>> for NodeBackedIndexerServiceError {
-    fn from(value: RpcRequestError<T>) -> Self {
-        match value {
-            RpcRequestError::Transport(transport_error) => {
-                Self::JsonRpcConnectorError(transport_error)
-            }
-            RpcRequestError::Method(e) => Self::UnhandledRpcError(format!(
-                "{}: {}",
-                std::any::type_name::<T>(),
-                e.to_string()
-            )),
-            RpcRequestError::JsonRpc(error) => Self::Custom(format!("bad argument: {error}")),
-            RpcRequestError::InternalUnrecoverable(e) => Self::Custom(e.to_string()),
-            RpcRequestError::ServerWorkQueueFull => {
-                Self::Custom("Server queue full. Handling for this not yet implemented".to_string())
-            }
-            RpcRequestError::UnexpectedErrorResponse(error) => Self::Custom(format!("{error}")),
-        }
-    }
-}
-
-/// These aren't the best conversions, but the MempoolError should go away
-/// in favor of a new type with the new chain cache is complete
-impl<T: ToString> From<RpcRequestError<T>> for MempoolError {
-    fn from(value: RpcRequestError<T>) -> Self {
-        match RpcRequestFallback::classify(value) {
-            RpcRequestFallback::Transport(transport_error) => {
-                MempoolError::JsonRpcConnectorError(transport_error)
-            }
-            RpcRequestFallback::Message(message) => MempoolError::Critical(message),
-        }
-    }
-}
-
 /// Errors related to the `Mempool`.
 #[derive(Debug, thiserror::Error)]
 pub enum MempoolError {
@@ -216,10 +205,6 @@ pub enum MempoolError {
         expected_chain_tip: BlockHash,
         current_chain_tip: BlockHash,
     },
-
-    /// Error from JsonRpcConnector.
-    #[error("JsonRpcConnector error: {0}")]
-    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::TransportError),
 
     /// Errors originating from the BlockchainSource in use.
     #[error("blockchain source error: {0}")]
@@ -253,14 +238,6 @@ pub enum BlockCacheError {
     #[error("FinalisedState Error: {0}")]
     FinalisedStateError(#[from] FinalisedStateError),
 
-    /// Error from JsonRpcConnector.
-    #[error("JsonRpcConnector error: {0}")]
-    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::TransportError),
-
-    /// Chain parse error.
-    #[error("Chain parse error: {0}")]
-    ChainParseError(#[from] zaino_fetch::chain::error::ParseError),
-
     /// Serialization error.
     #[error("Serialization error: {0}")]
     SerializationError(#[from] zebra_chain::serialization::SerializationError),
@@ -293,69 +270,9 @@ pub enum NonFinalisedStateError {
     #[error("Critical error: {0}")]
     Critical(String),
 
-    /// Error from JsonRpcConnector.
-    #[error("JsonRpcConnector error: {0}")]
-    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::TransportError),
-
     /// Unexpected status-related error.
     #[error("Status error: {0:?}")]
     StatusError(StatusError),
-}
-
-/// Either a transport error passed through intact, or the formatted message for the
-/// target error type's degraded catch-all variant.
-///
-/// Shared classification behind the `From<RpcRequestError<T>>` conversions for
-/// [`MempoolError`], [`NonFinalisedStateError`], and [`FinalisedStateError`]: all
-/// three map transport errors to their `JsonRpcConnectorError` variant and degrade
-/// every other case to a message-carrying variant (`Critical` or `Custom`).
-enum RpcRequestFallback {
-    Transport(zaino_fetch::jsonrpsee::error::TransportError),
-    Message(String),
-}
-
-impl RpcRequestFallback {
-    fn classify<T: ToString>(value: RpcRequestError<T>) -> Self {
-        match value {
-            RpcRequestError::Transport(transport_error) => {
-                RpcRequestFallback::Transport(transport_error)
-            }
-            RpcRequestError::JsonRpc(error) => {
-                RpcRequestFallback::Message(format!("argument failed to serialze: {error}"))
-            }
-            RpcRequestError::InternalUnrecoverable(e) => {
-                RpcRequestFallback::Message(format!("Internal unrecoverable error: {e}"))
-            }
-            RpcRequestError::ServerWorkQueueFull => RpcRequestFallback::Message(
-                "Server queue full. Handling for this not yet implemented".to_string(),
-            ),
-            RpcRequestError::Method(e) => RpcRequestFallback::Message(format!(
-                "unhandled rpc-specific {} error: {}",
-                type_name::<T>(),
-                e.to_string()
-            )),
-            RpcRequestError::UnexpectedErrorResponse(error) => {
-                RpcRequestFallback::Message(format!(
-                    "unhandled rpc-specific {} error: {}",
-                    type_name::<T>(),
-                    error
-                ))
-            }
-        }
-    }
-}
-
-/// These aren't the best conversions, but the NonFinalizedStateError should go away
-/// in favor of a new type with the new chain cache is complete
-impl<T: ToString> From<RpcRequestError<T>> for NonFinalisedStateError {
-    fn from(value: RpcRequestError<T>) -> Self {
-        match RpcRequestFallback::classify(value) {
-            RpcRequestFallback::Transport(transport_error) => {
-                NonFinalisedStateError::JsonRpcConnectorError(transport_error)
-            }
-            RpcRequestFallback::Message(message) => NonFinalisedStateError::Custom(message),
-        }
-    }
 }
 
 /// Errors related to the `FinalisedState`.
@@ -414,27 +331,9 @@ pub enum FinalisedStateError {
     #[error("Status error: {0:?}")]
     StatusError(StatusError),
 
-    /// Error from JsonRpcConnector.
-    // TODO: Remove when FinalisedState replaces legacy finalised state.
-    #[error("JsonRpcConnector error: {0}")]
-    JsonRpcConnectorError(#[from] zaino_fetch::jsonrpsee::error::TransportError),
-
     /// std::io::Error
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
-}
-
-/// These aren't the best conversions, but the FinalizedStateError should go away
-/// in favor of a new type with the new chain cache is complete
-impl<T: ToString> From<RpcRequestError<T>> for FinalisedStateError {
-    fn from(value: RpcRequestError<T>) -> Self {
-        match RpcRequestFallback::classify(value) {
-            RpcRequestFallback::Transport(transport_error) => {
-                FinalisedStateError::JsonRpcConnectorError(transport_error)
-            }
-            RpcRequestFallback::Message(message) => FinalisedStateError::Custom(message),
-        }
-    }
 }
 
 /// A general error type to represent error StatusTypes.
@@ -498,7 +397,7 @@ impl ChainIndexError {
     /// Constructs an `InternalServerError`-kind error from a typed error,
     /// preserving it as `source` so zaino-serve's RPC-error-code recovery
     /// walks can downcast to it (e.g. the legacy `-8` code carried by an
-    /// [`RpcError`](zaino_fetch::jsonrpsee::connector::RpcError)).
+    /// [`LegacyRpcError`]).
     pub(crate) fn internal_from(error: impl std::error::Error + Send + Sync + 'static) -> Self {
         Self {
             kind: ChainIndexErrorKind::InternalServerError,
@@ -579,9 +478,6 @@ impl From<FinalisedStateError> for ChainIndexError {
             FinalisedStateError::LmdbError(error) => error.to_string(),
             FinalisedStateError::SerdeJsonError(error) => error.to_string(),
             FinalisedStateError::StatusError(status_error) => status_error.to_string(),
-            FinalisedStateError::JsonRpcConnectorError(transport_error) => {
-                transport_error.to_string()
-            }
             FinalisedStateError::IoError(error) => error.to_string(),
             FinalisedStateError::BlockchainSourceError(blockchain_source_error) => {
                 blockchain_source_error.to_string()
@@ -607,9 +503,6 @@ impl From<MempoolError> for ChainIndexError {
                 format!(
                     "incorrect chain tip (expected {expected_chain_tip:?}, current {current_chain_tip:?})"
                 )
-            }
-            MempoolError::JsonRpcConnectorError(err) => {
-                format!("mempool json-rpc connector error: {err}")
             }
             MempoolError::BlockchainSourceError(err) => {
                 format!("mempool blockchain source error: {err}")

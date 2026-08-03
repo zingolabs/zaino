@@ -20,15 +20,13 @@ default = []
 fast-test-seam = []
 
 # Support for connecting to a zcashd validator node. Opt-in (default off, docs/adr/0005); being
-# deprecated. Forwards to zaino-fetch. See
-# docs/adr/0001-zcashd-support-feature-gate.md.
-zcashd_support = ["zaino-fetch/zcashd_support"]
-
+# deprecated. See docs/adr/0001-zcashd-support-feature-gate.md.
+#
 # Prometheus metrics emission (gauge! calls in sync paths).
 prometheus = ["metrics"]
 
 # test_dependencies - Exposes internal functionality for testing.
-test_dependencies = []
+test_dependencies = ["zaino-source-zebra/test_dependencies"]
 
 # **Experimental and alpha features**
 # Exposes the **complete** set of experimental / alpha features currently implemented in Zaino.
@@ -41,7 +39,6 @@ transparent_address_history_experimental = []
 
 [dependencies]
 zaino-common = { workspace = true }
-zaino-fetch = { workspace = true }
 zaino-proto = { workspace = true }
 
 # LibRustZcash
@@ -89,6 +86,14 @@ corez = { workspace = true }
 arc-swap = { workspace = true }
 reqwest.workspace = true
 bitflags = { workspace = true }
+zaino-source.workspace = true
+zaino-source-zebra.workspace = true
+zaino-primitives.workspace = true
+zaino-rpc.workspace = true
+zaino-source-zebra-rpc.workspace = true
+zaino-source-zebra-readstate.workspace = true
+zaino-address = { workspace = true }
+zaino-convert-zebra.workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }
