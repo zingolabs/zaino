@@ -14,13 +14,116 @@ on:
 
 jobs:
   docker:
-    name: Docker images (build+push)
-    runs-on: ubuntu-latest
+    name: Build ${{ matrix.flavor }} (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      # One failing leg should not cancel the others: per-arch results are
+      # independently useful when debugging a platform-specific failure.
+      fail-fast: false
+      matrix:
+        include:
+          # Native runners per architecture — no QEMU emulation. The arm64
+          # lane uses GitHub's free arm64 runners for public repos.
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+            flavor: default
+            no-tls: 'false'
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+            flavor: default
+            no-tls: 'false'
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+            flavor: no-tls
+            no-tls: 'true'
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+            flavor: no-tls
+            no-tls: 'true'
     env:
       # Push only on tag-push events, or when workflow_dispatch with input.push=true.
       PUSH_IMAGES: ${{ github.event_name != 'workflow_dispatch' || inputs.push }}
     steps:
       - uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Login is skipped on dry-runs so the workflow stays green on forks and
+      # verification branches where DockerHub secrets are unavailable.
+      - name: Login to DockerHub
+        if: env.PUSH_IMAGES == 'true'
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_ACCESS_TOKEN }}
+
+      - name: Determine Rust version from rust-toolchain.toml
+        run: |
+          echo "RUST_VERSION=$(cargo run -q --manifest-path tools/workbench/Cargo.toml --bin get-rust-version)" >> $GITHUB_ENV
+
+      # Each arch is pushed by digest only; the merge job below assembles the
+      # per-arch digests into one multi-arch manifest and applies the tags.
+      # On dry-runs the image is built but nothing leaves the runner.
+      - name: Build ${{ matrix.flavor }} image (${{ matrix.platform }})
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            NO_TLS=${{ matrix.no-tls }}
+            RUST_VERSION=${{ env.RUST_VERSION }}
+          outputs: ${{ env.PUSH_IMAGES == 'true' && format('type=image,"name={0}/zaino,{0}/zainod",push-by-digest=true,name-canonical=true,push=true', secrets.DOCKERHUB_USERNAME) || 'type=cacheonly' }}
+          # Registry cache is arch- and flavor-scoped to avoid cross-pollution;
+          # it is only written when credentials are present.
+          cache-from: |
+            ${{ env.PUSH_IMAGES == 'true' && format('type=registry,ref={0}/zainod:buildcache-{1}-{2}', secrets.DOCKERHUB_USERNAME, matrix.flavor, matrix.arch) || '' }}
+            type=gha,scope=${{ matrix.flavor }}-${{ matrix.arch }}
+          cache-to: |
+            ${{ env.PUSH_IMAGES == 'true' && format('type=registry,ref={0}/zainod:buildcache-{1}-{2},mode=max', secrets.DOCKERHUB_USERNAME, matrix.flavor, matrix.arch) || '' }}
+            type=gha,mode=max,scope=${{ matrix.flavor }}-${{ matrix.arch }}
+
+      - name: Export digest
+        if: env.PUSH_IMAGES == 'true'
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        if: env.PUSH_IMAGES == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.flavor }}-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Merge multi-arch manifest (${{ matrix.flavor }})
+    needs: docker
+    # Manifest assembly only makes sense when digests were pushed.
+    if: github.event_name != 'workflow_dispatch' || inputs.push
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - flavor: default
+            suffix: ''
+          - flavor: no-tls
+            suffix: '-no-tls'
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: digests-${{ matrix.flavor }}-*
+          path: /tmp/digests
+          merge-multiple: true
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -31,73 +134,36 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_ACCESS_TOKEN }}
 
-      - name: Determine Rust version from rust-toolchain.toml
-        run: |
-          echo "RUST_VERSION=$(cargo run -q --manifest-path tools/workbench/Cargo.toml --bin get-rust-version)" >> $GITHUB_ENV
-
-      - name: Extract metadata for Docker (default image)
-        id: meta-default
-        uses: docker/metadata-action@v6
-        with:
-          images: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/zaino
-            ${{ secrets.DOCKERHUB_USERNAME }}/zainod
-          tags: |
-            type=semver,pattern={{version}}
-            type=ref,event=branch
-            type=sha,prefix=,format=short
-
-      - name: Build and Push Default Image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          platforms: linux/amd64
-          push: ${{ env.PUSH_IMAGES }}
-          tags: ${{ steps.meta-default.outputs.tags }}
-          labels: ${{ steps.meta-default.outputs.labels }}
-          build-args: |
-            RUST_VERSION=${{ env.RUST_VERSION }}
-          cache-from: |
-            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/zainod:buildcache
-            type=gha
-          cache-to: |
-            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/zainod:buildcache,mode=max
-            type=gha,mode=max
-
-      - name: Extract metadata for Docker (no-tls image)
-        id: meta-no-tls
+      - name: Extract metadata for Docker (${{ matrix.flavor }} image)
+        id: meta
         uses: docker/metadata-action@v6
         with:
           images: |
             ${{ secrets.DOCKERHUB_USERNAME }}/zaino
             ${{ secrets.DOCKERHUB_USERNAME }}/zainod
           flavor: |
-            suffix=-no-tls
+            suffix=${{ matrix.suffix }}
           tags: |
             type=semver,pattern={{version}}
             type=ref,event=branch
             type=sha,prefix=,format=short
 
-      - name: Build and Push No-TLS Image
-        uses: docker/build-push-action@v7
-        with:
-          build-args: |
-            NO_TLS=true
-            RUST_VERSION=${{ env.RUST_VERSION }}
-          context: .
-          platforms: linux/amd64
-          push: ${{ env.PUSH_IMAGES }}
-          tags: "${{ steps.meta-no-tls.outputs.tags }}"
-          labels: ${{ steps.meta-no-tls.outputs.labels }}
-          cache-from: |
-            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/zainod:buildcache-no-tls
-            type=gha
-          cache-to: |
-            type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/zainod:buildcache-no-tls,mode=max
-            type=gha,mode=max
+      # The per-arch digests are identical in both repositories (they were
+      # pushed to zaino and zainod in one step), so the manifest sources are
+      # referenced from zainod and the tags fan out to both names.
+      - name: Create multi-arch manifest and push tags
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ secrets.DOCKERHUB_USERNAME }}/zainod@sha256:%s ' *)
+
+      - name: Inspect manifest
+        run: |
+          docker buildx imagetools inspect ${{ secrets.DOCKERHUB_USERNAME }}/zainod:$(jq -r '.tags[0] | split(":") | last' <<< "$DOCKER_METADATA_OUTPUT_JSON")
 
   create-release:
-    needs: docker
+    needs: merge
     name: Create GitHub Release
     runs-on: ubuntu-latest
     # Only create a GitHub release when triggered by a real semver tag push.
