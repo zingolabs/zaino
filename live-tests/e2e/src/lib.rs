@@ -1,16 +1,8 @@
 //! Wallet-to-validator integration tests.
-//!
-//! These exercise the zcash-devtool wallet client (a faucet and a recipient,
-//! see [`devtool`]) against a running Zaino indexer, built from a launched
-//! [`zaino_testutils::TestManager`]'s gRPC address. The clients are managed by
-//! `zcash_local_net`; this workspace keeps its own Cargo.lock for that stack.
 
 #![forbid(unsafe_code)]
 
-use zaino_proto::proto::compact_formats::CompactBlock;
-use zcash_primitives::transaction::TxId;
-
-pub mod devtool;
+use ztest::prelude::{CompactBlock, TxId};
 
 /// A shielded/transparent pool, paired with the address kind that routes funds
 /// into it. Lets a send-and-check test take a single `Pool` instead of an
@@ -30,14 +22,26 @@ pub enum Pool {
 }
 
 impl Pool {
-    /// The `get_recipient_address` / `get_faucet_address` pool name that routes
-    /// funds into this pool.
+    /// The pool name that routes funds into this pool.
     pub fn address_kind(self) -> &'static str {
         match self {
             Pool::Orchard | Pool::Ironwood => "unified",
             Pool::Sapling => "sapling",
             Pool::Transparent => "transparent",
         }
+    }
+
+    pub fn ztest(self) -> ztest::Pool {
+        match self {
+            Pool::Orchard => ztest::Pool::Orchard,
+            Pool::Ironwood => ztest::Pool::Ironwood,
+            Pool::Sapling => ztest::Pool::Sapling,
+            Pool::Transparent => ztest::Pool::Transparent,
+        }
+    }
+
+    pub fn spendable_balance(self, balances: &ztest::PoolBalances) -> u64 {
+        balances.get(self.ztest())
     }
 }
 

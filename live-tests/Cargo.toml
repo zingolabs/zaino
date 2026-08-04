@@ -1,0 +1,48 @@
+[workspace]
+members = [
+    "zaino-testutils",
+    "clientless",
+    # Added back as each partition is ported onto the ztest harness:
+    "e2e",
+]
+resolver = "2"
+
+[workspace.package]
+authors = ["Zingo Lab Cyan"]
+repository = "https://github.com/zingolabs"
+homepage = "https://www.zingolabs.org/"
+edition = "2021"
+license = "Apache-2.0"
+version = "0.2.0"
+
+[workspace.dependencies]
+# Workspace member.
+zaino-testutils = { path = "zaino-testutils" }
+
+# ztest — the k8s-based test harness that owns the validator / indexer / wallet
+# lifecycle and hands tests typed RPC handles. Lives in a sibling repo
+# (`ZingoLabs/ztest`); requires a sibling checkout for path resolution. The
+# tests drive Zaino out-of-process (in a pod) through this, so the live-test
+# crates link no zaino/zebra production code — hence no rocksdb / libstdc++.
+ztest = { path = "../../ztest" }
+
+# Runtime
+tokio = { version = "1.38", features = ["full"] }
+
+# Misc
+anyhow = "1.0"
+# `preserve_order`: keep JSON objects in wire (insertion) order rather than the
+# default key-sorted `BTreeMap`. `getblockchaininfo.upgrades` is emitted by zebra
+# in activation order (keyed by consensus branch id); the validator-heights test
+# asserts that order, which a key-sorted map would destroy.
+serde_json = { version = "1.0", features = ["preserve_order"] }
+
+# Test parameterization (fetch × state indexer-backend matrix).
+rstest = "0.23"
+
+# ztest's librustzcash wallet backend now tracks the zingolabs/librustzcash
+# `basic_ironwood` branch, which resolves shardtree 0.6.2 / incrementalmerkletree
+# 0.8.2 from crates.io (those releases carry the retained-checkpoint methods), so
+# no `[patch.crates-io]` override is needed here. (The prior decefc46 git pin was a
+# stale pre-release API missing `add_retained_checkpoint` et al. and broke the
+# basic_ironwood zcash_client_sqlite build in this workspace too.)

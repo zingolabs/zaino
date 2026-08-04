@@ -1,427 +1,378 @@
 //! Proof-of-concept: a devtool wallet against a **zcashd**-backed Zaino.
-//!
-//! The zebrad devtool suite (`tests/devtool.rs`) is complete. This isolates the
-//! one remaining alignment for the zcashd matrix (the `json_server` oracle tests
-//! and the zcashd send/query column): launch zcashd at the same activation
-//! heights zebrad uses — `ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS`, which the devtool
-//! wallet's compiled-in `supported_regtest_activation_heights` requires (the 46
-//! zebrad tests prove the wallet accepts them) — rather than zcashd's default
-//! heights (all = 1), which would mismatch the wallet's consensus branch IDs.
-//!
-//! zcashd mines ORCHARD coinbase to `REG_O_ADDR_FROM_ABANDONART` (the abandon-art
-//! orchard address the devtool faucet owns), so the faucet is funded with no
-//! transparent-coinbase shielding — the zcashd matrix is NOT gated on devtool
-//! transparent-coinbase shielding, only on this heights alignment.
-//!
-//! If this passes, the `json_server` tests port by swapping their zingolib
-//! funding for `DevtoolClients` while keeping the zaino-vs-zcashd oracle
-//! comparison. If zcashd rejects the heights (e.g. the NU6.1 lockbox gotcha,
-//! which bit zebrad), that's the blocker to resolve before porting the mod.
 
 // The entire zcashd matrix depends on the zcashd validator + its zaino-testutils
 // launchers, all gated behind `zcashd_support`. Gate the whole binary so it
 // compiles out under `--no-default-features` (mirrors the clientless partition's json_server.rs).
 #![cfg(feature = "zcashd_support")]
-use e2e::devtool::DevtoolClients;
-use zaino_state::{ChainIndex, ZcashIndexer};
-use zaino_testutils::{Rpc, TestManager, ValidatorKind, ZcashdDualFetchServices};
-use zcash_local_net::validator::zcashd::Zcashd;
-use zebra_chain::subtree::NoteCommitmentSubtreeIndex;
-use zebra_rpc::client::GetAddressBalanceRequest;
-use zebra_rpc::methods::GetAddressTxIdsRequest;
 
-/// Launch zcashd (orchard-mining) at the devtool-compatible activation heights
-/// (`ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS`, which the PoC below proves zcashd
-/// accepts and the devtool wallet requires) and build the devtool
-/// faucet/recipient wallets against the resulting Zaino, without mining or
-/// syncing. The zcashd analogue of devtool.rs's `launch_and_build_clients`,
-/// concrete on zcashd (which has no StateService backend).
-async fn launch_zcashd_and_build_clients() -> (TestManager<Zcashd, Rpc>, DevtoolClients) {
-    e2e::devtool::launch_and_build_devtool_clients(
-        &ValidatorKind::Zcashd,
-        // The heights the devtool wallet accepts (same as the zebrad path).
-        Some(zaino_testutils::ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS),
-    )
-    .await
-}
+use std::time::Duration;
 
-/// [`launch_zcashd_and_build_clients`] plus `orchard_notes` orchard coinbase
-/// notes for the faucet, synced. One block more than `orchard_notes` is mined
-/// because the height-1 coinbase is sapling at nu5=2 (orchard accrues from
-/// height 2). The send/shield analogue of devtool.rs's `launch_and_fund_faucet`.
-async fn launch_and_fund_zcashd_faucet(
-    orchard_notes: u32,
-) -> (TestManager<Zcashd, Rpc>, DevtoolClients) {
-    let (test_manager, mut clients) = launch_zcashd_and_build_clients().await;
-    test_manager
-        .generate_blocks_and_wait_for_tip(orchard_notes + 1, test_manager.subscriber())
-        .await;
-    clients.sync_faucet().await;
-    (test_manager, clients)
-}
+use anyhow::{Context, Result};
+use serde_json::{json, Value};
+use zaino_testutils::assert_rpc_parity;
+use ztest::prelude::*;
+
+const READY: Duration = Duration::from_secs(120);
+const SEND_AMOUNT: u64 = 250_000;
+const SHIELD_FEE: u64 = 15_000;
+/// zcashd mines a valid orchard coinbase to the abandon-art faucet address, so
+/// the faucet is funded from orchard shielded coinbase directly.
+const FUND: Pool = Pool::Orchard;
+/// Blocks to mine past a transaction's block to bury it below the finalisation
+/// seam (so it crosses `tip - seam`).
+const SEAM_ADVANCE: u32 = 105;
 
 /// Launch zcashd, fund the faucet with two orchard coinbase notes, and assert
 /// the faucet sees them — the PoC that proved zcashd accepts the
 /// devtool-compatible heights (no NU6.1 lockbox rejection) and the abandon-art
 /// faucet sees zcashd's orchard coinbase.
+#[ztest::qos::wallet]
 #[tokio::test(flavor = "multi_thread")]
-async fn faucet_receives_zcashd_orchard_reward() {
-    let (mut test_manager, mut clients) = launch_zcashd_and_build_clients().await;
+async fn faucet_receives_zcashd_orchard_reward() -> Result<()> {
+    let mut env = TestEnv::builder().ready_timeout(READY);
+    let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest().mine_to(FUND));
+    let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+    let wallet = env.add_wallet(Wallet::librustzcash());
+    env.build().await?;
 
-    // Two orchard coinbase notes for the abandon-art faucet.
-    test_manager
-        .generate_blocks_and_wait_for_tip(2, test_manager.subscriber())
-        .await;
-    clients.sync_faucet().await;
-
-    let balance = clients.faucet_balance().await;
-    dbg!(&balance);
+    let faucet = wallet
+        .funded_faucet_with_notes(&validator, &indexer, 1)
+        .await?;
     assert!(
-        balance.orchard_spendable > 0,
+        faucet.balances().await?.get(Pool::Orchard) > 0,
         "devtool faucet should see zcashd's orchard coinbase"
     );
-
-    test_manager.close().await;
+    Ok(())
 }
 
-/// Launch zcashd dual fetch services at the devtool-compatible activation
-/// heights (`ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS`, which the PoC above proves
-/// zcashd accepts and the devtool wallet requires) and build the devtool
-/// faucet/recipient wallets against the resulting Zaino — the devtool analogue
-/// of json_server's `create_zcashd_test_manager_and_fetch_services`.
-async fn create_zcashd_devtool_services() -> (ZcashdDualFetchServices, DevtoolClients) {
-    let services = zaino_testutils::launch_zcashd_dual_fetch_services_at(
-        zaino_testutils::ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS,
-    )
-    .await;
-    let clients = e2e::devtool::build_clients(
-        services
-            .test_manager
-            .zaino_grpc_listen_address
-            .expect("zaino enabled")
-            .port(),
-    )
-    .await;
-    (services, clients)
-}
-
-/// Devtool analogue of json_server's `jsonrpc_fund`: fund the faucet with orchard
-/// coinbase notes, sync, fetch the recipient's transparent + unified addresses,
-/// and if `send` is `Some(pool)`, send 250_000 to that pool's recipient address
-/// and mine it in. Returns `(recipient_taddr, recipient_ua, sent_txid_hex)`. The
-/// send=None mempool tests broadcast two unmined sends, so they need two notes.
-async fn jsonrpc_fund(
-    services: &ZcashdDualFetchServices,
-    clients: &mut DevtoolClients,
-    send: Option<e2e::Pool>,
-) -> (String, String, Option<String>) {
-    // At nu5=2 the height-1 coinbase is sapling and orchard notes only accrue
-    // from height 2, so mine one block more than the orchard notes needed (1 per
-    // send: a Some(pool) test spends one note, the send=None mempool tests two).
-    let notes: u32 = if send.is_some() { 2 } else { 3 };
-    services.generate_blocks_and_wait_for_tips(notes).await;
-    clients.sync_faucet().await;
-
-    let recipient_taddr = clients.get_recipient_address("transparent").await;
-    let recipient_ua = clients.get_recipient_address("unified").await;
-
-    let sent = if let Some(pool) = send {
-        let addr = clients.get_recipient_address(pool.address_kind()).await;
-        let txid = clients.send_from_faucet(&addr, 250_000).await;
-        services.generate_blocks_and_wait_for_tips(1).await;
-        Some(txid.trim().to_string())
-    } else {
-        None
-    };
-
-    (recipient_taddr, recipient_ua, sent)
-}
-
-/// Devtool ports of the `json_server` oracle tests: zaino's answer (through its
-/// JSON-RPC server, `zaino_subscriber`) must equal zcashd's own answer
-/// (`zcashd_subscriber`). Verbatim from `tests/json_server.rs` except the
-/// funding (devtool, not zingolib) and the sent txid (devtool's display-order
-/// hex `String`, which matches the txid strings these RPCs return).
+/// Devtool ports of the `json_server` oracle tests: zaino's answer must equal
+/// zcashd's own answer over the same funded state — balances / utxos / txids /
+/// mempool / treestate / subtrees / rawtx / gettxout.
 mod json_server {
     use super::*;
 
+    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    async fn z_get_address_balance() {
-        let (mut services, mut clients) = create_zcashd_devtool_services().await;
+    async fn z_get_address_balance() -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest().mine_to(FUND));
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        let wallet = env.add_wallet(Wallet::librustzcash());
+        env.build().await?;
 
-        let (recipient_taddr, _recipient_ua, _txid) =
-            jsonrpc_fund(&services, &mut clients, Some(e2e::Pool::Transparent)).await;
+        let faucet = wallet
+            .funded_faucet_with_notes(&validator, &indexer, 1)
+            .await?;
+        let recipient = wallet.recipient(&validator, &indexer).await?;
+        let recipient_taddr = recipient.address(Pool::Transparent).await?;
+        faucet.send(&recipient_taddr, SEND_AMOUNT).await?;
+        let tip = validator.generate_blocks(1).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
 
-        let zcashd_service_balance = services
-            .zcashd_subscriber
-            .z_get_address_balance(GetAddressBalanceRequest::new(vec![recipient_taddr.clone()]))
-            .await
-            .unwrap();
-        let zaino_service_balance = services
-            .zaino_subscriber
-            .z_get_address_balance(GetAddressBalanceRequest::new(vec![recipient_taddr]))
-            .await
-            .unwrap();
-
-        dbg!(&zcashd_service_balance);
-        dbg!(&zaino_service_balance);
-
+        let zrpc = validator.json_rpc().await?;
+        let irpc = indexer.json_rpc().await?;
+        let params = format!(r#"[{{"addresses": ["{recipient_taddr}"]}}]"#);
+        let balance = assert_rpc_parity("getaddressbalance", &params, &zrpc, &irpc, &[]).await?;
         // The fixture sent exactly 250_000 to the recipient taddr.
-        assert_eq!(zcashd_service_balance.balance(), 250_000);
-        assert_eq!(zcashd_service_balance, zaino_service_balance);
-
-        services.test_manager.close().await;
+        assert_eq!(
+            balance.get("balance").and_then(Value::as_u64),
+            Some(SEND_AMOUNT)
+        );
+        Ok(())
     }
 
+    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    async fn get_raw_mempool() {
-        let (mut services, mut clients) = create_zcashd_devtool_services().await;
+    async fn get_raw_mempool() -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest().mine_to(FUND));
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        let wallet = env.add_wallet(Wallet::librustzcash());
+        env.build().await?;
 
-        let (recipient_taddr, recipient_ua, _txid) =
-            jsonrpc_fund(&services, &mut clients, None).await;
-        clients.send_from_faucet(&recipient_taddr, 250_000).await;
-        clients.send_from_faucet(&recipient_ua, 250_000).await;
+        let faucet = wallet
+            .funded_faucet_with_notes(&validator, &indexer, 2)
+            .await?;
+        let recipient = wallet.recipient(&validator, &indexer).await?;
+        let recipient_taddr = recipient.address(Pool::Transparent).await?;
+        let recipient_oaddr = recipient.address(Pool::Orchard).await?;
+        faucet.send(&recipient_taddr, SEND_AMOUNT).await?;
+        faucet.send(&recipient_oaddr, SEND_AMOUNT).await?;
 
-        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
 
-        let mut zcashd_mempool = services.zcashd_subscriber.get_raw_mempool().await.unwrap();
-        let mut zaino_mempool = services.zaino_subscriber.get_raw_mempool().await.unwrap();
-
-        dbg!(&zcashd_mempool);
-        zcashd_mempool.sort();
-        dbg!(&zaino_mempool);
-        zaino_mempool.sort();
-
+        let zrpc = validator.json_rpc().await?;
+        let irpc = indexer.json_rpc().await?;
+        let mut zcashd_mempool = zrpc.call_value("getrawmempool", json!([])).await?;
+        let mut zaino_mempool = irpc.call_value("getrawmempool", json!([])).await?;
+        if let Some(a) = zcashd_mempool.as_array_mut() {
+            a.sort_by(|x, y| x.to_string().cmp(&y.to_string()));
+        }
+        if let Some(a) = zaino_mempool.as_array_mut() {
+            a.sort_by(|x, y| x.to_string().cmp(&y.to_string()));
+        }
         assert_eq!(zcashd_mempool, zaino_mempool);
-
-        services.test_manager.close().await;
+        Ok(())
     }
 
+    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    async fn get_mempool_info() {
-        let (mut services, mut clients) = create_zcashd_devtool_services().await;
+    async fn get_mempool_info() -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest().mine_to(FUND));
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        let wallet = env.add_wallet(Wallet::librustzcash());
+        env.build().await?;
 
-        let (recipient_taddr, recipient_ua, _txid) =
-            jsonrpc_fund(&services, &mut clients, None).await;
-        clients.send_from_faucet(&recipient_taddr, 250_000).await;
-        clients.send_from_faucet(&recipient_ua, 250_000).await;
+        let faucet = wallet
+            .funded_faucet_with_notes(&validator, &indexer, 2)
+            .await?;
+        let recipient = wallet.recipient(&validator, &indexer).await?;
+        let recipient_taddr = recipient.address(Pool::Transparent).await?;
+        let recipient_oaddr = recipient.address(Pool::Orchard).await?;
+        faucet.send(&recipient_taddr, SEND_AMOUNT).await?;
+        faucet.send(&recipient_oaddr, SEND_AMOUNT).await?;
 
-        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
 
-        let zcashd_info = services.zcashd_subscriber.get_mempool_info().await.unwrap();
-        let zaino_info = services.zaino_subscriber.get_mempool_info().await.unwrap();
-
-        assert_eq!(zcashd_info, zaino_info);
-
-        services.test_manager.close().await;
+        assert_rpc_parity(
+            "getmempoolinfo",
+            "",
+            &validator.json_rpc().await?,
+            &indexer.json_rpc().await?,
+            &[],
+        )
+        .await?;
+        Ok(())
     }
 
+    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    async fn z_get_treestate() {
-        let (mut services, mut clients) = create_zcashd_devtool_services().await;
+    async fn z_get_treestate() -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest().mine_to(FUND));
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        let wallet = env.add_wallet(Wallet::librustzcash());
+        env.build().await?;
 
-        jsonrpc_fund(&services, &mut clients, Some(e2e::Pool::Orchard)).await;
+        let faucet = wallet
+            .funded_faucet_with_notes(&validator, &indexer, 1)
+            .await?;
+        let recipient = wallet.recipient(&validator, &indexer).await?;
+        let addr = recipient.address(Pool::Orchard).await?;
+        faucet.send(&addr, SEND_AMOUNT).await?;
+        let tip = validator.generate_blocks(1).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
 
-        let chain_height = dbg!(services.zaino_subscriber.chain_height().await.unwrap()).0;
-
-        let zcashd_treestate = dbg!(services
-            .zcashd_subscriber
-            .z_get_treestate(chain_height.to_string())
-            .await
-            .unwrap());
-        let zaino_treestate = dbg!(services
-            .zaino_subscriber
-            .z_get_treestate(chain_height.to_string())
-            .await
-            .unwrap());
-
-        assert_eq!(zcashd_treestate, zaino_treestate);
-
-        services.test_manager.close().await;
+        let chain_height = indexer.latest_block_height().await?;
+        let params = format!(r#"["{}"]"#, u32::from(chain_height));
+        assert_rpc_parity(
+            "z_gettreestate",
+            &params,
+            &validator.json_rpc().await?,
+            &indexer.json_rpc().await?,
+            &[],
+        )
+        .await?;
+        Ok(())
     }
 
+    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    async fn z_get_subtrees_by_index() {
-        let (mut services, mut clients) = create_zcashd_devtool_services().await;
+    async fn z_get_subtrees_by_index() -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest().mine_to(FUND));
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        let wallet = env.add_wallet(Wallet::librustzcash());
+        env.build().await?;
 
-        jsonrpc_fund(&services, &mut clients, Some(e2e::Pool::Orchard)).await;
+        let faucet = wallet
+            .funded_faucet_with_notes(&validator, &indexer, 1)
+            .await?;
+        let recipient = wallet.recipient(&validator, &indexer).await?;
+        let addr = recipient.address(Pool::Orchard).await?;
+        faucet.send(&addr, SEND_AMOUNT).await?;
+        let tip = validator.generate_blocks(1).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
 
-        let zcashd_subtrees = dbg!(services
-            .zcashd_subscriber
-            .z_get_subtrees_by_index("orchard".to_string(), NoteCommitmentSubtreeIndex(0), None)
-            .await
-            .unwrap());
-        let zaino_subtrees = dbg!(services
-            .zaino_subscriber
-            .z_get_subtrees_by_index("orchard".to_string(), NoteCommitmentSubtreeIndex(0), None)
-            .await
-            .unwrap());
-
-        assert_eq!(zcashd_subtrees, zaino_subtrees);
-
-        services.test_manager.close().await;
+        assert_rpc_parity(
+            "z_getsubtreesbyindex",
+            r#"["orchard", 0]"#,
+            &validator.json_rpc().await?,
+            &indexer.json_rpc().await?,
+            &[],
+        )
+        .await?;
+        Ok(())
     }
 
+    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    async fn get_raw_transaction() {
-        let (mut services, mut clients) = create_zcashd_devtool_services().await;
+    async fn get_raw_transaction() -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest().mine_to(FUND));
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        let wallet = env.add_wallet(Wallet::librustzcash());
+        env.build().await?;
 
-        let (_recipient_taddr, _recipient_ua, tx) =
-            jsonrpc_fund(&services, &mut clients, Some(e2e::Pool::Orchard)).await;
-        let tx = tx.expect("jsonrpc_fund sends a tx when given Some(pool)");
+        let faucet = wallet
+            .funded_faucet_with_notes(&validator, &indexer, 1)
+            .await?;
+        let recipient = wallet.recipient(&validator, &indexer).await?;
+        let addr = recipient.address(Pool::Orchard).await?;
+        let txids = faucet.send(&addr, SEND_AMOUNT).await?;
+        let tip = validator.generate_blocks(1).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+        let tx = txids[0].to_string();
 
-        let zcashd_transaction = dbg!(services
-            .zcashd_subscriber
-            .get_raw_transaction(tx.clone(), Some(1))
-            .await
-            .unwrap());
-        let zaino_transaction = dbg!(services
-            .zaino_subscriber
-            .get_raw_transaction(tx, Some(1))
-            .await
-            .unwrap());
-
-        assert_eq!(zcashd_transaction, zaino_transaction);
-
-        services.test_manager.close().await;
+        let params = format!(r#"["{tx}", 1]"#);
+        assert_rpc_parity(
+            "getrawtransaction",
+            &params,
+            &validator.json_rpc().await?,
+            &indexer.json_rpc().await?,
+            &[],
+        )
+        .await?;
+        Ok(())
     }
 
+    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    async fn get_tx_out() {
-        let (mut services, mut clients) = create_zcashd_devtool_services().await;
+    async fn get_tx_out() -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest().mine_to(FUND));
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        let wallet = env.add_wallet(Wallet::librustzcash());
+        env.build().await?;
 
-        let (recipient_taddr, _recipient_ua, _txid) =
-            jsonrpc_fund(&services, &mut clients, Some(e2e::Pool::Transparent)).await;
+        let faucet = wallet
+            .funded_faucet_with_notes(&validator, &indexer, 1)
+            .await?;
+        let recipient = wallet.recipient(&validator, &indexer).await?;
+        let recipient_taddr = recipient.address(Pool::Transparent).await?;
+        faucet.send(&recipient_taddr, SEND_AMOUNT).await?;
+        let tip = validator.generate_blocks(1).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
 
-        let zcashd_utxos = services
-            .zcashd_subscriber
-            .z_get_address_utxos(GetAddressBalanceRequest::new(vec![recipient_taddr.clone()]))
-            .await
-            .unwrap();
-        let (_, txid, output_index, ..) = zcashd_utxos[0].into_parts();
+        let zrpc = validator.json_rpc().await?;
+        let irpc = indexer.json_rpc().await?;
 
-        let zcashd_tx_out = services
-            .zcashd_subscriber
-            .get_tx_out(txid.to_string(), output_index.index(), Some(true))
-            .await
-            .unwrap();
-        let zaino_tx_out = services
-            .zaino_subscriber
-            .get_tx_out(txid.to_string(), output_index.index(), Some(true))
-            .await
-            .unwrap();
+        let zcashd_utxos = zrpc
+            .call_value("getaddressutxos", json!([{"addresses": [recipient_taddr]}]))
+            .await?;
+        let first = zcashd_utxos
+            .as_array()
+            .and_then(|a| a.first())
+            .context("zcashd getaddressutxos returned no utxos")?;
+        let txid = first
+            .get("txid")
+            .and_then(Value::as_str)
+            .context("utxo.txid")?
+            .to_string();
+        let output_index = first
+            .get("outputIndex")
+            .and_then(Value::as_u64)
+            .context("utxo.outputIndex")?;
 
-        assert_eq!(zcashd_tx_out, zaino_tx_out);
+        let present = format!(r#"["{txid}", {output_index}, true]"#);
+        assert_rpc_parity("gettxout", &present, &zrpc, &irpc, &[]).await?;
 
-        let zcashd_missing_tx_out = services
-            .zcashd_subscriber
-            .get_tx_out(txid.to_string(), output_index.index() + 100, None)
-            .await
-            .unwrap();
-        let zaino_missing_tx_out = services
-            .zaino_subscriber
-            .get_tx_out(txid.to_string(), output_index.index() + 100, None)
-            .await
-            .unwrap();
-
-        assert_eq!(zcashd_missing_tx_out, zaino_missing_tx_out);
-
-        services.test_manager.close().await;
+        let missing = format!(r#"["{txid}", {}]"#, output_index + 100);
+        assert_rpc_parity("gettxout", &missing, &zrpc, &irpc, &[]).await?;
+        Ok(())
     }
 
+    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    async fn get_address_tx_ids() {
-        let (mut services, mut clients) = create_zcashd_devtool_services().await;
+    async fn get_address_tx_ids() -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest().mine_to(FUND));
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        let wallet = env.add_wallet(Wallet::librustzcash());
+        env.build().await?;
 
-        let (recipient_taddr, _recipient_ua, tx) =
-            jsonrpc_fund(&services, &mut clients, Some(e2e::Pool::Transparent)).await;
-        let tx = tx.expect("jsonrpc_fund sends a tx when given Some(pool)");
+        let faucet = wallet
+            .funded_faucet_with_notes(&validator, &indexer, 1)
+            .await?;
+        let recipient = wallet.recipient(&validator, &indexer).await?;
+        let recipient_taddr = recipient.address(Pool::Transparent).await?;
+        let txids = faucet.send(&recipient_taddr, SEND_AMOUNT).await?;
+        let tip = validator.generate_blocks(1).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+        let tx = txids[0].to_string();
 
-        let chain_height: u32 = {
-            let idx = &services.zcashd_subscriber.indexer;
-            let snapshot = idx.snapshot_nonfinalized_state().await.unwrap();
-            u32::from(idx.best_chaintip(&snapshot).await.unwrap().height)
-        };
-        dbg!(&chain_height);
+        let zrpc = validator.json_rpc().await?;
+        let irpc = indexer.json_rpc().await?;
+        let chain_height = u32::from(indexer.latest_block_height().await?);
 
-        let zcashd_txids = services
-            .zcashd_subscriber
-            .get_address_tx_ids(GetAddressTxIdsRequest::new(
-                vec![recipient_taddr.clone()],
-                Some(chain_height - 2),
-                Some(chain_height),
-            ))
-            .await
-            .unwrap();
-        let zaino_txids = services
-            .zaino_subscriber
-            .get_address_tx_ids(GetAddressTxIdsRequest::new(
-                vec![recipient_taddr],
-                Some(chain_height - 2),
-                Some(chain_height),
-            ))
-            .await
-            .unwrap();
+        let params = format!(
+            r#"[{{"addresses": ["{recipient_taddr}"], "start": {}, "end": {}}}]"#,
+            chain_height - 2,
+            chain_height
+        );
+        let zcashd_txids = zrpc
+            .call_value("getaddresstxids", serde_json::from_str(&params)?)
+            .await?;
+        let zaino_txids = irpc
+            .call_value("getaddresstxids", serde_json::from_str(&params)?)
+            .await?;
 
-        dbg!(&tx);
-        dbg!(&zcashd_txids);
-        assert_eq!(tx, zcashd_txids[0]);
-
-        dbg!(&zaino_txids);
+        assert_eq!(
+            zcashd_txids
+                .as_array()
+                .and_then(|a| a.first())
+                .and_then(Value::as_str),
+            Some(tx.as_str())
+        );
         assert_eq!(zcashd_txids, zaino_txids);
-
-        services.test_manager.close().await;
+        Ok(())
     }
 
+    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    async fn z_get_address_utxos() {
-        let (mut services, mut clients) = create_zcashd_devtool_services().await;
+    async fn z_get_address_utxos() -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest().mine_to(FUND));
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        let wallet = env.add_wallet(Wallet::librustzcash());
+        env.build().await?;
 
-        let (recipient_taddr, _recipient_ua, txid_1) =
-            jsonrpc_fund(&services, &mut clients, Some(e2e::Pool::Transparent)).await;
-        let txid_1 = txid_1.expect("jsonrpc_fund sends a tx when given Some(pool)");
+        let faucet = wallet
+            .funded_faucet_with_notes(&validator, &indexer, 1)
+            .await?;
+        let recipient = wallet.recipient(&validator, &indexer).await?;
+        let recipient_taddr = recipient.address(Pool::Transparent).await?;
+        let txids = faucet.send(&recipient_taddr, SEND_AMOUNT).await?;
+        let tip = validator.generate_blocks(1).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+        let txid_1 = txids[0].to_string();
 
-        clients.sync_faucet().await;
+        recipient.sync().await?;
 
-        let zcashd_utxos = services
-            .zcashd_subscriber
-            .z_get_address_utxos(GetAddressBalanceRequest::new(vec![recipient_taddr.clone()]))
-            .await
-            .unwrap();
-        let (_, zcashd_txid, ..) = zcashd_utxos[0].into_parts();
+        let zrpc = validator.json_rpc().await?;
+        let irpc = indexer.json_rpc().await?;
+        let params = json!([{"addresses": [recipient_taddr]}]);
+        let zcashd_utxos = zrpc.call_value("getaddressutxos", params.clone()).await?;
+        let zaino_utxos = irpc.call_value("getaddressutxos", params).await?;
 
-        let zaino_utxos = services
-            .zaino_subscriber
-            .z_get_address_utxos(GetAddressBalanceRequest::new(vec![recipient_taddr]))
-            .await
-            .unwrap();
-        let (_, zaino_txid, ..) = zaino_utxos[0].into_parts();
+        let zcashd_txid = zcashd_utxos
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(|u| u.get("txid"))
+            .and_then(Value::as_str)
+            .context("zcashd utxo.txid")?;
+        let zaino_txid = zaino_utxos
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(|u| u.get("txid"))
+            .and_then(Value::as_str)
+            .context("zaino utxo.txid")?;
 
-        dbg!(&txid_1);
-        dbg!(&zcashd_utxos);
-        assert_eq!(txid_1, zcashd_txid.to_string());
-
-        dbg!(&zaino_utxos);
-        assert_eq!(zcashd_txid.to_string(), zaino_txid.to_string());
-
-        services.test_manager.close().await;
+        assert_eq!(txid_1, zcashd_txid);
+        assert_eq!(zcashd_txid, zaino_txid);
+        Ok(())
     }
-}
-
-/// zcashd analogue of devtool.rs's `send_to_pool`: the faucet sends 250_000 to
-/// the recipient's `pool` address and the recipient sees it.
-async fn send_to_pool(pool: e2e::Pool) {
-    let (test_manager, clients) = launch_and_fund_zcashd_faucet(1).await;
-    e2e::devtool::assert_send_to_pool(test_manager, clients, pool).await;
-}
-
-/// zcashd analogue of devtool.rs's `shield_for_validator`: the recipient
-/// receives a transparent send, then shields it into orchard (235_000 after the
-/// ZIP-317 shielding fee).
-async fn shield_for_validator() {
-    let (test_manager, clients) = launch_and_fund_zcashd_faucet(1).await;
-    // Pre-NU6.3 heights on zcashd: `shield` lands in orchard, not ironwood.
-    e2e::devtool::assert_shield_for_validator(test_manager, clients, e2e::Pool::Orchard).await;
 }
 
 /// Devtool ports of `wallet_to_validator`'s `mod zcashd` send/shield/get-info
@@ -433,32 +384,131 @@ async fn shield_for_validator() {
 mod wallet_to_validator {
     use super::*;
 
+    #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
-    async fn connect_to_node_get_info() {
-        let (mut test_manager, clients) = launch_zcashd_and_build_clients().await;
-        clients.get_info_faucet().await;
-        clients.get_info_recipient().await;
-        test_manager.close().await;
+    async fn connect_to_node_get_info() -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest().mine_to(FUND));
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        let wallet = env.add_wallet(Wallet::librustzcash());
+        env.build().await?;
+
+        let _faucet = wallet
+            .funded_faucet_with_notes(&validator, &indexer, 1)
+            .await?;
+        let recipient = wallet.recipient(&validator, &indexer).await?;
+        recipient.sync().await?;
+        assert!(!indexer.indexer_info().await?.chain_name.is_empty());
+        Ok(())
     }
 
+    /// zcashd analogue of devtool.rs's `send_to_pool`: the faucet sends 250_000
+    /// to the recipient's pool address and the recipient sees it.
+    #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
-    async fn send_to_orchard() {
-        send_to_pool(e2e::Pool::Orchard).await;
+    async fn send_to_orchard() -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest().mine_to(FUND));
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        let wallet = env.add_wallet(Wallet::librustzcash());
+        env.build().await?;
+
+        let faucet = wallet
+            .funded_faucet_with_notes(&validator, &indexer, 1)
+            .await?;
+        let recipient = wallet.recipient(&validator, &indexer).await?;
+        let addr = recipient.address(Pool::Orchard).await?;
+        faucet.send(&addr, SEND_AMOUNT).await?;
+        let tip = validator.generate_blocks(1).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+        recipient.sync().await?;
+        assert_eq!(recipient.balances().await?.get(Pool::Orchard), SEND_AMOUNT);
+        Ok(())
     }
 
+    #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
-    async fn send_to_sapling() {
-        send_to_pool(e2e::Pool::Sapling).await;
+    async fn send_to_sapling() -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest().mine_to(FUND));
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        let wallet = env.add_wallet(Wallet::librustzcash());
+        env.build().await?;
+
+        let faucet = wallet
+            .funded_faucet_with_notes(&validator, &indexer, 1)
+            .await?;
+        let recipient = wallet.recipient(&validator, &indexer).await?;
+        let addr = recipient.address(Pool::Sapling).await?;
+        faucet.send(&addr, SEND_AMOUNT).await?;
+        let tip = validator.generate_blocks(1).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+        recipient.sync().await?;
+        assert_eq!(recipient.balances().await?.get(Pool::Sapling), SEND_AMOUNT);
+        Ok(())
     }
 
+    #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
-    async fn send_to_transparent() {
-        send_to_pool(e2e::Pool::Transparent).await;
+    async fn send_to_transparent() -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest().mine_to(FUND));
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        let wallet = env.add_wallet(Wallet::librustzcash());
+        env.build().await?;
+
+        let faucet = wallet
+            .funded_faucet_with_notes(&validator, &indexer, 1)
+            .await?;
+        let recipient = wallet.recipient(&validator, &indexer).await?;
+        let addr = recipient.address(Pool::Transparent).await?;
+        faucet.send(&addr, SEND_AMOUNT).await?;
+        let tip = validator.generate_blocks(1).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+        recipient.sync().await?;
+        assert_eq!(
+            recipient.balances().await?.get(Pool::Transparent),
+            SEND_AMOUNT
+        );
+        Ok(())
     }
 
+    /// zcashd analogue of devtool.rs's `shield_for_validator`: the recipient
+    /// receives a transparent send, then shields it into orchard (235_000 after the
+    /// ZIP-317 shielding fee).
+    #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
-    async fn shield() {
-        shield_for_validator().await;
+    async fn shield() -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest().mine_to(FUND));
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        let wallet = env.add_wallet(Wallet::librustzcash());
+        env.build().await?;
+
+        let faucet = wallet
+            .funded_faucet_with_notes(&validator, &indexer, 1)
+            .await?;
+        let recipient = wallet.recipient(&validator, &indexer).await?;
+        let taddr = recipient.address(Pool::Transparent).await?;
+        faucet.send(&taddr, SEND_AMOUNT).await?;
+        let tip = validator.generate_blocks(1).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+        recipient.sync().await?;
+        assert_eq!(
+            recipient.balances().await?.get(Pool::Transparent),
+            SEND_AMOUNT
+        );
+
+        // Pre-NU6.3 heights on zcashd: `shield` lands in orchard, not ironwood.
+        recipient.shield().await?;
+        let tip = validator.generate_blocks(1).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+        recipient.sync().await?;
+        assert_eq!(
+            recipient.balances().await?.get(Pool::Orchard),
+            SEND_AMOUNT - SHIELD_FEE
+        );
+        Ok(())
     }
 
     /// zcashd analogue of devtool.rs's gated `send_to_transparent_finalization`:
@@ -466,14 +516,48 @@ mod wallet_to_validator {
     /// chain and after the seam-deep advance into the finalized DB. `#[ignore]`d
     /// for the same reason — the advance mines orchard coinbase (~100 halo2
     /// proofs) until per-call cheap filler mining lands.
+    #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     #[cfg_attr(
         not(feature = "devtool-incompatible"),
         ignore = "heavy: seam-deep orchard advance (~100 halo2 proofs); un-ignore + transparent filler when cheap filler mining lands"
     )]
-    async fn send_to_transparent_finalization() {
-        let (test_manager, clients) = launch_and_fund_zcashd_faucet(1).await;
-        e2e::devtool::assert_send_to_transparent_finalization(test_manager, clients).await;
+    async fn send_to_transparent_finalization() -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest().mine_to(FUND));
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        let wallet = env.add_wallet(Wallet::librustzcash());
+        env.build().await?;
+
+        let faucet = wallet
+            .funded_faucet_with_notes(&validator, &indexer, 1)
+            .await?;
+        let recipient = wallet.recipient(&validator, &indexer).await?;
+        let recipient_taddr = recipient.address(Pool::Transparent).await?;
+        faucet.send(&recipient_taddr, SEND_AMOUNT).await?;
+        let tip = validator.generate_blocks(1).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+
+        let irpc = indexer.json_rpc().await?;
+        let height = u32::from(indexer.latest_block_height().await?);
+        let params = json!([{ "addresses": [recipient_taddr], "start": height, "end": height }]);
+        let unfinalised_txids = irpc.call_value("getaddresstxids", params.clone()).await?;
+
+        let tip = validator.generate_blocks(SEAM_ADVANCE).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+        let finalised_txids = irpc.call_value("getaddresstxids", params).await?;
+
+        recipient.sync().await?;
+        assert_eq!(
+            recipient.balances().await?.get(Pool::Transparent),
+            SEND_AMOUNT,
+            "the transparent send must still be served after it finalizes"
+        );
+        assert_eq!(
+            unfinalised_txids, finalised_txids,
+            "the address txids must be identical across the finalisation seam"
+        );
+        Ok(())
     }
 
     /// zcashd port of `sent_to::all` (heavy): one faucet funds a send to all
@@ -483,49 +567,96 @@ mod wallet_to_validator {
     /// load-bearing for the per-pool balance asserts (the sends confirm in one
     /// block), so this could be re-ported light (like the zebrad `send_to_all`)
     /// instead of gated, if preferred.
+    #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     #[cfg_attr(
         not(feature = "devtool-incompatible"),
         ignore = "heavy: seam-deep orchard advance (~100 halo2 proofs); re-port light or un-ignore with transparent filler"
     )]
-    async fn send_to_all() {
-        let (mut test_manager, mut clients) = launch_and_fund_zcashd_faucet(3).await;
+    async fn send_to_all() -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest().mine_to(FUND));
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        let wallet = env.add_wallet(Wallet::librustzcash());
+        env.build().await?;
 
-        let recipient_ua = clients.get_recipient_address("unified").await;
-        let recipient_zaddr = clients.get_recipient_address("sapling").await;
-        let recipient_taddr = clients.get_recipient_address("transparent").await;
-        clients.send_from_faucet(&recipient_ua, 250_000).await;
-        clients.send_from_faucet(&recipient_zaddr, 250_000).await;
-        clients.send_from_faucet(&recipient_taddr, 250_000).await;
-
-        test_manager
-            .generate_blocks_bulk_and_wait_for_tips(
-                // Advance past the seam so all three pool sends cross the finalised floor.
-                zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH + 5,
-                test_manager.subscriber(),
-                test_manager.subscriber(),
-            )
-            .await;
-        clients.sync_recipient().await;
-
-        let balance = clients.recipient_balance().await;
-        assert_eq!(e2e::Pool::Orchard.spendable_balance(&balance), 250_000);
-        assert_eq!(e2e::Pool::Sapling.spendable_balance(&balance), 250_000);
-        assert_eq!(e2e::Pool::Transparent.spendable_balance(&balance), 250_000);
-
-        test_manager.close().await;
+        let faucet = wallet
+            .funded_faucet_with_notes(&validator, &indexer, 3)
+            .await?;
+        let recipient = wallet.recipient(&validator, &indexer).await?;
+        for pool in [Pool::Orchard, Pool::Sapling, Pool::Transparent] {
+            let addr = recipient.address(pool).await?;
+            faucet.send(&addr, SEND_AMOUNT).await?;
+        }
+        let tip = validator.generate_blocks(1).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+        recipient.sync().await?;
+        let b = recipient.balances().await?;
+        assert_eq!(b.get(Pool::Orchard), SEND_AMOUNT);
+        assert_eq!(b.get(Pool::Sapling), SEND_AMOUNT);
+        assert_eq!(b.get(Pool::Transparent), SEND_AMOUNT);
+        Ok(())
     }
 
-    /// zcashd analogue of devtool.rs's `monitor_unverified_mempool`. `#[ignore]`d
-    /// with the balance assertions commented out — devtool's WalletBalance has
-    /// no unconfirmed_*/confirmed_* fields (block-based sync, no mempool scan).
+    /// zcashd analogue of devtool.rs's `monitor_unverified_mempool`: broadcast
+    /// two unmined sends, observe them in the mempool, then mine them in and
+    /// confirm the balances.
+    #[ztest::qos::wallet]
     #[tokio::test(flavor = "multi_thread")]
     #[cfg_attr(
         not(feature = "devtool-incompatible"),
-        ignore = "devtool WalletBalance has no unconfirmed_*/confirmed_* fields; balance asserts commented out — restore + un-ignore when devtool surfaces unconfirmed balances"
+        ignore = "ztest's Wallet::librustzcash exposes no unconfirmed/pending pool-balance accessor, so the unconfirmed-vs-confirmed balance split under test cannot be asserted yet — un-ignore when ztest surfaces unconfirmed balances"
     )]
-    async fn monitor_unverified_mempool() {
-        let (test_manager, clients) = launch_and_fund_zcashd_faucet(2).await;
-        e2e::devtool::assert_monitor_unverified_mempool(test_manager, clients).await;
+    async fn monitor_unverified_mempool() -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(Validator::zcashd("v6.20.0").regtest().mine_to(FUND));
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        let wallet = env.add_wallet(Wallet::librustzcash());
+        env.build().await?;
+
+        let faucet = wallet
+            .funded_faucet_with_notes(&validator, &indexer, 2)
+            .await?;
+        let recipient = wallet.recipient(&validator, &indexer).await?;
+        let oaddr = recipient.address(Pool::Orchard).await?;
+        let txid_1 = faucet
+            .send(&oaddr, SEND_AMOUNT)
+            .await?
+            .into_iter()
+            .next()
+            .expect("send returns a txid");
+        let txid_2 = faucet
+            .send(&oaddr, SEND_AMOUNT)
+            .await?
+            .into_iter()
+            .next()
+            .expect("send returns a txid");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let irpc = indexer.json_rpc().await?;
+        let mempool = irpc.call_value("getrawmempool", json!([])).await?;
+        let mempool_txids: Vec<String> = mempool
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            mempool_txids.contains(&txid_1.to_string())
+                && mempool_txids.contains(&txid_2.to_string()),
+            "both unmined sends must be visible in the mempool: {mempool_txids:?}"
+        );
+
+        let tip = validator.generate_blocks(1).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+        recipient.sync().await?;
+        assert_eq!(
+            recipient.balances().await?.get(Pool::Orchard),
+            2 * SEND_AMOUNT,
+            "both sends must confirm into the recipient's orchard balance"
+        );
+        Ok(())
     }
 }

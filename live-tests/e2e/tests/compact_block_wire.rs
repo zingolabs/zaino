@@ -10,18 +10,49 @@
 //! the unfiltered request shape (empty `poolTypes`): orchard-only, ironwood-only, and
 //! the orchard→ironwood transition at the NU6.3 activation boundary.
 
-use zaino_common::network::ActivationHeights;
-use zaino_proto::proto::compact_formats::CompactBlock;
-use zaino_proto::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
-use zaino_proto::proto::service::{BlockId, BlockRange};
-#[allow(deprecated)]
-use zaino_state::ZcashIndexer as _;
-use zaino_testutils::{
-    make_uri, MinerPool, Rpc, TestManager, ValidatorKind, IRONWOOD_ONLY_ACTIVATION_HEIGHTS,
-    NU6_3_TRANSITION_BOUNDARY, ORCHARD_ONLY_ACTIVATION_HEIGHTS,
-    ORCHARD_THEN_IRONWOOD_ACTIVATION_HEIGHTS,
-};
-use zcash_local_net::validator::zebrad::Zebrad;
+use std::time::Duration;
+
+use anyhow::Result;
+use ztest::prelude::*;
+
+const READY: Duration = Duration::from_secs(120);
+
+/// The mid-chain NU6.3 (Ironwood) activation height for the transition fixture:
+/// an Orchard era `[2, 6)` that flips to Ironwood at height 6.
+const NU6_3_TRANSITION_BOUNDARY: u32 = 6;
+
+/// Orchard-only schedule: NU5..=NU6.2 active from height 2, NU6.3 never — the
+/// orchard-receiver coinbase stays in Orchard actions for every block.
+fn orchard_only() -> ActivationHeights {
+    ActivationHeights::builder()
+        .set_overwinter(Some(1))
+        .set_sapling(Some(1))
+        .set_blossom(Some(1))
+        .set_heartwood(Some(1))
+        .set_canopy(Some(1))
+        .set_nu5(Some(2))
+        .set_nu6(Some(2))
+        .set_nu6_1(Some(2))
+        .set_nu6_2(Some(2))
+        .build()
+}
+
+/// Mid-chain transition schedule: Orchard era `[2, boundary)`, Ironwood from
+/// `boundary`, so the same orchard-receiver coinbase flips pools at `boundary`.
+fn orchard_then_ironwood_at(boundary: u32) -> ActivationHeights {
+    ActivationHeights::builder()
+        .set_overwinter(Some(1))
+        .set_sapling(Some(1))
+        .set_blossom(Some(1))
+        .set_heartwood(Some(1))
+        .set_canopy(Some(1))
+        .set_nu5(Some(2))
+        .set_nu6(Some(2))
+        .set_nu6_1(Some(2))
+        .set_nu6_2(Some(2))
+        .set_nu6_3(Some(boundary))
+        .build()
+}
 
 /// Which shielded pool the fixture's coinbase reward must land in at a given height,
 /// as observed in the served compact form.
@@ -35,92 +66,20 @@ enum CoinbaseEra {
     Ironwood,
 }
 
-/// Launches an orchard-receiver mining fixture with zainod enabled, generates
-/// `blocks` blocks, streams `[0, tip]` through zainod's real gRPC wire with the empty
-/// `poolTypes` filter, and asserts:
-///
-/// 1. wire fidelity — the streamed blocks equal the in-process subscriber's blocks;
-/// 2. era composition — each height's served orchard/ironwood action presence matches
-///    the era `expected_era` assigns it.
-async fn assert_wire_served_eras(
-    activation_heights: ActivationHeights,
-    blocks: u32,
-    expected_era: impl Fn(u64) -> CoinbaseEra,
-) {
-    #[allow(deprecated)]
-    let mut test_manager = TestManager::<Zebrad, Rpc>::launch_mining_to(
-        MinerPool::Orchard,
-        &ValidatorKind::Zebrad,
-        None,
-        Some(activation_heights),
-        None,
-        true,
-        false,
-        false,
-    )
-    .await
-    .unwrap();
-    let subscriber = test_manager.subscriber().clone();
-
-    test_manager
-        .generate_blocks_and_wait_for_tip(blocks, &subscriber)
-        .await;
-    let tip = u64::from(subscriber.chain_height().await.unwrap().0);
-
-    // The in-process serving result: the same request answered without the wire.
-    let in_process = zaino_testutils::collect_block_range(&subscriber, 0, tip, vec![]).await;
-
-    // The same request through zainod's real gRPC server.
-    let uri = make_uri(
-        test_manager
-            .zaino_grpc_listen_address
-            .expect("zaino enabled")
-            .port(),
-    );
-    let mut grpc_client = CompactTxStreamerClient::connect(uri)
-        .await
-        .expect("zainod grpc reachable");
-    let mut stream = grpc_client
-        .get_block_range(BlockRange {
-            start: Some(BlockId {
-                height: 0,
-                hash: vec![],
-            }),
-            end: Some(BlockId {
-                height: tip,
-                hash: vec![],
-            }),
-            // The unfiltered wire request real (including pre-Ironwood) clients send.
-            pool_types: vec![],
-        })
-        .await
-        .expect("get_block_range succeeds")
-        .into_inner();
-    let mut wire: Vec<CompactBlock> = Vec::new();
-    while let Some(block) = stream.message().await.expect("stream yields blocks") {
-        wire.push(block);
-    }
-
-    // E2e-exclusive predicate — wire fidelity: the protobuf encode/decode and zainod's
-    // gRPC server must be transparent.
-    assert_eq!(
-        wire.len(),
-        in_process.len(),
-        "wire and in-process must serve the same block count"
-    );
-    for (wire_block, in_process_block) in wire.iter().zip(&in_process) {
-        assert_eq!(
-            wire_block, in_process_block,
-            "wire round-trip must be transparent at height {}",
-            wire_block.height
-        );
-    }
-
+/// Asserts the era composition of a served compact-block stream: each height's served
+/// orchard/ironwood action presence must match the era `expected_era` assigns it. The
+/// stream is the one a real tonic client receives from zainod's gRPC — under ztest
+/// `indexer.get_block_range` opens the tonic channel internally, so this is the wire
+/// round-trip. Blocks are coinbase-only, so a block's per-pool action totals are the
+/// coinbase's: an Orchard-era coinbase pays the reward as Orchard actions
+/// (`vtx[].actions`, no ironwood), an Ironwood-era coinbase as Ironwood actions
+/// (`vtx[].ironwood_actions`, no orchard).
+fn assert_wire_served_eras(blocks: &[CompactBlock], expected_era: impl Fn(u64) -> CoinbaseEra) {
     // Era composition of the served stream. Observed failing at the first
     // ironwood-era height (served orchard 1 / ironwood 0) — hypotheses and the
     // raw-block disambiguation procedure are tracked in
     // <https://github.com/zingolabs/zaino/issues/1368>.
-    for block in &wire {
+    for block in blocks {
         let orchard_actions: usize = block.vtx.iter().map(|tx| tx.actions.len()).sum();
         let ironwood_actions: usize = block.vtx.iter().map(|tx| tx.ironwood_actions.len()).sum();
         let (want_orchard, want_ironwood) = match expected_era(block.height) {
@@ -143,8 +102,6 @@ async fn assert_wire_served_eras(
             block.height
         );
     }
-
-    test_manager.close().await;
 }
 
 /// Orchard-only era over the wire: NU6.3 never activates (explicit fixture — the
@@ -152,32 +109,62 @@ async fn assert_wire_served_eras(
 /// stream carries Orchard actions from height 2 and no ironwood anywhere.
 ///
 /// multi_thread required: the test manager spawns the validator, indexer, and zainod.
+#[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
-async fn orchard_only_wire_serving_zebrad() {
-    assert_wire_served_eras(ORCHARD_ONLY_ACTIVATION_HEIGHTS, 6, |height| {
+async fn orchard_only_wire_serving_zebrad() -> Result<()> {
+    let mut env = TestEnv::builder()
+        .ready_timeout(READY)
+        .activation_heights(orchard_only());
+    let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
+    let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+    env.build().await?;
+
+    let tip = validator.generate_blocks(6).await?;
+    indexer.wait_for_block_num(tip, READY).await?;
+
+    let blocks = indexer
+        .get_block_range(BlockHeight::from(1u32), tip)
+        .await?;
+    assert!(!blocks.is_empty(), "no compact blocks served");
+
+    assert_wire_served_eras(&blocks, |height| {
         if height >= 2 {
             CoinbaseEra::Orchard
         } else {
             CoinbaseEra::Neither
         }
-    })
-    .await;
+    });
+    Ok(())
 }
 
 /// Ironwood-only era over the wire: NU6.3 active from height 2, so the served stream
 /// carries Ironwood actions from height 2 and no Orchard actions anywhere.
 ///
 /// multi_thread required: the test manager spawns the validator, indexer, and zainod.
+#[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
-async fn ironwood_only_wire_serving_zebrad() {
-    assert_wire_served_eras(IRONWOOD_ONLY_ACTIVATION_HEIGHTS, 6, |height| {
+async fn ironwood_only_wire_serving_zebrad() -> Result<()> {
+    let mut env = TestEnv::builder().ready_timeout(READY);
+    let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
+    let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+    env.build().await?;
+
+    let tip = validator.generate_blocks(6).await?;
+    indexer.wait_for_block_num(tip, READY).await?;
+
+    let blocks = indexer
+        .get_block_range(BlockHeight::from(1u32), tip)
+        .await?;
+    assert!(!blocks.is_empty(), "no compact blocks served");
+
+    assert_wire_served_eras(&blocks, |height| {
         if height >= 2 {
             CoinbaseEra::Ironwood
         } else {
             CoinbaseEra::Neither
         }
-    })
-    .await;
+    });
+    Ok(())
 }
 
 /// The transition over the wire: the same unchanged orchard-receiver miner's served
@@ -185,21 +172,35 @@ async fn ironwood_only_wire_serving_zebrad() {
 /// height.
 ///
 /// multi_thread required: the test manager spawns the validator, indexer, and zainod.
+#[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
-async fn orchard_to_ironwood_transition_wire_serving_zebrad() {
+async fn orchard_to_ironwood_transition_wire_serving_zebrad() -> Result<()> {
+    let mut env = TestEnv::builder()
+        .ready_timeout(READY)
+        .activation_heights(orchard_then_ironwood_at(NU6_3_TRANSITION_BOUNDARY));
+    let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
+    let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+    env.build().await?;
+
     // Two blocks past the boundary, so both eras carry more than one block.
-    assert_wire_served_eras(
-        ORCHARD_THEN_IRONWOOD_ACTIVATION_HEIGHTS,
-        NU6_3_TRANSITION_BOUNDARY + 2,
-        |height| {
-            if height >= u64::from(NU6_3_TRANSITION_BOUNDARY) {
-                CoinbaseEra::Ironwood
-            } else if height >= 2 {
-                CoinbaseEra::Orchard
-            } else {
-                CoinbaseEra::Neither
-            }
-        },
-    )
-    .await;
+    let tip = validator
+        .generate_blocks(NU6_3_TRANSITION_BOUNDARY + 2)
+        .await?;
+    indexer.wait_for_block_num(tip, READY).await?;
+
+    let blocks = indexer
+        .get_block_range(BlockHeight::from(1u32), tip)
+        .await?;
+    assert!(!blocks.is_empty(), "no compact blocks served");
+
+    assert_wire_served_eras(&blocks, |height| {
+        if height >= u64::from(NU6_3_TRANSITION_BOUNDARY) {
+            CoinbaseEra::Ironwood
+        } else if height >= 2 {
+            CoinbaseEra::Orchard
+        } else {
+            CoinbaseEra::Neither
+        }
+    });
+    Ok(())
 }

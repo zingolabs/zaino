@@ -442,7 +442,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// # Parameters
     ///
-    /// - `pool`: (string, required) The pool from which subtrees should be returned. Either "sapling" or "orchard".
+    /// - `pool`: (string, required) The pool from which subtrees should be returned. Either "sapling", "orchard", or "ironwood".
     /// - `start_index`: (number, required) The index of the first 2^16-leaf subtree to return.
     /// - `limit`: (number, optional) The maximum number of subtree values to return.
     ///
@@ -757,7 +757,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
     /// Helper function to get timeout and channel size from config
     fn timeout_channel_size(&self) -> (u32, u32);
 
-    /// Returns a stream of information about roots of subtrees of the Sapling and Orchard
+    /// Returns a stream of information about roots of subtrees of the Sapling, Orchard and Ironwood
     /// note commitment trees.
     fn get_subtree_roots(
         &self,

@@ -22,37 +22,29 @@
 //!    The mapping from that shape to adopted heights is unit-tested next to
 //!    `activation_heights_from_upgrades` in zaino-state.
 
-use zaino_state::ZcashIndexer as _;
-use zaino_testutils::{
-    all_pools_i32, collect_block_range, MinerPool, Rpc, TestManager, ValidatorKind,
-    NU6_3_TRANSITION_BOUNDARY, ORCHARD_THEN_IRONWOOD_ACTIVATION_HEIGHTS,
-    ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS,
-};
-use zcash_local_net::validator::zebrad::Zebrad;
+use std::time::Duration;
 
-/// Launches an orchard-receiver-mining zebrad on the transition schedule
-/// with zainod enabled. The harness hands zainod only the canonical
-/// placeholder (see `launch_mining_to`), so the launch itself is the
-/// deliberate config/validator misalignment under test.
-async fn launch_transition_validator() -> TestManager<Zebrad, Rpc> {
-    assert_ne!(
-        ZEBRAD_DEFAULT_ACTIVATION_HEIGHTS, ORCHARD_THEN_IRONWOOD_ACTIVATION_HEIGHTS,
-        "premise: zainod's config placeholder must differ from the fixture \
-         schedule, or this proves nothing"
-    );
+use anyhow::{Context, Result};
+use serde_json::{json, Value};
+use ztest::prelude::*;
 
-    TestManager::<Zebrad, Rpc>::launch_mining_to(
-        MinerPool::Orchard,
-        &ValidatorKind::Zebrad,
-        None,
-        Some(ORCHARD_THEN_IRONWOOD_ACTIVATION_HEIGHTS),
-        None,
-        true,
-        false,
-        false,
-    )
-    .await
-    .expect("launch TestManager")
+const READY: Duration = Duration::from_secs(120);
+
+const NU6_3_TRANSITION_BOUNDARY: u32 = 6;
+
+fn orchard_then_ironwood_at(boundary: u32) -> ActivationHeights {
+    ActivationHeights::builder()
+        .set_overwinter(Some(1))
+        .set_sapling(Some(1))
+        .set_blossom(Some(1))
+        .set_heartwood(Some(1))
+        .set_canopy(Some(1))
+        .set_nu5(Some(2))
+        .set_nu6(Some(2))
+        .set_nu6_1(Some(2))
+        .set_nu6_2(Some(2))
+        .set_nu6_3(Some(boundary))
+        .build()
 }
 
 /// Boundary sync + no-recompile proof: a kind-only-configured zainod adopts
@@ -61,28 +53,37 @@ async fn launch_transition_validator() -> TestManager<Zebrad, Rpc> {
 ///
 /// multi_thread required: the test manager spawns the validator and indexer
 /// services.
+#[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
-async fn zainod_syncs_a_schedule_its_config_never_saw() {
-    let mut test_manager = launch_transition_validator().await;
-    let subscriber = test_manager.subscriber().clone();
+async fn zainod_syncs_a_schedule_its_config_never_saw() -> Result<()> {
+    let mut env = TestEnv::builder()
+        .ready_timeout(READY)
+        .activation_heights(orchard_then_ironwood_at(NU6_3_TRANSITION_BOUNDARY));
+    let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
+    let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+    env.build().await?;
 
     // Two blocks past the boundary, so both eras carry more than one block.
     // Reaching the tip at all is the core regression: pre-adoption, the
     // chain-index sync died on the first block whose commitment scheme the
     // misconfigured heights got wrong.
-    test_manager
-        .generate_blocks_and_wait_for_tip(NU6_3_TRANSITION_BOUNDARY + 1, &subscriber)
-        .await;
-    let tip = u64::from(subscriber.chain_height().await.expect("chain height").0);
+    let tip = validator
+        .generate_blocks(NU6_3_TRANSITION_BOUNDARY + 1)
+        .await?;
+    indexer.wait_for_block_num(tip, READY).await?;
     assert!(
-        tip > u64::from(NU6_3_TRANSITION_BOUNDARY),
-        "sync must cross the boundary, tip is {tip}"
+        u64::from(tip) > u64::from(NU6_3_TRANSITION_BOUNDARY),
+        "sync must cross the boundary, tip is {}",
+        u64::from(tip)
     );
 
     // Era composition of the served chain proves the adopted schedule is the
     // validator's, not the placeholder: under the placeholder (NU6.3 at 2)
     // the pre-boundary orchard coinbases would be misread as ironwood-era.
-    let blocks = collect_block_range(&subscriber, 2, tip, all_pools_i32()).await;
+    let blocks = indexer
+        .get_block_range(BlockHeight::from(2u32), tip)
+        .await?;
+    assert!(!blocks.is_empty(), "no compact blocks served");
     for block in &blocks {
         let height = block.height;
         let has_orchard = block.vtx.iter().any(|tx| !tx.actions.is_empty());
@@ -100,7 +101,7 @@ async fn zainod_syncs_a_schedule_its_config_never_saw() {
         }
     }
 
-    test_manager.close().await;
+    Ok(())
 }
 
 /// The input contract for adoption: the `upgrades` map a live zebrad reports
@@ -111,43 +112,65 @@ async fn zainod_syncs_a_schedule_its_config_never_saw() {
 ///
 /// multi_thread required: the test manager spawns the validator and indexer
 /// services.
+#[ztest::qos::integration]
 #[tokio::test(flavor = "multi_thread")]
-async fn getblockchaininfo_reports_the_configured_schedule() {
-    use zebra_chain::parameters::NetworkUpgrade;
+async fn getblockchaininfo_reports_the_configured_schedule() -> Result<()> {
+    let mut env = TestEnv::builder()
+        .ready_timeout(READY)
+        .activation_heights(orchard_then_ironwood_at(NU6_3_TRANSITION_BOUNDARY));
+    let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(Pool::Orchard));
+    env.build().await?;
 
-    let mut test_manager = launch_transition_validator().await;
+    let blockchain_info = validator
+        .json_rpc()
+        .await?
+        .call_value("getblockchaininfo", json!([]))
+        .await?;
+    let upgrades = blockchain_info
+        .get("upgrades")
+        .and_then(Value::as_object)
+        .context("getblockchaininfo must carry an upgrades object")?;
 
-    let blockchain_info = test_manager
-        .full_node_jsonrpc_connector()
-        .await
-        .get_blockchain_info()
-        .await
-        .expect("getblockchaininfo");
+    // `upgrades` is emitted by zebra in activation order (keyed by consensus
+    // branch id but serialized in order); serde_json's `preserve_order` feature
+    // keeps that iteration order after parsing. Collecting into a `Vec` and
+    // comparing against an ordered `Vec` pins the upgrade set, their heights,
+    // AND their order — exactly as dev did with `blockchain_info.upgrades.values()`
+    // against an ordered vec of `(NetworkUpgrade, height)`.
+    let mut reported: Vec<(String, u64)> = Vec::new();
+    for entry in upgrades.values() {
+        let name = entry
+            .get("name")
+            .and_then(Value::as_str)
+            .context("each upgrade entry must carry a name")?
+            .to_string();
+        let height = entry
+            .get("activationheight")
+            .and_then(Value::as_u64)
+            .context("each upgrade entry must carry an activationheight")?;
+        reported.push((name, height));
+    }
 
-    let reported: Vec<(NetworkUpgrade, u32)> = blockchain_info
-        .upgrades
-        .values()
-        .map(|upgrade_info| {
-            let (upgrade, height, _status) = upgrade_info.into_parts();
-            (upgrade, height.0)
-        })
-        .collect();
+    let expected: Vec<(String, u64)> = [
+        ("Overwinter", 1),
+        ("Sapling", 1),
+        ("Blossom", 1),
+        ("Heartwood", 1),
+        ("Canopy", 1),
+        ("NU5", 2),
+        ("NU6", 2),
+        ("NU6.1", 2),
+        ("NU6.2", 2),
+        ("NU6.3", u64::from(NU6_3_TRANSITION_BOUNDARY)),
+    ]
+    .into_iter()
+    .map(|(name, height)| (name.to_string(), height))
+    .collect();
 
     assert_eq!(
-        reported,
-        vec![
-            (NetworkUpgrade::Overwinter, 1),
-            (NetworkUpgrade::Sapling, 1),
-            (NetworkUpgrade::Blossom, 1),
-            (NetworkUpgrade::Heartwood, 1),
-            (NetworkUpgrade::Canopy, 1),
-            (NetworkUpgrade::Nu5, 2),
-            (NetworkUpgrade::Nu6, 2),
-            (NetworkUpgrade::Nu6_1, 2),
-            (NetworkUpgrade::Nu6_2, 2),
-            (NetworkUpgrade::Nu6_3, 6),
-        ],
+        reported, expected,
+        "reported upgrade schedule must match the pinned transition set, order, and heights"
     );
 
-    test_manager.close().await;
+    Ok(())
 }

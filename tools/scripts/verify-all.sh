@@ -93,8 +93,6 @@ fi
 run_task "help" makers help
 run_task "compute-image-tag" makers compute-image-tag
 run_task "get-podman-hash" makers get-podman-hash
-run_task "init-podman-volumes" makers init-podman-volumes
-run_task "check-matching-zebras" makers check-matching-zebras
 run_task "fmt" makers fmt
 run_task "clippy" makers clippy
 run_task "doc" makers doc
@@ -125,38 +123,12 @@ run_task "ensure-image-exists" makers ensure-image-exists
 podman tag "${IMAGE_NAME}:${TAG}" "${IMAGE_NAME}:verify-${TAG}" \
     2>/dev/null || true
 
-# === Tier 3: Container execution ===
-# One test per component: zcashd, zebrad, lightwallet gRPC,
-# wallet-to-validator. Tests live in the live-tests sub-workspace.
-ITESTS=(--manifest-path live-tests/Cargo.toml)
-
-run_task "container-test (zcashd)" makers container-test \
-    "${ITESTS[@]}" \
-    -E "binary(wallet_to_validator) & test(=zcashd::connect_to_node_get_info)"
-
-run_task "container-test (zebrad)" makers container-test \
-    "${ITESTS[@]}" \
-    -E "binary(wallet_to_validator) & \
-test(=zebrad::state_service::connect_to_node_get_info)"
-
-run_task "container-test (lightwallet)" makers container-test \
-    "${ITESTS[@]}" \
-    -E "binary(state_service) & test(=zebra::lightwallet_indexer::get_block)"
-
-run_task "container-test (wallet-to-validator)" makers container-test \
-    "${ITESTS[@]}" \
-    -E "binary(wallet_to_validator) & test(=zcashd::sent_to::transparent)"
-
-if command -v jq &>/dev/null && command -v yq &>/dev/null; then
-    run_task "validate-test-targets" makers validate-test-targets
-else
-    skip_task "validate-test-targets" "jq or yq not installed"
-fi
+# === Tier 3: Production test run ===
+# The packages/* set (root default-members, no validator). The live partitions
+# run on the ztest k8s harness and are exercised by `makers test live`, not
+# here — they need a cluster, which this idempotent local check does not assume.
+run_task "test packages" makers test packages
 
 # === Tier 4: Destructive/CI-only (skip) ===
 
 skip_task "push-image" "pushes to registry"
-skip_task "update-test-targets" "modifies CI workflow files"
-skip_task "validate-makefile-tasks" "redundant with this task"
-skip_task "container-test-save-failures" "requires full test run"
-skip_task "container-test-retry-failures" "requires prior save-failures"

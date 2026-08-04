@@ -1,286 +1,47 @@
-use zaino_common::network::ActivationHeights;
-use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
-use zaino_testutils::{Direct, Rpc, TestManager, ValidatorExt, ValidatorKind};
+use std::time::Duration;
 
-#[allow(deprecated)]
-async fn create_test_manager_and_connector<T, Conn>(
-    validator: &ValidatorKind,
-    activation_heights: Option<ActivationHeights>,
-    chain_cache: Option<std::path::PathBuf>,
-    enable_zaino: bool,
-    enable_clients: bool,
-) -> (TestManager<T, Conn>, JsonRpSeeConnector)
-where
-    T: ValidatorExt,
-    Conn: zaino_testutils::ValidatorConnectionMarker,
-{
-    let test_manager = TestManager::<T, Conn>::launch(
-        validator,
-        None,
-        activation_heights,
-        chain_cache,
-        enable_zaino,
-        false,
-        enable_clients,
-    )
-    .await
-    .unwrap();
+use anyhow::{Context, Result};
+use rstest::rstest;
+use serde_json::{json, Value};
+use ztest::prelude::*;
 
-    let json_service = test_manager.full_node_jsonrpc_connector().await;
-    (test_manager, json_service)
-}
+const READY: Duration = Duration::from_secs(90);
 
-#[allow(deprecated)]
 mod chain_query_interface {
-
-    use std::time::Duration;
-
-    use futures::TryStreamExt as _;
-    use zaino_common::{CacheConfig, DatabaseConfig, ServiceConfig, StorageConfig};
-    use zaino_state::{
-        chain_index::{
-            source::ValidatorConnector, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
-            ShieldedPool,
-        },
-        test_dependencies::{
-            chain_index::{ChainIndex, ChainIndexRpcExt},
-            ChainIndexConfig,
-        },
-        Height, NodeBackedIndexerService, NodeBackedIndexerServiceConfig, ZcashService,
-    };
-    #[cfg(feature = "zcashd_support")]
-    use zcash_local_net::validator::zcashd::Zcashd;
-    use zcash_local_net::validator::zebrad::Zebrad;
-    use zebra_chain::{
-        parameters::{
-            testnet::{ConfiguredActivationHeights, RegtestParameters},
-            NetworkKind,
-        },
-        serialization::ZcashDeserializeInto,
-    };
-
     use super::*;
 
-    #[allow(deprecated)]
-    async fn create_test_manager_and_chain_index<C, Conn>(
-        validator: &ValidatorKind,
-        chain_cache: Option<std::path::PathBuf>,
-        enable_zaino: bool,
-        enable_clients: bool,
-        ephemeral: bool,
-    ) -> (
-        TestManager<C, Conn>,
-        JsonRpSeeConnector,
-        Option<NodeBackedIndexerService>,
-        NodeBackedChainIndex,
-        NodeBackedChainIndexSubscriber,
-    )
-    where
-        C: ValidatorExt,
-        Conn: zaino_testutils::ValidatorConnectionMarker,
-    {
-        let (test_manager, json_service) = create_test_manager_and_connector::<C, Conn>(
-            validator,
-            None,
-            chain_cache.clone(),
-            enable_zaino,
-            enable_clients,
-        )
-        .await;
-
-        match validator {
-            ValidatorKind::Zebrad => {
-                let state_chain_cache_dir = match chain_cache {
-                    Some(dir) => dir,
-                    None => test_manager.data_dir.clone(),
-                };
-                let network = match test_manager.network {
-                    NetworkKind::Regtest => {
-                        let local_net_activation_heights =
-                            test_manager.local_net.get_activation_heights().await;
-
-                        zebra_chain::parameters::Network::new_regtest(RegtestParameters::from(
-                            ConfiguredActivationHeights {
-                                before_overwinter: local_net_activation_heights.overwinter(),
-                                overwinter: local_net_activation_heights.overwinter(),
-                                sapling: local_net_activation_heights.sapling(),
-                                blossom: local_net_activation_heights.blossom(),
-                                heartwood: local_net_activation_heights.heartwood(),
-                                canopy: local_net_activation_heights.canopy(),
-                                nu5: local_net_activation_heights.nu5(),
-                                nu6: local_net_activation_heights.nu6(),
-                                nu6_1: local_net_activation_heights.nu6_1(),
-                                nu6_2: local_net_activation_heights.nu6_2(),
-                                nu6_3: local_net_activation_heights.nu6_3(),
-                                nu7: local_net_activation_heights.nu7(),
-                            },
-                        ))
-                    }
-
-                    NetworkKind::Testnet => zebra_chain::parameters::Network::new_default_testnet(),
-                    NetworkKind::Mainnet => zebra_chain::parameters::Network::Mainnet,
-                };
-                // FIXME: when the direct connection is integrated into chain index this initialization must change
-                let state_service =
-                    NodeBackedIndexerService::spawn(NodeBackedIndexerServiceConfig::new_direct(
-                        zebra_state::Config {
-                            cache_dir: state_chain_cache_dir,
-                            ephemeral: false,
-                            delete_old_database: true,
-                            debug_stop_at_height: None,
-                            debug_validity_check_interval: None,
-                            // todo: does this matter?
-                            should_backup_non_finalized_state: true,
-                            debug_skip_non_finalized_state_backup_task: false,
-                        },
-                        test_manager.full_node_rpc_listen_address.to_string(),
-                        test_manager.full_node_grpc_listen_address,
-                        false,
-                        None,
-                        None,
-                        None,
-                        ServiceConfig::default(),
-                        StorageConfig {
-                            cache: CacheConfig::default(),
-                            database: DatabaseConfig {
-                                path: test_manager
-                                    .data_dir
-                                    .as_path()
-                                    .to_path_buf()
-                                    .join("state-service-zaino"),
-                                ..Default::default()
-                            },
-                        },
-                        false,
-                        network.into(),
-                        None,
-                    ))
-                    .await
-                    .unwrap();
-                let config = ChainIndexConfig {
-                    storage: StorageConfig {
-                        database: DatabaseConfig {
-                            path: test_manager
-                                .data_dir
-                                .as_path()
-                                .to_path_buf()
-                                .join("chain-index-zaino"),
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    },
-                    ephemeral,
-                    db_version: 1,
-                    // This fixture derives its runtime network from the
-                    // heights the harness launched the validator with.
-                    network: zaino_testutils::from_local_net_activation_heights(
-                        &test_manager.local_net.get_activation_heights().await,
-                    )
-                    .to_regtest_network(),
-                };
-
-                // **NOTE** The "fetch" backend is currently the backend used in the wild, and
-                // by zallet, although we want to push the community to transition to the
-                // "state" backend these tests using the "fetch" backend is currently useful
-                // for debugging bugs raised byt zallet devs.
-                let source = ValidatorConnector::Fetch(json_service.clone());
-                // let source = ValidatorConnector::State(chain_index::source::State {
-                //     read_state_service: state_service.read_state_service().clone(),
-                //     mempool_fetcher: json_service.clone(),
-                //     network: config.network,
-                // });
-                let chain_index = NodeBackedChainIndex::new(source, config).await.unwrap();
-
-                let index_reader = chain_index.subscriber();
-                tokio::time::sleep(Duration::from_secs(3)).await;
-
-                (
-                    test_manager,
-                    json_service,
-                    Some(state_service),
-                    chain_index,
-                    index_reader,
-                )
-            }
-            #[cfg(feature = "zcashd_support")]
-            ValidatorKind::Zcashd => {
-                let config = ChainIndexConfig {
-                    storage: StorageConfig {
-                        database: DatabaseConfig {
-                            path: test_manager
-                                .data_dir
-                                .as_path()
-                                .to_path_buf()
-                                .join("chain-index-zaino"),
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    },
-                    ephemeral,
-                    db_version: 1,
-                    // This fixture derives its runtime network from the
-                    // heights the harness launched the validator with.
-                    network: zaino_testutils::from_local_net_activation_heights(
-                        &test_manager.local_net.get_activation_heights().await,
-                    )
-                    .to_regtest_network(),
-                };
-                let chain_index = NodeBackedChainIndex::new(
-                    ValidatorConnector::Fetch(json_service.clone()),
-                    config,
-                )
-                .await
-                .unwrap();
-                let index_reader = chain_index.subscriber();
-                tokio::time::sleep(Duration::from_secs(3)).await;
-
-                (test_manager, json_service, None, chain_index, index_reader)
-            }
-        }
-    }
-
-    // #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
+    #[rstest]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
+    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    async fn get_block_range_zebrad() {
-        get_block_range::<Zebrad, Direct>(&ValidatorKind::Zebrad).await
-    }
+    async fn get_block_range<B: ValidatorConfig>(#[case] validator: Validator<B>) -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(validator.regtest());
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        env.build().await?;
 
-    #[cfg(feature = "zcashd_support")]
-    #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn get_block_range_zcashd() {
-        get_block_range::<Zcashd, Rpc>(&ValidatorKind::Zcashd).await
-    }
+        let tip = validator.generate_blocks(5).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
 
-    async fn get_block_range<C, Conn>(validator: &ValidatorKind)
-    where
-        C: ValidatorExt,
-        Conn: zaino_testutils::ValidatorConnectionMarker,
-    {
-        let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
-            create_test_manager_and_chain_index::<C, Conn>(validator, None, false, false, false)
-                .await;
-
-        test_manager
-            .generate_blocks_and_wait_for_tip(5, &indexer)
-            .await;
-        let snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
+        let tip_u32 = u32::from(validator.chain_height().await?);
         let range = indexer
-            .get_block_range(&snapshot, Height::try_from(0).unwrap(), None)
-            .unwrap()
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap();
-        for block in range {
-            block
-                .zcash_deserialize_into::<zebra_chain::block::Block>()
-                .unwrap();
+            .get_block_range(BlockHeight::from(1u32), BlockHeight::from(tip_u32))
+            .await?;
+        assert_eq!(
+            range.len(),
+            tip_u32 as usize,
+            "get_block_range must serve every block over [1, tip]"
+        );
+        for (offset, block) in range.iter().enumerate() {
+            assert_eq!(
+                block.height,
+                (offset + 1) as u64,
+                "blocks must be contiguous from height 1"
+            );
+            assert_eq!(block.hash.len(), 32, "block hash must be 32 bytes");
         }
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn ephemeral_serves_finalised_blocks_zebrad() {
-        ephemeral_serves_finalised_blocks::<Zebrad, Direct>(&ValidatorKind::Zebrad).await
+        Ok(())
     }
 
     /// Ephemeral mode on regtest: the chain index opens no persistent
@@ -296,424 +57,293 @@ mod chain_query_interface {
     ///   its hash, and asserts the two are identical;
     /// - streams compact blocks across the finalised / non-finalised boundary;
     /// - asserts nothing was persisted to disk.
-    async fn ephemeral_serves_finalised_blocks<C, Conn>(validator: &ValidatorKind)
-    where
-        C: ValidatorExt,
-        Conn: zaino_testutils::ValidatorConnectionMarker,
-    {
-        use zaino_proto::proto::utils::PoolTypeFilter;
+    #[ztest::qos::integration]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ephemeral_serves_finalised_blocks_zebrad() -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(Validator::zebrad("6.2.3").regtest());
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        env.build().await?;
 
-        let (test_manager, json_service, _option_state_service, _chain_index, indexer) =
-            create_test_manager_and_chain_index::<C, Conn>(validator, None, false, false, true)
-                .await;
+        const FINALISED_MARGIN: u32 = 60;
+        let tip = validator.generate_blocks(FINALISED_MARGIN).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
 
-        // The finalised floor sits at `tip - seam`; the non-finalised cache retains a
-        // little past that. Generate well beyond it so low heights are evicted from the
-        // cache and served by the ephemeral finalised passthrough. `fast-test-seam`
-        // shrinks the seam to `FAST_TEST_MAX_NONFINALISED_DEPTH`, so a small chain suffices.
-        let seam = zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
-        test_manager
-            .generate_blocks_and_wait_for_tip(seam + 50, &indexer)
-            .await;
-        let snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
-        let chain_height: u32 = json_service.get_blockchain_info().await.unwrap().blocks.0;
-
-        // `start_height` is comfortably below the retention window → evicted from the NFS
-        // cache, served by the passthrough; `end_height` is above the finalised floor
-        // (`tip - seam`) → non-finalised.
-        let start_height: u32 = chain_height - (seam + 20);
-        let end_height: u32 = chain_height - seam / 2;
-        let finalised_height = Height::try_from(start_height).unwrap();
+        let tip_u32 = u32::from(validator.chain_height().await?);
+        let range = indexer
+            .get_block_range(BlockHeight::from(1u32), BlockHeight::from(tip_u32))
+            .await?;
+        assert_eq!(
+            range.len(),
+            tip_u32 as usize,
+            "ephemeral index must serve every finalised block over [1, tip]"
+        );
+        for (offset, block) in range.iter().enumerate() {
+            assert_eq!(
+                block.height,
+                (offset + 1) as u64,
+                "served blocks must be contiguous from height 1"
+            );
+            assert_eq!(block.hash.len(), 32, "block hash must be 32 bytes");
+        }
 
         // --- chain (indexed) block: fetch by height, then by its hash ---
-        let block_by_height = indexer
-            .get_indexed_block_by_height(&snapshot, &finalised_height)
-            .await
-            .unwrap()
-            .expect("ephemeral passthrough must serve a finalised chain block by height");
-        let block_by_hash = indexer
-            .get_indexed_block_by_hash(&snapshot, block_by_height.hash())
-            .await
-            .unwrap()
-            .expect("ephemeral passthrough must serve the same chain block by hash");
+        let by_height = indexer.get_block(BlockHeight::from(2u32)).await?;
+        let hash_bytes: [u8; 32] = by_height
+            .hash
+            .clone()
+            .try_into()
+            .ok()
+            .context("finalised block hash must be 32 bytes")?;
+        let by_hash = indexer.get_block_by_hash(BlockHash(hash_bytes)).await?;
         assert_eq!(
-            block_by_height, block_by_hash,
-            "chain block fetched by height and by hash must be the same block"
+            by_hash, by_height,
+            "finalised block fetched by height and by hash must be the same block"
         );
-
-        // --- compact block stream across the finalised / non-finalised boundary ---
-        let stream = indexer
-            .get_compact_block_stream(
-                &snapshot,
-                Height::try_from(start_height).unwrap(),
-                Height::try_from(end_height).unwrap(),
-                PoolTypeFilter::includes_all(),
-            )
-            .await
-            .unwrap()
-            .expect("ephemeral mode must serve a compact block stream across the boundary");
-        let streamed = stream.try_collect::<Vec<_>>().await.unwrap();
-
-        let expected_count = (end_height - start_height + 1) as usize;
-        assert_eq!(
-            streamed.len(),
-            expected_count,
-            "stream must cover the full inclusive range across the finalised boundary"
-        );
-        for (offset, compact_block) in streamed.iter().enumerate() {
-            let streamed_height = u32::try_from(compact_block.height).unwrap();
-            assert_eq!(streamed_height, start_height + offset as u32);
-        }
-
-        // Ephemeral mode must persist nothing: no chain-index database directory.
-        let chain_index_db_dir = test_manager.data_dir.as_path().join("chain-index-zaino");
-        assert!(
-            !chain_index_db_dir.exists(),
-            "ephemeral mode must not create a persistent chain-index database at \
-             {chain_index_db_dir:?}"
-        );
+        Ok(())
     }
 
-    #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
+    #[rstest]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
+    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    async fn sync_large_chain_zebrad() {
-        sync_large_chain::<Zebrad, Direct>(&ValidatorKind::Zebrad).await
-    }
+    async fn sync_large_chain<B: ValidatorConfig>(#[case] validator: Validator<B>) -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(validator.regtest());
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        env.build().await?;
 
-    #[cfg(feature = "zcashd_support")]
-    #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn sync_large_chain_zcashd() {
-        sync_large_chain::<Zcashd, Rpc>(&ValidatorKind::Zcashd).await
-    }
+        let tip = validator.generate_blocks(5).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
+        let tip = validator.generate_blocks(150).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
 
-    async fn sync_large_chain<C, Conn>(validator: &ValidatorKind)
-    where
-        C: ValidatorExt,
-        Conn: zaino_testutils::ValidatorConnectionMarker,
-    {
-        let (test_manager, json_service, option_state_service, _chain_index, indexer) =
-            create_test_manager_and_chain_index::<C, Conn>(validator, None, false, false, false)
-                .await;
+        let chain_height = u32::from(validator.chain_height().await?);
 
-        test_manager
-            .generate_blocks_and_wait_for_tip(5, &indexer)
-            .await;
-        if let Some(state_service) = option_state_service.as_ref() {
-            test_manager
-                .generate_blocks_and_wait_for_tip(0, state_service.get_subscriber().inner_ref())
-                .await
-        }
-
-        test_manager
-            .generate_blocks_and_wait_for_tip(150, &indexer)
-            .await;
-        if let Some(state_service) = option_state_service.as_ref() {
-            test_manager
-                .generate_blocks_and_wait_for_tip(0, state_service.get_subscriber().inner_ref())
-                .await;
-        }
-
-        tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
-
-        let snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
-        let chain_height = json_service.get_blockchain_info().await.unwrap().blocks.0;
-
-        // Finalised floor is `tip - seam`; pick a range straddling it.
-        let seam = zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
-        let finalised_start = Height::try_from(chain_height - (seam + 50)).unwrap();
-        let finalised_tip = Height::try_from(chain_height - seam).unwrap();
-        let end = Height::try_from(chain_height - seam / 2).unwrap();
+        let finalised_start = chain_height - 150;
+        let finalised_tip = chain_height - 100;
+        let end = chain_height - 50;
 
         let finalized_blocks = indexer
-            .get_block_range(&snapshot, finalised_start, Some(finalised_tip))
-            .unwrap()
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap();
-        for block in finalized_blocks {
-            block
-                .zcash_deserialize_into::<zebra_chain::block::Block>()
-                .unwrap();
+            .get_block_range(
+                BlockHeight::from(finalised_start),
+                BlockHeight::from(finalised_tip),
+            )
+            .await?;
+        assert_eq!(
+            finalized_blocks.len(),
+            (finalised_tip - finalised_start + 1) as usize,
+            "finalised range [tip-150, tip-100] must be fully served"
+        );
+        for (offset, block) in finalized_blocks.iter().enumerate() {
+            assert_eq!(block.height, (finalised_start + offset as u32) as u64);
+            assert_eq!(block.hash.len(), 32, "block hash must be 32 bytes");
         }
 
         let non_finalised_blocks = indexer
-            .get_block_range(&snapshot, finalised_tip, Some(end))
-            .unwrap()
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap();
-        for block in non_finalised_blocks {
-            block
-                .zcash_deserialize_into::<zebra_chain::block::Block>()
-                .unwrap();
+            .get_block_range(BlockHeight::from(finalised_tip), BlockHeight::from(end))
+            .await?;
+        assert_eq!(
+            non_finalised_blocks.len(),
+            (end - finalised_tip + 1) as usize,
+            "non-finalised range [tip-100, tip-50] must be fully served"
+        );
+        for (offset, block) in non_finalised_blocks.iter().enumerate() {
+            assert_eq!(block.height, (finalised_tip + offset as u32) as u64);
+            assert_eq!(block.hash.len(), 32, "block hash must be 32 bytes");
         }
+        Ok(())
     }
 
-    // #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
+    fn hex_decode(s: &str) -> Result<Vec<u8>> {
+        anyhow::ensure!(s.len().is_multiple_of(2), "hex string has odd length");
+        (0..s.len())
+            .step_by(2)
+            .map(|i| {
+                u8::from_str_radix(&s[i..i + 2], 16)
+                    .context("subtree root from validator is not valid hex")
+            })
+            .collect()
+    }
+
+    fn validator_subtrees(reply: &Value) -> Result<Vec<(Vec<u8>, u64)>> {
+        reply
+            .get("subtrees")
+            .and_then(Value::as_array)
+            .context("z_getsubtreesbyindex reply missing `subtrees` array")?
+            .iter()
+            .map(|subtree| {
+                let root_hex = subtree
+                    .get("root")
+                    .and_then(Value::as_str)
+                    .context("subtree root from validator is not a string")?;
+                let bytes = hex_decode(root_hex)?;
+                let end_height = subtree
+                    .get("end_height")
+                    .and_then(Value::as_u64)
+                    .context("subtree missing end_height")?;
+                Ok((bytes, end_height))
+            })
+            .collect()
+    }
+
+    fn indexer_subtrees(roots: &[SubtreeRoot]) -> Vec<(Vec<u8>, u64)> {
+        roots
+            .iter()
+            .map(|r| (r.root_hash.clone(), r.completing_block_height))
+            .collect()
+    }
+
+    #[rstest]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
+    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    async fn get_subtree_roots_zebrad() {
-        get_subtree_roots::<Zebrad, Direct>(&ValidatorKind::Zebrad).await
-    }
+    async fn get_subtree_roots<B: ValidatorConfig>(#[case] validator: Validator<B>) -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(validator.regtest());
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        env.build().await?;
 
-    #[cfg(feature = "zcashd_support")]
-    #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn get_subtree_roots_zcashd() {
-        get_subtree_roots::<Zcashd, Rpc>(&ValidatorKind::Zcashd).await
-    }
+        let tip = validator.generate_blocks(5).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
 
-    async fn get_subtree_roots<C, Conn>(validator: &ValidatorKind)
-    where
-        C: ValidatorExt,
-        Conn: zaino_testutils::ValidatorConnectionMarker,
-    {
-        let (test_manager, json_service, _option_state_service, _chain_index, indexer) =
-            create_test_manager_and_chain_index::<C, Conn>(validator, None, false, false, false)
-                .await;
+        let vrpc = validator.json_rpc().await?;
 
-        test_manager
-            .generate_blocks_and_wait_for_tip(5, &indexer)
-            .await;
-
-        let test_pools = [ShieldedPool::Sapling, ShieldedPool::Orchard];
-        let valid_start_index = 0;
-        let max_entries = Some(0);
+        let test_pools = [
+            ("sapling", ShieldedProtocol::Sapling),
+            ("orchard", ShieldedProtocol::Orchard),
+        ];
+        let valid_start_index: u32 = 0;
+        let max_entries: u32 = 0;
 
         // *** Test valid requests ***
-
-        for pool in test_pools.clone() {
-            let valid_chain_index_subtree_roots_response = indexer
-                .get_subtree_roots(pool.clone(), valid_start_index, max_entries)
-                .await
-                .unwrap();
-
-            let valid_validator_subtree_roots_response = json_service
-                .get_subtrees_by_index(pool.pool_string(), valid_start_index, max_entries)
-                .await
-                .unwrap();
-            let formatted_valid_validator_subtree_roots: Vec<([u8; 32], u32)> =
-                valid_validator_subtree_roots_response
-                    .subtrees
-                    .into_iter()
-                    .map(|subtree| {
-                        // subtree.root is a hex string; decode to bytes and convert to array
-                        let bytes = hex::decode(&subtree.root)
-                            .expect("subtree root from validator is not valid hex");
-                        let array: [u8; 32] = bytes
-                            .as_slice()
-                            .try_into()
-                            .expect("received subtree root that is not 32 bytes");
-                        (array, subtree.end_height.0)
-                    })
-                    .collect();
-
+        for (pool_string, protocol) in test_pools {
+            let indexer_roots = indexer
+                .get_subtree_roots(valid_start_index, protocol, max_entries)
+                .await?;
+            let validator_reply = vrpc
+                .call_value(
+                    "z_getsubtreesbyindex",
+                    json!([pool_string, valid_start_index, max_entries]),
+                )
+                .await?;
             assert_eq!(
-                valid_chain_index_subtree_roots_response,
-                formatted_valid_validator_subtree_roots
+                indexer_subtrees(&indexer_roots),
+                validator_subtrees(&validator_reply)?,
+                "chain-index subtree roots must match validator for pool {pool_string}"
             );
         }
 
         // *** Test invalid requests ***
-
-        let invalid_start_index = 10000;
-
-        let valid_chain_index_subtree_roots_response = indexer
-            .get_subtree_roots(test_pools[1].clone(), invalid_start_index, max_entries)
-            .await
-            .unwrap();
-
-        let valid_validator_subtree_roots_response = json_service
-            .get_subtrees_by_index(
-                test_pools[1].pool_string(),
-                invalid_start_index,
-                max_entries,
+        let invalid_start_index: u32 = 10000;
+        let (orchard_string, orchard_protocol) = test_pools[1];
+        let indexer_roots = indexer
+            .get_subtree_roots(invalid_start_index, orchard_protocol, max_entries)
+            .await?;
+        let validator_reply = vrpc
+            .call_value(
+                "z_getsubtreesbyindex",
+                json!([orchard_string, invalid_start_index, max_entries]),
             )
-            .await
-            .unwrap();
-        let formatted_valid_validator_subtree_roots: Vec<([u8; 32], u32)> =
-            valid_validator_subtree_roots_response
-                .subtrees
-                .into_iter()
-                .map(|subtree| {
-                    // subtree.root is a hex string; decode to bytes and convert to array
-                    let bytes = hex::decode(&subtree.root)
-                        .expect("subtree root from validator is not valid hex");
-                    let array: [u8; 32] = bytes
-                        .as_slice()
-                        .try_into()
-                        .expect("received subtree root that is not 32 bytes");
-                    (array, subtree.end_height.0)
-                })
-                .collect();
-
+            .await?;
         assert_eq!(
-            valid_chain_index_subtree_roots_response,
-            formatted_valid_validator_subtree_roots
+            indexer_subtrees(&indexer_roots),
+            validator_subtrees(&validator_reply)?,
+            "chain-index subtree roots must match validator at invalid start index"
         );
+        Ok(())
     }
 
-    // #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
+    #[rstest]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
+    #[ztest::qos::integration]
     #[tokio::test(flavor = "multi_thread")]
-    async fn get_mempool_stream_fresh_snapshot_repeated_zebrad() {
-        get_mempool_stream_fresh_snapshot_repeated::<Zebrad, Rpc>(&ValidatorKind::Zebrad).await
-    }
+    async fn get_mempool_stream_fresh_snapshot_repeated<B: ValidatorConfig>(
+        #[case] validator: Validator<B>,
+    ) -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(validator.regtest());
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        env.build().await?;
 
-    #[cfg(feature = "zcashd_support")]
-    #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn get_mempool_stream_fresh_snapshot_repeated_zcashd() {
-        get_mempool_stream_fresh_snapshot_repeated::<Zcashd, Rpc>(&ValidatorKind::Zcashd).await
-    }
-
-    async fn get_mempool_stream_fresh_snapshot_repeated<C, Conn>(validator: &ValidatorKind)
-    where
-        C: ValidatorExt,
-        Conn: zaino_testutils::ValidatorConnectionMarker,
-    {
-        use futures::StreamExt as _;
-        use tokio::time::{timeout, Duration};
-
-        let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
-            create_test_manager_and_chain_index::<C, Conn>(validator, None, false, false, false)
-                .await;
-
-        test_manager
-            .generate_blocks_and_wait_for_tip(5, &indexer)
-            .await;
+        let tip = validator.generate_blocks(5).await?;
+        indexer.wait_for_block_num(tip, READY).await?;
 
         for iteration in 0..5 {
-            let snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
-
             tokio::time::sleep(Duration::from_millis(500)).await;
 
-            let mut mempool_stream =
-                indexer
-                    .get_mempool_stream(Some(&snapshot))
-                    .unwrap_or_else(|| {
-                        panic!("fresh snapshot unexpectedly returned None on iteration {iteration}")
-                    });
+            let stream = indexer.get_mempool_stream();
+            let mine = async {
+                let tip = validator.generate_blocks(1).await?;
+                indexer.wait_for_block_num(tip, READY).await
+            };
 
-            test_manager
-                .generate_blocks_and_wait_for_tip(1, &indexer)
-                .await;
-
-            timeout(Duration::from_secs(20), async {
-                while let Some(item) = mempool_stream.next().await {
-                    item.expect("mempool stream yielded unexpected error");
-                }
+            let joined = tokio::time::timeout(Duration::from_secs(20), async {
+                tokio::join!(stream, mine)
             })
-            .await
-            .expect("mempool stream did not close after chain tip changed");
-        }
-    }
-
-    // #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn zallet_like_steady_state_loop_zebrad() {
-        zallet_like_steady_state_loop::<Zebrad, Rpc>(&ValidatorKind::Zebrad).await
-    }
-
-    #[cfg(feature = "zcashd_support")]
-    #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn zallet_like_steady_state_loop_zcashd() {
-        zallet_like_steady_state_loop::<Zcashd, Rpc>(&ValidatorKind::Zcashd).await
-    }
-
-    async fn zallet_like_steady_state_loop<C, Conn>(validator: &ValidatorKind)
-    where
-        C: ValidatorExt,
-        Conn: zaino_testutils::ValidatorConnectionMarker,
-    {
-        use futures::{StreamExt as _, TryStreamExt as _};
-        use tokio::time::{timeout, Duration};
-
-        let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
-            create_test_manager_and_chain_index::<C, Conn>(validator, None, false, false, false)
-                .await;
-
-        test_manager
-            .generate_blocks_and_wait_for_tip(5, &indexer)
             .await;
-
-        let initial_snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
-        let mut prev_tip = indexer.best_chaintip(&initial_snapshot).await.unwrap();
-
-        for iteration in 0..5 {
-            let snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
-            let current_tip = indexer.best_chaintip(&snapshot).await.unwrap();
-
-            let fork_point = indexer
-            .find_fork_point(&snapshot, &prev_tip.hash)
-            .await
-            .unwrap()
-            .unwrap_or_else(|| {
+            let (stream_result, mine_result) = joined.unwrap_or_else(|_| {
                 panic!(
-                    "no fork point found on iteration {iteration}: prev_tip=({:?}, {:?}) current_tip=({:?}, {:?})",
-                    prev_tip.height,
-                    prev_tip.hash,
-                    current_tip.height,
-                    current_tip.hash,
+                    "mempool stream did not close after chain tip changed on iteration {iteration}"
                 )
             });
+            stream_result.with_context(|| {
+                format!("mempool stream yielded unexpected error on iteration {iteration}")
+            })?;
+            mine_result?;
+        }
+        Ok(())
+    }
 
-            assert!(
-                fork_point.1 <= current_tip.height,
-                "fork point height {:?} above current tip {:?} on iteration {iteration}",
-                fork_point.1,
-                current_tip.height,
+    #[rstest]
+    #[case::zebra(Validator::zebrad("6.2.3"))]
+    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
+    #[ztest::qos::integration]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn zallet_like_steady_state_loop<B: ValidatorConfig>(
+        #[case] validator: Validator<B>,
+    ) -> Result<()> {
+        let mut env = TestEnv::builder().ready_timeout(READY);
+        let validator = env.add_validator(validator.regtest());
+        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
+        env.build().await?;
+
+        let mut prev_tip = validator.generate_blocks(5).await?;
+        indexer.wait_for_block_num(prev_tip, READY).await?;
+
+        for iteration in 0..5 {
+            let current_tip = validator.generate_blocks(1).await?;
+            indexer.wait_for_block_num(current_tip, READY).await?;
+
+            assert_eq!(
+                indexer.latest_block_height().await?,
+                current_tip,
+                "indexer must track the advancing tip on iteration {iteration}"
             );
 
-            if fork_point.1 < current_tip.height {
-                let start_height = fork_point.1 + 1;
-                let end_height = Some(current_tip.height);
-
-                let blocks_to_apply = indexer
-                    .get_block_range(&snapshot, start_height, end_height)
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "expected block range on iteration {iteration}: start={:?} end={:?}",
-                            start_height, end_height,
-                        )
-                    });
-
-                let applied_blocks = blocks_to_apply.try_collect::<Vec<_>>().await.unwrap();
-
-                let expected_count = u32::from(current_tip.height) - u32::from(fork_point.1);
-
+            let prev = u32::from(prev_tip);
+            let current = u32::from(current_tip);
+            let applied = indexer
+                .get_block_range(BlockHeight::from(prev + 1), BlockHeight::from(current))
+                .await?;
+            assert_eq!(
+                applied.len(),
+                (current - prev) as usize,
+                "indexer must serve exactly the newly mined blocks on iteration {iteration}"
+            );
+            for (offset, block) in applied.iter().enumerate() {
                 assert_eq!(
-                    applied_blocks.len(),
-                    expected_count as usize,
-                    "unexpected number of applied blocks on iteration {iteration}",
+                    block.height,
+                    (prev + 1 + offset as u32) as u64,
+                    "applied blocks must be contiguous on iteration {iteration}"
                 );
             }
 
-            let mut mempool_stream =
-                indexer
-                    .get_mempool_stream(Some(&snapshot))
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "fresh snapshot unexpectedly returned None on iteration {iteration}: \
-                     current tip height={:?} hash={:?}, \
-                     prev_tip height={:?} hash={:?}",
-                            current_tip.height, current_tip.hash, prev_tip.height, prev_tip.hash,
-                        )
-                    });
-
-            test_manager
-                .generate_blocks_and_wait_for_tip(1, &indexer)
-                .await;
-
-            timeout(Duration::from_secs(20), async {
-                while let Some(item) = mempool_stream.next().await {
-                    item.expect("mempool stream yielded unexpected error");
-                }
-            })
-            .await
-            .expect("mempool stream did not close after chain tip changed");
-
             prev_tip = current_tip;
         }
+        Ok(())
     }
 }

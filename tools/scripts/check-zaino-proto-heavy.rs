@@ -63,7 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "[{label}] FAIL: zaino-proto `heavy` is NOT enabled under --no-default-features.\n\
                  A `zaino-proto` dependency likely sets `default-features = false`, which strips\n\
                  `heavy` (zebra-state / zebra-chain / which) from the no-zcashd test build that\n\
-                 `makers container-test` / `live` use. Remove that\n\
+                 `makers test packages` / `test live` use. Remove that\n\
                  `default-features = false`. See docs/adr/0001-zcashd-support-feature-gate.md.\n\
                  --- cargo tree output ---\n{stdout}"
             );

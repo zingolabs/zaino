@@ -16,25 +16,21 @@
 //! heights — and cross-checked against the observed activation on The
 //! Public Testnet at height 4,134,000 (~2026-07-04).
 //!
-//! Non-hermetic and therefore env-gated: the test needs a zebrad chain
-//! cache at `~/.cache/zebra` (`ZEBRAD_THE_PUB_TESTNET_CACHE_DIR`) synced past the
-//! activation height, and skips with a message when the cache is absent or
-//! short. Run it manually, or from a job that maintains the cache.
-//!
-//! The validator is launched through `ZebradConfig` directly rather than
-//! `TestManager`: the manager's launch path always writes regtest test
-//! parameters into the config, while this test needs The Public Testnet
-//! (`network_type: NetworkType::Testnet`, which makes zebrad ignore
-//! `activation_heights` and `miner_address`).
+//! Non-hermetic: the walk needs a validator whose chain is a pre-synced
+//! snapshot of The Public Testnet reaching past the NU6.3 activation height.
+//! Under ztest that snapshot is supplied by a named testnet fixture
+//! (`Validator::zebrad(..).testnet(<variant>)`, paired with a zainod indexer
+//! consuming the same `zebra.tar.xz` archive). No such boundary-crossing
+//! variant exists yet, so this test fails at materialization until one lands
+//! (see the `TODO` on the test body and ztest `fixtures/testnet/README.md`).
 
-use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
-use zaino_fetch::jsonrpsee::response::GetBlockResponse;
-use zaino_testutils::ZEBRAD_THE_PUB_TESTNET_CACHE_DIR;
-use zcash_local_net::process::Process as _;
-use zcash_local_net::protocol::NetworkType;
-use zcash_local_net::validator::zebrad::{Zebrad, ZebradConfig};
-use zcash_local_net::validator::Validator as _;
-use zebra_chain::parameters::NetworkUpgrade;
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use serde_json::{json, Value};
+use ztest::prelude::*;
+
+const READY: Duration = Duration::from_secs(300);
 
 /// The height The Public Testnet activated NU6.3 at, recorded from the real
 /// activation. A mismatch means either a reset of The Public Testnet or a
@@ -43,108 +39,85 @@ const OBSERVED_NU6_3_ACTIVATION_ON_THE_PUB_TESTNET: u32 = 4_134_000;
 
 /// The chain value of `pool_id` as of `height`, from the validator's
 /// verbosity-2 block object.
-async fn pool_zats(connector: &JsonRpSeeConnector, height: u32, pool_id: &str) -> i64 {
-    let response = connector
-        .get_block(height.to_string(), Some(2))
-        .await
-        .expect("getblock verbosity 2");
-    let GetBlockResponse::Object(block) = response else {
-        panic!("verbosity-2 getblock must return a block object");
-    };
-    block
-        .value_pools()
-        .expect("verbosity-2 block object carries value pools")
+async fn pool_zats(rpc: &JsonRpcClient, height: u32, pool_id: &str) -> Result<i64> {
+    let block = rpc
+        .call_value("getblock", json!([height.to_string(), 2]))
+        .await?;
+    let pools = block
+        .get("valuePools")
+        .and_then(Value::as_array)
+        .context("verbosity-2 block object must carry valuePools")?;
+    let pool = pools
         .iter()
-        .map(|pool| pool.balance())
-        .find(|pool| pool.id() == pool_id)
-        .unwrap_or_else(|| panic!("value pools must include {pool_id}"))
-        .chain_value_zat()
-        .zatoshis()
+        .find(|pool| pool.get("id").and_then(Value::as_str) == Some(pool_id))
+        .with_context(|| format!("value pools must include {pool_id}"))?;
+    pool.get("chainValueZat")
+        .and_then(Value::as_i64)
+        .with_context(|| format!("{pool_id}.chainValueZat must be an integer"))
 }
 
-/// multi_thread required: the test launches the validator process and polls
-/// it over RPC.
+/// multi_thread required: the test launches the validator pod and polls it
+/// over RPC.
+#[ztest::qos::testnet]
 #[tokio::test(flavor = "multi_thread")]
-async fn value_pools_respect_the_boundary_on_the_pub_testnet() {
-    let Some(cache_dir) = ZEBRAD_THE_PUB_TESTNET_CACHE_DIR.clone() else {
-        eprintln!("skipping: no cache dir configured for The Public Testnet");
-        return;
-    };
-    if !cache_dir.exists() {
-        eprintln!(
-            "skipping: no zebrad chain cache of The Public Testnet at {}",
-            cache_dir.display()
-        );
-        return;
-    }
+async fn value_pools_respect_the_boundary_on_the_pub_testnet() -> Result<()> {
+    // TODO: needs a ztest testnet fixture variant whose synced chain crosses the
+    // NU6.3/ironwood boundary (height 4,134,000 on The Public Testnet). The only
+    // named variants today ("orchard", synced past NU5; "sapling") stop far below
+    // it, and their archives are not in tree yet, so `env.build()` fails at
+    // materialization until such a fixture lands. See ztest
+    // fixtures/testnet/README.md.
+    let mut env = TestEnv::builder().ready_timeout(READY);
+    let validator = env.add_validator(Validator::zebrad("6.2.3").testnet("orchard"));
+    let _indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").testnet("orchard"));
+    env.build().await?;
 
-    let config = ZebradConfig {
-        network_type: NetworkType::Testnet,
-        chain_cache: Some(cache_dir),
-        ..ZebradConfig::default()
-    };
-    let mut zebrad = Zebrad::launch(config)
-        .await
-        .expect("launch a zebrad on The Public Testnet");
-
-    let rpc_address = format!("127.0.0.1:{}", zebrad.get_port());
-    let connector = JsonRpSeeConnector::new_with_basic_auth(
-        test_node_and_return_url(
-            &rpc_address,
-            None,
-            Some("xxxxxx".to_string()),
-            Some("xxxxxx".to_string()),
-        )
-        .await
-        .expect("validator RPC reachable"),
-        "xxxxxx".to_string(),
-        "xxxxxx".to_string(),
-    )
-    .expect("connect to the validator RPC");
-
-    let blockchain_info = connector
-        .get_blockchain_info()
-        .await
-        .expect("getblockchaininfo");
+    let vrpc = validator.json_rpc().await?;
+    let blockchain_info = vrpc.call_value("getblockchaininfo", json!([])).await?;
 
     // The validator's reported schedule is the source of truth for the
     // boundary; the recorded constant pins the real history of The Public Testnet.
     let boundary = blockchain_info
-        .upgrades
+        .get("upgrades")
+        .and_then(Value::as_object)
+        .context("getblockchaininfo.upgrades")?
         .values()
-        .find_map(|upgrade_info| {
-            let (upgrade, height, _status) = upgrade_info.into_parts();
-            (upgrade == NetworkUpgrade::Nu6_3).then_some(height.0)
+        .find_map(|upgrade| {
+            (upgrade.get("name").and_then(Value::as_str) == Some("NU6.3"))
+                .then(|| upgrade.get("activationheight").and_then(Value::as_u64))
+                .flatten()
         })
-        .expect("the validator on The Public Testnet must report an NU6.3 activation height");
+        .context("the validator on The Public Testnet must report an NU6.3 activation height")?
+        as u32;
     assert_eq!(
         boundary, OBSERVED_NU6_3_ACTIVATION_ON_THE_PUB_TESTNET,
         "the validator's NU6.3 height must match the observed activation on The Public Testnet"
     );
 
-    let tip = blockchain_info.blocks.0;
-    if tip <= boundary {
-        eprintln!(
-            "skipping: cache tip {tip} of The Public Testnet has not crossed the NU6.3 boundary {boundary}"
-        );
-        zebrad.stop();
-        return;
-    }
+    let tip = blockchain_info
+        .get("blocks")
+        .and_then(Value::as_u64)
+        .context("getblockchaininfo.blocks")? as u32;
+    assert!(
+        tip > boundary,
+        "the testnet fixture's tip {tip} has not crossed the NU6.3 boundary {boundary}; \
+         a fixture variant synced past the boundary is required (see the TODO above)"
+    );
 
     // One block below the boundary and at it, plus a block of margin on
     // each side: the Ironwood pool holds no value below the activation
     // height, and the Orchard pool never grows from it.
     for height in (boundary - 2)..boundary {
         assert_eq!(
-            pool_zats(&connector, height, "ironwood").await,
+            pool_zats(&vrpc, height, "ironwood").await?,
             0,
             "the ironwood pool must hold no value at height {height}, below the boundary"
         );
     }
     let walk_end = boundary + 1;
-    let mut previous_orchard = pool_zats(&connector, boundary - 1, "orchard").await;
+    let mut previous_orchard = pool_zats(&vrpc, boundary - 1, "orchard").await?;
     for height in boundary..=walk_end {
-        let orchard = pool_zats(&connector, height, "orchard").await;
+        let orchard = pool_zats(&vrpc, height, "orchard").await?;
         assert!(
             orchard <= previous_orchard,
             "the orchard pool must never grow from the boundary; \
@@ -153,5 +126,5 @@ async fn value_pools_respect_the_boundary_on_the_pub_testnet() {
         previous_orchard = orchard;
     }
 
-    zebrad.stop();
+    Ok(())
 }

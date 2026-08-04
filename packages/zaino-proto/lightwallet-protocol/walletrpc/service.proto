@@ -186,6 +186,7 @@ message TreeState {
 enum ShieldedProtocol {
     sapling = 0;
     orchard = 1;
+    ironwood = 2;
 }
 
 message GetSubtreeRootsArg {

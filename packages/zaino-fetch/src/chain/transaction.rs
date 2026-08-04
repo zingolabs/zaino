@@ -407,6 +407,48 @@ mod tests {
                 "{}",
                 vector.description
             );
+
+            // Ported from the (deleted) live-tests `pre_v4_txs_parsing`: the
+            // standalone ztest workspace links no production crates, so these
+            // parser assertions can only live here.
+            assert_eq!(
+                transaction.tx_id(),
+                vector.txid.to_vec(),
+                "txid round-trip: {}",
+                vector.description
+            );
+            // Sapling spends appear from v4; v1-v3 must have none.
+            if vector.version >= 4 {
+                assert_eq!(
+                    !transaction.shielded_spends().is_empty(),
+                    vector.has_sapling != 0,
+                    "sapling-spend presence: {}",
+                    vector.description
+                );
+            } else {
+                assert!(
+                    transaction.shielded_spends().is_empty(),
+                    "v{} must have no sapling spends: {}",
+                    vector.version,
+                    vector.description
+                );
+            }
+            // Orchard actions appear from v5; v1-v4 must have none.
+            if vector.version >= 5 {
+                assert_eq!(
+                    !transaction.orchard_actions().is_empty(),
+                    vector.has_orchard != 0,
+                    "orchard-action presence: {}",
+                    vector.description
+                );
+            } else {
+                assert!(
+                    transaction.orchard_actions().is_empty(),
+                    "v{} must have no orchard actions: {}",
+                    vector.version,
+                    vector.description
+                );
+            }
         }
 
         Ok(())
