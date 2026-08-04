@@ -8,6 +8,25 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.4.1] - 2026-08-04
+
+### Changed
+- Internal DRY refactor with no public API or behavior change: the connector,
+  response, and chain layers were deduplicated; the infallible `ResponseToError`
+  set is now macro-implemented; and one shared serde round-trip test helper is
+  reused across the test suites.
+### Deprecated
+### Removed
+### Fixed
+
+## [0.4.0] - 2026-07-13
+
+### Added
 - Ironwood (NU6.3) / V6 transaction support: ironwood value balances are
   read from parsed transactions, and compact-block construction populates
   `CompactTx.ironwoodActions` and the block's `ironwoodCommitmentTreeSize`.
@@ -19,6 +38,12 @@ and this library adheres to Rust's notion of
 ### Deprecated
 ### Removed
 ### Fixed
+
+## [0.3.0] - 2026-07-02
+
+### Changed
+- Version-alignment bump for the 0.5.0 workspace release; no changes to this
+  crate's own public API or behavior.
 
 ## [0.2.0] - 2026-06-17
 

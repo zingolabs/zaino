@@ -9,11 +9,35 @@ and this library adheres to Rust's notion of
 
 ### Added
 ### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.5.1] - 2026-08-04
+
+### Changed
+- Internal DRY refactor with no public API or behavior change: JSON-RPC
+  error-object construction is deduplicated, and the error-source walk is
+  expressed as an `unfold`.
+### Deprecated
+### Removed
+### Fixed
+
+## [0.5.0] - 2026-07-13
+
+### Added
+### Changed
 - tonic's TLS provider feature switches from `tls-ring` to `tls-aws-lc`,
   following the workspace's aws-lc-rs preferred CryptoProvider (ADR-0006).
 ### Deprecated
 ### Removed
 ### Fixed
+
+## [0.4.0] - 2026-07-02
+
+### Changed
+- Version-alignment bump for the 0.5.0 workspace release; no changes to this
+  crate's own public API or behavior.
 
 ## [0.3.0] - 2026-06-17
 

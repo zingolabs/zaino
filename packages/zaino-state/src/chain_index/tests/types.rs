@@ -27,7 +27,15 @@ pub(crate) fn canonical_blockheaderdata() -> BlockHeaderData {
     let bits = CompactDifficulty::try_from_bits(TEST_VALID_NBITS).expect("valid nBits");
 
     let bctx = BlockContext::new(hash, parent_hash, chainwork, height);
-    let bdata = BlockData::new(1, 2, [3u8; 32], [4u8; 32], bits, [5u8; 32], solution);
+    let bdata = BlockData {
+        version: 1,
+        time: 2,
+        merkle_root: [3u8; 32],
+        block_commitments: [4u8; 32],
+        bits,
+        nonce: [5u8; 32],
+        solution,
+    };
     BlockHeaderData::new(bctx, bdata)
 }
 

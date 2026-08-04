@@ -153,19 +153,29 @@ impl<K: Eq + Hash + Clone, V: Clone> Default for Broadcast<K, V> {
     }
 }
 
+/// Formats either side of the broadcast pair: the shared dashmap contents plus a
+/// placeholder naming the watch-channel endpoint (the channel itself is not `Debug`-useful).
+fn fmt_broadcast_state<K: Eq + Hash + Clone + std::fmt::Debug, V: Clone + std::fmt::Debug>(
+    struct_name: &str,
+    state: &DashMap<K, V>,
+    notifier_placeholder: &str,
+    f: &mut std::fmt::Formatter<'_>,
+) -> std::fmt::Result {
+    let state_contents: Vec<_> = state
+        .iter()
+        .map(|entry| (entry.key().clone(), entry.value().clone()))
+        .collect();
+    f.debug_struct(struct_name)
+        .field("state", &state_contents)
+        .field("notifier", &notifier_placeholder)
+        .finish()
+}
+
 impl<K: Eq + Hash + Clone + std::fmt::Debug, V: Clone + std::fmt::Debug> std::fmt::Debug
     for Broadcast<K, V>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let state_contents: Vec<_> = self
-            .state
-            .iter()
-            .map(|entry| (entry.key().clone(), entry.value().clone()))
-            .collect();
-        f.debug_struct("Broadcast")
-            .field("state", &state_contents)
-            .field("notifier", &"watch::Sender<StatusType>")
-            .finish()
+        fmt_broadcast_state("Broadcast", &self.state, "watch::Sender<StatusType>", f)
     }
 }
 
@@ -236,14 +246,11 @@ impl<K: Eq + Hash + Clone + std::fmt::Debug, V: Clone + std::fmt::Debug> std::fm
     for BroadcastSubscriber<K, V>
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let state_contents: Vec<_> = self
-            .state
-            .iter()
-            .map(|entry| (entry.key().clone(), entry.value().clone()))
-            .collect();
-        f.debug_struct("Broadcast")
-            .field("state", &state_contents)
-            .field("notifier", &"watch::Sender<StatusType>")
-            .finish()
+        fmt_broadcast_state(
+            "BroadcastSubscriber",
+            &self.state,
+            "watch::Receiver<StatusType>",
+            f,
+        )
     }
 }

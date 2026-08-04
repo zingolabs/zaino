@@ -3,14 +3,11 @@
 //! Although the current threat model assumes that `zaino` connects to a trusted validator,
 //! the `getpeerinfo` RPC performs some light validation.
 
-use std::convert::Infallible;
-
 #[cfg(feature = "zcashd_support")]
 use serde::Serializer;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
-use crate::jsonrpsee::connector::ResponseToError;
 #[cfg(feature = "zcashd_support")]
 use crate::jsonrpsee::response::common::{
     BlockHeight, Bytes, MaybeHeight, NodeId, ProtocolVersion, SecondsF64, TimeOffsetSeconds,
@@ -145,9 +142,7 @@ impl<'de> Deserialize<'de> for GetPeerInfo {
     }
 }
 
-impl ResponseToError for GetPeerInfo {
-    type RpcError = Infallible;
-}
+crate::jsonrpsee::response::impl_infallible_response_to_error!(GetPeerInfo);
 
 /// Bitflags for the peer's advertised services (backed by a u64).
 /// Serialized as a zero-padded 16-digit lowercase hex string.

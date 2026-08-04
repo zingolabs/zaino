@@ -124,29 +124,6 @@ pub struct BlockMetadata {
     pub network: zebra_chain::parameters::Network,
 }
 
-impl BlockMetadata {
-    /// Create new block metadata
-    pub fn new(
-        sapling_root: zebra_chain::sapling::tree::Root,
-        sapling_size: u32,
-        orchard_root: zebra_chain::orchard::tree::Root,
-        orchard_size: u32,
-        ironwood: Option<(zebra_chain::orchard::tree::Root, u32)>,
-        parent_chainwork: Option<ChainWork>,
-        network: zebra_chain::parameters::Network,
-    ) -> Self {
-        Self {
-            sapling_root,
-            sapling_size,
-            orchard_root,
-            orchard_size,
-            ironwood,
-            parent_chainwork,
-            network,
-        }
-    }
-}
-
 /// Intermediate type combining a block with its metadata
 #[derive(Debug, Clone)]
 pub struct BlockWithMetadata<'a> {
@@ -402,15 +379,15 @@ mod create_commitment_tree_data {
     fn absent_ironwood_root_is_stored_as_none() {
         let (sapling_root, sapling_size, orchard_root, orchard_size, ironwood) =
             TreeRootData::new(None, None, None).extract_with_defaults();
-        let metadata = BlockMetadata::new(
+        let metadata = BlockMetadata {
             sapling_root,
-            sapling_size as u32,
+            sapling_size: sapling_size as u32,
             orchard_root,
-            orchard_size as u32,
-            ironwood.map(|(root, size)| (root, size as u32)),
-            None,
-            zebra_chain::parameters::Network::Mainnet,
-        );
+            orchard_size: orchard_size as u32,
+            ironwood: ironwood.map(|(root, size)| (root, size as u32)),
+            parent_chainwork: None,
+            network: zebra_chain::parameters::Network::Mainnet,
+        };
 
         let commitment_tree_data = metadata.create_commitment_tree_data();
 

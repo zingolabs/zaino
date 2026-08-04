@@ -13,3 +13,7 @@ publish = false
 # Crate-wide: forbid unsafe across the lib and every binary in one place.
 [lints.rust]
 unsafe_code = "forbid"
+
+[dependencies]
+dupes-core = "=0.2.1"
+dupes-rust = "=0.2.1"

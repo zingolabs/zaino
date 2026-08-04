@@ -32,7 +32,7 @@ use crate::{
 };
 use crate::{BlockMetadata, BlockWithMetadata, NamedAtomicStatus};
 
-use zaino_proto::proto::utils::{compact_block_with_pool_types, PoolTypeFilter};
+use zaino_proto::proto::utils::{prune_compact_block, PoolTypeFilter};
 
 const EPHEMERAL_FINALISED_STATE_STATUS_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -301,15 +301,16 @@ impl<T: BlockchainSource> EphemeralFinalisedState<T> {
                 format!("block at height {height}")
             })?;
 
-        let block_metadata = BlockMetadata::new(
+        let block_metadata = BlockMetadata {
             sapling_root,
             sapling_size,
             orchard_root,
             orchard_size,
             ironwood,
-            None, // ephemeral store does not track chainwork
-            self.network.clone(),
-        );
+            // ephemeral store does not track chainwork
+            parent_chainwork: None,
+            network: self.network.clone(),
+        };
         let block_with_metadata = BlockWithMetadata::new(block.as_ref(), block_metadata);
         let indexed_block = IndexedBlock::try_from(block_with_metadata).map_err(|error| {
             FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
@@ -756,9 +757,9 @@ impl<T: BlockchainSource> CompactBlockExt for EphemeralFinalisedState<T> {
         pool_types: PoolTypeFilter,
     ) -> Result<zaino_proto::proto::compact_formats::CompactBlock, FinalisedStateError> {
         let chain_block = self.get_required_chain_block(height).await?;
-        Ok(compact_block_with_pool_types(
+        Ok(prune_compact_block(
             chain_block.to_compact_block(),
-            &pool_types.to_pool_types_vector(),
+            &pool_types,
         ))
     }
 

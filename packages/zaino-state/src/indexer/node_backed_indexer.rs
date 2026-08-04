@@ -49,7 +49,7 @@ use zaino_proto::proto::{
         TxFilter,
     },
     utils::{
-        blockid_to_hashorheight, compact_block_to_nullifiers, GetBlockRangeError, PoolTypeFilter,
+        blockid_to_hashorheight, compact_block_to_nullifiers, PoolTypeFilter,
         ValidatedBlockRangeRequest,
     },
 };
@@ -372,6 +372,121 @@ impl<Source: BlockchainSource> NodeBackedIndexerServiceSubscriber<Source> {
         Some(ChainTipSubscriber {
             monitor: self.indexer.source().chain_tip_change()?,
         })
+    }
+
+    /// Shared body of `get_block_range` and `get_block_range_nullifiers`: streams the
+    /// requested compact-block range through a channel, applying `map_block` to every
+    /// block before it is sent. `rpc_name` labels log lines and nothing else.
+    #[allow(deprecated)]
+    async fn spawn_block_range_stream(
+        &self,
+        request: &BlockRange,
+        rpc_name: &'static str,
+        map_block: impl Fn(CompactBlock) -> CompactBlock + Send + Sync + 'static,
+    ) -> Result<CompactBlockStream, NodeBackedIndexerServiceError> {
+        let validated_request = ValidatedBlockRangeRequest::new_from_block_range(request)
+            .map_err(NodeBackedIndexerServiceError::from)?;
+
+        let pool_type_filter = validated_request.pool_type_filter().clone();
+
+        let start = validated_request.start();
+        let end = validated_request.end();
+
+        let service_clone = self.clone();
+        let service_timeout = self.config.service.timeout;
+        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
+        let snapshot = service_clone.indexer.snapshot_nonfinalized_state().await?;
+
+        tokio::spawn(async move {
+            let timeout_result = timeout(
+                time::Duration::from_secs((service_timeout * 4) as u64),
+                async {
+                    let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
+                        // TODO: This probably shouldn't be an error.
+                        // this is an improvement over previous behaviour of
+                        // acting as if we are only synced to the genesis block
+                        if let Err(e) = channel_tx
+                            .send(Err(tonic::Status::failed_precondition(
+                                "zaino not yet synced".to_string(),
+                            )))
+                            .await
+                        {
+                            warn!(%e, "{rpc_name} channel closed unexpectedly");
+                        };
+                        return;
+                    };
+                    // Use the snapshot tip directly, as this function doesn't support passthrough
+                    let chain_height = non_finalized_snapshot.best_tip.height.0;
+
+                    let height_out_of_range_status = move || {
+                        let offending_height = if start > chain_height { start } else { end };
+                        tonic::Status::out_of_range(format!(
+                            "Error: Height out of range [{offending_height}]. \
+                            Height requested is greater than the best \
+                            chain tip [{chain_height}].",
+                        ))
+                    };
+
+                    match service_clone
+                        .indexer
+                        .get_compact_block_stream(
+                            &snapshot,
+                            types::Height(start),
+                            types::Height(end),
+                            pool_type_filter.clone(),
+                        )
+                        .await
+                    {
+                        Ok(Some(mut compact_block_stream)) => {
+                            while let Some(stream_item) = compact_block_stream.next().await {
+                                if channel_tx.send(stream_item.map(&map_block)).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                        Ok(None) => {
+                            // Per `get_compact_block_stream` semantics: `None` means at least one bound is above the tip.
+                            if let Err(e) = channel_tx.send(Err(height_out_of_range_status())).await
+                            {
+                                warn!(%e, "{rpc_name} channel closed unexpectedly");
+                            }
+                        }
+                        Err(e) => {
+                            // Preserve previous behaviour: if the request is above tip, surface OutOfRange;
+                            // otherwise return the error (currently exposed for dev).
+                            if start > chain_height || end > chain_height {
+                                if let Err(e) =
+                                    channel_tx.send(Err(height_out_of_range_status())).await
+                                {
+                                    warn!(%e, "{rpc_name} channel closed unexpectedly");
+                                }
+                            } else {
+                                // TODO: Hide server error from clients before release. Currently useful for dev purposes.
+                                if channel_tx
+                                    .send(Err(tonic::Status::unknown(e.to_string())))
+                                    .await
+                                    .is_err()
+                                {
+                                    warn!(%e, "{rpc_name} stream closed unexpectedly");
+                                }
+                            }
+                        }
+                    }
+                },
+            )
+            .await;
+
+            if timeout_result.is_err() {
+                channel_tx
+                    .send(Err(tonic::Status::deadline_exceeded(
+                        "Error: get_block_range gRPC request timed out.",
+                    )))
+                    .await
+                    .ok();
+            }
+        });
+
+        Ok(CompactBlockStream::new(channel_rx))
     }
 }
 
@@ -1251,125 +1366,8 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
         &self,
         request: BlockRange,
     ) -> Result<CompactBlockStream, Self::Error> {
-        let validated_request = ValidatedBlockRangeRequest::new_from_block_range(&request)
-            .map_err(NodeBackedIndexerServiceError::from)?;
-
-        let pool_type_filter = PoolTypeFilter::new_from_pool_types(&validated_request.pool_types())
-            .map_err(GetBlockRangeError::PoolTypeArgumentError)
-            .map_err(NodeBackedIndexerServiceError::from)?;
-
-        // Note conversion here is safe due to the use of [`ValidatedBlockRangeRequest::new_from_block_range`]
-        let start = validated_request.start() as u32;
-        let end = validated_request.end() as u32;
-
-        let service_clone = self.clone();
-        let service_timeout = self.config.service.timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
-        let snapshot = service_clone.indexer.snapshot_nonfinalized_state().await?;
-
-        tokio::spawn(async move {
-            let timeout_result = timeout(
-                time::Duration::from_secs((service_timeout * 4) as u64),
-                async {
-                    let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
-                        // TODO: This probably shouldn't be an error.
-                        // this is an improvement over previous behaviour of
-                        // acting as if we are only synced to the genesis block
-                        if let Err(e) = channel_tx
-                            .send(Err(tonic::Status::failed_precondition(
-                                "zaino not yet synced".to_string(),
-                            )))
-                            .await
-                        {
-                            warn!(%e, "GetBlockRange channel closed unexpectedly");
-                        };
-                        return;
-                    };
-                    // Use the snapshot tip directly, as this function doesn't support passthrough
-                    let chain_height = non_finalized_snapshot.best_tip.height.0;
-
-                    match service_clone
-                        .indexer
-                        .get_compact_block_stream(
-                            &snapshot,
-                            types::Height(start),
-                            types::Height(end),
-                            pool_type_filter.clone(),
-                        )
-                        .await
-                    {
-                        Ok(Some(mut compact_block_stream)) => {
-                            while let Some(stream_item) = compact_block_stream.next().await {
-                                if channel_tx.send(stream_item).await.is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                        Ok(None) => {
-                            // Per `get_compact_block_stream` semantics: `None` means at least one bound is above the tip.
-                            let offending_height = if start > chain_height { start } else { end };
-
-                            match channel_tx
-                                .send(Err(tonic::Status::out_of_range(format!(
-                                    "Error: Height out of range [{offending_height}]. \
-                                Height requested is greater than the best \
-                                chain tip [{chain_height}].",
-                                ))))
-                                .await
-                            {
-                                Ok(_) => {}
-                                Err(e) => {
-                                    warn!(%e, "GetBlockRange channel closed unexpectedly");
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            // Preserve previous behaviour: if the request is above tip, surface OutOfRange;
-                            // otherwise return the error (currently exposed for dev).
-                            if start > chain_height || end > chain_height {
-                                let offending_height =
-                                    if start > chain_height { start } else { end };
-
-                                match channel_tx
-                                    .send(Err(tonic::Status::out_of_range(format!(
-                                        "Error: Height out of range [{offending_height}]. \
-                                    Height requested is greater than the best \
-                                    chain tip [{chain_height}].",
-                                    ))))
-                                    .await
-                                {
-                                    Ok(_) => {}
-                                    Err(e) => {
-                                        warn!(%e, "GetBlockRange channel closed unexpectedly");
-                                    }
-                                }
-                            } else {
-                                // TODO: Hide server error from clients before release. Currently useful for dev purposes.
-                                if channel_tx
-                                    .send(Err(tonic::Status::unknown(e.to_string())))
-                                    .await
-                                    .is_err()
-                                {
-                                    warn!(%e, "GetBlockRangeStream closed unexpectedly");
-                                }
-                            }
-                        }
-                    }
-                },
-            )
-            .await;
-
-            if timeout_result.is_err() {
-                channel_tx
-                    .send(Err(tonic::Status::deadline_exceeded(
-                        "Error: get_block_range gRPC request timed out.",
-                    )))
-                    .await
-                    .ok();
-            }
-        });
-
-        Ok(CompactBlockStream::new(channel_rx))
+        self.spawn_block_range_stream(&request, "GetBlockRange", |block| block)
+            .await
     }
 
     /// Same as GetBlockRange except actions contain only nullifiers
@@ -1380,141 +1378,12 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
         &self,
         request: BlockRange,
     ) -> Result<CompactBlockStream, Self::Error> {
-        let validated_request = ValidatedBlockRangeRequest::new_from_block_range(&request)
-            .map_err(NodeBackedIndexerServiceError::from)?;
-
-        let pool_type_filter = PoolTypeFilter::new_from_pool_types(&validated_request.pool_types())
-            .map_err(GetBlockRangeError::PoolTypeArgumentError)
-            .map_err(NodeBackedIndexerServiceError::from)?;
-
-        // Note conversion here is safe due to the use of [`ValidatedBlockRangeRequest::new_from_block_range`]
-        let start = validated_request.start() as u32;
-        let end = validated_request.end() as u32;
-
-        let service_clone = self.clone();
-        let service_timeout = self.config.service.timeout;
-        let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
-        let snapshot = service_clone.indexer.snapshot_nonfinalized_state().await?;
-
-        tokio::spawn(async move {
-            let timeout_result = timeout(
-                time::Duration::from_secs((service_timeout * 4) as u64),
-                async {
-                    let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
-                        // TODO: This probably shouldn't be an error.
-                        // this is an improvement over previous behaviour of
-                        // acting as if we are only synced to the genesis block
-                        if let Err(e) = channel_tx
-                            .send(Err(tonic::Status::failed_precondition(
-                                "zaino not yet synced".to_string(),
-                            )))
-                            .await
-                        {
-                            warn!(%e, "GetBlockRangeNullifiers channel closed unexpectedly");
-                        };
-                        return;
-                    };
-
-                    // Use the snapshot tip directly, as this function doesn't support passthrough
-                    let chain_height = non_finalized_snapshot.best_tip.height.0;
-
-                    match service_clone
-                        .indexer
-                        .get_compact_block_stream(
-                            &snapshot,
-                            types::Height(start),
-                            types::Height(end),
-                            pool_type_filter.clone(),
-                        )
-                        .await
-                    {
-                        Ok(Some(mut compact_block_stream)) => {
-                            while let Some(stream_item) = compact_block_stream.next().await {
-                                match stream_item {
-                                    Ok(block) => {
-                                        if channel_tx
-                                            .send(Ok(compact_block_to_nullifiers(block)))
-                                            .await
-                                            .is_err()
-                                        {
-                                            break;
-                                        }
-                                    }
-                                    Err(status) => {
-                                        if channel_tx.send(Err(status)).await.is_err() {
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Ok(None) => {
-                            // Per `get_compact_block_stream` semantics: `None` means at least one bound is above the tip.
-                            let offending_height = if start > chain_height { start } else { end };
-
-                            match channel_tx
-                                .send(Err(tonic::Status::out_of_range(format!(
-                                    "Error: Height out of range [{offending_height}]. \
-                                Height requested is greater than the best \
-                                chain tip [{chain_height}].",
-                                ))))
-                                .await
-                            {
-                                Ok(_) => {}
-                                Err(e) => {
-                                    warn!(%e, "GetBlockRange channel closed unexpectedly");
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            // Preserve previous behaviour: if the request
-                            // is above tip, surface OutOfRange;
-                            // otherwise return the error (currently exposed for dev).
-                            if start > chain_height || end > chain_height {
-                                let offending_height =
-                                    if start > chain_height { start } else { end };
-
-                                match channel_tx
-                                    .send(Err(tonic::Status::out_of_range(format!(
-                                        "Error: Height out of range [{offending_height}]. \
-                                    Height requested is greater than the best chain tip \
-                                    [{chain_height}].",
-                                    ))))
-                                    .await
-                                {
-                                    Ok(_) => {}
-                                    Err(e) => {
-                                        warn!(%e, "GetBlockRange channel closed unexpectedly");
-                                    }
-                                }
-                            } else {
-                                // TODO: Hide server error from clients before release.
-                                // Currently useful for dev purposes.
-                                if channel_tx
-                                    .send(Err(tonic::Status::unknown(e.to_string())))
-                                    .await
-                                    .is_err()
-                                {
-                                    warn!(%e, "GetBlockRangeStream closed unexpectedly");
-                                }
-                            }
-                        }
-                    }
-                },
-            )
-            .await;
-
-            if timeout_result.is_err() {
-                channel_tx
-                    .send(Err(tonic::Status::deadline_exceeded(
-                        "Error: get_block_range gRPC request timed out.",
-                    )))
-                    .await
-                    .ok();
-            }
-        });
-
-        Ok(CompactBlockStream::new(channel_rx))
+        self.spawn_block_range_stream(
+            &request,
+            "GetBlockRangeNullifiers",
+            compact_block_to_nullifiers,
+        )
+        .await
     }
 
     /// Return the requested full (not compact) transaction (as from zcashd)
