@@ -32,7 +32,9 @@ impl Zatoshis {
         }
     }
 
-    /// Checked addition.
+    /// Returns `Some(sum)` when the addition is representable (below
+    /// MAX_ZATOSHIS), or `None` on arithmetic overflow, matching Rust
+    /// primitive integer `checked_add` semantics.
     pub fn checked_add(self, other: Self) -> Option<Self> {
         let sum = self.0.checked_add(other.0)?;
         if sum > MAX_ZATOSHIS {
