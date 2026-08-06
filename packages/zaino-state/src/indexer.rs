@@ -287,7 +287,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     fn send_raw_transaction(
         &self,
         raw_transaction_hex: String,
-    ) -> impl SendFut<Result<zaino_primitives::types::TransactionHash, Self::Error>>;
+    ) -> impl SendFut<Result<zaino_primitives::types::TransactionId, Self::Error>>;
 
     /// If verbose is false, returns a string that is serialized, hex-encoded data for blockheader `hash`.
     /// If verbose is true, returns an Object with information about blockheader `hash`.

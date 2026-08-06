@@ -240,13 +240,13 @@ mod tests {
             version: 4,
             merkle_root: domain::MerkleRoot::from([0xaa; 32]),
             deltas: vec![domain::rpc::BlockDelta {
-                txid: domain::TransactionHash::from(ASYMMETRIC),
+                txid: domain::TransactionId::from(ASYMMETRIC),
                 index: 1,
                 inputs: vec![domain::rpc::InputDelta {
                     address: TransparentAddress::new("t1spender".to_string()),
                     satoshis: SignedZatoshis::new(-5_000),
                     index: 0,
-                    prev_txid: domain::TransactionHash::from([0xbb; 32]),
+                    prev_txid: domain::TransactionId::from([0xbb; 32]),
                     prev_output: 3,
                 }],
                 outputs: vec![domain::rpc::OutputDelta {

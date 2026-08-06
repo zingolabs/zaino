@@ -2,7 +2,7 @@
 
 use std::future::Future;
 
-use zaino_primitives::types::{Height, TransactionHash};
+use zaino_primitives::types::{Height, TransactionId};
 
 use super::QueryError;
 
@@ -38,5 +38,5 @@ pub trait GetAddressTxids: Send + Sync {
         addresses: Vec<String>,
         start: Height,
         end: Height,
-    ) -> impl Future<Output = Result<Vec<TransactionHash>, QueryError<GetAddressTxidsError>>> + Send;
+    ) -> impl Future<Output = Result<Vec<TransactionId>, QueryError<GetAddressTxidsError>>> + Send;
 }

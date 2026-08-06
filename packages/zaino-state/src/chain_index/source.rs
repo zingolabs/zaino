@@ -213,7 +213,7 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     fn send_raw_transaction(
         &self,
         raw_transaction_hex: String,
-    ) -> impl SendFut<BlockchainSourceResult<zaino_primitives::types::TransactionHash>>;
+    ) -> impl SendFut<BlockchainSourceResult<zaino_primitives::types::TransactionId>>;
 
     /// Returns the full `z_gettreestate` response for the given hash-or-height string.
     ///

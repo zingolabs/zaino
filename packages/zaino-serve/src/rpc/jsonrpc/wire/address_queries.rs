@@ -54,7 +54,7 @@ pub fn address_utxos_from_domain(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zaino_primitives::types::{Height, Script, TransactionHash, TransparentAddress, Zatoshis};
+    use zaino_primitives::types::{Height, Script, TransactionId, TransparentAddress, Zatoshis};
 
     /// Asymmetric under reversal, so a missing or doubled byte-reversal shows up.
     const ASYMMETRIC: [u8; 32] = [
@@ -69,7 +69,7 @@ mod tests {
     fn utxo() -> Utxo {
         Utxo {
             address: TransparentAddress::new(ADDRESS.to_string()),
-            txid: TransactionHash::from(ASYMMETRIC),
+            txid: TransactionId::from(ASYMMETRIC),
             output_index: 2,
             script: Script::from(vec![0x76, 0xa9]),
             satoshis: Zatoshis::new(50_000).unwrap(),

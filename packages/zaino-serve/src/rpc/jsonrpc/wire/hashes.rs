@@ -4,7 +4,7 @@
 //! own type — there is nothing zcashd-specific left to reimplement, so this
 //! module holds only the conversions.
 
-use zaino_primitives::types::{BlockHash, TransactionHash};
+use zaino_primitives::types::{BlockHash, TransactionId};
 use zebra_rpc::methods::{GetBlockHash, SentTransactionHash};
 
 /// Renders a block hash as the `getbestblockhash` response.
@@ -13,7 +13,7 @@ pub fn best_block_hash_from_domain(hash: BlockHash) -> GetBlockHash {
 }
 
 /// Renders a transaction hash as the `sendrawtransaction` response.
-pub fn sent_transaction_hash_from_domain(txid: TransactionHash) -> SentTransactionHash {
+pub fn sent_transaction_hash_from_domain(txid: TransactionId) -> SentTransactionHash {
     SentTransactionHash::new(zebra_chain::transaction::Hash::from(<[u8; 32]>::from(txid)))
 }
 
@@ -44,7 +44,7 @@ mod tests {
             serde_json::Value::String(display_order())
         );
         assert_eq!(
-            serde_json::to_value(sent_transaction_hash_from_domain(TransactionHash::from(
+            serde_json::to_value(sent_transaction_hash_from_domain(TransactionId::from(
                 ASYMMETRIC
             )))
             .unwrap(),

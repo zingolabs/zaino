@@ -2,7 +2,7 @@
 
 use std::future::Future;
 
-use zaino_primitives::types::{rpc::TxOut, OutputIndex, TransactionHash};
+use zaino_primitives::types::{rpc::TxOut, OutputIndex, TransactionId};
 
 use super::QueryError;
 
@@ -11,7 +11,7 @@ use super::QueryError;
 pub enum GetTxOutError {
     /// The referenced transaction is not known to the validator.
     #[error("no transaction {0}")]
-    TransactionNotFound(TransactionHash),
+    TransactionNotFound(TransactionId),
 }
 
 /// Fetch an unspent transparent output by outpoint.
@@ -28,7 +28,7 @@ pub trait GetTxOut: Send + Sync {
     /// so an output spent only in the mempool reports as absent.
     fn get_tx_out(
         &self,
-        txid: TransactionHash,
+        txid: TransactionId,
         index: OutputIndex,
         include_mempool: bool,
     ) -> impl Future<Output = Result<Option<TxOut>, QueryError<GetTxOutError>>> + Send;

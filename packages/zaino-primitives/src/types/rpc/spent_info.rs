@@ -1,12 +1,12 @@
 //! `getspentinfo` — locate the transaction that spent a given output.
 
-use crate::types::{Height, OutputIndex, TransactionHash};
+use crate::types::{Height, OutputIndex, TransactionId};
 
 /// The output whose spender is being requested.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpentOutpoint {
     /// Transaction containing the output.
-    pub txid: TransactionHash,
+    pub txid: TransactionId,
     /// Index of the output within that transaction's outputs.
     pub index: OutputIndex,
 }
@@ -15,7 +15,7 @@ pub struct SpentOutpoint {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpentInfo {
     /// The transaction that spent the output.
-    pub txid: TransactionHash,
+    pub txid: TransactionId,
     /// Index of the spending input within that transaction's inputs.
     pub index: OutputIndex,
     /// Height of the block containing the spending transaction.

@@ -2,7 +2,7 @@
 
 use std::future::Future;
 
-use zaino_primitives::types::TransactionHash;
+use zaino_primitives::types::TransactionId;
 
 use super::QueryError;
 
@@ -31,5 +31,5 @@ pub trait SendRawTransaction: Send + Sync {
     fn send_raw_transaction(
         &self,
         transaction: Vec<u8>,
-    ) -> impl Future<Output = Result<TransactionHash, QueryError<SendRawTransactionError>>> + Send;
+    ) -> impl Future<Output = Result<TransactionId, QueryError<SendRawTransactionError>>> + Send;
 }

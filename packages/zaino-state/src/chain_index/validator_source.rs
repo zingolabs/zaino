@@ -292,13 +292,13 @@ impl<V: ChainIndexSourcePorts> ValidatorSource<V> {
 /// Parse a txid written in RPC display order.
 fn parse_display_txid(
     hex_str: &str,
-) -> Result<zaino_primitives::types::TransactionHash, BlockchainSourceError> {
+) -> Result<zaino_primitives::types::TransactionId, BlockchainSourceError> {
     let bytes = hex::decode(hex_str).map_err(|e| invalid(format!("txid is not hex: {e}")))?;
     let mut internal: [u8; 32] = bytes
         .try_into()
         .map_err(|_| invalid("txid is not 32 bytes".to_string()))?;
     internal.reverse();
-    Ok(zaino_primitives::types::TransactionHash::from(internal))
+    Ok(zaino_primitives::types::TransactionId::from(internal))
 }
 
 /// This crate's shielded pool as the port names it.
@@ -598,7 +598,7 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
         use zaino_primitives::types::TransactionLocation;
         use zebra_chain::serialization::ZcashDeserialize as _;
 
-        let domain_txid = zaino_primitives::types::TransactionHash::from(txid.0);
+        let domain_txid = zaino_primitives::types::TransactionId::from(txid.0);
 
         let response = match self.validator.get_transaction(domain_txid).await {
             Ok(response) => response,
@@ -943,7 +943,7 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
     async fn send_raw_transaction(
         &self,
         raw_transaction_hex: String,
-    ) -> BlockchainSourceResult<zaino_primitives::types::TransactionHash> {
+    ) -> BlockchainSourceResult<zaino_primitives::types::TransactionId> {
         let bytes = hex::decode(&raw_transaction_hex)
             .map_err(|e| invalid(format!("transaction is not hex: {e}")))?;
 

@@ -1135,7 +1135,7 @@ impl zaino_source::GetBestBlockHeight for ProptestMockchain {
 impl zaino_source::GetTransaction for ProptestMockchain {
     async fn get_transaction(
         &self,
-        txid: zaino_primitives::types::TransactionHash,
+        txid: zaino_primitives::types::TransactionId,
     ) -> Result<zaino_source::TransactionResponse, PortError<zaino_source::GetTransactionError>>
     {
         self.settle().await;
@@ -1174,7 +1174,7 @@ impl zaino_source::GetMempoolTxids for ProptestMockchain {
     async fn get_mempool_txids(
         &self,
     ) -> Result<
-        Vec<zaino_primitives::types::TransactionHash>,
+        Vec<zaino_primitives::types::TransactionId>,
         PortError<zaino_source::GetMempoolTxidsError>,
     > {
         self.settle().await;
@@ -1487,7 +1487,7 @@ impl zaino_source::GetMiningInfo for ProptestMockchain {
 impl zaino_source::GetTxOut for ProptestMockchain {
     async fn get_tx_out(
         &self,
-        _txid: zaino_primitives::types::TransactionHash,
+        _txid: zaino_primitives::types::TransactionId,
         _index: zaino_primitives::types::OutputIndex,
         _include_mempool: bool,
     ) -> Result<Option<zaino_primitives::types::rpc::TxOut>, PortError<zaino_source::GetTxOutError>>
@@ -1521,7 +1521,7 @@ impl zaino_source::SendRawTransaction for ProptestMockchain {
         &self,
         _transaction: Vec<u8>,
     ) -> Result<
-        zaino_primitives::types::TransactionHash,
+        zaino_primitives::types::TransactionId,
         PortError<zaino_source::SendRawTransactionError>,
     > {
         unimplemented!()
@@ -1595,7 +1595,7 @@ impl zaino_source::GetAddressTxids for ProptestMockchain {
         _start: zaino_primitives::types::Height,
         _end: zaino_primitives::types::Height,
     ) -> Result<
-        Vec<zaino_primitives::types::TransactionHash>,
+        Vec<zaino_primitives::types::TransactionId>,
         PortError<zaino_source::GetAddressTxidsError>,
     > {
         todo!()

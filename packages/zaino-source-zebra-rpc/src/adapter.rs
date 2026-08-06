@@ -1,8 +1,6 @@
 //! Trait implementations: zaino-source query traits on [`ZebraRpcAdapter`].
 
-use zaino_primitives::types::{
-    Block, BlockHash, ChainMetadata, Height, TransactionHash, Treestate,
-};
+use zaino_primitives::types::{Block, BlockHash, ChainMetadata, Height, TransactionId, Treestate};
 use zaino_rpc::RpcClient;
 use zaino_source::{
     FailureMode, FetchError, GetBlockError, GetChainTipError, GetTreestateError, QueryError,
@@ -275,7 +273,7 @@ fn hash_to_display_hex(hash: BlockHash) -> String {
 }
 
 /// Render a transaction id in RPC display order (big-endian hex).
-fn txid_to_display_hex(txid: TransactionHash) -> String {
+fn txid_to_display_hex(txid: TransactionId) -> String {
     let mut bytes = <[u8; 32]>::from(txid);
     bytes.reverse();
     hex::encode(bytes)
@@ -552,7 +550,7 @@ impl zaino_source::GetBlockchainInfo for ZebraRpcAdapter {
 impl zaino_source::GetMempoolTxids for ZebraRpcAdapter {
     async fn get_mempool_txids(
         &self,
-    ) -> Result<Vec<TransactionHash>, QueryError<zaino_source::GetMempoolTxidsError>> {
+    ) -> Result<Vec<TransactionId>, QueryError<zaino_source::GetMempoolTxidsError>> {
         self.call_parsed("getrawmempool", vec![], parse::parse_txids)
             .await
     }
@@ -607,7 +605,7 @@ impl zaino_source::GetAddressTxids for ZebraRpcAdapter {
         addresses: Vec<String>,
         start: Height,
         end: Height,
-    ) -> Result<Vec<TransactionHash>, QueryError<zaino_source::GetAddressTxidsError>> {
+    ) -> Result<Vec<TransactionId>, QueryError<zaino_source::GetAddressTxidsError>> {
         let params = vec![serde_json::json!({
             "addresses": addresses,
             "start": u32::from(start),
@@ -733,7 +731,7 @@ impl zaino_source::GetSpentInfo for ZebraRpcAdapter {
 impl zaino_source::GetTxOut for ZebraRpcAdapter {
     async fn get_tx_out(
         &self,
-        txid: TransactionHash,
+        txid: TransactionId,
         index: zaino_primitives::types::OutputIndex,
         include_mempool: bool,
     ) -> Result<Option<zaino_primitives::types::rpc::TxOut>, QueryError<zaino_source::GetTxOutError>>
@@ -752,7 +750,7 @@ impl zaino_source::SendRawTransaction for ZebraRpcAdapter {
     async fn send_raw_transaction(
         &self,
         transaction: Vec<u8>,
-    ) -> Result<TransactionHash, QueryError<zaino_source::SendRawTransactionError>> {
+    ) -> Result<TransactionId, QueryError<zaino_source::SendRawTransactionError>> {
         let params = vec![serde_json::Value::String(hex::encode(transaction))];
         // The one mutating call, and the one whose rejections are the point:
         // a client that submitted a bad transaction needs to know why.
@@ -855,7 +853,7 @@ impl zaino_source::SubscribeBlocks for ZebraRpcAdapter {}
 impl zaino_source::GetTransaction for ZebraRpcAdapter {
     async fn get_transaction(
         &self,
-        txid: TransactionHash,
+        txid: TransactionId,
     ) -> Result<zaino_source::TransactionResponse, QueryError<zaino_source::GetTransactionError>>
     {
         // Verbosity 1: the raw hex plus the height needed to place the

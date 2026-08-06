@@ -230,7 +230,7 @@ mod domain_tests {
     fn delta() -> domain::AddressDelta {
         domain::AddressDelta {
             satoshis: SignedZatoshis::new(-1_000),
-            txid: domain::TransactionHash::from(ASYMMETRIC),
+            txid: domain::TransactionId::from(ASYMMETRIC),
             index: 2,
             height: Height::try_from(99u32).unwrap(),
             address: TransparentAddress::new("t1address".to_string()),

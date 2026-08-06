@@ -63,7 +63,7 @@ pub use transaction::{
     OrchardAction, OrchardData, SaplingData, SaplingOutput, SaplingSpend, Transaction,
     TransparentData, TransparentInput, TransparentOutput,
 };
-pub use transaction_hash::TransactionHash;
+pub use transaction_hash::TransactionId;
 pub use transaction_location::TransactionLocation;
 pub use transparent_address::TransparentAddress;
 pub use tree_root::TreeRoot;

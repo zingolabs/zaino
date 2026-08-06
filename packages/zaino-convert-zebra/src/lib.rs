@@ -6,7 +6,7 @@
 use zaino_primitives::types::{
     Block, BlockCommitments, BlockHash, BlockHeader, ChainMetadata, EncryptedCiphertext,
     EphemeralKey, Height, MerkleRoot, NoteCommitment, Nullifier, OrchardAction, OrchardData,
-    SaplingData, SaplingOutput, SaplingSpend, Script, SignedZatoshis, Transaction, TransactionHash,
+    SaplingData, SaplingOutput, SaplingSpend, Script, SignedZatoshis, Transaction, TransactionId,
     TransparentData, TransparentInput, TransparentOutput, Zatoshis,
 };
 
@@ -98,7 +98,7 @@ pub fn transaction_from_zebra(
     index: u32,
 ) -> Result<Transaction, ConvertError> {
     Ok(Transaction {
-        txid: TransactionHash::from(tx.hash().0),
+        txid: TransactionId::from(tx.hash().0),
         index,
         transparent: transparent_from_zebra(tx)?,
         sapling: sapling_from_zebra(tx),
@@ -115,7 +115,7 @@ fn transparent_from_zebra(
         .iter()
         .filter_map(|input| match input {
             zebra_chain::transparent::Input::PrevOut { outpoint, .. } => Some(TransparentInput {
-                prev_txid: TransactionHash::from(outpoint.hash.0),
+                prev_txid: TransactionId::from(outpoint.hash.0),
                 prev_index: outpoint.index,
             }),
             zebra_chain::transparent::Input::Coinbase { .. } => None,

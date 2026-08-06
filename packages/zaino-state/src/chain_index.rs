@@ -632,7 +632,7 @@ pub trait ChainIndexRpcExt: ChainIndex {
     fn send_raw_transaction(
         &self,
         raw_transaction_hex: String,
-    ) -> impl std::future::Future<Output = Result<zaino_primitives::types::TransactionHash, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<zaino_primitives::types::TransactionId, Self::Error>>;
 
     /// Returns the full `z_gettreestate` response for the given hash-or-height, via the
     /// backing validator (node-passthrough fallback for treestates not locally serviceable).
@@ -2774,7 +2774,7 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
     async fn send_raw_transaction(
         &self,
         raw_transaction_hex: String,
-    ) -> Result<zaino_primitives::types::TransactionHash, Self::Error> {
+    ) -> Result<zaino_primitives::types::TransactionId, Self::Error> {
         // A local rejection, before the validator round trip. It carries
         // zcashd's `InvalidParameter` so the client sees the same code it
         // would have got from the validator, rather than a generic internal

@@ -603,7 +603,7 @@ impl zaino_source::GetDifficulty for MockchainSource {
 impl zaino_source::GetMempoolTxids for MockchainSource {
     async fn get_mempool_txids(
         &self,
-    ) -> Result<Vec<domain::TransactionHash>, PortError<zaino_source::GetMempoolTxidsError>> {
+    ) -> Result<Vec<domain::TransactionId>, PortError<zaino_source::GetMempoolTxidsError>> {
         // The mock's "mempool" is the next block in the loaded chain, minus its
         // coinbase — a transaction that cannot be in a mempool.
         let mempool_index = self.active_height() as usize + 1;
@@ -614,7 +614,7 @@ impl zaino_source::GetMempoolTxids for MockchainSource {
             .transactions
             .iter()
             .filter(|transaction| !transaction.is_coinbase())
-            .map(|transaction| domain::TransactionHash::from(transaction.hash().0))
+            .map(|transaction| domain::TransactionId::from(transaction.hash().0))
             .collect())
     }
 }
@@ -634,7 +634,7 @@ impl zaino_source::SourceLifecycle for MockchainSource {
 impl zaino_source::GetTransaction for MockchainSource {
     async fn get_transaction(
         &self,
-        txid: domain::TransactionHash,
+        txid: domain::TransactionId,
     ) -> Result<zaino_source::TransactionResponse, PortError<zaino_source::GetTransactionError>>
     {
         let zebra_txid = zebra_chain::transaction::Hash(<[u8; 32]>::from(txid));
@@ -985,7 +985,7 @@ impl zaino_source::GetAddressTxids for MockchainSource {
         addresses: Vec<String>,
         start: domain::Height,
         end: domain::Height,
-    ) -> Result<Vec<domain::TransactionHash>, PortError<zaino_source::GetAddressTxidsError>> {
+    ) -> Result<Vec<domain::TransactionId>, PortError<zaino_source::GetAddressTxidsError>> {
         let valid = GetAddressBalanceRequest::new(addresses)
             .valid_addresses()
             .map_err(|error| {
@@ -1018,7 +1018,7 @@ impl zaino_source::GetAddressTxids for MockchainSource {
             for transaction in &self.blocks[block_index].transactions {
                 if self.transaction_touches_addresses(transaction, &requested, &matching, &network)
                 {
-                    hashes.push(domain::TransactionHash::from(transaction.hash().0));
+                    hashes.push(domain::TransactionId::from(transaction.hash().0));
                 }
             }
         }
@@ -1056,7 +1056,7 @@ impl zaino_source::GetAddressUtxos for MockchainSource {
             .map(|(_, output)| {
                 Ok(domain::Utxo {
                     address: domain::TransparentAddress::new(output.address.to_string()),
-                    txid: domain::TransactionHash::from(output.transaction_hash.0),
+                    txid: domain::TransactionId::from(output.transaction_hash.0),
                     output_index: output.output_index,
                     script: domain::Script::new(output.output.lock_script.as_raw_bytes().to_vec()),
                     satoshis: domain::Zatoshis::new(u64::from(output.output.value()))
@@ -1157,7 +1157,7 @@ impl zaino_source::GetBlockDeltas for MockchainSource {
                     // Inputs are debits, so the amount leaves the address.
                     satoshis: domain::SignedZatoshis::new(-(value as i64)),
                     index: input_index as u32,
-                    prev_txid: domain::TransactionHash::from(outpoint.hash.0),
+                    prev_txid: domain::TransactionId::from(outpoint.hash.0),
                     prev_output: outpoint.index,
                 });
             }
@@ -1177,7 +1177,7 @@ impl zaino_source::GetBlockDeltas for MockchainSource {
             }
 
             deltas.push(domain::rpc::BlockDelta {
-                txid: domain::TransactionHash::from(transaction.hash().0),
+                txid: domain::TransactionId::from(transaction.hash().0),
                 index: tx_index as u32,
                 inputs,
                 outputs,
@@ -1359,7 +1359,7 @@ impl zaino_source::SendRawTransaction for MockchainSource {
     async fn send_raw_transaction(
         &self,
         _transaction: Vec<u8>,
-    ) -> Result<domain::TransactionHash, PortError<zaino_source::SendRawTransactionError>> {
+    ) -> Result<domain::TransactionId, PortError<zaino_source::SendRawTransactionError>> {
         // The mock chain has no mempool to accept submissions.
         unimplemented!("MockchainSource cannot serve send_raw_transaction")
     }
@@ -1379,7 +1379,7 @@ impl zaino_source::GetSpentInfo for MockchainSource {
 impl zaino_source::GetTxOut for MockchainSource {
     async fn get_tx_out(
         &self,
-        _txid: domain::TransactionHash,
+        _txid: domain::TransactionId,
         _index: domain::OutputIndex,
         _include_mempool: bool,
     ) -> Result<Option<domain::rpc::TxOut>, PortError<zaino_source::GetTxOutError>> {

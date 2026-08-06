@@ -2,7 +2,7 @@
 
 use std::future::Future;
 
-use zaino_primitives::types::{TransactionHash, TransactionLocation};
+use zaino_primitives::types::{TransactionId, TransactionLocation};
 
 use super::QueryError;
 
@@ -20,7 +20,7 @@ pub struct TransactionResponse {
 pub enum GetTransactionError {
     /// No transaction with this txid exists.
     #[error("transaction not found: {0}")]
-    NotFound(TransactionHash),
+    NotFound(TransactionId),
 }
 
 /// Fetch a transaction by its txid.
@@ -31,6 +31,6 @@ pub trait GetTransaction: Send + Sync {
     /// Fetch transaction.
     fn get_transaction(
         &self,
-        txid: TransactionHash,
+        txid: TransactionId,
     ) -> impl Future<Output = Result<TransactionResponse, QueryError<GetTransactionError>>> + Send;
 }

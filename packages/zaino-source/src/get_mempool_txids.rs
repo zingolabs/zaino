@@ -2,7 +2,7 @@
 
 use std::future::Future;
 
-use zaino_primitives::types::TransactionHash;
+use zaino_primitives::types::TransactionId;
 
 use super::QueryError;
 
@@ -21,5 +21,5 @@ pub trait GetMempoolTxids: Send + Sync {
     /// Fetch mempool txids.
     fn get_mempool_txids(
         &self,
-    ) -> impl Future<Output = Result<Vec<TransactionHash>, QueryError<GetMempoolTxidsError>>> + Send;
+    ) -> impl Future<Output = Result<Vec<TransactionId>, QueryError<GetMempoolTxidsError>>> + Send;
 }

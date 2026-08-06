@@ -33,7 +33,7 @@ use zaino_primitives::types::{
     },
     AddressBalance, AddressDelta, BlockCommitments, BlockHash, BlockTreeSizes, BlockVerbose,
     BlockchainInfo, ChainWork, ConsensusBranchId, ConsensusBranchIds, Height, MerkleRoot,
-    NetworkUpgradeInfo, NetworkUpgradeStatus, Script, SignedZatoshis, SubtreeRoot, TransactionHash,
+    NetworkUpgradeInfo, NetworkUpgradeStatus, Script, SignedZatoshis, SubtreeRoot, TransactionId,
     TransactionLocation, TransparentAddress, TreeRoot, TreeRootInfo, TreeRoots, Treestate, Utxo,
     ValuePoolBalance, Zatoshis,
 };
@@ -136,8 +136,8 @@ fn reversed(value: &serde_json::Value) -> Result<[u8; 32], ParseError> {
 }
 
 /// A transaction id. Reversed on the wire.
-pub(crate) fn as_txid(value: &serde_json::Value) -> Result<TransactionHash, ParseError> {
-    reversed(value).map(TransactionHash::from)
+pub(crate) fn as_txid(value: &serde_json::Value) -> Result<TransactionId, ParseError> {
+    reversed(value).map(TransactionId::from)
 }
 
 /// A transaction merkle root. Reversed on the wire, like a hash.
@@ -657,7 +657,7 @@ pub(crate) fn parse_address_utxos(value: &serde_json::Value) -> Result<Vec<Utxo>
 
 /// Parse a list of hex txids, as returned by `getrawmempool` and
 /// `getaddresstxids`.
-pub(crate) fn parse_txids(value: &serde_json::Value) -> Result<Vec<TransactionHash>, ParseError> {
+pub(crate) fn parse_txids(value: &serde_json::Value) -> Result<Vec<TransactionId>, ParseError> {
     as_array(value)?.iter().map(as_txid).collect()
 }
 

@@ -452,7 +452,7 @@ impl zaino_source::GetAddressUtxos for ZebraReadStateAdapter {
 
             result.push(Utxo {
                 address: TransparentAddress::new(address.to_string()),
-                txid: zaino_primitives::types::TransactionHash::from(txid.0),
+                txid: zaino_primitives::types::TransactionId::from(txid.0),
                 output_index: location.output_index().index(),
                 script: Script::new(output.lock_script.as_raw_bytes().to_vec()),
                 satoshis: Zatoshis::new(u64::from(output.value()))
@@ -473,10 +473,10 @@ impl zaino_source::GetAddressTxids for ZebraReadStateAdapter {
         start: Height,
         end: Height,
     ) -> Result<
-        Vec<zaino_primitives::types::TransactionHash>,
+        Vec<zaino_primitives::types::TransactionId>,
         QueryError<zaino_source::GetAddressTxidsError>,
     > {
-        use zaino_primitives::types::TransactionHash;
+        use zaino_primitives::types::TransactionId;
 
         // Bounds are checked against the tip before the index is queried, so an
         // impossible range is reported as such rather than silently returning
@@ -523,7 +523,7 @@ impl zaino_source::GetAddressTxids for ZebraReadStateAdapter {
                 return Err(out_of_order("address transaction").into());
             }
             previous = *location;
-            result.push(TransactionHash::from(txid.0));
+            result.push(TransactionId::from(txid.0));
         }
 
         Ok(result)
@@ -559,7 +559,7 @@ impl zaino_source::GetAddressDeltas for ZebraReadStateAdapter {
         QueryError<zaino_source::GetAddressDeltasError>,
     > {
         use zaino_primitives::types::{
-            AddressDelta, SignedZatoshis, TransactionHash, TransparentAddress,
+            AddressDelta, SignedZatoshis, TransactionId, TransparentAddress,
         };
 
         if start > end {
@@ -607,7 +607,7 @@ impl zaino_source::GetAddressDeltas for ZebraReadStateAdapter {
 
             let height = Height::try_from(location.height.0)
                 .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?;
-            let delta_txid = TransactionHash::from(txid.0);
+            let delta_txid = TransactionId::from(txid.0);
 
             for (index, output) in transaction.outputs().iter().enumerate() {
                 let Some(address) = output.address(&self.network) else {
@@ -865,7 +865,7 @@ fn hash_or_height(hash: BlockHash) -> zebra_state::HashOrHeight {
 impl zaino_source::GetTransaction for ZebraReadStateAdapter {
     async fn get_transaction(
         &self,
-        txid: zaino_primitives::types::TransactionHash,
+        txid: zaino_primitives::types::TransactionId,
     ) -> Result<zaino_source::TransactionResponse, QueryError<zaino_source::GetTransactionError>>
     {
         use zaino_primitives::types::TransactionLocation;
@@ -1256,7 +1256,7 @@ impl zaino_source::GetBlockDeltas for ZebraReadStateAdapter {
     > {
         use zaino_primitives::types::{
             rpc::{BlockDelta, BlockDeltas, InputDelta, OutputDelta},
-            MerkleRoot, SignedZatoshis, TransactionHash, TransparentAddress, Zatoshis,
+            MerkleRoot, SignedZatoshis, TransactionId, TransparentAddress, Zatoshis,
         };
         use zebra_chain::serialization::ZcashSerialize as _;
 
@@ -1337,7 +1337,7 @@ impl zaino_source::GetBlockDeltas for ZebraReadStateAdapter {
                     // A spend debits the address, so the value leaves it.
                     satoshis: SignedZatoshis::new(-output.value.zatoshis()),
                     index: index as u32,
-                    prev_txid: TransactionHash::from(outpoint.hash.0),
+                    prev_txid: TransactionId::from(outpoint.hash.0),
                     prev_output: outpoint.index,
                 });
             }
@@ -1356,7 +1356,7 @@ impl zaino_source::GetBlockDeltas for ZebraReadStateAdapter {
             }
 
             deltas.push(BlockDelta {
-                txid: TransactionHash::from(transaction.hash().0),
+                txid: TransactionId::from(transaction.hash().0),
                 index: tx_index as u32,
                 inputs,
                 outputs,

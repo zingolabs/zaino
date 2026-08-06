@@ -2,14 +2,18 @@
 
 use super::{
     EncryptedCiphertext, EphemeralKey, NoteCommitment, Nullifier, OutputIndex, Script,
-    SignedZatoshis, TransactionHash, TxIndex, Zatoshis,
+    SignedZatoshis, TransactionId, TxIndex, Zatoshis,
 };
 
 /// A transaction within a block.
 #[derive(Debug, Clone)]
 pub struct Transaction {
     /// Transaction id.
-    pub txid: TransactionHash,
+    ///
+    /// NOTE: Transaction hash vs transaction ID
+    /// - In pre V5 transactions this is the transaction hash (sha256 of serialized tx).
+    /// - From V5 onwards this field is the transaction ID (as defined in [zip 224](https://github.com/zcash/zips/blob/main/zips/zip-0244.rst).
+    pub txid: TransactionId,
     /// Position within the block (0-indexed).
     pub index: TxIndex,
     /// Transparent pool data.
@@ -41,7 +45,7 @@ pub struct TransparentData {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransparentInput {
     /// Transaction containing the output being spent.
-    pub prev_txid: TransactionHash,
+    pub prev_txid: TransactionId,
     /// Index of the output being spent.
     pub prev_index: OutputIndex,
 }

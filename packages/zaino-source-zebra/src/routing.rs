@@ -5,8 +5,8 @@ use std::time::Duration;
 use tokio::sync::watch;
 use zaino_primitives::types::{
     rpc, AddressBalance, AddressDelta, Block, BlockHash, BlockVerbose, BlockchainInfo, Difficulty,
-    Height, OutputIndex, PreIndexCompactBlock, ShieldedPool, SubtreeRoot, TransactionHash,
-    TreeRoots, Treestate, Utxo,
+    Height, OutputIndex, PreIndexCompactBlock, ShieldedPool, SubtreeRoot, TransactionId, TreeRoots,
+    Treestate, Utxo,
 };
 use zaino_source::*;
 use zaino_source_zebra_readstate::ZebraReadStateAdapter;
@@ -193,7 +193,7 @@ impl GetPreIndexCompactBlock for ZebraValidator {
 impl GetTransaction for ZebraValidator {
     async fn get_transaction(
         &self,
-        txid: TransactionHash,
+        txid: TransactionId,
     ) -> Result<TransactionResponse, QueryError<GetTransactionError>> {
         // The state service has no mempool, so its `NotFound` means "not
         // mined". An unmined transaction is found only over JSON-RPC, which is
@@ -269,7 +269,7 @@ impl GetAddressTxids for ZebraValidator {
         addresses: Vec<String>,
         start: Height,
         end: Height,
-    ) -> Result<Vec<TransactionHash>, QueryError<GetAddressTxidsError>> {
+    ) -> Result<Vec<TransactionId>, QueryError<GetAddressTxidsError>> {
         match self.fast() {
             Some(fast) => fast.get_address_txids(addresses, start, end).await,
             None => self.rpc.get_address_txids(addresses, start, end).await,
@@ -326,7 +326,7 @@ impl GetAddressDeltas for ZebraValidator {
 impl GetMempoolTxids for ZebraValidator {
     async fn get_mempool_txids(
         &self,
-    ) -> Result<Vec<TransactionHash>, QueryError<GetMempoolTxidsError>> {
+    ) -> Result<Vec<TransactionId>, QueryError<GetMempoolTxidsError>> {
         self.rpc.get_mempool_txids().await
     }
 }
@@ -430,7 +430,7 @@ impl GetNetworkSolPs for ZebraValidator {
 impl GetTxOut for ZebraValidator {
     async fn get_tx_out(
         &self,
-        txid: TransactionHash,
+        txid: TransactionId,
         index: OutputIndex,
         include_mempool: bool,
     ) -> Result<Option<rpc::TxOut>, QueryError<GetTxOutError>> {
@@ -454,7 +454,7 @@ impl SendRawTransaction for ZebraValidator {
     async fn send_raw_transaction(
         &self,
         transaction: Vec<u8>,
-    ) -> Result<TransactionHash, QueryError<SendRawTransactionError>> {
+    ) -> Result<TransactionId, QueryError<SendRawTransactionError>> {
         self.rpc.send_raw_transaction(transaction).await
     }
 }

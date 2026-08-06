@@ -2,8 +2,7 @@
 
 use crate::types::{
     BlockHash, BlockTime, CompactDifficulty, Confirmations, Difficulty, EquihashNonce, Height,
-    MerkleRoot, OutputIndex, SignedZatoshis, TransactionHash, TransparentAddress, TxIndex,
-    Zatoshis,
+    MerkleRoot, OutputIndex, SignedZatoshis, TransactionId, TransparentAddress, TxIndex, Zatoshis,
 };
 
 /// Transparent value movements for every transaction in a block.
@@ -54,7 +53,7 @@ pub struct BlockDeltas {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockDelta {
     /// Transaction this delta belongs to.
-    pub txid: TransactionHash,
+    pub txid: TransactionId,
     /// Position of the transaction within the block.
     pub index: TxIndex,
     /// Attributable transparent inputs. Each removes value from an address.
@@ -73,7 +72,7 @@ pub struct InputDelta {
     /// Position of this input within the transaction's inputs.
     pub index: OutputIndex,
     /// Transaction containing the output being spent.
-    pub prev_txid: TransactionHash,
+    pub prev_txid: TransactionId,
     /// Index of the output being spent within that transaction.
     pub prev_output: OutputIndex,
 }

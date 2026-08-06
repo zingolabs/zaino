@@ -720,7 +720,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
     async fn send_raw_transaction(
         &self,
         raw_transaction_hex: String,
-    ) -> Result<zaino_primitives::types::TransactionHash, Self::Error> {
+    ) -> Result<zaino_primitives::types::TransactionId, Self::Error> {
         Ok(self
             .indexer
             .send_raw_transaction(raw_transaction_hex)
@@ -2158,7 +2158,7 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
 mod compact_tx_to_proto_tests {
     use super::compact_tx_to_proto;
     use zaino_primitives::types::{
-        EncryptedCiphertext, OrchardAction, PreIndexCompactTx, Script, TransactionHash,
+        EncryptedCiphertext, OrchardAction, PreIndexCompactTx, Script, TransactionId,
         TransparentInput, TransparentOutput, Zatoshis,
     };
 
@@ -2173,9 +2173,9 @@ mod compact_tx_to_proto_tests {
 
     fn sample() -> PreIndexCompactTx {
         PreIndexCompactTx {
-            txid: TransactionHash::from([0xaa; 32]),
+            txid: TransactionId::from([0xaa; 32]),
             transparent_inputs: vec![TransparentInput {
-                prev_txid: TransactionHash::from([0xbb; 32]),
+                prev_txid: TransactionId::from([0xbb; 32]),
                 prev_index: 3,
             }],
             transparent_outputs: vec![TransparentOutput {

@@ -13,7 +13,7 @@
 
 use super::{
     BlockHash, BlockTime, ChainMetadata, CompactDifficulty, Nullifier, OrchardAction,
-    SaplingOutput, TransactionHash, TransparentInput, TransparentOutput,
+    SaplingOutput, TransactionId, TransparentInput, TransparentOutput,
 };
 
 // ---------------------------------------------------------------------------
@@ -48,7 +48,7 @@ pub struct PreIndexCompactBlock {
 #[derive(Debug, Clone)]
 pub struct PreIndexCompactTx {
     /// Transaction hash.
-    pub txid: TransactionHash,
+    pub txid: TransactionId,
     /// Transparent inputs — outpoint only (no script/sequence).
     pub transparent_inputs: Vec<TransparentInput>,
     /// Transparent outputs — value + lock script.
