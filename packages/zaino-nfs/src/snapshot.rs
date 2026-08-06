@@ -9,19 +9,19 @@
 // chain in a following commit. Remove once wired.
 #![allow(dead_code)]
 
-use zaino_core::{BlockHash, BlockId, CompactBlock, ForkPoint, Height, Locator, PreIndexCompactBlock};
+use zaino_core::{BlockHash, BlockId, CompactBlock, ForkPoint, Height, Locator};
 
 use crate::chain::{Chain, HasHeader};
 use crate::NfsSpine;
 
-// The chain element the window stores. **Provisional**: `PreIndexCompactBlock`
-// is the *ingestion format* (the block as Zebra hands it to us, pre-index), used
-// here as a stand-in because it happens to carry the header + transparent I/O.
-// The window's true domain block — the composition of that source format with
-// derived `ChainMetadata` (and only what facets/serving actually need) — is an
-// open modeling decision; the generic `Chain<B>` keeps that choice out here, not
-// in the reorg core.
-impl HasHeader for PreIndexCompactBlock {
+// The window stores the **domain block**: `CompactBlock`, which *is* the
+// composition `PreIndexCompactBlock ⊕ ChainMetadata` — the ingestion format
+// (from Zebra) enriched with the derived commitment-tree sizes. It carries
+// everything the window's operations need: the header (reorg), the transparent
+// I/O in its `PreIndexCompactTx`s (facets), and the tree sizes (serving). The
+// `PreIndexCompactBlock → CompactBlock` composition happens once, at ingestion
+// in the follow loop; the window just stores and serves the result.
+impl HasHeader for CompactBlock {
     fn hash(&self) -> BlockHash {
         self.hash
     }
@@ -39,11 +39,11 @@ impl HasHeader for PreIndexCompactBlock {
 /// block (an empty recent window is `Syncing`, not `Ready`).
 #[derive(Clone)]
 pub(crate) struct WindowSnapshot {
-    chain: Chain<PreIndexCompactBlock>,
+    chain: Chain<CompactBlock>,
 }
 
 impl WindowSnapshot {
-    pub(crate) fn new(chain: Chain<PreIndexCompactBlock>) -> Self {
+    pub(crate) fn new(chain: Chain<CompactBlock>) -> Self {
         Self { chain }
     }
 }
@@ -65,11 +65,10 @@ impl NfsSpine for WindowSnapshot {
         (to_height(self.chain.start), to_height(tip))
     }
 
-    fn compact_block(&self, _height: Height) -> Option<CompactBlock> {
-        // Seam: the serving `CompactBlock` = `PreIndexCompactBlock` + the
-        // `ChainMetadata` sapling/orchard tree sizes, which are a running fold
-        // seeded from the FS boundary tree state. Lands with tree-size seeding.
-        todo!("project PreIndexCompactBlock -> CompactBlock via seeded tree sizes")
+    fn compact_block(&self, height: Height) -> Option<CompactBlock> {
+        // The stored element *is* the serving block (tree sizes composed at
+        // ingestion) — just clone it out of the pinned chain.
+        self.chain.get(u32::from(height)).cloned()
     }
 
     fn height_of(&self, hash: BlockHash) -> Option<Height> {
@@ -98,18 +97,22 @@ fn to_height(h: u32) -> Height {
 
 #[cfg(test)]
 mod tests {
-    use zaino_core::PreIndexCompactBlock;
+    use zaino_core::ChainMetadata;
 
     use super::*;
 
-    fn block(height: u32, prev: BlockHash) -> PreIndexCompactBlock {
-        PreIndexCompactBlock {
+    fn block(height: u32, prev: BlockHash) -> CompactBlock {
+        CompactBlock {
             hash: BlockHash::from([height as u8; 32]),
             prev_hash: prev,
             height,
             time: 0,
             bits: 0,
             transactions: Vec::new(),
+            chain_metadata: ChainMetadata {
+                sapling_tree_size: height,
+                orchard_tree_size: height,
+            },
         }
     }
 
@@ -143,5 +146,16 @@ mod tests {
     fn chain_tips_is_the_single_best_tip() {
         let w = window(101, 3);
         assert_eq!(w.chain_tips(), vec![w.tip()]);
+    }
+
+    #[test]
+    fn compact_block_serves_the_stored_domain_block() {
+        let w = window(101, 5);
+        // In range: the stored CompactBlock (with its composed tree sizes).
+        let cb = w.compact_block(to_height(103)).expect("in range");
+        assert_eq!(cb.height, 103);
+        assert_eq!(cb.chain_metadata.sapling_tree_size, 103);
+        // Out of range: None.
+        assert!(w.compact_block(to_height(200)).is_none());
     }
 }
