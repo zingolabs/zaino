@@ -27,3 +27,4 @@ rustls = { version = "0.23", default-features = false, features = [
 hex.workspace = true
 thiserror.workspace = true
 zaino-status = { workspace = true }
+zaino-consensus = { workspace = true }

@@ -4,16 +4,18 @@
 //! and common utilities used across the Zaino blockchain indexer ecosystem.
 
 pub mod config;
-pub mod consensus;
 pub mod crypto;
 pub mod logging;
 pub mod net;
 pub mod xdg;
 
-// The status and health-probe vocabulary lives in `zaino-status`, so a
-// subsystem can report its status without depending on this crate's graph.
-// Re-exported under the module paths it has always had, so every existing
-// `zaino_common::status::*` / `zaino_common::probing::*` import keeps resolving.
+// The status and health-probe vocabulary lives in `zaino-status`, and the
+// consensus constants in `zaino-consensus`, so a subsystem can report its
+// status or reference a consensus bound without depending on this crate's
+// graph. Re-exported under the module paths they have always had, so every
+// existing `zaino_common::{status, probing, consensus}::*` import keeps
+// resolving.
+pub use zaino_consensus as consensus;
 pub use zaino_status::{probing, status};
 
 // Re-export network utilities

@@ -5892,8 +5892,18 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing-tree",
+ "zaino-consensus",
  "zaino-status",
  "zebra-chain",
+]
+
+[[package]]
+name = "zaino-consensus"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "primitive-types 0.14.0",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -5901,6 +5911,7 @@ name = "zaino-convert-zebra"
 version = "0.1.0"
 dependencies = [
  "thiserror 2.0.18",
+ "zaino-consensus",
  "zaino-primitives",
  "zebra-chain",
 ]

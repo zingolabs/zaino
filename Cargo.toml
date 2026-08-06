@@ -2,6 +2,7 @@
 [workspace]
 members = [
     "packages/zaino-status",
+    "packages/zaino-consensus",
     "packages/zaino-primitives",
     "packages/zaino-address",
     "packages/zaino-source",
@@ -26,6 +27,7 @@ members = [
 # when selected explicitly (`-p e2e` / `-p clientless`). See docs/adr/0002.
 default-members = [
     "packages/zaino-status",
+    "packages/zaino-consensus",
     "packages/zaino-primitives",
     "packages/zaino-address",
     "packages/zaino-source",
@@ -136,6 +138,10 @@ zainod = { path = "packages/zainod" }
 # (`tracing`), so any subsystem can report its status without inheriting a
 # dependency graph to do it.
 zaino-status = { path = "packages/zaino-status", version = "0.1.0" }
+# Consensus-derived constants (reorg bound, coinbase maturity, block size limit)
+# and the protocol-limit validation built on them. A leaf over `zebra-chain`, so
+# referencing a consensus fact does not cost a general-purpose dependency.
+zaino-consensus = { path = "packages/zaino-consensus", version = "0.1.0" }
 # Zero-dependency domain vocabulary. Every crate that needs chain-level types
 # (heights, hashes, blocks, transactions) depends on this rather than on
 # `zebra-chain` or on another zaino crate. See docs/adr/0010.
