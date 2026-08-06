@@ -3,11 +3,21 @@
 //! This module provides:
 //! - [`StatusType`]: An enum representing service operational states
 //! - [`Status`]: A trait for types that can report their status
+//! - [`NamedAtomicStatus`]: a thread-safe [`StatusType`] cell that logs its
+//!   transitions
 //!
 //! Types implementing [`Status`] automatically gain [`Liveness`]
 //! and [`Readiness`] implementations via blanket impls.
 
-use std::fmt;
+use std::{
+    fmt,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+};
+
+use tracing::debug;
 
 use crate::probing::{Liveness, Readiness};
 
@@ -142,5 +152,61 @@ impl<T: Status> Liveness for T {
 impl<T: Status> Readiness for T {
     fn is_ready(&self) -> bool {
         self.status().is_ready()
+    }
+}
+
+/// Thread-safe status cell that logs every transition.
+///
+/// The name identifies the component in those log lines, so a reader can
+/// follow one subsystem's lifecycle through an interleaved log without
+/// correlating by anything else.
+///
+/// Cloning shares the cell: every clone observes and publishes the same
+/// status, which is what lets a service hand read handles to consumers while
+/// its own task keeps writing.
+#[derive(Debug, Clone)]
+pub struct NamedAtomicStatus {
+    name: &'static str,
+    inner: Arc<AtomicUsize>,
+}
+
+impl NamedAtomicStatus {
+    /// Creates a new NamedAtomicStatus with the given component name and initial status.
+    pub fn new(name: &'static str, status: StatusType) -> Self {
+        debug!(component = name, status = %status, "[STATUS] initial");
+        Self {
+            name,
+            inner: Arc::new(AtomicUsize::new(status.into())),
+        }
+    }
+
+    /// Returns the component name.
+    pub fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// Loads the value held in the NamedAtomicStatus.
+    pub fn load(&self) -> StatusType {
+        StatusType::from(self.inner.load(Ordering::SeqCst))
+    }
+
+    /// Sets the value held in the NamedAtomicStatus, logging the transition.
+    pub fn store(&self, status: StatusType) {
+        let old = self.load();
+        if old != status {
+            debug!(
+                component = self.name,
+                from = %old,
+                to = %status,
+                "[STATUS] transition"
+            );
+        }
+        self.inner.store(status.into(), Ordering::SeqCst);
+    }
+}
+
+impl Status for NamedAtomicStatus {
+    fn status(&self) -> StatusType {
+        self.load()
     }
 }
