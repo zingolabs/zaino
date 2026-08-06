@@ -16,6 +16,7 @@
 
 mod chain;
 pub mod facts;
+mod snapshot;
 mod spine;
 
 use std::future::Future;
