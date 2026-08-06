@@ -5892,6 +5892,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing-tree",
+ "zaino-status",
  "zebra-chain",
 ]
 
@@ -6075,6 +6076,13 @@ dependencies = [
  "zebra-chain",
  "zebra-rpc",
  "zebra-state",
+]
+
+[[package]]
+name = "zaino-status"
+version = "0.1.0"
+dependencies = [
+ "tracing",
 ]
 
 [[package]]

@@ -21,6 +21,11 @@ use tracing::debug;
 
 use crate::probing::{Liveness, Readiness};
 
+// The `Liveness`/`Readiness` blanket impls below are why this module and
+// `probing` live in the same crate: `impl<T: Status> Liveness for T` needs one
+// of the two traits to be local, so splitting them would leave the impl
+// homeless.
+
 /// Status of a service component.
 ///
 /// Represents the operational state of a component.

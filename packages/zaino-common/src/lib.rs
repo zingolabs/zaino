@@ -8,9 +8,13 @@ pub mod consensus;
 pub mod crypto;
 pub mod logging;
 pub mod net;
-pub mod probing;
-pub mod status;
 pub mod xdg;
+
+// The status and health-probe vocabulary lives in `zaino-status`, so a
+// subsystem can report its status without depending on this crate's graph.
+// Re-exported under the module paths it has always had, so every existing
+// `zaino_common::status::*` / `zaino_common::probing::*` import keeps resolving.
+pub use zaino_status::{probing, status};
 
 // Re-export network utilities
 pub use net::{resolve_socket_addr, try_resolve_address, AddressResolution};

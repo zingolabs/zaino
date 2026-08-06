@@ -1,6 +1,7 @@
 # Workspace Members are in dependency order, do not change this without prior consideration.
 [workspace]
 members = [
+    "packages/zaino-status",
     "packages/zaino-primitives",
     "packages/zaino-address",
     "packages/zaino-source",
@@ -24,6 +25,7 @@ members = [
 # default-members — so the heavy live-test crates are built and tested only
 # when selected explicitly (`-p e2e` / `-p clientless`). See docs/adr/0002.
 default-members = [
+    "packages/zaino-status",
     "packages/zaino-primitives",
     "packages/zaino-address",
     "packages/zaino-source",
@@ -130,6 +132,10 @@ tempfile = "3.2"
 # no longer need `default-features = false` to drop it: their default feature
 # set is already empty. Enable zcashd end-to-end with `--features zcashd_support`.
 zainod = { path = "packages/zainod" }
+# Service status and health-probe vocabulary. A leaf with one dependency
+# (`tracing`), so any subsystem can report its status without inheriting a
+# dependency graph to do it.
+zaino-status = { path = "packages/zaino-status", version = "0.1.0" }
 # Zero-dependency domain vocabulary. Every crate that needs chain-level types
 # (heights, hashes, blocks, transactions) depends on this rather than on
 # `zebra-chain` or on another zaino crate. See docs/adr/0010.
