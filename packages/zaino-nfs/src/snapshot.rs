@@ -9,22 +9,41 @@
 // chain in a following commit. Remove once wired.
 #![allow(dead_code)]
 
-use zaino_core::{BlockHash, BlockId, CompactBlock, ForkPoint, Height, Locator};
+use zaino_core::{BlockHash, BlockId, CompactBlock, ForkPoint, Height, Locator, PreIndexCompactBlock};
 
-use crate::chain::Chain;
+use crate::chain::{Chain, HasHeader};
 use crate::NfsSpine;
+
+// The chain element the window stores. **Provisional**: `PreIndexCompactBlock`
+// is the *ingestion format* (the block as Zebra hands it to us, pre-index), used
+// here as a stand-in because it happens to carry the header + transparent I/O.
+// The window's true domain block — the composition of that source format with
+// derived `ChainMetadata` (and only what facets/serving actually need) — is an
+// open modeling decision; the generic `Chain<B>` keeps that choice out here, not
+// in the reorg core.
+impl HasHeader for PreIndexCompactBlock {
+    fn hash(&self) -> BlockHash {
+        self.hash
+    }
+    fn prev_hash(&self) -> BlockHash {
+        self.prev_hash
+    }
+    fn height(&self) -> u32 {
+        self.height
+    }
+}
 
 /// A pinned, reorg-coherent view of the recent window at one instant.
 ///
-/// Constructed from a non-empty [`Chain`]: a `Ready` window always has at least
-/// one block (an empty recent window is `Syncing`, not `Ready`).
+/// Constructed from a non-empty chain: a `Ready` window always has at least one
+/// block (an empty recent window is `Syncing`, not `Ready`).
 #[derive(Clone)]
 pub(crate) struct WindowSnapshot {
-    chain: Chain,
+    chain: Chain<PreIndexCompactBlock>,
 }
 
 impl WindowSnapshot {
-    pub(crate) fn new(chain: Chain) -> Self {
+    pub(crate) fn new(chain: Chain<PreIndexCompactBlock>) -> Self {
         Self { chain }
     }
 }

@@ -5,12 +5,14 @@
 //! sharing.
 //!
 //! **Vendored** from Hahn's `zaino-store::chain` (PR #1378, Lean-verified reorg
-//! machinery), adapted narrowly:
-//! - the element is our [`PreIndexCompactBlock`] (carries transparent I/O, so
-//!   the window can re-derive spend/address facts) instead of his opaque
-//!   `Block { data: Vec<u8> }`;
-//! - height indexing stays raw `u32` (his `Height` alias); the `NfsSpine` port
-//!   converts to/from the domain [`zaino_core::Height`] at the boundary.
+//! machinery). Adapted narrowly: height indexing stays raw `u32` (his `Height`
+//! alias); the `NfsSpine` port converts to/from the domain [`zaino_core::Height`].
+//!
+//! The chain is **content-agnostic** — like Hahn's opaque `data: Vec<u8>`
+//! element, the reorg core never interprets a block beyond its header
+//! ([`HasHeader`]). *What* the window stores as `B` — its domain block, carrying
+//! the transparent I/O and tree metadata that facets and serving need — is a
+//! separate modeling decision made at the window layer, not baked in here.
 //!
 //! Reconcile with `zaino-store` when #1378 lands. See [[project_zallet_fit_mirror]]
 //! for the mirror-then-reconcile pattern.
@@ -21,29 +23,33 @@
 
 use std::sync::Arc;
 
-use zaino_core::{BlockHash, PreIndexCompactBlock};
+use zaino_core::BlockHash;
 
-/// A block in the window: the source-side compact block, which carries the
-/// header (`hash`/`prev_hash`/`height`) the chain indexes by and the transparent
-/// I/O the facets scan.
-type Block = PreIndexCompactBlock;
+/// The block header the chain indexes and reorgs by — all the reorg core ever
+/// reads. Deliberately minimal: content (transactions, tree sizes, …) is the
+/// window's concern, not the chain's.
+pub(crate) trait HasHeader {
+    fn hash(&self) -> BlockHash;
+    fn prev_hash(&self) -> BlockHash;
+    fn height(&self) -> u32;
+}
 
-/// Persistent chain: best chain in height order.
+/// Persistent chain: best chain in height order, over any header-bearing block.
 ///
 /// `chain[i]` is the block at height `chain.start + i`. The chain is dense:
 /// every height from `start` to `start + len - 1` has exactly one block.
 ///
-/// Structural sharing via `Arc<im::Vector<Block>>`. `Clone` is O(1) — this is
-/// how a snapshot pins the window; push/pop/truncate/append allocate only the
-/// changed spine.
-#[derive(Debug, Clone)]
-pub(crate) struct Chain {
+/// Structural sharing via `Arc<im::Vector<B>>`. `Clone` is O(1) — this is how a
+/// snapshot pins the window; push/pop/truncate/append allocate only the changed
+/// spine.
+#[derive(Clone)]
+pub(crate) struct Chain<B> {
     /// The lowest height covered by this chain.
     pub(crate) start: u32,
-    inner: Arc<im::Vector<Block>>,
+    inner: Arc<im::Vector<B>>,
 }
 
-impl Chain {
+impl<B: Clone + HasHeader> Chain<B> {
     /// Create an empty chain starting at `start`.
     pub(crate) fn new(start: u32) -> Self {
         Self {
@@ -53,7 +59,7 @@ impl Chain {
     }
 
     /// Look up the block at `height`. Returns `None` if out of range.
-    pub(crate) fn get(&self, height: u32) -> Option<&Block> {
+    pub(crate) fn get(&self, height: u32) -> Option<&B> {
         if height < self.start {
             return None;
         }
@@ -62,22 +68,22 @@ impl Chain {
     }
 
     /// The last (highest-height) block in the chain.
-    pub(crate) fn last(&self) -> Option<&Block> {
+    pub(crate) fn last(&self) -> Option<&B> {
         self.inner.last()
     }
 
     /// The tip hash (hash of the highest block).
     pub(crate) fn tip_hash(&self) -> Option<BlockHash> {
-        self.inner.last().map(|b| b.hash)
+        self.inner.last().map(|b| b.hash())
     }
 
     /// The tip height (`start + len - 1`), or `None` if empty.
     pub(crate) fn tip_height(&self) -> Option<u32> {
-        self.last().map(|b| b.height)
+        self.last().map(|b| b.height())
     }
 
     /// Push a block to the back (tip extension). O(log n) structural sharing.
-    pub(crate) fn push_back(&self, block: Block) -> Self {
+    pub(crate) fn push_back(&self, block: B) -> Self {
         let mut new_vec = (*self.inner).clone();
         new_vec.push_back(block);
         Self {
@@ -88,7 +94,7 @@ impl Chain {
 
     /// Pop from the front (freeze). O(log n) structural sharing.
     /// Returns `None` if empty, otherwise `Some((block, new_chain))`.
-    pub(crate) fn pop_front(&self) -> Option<(Block, Self)> {
+    pub(crate) fn pop_front(&self) -> Option<(B, Self)> {
         if self.inner.is_empty() {
             return None;
         }
@@ -125,7 +131,7 @@ impl Chain {
         if keep >= self.inner.len() {
             return self.clone();
         }
-        let new_inner: im::Vector<Block> = self.inner.iter().take(keep).cloned().collect();
+        let new_inner: im::Vector<B> = self.inner.iter().take(keep).cloned().collect();
         Self {
             start: self.start,
             inner: Arc::new(new_inner),
@@ -134,7 +140,7 @@ impl Chain {
 
     /// Append a fragment to the back. O(log n) structural sharing.
     /// The fragment must be non-empty and form a valid chain extension.
-    pub(crate) fn append(&self, fragment: &im::Vector<Block>) -> Self {
+    pub(crate) fn append(&self, fragment: &im::Vector<B>) -> Self {
         if fragment.is_empty() {
             return self.clone();
         }
@@ -151,20 +157,16 @@ impl Chain {
     /// `trim_from`. For an empty chain, `trim_from` must be ≤ `start`;
     /// `trim_from = 0` means discard everything and start fresh.
     ///
-    /// The caller must ensure `fragment[0].prev_hash` matches the block at
+    /// The caller must ensure `fragment[0].prev_hash()` matches the block at
     /// `trim_from - 1` (in the finalised state when `trim_from <= start`, or in
     /// the chain when `trim_from > start`).
-    pub(crate) fn add_fragment(
-        &self,
-        trim_from: u32,
-        fragment: impl Into<im::Vector<Block>>,
-    ) -> Self {
+    pub(crate) fn add_fragment(&self, trim_from: u32, fragment: impl Into<im::Vector<B>>) -> Self {
         let fragment = fragment.into();
         self.truncate_from_incl(trim_from).append(&fragment)
     }
 
     /// Iterate over (height, &block) pairs.
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (u32, &Block)> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (u32, &B)> {
         let start = self.start;
         self.inner
             .iter()
@@ -177,16 +179,23 @@ impl Chain {
 mod tests {
     use super::*;
 
-    /// A minimal window block distinguished by its header `(hash, prev_hash,
-    /// height)`; no transactions (facet re-derivation is exercised elsewhere).
-    fn test_block(height: u32, prev_hash: BlockHash) -> Block {
-        PreIndexCompactBlock {
-            hash: BlockHash::from([height as u8; 32]),
-            prev_hash,
-            height,
-            time: 0,
-            bits: 0,
-            transactions: Vec::new(),
+    /// A minimal header-only block — the chain never needs more than this.
+    #[derive(Debug, Clone)]
+    struct TestBlock {
+        hash: BlockHash,
+        prev_hash: BlockHash,
+        height: u32,
+    }
+
+    impl HasHeader for TestBlock {
+        fn hash(&self) -> BlockHash {
+            self.hash
+        }
+        fn prev_hash(&self) -> BlockHash {
+            self.prev_hash
+        }
+        fn height(&self) -> u32 {
+            self.height
         }
     }
 
@@ -194,10 +203,17 @@ mod tests {
         BlockHash::from([tag; 32])
     }
 
+    fn test_block(height: u32, prev_hash: BlockHash) -> TestBlock {
+        TestBlock {
+            hash: hash(height as u8),
+            prev_hash,
+            height,
+        }
+    }
+
     #[test]
     fn chain_push_and_get() {
-        let c = Chain::new(0);
-        let c = c.push_back(test_block(0, hash(0)));
+        let c = Chain::new(0).push_back(test_block(0, hash(0)));
         assert_eq!(c.get(0).expect("h0").height, 0);
         assert!(c.get(1).is_none());
 
@@ -249,7 +265,7 @@ mod tests {
         let b1 = test_block(1, b0.hash);
         let c = Chain::new(0).push_back(b0);
 
-        let fragment: im::Vector<Block> = std::iter::once(b1).collect();
+        let fragment: im::Vector<TestBlock> = std::iter::once(b1).collect();
         let c2 = c.add_fragment(1, fragment);
         assert_eq!(c2.last().expect("tip").height, 1);
     }
@@ -263,16 +279,15 @@ mod tests {
         let b2_hash = b2.hash;
         let c = Chain::new(0).push_back(b0).push_back(b1).push_back(b2);
 
-        // Reorg at height 1: trim from 2, replace height 2 with alternative b2a.
-        let b2a = test_block(2, b1_hash);
-        // Distinguish b2a from b2 by prev is the same but re-tag the hash.
-        let b2a = PreIndexCompactBlock {
+        // Reorg at height 1: trim from 2, replace height 2 with an alternative.
+        let b2a = TestBlock {
             hash: hash(0xEE),
-            ..b2a
+            prev_hash: b1_hash,
+            height: 2,
         };
         let b2a_hash = b2a.hash;
         assert_ne!(b2a_hash, b2_hash);
-        let fragment: im::Vector<Block> = std::iter::once(b2a).collect();
+        let fragment: im::Vector<TestBlock> = std::iter::once(b2a).collect();
         let c2 = c.add_fragment(2, fragment);
         assert_eq!(c2.len(), 3);
         // Original unchanged.
@@ -291,7 +306,11 @@ mod tests {
         // Snapshot before mutation (an O(1) clone).
         let snap = c.clone();
 
-        let c2 = c.push_back(test_block(2, b1_hash));
+        let c2 = c.push_back(TestBlock {
+            hash: hash(2),
+            prev_hash: b1_hash,
+            height: 2,
+        });
 
         // The pinned snapshot still only has heights 0,1.
         assert_eq!(snap.len(), 2);
