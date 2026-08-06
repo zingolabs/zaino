@@ -14,6 +14,7 @@
 //! Scaffold: capability algebra only. Implementations follow.
 #![forbid(unsafe_code)]
 
+mod chain;
 pub mod facts;
 mod spine;
 

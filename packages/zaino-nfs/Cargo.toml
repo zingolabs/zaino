@@ -8,3 +8,4 @@ description = "Non-finalised-state component: the reorg-prone recent window. Ado
 [dependencies]
 zaino-core = { path = "../zaino-core" }
 futures = "0.3"
+im = "15"
