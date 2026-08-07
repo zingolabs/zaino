@@ -211,20 +211,48 @@ jobs:
       fail-fast: false
       matrix:
         partition:
-          # - "clientless::chain_cache"  # disabled: timeouts/hangs pending chain-index
-          #   integration; re-enable per https://github.com/zingolabs/zaino/issues/1312
+          # Regenerated with `makers update-test-targets`, then edited by hand
+          # for the two exclusions below. The generator cannot express them: its
+          # sed range stops at the first comment inside this array, so re-running
+          # it appends rather than replaces. Diff its output against this list
+          # rather than pasting over it.
+          #
+          # `clientless::chain_cache` is excluded: timeouts/hangs pending
+          # chain-index integration, re-enable per
+          # https://github.com/zingolabs/zaino/issues/1312.
+          #
+          # The e2e partitions (e2e::{compact_block_wire, devtool,
+          # ironwood_activation, test_vectors}) are excluded: they live in the
+          # unified --workspace archive and are compiled every run, but running
+          # the validator-heavy suite here is a CI-capacity decision tracked in
+          # https://github.com/zingolabs/zaino/issues/1308.
+          #
+          # `clientless::json_server` and `e2e::devtool_zcashd` are absent for a
+          # different reason: both are `#![cfg(feature = "zcashd_support")]` and
+          # the archive is built --no-default-features, so their partitions hold
+          # zero tests and `--no-tests fail` would fail the job.
+          - "clientless::compact_block_consistency"
           - "clientless::fetch_service"
-          - "clientless::json_server"
           - "clientless::state_service"
           - "clientless::test_vectors"
-          # NOTE: the e2e partition (e2e::devtool, e2e::devtool_zcashd,
-          # e2e::test_vectors) now lives in the unified --workspace archive and
-          # is compiled every run, but is intentionally NOT executed here —
-          # adding the validator-heavy e2e suite to this job is a CI-capacity
-          # decision tracked in https://github.com/zingolabs/zaino/issues/1308.
-          # When added, regenerate this matrix with `makers update-test-targets`.
+          - "clientless::the_pub_testnet_ironwood_boundary"
+          - "clientless::validator_heights"
+          - "zaino-address"
+          - "zaino-common"
+          - "zaino-consensus"
+          - "zaino-convert-zebra"
           - "zainod"
+          - "zaino-primitives"
+          - "zaino-proto"
+          - "zaino-rpc"
+          - "zaino-serve"
+          - "zaino-source"
+          - "zaino-source-zebra"
+          - "zaino-source-zebra-readstate"
+          - "zaino-source-zebra-rpc"
+          - "zaino-source-zebra-rpc::block_parity"
           - "zaino-state"
+          - "zaino-state::source_capabilities"
           - "zaino-testutils"
     steps:
       - uses: actions/checkout@v7
