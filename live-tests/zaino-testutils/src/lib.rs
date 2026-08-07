@@ -823,6 +823,9 @@ where
                         ..Default::default()
                     },
                 },
+                // The live suite exercises the built-in mempool bounds; a test
+                // that wants different ones sets them on its own config.
+                mempool: Default::default(),
                 ephemeral_finalised_state: false,
                 zebra_db_path,
                 network: zaino_network_kind,
