@@ -193,3 +193,17 @@ rust-analyzer indexes the
 single workspace, so go-to-def / find-references resolve across production and
 test code in one pass — no linked-project swapping, and an empty result means
 "no references," not "the other workspace isn't loaded."
+
+## Crate usage guides: keep them current
+
+Each crate is documented by a usage guide at `packages/<crate>/usage.md`, indexed
+from the root `README.md`'s "Crate usage guides" section. The set is deliberately
+incomplete and filled in crate by crate.
+
+When a change adds or alters a crate's **public capability** — a new port,
+service, config knob, public method, or a behavioural contract consumers rely on
+— update that crate's guide: fold it into the relevant existing section, or add
+one if none fits. If the crate has no guide yet, create it and add it to the
+README index. This mirrors the CHANGELOG discipline: the CHANGELOG records *what
+changed*, the guide records *how to use it*, and neither substitutes for the
+other. Purely internal refactors need no guide edit.

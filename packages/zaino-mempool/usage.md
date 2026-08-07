@@ -7,7 +7,7 @@ consume recipes. This guide explains the model and the contracts a consumer or
 adapter author must honour.
 
 For *why* the subsystem is shaped this way, see
-[ADR-0008](../../../docs/adr/0008-mempool-subsystem-separation.md); for the
+[ADR-0010](../../docs/adr/0010-mempool-subsystem-separation.md); for the
 state machine and lifecycle, see [`mempool_lifecycle.md`](./mempool_lifecycle.md).
 
 ## The two layers

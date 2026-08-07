@@ -41,6 +41,8 @@ packages/                          Cargo workspace member crates, in dependency 
   zaino-source-zebra-rpc/            JSON-RPC adapter + response parsing
   zaino-source-zebra-readstate/      Zebra ReadStateService adapter
   zaino-source-zebra/                ZebraValidator composite + routing
+  zaino-mempool/                     Mempool domain types and ports (no node library)
+  zaino-mempool-service/             The mempool runtime: poll loop, read handles, coherence
   zaino-common/                      Shared utilities and configuration
   zaino-proto/                       Protocol buffer definitions
   zaino-state/                       Chain state and indexer service library
@@ -158,6 +160,8 @@ mistakes its design is trying to prevent.
 - [`zaino-source-zebra-readstate`](./packages/zaino-source-zebra-readstate/usage.md): the read-state adapter, and what it deliberately cannot answer.
 - [`zaino-source-zebra`](./packages/zaino-source-zebra/usage.md): the composite and its three routing rules.
 - [`zaino-address`](./packages/zaino-address/usage.md): address classification, and what is not classified.
+- [`zaino-mempool`](./packages/zaino-mempool/usage.md): the two-layer model, the ports, and the bounds.
+- [`zaino-mempool-service`](./packages/zaino-mempool-service/usage.md): spawning and consuming the mempool.
 
 
 ## Security Vulnerability Disclosure
