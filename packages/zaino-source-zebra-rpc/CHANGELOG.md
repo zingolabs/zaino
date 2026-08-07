@@ -19,8 +19,25 @@ and this library adheres to Rust's notion of
   (address-keyed reads), `call_parsed_optional` (`gettxout`),
   `submission_rejection` (`sendrawtransaction`), `spent_info_rejection`
   (`getspentinfo`).
+- Impls of the three mempool sourcing ports: `GetMempoolMetadata`,
+  `GetRawMempoolTransaction`, `GetMempoolSourceTip`. The verbose listing goes
+  through `call_parsed_slow`, which applies `zaino_rpc::HEAVY_METHOD_TIMEOUT` —
+  the validator answers it by walking its whole mempool, so the client-wide
+  timeout would read a busy validator as a hard error.
+- `MAX_MEMPOOL_LISTING_ENTRIES` (1,000,000) and `parse_mempool_txids`. Both
+  mempool listings are now capped on their declared entry count *before* any
+  entry is decoded. `zaino_rpc::MAX_RESPONSE_BYTES` alone bounds the response
+  bytes but would still admit several hundred thousand txids, each of which a
+  consumer turns into a raw-transaction fetch. A ZIP-401-bounded validator
+  cannot approach this cap, so it only trips on one that is compromised,
+  misconfigured, or impersonated.
 
 ### Changed
+- `GetMempoolSourceTip` reads `getblockchaininfo` rather than the
+  `getbestblockhash` + `getblock` pair `GetChainTip` uses: one round trip
+  answers hash and height together, where reading them separately would let a
+  block land between the two calls and hand the consumer a tip that never
+  existed.
 - `getspentinfo` no longer shares `call_parsed_optional` with `gettxout`. It
   has no null answer in the interface, so `-5` becomes the `NotSpent` domain
   rejection and `-32601` becomes `Unsupported` — the latter because zebrad does

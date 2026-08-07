@@ -37,7 +37,7 @@ use zaino_primitives::types::{
     TransactionLocation, TransparentAddress, TreeRoot, TreeRootInfo, TreeRoots, Treestate, Utxo,
     ValuePoolBalance, Zatoshis,
 };
-use zaino_source::TransactionResponse;
+use zaino_source::{MempoolTxMeta, TransactionResponse};
 
 // ---------------------------------------------------------------------------
 // Scalar helpers
@@ -310,6 +310,17 @@ pub(crate) enum ParseError {
     /// Block deserialization failed.
     #[error("deserialize: {0}")]
     Deserialize(String),
+
+    /// A mempool listing declared more entries than we are willing to decode.
+    #[error("{kind} mempool listing too large: {len} entries > {max}")]
+    ListingTooLarge {
+        /// Which listing — `"txid"` or `"verbose"`.
+        kind: &'static str,
+        /// The entry count the validator sent.
+        len: usize,
+        /// The cap that was exceeded.
+        max: usize,
+    },
 }
 
 impl ParseError {
@@ -659,6 +670,80 @@ pub(crate) fn parse_address_utxos(value: &serde_json::Value) -> Result<Vec<Utxo>
 /// `getaddresstxids`.
 pub(crate) fn parse_txids(value: &serde_json::Value) -> Result<Vec<TransactionId>, ParseError> {
     as_array(value)?.iter().map(as_txid).collect()
+}
+
+/// Maximum number of entries accepted from one mempool listing, verbose or txid.
+///
+/// A ZIP-401-bounded validator cannot hold anything close to this — the cost
+/// floor of 10,000 bytes per transaction caps an 80 MB mempool at roughly 8,000
+/// entries — so this only ever trips on a validator that is compromised,
+/// misconfigured, or impersonated.
+///
+/// It is a belt on top of `zaino_rpc::MAX_RESPONSE_BYTES`, which bounds the
+/// response *bytes* but alone would still admit several hundred thousand txids,
+/// each of which a consumer would then turn into a raw-transaction fetch.
+pub(crate) const MAX_MEMPOOL_LISTING_ENTRIES: usize = 1_000_000;
+
+/// Reject an over-cap mempool listing on its declared entry count, before any
+/// entry is decoded.
+///
+/// Checking the count rather than the decoded set is the point: it bounds the
+/// parse's peak allocation and, upstream, stops a pathological listing from
+/// driving a million raw-transaction fetches.
+fn enforce_listing_cap(kind: &'static str, len: usize) -> Result<(), ParseError> {
+    if len > MAX_MEMPOOL_LISTING_ENTRIES {
+        return Err(ParseError::ListingTooLarge {
+            kind,
+            len,
+            max: MAX_MEMPOOL_LISTING_ENTRIES,
+        });
+    }
+    Ok(())
+}
+
+/// Parse a `getrawmempool` response, under the mempool listing cap.
+///
+/// Separate from [`parse_txids`] because that also serves `getaddresstxids`,
+/// where this bound has no meaning.
+pub(crate) fn parse_mempool_txids(
+    value: &serde_json::Value,
+) -> Result<Vec<TransactionId>, ParseError> {
+    let entries = as_array(value)?;
+    enforce_listing_cap("txid", entries.len())?;
+    entries.iter().map(as_txid).collect()
+}
+
+/// Parse a `getrawmempool verbose` response: a map of txid to `{ height, time }`.
+///
+/// Zebra reports far more per entry (fee, size, descendant stats); everything
+/// beyond the entry height and time is ignored, because nothing Zaino serves is
+/// derived from it and parsing a field commits us to its shape.
+pub(crate) fn parse_mempool_metadata(
+    value: &serde_json::Value,
+) -> Result<Vec<MempoolTxMeta>, ParseError> {
+    let entries = value
+        .as_object()
+        .ok_or_else(|| ParseError::unexpected("object", value))?;
+    enforce_listing_cap("verbose", entries.len())?;
+
+    entries
+        .iter()
+        .map(|(txid_hex, meta)| {
+            Ok(MempoolTxMeta {
+                txid: as_txid(&serde_json::Value::String(txid_hex.clone()))?,
+                entry_height: as_height(field(meta, "height")?)?,
+                // Absent rather than an error: the entry height is what Zaino
+                // acts on, and a validator that omits the timestamp is still
+                // giving a usable answer.
+                entry_time: opt_field(meta, "time").map(as_i64).transpose()?,
+            })
+        })
+        .collect()
+}
+
+/// Parse a `getrawtransaction(txid, 0)` response: a bare hex string.
+pub(crate) fn parse_raw_transaction(value: &serde_json::Value) -> Result<Vec<u8>, ParseError> {
+    hex::decode(as_str(value)?).map_err(|e| ParseError::Hex(e.to_string()))
 }
 
 /// Parse a `z_getsubtreesbyindex` response.
@@ -1285,5 +1370,84 @@ mod tests {
         .expect("a getblockchaininfo without pools parses");
 
         assert!(info.value_pools.is_empty());
+    }
+
+    /// The verbose listing carries far more per entry than Zaino reads. Only
+    /// `height` and `time` are taken, and an entry missing `time` is still a
+    /// usable answer — the entry height is the field Zaino acts on.
+    #[test]
+    fn verbose_mempool_takes_only_the_entry_height_and_time() {
+        let value = json!({
+            ASYMMETRIC_HEX: {
+                "size": 1_234,
+                "fee": 1_000,
+                "time": 1_700_000_000i64,
+                "height": 2_500_000,
+                "descendantcount": 1,
+                "depends": [],
+            },
+        });
+
+        let entries = parse_mempool_metadata(&value).expect("verbose mempool parses");
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(u32::from(entries[0].entry_height), 2_500_000);
+        assert_eq!(entries[0].entry_time, Some(1_700_000_000));
+        assert_eq!(
+            <[u8; 32]>::from(entries[0].txid),
+            reversed_bytes(),
+            "txids are reversed on the wire, keys included"
+        );
+    }
+
+    /// An entry without `time` parses; one without `height` does not. The
+    /// timestamp is informational, but the entry height is a protocol field
+    /// Zaino stamps onto its mempool entries — inventing one would put a wrong
+    /// consensus branch id on a served transaction.
+    #[test]
+    fn a_verbose_entry_needs_its_height_but_not_its_time() {
+        let without_time = json!({ ASYMMETRIC_HEX: { "height": 2_500_000 } });
+        let entries = parse_mempool_metadata(&without_time).expect("height alone parses");
+        assert_eq!(entries[0].entry_time, None);
+
+        let without_height = json!({ ASYMMETRIC_HEX: { "time": 1_700_000_000i64 } });
+        assert!(matches!(
+            parse_mempool_metadata(&without_height),
+            Err(ParseError::MissingField("height"))
+        ));
+    }
+
+    /// The cap is checked on the declared entry count, before any entry is
+    /// decoded — that is what bounds the parse's peak allocation and, upstream,
+    /// stops a pathological listing from driving a million raw-transaction
+    /// fetches. At the cap is accepted; one over is refused.
+    #[test]
+    fn an_oversized_mempool_listing_is_refused_on_its_count() {
+        assert!(enforce_listing_cap("txid", MAX_MEMPOOL_LISTING_ENTRIES).is_ok());
+
+        for kind in ["txid", "verbose"] {
+            assert!(
+                matches!(
+                    enforce_listing_cap(kind, MAX_MEMPOOL_LISTING_ENTRIES + 1),
+                    Err(ParseError::ListingTooLarge { .. })
+                ),
+                "the {kind} listing must be capped"
+            );
+        }
+    }
+
+    /// `getrawtransaction` at verbosity 0 answers with a bare hex string, not
+    /// an object — a different shape from the verbosity-1 response
+    /// [`parse_transaction`] reads.
+    #[test]
+    fn a_raw_transaction_is_a_bare_hex_string() {
+        assert_eq!(
+            parse_raw_transaction(&json!("deadbeef")).expect("hex parses"),
+            vec![0xde, 0xad, 0xbe, 0xef]
+        );
+        assert!(matches!(
+            parse_raw_transaction(&json!({ "hex": "deadbeef" })),
+            Err(ParseError::UnexpectedType { .. })
+        ));
     }
 }

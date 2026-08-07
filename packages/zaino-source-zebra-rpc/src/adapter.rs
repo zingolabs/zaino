@@ -289,18 +289,24 @@ impl ZebraRpcAdapter {
     ///
     /// The classifier is what separates the wrappers below: it decides whether a
     /// given transport failure is the port's domain answer or a real fetch
-    /// failure.
+    /// failure. `timeout` is the per-request bound, `None` for the client's
+    /// default.
     async fn call_parsed_classified<T, E>(
         &self,
         method: &str,
         params: Vec<serde_json::Value>,
+        timeout: Option<std::time::Duration>,
         parse: impl FnOnce(&serde_json::Value) -> Result<T, parse::ParseError>,
         classify: impl FnOnce(zaino_rpc::RpcError) -> QueryError<E>,
     ) -> Result<T, QueryError<E>>
     where
         E: std::fmt::Debug + std::fmt::Display,
     {
-        let value = self.rpc.call(method, params).await.map_err(classify)?;
+        let value = self
+            .rpc
+            .call_with_timeout(method, params, timeout)
+            .await
+            .map_err(classify)?;
         parse(&value).map_err(|e| QueryError::Fetch(from_parse(e)))
     }
 
@@ -315,9 +321,30 @@ impl ZebraRpcAdapter {
     where
         E: std::fmt::Debug + std::fmt::Display,
     {
-        self.call_parsed_classified(method, params, parse, |error| {
+        self.call_parsed_classified(method, params, None, parse, |error| {
             QueryError::Fetch(error.into())
         })
+        .await
+    }
+
+    /// [`call_parsed`](Self::call_parsed) with a per-request timeout, for the
+    /// methods the validator answers by walking a whole data structure.
+    async fn call_parsed_slow<T, E>(
+        &self,
+        method: &str,
+        params: Vec<serde_json::Value>,
+        parse: impl FnOnce(&serde_json::Value) -> Result<T, parse::ParseError>,
+    ) -> Result<T, QueryError<E>>
+    where
+        E: std::fmt::Debug + std::fmt::Display,
+    {
+        self.call_parsed_classified(
+            method,
+            params,
+            Some(zaino_rpc::HEAVY_METHOD_TIMEOUT),
+            parse,
+            |error| QueryError::Fetch(error.into()),
+        )
         .await
     }
 
@@ -336,7 +363,7 @@ impl ZebraRpcAdapter {
     where
         E: std::fmt::Debug + std::fmt::Display,
     {
-        self.call_parsed_classified(method, params, parse, |error| {
+        self.call_parsed_classified(method, params, None, parse, |error| {
             absent_or_fetch(error, absent)
         })
         .await
@@ -355,7 +382,7 @@ impl ZebraRpcAdapter {
     where
         E: std::fmt::Debug + std::fmt::Display,
     {
-        self.call_parsed_classified(method, params, parse, |error| {
+        self.call_parsed_classified(method, params, None, parse, |error| {
             invalid_address_or_fetch(error, invalid)
         })
         .await
@@ -565,8 +592,63 @@ impl zaino_source::GetMempoolTxids for ZebraRpcAdapter {
     async fn get_mempool_txids(
         &self,
     ) -> Result<Vec<TransactionId>, QueryError<zaino_source::GetMempoolTxidsError>> {
-        self.call_parsed("getrawmempool", vec![], parse::parse_txids)
+        self.call_parsed("getrawmempool", vec![], parse::parse_mempool_txids)
             .await
+    }
+}
+
+impl zaino_source::GetMempoolMetadata for ZebraRpcAdapter {
+    async fn get_mempool_metadata(
+        &self,
+    ) -> Result<Vec<zaino_source::MempoolTxMeta>, QueryError<zaino_source::GetMempoolMetadataError>>
+    {
+        // Slow path: the validator answers this by walking its entire mempool,
+        // loading full transactions and aggregating descendant stats. Under the
+        // client-wide timeout a busy validator would read as a hard error.
+        self.call_parsed_slow(
+            "getrawmempool",
+            vec![serde_json::Value::Bool(true)],
+            parse::parse_mempool_metadata,
+        )
+        .await
+    }
+}
+
+impl zaino_source::GetRawMempoolTransaction for ZebraRpcAdapter {
+    async fn get_raw_mempool_transaction(
+        &self,
+        txid: TransactionId,
+    ) -> Result<Vec<u8>, QueryError<zaino_source::GetRawMempoolTransactionError>> {
+        // Verbosity 0: the bytes alone. The caller already knows this
+        // transaction is in the mempool — it came from the listing — so the
+        // location `getrawtransaction 1` would add is redundant.
+        let params = vec![
+            serde_json::Value::String(txid_to_display_hex(txid)),
+            serde_json::Value::Number(0.into()),
+        ];
+        self.call_parsed_or_absent(
+            "getrawtransaction",
+            params,
+            parse::parse_raw_transaction,
+            || zaino_source::GetRawMempoolTransactionError::NotFound(txid),
+        )
+        .await
+    }
+}
+
+impl zaino_source::GetMempoolSourceTip for ZebraRpcAdapter {
+    async fn get_mempool_source_tip(
+        &self,
+    ) -> Result<(BlockHash, Height), QueryError<zaino_source::GetMempoolSourceTipError>> {
+        // `getblockchaininfo` rather than the `GetChainTip` pair, because it
+        // answers hash and height in one round trip. Reading them separately
+        // would let a block land between the two calls and hand the mempool a
+        // tip that never existed.
+        let info: zaino_primitives::types::BlockchainInfo = self
+            .call_parsed("getblockchaininfo", vec![], parse::parse_blockchain_info)
+            .await?;
+
+        Ok((info.best_block_hash, info.blocks))
     }
 }
 

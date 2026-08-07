@@ -331,6 +331,35 @@ impl GetMempoolTxids for ZebraValidator {
     }
 }
 
+impl GetMempoolMetadata for ZebraValidator {
+    async fn get_mempool_metadata(
+        &self,
+    ) -> Result<Vec<MempoolTxMeta>, QueryError<GetMempoolMetadataError>> {
+        self.rpc.get_mempool_metadata().await
+    }
+}
+
+impl GetRawMempoolTransaction for ZebraValidator {
+    async fn get_raw_mempool_transaction(
+        &self,
+        txid: TransactionId,
+    ) -> Result<Vec<u8>, QueryError<GetRawMempoolTransactionError>> {
+        self.rpc.get_raw_mempool_transaction(txid).await
+    }
+}
+
+impl GetMempoolSourceTip for ZebraValidator {
+    async fn get_mempool_source_tip(
+        &self,
+    ) -> Result<(BlockHash, Height), QueryError<GetMempoolSourceTipError>> {
+        // Deliberately *not* `fast_or_slow!`, unlike `GetChainTip` above. This
+        // tip tags a mempool set read over JSON-RPC, and the comparison it
+        // exists for is only sound if both come from one source — see the port's
+        // documentation.
+        self.rpc.get_mempool_source_tip().await
+    }
+}
+
 impl GetChainTips for ZebraValidator {
     async fn get_chain_tips(&self) -> Result<Vec<rpc::ChainTip>, QueryError<GetChainTipsError>> {
         // Enumerating the block tree includes side-chain tips, which the

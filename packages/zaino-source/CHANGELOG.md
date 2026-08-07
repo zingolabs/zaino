@@ -27,6 +27,21 @@ and this library adheres to Rust's notion of
   `PolledChainTip` (built and tested; not yet wired to a consumer).
 - `mock::MockChain` behind the `testing` feature — an in-memory chain with
   failure injection, superseding `force_requests_against_source_to_fail`.
+- Three mempool sourcing ports, for a consumer reconstructing a mempool rather
+  than merely listing one:
+  - `GetMempoolMetadata` (+ `MempoolTxMeta`) — `getrawmempool verbose`. Carries
+    each transaction's *validator-reported* tip-at-entry height, a protocol
+    field a consumer must not derive locally. Kept apart from `GetMempoolTxids`
+    because it is a whole-mempool walk, so a consumer can poll the cheap listing
+    and reach for this only on a diff.
+  - `GetRawMempoolTransaction` — `getrawtransaction(txid, 0)`, with `NotFound`
+    as a *domain* answer: a transaction leaving the mempool between listing and
+    fetch is the normal race, not a failure.
+  - `GetMempoolSourceTip` — the tip of the source that serves the mempool.
+    Deliberately not `GetChainTip`, which implementations may route to whichever
+    transport is fastest. A consumer tags its published set with this tip and
+    later compares the tag against the chain; the comparison is only sound if
+    the tag and the set came from one source.
 
 ### Changed
 - Only `-1` (work queue full) and `-28` (in warmup) are retryable RPC codes.
