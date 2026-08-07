@@ -75,6 +75,11 @@ and this library adheres to Rust's notion of
   (ADR-0008).
 ### Deprecated
 ### Removed
+- **Breaking** — `zaino_state::{Status, StatusType, NamedAtomicStatus}` and the
+  `status` module behind them. The status vocabulary lives in `zaino-status`;
+  a consumer that only needs to ask whether a component is ready no longer
+  depends on the indexer to find out. `AtomicStatus` is deleted outright, having
+  had no callers.
 - `zaino-fetch` is no longer a dependency, and the crate is deleted from the
   workspace. Its transport is `zaino-rpc`, its inbound parsing
   `zaino-source-zebra-rpc`, its outbound serialization `zaino-serve`'s wire
