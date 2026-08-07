@@ -14,7 +14,7 @@ and this library adheres to Rust's notion of
   `docs/adr/0008-mempool-subsystem-separation.md`). It depends on nothing in
   `zaino-state`; it declares the data it needs as consumer-owned ports which
   `zaino-state` adapts. The concrete runtime lives one layer out in
-  `zaino-mempool-rpc`.
+  `zaino-mempool-service`.
 - The subsystem is split into a **tip-agnostic core** and an optional
   **tip-aware coherence** layer (feature `tip_aware_mempool`, off by default):
   - Always available: `MempoolPorts` (the `zaino-source` subset the core reads
@@ -82,5 +82,5 @@ and this library adheres to Rust's notion of
   snapshot, so the coherence layer decides `V == NS` without re-fetching. A
   fully tip-agnostic core that tagged nothing could not support sound downstream
   coherence — the set and the tip would come from two independent reads (the race
-  the rework closed). See the `tip` module and `zaino-mempool-rpc`'s coherence
+  the rework closed). See the `tip` module and `zaino-mempool-service`'s coherence
   service.

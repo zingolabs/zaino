@@ -8,7 +8,7 @@
 //! set was fetched against. That tag is what lets the (optional) tip-aware
 //! coherence layer decide, without re-fetching, whether the set is coherent with
 //! Zaino's non-finalized-state tip (see the `tip` module and
-//! `zaino-mempool-rpc`'s coherence service).
+//! `zaino-mempool-service`'s coherence service).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -17,6 +17,22 @@ use zaino_primitives::types::TransactionId;
 
 use crate::entry::MempoolEntry;
 use crate::ports::BlockRef;
+
+/// The sort key that puts txids in *reversed* byte order.
+///
+/// The lightwallet exclude filter matches on txid *suffixes*, so sorting by the
+/// reversed bytes turns that suffix match into a binary-searchable prefix match.
+///
+/// One function rather than an inline comparator at each site because the
+/// ordering is a contract between two places that must agree: whoever builds
+/// [`MempoolSnapshot::txids_sorted`] and whoever binary-searches it. Two
+/// independently written comparators that disagree would not fail loudly — the
+/// search would simply miss matches.
+pub fn reversed_txid_key(txid: TransactionId) -> [u8; 32] {
+    let mut bytes = <[u8; 32]>::from(txid);
+    bytes.reverse();
+    bytes
+}
 
 /// Whether the snapshot's transaction set is a complete view of the mempool.
 ///
@@ -101,7 +117,7 @@ pub struct MempoolSnapshot {
     /// Entries indexed by txid.
     pub by_txid: Arc<HashMap<TransactionId, Arc<MempoolEntry>>>,
 
-    /// Txids sorted by *reversed* byte order, for shortened-txid suffix lookup.
+    /// Txids sorted by [`reversed_txid_key`], for shortened-txid suffix lookup.
     pub txids_sorted: Arc<[TransactionId]>,
 
     /// Entries in deterministic (sorted-txid) order, for stable response and

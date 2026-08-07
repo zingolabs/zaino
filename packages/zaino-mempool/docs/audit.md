@@ -140,7 +140,7 @@ freeze/thaw as a pure function of `(core set + source_tip, NS)` — no re-fetch,
 before/after guards — with generation-on-tip-change distinguishing epochs. The core
 never freezes, so the live reads stay correct through tip transitions. The
 freeze/thaw, change-feed (including the explicit lag signal), and update rules are
-exercised by the `zaino-mempool-rpc` test matrix (core and coherence suites, both
+exercised by the `zaino-mempool-service` test matrix (core and coherence suites, both
 feature modes) and the `zaino-state` mockchain integration tests.
 
 ## Phase 2 residual hardening (AP-12)

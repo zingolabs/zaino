@@ -16,7 +16,7 @@
 //! crate offers — are ports declared here.
 //!
 //! Concrete *adapters* live one layer out in
-//! [`zaino-mempool-rpc`](https://docs.rs/zaino-mempool-rpc) (the polling
+//! [`zaino-mempool-service`](https://docs.rs/zaino-mempool-service) (the polling
 //! `MempoolService`, the `MempoolSubscriber` read handle, and the coherence
 //! layer), and `zaino-state` supplies the
 //! [`ports::NfsEpochObserver`] implementation over its
@@ -43,7 +43,7 @@ pub use config::MempoolConfig;
 pub use entry::MempoolEntry;
 pub use error::MempoolError;
 pub use ports::{BlockRef, Mempool, MempoolPorts};
-pub use snapshot::{MempoolCompleteness, MempoolSnapshot};
+pub use snapshot::{reversed_txid_key, MempoolCompleteness, MempoolSnapshot};
 pub use update::MempoolUpdate;
 
 /// Re-exported from [`zaino_source`] so adapters and consumers of this crate can

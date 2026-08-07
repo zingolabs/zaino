@@ -2,7 +2,7 @@
 
 A task-oriented guide to the mempool subsystem's **ports and types**. This crate
 holds no runtime — the concrete services live in
-[`zaino-mempool-rpc`](../../zaino-mempool-rpc/docs/usage.md); read that for spawn /
+[`zaino-mempool-service`](../zaino-mempool-service/usage.md); read that for spawn /
 consume recipes. This guide explains the model and the contracts a consumer or
 adapter author must honour.
 
@@ -98,9 +98,10 @@ for the shortened-txid exclude filter), `entries_in_order`, `tx_count`,
 `raw_bytes`, `cost_bytes`, `completeness`, `unadmitted`, and `source_tip`. Each `MempoolEntry`
 holds the full unmined transaction; call `serialized_bytes()` for a borrowed slice,
 `wire_bytes()` for the shared `Bytes` buffer (prefer this when handing it to a wire
-type — cloning is a refcount bump), or `transaction()` to parse. It carries no
-RPC/wire forms — derive those (compact tx, lightclient `RawTransaction` at wire
-height `0`) at your boundary.
+type — cloning is a refcount bump). It carries no parsed or wire forms at all —
+deserialize it, or derive a compact tx or a lightclient `RawTransaction` at wire
+height `0`, at your boundary. Keeping those out is what lets this crate depend on
+no node library.
 
 `completeness` tells you whether the set is a full view, in two classes. **Short**
 (`IncompleteCapacityLimited`, `IncompletePendingMetadata`) — an *accurate* view
