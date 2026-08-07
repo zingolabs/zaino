@@ -21,6 +21,16 @@ and this library adheres to Rust's notion of
 - `metric_names` — the outbound RPC metric names, moved from `zainod` because
   this crate is what emits them. Registration and descriptions stay with the
   daemon.
+- `MAX_RESPONSE_BYTES` (32 MiB) and a chunk-wise capped body reader. Responses
+  are deserialized into memory, so an uncapped read let a compromised,
+  misconfigured, or impersonated validator exhaust the process's memory with a
+  single reply. Bodies are now abandoned part-way rather than buffered, and the
+  new `RpcError::ResponseBodyTooLarge` classifies as `FailureMode::Parse` so
+  `Resilient` does not re-issue the request and buffer the same body again.
+- `RpcClient::call_with_timeout` and `HEAVY_METHOD_TIMEOUT` (30s), for the few
+  methods that are inherently heavy on the validator (`getrawmempool verbose`
+  walks the whole mempool). The client-wide timeout stays tight for the small,
+  fast RPCs that dominate traffic.
 
 ### Changed
 ### Deprecated
