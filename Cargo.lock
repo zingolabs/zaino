@@ -5916,6 +5916,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-mempool"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures",
+ "thiserror 2.0.18",
+ "tokio",
+ "zaino-primitives",
+ "zaino-source",
+]
+
+[[package]]
 name = "zaino-primitives"
 version = "0.1.0"
 dependencies = [
