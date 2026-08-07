@@ -2,7 +2,7 @@
 //!
 //! Serves the live set (never frozen): `getrawmempool` / `getmempoolinfo` /
 //! `GetMempoolTx`-style reads. The tip-*coherent* reads and the raw-transaction
-//! stream live in the `coherence` module, behind the `tip_aware_mempool` feature.
+//! stream live in [`crate::coherence`], behind the `tip_aware_mempool` feature.
 
 use std::cmp::Ordering;
 use std::collections::HashSet;

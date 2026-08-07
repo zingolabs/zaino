@@ -33,6 +33,14 @@ and this library adheres to Rust's notion of
   (`validate_exclude_suffixes` + `get_filtered_entries`) and a read-only view of
   the memory bound (`max_cost_bytes`). Supporting types: `MempoolInfo`,
   `TxIdExcludeSuffix`, `MempoolFilterError`.
+- `CoherenceService<M, N>` + `CoherentSubscriber` (feature `tip_aware_mempool`):
+  the tip-aware layer. It consumes a `Mempool` core and an `NfsEpochObserver` and
+  maintains the `valid_for` freeze/thaw `CoherentSnapshot` — a re-fetch-free pure
+  function of `(core set + source_tip, NS)`. Serves the tip-coherent reads and the
+  `TipAwareMempool::stream_transactions_until_tip_change` loop (the ready-made
+  "stream the mempool until the tip moves" API). Modes: `NotReady` / `Live` /
+  `Frozen{reason}` / `Closing`. Validator-only mode (`spawn_validator_only`)
+  synthesizes the epoch from the validator tip (single-tip freeze/thaw).
 
 ### Fixed
 - **Capacity refusals no longer loop.** Additions over `max_cost_bytes` were all

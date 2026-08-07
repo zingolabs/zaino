@@ -1015,3 +1015,551 @@ mod core {
 }
 
 // ============================ COHERENCE ============================
+#[cfg(feature = "tip_aware_mempool")]
+mod coherence {
+    use super::*;
+
+    use crate::{CoherenceService, CoherentSubscriber, MempoolService, MempoolSubscriber};
+    use futures::StreamExt as _;
+    use zaino_mempool::ports::MempoolStreamError;
+    use zaino_mempool::tip::{CoherentSnapshot, FreezeReason, MempoolMode};
+    use zaino_mempool::TipAwareMempool as _;
+
+    /// Keep the core service alive alongside the coherence layer under test.
+    struct Harness {
+        core: Arc<MempoolService<MockSource>>,
+        coherence: Arc<CoherenceService<MempoolSubscriber, MockNfs>>,
+        subscriber: CoherentSubscriber,
+        source: MockSource,
+        nfs: MockNfs,
+    }
+
+    impl Harness {
+        fn close(&self) {
+            self.coherence.close();
+            self.core.close();
+        }
+    }
+
+    fn spawn_coherent(
+        height: u32,
+        hash_byte: u8,
+        generation: u64,
+        mempool: Vec<MockTx>,
+        config: MempoolConfig,
+    ) -> Harness {
+        let source = MockSource::new();
+        let nfs = MockNfs::new();
+        source.set_tip(block_ref(height, hash_byte));
+        source.set_mempool(mempool);
+        nfs.set(epoch(generation, height, hash_byte));
+
+        let core = MempoolService::spawn(source.clone(), config.clone(), CancellationToken::new());
+        let coherence = CoherenceService::spawn(
+            core.subscriber(),
+            nfs.clone(),
+            config,
+            CancellationToken::new(),
+        );
+        let subscriber = coherence.subscriber();
+        Harness {
+            core,
+            coherence,
+            subscriber,
+            source,
+            nfs,
+        }
+    }
+
+    /// As `core::wait_for`; see there for why the budget is what it is.
+    async fn wait_for(
+        subscriber: &CoherentSubscriber,
+        predicate: impl Fn(&CoherentSnapshot) -> bool,
+    ) -> Arc<CoherentSnapshot> {
+        for _ in 0..2000 {
+            let snapshot = subscriber.coherent_snapshot();
+            if predicate(&snapshot) {
+                return snapshot;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("coherent snapshot never satisfied the predicate");
+    }
+
+    fn is_live(snapshot: &CoherentSnapshot) -> bool {
+        matches!(snapshot.mode, MempoolMode::Live { .. })
+    }
+
+    fn is_frozen(snapshot: &CoherentSnapshot) -> bool {
+        matches!(snapshot.mode, MempoolMode::Frozen { .. })
+    }
+
+    fn freeze_reason(snapshot: &CoherentSnapshot) -> Option<FreezeReason> {
+        match snapshot.mode {
+            MempoolMode::Frozen { reason, .. } => Some(reason),
+            _ => None,
+        }
+    }
+
+    /// Waits for a freeze *with this reason*, rather than for any freeze.
+    ///
+    /// Waiting on [`is_frozen`] and then asserting the reason races the core's
+    /// first publish: until the core has a set, the coherent view is already
+    /// frozen — for `CoreIncomplete`, not for whatever the test set up. The wait
+    /// would return that startup freeze and the assertion would fail on a
+    /// perfectly correct service. Folding the reason into the predicate makes
+    /// the wait say what the test means, and turns a genuine failure into a
+    /// timeout naming the reason that never arrived.
+    fn frozen_because(reason: FreezeReason) -> impl Fn(&CoherentSnapshot) -> bool {
+        move |snapshot| freeze_reason(snapshot) == Some(reason)
+    }
+
+    #[tokio::test]
+    async fn nfs_advance_reconciles_on_the_signal_not_the_tick() {
+        // The coherence layer must learn of an NS advance from the observer's
+        // signal. Waiting for its own tick means tip-coherent reads stay frozen
+        // for a whole poll interval after every block — indefinitely when sync
+        // lags. The poll interval here is far longer than the test's patience,
+        // so only the signal can satisfy it.
+        let source = MockSource::new();
+        let nfs = MockNfs::new();
+        source.set_tip(block_ref(100, 0xAB));
+        source.set_mempool(vec![mtx(1, 100)]);
+        nfs.set(epoch(1, 100, 0xAB));
+
+        let mut slow_tick = fast_config();
+        slow_tick.poll_interval = Duration::from_secs(30);
+
+        let core = MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
+        let coherence = CoherenceService::spawn(
+            core.subscriber(),
+            nfs.clone(),
+            slow_tick,
+            CancellationToken::new(),
+        );
+        let subscriber = coherence.subscriber();
+        wait_for(&subscriber, is_live).await;
+
+        // Advance *only* the NS epoch. The validator tip and the mempool set are
+        // untouched, so the core publishes nothing and its change feed cannot be
+        // what wakes the layer — the observer's signal is the only path left.
+        nfs.set(epoch(2, 101, 0xCD));
+
+        wait_for(&subscriber, frozen_because(FreezeReason::TipsDiverged)).await;
+
+        // Without the signal this state change would wait out the 30s tick;
+        // arriving inside the wait above is the assertion.
+        coherence.close();
+        core.close();
+    }
+
+    #[tokio::test]
+    async fn agreement_publishes_a_live_coherent_view() {
+        let h = spawn_coherent(100, 0xAB, 7, vec![mtx(1, 100), mtx(2, 100)], fast_config());
+
+        let snapshot = wait_for(&h.subscriber, is_live).await;
+        assert!(snapshot.is_live_for(epoch(7, 100, 0xAB)));
+        assert_eq!(snapshot.set.tx_count, 2);
+        assert!(snapshot.is_valid_for_snapshot(epoch(7, 100, 0xAB)));
+        assert!(snapshot.get(&txid(1)).is_some());
+        h.close();
+    }
+
+    #[tokio::test]
+    async fn validator_tip_change_freezes_and_preserves_transactions() {
+        let h = spawn_coherent(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
+        wait_for(&h.subscriber, is_live).await;
+
+        h.source.set_tip(block_ref(101, 0xCD)); // V advances, NS stays
+
+        let snapshot = wait_for(&h.subscriber, is_frozen).await;
+        assert_eq!(snapshot.set.tx_count, 1); // last coherent set stays readable
+        assert!(snapshot.set.by_txid.contains_key(&txid(1)));
+        assert_eq!(snapshot.valid_for, Some(epoch(1, 100, 0xAB)));
+        assert_eq!(freeze_reason(&snapshot), Some(FreezeReason::TipsDiverged));
+        h.close();
+    }
+
+    #[tokio::test]
+    async fn tip_agnostic_core_stays_live_while_coherence_freezes() {
+        // The payoff of the split: during a tip transition the tip-agnostic core
+        // keeps serving the *live* validator mempool (GetMempoolTx / getrawmempool)
+        // while only the tip-coherent view freezes.
+        let h = spawn_coherent(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
+        let core = h.core.subscriber();
+        wait_for(&h.subscriber, is_live).await;
+
+        // The validator advances to a new tip and its mempool gains a transaction;
+        // Zaino's NS tip stays behind (V != NS).
+        h.source.set_tip(block_ref(101, 0xCD));
+        h.source.set_mempool(vec![mtx(1, 100), mtx(2, 101)]);
+
+        // The core reflects the new live mempool immediately — it never freezes.
+        // Same 10s starvation allowance as `wait_for`; hand-rolled because this
+        // polls the *core* handle while the suite's helper polls the coherent one.
+        let mut live = core.snapshot();
+        for _ in 0..2000 {
+            live = core.snapshot();
+            if live.tx_count == 2 && live.source_tip == Some(block_ref(101, 0xCD)) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            live.tx_count, 2,
+            "core must serve the live mempool during a transition"
+        );
+        assert_eq!(
+            live.completeness,
+            zaino_mempool::snapshot::MempoolCompleteness::Complete
+        );
+        assert!(live.by_txid.contains_key(&txid(2)));
+
+        // Meanwhile the coherent view freezes at the last coherent set: the new
+        // transaction is live in the core but not blessed for the stale NS tip.
+        let frozen = wait_for(&h.subscriber, frozen_because(FreezeReason::TipsDiverged)).await;
+        assert_eq!(frozen.set.tx_count, 1);
+        assert!(!frozen.set.by_txid.contains_key(&txid(2)));
+
+        h.close();
+    }
+
+    #[tokio::test]
+    async fn nonfinalized_tip_change_freezes() {
+        let h = spawn_coherent(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
+        wait_for(&h.subscriber, is_live).await;
+
+        h.nfs.set(epoch(2, 101, 0xCD)); // NS advances, V stays
+
+        let snapshot = wait_for(&h.subscriber, frozen_because(FreezeReason::TipsDiverged)).await;
+        assert_eq!(snapshot.set.tx_count, 1);
+        h.close();
+    }
+
+    #[tokio::test]
+    async fn agreement_after_divergence_thaws_to_live() {
+        let source = MockSource::new();
+        let nfs = MockNfs::new();
+        source.set_tip(block_ref(100, 0xAA));
+        source.set_mempool(vec![mtx(1, 100)]);
+        nfs.set(epoch(1, 100, 0xBB)); // diverged
+
+        let core = MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
+        let coherence = CoherenceService::spawn(
+            core.subscriber(),
+            nfs.clone(),
+            fast_config(),
+            CancellationToken::new(),
+        );
+        let subscriber = coherence.subscriber();
+
+        wait_for(&subscriber, frozen_because(FreezeReason::TipsDiverged)).await;
+
+        nfs.set(epoch(2, 100, 0xAA)); // agree
+
+        let snapshot = wait_for(&subscriber, is_live).await;
+        assert_eq!(snapshot.set.tx_count, 1);
+        assert!(snapshot.is_live_for(epoch(2, 100, 0xAA)));
+        coherence.close();
+        core.close();
+    }
+
+    #[tokio::test]
+    async fn coherence_thaw_latency_unaffected_by_metadata_interval() {
+        // R2: a long `metadata_min_interval` defers additions, but the poll still
+        // publishes its removals and tip re-tag — and coherence thaws on the
+        // re-tag. So after a block the coherent view returns to `Live` on the
+        // poll cadence, *not* after the metadata interval. The interval here is
+        // far longer than the wait budget: if thaw waited for it, the wait times
+        // out and the test fails.
+        let mut config = fast_config();
+        config.metadata_min_interval = Duration::from_secs(10);
+        let h = spawn_coherent(100, 0xAB, 1, vec![mtx(1, 100)], config);
+        wait_for(&h.subscriber, is_live).await;
+
+        // A new block: validator tip and NS both advance, and a new transaction
+        // enters the mempool (an addition that needs metadata, so it defers).
+        h.source.set_tip(block_ref(101, 0xCD));
+        h.source.set_mempool(vec![mtx(1, 100), mtx(2, 101)]);
+        h.nfs.set(epoch(2, 101, 0xCD));
+
+        // Thaws to Live for the new epoch within the wait budget (~5s), well
+        // inside the 10s metadata interval.
+        let snapshot = wait_for(&h.subscriber, |s| s.is_live_for(epoch(2, 101, 0xCD))).await;
+
+        // The re-tag carried the new tip; the addition is deferred, not admitted,
+        // and the set says so — which is exactly why thaw did not wait for it.
+        assert_eq!(snapshot.set.source_tip, Some(block_ref(101, 0xCD)));
+        assert!(!snapshot.set.by_txid.contains_key(&txid(2)));
+        assert_eq!(
+            snapshot.set.completeness,
+            zaino_mempool::snapshot::MempoolCompleteness::IncompletePendingMetadata
+        );
+
+        h.close();
+    }
+
+    #[tokio::test]
+    async fn missing_nonfinalized_state_stays_not_ready() {
+        let source = MockSource::new();
+        let nfs = MockNfs::new(); // never set: NS unavailable
+        source.set_tip(block_ref(100, 0xAA));
+        source.set_mempool(vec![mtx(1, 100)]);
+
+        let core = MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
+        let coherence = CoherenceService::spawn(
+            core.subscriber(),
+            nfs.clone(),
+            fast_config(),
+            CancellationToken::new(),
+        );
+        let subscriber = coherence.subscriber();
+
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let snapshot = subscriber.coherent_snapshot();
+        assert!(!is_live(&snapshot));
+        assert_eq!(snapshot.valid_for, None);
+        // Core is ready with data; coherence freezes on the missing NS tip.
+        assert_eq!(
+            freeze_reason(&snapshot),
+            Some(FreezeReason::NonFinalizedUnavailable)
+        );
+        coherence.close();
+        core.close();
+    }
+
+    #[tokio::test]
+    async fn core_source_error_freezes_coherent_view() {
+        let h = spawn_coherent(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
+        wait_for(&h.subscriber, is_live).await;
+
+        h.source.set_error(Some("validator unreachable"));
+
+        let snapshot = wait_for(&h.subscriber, frozen_because(FreezeReason::CoreIncomplete)).await;
+        assert_eq!(snapshot.set.tx_count, 1); // last coherent set preserved
+        h.close();
+    }
+
+    #[tokio::test]
+    async fn capacity_limited_set_still_serves_coherent_reads() {
+        // A set that is *short* (capacity-refused) but tip-consistent is an
+        // accurate view of what it holds, so it must serve `Live` — freezing
+        // would withhold the transactions Zaino does have on top of the ones it
+        // doesn't. Only a set that may be *wrong* (source error) freezes.
+        let config = fast_config();
+        config.set_max_cost_bytes(1); // below the ZIP-401 floor: every addition refused
+        let h = spawn_coherent(100, 0xAB, 1, vec![mtx(1, 100), mtx(2, 100)], config);
+
+        // Short but blessed: the view is Live even though the set is incomplete.
+        let live = wait_for(&h.subscriber, is_live).await;
+        assert!(
+            !live.set.completeness.is_whole(),
+            "the capacity-bounded set must be short, got {:?}",
+            live.set.completeness
+        );
+        assert_eq!(
+            live.set.completeness,
+            zaino_mempool::snapshot::MempoolCompleteness::IncompleteCapacityLimited
+        );
+        assert!(
+            !live.set.unadmitted.is_empty(),
+            "a capacity-refused set must name the txids it is short of"
+        );
+
+        // A set that may be wrong (source error) still freezes.
+        h.source.set_error(Some("validator unreachable"));
+        wait_for(&h.subscriber, frozen_because(FreezeReason::CoreIncomplete)).await;
+
+        h.close();
+    }
+
+    #[tokio::test]
+    async fn freeze_duration_is_tracked_and_cleared_on_thaw() {
+        // The freeze clock backing the N2(e) escalation signal: `None` while
+        // serving, `Some` while frozen, and back to `None` once thawed.
+        let h = spawn_coherent(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
+        wait_for(&h.subscriber, is_live).await;
+        assert!(
+            h.subscriber.frozen_for().is_none(),
+            "a live view is not frozen"
+        );
+
+        h.nfs.set(epoch(2, 101, 0xCD)); // NS advances, V stays: freeze
+        wait_for(&h.subscriber, is_frozen).await;
+        assert!(
+            h.subscriber.frozen_for().is_some(),
+            "a frozen view must report a freeze duration"
+        );
+
+        h.nfs.set(epoch(3, 100, 0xAB)); // re-agree with V: thaw
+        wait_for(&h.subscriber, is_live).await;
+        assert!(
+            h.subscriber.frozen_for().is_none(),
+            "the freeze clock must clear on thaw"
+        );
+
+        h.close();
+    }
+
+    #[tokio::test]
+    async fn stream_yields_initial_then_added() {
+        let h = spawn_coherent(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
+        wait_for(&h.subscriber, |s| is_live(s) && s.set.tx_count == 1).await;
+
+        let mut stream = Box::pin(
+            h.subscriber
+                .stream_transactions_until_tip_change(Some(epoch(1, 100, 0xAB)))
+                .expect("coherent for this epoch"),
+        );
+
+        // Initial set: the one transaction's bytes.
+        assert_eq!(
+            stream.next().await,
+            Some(Ok(bytes::Bytes::from_static(&[1])))
+        );
+
+        // Add a second transaction at the same epoch: it streams live.
+        h.source.set_mempool(vec![mtx(1, 100), mtx(2, 100)]);
+        assert_eq!(
+            stream.next().await,
+            Some(Ok(bytes::Bytes::from_static(&[2])))
+        );
+        h.close();
+    }
+
+    #[tokio::test]
+    async fn stream_surfaces_a_lag_as_an_error_not_a_silent_end() {
+        // A stream consumer that falls behind must be told. Ending silently is
+        // indistinguishable from the normal tip-change close, so the client
+        // would treat a partial mempool as the complete one.
+        let mut config = fast_config();
+        config.event_buffer_len = 2; // tiny buffer: a small flood overflows it
+
+        let h = spawn_coherent(100, 0xAB, 1, vec![mtx(1, 100)], config);
+        wait_for(&h.subscriber, |s| is_live(s) && s.set.tx_count == 1).await;
+
+        let mut stream = Box::pin(
+            h.subscriber
+                .stream_transactions_until_tip_change(Some(epoch(1, 100, 0xAB)))
+                .expect("coherent for this epoch"),
+        );
+        // Drain the initial set so the next item comes from the event feed.
+        assert_eq!(
+            stream.next().await,
+            Some(Ok(bytes::Bytes::from_static(&[1])))
+        );
+
+        // Flood far more coherent events than the buffer holds, without polling.
+        let flood: Vec<MockTx> = (0..50)
+            .map(|n| MockTx {
+                txid: txid_n(n),
+                entry_height: 100,
+                entry_time: None,
+                bytes: vec![(n % 251) as u8],
+            })
+            .collect();
+        h.source.set_mempool(flood);
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        // Collect until the stream ends; a lag must appear as an error item.
+        let mut saw_lag = false;
+        while let Some(item) = tokio::time::timeout(Duration::from_millis(200), stream.next())
+            .await
+            .unwrap_or(None)
+        {
+            if matches!(item, Err(MempoolStreamError::Lagged { .. })) {
+                saw_lag = true;
+                break;
+            }
+        }
+        assert!(saw_lag, "lag ended the stream without surfacing an error");
+        h.close();
+    }
+
+    #[tokio::test]
+    async fn stream_is_none_for_stale_epoch() {
+        let h = spawn_coherent(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
+        wait_for(&h.subscriber, is_live).await;
+
+        // A caller whose epoch does not match the coherent view gets `None`.
+        assert!(h
+            .subscriber
+            .stream_transactions_until_tip_change(Some(epoch(9, 999, 0xFF)))
+            .is_none());
+        h.close();
+    }
+
+    #[tokio::test]
+    async fn validator_only_freezes_on_tip_change_and_thaws() {
+        // No NS observer: the epoch is synthesized from the validator tip, so a
+        // stable tip is live and a tip change is a single-tip freeze/thaw.
+        let source = MockSource::new();
+        source.set_tip(block_ref(100, 0xAA));
+        source.set_mempool(vec![mtx(1, 100)]);
+        let core = MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
+        let coherence = CoherenceService::spawn_validator_only(
+            core.subscriber(),
+            fast_config(),
+            CancellationToken::new(),
+        );
+        let subscriber = coherence.subscriber();
+
+        let live = wait_for(&subscriber, is_live).await;
+        assert_eq!(live.set.tx_count, 1);
+
+        source.set_tip(block_ref(101, 0xBB)); // tip change: re-synthesize, stay live
+        let snapshot = wait_for(&subscriber, |s| {
+            is_live(s)
+                && s.observed_tips.validator
+                    == Some(zaino_mempool::tip::ValidatorTip {
+                        best_tip: block_ref(101, 0xBB),
+                    })
+        })
+        .await;
+        assert!(is_live(&snapshot));
+        coherence.close();
+        core.close();
+    }
+
+    #[tokio::test]
+    async fn coherent_empty_not_ready() {
+        let snapshot = CoherentSnapshot::empty_not_ready();
+        assert!(matches!(snapshot.mode, MempoolMode::NotReady));
+        assert_eq!(snapshot.valid_for, None);
+        assert_eq!(snapshot.set.tx_count, 0);
+    }
+
+    #[test]
+    fn observed_tips_agree_and_disagree() {
+        use zaino_mempool::tip::{ObservedTips, ValidatorTip};
+
+        let v = ValidatorTip {
+            best_tip: block_ref(100, 0xAB),
+        };
+        let ns_same = epoch(1, 100, 0xAB);
+        let ns_diff = epoch(1, 100, 0xCD);
+
+        assert_eq!(ObservedTips::none().agree(), None);
+        assert!(!ObservedTips::none().disagree());
+
+        let only_v = ObservedTips {
+            validator: Some(v),
+            non_finalized: None,
+        };
+        assert_eq!(only_v.agree(), None);
+        assert!(!only_v.disagree());
+
+        let agree = ObservedTips {
+            validator: Some(v),
+            non_finalized: Some(ns_same),
+        };
+        assert_eq!(agree.agree(), Some(ns_same));
+
+        let disagree = ObservedTips {
+            validator: Some(v),
+            non_finalized: Some(ns_diff),
+        };
+        assert_eq!(disagree.agree(), None);
+        assert!(disagree.disagree());
+    }
+}
