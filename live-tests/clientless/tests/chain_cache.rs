@@ -353,7 +353,7 @@ mod chain_query_interface {
         // little past that. Generate well beyond it so low heights are evicted from the
         // cache and served by the ephemeral finalised passthrough. `fast-test-seam`
         // shrinks the seam to `FAST_TEST_MAX_NONFINALISED_DEPTH`, so a small chain suffices.
-        let seam = zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
+        let seam = zaino_consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
         test_manager
             .generate_blocks_and_wait_for_tip(seam + 50, &indexer)
             .await;
@@ -466,7 +466,7 @@ mod chain_query_interface {
             .expect("a chain height") as u32;
 
         // Finalised floor is `tip - seam`; pick a range straddling it.
-        let seam = zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
+        let seam = zaino_consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
         let finalised_start = Height::try_from(chain_height - (seam + 50)).unwrap();
         let finalised_tip = Height::try_from(chain_height - seam).unwrap();
         let end = Height::try_from(chain_height - seam / 2).unwrap();

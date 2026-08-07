@@ -20,7 +20,8 @@ use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::{
     build_active_mockchain_source, load_test_vectors, TestVectorData,
 };
-use crate::{ChainIndexConfig, Height, StatusType};
+use crate::{ChainIndexConfig, Height};
+use zaino_status::StatusType;
 
 fn v1_2_1() -> DbVersion {
     DbVersion {

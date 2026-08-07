@@ -399,7 +399,7 @@ pub async fn assert_send_to_transparent_finalization<V, Conn>(
         .generate_blocks_bulk_and_wait_for_tips(
             // Advance past the seam so the send crosses the finalised floor
             // (`tip - seam`); a small margin above it keeps the boundary unambiguous.
-            zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH + 5,
+            zaino_consensus::FAST_TEST_MAX_NONFINALISED_DEPTH + 5,
             test_manager.subscriber(),
             test_manager.subscriber(),
         )

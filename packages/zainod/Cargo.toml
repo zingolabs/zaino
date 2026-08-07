@@ -91,6 +91,7 @@ thiserror = { workspace = true }
 # Formats
 toml = { workspace = true }
 config = { workspace = true }
+zaino-status.workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }

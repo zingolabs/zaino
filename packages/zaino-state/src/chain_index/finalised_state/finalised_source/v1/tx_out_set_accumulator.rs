@@ -2171,7 +2171,7 @@ mod tests {
         use crate::chain_index::finalised_state::capability::{
             CapabilityRequest, DbRead, TransparentHistExt,
         };
-        use zaino_common::consensus::COINBASE_MATURITY;
+        use zaino_consensus::COINBASE_MATURITY;
 
         let blocks = load_test_vectors().unwrap().blocks;
         let source = build_mockchain_source(blocks);

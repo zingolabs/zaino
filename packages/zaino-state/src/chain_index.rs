@@ -20,15 +20,13 @@ use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
 use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalisedStateError};
 #[cfg(feature = "prometheus")]
 use crate::metric_names::*;
-use crate::status::Status;
-use crate::{
-    CompactBlockStream, NamedAtomicStatus, NonFinalizedState, StatusType, SyncError, TxOutCompact,
-};
+use crate::{CompactBlockStream, NonFinalizedState, SyncError, TxOutCompact};
 use crate::{IndexedBlock, Outpoint, TransactionHash};
 use std::collections::HashSet;
 use std::str::FromStr;
 use std::{sync::Arc, time::Duration};
 use zaino_primitives::types::TxOutSetInfo;
+use zaino_status::{NamedAtomicStatus, Status, StatusType};
 
 use arc_swap::ArcSwapOption;
 use futures::{FutureExt, Stream};
@@ -38,7 +36,7 @@ use source::BlockchainSource;
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, instrument};
-use zaino_common::consensus::validate_raw_transaction_hex;
+use zaino_consensus::validate_raw_transaction_hex;
 use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
     NodeInfo, PeerInfo,
@@ -77,7 +75,7 @@ mod tests;
 /// zaino treats as part of the finalised DB — the finalised / non-finalised seam.
 ///
 /// Sourced from the workspace's single source of truth,
-/// [`zaino_common::consensus`]. Production uses the real
+/// [`zaino_consensus`]. Production uses the real
 /// [`MAX_NONFINALISED_DEPTH`]. The tractable [`FAST_TEST_MAX_NONFINALISED_DEPTH`]
 /// (= depth / 10) is selected for in-crate unit tests (`cfg(test)`) *and* for
 /// cross-crate live tests that enable the `fast-test-seam` feature — so short mock
@@ -86,13 +84,12 @@ mod tests;
 /// the eviction/seam invariants become untestable (see zingolabs/zaino#1288). Both
 /// arms derive from the same upstream reorg bound, so neither is a hard-coded literal.
 ///
-/// [`MAX_NONFINALISED_DEPTH`]: zaino_common::consensus::MAX_NONFINALISED_DEPTH
-/// [`FAST_TEST_MAX_NONFINALISED_DEPTH`]: zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH
+/// [`MAX_NONFINALISED_DEPTH`]: zaino_consensus::MAX_NONFINALISED_DEPTH
+/// [`FAST_TEST_MAX_NONFINALISED_DEPTH`]: zaino_consensus::FAST_TEST_MAX_NONFINALISED_DEPTH
 #[cfg(not(any(test, feature = "fast-test-seam")))]
-pub(crate) const OPERATIONAL_NFS_DEPTH: u32 = zaino_common::consensus::MAX_NONFINALISED_DEPTH;
+pub(crate) const OPERATIONAL_NFS_DEPTH: u32 = zaino_consensus::MAX_NONFINALISED_DEPTH;
 #[cfg(any(test, feature = "fast-test-seam"))]
-pub(crate) const OPERATIONAL_NFS_DEPTH: u32 =
-    zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
+pub(crate) const OPERATIONAL_NFS_DEPTH: u32 = zaino_consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
 
 /// Lower bound on zaino's finalized-DB tip, derived from the current
 /// best-known chain tip.
@@ -2045,7 +2042,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                 let _ = out_tx.try_send(Err(ChainIndexError::child_process_status_error(
                     "mempool",
                     crate::error::StatusError {
-                        server_status: crate::StatusType::RecoverableError,
+                        server_status: StatusType::RecoverableError,
                     },
                 )));
                 Some(tokio_stream::wrappers::ReceiverStream::new(out_rx))

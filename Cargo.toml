@@ -139,8 +139,9 @@ zainod = { path = "packages/zainod" }
 # dependency graph to do it.
 zaino-status = { path = "packages/zaino-status", version = "0.1.0" }
 # Consensus-derived constants (reorg bound, coinbase maturity, block size limit)
-# and the protocol-limit validation built on them. A leaf over `zebra-chain`, so
-# referencing a consensus fact does not cost a general-purpose dependency.
+# and the protocol-limit validation built on them. A leaf that depends on no
+# node implementation, so referencing a consensus fact costs neither a
+# general-purpose dependency nor a peer's reading of the specification.
 zaino-consensus = { path = "packages/zaino-consensus", version = "0.1.0" }
 # Zero-dependency domain vocabulary. Every crate that needs chain-level types
 # (heights, hashes, blocks, transactions) depends on this rather than on

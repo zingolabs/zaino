@@ -20,11 +20,8 @@ use std::{
 use tonic::transport::Channel;
 use tracing::{debug, info, instrument};
 use zaino_common::{
-    network::ActivationHeights,
-    probing::{Liveness, Readiness},
-    status::Status,
-    validator::ValidatorConfig,
-    CacheConfig, DatabaseConfig, Network, ServiceConfig, StorageConfig,
+    network::ActivationHeights, validator::ValidatorConfig, CacheConfig, DatabaseConfig, Network,
+    ServiceConfig, StorageConfig,
 };
 use zaino_proto::proto::compact_formats::CompactBlock;
 use zaino_proto::proto::service::{BlockId, BlockRange};
@@ -34,6 +31,7 @@ use zaino_state::{
     NodeBackedIndexerService, NodeBackedIndexerServiceConfig, NodeBackedIndexerServiceSubscriber,
     ZcashService,
 };
+use zaino_status::{Liveness, Readiness, Status};
 use zainodlib::{config::BackendType, error::IndexerError, indexer::Indexer};
 pub use zcash_local_net as services;
 use zcash_local_net::error::LaunchError;
@@ -285,7 +283,7 @@ pub async fn poll_until_ready(
 /// subscriber or a `NodeBackedChainIndexSubscriber`.
 ///
 /// [`Status`] (and through it [`Liveness`] / [`Readiness`] via the blanket
-/// impls in `zaino_common::status`) is a supertrait so a single
+/// impls in `zaino_status`) is a supertrait so a single
 /// `T: PollableTip` bound is everything the unified helper needs — it can
 /// poll for height, fail fast on a dead backend, and wait for readiness
 /// once the target height is reached.

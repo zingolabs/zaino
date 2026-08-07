@@ -11,10 +11,10 @@ use crate::{
         types::db::metadata::MempoolInfo,
     },
     error::{MempoolError, StatusError},
-    status::{NamedAtomicStatus, StatusType},
     BlockHash,
 };
 use tracing::{info, instrument, warn};
+use zaino_status::{NamedAtomicStatus, StatusType};
 use zebra_chain::{block::Hash, transaction::SerializedTransaction};
 
 /// Mempool key

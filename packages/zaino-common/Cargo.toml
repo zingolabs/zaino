@@ -24,7 +24,3 @@ rustls = { version = "0.23", default-features = false, features = [
     "aws_lc_rs",
     "prefer-post-quantum",
 ] }
-hex.workspace = true
-thiserror.workspace = true
-zaino-status = { workspace = true }
-zaino-consensus = { workspace = true }

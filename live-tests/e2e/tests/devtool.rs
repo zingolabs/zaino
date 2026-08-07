@@ -1964,7 +1964,7 @@ async fn get_outpoint_spenders_fetch_vs_state() {
     // `FAST_TEST_MAX_NONFINALISED_DEPTH`; a small margin above it keeps the boundary
     // unambiguous. (Without the feature the real seam is ~1000, impractical to mine
     // here — see zingolabs/zaino#1352.)
-    const FINALITY_DEPTH: u32 = zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH + 5;
+    const FINALITY_DEPTH: u32 = zaino_consensus::FAST_TEST_MAX_NONFINALISED_DEPTH + 5;
     const FUNDING_AMOUNT: u64 = 250_000;
 
     let mut svc = zaino_testutils::launch_state_and_fetch_services_mining_to::<Zebrad>(

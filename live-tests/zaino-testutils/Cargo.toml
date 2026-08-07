@@ -69,6 +69,7 @@ hex.workspace = true
 prost.workspace = true
 zaino-rpc.workspace = true
 serde_json.workspace = true
+zaino-status.workspace = true
 
 [dev-dependencies]
 tonic.workspace = true

@@ -340,7 +340,7 @@ pub enum FinalisedStateError {
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("Unexpected status error: {server_status:?}")]
 pub struct StatusError {
-    pub server_status: crate::status::StatusType,
+    pub server_status: zaino_status::StatusType,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -437,7 +437,7 @@ impl ChainIndexError {
     }
 
     pub(crate) fn child_process_status_error(process: &str, status_err: StatusError) -> Self {
-        use crate::status::StatusType;
+        use zaino_status::StatusType;
 
         let message = match status_err.server_status {
             StatusType::Spawning => format!("{process} status: Spawning (not ready yet)"),

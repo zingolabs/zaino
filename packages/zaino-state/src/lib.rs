@@ -115,10 +115,6 @@ pub(crate) mod error;
 
 pub use error::{LegacyRpcError, NodeBackedIndexerServiceError};
 
-pub(crate) mod status;
-
-pub use status::{NamedAtomicStatus, Status, StatusType};
-
 pub(crate) mod stream;
 
 pub use stream::{

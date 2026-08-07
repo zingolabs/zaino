@@ -47,7 +47,6 @@ use crate::{
     indexer::{
         handle_raw_transaction, IndexerSubscriber, LightWalletIndexer, ZcashIndexer, ZcashService,
     },
-    status::{Status, StatusType},
     stream::{
         AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
         UtxoReplyStream,
@@ -58,6 +57,7 @@ use crate::{
     chain_index::{non_finalised_state::ChainIndexSnapshot, NonFinalizedSnapshot},
     ChainIndex, ChainIndexRpcExt, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
 };
+use zaino_status::{Status, StatusType};
 
 /// A single node-backed chain-fetch + tx-submission service, generic over its
 /// [`BlockchainSource`].

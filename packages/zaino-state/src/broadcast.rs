@@ -5,7 +5,7 @@ use std::{collections::HashSet, hash::Hash, sync::Arc};
 use tokio::sync::watch;
 use tracing::debug;
 
-use crate::status::StatusType;
+use zaino_status::StatusType;
 
 /// A generic, thread-safe broadcaster that manages mutable state and notifies clients of updates.
 #[derive(Clone)]

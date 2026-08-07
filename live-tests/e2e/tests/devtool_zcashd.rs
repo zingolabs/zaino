@@ -509,7 +509,7 @@ mod wallet_to_validator {
         test_manager
             .generate_blocks_bulk_and_wait_for_tips(
                 // Advance past the seam so all three pool sends cross the finalised floor.
-                zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH + 5,
+                zaino_consensus::FAST_TEST_MAX_NONFINALISED_DEPTH + 5,
                 test_manager.subscriber(),
                 test_manager.subscriber(),
             )

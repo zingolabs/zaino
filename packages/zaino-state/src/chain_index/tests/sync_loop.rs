@@ -5,7 +5,7 @@ use super::{
 use crate::chain_index::{ChainIndex, SyncTimings};
 use std::time::Instant;
 use tokio::time::{sleep, Duration};
-use zaino_common::status::{Status as _, StatusType};
+use zaino_status::{Status as _, StatusType};
 
 /// Regression test (fixes #593): a source failure should not kill the
 /// sync loop.
