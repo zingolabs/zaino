@@ -1506,7 +1506,7 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
             };
 
             Ok(RawTransaction {
-                data: hex.as_ref().to_vec(),
+                data: bytes::Bytes::copy_from_slice(hex.as_ref()),
                 height,
             })
         } else {
@@ -1849,7 +1849,7 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
                                     Ok(transaction_bytes) => {
                                         if channel_tx
                                             .send(Ok(RawTransaction {
-                                                data: transaction_bytes,
+                                                data: transaction_bytes.into(),
                                                 height: mempool_height as u64,
                                             }))
                                             .await

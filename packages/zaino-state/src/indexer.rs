@@ -963,7 +963,7 @@ pub(crate) async fn handle_raw_transaction<Indexer: LightWalletIndexer>(
             };
             transmitter
                 .send(Ok(RawTransaction {
-                    data: transaction_obj.hex().as_ref().to_vec(),
+                    data: bytes::Bytes::copy_from_slice(transaction_obj.hex().as_ref()),
                     height,
                 }))
                 .await

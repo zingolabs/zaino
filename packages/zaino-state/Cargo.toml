@@ -96,6 +96,7 @@ zaino-address = { workspace = true }
 zaino-convert-zebra.workspace = true
 zaino-status.workspace = true
 zaino-consensus.workspace = true
+bytes.workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -6092,6 +6092,7 @@ dependencies = [
  "arc-swap",
  "bitflags 2.13.0",
  "blake2",
+ "bytes",
  "chrono",
  "corez",
  "dashmap",

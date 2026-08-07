@@ -29,6 +29,9 @@ and this library adheres to Rust's notion of
   sync/migration to reach its target (distinct from `wait_until_ready`, which
   reflects serving-readiness).
 ### Changed
+- The `RawTransaction.data` served over gRPC is now `bytes::Bytes` rather than
+  `Vec<u8>` at every construction site, following the proto change. The wire
+  format is unchanged.
 - `chain_index::finalised_state` renames (internal, `pub(crate)`):
   - facade type `ZainoDB` -> `FinalisedState`
   - module `db` -> `finalised_source`; enum `DbBackend` -> `FinalisedSource`
