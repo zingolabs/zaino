@@ -49,6 +49,77 @@ async fn wait_for_indexer_tip(
     .await;
 }
 
+/// Polls until the mempool's txid set equals `expected`.
+///
+/// The mempool is an eventually-consistent read model refreshed by its own poll
+/// loop, so — like [`wait_for_indexer_tip`] for the chain tip — a test must wait
+/// for it to converge before asserting on mempool data. Sleeping a fixed
+/// interval instead is what made the previous mempool tests flaky under
+/// full-suite parallel load.
+async fn wait_for_mempool_txids(
+    index_reader: &NodeBackedChainIndexSubscriber<MockSource>,
+    expected: &std::collections::HashSet<TransactionHash>,
+) {
+    poll_until(
+        "mempool to reflect expected txids",
+        Duration::from_secs(10),
+        Duration::from_millis(25),
+        || async {
+            let txids: std::collections::HashSet<TransactionHash> = index_reader
+                .get_mempool_txids()
+                .await
+                .ok()?
+                .into_iter()
+                .collect();
+            (txids == *expected).then_some(())
+        },
+    )
+    .await;
+}
+
+/// Polls until the coherence layer has blessed the current set for the current
+/// snapshot.
+///
+/// Distinct from [`wait_for_mempool_txids`] and both are needed: the tip-agnostic
+/// core publishes its txids before the coherence layer reconciles the two tips,
+/// so a test of the *coherent* reads (`get_raw_transaction`,
+/// `get_transaction_status`, `get_mempool_stream`) that waited only for the
+/// txids would race the reconcile.
+///
+/// A `Some` stream is the same guard the coherent point reads use, so this
+/// observes exactly what they will see. The stream is dropped immediately.
+async fn wait_for_mempool_coherent(index_reader: &NodeBackedChainIndexSubscriber<MockSource>) {
+    poll_until(
+        "mempool coherence to bless the current tip",
+        Duration::from_secs(10),
+        Duration::from_millis(25),
+        || async {
+            let snapshot = index_reader.snapshot_nonfinalized_state().await.ok()?;
+            index_reader.get_mempool_stream(Some(&snapshot)).map(|_| ())
+        },
+    )
+    .await;
+}
+
+/// The mempool the active mockchain models: the non-coinbase transactions of the
+/// block at `tip + 1`.
+fn expected_mempool_txids(
+    block_data: &[zebra_chain::block::Block],
+    mockchain_tip: u32,
+) -> std::collections::HashSet<TransactionHash> {
+    block_data
+        .get(mockchain_tip as usize + 1)
+        .map(|block| {
+            block
+                .transactions
+                .iter()
+                .filter(|tx| !tx.is_coinbase())
+                .map(|tx| TransactionHash::from(tx.hash()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn faucet_transparent_address() -> String {
     let vector_data = load_test_vectors().unwrap();
 
@@ -216,6 +287,12 @@ async fn get_mempool_transaction() {
 
     let mockchain_tip = mockchain.source().active_height();
     wait_for_indexer_tip(&index_reader, mockchain_tip).await;
+    wait_for_mempool_txids(
+        &index_reader,
+        &expected_mempool_txids(&block_data, mockchain_tip),
+    )
+    .await;
+    wait_for_mempool_coherent(&index_reader).await;
 
     let mempool_height = (mockchain_tip as usize) + 1;
 
@@ -264,6 +341,12 @@ async fn get_mempool_transaction_status() {
 
     let mockchain_tip = mockchain.source().active_height();
     wait_for_indexer_tip(&index_reader, mockchain_tip).await;
+    wait_for_mempool_txids(
+        &index_reader,
+        &expected_mempool_txids(&block_data, mockchain_tip),
+    )
+    .await;
+    wait_for_mempool_coherent(&index_reader).await;
 
     let mempool_height = (mockchain_tip as usize) + 1;
 
@@ -310,6 +393,12 @@ async fn get_mempool_transactions() {
 
     let mockchain_tip = mockchain.source().active_height();
     wait_for_indexer_tip(&index_reader, mockchain_tip).await;
+    wait_for_mempool_txids(
+        &index_reader,
+        &expected_mempool_txids(&block_data, mockchain_tip),
+    )
+    .await;
+    wait_for_mempool_coherent(&index_reader).await;
 
     let mempool_height = (mockchain_tip as usize) + 1;
     let mut mempool_transactions: Vec<_> = block_data
@@ -329,8 +418,9 @@ async fn get_mempool_transactions() {
         .await
         .unwrap()
         .iter()
-        .map(|txn_bytes| {
-            txn_bytes
+        .map(|entry| {
+            entry
+                .serialized_bytes()
                 .zcash_deserialize_into::<zebra_chain::transaction::Transaction>()
                 .unwrap()
         })
@@ -356,6 +446,12 @@ async fn get_filtered_mempool_transactions() {
 
     let mockchain_tip = mockchain.source().active_height();
     wait_for_indexer_tip(&index_reader, mockchain_tip).await;
+    wait_for_mempool_txids(
+        &index_reader,
+        &expected_mempool_txids(&block_data, mockchain_tip),
+    )
+    .await;
+    wait_for_mempool_coherent(&index_reader).await;
 
     let mempool_height = (mockchain_tip as usize) + 1;
     let mut mempool_transactions: Vec<_> = block_data
@@ -369,16 +465,19 @@ async fn get_filtered_mempool_transactions() {
         })
         .unwrap_or_default();
     let exclude_tx = mempool_transactions.pop().unwrap();
-    let exclude_txid = exclude_tx.hash().to_string();
+    // The exclude list is client-endian (internal) txid bytes — here the full
+    // 32, which uniquely matches the one transaction.
+    let exclude_suffix = exclude_tx.hash().0.to_vec();
     mempool_transactions.sort_by_key(|a| a.hash());
 
     let mut found_mempool_transactions: Vec<zebra_chain::transaction::Transaction> = index_reader
-        .get_mempool_transactions(vec![exclude_txid])
+        .get_mempool_transactions(vec![exclude_suffix])
         .await
         .unwrap()
         .iter()
-        .map(|txn_bytes| {
-            txn_bytes
+        .map(|entry| {
+            entry
+                .serialized_bytes()
                 .zcash_deserialize_into::<zebra_chain::transaction::Transaction>()
                 .unwrap()
         })
@@ -406,6 +505,12 @@ async fn get_mempool_stream_no_expected_chain_tip_snapshot() {
 
     let mockchain_tip = mockchain.source().active_height();
     wait_for_indexer_tip(&index_reader, mockchain_tip).await;
+    wait_for_mempool_txids(
+        &index_reader,
+        &expected_mempool_txids(&block_data, mockchain_tip),
+    )
+    .await;
+    wait_for_mempool_coherent(&index_reader).await;
 
     let next_mempool_height_index = (mockchain_tip as usize) + 1;
     let mut mempool_transactions: Vec<_> = block_data
@@ -421,17 +526,20 @@ async fn get_mempool_stream_no_expected_chain_tip_snapshot() {
     mempool_transactions.sort_by_key(|transaction| transaction.hash());
 
     let mempool_stream_task = tokio::spawn(async move {
-        let mut mempool_stream = index_reader
+        let mempool_stream = index_reader
             .get_mempool_stream(None)
             .expect("failed to create mempool stream");
+        let mut mempool_stream = std::pin::pin!(mempool_stream);
 
         let mut indexer_mempool_transactions: Vec<zebra_chain::transaction::Transaction> =
             Vec::new();
 
         while let Some(tx_bytes_res) = mempool_stream.next().await {
             let tx_bytes = tx_bytes_res.expect("stream error");
-            let tx: zebra_chain::transaction::Transaction =
-                tx_bytes.zcash_deserialize_into().expect("deserialize tx");
+            let tx: zebra_chain::transaction::Transaction = tx_bytes
+                .as_ref()
+                .zcash_deserialize_into()
+                .expect("deserialize tx");
             indexer_mempool_transactions.push(tx);
         }
 
@@ -467,6 +575,12 @@ async fn get_mempool_stream_correct_expected_chain_tip_snapshot() {
 
     let mockchain_tip = mockchain.source().active_height();
     wait_for_indexer_tip(&index_reader, mockchain_tip).await;
+    wait_for_mempool_txids(
+        &index_reader,
+        &expected_mempool_txids(&block_data, mockchain_tip),
+    )
+    .await;
+    wait_for_mempool_coherent(&index_reader).await;
 
     let next_mempool_height_index = (mockchain_tip as usize) + 1;
     let mut mempool_transactions: Vec<_> = block_data
@@ -483,17 +597,20 @@ async fn get_mempool_stream_correct_expected_chain_tip_snapshot() {
 
     let mempool_stream_task = tokio::spawn(async move {
         let nonfinalized_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
-        let mut mempool_stream = index_reader
+        let mempool_stream = index_reader
             .get_mempool_stream(Some(&nonfinalized_snapshot))
             .expect("failed to create mempool stream");
+        let mut mempool_stream = std::pin::pin!(mempool_stream);
 
         let mut indexer_mempool_transactions: Vec<zebra_chain::transaction::Transaction> =
             Vec::new();
 
         while let Some(tx_bytes_res) = mempool_stream.next().await {
             let tx_bytes = tx_bytes_res.expect("stream error");
-            let tx: zebra_chain::transaction::Transaction =
-                tx_bytes.zcash_deserialize_into().expect("deserialize tx");
+            let tx: zebra_chain::transaction::Transaction = tx_bytes
+                .as_ref()
+                .zcash_deserialize_into()
+                .expect("deserialize tx");
             indexer_mempool_transactions.push(tx);
         }
 

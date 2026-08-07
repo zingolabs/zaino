@@ -2053,65 +2053,77 @@ where
     e2e::devtool::assert_monitor_unverified_mempool(test_manager, clients).await;
 }
 
-/// Port of `test_get_mempool_info` (fetch_service, zebrad): `get_mempool_info`
-/// matches values recomputed from the fetch subscriber's mempool internals.
-/// FetchService-only — the recompute reads `FetchServiceSubscriber.indexer`.
+/// `getmempoolinfo` agrees with the **validator's own** `getmempoolinfo`.
+///
+/// This used to recompute the totals from the very entries Zaino had just
+/// reported, which only asserted that Zaino equals itself. The arithmetic is
+/// covered by mocks in `zaino-mempool-service`
+/// (`get_mempool_info_reports_totals`); what a live validator adds is the
+/// cross-check that Zaino's mirror of the mempool holds the same transactions
+/// the validator does.
 async fn get_mempool_info_fetch() {
-    use hex::ToHex as _;
-    use zaino_state::ChainIndex as _;
-
     let (mut test_manager, _transparent_txid, _unified_txid) = fund_and_fill_mempool::<Rpc>().await;
 
-    let subscriber = test_manager.subscriber();
-    let info = subscriber.get_mempool_info().await.unwrap();
-    let keys = subscriber.indexer.get_mempool_txids().await.unwrap();
-    let values = subscriber
-        .indexer
-        .get_mempool_transactions(Vec::new())
+    let info = test_manager.subscriber().get_mempool_info().await.unwrap();
+    let validator = test_manager
+        .full_node_jsonrpc_connector()
         .await
-        .unwrap();
+        .get("getmempoolinfo")
+        .await;
 
-    assert_eq!(info.size, values.len() as u64);
-    assert!(info.size >= 1);
-
-    let expected_bytes: u64 = values.iter().map(|entry| entry.len() as u64).sum();
-    let expected_key_heap_bytes: u64 = keys
-        .iter()
-        .map(|key| key.encode_hex::<String>().capacity() as u64)
-        .sum();
-    let expected_usage = expected_bytes.saturating_add(expected_key_heap_bytes);
-
-    assert!(info.bytes > 0);
-    assert_eq!(info.bytes, expected_bytes);
+    assert!(info.size >= 1, "the test funded the mempool");
+    assert_eq!(
+        info.size,
+        validator["size"].as_u64().expect("validator reports size"),
+        "Zaino's mempool holds a different number of transactions than the validator's"
+    );
+    assert_eq!(
+        info.bytes,
+        validator["bytes"]
+            .as_u64()
+            .expect("validator reports bytes"),
+        "Zaino's serialized-byte total disagrees with the validator's"
+    );
+    // `usage` is deliberately not compared. Zaino reports the ZIP-401 cost total
+    // — each transaction floored at the cost threshold — because that is the
+    // figure its own memory bound is enforced against; the validator reports its
+    // internal heap estimate. Different quantities by design.
     assert!(info.usage >= info.bytes);
-    assert_eq!(info.usage, expected_usage);
 
     test_manager.close().await;
 }
 
-/// Port of `state_service_…::get_mempool_info` (zebrad): `get_mempool_info`
-/// matches values recomputed from the state subscriber's mempool internals.
-/// StateService-only — the recompute reads `StateServiceSubscriber.mempool`.
+/// As [`get_mempool_info_fetch`], for the Direct (`ReadStateService`) backend.
+///
+/// Worth running on both because the mempool is served over JSON-RPC either way
+/// — the Direct backend reads it through the same transport — so this pins that
+/// the backend choice does not change the reported totals.
 async fn get_mempool_info_state() {
     let mut svc = fund_and_fill_mempool_dual().await;
 
     let info = svc.state_subscriber.get_mempool_info().await.unwrap();
-    let entries = svc.state_subscriber.mempool().get_mempool().await;
+    let validator = svc
+        .test_manager
+        .full_node_jsonrpc_connector()
+        .await
+        .get("getmempoolinfo")
+        .await;
 
-    assert_eq!(entries.len() as u64, info.size);
-    assert!(info.size >= 1);
-
-    let expected_bytes: u64 = entries
-        .iter()
-        .map(|(_, v)| v.serialized_tx.as_ref().as_ref().len() as u64)
-        .sum();
-    let expected_key_heap_bytes: u64 = entries.iter().map(|(k, _)| k.txid.capacity() as u64).sum();
-    let expected_usage = expected_bytes.saturating_add(expected_key_heap_bytes);
-
-    assert!(info.bytes > 0);
-    assert_eq!(info.bytes, expected_bytes);
+    assert!(info.size >= 1, "the test funded the mempool");
+    assert_eq!(
+        info.size,
+        validator["size"].as_u64().expect("validator reports size"),
+        "Zaino's mempool holds a different number of transactions than the validator's"
+    );
+    assert_eq!(
+        info.bytes,
+        validator["bytes"]
+            .as_u64()
+            .expect("validator reports bytes"),
+        "Zaino's serialized-byte total disagrees with the validator's"
+    );
+    // See `get_mempool_info_fetch` for why `usage` is not compared.
     assert!(info.usage >= info.bytes);
-    assert_eq!(info.usage, expected_usage);
 
     svc.test_manager.close().await;
 }

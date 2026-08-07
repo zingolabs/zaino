@@ -111,6 +111,7 @@ fn passthrough_test_on(
                     ..Default::default()
                 },
                 ephemeral: true,
+                mempool: Default::default(),
                 db_version: 1,
                 network: network.clone(),
 
@@ -827,6 +828,7 @@ fn make_chain() {
                     ..Default::default()
                 },
                 ephemeral: true,
+                mempool: Default::default(),
                 db_version: 1,
                 network: network.clone(),
 
@@ -1180,6 +1182,52 @@ impl zaino_source::GetMempoolTxids for ProptestMockchain {
         self.settle().await;
         // Generated chains carry no mempool.
         Ok(Vec::new())
+    }
+}
+
+/// Generated chains carry no mempool, so all three answer empty or absent. The
+/// impls exist because `ChainIndexSourcePorts` requires them, not because the
+/// proptest suite exercises mempool behaviour — `mockchain_tests` does that.
+impl zaino_source::GetMempoolMetadata for ProptestMockchain {
+    async fn get_mempool_metadata(
+        &self,
+    ) -> Result<Vec<zaino_source::MempoolTxMeta>, PortError<zaino_source::GetMempoolMetadataError>>
+    {
+        self.settle().await;
+        Ok(Vec::new())
+    }
+}
+
+impl zaino_source::GetRawMempoolTransaction for ProptestMockchain {
+    async fn get_raw_mempool_transaction(
+        &self,
+        txid: zaino_primitives::types::TransactionId,
+    ) -> Result<Vec<u8>, PortError<zaino_source::GetRawMempoolTransactionError>> {
+        self.settle().await;
+        Err(PortError::Domain(
+            zaino_source::GetRawMempoolTransactionError::NotFound(txid),
+        ))
+    }
+}
+
+impl zaino_source::GetMempoolSourceTip for ProptestMockchain {
+    async fn get_mempool_source_tip(
+        &self,
+    ) -> Result<
+        (
+            zaino_primitives::types::BlockHash,
+            zaino_primitives::types::Height,
+        ),
+        PortError<zaino_source::GetMempoolSourceTipError>,
+    > {
+        use zaino_source::GetChainTip as _;
+
+        self.get_chain_tip().await.map_err(|e| match e {
+            PortError::Domain(zaino_source::GetChainTipError::NotReady) => {
+                PortError::Domain(zaino_source::GetMempoolSourceTipError::NotReady)
+            }
+            PortError::Fetch(fetch) => PortError::Fetch(fetch),
+        })
     }
 }
 

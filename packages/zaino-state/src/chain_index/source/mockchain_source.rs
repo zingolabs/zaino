@@ -600,22 +600,103 @@ impl zaino_source::GetDifficulty for MockchainSource {
     }
 }
 
+impl MockchainSource {
+    /// The mock's "mempool": the next block in the loaded chain, minus its
+    /// coinbase — a transaction that cannot be in a mempool.
+    ///
+    /// One definition shared by all four mempool ports, so the txid listing, the
+    /// verbose listing and the raw fetch cannot drift into disagreeing about
+    /// what is in the mempool — which is exactly the incoherence the mempool
+    /// subsystem's single-source rule exists to prevent, and would make the mock
+    /// unable to exercise it.
+    fn mempool_transactions(
+        &self,
+    ) -> impl Iterator<Item = &Arc<zebra_chain::transaction::Transaction>> {
+        let mempool_index = self.active_height() as usize + 1;
+        self.blocks
+            .get(mempool_index)
+            .into_iter()
+            .flat_map(|block| block.transactions.iter())
+            .filter(|transaction| !transaction.is_coinbase())
+    }
+}
+
 impl zaino_source::GetMempoolTxids for MockchainSource {
     async fn get_mempool_txids(
         &self,
     ) -> Result<Vec<domain::TransactionId>, PortError<zaino_source::GetMempoolTxidsError>> {
-        // The mock's "mempool" is the next block in the loaded chain, minus its
-        // coinbase — a transaction that cannot be in a mempool.
-        let mempool_index = self.active_height() as usize + 1;
-        if mempool_index >= self.blocks.len() {
-            return Ok(Vec::new());
-        }
-        Ok(self.blocks[mempool_index]
-            .transactions
-            .iter()
-            .filter(|transaction| !transaction.is_coinbase())
+        Ok(self
+            .mempool_transactions()
             .map(|transaction| domain::TransactionId::from(transaction.hash().0))
             .collect())
+    }
+}
+
+impl zaino_source::GetMempoolMetadata for MockchainSource {
+    async fn get_mempool_metadata(
+        &self,
+    ) -> Result<Vec<zaino_source::MempoolTxMeta>, PortError<zaino_source::GetMempoolMetadataError>>
+    {
+        // Every mock mempool transaction entered at the current tip: the mock
+        // has no arrival history, and the tip is the honest answer for a set
+        // that is defined as "the block that would come next".
+        let entry_height = domain::Height::try_from(self.active_height())
+            .map_err(|e| port_fault::<zaino_source::GetMempoolMetadataError>(e.to_string()))?;
+
+        Ok(self
+            .mempool_transactions()
+            .map(|transaction| zaino_source::MempoolTxMeta {
+                txid: domain::TransactionId::from(transaction.hash().0),
+                entry_height,
+                // No arrival time to report rather than a fabricated one: the
+                // `Option` exists for exactly this, and a synthetic timestamp
+                // would give the admission tiebreak a fake ordering to sort on.
+                entry_time: None,
+            })
+            .collect())
+    }
+}
+
+impl zaino_source::GetRawMempoolTransaction for MockchainSource {
+    async fn get_raw_mempool_transaction(
+        &self,
+        txid: domain::TransactionId,
+    ) -> Result<Vec<u8>, PortError<zaino_source::GetRawMempoolTransactionError>> {
+        let wanted = zebra_chain::transaction::Hash(<[u8; 32]>::from(txid));
+
+        let transaction = self
+            .mempool_transactions()
+            .find(|transaction| transaction.hash() == wanted)
+            .ok_or(PortError::Domain(
+                zaino_source::GetRawMempoolTransactionError::NotFound(txid),
+            ))?;
+
+        transaction
+            .zcash_serialize_to_vec()
+            .map_err(|e| port_fault::<zaino_source::GetRawMempoolTransactionError>(e.to_string()))
+    }
+}
+
+impl zaino_source::GetMempoolSourceTip for MockchainSource {
+    async fn get_mempool_source_tip(
+        &self,
+    ) -> Result<
+        (domain::BlockHash, domain::Height),
+        PortError<zaino_source::GetMempoolSourceTipError>,
+    > {
+        // The mock serves its mempool and its tip from one place by
+        // construction — `mempool_transactions` is defined relative to
+        // `active_height` — so the single-source rule holds trivially here.
+        // Routed through `GetChainTip` rather than duplicated so it stays that
+        // way as the mock changes.
+        use zaino_source::GetChainTip as _;
+
+        self.get_chain_tip().await.map_err(|e| match e {
+            PortError::Domain(zaino_source::GetChainTipError::NotReady) => {
+                PortError::Domain(zaino_source::GetMempoolSourceTipError::NotReady)
+            }
+            PortError::Fetch(fetch) => PortError::Fetch(fetch),
+        })
     }
 }
 

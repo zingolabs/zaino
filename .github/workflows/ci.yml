@@ -241,6 +241,8 @@ jobs:
           - "zaino-common"
           - "zaino-consensus"
           - "zaino-convert-zebra"
+          - "zaino-mempool"
+          - "zaino-mempool-service"
           - "zainod"
           - "zaino-primitives"
           - "zaino-proto"

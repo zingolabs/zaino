@@ -418,6 +418,65 @@ fn value_pool_array(
     Ok(slots)
 }
 
+// ---------------------------------------------------------------------------
+// Mempool ports, forwarded
+//
+// The mempool subsystem reads the validator through `zaino-source` directly
+// rather than through `BlockchainSource`, so these four pass straight through
+// with no conversion — there is nothing to convert, both sides already speak
+// domain types. They exist because ChainIndex hands its source to the mempool,
+// and a trait impl does not travel through a wrapper on its own.
+//
+// All four must reach the *same* transport, which they do: `ZebraValidator`
+// routes them together, and the mempool's coherence check depends on it.
+// ---------------------------------------------------------------------------
+
+impl<V: ChainIndexSourcePorts> zaino_source::GetMempoolTxids for ValidatorSource<V> {
+    async fn get_mempool_txids(
+        &self,
+    ) -> Result<
+        Vec<zaino_primitives::types::TransactionId>,
+        zaino_source::QueryError<zaino_source::GetMempoolTxidsError>,
+    > {
+        self.validator.get_mempool_txids().await
+    }
+}
+
+impl<V: ChainIndexSourcePorts> zaino_source::GetMempoolMetadata for ValidatorSource<V> {
+    async fn get_mempool_metadata(
+        &self,
+    ) -> Result<
+        Vec<zaino_source::MempoolTxMeta>,
+        zaino_source::QueryError<zaino_source::GetMempoolMetadataError>,
+    > {
+        self.validator.get_mempool_metadata().await
+    }
+}
+
+impl<V: ChainIndexSourcePorts> zaino_source::GetRawMempoolTransaction for ValidatorSource<V> {
+    async fn get_raw_mempool_transaction(
+        &self,
+        txid: zaino_primitives::types::TransactionId,
+    ) -> Result<Vec<u8>, zaino_source::QueryError<zaino_source::GetRawMempoolTransactionError>>
+    {
+        self.validator.get_raw_mempool_transaction(txid).await
+    }
+}
+
+impl<V: ChainIndexSourcePorts> zaino_source::GetMempoolSourceTip for ValidatorSource<V> {
+    async fn get_mempool_source_tip(
+        &self,
+    ) -> Result<
+        (
+            zaino_primitives::types::BlockHash,
+            zaino_primitives::types::Height,
+        ),
+        zaino_source::QueryError<zaino_source::GetMempoolSourceTipError>,
+    > {
+        self.validator.get_mempool_source_tip().await
+    }
+}
+
 impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
     // ***** Blocks *****
 
@@ -471,20 +530,6 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
 
     fn chain_tip_change(&self) -> Option<zebra_state::ChainTipChange> {
         self.chain_tip_change.clone()
-    }
-
-    // ***** Mempool *****
-
-    async fn get_mempool_txids(
-        &self,
-    ) -> BlockchainSourceResult<Option<Vec<zebra_chain::transaction::Hash>>> {
-        let txids = self.validator.get_mempool_txids().await.map_err(err)?;
-        Ok(Some(
-            txids
-                .into_iter()
-                .map(|txid| zebra_chain::transaction::Hash::from(<[u8; 32]>::from(txid)))
-                .collect(),
-        ))
     }
 
     // ***** Transparent addresses *****

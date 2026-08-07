@@ -75,7 +75,29 @@ pub(crate) type NonfinalizedBlockReceiver =
 /// split this once carried a TODO for now exists in `zaino-source`; this trait
 /// remains only so ChainIndex can keep its current shape while the new stack is
 /// wired in beneath it.
-pub trait BlockchainSource: Clone + Send + Sync + 'static {
+///
+/// # The mempool ports are supertraits, not methods
+///
+/// The four mempool questions are required here rather than declared as methods
+/// below, because the mempool subsystem has already completed the migration this
+/// trait is scaffolding for: it reads `zaino-source` directly and never sees a
+/// `BlockchainSource`. Restating those questions as wire-typed methods would
+/// mean converting domain types out and back for no reader.
+///
+/// This is what "methods leave `BlockchainSource` as subsystems move onto the
+/// ports" looks like from the other side — the requirement stays (ChainIndex
+/// still needs a source that can answer them, to hand to the mempool), but the
+/// answering is no longer routed through here.
+pub trait BlockchainSource:
+    zaino_source::GetMempoolTxids
+    + zaino_source::GetMempoolMetadata
+    + zaino_source::GetRawMempoolTransaction
+    + zaino_source::GetMempoolSourceTip
+    + Clone
+    + Send
+    + Sync
+    + 'static
+{
     // ********** Block methods **********
 
     /// Returns a best-chain block by hash or height
@@ -128,11 +150,6 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
             )>,
         >,
     >;
-
-    /// Returns the complete list of txids currently in the mempool.
-    fn get_mempool_txids(
-        &self,
-    ) -> impl SendFut<BlockchainSourceResult<Option<Vec<zebra_chain::transaction::Hash>>>>;
 
     // ********** Chain methods **********
 

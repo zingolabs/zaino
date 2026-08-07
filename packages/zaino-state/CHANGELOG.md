@@ -29,9 +29,53 @@ and this library adheres to Rust's notion of
   sync/migration to reach its target (distinct from `wait_until_ready`, which
   reflects serving-readiness).
 ### Changed
+- **The mempool is now the `zaino-mempool` / `zaino-mempool-service` subsystem.**
+  `chain_index::mempool` (`Mempool`, `MempoolKey`, `MempoolValue`) and the
+  `Broadcast`/`BroadcastSubscriber` map it was built on are deleted, along with
+  their re-exports from the crate root. The ChainIndex now owns a tip-agnostic
+  `MempoolService` and a tip-aware `CoherenceService` over it.
+
+  The behavioural change this buys: the live reads (`getrawmempool`,
+  `getmempoolinfo`, `GetMempoolTx`) no longer stall across a tip transition,
+  because they are served from the tip-agnostic set; and the reads that place a
+  transaction relative to a tip (`get_raw_transaction`, `get_transaction_status`,
+  `GetMempoolStream`) now refuse to answer against a snapshot the mempool has
+  moved past, instead of answering with a consensus branch id derived from the
+  wrong height.
+- `ChainIndex::get_mempool_transactions` takes raw txid suffixes
+  (`Vec<Vec<u8>>`, client byte order, exactly as they arrive on the wire) and
+  returns `Arc<MempoolEntry>` rather than taking hex strings and returning
+  `Vec<Vec<u8>>`. Callers reach the shared buffer without a copy, and an
+  over-long list or an unusably short suffix is now rejected as
+  `InvalidArgument` rather than silently clamped.
+- `ChainIndex::get_mempool_stream` yields `bytes::Bytes`, and is driven by the
+  coherence layer's own "stream until the tip moves" loop rather than a local
+  mpsc relay. `ChainIndex::get_mempool_height` / `mempool_branch_id` are gone;
+  the branch id is derived from the caller's own snapshot.
+- `ChainIndexErrorKind` gains `Unavailable` (retryable — the request is fine,
+  Zaino's view has moved) and `InvalidArgument` (the request is wrong), mapping
+  to `tonic::Status::unavailable` / `invalid_argument`. `child_process_status_error`
+  is removed with the relay that used it.
+- `BlockchainSource` requires the four `zaino-source` mempool ports as
+  supertraits and no longer declares `get_mempool_txids`. The mempool subsystem
+  reads those ports directly, so restating them here as wire-typed methods would
+  convert domain types out and back for no reader.
+- `NonfinalizedBlockCacheSnapshot` carries a `generation`, bumped when the best
+  tip changes rather than on every publication, and exposes an `epoch()`. This
+  is what the coherence layer freezes and thaws against; bumping per publication
+  would churn it every sync iteration and defeat the agreement check.
+- `CommonBackendConfig` / `ChainIndexConfig` carry a `mempool: MempoolConfig`,
+  shared by clone so the two services see one `max_cost_bytes` cell.
 - The `RawTransaction.data` served over gRPC is now `bytes::Bytes` rather than
   `Vec<u8>` at every construction site, following the proto change. The wire
   format is unchanged.
+- `GetTransaction` reports height `0` — the wire sentinel for unmined — for a
+  mempool transaction, rather than reporting the chain tip (which claimed it was
+  mined at a height it is not in) or failing with `UnavailableNotSyncedEnough`.
+- New metric `zaino.mempool.coherence_frozen_seconds`, and a sync-loop warning
+  when coherence stays frozen past 120s. A freeze is the normal shape of a tip
+  transition; a sustained one means tip-coherent reads have been failing with
+  nothing in the log to say so.
 - `chain_index::finalised_state` renames (internal, `pub(crate)`):
   - facade type `ZainoDB` -> `FinalisedState`
   - module `db` -> `finalised_source`; enum `DbBackend` -> `FinalisedSource`

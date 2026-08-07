@@ -41,6 +41,8 @@ pub trait ChainIndexSourcePorts:
     + zaino_source::GetChainTips
     + zaino_source::GetCommitmentTreeRoots
     + zaino_source::GetDifficulty
+    + zaino_source::GetMempoolMetadata
+    + zaino_source::GetMempoolSourceTip
     + zaino_source::GetMempoolTxids
     + zaino_source::GetMiningInfo
     + zaino_source::GetNetworkSolPs
@@ -49,6 +51,7 @@ pub trait ChainIndexSourcePorts:
     + zaino_source::GetRawBlock
     + zaino_source::GetRawBlockByHash
     + zaino_source::GetRawBlockHeader
+    + zaino_source::GetRawMempoolTransaction
     + zaino_source::GetSpentInfo
     + zaino_source::GetSubtreeRoots
     + zaino_source::GetTransaction
@@ -79,6 +82,8 @@ impl<T> ChainIndexSourcePorts for T where
         + zaino_source::GetChainTips
         + zaino_source::GetCommitmentTreeRoots
         + zaino_source::GetDifficulty
+        + zaino_source::GetMempoolMetadata
+        + zaino_source::GetMempoolSourceTip
         + zaino_source::GetMempoolTxids
         + zaino_source::GetMiningInfo
         + zaino_source::GetNetworkSolPs
@@ -87,6 +92,7 @@ impl<T> ChainIndexSourcePorts for T where
         + zaino_source::GetRawBlock
         + zaino_source::GetRawBlockByHash
         + zaino_source::GetRawBlockHeader
+        + zaino_source::GetRawMempoolTransaction
         + zaino_source::GetSpentInfo
         + zaino_source::GetSubtreeRoots
         + zaino_source::GetTransaction

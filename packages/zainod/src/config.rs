@@ -436,6 +436,9 @@ impl TryFrom<ZainodConfig> for NodeBackedIndexerServiceConfig {
 
 fn build_common(cfg: ZainodConfig) -> CommonBackendConfig {
     CommonBackendConfig {
+        // Defaulted for now; the `[mempool]` config section wires operator
+        // overrides in.
+        mempool: zaino_mempool::MempoolConfig::default(),
         validator_rpc_address: cfg.validator_settings.validator_jsonrpc_listen_address,
         validator_cookie_path: cfg.validator_settings.validator_cookie_path,
         validator_rpc_user: cfg

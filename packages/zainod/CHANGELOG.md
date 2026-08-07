@@ -9,6 +9,11 @@ and this crate adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- `zaino.mempool.coherence_frozen_seconds` metric description: how long
+  tip-coherent mempool reads have been frozen. Brief spikes are normal tip
+  transitions; a sustained non-zero value means the validator tip and Zaino's
+  have stopped agreeing and those reads are unavailable.
+
 - Ironwood (NU6.3) / V6 transaction support, end to end through the
   workspace crates: V6 parsing and ironwood extraction (`zaino-fetch`),
   `ironwoodActions` in served compact blocks (`zaino-proto`, on by
