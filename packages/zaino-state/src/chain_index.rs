@@ -28,26 +28,20 @@ use crate::{IndexedBlock, Outpoint, TransactionHash};
 use std::collections::HashSet;
 use std::str::FromStr;
 use std::{sync::Arc, time::Duration};
+use zaino_primitives::types::TxOutSetInfo;
 
 use arc_swap::ArcSwapOption;
 use futures::{FutureExt, Stream};
 use hex::FromHex as _;
 use non_finalised_state::NonfinalizedBlockCacheSnapshot;
-use source::{BlockchainSource, ValidatorConnector};
+use source::BlockchainSource;
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, instrument};
-use zaino_fetch::jsonrpsee::raw_transaction::validate_raw_transaction_hex;
-use zaino_fetch::jsonrpsee::response::{
-    address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
-    block_deltas::BlockDeltas,
-    block_header::GetBlockHeader,
-    block_subsidy::GetBlockSubsidy,
-    chain_tips::{ChainTip, ChainTipStatus, GetChainTipsResponse},
-    mining_info::GetMiningInfoWire,
-    peer_info::GetPeerInfo,
-    EmptyTxOutSetInfo, GetNetworkSolPsResponse, GetSpentInfoRequest, GetSpentInfoResponse,
-    GetTxOutResponse, GetTxOutSetInfo, GetTxOutSetInfoResponse,
+use zaino_common::consensus::validate_raw_transaction_hex;
+use zaino_primitives::types::rpc::{
+    AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
+    NodeInfo, PeerInfo,
 };
 use zaino_proto::proto::utils::{prune_compact_block, PoolTypeFilter};
 use zebra_chain::parameters::ConsensusBranchId;
@@ -55,10 +49,7 @@ pub use zebra_chain::parameters::Network as ZebraNetwork;
 use zebra_chain::serialization::ZcashSerialize;
 use zebra_rpc::{
     client::{GetAddressBalanceRequest, GetAddressTxIdsRequest},
-    methods::{
-        AddressBalance, GetAddressUtxos, GetBlock, GetBlockchainInfoResponse, GetInfo,
-        SentTransactionHash,
-    },
+    methods::GetBlock,
 };
 use zebra_state::HashOrHeight;
 
@@ -67,13 +58,17 @@ pub mod encoding;
 pub mod finalised_state;
 /// State in the mempool, not yet on-chain
 pub mod mempool;
+mod network_adoption;
 /// State within [`OPERATIONAL_NFS_DEPTH`] blocks of the best-known chain tip;
 /// stored separately as it may be reorged.
 pub mod non_finalised_state;
-/// BlockchainSource
+/// ChainIndex's driven port onto the validator. Temporary scaffolding — see
+/// the module docs.
 pub mod source;
+pub mod source_ports;
 /// Common types used by the rest of this module
 pub mod types;
+pub mod validator_source;
 
 #[cfg(test)]
 mod tests;
@@ -130,7 +125,9 @@ pub(crate) fn unix_now_secs() -> f64 {
 /// this conversion can currently emit.
 pub(crate) fn chain_tips_from_nonfinalized_snapshot(
     snapshot: &NonfinalizedBlockCacheSnapshot,
-) -> GetChainTipsResponse {
+) -> Vec<zaino_primitives::types::rpc::ChainTip> {
+    use zaino_primitives::types::rpc::{ChainTip, ChainTipStatus};
+
     let parent_hashes = snapshot
         .blocks
         .values()
@@ -155,26 +152,42 @@ pub(crate) fn chain_tips_from_nonfinalized_snapshot(
             } else {
                 ChainTipStatus::ValidFork
             };
-            let branchlen = if is_active_tip {
+            let branch_len = if is_active_tip {
                 0
             } else {
                 branch_len_to_active_chain(snapshot, block)
             };
 
-            ChainTip::new(
-                u32::from(block.height()),
-                block.hash().to_rpc_hex(),
-                branchlen,
+            // Every height in the index passed `Height::try_from` when the block
+            // was ingested, so an out-of-range value here means the index itself
+            // is corrupt. Propagating would make a pure snapshot read fallible
+            // and ripple through its callers for a state that cannot arise.
+            let height = zaino_primitives::types::Height::try_from(u32::from(block.height()))
+                .expect("an indexed block's height is within the protocol maximum");
+
+            ChainTip {
+                height,
+                hash: zaino_primitives::types::BlockHash::from(block.hash().0),
+                branch_len,
                 status,
-            )
+            }
         })
         .collect::<Vec<_>>();
 
+    // Descending height, then ascending hash. The tie-break compares
+    // *display-order* bytes, which is the ordering the hex strings this
+    // previously sorted on would produce — hashes are byte-reversed for display,
+    // so sorting internal bytes would silently reorder equal-height tips.
     tips.sort_by(|left, right| {
+        let display_order = |hash: zaino_primitives::types::BlockHash| {
+            let mut bytes = <[u8; 32]>::from(hash);
+            bytes.reverse();
+            bytes
+        };
         right
             .height
             .cmp(&left.height)
-            .then_with(|| left.hash.cmp(&right.hash))
+            .then_with(|| display_order(left.hash).cmp(&display_order(right.hash)))
     });
     tips
 }
@@ -213,113 +226,43 @@ fn branch_len_to_active_chain(
 /// - Direct read access to a zebrad database via `ReadStateService` (preferred)
 /// - A JSON-RPC connection to a validator node (zcashd, zebrad, or another zainod)
 ///
-/// # Example with ReadStateService (Preferred)
+/// # Constructing one
+///
+/// Both backends are selected by config and built through
+/// [`NodeBackedIndexerService`](crate::NodeBackedIndexerService), which
+/// resolves the connection type, probes the validator, adopts its activation
+/// schedule and waits for the initial sync:
 ///
 /// ```no_run
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use zaino_state::{ChainIndex, NodeBackedChainIndex, ValidatorConnector, BlockCacheConfig};
-/// use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
-/// use zebra_state::{ReadStateService, Config as ZebraConfig};
-/// use std::path::PathBuf;
+/// use zaino_state::{
+///     LightWalletService, NodeBackedIndexerService, NodeBackedIndexerServiceConfig, ZcashService,
+/// };
 ///
-/// // Create a ReadStateService for direct database access
-/// let zebra_config = ZebraConfig::default();
-/// let read_state_service = ReadStateService::new(&zebra_config).await?;
-///
-/// // Create a JSON-RPC connector for mempool access (temporary requirement)
-/// let mempool_connector = JsonRpSeeConnector::new_from_config_parts(
-///     false, // no cookie auth
-///     "127.0.0.1:8232".parse()?,
-///     "user".to_string(),
-///     "password".to_string(),
-///     None,  // no cookie path
-/// ).await?;
-///
-/// // Create the State source combining both services
-/// let source = ValidatorConnector::State(zaino_state::chain_index::source::State {
-///     read_state_service,
-///     mempool_fetcher: mempool_connector,
-/// });
-///
-/// // Configure the block cache
-/// let config = BlockCacheConfig::new(
-///     None,  // map capacity
-///     None,  // shard amount
-///     1,     // db version
-///     PathBuf::from("/path/to/cache"),
-///     None,  // db size
-///     zebra_chain::parameters::Network::Mainnet,
-///     false, // sync enabled
-///     false, // db enabled
-/// );
-///
-/// // Create the chain index and get a subscriber for queries
-/// let chain_index = NodeBackedChainIndex::new(source, config).await?;
-/// let subscriber = chain_index.subscriber().await;
-///
-/// // Take a snapshot for consistent queries
-/// let snapshot = subscriber.snapshot_nonfinalized_state();
-///
-/// // Query blocks in a range using the subscriber
-/// if let Some(stream) = subscriber.get_block_range(
-///     &snapshot,
-///     zaino_state::Height(100000),
-///     Some(zaino_state::Height(100010))
-/// ) {
-///     // Process the block stream...
-/// }
+/// // `ValidatorConnectionType::Rpc` reaches the validator over JSON-RPC only;
+/// // `Direct` additionally reads its state database, and is preferred where
+/// // available.
+/// let config = NodeBackedIndexerServiceConfig::default();
+/// let service = NodeBackedIndexerService::spawn(config).await?;
 /// # Ok(())
 /// # }
 /// ```
 ///
-/// # Example with JSON-RPC Only (Fallback)
+/// Consumers then query through the service's subscriber, which implements this
+/// trait. A snapshot pins the non-finalised state so a sequence of queries sees
+/// one consistent chain:
 ///
 /// ```no_run
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use zaino_state::{ChainIndex, NodeBackedChainIndex, ValidatorConnector, BlockCacheConfig};
-/// use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
-/// use std::path::PathBuf;
+/// # async fn example(
+/// #     subscriber: impl zaino_state::ChainIndex,
+/// # ) -> Result<(), Box<dyn std::error::Error>> {
+/// use zaino_state::ChainIndex as _;
 ///
-/// // Create a JSON-RPC connector to your validator node
-/// let connector = JsonRpSeeConnector::new_from_config_parts(
-///     false, // no cookie auth
-///     "127.0.0.1:8232".parse()?,
-///     "user".to_string(),
-///     "password".to_string(),
-///     None,  // no cookie path
-/// ).await?;
-///
-/// // Wrap the connector for use with ChainIndex
-/// let source = ValidatorConnector::Fetch(connector);
-///
-/// // Configure the block cache (same as above)
-/// let config = BlockCacheConfig::new(
-///     None,  // map capacity
-///     None,  // shard amount
-///     1,     // db version
-///     PathBuf::from("/path/to/cache"),
-///     None,  // db size
-///     zebra_chain::parameters::Network::Mainnet,
-///     false, // sync enabled
-///     false, // db enabled
-/// );
-///
-/// // Create the chain index and get a subscriber for queries
-/// let chain_index = NodeBackedChainIndex::new(source, config).await?;
-/// let subscriber = chain_index.subscriber().await;
-///
-/// // Use the subscriber to access ChainIndex trait methods
-/// let snapshot = subscriber.snapshot_nonfinalized_state();
+/// let snapshot = subscriber.snapshot_nonfinalized_state().await?;
+/// let tip = subscriber.best_chaintip(&snapshot).await?;
 /// # Ok(())
 /// # }
 /// ```
-///
-/// # Migrating from FetchService or StateService
-///
-/// If you were previously using `FetchService::spawn()` or `StateService::spawn()`:
-/// 1. Extract the relevant fields from your service config into a `BlockCacheConfig`
-/// 2. Create the appropriate `ValidatorConnector` variant (State or Fetch)
-/// 3. Call `NodeBackedChainIndex::new(source, config).await`
 ///
 /// When a call asks for info (e.g. a block), Zaino selects sources in this order:
 #[doc = simple_mermaid::mermaid!("chain_index_passthrough.mmd")]
@@ -500,7 +443,7 @@ pub trait ChainIndex {
     fn get_address_balance(
         &self,
         address_strings: GetAddressBalanceRequest,
-    ) -> impl std::future::Future<Output = Result<AddressBalance, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<zaino_primitives::types::AddressBalance, Self::Error>>;
 
     /// Returns the transaction ids made by the given transparent addresses.
     fn get_address_txids(
@@ -512,7 +455,7 @@ pub trait ChainIndex {
     fn get_address_utxos(
         &self,
         address_strings: GetAddressBalanceRequest,
-    ) -> impl std::future::Future<Output = Result<Vec<GetAddressUtxos>, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<Vec<zaino_primitives::types::Utxo>, Self::Error>>;
 
     /// For each outpoint, returns the txid of the transaction that spent it on the best
     /// chain, or `None` if the outpoint is unspent or unknown.
@@ -609,8 +552,16 @@ pub trait ChainIndexRpcExt: ChainIndex {
     fn get_block_header(
         &self,
         hash: String,
-        verbose: bool,
-    ) -> impl std::future::Future<Output = Result<GetBlockHeader, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<BlockHeaderVerbose, Self::Error>>;
+
+    /// Returns the raw serialised header of the block with the given hash.
+    ///
+    /// The non-verbose half of `getblockheader`; see
+    /// [`BlockchainSource::get_raw_block_header`].
+    fn get_raw_block_header(
+        &self,
+        hash: String,
+    ) -> impl std::future::Future<Output = Result<Vec<u8>, Self::Error>>;
 
     /// Returns the `getblockdeltas`-shaped transparent input/output deltas for the block
     /// with the given hash.
@@ -632,26 +583,27 @@ pub trait ChainIndexRpcExt: ChainIndex {
     // No local-index equivalent; always delegate to the backing validator.
 
     /// Returns the `getinfo` response.
-    fn get_info(&self) -> impl std::future::Future<Output = Result<GetInfo, Self::Error>>;
+    fn get_info(&self) -> impl std::future::Future<Output = Result<NodeInfo, Self::Error>>;
 
     /// Returns the `getblockchaininfo` response.
     fn get_blockchain_info(
         &self,
-    ) -> impl std::future::Future<Output = Result<GetBlockchainInfoResponse, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<zaino_primitives::types::BlockchainInfo, Self::Error>>;
 
     /// Returns the `getpeerinfo` response.
-    fn get_peer_info(&self) -> impl std::future::Future<Output = Result<GetPeerInfo, Self::Error>>;
+    fn get_peer_info(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<PeerInfo>, Self::Error>>;
 
     /// Returns the `getblocksubsidy` response at the given height.
     fn get_block_subsidy(
         &self,
         height: u32,
-    ) -> impl std::future::Future<Output = Result<GetBlockSubsidy, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<BlockSubsidy, Self::Error>>;
 
     /// Returns the `getmininginfo` response.
-    fn get_mining_info(
-        &self,
-    ) -> impl std::future::Future<Output = Result<GetMiningInfoWire, Self::Error>>;
+    fn get_mining_info(&self)
+        -> impl std::future::Future<Output = Result<MiningInfo, Self::Error>>;
 
     /// Returns the `gettxout` response for the given outpoint.
     fn get_tx_out(
@@ -659,41 +611,43 @@ pub trait ChainIndexRpcExt: ChainIndex {
         txid: String,
         n: u32,
         include_mempool: Option<bool>,
-    ) -> impl std::future::Future<Output = Result<GetTxOutResponse, Self::Error>>;
+    ) -> impl std::future::Future<
+        Output = Result<Option<zaino_primitives::types::rpc::TxOut>, Self::Error>,
+    >;
 
     /// Returns the `getspentinfo` response for the given request.
     fn get_spent_info(
         &self,
-        request: GetSpentInfoRequest,
-    ) -> impl std::future::Future<Output = Result<GetSpentInfoResponse, Self::Error>>;
+        outpoint: zaino_primitives::types::rpc::SpentOutpoint,
+    ) -> impl std::future::Future<Output = Result<zaino_primitives::types::rpc::SpentInfo, Self::Error>>;
 
     /// Returns the `getnetworksolps` response.
     fn get_network_sol_ps(
         &self,
         blocks: Option<i32>,
         height: Option<i32>,
-    ) -> impl std::future::Future<Output = Result<GetNetworkSolPsResponse, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<u64, Self::Error>>;
 
     /// Submits a raw transaction to the network (`sendrawtransaction`).
     fn send_raw_transaction(
         &self,
         raw_transaction_hex: String,
-    ) -> impl std::future::Future<Output = Result<SentTransactionHash, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<zaino_primitives::types::TransactionId, Self::Error>>;
 
     /// Returns the full `z_gettreestate` response for the given hash-or-height, via the
     /// backing validator (node-passthrough fallback for treestates not locally serviceable).
     fn get_treestate_by_id(
         &self,
         hash_or_height: String,
-    ) -> impl std::future::Future<Output = Result<zebra_rpc::client::GetTreestateResponse, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<zaino_primitives::types::Treestate, Self::Error>>;
 
     // ********** Transparent address history methods **********
 
     /// Returns all changes for the given transparent addresses.
     fn get_address_deltas(
         &self,
-        params: GetAddressDeltasParams,
-    ) -> impl std::future::Future<Output = Result<GetAddressDeltasResponse, Self::Error>>;
+        params: AddressDeltasRequest,
+    ) -> impl std::future::Future<Output = Result<AddressDeltas, Self::Error>>;
 
     // ********** Metadata methods **********
 
@@ -706,11 +660,12 @@ pub trait ChainIndexRpcExt: ChainIndex {
     /// Returns the full `gettxoutsetinfo` response, folding the non-finalised state on top of
     /// the finalised txout-set accumulator.
     ///
-    /// Returns [`GetTxOutSetInfoResponse::Empty`] while the indexer is still syncing the
-    /// finalised state (the accumulator's spent-index invariants are not yet established).
+    /// Returns `None` while the indexer is still syncing the finalised state (the
+    /// accumulator's spent-index invariants are not yet established). The wire
+    /// layer renders that as zcashd's empty object.
     fn get_tx_out_set_info(
         &self,
-    ) -> impl std::future::Future<Output = Result<GetTxOutSetInfoResponse, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<Option<TxOutSetInfo>, Self::Error>>;
 }
 
 /// The combined index. Contains a view of the mempool, and the full
@@ -728,107 +683,33 @@ pub trait ChainIndexRpcExt: ChainIndex {
 /// # Construction
 ///
 /// Use [`NodeBackedChainIndex::new()`] with:
-/// - A [`ValidatorConnector`] source (State variant preferred, Fetch as fallback)
-/// - A [`crate::config::BlockCacheConfig`] containing cache and database settings
-///
-/// # Example with StateService (Preferred)
+/// - A source implementing [`BlockchainSource`] — in production
+///   [`ZebraValidatorSource`](crate::chain_index::validator_source::ZebraValidatorSource),
+///   built by `spawn_rpc` or `spawn_direct` from the backend config
+/// - A [`ChainIndexConfig`](crate::ChainIndexConfig) containing cache and database settings
 ///
 /// ```no_run
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use zaino_state::{NodeBackedChainIndex, ValidatorConnector, BlockCacheConfig};
-/// use zaino_state::chain_index::source::State;
-/// use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
-/// use zebra_state::{ReadStateService, Config as ZebraConfig};
-/// use std::path::PathBuf;
+/// use zaino_state::chain_index::validator_source::ZebraValidatorSource;
+/// use zaino_state::{ChainIndexConfig, NodeBackedChainIndex};
 ///
-/// // Create ReadStateService for direct database access
-/// let zebra_config = ZebraConfig::default();
-/// let read_state_service = ReadStateService::new(&zebra_config).await?;
+/// # let common = unimplemented!();
+/// // `spawn_rpc` reaches the validator over JSON-RPC only; `spawn_direct`
+/// // additionally reads its state database, and is preferred where available.
+/// // Both adopt the validator's activation schedule at first contact.
+/// let (source, _node_info, network) = ZebraValidatorSource::spawn_rpc(common).await?;
 ///
-/// // Temporary: Create JSON-RPC connector for mempool access
-/// let mempool_connector = JsonRpSeeConnector::new_from_config_parts(
-///     false,
-///     "127.0.0.1:8232".parse()?,
-///     "user".to_string(),
-///     "password".to_string(),
-///     None,
-/// ).await?;
-///
-/// let source = ValidatorConnector::State(State {
-///     read_state_service,
-///     mempool_fetcher: mempool_connector,
-/// });
-///
-/// // Configure the cache (extract these from your previous StateServiceConfig)
-/// let config = BlockCacheConfig {
-///     map_capacity: Some(1000),
-///     map_shard_amount: Some(16),
-///     db_version: 1,
-///     db_path: PathBuf::from("/path/to/cache"),
-///     db_size: Some(10), // GB
-///     network: zebra_chain::parameters::Network::Mainnet,
-///     no_sync: false,
-///     no_db: false,
-/// };
-///
-/// let chain_index = NodeBackedChainIndex::new(source, config).await?;
+/// let chain_index =
+///     NodeBackedChainIndex::new(source, ChainIndexConfig::from_backend_config(common, network))
+///         .await?;
 /// let subscriber = chain_index.subscriber().await;
-///
-/// // Use the subscriber to access ChainIndex trait methods
-/// let snapshot = subscriber.snapshot_nonfinalized_state();
 /// # Ok(())
 /// # }
 /// ```
 ///
-/// # Example with JSON-RPC Only (Fallback)
-///
-/// ```no_run
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use zaino_state::{NodeBackedChainIndex, ValidatorConnector, BlockCacheConfig};
-/// use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
-/// use std::path::PathBuf;
-///
-/// // For JSON-RPC backend (replaces FetchService::spawn)
-/// let connector = JsonRpSeeConnector::new_from_config_parts(
-///     false,
-///     "127.0.0.1:8232".parse()?,
-///     "user".to_string(),
-///     "password".to_string(),
-///     None,
-/// ).await?;
-/// let source = ValidatorConnector::Fetch(connector);
-///
-/// // Configure the cache (extract these from your previous FetchServiceConfig)
-/// let config = BlockCacheConfig {
-///     map_capacity: Some(1000),
-///     map_shard_amount: Some(16),
-///     db_version: 1,
-///     db_path: PathBuf::from("/path/to/cache"),
-///     db_size: Some(10), // GB
-///     network: zebra_chain::parameters::Network::Mainnet,
-///     no_sync: false,
-///     no_db: false,
-/// };
-///
-/// let chain_index = NodeBackedChainIndex::new(source, config).await?;
-/// let subscriber = chain_index.subscriber().await;
-///
-/// // Use the subscriber to access ChainIndex trait methods
-/// # Ok(())
-/// # }
-/// ```
-///
-/// # Migration from StateService/FetchService
-///
-/// If migrating from `StateService::spawn(config)`:
-/// 1. Create a `ReadStateService` and temporary JSON-RPC connector for mempool
-/// 2. Convert config to `BlockCacheConfig` (or use `From` impl)
-/// 3. Call `NodeBackedChainIndex::new(ValidatorConnector::State(...), block_config)`
-///
-/// If migrating from `FetchService::spawn(config)`:
-/// 1. Create a `JsonRpSeeConnector` using the RPC fields from your `FetchServiceConfig`
-/// 2. Convert remaining config fields to `BlockCacheConfig` (or use `From` impl)
-/// 3. Call `NodeBackedChainIndex::new(ValidatorConnector::Fetch(connector), block_config)`
+/// Most consumers should not build one directly:
+/// [`NodeBackedIndexerService`](crate::NodeBackedIndexerService) does all of the
+/// above from config, and additionally waits for the initial sync to complete.
 ///
 /// # Current Features
 ///
@@ -837,7 +718,9 @@ pub trait ChainIndexRpcExt: ChainIndex {
 /// - Automatic synchronization between state layers
 /// - Snapshot-based consistency for queries
 #[derive(Debug)]
-pub struct NodeBackedChainIndex<Source: BlockchainSource = ValidatorConnector> {
+pub struct NodeBackedChainIndex<
+    Source: BlockchainSource = crate::chain_index::validator_source::ZebraValidatorSource,
+> {
     #[allow(dead_code)]
     mempool: std::sync::Arc<mempool::Mempool<Source>>,
     non_finalized_state: Arc<ArcSwapOption<crate::NonFinalizedState<Source>>>,
@@ -910,8 +793,12 @@ impl SyncTimings {
 }
 
 impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
-    /// Creates a new chainindex from a connection to a validator
-    /// Currently this is a ReadStateService or JsonRpSeeConnector
+    /// Creates a new chainindex from a connection to a validator.
+    ///
+    /// In production `Source` is
+    /// [`ZebraValidatorSource`](crate::chain_index::validator_source::ZebraValidatorSource),
+    /// which routes each query to Zebra's read-state service or its JSON-RPC
+    /// interface according to which can answer it.
     pub async fn new(
         source: Source,
         config: crate::config::ChainIndexConfig,
@@ -1233,7 +1120,9 @@ impl<Source: BlockchainSource> Drop for NodeBackedChainIndex<Source> {
 ///
 /// [`NodeBackedChainIndexSubscriber`] can safely be cloned and dropped freely.
 #[derive(Clone, Debug)]
-pub struct NodeBackedChainIndexSubscriber<Source: BlockchainSource = ValidatorConnector> {
+pub struct NodeBackedChainIndexSubscriber<
+    Source: BlockchainSource = crate::chain_index::validator_source::ZebraValidatorSource,
+> {
     mempool: mempool::MempoolSubscriber,
     non_finalized_state: Arc<ArcSwapOption<crate::NonFinalizedState<Source>>>,
     finalized_state: finalised_state::reader::DbReader<Source>,
@@ -2317,7 +2206,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     async fn get_address_balance(
         &self,
         address_strings: GetAddressBalanceRequest,
-    ) -> Result<AddressBalance, Self::Error> {
+    ) -> Result<zaino_primitives::types::AddressBalance, Self::Error> {
         self.source()
             .get_address_balance(address_strings)
             .await
@@ -2339,7 +2228,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     async fn get_address_utxos(
         &self,
         address_strings: GetAddressBalanceRequest,
-    ) -> Result<Vec<GetAddressUtxos>, Self::Error> {
+    ) -> Result<Vec<zaino_primitives::types::Utxo>, Self::Error> {
         self.source()
             .get_address_utxos(address_strings)
             .await
@@ -2763,12 +2652,10 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
         let snapshot = self.snapshot_nonfinalized_state().await?;
         let tip = self.best_chaintip(&snapshot).await?;
         let id = HashOrHeight::new(&hash_or_height, Some(tip.height.into())).map_err(|error| {
-            ChainIndexError::internal_from(
-                zaino_fetch::jsonrpsee::connector::RpcError::new_from_legacycode(
-                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                    error,
-                ),
-            )
+            ChainIndexError::internal_from(crate::error::LegacyRpcError::new(
+                zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                error,
+            ))
         })?;
         self.source()
             .get_block_verbose(id, verbosity)
@@ -2776,13 +2663,16 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
             .map_err(ChainIndexError::backing_validator)
     }
 
-    async fn get_block_header(
-        &self,
-        hash: String,
-        verbose: bool,
-    ) -> Result<GetBlockHeader, Self::Error> {
+    async fn get_block_header(&self, hash: String) -> Result<BlockHeaderVerbose, Self::Error> {
         self.source()
-            .get_block_header(hash, verbose)
+            .get_block_header(hash)
+            .await
+            .map_err(ChainIndexError::backing_validator)
+    }
+
+    async fn get_raw_block_header(&self, hash: String) -> Result<Vec<u8>, Self::Error> {
+        self.source()
+            .get_raw_block_header(hash)
             .await
             .map_err(ChainIndexError::backing_validator)
     }
@@ -2808,7 +2698,7 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
             .map_err(ChainIndexError::backing_validator)
     }
 
-    async fn get_info(&self) -> Result<GetInfo, Self::Error> {
+    async fn get_info(&self) -> Result<NodeInfo, Self::Error> {
         self.source()
             .get_info()
             .await
@@ -2818,28 +2708,30 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
     // `getblockchaininfo` needs cumulative pool value balances (TipPoolValues) and on-disk
     // size, which are not in the ChainIndex's indexed data, so it cannot be built
     // internally: always delegate to the backing validator.
-    async fn get_blockchain_info(&self) -> Result<GetBlockchainInfoResponse, Self::Error> {
+    async fn get_blockchain_info(
+        &self,
+    ) -> Result<zaino_primitives::types::BlockchainInfo, Self::Error> {
         self.source()
             .get_blockchain_info()
             .await
             .map_err(ChainIndexError::backing_validator)
     }
 
-    async fn get_peer_info(&self) -> Result<GetPeerInfo, Self::Error> {
+    async fn get_peer_info(&self) -> Result<Vec<PeerInfo>, Self::Error> {
         self.source()
             .get_peer_info()
             .await
             .map_err(ChainIndexError::backing_validator)
     }
 
-    async fn get_block_subsidy(&self, height: u32) -> Result<GetBlockSubsidy, Self::Error> {
+    async fn get_block_subsidy(&self, height: u32) -> Result<BlockSubsidy, Self::Error> {
         self.source()
             .get_block_subsidy(height)
             .await
             .map_err(ChainIndexError::backing_validator)
     }
 
-    async fn get_mining_info(&self) -> Result<GetMiningInfoWire, Self::Error> {
+    async fn get_mining_info(&self) -> Result<MiningInfo, Self::Error> {
         self.source()
             .get_mining_info()
             .await
@@ -2851,7 +2743,7 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
         txid: String,
         n: u32,
         include_mempool: Option<bool>,
-    ) -> Result<GetTxOutResponse, Self::Error> {
+    ) -> Result<Option<zaino_primitives::types::rpc::TxOut>, Self::Error> {
         self.source()
             .get_tx_out(txid, n, include_mempool)
             .await
@@ -2860,10 +2752,10 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
 
     async fn get_spent_info(
         &self,
-        request: GetSpentInfoRequest,
-    ) -> Result<GetSpentInfoResponse, Self::Error> {
+        outpoint: zaino_primitives::types::rpc::SpentOutpoint,
+    ) -> Result<zaino_primitives::types::rpc::SpentInfo, Self::Error> {
         self.source()
-            .get_spent_info(request)
+            .get_spent_info(outpoint)
             .await
             .map_err(ChainIndexError::backing_validator)
     }
@@ -2872,7 +2764,7 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
         &self,
         blocks: Option<i32>,
         height: Option<i32>,
-    ) -> Result<GetNetworkSolPsResponse, Self::Error> {
+    ) -> Result<u64, Self::Error> {
         self.source()
             .get_network_sol_ps(blocks, height)
             .await
@@ -2882,9 +2774,18 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
     async fn send_raw_transaction(
         &self,
         raw_transaction_hex: String,
-    ) -> Result<SentTransactionHash, Self::Error> {
-        validate_raw_transaction_hex(&raw_transaction_hex)
-            .map_err(ChainIndexError::internal_from)?;
+    ) -> Result<zaino_primitives::types::TransactionId, Self::Error> {
+        // A local rejection, before the validator round trip. It carries
+        // zcashd's `InvalidParameter` so the client sees the same code it
+        // would have got from the validator, rather than a generic internal
+        // error — the serving layer recovers it by downcasting the source
+        // chain.
+        validate_raw_transaction_hex(&raw_transaction_hex).map_err(|error| {
+            ChainIndexError::internal_from(crate::error::LegacyRpcError::new(
+                zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                error.to_string(),
+            ))
+        })?;
         self.source()
             .send_raw_transaction(raw_transaction_hex)
             .await
@@ -2894,7 +2795,7 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
     async fn get_treestate_by_id(
         &self,
         hash_or_height: String,
-    ) -> Result<zebra_rpc::client::GetTreestateResponse, Self::Error> {
+    ) -> Result<zaino_primitives::types::Treestate, Self::Error> {
         self.source()
             .get_treestate_by_id(hash_or_height)
             .await
@@ -2904,8 +2805,8 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
     /// Returns all changes for the given transparent addresses.
     async fn get_address_deltas(
         &self,
-        params: GetAddressDeltasParams,
-    ) -> Result<GetAddressDeltasResponse, Self::Error> {
+        params: AddressDeltasRequest,
+    ) -> Result<AddressDeltas, Self::Error> {
         self.source()
             .get_address_deltas(params)
             .await
@@ -2920,7 +2821,7 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
         self.mempool.get_mempool_info().await
     }
 
-    async fn get_tx_out_set_info(&self) -> Result<GetTxOutSetInfoResponse, Self::Error> {
+    async fn get_tx_out_set_info(&self) -> Result<Option<TxOutSetInfo>, Self::Error> {
         use crate::chain_index::types::db::metadata::{
             is_unspendable_tx_out, ZAINO_TXOUTSET_ENTRY_LEN,
         };
@@ -2937,7 +2838,7 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
             ChainIndexSnapshot::StillSyncingFinalizedState { .. } => {
                 // Accumulator invariants are not established until the finalised state catches
                 // up. Match zcashd's "stats collection failed" empty-object shape.
-                return Ok(GetTxOutSetInfoResponse::Empty(EmptyTxOutSetInfo {}));
+                return Ok(None);
             }
         };
 
@@ -3087,18 +2988,18 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
             )));
         }
 
-        let total_amount = accumulator.total_zatoshis as f64 / 1e8;
-        let hash_serialized: String = accumulator.hash_serialized.encode_hex();
-        let best_block: String = best_tip.hash.encode_hex();
-
-        Ok(GetTxOutSetInfoResponse::Info(GetTxOutSetInfo {
-            height: best_tip.height.0.into(),
-            best_block,
+        // ZEC denomination and display-order hex are the wire's business; this
+        // hands over integer zatoshis and the hash bytes as they are.
+        Ok(Some(TxOutSetInfo {
+            height: zaino_primitives::types::Height::try_from(best_tip.height.0)
+                .map_err(|e| ChainIndexError::internal(e.to_string()))?,
+            best_block: zaino_primitives::types::BlockHash::from(best_tip.hash.0),
             transactions: accumulator.transactions,
-            txouts: accumulator.transaction_outputs,
+            tx_outs: accumulator.transaction_outputs,
             bytes_serialized: accumulator.bytes_serialized,
-            hash_serialized,
-            total_amount,
+            hash_serialized: accumulator.hash_serialized.encode_hex(),
+            total_amount: zaino_primitives::types::Zatoshis::new(accumulator.total_zatoshis)
+                .map_err(|e| ChainIndexError::internal(e.to_string()))?,
         }))
     }
 }

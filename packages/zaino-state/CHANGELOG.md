@@ -48,9 +48,60 @@ and this library adheres to Rust's notion of
   dedicated `storage.database.accumulator_rebuild_memory_size` budget instead of
   reusing `sync_write_batch_size`, so the bulk-sync block buffer and the rebuild
   can no longer inflate each other's peak memory.
+- **Breaking** — all 25 non-proto `ZcashIndexer` return types are now
+  `zaino-primitives` domain types (ADR-0009), including those that previously
+  returned `zebra_rpc::methods::*`. Two exceptions remain by decision:
+  `z_getblock` and `getrawtransaction` still return zebra's presentation
+  shapes, which are built from block bytes plus chain facts using zebra's own
+  builders. The zcashd-shaped JSON now lives in `zaino-serve`.
+- **Breaking** — `NodeBackedIndexerService` is constructed over the
+  `zaino-source-zebra` stack. `ValidatorConnector` and its
+  `spawn_fetch`/`spawn_state` are gone; `ValidatorSource<V>` /
+  `ZebraValidatorSource` replace them.
+- `BlockchainSource` (`chain_index::source`) is now documented as **temporary
+  scaffolding** — ChainIndex's driven port, kept so the crate keeps working
+  while the `zaino-source` ports are wired in underneath, with a "do not
+  extend" note. Its signatures now carry domain types. It shrinks as each
+  ChainIndex subsystem moves onto the real ports and is deleted with the last
+  of them.
+- `ValidatorSource<V>` is generic over the ports, so the production composite
+  and the test mocks (`MockchainSource`, `ProptestMockchain`) reach ChainIndex
+  through the same conversion code. `mockchain_tests.rs` and
+  `proptest_blockgen.rs` therefore now exercise the production conversion
+  layer rather than a parallel implementation of it.
+- `chain_index::source_ports::ChainIndexSourcePorts` and
+  `source_caps` — per-consumer capability aliases, declared here rather than in
+  `zaino-source`, because an alias states a requirement of its consumer
+  (ADR-0008).
 ### Deprecated
 ### Removed
+- `zaino-fetch` is no longer a dependency, and the crate is deleted from the
+  workspace. Its transport is `zaino-rpc`, its inbound parsing
+  `zaino-source-zebra-rpc`, its outbound serialization `zaino-serve`'s wire
+  module, and its legacy protocol parser moved to
+  `live-tests/zaino-testutils` as a test-only independent oracle.
+- `chain_index::source::validator_connector` (~3,000 lines). Its
+  `ReadStateService` query logic moved to `zaino-source-zebra-readstate`, where
+  it is independently testable.
+- Two dead `TryFrom` impls in `types/db/legacy.rs`
+  (`TryFrom<(FullBlock, ..)> for IndexedBlock`, `TryFrom<(u64, FullTransaction)>
+  for CompactTxData`). Both were unreachable — every call site used
+  `BlockWithMetadata` or `::new` — and survived only because trait impls are
+  invisible to the dead-code lint. No `types/db/**` shape changed.
+- Address classification moved out to the new `zaino-address` crate;
+  `error::ChainParseError` is unproducible and removed.
+- The `zcashd_support` feature declaration, which gated nothing in this crate
+  once the zcashd-shaped response types moved to `zaino-serve`.
 ### Fixed
+- `LegacyRpcError` — carries a zcashd-compatible legacy code as a typed
+  `source` through the error chain, so a domain rejection reaches the serving
+  layer with the code clients key on rather than as a generic internal error.
+- The mempool stream parses each transaction once, not twice. It deserialized
+  the same bytes into a `zebra_chain` transaction and then again into
+  `zaino-fetch`'s `FullTransaction` purely to reach the latter's `to_compact`;
+  the domain conversion reaches the same compact shape directly. Removes an
+  `.unwrap()` on the same path, and closes the in-code TODO that asked for
+  exactly this.
 - The finalised-state txout-set accumulator rebuild at chain tip no longer
   OOM-crashes on memory-constrained hosts. It auto-shards its in-memory spent set
   by creating-txid prefix and now enforces the per-shard budget *strictly*: each

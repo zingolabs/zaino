@@ -2,13 +2,23 @@
 The Zaino repo consists of several crates that collectively provide an indexing service and APIs for the Zcash blockchain. The crates are modularized to separate concerns, enhance maintainability, and allow for flexible integration.
 
 ### Crates
-  - `Zainod`
-  - `Zaino-Serve`
-  - `Zaino-State`
-  - `Zaino-Fetch`
+In dependency order. The source stack (`zaino-primitives` through
+`zaino-source-zebra`) is described by [ADR-0008](./adr/0008-source-ports-and-domain-primitives.md);
+each of its crates carries a `usage.md` beside its `Cargo.toml`.
+  - `Zaino-Primitives` — domain vocabulary
+  - `Zaino-Address` — address classification
+  - `Zaino-Source` — driven ports
+  - `Zaino-Rpc` — JSON-RPC transport
+  - `Zaino-Convert-Zebra` — zebra-chain → domain conversions
+  - `Zaino-Source-Zebra-Rpc` — JSON-RPC adapter
+  - `Zaino-Source-Zebra-Readstate` — ReadStateService adapter
+  - `Zaino-Source-Zebra` — the validator composite
+  - `Zaino-Common`
   - `Zaino-Proto`
-  - `Zaino-Testutils`
-  - `Integration-tests`
+  - `Zaino-State`
+  - `Zaino-Serve`
+  - `Zainod`
+  - `Zaino-Testutils`, `clientless`, `e2e` — the live-test suite
 
 ### Workspace Dependencies
 **Zingo Labs:**
@@ -96,7 +106,7 @@ A full specification of the public functionality and RPC services available in Z
 ### Functionality
 - Service Initialization:
   - Parses command-line arguments and configuration files.
-  - Initializes the gRPC server and internal caching systems using components from `zaino-serve` and `zaino-state` (backed by `zaino-fetch`).
+  - Initializes the gRPC and JSON-RPC servers and internal caching systems using components from `zaino-serve` and `zaino-state` (backed by the `zaino-source-zebra` composite).
   - Sets up logging and monitoring systems.
 
 - Runtime Management:
@@ -121,8 +131,20 @@ Full documentation for `ZainoD` can be found [here](https://zingolabs.github.io/
   - Validates and parses client requests.
   - Communicates with `zaino-state` to retrieve data.
 
+- The served JSON-RPC schema (`rpc/jsonrpc/wire/`):
+  - Owns the JSON shape Zaino emits for its zcashd-compatible RPC surface —
+    serde structs with zcashd's exact field names, one `from_domain` conversion
+    per type, and golden serialization tests beside each.
+  - This is deliberately *not* shared with the shape Zaino accepts from a
+    validator, which is `zaino-source-zebra-rpc`'s. The two interfaces
+    genuinely differ, and one type serving both directions cannot express that.
+    See [ADR-0009](./adr/0009-served-json-schema-lives-in-zaino-serve.md).
+
 - Error Handling:
   - Maps internal errors to appropriate gRPC status codes.
+  - Recovers zcashd-compatible legacy error codes by walking the error chain for
+    `zaino_source::FetchError` (a code the *validator* returned) or
+    `zaino_state::LegacyRpcError` (Zaino's own rejection).
   - Provides meaningful error messages to clients.
 
 Full documentation for `Zaino-Serve` can be found [here](https://zingolabs.github.io/zaino/zaino_serve/index.html).
@@ -171,29 +193,47 @@ Full documentation for `Zaino-Serve` can be found [here](https://zingolabs.githu
 Full documentation for `Zaino-State` can be found [here](https://zingolabs.github.io/zaino/zaino_state/index.html).
 
 
-## Zaino-Fetch
-`Zaino-Fetch` is a library that provides access to the mempool and blockchain data using Zcash's JsonRPC interface. It is primarily used as a backup and for backward compatibility with systems that rely on RPC communication such as `Zcashd`.
+## The source stack (`zaino-primitives` … `zaino-source-zebra`)
+Validator access is a hexagonal port/adapter stack rather than a single client
+library. It replaces `Zaino-Fetch`, which was deleted in this cycle. See
+[ADR-0008](./adr/0008-source-ports-and-domain-primitives.md) for the reasoning
+and each crate's `usage.md` for practical guidance.
 
 ### Functionality
-- RPC Client Implementation:
-  - Implements a `JSON-RPC` client to interact with `Zebra`'s RPC endpoints.
-  - Handles serialization and deserialization of RPC calls.
+- Domain vocabulary (`zaino-primitives`):
+  - The chain in Zaino's own terms: blocks, transactions, hashes, heights,
+    treestates, amounts, and the passthrough RPC response shapes.
+  - Depends on `thiserror` and nothing else. No serde: serialization belongs to
+    whichever boundary owns the format.
 
-- Data Retrieval and Transaction Submission:
-  - Fetches blocks, transactions, and mempool data via RPC.
-  - Sends transactions to the network using the `sendrawtransaction` RPC method.
+- Ports (`zaino-source`):
+  - One trait per question a consumer can ask, each with its own error type.
+  - `QueryError` separates a *domain answer* (the validator replied; not
+    retried) from a *transport failure* (retried by `Resilient`, according to a
+    machine-readable `FailureMode`). This is what lets a zcashd legacy error
+    code survive from the validator to the served response.
+  - Capability is structural: an adapter that cannot answer a question does not
+    implement its port, so mis-routing is a compile error.
 
-- Block and Transaction Deserialisation logic:
-  - Provides Block and transaction deserialisation implementaions.
+- Transport (`zaino-rpc`):
+  - HTTP, the JSON-RPC envelope, authentication, and retry-on-`-1`.
+  - `call()` returns a raw `serde_json::Value`; parsing is the adapter's job.
+    This is what lets the same client serve both the production adapter and the
+    live tests' independent oracle.
 
-- Mempool and CompactFormat access:
-  - Provides a simple mempool implementation for use in gRPC service implementations. (This is due to be refactored and possibly moved with the development of `Zaino-State`.)
-  - Provides parse implementations for converting "full" blocks and transactions to "compact" blocks and transactions.
+- Adapters (`zaino-source-zebra-rpc`, `zaino-source-zebra-readstate`):
+  - The JSON-RPC adapter implements every port JSON-RPC can answer, and owns
+    response parsing (Zaino's external-input validation) and error
+    classification.
+  - The read-state adapter reads Zebra's state database directly where Zaino
+    and Zebra share a host. It is an accelerator, not an alternative, and
+    deliberately does not implement the mempool or passthrough ports.
 
-- Fallback Mechanism:
-  - Acts as a backup when direct access via `zaino-state` is unavailable.
-
-Full documentation for `Zaino-Fetch` can be found [here](https://zingolabs.github.io/zaino/zaino_fetch/index.html).
+- Composite (`zaino-source-zebra`):
+  - `ZebraValidator` holds an RPC adapter and an optional read-state adapter,
+    and routes each question to whichever can answer it. RPC-only and
+    RPC+read-state are configurations of one type rather than variants of an
+    enum.
 
 
 ## Zaino-Proto

@@ -18,8 +18,6 @@ default = []
 # forwards to the zaino libs. See
 # docs/adr/0001-zcashd-support-feature-gate.md.
 zcashd_support = [
-    "zaino-fetch/zcashd_support",
-    "zaino-state/zcashd_support",
     "zaino-serve/zcashd_support",
     "zainod/zcashd_support",
 ]
@@ -43,7 +41,6 @@ zaino-state = { workspace = true }
 zaino-serve.workspace = true
 zaino-common.workspace = true
 zaino-proto = { workspace = true }
-zaino-fetch = { workspace = true }
 # test_dependencies enables Indexer::launch_inner_with_listeners (and forwards
 # zaino-serve/test_dependencies) so the harness can serve on pre-bound sockets.
 zainod = { workspace = true, features = ["test_dependencies"] }
@@ -66,6 +63,13 @@ http = { workspace = true }
 once_cell = { workspace = true }
 tokio = { workspace = true }
 tracing.workspace = true
+zaino-primitives.workspace = true
+thiserror.workspace = true
+hex.workspace = true
+prost.workspace = true
+zaino-rpc.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 tonic.workspace = true
+wire_serialized_transaction_test_data.workspace = true

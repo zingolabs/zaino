@@ -3,7 +3,7 @@
 //! Coverage note: these tests use `ActivationHeights::default()`, whose NU6.3 activation is `None`,
 //! so the migration takes the below-activation branch (rebuild each commitment row in place from the
 //! legacy fixed-length table, no ironwood). The at/above-activation *ironwood backfill* branch —
-//! which refetches block data from the validator — cannot be exercised yet: `MockchainSource`
+//! which refetches block data from the validator — cannot be exercised yet: `MockSource`
 //! serves no ironwood commitment roots (see its `get_commitment_tree_roots` TODO) and the test
 //! vectors carry no ironwood actions, so building a post-NU6.3 block would fail resolving the
 //! (required) ironwood root. That path needs ironwood-capable test vectors before it can be tested.

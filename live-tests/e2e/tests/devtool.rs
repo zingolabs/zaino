@@ -300,7 +300,7 @@ where
         .z_get_address_utxos(GetAddressBalanceRequest::new(vec![recipient_taddr]))
         .await
         .unwrap();
-    let (_, utxo_txid, ..) = utxos[0].into_parts();
+    let utxo_txid = utxos[0].txid;
 
     dbg!(&txid_hex, &utxo_txid);
     assert_eq!(txid_hex.trim(), utxo_txid.to_string());
@@ -338,7 +338,11 @@ where
 
     dbg!(test_manager
         .subscriber()
-        .z_get_subtrees_by_index("orchard".to_string(), NoteCommitmentSubtreeIndex(0), None)
+        .z_get_subtrees_by_index(
+            zaino_primitives::types::ShieldedPool::Orchard,
+            NoteCommitmentSubtreeIndex(0),
+            None
+        )
         .await
         .unwrap());
 
@@ -471,7 +475,9 @@ where
     let json_service = test_manager.full_node_jsonrpc_connector().await;
 
     let mut zaino_mempool = test_manager.subscriber().get_raw_mempool().await.unwrap();
-    let mut validator_mempool = json_service.get_raw_mempool().await.unwrap().transactions;
+    let mut validator_mempool: Vec<String> =
+        serde_json::from_value(json_service.get("getrawmempool").await)
+            .expect("getrawmempool returns an array of txids");
 
     dbg!(&zaino_mempool);
     dbg!(&validator_mempool);
@@ -856,9 +862,9 @@ where
         .await
         .unwrap();
 
-    dbg!(balance);
+    dbg!(&balance);
     // The fixture sent exactly 250_000 to the recipient taddr.
-    assert_eq!(balance.balance(), 250_000);
+    assert_eq!(u64::from(balance.balance), 250_000);
 
     test_manager.close().await;
 }
@@ -952,12 +958,20 @@ async fn z_get_subtrees_by_index_fetch_vs_state() {
 
     let fetch = svc
         .fetch_subscriber
-        .z_get_subtrees_by_index("orchard".to_string(), NoteCommitmentSubtreeIndex(0), None)
+        .z_get_subtrees_by_index(
+            zaino_primitives::types::ShieldedPool::Orchard,
+            NoteCommitmentSubtreeIndex(0),
+            None,
+        )
         .await
         .unwrap();
     let state = svc
         .state_subscriber
-        .z_get_subtrees_by_index("orchard".to_string(), NoteCommitmentSubtreeIndex(0), None)
+        .z_get_subtrees_by_index(
+            zaino_primitives::types::ShieldedPool::Orchard,
+            NoteCommitmentSubtreeIndex(0),
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(fetch, state);
@@ -1030,13 +1044,13 @@ async fn get_address_utxos_fetch_vs_state() {
         .z_get_address_utxos(GetAddressBalanceRequest::new(vec![recipient_taddr.clone()]))
         .await
         .unwrap();
-    let (_, fetch_txid, ..) = fetch_utxos[0].into_parts();
+    let fetch_txid = fetch_utxos[0].txid;
     let state_utxos = svc
         .state_subscriber
         .z_get_address_utxos(GetAddressBalanceRequest::new(vec![recipient_taddr]))
         .await
         .unwrap();
-    let (_, state_txid, ..) = state_utxos[0].into_parts();
+    let state_txid = state_utxos[0].txid;
 
     assert_eq!(txid_hex.trim(), fetch_txid.to_string());
     assert_eq!(fetch_txid.to_string(), state_txid.to_string());
@@ -1205,7 +1219,7 @@ async fn get_address_balance_fetch_vs_state() {
         .unwrap();
 
     // The fixture sent exactly 250_000 to the recipient taddr.
-    assert_eq!(fetch.balance(), 250_000);
+    assert_eq!(u64::from(fetch.balance), 250_000);
     assert_eq!(fetch, state);
 
     svc.test_manager.close().await;
@@ -1510,9 +1524,18 @@ where
 /// live chain (not the original's hardcoded 102/104) so that once devtool fixes
 /// the off-by-one, the only failure mode is the shield, not setup-height drift.
 async fn address_deltas() {
-    use zaino_fetch::jsonrpsee::response::address_deltas::{
-        GetAddressDeltasParams, GetAddressDeltasResponse,
+    use zaino_primitives::types::{
+        rpc::{AddressDeltas, AddressDeltasRequest},
+        TransparentAddress,
     };
+
+    /// Wraps plain address strings in the domain's address type.
+    fn taddrs(addresses: &[String]) -> Vec<TransparentAddress> {
+        addresses
+            .iter()
+            .map(|address| TransparentAddress::new(address.clone()))
+            .collect()
+    }
 
     const NON_EXISTENT_ADDRESS: &str = "tmVqEASZxBNKFTbmASZikGa5fPLkd68iJyx";
 
@@ -1561,30 +1584,32 @@ async fn address_deltas() {
     // 1) Simple query (single address) -> Simple variant with the send delta.
     let response = svc
         .state_subscriber
-        .get_address_deltas(GetAddressDeltasParams::Address(recipient_taddr.clone()))
+        .get_address_deltas(AddressDeltasRequest::Address(TransparentAddress::new(
+            recipient_taddr.clone(),
+        )))
         .await
         .unwrap();
-    let GetAddressDeltasResponse::Simple(deltas) = response else {
+    let AddressDeltas::Simple(deltas) = response else {
         panic!("Expected Simple variant");
     };
     let recipient_delta = deltas
         .iter()
-        .find(|d| d.height >= tx_height)
+        .find(|d| u32::from(d.height) >= tx_height)
         .expect("Should find recipient transaction delta");
     assert_eq!(recipient_delta.index, 0, "Expected output index 0");
 
     // 2) Filtered with start=0 -> Simple variant, deltas from both addresses.
     let response = svc
         .state_subscriber
-        .get_address_deltas(GetAddressDeltasParams::Filtered {
-            addresses: vec![recipient_taddr.clone(), faucet_taddr.clone()],
+        .get_address_deltas(AddressDeltasRequest::Filtered {
+            addresses: taddrs(&[recipient_taddr.clone(), faucet_taddr.clone()]),
             start: 0,
             end: chain_tip,
             chain_info: true,
         })
         .await
         .unwrap();
-    let GetAddressDeltasResponse::Simple(deltas) = response else {
+    let AddressDeltas::Simple(deltas) = response else {
         panic!("Expected Simple variant for start=0");
     };
     assert!(deltas.len() >= 2, "Expected deltas from multiple addresses");
@@ -1592,54 +1617,62 @@ async fn address_deltas() {
     // 3) Filtered with start>0 and chain_info -> WithChainInfo variant.
     let response = svc
         .state_subscriber
-        .get_address_deltas(GetAddressDeltasParams::Filtered {
-            addresses: vec![recipient_taddr.clone(), faucet_taddr.clone()],
+        .get_address_deltas(AddressDeltasRequest::Filtered {
+            addresses: taddrs(&[recipient_taddr.clone(), faucet_taddr.clone()]),
             start: 1,
             end: chain_tip,
             chain_info: true,
         })
         .await
         .unwrap();
-    let GetAddressDeltasResponse::WithChainInfo { deltas, start, end } = response else {
+    let AddressDeltas::WithChainInfo { deltas, start, end } = response else {
         panic!("Expected WithChainInfo variant");
     };
     assert!(!deltas.is_empty(), "Expected deltas with chain info");
-    assert_eq!(start.height, 1, "Start block should match request");
-    assert_eq!(end.height, chain_tip, "End block should match request");
+    assert_eq!(
+        u32::from(start.height),
+        1,
+        "Start block should match request"
+    );
+    assert_eq!(
+        u32::from(end.height),
+        chain_tip,
+        "End block should match request"
+    );
 
     // 4) Height clamping: end beyond the tip is clamped down to the tip.
     let response = svc
         .state_subscriber
-        .get_address_deltas(GetAddressDeltasParams::Filtered {
-            addresses: vec![recipient_taddr, faucet_taddr],
+        .get_address_deltas(AddressDeltasRequest::Filtered {
+            addresses: taddrs(&[recipient_taddr, faucet_taddr]),
             start: 1,
             end: height_beyond_tip,
             chain_info: true,
         })
         .await
         .unwrap();
-    let GetAddressDeltasResponse::WithChainInfo { deltas, start, end } = response else {
+    let AddressDeltas::WithChainInfo { deltas, start, end } = response else {
         panic!("Expected WithChainInfo variant");
     };
     assert!(!deltas.is_empty(), "Expected deltas with clamped range");
-    assert_eq!(start.height, 1, "Start should match request");
+    assert_eq!(u32::from(start.height), 1, "Start should match request");
     assert!(
-        end.height < height_beyond_tip,
+        u32::from(end.height) < height_beyond_tip,
         "End height should be clamped below the requested value"
     );
 
     // 5) Non-existent address -> empty deltas.
     let response = svc
         .state_subscriber
-        .get_address_deltas(GetAddressDeltasParams::Filtered {
-            addresses: vec![NON_EXISTENT_ADDRESS.to_string()],
+        .get_address_deltas(AddressDeltasRequest::Filtered {
+            addresses: taddrs(&[NON_EXISTENT_ADDRESS.to_string()]),
             start: 1,
             end: height_beyond_tip,
             chain_info: true,
         })
         .await
         .unwrap();
-    let GetAddressDeltasResponse::WithChainInfo { deltas, .. } = response else {
+    let AddressDeltas::WithChainInfo { deltas, .. } = response else {
         panic!("Expected WithChainInfo variant");
     };
     assert!(
@@ -1740,15 +1773,15 @@ async fn get_block_deltas_resolves_transparent_spend() {
         .find(|d| {
             d.outputs
                 .iter()
-                .any(|o| o.satoshis.zatoshis() == FUNDING_AMOUNT)
+                .any(|o| i64::try_from(u64::from(o.satoshis)) == Ok(FUNDING_AMOUNT))
         })
         .expect("funding tx paying the recipient should be in its block");
     let funding_output = funding_delta
         .outputs
         .iter()
-        .find(|o| o.satoshis.zatoshis() == FUNDING_AMOUNT)
+        .find(|o| i64::try_from(u64::from(o.satoshis)) == Ok(FUNDING_AMOUNT))
         .expect("funding output paying the recipient should be present");
-    let funding_txid = funding_delta.txid.clone();
+    let funding_txid = funding_delta.txid;
     let funding_vout = funding_output.index;
     let funding_address = funding_output.address.clone();
 
@@ -1764,7 +1797,7 @@ async fn get_block_deltas_resolves_transparent_spend() {
         .deltas
         .iter()
         .flat_map(|d| d.inputs.iter())
-        .find(|i| i.prevtxid == funding_txid && i.prevout == funding_vout)
+        .find(|i| i.prev_txid == funding_txid && i.prev_output == funding_vout)
         .expect("spend input referencing the funding output should be present");
 
     assert_eq!(
@@ -1772,7 +1805,7 @@ async fn get_block_deltas_resolves_transparent_spend() {
         "input must resolve to the prevout's address"
     );
     assert_eq!(
-        input.satoshis.zatoshis(),
+        i64::from(input.satoshis),
         -FUNDING_AMOUNT,
         "input must resolve to the prevout's full value, negated"
     );
@@ -1839,8 +1872,8 @@ async fn sole_recipient_outpoint(
         1,
         "recipient taddr should hold exactly one funding UTXO"
     );
-    let (_, txid, output_index, ..) = utxos[0].into_parts();
-    zaino_state::chain_index::types::Outpoint::new(txid.0, output_index.index())
+    let (txid, output_index) = (utxos[0].txid, utxos[0].output_index);
+    zaino_state::chain_index::types::Outpoint::new(<[u8; 32]>::from(txid), output_index)
 }
 
 /// The single transaction touching `recipient_taddr` at `height` — the shield

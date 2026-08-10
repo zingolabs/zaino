@@ -671,11 +671,15 @@ dependencies = [
  "anyhow",
  "futures",
  "hex",
+ "serde_json",
  "tokio",
  "wire_serialized_transaction_test_data",
+ "zaino-address",
  "zaino-common",
- "zaino-fetch",
+ "zaino-primitives",
  "zaino-proto",
+ "zaino-rpc",
+ "zaino-serve",
  "zaino-state",
  "zaino-testutils",
  "zainod",
@@ -1056,27 +1060,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "derive_more"
-version = "2.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d751e9e49156b02b44f9c1815bcb94b984cdcc4396ecc32521c739452808b134"
-dependencies = [
- "derive_more-impl",
-]
-
-[[package]]
-name = "derive_more-impl"
-version = "2.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "799a97264921d8623a957f6c3b9011f3b5492f557bbb7a5a19b7fa6d06ba8dcb"
-dependencies = [
- "proc-macro2",
- "quote",
- "rustc_version",
- "syn 2.0.118",
-]
-
-[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1188,8 +1171,9 @@ dependencies = [
  "tokio",
  "tower 0.4.13",
  "zaino-common",
- "zaino-fetch",
+ "zaino-primitives",
  "zaino-proto",
+ "zaino-serve",
  "zaino-state",
  "zaino-testutils",
  "zainod",
@@ -5884,11 +5868,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-address"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "sapling-crypto",
+ "tracing",
+ "zcash_address",
+ "zcash_keys",
+ "zcash_protocol",
+ "zcash_transparent",
+]
+
+[[package]]
 name = "zaino-common"
 version = "0.2.0"
 dependencies = [
+ "hex",
  "rustls",
  "serde",
+ "thiserror 2.0.18",
  "time",
  "tracing",
  "tracing-subscriber",
@@ -5897,30 +5896,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "zaino-fetch"
-version = "0.2.1"
+name = "zaino-convert-zebra"
+version = "0.1.0"
 dependencies = [
- "base64",
- "derive_more",
- "hex",
- "http",
- "indexmap 2.14.0",
- "jsonrpsee-types",
- "metrics",
- "prost",
- "reqwest 0.13.1",
- "serde",
- "serde_json",
  "thiserror 2.0.18",
- "tokio",
- "tonic",
- "tracing",
- "url",
- "wire_serialized_transaction_test_data",
- "zaino-common",
- "zaino-proto",
+ "zaino-primitives",
  "zebra-chain",
- "zebra-rpc",
+]
+
+[[package]]
+name = "zaino-primitives"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -5937,24 +5925,100 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-rpc"
+version = "0.1.0"
+dependencies = [
+ "reqwest 0.13.1",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "zaino-common",
+ "zaino-source",
+]
+
+[[package]]
 name = "zaino-serve"
 version = "0.3.1"
 dependencies = [
  "futures",
+ "hex",
+ "indexmap 2.14.0",
  "jsonrpsee",
  "metrics",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "tokio",
  "tonic",
  "tower 0.4.13",
  "tracing",
+ "zaino-address",
  "zaino-common",
- "zaino-fetch",
+ "zaino-primitives",
  "zaino-proto",
+ "zaino-source",
  "zaino-state",
  "zebra-chain",
  "zebra-rpc",
+]
+
+[[package]]
+name = "zaino-source"
+version = "0.1.0"
+dependencies = [
+ "thiserror 2.0.18",
+ "tokio",
+ "zaino-primitives",
+]
+
+[[package]]
+name = "zaino-source-zebra"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+ "zaino-primitives",
+ "zaino-source",
+ "zaino-source-zebra-readstate",
+ "zaino-source-zebra-rpc",
+]
+
+[[package]]
+name = "zaino-source-zebra-readstate"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde_json",
+ "tokio",
+ "tower 0.4.13",
+ "tracing",
+ "zaino-convert-zebra",
+ "zaino-primitives",
+ "zaino-source",
+ "zebra-chain",
+ "zebra-rpc",
+ "zebra-state",
+]
+
+[[package]]
+name = "zaino-source-zebra-rpc"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "incrementalmerkletree",
+ "sapling-crypto",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "zaino-convert-zebra",
+ "zaino-primitives",
+ "zaino-rpc",
+ "zaino-source",
+ "zcash_primitives",
+ "zebra-chain",
 ]
 
 [[package]]
@@ -5993,9 +6057,16 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "whoami",
+ "zaino-address",
  "zaino-common",
- "zaino-fetch",
+ "zaino-convert-zebra",
+ "zaino-primitives",
  "zaino-proto",
+ "zaino-rpc",
+ "zaino-source",
+ "zaino-source-zebra",
+ "zaino-source-zebra-readstate",
+ "zaino-source-zebra-rpc",
  "zcash_address",
  "zcash_keys",
  "zcash_primitives",
@@ -6011,14 +6082,20 @@ name = "zaino-testutils"
 version = "0.2.0"
 dependencies = [
  "futures",
+ "hex",
  "http",
  "once_cell",
+ "prost",
+ "serde_json",
+ "thiserror 2.0.18",
  "tokio",
  "tonic",
  "tracing",
+ "wire_serialized_transaction_test_data",
  "zaino-common",
- "zaino-fetch",
+ "zaino-primitives",
  "zaino-proto",
+ "zaino-rpc",
  "zaino-serve",
  "zaino-state",
  "zainod",
@@ -6045,7 +6122,7 @@ dependencies = [
  "toml",
  "tracing",
  "zaino-common",
- "zaino-fetch",
+ "zaino-rpc",
  "zaino-serve",
  "zaino-state",
  "zcash_address",

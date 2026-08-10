@@ -15,7 +15,6 @@ use crate::{
     BlockHash,
 };
 use tracing::{info, instrument, warn};
-use zaino_fetch::jsonrpsee::response::GetMempoolInfoResponse;
 use zebra_chain::{block::Hash, transaction::SerializedTransaction};
 
 /// Mempool key
@@ -305,7 +304,9 @@ impl<T: BlockchainSource> Mempool<T> {
 
     /// Returns information about the mempool. Used by the `getmempoolinfo` RPC.
     /// Computed from local Broadcast state.
-    pub async fn get_mempool_info(&self) -> Result<GetMempoolInfoResponse, MempoolError> {
+    pub async fn get_mempool_info(
+        &self,
+    ) -> Result<crate::chain_index::types::db::metadata::MempoolInfo, MempoolError> {
         let map = self.state.get_state();
 
         let size = map.len() as u64;
@@ -324,7 +325,7 @@ impl<T: BlockchainSource> Mempool<T> {
 
         let usage = bytes.saturating_add(key_heap_bytes);
 
-        Ok(GetMempoolInfoResponse { size, bytes, usage })
+        Ok(crate::chain_index::types::db::metadata::MempoolInfo { size, bytes, usage })
     }
 
     #[inline]

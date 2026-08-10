@@ -167,7 +167,7 @@ mod json_server {
         dbg!(&zaino_service_balance);
 
         // The fixture sent exactly 250_000 to the recipient taddr.
-        assert_eq!(zcashd_service_balance.balance(), 250_000);
+        assert_eq!(zcashd_service_balance.balance, 250_000);
         assert_eq!(zcashd_service_balance, zaino_service_balance);
 
         services.test_manager.close().await;
@@ -248,12 +248,20 @@ mod json_server {
 
         let zcashd_subtrees = dbg!(services
             .zcashd_subscriber
-            .z_get_subtrees_by_index("orchard".to_string(), NoteCommitmentSubtreeIndex(0), None)
+            .z_get_subtrees_by_index(
+                zaino_primitives::types::ShieldedPool::Orchard,
+                NoteCommitmentSubtreeIndex(0),
+                None
+            )
             .await
             .unwrap());
         let zaino_subtrees = dbg!(services
             .zaino_subscriber
-            .z_get_subtrees_by_index("orchard".to_string(), NoteCommitmentSubtreeIndex(0), None)
+            .z_get_subtrees_by_index(
+                zaino_primitives::types::ShieldedPool::Orchard,
+                NoteCommitmentSubtreeIndex(0),
+                None
+            )
             .await
             .unwrap());
 
@@ -298,7 +306,7 @@ mod json_server {
             .z_get_address_utxos(GetAddressBalanceRequest::new(vec![recipient_taddr.clone()]))
             .await
             .unwrap();
-        let (_, txid, output_index, ..) = zcashd_utxos[0].into_parts();
+        let (txid, output_index) = (zcashd_utxos[0].txid, zcashd_utxos[0].output_index);
 
         let zcashd_tx_out = services
             .zcashd_subscriber
@@ -388,14 +396,14 @@ mod json_server {
             .z_get_address_utxos(GetAddressBalanceRequest::new(vec![recipient_taddr.clone()]))
             .await
             .unwrap();
-        let (_, zcashd_txid, ..) = zcashd_utxos[0].into_parts();
+        let zcashd_txid = zcashd_utxos[0].txid;
 
         let zaino_utxos = services
             .zaino_subscriber
             .z_get_address_utxos(GetAddressBalanceRequest::new(vec![recipient_taddr]))
             .await
             .unwrap();
-        let (_, zaino_txid, ..) = zaino_utxos[0].into_parts();
+        let zaino_txid = zaino_utxos[0].txid;
 
         dbg!(&txid_1);
         dbg!(&zcashd_utxos);

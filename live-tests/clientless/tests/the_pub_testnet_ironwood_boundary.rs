@@ -27,9 +27,7 @@
 //! (`network_type: NetworkType::Testnet`, which makes zebrad ignore
 //! `activation_heights` and `miner_address`).
 
-use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
-use zaino_fetch::jsonrpsee::response::GetBlockResponse;
-use zaino_testutils::ZEBRAD_THE_PUB_TESTNET_CACHE_DIR;
+use zaino_testutils::{ValidatorOracle, ZEBRAD_THE_PUB_TESTNET_CACHE_DIR};
 use zcash_local_net::process::Process as _;
 use zcash_local_net::protocol::NetworkType;
 use zcash_local_net::validator::zebrad::{Zebrad, ZebradConfig};
@@ -43,23 +41,22 @@ const OBSERVED_NU6_3_ACTIVATION_ON_THE_PUB_TESTNET: u32 = 4_134_000;
 
 /// The chain value of `pool_id` as of `height`, from the validator's
 /// verbosity-2 block object.
-async fn pool_zats(connector: &JsonRpSeeConnector, height: u32, pool_id: &str) -> i64 {
-    let response = connector
-        .get_block(height.to_string(), Some(2))
-        .await
-        .expect("getblock verbosity 2");
-    let GetBlockResponse::Object(block) = response else {
-        panic!("verbosity-2 getblock must return a block object");
-    };
-    block
-        .value_pools()
+async fn pool_zats(connector: &ValidatorOracle, height: u32, pool_id: &str) -> i64 {
+    let block = connector
+        .call(
+            "getblock",
+            vec![serde_json::json!(height.to_string()), serde_json::json!(2)],
+        )
+        .await;
+
+    block["valuePools"]
+        .as_array()
         .expect("verbosity-2 block object carries value pools")
         .iter()
-        .map(|pool| pool.balance())
-        .find(|pool| pool.id() == pool_id)
-        .unwrap_or_else(|| panic!("value pools must include {pool_id}"))
-        .chain_value_zat()
-        .zatoshis()
+        .find(|pool| pool["id"] == pool_id)
+        .unwrap_or_else(|| panic!("value pools must include {pool_id}"))["chainValueZat"]
+        .as_i64()
+        .expect("a pool's chain value is an integer number of zatoshis")
 }
 
 /// multi_thread required: the test launches the validator process and polls
@@ -88,29 +85,21 @@ async fn value_pools_respect_the_boundary_on_the_pub_testnet() {
         .expect("launch a zebrad on The Public Testnet");
 
     let rpc_address = format!("127.0.0.1:{}", zebrad.get_port());
-    let connector = JsonRpSeeConnector::new_with_basic_auth(
-        test_node_and_return_url(
-            &rpc_address,
-            None,
-            Some("xxxxxx".to_string()),
-            Some("xxxxxx".to_string()),
-        )
+    zaino_rpc::probe_node(&rpc_address, None, None, None)
         .await
-        .expect("validator RPC reachable"),
-        "xxxxxx".to_string(),
-        "xxxxxx".to_string(),
-    )
-    .expect("connect to the validator RPC");
+        .expect("validator RPC reachable");
+    let connector = ValidatorOracle::new(&rpc_address);
 
-    let blockchain_info = connector
-        .get_blockchain_info()
-        .await
-        .expect("getblockchaininfo");
+    // Read as zebra's own response type: the boundary below is found by
+    // matching on the `NetworkUpgrade` enum.
+    let blockchain_info: zebra_rpc::methods::GetBlockchainInfoResponse =
+        serde_json::from_value(connector.get("getblockchaininfo").await)
+            .expect("getblockchaininfo");
 
     // The validator's reported schedule is the source of truth for the
     // boundary; the recorded constant pins the real history of The Public Testnet.
     let boundary = blockchain_info
-        .upgrades
+        .upgrades()
         .values()
         .find_map(|upgrade_info| {
             let (upgrade, height, _status) = upgrade_info.into_parts();
@@ -122,7 +111,7 @@ async fn value_pools_respect_the_boundary_on_the_pub_testnet() {
         "the validator's NU6.3 height must match the observed activation on The Public Testnet"
     );
 
-    let tip = blockchain_info.blocks.0;
+    let tip = blockchain_info.blocks().0;
     if tip <= boundary {
         eprintln!(
             "skipping: cache tip {tip} of The Public Testnet has not crossed the NU6.3 boundary {boundary}"

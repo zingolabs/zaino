@@ -11,7 +11,7 @@ use zebra_chain::serialization::ZcashDeserialize as _;
 use crate::{
     chain_index::{
         mempool::MempoolSubscriber,
-        source::mockchain_source::MockchainSource,
+        tests::vectors::MockSource,
         tests::{
             poll::poll_until,
             vectors::{build_active_mockchain_source, load_test_vectors, TestVectorBlockData},
@@ -66,9 +66,9 @@ async fn wait_for_mempool_tip_hash(subscriber: &MempoolSubscriber, expected: Blo
 }
 
 async fn spawn_mempool_and_mockchain() -> (
-    Mempool<MockchainSource>,
+    Mempool<MockSource>,
     MempoolSubscriber,
-    MockchainSource,
+    MockSource,
     Vec<zebra_chain::block::Block>,
 ) {
     let blocks = load_test_vectors().unwrap().blocks;
@@ -91,9 +91,9 @@ async fn spawn_mempool_and_mockchain() -> (
 async fn get_mempool() {
     let (_mempool, subscriber, mockchain, block_data) = spawn_mempool_and_mockchain().await;
 
-    let mut active_chain_height = dbg!(mockchain.active_height());
+    let mut active_chain_height = dbg!(mockchain.source().active_height());
     assert_eq!(active_chain_height, 0);
-    let max_chain_height = mockchain.max_chain_height();
+    let max_chain_height = mockchain.source().max_chain_height();
 
     for _ in 0..=max_chain_height {
         let mempool_index = (active_chain_height as usize) + 1;
@@ -142,8 +142,8 @@ async fn get_mempool() {
         }
 
         if active_chain_height < max_chain_height {
-            mockchain.mine_blocks(10);
-            active_chain_height = dbg!(mockchain.active_height());
+            mockchain.source().mine_blocks(10);
+            active_chain_height = dbg!(mockchain.source().active_height());
         }
     }
 }
@@ -152,8 +152,8 @@ async fn get_mempool() {
 async fn get_filtered_mempool() {
     let (_mempool, subscriber, mockchain, block_data) = spawn_mempool_and_mockchain().await;
 
-    mockchain.mine_blocks(150);
-    let active_chain_height = mockchain.active_height();
+    mockchain.source().mine_blocks(150);
+    let active_chain_height = mockchain.source().active_height();
 
     let mempool_index = (active_chain_height as usize) + 1;
     let mempool_transactions = block_data
@@ -224,8 +224,8 @@ async fn get_filtered_mempool() {
 async fn get_mempool_transaction() {
     let (_mempool, subscriber, mockchain, block_data) = spawn_mempool_and_mockchain().await;
 
-    mockchain.mine_blocks(150);
-    let active_chain_height = dbg!(mockchain.active_height());
+    mockchain.source().mine_blocks(150);
+    let active_chain_height = dbg!(mockchain.source().active_height());
 
     let mempool_index = (active_chain_height as usize) + 1;
 
@@ -272,8 +272,8 @@ async fn get_mempool_transaction() {
 async fn get_mempool_info() {
     let (_mempool, subscriber, mockchain, block_data) = spawn_mempool_and_mockchain().await;
 
-    mockchain.mine_blocks(150);
-    let active_chain_height = dbg!(mockchain.active_height());
+    mockchain.source().mine_blocks(150);
+    let active_chain_height = dbg!(mockchain.source().active_height());
 
     let mempool_index = (active_chain_height as usize) + 1;
 
@@ -338,8 +338,8 @@ async fn get_mempool_stream_no_expected_chain_tip() {
     let (_mempool, subscriber, mockchain, block_data) = spawn_mempool_and_mockchain().await;
     let mut subscriber = subscriber;
 
-    mockchain.mine_blocks(150);
-    let active_chain_height = dbg!(mockchain.active_height());
+    mockchain.source().mine_blocks(150);
+    let active_chain_height = dbg!(mockchain.source().active_height());
 
     let mempool_index = (active_chain_height as usize) + 1;
 
@@ -398,7 +398,7 @@ async fn get_mempool_stream_no_expected_chain_tip() {
         assert_eq!(got, bytes, "bytes mismatch for {k}");
     }
 
-    mockchain.mine_blocks(1);
+    mockchain.source().mine_blocks(1);
 
     timeout(Duration::from_secs(5), async {
         while let Some(_msg) = rx.recv().await {}
@@ -414,8 +414,8 @@ async fn get_mempool_stream_correct_expected_chain_tip() {
     let (_mempool, subscriber, mockchain, block_data) = spawn_mempool_and_mockchain().await;
     let mut subscriber = subscriber;
 
-    mockchain.mine_blocks(150);
-    let active_chain_tip_height = dbg!(mockchain.active_height());
+    mockchain.source().mine_blocks(150);
+    let active_chain_tip_height = dbg!(mockchain.source().active_height());
     let active_chain_tip_hash = mockchain.get_best_block_hash().await.unwrap().unwrap();
 
     let mempool_index = (active_chain_tip_height as usize) + 1;
@@ -479,7 +479,7 @@ async fn get_mempool_stream_correct_expected_chain_tip() {
         assert_eq!(got, bytes, "bytes mismatch for {k}");
     }
 
-    mockchain.mine_blocks(1);
+    mockchain.source().mine_blocks(1);
 
     timeout(Duration::from_secs(5), async {
         while let Some(_msg) = rx.recv().await {}
@@ -511,12 +511,20 @@ async fn get_mempool_stream_stale_expected_chain_tip() {
             .unwrap_or_default()
     };
 
-    mockchain.mine_blocks(149);
+    mockchain.source().mine_blocks(149);
     let state_chain_tip_hash = mockchain.get_best_block_hash().await.unwrap().unwrap();
-    wait_for_mempool_to_reflect(&subscriber, next_block_txids(mockchain.active_height())).await;
+    wait_for_mempool_to_reflect(
+        &subscriber,
+        next_block_txids(mockchain.source().active_height()),
+    )
+    .await;
 
-    mockchain.mine_blocks(1);
-    wait_for_mempool_to_reflect(&subscriber, next_block_txids(mockchain.active_height())).await;
+    mockchain.source().mine_blocks(1);
+    wait_for_mempool_to_reflect(
+        &subscriber,
+        next_block_txids(mockchain.source().active_height()),
+    )
+    .await;
 
     let result = subscriber
         .get_mempool_stream(Some(state_chain_tip_hash.into()))
