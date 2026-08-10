@@ -284,6 +284,26 @@ fn addresses_param(addresses: Vec<String>) -> serde_json::Value {
 }
 
 impl ZebraRpcAdapter {
+    /// Issue a call and parse its result, classifying transport failures with
+    /// `classify` and parse failures as [`QueryError::Fetch`].
+    ///
+    /// The classifier is what separates the wrappers below: it decides whether a
+    /// given transport failure is the port's domain answer or a real fetch
+    /// failure.
+    async fn call_parsed_classified<T, E>(
+        &self,
+        method: &str,
+        params: Vec<serde_json::Value>,
+        parse: impl FnOnce(&serde_json::Value) -> Result<T, parse::ParseError>,
+        classify: impl FnOnce(zaino_rpc::RpcError) -> QueryError<E>,
+    ) -> Result<T, QueryError<E>>
+    where
+        E: std::fmt::Debug + std::fmt::Display,
+    {
+        let value = self.rpc.call(method, params).await.map_err(classify)?;
+        parse(&value).map_err(|e| QueryError::Fetch(from_parse(e)))
+    }
+
     /// Issue a call and parse its result, mapping transport and parse failures
     /// into the caller's error type.
     async fn call_parsed<T, E>(
@@ -295,12 +315,10 @@ impl ZebraRpcAdapter {
     where
         E: std::fmt::Debug + std::fmt::Display,
     {
-        let value = self
-            .rpc
-            .call(method, params)
-            .await
-            .map_err(|e| QueryError::Fetch(e.into()))?;
-        parse(&value).map_err(|e| QueryError::Fetch(from_parse(e)))
+        self.call_parsed_classified(method, params, parse, |error| {
+            QueryError::Fetch(error.into())
+        })
+        .await
     }
 
     /// [`call_parsed`](Self::call_parsed), but reporting the validator's
@@ -318,12 +336,10 @@ impl ZebraRpcAdapter {
     where
         E: std::fmt::Debug + std::fmt::Display,
     {
-        let value = self
-            .rpc
-            .call(method, params)
-            .await
-            .map_err(|error| absent_or_fetch(error, absent))?;
-        parse(&value).map_err(|e| QueryError::Fetch(from_parse(e)))
+        self.call_parsed_classified(method, params, parse, |error| {
+            absent_or_fetch(error, absent)
+        })
+        .await
     }
 
     /// [`call_parsed`](Self::call_parsed), for the address-keyed methods,
@@ -339,12 +355,10 @@ impl ZebraRpcAdapter {
     where
         E: std::fmt::Debug + std::fmt::Display,
     {
-        let value = self
-            .rpc
-            .call(method, params)
-            .await
-            .map_err(|error| invalid_address_or_fetch(error, invalid))?;
-        parse(&value).map_err(|e| QueryError::Fetch(from_parse(e)))
+        self.call_parsed_classified(method, params, parse, |error| {
+            invalid_address_or_fetch(error, invalid)
+        })
+        .await
     }
 
     /// [`call_parsed`](Self::call_parsed), but reporting the validator's
