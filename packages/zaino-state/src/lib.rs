@@ -25,7 +25,8 @@ impl<T, F: Future<Output = T> + Send> SendFut<T> for F {}
 pub mod metric_names {
     pub const CHAIN_TIP_HEIGHT: &str = "zaino.chain.tip_height";
 
-    pub const SYNC_FINALIZED_HEIGHT: &str = "zaino.sync.finalized_height";
+    pub const SYNC_FINALIZED_HEIGHT: &str = "zaino.sync.finalized_height"; // Written to DB
+    pub const SYNC_FETCHED_HEIGHT: &str = "zaino.sync.fetched_height"; // Fetched from DB or RPC
     pub const SYNC_TARGET_HEIGHT: &str = "zaino.sync.target_height";
     pub const SYNC_LAG_BLOCKS: &str = "zaino.sync.lag_blocks";
     pub const SYNC_ITERATIONS_TOTAL: &str = "zaino.sync.iterations_total";

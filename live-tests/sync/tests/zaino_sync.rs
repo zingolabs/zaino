@@ -1,26 +1,28 @@
 //! End-to-end **index-construction test for zaino**: zaino builds its chain
 //! index from scratch over a pinned, pre-synced testnet snapshot, and the run
-//! continuously asserts that what it has built so far is correct — with the
-//! zebrad serving the same snapshot as the independent authority.
+//! asserts the whole way up that the build is well-formed — with the zebrad
+//! serving the same snapshot as the independent authority for where the chain
+//! ends.
 //!
 //! **Zaino is the subject, not the driver.** There is no wallet here. The
 //! `sync` harness observes zaino's own ingest tick by tick, so the thing under
 //! assertion is the *index itself*: how far it has been written, whether it was
-//! written in order, and whether the answers it serves over the range it has
-//! covered are the answers zebra gives for that same range.
+//! written in order, and whether it ever claims more chain than exists.
 //!
-//! ## Why this is not `clientless/tests/testnet_parity.rs`
+//! ## What this profile does and does not claim
 //!
-//! `state_parity` waits for zaino's index to finish and then compares its
-//! answers against zebra's. That is the *end-state* claim, and it is the right
-//! one to make there. It is also, by construction, blind to everything this
-//! profile exists for: `wait_for_served_index` throws the entire construction
-//! interval away, and every bug that lives in that interval with it — an index
-//! written out of order, a frontier that goes backwards, an answer served for a
-//! range that has not been indexed yet.
+//! It claims the *shape* of the build and its throughput: the frontier only
+//! rises, the per-pool counters only accumulate, the frontier never passes the
+//! pinned tip, the build keeps making ground, and it ends serving from its own
+//! index rather than proxying. Those are the properties that only exist during
+//! construction, which is the interval an end-state comparison throws away.
 //!
-//! This profile owns that interval. Anything only checkable once the index is
-//! complete belongs in `state_parity` instead, not here.
+//! It does **not** compare index *contents* against zebra. That check lived
+//! here as a periodic prefix sweep and was removed: several hundred rounds of
+//! live RPC against both pods taxes the very throughput this profile measures,
+//! and content correctness is an end-state claim that belongs in a parity test
+//! over the same fixture. There is no such test on this fixture today, so treat
+//! "the index holds the right blocks" as unasserted here.
 //!
 //! ## Why the deep snapshot
 //!
@@ -62,15 +64,6 @@ const RUN_CAP: std::time::Duration = hours(48);
 /// ~10 GB state directory rather than indexing anything.
 const STALL_WINDOW: std::time::Duration = mins(15);
 
-/// How many blocks of frontier progress between prefix-correctness sweeps.
-///
-/// The sweep is the most expensive probe in the profile — it is real RPC
-/// traffic against both zaino and zebra — so it is paced by chain progress
-/// rather than by the clock: on a 4.14M-block build this is a few hundred
-/// sweeps spread evenly across the whole of history, rather than a burst
-/// wherever the indexer happened to be slow.
-const PREFIX_SWEEP_BLOCKS: u32 = 10_000;
-
 #[ztest::needs(IRONWOOD)]
 #[ztest::sync_test(
     name = "zaino_index_construction",
@@ -85,16 +78,16 @@ async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
     // index over its own CoW clone of the same artifact. `?` is unavailable —
     // the body returns `SyncOutcome`, not `Result` — so a setup failure converts
     // to an errored outcome via `From` and returns.
-    let (zeb, zai) = match run
+    let (zebra, zaino_state) = match run
         .topology(|t| {
-            let zeb = t.add_validator(Validator::zebrad("6.2.3").restore(IRONWOOD));
+            let zebra = t.add_validator(Validator::zebrad("6.2.3").testnet(IRONWOOD));
             // Zaino is the SUT: built from this repo's Dockerfile with metrics
             // *and* profiling, because this profile's progress source is its own
             // exporter — `no_tls_with_prometheus` is load-bearing here, not
             // decoration. It also carries the no-TLS the cluster needs; the
             // default JSON-RPC public-bind feature is restated because
             // overriding the feature list drops it.
-            let zai = t.add_indexer(
+            let zaino_state = t.add_indexer(
                 dev!(
                     Indexer::Zainod,
                     "../../Dockerfile",
@@ -105,13 +98,16 @@ async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
                         "profile"
                     ]
                 )
-                .restore(IRONWOOD)
+                // The same chain the validator runs, as a private CoW clone this
+                // pod *reads*. Zaino's own index is pod-local scratch and starts
+                // empty — building it is what this profile watches.
+                .testnet(IRONWOOD)
                 // The whole subject of the test: `Fetch` forwards to the
                 // validator and builds no index, so there would be nothing to
                 // observe.
                 .tuning(ZainoTuning::State),
             );
-            (zeb, zai)
+            (zebra, zaino_state)
         })
         .await
     {
@@ -126,7 +122,7 @@ async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
     // and the manifest was written by the producer before either pod existed.
     let chain = run.chain();
 
-    run.sync(Subject::zaino(&zai));
+    run.sync(Subject::zaino(&zaino_state));
     run.tick(TICK).timeout(RUN_CAP);
     // Deliberately no `until_height`: a declared stop height is what makes two
     // runs' throughput comparable, and it is the wrong trade here. The reason
@@ -148,26 +144,15 @@ async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
         // Captured clones rather than `cx`: `SyncCtx` carries only the indexer,
         // so the validator — the one oracle in this topology that is not the
         // subject — reaches a probe by being moved into it.
-        let zeb = zeb.clone();
+        let zebra = zebra.clone();
         run.always(Severity::Fatal)
             .named("index_within_pinned_tip")
             .every(secs(30))
             .check_rpc(move |s, _cx| {
-                let zeb = zeb.clone();
-                Box::pin(async move { index_within_pinned_tip(s, &zeb, chain).await })
+                let zebra = zebra.clone();
+                Box::pin(async move { index_within_pinned_tip(s, &zebra, chain).await })
             });
     }
-    {
-        let zeb = zeb.clone();
-        run.always(Severity::Fatal)
-            .named("index_prefix_matches_validator")
-            .every_blocks(PREFIX_SWEEP_BLOCKS)
-            .check_rpc(move |s, cx| {
-                let zeb = zeb.clone();
-                Box::pin(async move { index_prefix_matches_validator(s, cx, &zeb, chain).await })
-            });
-    }
-
     // ── liveness: the build must keep making ground ──
     run.eventually(Severity::Fatal)
         .named("index_advances")
@@ -269,38 +254,6 @@ async fn index_within_pinned_tip(
         s.height()
     );
     Verdict::Satisfied
-}
-
-/// **The correctness spine: the index is right at every intermediate state, not
-/// only at the end.**
-///
-/// Everything above this probe is about the *shape* of the build — the frontier
-/// only rises, the counters only accumulate, the chain underneath is frozen.
-/// None of them look at a single thing the index actually stored. This one
-/// does: over the range zaino has indexed *so far*, its answers must be zebra's
-/// answers.
-///
-/// Called every [`PREFIX_SWEEP_BLOCKS`] of frontier progress, with the snapshot
-/// at that moment, the indexer on `cx`, and the validator captured. See
-/// [`ChainInfo::boundary_heights`] for the pinned heights worth querying, and
-/// `clientless/tests/testnet_parity.rs` for the end-state battery this is the
-/// mid-build counterpart to.
-///
-// TODO(prefix-sweep): implement. The design questions this has to answer are
-// laid out in the conversation that prepared this file; the shape below is the
-// signature and the wiring, not the policy.
-async fn index_prefix_matches_validator(
-    s: &Snapshot,
-    cx: &SyncCtx,
-    validator: &ZebraValidator,
-    chain: ChainInfo,
-) -> Verdict {
-    let _ = (s, cx, validator, chain);
-    Verdict::ProbeError(
-        "index_prefix_matches_validator is unimplemented: the profile must not report a \
-         green run while its correctness probe checks nothing"
-            .into(),
-    )
 }
 
 // ── liveness ─────────────────────────────────────────────────────────────

@@ -347,7 +347,7 @@ impl DbWrite for DbV1 {
                     if last_progress_log.elapsed() >= SYNC_PROGRESS_LOG_INTERVAL {
                         #[cfg(feature = "prometheus")]
                         {
-                            metrics::gauge!(SYNC_FINALIZED_HEIGHT).set((next - 1) as f64);
+                            metrics::gauge!(SYNC_FETCHED_HEIGHT).set((next - 1) as f64);
                             metrics::gauge!(SYNC_TARGET_HEIGHT).set(height.0 as f64);
                         }
                         info!(
@@ -391,6 +391,7 @@ impl DbWrite for DbV1 {
                 #[cfg(feature = "prometheus")]
                 {
                     metrics::gauge!(DB_TIP_HEIGHT).set((next - 1) as f64);
+                    metrics::gauge!(SYNC_FINALIZED_HEIGHT).set((next - 1) as f64);
                     metrics::gauge!(SYNC_LAST_BLOCK_WRITTEN_AT)
                         .set(crate::chain_index::unix_now_secs());
                 }

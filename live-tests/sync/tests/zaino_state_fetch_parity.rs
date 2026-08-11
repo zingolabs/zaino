@@ -88,12 +88,12 @@ async fn zaino_state_fetch_parity(mut run: SyncRunner) -> SyncOutcome {
     // of the archive (it reads a zebra state DB); the rpc pod is given none —
     // `materialize_opts` withholds it deliberately, because that pod sources its
     // blocks from the validator and would never open the mount.
-    let (direct, rpc) = match run
+    let (zaino_state, zaino_fetch) = match run
         .topology(|t| {
-            t.add_validator(Validator::zebrad("6.2.3").restore(IRONWOOD));
-            let direct = t.add_indexer(zaino().restore(IRONWOOD).tuning(ZainoTuning::State));
-            let rpc = t.add_indexer(zaino().restore(IRONWOOD).tuning(ZainoTuning::Fetch));
-            (direct, rpc)
+            t.add_validator(Validator::zebrad("6.2.3").testnet(IRONWOOD));
+            let zaino_state = t.add_indexer(zaino().testnet(IRONWOOD).tuning(ZainoTuning::State));
+            let zaino_fetch = t.add_indexer(zaino().testnet(IRONWOOD).tuning(ZainoTuning::Fetch));
+            (zaino_state, zaino_fetch)
         })
         .await
     {
@@ -110,7 +110,7 @@ async fn zaino_state_fetch_parity(mut run: SyncRunner) -> SyncOutcome {
     // margin. Binding the laggard means completion is very nearly "both are
     // done" — and `indexes_converged` covers the remainder rather than assuming
     // it away.
-    run.sync(Subject::zaino(&rpc));
+    run.sync(Subject::zaino(&zaino_fetch));
     run.tick(TICK).timeout(RUN_CAP);
 
     // ── safety: neither index may misbehave, and they may never disagree ──
@@ -119,23 +119,23 @@ async fn zaino_state_fetch_parity(mut run: SyncRunner) -> SyncOutcome {
         .every(secs(30))
         .check(subject_index_append_only);
     {
-        let direct = direct.clone();
+        let zaino_state = zaino_state.clone();
         run.always(Severity::Fatal)
             .named("frontiers_within_pin")
             .every(secs(30))
             .check_rpc(move |s, _cx| {
-                let direct = direct.clone();
-                Box::pin(async move { frontiers_within_pin(s, &direct, chain).await })
+                let zaino_state = zaino_state.clone();
+                Box::pin(async move { frontiers_within_pin(s, &zaino_state, chain).await })
             });
     }
     {
-        let direct = direct.clone();
+        let zaino_state = zaino_state.clone();
         run.always(Severity::Fatal)
             .named("indexes_agree_over_common_window")
             .every_blocks(SWEEP_BLOCKS)
             .check_rpc(move |s, cx| {
-                let direct = direct.clone();
-                Box::pin(async move { indexes_agree_over_common_window(s, cx, &direct).await })
+                let zaino_state = zaino_state.clone();
+                Box::pin(async move { indexes_agree_over_common_window(s, cx, &zaino_state).await })
             });
     }
 
@@ -147,43 +147,45 @@ async fn zaino_state_fetch_parity(mut run: SyncRunner) -> SyncOutcome {
 
     // ── coverage: without these the sweeps above can all be vacuous ──
     {
-        let direct = direct.clone();
+        let zaino_state = zaino_state.clone();
         run.sometimes()
             .named("observed_both_mid_build")
             .check_rpc(move |s, _cx| {
-                let direct = direct.clone();
-                Box::pin(async move { observed_both_mid_build(s, &direct).await })
+                let zaino_state = zaino_state.clone();
+                Box::pin(async move { observed_both_mid_build(s, &zaino_state).await })
             });
     }
     {
-        let direct = direct.clone();
+        let zaino_state = zaino_state.clone();
         run.sometimes()
             .named("both_answered_from_their_own_index")
             .check_rpc(move |s, cx| {
-                let direct = direct.clone();
-                Box::pin(async move { both_answered_from_their_own_index(s, cx, &direct).await })
+                let zaino_state = zaino_state.clone();
+                Box::pin(
+                    async move { both_answered_from_their_own_index(s, cx, &zaino_state).await },
+                )
             });
     }
 
     // ── terminal: both indexes complete, and identical at the pinned tip ──
     {
-        let direct = direct.clone();
+        let zaino_state = zaino_state.clone();
         run.at_completion(Severity::Fatal)
             .named("indexes_converged")
             .check_rpc(move |s, _cx| {
-                let direct = direct.clone();
-                Box::pin(async move { indexes_converged(s, &direct, chain).await })
+                let zaino_state = zaino_state.clone();
+                Box::pin(async move { indexes_converged(s, &zaino_state, chain).await })
             });
     }
     {
-        let direct = direct.clone();
+        let zaino_state = zaino_state.clone();
         run.at_completion(Severity::Fatal)
             .named("indexes_agree_at_the_pinned_tip")
             .check_rpc(move |s, cx| {
-                let direct = direct.clone();
-                Box::pin(
-                    async move { indexes_agree_at_the_pinned_tip(s, cx, &direct, chain).await },
-                )
+                let zaino_state = zaino_state.clone();
+                Box::pin(async move {
+                    indexes_agree_at_the_pinned_tip(s, cx, &zaino_state, chain).await
+                })
             });
     }
 

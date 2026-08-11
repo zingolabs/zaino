@@ -16,7 +16,7 @@ use arc_swap::ArcSwap;
 use futures::lock::Mutex;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::mpsc;
-use tracing::{info, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 use zebra_chain::{parameters::Network, serialization::BytesInDisplayOrder};
 use zebra_state::HashOrHeight;
 
@@ -465,6 +465,11 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
             initial_state = self.get_snapshot()
         }
         let mut working_snapshot = initial_state.as_ref().clone();
+        // Blocks applied by this pass, for the one summary line it logs. A pass
+        // that applied none — the steady state on a chain at its tip — says
+        // nothing at all rather than announcing that it did nothing.
+        let mut applied: u64 = 0;
+        let entry_height = working_snapshot.best_tip.height;
 
         // currently this only gets main-chain blocks
         // once readstateservice supports serving sidechain data, this
@@ -512,11 +517,17 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                         ))
                     })?;
                 let chainblock = self.block_to_chainblock(prev_block, &block).await?;
-                info!(
+                // Per *block*, so `debug`: filling the non-finalised window from
+                // cold is `OPERATIONAL_NFS_DEPTH` blocks, and at `info` that is a
+                // hundred-line wall on every startup that reads as the chain
+                // syncing. The one-line summary this pass emits below is the
+                // `info`-worthy statement.
+                debug!(
                     height = (working_snapshot.best_tip.height + 1).0,
                     hash = %chainblock.context.index.hash,
                     "Syncing block"
                 );
+                applied = applied.saturating_add(1);
                 working_snapshot.add_block_new_chaintip(chainblock);
             } else {
                 self.handle_reorg(&mut working_snapshot, block.as_ref(), 0)
@@ -539,6 +550,15 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         // Handle non-finalized change listener
         self.handle_nfs_change_listener(&mut working_snapshot)
             .await?;
+
+        if applied > 0 {
+            info!(
+                blocks = applied,
+                from = entry_height.0,
+                to = working_snapshot.best_tip.height.0,
+                "Non-finalised state synced"
+            );
+        }
 
         self.update(finalized_db.clone(), initial_state, working_snapshot)
             .await?;

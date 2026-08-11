@@ -49,7 +49,7 @@ const OBSERVED_NU6_3_ACTIVATION_ON_THE_PUB_TESTNET: u32 = 4_134_000;
 #[tokio::test(flavor = "multi_thread")]
 async fn value_pools_respect_the_boundary_on_the_pub_testnet() -> Result<()> {
     let mut env = TestEnv::builder().ready_timeout(READY);
-    let validator = env.add_validator(Validator::zebrad("6.2.3").restore(IRONWOOD));
+    let validator = env.add_validator(Validator::zebrad("6.2.3").testnet(IRONWOOD));
     // Validator only. This test's claim is about the chain — what the consensus
     // rule did to the value pools — and every assertion below reads the
     // validator. The zainod pod that used to stand here was never queried, so
