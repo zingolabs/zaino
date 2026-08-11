@@ -61,33 +61,27 @@ impl<T: BlockchainSource> Mempool<T> {
         fetcher: T,
         capacity_and_shard_amount: Option<(usize, usize)>,
     ) -> Result<Self, MempoolError> {
-        // Wait for mempool in validator to come online.
-        loop {
+        // Wait for the validator to become usable. Two *distinct* conditions are
+        // awaited here, not one: its mempool coming online, and its chain having
+        // a committed block.
+        //
+        // A validator that is up but has not yet committed its genesis block
+        // answers mempool queries while reporting no best block hash. Treating
+        // that as fatal made zaino's start-up race the validator's, so zaino had
+        // to be started behind an external delay that could only ever narrow the
+        // window (issue #1006). Waiting for the chain the same way the mempool is
+        // already waited for removes the race instead of shrinking it.
+        const VALIDATOR_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
+        let best_block_hash: BlockHash = loop {
             match fetcher.get_mempool_txids().await {
-                Ok(_) => {
-                    break;
-                }
-                Err(_) => {
-                    info!("Waiting for Validator mempool to come online");
-                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                }
+                Err(_) => info!("Waiting for Validator mempool to come online"),
+                Ok(_) => match fetcher.get_best_block_hash().await {
+                    Ok(Some(hash)) => break hash.into(),
+                    Ok(None) => info!("Waiting for Validator to commit its genesis block"),
+                    Err(_) => info!("Waiting for Validator chain to come online"),
+                },
             }
-        }
-
-        let best_block_hash: BlockHash = match fetcher.get_best_block_hash().await {
-            Ok(block_hash_opt) => match block_hash_opt {
-                Some(hash) => hash.into(),
-                None => {
-                    return Err(MempoolError::Critical(
-                        "Error in mempool: Error connecting with validator".to_string(),
-                    ))
-                }
-            },
-            Err(_e) => {
-                return Err(MempoolError::Critical(
-                    "Error in mempool: Error connecting with validator".to_string(),
-                ))
-            }
+            tokio::time::sleep(VALIDATOR_POLL_INTERVAL).await;
         };
 
         let (chain_tip_sender, _chain_tip_reciever) = tokio::sync::watch::channel(best_block_hash);
