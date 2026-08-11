@@ -1015,7 +1015,13 @@ pub trait IndexedBlockExt: Send + Sync {
 /// Range semantics:
 /// - Methods that accept `start_height` and `end_height` interpret the range as inclusive:
 ///   `[start_height, end_height]`
-pub trait TransparentHistExt: Send + Sync {
+// `pub(crate)`, unlike its eight sibling traits, because two of its methods
+// return `AddrEventBytes`, which is `pub(crate)`. Narrowing the trait is the
+// direction that keeps the packed 17-byte record private; widening the record
+// to satisfy a `pub` the module never exports would leak an on-disk detail for
+// nothing. The module itself is `pub(crate)` and none of these traits are
+// re-exported, so this costs no reachability.
+pub(crate) trait TransparentHistExt: Send + Sync {
     /// Fetch all address history records for a given transparent address.
     ///
     /// Returns:

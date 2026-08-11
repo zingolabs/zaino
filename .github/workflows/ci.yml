@@ -136,6 +136,44 @@ jobs:
       - name: Check no-zcashd build across all three workspaces
         run: makers check-no-zcashd
 
+  experimental-features-build:
+    name: Experimental-features build (--features experimental_features)
+    # The experimental/alpha feature set is off by default, so the normal build
+    # never compiles it and it bit-rots unwatched: two `#[cfg]` blocks in the
+    # finalised state's address-history writer kept referencing bindings the
+    # non-gated path had renamed away, and the feature had not compiled for some
+    # time before anyone tried it. This job is the thing that notices.
+    #
+    # Gated on the `experimental_features` umbrella rather than on a single
+    # feature, so anything added to that set is covered the day it lands.
+    # Deliberately separate from the main test archive, which stays on the
+    # shipped feature set — CI should not gate release testing on a
+    # non-release combo (see the note on the archive step below).
+    needs: compute-tag
+    container:
+      image: docker.io/zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
+    runs-on: arc-sh-runners
+    if: github.event_name != 'pull_request' && github.event.pull_request.draft == false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Restore cargo dependencies
+        uses: tespkg/actions-cache/restore@v1
+        with:
+          endpoint: ${{ env.CACHE_ENDPOINT }}
+          port: ${{ env.CACHE_PORT }}
+          bucket: ${{ env.CACHE_BUCKET }}
+          insecure: ${{ env.INSECURE_CACHE }}
+          key: cargo-deps-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-deps-
+          path: |
+            ~/.cargo
+            target/debug/deps
+
+      - name: Check the experimental feature set compiles and its tests pass
+        run: makers check-experimental-features
+
   build-test-artifacts:
     name: Build test artifacts
     needs: compute-tag
@@ -173,6 +211,8 @@ jobs:
         #     deprecated; zcashd-backed tests cfg out and are not executed in CI.
         #   - experimental_features / transparent_address_history_experimental:
         #     not shipped on by default; CI should not gate on a non-release combo.
+        #     Compiled and tested separately by `experimental-features-build`, so
+        #     omitting it here no longer means it goes unbuilt.
         #   - prometheus.
         # This also matches what local `makers container-test` runs by default, so
         # CI and local exercise the same feature set.
