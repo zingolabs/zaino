@@ -492,7 +492,11 @@ impl DbVersion {
             }
 
             // V1.2: Moves Spent indexing out of "transparent_address_history_experimental".
-            (1, 2) => {
+            //
+            // V1.3 (Ironwood / NU6.3) adds an ironwood commitment root, size and tx row. All three
+            // are read through `BlockShieldedExt`, which v1.2 already advertises, so the version
+            // gained no capability and shares this arm rather than duplicating it.
+            (1, 2) | (1, 3) => {
                 Capability::READ_CORE
                     | Capability::WRITE_CORE
                     | Capability::BLOCK_CORE_EXT
@@ -1121,4 +1125,71 @@ pub trait TransparentHistExt: Send + Sync {
     fn get_tx_out_set_info_accumulator(
         &self,
     ) -> impl SendFut<Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError>>;
+}
+
+#[cfg(test)]
+mod tests {
+    //! Tests for the schema-version → capability mapping.
+
+    use super::{Capability, DbVersion};
+    use crate::chain_index::finalised_state::finalised_source::v1::DB_VERSION_V1;
+
+    /// The current schema version must map to a capability set, not fall
+    /// through to `empty()`.
+    ///
+    /// This is the guard the mapping was missing. `DB_VERSION_V1` was bumped to
+    /// 1.3.0 for Ironwood without a matching arm here, so the current schema
+    /// answered `Capability::empty()` — "this build understands nothing about
+    /// this database". Nothing calls [`DbVersion::capability`] today, which is
+    /// the only reason that was harmless; the moment routing consults it, an
+    /// unmapped current version refuses every read against a perfectly good
+    /// database.
+    ///
+    /// Bumping `DB_VERSION_V1` without extending the mapping fails here.
+    #[test]
+    fn the_current_schema_version_is_mapped() {
+        assert_ne!(
+            DB_VERSION_V1.capability(),
+            Capability::empty(),
+            "DB_VERSION_V1 is {DB_VERSION_V1} but `DbVersion::capability` has no arm for it, so it \
+             falls through to the unknown-version case. Add an arm for this version."
+        );
+        assert_eq!(
+            DB_VERSION_V1.capability(),
+            Capability::LATEST,
+            "the current schema backs every capability this build knows about, so its mapping and \
+             `Capability::LATEST` must agree. If a new version genuinely adds a capability, add the \
+             bit to both."
+        );
+    }
+
+    /// A version this build has never heard of must yield nothing.
+    ///
+    /// Failing closed is the whole safety property of the mapping: a database
+    /// written by a newer Zaino must be refused rather than read with this
+    /// build's assumptions about its layout.
+    #[test]
+    fn an_unknown_schema_version_grants_nothing() {
+        assert_eq!(
+            DbVersion::new(2, 0, 0).capability(),
+            Capability::empty(),
+            "a future major version must fail closed"
+        );
+        assert_eq!(
+            DbVersion::new(1, 99, 0).capability(),
+            Capability::empty(),
+            "an unrecognised minor version must fail closed"
+        );
+    }
+
+    /// v1.3 shares v1.2's mapping deliberately — Ironwood added rows, not a
+    /// capability. Pinned so a future edit cannot silently give one of them a
+    /// different set.
+    #[test]
+    fn ironwood_did_not_change_the_capability_set() {
+        assert_eq!(
+            DbVersion::new(1, 3, 0).capability(),
+            DbVersion::new(1, 2, 0).capability(),
+        );
+    }
 }
