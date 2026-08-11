@@ -19,12 +19,12 @@ use std::num::NonZeroU128;
 
 use corez::io::{self, Read, Write};
 
-use crate::chain_index::{
-    encoding::{
-        read_fixed_le, read_option, read_u32_le, version, write_fixed_le, write_option,
-        write_u32_le, FixedEncodedLen, ZainoVersionedSerde,
-    },
-    types::{BlockContext, BlockHash, BlockIndex, ChainWork, CompactDifficulty, Height},
+use crate::chain_index::types::{
+    BlockContext, BlockHash, BlockIndex, ChainWork, CompactDifficulty, Height,
+};
+use zaino_encoding::{
+    read_fixed_le, read_option, read_u32_le, version, write_fixed_le, write_option, write_u32_le,
+    FixedEncodedLen, ZainoVersionedSerde,
 };
 
 /// Database-adjacent persistence shape for [`ChainWork`].

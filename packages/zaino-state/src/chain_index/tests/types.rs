@@ -106,7 +106,7 @@ pub(crate) fn expected_v2_bytes() -> Vec<u8> {
 /// encoding.
 ///
 /// If such a change is intentional, introduce a new body-format version
-/// (see [`crate::chain_index::encoding::version`]) rather than updating
+/// (see [`zaino_encoding::version`]) rather than updating
 /// the expected layout in place — an in-place update is an explicit
 /// compatibility-break acknowledgement.
 #[test]

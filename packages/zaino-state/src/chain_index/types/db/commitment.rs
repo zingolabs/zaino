@@ -8,12 +8,10 @@
 
 use corez::io::{self, Read, Write};
 
-use crate::{
-    chain_index::encoding::{
-        read_fixed_le, read_u32_le, version, write_fixed_le, write_u32_le, FixedEncodedLen,
-        ZainoVersionedSerde,
-    },
-    read_option, write_option,
+use crate::{read_option, write_option};
+use zaino_encoding::{
+    read_fixed_le, read_u32_le, version, write_fixed_le, write_u32_le, FixedEncodedLen,
+    ZainoVersionedSerde,
 };
 
 /// Holds commitment tree metadata (roots and sizes) for a block.

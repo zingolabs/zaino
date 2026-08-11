@@ -17,7 +17,7 @@
 //!
 //! A failure is not a bug in this module. It means the encoding changed. The
 //! correct response is almost never to update the golden: it is to introduce a
-//! new body-format version (see [`crate::chain_index::encoding::version`]) and
+//! new body-format version (see [`zaino_encoding::version`]) and
 //! leave the old decoder in place, so existing databases keep working.
 //! Updating a golden in place is an explicit statement that no such database
 //! exists.
@@ -550,7 +550,7 @@ fn fixed_lengths_match_the_encoder() {
 /// ironwood-bearing one.
 #[test]
 fn commitment_tree_lengths_are_fixed_at_v1_and_variable_at_v2() {
-    use crate::chain_index::encoding::version;
+    use zaino_encoding::version;
 
     assert_eq!(
         CommitmentTreeRoots::encoded_len(version::V1),

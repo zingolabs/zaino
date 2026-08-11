@@ -1,0 +1,21 @@
+[package]
+name = "zaino-encoding"
+description = "Zaino's versioned encoding traits and the byte primitives they are built from."
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+version = "0.1.0"
+
+[dependencies]
+# The Read/Write traits every encoder and decoder here is written against.
+# `corez` is the Zcash ecosystem's own no_std IO abstraction and carries no
+# dependencies of its own, so taking it costs this crate nothing it would not
+# otherwise pay: vendoring the two traits would mean this crate's signatures
+# stopped matching the ones the rest of the ecosystem uses.
+corez = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

@@ -60,7 +60,6 @@ use zebra_state::HashOrHeight;
 /// ChainIndex's side of the ChainHead boundary: handing ChainHead a validator,
 /// and re-expressing its blocks in this crate's vocabulary.
 pub mod chain_head;
-pub mod encoding;
 /// All state below [`OPERATIONAL_NFS_DEPTH`] blocks of the best-known chain tip.
 pub mod finalised_state;
 mod mempool;

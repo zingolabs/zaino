@@ -78,7 +78,10 @@ pub use chain_index::source::BlockchainSource;
 pub use chain_index::source_ports::ChainIndexSourcePorts;
 pub use chain_index::validator_source::{ValidatorSource, ZebraValidatorSource};
 // Supporting types
-pub use chain_index::encoding::*;
+// Zaino's versioned encoding now lives in `zaino-encoding`, so a storage
+// backend and a wire codec can share it. Re-exported unchanged: every consumer
+// of these names is mid-migration and should not have to move at the same time.
+pub use zaino_encoding::*;
 // Mempool statistics for `getmempoolinfo`, now `zaino-primitives` vocabulary.
 // Re-exported so a consumer wiring a ChainIndex need not name that crate.
 // The non-finalised chain head is `zaino-chain-head`; its runtime is

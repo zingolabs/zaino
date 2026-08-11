@@ -3,6 +3,7 @@
 members = [
     "packages/zaino-status",
     "packages/zaino-consensus",
+    "packages/zaino-encoding",
     "packages/zaino-primitives",
     "packages/zaino-address",
     "packages/zaino-source-macros",
@@ -37,6 +38,7 @@ members = [
 default-members = [
     "packages/zaino-status",
     "packages/zaino-consensus",
+    "packages/zaino-encoding",
     "packages/zaino-primitives",
     "packages/zaino-address",
     "packages/zaino-source-macros",
@@ -158,6 +160,14 @@ zaino-status = { path = "packages/zaino-status", version = "0.1.0" }
 # node implementation, so referencing a consensus fact costs neither a
 # general-purpose dependency nor a peer's reading of the specification.
 zaino-consensus = { path = "packages/zaino-consensus", version = "0.1.0" }
+# Zaino's versioned encoding: the `ZainoVersionedSerde` / `FixedEncodedLen`
+# traits, `CompactSize`, and the little/big-endian byte helpers the on-disk
+# formats are written in. A leaf over `corez` alone, so a storage backend and a
+# wire codec can share one encoding vocabulary without either depending on the
+# other. Holds no impl for any domain type: those live with the type whose
+# bytes they describe, which is what keeps a schema out of the vocabulary
+# crates. See docs/adr/0012.
+zaino-encoding = { path = "packages/zaino-encoding", version = "0.1.0" }
 # Zero-dependency domain vocabulary. Every crate that needs chain-level types
 # (heights, hashes, blocks, transactions) depends on this rather than on
 # `zebra-chain` or on another zaino crate. See docs/adr/0010.

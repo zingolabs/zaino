@@ -5983,6 +5983,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-encoding"
+version = "0.1.0"
+dependencies = [
+ "corez",
+]
+
+[[package]]
 name = "zaino-mempool"
 version = "0.1.0"
 dependencies = [
@@ -6184,6 +6191,7 @@ dependencies = [
  "zaino-common",
  "zaino-consensus",
  "zaino-convert-zebra",
+ "zaino-encoding",
  "zaino-mempool",
  "zaino-mempool-service",
  "zaino-primitives",
