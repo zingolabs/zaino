@@ -639,9 +639,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
     /// Canonical source code implementation: [`getmempoolinfo`](https://github.com/zcash/zcash/blob/18238d90cd0b810f5b07d5aaa1338126aa128c06/src/rpc/blockchain.cpp#L1555)
     ///
     /// Zebra does not support this RPC call directly.
-    async fn get_mempool_info(
-        &self,
-    ) -> Result<crate::chain_index::types::db::metadata::MempoolInfo, Self::Error> {
+    async fn get_mempool_info(&self) -> Result<zaino_primitives::types::MempoolInfo, Self::Error> {
         Ok(self.indexer.get_mempool_info().await)
     }
 

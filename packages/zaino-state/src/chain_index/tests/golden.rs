@@ -39,6 +39,11 @@
 //! which are module-private by design and whose bytes appear inside the
 //! `block_header_data` golden — pinning them separately would mean widening
 //! their visibility to test them.
+//!
+//! `MempoolInfo` is deliberately absent. It once carried an on-disk encoding
+//! and was pinned here, but nothing ever wrote it: the mempool is live state,
+//! rebuilt from the validator on every start. It is now
+//! [`zaino_primitives::types::MempoolInfo`] with no encoding to pin.
 
 use std::fmt::Debug;
 use std::num::NonZeroU128;
@@ -54,10 +59,9 @@ use crate::chain_index::types::EquihashSolution;
 use crate::{
     AddrHistRecord, AddrScript, BlockContext, BlockData, BlockHash, BlockHeaderData, ChainWork,
     CompactDifficulty, CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend,
-    FixedEncodedLen, Height, MempoolInfo, OrchardCompactTx, OrchardTxList, Outpoint,
-    SaplingCompactTx, SaplingTxList, ScriptType, ShardIndex, ShardRoot, TransactionHash,
-    TransparentCompactTx, TransparentTxList, TxInCompact, TxLocation, TxOutCompact, TxidList,
-    ZainoVersionedSerde,
+    FixedEncodedLen, Height, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx,
+    SaplingTxList, ScriptType, ShardIndex, ShardRoot, TransactionHash, TransparentCompactTx,
+    TransparentTxList, TxInCompact, TxLocation, TxOutCompact, TxidList, ZainoVersionedSerde,
 };
 
 /// A valid nBits value. Passes zebra's compact-difficulty validation without
@@ -273,14 +277,6 @@ fn commitment_tree_data() -> CommitmentTreeData {
     CommitmentTreeData::new(commitment_tree_roots(), commitment_tree_sizes())
 }
 
-fn mempool_info() -> MempoolInfo {
-    MempoolInfo {
-        size: 12,
-        bytes: 3_456,
-        usage: 7_890,
-    }
-}
-
 fn txout_set_accumulator() -> FinalisedTxOutSetInfoAccumulator {
     FinalisedTxOutSetInfoAccumulator::new(101, 202, 303, [0x5a; 32], 404)
 }
@@ -461,11 +457,6 @@ fn commitment_tree_goldens() {
 #[test]
 fn metadata_goldens() {
     assert_golden(
-        "MempoolInfo",
-        &mempool_info(),
-        "010c00000000000000800d000000000000d21e000000000000",
-    );
-    assert_golden(
         "FinalisedTxOutSetInfoAccumulator",
         &txout_set_accumulator(),
         "016500000000000000ca000000000000002f010000000000005a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a9401000000000000",
@@ -541,7 +532,6 @@ fn fixed_lengths_match_the_encoder() {
     );
     assert_fixed_len("ShardRoot", &shard_root());
     assert_fixed_len("CommitmentTreeSizes", &commitment_tree_sizes());
-    assert_fixed_len("MempoolInfo", &mempool_info());
     assert_fixed_len("FinalisedTxOutSetInfoAccumulator", &txout_set_accumulator());
     assert_fixed_len("DbVersion", &db_version());
     assert_fixed_len("DbMetadata", &db_metadata());

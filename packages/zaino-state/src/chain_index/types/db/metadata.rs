@@ -64,56 +64,6 @@ pub fn tx_out_set_entry_digest(outpoint: &Outpoint, out: &TxOutCompact) -> [u8; 
     output
 }
 
-/// Holds information about the mempool state.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MempoolInfo {
-    /// Current tx count
-    pub size: u64,
-    /// Sum of all tx sizes
-    pub bytes: u64,
-    /// Total memory usage for the mempool
-    pub usage: u64,
-}
-
-impl ZainoVersionedSerde for MempoolInfo {
-    const VERSION: u8 = version::V1;
-
-    fn encode_latest<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        Self::encode_v1(self, w)
-    }
-
-    fn decode_latest<R: Read>(r: &mut R) -> io::Result<Self> {
-        Self::decode_v1(r)
-    }
-
-    fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
-        let mut w = w;
-        write_u64_le(&mut w, self.size)?;
-        write_u64_le(&mut w, self.bytes)?;
-        write_u64_le(&mut w, self.usage)
-    }
-
-    fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
-        let mut r = r;
-        let size = read_u64_le(&mut r)?;
-        let bytes = read_u64_le(&mut r)?;
-        let usage = read_u64_le(&mut r)?;
-        Ok(MempoolInfo { size, bytes, usage })
-    }
-}
-
-/// Fixed-length encoding metadata for `MempoolInfo`.
-///
-/// v1 consists of 8 byte size + 8 byte bytes + 8 byte usage
-impl FixedEncodedLen for MempoolInfo {
-    fn encoded_len(version: u8) -> Option<usize> {
-        match version {
-            version::V1 => Some(24),
-            _ => None,
-        }
-    }
-}
-
 /// Holds finalised-state UTXO set accumulator data for `gettxoutsetinfo`.
 ///
 /// This is not the full RPC response. It only contains values that the

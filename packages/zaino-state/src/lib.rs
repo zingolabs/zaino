@@ -79,16 +79,15 @@ pub use chain_index::source_ports::ChainIndexSourcePorts;
 pub use chain_index::validator_source::{ValidatorSource, ZebraValidatorSource};
 // Supporting types
 pub use chain_index::encoding::*;
-// Mempool statistics for `getmempoolinfo`. Currently an on-disk shape in
-// `types/db/metadata.rs`; moving it into `zaino-primitives` belongs with the
-// persistence rework.
+// Mempool statistics for `getmempoolinfo`, now `zaino-primitives` vocabulary.
+// Re-exported so a consumer wiring a ChainIndex need not name that crate.
 // The non-finalised chain head is `zaino-chain-head`; its runtime is
 // `zaino-chain-head-service`. Re-exported here so a consumer wiring a
 // ChainIndex does not need to name those crates directly.
-pub use chain_index::types::db::metadata::MempoolInfo;
 pub use error::{InitError, SyncError};
 pub use zaino_chain_head::{ChainHeadBlock, ChainHeadSnapshot};
 pub use zaino_chain_head_service::MapBackedSnapshot;
+pub use zaino_primitives::types::MempoolInfo;
 // NOTE: Should these be pub at all?
 pub use chain_index::types::{
     AddrHistRecord, AddrScript, BlockContext, BlockData, BlockHash, BlockHeaderData, BlockMetadata,

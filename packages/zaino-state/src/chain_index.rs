@@ -15,7 +15,6 @@
 
 use crate::chain_index::finalised_state::router::FinalisedStateMode;
 use crate::chain_index::source::GetTransactionLocation;
-use crate::chain_index::types::db::metadata::MempoolInfo;
 use crate::chain_index::types::helpers::{BlockMetadata, BlockWithMetadata, TreeRootData};
 use crate::chain_index::types::BlockIndex;
 use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
@@ -27,6 +26,7 @@ use crate::{IndexedBlock, Outpoint, TransactionHash};
 use std::collections::HashSet;
 use std::str::FromStr;
 use std::{sync::Arc, time::Duration};
+use zaino_primitives::types::MempoolInfo;
 use zaino_primitives::types::TxOutSetInfo;
 use zaino_status::{NamedAtomicStatus, Status, StatusType};
 
