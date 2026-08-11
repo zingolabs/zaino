@@ -54,3 +54,19 @@ default-filter = """
     not test(testnet)
     & not test(client_rpcs)
 """
+
+# Debug profile for hunting hangs and load-dependent flakes in the production
+# unit tests, which the default profile deliberately runs without any
+# slow-timeout. A parallel run under this profile names laggards with a SLOW
+# line at 60s and terminates a genuinely stuck test at 300s, dumping its
+# captured output — run with RUST_LOG=trace so that capture holds the full
+# instrumentation:
+#
+#   NEXTEST_PROFILE=hangdebug RUST_LOG=trace cargo nextest run
+#
+[profile.hangdebug]
+fail-fast = false
+
+[[profile.hangdebug.overrides]]
+filter = 'package(zaino-state)'
+slow-timeout = { period = "60s", terminate-after = "5" }
