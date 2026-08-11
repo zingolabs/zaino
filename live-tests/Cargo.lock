@@ -4019,6 +4019,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sync"
+version = "0.2.0"
+dependencies = [
+ "serde_json",
+ "tokio",
+ "ztest",
+]
+
+[[package]]
 name = "sync_wrapper"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

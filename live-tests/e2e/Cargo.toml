@@ -1,6 +1,6 @@
 [package]
 name = "e2e"
-description = "End-to-end live tests: an in-process zingo wallet client driving Zaino over its gRPC surface to a live validator, on the ztest k8s harness."
+description = "End-to-end live tests: an in-process librustzcash wallet client driving Zaino over its gRPC surface to a live validator, on the ztest k8s harness."
 version = "0.2.0"
 authors.workspace = true
 repository.workspace = true

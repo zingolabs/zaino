@@ -1,0 +1,23 @@
+[package]
+name = "sync"
+description = "Wallet-driven chain-sync tests with Zaino as the system under test: a wallet syncs to tip through a validator + Zaino on the ztest k8s harness. Each is a `#[ztest::sync_test]` profile launched detached via `ztest sync start`."
+publish = false
+
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+edition.workspace = true
+license.workspace = true
+version = "0.2.0"
+
+[dependencies]
+# This crate is test-only (see `src/lib.rs`); the harness + wallet backend are
+
+[dev-dependencies]
+# The sync harness: `SyncRunner`, `#[ztest::sync_test]`, the probe taxonomy, and
+# the shipped chain snapshots. No wallet backend feature is needed — these
+# profiles observe an indexer building its own index and drive nothing.
+ztest = { workspace = true }
+tokio = { workspace = true }
+# Build the JSON-RPC selectors the index probes query zaino and zebra with.
+serde_json.workspace = true

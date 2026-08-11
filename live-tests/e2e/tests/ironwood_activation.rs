@@ -112,7 +112,7 @@ mod zebrad {
             let validator = env.add_validator(
                 Validator::zebrad("6.2.3")
                     .regtest()
-                    .mine_to(Pool::Orchard.ztest()),
+                    .mine_to(Pool::Orchard),
             );
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
@@ -125,25 +125,25 @@ mod zebrad {
                 .await?;
             let faucet_balance = faucet.balances().await?;
             assert!(
-                faucet_balance.get(Pool::Orchard.ztest()) > 0,
+                faucet_balance.get(Pool::Orchard) > 0,
                 "pre-boundary coinbase should be an orchard note, got {faucet_balance:?}"
             );
             assert_eq!(
-                faucet_balance.get(Pool::Ironwood.ztest()),
+                faucet_balance.get(Pool::Ironwood),
                 0,
                 "no ironwood note can exist below the boundary, got {faucet_balance:?}"
             );
 
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let ua = recipient.address(Pool::Orchard.ztest()).await?;
+            let ua = recipient.address(Pool::Orchard).await?;
             faucet.send(&ua, SEND_AMOUNT).await?;
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
             recipient.sync().await?;
 
             let balance = recipient.balances().await?;
-            assert_eq!(balance.get(Pool::Orchard.ztest()), SEND_AMOUNT);
-            assert_eq!(balance.get(Pool::Ironwood.ztest()), 0);
+            assert_eq!(balance.get(Pool::Orchard), SEND_AMOUNT);
+            assert_eq!(balance.get(Pool::Ironwood), 0);
             Ok(())
         }
 
@@ -168,7 +168,7 @@ mod zebrad {
             let validator = env.add_validator(
                 Validator::zebrad("6.2.3")
                     .regtest()
-                    .mine_to(Pool::Orchard.ztest()),
+                    .mine_to(Pool::Orchard),
             );
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
@@ -192,7 +192,7 @@ mod zebrad {
 
             let pre_boundary_balance = faucet.balances().await?;
             assert!(
-                pre_boundary_balance.get(Pool::Orchard.ztest()) > 0,
+                pre_boundary_balance.get(Pool::Orchard) > 0,
                 "pre-boundary coinbase should be an orchard note, got {pre_boundary_balance:?}"
             );
 
@@ -208,17 +208,22 @@ mod zebrad {
 
             faucet.sync().await?;
             let crossed_balance = faucet.balances().await?;
-            let orchard_before_send = crossed_balance.get(Pool::Orchard.ztest());
+            let orchard_before_send = crossed_balance.get(Pool::Orchard);
             assert!(
-                crossed_balance.get(Pool::Ironwood.ztest()) > 0,
+                crossed_balance.get(Pool::Ironwood) > 0,
                 "the boundary coinbase should be an ironwood note, got {crossed_balance:?}"
             );
 
             // The migration send: built at the boundary tip, it spends an
-            // Orchard note into a unified-address (Ironwood) receipt.
+            // Orchard note into a unified-address (Ironwood) receipt. Restricting
+            // the source pool to Orchard forces the migration: the faucet also
+            // holds the boundary coinbase as a spendable Ironwood note, which the
+            // wallet would otherwise spend to avoid crossing pools.
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let ua = recipient.address(Pool::Orchard.ztest()).await?;
-            faucet.send(&ua, SEND_AMOUNT).await?;
+            let ua = recipient.address(Pool::Orchard).await?;
+            faucet
+                .send_from(&[Pool::Orchard], &ua, SEND_AMOUNT)
+                .await?;
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
             orchard[migration_height] = served_pool_zats(&irpc, "orchard").await?;
@@ -227,10 +232,10 @@ mod zebrad {
             recipient.sync().await?;
 
             let balance = recipient.balances().await?;
-            assert_eq!(balance.get(Pool::Ironwood.ztest()), SEND_AMOUNT);
-            assert_eq!(balance.get(Pool::Orchard.ztest()), 0);
+            assert_eq!(balance.get(Pool::Ironwood), SEND_AMOUNT);
+            assert_eq!(balance.get(Pool::Orchard), 0);
             assert!(
-                faucet.balances().await?.get(Pool::Orchard.ztest()) < orchard_before_send,
+                faucet.balances().await?.get(Pool::Orchard) < orchard_before_send,
                 "the migration send must spend an orchard note"
             );
 
@@ -289,7 +294,7 @@ mod zebrad {
             let validator = env.add_validator(
                 Validator::zebrad("6.2.3")
                     .regtest()
-                    .mine_to(Pool::Orchard.ztest()),
+                    .mine_to(Pool::Orchard),
             );
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
@@ -310,7 +315,7 @@ mod zebrad {
             }
 
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let ua = recipient.address(Pool::Orchard.ztest()).await?;
+            let ua = recipient.address(Pool::Orchard).await?;
             let last_orchard_txid = faucet
                 .send(&ua, SEND_AMOUNT)
                 .await?
@@ -323,12 +328,12 @@ mod zebrad {
 
             let balance = recipient.balances().await?;
             assert_eq!(
-                balance.get(Pool::Orchard.ztest()),
+                balance.get(Pool::Orchard),
                 SEND_AMOUNT,
                 "receipt confirmed at boundary - 1 must be orchard, got {balance:?}"
             );
             assert_eq!(
-                balance.get(Pool::Ironwood.ztest()),
+                balance.get(Pool::Ironwood),
                 0,
                 "no ironwood receipt below the boundary, got {balance:?}"
             );
@@ -347,9 +352,9 @@ mod zebrad {
             recipient.sync().await?;
 
             let balance = recipient.balances().await?;
-            assert_eq!(balance.get(Pool::Ironwood.ztest()), SEND_AMOUNT);
+            assert_eq!(balance.get(Pool::Ironwood), SEND_AMOUNT);
             assert_eq!(
-                balance.get(Pool::Orchard.ztest()),
+                balance.get(Pool::Orchard),
                 SEND_AMOUNT,
                 "the pre-boundary receipt must survive the flip unchanged"
             );
@@ -401,7 +406,7 @@ mod zebrad {
             let validator = env.add_validator(
                 Validator::zebrad("6.2.3")
                     .regtest()
-                    .mine_to(Pool::Orchard.ztest()),
+                    .mine_to(Pool::Orchard),
             );
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
@@ -411,7 +416,7 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 1)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let taddr = recipient.address(Pool::Transparent.ztest()).await?;
+            let taddr = recipient.address(Pool::Transparent).await?;
             faucet.send(&taddr, SEND_AMOUNT).await?;
 
             // Confirm the transparent receipt below the boundary (height 4).
@@ -423,7 +428,7 @@ mod zebrad {
             indexer.wait_for_block_num(tip, READY).await?;
             recipient.sync().await?;
             assert_eq!(
-                recipient.balances().await?.get(Pool::Transparent.ztest()),
+                recipient.balances().await?.get(Pool::Transparent),
                 SEND_AMOUNT
             );
 
@@ -435,12 +440,12 @@ mod zebrad {
 
             let balance = recipient.balances().await?;
             assert_eq!(
-                balance.get(Pool::Orchard.ztest()),
+                balance.get(Pool::Orchard),
                 SEND_AMOUNT - SHIELD_FEE,
                 "shielded balance must be the send net of the ZIP-317 fee \
                  (below NU6.3 the shield deposits into the Orchard pool)"
             );
-            assert_eq!(balance.get(Pool::Ironwood.ztest()), 0);
+            assert_eq!(balance.get(Pool::Ironwood), 0);
             Ok(())
         }
     }
@@ -463,7 +468,7 @@ mod zebrad {
             let validator = env.add_validator(
                 Validator::zebrad("6.2.3")
                     .regtest()
-                    .mine_to(Pool::Orchard.ztest())
+                    .mine_to(Pool::Orchard)
                     .mount(&vol),
             );
             let indexer = env.add_indexer(
@@ -480,25 +485,25 @@ mod zebrad {
                 .await?;
             let faucet_balance = faucet.balances().await?;
             assert!(
-                faucet_balance.get(Pool::Orchard.ztest()) > 0,
+                faucet_balance.get(Pool::Orchard) > 0,
                 "pre-boundary coinbase should be an orchard note, got {faucet_balance:?}"
             );
             assert_eq!(
-                faucet_balance.get(Pool::Ironwood.ztest()),
+                faucet_balance.get(Pool::Ironwood),
                 0,
                 "no ironwood note can exist below the boundary, got {faucet_balance:?}"
             );
 
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let ua = recipient.address(Pool::Orchard.ztest()).await?;
+            let ua = recipient.address(Pool::Orchard).await?;
             faucet.send(&ua, SEND_AMOUNT).await?;
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
             recipient.sync().await?;
 
             let balance = recipient.balances().await?;
-            assert_eq!(balance.get(Pool::Orchard.ztest()), SEND_AMOUNT);
-            assert_eq!(balance.get(Pool::Ironwood.ztest()), 0);
+            assert_eq!(balance.get(Pool::Orchard), SEND_AMOUNT);
+            assert_eq!(balance.get(Pool::Ironwood), 0);
             Ok(())
         }
 
@@ -517,7 +522,7 @@ mod zebrad {
             let validator = env.add_validator(
                 Validator::zebrad("6.2.3")
                     .regtest()
-                    .mine_to(Pool::Orchard.ztest())
+                    .mine_to(Pool::Orchard)
                     .mount(&vol),
             );
             let indexer = env.add_indexer(
@@ -543,7 +548,7 @@ mod zebrad {
 
             let pre_boundary_balance = faucet.balances().await?;
             assert!(
-                pre_boundary_balance.get(Pool::Orchard.ztest()) > 0,
+                pre_boundary_balance.get(Pool::Orchard) > 0,
                 "pre-boundary coinbase should be an orchard note, got {pre_boundary_balance:?}"
             );
 
@@ -556,15 +561,21 @@ mod zebrad {
 
             faucet.sync().await?;
             let crossed_balance = faucet.balances().await?;
-            let orchard_before_send = crossed_balance.get(Pool::Orchard.ztest());
+            let orchard_before_send = crossed_balance.get(Pool::Orchard);
             assert!(
-                crossed_balance.get(Pool::Ironwood.ztest()) > 0,
+                crossed_balance.get(Pool::Ironwood) > 0,
                 "the boundary coinbase should be an ironwood note, got {crossed_balance:?}"
             );
 
+            // The migration send: restricting the source pool to Orchard forces
+            // the migration, since the faucet also holds the boundary coinbase as
+            // a spendable Ironwood note the wallet would otherwise spend to avoid
+            // crossing pools.
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let ua = recipient.address(Pool::Orchard.ztest()).await?;
-            faucet.send(&ua, SEND_AMOUNT).await?;
+            let ua = recipient.address(Pool::Orchard).await?;
+            faucet
+                .send_from(&[Pool::Orchard], &ua, SEND_AMOUNT)
+                .await?;
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
             orchard[migration_height] = served_pool_zats(&irpc, "orchard").await?;
@@ -573,10 +584,10 @@ mod zebrad {
             recipient.sync().await?;
 
             let balance = recipient.balances().await?;
-            assert_eq!(balance.get(Pool::Ironwood.ztest()), SEND_AMOUNT);
-            assert_eq!(balance.get(Pool::Orchard.ztest()), 0);
+            assert_eq!(balance.get(Pool::Ironwood), SEND_AMOUNT);
+            assert_eq!(balance.get(Pool::Orchard), 0);
             assert!(
-                faucet.balances().await?.get(Pool::Orchard.ztest()) < orchard_before_send,
+                faucet.balances().await?.get(Pool::Orchard) < orchard_before_send,
                 "the migration send must spend an orchard note"
             );
 
@@ -629,7 +640,7 @@ mod zebrad {
             let validator = env.add_validator(
                 Validator::zebrad("6.2.3")
                     .regtest()
-                    .mine_to(Pool::Orchard.ztest())
+                    .mine_to(Pool::Orchard)
                     .mount(&vol),
             );
             let indexer = env.add_indexer(
@@ -654,7 +665,7 @@ mod zebrad {
             }
 
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let ua = recipient.address(Pool::Orchard.ztest()).await?;
+            let ua = recipient.address(Pool::Orchard).await?;
             let last_orchard_txid = faucet
                 .send(&ua, SEND_AMOUNT)
                 .await?
@@ -667,12 +678,12 @@ mod zebrad {
 
             let balance = recipient.balances().await?;
             assert_eq!(
-                balance.get(Pool::Orchard.ztest()),
+                balance.get(Pool::Orchard),
                 SEND_AMOUNT,
                 "receipt confirmed at boundary - 1 must be orchard, got {balance:?}"
             );
             assert_eq!(
-                balance.get(Pool::Ironwood.ztest()),
+                balance.get(Pool::Ironwood),
                 0,
                 "no ironwood receipt below the boundary, got {balance:?}"
             );
@@ -689,9 +700,9 @@ mod zebrad {
             recipient.sync().await?;
 
             let balance = recipient.balances().await?;
-            assert_eq!(balance.get(Pool::Ironwood.ztest()), SEND_AMOUNT);
+            assert_eq!(balance.get(Pool::Ironwood), SEND_AMOUNT);
             assert_eq!(
-                balance.get(Pool::Orchard.ztest()),
+                balance.get(Pool::Orchard),
                 SEND_AMOUNT,
                 "the pre-boundary receipt must survive the flip unchanged"
             );
@@ -737,7 +748,7 @@ mod zebrad {
             let validator = env.add_validator(
                 Validator::zebrad("6.2.3")
                     .regtest()
-                    .mine_to(Pool::Orchard.ztest())
+                    .mine_to(Pool::Orchard)
                     .mount(&vol),
             );
             let indexer = env.add_indexer(
@@ -753,7 +764,7 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 1)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let taddr = recipient.address(Pool::Transparent.ztest()).await?;
+            let taddr = recipient.address(Pool::Transparent).await?;
             faucet.send(&taddr, SEND_AMOUNT).await?;
 
             let cur = u32::from(validator.chain_height().await?);
@@ -764,7 +775,7 @@ mod zebrad {
             indexer.wait_for_block_num(tip, READY).await?;
             recipient.sync().await?;
             assert_eq!(
-                recipient.balances().await?.get(Pool::Transparent.ztest()),
+                recipient.balances().await?.get(Pool::Transparent),
                 SEND_AMOUNT
             );
 
@@ -775,12 +786,12 @@ mod zebrad {
 
             let balance = recipient.balances().await?;
             assert_eq!(
-                balance.get(Pool::Orchard.ztest()),
+                balance.get(Pool::Orchard),
                 SEND_AMOUNT - SHIELD_FEE,
                 "shielded balance must be the send net of the ZIP-317 fee \
                  (below NU6.3 the shield deposits into the Orchard pool)"
             );
-            assert_eq!(balance.get(Pool::Ironwood.ztest()), 0);
+            assert_eq!(balance.get(Pool::Ironwood), 0);
             Ok(())
         }
     }

@@ -4,46 +4,10 @@
 
 use ztest::prelude::{CompactBlock, TxId};
 
-/// A shielded/transparent pool, paired with the address kind that routes funds
-/// into it. Lets a send-and-check test take a single `Pool` instead of an
-/// address string plus a balance-field closure.
-#[derive(Clone, Copy, Debug)]
-pub enum Pool {
-    /// Orchard (funds routed via a unified address through NU6.2; from NU6.3
-    /// devtool routes unified-address outputs to Ironwood — use
-    /// [`Pool::Ironwood`] for the receipt pool on NU6.3-active chains).
-    Orchard,
-    /// Ironwood (funds routed via a unified address from NU6.3).
-    Ironwood,
-    /// Sapling.
-    Sapling,
-    /// Transparent.
-    Transparent,
-}
-
-impl Pool {
-    /// The pool name that routes funds into this pool.
-    pub fn address_kind(self) -> &'static str {
-        match self {
-            Pool::Orchard | Pool::Ironwood => "unified",
-            Pool::Sapling => "sapling",
-            Pool::Transparent => "transparent",
-        }
-    }
-
-    pub fn ztest(self) -> ztest::Pool {
-        match self {
-            Pool::Orchard => ztest::Pool::Orchard,
-            Pool::Ironwood => ztest::Pool::Ironwood,
-            Pool::Sapling => ztest::Pool::Sapling,
-            Pool::Transparent => ztest::Pool::Transparent,
-        }
-    }
-
-    pub fn spendable_balance(self, balances: &ztest::PoolBalances) -> u64 {
-        balances.get(self.ztest())
-    }
-}
+/// The harness value-pool selector. Re-exported from ztest so the tests, the
+/// wallet API (`send`/`send_from`), and the compact-block assertions below all
+/// speak one `Pool` type — no conversion at the call site.
+pub use ztest::Pool;
 
 /// Whether the compact tx with `txid` carries no data for `pool` (transparent
 /// `vout` / sapling `outputs` / orchard `actions` / `ironwood_actions`).

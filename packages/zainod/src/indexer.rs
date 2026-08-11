@@ -173,6 +173,8 @@ where
         let log_interval = tokio::time::Duration::from_secs(10);
 
         let serve_task = tokio::task::spawn(async move {
+            let shutdown = shutdown_signal();
+            tokio::pin!(shutdown);
             loop {
                 // Log the servers status.
                 if last_log_time.elapsed() >= log_interval {
@@ -192,7 +194,18 @@ where
                     return Ok(());
                 }
 
-                server_interval.tick().await;
+                tokio::select! {
+                    _ = server_interval.tick() => {}
+                    // Pod teardown sends SIGTERM; drive the same graceful close
+                    // path so the DB/mempool shut down cleanly (and, under
+                    // `--features profile`, the flamegraph is written afterwards
+                    // in `run`).
+                    _ = &mut shutdown => {
+                        info!("received shutdown signal; closing Zaino gracefully");
+                        indexer.close().await;
+                        return Ok(());
+                    }
+                }
             }
         });
 
@@ -302,6 +315,33 @@ where
             grpc = %grpc_server_status,
             "Zaino status check"
         );
+    }
+}
+
+/// Resolves when the process is asked to shut down: SIGTERM (pod teardown) or
+/// ctrl-c on unix, ctrl-c elsewhere. Zaino previously had no signal handling, so
+/// a k8s SIGTERM killed it mid-write; this routes teardown through the graceful
+/// `close()` path instead.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(e) => {
+                tracing::warn!(%e, "could not install SIGTERM handler; falling back to ctrl-c only");
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
     }
 }
 

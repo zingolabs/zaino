@@ -43,6 +43,12 @@ no_tls_with_prometheus = ["no_tls_use_unencrypted_traffic", "prometheus"]
 # Prometheus /metrics scrape endpoint.
 prometheus = ["metrics", "metrics-exporter-prometheus", "zaino-state/prometheus", "zaino-serve/prometheus", "zaino-fetch/prometheus"]
 
+# CPU profiling: links pprof-rs and, when `ZTEST_PROFILE` is set at runtime,
+# samples the whole process and writes a flamegraph on graceful shutdown. Off by
+# default so production builds carry no profiler. See the ztest profiling
+# contract (docs/how-to-profile.md, mirrored in the ztest repo).
+profile = ["dep:pprof", "dep:flate2"]
+
 # DANGER: allows the JSON-RPC server to bind to a public (non-private,
 # non-loopback) address. The JSON-RPC interface has NO transport encryption and
 # is intended for loopback or trusted private networks only. Enabling this
@@ -89,12 +95,16 @@ serde = { workspace = true, features = ["derive"] }
 metrics = { workspace = true, optional = true }
 metrics-exporter-prometheus = { workspace = true, optional = true }
 
+# Profiling (behind "profile" feature)
+pprof = { workspace = true, optional = true }
+
 # Utility
 thiserror = { workspace = true }
 
 # Formats
 toml = { workspace = true }
 config = { workspace = true }
+flate2 = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -4,6 +4,8 @@ members = [
     "clientless",
     # Added back as each partition is ported onto the ztest harness:
     "e2e",
+    # Wallet-driven chain-sync suite (Zaino as SUT), launched via `ztest sync start`.
+    "sync",
 ]
 resolver = "2"
 

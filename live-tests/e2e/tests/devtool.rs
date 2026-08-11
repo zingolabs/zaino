@@ -148,7 +148,7 @@ mod zebrad {
         async fn receives_mining_reward_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -158,7 +158,7 @@ mod zebrad {
                 .await?;
             let balances = faucet.balances().await?;
             assert!(
-                balances.get(Pool::Ironwood.ztest()) > 0,
+                balances.get(Pool::Ironwood) > 0,
                 "faucet must hold a spendable Ironwood coinbase note, got {balances:?}"
             );
             Ok(())
@@ -174,7 +174,7 @@ mod zebrad {
             let validator = env.add_validator(
                 Validator::zebrad("6.2.3")
                     .regtest()
-                    .mine_to(FUND.ztest())
+                    .mine_to(FUND)
                     .mount(&vol),
             );
             let indexer = env.add_indexer(
@@ -192,7 +192,7 @@ mod zebrad {
                 .await?;
             let balances = faucet.balances().await?;
             assert!(
-                balances.get(Pool::Ironwood.ztest()) > 0,
+                balances.get(Pool::Ironwood) > 0,
                 "faucet must hold a spendable Ironwood coinbase note, got {balances:?}"
             );
             Ok(())
@@ -206,7 +206,7 @@ mod zebrad {
         async fn connect_to_node_get_info_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -231,7 +231,7 @@ mod zebrad {
             let validator = env.add_validator(
                 Validator::zebrad("6.2.3")
                     .regtest()
-                    .mine_to(FUND.ztest())
+                    .mine_to(FUND)
                     .mount(&vol),
             );
             let indexer = env.add_indexer(
@@ -263,7 +263,7 @@ mod zebrad {
         async fn send_to_ironwood_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -272,13 +272,13 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 1)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let addr = recipient.address(Pool::Ironwood.ztest()).await?;
+            let addr = recipient.address(Pool::Ironwood).await?;
             faucet.send(&addr, SEND_AMOUNT).await?;
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
             recipient.sync().await?;
             assert_eq!(
-                recipient.balances().await?.get(Pool::Ironwood.ztest()),
+                recipient.balances().await?.get(Pool::Ironwood),
                 SEND_AMOUNT,
                 "recipient Ironwood balance must equal the send"
             );
@@ -298,7 +298,7 @@ mod zebrad {
             let validator = env.add_validator(
                 Validator::zebrad("6.2.3")
                     .regtest()
-                    .mine_to(FUND.ztest())
+                    .mine_to(FUND)
                     .mount(&vol),
             );
             let indexer = env.add_indexer(
@@ -315,13 +315,13 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 1)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let addr = recipient.address(Pool::Ironwood.ztest()).await?;
+            let addr = recipient.address(Pool::Ironwood).await?;
             faucet.send(&addr, SEND_AMOUNT).await?;
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
             recipient.sync().await?;
             assert_eq!(
-                recipient.balances().await?.get(Pool::Ironwood.ztest()),
+                recipient.balances().await?.get(Pool::Ironwood),
                 SEND_AMOUNT,
                 "recipient Ironwood balance must equal the send"
             );
@@ -335,7 +335,7 @@ mod zebrad {
         async fn send_to_sapling_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -344,13 +344,13 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 1)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let addr = recipient.address(Pool::Sapling.ztest()).await?;
+            let addr = recipient.address(Pool::Sapling).await?;
             faucet.send(&addr, SEND_AMOUNT).await?;
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
             recipient.sync().await?;
             assert_eq!(
-                recipient.balances().await?.get(Pool::Sapling.ztest()),
+                recipient.balances().await?.get(Pool::Sapling),
                 SEND_AMOUNT,
                 "recipient Sapling balance must equal the send"
             );
@@ -367,7 +367,7 @@ mod zebrad {
             let validator = env.add_validator(
                 Validator::zebrad("6.2.3")
                     .regtest()
-                    .mine_to(FUND.ztest())
+                    .mine_to(FUND)
                     .mount(&vol),
             );
             let indexer = env.add_indexer(
@@ -384,13 +384,13 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 1)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let addr = recipient.address(Pool::Sapling.ztest()).await?;
+            let addr = recipient.address(Pool::Sapling).await?;
             faucet.send(&addr, SEND_AMOUNT).await?;
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
             recipient.sync().await?;
             assert_eq!(
-                recipient.balances().await?.get(Pool::Sapling.ztest()),
+                recipient.balances().await?.get(Pool::Sapling),
                 SEND_AMOUNT,
                 "recipient Sapling balance must equal the send"
             );
@@ -405,7 +405,7 @@ mod zebrad {
         async fn send_to_transparent_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -414,13 +414,13 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 1)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let addr = recipient.address(Pool::Transparent.ztest()).await?;
+            let addr = recipient.address(Pool::Transparent).await?;
             faucet.send(&addr, SEND_AMOUNT).await?;
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
             recipient.sync().await?;
             assert_eq!(
-                recipient.balances().await?.get(Pool::Transparent.ztest()),
+                recipient.balances().await?.get(Pool::Transparent),
                 SEND_AMOUNT,
                 "recipient Transparent balance must equal the send"
             );
@@ -438,7 +438,7 @@ mod zebrad {
             let validator = env.add_validator(
                 Validator::zebrad("6.2.3")
                     .regtest()
-                    .mine_to(FUND.ztest())
+                    .mine_to(FUND)
                     .mount(&vol),
             );
             let indexer = env.add_indexer(
@@ -455,13 +455,13 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 1)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let addr = recipient.address(Pool::Transparent.ztest()).await?;
+            let addr = recipient.address(Pool::Transparent).await?;
             faucet.send(&addr, SEND_AMOUNT).await?;
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
             recipient.sync().await?;
             assert_eq!(
-                recipient.balances().await?.get(Pool::Transparent.ztest()),
+                recipient.balances().await?.get(Pool::Transparent),
                 SEND_AMOUNT,
                 "recipient Transparent balance must equal the send"
             );
@@ -475,7 +475,7 @@ mod zebrad {
         async fn send_to_all_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -487,7 +487,7 @@ mod zebrad {
             let recipient = wallet.recipient(&validator, &indexer).await?;
             // NU6.3: the unified-address (Orchard-receiver) output routes to Ironwood.
             for pool in [Pool::Ironwood, Pool::Sapling, Pool::Transparent] {
-                let addr = recipient.address(pool.ztest()).await?;
+                let addr = recipient.address(pool).await?;
                 faucet.send(&addr, SEND_AMOUNT).await?;
             }
             let tip = validator.generate_blocks(1).await?;
@@ -495,13 +495,13 @@ mod zebrad {
             recipient.sync().await?;
 
             let balances = recipient.balances().await?;
-            assert_eq!(balances.get(Pool::Ironwood.ztest()), SEND_AMOUNT);
+            assert_eq!(balances.get(Pool::Ironwood), SEND_AMOUNT);
             // From NU6.3 the unified-address output routes to Ironwood; the
             // orchard pool must stay empty (a nonzero orchard here means the
             // receipt was mislabelled, not merely misrouted).
-            assert_eq!(balances.get(Pool::Orchard.ztest()), 0);
-            assert_eq!(balances.get(Pool::Sapling.ztest()), SEND_AMOUNT);
-            assert_eq!(balances.get(Pool::Transparent.ztest()), SEND_AMOUNT);
+            assert_eq!(balances.get(Pool::Orchard), 0);
+            assert_eq!(balances.get(Pool::Sapling), SEND_AMOUNT);
+            assert_eq!(balances.get(Pool::Transparent), SEND_AMOUNT);
             Ok(())
         }
 
@@ -515,7 +515,7 @@ mod zebrad {
             let validator = env.add_validator(
                 Validator::zebrad("6.2.3")
                     .regtest()
-                    .mine_to(FUND.ztest())
+                    .mine_to(FUND)
                     .mount(&vol),
             );
             let indexer = env.add_indexer(
@@ -535,7 +535,7 @@ mod zebrad {
             let recipient = wallet.recipient(&validator, &indexer).await?;
             // NU6.3: the unified-address (Orchard-receiver) output routes to Ironwood.
             for pool in [Pool::Ironwood, Pool::Sapling, Pool::Transparent] {
-                let addr = recipient.address(pool.ztest()).await?;
+                let addr = recipient.address(pool).await?;
                 faucet.send(&addr, SEND_AMOUNT).await?;
             }
             let tip = validator.generate_blocks(1).await?;
@@ -543,13 +543,13 @@ mod zebrad {
             recipient.sync().await?;
 
             let balances = recipient.balances().await?;
-            assert_eq!(balances.get(Pool::Ironwood.ztest()), SEND_AMOUNT);
+            assert_eq!(balances.get(Pool::Ironwood), SEND_AMOUNT);
             // From NU6.3 the unified-address output routes to Ironwood; the
             // orchard pool must stay empty (a nonzero orchard here means the
             // receipt was mislabelled, not merely misrouted).
-            assert_eq!(balances.get(Pool::Orchard.ztest()), 0);
-            assert_eq!(balances.get(Pool::Sapling.ztest()), SEND_AMOUNT);
-            assert_eq!(balances.get(Pool::Transparent.ztest()), SEND_AMOUNT);
+            assert_eq!(balances.get(Pool::Orchard), 0);
+            assert_eq!(balances.get(Pool::Sapling), SEND_AMOUNT);
+            assert_eq!(balances.get(Pool::Transparent), SEND_AMOUNT);
             Ok(())
         }
 
@@ -561,7 +561,7 @@ mod zebrad {
         async fn shield_for_validator_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -570,13 +570,13 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 1)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let taddr = recipient.address(Pool::Transparent.ztest()).await?;
+            let taddr = recipient.address(Pool::Transparent).await?;
             faucet.send(&taddr, SEND_AMOUNT).await?;
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
             recipient.sync().await?;
             assert_eq!(
-                recipient.balances().await?.get(Pool::Transparent.ztest()),
+                recipient.balances().await?.get(Pool::Transparent),
                 SEND_AMOUNT
             );
 
@@ -585,7 +585,7 @@ mod zebrad {
             indexer.wait_for_block_num(tip, READY).await?;
             recipient.sync().await?;
             assert_eq!(
-                recipient.balances().await?.get(Pool::Ironwood.ztest()),
+                recipient.balances().await?.get(Pool::Ironwood),
                 SEND_AMOUNT - SHIELD_FEE,
                 "shielded balance must be the send net of the ZIP-317 fee \
                  (NU6.3 shields transparent funds into the Ironwood pool)"
@@ -604,7 +604,7 @@ mod zebrad {
             let validator = env.add_validator(
                 Validator::zebrad("6.2.3")
                     .regtest()
-                    .mine_to(FUND.ztest())
+                    .mine_to(FUND)
                     .mount(&vol),
             );
             let indexer = env.add_indexer(
@@ -621,13 +621,13 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 1)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let taddr = recipient.address(Pool::Transparent.ztest()).await?;
+            let taddr = recipient.address(Pool::Transparent).await?;
             faucet.send(&taddr, SEND_AMOUNT).await?;
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
             recipient.sync().await?;
             assert_eq!(
-                recipient.balances().await?.get(Pool::Transparent.ztest()),
+                recipient.balances().await?.get(Pool::Transparent),
                 SEND_AMOUNT
             );
 
@@ -636,7 +636,7 @@ mod zebrad {
             indexer.wait_for_block_num(tip, READY).await?;
             recipient.sync().await?;
             assert_eq!(
-                recipient.balances().await?.get(Pool::Ironwood.ztest()),
+                recipient.balances().await?.get(Pool::Ironwood),
                 SEND_AMOUNT - SHIELD_FEE,
                 "shielded balance must be the send net of the ZIP-317 fee \
                  (NU6.3 shields transparent funds into the Ironwood pool)"
@@ -659,7 +659,7 @@ mod zebrad {
         async fn send_to_transparent_finalization_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -668,7 +668,7 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 1)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let taddr = recipient.address(Pool::Transparent.ztest()).await?;
+            let taddr = recipient.address(Pool::Transparent).await?;
             faucet.send(&taddr, SEND_AMOUNT).await?;
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
@@ -686,7 +686,7 @@ mod zebrad {
 
             recipient.sync().await?;
             assert_eq!(
-                recipient.balances().await?.get(Pool::Transparent.ztest()),
+                recipient.balances().await?.get(Pool::Transparent),
                 SEND_AMOUNT,
                 "the transparent send must still be served after it finalizes"
             );
@@ -715,7 +715,7 @@ mod zebrad {
             let validator = env.add_validator(
                 Validator::zebrad("6.2.3")
                     .regtest()
-                    .mine_to(FUND.ztest())
+                    .mine_to(FUND)
                     .mount(&vol),
             );
             let indexer = env.add_indexer(
@@ -732,7 +732,7 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 1)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let taddr = recipient.address(Pool::Transparent.ztest()).await?;
+            let taddr = recipient.address(Pool::Transparent).await?;
             faucet.send(&taddr, SEND_AMOUNT).await?;
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
@@ -750,7 +750,7 @@ mod zebrad {
 
             recipient.sync().await?;
             assert_eq!(
-                recipient.balances().await?.get(Pool::Transparent.ztest()),
+                recipient.balances().await?.get(Pool::Transparent),
                 SEND_AMOUNT,
                 "the transparent send must still be served after it finalizes"
             );
@@ -768,7 +768,7 @@ mod zebrad {
         async fn get_transaction_mined_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -777,7 +777,7 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 1)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let addr = recipient.address(Pool::Orchard.ztest()).await?;
+            let addr = recipient.address(Pool::Orchard).await?;
             let txid = faucet
                 .send(&addr, SEND_AMOUNT)
                 .await?
@@ -800,7 +800,7 @@ mod zebrad {
             let validator = env.add_validator(
                 Validator::zebrad("6.2.3")
                     .regtest()
-                    .mine_to(FUND.ztest())
+                    .mine_to(FUND)
                     .mount(&vol),
             );
             let indexer = env.add_indexer(
@@ -817,7 +817,7 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 1)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let addr = recipient.address(Pool::Orchard.ztest()).await?;
+            let addr = recipient.address(Pool::Orchard).await?;
             let txid = faucet
                 .send(&addr, SEND_AMOUNT)
                 .await?
@@ -839,7 +839,7 @@ mod zebrad {
         async fn get_raw_mempool_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -848,8 +848,8 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 2)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let taddr = recipient.address(Pool::Transparent.ztest()).await?;
-            let ua = recipient.address(Pool::Orchard.ztest()).await?;
+            let taddr = recipient.address(Pool::Transparent).await?;
+            let ua = recipient.address(Pool::Orchard).await?;
             faucet.send(&taddr, SEND_AMOUNT).await?;
             faucet.send(&ua, SEND_AMOUNT).await?;
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -889,7 +889,7 @@ mod zebrad {
             let validator = env.add_validator(
                 Validator::zebrad("6.2.3")
                     .regtest()
-                    .mine_to(FUND.ztest())
+                    .mine_to(FUND)
                     .mount(&vol),
             );
             let indexer = env.add_indexer(
@@ -906,8 +906,8 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 2)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let taddr = recipient.address(Pool::Transparent.ztest()).await?;
-            let ua = recipient.address(Pool::Orchard.ztest()).await?;
+            let taddr = recipient.address(Pool::Transparent).await?;
+            let ua = recipient.address(Pool::Orchard).await?;
             faucet.send(&taddr, SEND_AMOUNT).await?;
             faucet.send(&ua, SEND_AMOUNT).await?;
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -942,7 +942,7 @@ mod zebrad {
         async fn get_mempool_tx() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -951,8 +951,8 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 2)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let taddr = recipient.address(Pool::Transparent.ztest()).await?;
-            let ua = recipient.address(Pool::Orchard.ztest()).await?;
+            let taddr = recipient.address(Pool::Transparent).await?;
+            let ua = recipient.address(Pool::Orchard).await?;
             let t_txid = faucet
                 .send(&taddr, SEND_AMOUNT)
                 .await?
@@ -993,7 +993,7 @@ mod zebrad {
         async fn get_mempool_stream() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -1002,8 +1002,8 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 2)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let taddr = recipient.address(Pool::Transparent.ztest()).await?;
-            let ua = recipient.address(Pool::Orchard.ztest()).await?;
+            let taddr = recipient.address(Pool::Transparent).await?;
+            let ua = recipient.address(Pool::Orchard).await?;
             faucet.send(&taddr, SEND_AMOUNT).await?;
             faucet.send(&ua, SEND_AMOUNT).await?;
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -1032,7 +1032,7 @@ mod zebrad {
         async fn get_mempool_info_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -1041,8 +1041,8 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 2)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let taddr = recipient.address(Pool::Transparent.ztest()).await?;
-            let ua = recipient.address(Pool::Orchard.ztest()).await?;
+            let taddr = recipient.address(Pool::Transparent).await?;
+            let ua = recipient.address(Pool::Orchard).await?;
             faucet.send(&taddr, SEND_AMOUNT).await?;
             faucet.send(&ua, SEND_AMOUNT).await?;
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -1099,7 +1099,7 @@ mod zebrad {
             let validator = env.add_validator(
                 Validator::zebrad("6.2.3")
                     .regtest()
-                    .mine_to(FUND.ztest())
+                    .mine_to(FUND)
                     .mount(&vol),
             );
             let indexer = env.add_indexer(
@@ -1116,8 +1116,8 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 2)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let taddr = recipient.address(Pool::Transparent.ztest()).await?;
-            let ua = recipient.address(Pool::Orchard.ztest()).await?;
+            let taddr = recipient.address(Pool::Transparent).await?;
+            let ua = recipient.address(Pool::Orchard).await?;
             faucet.send(&taddr, SEND_AMOUNT).await?;
             faucet.send(&ua, SEND_AMOUNT).await?;
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -1176,7 +1176,7 @@ mod zebrad {
         async fn monitor_unverified_mempool_fetch() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -1186,8 +1186,8 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 2)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let ua = recipient.address(Pool::Ironwood.ztest()).await?;
-            let zaddr = recipient.address(Pool::Sapling.ztest()).await?;
+            let ua = recipient.address(Pool::Ironwood).await?;
+            let zaddr = recipient.address(Pool::Sapling).await?;
             let ua_txid = faucet
                 .send(&ua, SEND_AMOUNT)
                 .await?
@@ -1215,8 +1215,8 @@ mod zebrad {
             indexer.wait_for_block_num(tip, READY).await?;
             recipient.sync().await?;
             let balances = recipient.balances().await?;
-            assert_eq!(balances.get(Pool::Ironwood.ztest()), SEND_AMOUNT);
-            assert_eq!(balances.get(Pool::Sapling.ztest()), SEND_AMOUNT);
+            assert_eq!(balances.get(Pool::Ironwood), SEND_AMOUNT);
+            assert_eq!(balances.get(Pool::Sapling), SEND_AMOUNT);
             Ok(())
         }
 
@@ -1238,7 +1238,7 @@ mod zebrad {
             let validator = env.add_validator(
                 Validator::zebrad("6.2.3")
                     .regtest()
-                    .mine_to(FUND.ztest())
+                    .mine_to(FUND)
                     .mount(&vol),
             );
             let indexer = env.add_indexer(
@@ -1256,8 +1256,8 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 2)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let ua = recipient.address(Pool::Ironwood.ztest()).await?;
-            let zaddr = recipient.address(Pool::Sapling.ztest()).await?;
+            let ua = recipient.address(Pool::Ironwood).await?;
+            let zaddr = recipient.address(Pool::Sapling).await?;
             let ua_txid = faucet
                 .send(&ua, SEND_AMOUNT)
                 .await?
@@ -1285,8 +1285,8 @@ mod zebrad {
             indexer.wait_for_block_num(tip, READY).await?;
             recipient.sync().await?;
             let balances = recipient.balances().await?;
-            assert_eq!(balances.get(Pool::Ironwood.ztest()), SEND_AMOUNT);
-            assert_eq!(balances.get(Pool::Sapling.ztest()), SEND_AMOUNT);
+            assert_eq!(balances.get(Pool::Ironwood), SEND_AMOUNT);
+            assert_eq!(balances.get(Pool::Sapling), SEND_AMOUNT);
             Ok(())
         }
 
@@ -1297,7 +1297,7 @@ mod zebrad {
         async fn get_address_tx_ids() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -1306,7 +1306,7 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 1)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let taddr = recipient.address(Pool::Transparent.ztest()).await?;
+            let taddr = recipient.address(Pool::Transparent).await?;
             let txid = faucet
                 .send(&taddr, SEND_AMOUNT)
                 .await?
@@ -1341,7 +1341,7 @@ mod zebrad {
         async fn get_address_utxos() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -1350,7 +1350,7 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 1)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let taddr = recipient.address(Pool::Transparent.ztest()).await?;
+            let taddr = recipient.address(Pool::Transparent).await?;
             let txid = faucet
                 .send(&taddr, SEND_AMOUNT)
                 .await?
@@ -1377,7 +1377,7 @@ mod zebrad {
         async fn z_get_treestate() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -1386,7 +1386,7 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 1)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let addr = recipient.address(Pool::Orchard.ztest()).await?;
+            let addr = recipient.address(Pool::Orchard).await?;
             faucet.send(&addr, SEND_AMOUNT).await?;
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
@@ -1403,7 +1403,7 @@ mod zebrad {
         async fn z_get_subtrees_by_index() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -1412,7 +1412,7 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 1)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let addr = recipient.address(Pool::Orchard.ztest()).await?;
+            let addr = recipient.address(Pool::Orchard).await?;
             faucet.send(&addr, SEND_AMOUNT).await?;
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
@@ -1430,7 +1430,7 @@ mod zebrad {
         async fn get_raw_transaction() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -1439,7 +1439,7 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 1)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let addr = recipient.address(Pool::Orchard.ztest()).await?;
+            let addr = recipient.address(Pool::Orchard).await?;
             let txid = faucet
                 .send(&addr, SEND_AMOUNT)
                 .await?
@@ -1467,7 +1467,7 @@ mod zebrad {
         async fn get_taddress_txids() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -1476,7 +1476,7 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 1)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let taddr = recipient.address(Pool::Transparent.ztest()).await?;
+            let taddr = recipient.address(Pool::Transparent).await?;
             faucet.send(&taddr, SEND_AMOUNT).await?;
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
@@ -1494,7 +1494,7 @@ mod zebrad {
         async fn get_taddress_utxos() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -1503,7 +1503,7 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 1)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let taddr = recipient.address(Pool::Transparent.ztest()).await?;
+            let taddr = recipient.address(Pool::Transparent).await?;
             faucet.send(&taddr, SEND_AMOUNT).await?;
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
@@ -1521,7 +1521,7 @@ mod zebrad {
         async fn get_taddress_utxos_stream() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -1530,7 +1530,7 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 1)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let taddr = recipient.address(Pool::Transparent.ztest()).await?;
+            let taddr = recipient.address(Pool::Transparent).await?;
             faucet.send(&taddr, SEND_AMOUNT).await?;
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
@@ -1548,7 +1548,7 @@ mod zebrad {
         async fn get_transaction_mempool() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -1557,7 +1557,7 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 1)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let addr = recipient.address(Pool::Orchard.ztest()).await?;
+            let addr = recipient.address(Pool::Orchard).await?;
             let txid = faucet
                 .send(&addr, SEND_AMOUNT)
                 .await?
@@ -1576,7 +1576,7 @@ mod zebrad {
         async fn get_address_balance() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -1585,7 +1585,7 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 1)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let taddr = recipient.address(Pool::Transparent.ztest()).await?;
+            let taddr = recipient.address(Pool::Transparent).await?;
             faucet.send(&taddr, SEND_AMOUNT).await?;
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
@@ -1613,7 +1613,7 @@ mod zebrad {
         async fn get_taddress_balance() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
             let validator =
-                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND.ztest()));
+                env.add_validator(Validator::zebrad("6.2.3").regtest().mine_to(FUND));
             let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
             let wallet = env.add_wallet(Wallet::librustzcash());
             env.build().await?;
@@ -1622,7 +1622,7 @@ mod zebrad {
                 .funded_faucet_with_notes(&validator, &indexer, 1)
                 .await?;
             let recipient = wallet.recipient(&validator, &indexer).await?;
-            let taddr = recipient.address(Pool::Transparent.ztest()).await?;
+            let taddr = recipient.address(Pool::Transparent).await?;
             faucet.send(&taddr, SEND_AMOUNT).await?;
             let tip = validator.generate_blocks(1).await?;
             indexer.wait_for_block_num(tip, READY).await?;
@@ -1654,7 +1654,7 @@ mod zebrad {
         let validator = env.add_validator(
             Validator::zebrad("6.2.3")
                 .regtest()
-                .mine_to(FUND.ztest())
+                .mine_to(FUND)
                 .mount(&vol),
         );
         let fetch = env.add_indexer(
@@ -1679,7 +1679,7 @@ mod zebrad {
             .funded_faucet_with_notes(&validator, &fetch, 1)
             .await?;
         let recipient = wallet.recipient(&validator, &fetch).await?;
-        let ua = recipient.address(Pool::Orchard.ztest()).await?;
+        let ua = recipient.address(Pool::Orchard).await?;
         faucet.send(&ua, SEND_AMOUNT).await?;
         let end = validator.generate_blocks(1).await?;
         fetch.wait_for_block_num(end, READY).await?;
@@ -1729,7 +1729,7 @@ mod zebrad {
         let validator = env.add_validator(
             Validator::zebrad("6.2.3")
                 .regtest()
-                .mine_to(FUND.ztest())
+                .mine_to(FUND)
                 .mount(&vol),
         );
         let fetch = env.add_indexer(
@@ -1758,7 +1758,7 @@ mod zebrad {
         // NU6.3: the unified-address (Orchard-receiver) send emits Ironwood
         // actions, so the compact block carries them under `ironwood_actions`.
         for pool in [Pool::Transparent, Pool::Sapling, Pool::Ironwood] {
-            let addr = recipient.address(pool.ztest()).await?;
+            let addr = recipient.address(pool).await?;
             let txid = faucet
                 .send(&addr, SEND_AMOUNT)
                 .await?
@@ -1803,7 +1803,7 @@ mod zebrad {
         let validator = env.add_validator(
             Validator::zebrad("6.2.3")
                 .regtest()
-                .mine_to(FUND.ztest())
+                .mine_to(FUND)
                 .mount(&vol),
         );
         let fetch = env.add_indexer(
@@ -1826,7 +1826,7 @@ mod zebrad {
             .funded_faucet_with_notes(&validator, &fetch, 1)
             .await?;
         let recipient = wallet.recipient(&validator, &fetch).await?;
-        let addr = recipient.address(Pool::Orchard.ztest()).await?;
+        let addr = recipient.address(Pool::Orchard).await?;
         faucet.send(&addr, SEND_AMOUNT).await?;
         let tip = validator.generate_blocks(1).await?;
         fetch.wait_for_block_num(tip, READY).await?;
@@ -1850,7 +1850,7 @@ mod zebrad {
         let validator = env.add_validator(
             Validator::zebrad("6.2.3")
                 .regtest()
-                .mine_to(FUND.ztest())
+                .mine_to(FUND)
                 .mount(&vol),
         );
         let fetch = env.add_indexer(
@@ -1873,7 +1873,7 @@ mod zebrad {
             .funded_faucet_with_notes(&validator, &fetch, 1)
             .await?;
         let recipient = wallet.recipient(&validator, &fetch).await?;
-        let addr = recipient.address(Pool::Orchard.ztest()).await?;
+        let addr = recipient.address(Pool::Orchard).await?;
         faucet.send(&addr, SEND_AMOUNT).await?;
         let tip = validator.generate_blocks(1).await?;
         fetch.wait_for_block_num(tip, READY).await?;
@@ -1900,7 +1900,7 @@ mod zebrad {
         let validator = env.add_validator(
             Validator::zebrad("6.2.3")
                 .regtest()
-                .mine_to(FUND.ztest())
+                .mine_to(FUND)
                 .mount(&vol),
         );
         let fetch = env.add_indexer(
@@ -1923,7 +1923,7 @@ mod zebrad {
             .funded_faucet_with_notes(&validator, &fetch, 1)
             .await?;
         let recipient = wallet.recipient(&validator, &fetch).await?;
-        let addr = recipient.address(Pool::Orchard.ztest()).await?;
+        let addr = recipient.address(Pool::Orchard).await?;
         let txid = faucet
             .send(&addr, SEND_AMOUNT)
             .await?
@@ -1961,7 +1961,7 @@ mod zebrad {
         let validator = env.add_validator(
             Validator::zebrad("6.2.3")
                 .regtest()
-                .mine_to(FUND.ztest())
+                .mine_to(FUND)
                 .mount(&vol),
         );
         let fetch = env.add_indexer(
@@ -1984,7 +1984,7 @@ mod zebrad {
             .funded_faucet_with_notes(&validator, &fetch, 1)
             .await?;
         let recipient = wallet.recipient(&validator, &fetch).await?;
-        let taddr = recipient.address(Pool::Transparent.ztest()).await?;
+        let taddr = recipient.address(Pool::Transparent).await?;
         let txid = faucet
             .send(&taddr, SEND_AMOUNT)
             .await?
@@ -2015,7 +2015,7 @@ mod zebrad {
         let validator = env.add_validator(
             Validator::zebrad("6.2.3")
                 .regtest()
-                .mine_to(FUND.ztest())
+                .mine_to(FUND)
                 .mount(&vol),
         );
         let fetch = env.add_indexer(
@@ -2038,7 +2038,7 @@ mod zebrad {
             .funded_faucet_with_notes(&validator, &fetch, 1)
             .await?;
         let recipient = wallet.recipient(&validator, &fetch).await?;
-        let taddr = recipient.address(Pool::Transparent.ztest()).await?;
+        let taddr = recipient.address(Pool::Transparent).await?;
         let txid = faucet
             .send(&taddr, SEND_AMOUNT)
             .await?
@@ -2067,7 +2067,7 @@ mod zebrad {
         let validator = env.add_validator(
             Validator::zebrad("6.2.3")
                 .regtest()
-                .mine_to(FUND.ztest())
+                .mine_to(FUND)
                 .mount(&vol),
         );
         let fetch = env.add_indexer(
@@ -2090,8 +2090,8 @@ mod zebrad {
             .funded_faucet_with_notes(&validator, &fetch, 2)
             .await?;
         let recipient = wallet.recipient(&validator, &fetch).await?;
-        let taddr = recipient.address(Pool::Transparent.ztest()).await?;
-        let ua = recipient.address(Pool::Orchard.ztest()).await?;
+        let taddr = recipient.address(Pool::Transparent).await?;
+        let ua = recipient.address(Pool::Orchard).await?;
         faucet.send(&taddr, SEND_AMOUNT).await?;
         faucet.send(&ua, SEND_AMOUNT).await?;
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -2114,7 +2114,7 @@ mod zebrad {
         let validator = env.add_validator(
             Validator::zebrad("6.2.3")
                 .regtest()
-                .mine_to(FUND.ztest())
+                .mine_to(FUND)
                 .mount(&vol),
         );
         let fetch = env.add_indexer(
@@ -2137,7 +2137,7 @@ mod zebrad {
             .funded_faucet_with_notes(&validator, &fetch, 1)
             .await?;
         let recipient = wallet.recipient(&validator, &fetch).await?;
-        let taddr = recipient.address(Pool::Transparent.ztest()).await?;
+        let taddr = recipient.address(Pool::Transparent).await?;
         faucet.send(&taddr, SEND_AMOUNT).await?;
         let tip = validator.generate_blocks(1).await?;
         fetch.wait_for_block_num(tip, READY).await?;
@@ -2164,7 +2164,7 @@ mod zebrad {
         let validator = env.add_validator(
             Validator::zebrad("6.2.3")
                 .regtest()
-                .mine_to(Pool::Transparent.ztest())
+                .mine_to(Pool::Transparent)
                 .mount(&vol),
         );
         let fetch = env.add_indexer(
@@ -2220,7 +2220,7 @@ mod zebrad {
         let validator = env.add_validator(
             Validator::zebrad("6.2.3")
                 .regtest()
-                .mine_to(Pool::Transparent.ztest())
+                .mine_to(Pool::Transparent)
                 .mount(&vol),
         );
         let fetch = env.add_indexer(
@@ -2240,7 +2240,7 @@ mod zebrad {
         env.build().await?;
 
         let faucet = wallet.faucet(&validator, &fetch).await?;
-        let faucet_taddr = faucet.address(Pool::Transparent.ztest()).await?;
+        let faucet_taddr = faucet.address(Pool::Transparent).await?;
         let tip = validator.generate_blocks(100).await?;
         fetch.wait_for_block_num(tip, READY).await?;
         state.wait_for_block_num(tip, READY).await?;
@@ -2266,7 +2266,7 @@ mod zebrad {
         let validator = env.add_validator(
             Validator::zebrad("6.2.3")
                 .regtest()
-                .mine_to(Pool::Transparent.ztest())
+                .mine_to(Pool::Transparent)
                 .mount(&vol),
         );
         let fetch = env.add_indexer(
@@ -2286,7 +2286,7 @@ mod zebrad {
         env.build().await?;
 
         let faucet = wallet.faucet(&validator, &fetch).await?;
-        let faucet_taddr = faucet.address(Pool::Transparent.ztest()).await?;
+        let faucet_taddr = faucet.address(Pool::Transparent).await?;
         let tip = validator.generate_blocks(5).await?;
         fetch.wait_for_block_num(tip, READY).await?;
         state.wait_for_block_num(tip, READY).await?;
@@ -2313,7 +2313,7 @@ mod zebrad {
         let validator = env.add_validator(
             Validator::zebrad("6.2.3")
                 .regtest()
-                .mine_to(Pool::Transparent.ztest())
+                .mine_to(Pool::Transparent)
                 .mount(&vol),
         );
         let fetch = env.add_indexer(
@@ -2333,7 +2333,7 @@ mod zebrad {
         env.build().await?;
 
         let faucet = wallet.faucet(&validator, &fetch).await?;
-        let faucet_taddr = faucet.address(Pool::Transparent.ztest()).await?;
+        let faucet_taddr = faucet.address(Pool::Transparent).await?;
         let tip = validator.generate_blocks(5).await?;
         fetch.wait_for_block_num(tip, READY).await?;
         state.wait_for_block_num(tip, READY).await?;
@@ -2364,7 +2364,7 @@ mod zebrad {
         let validator = env.add_validator(
             Validator::zebrad("6.2.3")
                 .regtest()
-                .mine_to(Pool::Transparent.ztest())
+                .mine_to(Pool::Transparent)
                 .mount(&vol),
         );
         let fetch = env.add_indexer(
@@ -2384,7 +2384,7 @@ mod zebrad {
         env.build().await?;
 
         let faucet = wallet.faucet(&validator, &fetch).await?;
-        let faucet_taddr = faucet.address(Pool::Transparent.ztest()).await?;
+        let faucet_taddr = faucet.address(Pool::Transparent).await?;
         let tip = validator.generate_blocks(5).await?;
         fetch.wait_for_block_num(tip, READY).await?;
         state.wait_for_block_num(tip, READY).await?;
@@ -2431,7 +2431,7 @@ mod zebrad {
         let validator = env.add_validator(
             Validator::zebrad("6.2.3")
                 .regtest()
-                .mine_to(Pool::Transparent.ztest())
+                .mine_to(Pool::Transparent)
                 .mount(&vol),
         );
         let indexer = env.add_indexer(
@@ -2448,7 +2448,7 @@ mod zebrad {
         // the faucet coinbase's transparent credits.
         let faucet = wallet.faucet(&validator, &indexer).await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
-        let recipient_taddr = recipient.address(Pool::Transparent.ztest()).await?;
+        let recipient_taddr = recipient.address(Pool::Transparent).await?;
         let tip = validator.generate_blocks(5).await?;
         indexer.wait_for_block_num(tip, READY).await?;
         faucet.sync().await?;
@@ -2501,7 +2501,7 @@ mod zebrad {
         let validator = env.add_validator(
             Validator::zebrad("6.2.3")
                 .regtest()
-                .mine_to(Pool::Orchard.ztest())
+                .mine_to(Pool::Orchard)
                 .mount(&vol),
         );
         let indexer = env.add_indexer(
@@ -2520,7 +2520,7 @@ mod zebrad {
             .funded_faucet_with_notes(&validator, &indexer, 1)
             .await?;
         let recipient = wallet.recipient(&validator, &indexer).await?;
-        let recipient_taddr = recipient.address(Pool::Transparent.ztest()).await?;
+        let recipient_taddr = recipient.address(Pool::Transparent).await?;
         faucet.send(&recipient_taddr, FUNDING_AMOUNT as u64).await?;
         let tip = validator.generate_blocks(1).await?;
         indexer.wait_for_block_num(tip, READY).await?;
@@ -2622,7 +2622,7 @@ mod zebrad {
         let validator = env.add_validator(
             Validator::zebrad("6.2.3")
                 .regtest()
-                .mine_to(Pool::Orchard.ztest())
+                .mine_to(Pool::Orchard)
                 .mount(&vol),
         );
         let indexer = env.add_indexer(
@@ -2683,7 +2683,7 @@ mod zebrad {
         let validator = env.add_validator(
             Validator::zebrad("6.2.3")
                 .regtest()
-                .mine_to(FUND.ztest())
+                .mine_to(FUND)
                 .mount(&vol),
         );
         let fetch = env.add_indexer(
@@ -2707,7 +2707,7 @@ mod zebrad {
             .funded_faucet_with_notes(&validator, &fetch, 3)
             .await?;
         let recipient = wallet.recipient(&validator, &fetch).await?;
-        let taddr = recipient.address(Pool::Transparent.ztest()).await?;
+        let taddr = recipient.address(Pool::Transparent).await?;
 
         // ---- Phase 1: an outpoint that is SPENT and FINALISED ----
         // Fund the recipient taddr, then shield it (the shield drains all
@@ -2755,7 +2755,7 @@ mod zebrad {
         let validator = env.add_validator(
             Validator::zebrad("6.2.3")
                 .regtest()
-                .mine_to(FUND.ztest())
+                .mine_to(FUND)
                 .mount(&vol),
         );
         let fetch = env.add_indexer(
@@ -2778,7 +2778,7 @@ mod zebrad {
             .funded_faucet_with_notes(&validator, &fetch, 1)
             .await?;
         let recipient = wallet.recipient(&validator, &fetch).await?;
-        let taddr = recipient.address(Pool::Transparent.ztest()).await?;
+        let taddr = recipient.address(Pool::Transparent).await?;
         faucet.send(&taddr, SEND_AMOUNT).await?;
         let tip = validator.generate_blocks(1).await?;
         fetch.wait_for_block_num(tip, READY).await?;
@@ -2814,7 +2814,7 @@ mod zebrad {
         let validator = env.add_validator(
             Validator::zebrad("6.2.3")
                 .regtest()
-                .mine_to(Pool::Transparent.ztest())
+                .mine_to(Pool::Transparent)
                 .mount(&vol),
         );
         let fetch = env.add_indexer(
@@ -2867,7 +2867,7 @@ mod zebrad {
         let validator = env.add_validator(
             Validator::zebrad("6.2.3")
                 .regtest()
-                .mine_to(Pool::Transparent.ztest())
+                .mine_to(Pool::Transparent)
                 .mount(&vol),
         );
         let fetch = env.add_indexer(
