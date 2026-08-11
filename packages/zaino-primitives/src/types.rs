@@ -7,6 +7,7 @@ mod block;
 mod block_commitments;
 mod block_hash;
 mod block_ref;
+mod block_tx_position;
 mod block_verbose;
 mod blockchain_info;
 mod chain_state_epoch;
@@ -48,6 +49,7 @@ pub use block::{Block, BlockHeader, ChainMetadata};
 pub use block_commitments::BlockCommitments;
 pub use block_hash::BlockHash;
 pub use block_ref::BlockRef;
+pub use block_tx_position::BlockTxPosition;
 pub use block_verbose::{BlockTreeSizes, BlockVerbose};
 pub use blockchain_info::{BlockchainInfo, ValuePoolBalance};
 pub use chain_state_epoch::ChainStateEpoch;
@@ -66,7 +68,7 @@ pub use network_upgrade::{
 pub use note_commitment::NoteCommitment;
 pub use nullifier::Nullifier;
 pub use outpoint::Outpoint;
-pub use script::Script;
+pub use script::{Script, ScriptType};
 pub use shielded_pool::ShieldedPool;
 pub use subtree_root::SubtreeRoot;
 pub use transaction::{
