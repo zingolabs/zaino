@@ -7,6 +7,10 @@ use ztest::prelude::*;
 
 const READY: Duration = Duration::from_secs(90);
 
+// The testnet parity suite lives in its own target, `tests/testnet_parity.rs`:
+// it shares no topology with the regtest tests here, and consolidating its
+// eleven tests into one env per fixture left it self-contained.
+
 mod zebra {
 
     use super::*;
@@ -103,66 +107,15 @@ mod zebra {
             Ok(())
         }
 
-        #[ztest::qos::integration]
-        #[tokio::test(flavor = "multi_thread")]
-        #[ignore = "We no longer use chain caches. See zcashd::check_info::regtest_no_cache."]
-        async fn regtest_with_cache() -> Result<()> {
-            let mut env = TestEnv::builder().ready_timeout(READY);
-            let vol = env.shared_volume("zebra-db");
-            let validator = env.add_validator(Validator::zebrad("6.2.3").regtest().mount(&vol));
-            let fetch = env.add_indexer(
-                dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest()
-                    .tuning(ZainoTuning::Fetch)
-                    .named("zaino-fetch"),
-            );
-            let state = env.add_indexer(
-                dev!(Indexer::Zainod, "../../Dockerfile")
-                    .regtest()
-                    .tuning(ZainoTuning::State)
-                    .mount(&vol)
-                    .named("zaino-state"),
-            );
-            env.build().await?;
-
-            let tip = validator.generate_blocks(1).await?;
-            fetch.wait_for_block_num(tip, READY).await?;
-            state.wait_for_block_num(tip, READY).await?;
-            Ok(())
-        }
-
-        #[ztest::qos::integration]
-        #[ignore = "requires fully synced testnet."]
-        #[tokio::test(flavor = "multi_thread")]
-        async fn testnet() -> Result<()> {
-            unimplemented!("testnet check_info parity — requires synced testnet zebrad")
-        }
+        // `regtest_with_cache` lived here and was permanently `#[ignore]`d
+        // with "We no longer use chain caches"; `regtest_no_cache` above is
+        // the live replacement. Removed rather than left as a stub — a test
+        // that can never run is a maintenance cost with no signal.
     }
 
     pub(crate) mod get {
 
         use super::*;
-
-        #[ztest::qos::integration]
-        #[ignore = "requires fully synced testnet."]
-        #[tokio::test(flavor = "multi_thread")]
-        async fn address_utxos_testnet() -> Result<()> {
-            unimplemented!("testnet z_get_address_utxos parity — requires synced testnet zebrad")
-        }
-
-        #[ztest::qos::integration]
-        #[ignore = "requires fully synced testnet."]
-        #[tokio::test(flavor = "multi_thread")]
-        async fn address_tx_ids_testnet() -> Result<()> {
-            unimplemented!("testnet get_address_tx_ids parity — requires synced testnet zebrad")
-        }
-
-        #[ztest::qos::integration]
-        #[ignore = "requires fully synced testnet."]
-        #[tokio::test(flavor = "multi_thread")]
-        async fn raw_transaction_testnet() -> Result<()> {
-            unimplemented!("testnet get_raw_transaction parity — requires synced testnet zebrad")
-        }
 
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
@@ -399,30 +352,14 @@ mod zebra {
                 clientless::rpc::z_validate_address::run_z_validate_for(&state.json_rpc().await?)
                     .await
             }
-
-            #[ztest::qos::integration]
-            #[ignore = "requires fully synced testnet."]
-            #[tokio::test(flavor = "multi_thread")]
-            pub(crate) async fn subtrees_by_index_testnet() -> Result<()> {
-                unimplemented!(
-                    "testnet z_get_subtrees_by_index parity — requires synced testnet zebrad"
-                )
-            }
-
-            #[ztest::qos::integration]
-            #[ignore = "requires fully synced testnet."]
-            #[tokio::test(flavor = "multi_thread")]
-            pub(crate) async fn treestate_testnet() -> Result<()> {
-                unimplemented!("testnet z_get_treestate parity — requires synced testnet zebrad")
-            }
         }
 
-        #[ztest::qos::integration]
-        #[ignore = "requires fully synced testnet."]
-        #[tokio::test(flavor = "multi_thread")]
-        async fn raw_mempool_testnet() -> Result<()> {
-            unimplemented!("testnet get_raw_mempool parity — requires synced testnet zebrad")
-        }
+        // `raw_mempool_testnet` lived here. Removed as a category error: a
+        // chain snapshot has no mempool, and the validator is started with
+        // an empty peer set, so nothing can ever enter one — the test could
+        // only ever assert `[] == []`. Mempool parity is covered where
+        // transactions can actually be created, on regtest, by
+        // `e2e/devtool.rs::get_raw_mempool_{fetch,state}`.
 
         #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
@@ -464,13 +401,6 @@ mod zebra {
         }
 
         #[ztest::qos::integration]
-        #[ignore = "requires fully synced testnet."]
-        #[tokio::test(flavor = "multi_thread")]
-        async fn block_object_testnet() -> Result<()> {
-            unimplemented!("testnet getblock(object) parity — requires synced testnet zebrad")
-        }
-
-        #[ztest::qos::integration]
         #[tokio::test(flavor = "multi_thread")]
         async fn block_raw_regtest() -> Result<()> {
             let mut env = TestEnv::builder().ready_timeout(READY);
@@ -503,27 +433,6 @@ mod zebra {
             )
             .await?;
             Ok(())
-        }
-
-        #[ztest::qos::integration]
-        #[ignore = "requires fully synced testnet."]
-        #[tokio::test(flavor = "multi_thread")]
-        async fn block_raw_testnet() -> Result<()> {
-            unimplemented!("testnet getblock(raw) parity — requires synced testnet zebrad")
-        }
-
-        #[ztest::qos::integration]
-        #[ignore = "requires fully synced testnet."]
-        #[tokio::test(flavor = "multi_thread")]
-        async fn address_balance_testnet() -> Result<()> {
-            unimplemented!("testnet z_get_address_balance parity — requires synced testnet zebrad")
-        }
-
-        #[ztest::qos::integration]
-        #[ignore = "requires fully synced testnet."]
-        #[tokio::test]
-        async fn address_deltas_testnet() -> Result<()> {
-            unimplemented!("testnet get_address_deltas parity — requires synced testnet zebrad")
         }
     }
 

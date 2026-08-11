@@ -35,27 +35,10 @@ mod launch {
         Ok(())
     }
 
-    #[rstest]
-    #[case::zebra(Validator::zebrad("6.2.3"))]
-    #[cfg_attr(feature = "zcashd_support", case::zcashd(Validator::zcashd("v6.20.0")))]
-    #[ztest::qos::integration]
-    #[ignore = "We no longer use chain caches. See launch::regtest_no_cache."]
-    #[tokio::test(flavor = "multi_thread")]
-    pub(crate) async fn regtest_with_cache<B: ValidatorConfig>(
-        #[case] validator: Validator<B>,
-    ) -> Result<()> {
-        let mut env = TestEnv::builder().ready_timeout(READY);
-        let _validator = env.add_validator(validator.regtest());
-        let indexer = env.add_indexer(dev!(Indexer::Zainod, "../../Dockerfile").regtest());
-        env.build().await?;
-
-        let info = indexer.indexer_info().await?;
-        assert!(
-            !info.chain_name.is_empty(),
-            "indexer chain_name must be set: {info:?}"
-        );
-        Ok(())
-    }
+    // `regtest_with_cache` lived here and was permanently `#[ignore]`d with
+    // "We no longer use chain caches"; its body was byte-identical to
+    // `regtest_no_cache` above, which is the live replacement. Removed
+    // rather than left as a stub.
 }
 
 mod validation {

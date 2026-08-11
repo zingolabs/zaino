@@ -1,5 +1,17 @@
 //! JSON-RPC response comparison helpers shared by the parity tests.
+//!
+//! Each comparison comes in two forms: a `json_*` function returning
+//! `Result<()>`, and an `assert_json_*` wrapper that panics on the `Err`.
+//!
+//! The `Result` form is the composable one, and exists because a caller that
+//! runs many comparisons against one expensively-built topology cannot afford
+//! for the first mismatch to unwind the rest — see `clientless/tests/
+//! testnet_parity.rs`, which reports every check's verdict together, having
+//! paid for its topology once. The `assert_` form stays for single-comparison
+//! call sites,
+//! where a panic is the clearest thing that can happen.
 
+use anyhow::{ensure, Result};
 use serde_json::Value;
 
 /// Assert two JSON-RPC responses agree, after removing fields named by
@@ -14,16 +26,29 @@ use serde_json::Value;
 /// zaino-deserialized structs and so never saw this; raw-JSON equality
 /// would. Treating numerically-equal numbers as equal restores the
 /// upstream comparison's behaviour.
-pub fn assert_json_equal_ignoring(label: &str, mut a: Value, mut b: Value, volatile: &[&str]) {
+pub fn json_equal_ignoring(
+    label: &str,
+    mut a: Value,
+    mut b: Value,
+    volatile: &[&str],
+) -> Result<()> {
     for path in volatile {
         remove_path(&mut a, path);
         remove_path(&mut b, path);
     }
-    assert!(
+    ensure!(
         json_eq_numeric(&a, &b),
         "[{label}] validator and indexer JSON-RPC responses disagree \
          (after dropping {volatile:?})\n  left (validator): {a}\n  right (indexer): {b}"
     );
+    Ok(())
+}
+
+/// Panicking form of [`json_equal_ignoring`].
+pub fn assert_json_equal_ignoring(label: &str, a: Value, b: Value, volatile: &[&str]) {
+    if let Err(e) = json_equal_ignoring(label, a, b, volatile) {
+        panic!("{e:#}");
+    }
 }
 
 /// Structural JSON equality that compares numbers by value rather than
@@ -84,6 +109,30 @@ fn remove_path(v: &mut Value, path: &str) {
     }
 }
 
+/// Canonicalize an array-valued JSON-RPC response by sorting its elements,
+/// so set-valued results compare regardless of the order each source
+/// happened to emit them in.
+///
+/// Necessary because zaino's state backend derives results from its own
+/// index while the validator walks its own storage: the *contents* are the
+/// contract, the order is not. (`getrawmempool` already needed this and was
+/// sorted inline at the call site; the address-index queries need the same
+/// treatment over real history, where results are long enough that an
+/// order difference is likely rather than theoretical.)
+///
+/// Non-arrays pass through unchanged, so this is safe to apply to a
+/// response that may legitimately be an error object or a scalar. Sorting
+/// is by serialized form, which is total and stable across runs.
+pub fn sort_json_array(v: Value) -> Value {
+    match v {
+        Value::Array(mut items) => {
+            items.sort_by_key(|item| item.to_string());
+            Value::Array(items)
+        }
+        other => other,
+    }
+}
+
 /// Light parity check between two JSON-RPC objects. After dropping
 /// `ignore` paths from both sides, asserts:
 ///   - both are JSON objects
@@ -95,31 +144,46 @@ fn remove_path(v: &mut Value, path: &str) {
 /// to f64 while zcashd emits an int), don't include them in
 /// `check_values` — assert those at the call site with `.as_f64()` on
 /// both sides.
-pub fn assert_json_shape_matches(
+pub fn json_shape_matches(
     label: &str,
     mut a: Value,
     mut b: Value,
     ignore: &[&str],
     check_values: &[&str],
-) {
+) -> Result<()> {
     for path in ignore {
         remove_path(&mut a, path);
         remove_path(&mut b, path);
     }
     let (Value::Object(a_obj), Value::Object(b_obj)) = (&a, &b) else {
-        panic!("[{label}] expected JSON objects, got validator={a}, indexer={b}");
+        anyhow::bail!("[{label}] expected JSON objects, got validator={a}, indexer={b}");
     };
     let a_keys: std::collections::BTreeSet<&String> = a_obj.keys().collect();
     let b_keys: std::collections::BTreeSet<&String> = b_obj.keys().collect();
-    assert_eq!(
-        a_keys, b_keys,
+    ensure!(
+        a_keys == b_keys,
         "[{label}] key set differs: validator={a_keys:?}, indexer={b_keys:?}"
     );
     for name in check_values {
-        assert_eq!(
+        ensure!(
+            a_obj.get(*name) == b_obj.get(*name),
+            "[{label}] field {name:?} differs: validator={:?}, indexer={:?}",
             a_obj.get(*name),
-            b_obj.get(*name),
-            "[{label}] field {name:?} differs"
+            b_obj.get(*name)
         );
+    }
+    Ok(())
+}
+
+/// Panicking form of [`json_shape_matches`].
+pub fn assert_json_shape_matches(
+    label: &str,
+    a: Value,
+    b: Value,
+    ignore: &[&str],
+    check_values: &[&str],
+) {
+    if let Err(e) = json_shape_matches(label, a, b, ignore, check_values) {
+        panic!("{e:#}");
     }
 }

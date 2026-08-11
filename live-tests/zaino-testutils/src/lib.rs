@@ -14,7 +14,10 @@ pub use ztest::prelude::*;
 pub mod json;
 pub mod rpc;
 
-pub use json::{assert_json_equal_ignoring, assert_json_shape_matches};
+pub use json::{
+    assert_json_equal_ignoring, assert_json_shape_matches, json_equal_ignoring, json_shape_matches,
+    sort_json_array,
+};
 pub use rpc::assert_rpc_parity;
 
 /// Generate one discoverable `#[tokio::test]` per `name => helper` pair, each
