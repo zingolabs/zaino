@@ -3,6 +3,7 @@
 use zaino_chain_head::ChainHeadSnapshot as _;
 mod chain_head;
 pub(crate) mod finalised_state;
+mod golden;
 mod mockchain_tests;
 mod poll;
 mod proptest_blockgen;
