@@ -22,7 +22,7 @@
 use std::sync::Arc;
 
 use zaino_chain_head::{ChainHeadBlock, ChainHeadBlockSource, ChainHeadWork};
-use zaino_primitives::types::{Transaction, TreeRoots};
+use zaino_primitives::types::{classify_script, Transaction, TreeRoots};
 
 use crate::chain_index::{
     source::BlockchainSource,
@@ -30,9 +30,9 @@ use crate::chain_index::{
     types::{
         db::{
             legacy::{
-                AddrScript, BlockData, CompactOrchardAction, CompactSaplingOutput,
-                CompactSaplingSpend, CompactTxData, EquihashSolution, OrchardCompactTx,
-                SaplingCompactTx, ScriptType, TransparentCompactTx, TxInCompact, TxOutCompact,
+                BlockData, CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend,
+                CompactTxData, EquihashSolution, OrchardCompactTx, SaplingCompactTx, ScriptType,
+                TransparentCompactTx, TxInCompact, TxOutCompact,
             },
             CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes,
         },
@@ -75,6 +75,19 @@ where
 
     fn chain_head_source(&self) -> Arc<Self::Head> {
         self.validator()
+    }
+}
+
+/// This crate's on-disk tag for a [`classify_script`] result.
+///
+/// The classification is shared vocabulary; the byte written for it is this
+/// crate's storage detail, so the mapping lives here rather than on the
+/// shared type. Goes away with the persisted types it serves.
+fn legacy_script_tag(script_type: zaino_primitives::types::ScriptType) -> u8 {
+    match script_type {
+        zaino_primitives::types::ScriptType::P2PKH => ScriptType::P2PKH as u8,
+        zaino_primitives::types::ScriptType::P2SH => ScriptType::P2SH as u8,
+        zaino_primitives::types::ScriptType::NonStandard => ScriptType::NonStandard as u8,
     }
 }
 
@@ -259,20 +272,20 @@ fn transparent(
         .iter()
         .map(|output| {
             let script: Vec<u8> = output.script.clone().into();
-            let address = AddrScript::from_script(&script).unwrap_or_else(|| {
-                // A non-standard script has no address to index; the finalised
-                // path stores its first 20 bytes under a non-standard tag, and
-                // this matches so the two agree.
-                let mut fallback = [0u8; 20];
-                let usable = script.len().min(20);
-                fallback[..usable].copy_from_slice(&script[..usable]);
-                AddrScript::new(fallback, ScriptType::NonStandard as u8)
-            });
+            // Classified by the shared rule rather than a local copy of it.
+            // This path and the finalised state's must agree: both feed the
+            // UTXO-set commitment, which is computed over the resulting hash
+            // and script type, so a disagreement produces two different
+            // commitments for one chain rather than an error. They previously
+            // disagreed — the copy that lived here read a 21-byte script's
+            // first 20 bytes where the finalised path reads its last 20 and
+            // takes the leading byte as the type.
+            let (hash, script_type) = classify_script(&script);
 
             TxOutCompact::new(
                 u64::from(output.value),
-                *address.hash(),
-                address.script_type(),
+                hash,
+                legacy_script_tag(script_type),
             )
             .ok_or(ChainHeadConversionError::OutputNotCompactable { hash: block })
         })

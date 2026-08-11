@@ -1,0 +1,56 @@
+[package]
+name = "zaino-chain-store"
+description = "Domain types and ports for Zaino's finalised chain state."
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+version = "0.1.0"
+
+[features]
+default = []
+
+# Declares the transparent-address-history capability: its query and effect
+# types, and the `TransparentHistoryIndex` port. Named to match
+# `zaino-chain-head/transparent_address_history_experimental`, which declares
+# the recent-window half of the same capability, and
+# `zaino-state/transparent_address_history_experimental`, which gates the
+# implementation that backs this one.
+transparent_address_history_experimental = []
+
+[dependencies]
+# The domain vocabulary. This crate names no wire, node, or backend type.
+zaino-primitives = { workspace = true }
+
+# The validator ports the store reads through while building itself. Depending
+# on the port crate rather than restating the questions keeps one definition of
+# each, and lets any adapter that already answers them drive a store.
+zaino-source = { workspace = true }
+
+# Runtime status, so a consumer can ask how a store is faring through the same
+# vocabulary every other subsystem reports in.
+zaino-status = { workspace = true }
+
+# The UTXO-set commitment is a BLAKE2b-256 multiset hash. It is defined here
+# rather than in a backend because it is a contract between backends: two
+# stores holding the same UTXO set must commit to the same value, or
+# `gettxoutsetinfo` stops meaning one thing.
+blake2 = { workspace = true }
+
+# Streams — the chunked block reads return one.
+futures = { workspace = true }
+
+# Runtime — the service port publishes watermark changes as a `watch`.
+tokio = { workspace = true, features = ["sync"] }
+
+# Utility
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# The compile-time check that a real validator satisfies `ChainStoreSource`.
+zaino-source-zebra = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

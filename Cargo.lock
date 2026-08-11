@@ -5951,6 +5951,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-chain-store"
+version = "0.1.0"
+dependencies = [
+ "blake2",
+ "futures",
+ "thiserror 2.0.18",
+ "tokio",
+ "zaino-primitives",
+ "zaino-source",
+ "zaino-source-zebra",
+ "zaino-status",
+]
+
+[[package]]
 name = "zaino-common"
 version = "0.5.0"
 dependencies = [

@@ -68,7 +68,7 @@ pub use network_upgrade::{
 pub use note_commitment::NoteCommitment;
 pub use nullifier::Nullifier;
 pub use outpoint::Outpoint;
-pub use script::{Script, ScriptType};
+pub use script::{classify_script, Script, ScriptType};
 pub use shielded_pool::ShieldedPool;
 pub use subtree_root::SubtreeRoot;
 pub use transaction::{
