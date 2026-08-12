@@ -42,23 +42,34 @@ use crate::error::{ChainStoreError, ChainStoreSourceError};
 use crate::output::{SpenderRef, StoredTxOut};
 use crate::txout_set::TxOutSetAccumulator;
 
-/// Everything a chain store asks of a validator while building itself.
+/// Everything a chain store asks of a validator.
 ///
 /// An alias over `zaino-source`, not a new port. It states a requirement of
 /// *this* consumer; `zaino-source` should not have to know who its consumers
 /// are, so the list lives here rather than there.
 ///
-/// Blocks come as canonical bytes ([`GetRawBlock`](zaino_source::GetRawBlock))
-/// rather than parsed: the store builds its own indexed representation and
-/// needs the exact bytes the block hash commits to, not a shape something else
-/// has already interpreted.
+/// Four questions, and the list is derived from what the implementation
+/// actually calls rather than from what a store might plausibly want:
+///
+/// - the chain tip, to know how far there is to build;
+/// - blocks by height, to build from;
+/// - blocks by hash, and transactions, which only the passthrough mode needs —
+///   a store configured to hold nothing answers reads from the validator, and
+///   so asks questions a building store never does;
+/// - commitment tree roots, which are not derivable from a block alone.
+///
+/// Blocks are asked for parsed rather than raw. A store that took bytes would
+/// have to parse them itself, duplicating work the source adapter has already
+/// done and a parser Zaino would then maintain twice.
 ///
 /// Not `Clone`. A source may own connections and a database handle that must
 /// not be duplicated; the runtime shares one behind an `Arc`.
 pub trait ChainStoreSource:
-    zaino_source::GetBestBlockHeight
-    + zaino_source::GetRawBlock
-    + zaino_source::GetCommitmentTreeRoots
+    zaino_source::OneShotGetBestBlockHeight
+    + zaino_source::OneShotGetBlock
+    + zaino_source::OneShotGetBlockByHash
+    + zaino_source::OneShotGetCommitmentTreeRoots
+    + zaino_source::OneShotGetTransaction
     + Send
     + Sync
     + 'static
@@ -66,9 +77,11 @@ pub trait ChainStoreSource:
 }
 
 impl<T> ChainStoreSource for T where
-    T: zaino_source::GetBestBlockHeight
-        + zaino_source::GetRawBlock
-        + zaino_source::GetCommitmentTreeRoots
+    T: zaino_source::OneShotGetBestBlockHeight
+        + zaino_source::OneShotGetBlock
+        + zaino_source::OneShotGetBlockByHash
+        + zaino_source::OneShotGetCommitmentTreeRoots
+        + zaino_source::OneShotGetTransaction
         + Send
         + Sync
         + 'static
