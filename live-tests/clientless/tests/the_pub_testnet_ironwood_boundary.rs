@@ -34,6 +34,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use ztest::prelude::*;
+use ztest::snapshots::testnet::IRONWOOD;
 
 const READY: Duration = Duration::from_secs(300);
 

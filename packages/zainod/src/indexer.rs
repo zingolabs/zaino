@@ -325,7 +325,7 @@ where
 async fn shutdown_signal() {
     #[cfg(unix)]
     {
-        use tokio::signal::unix::{SignalKind, signal};
+        use tokio::signal::unix::{signal, SignalKind};
         match signal(SignalKind::terminate()) {
             Ok(mut term) => {
                 tokio::select! {

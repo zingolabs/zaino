@@ -777,15 +777,15 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                     );
                 }
 
+                // The depth histogram carries its own `_count`, which *is* the reorg
+                // total — so no separate counter is emitted alongside it.
                 #[cfg(feature = "prometheus")]
                 {
                     if new_best_tip.height == stale_best_tip.height
                         && new_best_tip.hash != stale_best_tip.hash
                     {
-                        metrics::counter!(SYNC_REORG_TOTAL).increment(1);
                         metrics::histogram!(SYNC_REORG_DEPTH).record(0.0);
                     } else if new_best_tip.height < stale_best_tip.height {
-                        metrics::counter!(SYNC_REORG_TOTAL).increment(1);
                         metrics::histogram!(SYNC_REORG_DEPTH)
                             .record((stale_best_tip.height.0 - new_best_tip.height.0) as f64);
                     }

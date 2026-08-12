@@ -2,8 +2,6 @@
 
 use std::{collections::HashSet, sync::Arc};
 
-#[cfg(feature = "prometheus")]
-use crate::metric_names::*;
 use crate::{
     broadcast::{Broadcast, BroadcastSubscriber},
     chain_index::{
@@ -203,12 +201,6 @@ impl<T: BlockchainSource> Mempool<T> {
                     status.store(StatusType::Syncing);
                     state.notify(status.load());
                     state.clear();
-                    #[cfg(feature = "prometheus")]
-                    {
-                        metrics::counter!(MEMPOOL_TIP_CHANGES_TOTAL).increment(1);
-                        metrics::gauge!(MEMPOOL_TRANSACTIONS).set(0.0);
-                    }
-
                     mempool
                         .mempool_chain_tip
                         .send_replace(check_block_hash.into());
@@ -222,8 +214,6 @@ impl<T: BlockchainSource> Mempool<T> {
                     Ok(mempool_transactions) => {
                         status.store(StatusType::Ready);
                         state.insert_filtered_set(mempool_transactions, status.load());
-                        #[cfg(feature = "prometheus")]
-                        metrics::gauge!(MEMPOOL_TRANSACTIONS).set(state.len() as f64);
                     }
                     Err(e) => {
                         status.store(StatusType::RecoverableError);

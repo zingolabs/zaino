@@ -5,25 +5,112 @@ use super::*;
 #[cfg(feature = "prometheus")]
 use crate::metric_names::*;
 
-/// Cheap heap-size estimate for a buffered [`IndexedBlock`], used only to bound the bulk-sync write
-/// batch in [`DbV1::write_blocks_to_height`]. Exactness is not required — it just keeps the batch's
-/// peak memory roughly within the configured budget.
-#[cfg(not(feature = "transparent_address_history_experimental"))]
-fn approx_indexed_block_bytes(block: &IndexedBlock) -> u64 {
-    block
-        .transactions()
-        .iter()
-        .map(|tx| {
+/// The protocol work one block carries, counted per operation class in a single
+/// pass over its transactions.
+///
+/// One walk serves both consumers on the ingest path. The write batch's byte
+/// budget ([`BlockWork::approx_bytes`]) and the throughput counters
+/// ([`SyncMetrics::record_block`]) need the same six item counts, and walking
+/// every transaction twice per block to gather them separately is waste on the
+/// hottest loop in the indexer.
+///
+/// Deliberately not gated on `prometheus`: the byte estimate is needed either
+/// way, and a second cfg-gated walk is how the two drift apart.
+#[derive(Clone, Copy, Default)]
+struct BlockWork {
+    transactions: u64,
+    transparent_ops: u64,
+    sapling_ops: u64,
+    orchard_actions: u64,
+    ironwood_actions: u64,
+}
+
+impl BlockWork {
+    /// Tally one block in a single pass.
+    ///
+    /// Transparent inputs and outputs are summed together, and Sapling spends
+    /// with Sapling outputs: this index stores them, it does not verify them, so
+    /// within a pool the two directions cost the same. The pools themselves stay
+    /// apart because they genuinely differ in cost.
+    ///
+    /// Sprout JoinSplits are absent by construction, not by oversight: the
+    /// compact transaction model this index stores carries no JoinSplit field,
+    /// so a pre-Sapling range reports transparent work only.
+    fn tally(block: &IndexedBlock) -> Self {
+        let mut work = Self {
+            transactions: block.transactions().len() as u64,
+            ..Self::default()
+        };
+        for tx in block.transactions() {
             let transparent = tx.transparent();
-            let items = transparent.inputs().len()
-                + transparent.outputs().len()
-                + tx.sapling().spends().len()
-                + tx.sapling().outputs().len()
-                + tx.orchard().actions().len()
-                + tx.ironwood().actions().len();
-            256 + items as u64 * 128
-        })
-        .sum()
+            work.transparent_ops +=
+                (transparent.inputs().len() + transparent.outputs().len()) as u64;
+            work.sapling_ops += (tx.sapling().spends().len() + tx.sapling().outputs().len()) as u64;
+            work.orchard_actions += tx.orchard().actions().len() as u64;
+            work.ironwood_actions += tx.ironwood().actions().len() as u64;
+        }
+        work
+    }
+
+    /// Total protocol operations across every pool.
+    fn operations(self) -> u64 {
+        self.transparent_ops + self.sapling_ops + self.orchard_actions + self.ironwood_actions
+    }
+
+    /// Cheap heap-size estimate for a buffered [`IndexedBlock`], used only to bound the bulk-sync
+    /// write batch in [`DbV1::write_blocks_to_height`]. Exactness is not required — it just keeps
+    /// the batch's peak memory roughly within the configured budget.
+    fn approx_bytes(self) -> u64 {
+        self.transactions * 256 + self.operations() * 128
+    }
+}
+
+/// Metric handles for the ingest loop, resolved once per sync call.
+///
+/// `metrics::counter!(NAME)` looks its key up in the global registry on *every*
+/// invocation. On a path that runs once per block, with five counters and a
+/// gauge per block, that lookup is the dominant cost of the measurement itself.
+/// The `metrics` crate hands back a cheap cloneable handle precisely so a hot
+/// loop can resolve once and increment many times; this struct is that.
+#[cfg(feature = "prometheus")]
+struct SyncMetrics {
+    transactions: metrics::Counter,
+    transparent_ops: metrics::Counter,
+    sapling_ops: metrics::Counter,
+    orchard_actions: metrics::Counter,
+    ironwood_actions: metrics::Counter,
+    fetched_height: metrics::Gauge,
+    block_build_seconds: metrics::Histogram,
+}
+
+#[cfg(feature = "prometheus")]
+impl SyncMetrics {
+    fn resolve() -> Self {
+        Self {
+            transactions: metrics::counter!(SYNC_TRANSACTIONS_TOTAL),
+            transparent_ops: metrics::counter!(SYNC_TRANSPARENT_OPS_TOTAL),
+            sapling_ops: metrics::counter!(SYNC_SAPLING_OPS_TOTAL),
+            orchard_actions: metrics::counter!(SYNC_ORCHARD_ACTIONS_TOTAL),
+            ironwood_actions: metrics::counter!(SYNC_IRONWOOD_ACTIONS_TOTAL),
+            fetched_height: metrics::gauge!(SYNC_FETCHED_HEIGHT),
+            block_build_seconds: metrics::histogram!(SYNC_BLOCK_BUILD_SECONDS),
+        }
+    }
+
+    /// Record one block's work and the frontier it advanced the sync to.
+    ///
+    /// Called as each block is *built*, not as a batch commits: a commit lands
+    /// at most once per `sync_checkpoint_interval` (120 s by default), which is
+    /// a durability knob. Counting there made every derived rate a sawtooth
+    /// that measured the commit clock rather than the ingest rate.
+    fn record_block(&self, work: BlockWork, height: u32) {
+        self.transactions.increment(work.transactions);
+        self.transparent_ops.increment(work.transparent_ops);
+        self.sapling_ops.increment(work.sapling_ops);
+        self.orchard_actions.increment(work.orchard_actions);
+        self.ironwood_actions.increment(work.ironwood_actions);
+        self.fetched_height.set(height as f64);
+    }
 }
 
 /// Maximum number of blocks buffered in a single bulk-sync write batch, regardless of the byte
@@ -308,6 +395,13 @@ impl DbWrite for DbV1 {
             );
             let mut next = start_height;
             let mut last_progress_log = std::time::Instant::now();
+            // Resolved once for the whole call, not per block — see [`SyncMetrics`].
+            #[cfg(feature = "prometheus")]
+            let sync_metrics = {
+                // Fixed for the whole call, so set once here rather than per block.
+                metrics::gauge!(SYNC_TARGET_HEIGHT).set(height.0 as f64);
+                SyncMetrics::resolve()
+            };
             while next <= height.0 {
                 // Fetch blocks (async; an LMDB write txn is `!Send` and cannot be held across the
                 // await) into a buffer, flushing on the *first* of: byte budget, block-count cap, or
@@ -334,22 +428,23 @@ impl DbWrite for DbV1 {
                         parent_chainwork,
                     )
                     .await?;
-                    #[cfg(feature = "prometheus")]
-                    metrics::histogram!(SYNC_BLOCK_BUILD_SECONDS)
-                        .record(build_start.elapsed().as_secs_f64());
                     parent_chainwork = Some(block.context.chainwork);
-                    batch_bytes = batch_bytes.saturating_add(approx_indexed_block_bytes(&block));
+                    // One walk over the block's transactions, feeding both the batch byte budget
+                    // and the throughput counters.
+                    let work = BlockWork::tally(&block);
+                    #[cfg(feature = "prometheus")]
+                    {
+                        sync_metrics
+                            .block_build_seconds
+                            .record(build_start.elapsed().as_secs_f64());
+                        sync_metrics.record_block(work, next);
+                    }
+                    batch_bytes = batch_bytes.saturating_add(work.approx_bytes());
                     batch.push(block);
                     next += 1;
 
-                    // In-flight progress: the block being fetched, throttled by time. (The committed
-                    // tip is reported by the per-batch commit log below.)
+                    // In-flight progress log, throttled by time
                     if last_progress_log.elapsed() >= SYNC_PROGRESS_LOG_INTERVAL {
-                        #[cfg(feature = "prometheus")]
-                        {
-                            metrics::gauge!(SYNC_FETCHED_HEIGHT).set((next - 1) as f64);
-                            metrics::gauge!(SYNC_TARGET_HEIGHT).set(height.0 as f64);
-                        }
                         info!(
                             current = next - 1,
                             target = height.0,
@@ -373,14 +468,12 @@ impl DbWrite for DbV1 {
                     FinalisedStateError::Custom(format!("LMDB checkpoint sync failed: {e}"))
                 })?;
                 #[cfg(feature = "prometheus")]
-                metrics::histogram!(SYNC_BLOCK_WRITE_SECONDS)
+                metrics::histogram!(SYNC_BATCH_WRITE_SECONDS)
                     .record(write_start.elapsed().as_secs_f64());
 
                 // Only after the batch is committed + synced do we advance the validated tip.
                 for block in &batch {
                     self.mark_validated(block.context.index.height.0);
-                    #[cfg(feature = "prometheus")]
-                    record_block_throughput(block);
                 }
                 self.status.store(StatusType::Ready);
                 info!(
@@ -390,16 +483,25 @@ impl DbWrite for DbV1 {
                 );
                 #[cfg(feature = "prometheus")]
                 {
-                    metrics::gauge!(DB_TIP_HEIGHT).set((next - 1) as f64);
                     metrics::gauge!(SYNC_FINALIZED_HEIGHT).set((next - 1) as f64);
-                    metrics::gauge!(SYNC_LAST_BLOCK_WRITTEN_AT)
-                        .set(crate::chain_index::unix_now_secs());
+                    self.record_storage_metrics();
                 }
             }
         }
         #[cfg(feature = "transparent_address_history_experimental")]
         {
+            // Instrumented identically to the bulk path above. This path commits per block rather
+            // than per batch, but that is a durability difference, not an observability one:
+            // enabling a storage feature must not silently blind every sync dashboard and probe.
+            #[cfg(feature = "prometheus")]
+            let sync_metrics = {
+                // Fixed for the whole call, so set once here rather than per block.
+                metrics::gauge!(SYNC_TARGET_HEIGHT).set(height.0 as f64);
+                SyncMetrics::resolve()
+            };
             for height_int in start_height..=height.0 {
+                #[cfg(feature = "prometheus")]
+                let build_start = std::time::Instant::now();
                 let block = build_indexed_block_from_source(
                     source,
                     network,
@@ -411,8 +513,21 @@ impl DbWrite for DbV1 {
                 )
                 .await?;
                 parent_chainwork = Some(block.context.chainwork);
+                #[cfg(feature = "prometheus")]
+                {
+                    sync_metrics
+                        .block_build_seconds
+                        .record(build_start.elapsed().as_secs_f64());
+                    sync_metrics.record_block(BlockWork::tally(&block), height_int);
+                }
 
                 self.write_block_with_options(block, false).await?;
+
+                #[cfg(feature = "prometheus")]
+                {
+                    metrics::gauge!(SYNC_FINALIZED_HEIGHT).set(height_int as f64);
+                    self.record_storage_metrics();
+                }
             }
         }
 
@@ -442,6 +557,33 @@ impl DbWrite for DbV1 {
 impl DbV1 {
     //! *** DB write / delete methods ***
     //! **These should only ever be used in a single DB control task.**
+
+    /// Publish how much of the LMDB map is in use, and how large the map is.
+    ///
+    /// The bulk write path is designed entirely around B-tree behaviour once the
+    /// database no longer fits in RAM — that is why batches are buffered and the
+    /// random-keyed indexes inserted in sorted order. Without these two gauges
+    /// the moment that threshold is crossed, which is exactly when write
+    /// throughput changes character, is invisible.
+    ///
+    /// Measured off `data.mdb`'s length rather than through LMDB's own counters.
+    /// `mdb_env_info`'s `me_last_pgno` would be the more direct read, but it is
+    /// only reachable through the raw FFI and this crate is `forbid(unsafe_code)`.
+    /// The safe alternative, [`lmdb::Stat`], describes only the *main* database's
+    /// tree — with sixteen named sub-databases that undercounts by orders of
+    /// magnitude. The data file, meanwhile, is grown to LMDB's high-water mark
+    /// and never shrinks, so its length is the number wanted.
+    ///
+    /// Called once per batch commit, and best-effort throughout: an unreadable
+    /// file is a missing sample, never a failed sync.
+    #[cfg(feature = "prometheus")]
+    fn record_storage_metrics(&self) {
+        if let Ok(meta) = std::fs::metadata(super::db_path(&self.config).join("data.mdb")) {
+            metrics::gauge!(DB_USED_BYTES).set(meta.len() as f64);
+        }
+        metrics::gauge!(DB_MAP_SIZE_BYTES)
+            .set(self.config.storage.database.size.to_byte_count() as f64);
+    }
 
     /// Writes a given (finalised) [`IndexedBlock`] to FinalisedState.
     ///
@@ -1978,18 +2120,51 @@ impl DbV1 {
     }
 }
 
-/// Increments per-block throughput counters (transactions, Sapling outputs,
-/// Orchard actions). Only compiled when the `prometheus` feature is enabled.
-#[cfg(feature = "prometheus")]
-fn record_block_throughput(block: &IndexedBlock) {
-    let transactions = block.transactions().len() as u64;
-    let mut sapling_outputs: u64 = 0;
-    let mut orchard_actions: u64 = 0;
-    for tx in block.transactions() {
-        sapling_outputs = sapling_outputs.saturating_add(tx.sapling().outputs().len() as u64);
-        orchard_actions = orchard_actions.saturating_add(tx.orchard().actions().len() as u64);
+#[cfg(test)]
+mod block_work_tests {
+    use super::BlockWork;
+
+    /// The batch byte budget is load-bearing (it bounds peak memory during bulk
+    /// sync), and folding the old per-transaction estimate into a whole-block
+    /// one changed the expression's shape. It must not have changed its value:
+    /// the original summed `256 + items * 128` per transaction, which is
+    /// `256 * transactions + 128 * items` over the block.
+    #[test]
+    fn approx_bytes_matches_the_per_transaction_formula_it_replaced() {
+        // (transactions, per-transaction item counts) across empty, coinbase-only,
+        // single-pool and mixed-pool shapes.
+        for (transactions, items_per_tx) in
+            [(0u64, 0u64), (1, 0), (1, 7), (12, 3), (4_000, 25), (1, 900)]
+        {
+            let work = BlockWork {
+                transactions,
+                // All in one pool; only the operation total may affect the estimate.
+                transparent_ops: items_per_tx * transactions,
+                sapling_ops: 0,
+                orchard_actions: 0,
+                ironwood_actions: 0,
+            };
+            let legacy: u64 = (0..transactions).map(|_| 256 + items_per_tx * 128).sum();
+            assert_eq!(
+                work.approx_bytes(),
+                legacy,
+                "block of {transactions} txs × {items_per_tx} items"
+            );
+        }
     }
-    metrics::counter!(SYNC_TRANSACTIONS_TOTAL).increment(transactions);
-    metrics::counter!(SYNC_SAPLING_OUTPUTS_TOTAL).increment(sapling_outputs);
-    metrics::counter!(SYNC_ORCHARD_ACTIONS_TOTAL).increment(orchard_actions);
+
+    /// `operations` is the per-pool sum a throughput rate divides by, so a pool
+    /// silently missing from it would understate every rate derived from it.
+    /// Distinct values catch a field being added twice or omitted.
+    #[test]
+    fn operations_sums_every_pool_and_excludes_the_transaction_count() {
+        let work = BlockWork {
+            transactions: 1_000_000,
+            transparent_ops: 1,
+            sapling_ops: 2,
+            orchard_actions: 4,
+            ironwood_actions: 8,
+        };
+        assert_eq!(work.operations(), 15);
+    }
 }

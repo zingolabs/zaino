@@ -1,5 +1,5 @@
 //! End-to-end **index-construction test for zaino**: zaino builds its chain
-//! index from scratch over a pinned, pre-synced testnet snapshot, and the run
+//! index from scratch over a pinned, pre-synced *mainnet* snapshot, and the run
 //! asserts the whole way up that the build is well-formed — with the zebrad
 //! serving the same snapshot as the independent authority for where the chain
 //! ends.
@@ -24,13 +24,35 @@
 //! over the same fixture. There is no such test on this fixture today, so treat
 //! "the index holds the right blocks" as unasserted here.
 //!
-//! ## Why the deep snapshot
+//! ## Why mainnet, and why Blossom
 //!
-//! [`IRONWOOD`] is the 4,140,000-block artifact: the only fixture that crosses
-//! the real Ironwood boundary, carries every prior activation, and puts the
-//! finalised/non-finalised seam and the commitment trees under genuine scale.
-//! Indexing it is hours of real work over real history — which is the point.
-//! Its zebrad is configured with no peers (`initial_testnet_peers = []`), so the
+//! Mainnet, because zaino's indexer is sensitive to *transaction density* and
+//! testnet has almost none. The per-op counters this profile reads are
+//! `sapling_outputs` and `orchard_actions`; a throughput number drawn from a
+//! sparse testnet chain describes a corpus nobody runs against.
+//!
+//! Blossom, because it is the deepest mainnet rung that fits the seed volume:
+//! 22.5 GB extracted against a 32Gi PVC. The next rung up, mainnet NU5/Orchard,
+//! is 32.8 GB and does not — see `ZAINO_SEED_SIZE` and the per-artifact sizing
+//! work it is waiting on.
+//!
+//! **What that costs, stated plainly.** This fixture pins 659,600, and NU5
+//! activates on mainnet at 1,687,104. So this profile no longer crosses the
+//! Orchard boundary, let alone Ironwood — the coverage the testnet `IRONWOOD`
+//! fixture existed to provide. What it gains instead is mainnet's real early
+//! history: heavy Sprout JoinSplit usage and ~240,000 blocks of post-Sapling
+//! adoption, at densities testnet never reached.
+//!
+//! Blossom also introduces **no value pool**, so this artifact carries no
+//! `[boundary_check]` and the activation it straddles is a block-timing change.
+//! The coverage probe below therefore asserts that the build crossed the
+//! straddled upgrade, not that it indexed a pool the upgrade introduced.
+//!
+//! Every probe here reads the pools and heights off the artifact's manifest
+//! rather than hardcoding them, so moving this profile to a deeper mainnet rung
+//! is a one-line change to the handle and nothing else.
+//!
+//! Its zebrad is configured with no peers (`initial_mainnet_peers = []`), so the
 //! chain is frozen at the pinned tip for the whole run: the target never moves,
 //! no reorg can occur, and every backwards motion in zaino's frontier is
 //! therefore a bug rather than a legal rollback.
@@ -38,6 +60,7 @@
 //! Launched detached via `ztest sync start zaino_index_construction`.
 
 use ztest::prelude::*;
+use ztest::snapshots::mainnet::BLOSSOM;
 use ztest::sync::{
     hours, mins, secs, Op, Severity, Snapshot, Subject, SyncCtx, SyncOutcome, SyncRunner, Verdict,
     Violation,
@@ -59,19 +82,19 @@ const RUN_CAP: std::time::Duration = hours(48);
 /// How long the index may go without its frontier advancing before the run is
 /// called stalled.
 ///
-/// Generous because a single commit near the tip of real history is a large
-/// batch of dense blocks, and because the first minutes are spent opening a
-/// ~10 GB state directory rather than indexing anything.
+/// Generous because a single commit is a large batch of dense mainnet blocks,
+/// and because the first minutes are spent opening a 22.5 GB state directory
+/// rather than indexing anything.
 const STALL_WINDOW: std::time::Duration = mins(15);
 
-#[ztest::needs(IRONWOOD)]
+#[ztest::needs(BLOSSOM)]
 #[ztest::sync_test(
     name = "zaino_index_construction",
-    description = "zaino builds its chain index over the pinned Ironwood testnet snapshot; zebrad is the authority",
+    description = "zaino builds its chain index over the pinned Blossom mainnet snapshot; zebrad is the authority",
     subject = indexer,
     timeout = "48h",
     qos = sync,
-    tags = ["testnet", "zaino", "index", "ironwood"],
+    tags = ["mainnet", "zaino", "index", "blossom"],
 )]
 async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
     // Topology: one zebrad serving the snapshot, and one zaino building a state
@@ -80,7 +103,7 @@ async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
     // to an errored outcome via `From` and returns.
     let (zebra, zaino_state) = match run
         .topology(|t| {
-            let zebra = t.add_validator(Validator::zebrad("6.2.3").testnet(IRONWOOD));
+            let zebra = t.add_validator(Validator::zebrad("6.2.3").mainnet(BLOSSOM));
             // Zaino is the SUT: built from this repo's Dockerfile with metrics
             // *and* profiling, because this profile's progress source is its own
             // exporter — `no_tls_with_prometheus` is load-bearing here, not
@@ -101,7 +124,7 @@ async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
                 // The same chain the validator runs, as a private CoW clone this
                 // pod *reads*. Zaino's own index is pod-local scratch and starts
                 // empty — building it is what this profile watches.
-                .testnet(IRONWOOD)
+                .mainnet(BLOSSOM)
                 // The whole subject of the test: `Fetch` forwards to the
                 // validator and builds no index, so there would be nothing to
                 // observe.
@@ -139,7 +162,7 @@ async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
     run.always(Severity::Recorded)
         .named("indexed_work_monotonic")
         .each_tick()
-        .check(indexed_work_monotonic);
+        .check(move |s: &Snapshot| indexed_work_monotonic(s, chain));
     {
         // Captured clones rather than `cx`: `SyncCtx` carries only the indexer,
         // so the validator — the one oracle in this topology that is not the
@@ -165,7 +188,7 @@ async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
         .named("observed_a_partial_index")
         .check(observed_a_partial_index);
     run.sometimes()
-        .named("crossed_the_ironwood_activation")
+        .named("crossed_the_straddled_activation")
         .check(move |s: &Snapshot| crossed_activation(s, chain));
 
     // ── terminal: end-state agreement, against the pin rather than a component ──
@@ -208,8 +231,20 @@ fn index_append_only(s: &Snapshot) -> Verdict {
 /// re-entered a range it had already absorbed — neither of which an append-only
 /// build does. `require` rather than `get`: an op nobody measured must panic
 /// here, because comparing two absent values would make this probe unfailable.
-fn indexed_work_monotonic(s: &Snapshot) -> Verdict {
-    for op in [Op::SaplingOutput, Op::OrchardAction] {
+///
+/// The op list comes from [`indexed_pools`] rather than being written out,
+/// which is what keeps `require` honest across fixtures — see there.
+fn indexed_work_monotonic(s: &Snapshot, chain: ChainInfo) -> Verdict {
+    let ops = indexed_pools(chain);
+    if ops.is_empty() {
+        return Verdict::ProbeError(format!(
+            "this fixture is pinned at {} and activates no pool zaino counts, so there is \
+             no per-pool progress to hold monotonic; the profile needs a fixture that \
+             straddles at least Sapling",
+            chain.tip_height(),
+        ));
+    }
+    for op in ops {
         let (prev, now) = (s.prev_work().require(op), s.work().require(op));
         ztest::sync_ensure!(
             now >= prev,
@@ -217,6 +252,32 @@ fn indexed_work_monotonic(s: &Snapshot) -> Verdict {
         );
     }
     Verdict::Satisfied
+}
+
+/// The pools this fixture can actually contain, read off its manifest.
+///
+/// **Not a convenience — a correctness requirement.** Zaino publishes a counter
+/// only for pools it has something to say about, and the subject marks an op
+/// *known* only when its counter is present
+/// (`ZainoIndexer::progress`). `Work::require` then panics on an op the run
+/// never measured. So naming a pool the chain does not reach has two failure
+/// modes and no good one: the counter is absent and every tick panics, or it is
+/// published as a flat zero and `0 >= 0` passes forever while proving nothing.
+///
+/// Mainnet Blossom pins 659,600 and NU5 activates at 1,687,104, so asking this
+/// fixture about Orchard is exactly that mistake. Deriving the list from
+/// `[activations]` means the probe checks precisely the pools the artifact
+/// carries, and keeps doing so when the profile is repointed at a deeper rung.
+fn indexed_pools(chain: ChainInfo) -> Vec<Op> {
+    let activated = |key: &str| chain.activations().iter().any(|a| a.key == key);
+    let mut ops = Vec::new();
+    if activated("sapling") {
+        ops.push(Op::SaplingOutput);
+    }
+    if activated("nu5") {
+        ops.push(Op::OrchardAction);
+    }
+    ops
 }
 
 /// The frontier never claims more chain than exists.
@@ -285,11 +346,18 @@ fn observed_a_partial_index(s: &Snapshot) -> Verdict {
     }
 }
 
-/// The build crossed the activation this fixture exists for.
+/// The build crossed the activation this fixture straddles.
 ///
-/// A run that ended below 4,134,000 never indexed a single Ironwood-bearing
-/// block, so every pool-sensitive claim it made was about history that predates
-/// the pool. That is a weak pass, and coverage is how the harness says so.
+/// A run that ended below the activation never indexed a single block under the
+/// new rules, so every claim it made was about history that predates them. That
+/// is a weak pass, and coverage is how the harness says so.
+///
+/// Note what this does *not* say on the current fixture. Blossom introduces no
+/// value pool — it is a block-target change — so crossing it is not evidence
+/// that any pool was exercised, and the artifact carries no `[boundary_check]`
+/// to stand behind such a claim. On a rung whose upgrade does introduce a pool
+/// (mainnet NU5, or Ironwood) this same probe recovers its full meaning without
+/// an edit, because the height it compares against is the manifest's.
 fn crossed_activation(s: &Snapshot, chain: ChainInfo) -> Verdict {
     if s.height() >= chain.activation() {
         Verdict::Satisfied

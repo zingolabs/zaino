@@ -285,6 +285,10 @@ pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
     height_int: u32,
     parent_chainwork: Option<ChainWork>,
 ) -> Result<IndexedBlock, FinalisedStateError> {
+    // fetch_start used for timing upstream validator wall time
+    #[cfg(feature = "prometheus")]
+    let fetch_start = std::time::Instant::now();
+
     let block = match source
         .get_block(zebra_state::HashOrHeight::Height(
             zebra_chain::block::Height(height_int),
@@ -306,6 +310,10 @@ pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
     // Fetch sapling / orchard commitment tree data if above the relevant network upgrade.
     let (sapling_opt, orchard_opt, ironwood_opt) =
         source.get_commitment_tree_roots(block_hash).await?;
+
+    #[cfg(feature = "prometheus")]
+    metrics::histogram!(crate::metric_names::SYNC_BLOCK_FETCH_SECONDS)
+        .record(fetch_start.elapsed().as_secs_f64());
 
     let is_sapling_active = height_int >= sapling_activation_height.0;
     let is_orchard_active = nu5_activation_height

@@ -282,6 +282,21 @@ impl LmdbLifecycle for DbV1 {
 /// This type owns an LMDB [`Environment`] and a fixed set of named databases representing the V1
 /// schema. It implements the capability traits used by the rest of the chain indexer.
 ///
+/// Directory holding this config's V1 LMDB environment.
+///
+/// One definition rather than two: [`DbV1::open`] creates the environment here
+/// and the storage-size metric measures the file inside it, and a second copy of
+/// the network-to-directory mapping would eventually report the size of a
+/// database on a different network than the one being served.
+pub(super) fn db_path(config: &ChainIndexConfig) -> std::path::PathBuf {
+    let db_path_dir = match config.network.kind() {
+        NetworkKind::Mainnet => "mainnet",
+        NetworkKind::Testnet => "testnet",
+        NetworkKind::Regtest => "regtest",
+    };
+    config.storage.database.path.join(db_path_dir).join("v1")
+}
+
 /// Data is stored per-height in “best chain” order and is validated (checksums and continuity)
 /// before being treated as reliable for downstream reads.
 #[derive(Debug)]
@@ -456,12 +471,7 @@ impl DbV1 {
 
         // Prepare database details and path.
         let db_size_bytes = config.storage.database.size.to_byte_count();
-        let db_path_dir = match config.network.kind() {
-            NetworkKind::Mainnet => "mainnet",
-            NetworkKind::Testnet => "testnet",
-            NetworkKind::Regtest => "regtest",
-        };
-        let db_path = config.storage.database.path.join(db_path_dir).join("v1");
+        let db_path = db_path(config);
         if !db_path.exists() {
             fs::create_dir_all(&db_path)?;
         }

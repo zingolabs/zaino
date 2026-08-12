@@ -143,7 +143,6 @@ fn record_grpc_metrics<T>(
     result: &Result<tonic::Response<T>, tonic::Status>,
 ) {
     use crate::metric_names::*;
-    metrics::counter!(GRPC_REQUESTS_TOTAL, "method" => method).increment(1);
     metrics::histogram!(GRPC_REQUEST_DURATION_SECONDS, "method" => method)
         .record(start.elapsed().as_secs_f64());
     if let Err(status) = result {

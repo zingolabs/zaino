@@ -10,11 +10,10 @@
 pub mod rpc;
 pub mod server;
 
-/// Prometheus metric names emitted by this crate; the single source of truth shared with `zainod`'s `describe_*` registrations (which carry the descriptions).
+/// Prometheus metric names emitted by this crate
 #[cfg(feature = "prometheus")]
-#[allow(missing_docs)] // names are self-describing; descriptions live in zainod
 pub mod metric_names {
-    pub const GRPC_REQUESTS_TOTAL: &str = "zaino.grpc.requests_total";
+    /// Serving latency per method. Its `_count` is the request volume, so no
     pub const GRPC_REQUEST_DURATION_SECONDS: &str = "zaino.grpc.request_duration_seconds";
     pub const GRPC_ERRORS_TOTAL: &str = "zaino.grpc.errors_total";
 }
