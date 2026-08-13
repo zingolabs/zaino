@@ -68,6 +68,31 @@ and this library adheres to Rust's notion of
   `IncompleteSourceError` so consumers learn the mempool is not converging.
 
 ### Changed
+- **The runtime is instrumented, and source errors are no longer swallowed.**
+  Four `Err(_)` arms discarded the validator's error entirely — including one
+  that built a `MempoolError` and dropped it — so the mempool could degrade to
+  `IncompleteSourceError` and serve a stale set with nothing in the log. An
+  operator had no way to tell a genuinely empty mempool from a validator that
+  had been unreachable for an hour.
+
+  Logging is **edge-triggered**, because the poll cadence is sub-second: `warn`
+  on the transition *into* degradation, carrying the `cause` (which validator
+  port failed, or `tip_unstable`) and the error; `info` on recovery, so every
+  warning is closed; `debug` while still degraded, for turning the level up.
+  The tag-stability backstop gets its own line rather than being reported as a
+  source failure — the validator is answering fine there, the tip just will not
+  hold still, and an operator should not be sent looking for a broken
+  connection.
+
+  The poll and reconcile loops carry one long-lived `#[instrument]` span each
+  (`mempool_poll_loop`, `mempool_coherence_loop`) with start/stop at `debug`.
+  Per-tick spans were deliberately not added: at this cadence they would swamp
+  any trace they appeared in, and the signal is in the edges.
+
+  `tracing` is a dependency of this crate only. `zaino-mempool` is types, ports
+  and pure functions with no runtime behaviour to report — its one rejection
+  path is a `debug_assert`, and its configuration knobs are `NonZero`, so there
+  is nothing to log rather than nothing logged.
 - The coherence layer reconciles on the change feed's `Reset` batch boundary
   only, not on every per-txid `Added`/`Removed`. Clearing a block of 1,000
   transactions previously meant ~2,001 reconciles, each of which re-read the

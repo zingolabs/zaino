@@ -158,3 +158,28 @@ against the port rather than the concrete type.
 | `getrawmempool`, `getmempoolinfo`, `GetMempoolTx` | core (`MempoolSubscriber`) |
 | `get_raw_transaction`, `get_transaction_status` | coherence (`CoherentSnapshot`) |
 | `get_mempool_stream` | coherence (`stream_transactions_until_tip_change`) |
+
+## Observing it
+
+Both loops log under their crate target, so `RUST_LOG=zaino_mempool_service=debug`
+turns them up without touching the rest of the stack (see `docs/logging.md`).
+
+At the default `info` level you see only the edges that change what the mempool
+is serving:
+
+- `warn` — the set went incomplete. Carries `cause` (the validator port that
+  failed, or `tip_unstable` when the tip will not hold still long enough to tag
+  a set against), the underlying `error`, and the `tx_count` still being served.
+- `info` — the source recovered and polls are being applied again. Every `warn`
+  above is eventually closed by one of these.
+
+Nothing is logged per poll or per reconcile. At a sub-second cadence that would
+be noise, so a validator that stays down produces one `warn`, not thousands; turn
+the level up to `debug` to confirm it is *still* failing and why.
+
+The two loops each run inside one long-lived span — `mempool_poll_loop` and
+`mempool_coherence_loop` — which is what `ZAINOLOG_FORMAT=tree` groups on.
+
+For alerting rather than reading, prefer the status and the freeze clock:
+`MempoolSubscriber::status()`, `CoherentSubscriber::frozen_for()`, and the
+`zaino.mempool.coherence_frozen_seconds` gauge `zainod` exports.

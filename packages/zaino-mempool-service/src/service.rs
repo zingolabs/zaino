@@ -256,6 +256,17 @@ impl<S: MempoolSource> MempoolService<S> {
 
     // ---- background task ------------------------------------------------
 
+    /// The single writer task.
+    ///
+    /// Instrumented as one long-lived span rather than per tick: at a sub-second
+    /// cadence a span per poll would dominate any trace it appeared in, and the
+    /// interesting events (degradation, recovery) are edges the loop reports
+    /// itself.
+    #[tracing::instrument(
+        name = "mempool_poll_loop",
+        skip_all,
+        fields(poll_interval_ms = self.config.poll_interval().as_millis()),
+    )]
     async fn run(self: Arc<Self>) {
         self.status.store(StatusType::Syncing);
 
@@ -264,9 +275,15 @@ impl<S: MempoolSource> MempoolService<S> {
         let mut block_wake = self.source.subscribe_to_blocks_received();
         let mut state = PollState::default();
 
+        tracing::debug!(
+            block_wake = block_wake.is_some(),
+            "mempool poll loop started"
+        );
+
         loop {
             tokio::select! {
                 _ = self.cancel.cancelled() => {
+                    tracing::debug!("mempool poll loop cancelled; publishing Closing");
                     self.publish_closing();
                     return;
                 }
@@ -295,14 +312,14 @@ impl<S: MempoolSource> MempoolService<S> {
         // mempool, which the coherence layer depends on to thaw.
         let tip_before = match self.source.get_mempool_source_tip().await {
             Ok(tip) => BlockRef::from_tip(tip),
-            Err(_) => return self.source_error(state),
+            Err(error) => return self.source_error(state, "get_mempool_source_tip", Some(&error)),
         };
 
         let txids = match self.source.get_mempool_txids().await {
             Ok(txids) => txids,
             // The source errored: keep the last set, mark it incomplete, and
             // retry next poll. The core never freezes.
-            Err(_) => return self.source_error(state),
+            Err(error) => return self.source_error(state, "get_mempool_txids", Some(&error)),
         };
 
         let current = self.current.load_full();
@@ -381,7 +398,9 @@ impl<S: MempoolSource> MempoolService<S> {
                 } else {
                     let metadata = match self.source.get_mempool_metadata().await {
                         Ok(metadata) => metadata,
-                        Err(_) => return self.source_error(state),
+                        Err(error) => {
+                            return self.source_error(state, "get_mempool_metadata", Some(&error))
+                        }
                     };
                     state.last_metadata_fetch = Some(Instant::now());
                     let meta_by_txid: HashMap<_, _> =
@@ -434,7 +453,7 @@ impl<S: MempoolSource> MempoolService<S> {
             .await
         {
             Some(entries) => entries,
-            None => return self.source_error(state),
+            None => return self.source_error(state, "get_raw_mempool_transaction", None),
         };
 
         // Tag-stability guard: the validator tip must not have moved across the
@@ -496,7 +515,15 @@ impl<S: MempoolSource> MempoolService<S> {
         } else {
             state.consecutive_discards = state.consecutive_discards.saturating_add(1);
             if state.consecutive_discards >= MAX_CONSECUTIVE_DISCARDS {
-                self.publish_source_error();
+                // Not a source failure: the validator is answering fine, the tip
+                // simply will not hold still long enough to tag a set against.
+                // Named separately so an operator is not sent looking for a
+                // broken connection.
+                tracing::warn!(
+                    consecutive_discards = state.consecutive_discards,
+                    "mempool tip moved across every recent poll window; set is not converging"
+                );
+                self.publish_source_error("tip_unstable", None);
             }
         }
         stable
@@ -596,8 +623,16 @@ impl<S: MempoolSource> MempoolService<S> {
                 Ok(Some(entry)) => entries.push(entry),
                 Ok(None) => {}
                 // Any raw-fetch error aborts this poll's update; the last set
-                // stays readable and the next poll retries.
-                Err(_) => return None,
+                // stays readable and the next poll retries. The error was fully
+                // built before this point, so dropping it unlogged would discard
+                // the only account of why an addition never appeared.
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "raw mempool transaction fetch failed; abandoning this poll's additions"
+                    );
+                    return None;
+                }
             }
         }
         Some(entries)
@@ -671,6 +706,8 @@ impl<S: MempoolSource> MempoolService<S> {
             applied_entries.push(entry);
         }
 
+        Self::log_recovery(current, Self::completeness_for(state));
+
         // Ordering, ordering-derived collections and totals are all the
         // constructor's job — see `MempoolSnapshot::from_entries`.
         let snapshot = Arc::new(MempoolSnapshot::from_entries(
@@ -722,6 +759,7 @@ impl<S: MempoolSource> MempoolService<S> {
         // carry a fresh shortfall (a poll that deferred its additions publishes
         // through here), and reusing the stale list would report nothing
         // unadmitted.
+        Self::log_recovery(current, completeness);
         let snapshot = Arc::new(current.retag(source_tip, completeness, Arc::new(unadmitted)));
         let next_sequence = snapshot.event_sequence();
 
@@ -732,21 +770,72 @@ impl<S: MempoolSource> MempoolService<S> {
         self.status.store(StatusType::Ready);
     }
 
-    /// A source read failed this poll: degrade completeness and reset the
-    /// discard run, which this failure interrupted.
-    fn source_error(&self, state: &mut PollState) {
-        state.consecutive_discards = 0;
-        self.publish_source_error();
+    /// Log the edge back out of source-error degradation.
+    ///
+    /// Paired with the `warn` in [`publish_source_error`](Self::publish_source_error)
+    /// so an operator who sees the mempool go incomplete also sees it come back,
+    /// rather than being left to infer recovery from the absence of further
+    /// warnings. Edge-triggered on both sides: the poll cadence is sub-second.
+    fn log_recovery(previous: &MempoolSnapshot, next: MempoolCompleteness) {
+        if previous.completeness() == MempoolCompleteness::IncompleteSourceError
+            && next != MempoolCompleteness::IncompleteSourceError
+        {
+            tracing::info!(
+                completeness = ?next,
+                "mempool source recovered; polls are being applied again"
+            );
+        }
     }
 
-    /// A source read failed this poll: retain the set but mark it incomplete and
-    /// re-publish so consumers see the degraded completeness.
-    fn publish_source_error(&self) {
+    /// A source read failed this poll: degrade completeness and reset the
+    /// discard run, which this failure interrupted.
+    ///
+    /// `cause` names what degraded the set — a validator port, or a condition
+    /// like a tip that will not hold still. It is carried here rather than
+    /// logged at the call site so the *transition* into degradation reports it:
+    /// an operator who sees the mempool go incomplete needs to know why, and
+    /// that transition is the only line they get.
+    ///
+    /// `error` is `None` where the cause is not a single failed call (the
+    /// tag-stability backstop) or where the error was already reported with more
+    /// context than survives here (the fan-out raw fetch).
+    fn source_error(
+        &self,
+        state: &mut PollState,
+        cause: &'static str,
+        error: Option<&dyn std::fmt::Display>,
+    ) {
+        state.consecutive_discards = 0;
+        self.publish_source_error(cause, error);
+    }
+
+    /// Retain the set but mark it incomplete and re-publish, so consumers see
+    /// the degraded completeness.
+    fn publish_source_error(&self, cause: &'static str, error: Option<&dyn std::fmt::Display>) {
         let current = self.current.load_full();
+        let error = error.map(|error| error.to_string());
+
         if current.completeness() == MempoolCompleteness::IncompleteSourceError {
+            // Already degraded. `debug` rather than `warn`: the poll cadence is
+            // sub-second, so a validator that stays down would emit thousands of
+            // identical warnings. The transition below is the line that matters;
+            // this one is for turning the level up to see whether it is still
+            // failing, and why.
+            tracing::debug!(
+                cause,
+                error,
+                "mempool still degraded; set remains incomplete"
+            );
             self.status.store(StatusType::Syncing);
             return;
         }
+
+        tracing::warn!(
+            cause,
+            error,
+            tx_count = current.tx_count(),
+            "mempool degraded; serving the last set as incomplete"
+        );
 
         // `unadmitted` is carried over: this poll failed before it could
         // recompute the shortfall, so the previous list is the best information

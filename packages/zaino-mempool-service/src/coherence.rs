@@ -162,6 +162,12 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
 
     // ---- background task ------------------------------------------------
 
+    /// The coherence reconcile task.
+    ///
+    /// One long-lived span, as with the core's poll loop: reconciles are
+    /// sub-second and mostly no-ops, so the signal is in the freeze/thaw edges
+    /// rather than in per-reconcile spans.
+    #[tracing::instrument(name = "mempool_coherence_loop", skip_all)]
     async fn run(self: Arc<Self>) {
         self.status.store(StatusType::Syncing);
 
@@ -177,11 +183,18 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
         let mut interval = tokio::time::interval(self.config.poll_interval());
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+        tracing::debug!(
+            dual_tip = self.nfs.is_some(),
+            epoch_wake = epoch_wake.is_some(),
+            "mempool coherence loop started"
+        );
+
         self.reconcile();
 
         loop {
             tokio::select! {
                 _ = self.cancel.cancelled() => {
+                    tracing::debug!("mempool coherence loop cancelled; publishing Closing");
                     self.publish_closing();
                     return;
                 }
