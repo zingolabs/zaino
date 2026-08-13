@@ -29,6 +29,18 @@ and this library adheres to Rust's notion of
   sync/migration to reach its target (distinct from `wait_until_ready`, which
   reflects serving-readiness).
 ### Changed
+- `BlockchainSource` documents how it dissolves, not just that it will. Before a
+  subsystem migrates, its needs sit on the trait as wire-typed *methods*; after,
+  as `zaino-source` *supertraits* — so each migration converts method-surface
+  into port-surface and the trait tends toward a bound with no methods of its
+  own, at which point the ChainHead cutover deletes it mechanically. Written
+  down because the opposite reading is available and was reached in review: a
+  growing supertrait list looks like accretion, and an adapter bounded on the
+  trait while calling none of its methods looks like coupling, when both are the
+  *finished* state for a migrated subsystem. Also records the two things to
+  notice at the end — a migrated subsystem's ports are named both here and in
+  `ChainIndexSourcePorts` with nothing enforcing that they agree, and the end
+  state converges on the two being duplicates.
 - **The mempool is now the `zaino-mempool` / `zaino-mempool-service` subsystem.**
   `chain_index::mempool` (`Mempool`, `MempoolKey`, `MempoolValue`) and the
   `Broadcast`/`BroadcastSubscriber` map it was built on are deleted, along with
