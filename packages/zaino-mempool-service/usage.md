@@ -13,7 +13,7 @@ The snippets below are illustrative sketches, not copy-paste-complete programs.
 
 ## Spawn the core
 
-`MempoolService<S>` is generic over `S: MempoolPorts` — any validator adapter
+`MempoolService<S>` is generic over `S: MempoolSource` — any validator adapter
 answering the four mempool `zaino-source` ports plus `SubscribeBlocks`. Spawn it with a
 config and a cancellation token; it starts a background poll task immediately.
 
@@ -23,7 +23,7 @@ use zaino_mempool::MempoolConfig;
 use zaino_mempool_service::MempoolService;
 
 let cancel = CancellationToken::new();
-let core = MempoolService::spawn(source /* : impl MempoolPorts */, MempoolConfig::default(), cancel.child_token());
+let core = MempoolService::spawn(source /* : impl MempoolSource */, MempoolConfig::default(), cancel.child_token());
 let mempool = core.subscriber(); // cheap, cloneable read handle
 ```
 

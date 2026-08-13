@@ -35,7 +35,7 @@ use zaino_status::{NamedAtomicStatus, StatusType};
 use crate::subscriber::MempoolSubscriber;
 use zaino_mempool::config::MempoolConfig;
 use zaino_mempool::entry::MempoolEntry;
-use zaino_mempool::ports::MempoolPorts;
+use zaino_mempool::ports::MempoolSource;
 use zaino_mempool::snapshot::{MempoolCompleteness, MempoolSnapshot};
 use zaino_mempool::update::MempoolUpdate;
 use zaino_primitives::types::{BlockRef, Height, TransactionId};
@@ -139,9 +139,9 @@ impl PollState {
 
 /// The core mempool read-model service.
 ///
-/// Generic over its one outbound port ([`MempoolPorts`]) so the core has no
+/// Generic over its one outbound port ([`MempoolSource`]) so the core has no
 /// `zaino-state` dependency and no chain-tip knowledge beyond the tag it stamps.
-pub struct MempoolService<S: MempoolPorts> {
+pub struct MempoolService<S: MempoolSource> {
     source: S,
     current: Arc<ArcSwap<MempoolSnapshot>>,
     updates: broadcast::Sender<MempoolUpdate>,
@@ -153,7 +153,7 @@ pub struct MempoolService<S: MempoolPorts> {
     admission_salt: u64,
 }
 
-impl<S: MempoolPorts> std::fmt::Debug for MempoolService<S> {
+impl<S: MempoolSource> std::fmt::Debug for MempoolService<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MempoolService")
             .field("status", &self.status.load())
@@ -161,7 +161,7 @@ impl<S: MempoolPorts> std::fmt::Debug for MempoolService<S> {
     }
 }
 
-impl<S: MempoolPorts> MempoolService<S> {
+impl<S: MempoolSource> MempoolService<S> {
     /// Spawn the core service and its background poll task.
     ///
     /// The admission tiebreak salt is drawn per process, so the order additions

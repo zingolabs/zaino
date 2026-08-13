@@ -1,13 +1,13 @@
 //! Ports required and offered by the mempool subsystem.
 //!
 //! The core reads the validator through `zaino-source`'s ports — one trait per
-//! question — and names the subset it needs as [`MempoolPorts`], in this crate,
+//! question — and names the subset it needs as [`MempoolSource`], in this crate,
 //! because that subset is a requirement of *this* consumer rather than a
 //! capability of `zaino-source`. Everything the mempool needs that `zaino-source`
 //! does not describe is a port defined here, and the wiring crate
 //! (`zaino-state`) supplies the adapter.
 //!
-//! - [`MempoolPorts`] — the validator questions the tip-agnostic core asks:
+//! - [`MempoolSource`] — the validator questions the tip-agnostic core asks:
 //!   mempool data plus the tip that data was read at.
 //! - [`Mempool`] — the inbound port the core *offers*: the tip-agnostic read model
 //!   plus the [`MempoolUpdate`] change feed. The tip-aware coherence layer
@@ -25,12 +25,19 @@ use zaino_primitives::types::BlockRef;
 use crate::snapshot::MempoolSnapshot;
 use crate::update::MempoolUpdate;
 
-/// Every validator question the tip-agnostic mempool core asks.
+/// A transport that can source a validator's mempool coherently.
 ///
-/// A consumer-defined bound over `zaino-source`'s ports, in the same shape and
-/// for the same reason as `zaino-state`'s `ChainIndexSourcePorts`: it states a
-/// requirement of this crate, not a capability of `zaino-source`, which should
-/// not have to know who its consumers are.
+/// A consumer-defined bound over `zaino-source`'s ports: it states a requirement
+/// of this crate, not a capability of `zaino-source`, which should not have to
+/// know who its consumers are.
+///
+/// Named for the capability it represents rather than for its place in the
+/// hexagon. A bound reads best as *what a type satisfying it can do* —
+/// `impl<S: MempoolSource>` says the thing can source a mempool, where
+/// `MempoolPorts` said only that it was a bag of ports. `zaino-state`'s
+/// `ChainIndexSourcePorts` is the same construct under the older convention;
+/// that crate is transitional wiring being retired as its subsystems move into
+/// their own crates, and each one that lands takes the capability name.
 ///
 /// Nothing implements this directly — the blanket impl below applies it to any
 /// type that answers all of the questions, so an adapter earns the bound by
@@ -38,17 +45,23 @@ use crate::update::MempoolUpdate;
 ///
 /// # The single-source rule
 ///
-/// Every port in this bound must be answered by the **same** transport. The core
-/// tags each published set with
+/// Every *validator* port in this bound — the four data and tip reads — must be
+/// answered by the **same** transport. The core tags each published set with
 /// [`get_mempool_source_tip`](zaino_source::GetMempoolSourceTip::get_mempool_source_tip)
 /// so the coherence layer can judge the set's coherence without re-fetching it,
 /// and that comparison is only sound for a single-source pair. `ZebraValidator`
 /// upholds this by routing all four to JSON-RPC; see
 /// [`GetMempoolSourceTip`](zaino_source::GetMempoolSourceTip)'s documentation.
 ///
+/// [`SubscribeBlocks`](zaino_source::SubscribeBlocks) is exempt, and is the
+/// reason this is a capability rather than a plain source: it is a wake hint,
+/// supplied by whoever knows a block landed — in production `zaino-state`'s sync
+/// loop, not the validator — and a missed or spurious signal costs latency, not
+/// correctness.
+///
 /// `Clone` is required because the core clones the source to fan out bounded,
 /// concurrent raw-transaction fetches, so implementations must be cheap to clone.
-pub trait MempoolPorts:
+pub trait MempoolSource:
     zaino_source::GetMempoolTxids
     + zaino_source::GetMempoolMetadata
     + zaino_source::GetRawMempoolTransaction
@@ -61,7 +74,7 @@ pub trait MempoolPorts:
 {
 }
 
-impl<T> MempoolPorts for T where
+impl<T> MempoolSource for T where
     T: zaino_source::GetMempoolTxids
         + zaino_source::GetMempoolMetadata
         + zaino_source::GetRawMempoolTransaction

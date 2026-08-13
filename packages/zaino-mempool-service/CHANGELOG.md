@@ -22,7 +22,7 @@ and this library adheres to Rust's notion of
   the set marked capacity-limited). Implements the
   `zaino-mempool` `Mempool` port via `MempoolSubscriber` and offers a
   `MempoolUpdate` change feed.
-  Generic over `S: MempoolPorts`, so it drives off `zaino-source`'s ports
+  Generic over `S: MempoolSource`, so it drives off `zaino-source`'s ports
   directly — any adapter answering them can back a mempool, and no bespoke source
   trait or `zaino-state` adapter sits in between.
 - `MempoolSubscriber`: cheap, cloneable, lock-free tip-agnostic reads (`snapshot`,

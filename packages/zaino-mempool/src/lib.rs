@@ -11,7 +11,7 @@
 //! Following the hexagonal (ports/adapters) pattern, this crate holds the domain
 //! types and the ports, and depends on nothing in `zaino-state`. It reads the
 //! validator through [`zaino-source`](zaino_source)'s ports, naming the subset it
-//! needs as [`ports::MempoolPorts`]; the two things `zaino-source` cannot
+//! needs as [`ports::MempoolSource`]; the two things `zaino-source` cannot
 //! describe — Zaino's own non-finalized-state epoch, and the read models this
 //! crate offers — are ports declared here.
 //!
@@ -42,7 +42,7 @@ pub mod tip;
 pub use config::MempoolConfig;
 pub use entry::MempoolEntry;
 pub use error::MempoolError;
-pub use ports::{Mempool, MempoolPorts};
+pub use ports::{Mempool, MempoolSource};
 pub use snapshot::{reversed_txid_key, MempoolCompleteness, MempoolSnapshot};
 pub use update::MempoolUpdate;
 

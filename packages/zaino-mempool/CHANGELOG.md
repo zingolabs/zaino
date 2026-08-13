@@ -17,7 +17,7 @@ and this library adheres to Rust's notion of
   `zaino-mempool-service`.
 - The subsystem is split into a **tip-agnostic core** and an optional
   **tip-aware coherence** layer (feature `tip_aware_mempool`, off by default):
-  - Always available: `MempoolPorts` (the `zaino-source` subset the core reads
+  - Always available: `MempoolSource` (the `zaino-source` subset the core reads
     the validator through); the `Mempool` inbound port (the core's tip-agnostic
     read model plus the `MempoolUpdate` change feed); `MempoolSnapshot` — now
     tip-agnostic, tagged with the validator tip (`source_tip`) the set was
@@ -66,6 +66,12 @@ and this library adheres to Rust's notion of
   rather than an incomplete set. `DEFAULT_POLL_INTERVAL` is now a public constant.
 
 ### Changed
+- The validator bound is `MempoolSource`, not `MempoolPorts`. A trait bound
+  reads best as the capability a satisfying type has — `impl<S: MempoolSource>`
+  says the thing can source a mempool — rather than as its place in the
+  architecture. `zaino-state`'s `ChainIndexSourcePorts` is the same construct
+  under the older convention; that crate is transitional wiring being retired as
+  its subsystems move out, and each one that lands takes the capability name.
 - `MempoolEntry::serialized_tx` is a `bytes::Bytes` (was `Arc<SerializedTransaction>`),
   built once at ingest and shared to the wire, so fanning one transaction out to
   N stream consumers costs N refcount bumps rather than N copies.

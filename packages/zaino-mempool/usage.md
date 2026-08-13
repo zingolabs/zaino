@@ -29,25 +29,28 @@ non-finalized-state tip (NS) agree.
 ## Ports
 
 **Outbound — the validator:** not defined here. The core reads the validator
-through `zaino-source`'s ports and names the subset it needs as `MempoolPorts`:
+through `zaino-source`'s ports and names the subset it needs as `MempoolSource`:
 
 ```rust
-pub trait MempoolPorts:
+pub trait MempoolSource:
     GetMempoolTxids + GetMempoolMetadata + GetRawMempoolTransaction
   + GetMempoolSourceTip + SubscribeBlocks + Clone + Send + Sync + 'static {}
 ```
 
 A blanket impl means any adapter answering all five earns the bound — nothing
-implements `MempoolPorts` by name. **All five must be answered by the same
-transport.** The core tags each published set with `get_mempool_source_tip` so
-the coherence layer can judge that set without re-fetching it, and the comparison
-is only sound for a single-source pair. `ZebraValidator` upholds this by routing
-all five to JSON-RPC.
+implements `MempoolSource` by name. **The four validator reads must be answered
+by the same transport.** The core tags each published set with
+`get_mempool_source_tip` so the coherence layer can judge that set without
+re-fetching it, and the comparison is only sound for a single-source pair.
+`ZebraValidator` upholds this by routing all four to JSON-RPC.
 
-`SubscribeBlocks` is a wake *hint*, never a tip source: the tip is re-read from
-the source on every tick regardless. It exists because a request/response
-validator has no push path, so without a hint the addition latency is always a
-full poll interval.
+`SubscribeBlocks` is the exception, and is why this is a *capability* bound
+rather than a plain source: it is answered by whoever knows a block landed,
+which in production is `zaino-state`'s sync loop rather than the validator. It
+is a wake *hint*, never a tip source — the tip is re-read from the source on
+every tick regardless. It exists because a request/response validator has no
+push path, so without a hint the addition latency is always a full poll
+interval.
 
 **Outbound — Zaino's own state (you implement this):**
 
