@@ -35,6 +35,12 @@ and this library adheres to Rust's notion of
   their re-exports from the crate root. The ChainIndex now owns a tip-agnostic
   `MempoolService` and a tip-aware `CoherenceService` over it.
 
+  The `chain_index::mempool` path is reused, deliberately: it is now
+  ChainIndex's side of the mempool boundary — the private module holding the
+  two adapters that wire the subsystem in — rather than a mempool
+  implementation. It is named for the boundary, as `chain_head.rs` is, so the
+  name survives the module's contents changing.
+
   The behavioural change this buys: the live reads (`getrawmempool`,
   `getmempoolinfo`, `GetMempoolTx`) no longer stall across a tip transition,
   because they are served from the tip-agnostic set; and the reads that place a

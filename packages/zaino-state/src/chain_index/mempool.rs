@@ -1,4 +1,13 @@
+//! ChainIndex's side of the mempool boundary.
+//!
 //! What the mempool subsystem needs from `zaino-state`, and how it gets it.
+//!
+//! Named for the boundary, not for what it currently holds. These are adapters
+//! today, but a suffix saying so would rot the first time a bound or a
+//! conversion joined them — which is exactly how `_ports` came to mean two
+//! different things in this crate (`source_ports` really does hold a port).
+//! Each subsystem extracted from ChainIndex gets a module named this way, so
+//! the name survives the contents changing.
 //!
 //! The mempool reads the validator through [`zaino_source`]'s ports, which
 //! ChainIndex's source already answers, so nothing here translates validator
