@@ -145,6 +145,32 @@ fn spent_info_rejection(error: &FetchError) -> Option<zaino_source::GetSpentInfo
     }
 }
 
+/// Classifies a transport failure on a mempool listing method.
+///
+/// `-32601` is the validator saying it does not implement the method, which on
+/// `getrawmempool` means the backing node exposes no mempool at all. That is an
+/// answer about the node rather than a failure of this request: retrying cannot
+/// change it, so a consumer should be told rather than left to re-poll a
+/// validator that will never answer.
+///
+/// Nothing else is classified. A mempool that is merely empty answers with an
+/// empty list, and a validator still starting up fails at the transport level —
+/// both of which are correctly *not* this.
+fn mempool_unavailable_or_fetch<E>(
+    error: zaino_rpc::RpcError,
+    unavailable: impl FnOnce() -> E,
+) -> QueryError<E>
+where
+    E: std::fmt::Debug + std::fmt::Display,
+{
+    let error: FetchError = error.into();
+    if matches!(error.mode, FailureMode::RpcError(METHOD_NOT_FOUND)) {
+        QueryError::Domain(unavailable())
+    } else {
+        QueryError::Fetch(error)
+    }
+}
+
 /// Classifies a transport failure on an address-keyed method.
 ///
 /// Separate from [`absent_or_fetch`] because these methods reject the caller's
@@ -289,18 +315,24 @@ impl ZebraRpcAdapter {
     ///
     /// The classifier is what separates the wrappers below: it decides whether a
     /// given transport failure is the port's domain answer or a real fetch
-    /// failure.
+    /// failure. `timeout` is the per-request bound, `None` for the client's
+    /// default.
     async fn call_parsed_classified<T, E>(
         &self,
         method: &str,
         params: Vec<serde_json::Value>,
+        timeout: Option<std::time::Duration>,
         parse: impl FnOnce(&serde_json::Value) -> Result<T, parse::ParseError>,
         classify: impl FnOnce(zaino_rpc::RpcError) -> QueryError<E>,
     ) -> Result<T, QueryError<E>>
     where
         E: std::fmt::Debug + std::fmt::Display,
     {
-        let value = self.rpc.call(method, params).await.map_err(classify)?;
+        let value = self
+            .rpc
+            .call_with_timeout(method, params, timeout)
+            .await
+            .map_err(classify)?;
         parse(&value).map_err(|e| QueryError::Fetch(from_parse(e)))
     }
 
@@ -315,7 +347,7 @@ impl ZebraRpcAdapter {
     where
         E: std::fmt::Debug + std::fmt::Display,
     {
-        self.call_parsed_classified(method, params, parse, |error| {
+        self.call_parsed_classified(method, params, None, parse, |error| {
             QueryError::Fetch(error.into())
         })
         .await
@@ -336,7 +368,7 @@ impl ZebraRpcAdapter {
     where
         E: std::fmt::Debug + std::fmt::Display,
     {
-        self.call_parsed_classified(method, params, parse, |error| {
+        self.call_parsed_classified(method, params, None, parse, |error| {
             absent_or_fetch(error, absent)
         })
         .await
@@ -355,7 +387,7 @@ impl ZebraRpcAdapter {
     where
         E: std::fmt::Debug + std::fmt::Display,
     {
-        self.call_parsed_classified(method, params, parse, |error| {
+        self.call_parsed_classified(method, params, None, parse, |error| {
             invalid_address_or_fetch(error, invalid)
         })
         .await
@@ -565,8 +597,81 @@ impl zaino_source::GetMempoolTxids for ZebraRpcAdapter {
     async fn get_mempool_txids(
         &self,
     ) -> Result<Vec<TransactionId>, QueryError<zaino_source::GetMempoolTxidsError>> {
-        self.call_parsed("getrawmempool", vec![], parse::parse_txids)
-            .await
+        self.call_parsed_classified(
+            "getrawmempool",
+            vec![],
+            None,
+            parse::parse_mempool_txids,
+            |error| {
+                mempool_unavailable_or_fetch(error, || {
+                    zaino_source::GetMempoolTxidsError::Unavailable
+                })
+            },
+        )
+        .await
+    }
+}
+
+impl zaino_source::GetMempoolMetadata for ZebraRpcAdapter {
+    async fn get_mempool_metadata(
+        &self,
+    ) -> Result<Vec<zaino_source::MempoolTxMeta>, QueryError<zaino_source::GetMempoolMetadataError>>
+    {
+        // The validator answers this by walking its entire mempool, loading
+        // full transactions and aggregating descendant stats. Under the
+        // client-wide timeout a busy validator would read as a hard error, so
+        // this method names its own bound rather than inheriting the default —
+        // the only axis on which it differs from an ordinary call.
+        self.call_parsed_classified(
+            "getrawmempool",
+            vec![serde_json::Value::Bool(true)],
+            Some(zaino_rpc::HEAVY_METHOD_TIMEOUT),
+            parse::parse_mempool_metadata,
+            |error| {
+                mempool_unavailable_or_fetch(error, || {
+                    zaino_source::GetMempoolMetadataError::Unavailable
+                })
+            },
+        )
+        .await
+    }
+}
+
+impl zaino_source::GetRawMempoolTransaction for ZebraRpcAdapter {
+    async fn get_raw_mempool_transaction(
+        &self,
+        txid: TransactionId,
+    ) -> Result<Vec<u8>, QueryError<zaino_source::GetRawMempoolTransactionError>> {
+        // Verbosity 0: the bytes alone. The caller already knows this
+        // transaction is in the mempool — it came from the listing — so the
+        // location `getrawtransaction 1` would add is redundant.
+        let params = vec![
+            serde_json::Value::String(txid_to_display_hex(txid)),
+            serde_json::Value::Number(0.into()),
+        ];
+        self.call_parsed_or_absent(
+            "getrawtransaction",
+            params,
+            parse::parse_raw_transaction,
+            || zaino_source::GetRawMempoolTransactionError::NotFound(txid),
+        )
+        .await
+    }
+}
+
+impl zaino_source::GetMempoolSourceTip for ZebraRpcAdapter {
+    async fn get_mempool_source_tip(
+        &self,
+    ) -> Result<(BlockHash, Height), QueryError<std::convert::Infallible>> {
+        // `getblockchaininfo` rather than the `GetChainTip` pair, because it
+        // answers hash and height in one round trip. Reading them separately
+        // would let a block land between the two calls and hand the mempool a
+        // tip that never existed.
+        let info: zaino_primitives::types::BlockchainInfo = self
+            .call_parsed("getblockchaininfo", vec![], parse::parse_blockchain_info)
+            .await?;
+
+        Ok((info.best_block_hash, info.blocks))
     }
 }
 
@@ -1084,5 +1189,41 @@ mod classification_tests {
             "timed out"
         ))
         .is_none());
+    }
+
+    /// A validator that does not implement `getrawmempool` is answering about
+    /// itself, not failing to answer. Reported as the port's domain error so a
+    /// consumer stops asking, rather than as a fetch failure it would re-poll
+    /// forever against a node that will never serve one.
+    #[test]
+    fn a_missing_mempool_method_is_the_ports_own_answer() {
+        use zaino_source::GetMempoolTxidsError;
+
+        let classified = mempool_unavailable_or_fetch(rpc(-32601, "Method not found"), || {
+            GetMempoolTxidsError::Unavailable
+        });
+        assert!(matches!(
+            classified,
+            QueryError::Domain(GetMempoolTxidsError::Unavailable)
+        ));
+    }
+
+    /// Everything else is a failure to reach or be served by the node. In
+    /// particular an empty mempool is a successful empty list and never reaches
+    /// here, and a warming-up validator (-28) is transient — calling either
+    /// "unavailable" would tell a consumer to give up on a healthy node.
+    #[test]
+    fn other_mempool_codes_stay_fetch_failures() {
+        use zaino_source::GetMempoolTxidsError;
+
+        for code in [-5, -8, -28, -1, -32603] {
+            let classified = mempool_unavailable_or_fetch(rpc(code, "something else"), || {
+                GetMempoolTxidsError::Unavailable
+            });
+            assert!(
+                matches!(classified, QueryError::Fetch(_)),
+                "code {code} does not say this validator lacks a mempool"
+            );
+        }
     }
 }

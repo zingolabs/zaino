@@ -46,6 +46,7 @@ pub mod metric_names {
 
     pub const MEMPOOL_TRANSACTIONS: &str = "zaino.mempool.transactions";
     pub const MEMPOOL_TIP_CHANGES_TOTAL: &str = "zaino.mempool.tip_changes_total";
+    pub const MEMPOOL_COHERENCE_FROZEN_SECONDS: &str = "zaino.mempool.coherence_frozen_seconds";
 }
 
 // Zaino's Indexer library frontend.
@@ -72,7 +73,6 @@ pub use chain_index::source_ports::ChainIndexSourcePorts;
 pub use chain_index::validator_source::{ValidatorSource, ZebraValidatorSource};
 // Supporting types
 pub use chain_index::encoding::*;
-pub use chain_index::mempool::Mempool;
 // Mempool statistics for `getmempoolinfo`. Currently an on-disk shape in
 // `types/db/metadata.rs`; moving it into `zaino-primitives` belongs with the
 // persistence rework.
@@ -90,8 +90,6 @@ pub use chain_index::types::{
     ShardIndex, ShardRoot, TransactionHash, TransparentCompactTx, TransparentTxList, TreeRootData,
     TxInCompact, TxLocation, TxOutCompact, TxidList,
 };
-
-pub use chain_index::mempool::{MempoolKey, MempoolValue};
 
 #[cfg(feature = "test_dependencies")]
 /// allow public access to additional APIs, for testing
@@ -115,18 +113,12 @@ pub(crate) mod error;
 
 pub use error::{LegacyRpcError, NodeBackedIndexerServiceError};
 
-pub(crate) mod status;
-
-pub use status::{AtomicStatus, NamedAtomicStatus, Status, StatusType};
-
 pub(crate) mod stream;
 
 pub use stream::{
     AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
     SubtreeRootReplyStream, UtxoReplyStream,
 };
-
-pub(crate) mod broadcast;
 
 pub(crate) mod utils;
 

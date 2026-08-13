@@ -31,8 +31,8 @@ use zaino_primitives::types::rpc::{BlockDeltas, MiningInfo, NodeInfo, PeerInfo};
 ```
 
 - `types` — the chain itself: `Block`, `BlockHeader`, `Transaction`,
-  `BlockHash`, `TransactionHash`, `Height`, `TreeRoot`, `Treestate`,
-  `ShieldedPool`, `ChainMetadata`, `Zatoshis`, `SignedZatoshis`.
+  `BlockHash`, `TransactionHash`, `Height`, `BlockRef`, `TreeRoot`,
+  `Treestate`, `ShieldedPool`, `ChainMetadata`, `Zatoshis`, `SignedZatoshis`.
 - `types::rpc` — the response shapes for passthrough RPCs, in domain
   vocabulary rather than any interface's: `BlockDeltas`, `BlockchainInfo`,
   `ChainTip`, `MiningInfo`, `NodeInfo`, `PeerInfo`, `SpentInfo`, `TxOut`,

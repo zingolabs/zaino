@@ -140,6 +140,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f02882884d3e1bc524fb12c79f107f6ad0e1cfd498c536ffb494301740995dfe"
 
 [[package]]
+name = "async-stream"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b5a71a6f37880a80d1d7f19efd781e4b5de42c88f0722cc13bcb6cc2cfe8476"
+dependencies = [
+ "async-stream-impl",
+ "futures-core",
+ "pin-project-lite",
+]
+
+[[package]]
+name = "async-stream-impl"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7c24de15d275a1ecfd47a380fb4d5ec9bfe0933f309ed5e705b775596a3574d"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
+]
+
+[[package]]
 name = "async-trait"
 version = "0.1.89"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -676,11 +698,13 @@ dependencies = [
  "wire_serialized_transaction_test_data",
  "zaino-address",
  "zaino-common",
+ "zaino-consensus",
  "zaino-primitives",
  "zaino-proto",
  "zaino-rpc",
  "zaino-serve",
  "zaino-state",
+ "zaino-status",
  "zaino-testutils",
  "zainod",
  "zcash_local_net",
@@ -1171,6 +1195,7 @@ dependencies = [
  "tokio",
  "tower 0.4.13",
  "zaino-common",
+ "zaino-consensus",
  "zaino-primitives",
  "zaino-proto",
  "zaino-serve",
@@ -5884,10 +5909,8 @@ dependencies = [
 name = "zaino-common"
 version = "0.2.0"
 dependencies = [
- "hex",
  "rustls",
  "serde",
- "thiserror 2.0.18",
  "time",
  "tracing",
  "tracing-subscriber",
@@ -5896,12 +5919,52 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-consensus"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "primitive-types 0.14.0",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "zaino-convert-zebra"
 version = "0.1.0"
 dependencies = [
  "thiserror 2.0.18",
+ "zaino-consensus",
  "zaino-primitives",
  "zebra-chain",
+]
+
+[[package]]
+name = "zaino-mempool"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures",
+ "thiserror 2.0.18",
+ "tokio",
+ "zaino-primitives",
+ "zaino-source",
+]
+
+[[package]]
+name = "zaino-mempool-service"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "async-stream",
+ "bytes",
+ "futures",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "zaino-mempool",
+ "zaino-primitives",
+ "zaino-source",
+ "zaino-status",
 ]
 
 [[package]]
@@ -5956,10 +6019,12 @@ dependencies = [
  "tracing",
  "zaino-address",
  "zaino-common",
+ "zaino-consensus",
  "zaino-primitives",
  "zaino-proto",
  "zaino-source",
  "zaino-state",
+ "zaino-status",
  "zebra-chain",
  "zebra-rpc",
 ]
@@ -6028,6 +6093,7 @@ dependencies = [
  "arc-swap",
  "bitflags 2.13.0",
  "blake2",
+ "bytes",
  "chrono",
  "corez",
  "dashmap",
@@ -6059,7 +6125,10 @@ dependencies = [
  "whoami",
  "zaino-address",
  "zaino-common",
+ "zaino-consensus",
  "zaino-convert-zebra",
+ "zaino-mempool",
+ "zaino-mempool-service",
  "zaino-primitives",
  "zaino-proto",
  "zaino-rpc",
@@ -6067,6 +6136,7 @@ dependencies = [
  "zaino-source-zebra",
  "zaino-source-zebra-readstate",
  "zaino-source-zebra-rpc",
+ "zaino-status",
  "zcash_address",
  "zcash_keys",
  "zcash_primitives",
@@ -6075,6 +6145,13 @@ dependencies = [
  "zebra-chain",
  "zebra-rpc",
  "zebra-state",
+]
+
+[[package]]
+name = "zaino-status"
+version = "0.1.0"
+dependencies = [
+ "tracing",
 ]
 
 [[package]]
@@ -6098,6 +6175,7 @@ dependencies = [
  "zaino-rpc",
  "zaino-serve",
  "zaino-state",
+ "zaino-status",
  "zainod",
  "zcash_local_net",
  "zcash_protocol",
@@ -6122,9 +6200,11 @@ dependencies = [
  "toml",
  "tracing",
  "zaino-common",
+ "zaino-mempool",
  "zaino-rpc",
  "zaino-serve",
  "zaino-state",
+ "zaino-status",
  "zcash_address",
  "zcash_protocol",
  "zebra-state",

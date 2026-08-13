@@ -220,3 +220,79 @@ mod tests {
         assert_eq!(pool.value_balance, SignedZatoshis::new(-42));
     }
 }
+
+/// Our reading of the consensus constants against zebra's.
+///
+/// `zaino-consensus` states these itself and depends on no node
+/// implementation, because they are protocol facts rather than any
+/// implementation's values. That independence is only safe if the two readings
+/// are checked against each other somewhere, and this crate — which already
+/// owns our relationship to zebra's types — is that somewhere.
+///
+/// A failure here does not say which side is wrong. It says the protocol moved
+/// or one of us misread it, and that the answer needs looking up in the
+/// specification rather than copied across.
+#[cfg(test)]
+mod consensus_agreement {
+    #[test]
+    fn coinbase_maturity_agrees() {
+        assert_eq!(
+            zaino_consensus::COINBASE_MATURITY,
+            zebra_chain::transparent::MIN_TRANSPARENT_COINBASE_MATURITY
+        );
+    }
+
+    #[test]
+    fn reorg_limit_agrees() {
+        assert_eq!(
+            zaino_consensus::MAX_BLOCK_REORG_HEIGHT,
+            zebra_chain::parameters::constants::MAX_BLOCK_REORG_HEIGHT
+        );
+    }
+
+    #[test]
+    fn max_block_bytes_agrees() {
+        assert_eq!(
+            zaino_consensus::MAX_BLOCK_BYTES,
+            zebra_chain::block::MAX_BLOCK_BYTES
+        );
+    }
+
+    /// `work_from_bits` is implemented against the specification rather than by
+    /// delegating, so it is swept against zebra's implementation across the
+    /// whole encoding space — every exponent, and mantissas chosen to sit on
+    /// the boundaries where the two could plausibly disagree: zero, one, the
+    /// byte and half-word limits the overflow rules key off, the sign bit that
+    /// makes a target negative, and the largest valid magnitude.
+    ///
+    /// Agreement on rejection matters as much as agreement on value. A
+    /// disagreement about *which* encodings are valid would let a block through
+    /// that a validator refuses, or refuse one it accepts.
+    #[test]
+    fn work_from_bits_agrees_across_the_encoding_space() {
+        const MANTISSAS: [u32; 8] = [
+            0x00_0000, 0x00_0001, 0x00_00ff, 0x00_0100, 0x00_ffff, 0x01_0000, 0x7f_ffff, 0x80_0000,
+        ];
+
+        let mut compared = 0;
+        for exponent in 0u32..=0xff {
+            for mantissa in MANTISSAS {
+                let bits = (exponent << 24) | mantissa;
+
+                let ours = zaino_consensus::work_from_bits(bits).ok();
+                let theirs =
+                    zebra_chain::work::difficulty::CompactDifficulty::from_bytes_in_display_order(
+                        &bits.to_be_bytes(),
+                    )
+                    .ok()
+                    .and_then(|compact| compact.to_work())
+                    .map(|work| work.as_u128());
+
+                assert_eq!(ours, theirs, "disagreement at nBits {bits:#010x}");
+                compared += 1;
+            }
+        }
+
+        assert_eq!(compared, 256 * MANTISSAS.len());
+    }
+}

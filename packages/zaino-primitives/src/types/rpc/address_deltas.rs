@@ -4,7 +4,7 @@
 //! shape depends on which was asked, so both are modelled here rather than
 //! being flattened into one type with optional fields.
 
-use crate::types::{AddressDelta, BlockHash, Height, TransparentAddress};
+use crate::types::{AddressDelta, BlockRef, TransparentAddress};
 
 /// What was asked of `getaddressdeltas`.
 ///
@@ -54,16 +54,4 @@ pub enum AddressDeltas {
         /// The last block of the range, after clamping.
         end: BlockRef,
     },
-}
-
-/// A block named by both hash and height.
-///
-/// Used where a response echoes back which blocks it covered, so the caller can
-/// tell whether a reorg has moved the range underneath it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BlockRef {
-    /// The block's hash.
-    pub hash: BlockHash,
-    /// The block's height.
-    pub height: Height,
 }

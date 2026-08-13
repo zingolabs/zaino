@@ -94,6 +94,11 @@ zaino-source-zebra-rpc.workspace = true
 zaino-source-zebra-readstate.workspace = true
 zaino-address = { workspace = true }
 zaino-convert-zebra.workspace = true
+zaino-status.workspace = true
+zaino-consensus.workspace = true
+bytes.workspace = true
+zaino-mempool = { workspace = true, features = ["tip_aware_mempool"] }
+zaino-mempool-service = { workspace = true, features = ["tip_aware_mempool"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

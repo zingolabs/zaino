@@ -157,6 +157,12 @@ impl From<NodeBackedIndexerServiceError> for tonic::Status {
                 ChainIndexErrorKind::InvalidSnapshot => {
                     tonic::Status::failed_precondition(err.message)
                 }
+                // `unavailable` rather than `failed_precondition`: gRPC clients
+                // treat it as retryable, which is exactly the instruction here.
+                ChainIndexErrorKind::Unavailable => tonic::Status::unavailable(err.message),
+                ChainIndexErrorKind::InvalidArgument => {
+                    tonic::Status::invalid_argument(err.message)
+                }
             },
             NodeBackedIndexerServiceError::BlockCacheError(err) => {
                 tonic::Status::internal(format!("BlockCache error: {err:?}"))
@@ -340,7 +346,7 @@ pub enum FinalisedStateError {
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("Unexpected status error: {server_status:?}")]
 pub struct StatusError {
-    pub server_status: crate::status::StatusType,
+    pub server_status: zaino_status::StatusType,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -366,6 +372,19 @@ pub enum ChainIndexErrorKind {
     // whatever went wrong
     #[allow(dead_code)]
     InvalidSnapshot,
+    /// The caller asked for something Zaino cannot serve *right now*, but
+    /// could on a later attempt — a mempool read against a snapshot the
+    /// mempool has since moved past, most often.
+    ///
+    /// Distinct from `InvalidSnapshot`: nothing about the request was wrong,
+    /// and distinct from `InternalServerError`: nothing is broken. Retrying
+    /// with a fresh snapshot is the correct response, and only a retryable
+    /// status tells the caller so.
+    Unavailable,
+    /// The caller's request was malformed — an over-long exclude list, a txid
+    /// suffix too short to identify anything. Retrying it unchanged will fail
+    /// the same way.
+    InvalidArgument,
 }
 
 impl Display for ChainIndexErrorKind {
@@ -373,6 +392,8 @@ impl Display for ChainIndexErrorKind {
         f.write_str(match self {
             ChainIndexErrorKind::InternalServerError => "internal server error",
             ChainIndexErrorKind::InvalidSnapshot => "invalid snapshot",
+            ChainIndexErrorKind::Unavailable => "unavailable",
+            ChainIndexErrorKind::InvalidArgument => "invalid argument",
         })
     }
 }
@@ -406,6 +427,26 @@ impl ChainIndexError {
         }
     }
 
+    /// Constructs an `Unavailable`-kind error: the request was fine, Zaino
+    /// simply cannot serve it from its current view. Tells the caller to retry.
+    pub(crate) fn unavailable(message: impl Into<String>) -> Self {
+        Self {
+            kind: ChainIndexErrorKind::Unavailable,
+            message: message.into(),
+            source: None,
+        }
+    }
+
+    /// Constructs an `InvalidArgument`-kind error: the request itself is wrong,
+    /// and retrying it unchanged will fail identically.
+    pub(crate) fn invalid_argument(message: impl Into<String>) -> Self {
+        Self {
+            kind: ChainIndexErrorKind::InvalidArgument,
+            message: message.into(),
+            source: None,
+        }
+    }
+
     pub(crate) fn backing_validator(value: impl std::error::Error + Send + Sync + 'static) -> Self {
         Self {
             kind: ChainIndexErrorKind::InternalServerError,
@@ -433,31 +474,6 @@ impl ChainIndexError {
             message: "validator error: data error: block.coinbase_height() returned None"
                 .to_string(),
             source: None,
-        }
-    }
-
-    pub(crate) fn child_process_status_error(process: &str, status_err: StatusError) -> Self {
-        use crate::status::StatusType;
-
-        let message = match status_err.server_status {
-            StatusType::Spawning => format!("{process} status: Spawning (not ready yet)"),
-            StatusType::Syncing => format!("{process} status: Syncing (not ready yet)"),
-            StatusType::Ready => format!("{process} status: Ready (unexpected error path)"),
-            StatusType::Busy => format!("{process} status: Busy (temporarily unavailable)"),
-            StatusType::Closing => format!("{process} status: Closing (shutting down)"),
-            StatusType::Offline => format!("{process} status: Offline (not available)"),
-            StatusType::RecoverableError => {
-                format!("{process} status: RecoverableError (retry may succeed)")
-            }
-            StatusType::CriticalError => {
-                format!("{process} status: CriticalError (requires operator action)")
-            }
-        };
-
-        ChainIndexError {
-            kind: ChainIndexErrorKind::InternalServerError,
-            message,
-            source: Some(Box::new(status_err)),
         }
     }
 }

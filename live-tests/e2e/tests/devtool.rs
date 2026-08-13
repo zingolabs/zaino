@@ -639,6 +639,12 @@ where
 /// Port of `fetch_service_get_transaction_mempool` (zebrad): the indexer
 /// serves `get_transaction` for an orchard send that is broadcast but not
 /// mined, keyed by its txid — i.e. from the mempool.
+///
+/// Also the end-to-end guard for the unconfirmed-height wire contract: an
+/// unmined transaction must report `height = 0` (lightwalletd's "in the mempool"
+/// sentinel), never the chain-tip height, which a client would misread as a
+/// confirmation. That sentinel is chosen deep in the serving path, so only a
+/// real broadcast-but-unmined transaction exercises it.
 async fn get_transaction_mempool<Conn>()
 where
     Conn: zaino_testutils::ValidatorConnectionMarker,
@@ -647,11 +653,14 @@ where
 
     let recipient_ua = clients.get_recipient_address("unified").await;
     let txid_hex = clients.send_from_faucet(&recipient_ua, 250_000).await;
+    let expected_txid_bytes = e2e::devtool::txid_internal_bytes(&txid_hex);
     let tx_filter = TxFilter {
         block: None,
         index: 0,
-        hash: e2e::devtool::txid_internal_bytes(&txid_hex),
+        hash: expected_txid_bytes.clone(),
     };
+
+    use zebra_chain::serialization::ZcashDeserializeInto as _;
 
     // Let the broadcaster and the indexer observe the unmined transaction.
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -661,7 +670,43 @@ where
         .get_transaction(tx_filter)
         .await
         .unwrap();
-    dbg!(raw_transaction);
+
+    assert_eq!(
+        raw_transaction.height, 0,
+        "an unmined transaction must carry the mempool height sentinel, not the tip height"
+    );
+
+    // The bytes served are the transaction that was actually sent.
+    let served: zebra_chain::transaction::Transaction = raw_transaction
+        .data
+        .as_ref()
+        .zcash_deserialize_into()
+        .expect("served mempool transaction must deserialize");
+    assert_eq!(
+        served.hash().0.to_vec(),
+        expected_txid_bytes,
+        "get_transaction served a different transaction than the one broadcast"
+    );
+
+    // Mine it, and the same query must flip from the mempool sentinel to a real
+    // confirmation height — the mempool-to-mined transition, end to end.
+    test_manager
+        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
+        .await;
+
+    let mined = test_manager
+        .subscriber()
+        .get_transaction(TxFilter {
+            block: None,
+            index: 0,
+            hash: expected_txid_bytes.clone(),
+        })
+        .await
+        .unwrap();
+    assert!(
+        mined.height > 0,
+        "a mined transaction must report its confirmation height, not the mempool sentinel"
+    );
 
     test_manager.close().await;
 }
@@ -1096,8 +1141,14 @@ async fn fund_and_fill_mempool_dual() -> zaino_testutils::StateAndFetchServices<
     svc
 }
 
-/// Port of `state_service_get_raw_mempool` (zebrad): the fetch and state
+/// Port of `state_service_get_raw_mempool` (zebrad): the RPC and Direct
 /// indexers agree on `get_raw_mempool` while two sends sit unmined.
+///
+/// Guards the single-source rule the mempool rework rests on: the mempool must
+/// be read through the JSON-RPC `mempool_fetcher` on *both* backends, so that
+/// the set and the validator tip it is tagged with come from one place. Routing
+/// the Direct backend's mempool through `ReadStateService` instead would show up
+/// here as the two views disagreeing.
 async fn get_raw_mempool_fetch_vs_state() {
     let mut svc = fund_and_fill_mempool_dual().await;
 
@@ -1964,7 +2015,7 @@ async fn get_outpoint_spenders_fetch_vs_state() {
     // `FAST_TEST_MAX_NONFINALISED_DEPTH`; a small margin above it keeps the boundary
     // unambiguous. (Without the feature the real seam is ~1000, impractical to mine
     // here — see zingolabs/zaino#1352.)
-    const FINALITY_DEPTH: u32 = zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH + 5;
+    const FINALITY_DEPTH: u32 = zaino_consensus::FAST_TEST_MAX_NONFINALISED_DEPTH + 5;
     const FUNDING_AMOUNT: u64 = 250_000;
 
     let mut svc = zaino_testutils::launch_state_and_fetch_services_mining_to::<Zebrad>(
@@ -2035,83 +2086,77 @@ async fn get_outpoint_spenders_fetch_vs_state() {
     svc.test_manager.close().await;
 }
 
-/// Port of `monitor_unverified_mempool` (wallet_to_validator): broadcast two
-/// unmined sends, observe them in the validator mempool, then mine them in.
+/// `getmempoolinfo` agrees with the **validator's own** `getmempoolinfo`.
 ///
-/// `#[ignore]`d, with the balance assertions commented out: the original asserts
-/// `WalletBalance::{unconfirmed,confirmed}_*_balance`, fields devtool's
-/// `WalletBalance` does not have (it surfaces only `*_spendable`, and devtool
-/// sync is block-based so it never scans the mempool). Restore the assertions
-/// (using `Pool::spendable_balance` for the confirmed ones) and un-ignore when
-/// devtool surfaces unconfirmed balances.
-async fn monitor_unverified_mempool<Conn>()
-where
-    Conn: zaino_testutils::ValidatorConnectionMarker,
-{
-    // Two orchard notes — one per unmined send.
-    let (test_manager, clients) = launch_and_fund_faucet::<Conn>(2).await;
-    e2e::devtool::assert_monitor_unverified_mempool(test_manager, clients).await;
-}
-
-/// Port of `test_get_mempool_info` (fetch_service, zebrad): `get_mempool_info`
-/// matches values recomputed from the fetch subscriber's mempool internals.
-/// FetchService-only — the recompute reads `FetchServiceSubscriber.indexer`.
+/// This used to recompute the totals from the very entries Zaino had just
+/// reported, which only asserted that Zaino equals itself. The arithmetic is
+/// covered by mocks in `zaino-mempool-service`
+/// (`get_mempool_info_reports_totals`); what a live validator adds is the
+/// cross-check that Zaino's mirror of the mempool holds the same transactions
+/// the validator does.
 async fn get_mempool_info_fetch() {
-    use hex::ToHex as _;
-    use zaino_state::ChainIndex as _;
-
     let (mut test_manager, _transparent_txid, _unified_txid) = fund_and_fill_mempool::<Rpc>().await;
 
-    let subscriber = test_manager.subscriber();
-    let info = subscriber.get_mempool_info().await.unwrap();
-    let keys = subscriber.indexer.get_mempool_txids().await.unwrap();
-    let values = subscriber
-        .indexer
-        .get_mempool_transactions(Vec::new())
+    let info = test_manager.subscriber().get_mempool_info().await.unwrap();
+    let validator = test_manager
+        .full_node_jsonrpc_connector()
         .await
-        .unwrap();
+        .get("getmempoolinfo")
+        .await;
 
-    assert_eq!(info.size, values.len() as u64);
-    assert!(info.size >= 1);
-
-    let expected_bytes: u64 = values.iter().map(|entry| entry.len() as u64).sum();
-    let expected_key_heap_bytes: u64 = keys
-        .iter()
-        .map(|key| key.encode_hex::<String>().capacity() as u64)
-        .sum();
-    let expected_usage = expected_bytes.saturating_add(expected_key_heap_bytes);
-
-    assert!(info.bytes > 0);
-    assert_eq!(info.bytes, expected_bytes);
+    assert!(info.size >= 1, "the test funded the mempool");
+    assert_eq!(
+        info.size,
+        validator["size"].as_u64().expect("validator reports size"),
+        "Zaino's mempool holds a different number of transactions than the validator's"
+    );
+    assert_eq!(
+        info.bytes,
+        validator["bytes"]
+            .as_u64()
+            .expect("validator reports bytes"),
+        "Zaino's serialized-byte total disagrees with the validator's"
+    );
+    // `usage` is deliberately not compared. Zaino reports the ZIP-401 cost total
+    // — each transaction floored at the cost threshold — because that is the
+    // figure its own memory bound is enforced against; the validator reports its
+    // internal heap estimate. Different quantities by design.
     assert!(info.usage >= info.bytes);
-    assert_eq!(info.usage, expected_usage);
 
     test_manager.close().await;
 }
 
-/// Port of `state_service_…::get_mempool_info` (zebrad): `get_mempool_info`
-/// matches values recomputed from the state subscriber's mempool internals.
-/// StateService-only — the recompute reads `StateServiceSubscriber.mempool`.
+/// As [`get_mempool_info_fetch`], for the Direct (`ReadStateService`) backend.
+///
+/// Worth running on both because the mempool is served over JSON-RPC either way
+/// — the Direct backend reads it through the same transport — so this pins that
+/// the backend choice does not change the reported totals.
 async fn get_mempool_info_state() {
     let mut svc = fund_and_fill_mempool_dual().await;
 
     let info = svc.state_subscriber.get_mempool_info().await.unwrap();
-    let entries = svc.state_subscriber.mempool().get_mempool().await;
+    let validator = svc
+        .test_manager
+        .full_node_jsonrpc_connector()
+        .await
+        .get("getmempoolinfo")
+        .await;
 
-    assert_eq!(entries.len() as u64, info.size);
-    assert!(info.size >= 1);
-
-    let expected_bytes: u64 = entries
-        .iter()
-        .map(|(_, v)| v.serialized_tx.as_ref().as_ref().len() as u64)
-        .sum();
-    let expected_key_heap_bytes: u64 = entries.iter().map(|(k, _)| k.txid.capacity() as u64).sum();
-    let expected_usage = expected_bytes.saturating_add(expected_key_heap_bytes);
-
-    assert!(info.bytes > 0);
-    assert_eq!(info.bytes, expected_bytes);
+    assert!(info.size >= 1, "the test funded the mempool");
+    assert_eq!(
+        info.size,
+        validator["size"].as_u64().expect("validator reports size"),
+        "Zaino's mempool holds a different number of transactions than the validator's"
+    );
+    assert_eq!(
+        info.bytes,
+        validator["bytes"]
+            .as_u64()
+            .expect("validator reports bytes"),
+        "Zaino's serialized-byte total disagrees with the validator's"
+    );
+    // See `get_mempool_info_fetch` for why `usage` is not compared.
     assert!(info.usage >= info.bytes);
-    assert_eq!(info.usage, expected_usage);
 
     svc.test_manager.close().await;
 }
@@ -2187,15 +2232,6 @@ mod zebrad {
         #[tokio::test(flavor = "multi_thread")]
         async fn get_mempool_info() {
             crate::get_mempool_info_fetch().await;
-        }
-
-        #[tokio::test(flavor = "multi_thread")]
-        #[cfg_attr(
-            not(feature = "devtool-incompatible"),
-            ignore = "devtool WalletBalance has no unconfirmed_*/confirmed_* fields; balance asserts are commented out — restore + un-ignore when devtool surfaces unconfirmed balances"
-        )]
-        async fn monitor_unverified_mempool() {
-            crate::monitor_unverified_mempool::<Rpc>().await;
         }
 
         #[tokio::test(flavor = "multi_thread")]
@@ -2429,15 +2465,6 @@ mod zebrad {
         #[tokio::test(flavor = "multi_thread")]
         async fn get_mempool_info() {
             crate::get_mempool_info_state().await;
-        }
-
-        #[tokio::test(flavor = "multi_thread")]
-        #[cfg_attr(
-            not(feature = "devtool-incompatible"),
-            ignore = "devtool WalletBalance has no unconfirmed_*/confirmed_* fields; balance asserts are commented out — restore + un-ignore when devtool surfaces unconfirmed balances"
-        )]
-        async fn monitor_unverified_mempool() {
-            crate::monitor_unverified_mempool::<Direct>().await;
         }
 
         // No get_mempool_tx here: the state backend returns mempool-tx txids

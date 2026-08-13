@@ -13,6 +13,12 @@ and this library adheres to Rust's notion of
   transport can answer it.
 - Constructors `rpc_only`, `spawn_rpc` and `spawn_direct`, replacing the
   `ValidatorConnector` enum's construction paths.
+- Routing for the three mempool sourcing ports (`GetMempoolMetadata`,
+  `GetRawMempoolTransaction`, `GetMempoolSourceTip`), all pinned to JSON-RPC.
+  `GetMempoolSourceTip` in particular does *not* use `fast_or_slow!`, unlike its
+  `GetChainTip` neighbour: it tags a mempool set read over JSON-RPC, and a tip
+  read from the state database would differ by a block for reasons unrelated to
+  the mempool, which a consumer would misread as a real tip change.
 
 ### Changed
 - **`Fetch`-only and `State` are now configurations of one type, not variants

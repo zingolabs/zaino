@@ -1,0 +1,21 @@
+[package]
+name = "zaino-consensus"
+description = "Consensus-derived constants and protocol-limit validation, with a single source of truth."
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+version = "0.1.0"
+
+[dependencies]
+# Deliberately minimal, and deliberately no node implementation: these are
+# protocol constants, not any implementation's values. See the crate docs.
+thiserror = { workspace = true }
+hex = { workspace = true }
+# 256-bit arithmetic for expanding compact difficulty into a target threshold.
+primitive-types = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

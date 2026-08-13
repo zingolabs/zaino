@@ -425,6 +425,7 @@ async fn v1_1_to_v1_2_spent_index_backfill_from_old_version() {
             ..Default::default()
         },
         ephemeral: false,
+        mempool: Default::default(),
         db_version: 1,
         network: ActivationHeights::default().to_regtest_network(),
     };
@@ -497,6 +498,7 @@ async fn v1_1_to_v1_2_spent_index_migration_resumes_after_crash() {
             ..Default::default()
         },
         ephemeral: false,
+        mempool: Default::default(),
         db_version: 1,
         network: ActivationHeights::default().to_regtest_network(),
     };
@@ -596,6 +598,7 @@ async fn v1_2_0_cache_missing_txid_location_index_is_rebuilt() {
             ..Default::default()
         },
         ephemeral: false,
+        mempool: Default::default(),
         db_version: 1,
         network: ActivationHeights::default().to_regtest_network(),
     };

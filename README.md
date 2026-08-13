@@ -31,6 +31,8 @@ Currently Zebra's `ReadStateService` only enables direct access to chain data (b
 
 ```
 packages/                          Cargo workspace member crates, in dependency order
+  zaino-status/                      How a component reports whether it is working
+  zaino-consensus/                   Zcash consensus constants and protocol limits
   zaino-primitives/                  Domain vocabulary (thiserror only; no serde)
   zaino-address/                     Zcash address classification
   zaino-source/                      Driven ports: one trait per chain question
@@ -39,6 +41,8 @@ packages/                          Cargo workspace member crates, in dependency 
   zaino-source-zebra-rpc/            JSON-RPC adapter + response parsing
   zaino-source-zebra-readstate/      Zebra ReadStateService adapter
   zaino-source-zebra/                ZebraValidator composite + routing
+  zaino-mempool/                     Mempool domain types and ports (no node library)
+  zaino-mempool-service/             The mempool runtime: poll loop, read handles, coherence
   zaino-common/                      Shared utilities and configuration
   zaino-proto/                       Protocol buffer definitions
   zaino-state/                       Chain state and indexer service library
@@ -146,6 +150,8 @@ these before changing the structure they describe.
 ### Crate usage guides
 Practical guidance for working *in* a crate — its scope, its invariants, and the
 mistakes its design is trying to prevent.
+- [`zaino-status`](./packages/zaino-status/usage.md): the status vocabulary, and why it stays vocabulary.
+- [`zaino-consensus`](./packages/zaino-consensus/usage.md): the protocol constants, and why they are stated rather than borrowed.
 - [`zaino-primitives`](./packages/zaino-primitives/usage.md): the domain vocabulary, and why it depends on nothing.
 - [`zaino-source`](./packages/zaino-source/usage.md): the ports, the domain/fetch error split, and `Resilient`.
 - [`zaino-rpc`](./packages/zaino-rpc/usage.md): JSON-RPC transport, and what it deliberately does not do.
@@ -154,6 +160,8 @@ mistakes its design is trying to prevent.
 - [`zaino-source-zebra-readstate`](./packages/zaino-source-zebra-readstate/usage.md): the read-state adapter, and what it deliberately cannot answer.
 - [`zaino-source-zebra`](./packages/zaino-source-zebra/usage.md): the composite and its three routing rules.
 - [`zaino-address`](./packages/zaino-address/usage.md): address classification, and what is not classified.
+- [`zaino-mempool`](./packages/zaino-mempool/usage.md): the two-layer model, the ports, and the bounds.
+- [`zaino-mempool-service`](./packages/zaino-mempool-service/usage.md): spawning and consuming the mempool.
 
 
 ## Security Vulnerability Disclosure

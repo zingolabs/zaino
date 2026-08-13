@@ -47,6 +47,19 @@ and this library adheres to Rust's notion of
   `RUST_LOG` runtime interface and output formats are unchanged.
 ### Deprecated
 ### Removed
+- **Breaking** — status reporting moved to the new `zaino-status` crate:
+  `StatusType`, `Status`, `NamedAtomicStatus`, and the `Liveness` / `Readiness`
+  / `VitalsProbe` probing traits. Reporting a status from here cost a dependency
+  on the validator config, the logging stack, TLS and `zebra-chain`, which
+  subsystems built to depend on as little as possible could not accept.
+- **Breaking** — the `consensus` module moved to the new `zaino-consensus`
+  crate, for the same reason and one more: those values are protocol facts, not
+  a node implementation's, and are now stated with their provenance rather than
+  re-exported from `zebra-chain`.
+- `AtomicStatus`, superseded by `NamedAtomicStatus` and deleted rather than
+  moved — it had no callers left.
+- Dependencies `hex` and `thiserror` again, the `consensus` module having been
+  their only remaining user.
 - Unused dependencies `thiserror`, `nu-ansi-term`, and `hex` (`hex`'s last
   consumers were the display wrappers removed below). Verified empirically:
   each dependency was deleted in turn and the crate re-checked with

@@ -105,6 +105,14 @@ pub struct CommonBackendConfig {
     pub network: Network,
     /// Zcash donation UA address
     pub donation_address: Option<DonationAddress>,
+    /// Mempool bounds and poll cadence.
+    ///
+    /// Passed through to `ChainIndexConfig` by
+    /// [`ChainIndexConfig::from_backend_config`], which clones rather than
+    /// rebuilds it: `MempoolConfig` shares its `max_cost_bytes` cell across
+    /// clones, so an operator changing the bound at runtime moves the
+    /// tip-agnostic core and the coherence layer together.
+    pub mempool: zaino_mempool::MempoolConfig,
     /// Version of the indexer binary embedding this service.
     ///
     /// Reported on the wire via `LightdInfo.version`. Defaults to this
@@ -139,6 +147,12 @@ impl CommonBackendConfig {
             service,
             storage,
             ephemeral_finalised_state,
+            // Not an argument: this constructor is already at the
+            // too-many-arguments limit, and the mempool bounds are an operator
+            // knob with a safe default rather than something every caller has
+            // an opinion on. `zainod` sets the field after construction when its
+            // `[mempool]` section says to.
+            mempool: zaino_mempool::MempoolConfig::default(),
             network,
             donation_address,
             indexer_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -248,6 +262,9 @@ pub struct ChainIndexConfig {
     /// Note that full functionality is not available and
     /// performanc will be reduced in this configuration.
     pub ephemeral: bool,
+    /// Mempool bounds and poll cadence, shared with the backend config it came
+    /// from — see [`CommonBackendConfig::mempool`].
+    pub mempool: zaino_mempool::MempoolConfig,
 }
 
 impl ChainIndexConfig {
@@ -265,6 +282,7 @@ impl ChainIndexConfig {
             db_version: 1,
             network,
             ephemeral: common.ephemeral_finalised_state,
+            mempool: common.mempool.clone(),
         }
     }
 }

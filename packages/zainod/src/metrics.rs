@@ -165,6 +165,12 @@ fn describe_metrics() {
         MEMPOOL_TIP_CHANGES_TOTAL,
         "Total mempool resets due to chain tip changes"
     );
+    metrics::describe_gauge!(
+        MEMPOOL_COHERENCE_FROZEN_SECONDS,
+        "How long tip-coherent mempool reads have been frozen; 0 when live. \
+         Brief spikes are normal tip transitions — a sustained non-zero value \
+         means the validator tip and Zaino's have stopped agreeing"
+    );
 }
 
 /// Emit a constant gauge `zainod_build_info{version="x.y.z"} 1` so the

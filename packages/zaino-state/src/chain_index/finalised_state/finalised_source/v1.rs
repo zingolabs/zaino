@@ -40,10 +40,11 @@ use crate::{
     error::FinalisedStateError,
     BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream, CompactOrchardAction,
     CompactSaplingSpend, CompactSize, CompactTxData, FixedEncodedLen as _, Height, IndexedBlock,
-    NamedAtomicStatus, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList,
-    StatusType, TransparentCompactTx, TransparentTxList, TxInCompact, TxLocation, TxOutCompact,
-    TxidList, ZainoVersionedSerde as _,
+    OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList,
+    TransparentCompactTx, TransparentTxList, TxInCompact, TxLocation, TxOutCompact, TxidList,
+    ZainoVersionedSerde as _,
 };
+use zaino_status::{NamedAtomicStatus, StatusType};
 
 #[cfg(feature = "transparent_address_history_experimental")]
 use crate::{chain_index::types::AddrEventBytes, AddrHistRecord, AddrScript};
@@ -1140,6 +1141,7 @@ mod tests {
                 ..Default::default()
             },
             ephemeral: false,
+            mempool: Default::default(),
             db_version: 1,
             network: ActivationHeights::default().to_regtest_network(),
         };

@@ -2110,6 +2110,7 @@ mod tests {
                 ..Default::default()
             },
             ephemeral: false,
+            mempool: Default::default(),
             db_version: 1,
             network: ActivationHeights::default().to_regtest_network(),
         };
@@ -2171,7 +2172,7 @@ mod tests {
         use crate::chain_index::finalised_state::capability::{
             CapabilityRequest, DbRead, TransparentHistExt,
         };
-        use zaino_common::consensus::COINBASE_MATURITY;
+        use zaino_consensus::COINBASE_MATURITY;
 
         let blocks = load_test_vectors().unwrap().blocks;
         let source = build_mockchain_source(blocks);
@@ -2185,6 +2186,7 @@ mod tests {
                 ..Default::default()
             },
             ephemeral: false,
+            mempool: Default::default(),
             db_version: 1,
             network: ActivationHeights::default().to_regtest_network(),
         };
