@@ -87,7 +87,7 @@ impl<S: MempoolSource> MempoolService<S> {
         cancel: CancellationToken,
         admission_salt: u64,
     ) -> Arc<Self> {
-        let (updates, _) = broadcast::channel(config.event_buffer_len);
+        let (updates, _) = broadcast::channel(config.event_buffer_len.get());
 
         let service = Arc::new(Self {
             source,

@@ -2,6 +2,7 @@
 
 use std::{
     net::{IpAddr, SocketAddr},
+    num::{NonZeroU64, NonZeroUsize},
     path::PathBuf,
 };
 
@@ -47,12 +48,57 @@ pub enum BackendType {
     Rpc,
 }
 
+/// An operator-supplied total-cost cap that has cleared the ZIP-401
+/// per-transaction floor.
+///
+/// The floor is enforced *during deserialization* (`try_from`), so a sub-floor
+/// value in the config file fails to parse — the operator is told immediately
+/// instead of running a mempool that can never admit a transaction. The mempool
+/// core itself tolerates any bound (a sub-floor one simply refuses everything),
+/// so this is operator UX, which is exactly why it lives at the config boundary
+/// and is a bare `u64` again by the time it reaches the core.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(try_from = "u64", into = "u64")]
+pub struct MaxCostBytes(u64);
+
+impl MaxCostBytes {
+    /// The wrapped byte cap.
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl TryFrom<u64> for MaxCostBytes {
+    type Error = String;
+
+    fn try_from(bytes: u64) -> Result<Self, Self::Error> {
+        let floor = zaino_mempool::config::MEMPOOL_TRANSACTION_COST_THRESHOLD;
+        if bytes < floor {
+            Err(format!(
+                "mempool.max_cost_bytes ({bytes}) is below the ZIP-401 per-transaction \
+                 floor ({floor}); it cannot admit a single transaction. Raise it to at \
+                 least {floor}."
+            ))
+        } else {
+            Ok(Self(bytes))
+        }
+    }
+}
+
+impl From<MaxCostBytes> for u64 {
+    fn from(value: MaxCostBytes) -> Self {
+        value.0
+    }
+}
+
 /// Operator-facing mempool bounds, as they appear in `[mempool]`.
 ///
 /// A TOML mirror of [`zaino_mempool::MempoolConfig`], which cannot be
 /// deserialized directly (its runtime-adjustable bound is a shared atomic).
 /// Every field is optional: an absent one keeps the built-in default, so an
-/// existing config file without a `[mempool]` section is unaffected.
+/// existing config file without a `[mempool]` section is unaffected. The
+/// zero-invalid and sub-floor knobs are typed so that an invalid value is
+/// rejected *at deserialize*, not caught by a later validation pass.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct MempoolSettings {
     /// Maximum total mempool cost Zaino will hold, in bytes (default 128 MiB).
@@ -60,9 +106,14 @@ pub struct MempoolSettings {
     /// A denial-of-service backstop, deliberately above the validator's own
     /// ZIP-401 limit so healthy operation never reaches it. Over-bound
     /// transactions are refused and the mempool is reported as incomplete.
-    pub max_cost_bytes: Option<u64>,
+    /// Rejected at deserialize if below the ZIP-401 per-transaction floor (see
+    /// [`MaxCostBytes`]).
+    pub max_cost_bytes: Option<MaxCostBytes>,
     /// How often to poll the validator's mempool, in milliseconds (default 500).
-    pub poll_interval_ms: Option<u64>,
+    ///
+    /// Rejected at deserialize if `0`: a zero-delay poll busy-spins and panics
+    /// `tokio::time::interval`.
+    pub poll_interval_ms: Option<NonZeroU64>,
     /// Minimum gap between verbose mempool listings, in milliseconds (default:
     /// the poll interval).
     ///
@@ -71,10 +122,10 @@ pub struct MempoolSettings {
     /// validator load: between listings, new transactions are deferred (not
     /// dropped), while removals and the tip re-tag still apply — so tip-coherent
     /// reads are unaffected.
-    pub metadata_min_interval_ms: Option<u64>,
+    pub metadata_min_interval_ms: Option<NonZeroU64>,
     /// Maximum exclude suffixes a client may send to a filtered mempool read
     /// (default 1024).
-    pub max_exclude_count: Option<usize>,
+    pub max_exclude_count: Option<NonZeroUsize>,
 }
 
 impl MempoolSettings {
@@ -82,17 +133,18 @@ impl MempoolSettings {
     fn to_mempool_config(&self) -> zaino_mempool::MempoolConfig {
         let mut config = zaino_mempool::MempoolConfig::default();
         if let Some(max_cost_bytes) = self.max_cost_bytes {
-            config.set_max_cost_bytes(max_cost_bytes);
+            config.set_max_cost_bytes(max_cost_bytes.get());
         }
         if let Some(poll_interval_ms) = self.poll_interval_ms {
-            config.poll_interval = std::time::Duration::from_millis(poll_interval_ms);
+            config.poll_interval =
+                zaino_mempool::config::NonZeroDuration::from_millis(poll_interval_ms);
             // Keep the listing floor tied to the poll cadence unless it is set
             // explicitly, matching the default relationship between the two.
             config.metadata_min_interval = config.poll_interval;
         }
         if let Some(metadata_min_interval_ms) = self.metadata_min_interval_ms {
             config.metadata_min_interval =
-                std::time::Duration::from_millis(metadata_min_interval_ms);
+                zaino_mempool::config::NonZeroDuration::from_millis(metadata_min_interval_ms);
         }
         if let Some(max_exclude_count) = self.max_exclude_count {
             config.max_exclude_count = max_exclude_count;
@@ -299,21 +351,10 @@ impl ZainodConfig {
             }
         }
 
-        // A mempool cost bound below the ZIP-401 per-transaction floor can never
-        // admit even one transaction — a misconfiguration worth naming at startup
-        // rather than leaving the operator with a silently empty mempool. (The
-        // arithmetic in the mempool itself already tolerates such a value safely;
-        // this is operator UX only.)
-        if let Some(max_cost_bytes) = self.mempool.max_cost_bytes {
-            let floor = zaino_mempool::config::MEMPOOL_TRANSACTION_COST_THRESHOLD;
-            if max_cost_bytes < floor {
-                return Err(IndexerError::ConfigError(format!(
-                    "mempool.max_cost_bytes ({max_cost_bytes}) is below the ZIP-401 \
-                     per-transaction floor ({floor}); it cannot admit a single \
-                     transaction. Raise it to at least {floor}."
-                )));
-            }
-        }
+        // The mempool bounds are validated where they are parsed: zero-invalid
+        // knobs are `NonZero`-typed and the sub-floor cost cap is rejected by
+        // `MaxCostBytes` during deserialization, so a bad `[mempool]` value never
+        // reaches this point. There is nothing left to re-check here.
 
         Ok(())
     }
@@ -587,6 +628,32 @@ mod tests {
         path
     }
 
+    /// The minimal set of sections a config needs to load and pass
+    /// `check_config`: a private validator address, a db path, and a loopback
+    /// gRPC bind. Single-field / single-section tests start from this and append
+    /// only their own delta, instead of re-inlining the whole scaffold.
+    const MINIMAL_CONFIG_TOML: &str = r#"
+[validator_settings]
+validator_jsonrpc_listen_address = "127.0.0.1:18232"
+
+[storage.database]
+path = "/zaino/db"
+
+[grpc_settings]
+listen_address = "127.0.0.1:8137"
+"#;
+
+    /// Load a config built from [`MINIMAL_CONFIG_TOML`] plus `delta` appended
+    /// verbatim (e.g. an extra `[mempool]` section), so a test states only the
+    /// field(s) it exercises and asserts the parse/validate result. The delta
+    /// must be TOML that can follow table sections — a new section, not a bare
+    /// top-level key.
+    fn load_with_delta(dir: &TempDir, delta: &str) -> Result<ZainodConfig, IndexerError> {
+        let content = format!("{MINIMAL_CONFIG_TOML}{delta}");
+        let path = create_test_config_file(dir, &content, "delta.toml");
+        load_config(&path)
+    }
+
     #[test]
     fn test_deserialize_full_valid_config() {
         let _guard = EnvGuard::new();
@@ -827,29 +894,23 @@ listen_address = "127.0.0.1:8137"
         let _guard = EnvGuard::new();
         let temp_dir = TempDir::new().unwrap();
 
-        let toml_content = r#"
-[validator_settings]
-validator_jsonrpc_listen_address = "127.0.0.1:18232"
-
-[storage.database]
-path = "/zaino/db"
-
-[grpc_settings]
-listen_address = "127.0.0.1:8137"
-
-[mempool]
-max_cost_bytes = 67108864
-poll_interval_ms = 250
-"#;
-
-        let config_path = create_test_config_file(&temp_dir, toml_content, "mempool.toml");
-        let config = load_config(&config_path).expect("load_config failed");
-        assert_eq!(config.mempool.max_cost_bytes, Some(67_108_864));
-        assert_eq!(config.mempool.poll_interval_ms, Some(250));
+        let config = load_with_delta(
+            &temp_dir,
+            "[mempool]\nmax_cost_bytes = 67108864\npoll_interval_ms = 250\n",
+        )
+        .expect("load_config failed");
+        assert_eq!(
+            config.mempool.max_cost_bytes.map(MaxCostBytes::get),
+            Some(67_108_864)
+        );
+        assert_eq!(config.mempool.poll_interval_ms, NonZeroU64::new(250));
 
         let mempool = config.mempool.to_mempool_config();
         assert_eq!(mempool.max_cost_bytes(), 67_108_864);
-        assert_eq!(mempool.poll_interval, std::time::Duration::from_millis(250));
+        assert_eq!(
+            mempool.poll_interval.get(),
+            std::time::Duration::from_millis(250)
+        );
         // Unset: the listing floor follows the poll interval, and everything
         // else keeps its built-in default.
         assert_eq!(mempool.metadata_min_interval, mempool.poll_interval);
@@ -864,19 +925,7 @@ poll_interval_ms = 250
         let _guard = EnvGuard::new();
         let temp_dir = TempDir::new().unwrap();
 
-        let toml_content = r#"
-[validator_settings]
-validator_jsonrpc_listen_address = "127.0.0.1:18232"
-
-[storage.database]
-path = "/zaino/db"
-
-[grpc_settings]
-listen_address = "127.0.0.1:8137"
-"#;
-
-        let config_path = create_test_config_file(&temp_dir, toml_content, "no_mempool.toml");
-        let config = load_config(&config_path).expect("load_config failed");
+        let config = load_with_delta(&temp_dir, "").expect("load_config failed");
 
         let mempool = config.mempool.to_mempool_config();
         let defaults = zaino_mempool::MempoolConfig::default();
@@ -886,6 +935,15 @@ listen_address = "127.0.0.1:8137"
             mempool.metadata_min_interval,
             defaults.metadata_min_interval
         );
+    }
+
+    #[test]
+    fn poll_interval_ms_zero_is_rejected() {
+        let _guard = EnvGuard::new();
+        let temp_dir = TempDir::new().unwrap();
+        // 0 must be rejected at deserialize (NonZeroU64), not silently become a
+        // zero-delay poll that panics tokio::time::interval.
+        assert!(load_with_delta(&temp_dir, "[mempool]\npoll_interval_ms = 0\n").is_err());
     }
 
     #[test]
@@ -1415,17 +1473,23 @@ listen_address = "127.0.0.1:8137"
     #[test]
     fn mempool_bound_below_the_zip401_floor_is_rejected() {
         // Operator-UX guard (N3): a bound that cannot admit one floor-cost
-        // transaction is a misconfiguration named at startup.
-        let mut cfg = ZainodConfig::default();
-        cfg.mempool.max_cost_bytes =
-            Some(zaino_mempool::config::MEMPOOL_TRANSACTION_COST_THRESHOLD - 1);
-        cfg.check_config()
-            .expect_err("a sub-floor mempool bound must be rejected");
+        // transaction is a misconfiguration rejected at deserialize (via
+        // `MaxCostBytes`), not silently accepted.
+        let _guard = EnvGuard::new();
+        let temp_dir = TempDir::new().unwrap();
+        let floor = zaino_mempool::config::MEMPOOL_TRANSACTION_COST_THRESHOLD;
 
-        // Exactly at the floor is accepted.
-        cfg.mempool.max_cost_bytes =
-            Some(zaino_mempool::config::MEMPOOL_TRANSACTION_COST_THRESHOLD);
-        cfg.check_config()
+        assert!(
+            load_with_delta(
+                &temp_dir,
+                &format!("[mempool]\nmax_cost_bytes = {}\n", floor - 1)
+            )
+            .is_err(),
+            "a sub-floor mempool bound must be rejected at deserialize"
+        );
+
+        // Exactly at the floor admits one transaction and is accepted.
+        load_with_delta(&temp_dir, &format!("[mempool]\nmax_cost_bytes = {floor}\n"))
             .expect("a bound at the floor admits one transaction and is accepted");
     }
 

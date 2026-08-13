@@ -22,7 +22,7 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
             .nfs
             .as_ref()
             .and_then(|nfs| nfs.subscribe_epoch_changes());
-        let mut interval = tokio::time::interval(self.config.poll_interval);
+        let mut interval = tokio::time::interval(self.config.poll_interval.get());
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         self.reconcile();

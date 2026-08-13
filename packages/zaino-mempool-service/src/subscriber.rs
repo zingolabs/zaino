@@ -161,26 +161,26 @@ impl MempoolSubscriber {
         &self,
         exclude_suffixes_client_endian: &[Vec<u8>],
     ) -> Result<Vec<TxIdExcludeSuffix>, MempoolFilterError> {
-        if exclude_suffixes_client_endian.len() > self.config.max_exclude_count {
+        if exclude_suffixes_client_endian.len() > self.config.max_exclude_count.get() {
             return Err(MempoolFilterError::TooManyExcludes {
                 actual: exclude_suffixes_client_endian.len(),
-                max: self.config.max_exclude_count,
+                max: self.config.max_exclude_count.get(),
             });
         }
 
         exclude_suffixes_client_endian
             .iter()
             .map(|suffix| {
-                if suffix.len() < self.config.min_exclude_suffix_len {
+                if suffix.len() < self.config.exclude_suffix_bounds.min().get() {
                     return Err(MempoolFilterError::ExcludeSuffixTooShort {
                         actual: suffix.len(),
-                        min: self.config.min_exclude_suffix_len,
+                        min: self.config.exclude_suffix_bounds.min().get(),
                     });
                 }
-                if suffix.len() > self.config.max_exclude_suffix_len {
+                if suffix.len() > self.config.exclude_suffix_bounds.max().get() {
                     return Err(MempoolFilterError::ExcludeSuffixTooLong {
                         actual: suffix.len(),
-                        max: self.config.max_exclude_suffix_len,
+                        max: self.config.exclude_suffix_bounds.max().get(),
                     });
                 }
                 // Stored verbatim; matched with `ends_with` against internal txid

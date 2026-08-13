@@ -19,7 +19,9 @@ use zaino_source::{
     GetMempoolTxidsError, GetRawMempoolTransactionError, MempoolTxMeta, QueryError,
 };
 
-use zaino_mempool::config::MempoolConfig;
+use std::num::NonZeroUsize;
+
+use zaino_mempool::config::{MempoolConfig, NonZeroDuration};
 use zaino_mempool::ports::BlockRef;
 
 #[cfg(feature = "tip_aware_mempool")]
@@ -288,7 +290,7 @@ fn epoch(generation: u64, height: u32, hash_byte: u8) -> NonFinalizedEpoch {
 
 fn fast_config() -> MempoolConfig {
     let mut config = MempoolConfig::default();
-    config.poll_interval = Duration::from_millis(5);
+    config.poll_interval = NonZeroDuration::new(Duration::from_millis(5)).expect("nonzero");
     // Keep the metadata floor at the poll cadence, as the default does — a test
     // that wants coalescing raises it explicitly.
     config.metadata_min_interval = config.poll_interval;
@@ -424,7 +426,7 @@ mod core {
         // service that had done nothing wrong — about one run in ten. Production
         // polls at 500ms, so the recovery this bounds is sub-second there.
         let mut config = fast_config();
-        config.poll_interval = Duration::from_secs(1);
+        config.poll_interval = NonZeroDuration::new(Duration::from_secs(1)).expect("nonzero");
         let (service, subscriber, source) = spawn_core(100, 0xAB, vec![mtx(1, 100)], config);
 
         // The immediate first interval tick serves the initial set.
@@ -753,7 +755,8 @@ mod core {
         // poll inside the floor defers the *additions* — and says so, rather than
         // presenting a short set as complete.
         let mut config = fast_config();
-        config.metadata_min_interval = Duration::from_secs(30);
+        config.metadata_min_interval =
+            NonZeroDuration::new(Duration::from_secs(30)).expect("nonzero");
         let (service, subscriber, source) = spawn_core(100, 0xAB, vec![mtx(1, 100)], config);
 
         wait_for(&subscriber, |s| s.tx_count == 1).await;
@@ -784,7 +787,8 @@ mod core {
         // thaws on the tip re-tag, so holding it back would make
         // `metadata_min_interval` extend the post-block freeze by its own length.
         let mut config = fast_config();
-        config.metadata_min_interval = Duration::from_secs(30);
+        config.metadata_min_interval =
+            NonZeroDuration::new(Duration::from_secs(30)).expect("nonzero");
         let (service, subscriber, source) =
             spawn_core(100, 0xAB, vec![mtx(1, 100), mtx(2, 100)], config);
 
@@ -940,7 +944,7 @@ mod core {
         // A consumer that falls behind the bounded feed is told so *in band*
         // (never a silent skip), so it can resync from `current()`.
         let mut config = fast_config();
-        config.event_buffer_len = 2; // tiny buffer: one publish overflows it
+        config.event_buffer_len = NonZeroUsize::new(2).expect("nonzero"); // tiny buffer: one publish overflows it
 
         let source = MockSource::new();
         source.set_tip(block_ref(100, 0xAB));
@@ -1128,7 +1132,7 @@ mod coherence {
         nfs.set(epoch(1, 100, 0xAB));
 
         let mut slow_tick = fast_config();
-        slow_tick.poll_interval = Duration::from_secs(30);
+        slow_tick.poll_interval = NonZeroDuration::new(Duration::from_secs(30)).expect("nonzero");
 
         let core = MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
         let coherence = CoherenceService::spawn(
@@ -1273,7 +1277,8 @@ mod coherence {
         // far longer than the wait budget: if thaw waited for it, the wait times
         // out and the test fails.
         let mut config = fast_config();
-        config.metadata_min_interval = Duration::from_secs(10);
+        config.metadata_min_interval =
+            NonZeroDuration::new(Duration::from_secs(10)).expect("nonzero");
         let h = spawn_coherent(100, 0xAB, 1, vec![mtx(1, 100)], config);
         wait_for(&h.subscriber, is_live).await;
 
@@ -1433,7 +1438,7 @@ mod coherence {
         // indistinguishable from the normal tip-change close, so the client
         // would treat a partial mempool as the complete one.
         let mut config = fast_config();
-        config.event_buffer_len = 2; // tiny buffer: a small flood overflows it
+        config.event_buffer_len = NonZeroUsize::new(2).expect("nonzero"); // tiny buffer: a small flood overflows it
 
         let h = spawn_coherent(100, 0xAB, 1, vec![mtx(1, 100)], config);
         wait_for(&h.subscriber, |s| is_live(s) && s.set.tx_count == 1).await;

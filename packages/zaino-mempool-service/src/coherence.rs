@@ -109,7 +109,7 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
         config: MempoolConfig,
         cancel: CancellationToken,
     ) -> Arc<Self> {
-        let (events, _) = broadcast::channel(config.event_buffer_len);
+        let (events, _) = broadcast::channel(config.event_buffer_len.get());
 
         let service = Arc::new(Self {
             mempool,

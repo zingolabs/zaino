@@ -39,7 +39,7 @@ pub mod event;
 #[cfg(feature = "tip_aware_mempool")]
 pub mod tip;
 
-pub use config::MempoolConfig;
+pub use config::{ExcludeSuffixBounds, MempoolConfig};
 pub use entry::MempoolEntry;
 pub use error::MempoolError;
 pub use ports::{BlockRef, Mempool, MempoolSource};

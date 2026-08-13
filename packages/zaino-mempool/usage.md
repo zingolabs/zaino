@@ -146,6 +146,17 @@ via `zainod`'s `[mempool]` config section.
   carries **no coherence penalty** — because the re-tag still publishes, tip-coherent
   reads thaw after a block on the poll cadence regardless of this value.
 
+The zero-invalid knobs are typed so an invalid value is unrepresentable rather
+than checked later: `event_buffer_len`, `max_concurrent_raw_fetches` and
+`max_exclude_count` are `NonZeroUsize`, and `poll_interval` / `metadata_min_interval`
+are `NonZeroDuration`. The exclude-suffix length window is a single
+`ExcludeSuffixBounds` (built with `ExcludeSuffixBounds::new(min, max)`, which
+rejects `min > max`) rather than two independent fields, so an inverted window
+that would reject every suffix cannot be constructed. `max_cost_bytes` stays a
+plain runtime-adjustable `u64` — the core tolerates any value (a sub-floor bound
+simply refuses every addition); `zainod` rejects a sub-floor value at config
+deserialization as operator UX, not as a core invariant.
+
 ## The coherent view (feature `tip_aware_mempool`)
 
 `TipAwareMempool::coherent_snapshot()` returns a `CoherentSnapshot`: the core set
