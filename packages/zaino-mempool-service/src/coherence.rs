@@ -9,13 +9,18 @@
 //! # No re-fetch: coherence is a pure function of (core set + V, NS)
 //!
 //! The core tags every published set with the validator tip `V` it was fetched at
-//! ([`MempoolSnapshot::source_tip`]). Because that tag and the mempool data are a
+//! ([`MempoolSnapshot::source_tip`](zaino_mempool::snapshot::MempoolSnapshot::source_tip)).
+//! Because that tag and the mempool data are a
 //! single-source pair, the coherence layer never re-fetches and needs no
 //! before/after guards: it simply compares `V` against the observed NS epoch. When
 //! they agree it blesses the core's *current* set as valid for that epoch; when
 //! they diverge (or a tip is unavailable, or the core set is incomplete) it freezes
 //! at the last blessed set. This is the guarantee the whole rework rests on — see
 //! `zaino-mempool`'s `tip` module docs.
+
+mod publish;
+mod reconcile;
+mod run;
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -30,11 +35,7 @@ use zaino_mempool::event::MempoolEvent;
 use zaino_mempool::ports::{
     Mempool, MempoolStreamError, NfsEpochObserver, NoNfs, NonFinalizedEpoch,
 };
-use zaino_mempool::snapshot::MempoolSnapshot;
-use zaino_mempool::tip::{
-    CoherentSnapshot, FreezeReason, MempoolMode, ObservedTips, TipChange, ValidatorTip,
-};
-use zaino_mempool::update::MempoolUpdate;
+use zaino_mempool::tip::CoherentSnapshot;
 
 /// Writer-local state for synthesizing a non-finalized epoch from the validator
 /// tip in validator-only mode: `generation` increments only when the validator
@@ -160,269 +161,6 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
         {
             handle.abort();
         }
-    }
-
-    // ---- background task ------------------------------------------------
-
-    async fn run(self: Arc<Self>) {
-        self.status.store(StatusType::Syncing);
-
-        let mut updates = self.mempool.subscribe_updates();
-        // The NS tip advances on Zaino's own sync, which does not always coincide
-        // with a core update. Prefer the observer's wake signal — waiting for the
-        // tick instead would freeze tip-coherent reads for that long after every
-        // block — and keep the tick as a fallback for observers with no signal.
-        let mut epoch_wake = self
-            .nfs
-            .as_ref()
-            .and_then(|nfs| nfs.subscribe_epoch_changes());
-        let mut interval = tokio::time::interval(self.config.poll_interval);
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
-        self.reconcile();
-
-        loop {
-            tokio::select! {
-                _ = self.cancel.cancelled() => {
-                    self.publish_closing();
-                    return;
-                }
-                _ = interval.tick() => {
-                    self.reconcile();
-                }
-                _ = async {
-                    match epoch_wake.as_mut() {
-                        Some(rx) => {
-                            let _ = rx.changed().await;
-                        }
-                        None => std::future::pending::<()>().await,
-                    }
-                } => {
-                    self.reconcile();
-                }
-                update = updates.recv() => {
-                    match update {
-                        Ok(MempoolUpdate::Closing { .. }) => {
-                            self.publish_closing();
-                            return;
-                        }
-                        // Reconcile on the batch boundary only. The core emits
-                        // one message per added/removed txid and closes every
-                        // batch with a `Reset`, so waking on each would mean
-                        // thousands of reconciles for a single cleared block —
-                        // and `reconcile` re-reads the core's snapshot wholesale
-                        // anyway, so the per-txid messages carry nothing extra.
-                        Ok(MempoolUpdate::Reset { .. })
-                        | Err(broadcast::error::RecvError::Lagged(_)) => {
-                            self.reconcile();
-                        }
-                        Ok(MempoolUpdate::Added { .. })
-                        | Ok(MempoolUpdate::Removed { .. })
-                        | Ok(MempoolUpdate::Lagged { .. }) => {}
-                        Err(broadcast::error::RecvError::Closed) => return,
-                    }
-                }
-            }
-        }
-    }
-
-    // ---- reconcile (freeze / thaw) --------------------------------------
-
-    /// Recompute the coherent view from the core's current snapshot and the NS
-    /// epoch. Idempotent: publishes (and emits an event) only on a state change.
-    fn reconcile(&self) {
-        let core = self.mempool.current();
-        let observed = self.observe_tips(&core);
-        let prev = self.coherent.load_full();
-
-        // Freeze only when the set may be *wrong*, not merely *short*.
-        //
-        // Freezing does not make missing transactions appear — it withholds the
-        // ones the core does have on top of the ones it doesn't. A set that is
-        // short by a known, named list (capacity-refused or metadata-deferred;
-        // see `MempoolSnapshot::unadmitted`) is still an accurate view of what it
-        // holds and is tagged with a sound tip, so serving it is strictly more
-        // useful than a blackout. A set that may not reflect the source at all is
-        // the case a freeze is actually for.
-        if core.completeness.may_be_wrong() {
-            self.freeze(&prev, observed, FreezeReason::CoreIncomplete);
-            return;
-        }
-
-        match observed.agree() {
-            Some(epoch) => self.publish_live(&prev, core, observed, epoch),
-            None => {
-                let reason = Self::freeze_reason_from_tips(prev.observed_tips, observed);
-                self.freeze(&prev, observed, reason);
-            }
-        }
-    }
-
-    fn observe_tips(&self, core: &MempoolSnapshot) -> ObservedTips {
-        let validator = core.source_tip.map(|best_tip| ValidatorTip { best_tip });
-
-        let non_finalized = match &self.nfs {
-            // Dual-tip: the observer reports the ChainIndex epoch (`None` freezes).
-            Some(observer) => observer.current_epoch(),
-            // Validator-only: synthesize the epoch from the validator tip.
-            None => validator.map(|tip| self.synthesized_epoch(tip.best_tip)),
-        };
-
-        ObservedTips {
-            validator,
-            non_finalized,
-        }
-    }
-
-    fn synthesized_epoch(
-        &self,
-        validator_tip: zaino_mempool::ports::BlockRef,
-    ) -> NonFinalizedEpoch {
-        let mut state = self.synth_epoch.lock().expect("synth epoch lock poisoned");
-        if state.last_validator_hash != Some(validator_tip.hash) {
-            state.generation = state.generation.saturating_add(1);
-            state.last_validator_hash = Some(validator_tip.hash);
-        }
-        NonFinalizedEpoch {
-            generation: state.generation,
-            best_tip: validator_tip,
-        }
-    }
-
-    fn classify_tip_change(previous: ObservedTips, next: ObservedTips) -> TipChange {
-        let validator_changed = previous.validator != next.validator;
-        let ns_changed = previous.non_finalized != next.non_finalized;
-        match (validator_changed, ns_changed) {
-            (false, false) => TipChange::None,
-            (true, false) => TipChange::ValidatorChanged,
-            (false, true) => TipChange::NonFinalizedChanged,
-            (true, true) => TipChange::BothChanged,
-        }
-    }
-
-    fn freeze_reason_from_tips(old_tips: ObservedTips, new_tips: ObservedTips) -> FreezeReason {
-        if new_tips.non_finalized.is_none() {
-            return FreezeReason::NonFinalizedUnavailable;
-        }
-        if new_tips.validator.is_none() {
-            return FreezeReason::ValidatorTipUnavailable;
-        }
-        if new_tips.disagree() {
-            return FreezeReason::TipsDiverged;
-        }
-        match Self::classify_tip_change(old_tips, new_tips) {
-            TipChange::ValidatorChanged => FreezeReason::ValidatorTipChanged,
-            TipChange::NonFinalizedChanged => FreezeReason::NonFinalizedTipChanged,
-            TipChange::BothChanged => FreezeReason::BothTipsChanged,
-            TipChange::None => FreezeReason::TipsDiverged,
-        }
-    }
-
-    // ---- publication ----------------------------------------------------
-
-    fn publish_live(
-        &self,
-        prev: &CoherentSnapshot,
-        core: Arc<MempoolSnapshot>,
-        observed: ObservedTips,
-        epoch: NonFinalizedEpoch,
-    ) {
-        // Serving live: the freeze clock (if any) stops here.
-        *self.frozen_since.lock().expect("frozen_since poisoned") = None;
-
-        // Already live for this epoch at this core generation: nothing to do.
-        if prev.is_live_for(epoch)
-            && prev.set.mempool_generation == core.mempool_generation
-            && prev.observed_tips == observed
-        {
-            self.status.store(StatusType::Ready);
-            return;
-        }
-
-        // A steady update at the same epoch: emit an `Added` for each entry newly
-        // present since the previous coherent set, so open streams see it live.
-        let steady_update = prev.is_live_for(epoch);
-        let next_sequence = prev.event_sequence.saturating_add(1);
-
-        let snapshot = Arc::new(CoherentSnapshot {
-            set: Arc::clone(&core),
-            mode: MempoolMode::Live { valid_for: epoch },
-            valid_for: Some(epoch),
-            observed_tips: observed,
-            event_sequence: next_sequence,
-        });
-        self.coherent.store(snapshot);
-
-        if steady_update {
-            for entry in core.entries_in_order.iter() {
-                if !prev.set.by_txid.contains_key(&entry.txid) {
-                    let _ = self.events.send(Arc::new(MempoolEvent::Added {
-                        sequence: next_sequence,
-                        valid_for: epoch,
-                        entry: Arc::clone(entry),
-                    }));
-                }
-            }
-        }
-        let _ = self.events.send(Arc::new(MempoolEvent::Live {
-            sequence: next_sequence,
-            valid_for: epoch,
-        }));
-
-        self.status.store(StatusType::Ready);
-    }
-
-    fn freeze(&self, prev: &CoherentSnapshot, observed: ObservedTips, reason: FreezeReason) {
-        // Start the freeze clock on the transition *into* a freeze, and hold it
-        // across repeated freezes (a reason/tip change while still frozen keeps
-        // the original start). Cleared only on thaw in `publish_live`.
-        if !matches!(prev.mode, MempoolMode::Frozen { .. }) {
-            *self.frozen_since.lock().expect("frozen_since poisoned") = Some(Instant::now());
-        }
-
-        // Already frozen for the same reason against the same tips: no re-publish.
-        if matches!(prev.mode, MempoolMode::Frozen { reason: r, .. } if r == reason)
-            && prev.observed_tips == observed
-        {
-            self.status.store(StatusType::Syncing);
-            return;
-        }
-
-        let next_sequence = prev.event_sequence.saturating_add(1);
-        let snapshot = Arc::new(CoherentSnapshot {
-            // Keep the last blessed set; freezing never mutates it.
-            set: Arc::clone(&prev.set),
-            mode: MempoolMode::Frozen {
-                valid_for: prev.valid_for,
-                reason,
-            },
-            valid_for: prev.valid_for,
-            observed_tips: observed,
-            event_sequence: next_sequence,
-        });
-        self.coherent.store(snapshot);
-        let _ = self.events.send(Arc::new(MempoolEvent::Frozen {
-            sequence: next_sequence,
-            reason,
-        }));
-        self.status.store(StatusType::Syncing);
-    }
-
-    fn publish_closing(&self) {
-        let prev = self.coherent.load_full();
-        let next_sequence = prev.event_sequence.saturating_add(1);
-        let closing = Arc::new(CoherentSnapshot {
-            set: Arc::clone(&prev.set),
-            mode: MempoolMode::Closing,
-            valid_for: prev.valid_for,
-            observed_tips: prev.observed_tips,
-            event_sequence: next_sequence,
-        });
-        self.coherent.store(closing);
-        let _ = self.events.send(Arc::new(MempoolEvent::Closing {
-            sequence: next_sequence,
-        }));
-        self.status.store(StatusType::Closing);
     }
 }
 
