@@ -46,10 +46,6 @@ pub use ports::{BlockRef, Mempool, MempoolPorts};
 pub use snapshot::{reversed_txid_key, MempoolCompleteness, MempoolSnapshot};
 pub use update::MempoolUpdate;
 
-/// Re-exported from [`zaino_source`] so adapters and consumers of this crate can
-/// name the metadata type without also depending on the port crate.
-pub use zaino_source::MempoolTxMeta;
-
 #[cfg(feature = "tip_aware_mempool")]
 pub use event::MempoolEvent;
 #[cfg(feature = "tip_aware_mempool")]
