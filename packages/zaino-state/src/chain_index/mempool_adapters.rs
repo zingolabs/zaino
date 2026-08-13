@@ -67,7 +67,7 @@ impl<S> MempoolSourceAdapter<S> {
     }
 }
 
-impl<S: BlockchainSource> zaino_source::GetMempoolTxids for MempoolSourceAdapter<S> {
+impl<S: zaino_source::GetMempoolTxids> zaino_source::GetMempoolTxids for MempoolSourceAdapter<S> {
     fn get_mempool_txids(
         &self,
     ) -> impl std::future::Future<
@@ -80,7 +80,9 @@ impl<S: BlockchainSource> zaino_source::GetMempoolTxids for MempoolSourceAdapter
     }
 }
 
-impl<S: BlockchainSource> zaino_source::GetMempoolMetadata for MempoolSourceAdapter<S> {
+impl<S: zaino_source::GetMempoolMetadata> zaino_source::GetMempoolMetadata
+    for MempoolSourceAdapter<S>
+{
     fn get_mempool_metadata(
         &self,
     ) -> impl std::future::Future<
@@ -93,7 +95,9 @@ impl<S: BlockchainSource> zaino_source::GetMempoolMetadata for MempoolSourceAdap
     }
 }
 
-impl<S: BlockchainSource> zaino_source::GetRawMempoolTransaction for MempoolSourceAdapter<S> {
+impl<S: zaino_source::GetRawMempoolTransaction> zaino_source::GetRawMempoolTransaction
+    for MempoolSourceAdapter<S>
+{
     fn get_raw_mempool_transaction(
         &self,
         txid: zaino_primitives::types::TransactionId,
@@ -107,7 +111,9 @@ impl<S: BlockchainSource> zaino_source::GetRawMempoolTransaction for MempoolSour
     }
 }
 
-impl<S: BlockchainSource> zaino_source::GetMempoolSourceTip for MempoolSourceAdapter<S> {
+impl<S: zaino_source::GetMempoolSourceTip> zaino_source::GetMempoolSourceTip
+    for MempoolSourceAdapter<S>
+{
     fn get_mempool_source_tip(
         &self,
     ) -> impl std::future::Future<
@@ -123,7 +129,10 @@ impl<S: BlockchainSource> zaino_source::GetMempoolSourceTip for MempoolSourceAda
     }
 }
 
-impl<S: BlockchainSource> zaino_source::SubscribeBlocks for MempoolSourceAdapter<S> {
+// The one port the adapter *provides* rather than forwards: the block-arrival
+// wake the request/response source has no way to offer. Bounded only by what the
+// trait itself requires (`Send + Sync`), not by the source's capabilities.
+impl<S: Send + Sync> zaino_source::SubscribeBlocks for MempoolSourceAdapter<S> {
     fn subscribe_to_blocks_received(&self) -> Option<tokio::sync::watch::Receiver<()>> {
         Some(self.block_wake.clone())
     }
