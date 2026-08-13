@@ -190,7 +190,7 @@ async fn read_body_capped(
     // an absent or lying one is caught by the running total below.
     if response
         .content_length()
-        .is_some_and(|len| len > max as u64)
+        .is_some_and(|len| len > u64::try_from(max).unwrap_or(u64::MAX))
     {
         return Err(RpcError::ResponseBodyTooLarge { max });
     }
