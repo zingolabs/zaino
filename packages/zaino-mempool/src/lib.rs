@@ -42,7 +42,7 @@ pub mod tip;
 pub use config::MempoolConfig;
 pub use entry::MempoolEntry;
 pub use error::MempoolError;
-pub use ports::{BlockRef, Mempool, MempoolPorts};
+pub use ports::{Mempool, MempoolPorts};
 pub use snapshot::{reversed_txid_key, MempoolCompleteness, MempoolSnapshot};
 pub use update::MempoolUpdate;
 

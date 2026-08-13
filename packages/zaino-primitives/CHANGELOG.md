@@ -22,6 +22,10 @@ and this library adheres to Rust's notion of
   boundary rather than fabricated here.
 - `PoolTreestate::final_root`, so `z_gettreestate` can serve `finalRoot`
   without the domain having to omit it.
+- `BlockRef` (`types::BlockRef`) — a block named by hash and height, with
+  `from_tip` / `From<(BlockHash, Height)>`. Chain-wide vocabulary rather than
+  any one subsystem's: a response echoing back the range it covered and a
+  mempool set tagged with the tip it was read at are the same question.
 
 ### Changed
 - **Dependency policy** — this crate depends on `thiserror` and nothing else,
@@ -32,6 +36,11 @@ and this library adheres to Rust's notion of
 - Byte order is internal throughout. `BlockHash` and `TransactionHash` hold
   bytes in protocol order, not display order; the reversal happens at the
   boundary that presents.
+- `BlockRef` moved from `types::rpc` (where it was defined inside
+  `address_deltas`) to the top-level `types`, and gained `Hash`. It was never
+  an RPC-response shape — `getaddressdeltas` was just the first caller — and
+  the mempool subsystem had independently defined an identical copy. One
+  canonical type, one path to it.
 
 ### Deprecated
 ### Removed

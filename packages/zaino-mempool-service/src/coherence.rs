@@ -276,7 +276,7 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
 
     fn synthesized_epoch(
         &self,
-        validator_tip: zaino_mempool::ports::BlockRef,
+        validator_tip: zaino_primitives::types::BlockRef,
     ) -> NonFinalizedEpoch {
         let mut state = self.synth_epoch.lock().expect("synth epoch lock poisoned");
         if state.last_validator_hash != Some(validator_tip.hash) {

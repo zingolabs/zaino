@@ -279,10 +279,10 @@ impl<V: ChainIndexSourcePorts> ValidatorSource<V> {
     async fn block_info(
         &self,
         height: zaino_primitives::types::Height,
-    ) -> Result<zaino_primitives::types::rpc::BlockRef, BlockchainSourceError> {
+    ) -> Result<zaino_primitives::types::BlockRef, BlockchainSourceError> {
         let bytes = self.validator.get_raw_block(height).await.map_err(err)?;
         let block = block_from_bytes(bytes)?;
-        Ok(zaino_primitives::types::rpc::BlockRef {
+        Ok(zaino_primitives::types::BlockRef {
             hash: zaino_primitives::types::BlockHash::from(block.hash().0),
             height,
         })

@@ -13,10 +13,9 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use zaino_primitives::types::TransactionId;
+use zaino_primitives::types::{BlockRef, TransactionId};
 
 use crate::entry::MempoolEntry;
-use crate::ports::BlockRef;
 
 /// The sort key that puts txids in *reversed* byte order.
 ///

@@ -207,7 +207,7 @@ impl BlockInfo {
     }
 
     /// Renders a domain block reference as the served JSON shape.
-    fn from_domain(block: zaino_primitives::types::rpc::BlockRef) -> Self {
+    fn from_domain(block: zaino_primitives::types::BlockRef) -> Self {
         Self {
             hash: super::display_hex(block.hash.into()),
             height: block.height.into(),
@@ -264,7 +264,7 @@ mod domain_tests {
     /// the same encoding as a delta's txid, from a different domain type.
     #[test]
     fn chain_info_response_names_its_endpoints() {
-        let block = |height: u32| domain::rpc::BlockRef {
+        let block = |height: u32| domain::BlockRef {
             hash: domain::BlockHash::from(ASYMMETRIC),
             height: Height::try_from(height).unwrap(),
         };
@@ -291,7 +291,7 @@ mod domain_tests {
     /// the variant follows the request, not what the data turned out to be.
     #[test]
     fn an_empty_chain_info_answer_keeps_its_shape() {
-        let block = domain::rpc::BlockRef {
+        let block = domain::BlockRef {
             hash: domain::BlockHash::from(ASYMMETRIC),
             height: Height::try_from(1u32).unwrap(),
         };

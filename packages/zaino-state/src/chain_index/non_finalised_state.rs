@@ -143,7 +143,7 @@ impl NonfinalizedBlockCacheSnapshot {
     pub(crate) fn epoch(&self) -> zaino_mempool::NonFinalizedEpoch {
         zaino_mempool::NonFinalizedEpoch {
             generation: self.generation,
-            best_tip: zaino_mempool::BlockRef {
+            best_tip: zaino_primitives::types::BlockRef {
                 hash: zaino_primitives::types::BlockHash::from(self.best_tip.hash.0),
                 height: zaino_primitives::types::Height::try_from(u32::from(self.best_tip.height))
                     .expect("a non-finalized tip height is always a valid chain height"),

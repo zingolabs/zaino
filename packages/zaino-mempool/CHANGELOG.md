@@ -22,7 +22,9 @@ and this library adheres to Rust's notion of
     read model plus the `MempoolUpdate` change feed); `MempoolSnapshot` — now
     tip-agnostic, tagged with the validator tip (`source_tip`) the set was
     fetched at; `MempoolEntry`, `MempoolConfig`, `MempoolError`,
-    `MempoolCompleteness`, `BlockRef`, and `MempoolUpdate`.
+    `MempoolCompleteness`, and `MempoolUpdate`. The tip tag is
+    `zaino_primitives::types::BlockRef` — chain-wide vocabulary, not this
+    crate's, so there is one canonical type rather than a mempool-local copy.
   - Under `tip_aware_mempool`: the `NfsEpochObserver` port (with `NoNfs`), the
     `TipAwareMempool` port (`coherent_snapshot` + the ready-made
     `stream_transactions_until_tip_change` loop), `NonFinalizedEpoch`, the

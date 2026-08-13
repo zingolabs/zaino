@@ -18,10 +18,10 @@
 
 use std::sync::Arc;
 
-use zaino_primitives::types::TransactionId;
+use zaino_primitives::types::{BlockRef, TransactionId};
 
 use crate::entry::MempoolEntry;
-use crate::ports::{BlockRef, NonFinalizedEpoch};
+use crate::ports::NonFinalizedEpoch;
 use crate::snapshot::MempoolSnapshot;
 
 /// The tip of the source that supplies mempool data ("V").

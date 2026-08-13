@@ -35,10 +35,10 @@ use zaino_status::{NamedAtomicStatus, StatusType};
 use crate::subscriber::MempoolSubscriber;
 use zaino_mempool::config::MempoolConfig;
 use zaino_mempool::entry::MempoolEntry;
-use zaino_mempool::ports::{BlockRef, MempoolPorts};
+use zaino_mempool::ports::MempoolPorts;
 use zaino_mempool::snapshot::{MempoolCompleteness, MempoolSnapshot};
 use zaino_mempool::update::MempoolUpdate;
-use zaino_primitives::types::{Height, TransactionId};
+use zaino_primitives::types::{BlockRef, Height, TransactionId};
 use zaino_source::{GetRawMempoolTransactionError, MempoolTxMeta, QueryError};
 
 /// Fraction of `max_cost_bytes` the set must fall back below before previously
