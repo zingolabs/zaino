@@ -54,7 +54,7 @@ use zebra_state::HashOrHeight;
 pub mod encoding;
 /// All state below [`OPERATIONAL_NFS_DEPTH`] blocks of the best-known chain tip.
 pub mod finalised_state;
-mod mempool_ports;
+mod mempool_adapters;
 
 /// How long the mempool may stay frozen before the sync loop says so.
 ///
@@ -747,17 +747,17 @@ pub struct NodeBackedChainIndex<
     Source: BlockchainSource = crate::chain_index::validator_source::ZebraValidatorSource,
 > {
     /// The tip-agnostic mempool: always live, never frozen.
-    mempool: std::sync::Arc<mempool_ports::ChainIndexMempool<Source>>,
+    mempool: std::sync::Arc<mempool_adapters::ChainIndexMempool<Source>>,
     /// The tip-aware view over it, for the reads that place a transaction
     /// relative to a chain tip.
-    coherence: std::sync::Arc<mempool_ports::ChainIndexCoherence<Source>>,
+    coherence: std::sync::Arc<mempool_adapters::ChainIndexCoherence<Source>>,
     /// Fired by the sync loop after each non-finalized publication, so the
     /// coherence layer thaws on the block rather than on its next poll tick.
     /// Without it every block is followed by a freeze lasting a full tick.
     nfs_epoch_signal: tokio::sync::watch::Sender<()>,
     /// Fired by the sync loop when the chain height moves, giving the mempool a
     /// push path the source does not have. A hint only — see
-    /// [`MempoolSourceAdapter`](mempool_ports::MempoolSourceAdapter).
+    /// [`MempoolSourceAdapter`](mempool_adapters::MempoolSourceAdapter).
     block_wake_signal: tokio::sync::watch::Sender<()>,
     non_finalized_state: Arc<ArcSwapOption<crate::NonFinalizedState<Source>>>,
     finalized_db: std::sync::Arc<finalised_state::FinalisedState<Source>>,
@@ -864,14 +864,14 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         let cancel_token = CancellationToken::new();
 
         let mempool = zaino_mempool_service::MempoolService::spawn(
-            mempool_ports::MempoolSourceAdapter::new(source.clone(), block_wake),
+            mempool_adapters::MempoolSourceAdapter::new(source.clone(), block_wake),
             config.mempool.clone(),
             cancel_token.child_token(),
         );
 
         let coherence = zaino_mempool_service::CoherenceService::spawn(
             mempool.subscriber(),
-            mempool_ports::NfsEpochAdapter::new(non_finalized_state.clone(), nfs_epoch_wake),
+            mempool_adapters::NfsEpochAdapter::new(non_finalized_state.clone(), nfs_epoch_wake),
             // Cloned rather than rebuilt: `MempoolConfig` shares its
             // `max_cost_bytes` cell across clones, so an operator changing the
             // bound moves both services at once.
