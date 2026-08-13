@@ -111,7 +111,7 @@ impl MempoolSubscriber {
 
     /// The current snapshot's txids, sorted by canonical (reversed) byte order.
     pub fn get_txids(&self) -> Arc<[TransactionId]> {
-        self.current.load().txids_sorted.clone()
+        self.current.load().txids_sorted().clone()
     }
 
     /// Subscribe to the bounded mempool change feed (the raw receiver).
@@ -208,7 +208,7 @@ impl MempoolSubscriber {
 
         let mut excluded: HashSet<TransactionId> = HashSet::new();
         for exclude in exclude_suffixes {
-            if let Some(txid) = unique_suffix_match(&snapshot.txids_sorted, &exclude.suffix) {
+            if let Some(txid) = unique_suffix_match(snapshot.txids_sorted(), &exclude.suffix) {
                 excluded.insert(txid);
             }
         }
