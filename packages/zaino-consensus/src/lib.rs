@@ -1,27 +1,54 @@
-//! Consensus-derived constants with a single source of truth.
+//! Zcash consensus constants, and the protocol-limit validation built on them.
 //!
-//! Each value derives from zebra's authoritative upstream constant; nothing else in
-//! the workspace should hard-code these — reference this module instead.
+//! Nothing else in the workspace should restate these values — reference this
+//! crate instead.
+//!
+//! # Why this is its own crate, and why it has no dependencies
+//!
+//! These are protocol facts. Anything reasoning about the chain needs them,
+//! including subsystems built to depend on as little as possible, so holding
+//! them in a general-purpose crate meant referencing a reorg bound cost a
+//! dependency on the config, logging and TLS stacks too.
+//!
+//! They are also *not* any implementation's values. A node implementation
+//! encodes the consensus rules, exactly as this crate does; it does not define
+//! them. Depending on one to learn a protocol constant would invert that —
+//! taking a dependency on a peer's reading of a specification we can read
+//! ourselves, and dragging that peer's entire type system along for a `u32`.
+//!
+//! So each value is stated here with its provenance, and
+//! `zaino-convert-zebra` — which owns our relationship to zebra's types —
+//! carries tests asserting our reading and zebra's still agree. Divergence
+//! becomes a test failure rather than a silent behaviour change, without
+//! anything having to depend on zebra to obtain a number.
+
+pub mod work;
+
+pub use work::{work_from_bits, WorkError};
 
 /// Number of confirmations before a coinbase output becomes spendable.
 ///
-/// Single source of truth, from zebra's transparent-coinbase maturity rule.
-pub const COINBASE_MATURITY: u32 = zebra_chain::transparent::MIN_TRANSPARENT_COINBASE_MATURITY;
+/// Zcash protocol specification §3.10: a coinbase output cannot be spent until
+/// 100 blocks have been mined on top of the block containing it.
+pub const COINBASE_MATURITY: u32 = 100;
+
+/// The protocol's reorganisation limit: no valid reorg rewrites more than this
+/// many blocks.
+pub const MAX_BLOCK_REORG_HEIGHT: u32 = 1000;
 
 /// Distance below the best-chain tip of the finalised / non-finalised seam: a block
 /// buried deeper than this is finalised (reorg-stable).
 ///
-/// Derived from zebra's protocol reorg limit (`MAX_BLOCK_REORG_HEIGHT`). The `+ 1`
-/// accounts for the tip block itself, preserving the historical seam semantics.
-pub const MAX_NONFINALISED_DEPTH: u32 =
-    zebra_chain::parameters::constants::MAX_BLOCK_REORG_HEIGHT + 1;
+/// [`MAX_BLOCK_REORG_HEIGHT`] plus one for the tip block itself, preserving the
+/// historical seam semantics.
+pub const MAX_NONFINALISED_DEPTH: u32 = MAX_BLOCK_REORG_HEIGHT + 1;
 
 /// A tractable one-tenth of [`MAX_NONFINALISED_DEPTH`], for fast tests that need a
 /// finalised seam without building a full ~[`MAX_NONFINALISED_DEPTH`]-block chain.
 ///
 /// Integer division, so this is `100` when the real depth is `1001`. Test-only: it
-/// lets in-crate tests select a shallow seam that still derives from the single
-/// source of truth rather than a hard-coded literal.
+/// lets tests select a shallow seam that still derives from the protocol constant
+/// rather than a literal of its own.
 pub const FAST_TEST_MAX_NONFINALISED_DEPTH: u32 = MAX_NONFINALISED_DEPTH / 10;
 
 /// Why a client's raw transaction was rejected before it reached a validator.
@@ -45,11 +72,11 @@ pub enum RawTransactionError {
     },
 }
 
-/// Maximum serialised size of a transaction, in bytes.
+/// Maximum serialised size of a block, in bytes.
 ///
-/// A transaction must fit in a block, so the block limit is the transaction
-/// limit. From zebra's authoritative constant.
-pub const MAX_BLOCK_BYTES: u64 = zebra_chain::block::MAX_BLOCK_BYTES;
+/// Also the maximum size of a transaction: a transaction must fit in a block,
+/// so the block limit bounds both.
+pub const MAX_BLOCK_BYTES: u64 = 2_000_000;
 
 /// Validates that `bytes` does not exceed the protocol transaction size limit.
 pub fn validate_raw_transaction_bytes(bytes: &[u8]) -> Result<(), RawTransactionError> {

@@ -25,7 +25,8 @@ use crate::chain_index::tests::vectors::{
     build_mockchain_source, indexed_block_chain, load_test_vectors,
 };
 use crate::error::FinalisedStateError;
-use crate::{ChainIndexConfig, Height, StatusType};
+use crate::{ChainIndexConfig, Height};
+use zaino_status::StatusType;
 
 /// Spawns a `FinalisedState` in ephemeral mode over `source`. The database path
 /// is a throwaway tempdir that is never opened (ephemeral mode opens no DB).
@@ -44,6 +45,7 @@ pub(crate) async fn spawn_ephemeral_finalised_state(
             ..Default::default()
         },
         ephemeral: true,
+        mempool: Default::default(),
         db_version: 1,
         network: ActivationHeights::default().to_regtest_network(),
     };

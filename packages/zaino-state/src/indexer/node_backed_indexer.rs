@@ -47,7 +47,6 @@ use crate::{
     indexer::{
         handle_raw_transaction, IndexerSubscriber, LightWalletIndexer, ZcashIndexer, ZcashService,
     },
-    status::{Status, StatusType},
     stream::{
         AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
         UtxoReplyStream,
@@ -58,6 +57,7 @@ use crate::{
     chain_index::{non_finalised_state::ChainIndexSnapshot, NonFinalizedSnapshot},
     ChainIndex, ChainIndexRpcExt, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
 };
+use zaino_status::{Status, StatusType};
 
 /// A single node-backed chain-fetch + tx-submission service, generic over its
 /// [`BlockchainSource`].
@@ -572,7 +572,7 @@ impl NodeBackedIndexerServiceSubscriber<ZebraValidatorSource> {
     /// directly off the mempool's entries. Production code goes through the `ChainIndex`
     /// mempool API.
     #[cfg(feature = "test_dependencies")]
-    pub fn mempool(&self) -> &crate::chain_index::mempool::MempoolSubscriber {
+    pub fn mempool(&self) -> &zaino_mempool_service::MempoolSubscriber {
         self.indexer.mempool_subscriber()
     }
 }
@@ -1490,23 +1490,17 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
                     tonic::Status::not_found("Error: Transaction not received"),
                 ));
             };
-            let height: u64 = match height {
-                Some(h) => h as u64,
-                // Zebra returns None for mempool transactions, convert to `Mempool Height`.
-                None => {
-                    let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
-                    let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
-                        // TODO: This probably shouldn't be an error.
-                        // this is an improvement over previous behaviour of
-                        // acting as if we are only synced to the genesis block
-                        return Err(NodeBackedIndexerServiceError::UnavailableNotSyncedEnough);
-                    };
-                    non_finalized_snapshot.best_tip.height.0 as u64
-                }
-            };
+            // A `None` height means the validator has the transaction but it is
+            // unmined. `0` is the wire sentinel for that, and is the honest
+            // answer: this used to report the chain tip, which claimed the
+            // transaction was mined at a height it is not in, and to fail with
+            // `UnavailableNotSyncedEnough` when there was no non-finalized state
+            // — an error for the ordinary case of asking about a mempool
+            // transaction.
+            let height: u64 = height.map_or(0, |h| h as u64);
 
             Ok(RawTransaction {
-                data: hex.as_ref().to_vec(),
+                data: bytes::Bytes::copy_from_slice(hex.as_ref()),
                 height,
             })
         } else {
@@ -1723,24 +1717,13 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
         &self,
         request: GetMempoolTxRequest,
     ) -> Result<CompactTransactionStream, Self::Error> {
-        let mut exclude_txids: Vec<String> = vec![];
-
-        for (i, excluded_id) in request.exclude_txid_suffixes.iter().enumerate() {
-            if excluded_id.len() > 32 {
-                return Err(NodeBackedIndexerServiceError::TonicStatusError(
-                    tonic::Status::invalid_argument(format!(
-                        "Error: excluded txid {} is larger than 32 bytes",
-                        i
-                    )),
-                ));
-            }
-
-            // NOTE: the TransactionHash methods cannot be used for
-            // this hex encoding as exclusions could be truncated to less than 32 bytes
-            let reversed_txid_bytes: Vec<u8> = excluded_id.iter().cloned().rev().collect();
-            let hex_string_txid: String = hex::encode(&reversed_txid_bytes);
-            exclude_txids.push(hex_string_txid);
-        }
+        // Passed through as raw bytes. This used to reverse each suffix and hex
+        // it so the mempool could match on strings; the mempool now matches on
+        // the bytes directly, against a txid list sorted in the same reversed
+        // order, so the round trip through hex was pure loss — and the length
+        // and count checks it hand-rolled now live with the matcher that
+        // enforces them.
+        let exclude_txids = request.exclude_txid_suffixes.clone();
 
         let mempool = self.indexer.clone();
         let service_timeout = self.config.service.timeout;
@@ -1751,8 +1734,8 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
                 time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
                     match mempool.get_mempool_transactions(exclude_txids).await {
-                        Ok(transactions) => {
-                            for serialized_transaction_bytes in transactions {
+                        Ok(entries) => {
+                            for entry in entries {
                                 // One parse, not two. This used to deserialize
                                 // the same bytes into a `zebra_chain`
                                 // transaction and then again into
@@ -1763,7 +1746,7 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
                                 // what the TODO this replaces asked for.
                                 let compact =
                                     zebra_chain::transaction::Transaction::zcash_deserialize(
-                                        &mut Cursor::new(&serialized_transaction_bytes),
+                                        &mut Cursor::new(entry.serialized_bytes()),
                                     )
                                     .map_err(|e| {
                                         tonic::Status::unknown(format!(
@@ -1791,8 +1774,14 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
                             }
                         }
                         Err(e) => {
+                            // The ChainIndex error already carries its own gRPC
+                            // status — `invalid_argument` for a malformed
+                            // exclude list, `unavailable` for a retryable one.
+                            // Flattening every one to `unknown` told the client
+                            // nothing and made a caller mistake look like a
+                            // server fault.
                             channel_tx
-                                .send(Err(tonic::Status::unknown(e.to_string())))
+                                .send(Err(NodeBackedIndexerServiceError::from(e).into()))
                                 .await
                                 .ok();
                         }
@@ -1827,10 +1816,10 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 6) as u64),
                 async {
-                    let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
-                        // TODO: This probably shouldn't be an error.
-                        // this is an improvement over previous behaviour of
-                        // acting as if we are only synced to the genesis block
+                    // The snapshot must exist for the stream to be coherent
+                    // against anything; its contents are the mempool's business,
+                    // not this handler's.
+                    if snapshot.get_nfs_snapshot().is_none() {
                         if let Err(e) = channel_tx
                             .send(Err(tonic::Status::failed_precondition(
                                 "zaino not yet synced".to_string(),
@@ -1840,17 +1829,26 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
                             warn!(%e, "GetMempoolStream channel closed unexpectedly");
                         };
                         return;
-                    };
-                    let mempool_height = non_finalized_snapshot.best_tip.height.0;
-                    match indexer.get_mempool_stream(None) {
-                        Some(mut mempool_stream) => {
+                    }
+                    // The snapshot is passed in, not dropped: the stream must be
+                    // coherent with the tip this request was admitted against,
+                    // and `None` would take whatever the mempool is coherent
+                    // with instead.
+                    match indexer.get_mempool_stream(Some(&snapshot)) {
+                        Some(mempool_stream) => {
+                            let mut mempool_stream = std::pin::pin!(mempool_stream);
                             while let Some(result) = mempool_stream.next().await {
                                 match result {
                                     Ok(transaction_bytes) => {
                                         if channel_tx
                                             .send(Ok(RawTransaction {
                                                 data: transaction_bytes,
-                                                height: mempool_height as u64,
+                                                // A mempool transaction is
+                                                // unmined, and `0` is the wire
+                                                // sentinel for that. Reporting
+                                                // the chain tip claimed it was
+                                                // mined at a height it is not in.
+                                                height: 0,
                                             }))
                                             .await
                                             .is_err()
@@ -1860,9 +1858,9 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
                                     }
                                     Err(e) => {
                                         channel_tx
-                                            .send(Err(tonic::Status::internal(format!(
-                                                "Error in mempool stream: {e:?}"
-                                            ))))
+                                            .send(
+                                                Err(NodeBackedIndexerServiceError::from(e).into()),
+                                            )
                                             .await
                                             .ok();
                                         break;
@@ -1871,9 +1869,17 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
                             }
                         }
                         None => {
-                            warn!("Error fetching stream from mempool, Incorrect chain tip!");
+                            // The caller's snapshot is older than the one the
+                            // mempool is coherent with. Retryable, and
+                            // `failed_precondition` says so — `internal` read as
+                            // a server fault and gave the client nothing to act
+                            // on.
+                            warn!("mempool stream requested against a stale snapshot");
                             channel_tx
-                                .send(Err(tonic::Status::internal("Error getting mempool stream")))
+                                .send(Err(tonic::Status::failed_precondition(
+                                    "mempool is not coherent with the requested snapshot; \
+                                     retry with a fresh snapshot",
+                                )))
                                 .await
                                 .ok();
                         }

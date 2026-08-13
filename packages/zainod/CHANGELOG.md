@@ -9,11 +9,29 @@ and this crate adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- `zaino.mempool.coherence_frozen_seconds` metric description: how long
+  tip-coherent mempool reads have been frozen. Brief spikes are normal tip
+  transitions; a sustained non-zero value means the validator tip and Zaino's
+  have stopped agreeing and those reads are unavailable.
+
 - Ironwood (NU6.3) / V6 transaction support, end to end through the
   workspace crates: V6 parsing and ironwood extraction (`zaino-fetch`),
   `ironwoodActions` in served compact blocks (`zaino-proto`, on by
   default), and ironwood treestate roots in the chain index
   (`zaino-state`).
+- `[mempool]` config section — `max_cost_bytes` (default 128 MiB, the mempool
+  memory backstop), `poll_interval_ms` (default 500), `metadata_min_interval_ms`
+  (defaults to the poll interval; raising it trades mempool latency for validator
+  load) and `max_exclude_count` (default 1024). Every field is optional and an
+  absent section keeps the built-in bounds, so existing config files are
+  unaffected. This makes the mempool capacity bound operator-configurable.
+
+  `poll_interval_ms = 0` is rejected by `check_config` with a named error. It is
+  not a slow mempool but a crash: the poll and coherence loops both build a
+  `tokio::time::interval` from it, and a zero period aborts at startup. The
+  operator sees a configuration error instead. `metadata_min_interval_ms = 0` is
+  deliberately still accepted — it is a `>=` floor, so zero means "no coalescing
+  beyond the poll cadence".
 - `[storage.database]` config gains `sync_checkpoint_interval` (seconds, default
   120) — the bulk-sync write-batch flush interval, which also bounds the window of
   unflushed (`NO_SYNC`) writes at risk on a hard kill / eviction.

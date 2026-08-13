@@ -1,0 +1,50 @@
+[package]
+name = "zaino-mempool-service"
+description = "Concrete adapters/implementations for Zaino's mempool ports (hexagonal adapter layer)."
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+version = "0.1.0"
+
+[dependencies]
+# Mempool ports + foundational types
+zaino-mempool = { workspace = true }
+
+# The validator ports the service reads through, and the domain vocabulary its
+# snapshots are expressed in.
+zaino-source = { workspace = true }
+zaino-primitives = { workspace = true }
+
+# The status vocabulary the service reports its health in.
+zaino-status = { workspace = true }
+
+# Runtime
+tokio = { workspace = true, features = ["full"] }
+tokio-util = { workspace = true }
+futures = { workspace = true }
+arc-swap = { workspace = true }
+
+# Streams
+async-stream = "0.3"
+
+# Utility
+thiserror = { workspace = true }
+bytes.workspace = true
+
+# Observability. This crate owns the runtime loops, so it is where degradation
+# becomes visible; `zaino-mempool` is types and ports with nothing to emit.
+tracing = { workspace = true }
+
+[features]
+# Opt-in tip-coherence layer: the `CoherenceService` and its coherent read/stream
+# handle, over the matching `zaino-mempool` feature.
+tip_aware_mempool = ["zaino-mempool/tip_aware_mempool"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util", "macros"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

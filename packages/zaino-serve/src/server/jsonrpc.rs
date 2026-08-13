@@ -5,11 +5,10 @@ use crate::{
     server::{config::JsonRpcServerConfig, error::ServerError},
 };
 
-use zaino_state::{
-    IndexerSubscriber, LightWalletIndexer, NamedAtomicStatus, StatusType, ZcashIndexer,
-};
+use zaino_state::{IndexerSubscriber, LightWalletIndexer, ZcashIndexer};
+use zaino_status::{NamedAtomicStatus, StatusType};
 
-use zebra_chain::block::MAX_BLOCK_BYTES;
+use zaino_consensus::MAX_BLOCK_BYTES;
 use zebra_rpc::server::{
     cookie::{remove_from_disk, write_to_disk, Cookie},
     http_request_compatibility::HttpRequestMiddlewareLayer,

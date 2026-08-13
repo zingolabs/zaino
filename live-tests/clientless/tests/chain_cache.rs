@@ -211,6 +211,7 @@ mod chain_query_interface {
                         ..Default::default()
                     },
                     ephemeral,
+                    mempool: Default::default(),
                     db_version: 1,
                     // This fixture derives its runtime network from the
                     // heights the harness launched the validator with.
@@ -258,6 +259,7 @@ mod chain_query_interface {
                         ..Default::default()
                     },
                     ephemeral,
+                    mempool: Default::default(),
                     db_version: 1,
                     // This fixture derives its runtime network from the
                     // heights the harness launched the validator with.
@@ -353,7 +355,7 @@ mod chain_query_interface {
         // little past that. Generate well beyond it so low heights are evicted from the
         // cache and served by the ephemeral finalised passthrough. `fast-test-seam`
         // shrinks the seam to `FAST_TEST_MAX_NONFINALISED_DEPTH`, so a small chain suffices.
-        let seam = zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
+        let seam = zaino_consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
         test_manager
             .generate_blocks_and_wait_for_tip(seam + 50, &indexer)
             .await;
@@ -466,7 +468,7 @@ mod chain_query_interface {
             .expect("a chain height") as u32;
 
         // Finalised floor is `tip - seam`; pick a range straddling it.
-        let seam = zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
+        let seam = zaino_consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
         let finalised_start = Height::try_from(chain_height - (seam + 50)).unwrap();
         let finalised_tip = Height::try_from(chain_height - seam).unwrap();
         let end = Height::try_from(chain_height - seam / 2).unwrap();
@@ -605,12 +607,12 @@ mod chain_query_interface {
 
             tokio::time::sleep(Duration::from_millis(500)).await;
 
-            let mut mempool_stream =
-                indexer
-                    .get_mempool_stream(Some(&snapshot))
-                    .unwrap_or_else(|| {
-                        panic!("fresh snapshot unexpectedly returned None on iteration {iteration}")
-                    });
+            let mempool_stream = indexer
+                .get_mempool_stream(Some(&snapshot))
+                .unwrap_or_else(|| {
+                    panic!("fresh snapshot unexpectedly returned None on iteration {iteration}")
+                });
+            let mut mempool_stream = std::pin::pin!(mempool_stream);
 
             test_manager
                 .generate_blocks_and_wait_for_tip(1, &indexer)
@@ -707,17 +709,17 @@ mod chain_query_interface {
                 );
             }
 
-            let mut mempool_stream =
-                indexer
-                    .get_mempool_stream(Some(&snapshot))
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "fresh snapshot unexpectedly returned None on iteration {iteration}: \
+            let mempool_stream = indexer
+                .get_mempool_stream(Some(&snapshot))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "fresh snapshot unexpectedly returned None on iteration {iteration}: \
                      current tip height={:?} hash={:?}, \
                      prev_tip height={:?} hash={:?}",
-                            current_tip.height, current_tip.hash, prev_tip.height, prev_tip.hash,
-                        )
-                    });
+                        current_tip.height, current_tip.hash, prev_tip.height, prev_tip.hash,
+                    )
+                });
+            let mut mempool_stream = std::pin::pin!(mempool_stream);
 
             test_manager
                 .generate_blocks_and_wait_for_tip(1, &indexer)

@@ -77,8 +77,8 @@ pub struct TxFilter {
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct RawTransaction {
     /// The serialized representation of the Zcash transaction.
-    #[prost(bytes = "vec", tag = "1")]
-    pub data: ::prost::alloc::vec::Vec<u8>,
+    #[prost(bytes = "bytes", tag = "1")]
+    pub data: ::prost::bytes::Bytes,
     /// The height at which the transaction is mined, or a sentinel value.
     ///
     /// Due to an error in the original protobuf definition, it is necessary to

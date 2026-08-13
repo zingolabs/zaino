@@ -1,0 +1,16 @@
+[package]
+name = "zaino-status"
+description = "Service status and health-probe vocabulary shared across the Zaino stack."
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+version = "0.1.0"
+
+[dependencies]
+tracing = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

@@ -9,9 +9,8 @@ use zaino_serve::rpc::jsonrpc::wire::{
     block_header::GetBlockHeader, block_subsidy::GetBlockSubsidy, mining_info::GetMiningInfoWire,
     peer_info::GetPeerInfo,
 };
-use zaino_state::{
-    LightWalletIndexer, NodeBackedIndexerServiceSubscriber, Status, StatusType, ZcashIndexer,
-};
+use zaino_state::{LightWalletIndexer, NodeBackedIndexerServiceSubscriber, ZcashIndexer};
+use zaino_status::{Status, StatusType};
 use zaino_testutils::ValidatorOracle;
 use zaino_testutils::{Rpc, TestManager, ValidatorExt, ValidatorKind};
 use zebra_chain::parameters::subsidy::ParameterSubsidy as _;

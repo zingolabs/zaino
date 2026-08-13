@@ -10,8 +10,9 @@ use zaino_serve::{
 };
 use zaino_state::{
     IndexerService, LightWalletService, NodeBackedIndexerService, NodeBackedIndexerServiceConfig,
-    StatusType, ZcashIndexer, ZcashService,
+    ZcashIndexer, ZcashService,
 };
+use zaino_status::StatusType;
 
 use crate::{config::ZainodConfig, error::IndexerError};
 

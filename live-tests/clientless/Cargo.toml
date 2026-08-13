@@ -77,3 +77,5 @@ zaino-serve = { workspace = true }
 serde_json.workspace = true
 zaino-primitives.workspace = true
 zaino-rpc.workspace = true
+zaino-consensus.workspace = true
+zaino-status.workspace = true

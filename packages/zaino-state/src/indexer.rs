@@ -30,13 +30,11 @@ use zebra_rpc::methods::{
     GetAddressBalanceRequest, GetAddressTxIdsRequest, GetBlock, GetBlockHash, GetRawTransaction,
 };
 
-use crate::{
-    status::Status,
-    stream::{
-        AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
-        SubtreeRootReplyStream, UtxoReplyStream,
-    },
+use crate::stream::{
+    AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
+    SubtreeRootReplyStream, UtxoReplyStream,
 };
+use zaino_status::Status;
 
 /// Wrapper struct for a ZainoState chain-fetch service (currently the single
 /// [`node_backed_indexer::NodeBackedIndexerService`]).
@@ -77,8 +75,8 @@ where
 
 /// Zcash Service functionality.
 ///
-/// Implementors automatically gain [`Liveness`](zaino_common::probing::Liveness) and
-/// [`Readiness`](zaino_common::probing::Readiness) via the [`Status`] supertrait.
+/// Implementors automatically gain [`Liveness`](zaino_status::probing::Liveness) and
+/// [`Readiness`](zaino_status::probing::Readiness) via the [`Status`] supertrait.
 pub trait ZcashService: Sized + Status {
     /// A subscriber to the service, used to fetch chain data.
     type Subscriber: Clone + ZcashIndexer + LightWalletIndexer + Status;
@@ -965,7 +963,7 @@ pub(crate) async fn handle_raw_transaction<Indexer: LightWalletIndexer>(
             };
             transmitter
                 .send(Ok(RawTransaction {
-                    data: transaction_obj.hex().as_ref().to_vec(),
+                    data: bytes::Bytes::copy_from_slice(transaction_obj.hex().as_ref()),
                     height,
                 }))
                 .await

@@ -237,8 +237,9 @@ use crate::{
     },
     config::ChainIndexConfig,
     error::FinalisedStateError,
-    BlockHash, BlockMetadata, BlockWithMetadata, ChainWork, Height, IndexedBlock, StatusType,
+    BlockHash, BlockMetadata, BlockWithMetadata, ChainWork, Height, IndexedBlock,
 };
+use zaino_status::StatusType;
 
 use std::{sync::Arc, time::Duration};
 use tokio::time::{interval, MissedTickBehavior};

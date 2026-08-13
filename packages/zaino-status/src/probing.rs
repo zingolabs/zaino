@@ -14,7 +14,7 @@
 //! # Example
 //!
 //! ```
-//! use zaino_common::probing::{Liveness, Readiness, VitalsProbe};
+//! use zaino_status::probing::{Liveness, Readiness, VitalsProbe};
 //!
 //! struct MyService {
 //!     connected: bool,

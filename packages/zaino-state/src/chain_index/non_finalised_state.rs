@@ -94,6 +94,12 @@ impl ChainIndexSnapshot {
             ChainIndexSnapshot::StillSyncingFinalizedState { .. } => None,
         }
     }
+
+    /// The mempool-coherence epoch of the underlying non-finalized snapshot, if
+    /// the non-finalized state exists.
+    pub(crate) fn nfs_epoch(&self) -> Option<zaino_mempool::NonFinalizedEpoch> {
+        self.get_nfs_snapshot().map(|snapshot| snapshot.epoch())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +118,38 @@ pub(crate) struct NonfinalizedBlockCacheSnapshot {
     // best_tip is a BestTip, which contains
     // a Height, and a BlockHash as named fields.
     pub best_tip: BlockIndex,
+    /// Monotonic publication generation, bumped when [`Self::best_tip`] changes.
+    ///
+    /// Deliberately *not* bumped on every publication. The sync loop republishes
+    /// each iteration — to trim finalized blocks and so on — even when the tip
+    /// has not moved, and bumping on those no-op republishes would churn the
+    /// mempool-coherence epoch every cycle and defeat the freeze/thaw agreement
+    /// check. Keying it to tip changes gives a stable epoch for a stable tip
+    /// while still distinguishing successive tips, including same-height reorgs,
+    /// which change the tip hash.
+    pub generation: u64,
+}
+
+impl NonfinalizedBlockCacheSnapshot {
+    /// The stable epoch identifying this published snapshot.
+    ///
+    /// Returns the mempool port's [`NonFinalizedEpoch`](zaino_mempool::NonFinalizedEpoch)
+    /// so the mempool can gate coherence without depending on `zaino-state` types.
+    ///
+    /// The epoch carries generation *and* tip. Matching on the tip hash alone
+    /// would be weaker: two snapshots can share a best tip and differ in
+    /// contents, and a reader that had been handed the earlier one would be told
+    /// it was current.
+    pub(crate) fn epoch(&self) -> zaino_mempool::NonFinalizedEpoch {
+        zaino_mempool::NonFinalizedEpoch {
+            generation: self.generation,
+            best_tip: zaino_primitives::types::BlockRef {
+                hash: zaino_primitives::types::BlockHash::from(self.best_tip.hash.0),
+                height: zaino_primitives::types::Height::try_from(u32::from(self.best_tip.height))
+                    .expect("a non-finalized tip height is always a valid chain height"),
+            },
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -234,6 +272,7 @@ impl NonfinalizedBlockCacheSnapshot {
             blocks,
             heights_to_hashes,
             best_tip,
+            generation: 0,
         }
     }
 
@@ -459,9 +498,14 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
                 anchor_height,
             )
             .await?;
-            self.current.swap(Arc::new(
-                NonfinalizedBlockCacheSnapshot::from_initial_block(anchor_block),
-            ));
+            // Preserve generation monotonicity across a re-anchor:
+            // `from_initial_block` starts at 0, so carry the old generation
+            // forward. A reader holding a pre-re-anchor epoch must not have it
+            // silently match a post-re-anchor snapshot.
+            let mut anchor_snapshot =
+                NonfinalizedBlockCacheSnapshot::from_initial_block(anchor_block);
+            anchor_snapshot.generation = initial_state.generation.saturating_add(1);
+            self.current.swap(Arc::new(anchor_snapshot));
             initial_state = self.get_snapshot()
         }
         let mut working_snapshot = initial_state.as_ref().clone();
@@ -718,6 +762,14 @@ impl<Source: BlockchainSource> NonFinalizedState<Source> {
         self.handle_reorg(&mut new_snapshot, best_block, 0)
             .await
             .map_err(|_e| UpdateError::DatabaseHole)?;
+
+        // See the field docs on `generation` for why this is keyed to tip
+        // changes rather than to publications.
+        new_snapshot.generation = if new_snapshot.best_tip != initial_state.best_tip {
+            initial_state.generation.saturating_add(1)
+        } else {
+            initial_state.generation
+        };
 
         // Need to get best hash at some point in this process
         let stored = self

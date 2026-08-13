@@ -66,3 +66,5 @@ zaino-primitives.workspace = true
 serde_json.workspace = true
 indexmap.workspace = true
 zaino-source.workspace = true
+zaino-status.workspace = true
+zaino-consensus.workspace = true

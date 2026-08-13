@@ -6,6 +6,7 @@ mod aliases;
 mod block;
 mod block_commitments;
 mod block_hash;
+mod block_ref;
 mod block_verbose;
 mod blockchain_info;
 mod chain_work;
@@ -42,6 +43,7 @@ pub use aliases::{
 pub use block::{Block, BlockHeader, ChainMetadata};
 pub use block_commitments::BlockCommitments;
 pub use block_hash::BlockHash;
+pub use block_ref::BlockRef;
 pub use block_verbose::{BlockTreeSizes, BlockVerbose};
 pub use blockchain_info::{BlockchainInfo, ValuePoolBalance};
 pub use chain_work::ChainWork;

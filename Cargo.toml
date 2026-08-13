@@ -1,6 +1,8 @@
 # Workspace Members are in dependency order, do not change this without prior consideration.
 [workspace]
 members = [
+    "packages/zaino-status",
+    "packages/zaino-consensus",
     "packages/zaino-primitives",
     "packages/zaino-address",
     "packages/zaino-source",
@@ -9,6 +11,8 @@ members = [
     "packages/zaino-source-zebra-rpc",
     "packages/zaino-source-zebra-readstate",
     "packages/zaino-source-zebra",
+    "packages/zaino-mempool",
+    "packages/zaino-mempool-service",
     "packages/zaino-common",
     "packages/zainod",
     "packages/zaino-serve",
@@ -24,6 +28,8 @@ members = [
 # default-members — so the heavy live-test crates are built and tested only
 # when selected explicitly (`-p e2e` / `-p clientless`). See docs/adr/0002.
 default-members = [
+    "packages/zaino-status",
+    "packages/zaino-consensus",
     "packages/zaino-primitives",
     "packages/zaino-address",
     "packages/zaino-source",
@@ -32,6 +38,8 @@ default-members = [
     "packages/zaino-source-zebra-rpc",
     "packages/zaino-source-zebra-readstate",
     "packages/zaino-source-zebra",
+    "packages/zaino-mempool",
+    "packages/zaino-mempool-service",
     "packages/zaino-common",
     "packages/zainod",
     "packages/zaino-serve",
@@ -111,6 +119,7 @@ metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false, features = ["http-listener"] }
 
 # Utility
+bytes = "1.12"
 thiserror = "2.0"
 once_cell = "1.20"
 chrono = "0.4"
@@ -130,6 +139,15 @@ tempfile = "3.2"
 # no longer need `default-features = false` to drop it: their default feature
 # set is already empty. Enable zcashd end-to-end with `--features zcashd_support`.
 zainod = { path = "packages/zainod" }
+# Service status and health-probe vocabulary. A leaf with one dependency
+# (`tracing`), so any subsystem can report its status without inheriting a
+# dependency graph to do it.
+zaino-status = { path = "packages/zaino-status", version = "0.1.0" }
+# Consensus-derived constants (reorg bound, coinbase maturity, block size limit)
+# and the protocol-limit validation built on them. A leaf that depends on no
+# node implementation, so referencing a consensus fact costs neither a
+# general-purpose dependency nor a peer's reading of the specification.
+zaino-consensus = { path = "packages/zaino-consensus", version = "0.1.0" }
 # Zero-dependency domain vocabulary. Every crate that needs chain-level types
 # (heights, hashes, blocks, transactions) depends on this rather than on
 # `zebra-chain` or on another zaino crate. See docs/adr/0010.
@@ -141,6 +159,8 @@ zaino-address = { path = "packages/zaino-address", version = "0.1.0" }
 # ask, so each consumer's bound names exactly the capabilities it uses and an
 # adapter that cannot answer a question simply does not implement it.
 zaino-source = { path = "packages/zaino-source", version = "0.1.0" }
+zaino-mempool = { path = "packages/zaino-mempool", version = "0.1.0" }
+zaino-mempool-service = { path = "packages/zaino-mempool-service", version = "0.1.0" }
 # JSON-RPC 2.0 transport shared by the RPC-backed source adapters.
 zaino-rpc = { path = "packages/zaino-rpc", version = "0.1.0" }
 # The single place `zebra_chain` types are translated into domain types.

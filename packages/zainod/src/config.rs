@@ -47,6 +47,70 @@ pub enum BackendType {
     Rpc,
 }
 
+/// Operator-facing mempool bounds, as they appear in `[mempool]`.
+///
+/// A TOML mirror of [`zaino_mempool::MempoolConfig`], which cannot be
+/// deserialized directly (its runtime-adjustable bound is a shared atomic).
+/// Every field is optional: an absent one keeps the built-in default, so an
+/// existing config file without a `[mempool]` section is unaffected.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct MempoolSettings {
+    /// Maximum total mempool cost Zaino will hold, in bytes (default 128 MiB).
+    ///
+    /// A denial-of-service backstop, deliberately above the validator's own
+    /// ZIP-401 limit so healthy operation never reaches it. Over-bound
+    /// transactions are refused and the mempool is reported as incomplete.
+    pub max_cost_bytes: Option<u64>,
+    /// How often to poll the validator's mempool, in milliseconds (default 500).
+    pub poll_interval_ms: Option<u64>,
+    /// Minimum gap between verbose mempool listings, in milliseconds (default:
+    /// the poll interval).
+    ///
+    /// The validator answers the listing by walking its whole mempool. Raising
+    /// this above the poll interval trades *addition-visibility* latency for
+    /// validator load: between listings, new transactions are deferred (not
+    /// dropped), while removals and the tip re-tag still apply — so tip-coherent
+    /// reads are unaffected.
+    pub metadata_min_interval_ms: Option<u64>,
+    /// Maximum exclude suffixes a client may send to a filtered mempool read
+    /// (default 1024).
+    pub max_exclude_count: Option<usize>,
+}
+
+impl MempoolSettings {
+    /// Applies these settings over the built-in defaults.
+    ///
+    /// Infallible: the only value that could be rejected here — a zero poll
+    /// interval — is refused by [`ZainodConfig::validate`] before this runs, so
+    /// the operator sees a named configuration error rather than a panic deep in
+    /// the runtime. `NonZeroU64::new` still cannot be unwrapped blindly, so a
+    /// zero that somehow reached this point falls back to the default rather
+    /// than taking the process down.
+    fn to_mempool_config(&self) -> zaino_mempool::MempoolConfig {
+        let mut config = zaino_mempool::MempoolConfig::default();
+        if let Some(max_cost_bytes) = self.max_cost_bytes {
+            config.set_max_cost_bytes(max_cost_bytes);
+        }
+        if let Some(poll_interval_ms) = self.poll_interval_ms.and_then(std::num::NonZeroU64::new) {
+            config.set_poll_interval_ms(poll_interval_ms);
+            // Keep the listing floor tied to the poll cadence unless it is set
+            // explicitly, matching the default relationship between the two.
+            config.set_metadata_min_interval(config.poll_interval());
+        }
+        if let Some(metadata_min_interval_ms) = self.metadata_min_interval_ms {
+            // No non-zero requirement: this is a `>=` floor, so zero means "no
+            // floor beyond the poll cadence" — a meaningful setting.
+            config.set_metadata_min_interval(std::time::Duration::from_millis(
+                metadata_min_interval_ms,
+            ));
+        }
+        if let Some(max_exclude_count) = self.max_exclude_count {
+            config.set_max_exclude_count(max_exclude_count);
+        }
+        config
+    }
+}
+
 /// Header for generated configuration files.
 pub const GENERATED_CONFIG_HEADER: &str = r#"# Zaino Configuration
 #
@@ -123,6 +187,9 @@ pub struct ZainodConfig {
     pub service: ServiceConfig,
     /// Storage settings (cache and database).
     pub storage: StorageConfig,
+    /// Mempool bounds (memory cap, poll cadence, exclude-list caps).
+    #[serde(default)]
+    pub mempool: MempoolSettings,
     /// Zcash donation UA address
     pub donation_address: Option<DonationAddress>,
 }
@@ -242,6 +309,37 @@ impl ZainodConfig {
             }
         }
 
+        // A mempool cost bound below the ZIP-401 per-transaction floor can never
+        // admit even one transaction — a misconfiguration worth naming at startup
+        // rather than leaving the operator with a silently empty mempool. (The
+        // arithmetic in the mempool itself already tolerates such a value safely;
+        // this is operator UX only.)
+        if let Some(max_cost_bytes) = self.mempool.max_cost_bytes {
+            let floor = zaino_mempool::config::MEMPOOL_TRANSACTION_COST_THRESHOLD;
+            if max_cost_bytes < floor {
+                return Err(IndexerError::ConfigError(format!(
+                    "mempool.max_cost_bytes ({max_cost_bytes}) is below the ZIP-401 \
+                     per-transaction floor ({floor}); it cannot admit a single \
+                     transaction. Raise it to at least {floor}."
+                )));
+            }
+        }
+
+        // A zero poll interval is not a slow mempool, it is a panic: the poll
+        // and coherence loops both build a `tokio::time::interval` from it, and
+        // a zero period aborts the process at spawn. Named here so the operator
+        // gets a configuration error instead of a crash.
+        //
+        // `metadata_min_interval_ms` deliberately has no such check: it is a
+        // `>=` floor, so zero simply means "no floor beyond the poll cadence".
+        if self.mempool.poll_interval_ms == Some(0) {
+            return Err(IndexerError::ConfigError(
+                "mempool.poll_interval_ms must be greater than zero; a zero poll \
+                 period is rejected by the runtime timer and would abort at startup."
+                    .to_string(),
+            ));
+        }
+
         Ok(())
     }
 }
@@ -265,6 +363,7 @@ impl Default for ZainodConfig {
             },
             service: ServiceConfig::default(),
             storage: StorageConfig::default(),
+            mempool: MempoolSettings::default(),
             ephemeral_finalised_state: false,
             zebra_db_path: default_zebra_db_path(),
             network: Network::PubTestnet,
@@ -451,6 +550,7 @@ fn build_common(cfg: ZainodConfig) -> CommonBackendConfig {
         ephemeral_finalised_state: cfg.ephemeral_finalised_state,
         network: cfg.network,
         donation_address: cfg.donation_address,
+        mempool: cfg.mempool.to_mempool_config(),
         indexer_version: env!("CARGO_PKG_VERSION").to_string(),
     }
 }
@@ -745,6 +845,75 @@ listen_address = "127.0.0.1:8137"
         let config_path3 = create_test_config_file(&temp_dir, toml_content3, "s3.toml");
         let config3 = load_config(&config_path3).expect("Config S3 failed");
         assert!(config3.json_server_settings.unwrap().cookie_dir.is_none());
+    }
+
+    #[test]
+    fn mempool_section_overrides_only_what_it_sets() {
+        let _guard = EnvGuard::new();
+        let temp_dir = TempDir::new().unwrap();
+
+        let toml_content = r#"
+[validator_settings]
+validator_jsonrpc_listen_address = "127.0.0.1:18232"
+
+[storage.database]
+path = "/zaino/db"
+
+[grpc_settings]
+listen_address = "127.0.0.1:8137"
+
+[mempool]
+max_cost_bytes = 67108864
+poll_interval_ms = 250
+"#;
+
+        let config_path = create_test_config_file(&temp_dir, toml_content, "mempool.toml");
+        let config = load_config(&config_path).expect("load_config failed");
+        assert_eq!(config.mempool.max_cost_bytes, Some(67_108_864));
+        assert_eq!(config.mempool.poll_interval_ms, Some(250));
+
+        let mempool = config.mempool.to_mempool_config();
+        assert_eq!(mempool.max_cost_bytes(), 67_108_864);
+        assert_eq!(
+            mempool.poll_interval(),
+            std::time::Duration::from_millis(250)
+        );
+        // Unset: the listing floor follows the poll interval, and everything
+        // else keeps its built-in default.
+        assert_eq!(mempool.metadata_min_interval(), mempool.poll_interval());
+        assert_eq!(
+            mempool.max_exclude_count(),
+            zaino_mempool::MempoolConfig::default().max_exclude_count()
+        );
+    }
+
+    #[test]
+    fn absent_mempool_section_keeps_the_built_in_bounds() {
+        let _guard = EnvGuard::new();
+        let temp_dir = TempDir::new().unwrap();
+
+        let toml_content = r#"
+[validator_settings]
+validator_jsonrpc_listen_address = "127.0.0.1:18232"
+
+[storage.database]
+path = "/zaino/db"
+
+[grpc_settings]
+listen_address = "127.0.0.1:8137"
+"#;
+
+        let config_path = create_test_config_file(&temp_dir, toml_content, "no_mempool.toml");
+        let config = load_config(&config_path).expect("load_config failed");
+
+        let mempool = config.mempool.to_mempool_config();
+        let defaults = zaino_mempool::MempoolConfig::default();
+        assert_eq!(mempool.max_cost_bytes(), defaults.max_cost_bytes());
+        assert_eq!(mempool.poll_interval(), defaults.poll_interval());
+        assert_eq!(
+            mempool.metadata_min_interval(),
+            defaults.metadata_min_interval()
+        );
     }
 
     #[test]
@@ -1269,6 +1438,55 @@ listen_address = "127.0.0.1:8137"
         json_config_with("[fc00::1]:8237")
             .check_config()
             .expect("IPv6 ULA JSON-RPC bind must be accepted");
+    }
+
+    #[test]
+    fn mempool_bound_below_the_zip401_floor_is_rejected() {
+        // Operator-UX guard (N3): a bound that cannot admit one floor-cost
+        // transaction is a misconfiguration named at startup.
+        let mut cfg = ZainodConfig::default();
+        cfg.mempool.max_cost_bytes =
+            Some(zaino_mempool::config::MEMPOOL_TRANSACTION_COST_THRESHOLD - 1);
+        cfg.check_config()
+            .expect_err("a sub-floor mempool bound must be rejected");
+
+        // Exactly at the floor is accepted.
+        cfg.mempool.max_cost_bytes =
+            Some(zaino_mempool::config::MEMPOOL_TRANSACTION_COST_THRESHOLD);
+        cfg.check_config()
+            .expect("a bound at the floor admits one transaction and is accepted");
+    }
+
+    /// A zero poll interval is a crash, not a slow mempool: both the poll and
+    /// coherence loops build a `tokio::time::interval` from it, and a zero
+    /// period aborts at spawn. It has to be refused where the operator can see
+    /// it, not reached at runtime.
+    #[test]
+    fn a_zero_mempool_poll_interval_is_rejected() {
+        let mut cfg = ZainodConfig::default();
+        cfg.mempool.poll_interval_ms = Some(0);
+        cfg.check_config()
+            .expect_err("a zero poll interval must be rejected");
+
+        // One millisecond is absurd but survivable, so the bound is zero itself
+        // rather than a judgement about sensible cadences.
+        cfg.mempool.poll_interval_ms = Some(1);
+        cfg.check_config()
+            .expect("a non-zero poll interval is the operator's business");
+    }
+
+    /// The listing floor is compared with `>=`, so zero means "no floor beyond
+    /// the poll cadence" — a meaningful setting, and deliberately *not* rejected
+    /// alongside the poll interval.
+    #[test]
+    fn a_zero_metadata_floor_is_accepted() {
+        let mut cfg = ZainodConfig::default();
+        cfg.mempool.metadata_min_interval_ms = Some(0);
+        cfg.check_config()
+            .expect("a zero metadata floor is legal: it means no additional coalescing");
+
+        let mempool = cfg.mempool.to_mempool_config();
+        assert_eq!(mempool.metadata_min_interval(), std::time::Duration::ZERO);
     }
 
     #[test]

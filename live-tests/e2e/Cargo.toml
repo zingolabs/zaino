@@ -54,6 +54,7 @@ hex = { workspace = true }
 corez = { workspace = true }
 tower = { workspace = true }
 serde_json = { workspace = true }
+zaino-consensus.workspace = true
 
 [dev-dependencies]
 zaino-primitives.workspace = true

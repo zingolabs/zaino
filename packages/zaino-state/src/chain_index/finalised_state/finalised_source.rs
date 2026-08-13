@@ -77,10 +77,10 @@ use crate::{
     config::ChainIndexConfig,
     error::FinalisedStateError,
     BlockHash, BlockHeaderData, BlockchainSource, CommitmentTreeData, CompactBlockStream, Height,
-    IndexedBlock, NamedAtomicStatus, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx,
-    SaplingTxList, StatusType, TransparentCompactTx, TransparentTxList, TxLocation, TxOutCompact,
-    TxidList,
+    IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList,
+    TransparentCompactTx, TransparentTxList, TxLocation, TxOutCompact, TxidList,
 };
+use zaino_status::{NamedAtomicStatus, StatusType};
 
 #[cfg(feature = "transparent_address_history_experimental")]
 use crate::AddrScript;
