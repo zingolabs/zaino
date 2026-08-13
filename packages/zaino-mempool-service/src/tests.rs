@@ -1511,11 +1511,7 @@ mod coherence {
 
         source.set_tip(block_ref(101, 0xBB)); // tip change: re-synthesize, stay live
         let snapshot = wait_for(&subscriber, |s| {
-            is_live(s)
-                && s.observed_tips.validator
-                    == Some(zaino_mempool::tip::ValidatorTip {
-                        best_tip: block_ref(101, 0xBB),
-                    })
+            is_live(s) && s.observed_tips.validator == Some(block_ref(101, 0xBB))
         })
         .await;
         assert!(is_live(&snapshot));
@@ -1609,11 +1605,9 @@ mod coherence {
 
     #[test]
     fn observed_tips_agree_and_disagree() {
-        use zaino_mempool::tip::{ObservedTips, ValidatorTip};
+        use zaino_mempool::tip::ObservedTips;
 
-        let v = ValidatorTip {
-            best_tip: block_ref(100, 0xAB),
-        };
+        let v = block_ref(100, 0xAB);
         let ns_same = epoch(1, 100, 0xAB);
         let ns_diff = epoch(1, 100, 0xCD);
 

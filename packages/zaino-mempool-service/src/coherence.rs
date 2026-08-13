@@ -31,9 +31,7 @@ use zaino_mempool::ports::{
     Mempool, MempoolStreamError, NfsEpochObserver, NoNfs, NonFinalizedEpoch,
 };
 use zaino_mempool::snapshot::MempoolSnapshot;
-use zaino_mempool::tip::{
-    CoherentSnapshot, FreezeReason, MempoolMode, ObservedTips, TipChange, ValidatorTip,
-};
+use zaino_mempool::tip::{CoherentSnapshot, FreezeReason, MempoolMode, ObservedTips, TipChange};
 use zaino_mempool::update::MempoolUpdate;
 
 /// Writer-local state for synthesizing a non-finalized epoch from the validator
@@ -275,13 +273,13 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
     }
 
     fn observe_tips(&self, core: &MempoolSnapshot) -> ObservedTips {
-        let validator = core.source_tip.map(|best_tip| ValidatorTip { best_tip });
+        let validator = core.source_tip;
 
         let non_finalized = match &self.nfs {
             // Dual-tip: the observer reports the ChainIndex epoch (`None` freezes).
             Some(observer) => observer.current_epoch(),
             // Validator-only: synthesize the epoch from the validator tip.
-            None => validator.map(|tip| self.synthesized_epoch(tip.best_tip)),
+            None => validator.map(|tip| self.synthesized_epoch(tip)),
         };
 
         ObservedTips {

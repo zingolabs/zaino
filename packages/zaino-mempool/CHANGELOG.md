@@ -29,8 +29,10 @@ and this library adheres to Rust's notion of
     `TipAwareMempool` port (`coherent_snapshot` + the ready-made
     `stream_transactions_until_tip_change` loop), `NonFinalizedEpoch`, the
     coherent-view types (`CoherentSnapshot`, `MempoolMode`, `FreezeReason`,
-    `ObservedTips`, `ValidatorTip`, `TipChange`), and the coherent-stream
-    `MempoolEvent`.
+    `ObservedTips`, `TipChange`), and the coherent-stream `MempoolEvent`.
+    `ObservedTips` names the V side as a plain `BlockRef`: the field carries the
+    role, and the NS side is a distinct type, so a wrapper would add a name to
+    unwrap rather than a mistake to prevent.
 - The `MempoolUpdate` change feed (`Added` / `Removed` / `Reset{sequence}` /
   `Lagged{missed}` / `Closing`) carries only small facts — `Reset` is a batch
   boundary that points consumers at `current()`, never the snapshot itself — so
@@ -80,6 +82,12 @@ and this library adheres to Rust's notion of
   reports `ValidatorTipUnavailable` (or `NonFinalizedUnavailable`) instead of
   `CoreIncomplete`. More accurate — the empty startup set is not incomplete,
   there is simply no tip to place it against.
+- `ObservedTips::validator` is `Option<BlockRef>`; the `ValidatorTip` wrapper is
+  gone. It was a single named field over `BlockRef` that nothing read except
+  through `.best_tip`, so it cost an unwrap at every use and bought no safety:
+  the field name already states the role, and the NS side is a distinct type, so
+  the two were never confusable. (A `Deref` newtype would have hidden the unwrap
+  but leaked every future `BlockRef` method onto a validator tip.)
 - `MempoolSnapshot::empty_not_ready()` is `MempoolSnapshot::empty()`.
   `CoherentSnapshot::empty_not_ready()` keeps its name: coherence is the axis
   readiness belongs on, and that view really is `MempoolMode::NotReady`.

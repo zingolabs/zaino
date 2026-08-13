@@ -24,21 +24,18 @@ use crate::entry::MempoolEntry;
 use crate::ports::NonFinalizedEpoch;
 use crate::snapshot::MempoolSnapshot;
 
-/// The tip of the source that supplies mempool data ("V").
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ValidatorTip {
-    /// The mempool source's best tip.
-    pub best_tip: BlockRef,
-}
-
 /// The two tips coherence tracks: the validator/mempool-source tip ("V", from the
 /// core's [`source_tip`](MempoolSnapshot::source_tip) tag) and the
 /// non-finalized-state epoch ("NS", from the [`NfsEpochObserver`](crate::ports::NfsEpochObserver)).
+///
+/// The V side is a plain [`BlockRef`]. The field name carries the role, and the
+/// NS side is a distinct type, so the two cannot be confused at a call site —
+/// a wrapper would add a name to unwrap rather than a mistake to prevent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ObservedTips {
-    /// Latest observed validator/mempool-source tip.
-    pub validator: Option<ValidatorTip>,
-    /// Latest observed non-finalized-state epoch.
+    /// Latest observed validator/mempool-source tip ("V").
+    pub validator: Option<BlockRef>,
+    /// Latest observed non-finalized-state epoch ("NS").
     pub non_finalized: Option<NonFinalizedEpoch>,
 }
 
@@ -57,7 +54,7 @@ impl ObservedTips {
         let validator = self.validator?;
         let non_finalized = self.non_finalized?;
 
-        if validator.best_tip.hash == non_finalized.best_tip.hash {
+        if validator.hash == non_finalized.best_tip.hash {
             Some(non_finalized)
         } else {
             None

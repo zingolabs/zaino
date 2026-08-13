@@ -192,6 +192,6 @@ stuck). `zaino-state`'s sync loop wires this to the
 
 `tip_aware_mempool` (off by default) adds the `NfsEpochObserver` / `TipAwareMempool`
 ports, `NonFinalizedEpoch`, the coherent-view types (`CoherentSnapshot`,
-`MempoolMode`, `FreezeReason`, `ObservedTips`, `ValidatorTip`, `TipChange`), and the
+`MempoolMode`, `FreezeReason`, `ObservedTips`, `TipChange`), and the
 coherent-stream `MempoolEvent`. Enable it to consume the coherence layer; leave it
 off to use the tip-agnostic core standalone.
