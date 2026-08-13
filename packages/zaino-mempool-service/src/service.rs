@@ -350,8 +350,16 @@ impl<S: MempoolSource> MempoolService<S> {
             // and the exact check in `publish_snapshot` still decides.
             let max_cost_bytes = self.config.max_cost_bytes();
             let headroom = max_cost_bytes.saturating_sub(current.cost_bytes());
-            let max_admissible =
-                (headroom / zaino_mempool::config::MEMPOOL_TRANSACTION_COST_THRESHOLD) as usize;
+            // Saturating rather than `as`: on a 32-bit target the quotient can
+            // exceed `usize::MAX`, and a truncating cast is exactly wrong at the
+            // boundary — it wraps to a *small* number, and a wrap to zero would
+            // take the refuse-everything branch below while the set had room.
+            // Saturating keeps the over-count in the direction the estimate is
+            // already deliberately wrong in.
+            let max_admissible = usize::try_from(
+                headroom / zaino_mempool::config::MEMPOOL_TRANSACTION_COST_THRESHOLD,
+            )
+            .unwrap_or(usize::MAX);
 
             if max_admissible == 0 {
                 // The set is already at the bound. Refuse without fetching, and
