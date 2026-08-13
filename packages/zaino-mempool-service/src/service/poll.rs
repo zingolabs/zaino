@@ -10,7 +10,7 @@ use zaino_status::StatusType;
 
 use super::state::{admission_key, PollState};
 use zaino_mempool::entry::MempoolEntry;
-use zaino_mempool::ports::{BlockRef, MempoolPorts};
+use zaino_mempool::ports::{BlockRef, MempoolSource};
 use zaino_mempool::snapshot::{MempoolCompleteness, MempoolSnapshot};
 use zaino_source::{GetRawMempoolTransactionError, MempoolTxMeta, QueryError};
 
@@ -28,7 +28,7 @@ const CAPACITY_LOW_WATER_PERCENT: u64 = 90;
 /// is stale than by an unchanging `Complete` set.
 pub(super) const MAX_CONSECUTIVE_DISCARDS: u32 = 5;
 
-impl<S: MempoolPorts> super::MempoolService<S> {
+impl<S: MempoolSource> super::MempoolService<S> {
     pub(super) async fn run(self: Arc<Self>) {
         self.status.store(StatusType::Syncing);
 

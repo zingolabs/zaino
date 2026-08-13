@@ -8,12 +8,12 @@ use zaino_status::StatusType;
 
 use super::state::{admission_key, PollState};
 use zaino_mempool::entry::MempoolEntry;
-use zaino_mempool::ports::{BlockRef, MempoolPorts};
+use zaino_mempool::ports::{BlockRef, MempoolSource};
 use zaino_mempool::snapshot::{MempoolCompleteness, MempoolSnapshot};
 use zaino_mempool::update::MempoolUpdate;
 use zaino_primitives::types::TransactionId;
 
-impl<S: MempoolPorts> super::MempoolService<S> {
+impl<S: MempoolSource> super::MempoolService<S> {
     /// Build and publish the next snapshot from `current` plus the poll's deltas.
     ///
     /// Removals always apply (they only shrink the set). Additions are admitted

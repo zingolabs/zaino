@@ -1,13 +1,13 @@
 //! Ports required and offered by the mempool subsystem.
 //!
 //! The core reads the validator through `zaino-source`'s ports — one trait per
-//! question — and names the subset it needs as [`MempoolPorts`], in this crate,
+//! question — and names the subset it needs as [`MempoolSource`], in this crate,
 //! because that subset is a requirement of *this* consumer rather than a
 //! capability of `zaino-source`. Everything the mempool needs that `zaino-source`
 //! does not describe is a port defined here, and the wiring crate
 //! (`zaino-state`) supplies the adapter.
 //!
-//! - [`MempoolPorts`] — the validator questions the tip-agnostic core asks:
+//! - [`MempoolSource`] — the validator questions the tip-agnostic core asks:
 //!   mempool data plus the tip that data was read at.
 //! - [`Mempool`] — the inbound port the core *offers*: the tip-agnostic read model
 //!   plus the [`MempoolUpdate`] change feed. The tip-aware coherence layer
@@ -30,7 +30,9 @@ use crate::update::MempoolUpdate;
 /// chain-wide primitive, not mempool-specific vocabulary.
 pub use zaino_primitives::types::BlockRef;
 
-/// Every validator question the tip-agnostic mempool core asks.
+/// A source that can answer every validator question the tip-agnostic mempool
+/// core needs — the mempool listing, its per-entry metadata, a raw transaction,
+/// and the tip the set was read against.
 ///
 /// A consumer-defined bound over `zaino-source`'s ports, in the same shape and
 /// for the same reason as `zaino-state`'s `ChainIndexSourcePorts`: it states a
@@ -53,7 +55,7 @@ pub use zaino_primitives::types::BlockRef;
 ///
 /// `Clone` is required because the core clones the source to fan out bounded,
 /// concurrent raw-transaction fetches, so implementations must be cheap to clone.
-pub trait MempoolPorts:
+pub trait MempoolSource:
     zaino_source::GetMempoolTxids
     + zaino_source::GetMempoolMetadata
     + zaino_source::GetRawMempoolTransaction
@@ -66,7 +68,7 @@ pub trait MempoolPorts:
 {
 }
 
-impl<T> MempoolPorts for T where
+impl<T> MempoolSource for T where
     T: zaino_source::GetMempoolTxids
         + zaino_source::GetMempoolMetadata
         + zaino_source::GetRawMempoolTransaction
