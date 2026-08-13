@@ -68,6 +68,23 @@ and this library adheres to Rust's notion of
   rather than an incomplete set. `DEFAULT_POLL_INTERVAL` is now a public constant.
 
 ### Changed
+- **`MempoolConfig` no longer admits values that panic the runtime.** Its fields
+  are private and read through accessors; the ones with no safe zero are stored
+  as `NonZero`:
+  - `poll_interval_ms` (`NonZeroU64`, read back as `poll_interval() -> Duration`)
+    — both the poll and coherence loops build a `tokio::time::interval` from it,
+    and a zero period aborts the process at spawn. `Duration` has no non-zero
+    form, so the guarantee lives in the stored millis.
+  - `event_buffer_len` (`NonZeroUsize`) — zero panics `broadcast::channel`.
+  - `max_concurrent_raw_fetches` (`NonZeroUsize`) — zero would stall
+    reconciliation rather than throttle it. Previously papered over by a
+    `.max(1)` at the point of use, which silently rewrote the operator's value
+    instead of rejecting it; that guard is gone.
+
+  `metadata_min_interval` stays a plain `Duration` **on purpose**: it is compared
+  with `>=`, so zero means "no floor beyond the poll cadence" — a meaningful
+  setting, not a broken one. `max_exclude_count` likewise stays plain, where zero
+  disables client-supplied exclusion.
 - **`MempoolSnapshot` construction is sealed.** Its fields are private, read
   through accessors, and built only by `empty()`, `from_entries()` or
   `retag()`. The type carries invariants a struct literal cannot express, each

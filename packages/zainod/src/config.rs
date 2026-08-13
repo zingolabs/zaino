@@ -79,23 +79,33 @@ pub struct MempoolSettings {
 
 impl MempoolSettings {
     /// Applies these settings over the built-in defaults.
+    ///
+    /// Infallible: the only value that could be rejected here — a zero poll
+    /// interval — is refused by [`ZainodConfig::validate`] before this runs, so
+    /// the operator sees a named configuration error rather than a panic deep in
+    /// the runtime. `NonZeroU64::new` still cannot be unwrapped blindly, so a
+    /// zero that somehow reached this point falls back to the default rather
+    /// than taking the process down.
     fn to_mempool_config(&self) -> zaino_mempool::MempoolConfig {
         let mut config = zaino_mempool::MempoolConfig::default();
         if let Some(max_cost_bytes) = self.max_cost_bytes {
             config.set_max_cost_bytes(max_cost_bytes);
         }
-        if let Some(poll_interval_ms) = self.poll_interval_ms {
-            config.poll_interval = std::time::Duration::from_millis(poll_interval_ms);
+        if let Some(poll_interval_ms) = self.poll_interval_ms.and_then(std::num::NonZeroU64::new) {
+            config.set_poll_interval_ms(poll_interval_ms);
             // Keep the listing floor tied to the poll cadence unless it is set
             // explicitly, matching the default relationship between the two.
-            config.metadata_min_interval = config.poll_interval;
+            config.set_metadata_min_interval(config.poll_interval());
         }
         if let Some(metadata_min_interval_ms) = self.metadata_min_interval_ms {
-            config.metadata_min_interval =
-                std::time::Duration::from_millis(metadata_min_interval_ms);
+            // No non-zero requirement: this is a `>=` floor, so zero means "no
+            // floor beyond the poll cadence" — a meaningful setting.
+            config.set_metadata_min_interval(std::time::Duration::from_millis(
+                metadata_min_interval_ms,
+            ));
         }
         if let Some(max_exclude_count) = self.max_exclude_count {
-            config.max_exclude_count = max_exclude_count;
+            config.set_max_exclude_count(max_exclude_count);
         }
         config
     }
@@ -313,6 +323,21 @@ impl ZainodConfig {
                      transaction. Raise it to at least {floor}."
                 )));
             }
+        }
+
+        // A zero poll interval is not a slow mempool, it is a panic: the poll
+        // and coherence loops both build a `tokio::time::interval` from it, and
+        // a zero period aborts the process at spawn. Named here so the operator
+        // gets a configuration error instead of a crash.
+        //
+        // `metadata_min_interval_ms` deliberately has no such check: it is a
+        // `>=` floor, so zero simply means "no floor beyond the poll cadence".
+        if self.mempool.poll_interval_ms == Some(0) {
+            return Err(IndexerError::ConfigError(
+                "mempool.poll_interval_ms must be greater than zero; a zero poll \
+                 period is rejected by the runtime timer and would abort at startup."
+                    .to_string(),
+            ));
         }
 
         Ok(())
@@ -849,13 +874,16 @@ poll_interval_ms = 250
 
         let mempool = config.mempool.to_mempool_config();
         assert_eq!(mempool.max_cost_bytes(), 67_108_864);
-        assert_eq!(mempool.poll_interval, std::time::Duration::from_millis(250));
+        assert_eq!(
+            mempool.poll_interval(),
+            std::time::Duration::from_millis(250)
+        );
         // Unset: the listing floor follows the poll interval, and everything
         // else keeps its built-in default.
-        assert_eq!(mempool.metadata_min_interval, mempool.poll_interval);
+        assert_eq!(mempool.metadata_min_interval(), mempool.poll_interval());
         assert_eq!(
-            mempool.max_exclude_count,
-            zaino_mempool::MempoolConfig::default().max_exclude_count
+            mempool.max_exclude_count(),
+            zaino_mempool::MempoolConfig::default().max_exclude_count()
         );
     }
 
@@ -881,10 +909,10 @@ listen_address = "127.0.0.1:8137"
         let mempool = config.mempool.to_mempool_config();
         let defaults = zaino_mempool::MempoolConfig::default();
         assert_eq!(mempool.max_cost_bytes(), defaults.max_cost_bytes());
-        assert_eq!(mempool.poll_interval, defaults.poll_interval);
+        assert_eq!(mempool.poll_interval(), defaults.poll_interval());
         assert_eq!(
-            mempool.metadata_min_interval,
-            defaults.metadata_min_interval
+            mempool.metadata_min_interval(),
+            defaults.metadata_min_interval()
         );
     }
 
@@ -1427,6 +1455,38 @@ listen_address = "127.0.0.1:8137"
             Some(zaino_mempool::config::MEMPOOL_TRANSACTION_COST_THRESHOLD);
         cfg.check_config()
             .expect("a bound at the floor admits one transaction and is accepted");
+    }
+
+    /// A zero poll interval is a crash, not a slow mempool: both the poll and
+    /// coherence loops build a `tokio::time::interval` from it, and a zero
+    /// period aborts at spawn. It has to be refused where the operator can see
+    /// it, not reached at runtime.
+    #[test]
+    fn a_zero_mempool_poll_interval_is_rejected() {
+        let mut cfg = ZainodConfig::default();
+        cfg.mempool.poll_interval_ms = Some(0);
+        cfg.check_config()
+            .expect_err("a zero poll interval must be rejected");
+
+        // One millisecond is absurd but survivable, so the bound is zero itself
+        // rather than a judgement about sensible cadences.
+        cfg.mempool.poll_interval_ms = Some(1);
+        cfg.check_config()
+            .expect("a non-zero poll interval is the operator's business");
+    }
+
+    /// The listing floor is compared with `>=`, so zero means "no floor beyond
+    /// the poll cadence" — a meaningful setting, and deliberately *not* rejected
+    /// alongside the poll interval.
+    #[test]
+    fn a_zero_metadata_floor_is_accepted() {
+        let mut cfg = ZainodConfig::default();
+        cfg.mempool.metadata_min_interval_ms = Some(0);
+        cfg.check_config()
+            .expect("a zero metadata floor is legal: it means no additional coalescing");
+
+        let mempool = cfg.mempool.to_mempool_config();
+        assert_eq!(mempool.metadata_min_interval(), std::time::Duration::ZERO);
     }
 
     #[test]

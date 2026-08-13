@@ -186,7 +186,7 @@ impl<S: MempoolSource> MempoolService<S> {
         cancel: CancellationToken,
         admission_salt: u64,
     ) -> Arc<Self> {
-        let (updates, _) = broadcast::channel(config.event_buffer_len);
+        let (updates, _) = broadcast::channel(config.event_buffer_len());
 
         let service = Arc::new(Self {
             source,
@@ -259,7 +259,7 @@ impl<S: MempoolSource> MempoolService<S> {
     async fn run(self: Arc<Self>) {
         self.status.store(StatusType::Syncing);
 
-        let mut interval = tokio::time::interval(self.config.poll_interval);
+        let mut interval = tokio::time::interval(self.config.poll_interval());
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut block_wake = self.source.subscribe_to_blocks_received();
         let mut state = PollState::default();
@@ -497,7 +497,7 @@ impl<S: MempoolSource> MempoolService<S> {
     /// Whether enough time has passed since the last metadata listing.
     fn metadata_fetch_is_due(&self, state: &PollState) -> bool {
         match state.last_metadata_fetch {
-            Some(last) => last.elapsed() >= self.config.metadata_min_interval,
+            Some(last) => last.elapsed() >= self.config.metadata_min_interval(),
             None => true,
         }
     }
@@ -546,7 +546,7 @@ impl<S: MempoolSource> MempoolService<S> {
         added: Vec<MempoolTxMeta>,
         next_generation: u64,
     ) -> Option<Vec<Arc<MempoolEntry>>> {
-        let concurrency = self.config.max_concurrent_raw_fetches.max(1);
+        let concurrency = self.config.max_concurrent_raw_fetches();
         let source = &self.source;
 
         let results = stream::iter(added)

@@ -93,6 +93,25 @@ impossible to ignore. Prefer it over the raw receiver.
 correctness one: it sets how far a consumer may fall behind before it is asked to
 resync. State-losslessness does not depend on it.
 
+## Configuring the mempool
+
+`MempoolConfig`'s fields are private: start from `default()` and adjust through
+its setters. The knobs with no safe zero take a `NonZero` type, so an illegal
+value cannot be constructed rather than being caught (or not) at startup:
+`set_poll_interval_ms(NonZeroU64)` — a zero period panics `tokio::time::interval`
+at spawn; `set_event_buffer_len(NonZeroUsize)` — zero panics
+`broadcast::channel`; `set_max_concurrent_raw_fetches(NonZeroUsize)` — zero
+stalls reconciliation instead of throttling it.
+
+The knobs where zero is *meaningful* stay plain, and that distinction is the
+point rather than an oversight: `set_metadata_min_interval(Duration)` accepts
+zero, meaning "no floor beyond the poll cadence" (it is compared with `>=`), and
+`set_max_exclude_count(usize)` accepts zero to disable client-supplied exclusion.
+
+`set_max_cost_bytes` is the exception in the other direction: it takes `&self`,
+not `&mut self`, because the bound lives behind a shared atomic so an operator
+can move it at runtime across every clone of the config.
+
 ## Reading the snapshot
 
 `MempoolSnapshot` (from `current()`) is immutable and cheap to hold (`Arc`s

@@ -106,7 +106,7 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
         config: MempoolConfig,
         cancel: CancellationToken,
     ) -> Arc<Self> {
-        let (events, _) = broadcast::channel(config.event_buffer_len);
+        let (events, _) = broadcast::channel(config.event_buffer_len());
 
         let service = Arc::new(Self {
             mempool,
@@ -174,7 +174,7 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
             .nfs
             .as_ref()
             .and_then(|nfs| nfs.subscribe_epoch_changes());
-        let mut interval = tokio::time::interval(self.config.poll_interval);
+        let mut interval = tokio::time::interval(self.config.poll_interval());
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         self.reconcile();

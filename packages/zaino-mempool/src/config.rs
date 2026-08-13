@@ -2,6 +2,7 @@
 //!
 //! These are Zaino public-service safety bounds, not validator mempool policy.
 
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::{
     atomic::{AtomicU64, Ordering},
     Arc,
@@ -23,8 +24,12 @@ pub const MEMPOOL_TRANSACTION_COST_THRESHOLD: u64 = 10_000;
 /// than silently dropping data.
 pub const DEFAULT_MAX_COST_BYTES: u64 = 128 * 1024 * 1024;
 
+/// Default source poll cadence, in milliseconds, and the default floor between
+/// metadata listings.
+pub const DEFAULT_POLL_INTERVAL_MS: u64 = 500;
+
 /// Default source poll cadence, and the default floor between metadata listings.
-pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(500);
+pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(DEFAULT_POLL_INTERVAL_MS);
 
 /// The ZIP-401 cost of a single transaction: `max(serialized_size, threshold)`.
 pub fn tx_cost(raw_len: u64) -> u64 {
@@ -49,10 +54,18 @@ pub struct MempoolConfig {
     /// safely bounded. Since buffered updates carry no snapshots (only entries and
     /// small facts), memory is `~capacity` small slots regardless of subscriber
     /// count. The default trades a generous window for that bounded cost.
-    pub event_buffer_len: usize,
+    /// Zero is unrepresentable: `broadcast::channel(0)` panics.
+    event_buffer_len: NonZeroUsize,
 
-    /// How often the update loop polls the source when no wake signal arrives.
-    pub poll_interval: Duration,
+    /// How often the update loop polls the source when no wake signal arrives,
+    /// in milliseconds.
+    ///
+    /// Held as `NonZeroU64` millis rather than a `Duration` because zero must be
+    /// unrepresentable: `tokio::time::interval` panics on a zero period, which
+    /// takes the process down at spawn rather than at a read. `Duration` has no
+    /// non-zero form, so the guarantee has to live in the stored type — read it
+    /// back as a `Duration` via [`poll_interval`](Self::poll_interval).
+    poll_interval_ms: NonZeroU64,
 
     /// Minimum interval between per-entry metadata listings
     /// (`getrawmempool verbose`), which the source answers by walking its whole
@@ -68,23 +81,33 @@ pub struct MempoolConfig {
     /// cadence regardless of this value. The default equals [`Self::poll_interval`],
     /// i.e. no additional coalescing.
     ///
+    /// Zero is **legal** here, unlike [`poll_interval`](Self::poll_interval):
+    /// this is a floor compared with `>=`, so zero simply means "no floor beyond
+    /// the poll cadence" — a meaningful setting, not a broken one. A plain
+    /// `Duration`, deliberately.
+    ///
     /// [`IncompletePendingMetadata`]: crate::snapshot::MempoolCompleteness::IncompletePendingMetadata
-    pub metadata_min_interval: Duration,
+    metadata_min_interval: Duration,
 
     /// Maximum number of raw-transaction fetches issued concurrently when
     /// reconciling additions.
-    pub max_concurrent_raw_fetches: usize,
+    ///
+    /// Zero is unrepresentable: it would mean "reconcile with no concurrency at
+    /// all", which stalls rather than throttles. Previously guarded by a
+    /// `.max(1)` at the point of use, which silently rewrote the operator's
+    /// value instead of rejecting it.
+    max_concurrent_raw_fetches: NonZeroUsize,
 
     /// Maximum number of exclude suffixes a client may send to a filtered
-    /// mempool read.
-    pub max_exclude_count: usize,
+    /// mempool read. Zero is legal: it disables client-supplied exclusion.
+    max_exclude_count: usize,
 
     /// Minimum length (bytes) of a client-supplied exclude suffix. Rejects
     /// empty/near-empty suffixes that would match most of the mempool.
-    pub min_exclude_suffix_len: usize,
+    min_exclude_suffix_len: usize,
 
     /// Maximum length (bytes) of a client-supplied exclude suffix.
-    pub max_exclude_suffix_len: usize,
+    max_exclude_suffix_len: usize,
 }
 
 impl MempoolConfig {
@@ -98,18 +121,83 @@ impl MempoolConfig {
     pub fn set_max_cost_bytes(&self, bytes: u64) {
         self.max_cost_bytes.store(bytes, Ordering::Relaxed);
     }
+
+    /// Capacity of the bounded change-feed / event broadcast channels.
+    pub fn event_buffer_len(&self) -> usize {
+        self.event_buffer_len.get()
+    }
+
+    /// Set the change-feed capacity. Non-zero by type: zero panics
+    /// `broadcast::channel`.
+    pub fn set_event_buffer_len(&mut self, len: NonZeroUsize) {
+        self.event_buffer_len = len;
+    }
+
+    /// How often the update loop polls the source when no wake signal arrives.
+    pub fn poll_interval(&self) -> Duration {
+        Duration::from_millis(self.poll_interval_ms.get())
+    }
+
+    /// Set the poll cadence, in milliseconds. Non-zero by type: a zero period
+    /// panics `tokio::time::interval` at spawn.
+    pub fn set_poll_interval_ms(&mut self, millis: NonZeroU64) {
+        self.poll_interval_ms = millis;
+    }
+
+    /// Minimum interval between per-entry metadata listings.
+    pub fn metadata_min_interval(&self) -> Duration {
+        self.metadata_min_interval
+    }
+
+    /// Set the metadata-listing floor. Zero is accepted and means "no floor
+    /// beyond the poll cadence" — see the field documentation.
+    pub fn set_metadata_min_interval(&mut self, interval: Duration) {
+        self.metadata_min_interval = interval;
+    }
+
+    /// Maximum number of raw-transaction fetches issued concurrently.
+    pub fn max_concurrent_raw_fetches(&self) -> usize {
+        self.max_concurrent_raw_fetches.get()
+    }
+
+    /// Set the raw-fetch concurrency. Non-zero by type: zero would stall
+    /// reconciliation rather than throttle it.
+    pub fn set_max_concurrent_raw_fetches(&mut self, fetches: NonZeroUsize) {
+        self.max_concurrent_raw_fetches = fetches;
+    }
+
+    /// Maximum number of exclude suffixes a client may send.
+    pub fn max_exclude_count(&self) -> usize {
+        self.max_exclude_count
+    }
+
+    /// Set the exclude-suffix count bound. Zero disables client exclusion.
+    pub fn set_max_exclude_count(&mut self, count: usize) {
+        self.max_exclude_count = count;
+    }
+
+    /// Minimum length (bytes) of a client-supplied exclude suffix.
+    pub fn min_exclude_suffix_len(&self) -> usize {
+        self.min_exclude_suffix_len
+    }
+
+    /// Maximum length (bytes) of a client-supplied exclude suffix.
+    pub fn max_exclude_suffix_len(&self) -> usize {
+        self.max_exclude_suffix_len
+    }
 }
 
 impl Default for MempoolConfig {
     fn default() -> Self {
         Self {
             max_cost_bytes: Arc::new(AtomicU64::new(DEFAULT_MAX_COST_BYTES)),
-            event_buffer_len: 16_384,
-            poll_interval: DEFAULT_POLL_INTERVAL,
+            event_buffer_len: NonZeroUsize::new(16_384).expect("16384 is non-zero"),
+            poll_interval_ms: NonZeroU64::new(DEFAULT_POLL_INTERVAL_MS)
+                .expect("the default poll interval is non-zero"),
             // Equal to the poll interval: no coalescing beyond the poll cadence
             // itself, so the default preserves minimum mempool latency.
             metadata_min_interval: DEFAULT_POLL_INTERVAL,
-            max_concurrent_raw_fetches: 32,
+            max_concurrent_raw_fetches: NonZeroUsize::new(32).expect("32 is non-zero"),
             max_exclude_count: 1_024,
             min_exclude_suffix_len: 4,
             max_exclude_suffix_len: 32,
