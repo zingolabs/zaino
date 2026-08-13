@@ -40,7 +40,14 @@ synthesized from V, so coherence collapses to a single tip — freeze on V chang
 ## Core lifecycle — always live, never frozen
 
 The core never freezes; it always reflects the latest validator mempool. Its
-snapshots carry no freeze/thaw mode, only a `source_tip` tag and a completeness:
+snapshots carry no freeze/thaw mode, only a `source_tip` tag and a completeness.
+
+The tag doubles as the readiness signal: no tag means no poll has run
+(`is_ready()` is false), so completeness is left to describe only the fidelity of
+a set that exists. The pre-first-poll snapshot is empty and `Complete` — which
+asserts nothing, since `Complete` means "a full view at `source_tip`" and there
+is no `source_tip` — and coherence refuses to bless it on the readiness check
+rather than on its completeness.
 
 - **`Complete`** — a full view of the validator's mempool at `source_tip`.
 - **`IncompleteSourceError`** — a source read failed this poll; the last set is

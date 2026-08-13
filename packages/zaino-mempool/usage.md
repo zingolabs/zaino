@@ -109,10 +109,17 @@ no node library.
 `completeness` tells you whether the set is a full view, in two classes. **Short**
 (`IncompleteCapacityLimited`, `IncompletePendingMetadata`) — an *accurate* view
 that is missing some txids it knows about; `is_whole()` is false but the set is
-still safe to serve for positive results. **Possibly-wrong** (`IncompleteSourceError`,
-`NotReady`) — the set may not reflect the source; `may_be_wrong()` is true, and this
-is the only class the coherence layer freezes on. Never present an incomplete set as
-complete on a full-mempool API.
+still safe to serve for positive results. **Possibly-wrong**
+(`IncompleteSourceError`) — the set may not reflect the source; `may_be_wrong()`
+is true, and this is the only class the coherence layer freezes on. Never present
+an incomplete set as complete on a full-mempool API.
+
+`completeness` describes a set that *exists*. Whether one has been built yet is a
+separate axis: `is_ready()`, which reads the `source_tip` tag (no tag, no set).
+The pre-first-poll snapshot is empty and trivially `Complete`, so `is_whole()`
+alone is not a readiness check — the coherence layer refuses to bless an unready
+set, and the service's `StatusType` is the operator-facing form of the same
+question.
 
 `unadmitted` is the per-txid form of the short case: the exact txids the source
 reported that are not in `by_txid` (capacity-refused, or metadata-deferred),

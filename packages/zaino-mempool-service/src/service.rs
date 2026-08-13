@@ -190,7 +190,7 @@ impl<S: MempoolSource> MempoolService<S> {
 
         let service = Arc::new(Self {
             source,
-            current: Arc::new(ArcSwap::from_pointee(MempoolSnapshot::empty_not_ready())),
+            current: Arc::new(ArcSwap::from_pointee(MempoolSnapshot::empty())),
             updates,
             config,
             status: NamedAtomicStatus::new("Mempool", StatusType::Spawning),

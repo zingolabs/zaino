@@ -165,8 +165,9 @@ there*, and the coherence freeze was too blunt for the "set is short" case.
 - **N2 — reserve the freeze for "the set may be wrong".** `MempoolCompleteness` now
   splits into a **short** class (`IncompleteCapacityLimited`,
   `IncompletePendingMetadata` — accurate but missing known txids) and a
-  **possibly-wrong** class (`IncompleteSourceError`, `NotReady`). Coherence freezes
-  only on `may_be_wrong()`; a short but tip-consistent set publishes `Live`.
+  **possibly-wrong** class (`IncompleteSourceError`). Coherence freezes on
+  `may_be_wrong()` or on an unready set (`!is_ready()`, i.e. no `source_tip` tag
+  yet); a short but tip-consistent set publishes `Live`.
   Negative lookups stay precise: `get_transaction_status` returns `Unavailable` for
   a queried txid **iff it is in the snapshot's `unadmitted` set**, never on
   set-level shortness (absent is the common case). The wire stream logs + counts

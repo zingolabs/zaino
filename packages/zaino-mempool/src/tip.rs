@@ -151,7 +151,7 @@ impl CoherentSnapshot {
     /// The initial, empty, not-ready coherent view.
     pub fn empty_not_ready() -> Self {
         Self {
-            set: Arc::new(MempoolSnapshot::empty_not_ready()),
+            set: Arc::new(MempoolSnapshot::empty()),
             mode: MempoolMode::NotReady,
             valid_for: None,
             observed_tips: ObservedTips::none(),

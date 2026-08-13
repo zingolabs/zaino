@@ -35,6 +35,12 @@ pub fn reversed_txid_key(txid: TransactionId) -> [u8; 32] {
 
 /// Whether the snapshot's transaction set is a complete view of the mempool.
 ///
+/// This describes the fidelity of a set that *exists*. Whether one has been
+/// built yet is a separate question, on a separate axis — see
+/// [`MempoolSnapshot::is_ready`], and the service's `StatusType`. Mixing the two
+/// here would mean every consumer matching on fidelity also had to handle a
+/// lifecycle case.
+///
 /// The variants fall into two classes, and the distinction drives whether the
 /// tip-aware coherence layer freezes:
 ///
@@ -44,12 +50,10 @@ pub fn reversed_txid_key(txid: TransactionId) -> [u8; 32] {
 ///   is more useful than withholding it; the missing txids are named in
 ///   [`MempoolSnapshot::unadmitted`].
 /// - **Possibly wrong** — the set may not reflect the source at all
-///   ([`IncompleteSourceError`](Self::IncompleteSourceError),
-///   [`NotReady`](Self::NotReady)). Only these justify a freeze.
+///   ([`IncompleteSourceError`](Self::IncompleteSourceError)). Only this
+///   justifies a freeze.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MempoolCompleteness {
-    /// No set has been built yet.
-    NotReady,
     /// The set is a complete view of the source mempool at `source_tip`.
     Complete,
     /// The set is intentionally not complete because a capacity bound was hit.
@@ -75,6 +79,10 @@ impl MempoolCompleteness {
     /// A short set still answers positive lookups correctly, and gating negative
     /// lookups on it would make every absent txid unavailable; use
     /// [`MempoolSnapshot::unadmitted`] for the per-txid question instead.
+    ///
+    /// Says nothing about readiness: the pre-first-poll snapshot is an empty set
+    /// that is trivially whole. Pair with [`MempoolSnapshot::is_ready`] where
+    /// the question is "is there a set yet".
     pub fn is_whole(self) -> bool {
         matches!(self, Self::Complete)
     }
@@ -82,11 +90,12 @@ impl MempoolCompleteness {
     /// Whether the set may not reflect the source, as opposed to merely being
     /// short of transactions Zaino knows it is missing.
     ///
-    /// This is the freeze condition: withholding a *short* set adds nothing (the
-    /// missing transactions do not appear by hiding the present ones), but a set
-    /// that may be *wrong* must not be blessed as coherent.
+    /// One half of the freeze condition: withholding a *short* set adds nothing
+    /// (the missing transactions do not appear by hiding the present ones), but
+    /// a set that may be *wrong* must not be blessed as coherent. The other half
+    /// is readiness — see [`MempoolSnapshot::is_ready`].
     pub fn may_be_wrong(self) -> bool {
-        matches!(self, Self::NotReady | Self::IncompleteSourceError)
+        matches!(self, Self::IncompleteSourceError)
     }
 }
 
@@ -151,8 +160,19 @@ pub struct MempoolSnapshot {
 }
 
 impl MempoolSnapshot {
-    /// The initial, empty, not-ready snapshot.
-    pub fn empty_not_ready() -> Self {
+    /// The initial snapshot, before the first poll has run.
+    ///
+    /// Its [`completeness`](Self::completeness) is
+    /// [`Complete`](MempoolCompleteness::Complete), which is not a claim about
+    /// the mempool: that variant reads "a complete view of the source mempool
+    /// **at `source_tip`**", and `source_tip` is `None` here, so it asserts
+    /// nothing. It keeps the enum's invariant exact — `unadmitted` is empty iff
+    /// `Complete` — instead of carrying a lifecycle variant that every consumer
+    /// matching on fidelity would have to handle.
+    ///
+    /// "No set yet" is answered by [`is_ready`](Self::is_ready), which reads the
+    /// `source_tip` that already encodes it.
+    pub fn empty() -> Self {
         Self {
             source_tip: None,
             mempool_generation: 0,
@@ -163,8 +183,22 @@ impl MempoolSnapshot {
             tx_count: 0,
             raw_bytes: 0,
             cost_bytes: 0,
-            completeness: MempoolCompleteness::NotReady,
+            completeness: MempoolCompleteness::Complete,
             unadmitted: Arc::new(HashSet::new()),
         }
+    }
+
+    /// Whether a poll has ever populated this snapshot.
+    ///
+    /// Derived from [`source_tip`](Self::source_tip) rather than stored: a set
+    /// is tagged with the validator tip it was read at, so having no tag *is*
+    /// having no set. Every publication path stamps a tag, so this is `false`
+    /// only for [`empty`](Self::empty).
+    ///
+    /// An unready snapshot must not be served as a tip-coherent view — an empty
+    /// mempool presented as authoritative would tell a caller their transaction
+    /// is not pending when Zaino simply has not looked yet.
+    pub fn is_ready(&self) -> bool {
+        self.source_tip.is_some()
     }
 }

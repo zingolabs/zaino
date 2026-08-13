@@ -66,6 +66,23 @@ and this library adheres to Rust's notion of
   rather than an incomplete set. `DEFAULT_POLL_INTERVAL` is now a public constant.
 
 ### Changed
+- `MempoolCompleteness` describes only the fidelity of a set that exists. Its
+  `NotReady` variant is gone: it named a lifecycle state on an axis about
+  fidelity, was never produced by the live classifier (only by the pre-first-poll
+  sentinel), and made the documented "`unadmitted` is empty iff `Complete`"
+  invariant read "iff `Complete` or `NotReady`". Readiness is now
+  `MempoolSnapshot::is_ready()`, derived from the `source_tip` tag that already
+  encoded it — no new state — with `StatusType` and `MempoolMode::NotReady`
+  remaining the operator- and coherence-facing forms.
+
+  Behaviour change: `may_be_wrong()` is now `IncompleteSourceError` alone, and
+  the coherence layer checks readiness explicitly, so the pre-first-poll freeze
+  reports `ValidatorTipUnavailable` (or `NonFinalizedUnavailable`) instead of
+  `CoreIncomplete`. More accurate — the empty startup set is not incomplete,
+  there is simply no tip to place it against.
+- `MempoolSnapshot::empty_not_ready()` is `MempoolSnapshot::empty()`.
+  `CoherentSnapshot::empty_not_ready()` keeps its name: coherence is the axis
+  readiness belongs on, and that view really is `MempoolMode::NotReady`.
 - The validator bound is `MempoolSource`, not `MempoolPorts`. A trait bound
   reads best as the capability a satisfying type has — `impl<S: MempoolSource>`
   says the thing can source a mempool — rather than as its place in the

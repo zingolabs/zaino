@@ -1531,6 +1531,82 @@ mod coherence {
         assert_eq!(snapshot.set.tx_count, 0);
     }
 
+    /// The pre-first-poll set must never be blessed as coherent.
+    ///
+    /// It is empty, so serving it would answer "your transaction is not
+    /// pending" when Zaino has merely not looked yet — indistinguishable, to a
+    /// caller, from a real absence. This was previously guaranteed by
+    /// `MempoolCompleteness::NotReady` making `may_be_wrong()` true; readiness
+    /// now lives on `MempoolSnapshot::is_ready`, and the guarantee is pinned
+    /// here so it cannot be lost with the variant.
+    #[tokio::test]
+    async fn an_unpolled_set_is_never_served_as_coherent() {
+        let source = MockSource::new();
+        let nfs = MockNfs::new();
+        // A tip and a mempool exist on the NS side, so the *only* thing keeping
+        // this from going live is that the core has not polled the source yet.
+        nfs.set(epoch(1, 100, 0xAB));
+
+        let core = MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
+        let coherence = CoherenceService::spawn(
+            core.subscriber(),
+            nfs.clone(),
+            fast_config(),
+            CancellationToken::new(),
+        );
+        let subscriber = coherence.subscriber();
+
+        assert!(
+            !core.subscriber().snapshot().is_ready(),
+            "a source with no tip cannot produce a ready set"
+        );
+
+        // Give the loops room to run: the point is that they never go live.
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        let snapshot = subscriber.coherent_snapshot();
+        assert!(
+            !is_live(&snapshot),
+            "an unpolled mempool must not be served as a coherent view, got {:?}",
+            snapshot.mode
+        );
+        assert_eq!(snapshot.valid_for, None);
+
+        coherence.close();
+        core.close();
+    }
+
+    /// Before the first poll the freeze reason names the missing validator tip,
+    /// not the core's completeness.
+    ///
+    /// The set is empty and `Complete` — there is nothing wrong with it, there
+    /// is simply no tip to place it against — so `CoreIncomplete` would have
+    /// pointed an operator at the wrong thing.
+    #[tokio::test]
+    async fn the_startup_freeze_names_the_missing_tip() {
+        let source = MockSource::new();
+        let nfs = MockNfs::new();
+        nfs.set(epoch(1, 100, 0xAB));
+
+        let core = MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
+        let coherence = CoherenceService::spawn(
+            core.subscriber(),
+            nfs.clone(),
+            fast_config(),
+            CancellationToken::new(),
+        );
+        let subscriber = coherence.subscriber();
+
+        let snapshot = wait_for(&subscriber, is_frozen).await;
+        assert_eq!(
+            freeze_reason(&snapshot),
+            Some(FreezeReason::ValidatorTipUnavailable)
+        );
+
+        coherence.close();
+        core.close();
+    }
+
     #[test]
     fn observed_tips_agree_and_disagree() {
         use zaino_mempool::tip::{ObservedTips, ValidatorTip};

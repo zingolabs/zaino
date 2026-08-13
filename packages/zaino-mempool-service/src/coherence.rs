@@ -235,6 +235,22 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
         let observed = self.observe_tips(&core);
         let prev = self.coherent.load_full();
 
+        // Nothing has been polled yet, so there is no set to bless. The empty
+        // pre-first-poll snapshot must never be served as a coherent view: it
+        // would tell a caller their transaction is not pending when Zaino has
+        // simply not looked.
+        //
+        // The tip path below would also catch this — an unready snapshot has no
+        // `source_tip`, so `observe_tips` yields no validator tip and `agree()`
+        // returns `None`. Stated here anyway: the safety of the empty case
+        // should not depend on following that through three other functions, and
+        // a future change to `observe_tips` must not be able to quietly remove
+        // it. Costs one branch on a path that runs once per publication.
+        if !core.is_ready() {
+            self.freeze(&prev, observed, FreezeReason::ValidatorTipUnavailable);
+            return;
+        }
+
         // Freeze only when the set may be *wrong*, not merely *short*.
         //
         // Freezing does not make missing transactions appear — it withholds the
