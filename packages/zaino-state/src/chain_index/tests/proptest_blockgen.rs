@@ -61,9 +61,10 @@ fn passthrough_test(
 
 /// [`passthrough_test`] on an explicit network, with a per-segment chain mutator.
 ///
-/// The mutator exists because zebra's stock `Transaction` strategy never generates V6
-/// transactions (its NU6.3/NU7 arm produces only v4/v5), so ironwood-era content must
-/// be injected after generation. Mutating a block's transactions is safe here: the
+/// The mutator exists because zebra's stock `Transaction` strategy generates V6
+/// transactions only probabilistically (its NU6.3/NU7 arm picks one of v4/v5/v6 per
+/// transaction), so deterministic ironwood-era content must be injected after
+/// generation. Mutating a block's transactions is safe here: the
 /// block hash covers only the header, so parent-hash continuity is untouched, and the
 /// header's merkle root is already arbitrary — the passthrough path tolerates that by
 /// construction.
@@ -405,21 +406,23 @@ fn passthrough_get_block_range() {
     })
 }
 
-/// Upstream gap demonstration: zebra-chain's stock [`Transaction`] strategy never
-/// generates V6 transactions, even for an NU6.3 ledger state — its NU6.3/NU7 arm is
-/// `prop_oneof![v4_strategy, v5_strategy]` (zebra-chain `transaction/arbitrary.rs`).
-/// V6 is therefore structurally impossible from the stock strategy, not merely rare,
-/// which is why the `passthrough_metadata_consistency_*` walks must inject
-/// `fake_v6_transaction` ironwood content instead of relying on generation.
+/// Upstream capability guard: zebra-chain's stock [`Transaction`] strategy generates V6
+/// transactions for an NU6.3 ledger state — its NU6.3/NU7 arm is
+/// `prop_oneof![v4_strategy, v5_strategy, v6_strategy]` (zebra-chain
+/// `transaction/arbitrary.rs`). Before zebra-chain 12.0 that arm carried no `v6_strategy`
+/// and this test was a `should_panic` canary tracking the gap; the gap is now closed.
 ///
-/// `should_panic` tracks the upstream gap: when a zebra upgrade starts generating V6,
-/// this test flips, and the `#[should_panic]` should be removed together with the
-/// fake-transaction injection in `inject_ironwood_transactions` (generation then covers
-/// it natively).
+/// V6 generation is nonetheless *probabilistic* — one arm of three per transaction — so
+/// the `passthrough_metadata_consistency_*` walks still inject `fake_v6_transaction`
+/// ironwood content rather than relying on generation. Those walks assert their own
+/// non-vacuity (`above > 0`), which probabilistic content would turn into a flake rather
+/// than a silent pass.
+///
+/// If a future zebra release drops the V6 arm, this fails loudly and the injection's
+/// justification reverts from "determinism" to "necessity".
 ///
 /// [`Transaction`]: zebra_chain::transaction::Transaction
 #[test]
-#[should_panic(expected = "zebra's stock Transaction strategy generated no V6")]
 fn zebra_arbitrary_generates_v6_transactions_for_nu6_3() {
     use proptest::strategy::ValueTree as _;
     use proptest::test_runner::TestRunner;
@@ -504,9 +507,10 @@ const ORCHARD_ONLY_HEIGHTS: ActivationHeights = ActivationHeights {
     nu7: None,
 };
 
-/// Orchard-only era (NU6.3 never activates): fake Orchard content from height 2,
-/// and — since zebra's stock strategy cannot generate V6 — ironwood provably never
-/// appears anywhere in the chain or the served form.
+/// Orchard-only era (NU6.3 never activates): fake Orchard content from height 2, and —
+/// since the stock strategy's V6 arm is reachable only from an NU6.3/NU7 ledger state,
+/// which `nu6_3: None` never produces — ironwood provably never appears anywhere in the
+/// chain or the served form.
 #[test]
 fn passthrough_metadata_consistency_orchard_only() {
     metadata_consistency_for_era(ORCHARD_ONLY_HEIGHTS, None, false)
@@ -530,8 +534,9 @@ fn passthrough_metadata_consistency_orchard_to_ironwood_transition() {
 }
 
 /// A structurally-valid (cryptographically fake) V6 transaction carrying a two-action
-/// Ironwood bundle. Injected because zebra's stock strategy never generates V6
-/// (demonstrated by [`zebra_arbitrary_generates_v6_transactions_for_nu6_3`]).
+/// Ironwood bundle. Injected because zebra's stock strategy generates V6 only
+/// probabilistically, so era content must be deterministic here
+/// (see [`zebra_arbitrary_generates_v6_transactions_for_nu6_3`]).
 fn fake_ironwood_transaction() -> zebra_chain::transaction::Transaction {
     use zebra_chain::amount::Amount;
     use zebra_chain::orchard::{Flags, ShieldedDataV6};

@@ -64,15 +64,15 @@ license = "Apache-2.0"
 incrementalmerkletree = "0.8"
 sapling-crypto = "0.7"
 zcash_address = "0.13"
-zcash_keys = "0.15"
+zcash_keys = "0.16"
 zcash_protocol = "0.10"
-zcash_primitives = "0.29"
-zcash_transparent = "0.9"
+zcash_primitives = "0.30"
+zcash_transparent = "0.10"
 
 # Zebra
-zebra-chain = "11.1"
-zebra-state = "10.1"
-zebra-rpc = "11.1"
+zebra-chain = "12.0"
+zebra-state = "13.0"
+zebra-rpc = "16.0"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }
