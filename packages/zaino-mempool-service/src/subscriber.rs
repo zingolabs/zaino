@@ -130,25 +130,25 @@ impl MempoolSubscriber {
     pub fn get_mempool_info(&self) -> MempoolInfo {
         let snapshot = self.current.load();
         MempoolInfo {
-            size: snapshot.tx_count as u64,
-            bytes: snapshot.raw_bytes,
-            usage: snapshot.cost_bytes,
+            size: snapshot.tx_count() as u64,
+            bytes: snapshot.raw_bytes(),
+            usage: snapshot.cost_bytes(),
         }
     }
 
     /// Whether the current snapshot contains `txid`.
     pub fn contains_txid(&self, txid: &TransactionId) -> bool {
-        self.current.load().by_txid.contains_key(txid)
+        self.current.load().by_txid().contains_key(txid)
     }
 
     /// The entry for `txid` in the current snapshot, if present.
     pub fn get_transaction(&self, txid: &TransactionId) -> Option<Arc<MempoolEntry>> {
-        self.current.load().by_txid.get(txid).cloned()
+        self.current.load().by_txid().get(txid).cloned()
     }
 
     /// The current snapshot's txids, sorted by canonical (reversed) byte order.
     pub fn get_txids(&self) -> Arc<[TransactionId]> {
-        self.current.load().txids_sorted.clone()
+        self.current.load().txids_sorted().clone()
     }
 
     /// Subscribe to the bounded mempool change feed (the raw receiver).
@@ -245,13 +245,13 @@ impl MempoolSubscriber {
 
         let mut excluded: HashSet<TransactionId> = HashSet::new();
         for exclude in exclude_suffixes {
-            if let Some(txid) = unique_suffix_match(&snapshot.txids_sorted, &exclude.suffix) {
+            if let Some(txid) = unique_suffix_match(snapshot.txids_sorted(), &exclude.suffix) {
                 excluded.insert(txid);
             }
         }
 
         snapshot
-            .entries_in_order
+            .entries_in_order()
             .iter()
             .filter(|entry| !excluded.contains(&entry.txid))
             .cloned()

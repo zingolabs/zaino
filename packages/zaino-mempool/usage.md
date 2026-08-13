@@ -96,9 +96,19 @@ resync. State-losslessness does not depend on it.
 ## Reading the snapshot
 
 `MempoolSnapshot` (from `current()`) is immutable and cheap to hold (`Arc`s
-throughout). Key fields: `by_txid` (lookup), `txids_sorted` (reversed-byte order,
-for the shortened-txid exclude filter), `entries_in_order`, `tx_count`,
-`raw_bytes`, `cost_bytes`, `completeness`, `unadmitted`, and `source_tip`. Each `MempoolEntry`
+throughout). Read it through its accessors: `by_txid()` (lookup),
+`txids_sorted()` (reversed-byte order, for the shortened-txid exclude filter),
+`entries_in_order()`, `tx_count()`, `raw_bytes()`, `cost_bytes()`,
+`completeness()`, `unadmitted()`, `source_tip()`, and `is_ready()`.
+
+Construction is sealed — `empty()`, `from_entries()` and `retag()` are the only
+ways to build one. The type's invariants (the reversed-byte ordering, the
+derived totals agreeing with the set, `unadmitted` empty iff `Complete`) all
+fail silently when broken, so the constructor owns them rather than trusting
+each call site. You only need this if you are implementing the `Mempool` port
+yourself; consumers just read.
+
+Each `MempoolEntry`
 holds the full unmined transaction; call `serialized_bytes()` for a borrowed slice,
 `wire_bytes()` for the shared `Bytes` buffer (prefer this when handing it to a wire
 type — cloning is a refcount bump). It carries no parsed or wire forms at all —

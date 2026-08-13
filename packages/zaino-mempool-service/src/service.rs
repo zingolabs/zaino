@@ -309,7 +309,7 @@ impl<S: MempoolSource> MempoolService<S> {
         let source_txids: HashSet<_> = txids.iter().copied().collect();
 
         let removed: Vec<_> = current
-            .by_txid
+            .by_txid()
             .keys()
             .filter(|txid| !source_txids.contains(*txid))
             .copied()
@@ -326,7 +326,9 @@ impl<S: MempoolSource> MempoolService<S> {
 
         let added_txids: Vec<_> = txids
             .into_iter()
-            .filter(|txid| !current.by_txid.contains_key(txid) && !state.refused.contains_key(txid))
+            .filter(|txid| {
+                !current.by_txid().contains_key(txid) && !state.refused.contains_key(txid)
+            })
             .collect();
 
         if added_txids.is_empty() && removed.is_empty() {
@@ -347,7 +349,7 @@ impl<S: MempoolSource> MempoolService<S> {
             // ZIP-401 floor. An entry can only cost *more*, so this over-counts
             // and the exact check in `publish_snapshot` still decides.
             let max_cost_bytes = self.config.max_cost_bytes();
-            let headroom = max_cost_bytes.saturating_sub(current.cost_bytes);
+            let headroom = max_cost_bytes.saturating_sub(current.cost_bytes());
             let max_admissible =
                 (headroom / zaino_mempool::config::MEMPOOL_TRANSACTION_COST_THRESHOLD) as usize;
 
@@ -418,7 +420,7 @@ impl<S: MempoolSource> MempoolService<S> {
             return;
         }
 
-        let next_generation = current.mempool_generation.saturating_add(1);
+        let next_generation = current.mempool_generation().saturating_add(1);
         let added_entries = match self
             .fetch_added_entries_bounded(added_meta, next_generation)
             .await
@@ -455,9 +457,9 @@ impl<S: MempoolSource> MempoolService<S> {
         state: &mut PollState,
     ) {
         let next_unadmitted = state.unadmitted();
-        if current.source_tip != Some(tip_before)
-            || current.completeness != Self::completeness_for(state)
-            || *current.unadmitted != next_unadmitted
+        if current.source_tip() != Some(tip_before)
+            || current.completeness() != Self::completeness_for(state)
+            || **current.unadmitted() != next_unadmitted
         {
             // Only once the tag is confirmed stable — never smeared across a
             // mid-poll block.
@@ -515,10 +517,10 @@ impl<S: MempoolSource> MempoolService<S> {
         // Multiply first: `max / 100 * pct` truncates to zero for any bound
         // below 100, which would make `cost_bytes >= 0` always true and strand
         // every refusal forever.
-        if current.cost_bytes >= max_cost_bytes.saturating_mul(CAPACITY_LOW_WATER_PERCENT) / 100 {
+        if current.cost_bytes() >= max_cost_bytes.saturating_mul(CAPACITY_LOW_WATER_PERCENT) / 100 {
             return;
         }
-        let headroom = max_cost_bytes.saturating_sub(current.cost_bytes);
+        let headroom = max_cost_bytes.saturating_sub(current.cost_bytes());
         state.refused.retain(|_, cost| *cost > headroom);
     }
 
@@ -625,16 +627,14 @@ impl<S: MempoolSource> MempoolService<S> {
             return;
         }
 
-        let mut final_by_txid = current.by_txid.as_ref().clone();
-        // Totals move with the delta rather than being re-summed over the whole
-        // set: the set is capped near 13k entries, so re-summing is not dangerous,
-        // but it is three needless O(N) passes per poll.
-        let mut cost_bytes = current.cost_bytes;
-        let mut raw_bytes = current.raw_bytes;
+        let mut final_by_txid = current.by_txid().clone();
+        // Tracked across the admission loop below only to decide what fits; the
+        // published totals are derived from the final set by `from_entries`, so
+        // this running value cannot drift into the snapshot.
+        let mut cost_bytes = current.cost_bytes();
         for txid in &removed {
             if let Some(entry) = final_by_txid.remove(txid) {
                 cost_bytes = cost_bytes.saturating_sub(entry.cost());
-                raw_bytes = raw_bytes.saturating_sub(entry.raw_len);
             }
         }
 
@@ -659,40 +659,20 @@ impl<S: MempoolSource> MempoolService<S> {
                 continue;
             }
             cost_bytes += cost;
-            raw_bytes += entry.raw_len;
             final_by_txid.insert(entry.txid, Arc::clone(&entry));
             applied_entries.push(entry);
         }
 
-        let completeness = Self::completeness_for(state);
-
-        // Deterministic order, and the one `unique_suffix_match` binary-searches
-        // against — see `reversed_txid_key`.
-        let mut txids_sorted: Vec<_> = final_by_txid.keys().copied().collect();
-        txids_sorted.sort_unstable_by_key(|txid| zaino_mempool::reversed_txid_key(*txid));
-
-        let entries_in_order: Vec<_> = txids_sorted
-            .iter()
-            .map(|txid| Arc::clone(&final_by_txid[txid]))
-            .collect();
-
-        let next_sequence = current.event_sequence.saturating_add(1);
-        let next_generation = current.mempool_generation.saturating_add(1);
-        let tx_count = final_by_txid.len();
-
-        let snapshot = Arc::new(MempoolSnapshot {
+        // Ordering, ordering-derived collections and totals are all the
+        // constructor's job — see `MempoolSnapshot::from_entries`.
+        let snapshot = Arc::new(MempoolSnapshot::from_entries(
+            current,
+            final_by_txid,
             source_tip,
-            mempool_generation: next_generation,
-            event_sequence: next_sequence,
-            by_txid: Arc::new(final_by_txid),
-            txids_sorted: Arc::from(txids_sorted),
-            entries_in_order: Arc::from(entries_in_order),
-            tx_count,
-            raw_bytes,
-            cost_bytes,
-            completeness,
-            unadmitted: Arc::new(state.unadmitted()),
-        });
+            Self::completeness_for(state),
+            state.unadmitted(),
+        ));
+        let next_sequence = snapshot.event_sequence();
 
         self.current.store(snapshot);
 
@@ -730,23 +710,14 @@ impl<S: MempoolSource> MempoolService<S> {
         completeness: MempoolCompleteness,
         unadmitted: HashSet<TransactionId>,
     ) {
-        let next_sequence = current.event_sequence.saturating_add(1);
-        self.current.store(Arc::new(MempoolSnapshot {
-            source_tip,
-            mempool_generation: current.mempool_generation,
-            event_sequence: next_sequence,
-            by_txid: Arc::clone(&current.by_txid),
-            txids_sorted: Arc::clone(&current.txids_sorted),
-            entries_in_order: Arc::clone(&current.entries_in_order),
-            tx_count: current.tx_count,
-            raw_bytes: current.raw_bytes,
-            cost_bytes: current.cost_bytes,
-            completeness,
-            // Explicitly *not* reused from `current`: a re-tag can carry a fresh
-            // shortfall (a poll that deferred its additions publishes through
-            // here), and reusing the stale list would report nothing unadmitted.
-            unadmitted: Arc::new(unadmitted),
-        }));
+        // `unadmitted` is explicitly *not* reused from `current`: a re-tag can
+        // carry a fresh shortfall (a poll that deferred its additions publishes
+        // through here), and reusing the stale list would report nothing
+        // unadmitted.
+        let snapshot = Arc::new(current.retag(source_tip, completeness, Arc::new(unadmitted)));
+        let next_sequence = snapshot.event_sequence();
+
+        self.current.store(snapshot);
         let _ = self.updates.send(MempoolUpdate::Reset {
             sequence: next_sequence,
         });
@@ -764,30 +735,22 @@ impl<S: MempoolSource> MempoolService<S> {
     /// re-publish so consumers see the degraded completeness.
     fn publish_source_error(&self) {
         let current = self.current.load_full();
-        if current.completeness == MempoolCompleteness::IncompleteSourceError {
+        if current.completeness() == MempoolCompleteness::IncompleteSourceError {
             self.status.store(StatusType::Syncing);
             return;
         }
 
-        let next_sequence = current.event_sequence.saturating_add(1);
-        let snapshot = Arc::new(MempoolSnapshot {
-            source_tip: current.source_tip,
-            mempool_generation: current.mempool_generation,
-            event_sequence: next_sequence,
-            by_txid: Arc::clone(&current.by_txid),
-            txids_sorted: Arc::clone(&current.txids_sorted),
-            entries_in_order: Arc::clone(&current.entries_in_order),
-            tx_count: current.tx_count,
-            raw_bytes: current.raw_bytes,
-            cost_bytes: current.cost_bytes,
-            completeness: MempoolCompleteness::IncompleteSourceError,
-            // Carried over: this poll failed before it could recompute the
-            // shortfall, so the previous list is the best information there is.
-            // It can name a txid that has since left the mempool, which yields a
-            // spurious "retry" until the next successful poll — bounded,
-            // self-correcting, and the safe direction to be wrong in. Not a leak.
-            unadmitted: Arc::clone(&current.unadmitted),
-        });
+        // `unadmitted` is carried over: this poll failed before it could
+        // recompute the shortfall, so the previous list is the best information
+        // there is. It can name a txid that has since left the mempool, which
+        // yields a spurious "retry" until the next successful poll — bounded,
+        // self-correcting, and the safe direction to be wrong in. Not a leak.
+        let snapshot = Arc::new(current.retag(
+            current.source_tip(),
+            MempoolCompleteness::IncompleteSourceError,
+            Arc::clone(current.unadmitted()),
+        ));
+        let next_sequence = snapshot.event_sequence();
 
         self.current.store(snapshot);
         let _ = self.updates.send(MempoolUpdate::Reset {
@@ -798,7 +761,7 @@ impl<S: MempoolSource> MempoolService<S> {
 
     fn publish_closing(&self) {
         let current = self.current.load_full();
-        let next_sequence = current.event_sequence.saturating_add(1);
+        let next_sequence = current.event_sequence().saturating_add(1);
         let _ = self.updates.send(MempoolUpdate::Closing {
             sequence: next_sequence,
         });

@@ -68,6 +68,24 @@ and this library adheres to Rust's notion of
   rather than an incomplete set. `DEFAULT_POLL_INTERVAL` is now a public constant.
 
 ### Changed
+- **`MempoolSnapshot` construction is sealed.** Its fields are private, read
+  through accessors, and built only by `empty()`, `from_entries()` or
+  `retag()`. The type carries invariants a struct literal cannot express, each
+  of which fails *silently* if broken: `txids_sorted` must be ordered by
+  `reversed_txid_key` (the shortened-txid suffix search binary-searches it, so a
+  wrong order does not panic — it stops finding matches, and the exclude filter
+  leaks a txid a client asked to hide); `by_txid` / `entries_in_order` /
+  `tx_count` / `raw_bytes` / `cost_bytes` must agree with one another; and
+  `unadmitted` is empty iff `Complete`.
+
+  `from_entries` owns the sort and derives every total from the entries it is
+  given, so a publisher cannot get them wrong. Totals are summed there rather
+  than carried forward incrementally — the sort is already `O(n log n)` over the
+  same entries, so the extra `O(n)` is noise beside it, and a drifted running
+  total becomes unrepresentable rather than merely unlikely. `retag` encodes the
+  no-delta rule: the set and `mempool_generation` are held (bumping the
+  generation on unchanged contents would make the coherence layer redo its work
+  on every tip re-stamp) while the event sequence advances.
 - `MempoolCompleteness` describes only the fidelity of a set that exists. Its
   `NotReady` variant is gone: it named a lifecycle state on an axis about
   fidelity, was never produced by the live classifier (only by the pre-first-poll

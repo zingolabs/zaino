@@ -170,6 +170,6 @@ impl CoherentSnapshot {
 
     /// The entry for `txid`, if present in the coherent set.
     pub fn get(&self, txid: &TransactionId) -> Option<Arc<MempoolEntry>> {
-        self.set.by_txid.get(txid).cloned()
+        self.set.by_txid().get(txid).cloned()
     }
 }

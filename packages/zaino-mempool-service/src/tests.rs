@@ -350,10 +350,10 @@ mod core {
         let (service, subscriber, _source) =
             spawn_core(100, 0xAB, vec![mtx(1, 100), mtx(2, 100)], fast_config());
 
-        let snapshot = wait_for(&subscriber, |s| s.tx_count == 2).await;
-        assert_eq!(snapshot.completeness, MempoolCompleteness::Complete);
-        assert_eq!(snapshot.source_tip, Some(block_ref(100, 0xAB)));
-        assert_eq!(snapshot.by_txid[&txid(1)].entry_height, height(100));
+        let snapshot = wait_for(&subscriber, |s| s.tx_count() == 2).await;
+        assert_eq!(snapshot.completeness(), MempoolCompleteness::Complete);
+        assert_eq!(snapshot.source_tip(), Some(block_ref(100, 0xAB)));
+        assert_eq!(snapshot.by_txid()[&txid(1)].entry_height, height(100));
 
         service.close();
     }
@@ -363,13 +363,16 @@ mod core {
         // The core is tip-agnostic: a validator-tip advance re-tags the set but
         // never freezes — the live view stays served.
         let (service, subscriber, source) = spawn_core(100, 0xAB, vec![mtx(1, 100)], fast_config());
-        wait_for(&subscriber, |s| s.tx_count == 1).await;
+        wait_for(&subscriber, |s| s.tx_count() == 1).await;
 
         source.set_tip(block_ref(101, 0xCD));
 
-        let snapshot = wait_for(&subscriber, |s| s.source_tip == Some(block_ref(101, 0xCD))).await;
-        assert_eq!(snapshot.completeness, MempoolCompleteness::Complete);
-        assert_eq!(snapshot.tx_count, 1);
+        let snapshot = wait_for(&subscriber, |s| {
+            s.source_tip() == Some(block_ref(101, 0xCD))
+        })
+        .await;
+        assert_eq!(snapshot.completeness(), MempoolCompleteness::Complete);
+        assert_eq!(snapshot.tx_count(), 1);
         service.close();
     }
 
@@ -380,14 +383,17 @@ mod core {
         // gone. Measured as an invariant over a window of real polls, including
         // ones that change the set (which take the full two-read path).
         let (service, subscriber, source) = spawn_core(100, 0xAB, vec![mtx(1, 100)], fast_config());
-        wait_for(&subscriber, |s| s.tx_count == 1).await;
+        wait_for(&subscriber, |s| s.tx_count() == 1).await;
 
         // Exercise the two-read path: a tip change and a set change each force a
         // publish, whose tip-stability guard issues the second read.
         source.set_tip(block_ref(101, 0xCD));
-        wait_for(&subscriber, |s| s.source_tip == Some(block_ref(101, 0xCD))).await;
+        wait_for(&subscriber, |s| {
+            s.source_tip() == Some(block_ref(101, 0xCD))
+        })
+        .await;
         source.set_mempool(vec![mtx(1, 100), mtx(2, 101)]);
-        wait_for(&subscriber, |s| s.tx_count == 2).await;
+        wait_for(&subscriber, |s| s.tx_count() == 2).await;
 
         // Let several steady polls (one read each) accumulate too.
         tokio::time::sleep(Duration::from_millis(60)).await;
@@ -430,7 +436,7 @@ mod core {
         let (service, subscriber, source) = spawn_core(100, 0xAB, vec![mtx(1, 100)], config);
 
         // The immediate first interval tick serves the initial set.
-        wait_for(&subscriber, |s| s.tx_count == 1).await;
+        wait_for(&subscriber, |s| s.tx_count() == 1).await;
 
         // A burst: advance the tip many times and fire a wake each time, all with
         // no `.await` between them, so the core task stays parked until the tip
@@ -447,11 +453,11 @@ mod core {
         // Converges to the final tip as a Complete set — the backstop never
         // latched IncompleteSourceError.
         let snapshot = wait_for(&subscriber, |s| {
-            s.source_tip == Some(block_ref(200, 0xFF)) && s.tx_count == 2
+            s.source_tip() == Some(block_ref(200, 0xFF)) && s.tx_count() == 2
         })
         .await;
 
-        assert_eq!(snapshot.completeness, MempoolCompleteness::Complete);
+        assert_eq!(snapshot.completeness(), MempoolCompleteness::Complete);
 
         // The claim the burst is here to test, and which the timing cliff above
         // was standing in for: 21 wakes did not become 21 polls. `watch`
@@ -471,7 +477,7 @@ mod core {
     async fn added_transaction_is_fetched_once() {
         let (service, subscriber, source) =
             spawn_core(100, 0xAB, vec![mtx(1, 100), mtx(2, 100)], fast_config());
-        wait_for(&subscriber, |s| s.tx_count == 2).await;
+        wait_for(&subscriber, |s| s.tx_count() == 2).await;
 
         tokio::time::sleep(Duration::from_millis(60)).await;
         assert_eq!(source.raw_fetch_count(&txid(1)), 1);
@@ -483,13 +489,13 @@ mod core {
     async fn removed_transaction_is_dropped() {
         let (service, subscriber, source) =
             spawn_core(100, 0xAB, vec![mtx(1, 100), mtx(2, 100)], fast_config());
-        wait_for(&subscriber, |s| s.tx_count == 2).await;
+        wait_for(&subscriber, |s| s.tx_count() == 2).await;
 
         source.set_mempool(vec![mtx(1, 100)]);
 
-        let snapshot = wait_for(&subscriber, |s| s.tx_count == 1).await;
-        assert!(snapshot.by_txid.contains_key(&txid(1)));
-        assert!(!snapshot.by_txid.contains_key(&txid(2)));
+        let snapshot = wait_for(&subscriber, |s| s.tx_count() == 1).await;
+        assert!(snapshot.by_txid().contains_key(&txid(1)));
+        assert!(!snapshot.by_txid().contains_key(&txid(2)));
         service.close();
     }
 
@@ -499,9 +505,9 @@ mod core {
             spawn_core(100, 0xAB, vec![mtx(1, 100), mtx(2, 100)], fast_config());
         source.lock().phantom.insert(txid(2));
 
-        let snapshot = wait_for(&subscriber, |s| s.tx_count == 1).await;
-        assert!(snapshot.by_txid.contains_key(&txid(1)));
-        assert!(!snapshot.by_txid.contains_key(&txid(2)));
+        let snapshot = wait_for(&subscriber, |s| s.tx_count() == 1).await;
+        assert!(snapshot.by_txid().contains_key(&txid(1)));
+        assert!(!snapshot.by_txid().contains_key(&txid(2)));
         service.close();
     }
 
@@ -519,23 +525,23 @@ mod core {
             MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
         let subscriber = service.subscriber();
 
-        let snapshot = wait_for(&subscriber, |s| s.tx_count == 1).await;
-        assert_eq!(snapshot.by_txid[&txid(1)].entry_time, Some(1_700_000_000));
+        let snapshot = wait_for(&subscriber, |s| s.tx_count() == 1).await;
+        assert_eq!(snapshot.by_txid()[&txid(1)].entry_time, Some(1_700_000_000));
         service.close();
     }
 
     #[tokio::test]
     async fn source_error_keeps_set_and_marks_incomplete() {
         let (service, subscriber, source) = spawn_core(100, 0xAB, vec![mtx(1, 100)], fast_config());
-        wait_for(&subscriber, |s| s.tx_count == 1).await;
+        wait_for(&subscriber, |s| s.tx_count() == 1).await;
 
         source.set_error(Some("validator unreachable"));
 
         let snapshot = wait_for(&subscriber, |s| {
-            s.completeness == MempoolCompleteness::IncompleteSourceError
+            s.completeness() == MempoolCompleteness::IncompleteSourceError
         })
         .await;
-        assert_eq!(snapshot.tx_count, 1); // prior set preserved, never frozen away
+        assert_eq!(snapshot.tx_count(), 1); // prior set preserved, never frozen away
         service.close();
     }
 
@@ -546,17 +552,17 @@ mod core {
         // incomplete. Nothing is deleted on the strength of an unmodelled
         // failure.
         let (service, subscriber, source) = spawn_core(100, 0xAB, vec![mtx(1, 100)], fast_config());
-        wait_for(&subscriber, |s| s.tx_count == 1).await;
+        wait_for(&subscriber, |s| s.tx_count() == 1).await;
 
         source.fail_raw_fetch_for(txid(2));
         source.set_mempool(vec![mtx(1, 100), mtx(2, 100)]);
 
         let snapshot = wait_for(&subscriber, |s| {
-            s.completeness == MempoolCompleteness::IncompleteSourceError
+            s.completeness() == MempoolCompleteness::IncompleteSourceError
         })
         .await;
-        assert!(snapshot.by_txid.contains_key(&txid(1)));
-        assert!(!snapshot.by_txid.contains_key(&txid(2)));
+        assert!(snapshot.by_txid().contains_key(&txid(1)));
+        assert!(!snapshot.by_txid().contains_key(&txid(2)));
         service.close();
     }
 
@@ -571,12 +577,12 @@ mod core {
             spawn_core(100, 0xAB, vec![mtx(1, 100), mtx(2, 100)], config);
 
         let snapshot = wait_for(&subscriber, |s| {
-            s.completeness == MempoolCompleteness::IncompleteCapacityLimited
+            s.completeness() == MempoolCompleteness::IncompleteCapacityLimited
         })
         .await;
         // Partial admission: the set fills up to the bound rather than dropping
         // every addition.
-        assert_eq!(snapshot.tx_count, 1);
+        assert_eq!(snapshot.tx_count(), 1);
         service.close();
     }
 
@@ -593,7 +599,7 @@ mod core {
             spawn_core(100, 0xAB, vec![mtx(1, 100), mtx(2, 100)], config);
 
         wait_for(&subscriber, |s| {
-            s.completeness == MempoolCompleteness::IncompleteCapacityLimited
+            s.completeness() == MempoolCompleteness::IncompleteCapacityLimited
         })
         .await;
 
@@ -608,10 +614,10 @@ mod core {
         );
 
         let snapshot = subscriber.snapshot();
-        assert_eq!(snapshot.tx_count, 1);
+        assert_eq!(snapshot.tx_count(), 1);
         // The shortfall is named, so a caller can tell "short this one" from
         // "no such transaction".
-        assert_eq!(snapshot.unadmitted.len(), 1);
+        assert_eq!(snapshot.unadmitted().len(), 1);
         service.close();
     }
 
@@ -624,13 +630,13 @@ mod core {
         config.set_max_cost_bytes(zaino_mempool::config::MEMPOOL_TRANSACTION_COST_THRESHOLD);
         let (service, subscriber, source) = spawn_core(100, 0xAB, vec![mtx(1, 100)], config);
 
-        wait_for(&subscriber, |s| s.tx_count == 1).await;
+        wait_for(&subscriber, |s| s.tx_count() == 1).await;
         let listings_once_full = source.metadata_fetch_count();
 
         // A new arrival cannot fit: headroom is zero.
         source.set_mempool(vec![mtx(1, 100), mtx(2, 100)]);
         wait_for(&subscriber, |s| {
-            s.completeness == MempoolCompleteness::IncompleteCapacityLimited
+            s.completeness() == MempoolCompleteness::IncompleteCapacityLimited
         })
         .await;
         tokio::time::sleep(Duration::from_millis(60)).await;
@@ -657,7 +663,7 @@ mod core {
         // Nothing fits in 50 bytes (the ZIP-401 floor alone is 10,000), so the
         // transaction is refused and remembered.
         wait_for(&subscriber, |s| {
-            s.completeness == MempoolCompleteness::IncompleteCapacityLimited
+            s.completeness() == MempoolCompleteness::IncompleteCapacityLimited
         })
         .await;
 
@@ -665,10 +671,10 @@ mod core {
         // a permanently un-retryable entry.
         source.set_mempool(Vec::new());
         let snapshot = wait_for(&subscriber, |s| {
-            s.completeness == MempoolCompleteness::Complete
+            s.completeness() == MempoolCompleteness::Complete
         })
         .await;
-        assert!(snapshot.unadmitted.is_empty());
+        assert!(snapshot.unadmitted().is_empty());
         service.close();
     }
 
@@ -718,9 +724,9 @@ mod core {
             salt,
         );
         let subscriber = service.subscriber();
-        let snapshot = wait_for(&subscriber, |s| s.tx_count == 1).await;
+        let snapshot = wait_for(&subscriber, |s| s.tx_count() == 1).await;
         let admitted = *snapshot
-            .by_txid
+            .by_txid()
             .keys()
             .next()
             .expect("exactly one transaction admitted");
@@ -738,14 +744,14 @@ mod core {
             spawn_core(100, 0xAB, vec![mtx(1, 100), mtx(2, 100)], config);
 
         wait_for(&subscriber, |s| {
-            s.completeness == MempoolCompleteness::IncompleteCapacityLimited
+            s.completeness() == MempoolCompleteness::IncompleteCapacityLimited
         })
         .await;
 
         service.set_max_cost_bytes(1_000_000);
 
-        let snapshot = wait_for(&subscriber, |s| s.tx_count == 2).await;
-        assert_eq!(snapshot.completeness, MempoolCompleteness::Complete);
+        let snapshot = wait_for(&subscriber, |s| s.tx_count() == 2).await;
+        assert_eq!(snapshot.completeness(), MempoolCompleteness::Complete);
         service.close();
     }
 
@@ -758,7 +764,7 @@ mod core {
         config.metadata_min_interval = Duration::from_secs(30);
         let (service, subscriber, source) = spawn_core(100, 0xAB, vec![mtx(1, 100)], config);
 
-        wait_for(&subscriber, |s| s.tx_count == 1).await;
+        wait_for(&subscriber, |s| s.tx_count() == 1).await;
         let listings_after_startup = source.metadata_fetch_count();
 
         source.set_mempool(vec![mtx(1, 100), mtx(2, 100)]);
@@ -770,13 +776,13 @@ mod core {
             "listing re-issued inside the floor"
         );
         let snapshot = subscriber.snapshot();
-        assert_eq!(snapshot.tx_count, 1);
+        assert_eq!(snapshot.tx_count(), 1);
         assert_eq!(
-            snapshot.completeness,
+            snapshot.completeness(),
             MempoolCompleteness::IncompletePendingMetadata,
             "a deferred addition must be reported as such, not as a complete set"
         );
-        assert!(snapshot.unadmitted.contains(&txid(2)));
+        assert!(snapshot.unadmitted().contains(&txid(2)));
         service.close();
     }
 
@@ -790,23 +796,26 @@ mod core {
         let (service, subscriber, source) =
             spawn_core(100, 0xAB, vec![mtx(1, 100), mtx(2, 100)], config);
 
-        wait_for(&subscriber, |s| s.tx_count == 2).await;
+        wait_for(&subscriber, |s| s.tx_count() == 2).await;
 
         // One transaction leaves, another arrives, and the tip advances — all in
         // the same poll, with the metadata listing floored out.
         source.set_mempool(vec![mtx(2, 100), mtx(3, 100)]);
         source.set_tip(block_ref(101, 0xCD));
 
-        let snapshot = wait_for(&subscriber, |s| s.source_tip == Some(block_ref(101, 0xCD))).await;
+        let snapshot = wait_for(&subscriber, |s| {
+            s.source_tip() == Some(block_ref(101, 0xCD))
+        })
+        .await;
         assert!(
-            !snapshot.by_txid.contains_key(&txid(1)),
+            !snapshot.by_txid().contains_key(&txid(1)),
             "the removal must apply even though the additions were deferred"
         );
         assert!(
-            !snapshot.by_txid.contains_key(&txid(3)),
+            !snapshot.by_txid().contains_key(&txid(3)),
             "the addition must still be deferred"
         );
-        assert!(snapshot.unadmitted.contains(&txid(3)));
+        assert!(snapshot.unadmitted().contains(&txid(3)));
         service.close();
     }
 
@@ -814,7 +823,7 @@ mod core {
     async fn get_mempool_info_reports_totals() {
         let (service, subscriber, _source) =
             spawn_core(100, 0xAB, vec![mtx(1, 100), mtx(2, 100)], fast_config());
-        wait_for(&subscriber, |s| s.tx_count == 2).await;
+        wait_for(&subscriber, |s| s.tx_count() == 2).await;
 
         let info = subscriber.get_mempool_info();
         assert_eq!(info.size, 2);
@@ -849,7 +858,7 @@ mod core {
         let service =
             MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
         let subscriber = service.subscriber();
-        wait_for(&subscriber, |s| s.tx_count == 2).await;
+        wait_for(&subscriber, |s| s.tx_count() == 2).await;
 
         // Suffix `[0x00; 31]` (the shared trailing bytes) matches both -> excludes
         // neither.
@@ -873,7 +882,7 @@ mod core {
     #[tokio::test]
     async fn update_feed_emits_added_removed_and_reset() {
         let (service, subscriber, source) = spawn_core(100, 0xAB, vec![mtx(1, 100)], fast_config());
-        wait_for(&subscriber, |s| s.tx_count == 1).await;
+        wait_for(&subscriber, |s| s.tx_count() == 1).await;
 
         let mut updates = subscriber.subscribe_updates();
         source.set_mempool(vec![mtx(2, 100)]); // remove 1, add 2
@@ -910,7 +919,7 @@ mod core {
             MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
         let subscriber = service.subscriber();
         wait_for(&subscriber, |s| {
-            s.completeness == MempoolCompleteness::Complete
+            s.completeness() == MempoolCompleteness::Complete
         })
         .await;
 
@@ -949,7 +958,7 @@ mod core {
         let service = MempoolService::spawn(source.clone(), config, CancellationToken::new());
         let subscriber = service.subscriber();
         wait_for(&subscriber, |s| {
-            s.completeness == MempoolCompleteness::Complete
+            s.completeness() == MempoolCompleteness::Complete
         })
         .await;
 
@@ -997,7 +1006,7 @@ mod core {
         let service =
             MempoolService::spawn(source.clone(), fast_config(), CancellationToken::new());
         let subscriber = service.subscriber();
-        wait_for(&subscriber, |s| s.tx_count == 200).await;
+        wait_for(&subscriber, |s| s.tx_count() == 200).await;
 
         let mut handles = Vec::new();
         for _ in 0..16 {
@@ -1005,7 +1014,7 @@ mod core {
             handles.push(tokio::spawn(async move {
                 for _ in 0..500 {
                     let snap = sub.snapshot();
-                    assert_eq!(snap.tx_count, snap.by_txid.len());
+                    assert_eq!(snap.tx_count(), snap.by_txid().len());
                 }
             }));
         }
@@ -1161,7 +1170,7 @@ mod coherence {
 
         let snapshot = wait_for(&h.subscriber, is_live).await;
         assert!(snapshot.is_live_for(epoch(7, 100, 0xAB)));
-        assert_eq!(snapshot.set.tx_count, 2);
+        assert_eq!(snapshot.set.tx_count(), 2);
         assert!(snapshot.is_valid_for_snapshot(epoch(7, 100, 0xAB)));
         assert!(snapshot.get(&txid(1)).is_some());
         h.close();
@@ -1175,8 +1184,8 @@ mod coherence {
         h.source.set_tip(block_ref(101, 0xCD)); // V advances, NS stays
 
         let snapshot = wait_for(&h.subscriber, is_frozen).await;
-        assert_eq!(snapshot.set.tx_count, 1); // last coherent set stays readable
-        assert!(snapshot.set.by_txid.contains_key(&txid(1)));
+        assert_eq!(snapshot.set.tx_count(), 1); // last coherent set stays readable
+        assert!(snapshot.set.by_txid().contains_key(&txid(1)));
         assert_eq!(snapshot.valid_for, Some(epoch(1, 100, 0xAB)));
         assert_eq!(freeze_reason(&snapshot), Some(FreezeReason::TipsDiverged));
         h.close();
@@ -1202,26 +1211,27 @@ mod coherence {
         let mut live = core.snapshot();
         for _ in 0..2000 {
             live = core.snapshot();
-            if live.tx_count == 2 && live.source_tip == Some(block_ref(101, 0xCD)) {
+            if live.tx_count() == 2 && live.source_tip() == Some(block_ref(101, 0xCD)) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         assert_eq!(
-            live.tx_count, 2,
+            live.tx_count(),
+            2,
             "core must serve the live mempool during a transition"
         );
         assert_eq!(
-            live.completeness,
+            live.completeness(),
             zaino_mempool::snapshot::MempoolCompleteness::Complete
         );
-        assert!(live.by_txid.contains_key(&txid(2)));
+        assert!(live.by_txid().contains_key(&txid(2)));
 
         // Meanwhile the coherent view freezes at the last coherent set: the new
         // transaction is live in the core but not blessed for the stale NS tip.
         let frozen = wait_for(&h.subscriber, frozen_because(FreezeReason::TipsDiverged)).await;
-        assert_eq!(frozen.set.tx_count, 1);
-        assert!(!frozen.set.by_txid.contains_key(&txid(2)));
+        assert_eq!(frozen.set.tx_count(), 1);
+        assert!(!frozen.set.by_txid().contains_key(&txid(2)));
 
         h.close();
     }
@@ -1234,7 +1244,7 @@ mod coherence {
         h.nfs.set(epoch(2, 101, 0xCD)); // NS advances, V stays
 
         let snapshot = wait_for(&h.subscriber, frozen_because(FreezeReason::TipsDiverged)).await;
-        assert_eq!(snapshot.set.tx_count, 1);
+        assert_eq!(snapshot.set.tx_count(), 1);
         h.close();
     }
 
@@ -1260,7 +1270,7 @@ mod coherence {
         nfs.set(epoch(2, 100, 0xAA)); // agree
 
         let snapshot = wait_for(&subscriber, is_live).await;
-        assert_eq!(snapshot.set.tx_count, 1);
+        assert_eq!(snapshot.set.tx_count(), 1);
         assert!(snapshot.is_live_for(epoch(2, 100, 0xAA)));
         coherence.close();
         core.close();
@@ -1291,10 +1301,10 @@ mod coherence {
 
         // The re-tag carried the new tip; the addition is deferred, not admitted,
         // and the set says so — which is exactly why thaw did not wait for it.
-        assert_eq!(snapshot.set.source_tip, Some(block_ref(101, 0xCD)));
-        assert!(!snapshot.set.by_txid.contains_key(&txid(2)));
+        assert_eq!(snapshot.set.source_tip(), Some(block_ref(101, 0xCD)));
+        assert!(!snapshot.set.by_txid().contains_key(&txid(2)));
         assert_eq!(
-            snapshot.set.completeness,
+            snapshot.set.completeness(),
             zaino_mempool::snapshot::MempoolCompleteness::IncompletePendingMetadata
         );
 
@@ -1338,7 +1348,7 @@ mod coherence {
         h.source.set_error(Some("validator unreachable"));
 
         let snapshot = wait_for(&h.subscriber, frozen_because(FreezeReason::CoreIncomplete)).await;
-        assert_eq!(snapshot.set.tx_count, 1); // last coherent set preserved
+        assert_eq!(snapshot.set.tx_count(), 1); // last coherent set preserved
         h.close();
     }
 
@@ -1355,16 +1365,16 @@ mod coherence {
         // Short but blessed: the view is Live even though the set is incomplete.
         let live = wait_for(&h.subscriber, is_live).await;
         assert!(
-            !live.set.completeness.is_whole(),
+            !live.set.completeness().is_whole(),
             "the capacity-bounded set must be short, got {:?}",
-            live.set.completeness
+            live.set.completeness()
         );
         assert_eq!(
-            live.set.completeness,
+            live.set.completeness(),
             zaino_mempool::snapshot::MempoolCompleteness::IncompleteCapacityLimited
         );
         assert!(
-            !live.set.unadmitted.is_empty(),
+            !live.set.unadmitted().is_empty(),
             "a capacity-refused set must name the txids it is short of"
         );
 
@@ -1406,7 +1416,7 @@ mod coherence {
     #[tokio::test]
     async fn stream_yields_initial_then_added() {
         let h = spawn_coherent(100, 0xAB, 1, vec![mtx(1, 100)], fast_config());
-        wait_for(&h.subscriber, |s| is_live(s) && s.set.tx_count == 1).await;
+        wait_for(&h.subscriber, |s| is_live(s) && s.set.tx_count() == 1).await;
 
         let mut stream = Box::pin(
             h.subscriber
@@ -1438,7 +1448,7 @@ mod coherence {
         config.event_buffer_len = 2; // tiny buffer: a small flood overflows it
 
         let h = spawn_coherent(100, 0xAB, 1, vec![mtx(1, 100)], config);
-        wait_for(&h.subscriber, |s| is_live(s) && s.set.tx_count == 1).await;
+        wait_for(&h.subscriber, |s| is_live(s) && s.set.tx_count() == 1).await;
 
         let mut stream = Box::pin(
             h.subscriber
@@ -1507,7 +1517,7 @@ mod coherence {
         let subscriber = coherence.subscriber();
 
         let live = wait_for(&subscriber, is_live).await;
-        assert_eq!(live.set.tx_count, 1);
+        assert_eq!(live.set.tx_count(), 1);
 
         source.set_tip(block_ref(101, 0xBB)); // tip change: re-synthesize, stay live
         let snapshot = wait_for(&subscriber, |s| {
@@ -1524,7 +1534,7 @@ mod coherence {
         let snapshot = CoherentSnapshot::empty_not_ready();
         assert!(matches!(snapshot.mode, MempoolMode::NotReady));
         assert_eq!(snapshot.valid_for, None);
-        assert_eq!(snapshot.set.tx_count, 0);
+        assert_eq!(snapshot.set.tx_count(), 0);
     }
 
     /// The pre-first-poll set must never be blessed as coherent.

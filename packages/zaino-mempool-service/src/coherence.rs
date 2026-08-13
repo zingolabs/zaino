@@ -258,7 +258,7 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
         // holds and is tagged with a sound tip, so serving it is strictly more
         // useful than a blackout. A set that may not reflect the source at all is
         // the case a freeze is actually for.
-        if core.completeness.may_be_wrong() {
+        if core.completeness().may_be_wrong() {
             self.freeze(&prev, observed, FreezeReason::CoreIncomplete);
             return;
         }
@@ -273,7 +273,7 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
     }
 
     fn observe_tips(&self, core: &MempoolSnapshot) -> ObservedTips {
-        let validator = core.source_tip;
+        let validator = core.source_tip();
 
         let non_finalized = match &self.nfs {
             // Dual-tip: the observer reports the ChainIndex epoch (`None` freezes).
@@ -346,7 +346,7 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
 
         // Already live for this epoch at this core generation: nothing to do.
         if prev.is_live_for(epoch)
-            && prev.set.mempool_generation == core.mempool_generation
+            && prev.set.mempool_generation() == core.mempool_generation()
             && prev.observed_tips == observed
         {
             self.status.store(StatusType::Ready);
@@ -368,8 +368,8 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
         self.coherent.store(snapshot);
 
         if steady_update {
-            for entry in core.entries_in_order.iter() {
-                if !prev.set.by_txid.contains_key(&entry.txid) {
+            for entry in core.entries_in_order().iter() {
+                if !prev.set.by_txid().contains_key(&entry.txid) {
                     let _ = self.events.send(Arc::new(MempoolEvent::Added {
                         sequence: next_sequence,
                         valid_for: epoch,
@@ -509,7 +509,7 @@ impl zaino_mempool::ports::TipAwareMempool for CoherentSubscriber {
         }
 
         let start_sequence = snapshot.event_sequence;
-        let initial_entries = snapshot.set.entries_in_order.clone();
+        let initial_entries = snapshot.set.entries_in_order().clone();
 
         // The epoch this stream serves. It closes only when the view becomes live
         // for a *different* epoch — i.e. when the tips re-agree at a *new* tip. It
