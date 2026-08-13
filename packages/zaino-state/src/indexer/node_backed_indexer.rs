@@ -1079,7 +1079,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
         let not_found_error = || {
             NodeBackedIndexerServiceError::RpcError(crate::error::LegacyRpcError::new(
                 zebra_rpc::server::error::LegacyCode::InvalidAddressOrKey,
-                "No such mempool or main chain transaction",
+                "Transaction not found in mempool or best chain",
             ))
         };
 

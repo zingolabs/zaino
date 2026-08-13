@@ -38,6 +38,14 @@ and this library adheres to Rust's notion of
   cadence and exclude-list caps operator-configurable.
 
 ### Changed
+- **The live test image now runs zebrad 6.3.0**, the release whose dependency
+  set matches the Zebra libraries Zaino links. The libraries moved to that set,
+  but the image tag stayed on 6.0.0, so the live suite exercised a pairing no
+  release ships.
+- **`getrawtransaction` reports an unknown transaction with the message
+  `Transaction not found in mempool or best chain`**, the text zebrad itself
+  now returns. The error code is unchanged. A client that matches on the old
+  message text must be updated.
 - **The mempool no longer stalls across a tip transition.** `getrawmempool`,
   `getmempoolinfo` and `GetMempoolTx` are served from a tip-agnostic set that
   never clears; the old mempool wiped its whole map on every tip change and
