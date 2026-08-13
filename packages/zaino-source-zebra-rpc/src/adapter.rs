@@ -327,27 +327,6 @@ impl ZebraRpcAdapter {
         .await
     }
 
-    /// [`call_parsed`](Self::call_parsed) with a per-request timeout, for the
-    /// methods the validator answers by walking a whole data structure.
-    async fn call_parsed_slow<T, E>(
-        &self,
-        method: &str,
-        params: Vec<serde_json::Value>,
-        parse: impl FnOnce(&serde_json::Value) -> Result<T, parse::ParseError>,
-    ) -> Result<T, QueryError<E>>
-    where
-        E: std::fmt::Debug + std::fmt::Display,
-    {
-        self.call_parsed_classified(
-            method,
-            params,
-            Some(zaino_rpc::HEAVY_METHOD_TIMEOUT),
-            parse,
-            |error| QueryError::Fetch(error.into()),
-        )
-        .await
-    }
-
     /// [`call_parsed`](Self::call_parsed), but reporting the validator's
     /// not-found codes as the port's own "absent" answer.
     ///
@@ -602,13 +581,17 @@ impl zaino_source::GetMempoolMetadata for ZebraRpcAdapter {
         &self,
     ) -> Result<Vec<zaino_source::MempoolTxMeta>, QueryError<zaino_source::GetMempoolMetadataError>>
     {
-        // Slow path: the validator answers this by walking its entire mempool,
-        // loading full transactions and aggregating descendant stats. Under the
-        // client-wide timeout a busy validator would read as a hard error.
-        self.call_parsed_slow(
+        // The validator answers this by walking its entire mempool, loading
+        // full transactions and aggregating descendant stats. Under the
+        // client-wide timeout a busy validator would read as a hard error, so
+        // this method names its own bound rather than inheriting the default —
+        // the only axis on which it differs from an ordinary call.
+        self.call_parsed_classified(
             "getrawmempool",
             vec![serde_json::Value::Bool(true)],
+            Some(zaino_rpc::HEAVY_METHOD_TIMEOUT),
             parse::parse_mempool_metadata,
+            |error| QueryError::Fetch(error.into()),
         )
         .await
     }

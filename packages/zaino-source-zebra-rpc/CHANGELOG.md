@@ -20,10 +20,12 @@ and this library adheres to Rust's notion of
   `submission_rejection` (`sendrawtransaction`), `spent_info_rejection`
   (`getspentinfo`).
 - Impls of the three mempool sourcing ports: `GetMempoolMetadata`,
-  `GetRawMempoolTransaction`, `GetMempoolSourceTip`. The verbose listing goes
-  through `call_parsed_slow`, which applies `zaino_rpc::HEAVY_METHOD_TIMEOUT` —
-  the validator answers it by walking its whole mempool, so the client-wide
-  timeout would read a busy validator as a hard error.
+  `GetRawMempoolTransaction`, `GetMempoolSourceTip`. The verbose listing names
+  its own bound — `zaino_rpc::HEAVY_METHOD_TIMEOUT`, passed to
+  `call_parsed_classified` — because the validator answers it by walking its
+  whole mempool, so the client-wide timeout would read a busy validator as a
+  hard error. Timeout is a per-method value rather than a preset: it composes
+  with any error classification instead of multiplying against it.
 - `MAX_MEMPOOL_LISTING_ENTRIES` (1,000,000) and `parse_mempool_txids`. Both
   mempool listings are now capped on their declared entry count *before* any
   entry is decoded. `zaino_rpc::MAX_RESPONSE_BYTES` alone bounds the response

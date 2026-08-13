@@ -27,10 +27,11 @@ and this library adheres to Rust's notion of
   single reply. Bodies are now abandoned part-way rather than buffered, and the
   new `RpcError::ResponseBodyTooLarge` classifies as `FailureMode::Parse` so
   `Resilient` does not re-issue the request and buffer the same body again.
-- `RpcClient::call_with_timeout` and `HEAVY_METHOD_TIMEOUT` (30s), for the few
+- `RpcClient::call_with_timeout` and `HEAVY_METHOD_TIMEOUT` (120s), for the few
   methods that are inherently heavy on the validator (`getrawmempool verbose`
-  walks the whole mempool). The client-wide timeout stays tight for the small,
-  fast RPCs that dominate traffic.
+  walks the whole mempool). The client-wide timeout (30s) stays tight for the
+  small, fast RPCs that dominate traffic. The constant must exceed that default
+  or the override is inert; a unit test pins the relationship.
 
 ### Changed
 ### Deprecated

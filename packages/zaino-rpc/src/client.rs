@@ -20,7 +20,14 @@ use crate::retry;
 /// on a busy chain it legitimately takes longer than the default. Failing it
 /// leaves a consumer's mempool marked incomplete precisely when the chain is
 /// busiest, so a slow answer is far better than an error.
-pub const HEAVY_METHOD_TIMEOUT: Duration = Duration::from_secs(30);
+///
+/// This **must** stay above [`RpcClientConfig::request_timeout`]'s default, or
+/// the override buys nothing and the failure above happens anyway. Four times
+/// the default: enough that a heavy call has real room, bounded enough that an
+/// unreachable validator is still noticed in seconds rather than minutes. The
+/// caller that waits on it is a poll loop which serves its previous set
+/// meanwhile, so a slow answer costs staleness, not availability.
+pub const HEAVY_METHOD_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Maximum response body this client will buffer, in bytes.
 ///
@@ -203,4 +210,23 @@ async fn read_body_capped(
         body.extend_from_slice(&chunk);
     }
     Ok(body)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The whole point of [`HEAVY_METHOD_TIMEOUT`] is headroom over the
+    /// client-wide default. Equal values make the override a no-op while
+    /// reading, at every call site, as though heavy methods were handled — the
+    /// state this constant shipped in before it was caught in review.
+    #[test]
+    fn heavy_method_timeout_actually_grants_headroom() {
+        assert!(
+            HEAVY_METHOD_TIMEOUT > RpcClientConfig::default().request_timeout,
+            "HEAVY_METHOD_TIMEOUT ({HEAVY_METHOD_TIMEOUT:?}) must exceed the default \
+             request_timeout ({:?}), or overriding with it changes nothing",
+            RpcClientConfig::default().request_timeout,
+        );
+    }
 }
