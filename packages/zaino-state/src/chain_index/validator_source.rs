@@ -471,7 +471,7 @@ impl<V: ChainIndexSourcePorts> zaino_source::GetMempoolSourceTip for ValidatorSo
             zaino_primitives::types::BlockHash,
             zaino_primitives::types::Height,
         ),
-        zaino_source::QueryError<zaino_source::GetMempoolSourceTipError>,
+        zaino_source::QueryError<std::convert::Infallible>,
     > {
         self.validator.get_mempool_source_tip().await
     }

@@ -18,7 +18,8 @@ and this library adheres to Rust's notion of
   `absent_or_fetch` (height/hash-keyed reads), `invalid_address_or_fetch`
   (address-keyed reads), `call_parsed_optional` (`gettxout`),
   `submission_rejection` (`sendrawtransaction`), `spent_info_rejection`
-  (`getspentinfo`).
+  (`getspentinfo`), `mempool_unavailable_or_fetch` (both `getrawmempool`
+  listings, mapping `-32601` to the port's `Unavailable`).
 - Impls of the three mempool sourcing ports: `GetMempoolMetadata`,
   `GetRawMempoolTransaction`, `GetMempoolSourceTip`. The verbose listing names
   its own bound — `zaino_rpc::HEAVY_METHOD_TIMEOUT`, passed to

@@ -351,7 +351,7 @@ impl GetRawMempoolTransaction for ZebraValidator {
 impl GetMempoolSourceTip for ZebraValidator {
     async fn get_mempool_source_tip(
         &self,
-    ) -> Result<(BlockHash, Height), QueryError<GetMempoolSourceTipError>> {
+    ) -> Result<(BlockHash, Height), QueryError<std::convert::Infallible>> {
         // Deliberately *not* `fast_or_slow!`, unlike `GetChainTip` above. This
         // tip tags a mempool set read over JSON-RPC, and the comparison it
         // exists for is only sound if both come from one source — see the port's

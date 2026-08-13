@@ -70,7 +70,7 @@ pub use get_commitment_tree_roots::{GetCommitmentTreeRoots, GetCommitmentTreeRoo
 pub use get_compact_block::GetPreIndexCompactBlock;
 pub use get_difficulty::{GetDifficulty, GetDifficultyError};
 pub use get_mempool_metadata::{GetMempoolMetadata, GetMempoolMetadataError, MempoolTxMeta};
-pub use get_mempool_source_tip::{GetMempoolSourceTip, GetMempoolSourceTipError};
+pub use get_mempool_source_tip::GetMempoolSourceTip;
 pub use get_mempool_txids::{GetMempoolTxids, GetMempoolTxidsError};
 pub use get_mining_info::{GetMiningInfo, GetMiningInfoError};
 pub use get_network_sol_ps::{GetNetworkSolPs, GetNetworkSolPsError};

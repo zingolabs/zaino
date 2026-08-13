@@ -54,12 +54,30 @@ and this library adheres to Rust's notion of
   neighbour `GetTxOut`, where an absent output is a successful query returning
   JSON `null`; `getspentinfo` has no null answer, so modelling absence as
   `None` forced every consumer to invent an error code on the way out.
+- `GetMempoolTxidsError::Unavailable` and `GetMempoolMetadataError::Unavailable`
+  now name one condition — *this validator does not expose a mempool* — and are
+  actually produced, from `-32601` on `getrawmempool`. They were declared but
+  unreachable, because both methods ran through a classifier that mapped every
+  failure to `Fetch`. A consumer can now tell "stop asking, this node has no
+  mempool" from "the request failed, try again", which is the distinction the
+  variants existed to draw.
 
 ### Deprecated
 ### Removed
 - `GetSpentInfoError::IndexUnavailable` — declared, documented, and never
   constructed anywhere. Replaced by `NotSpent` / `Unsupported`, which are
   produced.
+- `GetMempoolSourceTipError` — the whole type. Its one variant (`NotReady`) was
+  unproducible *by construction*, not by oversight: the port's single-source
+  rule requires the tip to come from whichever transport serves the mempool,
+  which is JSON-RPC, and that answer either carries a tip or fails at the
+  transport level. `get_mempool_source_tip` is now typed
+  `QueryError<Infallible>`, which says exactly that.
+
+  Contrast `GetChainTipError::NotReady`, which stays: `GetChainTip` may be
+  answered from the state database, and the ReadState adapter genuinely
+  observes "no tip yet" as an answer. A domain variant one transport cannot see
+  but another can is correct; one *no* transport can produce is not.
 
 ### Fixed
 - `mock` is gated `#[cfg(any(test, feature = "testing"))]` rather than on the

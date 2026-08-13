@@ -128,6 +128,29 @@ The listing caps live in the adapter (`zaino-source-zebra-rpc`'s
 entry is decoded. That bounds the parse's peak allocation *and* stops an
 oversized listing from driving a million raw-transaction fetches upstream.
 
+### Their error models differ, and the single-source rule is why
+
+The two listing methods carry `Unavailable` — *this validator does not expose a
+mempool*, produced from `-32601`. It is worth distinguishing because retrying
+cannot change it: a consumer should stop asking rather than re-poll a node that
+will never answer.
+
+`GetMempoolSourceTip` carries **no domain error at all** — it is typed
+`QueryError<Infallible>`. This follows directly from the single-source rule
+above: because the tip must come from whichever transport serves the mempool,
+there is no second implementation that could observe a mempool-specific reason
+for having no tip, and the JSON-RPC answer either returns one or fails at the
+transport level. Nothing is left to name.
+
+That is the general rule for this crate. **A domain variant earns its place by
+being producible by some adapter, not by being plausible.** `GetChainTipError::
+NotReady` is producible — `GetChainTip` may be answered from the state database,
+and the ReadState adapter reports "no tip yet" as an answer. A variant one
+transport cannot see but another can is correct and should stay. A variant *no*
+transport can produce is worse than absent: it tells a consumer to handle a case
+that cannot arise, and reads as though the condition were being reported when it
+is not. When a method has no such case, type it `Infallible` and say why.
+
 ## Consumer aliases go in the consumer
 
 A crate that needs many ports declares its own supertrait alias, **in its own

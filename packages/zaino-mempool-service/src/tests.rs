@@ -15,8 +15,8 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use zaino_primitives::types::{BlockHash, Height, TransactionId};
 use zaino_source::{
-    FailureMode, FetchError, GetMempoolMetadataError, GetMempoolSourceTipError,
-    GetMempoolTxidsError, GetRawMempoolTransactionError, MempoolTxMeta, QueryError,
+    FailureMode, FetchError, GetMempoolMetadataError, GetMempoolTxidsError,
+    GetRawMempoolTransactionError, MempoolTxMeta, QueryError,
 };
 
 use zaino_mempool::config::MempoolConfig;
@@ -193,14 +193,16 @@ impl zaino_source::GetRawMempoolTransaction for MockSource {
 impl zaino_source::GetMempoolSourceTip for MockSource {
     async fn get_mempool_source_tip(
         &self,
-    ) -> Result<(BlockHash, Height), QueryError<GetMempoolSourceTipError>> {
+    ) -> Result<(BlockHash, Height), QueryError<std::convert::Infallible>> {
         self.lock().source_tip_reads += 1;
         if let Some(message) = self.error_message() {
             return Err(outage(message));
         }
         match self.lock().tip {
             Some(tip) => Ok((tip.hash, tip.height)),
-            None => Err(QueryError::Domain(GetMempoolSourceTipError::NotReady)),
+            // No domain answer on this port by design — an unset fixture tip is
+            // a fault, not the validator reporting something.
+            None => Err(outage("mock source has no tip set".to_string())),
         }
     }
 }

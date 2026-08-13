@@ -1218,13 +1218,16 @@ impl zaino_source::GetMempoolSourceTip for ProptestMockchain {
             zaino_primitives::types::BlockHash,
             zaino_primitives::types::Height,
         ),
-        PortError<zaino_source::GetMempoolSourceTipError>,
+        PortError<std::convert::Infallible>,
     > {
         use zaino_source::GetChainTip as _;
 
+        // No domain answer on this port by design — see `GetMempoolSourceTip`.
         self.get_chain_tip().await.map_err(|e| match e {
             PortError::Domain(zaino_source::GetChainTipError::NotReady) => {
-                PortError::Domain(zaino_source::GetMempoolSourceTipError::NotReady)
+                super::super::source::mockchain_source::port_fault(
+                    "proptest mockchain has no chain tip to serve the mempool",
+                )
             }
             PortError::Fetch(fetch) => PortError::Fetch(fetch),
         })

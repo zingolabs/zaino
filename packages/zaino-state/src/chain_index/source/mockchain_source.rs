@@ -680,10 +680,7 @@ impl zaino_source::GetRawMempoolTransaction for MockchainSource {
 impl zaino_source::GetMempoolSourceTip for MockchainSource {
     async fn get_mempool_source_tip(
         &self,
-    ) -> Result<
-        (domain::BlockHash, domain::Height),
-        PortError<zaino_source::GetMempoolSourceTipError>,
-    > {
+    ) -> Result<(domain::BlockHash, domain::Height), PortError<std::convert::Infallible>> {
         // The mock serves its mempool and its tip from one place by
         // construction — `mempool_transactions` is defined relative to
         // `active_height` — so the single-source rule holds trivially here.
@@ -691,9 +688,12 @@ impl zaino_source::GetMempoolSourceTip for MockchainSource {
         // way as the mock changes.
         use zaino_source::GetChainTip as _;
 
+        // `GetChainTip` has a domain answer for "no tip yet"; this port has
+        // none, by design (see `GetMempoolSourceTip`). Reported as a fault,
+        // which is what it is here — a fixture that cannot answer.
         self.get_chain_tip().await.map_err(|e| match e {
             PortError::Domain(zaino_source::GetChainTipError::NotReady) => {
-                PortError::Domain(zaino_source::GetMempoolSourceTipError::NotReady)
+                port_fault("mockchain has no chain tip to serve the mempool")
             }
             PortError::Fetch(fetch) => PortError::Fetch(fetch),
         })

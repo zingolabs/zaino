@@ -29,7 +29,14 @@ pub struct MempoolTxMeta {
 /// Domain error for [`GetMempoolMetadata`].
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
 pub enum GetMempoolMetadataError {
-    /// Mempool is not available (e.g. validator doesn't expose it).
+    /// This validator does not expose a mempool.
+    ///
+    /// The same condition [`GetMempoolTxidsError::Unavailable`] names, on the
+    /// other listing method: the validator saying it does not implement the
+    /// method, which is a statement about the node rather than about this
+    /// request. Retrying will not help.
+    ///
+    /// [`GetMempoolTxidsError::Unavailable`]: super::GetMempoolTxidsError::Unavailable
     #[error("mempool unavailable")]
     Unavailable,
 }

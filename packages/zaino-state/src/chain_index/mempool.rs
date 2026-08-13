@@ -125,7 +125,7 @@ impl<S: BlockchainSource> zaino_source::GetMempoolSourceTip for MempoolSourceAda
                 zaino_primitives::types::BlockHash,
                 zaino_primitives::types::Height,
             ),
-            zaino_source::QueryError<zaino_source::GetMempoolSourceTipError>,
+            zaino_source::QueryError<std::convert::Infallible>,
         >,
     > + Send {
         self.source.get_mempool_source_tip()
