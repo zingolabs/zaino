@@ -19,6 +19,17 @@
 pub mod service;
 pub mod subscriber;
 
+/// Widen a `usize` length or count to `u64`.
+///
+/// Infallible on every supported target (`usize` is at most 64 bits); saturates
+/// on the theoretical wider target rather than panicking, so no serving or poll
+/// path can be brought down by a conversion that cannot actually fail. Used
+/// wherever a byte length or transaction count crosses into the crate's `u64`
+/// accounting.
+pub(crate) fn usize_to_u64(n: usize) -> u64 {
+    u64::try_from(n).unwrap_or(u64::MAX)
+}
+
 #[cfg(feature = "tip_aware_mempool")]
 pub mod coherence;
 

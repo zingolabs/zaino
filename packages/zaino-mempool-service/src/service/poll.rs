@@ -342,8 +342,7 @@ impl<S: MempoolSource> super::MempoolService<S> {
                     Err(e) => return Err(zaino_mempool::MempoolError::source(e)),
                 };
 
-                let raw_len = u64::try_from(serialized_tx.len())
-                    .expect("serialized transaction length fits u64");
+                let raw_len = crate::usize_to_u64(serialized_tx.len());
                 Ok(Some(Arc::new(MempoolEntry {
                     txid: meta.txid,
                     // One copy out of the validator's response, shared from here
