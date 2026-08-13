@@ -959,7 +959,7 @@ mod core {
                 txid: txid_n(n),
                 entry_height: 100,
                 entry_time: None,
-                bytes: vec![(n % 251) as u8],
+                bytes: vec![u8::try_from(n % 251).expect("n % 251 fits u8")],
             })
             .collect();
         source.set_mempool(flood);
@@ -988,7 +988,7 @@ mod core {
                 txid: txid_n(n),
                 entry_height: 100,
                 entry_time: None,
-                bytes: vec![(n % 251) as u8],
+                bytes: vec![u8::try_from(n % 251).expect("n % 251 fits u8")],
             })
             .collect();
         source.set_mempool(mempool);
@@ -1455,7 +1455,7 @@ mod coherence {
                 txid: txid_n(n),
                 entry_height: 100,
                 entry_time: None,
-                bytes: vec![(n % 251) as u8],
+                bytes: vec![u8::try_from(n % 251).expect("n % 251 fits u8")],
             })
             .collect();
         h.source.set_mempool(flood);

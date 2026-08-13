@@ -121,8 +121,13 @@ impl<S: MempoolSource> super::MempoolService<S> {
             // and the exact check in `publish_snapshot` still decides.
             let max_cost_bytes = self.config.max_cost_bytes();
             let headroom = max_cost_bytes.saturating_sub(current.cost_bytes);
-            let max_admissible =
-                (headroom / zaino_mempool::config::MEMPOOL_TRANSACTION_COST_THRESHOLD) as usize;
+            let max_admissible = usize::try_from(
+                headroom / zaino_mempool::config::MEMPOOL_TRANSACTION_COST_THRESHOLD,
+            )
+            // Saturate rather than cast: this is an over-count upper bound and the
+            // exact check in `publish_snapshot` still decides, so on a target where
+            // the estimate exceeds `usize` the whole listing is a safe ceiling.
+            .unwrap_or(usize::MAX);
 
             if max_admissible == 0 {
                 // The set is already at the bound. Refuse without fetching, and
@@ -337,7 +342,8 @@ impl<S: MempoolSource> super::MempoolService<S> {
                     Err(e) => return Err(zaino_mempool::MempoolError::source(e)),
                 };
 
-                let raw_len = serialized_tx.len() as u64;
+                let raw_len = u64::try_from(serialized_tx.len())
+                    .expect("serialized transaction length fits u64");
                 Ok(Some(Arc::new(MempoolEntry {
                     txid: meta.txid,
                     // One copy out of the validator's response, shared from here

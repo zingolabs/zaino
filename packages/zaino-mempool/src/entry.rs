@@ -76,7 +76,7 @@ mod tests {
     use super::*;
 
     fn entry_with(bytes: Vec<u8>, entry_height: u32) -> MempoolEntry {
-        let raw_len = bytes.len() as u64;
+        let raw_len = u64::try_from(bytes.len()).expect("fixture length fits u64");
         MempoolEntry {
             txid: TransactionId::from([7u8; 32]),
             serialized_tx: Bytes::from(bytes),

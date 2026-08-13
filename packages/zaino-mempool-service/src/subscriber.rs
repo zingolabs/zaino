@@ -93,7 +93,7 @@ impl MempoolSubscriber {
     pub fn get_mempool_info(&self) -> MempoolInfo {
         let snapshot = self.current.load();
         MempoolInfo {
-            size: snapshot.tx_count as u64,
+            size: u64::try_from(snapshot.tx_count).expect("mempool tx count fits u64"),
             bytes: snapshot.raw_bytes,
             usage: snapshot.cost_bytes,
         }
