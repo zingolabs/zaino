@@ -172,6 +172,12 @@ is serving:
   a set against), the underlying `error`, and the `tx_count` still being served.
 - `info` — the source recovered and polls are being applied again. Every `warn`
   above is eventually closed by one of these.
+- `debug` (coherence) — freeze and thaw, carrying the `FreezeReason`. These are
+  at `debug` rather than `info` on purpose: every block freezes coherence
+  briefly, so at the default level a healthy node would log one line per block.
+  Turn them up when you want to know *why* a freeze happened; the escalation
+  `warn` (and the `zaino.mempool.coherence_frozen_seconds` gauge) is what tells
+  you a freeze has outlasted normal thaw.
 
 Nothing is logged per poll or per reconcile. At a sub-second cadence that would
 be noise, so a validator that stays down produces one `warn`, not thousands; turn

@@ -355,7 +355,17 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
         epoch: NonFinalizedEpoch,
     ) {
         // Serving live: the freeze clock (if any) stops here.
+        let was_frozen = matches!(prev.mode, MempoolMode::Frozen { .. });
         *self.frozen_since.lock().expect("frozen_since poisoned") = None;
+
+        if was_frozen {
+            // The matching edge to the freeze above, so a `frozen` line is
+            // always closed by a `thawed` one and a reader can bound how long
+            // coherent reads were withheld. Tested against `prev.mode` rather
+            // than the clock: this runs on every live publication, and only the
+            // transition is worth a line.
+            tracing::debug!(valid_for = ?epoch, "mempool coherence thawed; serving live");
+        }
 
         // Already live for this epoch at this core generation: nothing to do.
         if prev.is_live_for(epoch)
@@ -400,11 +410,25 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
     }
 
     fn freeze(&self, prev: &CoherentSnapshot, observed: ObservedTips, reason: FreezeReason) {
+        let was_frozen = matches!(prev.mode, MempoolMode::Frozen { .. });
+
         // Start the freeze clock on the transition *into* a freeze, and hold it
         // across repeated freezes (a reason/tip change while still frozen keeps
         // the original start). Cleared only on thaw in `publish_live`.
-        if !matches!(prev.mode, MempoolMode::Frozen { .. }) {
+        if !was_frozen {
             *self.frozen_since.lock().expect("frozen_since poisoned") = Some(Instant::now());
+
+            // The edge where tip-coherent reads stop being served. `FreezeReason`
+            // is otherwise only a broadcast event, so without this an operator
+            // who sees the upstream freeze-escalation warning has no record of
+            // *why* it froze — and the reason distinguishes a routine block from
+            // a diverged validator.
+            //
+            // `debug`, not `info`: a freeze is normal — every block causes one —
+            // so at the default level this would add a line per block for a
+            // perfectly healthy node. The escalation `warn` upstream is what
+            // fires when a freeze outlives normal thaw.
+            tracing::debug!(?reason, "mempool coherence frozen");
         }
 
         // Already frozen for the same reason against the same tips: no re-publish.
@@ -413,6 +437,15 @@ impl<M: Mempool, N: NfsEpochObserver> CoherenceService<M, N> {
         {
             self.status.store(StatusType::Syncing);
             return;
+        }
+
+        if was_frozen {
+            // Still frozen, but the cause moved (a tip changed again, or the
+            // tips diverged after one went unavailable). Logged separately from
+            // the entry edge so a reader can tell a deepening problem from a
+            // fresh one — and placed after the dedup guard above, so an
+            // unchanged freeze stays silent.
+            tracing::debug!(?reason, "mempool coherence freeze reason changed");
         }
 
         let next_sequence = prev.event_sequence.saturating_add(1);

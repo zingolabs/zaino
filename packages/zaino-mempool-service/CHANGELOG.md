@@ -89,6 +89,15 @@ and this library adheres to Rust's notion of
   Per-tick spans were deliberately not added: at this cadence they would swamp
   any trace they appeared in, and the signal is in the edges.
 
+  Coherence freeze and thaw are traced with the `FreezeReason` as a structured
+  field. It was previously carried only on the broadcast event, so an operator
+  who saw the upstream freeze-escalation warning had no record of *why* the view
+  froze — and the reason is what separates a routine block from a diverged
+  validator. Both edges log at `debug`, deliberately: a freeze happens on every
+  block, so `info` would put a line per block in a default-level log for a
+  healthy node. A freeze that changes cause while still frozen logs distinctly
+  from one that is entering, and an unchanged freeze stays silent.
+
   `tracing` is a dependency of this crate only. `zaino-mempool` is types, ports
   and pure functions with no runtime behaviour to report — its one rejection
   path is a `debug_assert`, and its configuration knobs are `NonZero`, so there
