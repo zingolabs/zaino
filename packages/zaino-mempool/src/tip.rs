@@ -24,20 +24,13 @@ use crate::entry::MempoolEntry;
 use crate::ports::{BlockRef, NonFinalizedEpoch};
 use crate::snapshot::MempoolSnapshot;
 
-/// The tip of the source that supplies mempool data ("V").
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ValidatorTip {
-    /// The mempool source's best tip.
-    pub best_tip: BlockRef,
-}
-
 /// The two tips coherence tracks: the validator/mempool-source tip ("V", from the
 /// core's [`source_tip`](MempoolSnapshot::source_tip) tag) and the
 /// non-finalized-state epoch ("NS", from the [`NfsEpochObserver`](crate::ports::NfsEpochObserver)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ObservedTips {
-    /// Latest observed validator/mempool-source tip.
-    pub validator: Option<ValidatorTip>,
+    /// Latest observed validator/mempool-source tip ("V").
+    pub validator: Option<BlockRef>,
     /// Latest observed non-finalized-state epoch.
     pub non_finalized: Option<NonFinalizedEpoch>,
 }
@@ -57,7 +50,7 @@ impl ObservedTips {
         let validator = self.validator?;
         let non_finalized = self.non_finalized?;
 
-        if validator.best_tip.hash == non_finalized.best_tip.hash {
+        if validator.hash == non_finalized.best_tip.hash {
             Some(non_finalized)
         } else {
             None

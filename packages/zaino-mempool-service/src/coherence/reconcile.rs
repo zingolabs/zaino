@@ -3,7 +3,7 @@
 
 use zaino_mempool::ports::{Mempool, NfsEpochObserver, NonFinalizedEpoch};
 use zaino_mempool::snapshot::MempoolSnapshot;
-use zaino_mempool::tip::{FreezeReason, ObservedTips, TipChange, ValidatorTip};
+use zaino_mempool::tip::{FreezeReason, ObservedTips, TipChange};
 
 impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
     /// Recompute the coherent view from the core's current snapshot and the NS
@@ -37,13 +37,13 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
     }
 
     fn observe_tips(&self, core: &MempoolSnapshot) -> ObservedTips {
-        let validator = core.source_tip.map(|best_tip| ValidatorTip { best_tip });
+        let validator = core.source_tip;
 
         let non_finalized = match &self.nfs {
             // Dual-tip: the observer reports the ChainIndex epoch (`None` freezes).
             Some(observer) => observer.current_epoch(),
             // Validator-only: synthesize the epoch from the validator tip.
-            None => validator.map(|tip| self.synthesized_epoch(tip.best_tip)),
+            None => validator.map(|tip| self.synthesized_epoch(tip)),
         };
 
         ObservedTips {
