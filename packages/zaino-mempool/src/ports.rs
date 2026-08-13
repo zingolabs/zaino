@@ -20,32 +20,15 @@
 use std::sync::Arc;
 
 use tokio::sync::broadcast;
-use zaino_primitives::types::{BlockHash, Height};
 
 use crate::snapshot::MempoolSnapshot;
 use crate::update::MempoolUpdate;
 
-/// A minimal `(hash, height)` reference to a block.
+/// A block named by both hash and height — the tip a mempool set is tagged with.
 ///
-/// A named pair rather than a tuple because the mempool compares these for
-/// equality in the one place that decides whether a transaction set is still
-/// coherent with the chain; `tip.hash != other.hash` reads correctly where
-/// `tip.0 != other.0` invites the wrong field.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct BlockRef {
-    /// The block's hash.
-    pub hash: BlockHash,
-    /// The block's height.
-    pub height: Height,
-}
-
-impl BlockRef {
-    /// Build a reference from the pair `zaino-source`'s tip ports answer with.
-    pub fn from_tip(tip: (BlockHash, Height)) -> Self {
-        let (hash, height) = tip;
-        Self { hash, height }
-    }
-}
+/// Re-exported from [`zaino_primitives`] rather than redefined: it is a
+/// chain-wide primitive, not mempool-specific vocabulary.
+pub use zaino_primitives::types::BlockRef;
 
 /// Every validator question the tip-agnostic mempool core asks.
 ///
