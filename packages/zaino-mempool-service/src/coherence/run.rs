@@ -10,7 +10,9 @@ use zaino_mempool::ports::{Mempool, NfsEpochObserver};
 use zaino_mempool::update::MempoolUpdate;
 
 impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
+    #[tracing::instrument(skip_all, name = "mempool.coherence_loop")]
     pub(super) async fn run(self: Arc<Self>) {
+        tracing::info!("starting");
         self.status.store(StatusType::Syncing);
 
         let mut updates = self.mempool.subscribe_updates();
@@ -30,6 +32,7 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
         loop {
             tokio::select! {
                 _ = self.cancel.cancelled() => {
+                    tracing::info!("closing");
                     self.publish_closing();
                     return;
                 }
@@ -49,6 +52,7 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
                 update = updates.recv() => {
                     match update {
                         Ok(MempoolUpdate::Closing { .. }) => {
+                            tracing::info!("closing");
                             self.publish_closing();
                             return;
                         }
@@ -65,7 +69,10 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
                         Ok(MempoolUpdate::Added { .. })
                         | Ok(MempoolUpdate::Removed { .. })
                         | Ok(MempoolUpdate::Lagged { .. }) => {}
-                        Err(broadcast::error::RecvError::Closed) => return,
+                        Err(broadcast::error::RecvError::Closed) => {
+                            tracing::info!("closing");
+                            return;
+                        }
                     }
                 }
             }

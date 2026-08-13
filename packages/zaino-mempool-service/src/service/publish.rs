@@ -29,18 +29,24 @@ impl<S: MempoolSource> super::MempoolService<S> {
         removed: Vec<TransactionId>,
         state: &mut PollState,
     ) {
+        let completeness = Self::completeness_for(state);
+
+        // Recovery edge: the last published set was short/degraded and this one
+        // is whole again. Edge-triggered — emitted only on the transition back
+        // to `Complete`, not on every complete publish.
+        if current.completeness != MempoolCompleteness::Complete
+            && completeness == MempoolCompleteness::Complete
+        {
+            tracing::info!("mempool recovered: serving a complete set");
+        }
+
         // A republish that carries no delta only re-stamps the tag (and possibly
         // the completeness). Reuse the existing collections and, crucially, keep
         // `mempool_generation` — bumping it on an unchanged set would make the
         // coherence layer treat every tip re-tag as new contents and redo its
         // work.
         if added_entries.is_empty() && removed.is_empty() {
-            self.publish_retagged(
-                current,
-                source_tip,
-                Self::completeness_for(state),
-                state.unadmitted(),
-            );
+            self.publish_retagged(current, source_tip, completeness, state.unadmitted());
             return;
         }
 
@@ -80,7 +86,6 @@ impl<S: MempoolSource> super::MempoolService<S> {
             applied_entries.push(entry);
         }
 
-        let completeness = Self::completeness_for(state);
         let next_sequence = current.event_sequence.saturating_add(1);
         let next_generation = current.mempool_generation.saturating_add(1);
 
@@ -164,6 +169,9 @@ impl<S: MempoolSource> super::MempoolService<S> {
             self.status.store(StatusType::Syncing);
             return;
         }
+
+        // Non-dedup path: this is the actual transition into the degraded state.
+        tracing::warn!("mempool degraded: source unavailable");
 
         let next_sequence = current.event_sequence.saturating_add(1);
         // `unadmitted` carried over: this poll failed before it could recompute

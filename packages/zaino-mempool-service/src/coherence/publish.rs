@@ -22,6 +22,12 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
         // Serving live: the freeze clock (if any) stops here.
         *self.frozen_since.lock().expect("frozen_since poisoned") = None;
 
+        // Freeze→live edge: emitted only when thawing out of a freeze, not on
+        // every live publish.
+        if matches!(prev.mode, MempoolMode::Frozen { .. }) {
+            tracing::debug!("coherence thawed; serving live");
+        }
+
         // Already live for this epoch at this core generation: nothing to do.
         if prev.is_live_for(epoch)
             && prev.set.mempool_generation == core.mempool_generation
@@ -74,6 +80,7 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
         // across repeated freezes (a reason/tip change while still frozen keeps
         // the original start). Cleared only on thaw in `publish_live`.
         if !matches!(prev.mode, MempoolMode::Frozen { .. }) {
+            tracing::debug!(reason = ?reason, "coherence froze");
             *self.frozen_since.lock().expect("frozen_since poisoned") = Some(Instant::now());
         }
 

@@ -33,6 +33,10 @@ async-stream = "0.3"
 thiserror = { workspace = true }
 bytes.workspace = true
 
+# Structured, edge-triggered observability for the runtime's operationally
+# significant events (degradation, recovery, freeze/thaw, loop lifecycle).
+tracing = { workspace = true }
+
 [features]
 # Opt-in tip-coherence layer: the `CoherenceService` and its coherent read/stream
 # handle, over the matching `zaino-mempool` feature.

@@ -29,7 +29,9 @@ const CAPACITY_LOW_WATER_PERCENT: u64 = 90;
 pub(super) const MAX_CONSECUTIVE_DISCARDS: u32 = 5;
 
 impl<S: MempoolSource> super::MempoolService<S> {
+    #[tracing::instrument(skip_all, name = "mempool.poll_loop")]
     pub(super) async fn run(self: Arc<Self>) {
+        tracing::info!("starting");
         self.status.store(StatusType::Syncing);
 
         let mut interval = tokio::time::interval(self.config.poll_interval.get());
@@ -40,6 +42,7 @@ impl<S: MempoolSource> super::MempoolService<S> {
         loop {
             tokio::select! {
                 _ = self.cancel.cancelled() => {
+                    tracing::info!("closing");
                     self.publish_closing();
                     return;
                 }
@@ -68,14 +71,28 @@ impl<S: MempoolSource> super::MempoolService<S> {
         // mempool, which the coherence layer depends on to thaw.
         let tip_before = match self.source.get_mempool_source_tip().await {
             Ok(tip) => BlockRef::from_tip(tip),
-            Err(_) => return self.source_error(state),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    fetch = "mempool_source_tip",
+                    "mempool source read failed; marking set incomplete"
+                );
+                return self.source_error(state);
+            }
         };
 
         let txids = match self.source.get_mempool_txids().await {
             Ok(txids) => txids,
             // The source errored: keep the last set, mark it incomplete, and
             // retry next poll. The core never freezes.
-            Err(_) => return self.source_error(state),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    fetch = "mempool_txids",
+                    "mempool source read failed; marking set incomplete"
+                );
+                return self.source_error(state);
+            }
         };
 
         let current = self.current.load_full();
@@ -149,7 +166,14 @@ impl<S: MempoolSource> super::MempoolService<S> {
                 } else {
                     let metadata = match self.source.get_mempool_metadata().await {
                         Ok(metadata) => metadata,
-                        Err(_) => return self.source_error(state),
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                fetch = "mempool_metadata",
+                                "mempool source read failed; marking set incomplete"
+                            );
+                            return self.source_error(state);
+                        }
                     };
                     state.last_metadata_fetch = Some(Instant::now());
                     let meta_by_txid: HashMap<_, _> =
@@ -264,6 +288,10 @@ impl<S: MempoolSource> super::MempoolService<S> {
         } else {
             state.consecutive_discards = state.consecutive_discards.saturating_add(1);
             if state.consecutive_discards >= MAX_CONSECUTIVE_DISCARDS {
+                tracing::warn!(
+                    consecutive_discards = state.consecutive_discards,
+                    "mempool tip unstable across polls; republishing set as incomplete"
+                );
                 self.publish_source_error();
             }
         }
@@ -339,7 +367,13 @@ impl<S: MempoolSource> super::MempoolService<S> {
                     Err(QueryError::Domain(GetRawMempoolTransactionError::NotFound(_))) => {
                         return Ok(None)
                     }
-                    Err(e) => return Err(zaino_mempool::MempoolError::source(e)),
+                    Err(e) => {
+                        tracing::debug!(
+                            error = %e,
+                            "raw-transaction fetch failed; dropping this poll's additions"
+                        );
+                        return Err(zaino_mempool::MempoolError::source(e));
+                    }
                 };
 
                 let raw_len = crate::usize_to_u64(serialized_tx.len());
@@ -364,8 +398,16 @@ impl<S: MempoolSource> super::MempoolService<S> {
                 Ok(Some(entry)) => entries.push(entry),
                 Ok(None) => {}
                 // Any raw-fetch error aborts this poll's update; the last set
-                // stays readable and the next poll retries.
-                Err(_) => return None,
+                // stays readable and the next poll retries. The individual
+                // failure was already logged in the fetch closure above; this
+                // records that the abort propagated and the additions are gone.
+                Err(e) => {
+                    tracing::debug!(
+                        error = %e,
+                        "raw-transaction fetch failed; dropping this poll's additions"
+                    );
+                    return None;
+                }
             }
         }
         Some(entries)
