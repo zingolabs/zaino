@@ -196,8 +196,15 @@ fn commitment_tree_data(roots: &TreeRoots) -> CommitmentTreeData {
     let root_bytes = |root: &Option<zaino_primitives::types::TreeRootInfo>| {
         root.as_ref().map(|info| <[u8; 32]>::from(info.root))
     };
+    // Saturating rather than truncating. A note-commitment tree size cannot
+    // reach `u32::MAX` — that is more notes than the chain has blocks to carry —
+    // so neither arm is reachable in practice, but the two disagree about which
+    // way to be wrong if it ever were. `as` is modulo, so a size of exactly
+    // 2^32 would report an *empty* tree, which reads as valid; saturating
+    // reports an implausibly full one, which does not.
     let size = |root: &Option<zaino_primitives::types::TreeRootInfo>| {
-        root.as_ref().map_or(0, |info| info.size as u32)
+        root.as_ref()
+            .map_or(0, |info| u32::try_from(info.size).unwrap_or(u32::MAX))
     };
 
     CommitmentTreeData::new(
