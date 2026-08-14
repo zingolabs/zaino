@@ -194,10 +194,10 @@ impl ChainHeadEpochAdapter {
 }
 
 impl zaino_mempool::NfsEpochObserver for ChainHeadEpochAdapter {
-    fn current_epoch(&self) -> Option<zaino_mempool::NonFinalizedEpoch> {
-        Some(super::chain_head::mempool_epoch(
-            &zaino_chain_head::ChainHeadBlockService::current(&self.chain_head),
-        ))
+    fn current_epoch(&self) -> Option<zaino_primitives::types::ChainStateEpoch> {
+        use zaino_chain_head::ChainHeadSnapshot as _;
+
+        Some(zaino_chain_head::ChainHeadBlockService::current(&self.chain_head).epoch())
     }
 
     fn subscribe_epoch_changes(&self) -> Option<tokio::sync::watch::Receiver<()>> {

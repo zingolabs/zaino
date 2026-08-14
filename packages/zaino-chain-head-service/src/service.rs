@@ -44,10 +44,9 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, warn};
 use zaino_chain_head::{
-    ChainHeadBlock, ChainHeadBlockSource, ChainHeadConfig, ChainHeadEpoch, ChainHeadSnapshot as _,
-    ChainHeadWork,
+    ChainHeadBlock, ChainHeadBlockSource, ChainHeadConfig, ChainHeadSnapshot as _, ChainHeadWork,
 };
-use zaino_primitives::types::{BlockHash, BlockRef, Height, TreeRoots};
+use zaino_primitives::types::{BlockHash, BlockRef, ChainStateEpoch, Height, TreeRoots};
 use zaino_status::{NamedAtomicStatus, Status, StatusType};
 
 use crate::{
@@ -87,7 +86,7 @@ pub struct ChainHeadService<S: ChainHeadBlockSource> {
     /// offer that. This means we can overwrite the arc without interfering with
     /// readers, who will hold a stale copy.
     current: Arc<ArcSwap<MapBackedSnapshot>>,
-    updates: watch::Sender<ChainHeadEpoch>,
+    updates: watch::Sender<ChainStateEpoch>,
     frozen: broadcast::Sender<ChainHeadBlock>,
     status: NamedAtomicStatus,
     cancel: CancellationToken,
@@ -172,7 +171,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             "ChainHead anchored"
         );
 
-        let (updates, _) = watch::channel(ChainHeadEpoch {
+        let (updates, _) = watch::channel(ChainStateEpoch {
             generation: 0,
             best_tip: snapshot.best_tip(),
         });
@@ -576,7 +575,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             #[cfg(feature = "prometheus")]
             record_reorg(stale_tip, new_tip);
 
-            self.updates.send_replace(ChainHeadEpoch {
+            self.updates.send_replace(ChainStateEpoch {
                 generation,
                 best_tip: new_tip,
             });

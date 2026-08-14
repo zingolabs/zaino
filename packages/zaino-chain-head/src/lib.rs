@@ -16,7 +16,7 @@
 //! [`ChainHeadSnapshot`] is a trait. Nothing here says how the block graph is
 //! stored — that is the publishing runtime's decision, and replacing hash maps
 //! with persistent structures must be invisible to every consumer. What is
-//! concrete here is vocabulary: a [`ChainHeadBlock`], a [`ChainHeadEpoch`], a
+//! concrete here is vocabulary: a [`ChainHeadBlock`], a [`ChainStateEpoch`], a
 //! position, a location. What is abstract is anything that could reasonably be
 //! built more than one way.
 //!
@@ -52,7 +52,7 @@ pub use config::ChainHeadConfig;
 pub use error::ChainHeadError;
 pub use ports::{ChainHeadBlockService, ChainHeadBlockSource, ChainHeadFreezeEvents};
 pub use snapshot::{
-    ChainHeadBlockIter, ChainHeadEpoch, ChainHeadSnapshot, ChainHeadTransactionLocations,
+    ChainHeadBlockIter, ChainHeadSnapshot, ChainHeadTransactionLocations,
     ChainHeadTransactionService, ChainHeadTxPosition, SpenderLocation,
 };
 

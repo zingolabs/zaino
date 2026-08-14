@@ -48,7 +48,7 @@ describing the chain as it was, and the reorg is visible when you next take one.
 
 ### Naming which chain state you are on
 
-`ChainHeadEpoch` is the name of a chain state: a generation that advances when
+`ChainStateEpoch` is the name of a chain state: a generation that advances when
 the canonical tip changes — not on every republication — plus the tip itself.
 It is readable from both sides, and which one you want is not a matter of taste:
 

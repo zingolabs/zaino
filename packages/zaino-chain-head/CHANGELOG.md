@@ -43,8 +43,9 @@ and this library adheres to Rust's notion of
   anchor rather than from genesis**. It orders competing branches correctly and
   is not the absolute value a validator reports; the distinct name is there so
   the two are not mistaken for each other.
-- `ChainHeadEpoch` — a generation counter that advances when the canonical tip
-  changes, not on every republication. Readable from the runtime handle
+- Epochs are `zaino_primitives::types::ChainStateEpoch`: a generation that
+  advances when the canonical tip changes, not on every republication. Readable
+  from the runtime handle
   (`ChainHeadBlockService::subscribe_updates`) *and* from a snapshot
   (`ChainHeadSnapshot::epoch`). Both, because a consumer gating on chain state
   needs the epoch of the view it is holding: reading it from the handle instead

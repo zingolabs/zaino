@@ -31,10 +31,9 @@ use std::sync::Arc;
 
 use tokio::sync::{broadcast, watch};
 
-use crate::{
-    block::ChainHeadBlock,
-    snapshot::{ChainHeadEpoch, ChainHeadSnapshot},
-};
+use zaino_primitives::types::ChainStateEpoch;
+
+use crate::{block::ChainHeadBlock, snapshot::ChainHeadSnapshot};
 
 /// Every question ChainHead asks a validator.
 ///
@@ -113,7 +112,7 @@ pub trait ChainHeadBlockService: Clone + Send + Sync + 'static {
     /// The epoch's generation advances when the canonical tip changes, not on
     /// every republication, so a consumer pinned to an epoch is told the chain
     /// moved only when it actually did.
-    fn subscribe_updates(&self) -> watch::Receiver<ChainHeadEpoch>;
+    fn subscribe_updates(&self) -> watch::Receiver<ChainStateEpoch>;
 }
 
 /// Blocks the chain head has finalised, for a store to ingest.

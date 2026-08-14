@@ -20,7 +20,7 @@
 use std::sync::Arc;
 
 use tokio::sync::broadcast;
-use zaino_primitives::types::BlockRef;
+use zaino_primitives::types::ChainStateEpoch;
 
 use crate::snapshot::MempoolSnapshot;
 use crate::update::MempoolUpdate;
@@ -108,26 +108,6 @@ pub trait Mempool: Clone + Send + Sync + 'static {
     fn subscribe_updates(&self) -> broadcast::Receiver<MempoolUpdate>;
 }
 
-/// A stable identifier for a published non-finalized-state snapshot.
-///
-/// `generation` increments when the publisher's best tip *changes*, not on every
-/// republication: the publisher republishes on each of its own iterations (to
-/// trim blocks that have passed below its window, and so on) even when the tip
-/// has not moved, and bumping the generation on those no-op republishes would
-/// churn the epoch every cycle and defeat the coherence layer's agreement
-/// check. Keying it to tip changes gives a stable
-/// epoch for a stable tip while still distinguishing successive tips — including
-/// same-height reorgs, which change the tip hash. The coherence layer keys on
-/// the whole epoch (generation *and* tip); hash-only matching would be weaker.
-#[cfg(feature = "tip_aware_mempool")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NonFinalizedEpoch {
-    /// Monotonic publication generation of the non-finalized snapshot.
-    pub generation: u64,
-    /// The best (tip) block of the non-finalized snapshot.
-    pub best_tip: BlockRef,
-}
-
 /// Outbound port (coherence layer): observe the current non-finalized-state epoch.
 ///
 /// The mempool must not own or publish the non-finalized state; the coherence
@@ -137,7 +117,7 @@ pub struct NonFinalizedEpoch {
 #[cfg(feature = "tip_aware_mempool")]
 pub trait NfsEpochObserver: Clone + Send + Sync + 'static {
     /// The epoch of the currently published non-finalized snapshot, if any.
-    fn current_epoch(&self) -> Option<NonFinalizedEpoch>;
+    fn current_epoch(&self) -> Option<ChainStateEpoch>;
 
     /// An optional wake signal that fires when a new non-finalized snapshot is
     /// published.
@@ -164,7 +144,7 @@ pub struct NoNfs;
 
 #[cfg(feature = "tip_aware_mempool")]
 impl NfsEpochObserver for NoNfs {
-    fn current_epoch(&self) -> Option<NonFinalizedEpoch> {
+    fn current_epoch(&self) -> Option<ChainStateEpoch> {
         None
     }
 }
@@ -221,6 +201,6 @@ pub trait TipAwareMempool: Clone + Send + Sync + 'static {
     /// loop; the caller just drives it with `StreamExt::next`.
     fn stream_transactions_until_tip_change(
         &self,
-        expected_epoch: Option<NonFinalizedEpoch>,
+        expected_epoch: Option<ChainStateEpoch>,
     ) -> Option<impl futures::Stream<Item = Result<bytes::Bytes, MempoolStreamError>> + Send>;
 }

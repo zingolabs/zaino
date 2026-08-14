@@ -150,7 +150,8 @@ same answers the old derivation produced from the same graph.
 
 **The chain head is now the mempool's notion of "which chain".** The mempool
 subsystem's coherence layer freezes and thaws against a non-finalised-state
-epoch (ADR-0010); with the head extracted, that epoch is `ChainHeadEpoch`, read
+epoch (ADR-0010); with the head extracted, that epoch is published by the chain
+head, read
 through the same subscriber the rest of `ChainIndex` serves snapshots from.
 Two consequences worth naming:
 

@@ -4,9 +4,8 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use tokio::sync::{broadcast, watch};
-use zaino_chain_head::{
-    ChainHeadBlock, ChainHeadBlockService, ChainHeadEpoch, ChainHeadFreezeEvents,
-};
+use zaino_chain_head::{ChainHeadBlock, ChainHeadBlockService, ChainHeadFreezeEvents};
+use zaino_primitives::types::ChainStateEpoch;
 use zaino_status::{NamedAtomicStatus, Status, StatusType};
 
 use crate::snapshot::MapBackedSnapshot;
@@ -29,7 +28,7 @@ pub struct ChainHeadSubscriber {
     /// was created with, and a consumer that keeps one subscriber for the
     /// process lifetime would never see the chain move again.
     current: Arc<ArcSwap<MapBackedSnapshot>>,
-    updates: watch::Receiver<ChainHeadEpoch>,
+    updates: watch::Receiver<ChainStateEpoch>,
     frozen: broadcast::Sender<ChainHeadBlock>,
     /// A clone of the runtime's own cell, not a copy of its value.
     ///
@@ -54,7 +53,7 @@ impl std::fmt::Debug for ChainHeadSubscriber {
 impl ChainHeadSubscriber {
     pub(crate) fn new(
         current: Arc<ArcSwap<MapBackedSnapshot>>,
-        updates: watch::Receiver<ChainHeadEpoch>,
+        updates: watch::Receiver<ChainStateEpoch>,
         frozen: broadcast::Sender<ChainHeadBlock>,
         status: NamedAtomicStatus,
     ) -> Self {
@@ -67,7 +66,7 @@ impl ChainHeadSubscriber {
     }
 
     /// The epoch of the most recently published snapshot.
-    pub fn epoch(&self) -> ChainHeadEpoch {
+    pub fn epoch(&self) -> ChainStateEpoch {
         *self.updates.borrow()
     }
 }
@@ -89,7 +88,7 @@ impl ChainHeadBlockService for ChainHeadSubscriber {
         self.current.load_full()
     }
 
-    fn subscribe_updates(&self) -> watch::Receiver<ChainHeadEpoch> {
+    fn subscribe_updates(&self) -> watch::Receiver<ChainStateEpoch> {
         self.updates.clone()
     }
 }

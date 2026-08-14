@@ -55,7 +55,7 @@ interval.
 **Outbound — Zaino's own state (you implement this):**
 
 - `NfsEpochObserver` *(feature `tip_aware_mempool`)* — reports Zaino's current
-  non-finalized-state epoch (`Option<NonFinalizedEpoch>`); `None` while there is
+  non-finalized-state epoch (`Option<ChainStateEpoch>`); `None` while there is
   no such state to observe. In Zaino that state is the chain head subsystem, and
   `zaino-state` adapts its subscriber onto this port — reading the epoch from
   the same handle the rest of ChainIndex serves snapshots from, so the two
@@ -223,7 +223,7 @@ stuck). `zaino-state`'s sync loop wires this to the
 ## Feature flag
 
 `tip_aware_mempool` (off by default) adds the `NfsEpochObserver` / `TipAwareMempool`
-ports, `NonFinalizedEpoch`, the coherent-view types (`CoherentSnapshot`,
+ports, the coherent-view types (`CoherentSnapshot`,
 `MempoolMode`, `FreezeReason`, `ObservedTips`, `TipChange`), and the
 coherent-stream `MempoolEvent`. Enable it to consume the coherence layer; leave it
 off to use the tip-agnostic core standalone.

@@ -17,11 +17,11 @@ use zaino_chain_head::{
         ChainHeadBlockIter, ChainHeadTransactionLocations, ChainHeadTransactionService,
         ChainHeadTxPosition, SpenderLocation,
     },
-    ChainHeadBlock, ChainHeadEpoch, ChainHeadError, ChainHeadSnapshot,
+    ChainHeadBlock, ChainHeadError, ChainHeadSnapshot,
 };
 use zaino_primitives::types::{
     rpc::{ChainTip, ChainTipStatus},
-    BlockHash, BlockRef, Height, Outpoint, TransactionId,
+    BlockHash, BlockRef, ChainStateEpoch, Height, Outpoint, TransactionId,
 };
 
 /// The retained graph, held in hash maps.
@@ -38,7 +38,7 @@ pub struct MapBackedSnapshot {
     pub(crate) blocks: HashMap<BlockHash, ChainHeadBlock>,
     pub(crate) heights_to_hashes: HashMap<Height, BlockHash>,
     pub(crate) best_tip: BlockRef,
-    /// Which publication this is, in the sense of [`ChainHeadEpoch`].
+    /// Which publication this is, in the sense of [`ChainStateEpoch`].
     ///
     /// Stamped by the writer at publish time rather than derived here: only the
     /// writer knows whether the tip moved, and the epoch advances on tip changes
@@ -133,8 +133,8 @@ impl ChainHeadSnapshot for MapBackedSnapshot {
         self.best_tip
     }
 
-    fn epoch(&self) -> ChainHeadEpoch {
-        ChainHeadEpoch {
+    fn epoch(&self) -> ChainStateEpoch {
+        ChainStateEpoch {
             generation: self.generation,
             best_tip: self.best_tip,
         }

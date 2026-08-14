@@ -1677,8 +1677,8 @@ impl<Source: BlockchainSource + WithChainHeadSource> ChainIndex
         // branch id from a right one. `Unavailable` says "ask again with a fresh
         // snapshot", which is recoverable; the wrong answer is not.
         let coherent = self.coherence.coherent_snapshot();
-        let coherent_here = Some(chain_head::mempool_epoch(snapshot))
-            .filter(|epoch| coherent.is_valid_for_snapshot(*epoch));
+        let coherent_here =
+            Some(snapshot.epoch()).filter(|epoch| coherent.is_valid_for_snapshot(*epoch));
 
         if let Some(epoch) = coherent_here {
             if let Some(entry) = coherent.get(&types_txid_to_domain(txid)) {
@@ -1792,7 +1792,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ChainIndex
         let in_mempool = self.mempool.contains_txid(&domain_txid);
         if in_mempool {
             let coherent = self.coherence.coherent_snapshot();
-            if coherent.is_valid_for_snapshot(chain_head::mempool_epoch(non_finalized_snapshot)) {
+            if coherent.is_valid_for_snapshot(non_finalized_snapshot.epoch()) {
                 if best_chain_block.is_some() {
                     return Err(ChainIndexError {
                         kind: ChainIndexErrorKind::InvalidSnapshot,
@@ -1868,7 +1868,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ChainIndex
         // The chain head always has a snapshot to answer with, so a caller's
         // snapshot always names an epoch — there is no "still syncing" case to
         // rule out here any more.
-        let expected_epoch = snapshot.map(|snapshot| chain_head::mempool_epoch(snapshot));
+        let expected_epoch = snapshot.map(|snapshot| snapshot.epoch());
 
         // One ready-made loop rather than the mpsc relay this used to run: the
         // coherence layer already owns "stream until the tip moves", including

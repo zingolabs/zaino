@@ -119,10 +119,9 @@ and this library adheres to Rust's notion of
   coherence layer freezes and thaws against reads the same `ChainHeadSubscriber`
   the rest of ChainIndex serves snapshots from, so the two cannot drift, and the
   sync loop no longer relays a publication signal for a state it no longer
-  drives. `chain_index::chain_head::mempool_epoch` is the whole translation:
-  `ChainHeadEpoch` and `NonFinalizedEpoch` are field-identical and both key on
-  tip changes, but neither subsystem may name the other's types, and ChainIndex
-  is the only place that knows both.
+  drives. There is no translation: both subsystems name
+  `zaino_primitives::types::ChainStateEpoch`, so the coherence check compares one
+  type rather than converting between two that started identical.
 - `CommonBackendConfig` / `ChainIndexConfig` carry a `mempool: MempoolConfig`,
   shared by clone so the two services see one `max_cost_bytes` cell.
 - The `RawTransaction.data` served over gRPC is now `bytes::Bytes` rather than

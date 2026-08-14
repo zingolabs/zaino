@@ -96,25 +96,6 @@ pub(crate) fn domain_height(height: crate::Height) -> Option<zaino_primitives::t
     zaino_primitives::types::Height::try_from(height.0).ok()
 }
 
-/// A published ChainHead view's epoch, as the mempool's coherence port names it.
-///
-/// The two types are field-identical and both are keyed to tip changes rather
-/// than to publications, so this is a rename across a boundary and nothing more.
-/// It exists because neither subsystem may name the other's types: the mempool
-/// must not depend on ChainHead, and ChainHead must not know a mempool exists.
-/// ChainIndex is the only place that knows both, so the translation is here.
-pub(crate) fn mempool_epoch(
-    snapshot: &zaino_chain_head_service::MapBackedSnapshot,
-) -> zaino_mempool::NonFinalizedEpoch {
-    use zaino_chain_head::ChainHeadSnapshot as _;
-
-    let epoch = snapshot.epoch();
-    zaino_mempool::NonFinalizedEpoch {
-        generation: epoch.generation,
-        best_tip: epoch.best_tip,
-    }
-}
-
 /// A [`ChainHeadBlock`] could not be expressed as an [`IndexedBlock`].
 #[derive(Debug, thiserror::Error)]
 pub enum ChainHeadConversionError {

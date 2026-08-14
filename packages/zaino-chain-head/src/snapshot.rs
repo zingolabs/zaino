@@ -20,26 +20,10 @@
 //! in exactly one place.
 
 use zaino_primitives::types::{
-    rpc::ChainTip, BlockHash, BlockRef, Height, Outpoint, TransactionId, TxIndex,
+    rpc::ChainTip, BlockHash, BlockRef, ChainStateEpoch, Height, Outpoint, TransactionId, TxIndex,
 };
 
 use crate::{block::ChainHeadBlock, error::ChainHeadError};
-
-/// Identifies which chain state a snapshot represents.
-///
-/// `generation` advances when the canonical tip *changes*, not on every
-/// republication: a snapshot republished with the same tip describes the same
-/// chain state, and a consumer pinned to an epoch should not be told otherwise.
-///
-/// Carrying `best_tip` alongside makes the epoch self-describing, so a consumer
-/// can tell not just that the chain moved but where it moved to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ChainHeadEpoch {
-    /// Advances on each canonical tip change.
-    pub generation: u64,
-    /// The canonical tip this epoch describes.
-    pub best_tip: BlockRef,
-}
 
 /// Where a transaction sits in the ChainHead graph.
 ///
@@ -123,7 +107,7 @@ pub trait ChainHeadSnapshot: Send + Sync + 'static {
     /// one that does — needs the epoch *of the view it is holding*. Reading it
     /// from the handle instead would compare against whatever the chain head
     /// has since published, which is the race the epoch exists to close.
-    fn epoch(&self) -> ChainHeadEpoch;
+    fn epoch(&self) -> ChainStateEpoch;
 
     /// The block with this hash, canonical or competing.
     fn block_by_hash(&self, hash: &BlockHash) -> Option<&ChainHeadBlock>;
@@ -185,7 +169,7 @@ impl<T: ChainHeadSnapshot> ChainHeadSnapshot for std::sync::Arc<T> {
         self.as_ref().best_tip()
     }
 
-    fn epoch(&self) -> ChainHeadEpoch {
+    fn epoch(&self) -> ChainStateEpoch {
         self.as_ref().epoch()
     }
 
