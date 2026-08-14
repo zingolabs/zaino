@@ -66,6 +66,13 @@ that the caller owns the lifetime.
 Pass a **child token**. A parent token passed directly means shutting down the
 chain head shuts down everything else sharing it.
 
+`shutdown` is synchronous and does not wait for the task to wind down: it marks
+the status `Closing`, cancels the token, and aborts the join handle. It cannot
+wait — it is called from `Drop`, which cannot await. Aborting is safe rather
+than merely expedient, because a snapshot is installed with one atomic store: a
+task killed part-way through building a candidate leaves the last published
+snapshot whole, and there is no partial write to interrupt.
+
 ## Publication is all-or-nothing
 
 A snapshot is built as a candidate and installed with one atomic store. A reader

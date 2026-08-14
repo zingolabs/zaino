@@ -230,6 +230,14 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     /// The cancellation token passed to [`spawn`](Self::spawn) also stops the
     /// task; this additionally publishes `Closing` and releases the handle, so
     /// shutdown is observable rather than merely effective.
+    ///
+    /// Synchronous, and does **not** wait for the task to wind down: it cancels
+    /// and then aborts. It cannot wait, because it is called from `Drop`. The
+    /// abort is safe rather than merely expedient — a snapshot is installed with
+    /// one atomic store, so a task killed part-way through building a candidate
+    /// leaves the last published snapshot whole. The status is stored before the
+    /// abort so `Closing` is observable on every handle regardless of when the
+    /// task dies.
     pub fn shutdown(&self) {
         self.status.store(StatusType::Closing);
         self.cancel.cancel();
