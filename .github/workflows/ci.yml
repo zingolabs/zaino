@@ -238,6 +238,7 @@ jobs:
           - "clientless::the_pub_testnet_ironwood_boundary"
           - "clientless::validator_heights"
           - "zaino-address"
+          - "zaino-chain-head"
           - "zaino-common"
           - "zaino-consensus"
           - "zaino-convert-zebra"

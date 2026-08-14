@@ -5,9 +5,9 @@
 
 use zaino_primitives::types::{
     Block, BlockCommitments, BlockHash, BlockHeader, ChainMetadata, EncryptedCiphertext,
-    EphemeralKey, Height, MerkleRoot, NoteCommitment, Nullifier, OrchardAction, OrchardData,
-    SaplingData, SaplingOutput, SaplingSpend, Script, SignedZatoshis, Transaction, TransactionId,
-    TransparentData, TransparentInput, TransparentOutput, Zatoshis,
+    EphemeralKey, EquihashSolution, Height, MerkleRoot, NoteCommitment, Nullifier, OrchardAction,
+    OrchardData, SaplingData, SaplingOutput, SaplingSpend, Script, SignedZatoshis, Transaction,
+    TransactionId, TransparentData, TransparentInput, TransparentOutput, Zatoshis,
 };
 
 /// Errors during conversion from zebra types.
@@ -53,6 +53,7 @@ pub fn header_from_zebra(zb: &zebra_chain::block::Block) -> Result<BlockHeader, 
 
     Ok(BlockHeader {
         hash: BlockHash::from(zb.hash().0),
+        version: h.version,
         prev_hash: BlockHash::from(h.previous_block_hash.0),
         height: Height::try_from(height.0).map_err(|e| ConvertError::Height(e.to_string()))?,
         time: h.time.timestamp() as u32,
@@ -62,7 +63,16 @@ pub fn header_from_zebra(zb: &zebra_chain::block::Block) -> Result<BlockHeader, 
         // Workaround: round-trip through display-order bytes.
         bits: u32::from_be_bytes(h.difficulty_threshold.bytes_in_display_order()),
         nonce: *h.nonce,
+        solution: solution_from_zebra(h.solution),
     })
+}
+
+/// Convert a zebra Equihash solution into the domain's.
+fn solution_from_zebra(solution: zebra_chain::work::equihash::Solution) -> EquihashSolution {
+    match solution {
+        zebra_chain::work::equihash::Solution::Common(bytes) => EquihashSolution::Standard(bytes),
+        zebra_chain::work::equihash::Solution::Regtest(bytes) => EquihashSolution::Regtest(bytes),
+    }
 }
 
 /// Convert from pre-parsed header components (from ReadRequest::BlockHeader).
@@ -74,6 +84,7 @@ pub fn header_from_parts(
 ) -> Result<BlockHeader, ConvertError> {
     Ok(BlockHeader {
         hash: BlockHash::from(hash.0),
+        version: header.version,
         prev_hash: BlockHash::from(header.previous_block_hash.0),
         height: Height::try_from(height.0).map_err(|e| ConvertError::Height(e.to_string()))?,
         time: header.time.timestamp() as u32,
@@ -81,6 +92,7 @@ pub fn header_from_parts(
         block_commitments: BlockCommitments::from(*header.commitment_bytes),
         bits: u32::from_be_bytes(header.difficulty_threshold.bytes_in_display_order()),
         nonce: *header.nonce,
+        solution: solution_from_zebra(header.solution),
     })
 }
 

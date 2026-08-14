@@ -16,6 +16,10 @@ and this library adheres to Rust's notion of
   `ChainTip`, `MempoolInfo`, `MiningInfo`, `NodeInfo`, `PeerInfo`, `SpentInfo`,
   `TxOut`, `TxOutSetInfo`, `BlockSubsidy`, `AddressBalance`, `AddressDelta`,
   `Utxo`, `SubtreeRoot`).
+- `types::BlockRef` — a hash and a height together, so the two cannot be passed
+  in the wrong order or observed torn apart.
+- `types::EquihashSolution`, and `version` / `solution` on `BlockHeader`. A
+  header now carries everything needed to re-derive its own hash.
 - Ironwood (NU6.3) throughout: `ChainMetadata::ironwood_tree_size`,
   `Treestate::ironwood`, `TreeRoots::ironwood`, `ShieldedPool::Ironwood`.
   Uniformly `Option` per pool, with defaulting applied at the conversion
