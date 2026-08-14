@@ -8,9 +8,46 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.6.0] - 2026-08-04
+
+### Added
+### Changed
+- The six public stream types (`RawTransactionStream`,
+  `CompactTransactionStream`, `CompactBlockStream`, `UtxoReplyStream`,
+  `SubtreeRootReplyStream`, `AddressStream`) are collapsed to
+  `pub type X = ChannelStream<T>` aliases. Their names, constructors, and
+  `Stream` impls are preserved, so this is **not** a breaking change for
+  typical use.
+- Adopted the DRY'd `zaino-proto` proto utilities.
+- Internal refactor of the error and indexer plumbing.
+### Deprecated
+### Removed
+- **Breaking** — the public constructors `BlockData::new` and
+  `BlockMetadata::new` (construct these types via struct literals instead).
+- **Breaking** — `impl ZainoVersionedSerde for IndexedBlock` and
+  `impl ZainoVersionedSerde for CompactTxData` (the never-adopted
+  wholesale-block serde path).
+### Fixed
+
+## [0.5.0] - 2026-07-13
+
+### Added
 - The chain index tracks Ironwood (NU6.3) note-commitment treestate roots,
   storing `None` while the pool has no treestate rather than fabricating a
   root.
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.4.0] - 2026-07-02
+
+### Added
 - `ChainIndex` / `NodeBackedChainIndexSubscriber` gain `get_outpoint_spenders` —
   for each transparent `Outpoint`, returns the txid that spent it on the best
   chain (index-aligned with the input, `None` if unspent or unknown).
