@@ -1,3 +1,17 @@
 [env]
 # Workaround for GCC 15+: zebra's librocksdb-sys vendored C++ relies on transitive <cstdint>.
 CXXFLAGS = { value = "-include cstdint", force = false, relative = false }
+
+[build]
+# Frame pointers make the call stack walkable by a cheap register chase instead of a
+# DWARF `.eh_frame` unwind. Sampling profilers (in-process pprof-rs, out-of-process eBPF)
+# both unwind far more reliably and far more cheaply with them; without them, deep or
+# native-heavy stacks truncate silently, which corrupts a profile rather than failing it.
+# Costs ~1% runtime from losing one general-purpose register. Fedora 38 and Ubuntu 24.04
+# both turned frame pointers back on distribution-wide for exactly this reason.
+#
+# WARNING: a `RUSTFLAGS` environment variable REPLACES this list wholesale rather than
+# appending to it. Any build environment that sets `RUSTFLAGS` must append
+# `-C force-frame-pointers=yes` itself or it silently ships an unprofileable binary.
+# See `Dockerfile.deterministic`, which sets `RUSTFLAGS` and therefore does not inherit this.
+rustflags = ["-C", "force-frame-pointers=yes"]

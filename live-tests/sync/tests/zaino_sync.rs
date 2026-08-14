@@ -13,9 +13,19 @@
 //!
 //! It claims the *shape* of the build and its throughput: the frontier only
 //! rises, the per-pool counters only accumulate, the frontier never passes the
-//! pinned tip, the build keeps making ground, and it ends serving from its own
-//! index rather than proxying. Those are the properties that only exist during
-//! construction, which is the interval an end-state comparison throws away.
+//! pinned tip, the build keeps making ground, and it ends with its own index
+//! serving the pinned tip out of the non-finalised state, the finalised half
+//! trailing by no more than one reorg bound. Those are the properties that only
+//! exist during construction, which is the interval an end-state comparison
+//! throws away.
+//!
+//! **"Reached the tip" is a two-part claim here, deliberately.** Zaino never
+//! finalises the tip: the sync worker writes the finalised index up to
+//! `tip - MAX_NONFINALISED_DEPTH` and holds the last 1,001 blocks in the
+//! non-finalised state, where a reorg can still rewrite them. A single equality
+//! against the pin is therefore unsatisfiable by construction, whichever half it
+//! is asked of — so the terminal probes ask the non-finalised state for the tip
+//! and the finalised state for the bound.
 //!
 //! It does **not** compare index *contents* against zebra. That check lived
 //! here as a periodic prefix sweep and was removed: several hundred rounds of
@@ -24,29 +34,51 @@
 //! over the same fixture. There is no such test on this fixture today, so treat
 //! "the index holds the right blocks" as unasserted here.
 //!
-//! ## Why mainnet, and why Blossom
+//! ## Why mainnet, and why this rung
 //!
 //! Mainnet, because zaino's indexer is sensitive to *transaction density* and
 //! testnet has almost none. The per-op counters this profile reads are
 //! `sapling_outputs` and `orchard_actions`; a throughput number drawn from a
 //! sparse testnet chain describes a corpus nobody runs against.
 //!
-//! Blossom, because it is the deepest mainnet rung that fits the seed volume:
-//! 22.5 GB extracted against a 32Gi PVC. The next rung up, mainnet NU5/Orchard,
-//! is 32.8 GB and does not — see `ZAINO_SEED_SIZE` and the per-artifact sizing
-//! work it is waiting on.
+//! The Orchard rung — mainnet 1,693,104, NU5 activation (1,687,104) plus 6,000
+//! blocks — because it is the deepest registered mainnet artifact, and because
+//! of *where it stops*. Mainnet's density is not one regime: in June 2022 the
+//! sandblasting spam attack begins, and within two days the median block goes
+//! from 2.5 kB to over 100 kB and never comes back down. This fixture ends
+//! below that, so every block it holds belongs to the pre-sandblast chain and
+//! the throughput this profile measures describes normal mainnet rather than an
+//! anomaly averaged into it.
 //!
-//! **What that costs, stated plainly.** This fixture pins 659,600, and NU5
-//! activates on mainnet at 1,687,104. So this profile no longer crosses the
-//! Orchard boundary, let alone Ironwood — the coverage the testnet `IRONWOOD`
-//! fixture existed to provide. What it gains instead is mainnet's real early
-//! history: heavy Sprout JoinSplit usage and ~240,000 blocks of post-Sapling
-//! adoption, at densities testnet never reached.
+//! **The onset height is derived, not cited.** No published source states one —
+//! ECC's own retrospective dates the attack to "June 2022" and no finer.
+//! Measured over per-block sizes, mainnet's median block holds at 2,508 bytes
+//! through 1,703,449; the first 500-block window with a median above 3x that
+//! begins at **1,704,323** (2022-06-15 18:18 UTC); and from **1,706,605**
+//! (2022-06-17) the median sits above 100 kB permanently. This fixture's pin is
+//! ~11,000 blocks below the onset — the closest any registered artifact reaches
+//! it. A profile wanting the boundary itself needs a rung produced for it, not a
+//! different stop height: the chain's tip is fixed by the seed archive, so
+//! `until_height` can only stop short of a pin, never past one.
 //!
-//! Blossom also introduces **no value pool**, so this artifact carries no
-//! `[boundary_check]` and the activation it straddles is a block-timing change.
-//! The coverage probe below therefore asserts that the build crossed the
-//! straddled upgrade, not that it indexed a pool the upgrade introduced.
+//! **What this rung gains over the Blossom one this profile used to ride.**
+//! 659,600 stopped a million blocks below NU5, so no Orchard action was ever
+//! indexed, and Blossom introduces no value pool — the artifact carried no
+//! `[boundary_check]` at all and the activation it straddled was a block-timing
+//! change. This artifact crosses NU5 with a producer-verified Orchard pool
+//! (0 -> 325,252,861,549 zatoshi over 1,687,104..1,693,104), so
+//! `orchard_actions` is a counter with content behind it and
+//! `crossed_the_straddled_activation` now means the build indexed a pool the
+//! upgrade introduced.
+//!
+//! **What the seed volume is, since this rung is the first to strain it.** The
+//! seed PVC (`ZTEST_SEED_SIZE`/`materialize::seed_size`) holds the *extracted
+//! chain archive* and nothing else — zebra's state DB, pulled once per cluster
+//! and CoW-cloned per pod. Zaino's index is not seeded and never was: it is
+//! built from empty into a pod-local `emptyDir`, bounded by node ephemeral
+//! storage. This archive is 30.5 GiB extracted, which is why ztest's flat
+//! default moved from 32Gi to 48Gi — at 32Gi it was 95% full before any
+//! filesystem overhead.
 //!
 //! Every probe here reads the pools and heights off the artifact's manifest
 //! rather than hardcoding them, so moving this profile to a deeper mainnet rung
@@ -60,7 +92,7 @@
 //! Launched detached via `ztest sync start zaino_index_construction`.
 
 use ztest::prelude::*;
-use ztest::snapshots::mainnet::BLOSSOM;
+use ztest::snapshots::mainnet::ORCHARD;
 use ztest::sync::{
     hours, mins, secs, Op, Severity, Snapshot, Subject, SyncCtx, SyncOutcome, SyncRunner, Verdict,
     Violation,
@@ -87,14 +119,46 @@ const RUN_CAP: std::time::Duration = hours(48);
 /// rather than indexing anything.
 const STALL_WINDOW: std::time::Duration = mins(15);
 
-#[ztest::needs(BLOSSOM)]
+/// The blocks zaino deliberately leaves *out* of its finalised index.
+///
+/// The sync worker never asks the finalised writer for the tip: it writes to
+/// `finalized_height_floor(tip)` = `tip - MAX_NONFINALISED_DEPTH`, and the
+/// remaining span lives in the non-finalised state, where a reorg can still
+/// rewrite it. `MAX_NONFINALISED_DEPTH` is zebra's `MAX_BLOCK_REORG_HEIGHT`
+/// (1,000) plus one.
+///
+/// Mirrored rather than imported: the live-test workspace links no zaino
+/// production code (see the workspace note in the repo's `CLAUDE.md`), so the
+/// number is restated here with its derivation. It is a consensus-level bound,
+/// not a tuning knob — a build that changes it changes what "synced" means, and
+/// this profile should fail until the constant is revisited alongside it.
+const NON_FINALISED_DEPTH: u32 = 1_001;
+
+/// How long the terminal probes wait for zaino to finish coming up.
+///
+/// Completion is declared the moment the finalised writer commits its last
+/// batch, but zaino is not serving from its own index at that instant: the
+/// worker still has to rebuild the txout-set accumulator over the whole
+/// finalised range and then anchor and fill the non-finalised state. Both are
+/// unbounded-by-design post-sync work, so the terminal probes wait rather than
+/// read once and fail the run for asking too early. Not a measured figure — a
+/// bound generous enough that expiry means wedged, not slow.
+const INDEX_UP_WINDOW: std::time::Duration = mins(30);
+
+/// Poll cadence inside [`INDEX_UP_WINDOW`]. `gettxoutsetinfo` folds the entire
+/// non-finalised state on every call, so this is deliberately slack: the answer
+/// is a step change, not a curve worth resolving.
+const INDEX_UP_POLL: std::time::Duration = secs(10);
+
+#[ztest::needs(ORCHARD)]
 #[ztest::sync_test(
     name = "zaino_index_construction",
-    description = "zaino builds its chain index over the pinned Blossom mainnet snapshot; zebrad is the authority",
+    description = "zaino builds its chain index over the pinned pre-sandblast mainnet snapshot; zebrad is the authority",
     subject = indexer,
     timeout = "48h",
     qos = sync,
-    tags = ["mainnet", "zaino", "index", "blossom"],
+    footprint = "15c/29Gi",
+    tags = ["mainnet", "zaino", "index", "orchard", "pre-sandblast"],
 )]
 async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
     // Topology: one zebrad serving the snapshot, and one zaino building a state
@@ -103,13 +167,28 @@ async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
     // to an errored outcome via `From` and returns.
     let (zebra, zaino_state) = match run
         .topology(|t| {
-            let zebra = t.add_validator(Validator::zebrad("6.2.3").mainnet(BLOSSOM));
-            // Zaino is the SUT: built from this repo's Dockerfile with metrics
-            // *and* profiling, because this profile's progress source is its own
-            // exporter — `no_tls_with_prometheus` is load-bearing here, not
-            // decoration. It also carries the no-TLS the cluster needs; the
-            // default JSON-RPC public-bind feature is restated because
-            // overriding the feature list drops it.
+            // Explicit per-pod sizing rather than the profile's even split, because
+            // the two pods are nothing like the same shape here. Zebra serves a
+            // frozen snapshot over RPC — it reads, it does not sync, and it does
+            // not grow. Zaino holds an open LMDB write transaction whose dirty
+            // pages are the run's real memory cost, so the headroom belongs to
+            // it. An even split starves the side that needs it and wastes it
+            // on the side that does not.
+            //
+            // These two must sum inside the declared `footprint` above; the deploy
+            // budget checks exactly that before creating a pod.
+            let zebra = t.add_validator(
+                Validator::zebrad("6.2.3")
+                    .mainnet(ORCHARD)
+                    .resources(Cpu::cores(5), Mem::gib(4)),
+            );
+            // Zaino is the SUT: built from this repo's Dockerfile with metrics,
+            // because this profile's progress source is its own exporter —
+            // `no_tls_with_prometheus` is load-bearing here, not decoration. It
+            // also carries the no-TLS the cluster needs; the default JSON-RPC
+            // public-bind feature is restated because overriding the feature
+            // list drops it. Profiling needs no feature: ztest's eBPF collector
+            // samples the pod from outside it.
             let zaino_state = t.add_indexer(
                 dev!(
                     Indexer::Zainod,
@@ -117,18 +196,23 @@ async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
                     context = "../..",
                     features = [
                         "no_tls_with_prometheus",
-                        "allow_unencrypted_public_json_rpc_bind",
-                        "profile"
+                        "allow_unencrypted_public_json_rpc_bind"
                     ]
                 )
                 // The same chain the validator runs, as a private CoW clone this
                 // pod *reads*. Zaino's own index is pod-local scratch and starts
                 // empty — building it is what this profile watches.
-                .mainnet(BLOSSOM)
+                .mainnet(ORCHARD)
                 // The whole subject of the test: `Fetch` forwards to the
                 // validator and builds no index, so there would be nothing to
                 // observe.
-                .tuning(ZainoTuning::State),
+                .tuning(ZainoTuning::State)
+                // The SUT gets the bulk of the declared 29 GiB reserve: 24 GiB,
+                // leaving the validator its 4 and a GiB of slack. Not a measured
+                // requirement — it is headroom while the write transaction's
+                // dirty-page growth is still unbounded, and the number to revisit
+                // first once a run gets far enough to measure the real ceiling.
+                .resources(Cpu::cores(9), Mem::gib(24)),
             );
             (zebra, zaino_state)
         })
@@ -149,10 +233,11 @@ async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
     run.tick(TICK).timeout(RUN_CAP);
     // Deliberately no `until_height`: a declared stop height is what makes two
     // runs' throughput comparable, and it is the wrong trade here. The reason
-    // this fixture was chosen is the history above the Ironwood activation, and
+    // this fixture was chosen is the 6,000 blocks above the NU5 activation, and
     // any stop height low enough to bound the run is also low enough to end it
     // before that boundary — buying comparability by never reaching the thing
-    // under test. The chain is frozen, so the span is already fixed by the pin.
+    // under test. The chain is frozen, so the span is already fixed by the pin,
+    // and the pin is already the pre-sandblast edge.
 
     // ── safety: what the index must never do while it is being built ──
     run.always(Severity::Fatal)
@@ -193,11 +278,11 @@ async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
 
     // ── terminal: end-state agreement, against the pin rather than a component ──
     run.at_completion(Severity::Fatal)
-        .named("reached_the_pinned_tip")
-        .check(move |s: &Snapshot| reached_the_pinned_tip(s, chain));
+        .named("index_serves_the_pinned_tip")
+        .check_rpc(move |s, cx| Box::pin(index_serves_the_pinned_tip(s, cx, chain)));
     run.at_completion(Severity::Fatal)
-        .named("serves_from_its_own_index")
-        .check_rpc(move |s, cx| Box::pin(serves_from_its_own_index(s, cx)));
+        .named("finalised_seam_within_reorg_bound")
+        .check(move |s: &Snapshot| finalised_seam_within_reorg_bound(s, chain));
 
     run.run().await
 }
@@ -264,10 +349,12 @@ fn indexed_work_monotonic(s: &Snapshot, chain: ChainInfo) -> Verdict {
 /// modes and no good one: the counter is absent and every tick panics, or it is
 /// published as a flat zero and `0 >= 0` passes forever while proving nothing.
 ///
-/// Mainnet Blossom pins 659,600 and NU5 activates at 1,687,104, so asking this
-/// fixture about Orchard is exactly that mistake. Deriving the list from
-/// `[activations]` means the probe checks precisely the pools the artifact
-/// carries, and keeps doing so when the profile is repointed at a deeper rung.
+/// The Blossom rung this profile used to ride pinned 659,600 against an NU5
+/// activation of 1,687,104, so asking *it* about Orchard was exactly that
+/// mistake — and the repoint to 1,693,104 fixed it without an edit here, which
+/// is the property worth keeping. Deriving the list from `[activations]` means
+/// the probe checks precisely the pools the artifact carries, and keeps doing so
+/// when the profile is repointed again.
 fn indexed_pools(chain: ChainInfo) -> Vec<Op> {
     let activated = |key: &str| chain.activations().iter().any(|a| a.key == key);
     let mut ops = Vec::new();
@@ -352,12 +439,14 @@ fn observed_a_partial_index(s: &Snapshot) -> Verdict {
 /// new rules, so every claim it made was about history that predates them. That
 /// is a weak pass, and coverage is how the harness says so.
 ///
-/// Note what this does *not* say on the current fixture. Blossom introduces no
-/// value pool — it is a block-target change — so crossing it is not evidence
-/// that any pool was exercised, and the artifact carries no `[boundary_check]`
-/// to stand behind such a claim. On a rung whose upgrade does introduce a pool
-/// (mainnet NU5, or Ironwood) this same probe recovers its full meaning without
-/// an edit, because the height it compares against is the manifest's.
+/// On the current fixture that claim is at full strength. The straddled upgrade
+/// is NU5, which introduces the Orchard pool, and the artifact's
+/// `[boundary_check]` records the producer funding it (0 -> 325,252,861,549
+/// zatoshi) inside the 6,000 blocks above the activation — so crossing 1,687,104
+/// here means the build indexed blocks that provably contain Orchard actions,
+/// not merely blocks written under a new rule. Nothing in this probe encodes
+/// that: the height it compares against is the manifest's, which is why the
+/// repoint off Blossom strengthened it without an edit.
 fn crossed_activation(s: &Snapshot, chain: ChainInfo) -> Verdict {
     if s.height() >= chain.activation() {
         Verdict::Satisfied
@@ -368,54 +457,108 @@ fn crossed_activation(s: &Snapshot, chain: ChainInfo) -> Verdict {
 
 // ── terminal ─────────────────────────────────────────────────────────────
 
-/// The finished index covers exactly the chain the artifact pins.
+/// The index comes up, and when it does it reaches the tip the artifact pins.
 ///
-/// Against the manifest, deliberately, and not against `latest_block_height`:
-/// asking zaino where the chain ends and then congratulating it for having
-/// reached there is the failure mode this whole profile was rebuilt to avoid.
-fn reached_the_pinned_tip(s: &Snapshot, chain: ChainInfo) -> Verdict {
-    let pinned = chain.tip_height();
-    ztest::sync_ensure!(
-        s.height() == pinned,
-        "index frontier finished at {} but the snapshot pins its tip at {pinned}",
-        s.height()
-    );
-    Verdict::Satisfied
-}
-
-/// At completion, zaino answers from its own index rather than forwarding.
+/// **Why this is one probe and not two.** "Zaino is serving from its own index"
+/// and "that index covers the pinned tip" are two claims, but a single call
+/// states both and neither is observable without the other. `gettxoutsetinfo`
+/// is that call:
 ///
-/// `getaddressdeltas` is the discriminator: zaino synthesizes it from its index
-/// and zebra serves no such method, so while the state backend is still
-/// proxying, the call is forwarded and comes back JSON-RPC `-32601`. Any other
-/// answer is the index serving. (Same signal as `wait_for_served_index` in
-/// `clientless/tests/testnet_parity.rs`, used here as an assertion rather than
-/// as a gate.)
-async fn serves_from_its_own_index(s: &Snapshot, cx: &SyncCtx) -> Verdict {
+/// - While the finalised state is still catching up, zaino answers the empty
+///   object zcashd returns when stats collection fails — the accumulator's
+///   spent-index invariants do not hold yet, and it says so rather than
+///   guessing. An answer *with* a height is therefore proof the index is up.
+/// - The height it answers with is `non_finalized_snapshot.best_tip`: the
+///   non-finalised tip, folded on top of the finalised accumulator. There is no
+///   proxy path through it, so unlike every height zaino *forwards*, this one
+///   cannot be the validator's answer wearing zaino's name.
+///
+/// So the tip claim is the non-finalised state's, which is the only place the
+/// last [`NON_FINALISED_DEPTH`] blocks exist — see
+/// [`finalised_seam_within_reorg_bound`] for the other half of the end state.
+///
+/// Waits rather than reads once: completion fires when the last finalised batch
+/// commits, which is two pieces of post-sync work before the index serves. RPC
+/// errors inside the window are retried and only surfaced if the window
+/// expires — the pod is rebuilding an accumulator over the whole chain while
+/// this polls, and a refused connection there is expected, not a verdict.
+async fn index_serves_the_pinned_tip(s: &Snapshot, cx: &SyncCtx, chain: ChainInfo) -> Verdict {
     let Some(ix) = cx.indexer() else {
-        return Verdict::ProbeError("serves_from_its_own_index: no indexer bound".into());
+        return Verdict::ProbeError("index_serves_the_pinned_tip: no indexer bound".into());
     };
     let rpc = match ix.json_rpc().await {
         Ok(rpc) => rpc,
         Err(e) => return Verdict::ProbeError(format!("zaino json_rpc: {e}")),
     };
-    // The probe is whether the *method* is answered, so the selector is
-    // deliberately trivial: an empty result proves the index served just as well
-    // as a populated one, and picking a real address would make this depend on
-    // discovery it does not need.
-    let selector = serde_json::json!([{ "addresses": [], "start": 0, "end": 1 }]);
-    match rpc.call_value("getaddressdeltas", selector).await {
-        Ok(_) => Verdict::Satisfied,
-        Err(e) if e.to_string().contains("-32601") => violated(
-            s.height(),
-            format!(
-                "at frontier {} zaino still forwards `getaddressdeltas` to the validator, so \
-                 its index is not serving: the run completed without the index ever coming up",
-                s.height()
-            ),
-        ),
-        Err(e) => Verdict::ProbeError(format!("getaddressdeltas: {e}")),
+    let pinned = chain.tip_height();
+    let deadline = std::time::Instant::now() + INDEX_UP_WINDOW;
+    loop {
+        // Why this attempt did not satisfy, so an expiry names the state it
+        // expired in rather than only the height it wanted.
+        let last = match rpc
+            .call_value("gettxoutsetinfo", serde_json::json!([]))
+            .await
+        {
+            // Empty object = still syncing; `height` present = the index is
+            // serving. Distinguished by the field rather than by shape name
+            // because the two arms serialize untagged.
+            Ok(v) => match v.get("height").and_then(serde_json::Value::as_u64) {
+                Some(h) if h == u64::from(pinned) => return Verdict::Satisfied,
+                Some(h) => format!(
+                    "the index is serving but its non-finalised tip is {h}, not the pinned \
+                     {pinned}"
+                ),
+                None => "zaino still answers `gettxoutsetinfo` empty, so its finalised state is \
+                         not caught up and the index is not serving"
+                    .to_string(),
+            },
+            Err(e) => format!("`gettxoutsetinfo` did not answer: {e}"),
+        };
+        if std::time::Instant::now() >= deadline {
+            return violated(
+                s.height(),
+                format!(
+                    "{INDEX_UP_WINDOW:?} after the finalised writer committed its last batch at \
+                     frontier {}, {last}",
+                    s.height()
+                ),
+            );
+        }
+        tokio::time::sleep(INDEX_UP_POLL).await;
     }
+}
+
+/// The finalised index stops short of the tip, by no more than one reorg bound.
+///
+/// The other half of the end state, and the reason this is not an equality
+/// against the pin. Zaino's finalised writer is *aimed* at
+/// `tip - MAX_NONFINALISED_DEPTH` and never at the tip: everything above that
+/// floor can still be reorged away, so it is held in the non-finalised state
+/// instead. A probe demanding `frontier == pinned` therefore asserts against a
+/// height the design forbids, and fails every run by exactly
+/// [`NON_FINALISED_DEPTH`] — which is what it did before this was rewritten.
+///
+/// What is worth asserting is the bound: the span zaino left unfinalised is no
+/// deeper than the reorg limit that justifies leaving it. Deeper means the
+/// finalised index is lagging its own target, which on this frozen chain is a
+/// writer that stopped rather than a chain that moved.
+fn finalised_seam_within_reorg_bound(s: &Snapshot, chain: ChainInfo) -> Verdict {
+    let pinned = chain.tip_height();
+    let frontier = s.height();
+    // Above the pin is already fatal per tick (`index_within_pinned_tip`); repeated
+    // here because the subtraction below would otherwise wrap into a passing lag.
+    ztest::sync_ensure!(
+        frontier <= pinned,
+        "finalised frontier {frontier} is above the snapshot's pinned tip {pinned}"
+    );
+    let lag = pinned - frontier;
+    ztest::sync_ensure!(
+        lag <= NON_FINALISED_DEPTH,
+        "finalised frontier finished at {frontier}, {lag} blocks below the pinned tip {pinned}: \
+         zaino finalises up to `tip - {NON_FINALISED_DEPTH}`, so anything deeper is the writer \
+         falling short of its own target on a chain that cannot have moved"
+    );
+    Verdict::Satisfied
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────

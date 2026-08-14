@@ -31,28 +31,50 @@
 //!
 //! ## The fixture
 //!
-//! Mainnet Blossom, pinned at 659,600 — the deepest mainnet rung that fits the
-//! 32Gi seed volume at 22.5 GB extracted. Mainnet matters more here than it
-//! might appear: a differential is only as sharp as the corpus it runs over,
-//! and the source layer this profile is trying to catch differs most on dense,
-//! irregular blocks. Testnet's sparse history is where two ingest paths agree
-//! most easily.
+//! Mainnet, pinned at 1,693,104 — the NU5/Orchard rung, and the deepest
+//! registered mainnet artifact. Mainnet matters more here than it might appear:
+//! a differential is only as sharp as the corpus it runs over, and the source
+//! layer this profile is trying to catch differs most on dense, irregular
+//! blocks. Testnet's sparse history is where two ingest paths agree most easily.
 //!
-//! The rung is below NU5 (mainnet 1,687,104), so no Orchard is compared here.
+//! Being above NU5 (1,687,104) is what puts v5 transactions and a funded Orchard
+//! pool on both sides of the comparison — the artifact's `[boundary_check]`
+//! records the producer funding it, 0 -> 325,252,861,549 zatoshi, inside the
+//! 6,000 blocks above the activation. On the Blossom rung this profile used to
+//! ride, `z_gettreestate` had no Orchard tree to disagree about.
+//!
+//! **Where it stops is chosen, not incidental.** Mainnet's density is not one
+//! regime: in June 2022 the sandblasting spam attack begins, and within two days
+//! the median block goes from 2.5 kB to over 100 kB and stays there. The onset
+//! is derived rather than cited — no published source gives a height, ECC's
+//! retrospective says only "June 2022" — and measures out as the first
+//! 500-block window above 3x baseline at **1,704,323** (2022-06-15 18:18 UTC),
+//! permanent from **1,706,605**. This pin sits ~11,000 blocks below that, so
+//! both indexes are built entirely over the pre-sandblast chain. Reaching the
+//! boundary itself would take a rung produced for it: the tip is fixed by the
+//! seed archive, so no stop height can go past a pin.
+//!
 //! Every height this profile queries comes from the artifact's manifest, so
 //! repointing it at a deeper rung needs no change but the handle.
+//!
+//! One thing the manifest does not carry: the seed PVC holding the extracted
+//! chain archive is sized by a flat `ZTEST_SEED_SIZE`, not from
+//! `ChainInfo::uncompressed_bytes`. This archive is 30.5 GiB extracted, which
+//! is what moved that default from 32Gi to 48Gi. Neither indexer's own DB is
+//! seeded — both build from empty into a pod-local `emptyDir` — so only the
+//! `direct` pod's CoW clone of the archive touches this volume at all.
 //!
 //! Launched detached via `ztest sync start zaino_state_fetch_parity`.
 
 use serde_json::{json, Value};
 use ztest::prelude::*;
-use ztest::snapshots::mainnet::BLOSSOM;
+use ztest::snapshots::mainnet::ORCHARD;
 use ztest::sync::{
     hours, mins, secs, Severity, Snapshot, Subject, SyncCtx, SyncOutcome, SyncRunner, Verdict,
     Violation,
 };
 
-/// Snapshot cadence. Two indexers over 659,600 dense mainnet blocks is an
+/// Snapshot cadence. Two indexers over 1,693,104 dense mainnet blocks is an
 /// hours-long run; the frontier does not need resolving finer than this, and
 /// every tick costs two exporter scrapes.
 const TICK: std::time::Duration = secs(15);
@@ -66,12 +88,18 @@ const RUN_CAP: std::time::Duration = hours(48);
 /// JSON-RPC indexer, whose progress comes in whole batches pulled over the wire.
 const STALL_WINDOW: std::time::Duration = mins(30);
 
-/// Blocks of subject progress between full parity sweeps. The sweep is the
-/// expensive probe — several RPC round trips against both pods — so it is paced
-/// by chain progress rather than the clock, spreading the sweeps evenly across
-/// the whole of history. At 10,000 blocks over this fixture's 659,600 that is
-/// ~66 sweeps; the pacing is in blocks so it stays sane on a deeper rung.
-const SWEEP_BLOCKS: u32 = 10_000;
+/// Full parity sweeps per run — the profile's coverage/cost dial, and the thing
+/// actually held fixed across rungs.
+///
+/// The sweep is the expensive probe (several RPC round trips against both pods),
+/// so it is paced by chain progress rather than the clock, spreading the sweeps
+/// evenly across the whole of history. What that pacing must not do is scale
+/// with the fixture: a fixed *stride* was 66 sweeps over the Blossom rung's
+/// 659,600 and would be 169 over this one, taxing the throughput of a deeper
+/// run precisely because it is deeper. Fixing the count and deriving the stride
+/// from the manifest keeps the cost of a sweep pass constant, and holds it
+/// constant on whatever rung this profile is repointed at next.
+const SWEEPS_PER_RUN: u32 = 66;
 
 /// How long the unbound indexer gets to finish after the subject has, before the
 /// terminal sweep gives up on comparing two complete indexes.
@@ -90,14 +118,14 @@ const CONVERGE_POLL: std::time::Duration = secs(30);
 /// code is the stable half of that string.
 const PROXY_METHOD_NOT_FOUND: &str = "-32601";
 
-#[ztest::needs(BLOSSOM)]
+#[ztest::needs(ORCHARD)]
 #[ztest::sync_test(
     name = "zaino_state_fetch_parity",
-    description = "two zaino pods index the pinned Blossom mainnet snapshot over different ingest paths; their indexes must agree",
+    description = "two zaino pods index the pinned pre-sandblast mainnet snapshot over different ingest paths; their indexes must agree",
     subject = indexer,
     timeout = "48h",
     qos = sync,
-    tags = ["mainnet", "zaino", "index", "differential"],
+    tags = ["mainnet", "zaino", "index", "differential", "orchard", "pre-sandblast"],
 )]
 async fn zaino_state_fetch_parity(mut run: SyncRunner) -> SyncOutcome {
     // One validator, two indexers over it. The direct pod gets its own CoW clone
@@ -106,9 +134,9 @@ async fn zaino_state_fetch_parity(mut run: SyncRunner) -> SyncOutcome {
     // blocks from the validator and would never open the mount.
     let (zaino_state, zaino_fetch) = match run
         .topology(|t| {
-            t.add_validator(Validator::zebrad("6.2.3").mainnet(BLOSSOM));
-            let zaino_state = t.add_indexer(zaino().mainnet(BLOSSOM).tuning(ZainoTuning::State));
-            let zaino_fetch = t.add_indexer(zaino().mainnet(BLOSSOM).tuning(ZainoTuning::Fetch));
+            t.add_validator(Validator::zebrad("6.2.3").mainnet(ORCHARD));
+            let zaino_state = t.add_indexer(zaino().mainnet(ORCHARD).tuning(ZainoTuning::State));
+            let zaino_fetch = t.add_indexer(zaino().mainnet(ORCHARD).tuning(ZainoTuning::Fetch));
             (zaino_state, zaino_fetch)
         })
         .await
@@ -122,7 +150,7 @@ async fn zaino_state_fetch_parity(mut run: SyncRunner) -> SyncOutcome {
     // The **rpc** pod is the bound subject, and which one that is matters. The
     // engine's completion predicate is the subject's, and the two pods do not
     // finish together: the direct path reads blocks from a local RocksDB while
-    // this one pulls all 659,600 over JSON-RPC, so it is the long pole by a wide
+    // this one pulls all 1,693,104 over JSON-RPC, so it is the long pole by a wide
     // margin. Binding the laggard means completion is very nearly "both are
     // done" — and `indexes_converged` covers the remainder rather than assuming
     // it away.
@@ -148,7 +176,9 @@ async fn zaino_state_fetch_parity(mut run: SyncRunner) -> SyncOutcome {
         let zaino_state = zaino_state.clone();
         run.always(Severity::Fatal)
             .named("indexes_agree_over_common_window")
-            .every_blocks(SWEEP_BLOCKS)
+            // `.max(1)` so a fixture shorter than the sweep count cannot ask for a
+            // stride of zero; on any real rung this is thousands of blocks.
+            .every_blocks((chain.tip_height() / SWEEPS_PER_RUN).max(1))
             .check_rpc(move |s, cx| {
                 let zaino_state = zaino_state.clone();
                 Box::pin(async move { indexes_agree_over_common_window(s, cx, &zaino_state).await })
@@ -221,11 +251,7 @@ fn zaino() -> ztest::component::Indexer<ztest::backends::zainod::ZainoBackend> {
         Indexer::Zainod,
         "../../Dockerfile",
         context = "../..",
-        features = [
-            "no_tls_with_prometheus",
-            "allow_unencrypted_public_json_rpc_bind",
-            "profile"
-        ]
+        features = ["no_tls_with_prometheus", "allow_unencrypted_public_json_rpc_bind"]
     )
 }
 
@@ -557,7 +583,7 @@ fn violated(height: u32, detail: String) -> Verdict {
 /// The sampling ladder is this profile's coverage policy — how much of two
 /// full-chain indexes each sweep actually compares — so it is pinned here
 /// rather than left to be read off the arithmetic. The windows below span the
-/// current fixture (659,600) and a rung an order of magnitude deeper, because
+/// current fixture (1,693,104) and a rung deeper still, because
 /// the ladder's properties must hold wherever the profile is repointed.
 #[cfg(test)]
 mod tests {
@@ -566,7 +592,7 @@ mod tests {
     /// A sweep may only ask about blocks both indexes have written.
     #[test]
     fn every_sample_lies_inside_the_common_window() {
-        for window in [1, 2, 9, 1_000, 659_600, 4_140_000] {
+        for window in [1, 2, 9, 1_000, 1_693_104, 4_140_000] {
             let heights = sweep_heights(window);
             assert!(
                 heights.iter().all(|&h| h >= 1 && h <= window),
@@ -584,7 +610,7 @@ mod tests {
     /// corrupted early cannot stop being checked as the window grows past it.
     #[test]
     fn both_ends_of_the_window_are_always_sampled() {
-        for window in [1, 2, 9, 1_000, 659_600, 4_140_000] {
+        for window in [1, 2, 9, 1_000, 1_693_104, 4_140_000] {
             let heights = sweep_heights(window);
             assert!(heights.contains(&1), "window {window} skipped the base");
             assert!(
@@ -600,7 +626,7 @@ mod tests {
     /// thorough.
     #[test]
     fn the_ladder_stays_small_over_a_full_chain() {
-        for window in [659_600, 4_140_000] {
+        for window in [1_693_104, 4_140_000] {
             let heights = sweep_heights(window);
             assert!(
                 heights.len() <= 12,
@@ -615,7 +641,7 @@ mod tests {
     /// history that every previous sweep already agreed about.
     #[test]
     fn most_samples_sit_near_the_frontier() {
-        for window in [659_600u32, 4_140_000] {
+        for window in [1_693_104u32, 4_140_000] {
             let heights = sweep_heights(window);
             let newest_tenth = window - window / 10;
             let near = heights.iter().filter(|&&h| h >= newest_tenth).count();

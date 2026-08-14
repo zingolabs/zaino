@@ -16,8 +16,6 @@ pub mod error;
 pub mod indexer;
 #[cfg(feature = "prometheus")]
 pub mod metrics;
-#[cfg(feature = "profile")]
-pub mod profile;
 
 /// Run the Zaino indexer.
 ///
@@ -35,19 +33,7 @@ pub async fn run(config_path: PathBuf) -> Result<(), IndexerError> {
         crate::metrics::init(endpoint)?;
     }
 
-    // Hold the profiler for the whole process; the report is built from the
-    // graceful-shutdown path below, after the serve loop returns.
-    #[cfg(feature = "profile")]
-    let profiler = crate::profile::start_profiler();
-
-    let result = run_indexer_loop(config).await;
-
-    #[cfg(feature = "profile")]
-    if let Some(guard) = profiler {
-        crate::profile::write_profile(guard);
-    }
-
-    result
+    run_indexer_loop(config).await
 }
 
 /// The restart-aware indexer loop: spawn the indexer, await its serve task, and

@@ -69,7 +69,6 @@ tracing-subscriber = { version = "0.3.20", features = [
     "json",
 ] }
 tracing-tree = "0.4"
-nu-ansi-term = "0.50"
 time = { version = "0.3", features = ["macros", "formatting"] }
 
 # Network / RPC
@@ -99,13 +98,8 @@ futures = "0.3.30"
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false, features = ["http-listener"] }
 
-# Profiling (behind the "profile" feature; see docs, ztest how-to-profile).
-pprof = { version = "0.13", features = ["protobuf-codec"] }
-flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
-
 # Utility
 thiserror = "2.0"
-once_cell = "1.20"
 chrono = "0.4"
 which = "8"
 whoami = "2.1"
@@ -113,7 +107,6 @@ corez = "0.1"
 
 # Formats
 base64 = "0.22"
-byteorder = "1.5"
 sha2 = "0.10"
 blake2 = "0.10"
 hex = "0.4"
@@ -123,10 +116,6 @@ bitflags = "2.9"
 
 # Test
 tempfile = "3.2"
-# `zcashd_support` is opt-in, not a default (docs/adr/0005), so these path deps
-# no longer need `default-features = false` to drop it: their default feature
-# set is already empty. Enable zcashd end-to-end with `--features zcashd_support`.
-zainod = { path = "packages/zainod" }
 zaino-common = { path = "packages/zaino-common", version = "0.2.0" }
 # default-features = false so the default-on `zcashd_support` feature can be
 # dropped end-to-end via `--no-default-features`; each consumer re-enables it
@@ -145,5 +134,8 @@ derive_more = "2.0.1"
 [profile.test]
 opt-level = 3
 debug = true
+
+[profile.release]
+debug = "line-tables-only"
 
 [patch.crates-io]
