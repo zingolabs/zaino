@@ -491,6 +491,45 @@ async fn the_epoch_advances_only_when_the_tip_changes() {
     assert_ne!(second.best_tip, first.best_tip);
 }
 
+/// The generation keeps advancing across a re-anchor.
+///
+/// A re-anchored graph is built from a single block and starts at generation
+/// zero, so a rule that inherited from the graph it replaces would let a
+/// generation repeat — and a consumer holding the earlier epoch would be told
+/// its stale view was current.
+#[tokio::test]
+async fn the_generation_advances_across_a_re_anchor() {
+    let validator = MockValidator::linear(5);
+    let service = stepped(&validator, 5).await;
+    step_to_tip(&service, &validator).await;
+    let before = service.subscriber().epoch();
+
+    // Far enough past the window that the writer re-anchors rather than walking
+    // the gap one block at a time. The next tick anchors at `tip - max_depth`,
+    // so the held tip has to fall below that for the re-anchor branch to be
+    // taken at all — asserted, so this cannot quietly become a test of the
+    // ordinary extension path.
+    validator.extend(100);
+    assert!(
+        u32::from(before.best_tip.height) < 105 - 5,
+        "the held tip must be below the anchor the next tick computes",
+    );
+    step_to_tip(&service, &validator).await;
+
+    let after = service.subscriber().epoch();
+    assert!(
+        after.generation > before.generation,
+        "a re-anchor must not reset or repeat the generation: {} -> {}",
+        before.generation,
+        after.generation,
+    );
+    assert_eq!(
+        service.subscriber().current().epoch(),
+        after,
+        "the re-anchored snapshot carries the epoch that was published",
+    );
+}
+
 /// A captured snapshot reports the epoch it was published under, not whatever
 /// the chain head has moved on to since.
 ///

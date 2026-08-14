@@ -27,11 +27,14 @@ and this library adheres to Rust's notion of
   fresh.
 - `MapBackedSnapshot` — this crate's `ChainHeadSnapshot` implementation, and the
   only place the graph's representation is decided. It carries the generation of
-  the publication that produced it, stamped by the writer before the snapshot is
-  stored, so a captured view keeps reporting the epoch it was published under
-  rather than following the chain head forward. A republication with an unmoved
-  tip keeps the previous generation; only the writer knows whether the tip moved,
-  which is why the stamp is applied there and not derived on the snapshot.
+  the publication that produced it, stamped before the snapshot is stored, so a
+  captured view keeps reporting the epoch it was published under rather than
+  following the chain head forward. The generation field is private and written
+  only by `stamp_generation`, which owns the rule: a publication whose tip is
+  unchanged inherits the previous generation, and one whose tip moved advances
+  past the highest yet published. Taking the highest published rather than the
+  previous snapshot's is what keeps it monotonic across a re-anchor, where the
+  graph is rebuilt from a single block and starts at zero.
 - `ChainHeadAdvanceError` (`SourceUnavailable` / `InconsistentSource` /
   `ReorgFailure`) and `ChainHeadInitError`, for a chain head that could not
   anchor.

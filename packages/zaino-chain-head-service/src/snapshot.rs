@@ -40,10 +40,12 @@ pub struct MapBackedSnapshot {
     pub(crate) best_tip: BlockRef,
     /// Which publication this is, in the sense of [`ChainStateEpoch`].
     ///
-    /// Stamped by the writer at publish time rather than derived here: only the
-    /// writer knows whether the tip moved, and the epoch advances on tip changes
-    /// alone.
-    pub(crate) generation: u64,
+    /// Private even to the rest of this crate, and written only by
+    /// [`stamp_generation`](Self::stamp_generation): the writer decides when to
+    /// publish, but the rule for what generation a publication carries is the
+    /// snapshot's own, and a field the writer could assign is a field the writer
+    /// could assign wrongly.
+    generation: u64,
 }
 
 impl MapBackedSnapshot {
@@ -53,6 +55,27 @@ impl MapBackedSnapshot {
     /// is holding, not anything about the chain, so no consumer needs it.
     pub fn retained_block_count(&self) -> usize {
         self.blocks.len()
+    }
+
+    /// Stamp the generation this publication carries.
+    ///
+    /// The rule lives here rather than at the call site because it is an
+    /// invariant of the epoch, not a decision the writer makes: a publication
+    /// whose tip matches `previous` describes the same chain state and inherits
+    /// its generation; one whose tip differs advances past the highest
+    /// generation yet published.
+    ///
+    /// Taking `highest_published` rather than reading `previous.generation` is
+    /// what makes it monotonic across a re-anchor. A re-anchored graph is built
+    /// from a single block and starts at zero, so inheriting from the graph it
+    /// replaces would let a generation repeat — and a consumer holding the
+    /// earlier epoch would be told its view was current.
+    pub(crate) fn stamp_generation(&mut self, previous: &Self, highest_published: u64) {
+        self.generation = if self.best_tip == previous.best_tip {
+            previous.generation
+        } else {
+            highest_published.saturating_add(1)
+        };
     }
 
     /// Create initial snapshot from a single block

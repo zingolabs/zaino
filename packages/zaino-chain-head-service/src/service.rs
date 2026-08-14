@@ -574,22 +574,19 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             Vec::new()
         };
 
-        // Stamped onto the snapshot *before* it is stored, so a reader that
-        // captures the view and asks for its epoch is told the epoch this
-        // publication carries. A republication with an unmoved tip keeps the
-        // previous generation: the chain state has not changed, and a consumer
-        // pinned to it must not be told otherwise.
+        // Stamped *before* the store, so a reader that captures the view and
+        // asks for its epoch is told the epoch this publication carries rather
+        // than whatever has been published since. The rule for which generation
+        // that is belongs to the snapshot; this only supplies the two facts it
+        // cannot know — what came before, and how far the epoch has ever got.
         //
-        // The generation is read into a local before the `send_replace` below
-        // for a second reason: `borrow()` holds a read guard for the whole
-        // enclosing statement, and `send_replace` wants the write lock, so
-        // inlining the read deadlocks the channel against itself.
-        let generation = if tip_changed {
-            self.updates.borrow().generation + 1
-        } else {
-            previous.generation
-        };
-        next.generation = generation;
+        // The highest published generation is read into a local first because
+        // `borrow()` holds a read guard for the whole enclosing statement and
+        // the `send_replace` below wants the write lock, so inlining the read
+        // deadlocks the channel against itself.
+        let highest_published = self.updates.borrow().generation;
+        next.stamp_generation(previous, highest_published);
+        let generation = next.epoch().generation;
 
         self.current.store(Arc::new(next));
 
