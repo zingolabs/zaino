@@ -31,6 +31,19 @@ and this library adheres to Rust's notion of
     validator's bytes and never parse them.
   - `zaino-mempool-service` — the runtime: the polling core, the read handles,
     and the tip-aware coherence layer.
+- **Two more crates for the chain head subsystem** (ADR-0011), replacing
+  `zaino-state`'s `non_finalised_state` module:
+  - `zaino-chain-head` — the domain types and ports for the bounded,
+    non-finalised head of the chain. No runtime and no data structures: the
+    graph's representation belongs to whoever publishes it.
+  - `zaino-chain-head-service` — the runtime: the writer task that keeps the
+    graph reconciled with the validator, and the snapshots it publishes.
+
+  The behavioural change this buys: the chain head and the finalised state now
+  advance independently, so a slow database no longer holds the chain tip back.
+  In exchange `ChainIndex::new` fails when the chain head cannot anchor, where
+  the old code retried in the background indefinitely and served a "still
+  syncing" case from every read path.
 - Three mempool sourcing ports in `zaino-source` — `GetMempoolMetadata`,
   `GetRawMempoolTransaction`, `GetMempoolSourceTip` — all of which an adapter
   must route to the same transport as `GetMempoolTxids`.
