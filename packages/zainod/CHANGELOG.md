@@ -13,12 +13,6 @@ and this crate adheres to Rust's notion of
   tip-coherent mempool reads have been frozen. Brief spikes are normal tip
   transitions; a sustained non-zero value means the validator tip and Zaino's
   have stopped agreeing and those reads are unavailable.
-
-- Ironwood (NU6.3) / V6 transaction support, end to end through the
-  workspace crates: V6 parsing and ironwood extraction (`zaino-fetch`),
-  `ironwoodActions` in served compact blocks (`zaino-proto`, on by
-  default), and ironwood treestate roots in the chain index
-  (`zaino-state`).
 - `[mempool]` config section — `max_cost_bytes` (default 128 MiB, the mempool
   memory backstop), `poll_interval_ms` (default 500), `metadata_min_interval_ms`
   (defaults to the poll interval; raising it trades mempool latency for validator
@@ -32,23 +26,7 @@ and this crate adheres to Rust's notion of
   operator sees a configuration error instead. `metadata_min_interval_ms = 0` is
   deliberately still accepted — it is a `>=` floor, so zero means "no coalescing
   beyond the poll cadence".
-- `[storage.database]` config gains `sync_checkpoint_interval` (seconds, default
-  120) — the bulk-sync write-batch flush interval, which also bounds the window of
-  unflushed (`NO_SYNC`) writes at risk on a hard kill / eviction.
-- `[storage.database]` config gains `accumulator_rebuild_memory_size` (GiB,
-  default 8) — a dedicated heap budget for the txout-set accumulator rebuild,
-  separate from `sync_write_batch_size`.
 ### Changed
-- Version marked `0.4.3-ironwood.1` so Ironwood feature builds identify
-  themselves at `zainod --version`; stock `0.4.2` binaries are otherwise
-  indistinguishable from this branch's builds.
-- **Breaking** — `[storage.database] sync_write_batch_bytes` (bytes) is renamed
-  to `sync_write_batch_size` and is now given in **GiB** (default 8). It now
-  budgets only the bulk-sync block buffer; the accumulator rebuild uses the new
-  `accumulator_rebuild_memory_size`. See the `zaino-common` changelog.
-- **Breaking** — unknown keys under `[storage.database]` now fail config parsing
-  loudly (e.g. a stale `sync_write_batch_bytes`) instead of being silently ignored
-  and falling back to the default budget.
 - The daemon builds on the new source stack (`zaino-source-zebra`) via
   `zaino-state`. No configuration change: the `[validator] connection` selector
   (`rpc` / `direct`) means the same thing, and now chooses whether the composite
@@ -64,6 +42,53 @@ and this crate adheres to Rust's notion of
 - The startup validator probe returns an error instead of calling
   `std::process::exit(1)` from inside a library, so the daemon controls its own
   shutdown path on an unreachable validator.
+
+## [0.7.0] - 2026-08-04
+
+### Added
+### Changed
+- Bumped the bundled crate dependencies: `zaino-proto` 0.3.0, `zaino-state`
+  0.6.0, `zaino-fetch` 0.4.1, and `zaino-serve` 0.5.1.
+- CI now gates on duplicate Rust logic (the workbench `check-code-duplication`
+  check).
+- ADR 0007 records the block-persistence row-set boundary.
+### Deprecated
+### Removed
+### Fixed
+
+## [0.6.0] - 2026-07-13
+
+### Added
+- Ironwood (NU6.3) / V6 transaction support, end to end through the
+  workspace crates: V6 parsing and ironwood extraction (`zaino-fetch`),
+  `ironwoodActions` in served compact blocks (`zaino-proto`, on by
+  default), and ironwood treestate roots in the chain index
+  (`zaino-state`).
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.5.0] - 2026-07-02
+
+### Added
+- `[storage.database]` config gains `sync_checkpoint_interval` (seconds, default
+  120) — the bulk-sync write-batch flush interval, which also bounds the window of
+  unflushed (`NO_SYNC`) writes at risk on a hard kill / eviction.
+- `[storage.database]` config gains `accumulator_rebuild_memory_size` (GiB,
+  default 8) — a dedicated heap budget for the txout-set accumulator rebuild,
+  separate from `sync_write_batch_size`.
+### Changed
+- **Breaking** — `[storage.database] sync_write_batch_bytes` (bytes) is renamed
+  to `sync_write_batch_size` and is now given in **GiB** (default 8). It now
+  budgets only the bulk-sync block buffer; the accumulator rebuild uses the new
+  `accumulator_rebuild_memory_size`. See the `zaino-common` changelog.
+- **Breaking** — unknown keys under `[storage.database]` now fail config parsing
+  loudly (e.g. a stale `sync_write_batch_bytes`) instead of being silently ignored
+  and falling back to the default budget.
+### Deprecated
+### Removed
+### Fixed
 - Zaino no longer silently falls back to a large default write/rebuild budget when
   an old `[storage.database]` key is present — the silent fallback to the (former
   32 GiB) default is what OOM-killed nodes at mainnet chain tip (e.g. a 16 GiB
