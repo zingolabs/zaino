@@ -18,17 +18,12 @@
 //! - [`MempoolSourceAdapter`] supplies the block-arrival wake, which must come
 //!   from ChainIndex's sync loop rather than from the source. Its port impls
 //!   forward the validator questions untouched.
-//! - [`NfsEpochAdapter`] exposes the non-finalized state's epoch, which is what
+//! - [`ChainHeadEpochAdapter`] exposes the chain head's epoch, which is what
 //!   the coherence layer freezes and thaws against.
 //!
 //! Dependencies point inward: these adapters know about the mempool crates; the
 //! mempool crates never name a `zaino-state` type.
 
-use std::sync::Arc;
-
-use arc_swap::ArcSwapOption;
-
-use crate::chain_index::non_finalised_state::NonFinalizedState;
 use crate::chain_index::source::BlockchainSource;
 
 /// The tip-agnostic core mempool the ChainIndex owns.
@@ -40,13 +35,13 @@ pub(crate) type ChainIndexMempool<Source> =
 
 /// The tip-aware coherence layer the ChainIndex owns.
 ///
-/// Wraps the core's read handle and this crate's non-finalized-state epoch
-/// observer to serve the reads that place a transaction relative to a tip —
+/// Wraps the core's read handle and the chain head's epoch observer to serve
+/// the reads that place a transaction relative to a tip —
 /// `get_raw_transaction`, `get_transaction_status`, and the coherent
 /// raw-transaction stream.
-pub(crate) type ChainIndexCoherence<Source> = zaino_mempool_service::CoherenceService<
+pub(crate) type ChainIndexCoherence = zaino_mempool_service::CoherenceService<
     zaino_mempool_service::MempoolSubscriber,
-    NfsEpochAdapter<Source>,
+    ChainHeadEpochAdapter,
 >;
 
 /// Wraps ChainIndex's source to give the mempool a block-arrival wake.
@@ -138,51 +133,71 @@ impl<S: BlockchainSource> zaino_source::SubscribeBlocks for MempoolSourceAdapter
     }
 }
 
-/// Presents the ChainIndex's non-finalized state as the mempool's epoch
-/// observer.
+/// Presents the chain head's epoch as the mempool's epoch observer.
 ///
-/// Reads the *same* `ArcSwapOption` the ChainIndex publishes into, so the
-/// mempool observes exactly the epoch the rest of the ChainIndex serves. Holding
-/// a separate copy would let the two drift, and the coherence layer would be
-/// freezing against a tip nobody was being served.
+/// Reads the *same* subscriber the rest of the ChainIndex serves snapshots
+/// from, so the coherence layer observes exactly the epoch callers are being
+/// answered against. A separate view of the chain would let the two drift, and
+/// coherence would be freezing against a tip nobody was being served.
 ///
-/// It never owns or mutates the non-finalized state — it only reads its epoch.
-pub(crate) struct NfsEpochAdapter<Source: BlockchainSource> {
-    non_finalized_state: Arc<ArcSwapOption<NonFinalizedState<Source>>>,
-    /// Fired by the ChainIndex sync loop on each publication.
+/// It never drives the chain head — it only observes its epoch.
+#[derive(Clone)]
+pub(crate) struct ChainHeadEpochAdapter {
+    chain_head: zaino_chain_head_service::ChainHeadSubscriber,
+    /// Fires on each chain head epoch change.
     epoch_wake: tokio::sync::watch::Receiver<()>,
 }
 
-impl<Source: BlockchainSource> NfsEpochAdapter<Source> {
-    /// Wrap the ChainIndex's shared non-finalized-state handle and its
-    /// publication signal.
-    pub(crate) fn new(
-        non_finalized_state: Arc<ArcSwapOption<NonFinalizedState<Source>>>,
-        epoch_wake: tokio::sync::watch::Receiver<()>,
+impl ChainHeadEpochAdapter {
+    /// Wrap a chain head subscriber, and start the relay that turns its epoch
+    /// feed into the unit wake this port is defined in terms of.
+    ///
+    /// The relay exists purely to bridge two watch channels of different item
+    /// types; `watch::Receiver` cannot be mapped in place. It is worth a task
+    /// because without a wake the coherence layer only notices a tip change on
+    /// its next poll tick, so every block would be followed by a blackout of
+    /// that length in which tip-coherent reads are frozen.
+    ///
+    /// It ends when the token is cancelled or the chain head stops publishing,
+    /// and it drops the epoch it reads: the value is re-read from
+    /// [`current_epoch`](zaino_mempool::NfsEpochObserver::current_epoch) on
+    /// every reconcile, so this is a hint and never a source of truth.
+    pub(crate) fn spawn(
+        chain_head: zaino_chain_head_service::ChainHeadSubscriber,
+        cancel_token: tokio_util::sync::CancellationToken,
     ) -> Self {
+        let (epoch_signal, epoch_wake) = tokio::sync::watch::channel(());
+        let mut updates = zaino_chain_head::ChainHeadBlockService::subscribe_updates(&chain_head);
+
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    () = cancel_token.cancelled() => break,
+                    changed = updates.changed() => {
+                        if changed.is_err() {
+                            // The chain head is gone; there will be no more
+                            // epochs to relay.
+                            break;
+                        }
+                        // A lost send costs latency, never correctness.
+                        let _ = epoch_signal.send(());
+                    }
+                }
+            }
+        });
+
         Self {
-            non_finalized_state,
+            chain_head,
             epoch_wake,
         }
     }
 }
 
-/// Written out rather than derived: `derive(Clone)` would demand
-/// `Source: Clone`, which the adapter does not need — it holds only shared
-/// handles.
-impl<Source: BlockchainSource> Clone for NfsEpochAdapter<Source> {
-    fn clone(&self) -> Self {
-        Self {
-            non_finalized_state: Arc::clone(&self.non_finalized_state),
-            epoch_wake: self.epoch_wake.clone(),
-        }
-    }
-}
-
-impl<Source: BlockchainSource> zaino_mempool::NfsEpochObserver for NfsEpochAdapter<Source> {
+impl zaino_mempool::NfsEpochObserver for ChainHeadEpochAdapter {
     fn current_epoch(&self) -> Option<zaino_mempool::NonFinalizedEpoch> {
-        let non_finalized_state = self.non_finalized_state.load_full()?;
-        Some(non_finalized_state.get_snapshot().epoch())
+        Some(super::chain_head::mempool_epoch(
+            &zaino_chain_head::ChainHeadBlockService::current(&self.chain_head),
+        ))
     }
 
     fn subscribe_epoch_changes(&self) -> Option<tokio::sync::watch::Receiver<()>> {

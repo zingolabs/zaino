@@ -111,10 +111,11 @@ pub trait Mempool: Clone + Send + Sync + 'static {
 /// A stable identifier for a published non-finalized-state snapshot.
 ///
 /// `generation` increments when the publisher's best tip *changes*, not on every
-/// republication: the sync loop republishes each iteration (to trim finalized
-/// blocks and so on) even when the tip has not moved, and bumping the generation
-/// on those no-op republishes would churn the epoch every cycle and defeat the
-/// coherence layer's agreement check. Keying it to tip changes gives a stable
+/// republication: the publisher republishes on each of its own iterations (to
+/// trim blocks that have passed below its window, and so on) even when the tip
+/// has not moved, and bumping the generation on those no-op republishes would
+/// churn the epoch every cycle and defeat the coherence layer's agreement
+/// check. Keying it to tip changes gives a stable
 /// epoch for a stable tip while still distinguishing successive tips — including
 /// same-height reorgs, which change the tip hash. The coherence layer keys on
 /// the whole epoch (generation *and* tip); hash-only matching would be weaker.
@@ -130,9 +131,9 @@ pub struct NonFinalizedEpoch {
 /// Outbound port (coherence layer): observe the current non-finalized-state epoch.
 ///
 /// The mempool must not own or publish the non-finalized state; the coherence
-/// layer only observes its epoch to gate transaction-set coherence. `zaino-state`
-/// adapts its `ArcSwapOption<NonFinalizedState<..>>` onto this port. Returns
-/// `None` while the non-finalized state does not yet exist.
+/// layer only observes its epoch to gate transaction-set coherence. In Zaino
+/// that state is the chain head subsystem, which `zaino-state` adapts onto this
+/// port. Returns `None` while there is no non-finalized state to observe.
 #[cfg(feature = "tip_aware_mempool")]
 pub trait NfsEpochObserver: Clone + Send + Sync + 'static {
     /// The epoch of the currently published non-finalized snapshot, if any.

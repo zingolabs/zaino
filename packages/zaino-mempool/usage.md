@@ -55,8 +55,11 @@ interval.
 **Outbound — Zaino's own state (you implement this):**
 
 - `NfsEpochObserver` *(feature `tip_aware_mempool`)* — reports Zaino's current
-  non-finalized-state epoch (`Option<NonFinalizedEpoch>`); `None` while the NFS
-  does not yet exist. Implement `subscribe_epoch_changes` to hand back a
+  non-finalized-state epoch (`Option<NonFinalizedEpoch>`); `None` while there is
+  no such state to observe. In Zaino that state is the chain head subsystem, and
+  `zaino-state` adapts its subscriber onto this port — reading the epoch from
+  the same handle the rest of ChainIndex serves snapshots from, so the two
+  cannot drift. Implement `subscribe_epoch_changes` to hand back a
   `watch::Receiver<()>` fired on each publication: without it the coherence layer
   only notices an advance on its next poll tick, which freezes tip-coherent reads
   for that long after every block. `NoNfs` is the no-op for validator-only mode.

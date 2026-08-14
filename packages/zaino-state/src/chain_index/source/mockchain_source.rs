@@ -4,7 +4,7 @@ use super::*;
 use std::collections::{HashMap, HashSet};
 use std::sync::{
     atomic::{AtomicU32, Ordering},
-    Arc, Mutex,
+    Arc,
 };
 use zaino_common::network::ActivationHeights;
 use zebra_chain::{block::Block, orchard::tree as orchard, sapling::tree as sapling};
@@ -145,13 +145,6 @@ pub(crate) struct MockchainSource {
     >,
     active_chain_height: Arc<AtomicU32>,
     force_requests_against_source_to_fail: Arc<std::sync::atomic::AtomicBool>,
-    /// One-shot test hook: fires on the first `get_block(HashOrHeight::Height(_))`
-    /// call after [`Self::arm_one_shot_get_block_hook`], regardless of which
-    /// height is requested. Used by race regression tests (#1126) to inject
-    /// a `mine_blocks` mid-iter, deterministically placing the iter into the
-    /// race window. Cleared after firing; subsequent `get_block` calls run
-    /// unaffected.
-    get_block_hook: Arc<Mutex<Option<Box<dyn FnOnce() + Send + Sync>>>>,
     /// Announces "blocks received" — i.e. [`Self::mine_blocks`] advanced
     /// the active height — to every subscriber registered via
     /// [`BlockchainSource::subscribe_to_blocks_received`], so each can
@@ -234,7 +227,6 @@ impl MockchainSource {
             force_requests_against_source_to_fail: Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
             )),
-            get_block_hook: Arc::new(Mutex::new(None)),
             blocks_received_broadcaster: tokio::sync::watch::channel(()).0,
             shutdown_called: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
@@ -286,23 +278,6 @@ impl MockchainSource {
     /// notices, notify or not.
     pub(crate) fn mine_blocks_silent(&self, blocks: u32) {
         self.advance_active_height(blocks);
-    }
-
-    /// Arm a one-shot hook that fires the next time
-    /// `get_block(HashOrHeight::Height(_))` is called, before the source
-    /// checks its active height. Used by race regression tests (#1126) to
-    /// inject a mid-iter source advance at a precise point — when the
-    /// worker's height-keyed fetch path is about to fetch its first block
-    /// of the iter, regardless of which specific height it requests first.
-    ///
-    /// The closure runs synchronously inside `get_block`; do non-blocking
-    /// work only (e.g. [`Self::mine_blocks`]). The hook is cleared after
-    /// firing; replacing an armed hook is a silent overwrite.
-    pub(crate) fn arm_one_shot_get_block_hook(&self, f: Box<dyn FnOnce() + Send + Sync>) {
-        *self
-            .get_block_hook
-            .lock()
-            .expect("get_block_hook mutex poisoned") = Some(f);
     }
 
     pub(crate) fn max_chain_height(&self) -> u32 {
@@ -504,18 +479,6 @@ impl zaino_source::GetRawBlock for MockchainSource {
         &self,
         height: domain::Height,
     ) -> Result<Vec<u8>, PortError<zaino_source::GetBlockError>> {
-        // The one-shot hook fires before the active-height check, so a hook
-        // that advances the active height is visible to this same call — the
-        // race window the regression tests place themselves in.
-        if let Some(hook) = self
-            .get_block_hook
-            .lock()
-            .expect("get_block_hook mutex poisoned")
-            .take()
-        {
-            hook();
-        }
-
         let index = self
             .served_index_at_height(height)
             .ok_or(PortError::Domain(
@@ -534,6 +497,53 @@ impl zaino_source::GetRawBlockByHash for MockchainSource {
             zaino_source::GetBlockByHashError::NotFound(hash),
         ))?;
         self.serialized_block_at(index).map_err(port_fault)
+    }
+}
+
+impl MockchainSource {
+    /// The parsed domain block at `index`, with the tree sizes the mock's
+    /// stored roots report.
+    ///
+    /// The sizes come from the same place [`GetCommitmentTreeRoots`] serves
+    /// them, so a consumer reading a block and its roots sees one consistent
+    /// answer rather than two independently invented ones.
+    fn domain_block_at(&self, index: usize) -> Result<domain::Block, String> {
+        let (sapling, orchard) = self.roots[index];
+        let chain_metadata = domain::ChainMetadata {
+            sapling_tree_size: sapling.map_or(0, |(_, size)| size as u32),
+            orchard_tree_size: orchard.map_or(0, |(_, size)| size as u32),
+            // The test vectors carry no ironwood tree.
+            ironwood_tree_size: 0,
+        };
+
+        zaino_convert_zebra::block_from_zebra(&self.blocks[index], chain_metadata)
+            .map_err(|error| format!("mock block did not convert: {error}"))
+    }
+}
+
+impl zaino_source::GetBlock for MockchainSource {
+    async fn get_block(
+        &self,
+        height: domain::Height,
+    ) -> Result<domain::Block, PortError<zaino_source::GetBlockError>> {
+        let index = self
+            .served_index_at_height(height)
+            .ok_or(PortError::Domain(
+                zaino_source::GetBlockError::HeightNotFound(height),
+            ))?;
+        self.domain_block_at(index).map_err(port_fault)
+    }
+}
+
+impl zaino_source::GetBlockByHash for MockchainSource {
+    async fn get_block_by_hash(
+        &self,
+        hash: domain::BlockHash,
+    ) -> Result<domain::Block, PortError<zaino_source::GetBlockByHashError>> {
+        let index = self.served_index_at_hash(hash).ok_or(PortError::Domain(
+            zaino_source::GetBlockByHashError::NotFound(hash),
+        ))?;
+        self.domain_block_at(index).map_err(port_fault)
     }
 }
 
