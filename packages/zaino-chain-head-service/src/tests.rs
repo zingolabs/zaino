@@ -218,22 +218,30 @@ impl SubscribeBlocks for MockValidator {}
 /// A config for stepped tests: the writer never runs, so the interval is set
 /// long enough that nothing fires even if one is started by accident.
 ///
-/// `ChainHeadConfig` is `non_exhaustive`, so it is built through its
-/// constructor and adjusted — which is also what a consumer outside the crate
-/// must do.
+/// `ChainHeadConfig`'s fields are private, so it is built through its
+/// constructor and adjusted through setters — which is also what a consumer
+/// outside the crate must do.
 fn test_config(max_depth: u32) -> ChainHeadConfig {
-    let mut config = ChainHeadConfig::with_max_depth(max_depth);
-    config.poll_interval = Duration::from_secs(3600);
-    config.initial_backoff = Duration::from_millis(1);
-    config.max_backoff = Duration::from_millis(1);
-    config.max_consecutive_failures = 3;
+    let mut config = ChainHeadConfig::with_max_depth(nonzero_u32(max_depth));
+    config.set_poll_interval_ms(nonzero_u64(3_600_000));
+    config.set_initial_backoff_ms(nonzero_u64(1));
+    config.set_max_backoff_ms(nonzero_u64(1));
+    config.set_max_consecutive_failures(nonzero_u32(3));
     config
+}
+
+fn nonzero_u32(value: u32) -> std::num::NonZeroU32 {
+    std::num::NonZeroU32::new(value).expect("test config values are not zero")
+}
+
+fn nonzero_u64(value: u64) -> std::num::NonZeroU64 {
+    std::num::NonZeroU64::new(value).expect("test config values are not zero")
 }
 
 /// A config for tests that run the real writer task and poll for the result.
 fn running_config(max_depth: u32) -> ChainHeadConfig {
     let mut config = test_config(max_depth);
-    config.poll_interval = Duration::from_millis(2);
+    config.set_poll_interval_ms(nonzero_u64(2));
     config
 }
 

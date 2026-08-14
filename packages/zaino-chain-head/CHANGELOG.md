@@ -52,6 +52,12 @@ and this library adheres to Rust's notion of
   would compare against whatever has been published since, which is the race
   the epoch exists to close. Zaino's mempool coherence layer is that consumer.
 - `ChainHeadConfig` — retention window, defaulting to `MAX_NONFINALISED_DEPTH`.
+  Fields are private and every knob is a `NonZero` type, so an illegal value is
+  unrepresentable rather than caught (or not) at startup. Zero is meaningless
+  for all five: a zero window could not observe a reorg, a zero poll interval
+  spins against the validator without panicking, a zero backoff defeats the
+  retry ladder, and zero tolerated failures is indistinguishable from one. A
+  knob where zero *is* meaningful would stay plain.
 - `ChainHeadTransparentHistoryService` and the `transparent` module, behind
   `transparent_address_history_experimental`: declared, unimplemented.
 

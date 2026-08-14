@@ -126,7 +126,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     /// to publish at all. The cost is that the caller owns the lifetime, so
     /// pass a token that is actually cancelled — see the cancellation section
     /// of this crate's `usage.md` for why it should be a *child* token.
-    #[instrument(name = "ChainHeadService::spawn", skip_all, fields(max_depth = config.max_depth))]
+    #[instrument(name = "ChainHeadService::spawn", skip_all, fields(max_depth = config.max_depth()))]
     pub async fn spawn(
         source: Arc<S>,
         config: ChainHeadConfig,
@@ -258,7 +258,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     /// a run of failures.
     async fn run(self: Arc<Self>) {
         let mut wake = self.source.subscribe_to_blocks_received();
-        let mut backoff = self.config.initial_backoff;
+        let mut backoff = self.config.initial_backoff();
         let mut consecutive_failures = 0u32;
 
         loop {
@@ -275,7 +275,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             match iteration {
                 Ok(()) => {
                     consecutive_failures = 0;
-                    backoff = self.config.initial_backoff;
+                    backoff = self.config.initial_backoff();
                     if self.status.load() != StatusType::Closing {
                         self.status.store(StatusType::Ready);
                     }
@@ -285,7 +285,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                 }
                 Err(error) => {
                     consecutive_failures += 1;
-                    if consecutive_failures >= self.config.max_consecutive_failures {
+                    if consecutive_failures >= self.config.max_consecutive_failures() {
                         warn!(
                             %error,
                             attempts = consecutive_failures,
@@ -299,7 +299,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                     if sleep_or_cancel(backoff, &self.cancel).await.is_break() {
                         break;
                     }
-                    backoff = (backoff * 2).min(self.config.max_backoff);
+                    backoff = (backoff * 2).min(self.config.max_backoff());
                 }
             }
         }
@@ -318,7 +318,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         match wake {
             Some(rx) => tokio::select! {
                 _ = self.cancel.cancelled() => std::ops::ControlFlow::Break(()),
-                _ = tokio::time::sleep(self.config.poll_interval) => std::ops::ControlFlow::Continue(()),
+                _ = tokio::time::sleep(self.config.poll_interval()) => std::ops::ControlFlow::Continue(()),
                 changed = rx.changed() => {
                     if changed.is_err() {
                         // The source dropped its sender. Fall back to the
@@ -328,7 +328,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                     std::ops::ControlFlow::Continue(())
                 }
             },
-            None => sleep_or_cancel(self.config.poll_interval, &self.cancel).await,
+            None => sleep_or_cancel(self.config.poll_interval(), &self.cancel).await,
         }
     }
 
@@ -377,7 +377,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         // greater of the finalised database's height and this floor; with the
         // database gone the floor is the whole rule, and it is the arm the old
         // code took whenever the database lagged (#1261).
-        let anchor_height = height_below(chain_height, self.config.max_depth);
+        let anchor_height = height_below(chain_height, self.config.max_depth());
 
         let mut graph = if previous.best_tip().height < anchor_height {
             // The chain moved further than the window covers. Re-anchor rather
@@ -562,8 +562,8 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         // seam sits at the configured depth; the retention floor is lower, so
         // a frozen block is still retained for a while after it is emitted.
         let frozen: Vec<ChainHeadBlock> = if self.frozen.receiver_count() > 0 {
-            let was_frozen_below = height_below(stale_tip.height, self.config.max_depth);
-            let now_frozen_below = height_below(new_tip.height, self.config.max_depth);
+            let was_frozen_below = height_below(stale_tip.height, self.config.max_depth());
+            let now_frozen_below = height_below(new_tip.height, self.config.max_depth());
             next.best_chain()
                 .filter(|block| {
                     block.height() > was_frozen_below && block.height() <= now_frozen_below
@@ -613,7 +613,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
 
     /// How far below the tip blocks are retained.
     fn max_retained_depth(&self) -> u32 {
-        self.config.max_depth.saturating_add(RETENTION_MARGIN)
+        self.config.max_depth().saturating_add(RETENTION_MARGIN)
     }
 
     async fn block_to_chainblock(
@@ -763,7 +763,7 @@ async fn anchor_with_retry<S: ChainHeadBlockSource>(
     config: &ChainHeadConfig,
     cancel: &CancellationToken,
 ) -> Result<MapBackedSnapshot, ChainHeadInitError> {
-    let mut backoff = config.initial_backoff;
+    let mut backoff = config.initial_backoff();
     let mut failures = 0u32;
 
     loop {
@@ -775,7 +775,7 @@ async fn anchor_with_retry<S: ChainHeadBlockSource>(
             Ok(snapshot) => return Ok(snapshot),
             Err(error) => {
                 failures += 1;
-                if failures >= config.max_consecutive_failures {
+                if failures >= config.max_consecutive_failures() {
                     return Err(ChainHeadInitError::SourceUnavailable {
                         attempts: failures,
                         source: error,
@@ -785,7 +785,7 @@ async fn anchor_with_retry<S: ChainHeadBlockSource>(
                 if sleep_or_cancel(backoff, cancel).await.is_break() {
                     return Err(ChainHeadInitError::Cancelled);
                 }
-                backoff = (backoff * 2).min(config.max_backoff);
+                backoff = (backoff * 2).min(config.max_backoff());
             }
         }
     }
@@ -803,7 +803,7 @@ async fn anchor<S: ChainHeadBlockSource>(
         .await
         .map_err(|error| ChainHeadAdvanceError::SourceUnavailable(error.to_string()))?;
 
-    let anchor_height = height_below(tip_height, config.max_depth);
+    let anchor_height = height_below(tip_height, config.max_depth());
 
     let block = source
         .get_block(anchor_height)

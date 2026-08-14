@@ -810,7 +810,10 @@ impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedChainIndex<Source
         // layer freeze against a tip nobody was being served.
         let chain_head = ChainHeadService::spawn(
             source.chain_head_source(),
-            ChainHeadConfig::with_max_depth(OPERATIONAL_NFS_DEPTH),
+            ChainHeadConfig::with_max_depth(
+                std::num::NonZeroU32::new(OPERATIONAL_NFS_DEPTH)
+                    .expect("the operational chain-head depth derives from a non-zero reorg bound"),
+            ),
             cancel_token.child_token(),
         )
         .await
