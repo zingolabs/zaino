@@ -223,17 +223,11 @@ impl<T: ChainHeadSnapshot> ChainHeadSnapshot for std::sync::Arc<T> {
 }
 
 impl<T: ChainHeadTransactionService> ChainHeadTransactionService for std::sync::Arc<T> {
-    fn transaction_locations(
-        &self,
-        txid: &TransactionId,
-    ) -> Result<ChainHeadTransactionLocations, ChainHeadError> {
+    fn transaction_locations(&self, txid: &TransactionId) -> ChainHeadTransactionLocations {
         self.as_ref().transaction_locations(txid)
     }
 
-    fn outpoint_spenders(
-        &self,
-        outpoints: &[Outpoint],
-    ) -> Result<Vec<Option<SpenderLocation>>, ChainHeadError> {
+    fn outpoint_spenders(&self, outpoints: &[Outpoint]) -> Vec<Option<SpenderLocation>> {
         self.as_ref().outpoint_spenders(outpoints)
     }
 }
@@ -246,20 +240,17 @@ impl<T: ChainHeadTransactionService> ChainHeadTransactionService for std::sync::
 /// by the consumer.
 pub trait ChainHeadTransactionService: ChainHeadSnapshot {
     /// Every place this transaction appears in the retained graph.
-    fn transaction_locations(
-        &self,
-        txid: &TransactionId,
-    ) -> Result<ChainHeadTransactionLocations, ChainHeadError>;
+    ///
+    /// Total: a transaction that appears nowhere is an empty result, not a
+    /// failure.
+    fn transaction_locations(&self, txid: &TransactionId) -> ChainHeadTransactionLocations;
 
     /// For each outpoint, the canonical transaction that spent it.
     ///
     /// Output ordering matches input ordering. `None` means "not spent within
     /// ChainHead", which is not the same as unspent — the finalised state holds
     /// the rest of the chain.
-    fn outpoint_spenders(
-        &self,
-        outpoints: &[Outpoint],
-    ) -> Result<Vec<Option<SpenderLocation>>, ChainHeadError>;
+    fn outpoint_spenders(&self, outpoints: &[Outpoint]) -> Vec<Option<SpenderLocation>>;
 }
 
 /// Transparent-address effects derivable from a snapshot's blocks.

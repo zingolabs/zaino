@@ -263,10 +263,7 @@ impl ChainHeadTransactionService for MapBackedSnapshot {
     /// A bounded scan of the window. The window is small and this is not on a
     /// hot path; when it becomes one, the answer is a `txid ->` position index
     /// carried alongside the graph, not a faster scan.
-    fn transaction_locations(
-        &self,
-        txid: &TransactionId,
-    ) -> Result<ChainHeadTransactionLocations, ChainHeadError> {
+    fn transaction_locations(&self, txid: &TransactionId) -> ChainHeadTransactionLocations {
         let mut locations = ChainHeadTransactionLocations::default();
 
         for block in self.blocks.values() {
@@ -290,7 +287,7 @@ impl ChainHeadTransactionService for MapBackedSnapshot {
             }
         }
 
-        Ok(locations)
+        locations
     }
 
     /// Canonical spenders only: a spend on a competing branch is not a spend of
@@ -298,12 +295,9 @@ impl ChainHeadTransactionService for MapBackedSnapshot {
     ///
     /// One pass over the canonical blocks builds one map for the whole batch,
     /// so cost is independent of how many outpoints are asked about.
-    fn outpoint_spenders(
-        &self,
-        outpoints: &[Outpoint],
-    ) -> Result<Vec<Option<SpenderLocation>>, ChainHeadError> {
+    fn outpoint_spenders(&self, outpoints: &[Outpoint]) -> Vec<Option<SpenderLocation>> {
         if outpoints.is_empty() {
-            return Ok(Vec::new());
+            return Vec::new();
         }
 
         let mut spenders: HashMap<Outpoint, SpenderLocation> = HashMap::new();
@@ -328,9 +322,9 @@ impl ChainHeadTransactionService for MapBackedSnapshot {
             }
         }
 
-        Ok(outpoints
+        outpoints
             .iter()
             .map(|outpoint| spenders.get(outpoint).copied())
-            .collect())
+            .collect()
     }
 }

@@ -49,7 +49,7 @@ pub mod transparent;
 
 pub use block::{ChainHeadBlock, ChainHeadWork};
 pub use config::ChainHeadConfig;
-pub use error::{ChainHeadError, ChainHeadSourceError};
+pub use error::ChainHeadError;
 pub use ports::{ChainHeadBlockService, ChainHeadBlockSource, ChainHeadFreezeEvents};
 pub use snapshot::{
     ChainHeadBlockIter, ChainHeadEpoch, ChainHeadSnapshot, ChainHeadTransactionLocations,

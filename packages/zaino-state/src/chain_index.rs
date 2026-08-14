@@ -1412,7 +1412,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedChainIndexSubscri
         // over its whole retained graph — canonical and competing branches
         // alike — so this asks rather than re-scanning the blocks here.
         let locations =
-            snapshot.transaction_locations(&zaino_primitives::types::TransactionId::from(txid))?;
+            snapshot.transaction_locations(&zaino_primitives::types::TransactionId::from(txid));
         let non_finalized_blocks_containing_transaction = locations
             .best_chain
             .into_iter()

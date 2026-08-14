@@ -21,6 +21,13 @@ and this library adheres to Rust's notion of
   chain head finishes initialising before its constructor returns. Its
   associated `Snapshot` type is what keeps the representation out of the port.
 - `ChainHeadTransactionService` — transaction location lookups, on the snapshot.
+  Both methods are infallible: a transaction that appears nowhere, and an
+  outpoint nothing spent, are absence rather than failure.
+- `ChainHeadError` — one variant, `InvalidRange`, and `#[non_exhaustive]`. Every
+  other snapshot query is a total function of a graph the caller already holds,
+  so "not retained" is reported as `None` or an empty collection. A variant is
+  added when an implementation exists that can produce it — an implementation
+  paging its graph from a store could — rather than in anticipation of one.
 - `ChainHeadFreezeEvents` — blocks that have fallen below the consensus seam,
   for a chain store to ingest without re-fetching. A separate trait so a
   consumer bounds on it only when it wants the handoff. The stream is
