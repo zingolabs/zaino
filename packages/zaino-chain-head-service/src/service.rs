@@ -111,6 +111,21 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     /// time. Doing it before returning is what makes
     /// [`ChainHeadSubscriber::current`] total — there is no state in which a
     /// ChainHead exists with nothing to answer from.
+    ///
+    /// # Shutdown contract
+    ///
+    /// **Dropping the returned `Arc` does not stop the writer task.** The task
+    /// holds its own `Arc<Self>`, so the service outlives every handle a caller
+    /// keeps. Stop it by cancelling `cancel` or by calling
+    /// [`shutdown`](Self::shutdown); a caller that does neither leaks the task
+    /// for the life of the process.
+    ///
+    /// This is deliberate rather than an oversight. A writer that stopped when
+    /// the last read handle went away would stop mid-request in any consumer
+    /// that briefly holds no subscriber, and the task must outlive its handles
+    /// to publish at all. The cost is that the caller owns the lifetime, so
+    /// pass a token that is actually cancelled — see the cancellation section
+    /// of this crate's `usage.md` for why it should be a *child* token.
     #[instrument(name = "ChainHeadService::spawn", skip_all, fields(max_depth = config.max_depth))]
     pub async fn spawn(
         source: Arc<S>,

@@ -51,11 +51,20 @@ a status saying it is stale is more useful than no data.
 Callers wanting readiness poll `status()`, on either handle. There is
 deliberately no `wait_until_ready`.
 
-## Cancellation
+## Cancellation, and who owns the writer task
 
-Pass a **child token**. `shutdown` cancels the writer task and awaits it; a
-parent token passed directly means shutting down the chain head shuts down
-everything else sharing it.
+**Dropping the service does not stop the writer task.** The task holds its own
+`Arc<ChainHeadService>`, so the service outlives every handle you keep. Stop it
+by cancelling the token you passed to `spawn`, or by calling `shutdown`. A
+consumer that just drops the handle leaks the task for the life of the process.
+
+That is the deliberate trade: a writer that stopped when the last handle went
+away would stop mid-request in any consumer that briefly holds no subscriber,
+and the task has to outlive its handles to publish at all. The consequence is
+that the caller owns the lifetime.
+
+Pass a **child token**. A parent token passed directly means shutting down the
+chain head shuts down everything else sharing it.
 
 ## Publication is all-or-nothing
 

@@ -158,8 +158,12 @@ impl ChainHeadEpochAdapter {
     /// its next poll tick, so every block would be followed by a blackout of
     /// that length in which tip-coherent reads are frozen.
     ///
-    /// It ends when the token is cancelled or the chain head stops publishing,
-    /// and it drops the epoch it reads: the value is re-read from
+    /// It ends when the token is cancelled or the chain head stops publishing —
+    /// **not** when the adapter is dropped, which it does not observe. The
+    /// token is a child of ChainIndex's, so its lifetime is bounded by the
+    /// thing that spawned it.
+    ///
+    /// It drops the epoch it reads: the value is re-read from
     /// [`current_epoch`](zaino_mempool::NfsEpochObserver::current_epoch) on
     /// every reconcile, so this is a hint and never a source of truth.
     pub(crate) fn spawn(
