@@ -13,6 +13,14 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.4.0] - 2026-08-14
+
+### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
 ## [0.3.0] - 2026-08-04
 
 ### Added
