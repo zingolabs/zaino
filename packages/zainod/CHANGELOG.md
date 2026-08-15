@@ -9,6 +9,14 @@ and this crate adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.8.0] - 2026-08-14
+
+### Added
 - `zaino.mempool.coherence_frozen_seconds` metric description: how long
   tip-coherent mempool reads have been frozen. Brief spikes are normal tip
   transitions; a sustained non-zero value means the validator tip and Zaino's

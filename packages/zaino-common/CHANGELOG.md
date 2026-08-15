@@ -8,6 +8,14 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.5.0] - 2026-08-14
+
+### Added
 - `consensus::validate_raw_transaction_hex` / `validate_raw_transaction_bytes`,
   `RawTransactionError` and `MAX_BLOCK_BYTES` — moved from `zaino-fetch`. This
   is a consensus-limit check, which is what this module exists for; the

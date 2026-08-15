@@ -8,6 +8,14 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.6.0] - 2026-08-14
+
+### Added
 - `rpc::jsonrpc::wire` — **this crate now owns the served JSON schema**
   (ADR-0009). Serde structs carrying zcashd's exact field names, one module per
   response family (`address`, `address_deltas`, `address_queries`,
