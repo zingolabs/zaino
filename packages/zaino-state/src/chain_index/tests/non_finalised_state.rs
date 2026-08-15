@@ -39,7 +39,7 @@ async fn nfs_lowest_block_matches_finalized_db_tip() {
         .get_nfs_snapshot()
         .expect("NFS exists after harness completes finalized sync");
 
-    let seam_height = finalized_height_floor(mockchain.active_height());
+    let seam_height = finalized_height_floor(mockchain.source().active_height());
     let nfs_seam_hash = nfs
         .heights_to_hashes
         .get(&seam_height)
@@ -70,7 +70,7 @@ async fn block_is_evicted_from_nfs_when_finalized_advances_past_it() {
     let (_blocks, _indexer, index_reader, mockchain) =
         load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
 
-    let initial_seam_height = finalized_height_floor(mockchain.active_height());
+    let initial_seam_height = finalized_height_floor(mockchain.source().active_height());
 
     let initial_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
     let initial_nfs = initial_snapshot
@@ -85,8 +85,8 @@ async fn block_is_evicted_from_nfs_when_finalized_advances_past_it() {
         "precondition: block at seam height is in NFS",
     );
 
-    mockchain.mine_blocks(20);
-    let post_mine_active_height = mockchain.active_height();
+    mockchain.source().mine_blocks(20);
+    let post_mine_active_height = mockchain.source().active_height();
 
     // Poll the *NFS tip*, not `finalized_state.db_height()`:
     // `fs.sync_to_height` advances the finalized DB BEFORE
@@ -163,7 +163,7 @@ async fn shutdown_terminates_sync_loop_cleanly() {
     let (_blocks, mut indexer, index_reader, mockchain) =
         load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
 
-    let target_tip = mockchain.active_height();
+    let target_tip = mockchain.source().active_height();
     poll_until(
         "indexer to publish NFS at chain tip (loop settled in interval sleep)",
         Duration::from_secs(10),
@@ -207,7 +207,7 @@ async fn shutdown_terminates_sync_loop_cleanly() {
 /// on scheduler quirks; in CI it can pass while the bug is fully present.
 ///
 /// This test forces the race window using the one-shot
-/// [`MockchainSource::arm_one_shot_get_block_hook`]. The hook fires the
+/// [`MockSource::arm_one_shot_get_block_hook`]. The hook fires the
 /// *first* time the worker requests `get_block(Height(_))`, which is the
 /// first call inside iter N's NFS-sync while loop *after* iter N has already
 /// committed to `chain_height = initial_active` and called
@@ -233,7 +233,7 @@ async fn race_pre_mine_finalized_height_block_is_evicted_when_source_advances_mi
     let (_blocks, _indexer, index_reader, mockchain) =
         load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
 
-    let initial_active = mockchain.active_height();
+    let initial_active = mockchain.source().active_height();
     let pre_mine_finalized_height = dbg!(finalized_height_floor(initial_active));
 
     let initial_snapshot = index_reader.snapshot_nonfinalized_state().await.unwrap();
@@ -258,7 +258,9 @@ async fn race_pre_mine_finalized_height_block_is_evicted_when_source_advances_mi
     // mid-iteration.
     let advance: u32 = 20;
     let mc = mockchain.clone();
-    mockchain.arm_one_shot_get_block_hook(Box::new(move || mc.mine_blocks(advance)));
+    mockchain
+        .source()
+        .arm_one_shot_get_block_hook(Box::new(move || mc.source().mine_blocks(advance)));
 
     let post_mine_active = initial_active + advance;
     poll_until(

@@ -167,7 +167,7 @@ mod json_server {
         dbg!(&zaino_service_balance);
 
         // The fixture sent exactly 250_000 to the recipient taddr.
-        assert_eq!(zcashd_service_balance.balance(), 250_000);
+        assert_eq!(zcashd_service_balance.balance, 250_000);
         assert_eq!(zcashd_service_balance, zaino_service_balance);
 
         services.test_manager.close().await;
@@ -248,12 +248,20 @@ mod json_server {
 
         let zcashd_subtrees = dbg!(services
             .zcashd_subscriber
-            .z_get_subtrees_by_index("orchard".to_string(), NoteCommitmentSubtreeIndex(0), None)
+            .z_get_subtrees_by_index(
+                zaino_primitives::types::ShieldedPool::Orchard,
+                NoteCommitmentSubtreeIndex(0),
+                None
+            )
             .await
             .unwrap());
         let zaino_subtrees = dbg!(services
             .zaino_subscriber
-            .z_get_subtrees_by_index("orchard".to_string(), NoteCommitmentSubtreeIndex(0), None)
+            .z_get_subtrees_by_index(
+                zaino_primitives::types::ShieldedPool::Orchard,
+                NoteCommitmentSubtreeIndex(0),
+                None
+            )
             .await
             .unwrap());
 
@@ -298,7 +306,7 @@ mod json_server {
             .z_get_address_utxos(GetAddressBalanceRequest::new(vec![recipient_taddr.clone()]))
             .await
             .unwrap();
-        let (_, txid, output_index, ..) = zcashd_utxos[0].into_parts();
+        let (txid, output_index) = (zcashd_utxos[0].txid, zcashd_utxos[0].output_index);
 
         let zcashd_tx_out = services
             .zcashd_subscriber
@@ -388,14 +396,14 @@ mod json_server {
             .z_get_address_utxos(GetAddressBalanceRequest::new(vec![recipient_taddr.clone()]))
             .await
             .unwrap();
-        let (_, zcashd_txid, ..) = zcashd_utxos[0].into_parts();
+        let zcashd_txid = zcashd_utxos[0].txid;
 
         let zaino_utxos = services
             .zaino_subscriber
             .z_get_address_utxos(GetAddressBalanceRequest::new(vec![recipient_taddr]))
             .await
             .unwrap();
-        let (_, zaino_txid, ..) = zaino_utxos[0].into_parts();
+        let zaino_txid = zaino_utxos[0].txid;
 
         dbg!(&txid_1);
         dbg!(&zcashd_utxos);
@@ -501,7 +509,7 @@ mod wallet_to_validator {
         test_manager
             .generate_blocks_bulk_and_wait_for_tips(
                 // Advance past the seam so all three pool sends cross the finalised floor.
-                zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH + 5,
+                zaino_consensus::FAST_TEST_MAX_NONFINALISED_DEPTH + 5,
                 test_manager.subscriber(),
                 test_manager.subscriber(),
             )
@@ -514,18 +522,5 @@ mod wallet_to_validator {
         assert_eq!(e2e::Pool::Transparent.spendable_balance(&balance), 250_000);
 
         test_manager.close().await;
-    }
-
-    /// zcashd analogue of devtool.rs's `monitor_unverified_mempool`. `#[ignore]`d
-    /// with the balance assertions commented out — devtool's WalletBalance has
-    /// no unconfirmed_*/confirmed_* fields (block-based sync, no mempool scan).
-    #[tokio::test(flavor = "multi_thread")]
-    #[cfg_attr(
-        not(feature = "devtool-incompatible"),
-        ignore = "devtool WalletBalance has no unconfirmed_*/confirmed_* fields; balance asserts commented out — restore + un-ignore when devtool surfaces unconfirmed balances"
-    )]
-    async fn monitor_unverified_mempool() {
-        let (test_manager, clients) = launch_and_fund_zcashd_faucet(2).await;
-        e2e::devtool::assert_monitor_unverified_mempool(test_manager, clients).await;
     }
 }

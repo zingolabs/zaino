@@ -117,15 +117,19 @@ async fn getblockchaininfo_reports_the_configured_schedule() {
 
     let mut test_manager = launch_transition_validator().await;
 
-    let blockchain_info = test_manager
-        .full_node_jsonrpc_connector()
-        .await
-        .get_blockchain_info()
-        .await
-        .expect("getblockchaininfo");
+    // Read as zebra's own response type: this test asserts on the
+    // `NetworkUpgrade` enum, which is what indexes an activation schedule.
+    let blockchain_info: zebra_rpc::methods::GetBlockchainInfoResponse = serde_json::from_value(
+        test_manager
+            .full_node_jsonrpc_connector()
+            .await
+            .get("getblockchaininfo")
+            .await,
+    )
+    .expect("getblockchaininfo");
 
     let reported: Vec<(NetworkUpgrade, u32)> = blockchain_info
-        .upgrades
+        .upgrades()
         .values()
         .map(|upgrade_info| {
             let (upgrade, height, _status) = upgrade_info.into_parts();

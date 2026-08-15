@@ -30,12 +30,23 @@ Currently Zebra's `ReadStateService` only enables direct access to chain data (b
 ## Project Structure
 
 ```
-packages/                          Cargo workspace member crates
-  zaino-proto/                       Protocol buffer definitions
+packages/                          Cargo workspace member crates, in dependency order
+  zaino-status/                      How a component reports whether it is working
+  zaino-consensus/                   Zcash consensus constants and protocol limits
+  zaino-primitives/                  Domain vocabulary (thiserror only; no serde)
+  zaino-address/                     Zcash address classification
+  zaino-source/                      Driven ports: one trait per chain question
+  zaino-rpc/                         JSON-RPC transport (no parsing)
+  zaino-convert-zebra/               zebra-chain -> domain conversions
+  zaino-source-zebra-rpc/            JSON-RPC adapter + response parsing
+  zaino-source-zebra-readstate/      Zebra ReadStateService adapter
+  zaino-source-zebra/                ZebraValidator composite + routing
+  zaino-mempool/                     Mempool domain types and ports (no node library)
+  zaino-mempool-service/             The mempool runtime: poll loop, read handles, coherence
   zaino-common/                      Shared utilities and configuration
-  zaino-fetch/                       Blockchain data fetching (JSON-RPC backend)
+  zaino-proto/                       Protocol buffer definitions
   zaino-state/                       Chain state and indexer service library
-  zaino-serve/                       gRPC server (CompactTxStreamer)
+  zaino-serve/                       gRPC + JSON-RPC servers, and the served JSON schema
   zainod/                            Daemon binary
 
 live-tests/                        Live-test suite — root-workspace members, run against zcashd/zebrad
@@ -125,6 +136,32 @@ for full instructions.
 - [Internal Specification](./docs/internal_spec.md): Holds a specification for Zaino and its crates, detailing their functionality, interfaces and dependencies.
 - [RPC API Spec](./docs/rpc_api.md): Holds a full specification of all of the RPC services served by Zaino.
 - [Cargo Docs](https://zingolabs.github.io/zaino/): Holds a full code specification for Zaino.
+
+### Architecture Decision Records
+Decisions that shape the codebase, with the reasoning that produced them. Read
+these before changing the structure they describe.
+- [ADR-0001](./docs/adr/0001-zcashd-support-feature-gate.md) / [ADR-0005](./docs/adr/0005-zcashd-support-default-off.md): the `zcashd_support` feature gate, and why it is opt-in.
+- [ADR-0002](./docs/adr/0002-live-tests-rejoin-root-workspace.md), [ADR-0003](./docs/adr/0003-live-test-taxonomy-and-two-crate-split.md), [ADR-0004](./docs/adr/0004-rename-integration-partition-to-clientless.md): the live-test suite's workspace membership, taxonomy and naming.
+- [ADR-0006](./docs/adr/0006-aws-lc-rs-preferred-crypto-provider.md): aws-lc-rs as the preferred rustls CryptoProvider.
+- [ADR-0007](./docs/adr/0007-block-persistence-is-a-row-set-boundary.md): block persistence is a row-set boundary.
+- [ADR-0008](./docs/adr/0008-source-ports-and-domain-primitives.md): validator access is a set of single-question ports over domain primitives.
+- [ADR-0009](./docs/adr/0009-served-json-schema-lives-in-zaino-serve.md): the served JSON schema lives in `zaino-serve`.
+
+### Crate usage guides
+Practical guidance for working *in* a crate — its scope, its invariants, and the
+mistakes its design is trying to prevent.
+- [`zaino-status`](./packages/zaino-status/usage.md): the status vocabulary, and why it stays vocabulary.
+- [`zaino-consensus`](./packages/zaino-consensus/usage.md): the protocol constants, and why they are stated rather than borrowed.
+- [`zaino-primitives`](./packages/zaino-primitives/usage.md): the domain vocabulary, and why it depends on nothing.
+- [`zaino-source`](./packages/zaino-source/usage.md): the ports, the domain/fetch error split, and `Resilient`.
+- [`zaino-rpc`](./packages/zaino-rpc/usage.md): JSON-RPC transport, and what it deliberately does not do.
+- [`zaino-convert-zebra`](./packages/zaino-convert-zebra/usage.md): `zebra-chain` → domain conversions.
+- [`zaino-source-zebra-rpc`](./packages/zaino-source-zebra-rpc/usage.md): the JSON-RPC adapter and its error classification.
+- [`zaino-source-zebra-readstate`](./packages/zaino-source-zebra-readstate/usage.md): the read-state adapter, and what it deliberately cannot answer.
+- [`zaino-source-zebra`](./packages/zaino-source-zebra/usage.md): the composite and its three routing rules.
+- [`zaino-address`](./packages/zaino-address/usage.md): address classification, and what is not classified.
+- [`zaino-mempool`](./packages/zaino-mempool/usage.md): the two-layer model, the ports, and the bounds.
+- [`zaino-mempool-service`](./packages/zaino-mempool-service/usage.md): spawning and consuming the mempool.
 
 
 ## Security Vulnerability Disclosure

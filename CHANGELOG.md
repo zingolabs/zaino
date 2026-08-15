@@ -7,7 +7,66 @@ and this library adheres to Rust's notion of
 
 ## Unreleased
 
+### Added
+- **Eight new crates** implementing validator access as a hexagonal port /
+  adapter stack (ADR-0008, ADR-0009). Each carries a `usage.md`:
+  - `zaino-primitives` — Zaino's domain vocabulary. Depends on `thiserror` and
+    nothing else; deliberately no serde.
+  - `zaino-source` — the driven ports: 36 single-method traits, one per question
+    a consumer can ask, each with its own error type. Plus `QueryError`,
+    `FetchError`/`FailureMode`, the `Resilient` retry decorator, and `MockChain`.
+  - `zaino-rpc` — JSON-RPC transport only: HTTP, envelope, auth, retry-on-`-1`.
+  - `zaino-convert-zebra` — `zebra-chain` → domain conversions, in one place.
+  - `zaino-source-zebra-rpc` — the JSON-RPC adapter, plus response parsing.
+  - `zaino-source-zebra-readstate` — the read-state adapter.
+  - `zaino-source-zebra` — the `ZebraValidator` composite and its routing.
+  - `zaino-address` — Zcash address classification, isolating a heavy
+    dependency set behind a leaf crate.
+- `zaino-serve` now owns **the served JSON schema** in `rpc/jsonrpc/wire/`
+  (ADR-0009), with golden serialization tests beside each type.
+- **Two more crates for the mempool subsystem** (ADR-0010), replacing the
+  `Broadcast`-backed mempool inside `zaino-state`:
+  - `zaino-mempool` — the domain types and ports. Reads the validator through
+    `zaino-source`, and names no node library at all: entries hold the
+    validator's bytes and never parse them.
+  - `zaino-mempool-service` — the runtime: the polling core, the read handles,
+    and the tip-aware coherence layer.
+- Three mempool sourcing ports in `zaino-source` — `GetMempoolMetadata`,
+  `GetRawMempoolTransaction`, `GetMempoolSourceTip` — all of which an adapter
+  must route to the same transport as `GetMempoolTxids`.
+- `[mempool]` config section in `zainod`, making the mempool memory bound, poll
+  cadence and exclude-list caps operator-configurable.
+
 ### Changed
+- **The mempool no longer stalls across a tip transition.** `getrawmempool`,
+  `getmempoolinfo` and `GetMempoolTx` are served from a tip-agnostic set that
+  never clears; the old mempool wiped its whole map on every tip change and
+  answered as if empty until it had re-fetched every transaction.
+- **The reads that place a transaction relative to a tip now refuse to answer
+  against a stale snapshot** rather than answering with a consensus branch id
+  derived from the wrong height. `get_raw_transaction`, `get_transaction_status`
+  and `GetMempoolStream` return a retryable error instead; a caller cannot tell
+  a wrong branch id from a right one, but it can retry.
+- **`GetTransaction` reports height `0` for an unmined transaction** — the
+  lightwalletd sentinel — rather than the chain tip, which claimed the
+  transaction was mined at a height it is not in.
+- **The validator abstraction is now a set of single-question ports in domain
+  vocabulary** rather than a 34-method trait declared in `zebra-chain`,
+  `zebra-rpc` and `zaino-fetch` types (ADR-0008). Errors distinguish a domain
+  answer from a transport failure, so retry policy is a property of the type;
+  capability is structural, so an adapter that cannot answer a question does not
+  implement its port; and preference is a routing table rather than a 3,145-line
+  enum matched in every method.
+- **Breaking** — `zaino-state`'s `ZcashIndexer` returns domain types from all 25
+  non-proto methods, including those that previously returned
+  `zebra_rpc::methods::*`. `z_getblock` and `getrawtransaction` keep zebra's
+  presentation shapes by decision.
+- `zaino-state`'s `BlockchainSource` survives as documented **temporary
+  scaffolding** with a "do not extend" note, so ChainIndex keeps working while
+  the new stack is proven underneath it. It shrinks as each subsystem moves onto
+  the real ports.
+- Config, RPC surface and gRPC surface are unchanged. This is an internal
+  rewire.
 - `zaino-state`: `FetchService` and `StateService` are merged into a single
   generic `NodeBackedIndexerService<Source>` (module
   `zaino_state::indexer::node_backed_indexer`; the former `backends` module is
@@ -55,10 +114,59 @@ and this library adheres to Rust's notion of
   (seconds, default 300) makes the bulk-sync flush interval configurable (was a
   fixed 60s).
 
+### Removed
+- **`zaino-fetch` is deleted from the workspace.** It was dual-purpose —
+  deserializing validator replies *and* serializing Zaino's own JSON-RPC
+  replies — which is why replacing its transport did not remove it. The three
+  roles now have three owners: `zaino-rpc` (transport),
+  `zaino-source-zebra-rpc` (inbound parsing), `zaino-serve`'s wire module
+  (outbound serialization). Its legacy protocol parser moved to
+  `live-tests/zaino-testutils` as a test-only module, kept deliberately
+  independent of the parser under test so the test vectors remain a real
+  oracle.
+- The `zcashd_support` feature declaration on `zaino-state`, which gated
+  nothing once the zcashd-shaped types moved to `zaino-serve`. The feature and
+  its behaviour are unchanged; `zaino-serve` is now the only crate where it
+  gates code (ADR-0001, ADR-0005).
+
 ### Fixed
+- JSON-RPC responses are read against a 32 MiB cap, chunk-wise. Every response
+  is deserialized into memory, so an uncapped read let a compromised,
+  misconfigured or impersonated validator exhaust Zaino's memory with one reply.
+- Every client-controllable mempool input is bounded: the exclude list's count
+  and per-suffix length, and both mempool listings on their declared entry count
+  — the latter before any entry is decoded, so an oversized listing cannot drive
+  a million raw-transaction fetches.
+- The mempool's per-transaction entry height is sourced from the validator
+  rather than derived locally. The two disagree exactly when the chain moves
+  under a transaction, which is the case that matters.
 - Zaino no longer OOM-crashes during the txout-set accumulator rebuild when it
   reaches mainnet chain tip on memory-constrained hosts; the rebuild auto-shards
   its in-memory spent set to fit the configured `sync_write_batch_size` budget.
+- **A missing object is told apart from an unreachable validator.** The JSON-RPC
+  adapter reported "no block at that height" — which the ChainIndex sync loop
+  asks on every iteration — as an unrecoverable transport fault, exhausting the
+  retry ladder against a perfectly healthy node.
+- **zcashd error-code recovery was silently inert.** `zaino-serve` recovered
+  codes by downcasting for a `zaino-fetch` type the new stack never constructs,
+  so every code reached the client as a generic internal error.
+- `getblockdeltas` is served on zebrad-backed deployments. zebrad does not
+  implement the method, and the read-state derivation that answered it had been
+  omitted on the mistaken reasoning that the validator already provided it.
+- `getblockchaininfo` and `z_getblock` work against zebra 6.0, which serialises
+  the deferred-development-fund value pool as `lockbox` where zcashd calls it
+  `deferred`.
+- `getspentinfo` reports zcashd's own `-5` / `Unable to get spent info`, and
+  reports `-32601` rather than a not-found when the backing validator is zebrad
+  (which does not implement it). Neither Zaino nor its predecessor served the
+  `-5`. **Zaino still does not answer `getspentinfo` from its own index** — a
+  documented gap, not a fix, and one that matters because zebrad will never
+  implement the method. See `zaino-source`'s `GetSpentInfo` for what would be
+  needed.
+- Network upgrade names no longer differ between the two transports (`Nu5` vs
+  `NU5`).
+- The mempool stream parses each transaction once rather than twice, removing an
+  `.unwrap()` on the same path.
 
 ## [0.4.1] - 2026-06-18
 - Bump zaino-proto 0.1.2 → 0.1.3 and zainod 0.4.0 → 0.4.1 to work around

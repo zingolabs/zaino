@@ -1,6 +1,47 @@
 use zaino_common::network::ActivationHeights;
-use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
 use zaino_testutils::{Direct, Rpc, TestManager, ValidatorExt, ValidatorKind};
+
+/// The validator's own `z_getsubtreesbyindex` answer, as `(root, end_height)`
+/// pairs.
+///
+/// Read from the raw JSON rather than through a Zaino type: this is the oracle
+/// side, and deserializing it through the type under test would make the two
+/// sides agree by construction on exactly the encoding being checked.
+async fn oracle_subtree_roots(
+    oracle: &zaino_testutils::ValidatorOracle,
+    pool: &str,
+    start_index: u16,
+    max_entries: Option<u16>,
+) -> Vec<([u8; 32], u32)> {
+    let mut params = vec![serde_json::json!(pool), serde_json::json!(start_index)];
+    if let Some(limit) = max_entries {
+        params.push(serde_json::json!(limit));
+    }
+
+    let response = oracle.call("z_getsubtreesbyindex", params).await;
+    response["subtrees"]
+        .as_array()
+        .expect("z_getsubtreesbyindex returns a subtrees array")
+        .iter()
+        .map(|subtree| {
+            let bytes = hex::decode(
+                subtree["root"]
+                    .as_str()
+                    .expect("subtree root from validator is a string"),
+            )
+            .expect("subtree root from validator is not valid hex");
+            let root: [u8; 32] = bytes
+                .as_slice()
+                .try_into()
+                .expect("received subtree root that is not 32 bytes");
+            let end_height = subtree["end_height"]
+                .as_u64()
+                .expect("subtree end_height from validator is a number")
+                as u32;
+            (root, end_height)
+        })
+        .collect()
+}
 
 #[allow(deprecated)]
 async fn create_test_manager_and_connector<T, Conn>(
@@ -9,7 +50,7 @@ async fn create_test_manager_and_connector<T, Conn>(
     chain_cache: Option<std::path::PathBuf>,
     enable_zaino: bool,
     enable_clients: bool,
-) -> (TestManager<T, Conn>, JsonRpSeeConnector)
+) -> (TestManager<T, Conn>, zaino_testutils::ValidatorOracle)
 where
     T: ValidatorExt,
     Conn: zaino_testutils::ValidatorConnectionMarker,
@@ -39,8 +80,8 @@ mod chain_query_interface {
     use zaino_common::{CacheConfig, DatabaseConfig, ServiceConfig, StorageConfig};
     use zaino_state::{
         chain_index::{
-            source::ValidatorConnector, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
-            ShieldedPool,
+            validator_source::ZebraValidatorSource, NodeBackedChainIndex,
+            NodeBackedChainIndexSubscriber, ShieldedPool,
         },
         test_dependencies::{
             chain_index::{ChainIndex, ChainIndexRpcExt},
@@ -70,7 +111,7 @@ mod chain_query_interface {
         ephemeral: bool,
     ) -> (
         TestManager<C, Conn>,
-        JsonRpSeeConnector,
+        zaino_testutils::ValidatorOracle,
         Option<NodeBackedIndexerService>,
         NodeBackedChainIndex,
         NodeBackedChainIndexSubscriber,
@@ -170,6 +211,7 @@ mod chain_query_interface {
                         ..Default::default()
                     },
                     ephemeral,
+                    mempool: Default::default(),
                     db_version: 1,
                     // This fixture derives its runtime network from the
                     // heights the harness launched the validator with.
@@ -183,12 +225,12 @@ mod chain_query_interface {
                 // by zallet, although we want to push the community to transition to the
                 // "state" backend these tests using the "fetch" backend is currently useful
                 // for debugging bugs raised byt zallet devs.
-                let source = ValidatorConnector::Fetch(json_service.clone());
-                // let source = ValidatorConnector::State(chain_index::source::State {
-                //     read_state_service: state_service.read_state_service().clone(),
-                //     mempool_fetcher: json_service.clone(),
-                //     network: config.network,
-                // });
+                let source = ZebraValidatorSource::rpc_only(
+                    &test_manager.full_node_rpc_listen_address.to_string(),
+                    Some(("xxxxxx".to_string(), "xxxxxx".to_string())),
+                    config.network.clone(),
+                )
+                .unwrap();
                 let chain_index = NodeBackedChainIndex::new(source, config).await.unwrap();
 
                 let index_reader = chain_index.subscriber();
@@ -217,6 +259,7 @@ mod chain_query_interface {
                         ..Default::default()
                     },
                     ephemeral,
+                    mempool: Default::default(),
                     db_version: 1,
                     // This fixture derives its runtime network from the
                     // heights the harness launched the validator with.
@@ -225,12 +268,13 @@ mod chain_query_interface {
                     )
                     .to_regtest_network(),
                 };
-                let chain_index = NodeBackedChainIndex::new(
-                    ValidatorConnector::Fetch(json_service.clone()),
-                    config,
+                let source = ZebraValidatorSource::rpc_only(
+                    &test_manager.full_node_rpc_listen_address.to_string(),
+                    Some(("xxxxxx".to_string(), "xxxxxx".to_string())),
+                    config.network.clone(),
                 )
-                .await
                 .unwrap();
+                let chain_index = NodeBackedChainIndex::new(source, config).await.unwrap();
                 let index_reader = chain_index.subscriber();
                 tokio::time::sleep(Duration::from_secs(3)).await;
 
@@ -311,12 +355,14 @@ mod chain_query_interface {
         // little past that. Generate well beyond it so low heights are evicted from the
         // cache and served by the ephemeral finalised passthrough. `fast-test-seam`
         // shrinks the seam to `FAST_TEST_MAX_NONFINALISED_DEPTH`, so a small chain suffices.
-        let seam = zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
+        let seam = zaino_consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
         test_manager
             .generate_blocks_and_wait_for_tip(seam + 50, &indexer)
             .await;
         let snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
-        let chain_height: u32 = json_service.get_blockchain_info().await.unwrap().blocks.0;
+        let chain_height: u32 = json_service.get("getblockchaininfo").await["blocks"]
+            .as_u64()
+            .expect("a chain height") as u32;
 
         // `start_height` is comfortably below the retention window → evicted from the NFS
         // cache, served by the passthrough; `end_height` is above the finalised floor
@@ -417,10 +463,12 @@ mod chain_query_interface {
         tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
 
         let snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
-        let chain_height = json_service.get_blockchain_info().await.unwrap().blocks.0;
+        let chain_height = json_service.get("getblockchaininfo").await["blocks"]
+            .as_u64()
+            .expect("a chain height") as u32;
 
         // Finalised floor is `tip - seam`; pick a range straddling it.
-        let seam = zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
+        let seam = zaino_consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
         let finalised_start = Height::try_from(chain_height - (seam + 50)).unwrap();
         let finalised_tip = Height::try_from(chain_height - seam).unwrap();
         let end = Height::try_from(chain_height - seam / 2).unwrap();
@@ -488,25 +536,13 @@ mod chain_query_interface {
                 .await
                 .unwrap();
 
-            let valid_validator_subtree_roots_response = json_service
-                .get_subtrees_by_index(pool.pool_string(), valid_start_index, max_entries)
-                .await
-                .unwrap();
-            let formatted_valid_validator_subtree_roots: Vec<([u8; 32], u32)> =
-                valid_validator_subtree_roots_response
-                    .subtrees
-                    .into_iter()
-                    .map(|subtree| {
-                        // subtree.root is a hex string; decode to bytes and convert to array
-                        let bytes = hex::decode(&subtree.root)
-                            .expect("subtree root from validator is not valid hex");
-                        let array: [u8; 32] = bytes
-                            .as_slice()
-                            .try_into()
-                            .expect("received subtree root that is not 32 bytes");
-                        (array, subtree.end_height.0)
-                    })
-                    .collect();
+            let formatted_valid_validator_subtree_roots = super::oracle_subtree_roots(
+                &json_service,
+                &pool.pool_string(),
+                valid_start_index,
+                max_entries,
+            )
+            .await;
 
             assert_eq!(
                 valid_chain_index_subtree_roots_response,
@@ -523,29 +559,13 @@ mod chain_query_interface {
             .await
             .unwrap();
 
-        let valid_validator_subtree_roots_response = json_service
-            .get_subtrees_by_index(
-                test_pools[1].pool_string(),
-                invalid_start_index,
-                max_entries,
-            )
-            .await
-            .unwrap();
-        let formatted_valid_validator_subtree_roots: Vec<([u8; 32], u32)> =
-            valid_validator_subtree_roots_response
-                .subtrees
-                .into_iter()
-                .map(|subtree| {
-                    // subtree.root is a hex string; decode to bytes and convert to array
-                    let bytes = hex::decode(&subtree.root)
-                        .expect("subtree root from validator is not valid hex");
-                    let array: [u8; 32] = bytes
-                        .as_slice()
-                        .try_into()
-                        .expect("received subtree root that is not 32 bytes");
-                    (array, subtree.end_height.0)
-                })
-                .collect();
+        let formatted_valid_validator_subtree_roots = super::oracle_subtree_roots(
+            &json_service,
+            &test_pools[1].pool_string(),
+            invalid_start_index,
+            max_entries,
+        )
+        .await;
 
         assert_eq!(
             valid_chain_index_subtree_roots_response,
@@ -587,12 +607,12 @@ mod chain_query_interface {
 
             tokio::time::sleep(Duration::from_millis(500)).await;
 
-            let mut mempool_stream =
-                indexer
-                    .get_mempool_stream(Some(&snapshot))
-                    .unwrap_or_else(|| {
-                        panic!("fresh snapshot unexpectedly returned None on iteration {iteration}")
-                    });
+            let mempool_stream = indexer
+                .get_mempool_stream(Some(&snapshot))
+                .unwrap_or_else(|| {
+                    panic!("fresh snapshot unexpectedly returned None on iteration {iteration}")
+                });
+            let mut mempool_stream = std::pin::pin!(mempool_stream);
 
             test_manager
                 .generate_blocks_and_wait_for_tip(1, &indexer)
@@ -689,17 +709,17 @@ mod chain_query_interface {
                 );
             }
 
-            let mut mempool_stream =
-                indexer
-                    .get_mempool_stream(Some(&snapshot))
-                    .unwrap_or_else(|| {
-                        panic!(
-                            "fresh snapshot unexpectedly returned None on iteration {iteration}: \
+            let mempool_stream = indexer
+                .get_mempool_stream(Some(&snapshot))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "fresh snapshot unexpectedly returned None on iteration {iteration}: \
                      current tip height={:?} hash={:?}, \
                      prev_tip height={:?} hash={:?}",
-                            current_tip.height, current_tip.hash, prev_tip.height, prev_tip.hash,
-                        )
-                    });
+                        current_tip.height, current_tip.hash, prev_tip.height, prev_tip.hash,
+                    )
+                });
+            let mut mempool_stream = std::pin::pin!(mempool_stream);
 
             test_manager
                 .generate_blocks_and_wait_for_tip(1, &indexer)

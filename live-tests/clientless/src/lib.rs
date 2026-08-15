@@ -26,12 +26,12 @@ pub async fn assert_get_block_header_matches<Oracle, Subject>(
     };
 
     let oracle_header = oracle
-        .get_block_header(block_hash.to_string(), false)
+        .get_raw_block_header(block_hash.to_string())
         .await
         .unwrap();
 
     let subject_header = subject
-        .get_block_header(block_hash.to_string(), false)
+        .get_raw_block_header(block_hash.to_string())
         .await
         .unwrap();
     assert_eq!(oracle_header, subject_header);
@@ -42,11 +42,9 @@ pub mod rpc {
         pub const VALID_P2PKH_ADDRESS: &str = "tmVqEASZxBNKFTbmASZikGa5fPLkd68iJyx";
         pub const VALID_P2SH_ADDRESS: &str = "t2MjoXQ2iDrjG9QXNZNCY9io8ecN4FJYK1u";
 
-        pub const VALID_SPROUT_ADDRESS: &str = "ztfhKyLouqi8sSwjRm4YMQdWPjTmrJ4QgtziVQ1Kd1e9EsRHYKofjoJdF438FwcUQnix8yrbSrzPpJJNABewgNffs5d4YZJ";
-        pub const VALID_PAYING_KEY: &str =
-            "c8e8797f1fb5e9cf6b2d000177c5994119279a2629970a4f669aed1362a4cca5";
-        pub const VALID_TRANSMISSION_KEY: &str =
-            "480f78d61bdd7fc4b4edeef9f6305b29753057ab1008d42ded1a3364dac2d83c";
+        // Sprout vectors deliberately absent: Zaino does not classify Sprout
+        // addresses, so there is nothing for a live test to assert beyond
+        // "invalid", which `zaino-address`'s own tests already pin.
 
         pub const VALID_SAPLING_ADDRESS: &str = "zregtestsapling1jalqhycwumq3unfxlzyzcktq3n478n82k2wacvl8gwfxk6ahshkxmtp2034qj28n7gl92ka5wca";
         pub const VALID_DIVERSIFIER: &str = "977e0b930ee6c11e4d26f8";
@@ -63,87 +61,71 @@ pub mod rpc {
             VALID_DIVERSIFIED_TRANSMISSION_KEY, VALID_DIVERSIFIER, VALID_P2PKH_ADDRESS,
             VALID_P2SH_ADDRESS, VALID_SAPLING_ADDRESS, VALID_UNIFIED_ADDRESS,
         };
-        use zaino_fetch::jsonrpsee::response::z_validate_address::{
-            KnownZValidateAddress, ValidZValidateAddress, ZValidateAddressResponse,
-        };
+        use zaino_address::ZValidatedAddress;
         #[allow(deprecated)]
         use zaino_state::ZcashIndexer;
 
-        pub fn assert_known_valid_eq(
-            resp: ZValidateAddressResponse,
-            expected: ValidZValidateAddress,
-            label: &str,
-        ) {
-            match resp {
-                ZValidateAddressResponse::Known(KnownZValidateAddress::Valid(actual)) => {
-                    assert_eq!(actual, expected, "mismatch for {label}")
-                }
-                other => panic!(
-                    "Unexpected ZValidateAddressResponse for {label}: {:#?}",
-                    other
-                ),
-            }
+        /// Decodes one of the hex test vectors into the fixed-size array the
+        /// domain type carries. The vectors are hex because they were captured
+        /// from zcashd's JSON output; the domain type is bytes because hex
+        /// encoding is the wire layer's job.
+        fn vector_bytes<const N: usize>(hex_vector: &str) -> [u8; N] {
+            hex::decode(hex_vector)
+                .expect("test vector is valid hex")
+                .try_into()
+                .expect("test vector has the expected length")
         }
 
         pub async fn run_z_validate_suite<F, Fut>(rpc_call: &F)
         where
             // Any callable that takes an address and returns the response (you can unwrap inside)
             F: Fn(String) -> Fut,
-            Fut: Future<Output = ZValidateAddressResponse>,
+            Fut: Future<Output = ZValidatedAddress>,
         {
-            // P2PKH
-            let expected_p2pkh = ValidZValidateAddress::p2pkh(VALID_P2PKH_ADDRESS.to_string());
-            assert_known_valid_eq(
+            assert_eq!(
                 rpc_call(VALID_P2PKH_ADDRESS.to_string()).await,
-                expected_p2pkh,
-                "P2PKH",
+                ZValidatedAddress::P2pkh {
+                    address: VALID_P2PKH_ADDRESS.to_string()
+                },
+                "mismatch for P2PKH",
             );
 
-            // P2SH
-            let expected_p2sh = ValidZValidateAddress::p2sh(VALID_P2SH_ADDRESS.to_string());
-            assert_known_valid_eq(
+            assert_eq!(
                 rpc_call(VALID_P2SH_ADDRESS.to_string()).await,
-                expected_p2sh,
-                "P2SH",
+                ZValidatedAddress::P2sh {
+                    address: VALID_P2SH_ADDRESS.to_string()
+                },
+                "mismatch for P2SH",
             );
 
-            // Note: It could be the case that Zaino needs to support Sprout. For now, it's been disabled.
+            // Sprout is not classified: `ZValidatedAddress` has no Sprout
+            // variant, and a Sprout address is reported invalid. See that
+            // type's Sprout note.
 
-            // let expected_sprout = ZValidateAddress::sprout("ztfhKyLouqi8sSwjRm4YMQdWPjTmrJ4QgtziVQ1Kd1e9EsRHYKofjoJdF438FwcUQnix8yrbSrzPpJJNABewgNffs5d4YZJ".to_string(), "c8e8797f1fb5e9cf6b2d000177c5994119279a2629970a4f669aed1362a4cca5".to_string(), "480f78d61bdd7fc4b4edeef9f6305b29753057ab1008d42ded1a3364dac2d83c".to_string());
-
-            // let fs_sprout = zcashd_subscriber
-            //     .z_validate_address("ztfhKyLouqi8sSwjRm4YMQdWPjTmrJ4QgtziVQ1Kd1e9EsRHYKofjoJdF438FwcUQnix8yrbSrzPpJJNABewgNffs5d4YZJ".to_string())
-            //     .await
-            //     .unwrap();
-
-            // assert_eq!(fs_sprout, expected_sprout);
-
-            // Sapling
-            let expected_sapling = ValidZValidateAddress::sapling(
-                VALID_SAPLING_ADDRESS.to_string(),
-                Some(VALID_DIVERSIFIER.to_string()),
-                Some(VALID_DIVERSIFIED_TRANSMISSION_KEY.to_string()),
-            );
-            assert_known_valid_eq(
+            assert_eq!(
                 rpc_call(VALID_SAPLING_ADDRESS.to_string()).await,
-                expected_sapling,
-                "Sapling",
+                ZValidatedAddress::Sapling {
+                    address: VALID_SAPLING_ADDRESS.to_string(),
+                    diversifier: vector_bytes(VALID_DIVERSIFIER),
+                    diversified_transmission_key: vector_bytes(VALID_DIVERSIFIED_TRANSMISSION_KEY),
+                },
+                "mismatch for Sapling",
             );
 
             // Unified (differs by validator)
-            let expected_unified =
-                ValidZValidateAddress::unified(VALID_UNIFIED_ADDRESS.to_string());
-            assert_known_valid_eq(
+            assert_eq!(
                 rpc_call(VALID_UNIFIED_ADDRESS.to_string()).await,
-                expected_unified,
-                "Unified",
+                ZValidatedAddress::Unified {
+                    address: VALID_UNIFIED_ADDRESS.to_string()
+                },
+                "mismatch for Unified",
             );
 
             // Invalids
             let by_len = rpc_call("t1123456789ABCDEFGHJKLMNPQRSTUVWXY".to_string()).await;
             let all_zeroes = rpc_call("t1000000000000000000000000000000000".to_string()).await;
-            assert_eq!(by_len, ZValidateAddressResponse::invalid());
-            assert_eq!(all_zeroes, ZValidateAddressResponse::invalid());
+            assert_eq!(by_len, ZValidatedAddress::Invalid);
+            assert_eq!(all_zeroes, ZValidatedAddress::Invalid);
         }
 
         /// Build the `z_validate_address` rpc-call closure from `subscriber` and

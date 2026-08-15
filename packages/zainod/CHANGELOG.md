@@ -9,10 +9,39 @@ and this crate adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- `zaino.mempool.coherence_frozen_seconds` metric description: how long
+  tip-coherent mempool reads have been frozen. Brief spikes are normal tip
+  transitions; a sustained non-zero value means the validator tip and Zaino's
+  have stopped agreeing and those reads are unavailable.
+- `[mempool]` config section — `max_cost_bytes` (default 128 MiB, the mempool
+  memory backstop), `poll_interval_ms` (default 500), `metadata_min_interval_ms`
+  (defaults to the poll interval; raising it trades mempool latency for validator
+  load) and `max_exclude_count` (default 1024). Every field is optional and an
+  absent section keeps the built-in bounds, so existing config files are
+  unaffected. This makes the mempool capacity bound operator-configurable.
+
+  `poll_interval_ms = 0` is rejected by `check_config` with a named error. It is
+  not a slow mempool but a crash: the poll and coherence loops both build a
+  `tokio::time::interval` from it, and a zero period aborts at startup. The
+  operator sees a configuration error instead. `metadata_min_interval_ms = 0` is
+  deliberately still accepted — it is a `>=` floor, so zero means "no coalescing
+  beyond the poll cadence".
 ### Changed
+- The daemon builds on the new source stack (`zaino-source-zebra`) via
+  `zaino-state`. No configuration change: the `[validator] connection` selector
+  (`rpc` / `direct`) means the same thing, and now chooses whether the composite
+  is constructed with a read-state adapter alongside its RPC one.
 ### Deprecated
 ### Removed
+- The outbound RPC metric *names* moved to `zaino-rpc`, which is the crate that
+  emits them. Registration and the metric descriptions stay here, so the
+  exported metrics are unchanged.
+- `zcashd_support` no longer forwards to `zaino-state`, which gates nothing
+  under it; it forwards to `zaino-serve` alone.
 ### Fixed
+- The startup validator probe returns an error instead of calling
+  `std::process::exit(1)` from inside a library, so the daemon controls its own
+  shutdown path on an unreachable validator.
 
 ## [0.7.0] - 2026-08-04
 

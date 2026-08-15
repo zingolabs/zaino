@@ -6,8 +6,8 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use tokio::sync::Mutex;
-use zaino_common::status::StatusType;
 use zaino_proto::proto::compact_formats::CompactBlock;
+use zaino_status::{NamedAtomicStatus, StatusType};
 use zcash_protocol::consensus::Parameters as _;
 use zebra_state::HashOrHeight;
 
@@ -30,7 +30,7 @@ use crate::{
     SaplingTxList, TransactionHash, TransparentCompactTx, TransparentTxList, TxLocation,
     TxOutCompact, TxidList,
 };
-use crate::{BlockMetadata, BlockWithMetadata, NamedAtomicStatus};
+use crate::{BlockMetadata, BlockWithMetadata};
 
 use zaino_proto::proto::utils::{prune_compact_block, PoolTypeFilter};
 

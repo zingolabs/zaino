@@ -1,7 +1,6 @@
 //! Zaino-State ChainIndex unit tests.
 
 pub(crate) mod finalised_state;
-pub(crate) mod mempool;
 mod mockchain_tests;
 mod non_finalised_state;
 mod poll;
@@ -32,7 +31,7 @@ use crate::{
     chain_index::{
         finalised_state::FinalisedState,
         finalized_height_floor,
-        source::mockchain_source::MockchainSource,
+        tests::vectors::MockSource,
         tests::vectors::{
             build_active_mockchain_source, build_mockchain_source, copy_dir_recursive,
             load_test_vectors, sync_db_with_blockdata,
@@ -42,13 +41,13 @@ use crate::{
     ChainIndexConfig,
 };
 
-/// Selects which factory the test setup uses to build its `MockchainSource`,
+/// Selects which factory the test setup uses to build its `MockSource`,
 /// which in turn determines the source's `active_chain_height` and so the
 /// indexer's sync target.
 ///
 /// - `Active` → `build_active_mockchain_source(150, blocks)`: source has a
 ///   separately-tracked `active_height = 150` that tests can advance via
-///   `mockchain.mine_blocks(N)`. Indexer's finalised sync target is
+///   `mockchain.source().mine_blocks(N)`. Indexer's finalised sync target is
 ///   `finalized_height_floor(150) = 50`.
 /// - `Static` → `build_mockchain_source(blocks)`: every loaded block is
 ///   immediately active (`active_height = tip_height = 200` for the 201-block
@@ -64,9 +63,9 @@ async fn load_test_vectors_and_sync_chain_index(
     mode: MockchainMode,
 ) -> (
     Vec<vectors::TestVectorBlockData>,
-    NodeBackedChainIndex<MockchainSource>,
-    NodeBackedChainIndexSubscriber<MockchainSource>,
-    MockchainSource,
+    NodeBackedChainIndex<MockSource>,
+    NodeBackedChainIndexSubscriber<MockSource>,
+    MockSource,
 ) {
     // 25 ms setup-poll interval mirrors `_with_timings`. The previous 2 s
     // value was load-bearing for the teardown race tracked in #1098: most
@@ -86,9 +85,9 @@ async fn load_test_vectors_and_sync_chain_index_with_timings(
     sync_timings: SyncTimings,
 ) -> (
     Vec<vectors::TestVectorBlockData>,
-    NodeBackedChainIndex<MockchainSource>,
-    NodeBackedChainIndexSubscriber<MockchainSource>,
-    MockchainSource,
+    NodeBackedChainIndex<MockSource>,
+    NodeBackedChainIndexSubscriber<MockSource>,
+    MockSource,
 ) {
     load_with_settings(mode, sync_timings, Duration::from_millis(25)).await
 }
@@ -99,9 +98,9 @@ async fn load_with_settings(
     setup_poll_interval: Duration,
 ) -> (
     Vec<vectors::TestVectorBlockData>,
-    NodeBackedChainIndex<MockchainSource>,
-    NodeBackedChainIndexSubscriber<MockchainSource>,
-    MockchainSource,
+    NodeBackedChainIndex<MockSource>,
+    NodeBackedChainIndexSubscriber<MockSource>,
+    MockSource,
 ) {
     init_tracing();
 
@@ -133,6 +132,7 @@ async fn load_with_settings(
             ..Default::default()
         },
         ephemeral: false,
+        mempool: Default::default(),
         db_version: 1,
         network: ActivationHeights::default().to_regtest_network(),
     };
@@ -149,10 +149,10 @@ async fn load_with_settings(
     // to initialise NFS. Tests that read the NFS immediately after the
     // helper returns (`nfs_lowest_block_matches_finalized_db_tip`,
     // `sync_blocks_after_startup`, …) then unwrap on `None`. The NFS being
-    // at `source.active_height()` implies the finalised DB has reached its
+    // at `source.source().active_height()` implies the finalised DB has reached its
     // floor — the sync loop only initialises NFS after `sync_to_height`
     // succeeds — so this condition subsumes the old one.
-    let expected_nfs_tip = source.active_height();
+    let expected_nfs_tip = source.source().active_height();
     // Bound the readiness wait so a sync worker that never signals NFS-ready
     // (a starvation / missed-notification hang in chain-index sync, observed on
     // this helper under full-suite parallelism) fails loud here instead of
@@ -209,7 +209,7 @@ async fn v1_finalised_seed_dir(mode: MockchainMode) -> &'static Path {
             MockchainMode::Active => build_active_mockchain_source(150, blocks.clone()),
             MockchainMode::Static => build_mockchain_source(blocks.clone()),
         };
-        let target = finalized_height_floor(source.active_height()).0;
+        let target = finalized_height_floor(source.source().active_height()).0;
 
         let temp_dir: TempDir = tempfile::tempdir().unwrap();
         let config = ChainIndexConfig {
@@ -221,6 +221,7 @@ async fn v1_finalised_seed_dir(mode: MockchainMode) -> &'static Path {
                 ..Default::default()
             },
             ephemeral: false,
+            mempool: Default::default(),
             db_version: 1,
             network: ActivationHeights::default().to_regtest_network(),
         };

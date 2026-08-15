@@ -1,4 +1,14 @@
-use zaino_fetch::jsonrpsee::response::address_deltas::GetAddressDeltasParams;
+use zaino_primitives::types::{rpc::AddressDeltasRequest, TransparentAddress};
+
+/// A `getaddressdeltas` request over a height range, from a plain address string.
+fn deltas_request(address: &str, start: u32, end: u32, chain_info: bool) -> AddressDeltasRequest {
+    AddressDeltasRequest::Filtered {
+        addresses: vec![TransparentAddress::new(address.to_string())],
+        start,
+        end,
+        chain_info,
+    }
+}
 
 use zaino_state::{LightWalletIndexer, NodeBackedIndexerServiceSubscriber, ZcashIndexer};
 use zaino_testutils::{StateAndFetchServices, ValidatorExt};
@@ -93,33 +103,33 @@ async fn state_service_check_info<V: ValidatorExt>(
     assert_eq!(cleaned_fetch_info, cleaned_state_info);
 
     assert_eq!(
-        fetch_service_blockchain_info.chain(),
-        state_service_blockchain_info.chain()
+        fetch_service_blockchain_info.chain,
+        state_service_blockchain_info.chain
     );
     assert_eq!(
-        fetch_service_blockchain_info.blocks(),
-        state_service_blockchain_info.blocks()
+        fetch_service_blockchain_info.blocks,
+        state_service_blockchain_info.blocks
     );
     assert_eq!(
-        fetch_service_blockchain_info.best_block_hash(),
-        state_service_blockchain_info.best_block_hash()
+        fetch_service_blockchain_info.best_block_hash,
+        state_service_blockchain_info.best_block_hash
     );
     assert_eq!(
-        fetch_service_blockchain_info.estimated_height(),
-        state_service_blockchain_info.estimated_height()
+        fetch_service_blockchain_info.estimated_height,
+        state_service_blockchain_info.estimated_height
     );
     // TODO: Fix this! (ignored due to [https://github.com/zingolabs/zaino/issues/235]).
     // assert_eq!(
-    //     fetch_service_blockchain_info.value_pools(),
-    //     state_service_blockchain_info.value_pools()
+    //     fetch_service_blockchain_info.value_pools,
+    //     state_service_blockchain_info.value_pools
     // );
     assert_eq!(
-        fetch_service_blockchain_info.upgrades(),
-        state_service_blockchain_info.upgrades()
+        fetch_service_blockchain_info.upgrades,
+        state_service_blockchain_info.upgrades
     );
     assert_eq!(
-        fetch_service_blockchain_info.consensus(),
-        state_service_blockchain_info.consensus()
+        fetch_service_blockchain_info.consensus,
+        state_service_blockchain_info.consensus
     );
 
     services.test_manager.close().await;
@@ -251,14 +261,22 @@ async fn state_service_z_get_subtrees_by_index_testnet() {
     assert_subscribers_agree(
         &services,
         |f| async move {
-            f.z_get_subtrees_by_index("sapling".to_string(), 0.into(), None)
-                .await
-                .unwrap()
+            f.z_get_subtrees_by_index(
+                zaino_primitives::types::ShieldedPool::Sapling,
+                0.into(),
+                None,
+            )
+            .await
+            .unwrap()
         },
         |s| async move {
-            s.z_get_subtrees_by_index("sapling".to_string(), 0.into(), None)
-                .await
-                .unwrap()
+            s.z_get_subtrees_by_index(
+                zaino_primitives::types::ShieldedPool::Sapling,
+                0.into(),
+                None,
+            )
+            .await
+            .unwrap()
         },
     )
     .await;
@@ -266,14 +284,22 @@ async fn state_service_z_get_subtrees_by_index_testnet() {
     assert_subscribers_agree(
         &services,
         |f| async move {
-            f.z_get_subtrees_by_index("orchard".to_string(), 0.into(), None)
-                .await
-                .unwrap()
+            f.z_get_subtrees_by_index(
+                zaino_primitives::types::ShieldedPool::Orchard,
+                0.into(),
+                None,
+            )
+            .await
+            .unwrap()
         },
         |s| async move {
-            s.z_get_subtrees_by_index("orchard".to_string(), 0.into(), None)
-                .await
-                .unwrap()
+            s.z_get_subtrees_by_index(
+                zaino_primitives::types::ShieldedPool::Orchard,
+                0.into(),
+                None,
+            )
+            .await
+            .unwrap()
         },
     )
     .await;
@@ -338,8 +364,7 @@ async fn state_service_get_address_deltas_testnet() {
     let address = "tmAkxrvJCN75Ty9YkiHccqc1hJmGZpggo6i";
 
     // Test simple response
-    let simple_request =
-        GetAddressDeltasParams::new_filtered(vec![address.to_string()], 2000000, 3000000, false);
+    let simple_request = deltas_request(address, 2000000, 3000000, false);
     let state_simple_request = simple_request.clone();
 
     assert_subscribers_agree(
@@ -350,8 +375,7 @@ async fn state_service_get_address_deltas_testnet() {
     .await;
 
     // Test response with chain info
-    let chain_info_params =
-        GetAddressDeltasParams::new_filtered(vec![address.to_string()], 2000000, 3000000, true);
+    let chain_info_params = deltas_request(address, 2000000, 3000000, true);
     let state_chain_info_params = chain_info_params.clone();
 
     assert_subscribers_agree(

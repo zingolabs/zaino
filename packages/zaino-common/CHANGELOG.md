@@ -8,9 +8,26 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- `consensus::validate_raw_transaction_hex` / `validate_raw_transaction_bytes`,
+  `RawTransactionError` and `MAX_BLOCK_BYTES` — moved from `zaino-fetch`. This
+  is a consensus-limit check, which is what this module exists for; the
+  `LegacyCode` mapping that travelled with it stays in `zaino-serve`.
 ### Changed
 ### Deprecated
 ### Removed
+- **Breaking** — status reporting moved to the new `zaino-status` crate:
+  `StatusType`, `Status`, `NamedAtomicStatus`, and the `Liveness` / `Readiness`
+  / `VitalsProbe` probing traits. Reporting a status from here cost a dependency
+  on the validator config, the logging stack, TLS and `zebra-chain`, which
+  subsystems built to depend on as little as possible could not accept.
+- **Breaking** — the `consensus` module moved to the new `zaino-consensus`
+  crate, for the same reason and one more: those values are protocol facts, not
+  a node implementation's, and are now stated with their provenance rather than
+  re-exported from `zebra-chain`.
+- `AtomicStatus`, superseded by `NamedAtomicStatus` and deleted rather than
+  moved — it had no callers left.
+- Dependencies `hex` and `thiserror` again, the `consensus` module having been
+  their only remaining user.
 ### Fixed
 
 ## [0.4.0] - 2026-07-13

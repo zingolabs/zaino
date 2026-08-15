@@ -3,6 +3,11 @@
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
+pub mod legacy_parser;
+pub mod validator_oracle;
+
+pub use validator_oracle::ValidatorOracle;
+
 use futures::StreamExt as _;
 use once_cell::sync::Lazy;
 use std::{
@@ -15,13 +20,9 @@ use std::{
 use tonic::transport::Channel;
 use tracing::{debug, info, instrument};
 use zaino_common::{
-    network::ActivationHeights,
-    probing::{Liveness, Readiness},
-    status::Status,
-    validator::ValidatorConfig,
-    CacheConfig, DatabaseConfig, Network, ServiceConfig, StorageConfig,
+    network::ActivationHeights, validator::ValidatorConfig, CacheConfig, DatabaseConfig, Network,
+    ServiceConfig, StorageConfig,
 };
-use zaino_fetch::jsonrpsee::connector::{test_node_and_return_url, JsonRpSeeConnector};
 use zaino_proto::proto::compact_formats::CompactBlock;
 use zaino_proto::proto::service::{BlockId, BlockRange};
 use zaino_serve::server::config::{GrpcServerConfig, JsonRpcServerConfig};
@@ -30,6 +31,7 @@ use zaino_state::{
     NodeBackedIndexerService, NodeBackedIndexerServiceConfig, NodeBackedIndexerServiceSubscriber,
     ZcashService,
 };
+use zaino_status::{Liveness, Readiness, Status};
 use zainodlib::{config::BackendType, error::IndexerError, indexer::Indexer};
 pub use zcash_local_net as services;
 use zcash_local_net::error::LaunchError;
@@ -41,7 +43,6 @@ use zcash_local_net::validator::ValidatorConfig as _;
 pub use zcash_local_net::MinerPool;
 use zcash_local_net::{logs::LogsToStdoutAndStderr, process::Process};
 use zebra_chain::parameters::NetworkKind;
-use zebra_rpc::methods::GetInfo;
 
 #[cfg(test)]
 use zaino_proto::proto::service::compact_tx_streamer_client::CompactTxStreamerClient;
@@ -282,7 +283,7 @@ pub async fn poll_until_ready(
 /// subscriber or a `NodeBackedChainIndexSubscriber`.
 ///
 /// [`Status`] (and through it [`Liveness`] / [`Readiness`] via the blanket
-/// impls in `zaino_common::status`) is a supertrait so a single
+/// impls in `zaino_status`) is a supertrait so a single
 /// `T: PollableTip` bound is everything the unified helper needs — it can
 /// poll for height, fail fast on a dead backend, and wait for readiness
 /// once the target height is reached.
@@ -822,6 +823,9 @@ where
                         ..Default::default()
                     },
                 },
+                // The live suite exercises the built-in mempool bounds; a test
+                // that wants different ones sets them on its own config.
+                mempool: Default::default(),
                 ephemeral_finalised_state: false,
                 zebra_db_path,
                 network: zaino_network_kind,
@@ -1035,23 +1039,13 @@ where
         }
     }
 
-    /// Build a JSON-RPC connector to the backing validator's RPC port, using
-    /// the regtest test cookie credentials. For tests that compare Zaino's
-    /// output against the validator's own JSON-RPC.
-    pub async fn full_node_jsonrpc_connector(&self) -> JsonRpSeeConnector {
-        JsonRpSeeConnector::new_with_basic_auth(
-            test_node_and_return_url(
-                &self.full_node_rpc_listen_address.to_string(),
-                None,
-                Some("xxxxxx".to_string()),
-                Some("xxxxxx".to_string()),
-            )
-            .await
-            .unwrap(),
-            "xxxxxx".to_string(),
-            "xxxxxx".to_string(),
-        )
-        .unwrap()
+    /// A raw JSON-RPC line to the backing validator, for tests that compare
+    /// Zaino's output against the validator's own.
+    ///
+    /// Answers are raw JSON: see [`ValidatorOracle`] for why the oracle side
+    /// deliberately does not go through a Zaino type.
+    pub async fn full_node_jsonrpc_connector(&self) -> ValidatorOracle {
+        ValidatorOracle::new(&self.full_node_rpc_listen_address.to_string())
     }
 
     /// Closes the TestManager.
@@ -1368,40 +1362,14 @@ pub async fn launch_zcashd_dual_fetch_services_at(
     }
 }
 
-/// Return a copy of `info` with its final (timestamp) field zeroed, so two
-/// `getinfo` responses from different sources can be compared without spurious
-/// timestamp differences.
-pub fn get_info_with_zeroed_timestamp(info: GetInfo) -> GetInfo {
-    let (
-        version,
-        build,
-        subversion,
-        protocol_version,
-        blocks,
-        connections,
-        proxy,
-        difficulty,
-        testnet,
-        pay_tx_fee,
-        relay_fee,
-        errors,
-        _,
-    ) = info.into_parts();
-    GetInfo::new(
-        version,
-        build,
-        subversion,
-        protocol_version,
-        blocks,
-        connections,
-        proxy,
-        difficulty,
-        testnet,
-        pay_tx_fee,
-        relay_fee,
-        errors,
-        0,
-    )
+/// Return a copy of `info` with its error timestamp cleared, so two `getinfo`
+/// responses from different sources can be compared without spurious timestamp
+/// differences.
+pub fn get_info_with_zeroed_timestamp(
+    mut info: zaino_primitives::types::rpc::NodeInfo,
+) -> zaino_primitives::types::rpc::NodeInfo {
+    info.errors_timestamp = None;
+    info
 }
 
 /// Launch a fetch-backend [`TestManager`] and return it together with its own

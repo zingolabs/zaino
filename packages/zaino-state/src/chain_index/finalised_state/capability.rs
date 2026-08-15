@@ -83,9 +83,10 @@ use crate::{
     read_fixed_le, read_u32_le, read_u8, version, write_fixed_le, write_u32_le, write_u8,
     BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream, FixedEncodedLen, Height,
     IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList,
-    StatusType, TransparentCompactTx, TransparentTxList, TxLocation, TxOutCompact, TxidList,
+    TransparentCompactTx, TransparentTxList, TxLocation, TxOutCompact, TxidList,
     ZainoVersionedSerde,
 };
+use zaino_status::StatusType;
 
 #[cfg(feature = "transparent_address_history_experimental")]
 use crate::{chain_index::types::AddrEventBytes, AddrScript};

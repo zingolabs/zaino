@@ -54,8 +54,9 @@ use crate::{
     error::FinalisedStateError,
     BlockHash, BlockHeaderData, BlockchainSource, CommitmentTreeData, CompactBlockStream, Height,
     IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList,
-    StatusType, TransparentCompactTx, TransparentTxList, TxLocation, TxOutCompact, TxidList,
+    TransparentCompactTx, TransparentTxList, TxLocation, TxOutCompact, TxidList,
 };
+use zaino_status::StatusType;
 
 #[cfg(feature = "transparent_address_history_experimental")]
 use crate::{chain_index::types::AddrEventBytes, AddrScript};

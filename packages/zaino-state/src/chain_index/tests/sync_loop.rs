@@ -5,7 +5,7 @@ use super::{
 use crate::chain_index::{ChainIndex, SyncTimings};
 use std::time::Instant;
 use tokio::time::{sleep, Duration};
-use zaino_common::status::{Status as _, StatusType};
+use zaino_status::{Status as _, StatusType};
 
 /// Regression test (fixes #593): a source failure should not kill the
 /// sync loop.
@@ -24,7 +24,7 @@ async fn survives_transient_source_failure() {
         load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
 
     let start = Instant::now();
-    mockchain.set_failing(true);
+    mockchain.source().set_failing(true);
     sleep(Duration::from_secs(2)).await;
 
     let status = index_reader.status();
@@ -54,7 +54,7 @@ async fn escalates_to_critical_after_persistent_failure() {
         load_test_vectors_and_sync_chain_index_with_timings(MockchainMode::Active, timings).await;
 
     let start = Instant::now();
-    mockchain.set_failing(true);
+    mockchain.source().set_failing(true);
 
     // 5× slack over the nominal backoff sum to absorb scheduling jitter and
     // the per-iteration sync work the loop performs between sleeps.
@@ -93,7 +93,7 @@ async fn escalates_to_critical_after_persistent_failure() {
 /// `sync_blocks_after_startup` covers the one-block-at-a-time trickle.
 /// This test covers the distinct case where multiple blocks appear on
 /// the source before the next sync iteration runs. Porting to
-/// `MockchainSource` (which implements `BlockchainReader`) keeps the
+/// `MockSource` (which implements `BlockchainReader`) keeps the
 /// indexer's production sync code in the loop while removing the podman
 /// / live-validator fixture dependency the original test required.
 #[tokio::test(flavor = "multi_thread")]
@@ -101,14 +101,14 @@ async fn tip_converges_after_burst_mine() {
     let (_blocks, _indexer, index_reader, mockchain) =
         load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
 
-    let initial_tip = mockchain.active_height();
-    mockchain.mine_blocks(20);
-    let expected_tip = mockchain.active_height();
+    let initial_tip = mockchain.source().active_height();
+    mockchain.source().mine_blocks(20);
+    let expected_tip = mockchain.source().active_height();
     assert!(
         expected_tip > initial_tip,
         "mockchain did not advance: burst mine was a no-op \
          (initial_tip={initial_tip}, max_chain_height={})",
-        mockchain.max_chain_height(),
+        mockchain.source().max_chain_height(),
     );
 
     super::poll::poll_until(

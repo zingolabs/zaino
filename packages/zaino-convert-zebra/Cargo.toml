@@ -1,0 +1,25 @@
+[package]
+name = "zaino-convert-zebra"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+description = "Convert zebra-chain types to zaino-primitives domain types."
+
+[dependencies]
+zaino-primitives.workspace = true
+zebra-chain = { workspace = true }
+thiserror.workspace = true
+
+[dev-dependencies]
+# Test-only: this crate owns our relationship to zebra's types, so it is where
+# we assert that our reading of the consensus constants and zebra's still agree.
+# A normal dependency would defeat the point — zaino-consensus must not need a
+# node implementation, and nothing should reach zebra to obtain a constant.
+zaino-consensus.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

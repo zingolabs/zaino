@@ -17,8 +17,6 @@ default = []
 # docs/adr/0001-zcashd-support-feature-gate.md.
 zcashd_support = [
     "zaino-testutils/zcashd_support",
-    "zaino-state/zcashd_support",
-    "zaino-fetch/zcashd_support",
     "zainod/zcashd_support",
 ]
 
@@ -37,7 +35,6 @@ devtool-incompatible = []
 zaino-testutils = { workspace = true }
 zaino-state = { workspace = true, features = ["test_dependencies"] }
 zaino-common = { workspace = true }
-zaino-fetch = { workspace = true }
 zaino-proto = { workspace = true }
 zainod = { workspace = true }
 
@@ -57,8 +54,14 @@ hex = { workspace = true }
 corez = { workspace = true }
 tower = { workspace = true }
 serde_json = { workspace = true }
+zaino-consensus.workspace = true
 
 [dev-dependencies]
+zaino-primitives.workspace = true
+# The served JSON schema. These tests compare Zaino's domain answers against a
+# raw JSON-RPC oracle, so they render the domain side through the same wire
+# types the server uses.
+zaino-serve = { workspace = true }
 # Enable the tractable seam depth (fast-test-seam) so this crate's live tests can
 # exercise finalisation/eviction at small chain heights. Dev-dependency only — the
 # feature must never reach a shipped build (see the zaino-state feature comment).
