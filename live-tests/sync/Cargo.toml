@@ -1,0 +1,60 @@
+# Standalone workspace, deliberately not a member of the root one.
+#
+# This crate's only dependency is the `ztest` harness in a sibling repo, whose
+# tree (a librustzcash wallet backend and its transitive crypto stack) has
+# nothing to do with the crates Zaino ships. Joining the root workspace would
+# resolve that tree into the production `Cargo.lock` and make every production
+# build carry it. The live-test partitions are kept off the production build for
+# the same reason (docs/adr/0002, 0003, 0004); this goes one step further
+# because it links no Zaino production code at all — it drives Zaino
+# out-of-process, in a pod, over gRPC and JSON-RPC.
+#
+# The root manifest lists this directory under `exclude` so Cargo does not treat
+# it as an unlisted nested package.
+[workspace]
+members = ["."]
+resolver = "2"
+
+[workspace.package]
+authors = ["Zingo Lab Cyan"]
+repository = "https://github.com/zingolabs"
+homepage = "https://www.zingolabs.org/"
+edition = "2021"
+license = "Apache-2.0"
+version = "0.2.0"
+
+[workspace.dependencies]
+# ztest — the k8s-based test harness that owns the validator / indexer / wallet
+# lifecycle and hands tests typed RPC handles. Lives in a sibling repo
+# (`ZingoLabs/ztest`) and requires a sibling checkout for path resolution.
+ztest = { path = "../../../ztest" }
+
+# Runtime
+tokio = { version = "1.38", features = ["full"] }
+
+# Builds the JSON-RPC selectors the index probes query zaino and zebra with.
+serde_json = "1.0"
+
+[package]
+name = "sync"
+description = "Wallet-driven chain-sync tests with Zaino as the system under test: a wallet syncs to tip through a validator + Zaino on the ztest k8s harness. Each is a `#[ztest::sync_test]` profile launched detached via `ztest sync start`."
+publish = false
+
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+# This crate is test-only (see `src/lib.rs`); the harness + wallet backend are
+# dev-dependencies of the test targets, not of the (empty) library.
+
+[dev-dependencies]
+# The sync harness: `SyncRunner`, `#[ztest::sync_test]`, the probe taxonomy, and
+# the shipped chain snapshots. No wallet backend feature is needed — these
+# profiles observe an indexer building its own index and drive nothing.
+ztest = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
