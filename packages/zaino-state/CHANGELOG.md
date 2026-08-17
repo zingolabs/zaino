@@ -9,8 +9,60 @@ and this library adheres to Rust's notion of
 
 ### Added
 ### Changed
+- The non-finalised state is no longer part of this crate. It is now the
+  `zaino-chain-head` / `zaino-chain-head-service` subsystem, which owns its own
+  writer task and never reads the finalised state; `ChainIndex` reads the
+  snapshots it publishes. See ADR-0011. Consequences visible from here:
+  - The two layers advance independently. This crate's sync worker keeps only
+    the finalised half, so a slow database no longer holds the chain tip back;
+    both derive the seam from the same tip and the same depth.
+  - `ChainIndex::new` is fallible where the chain head cannot anchor — the
+    validator being unreachable for `max_consecutive_failures` consecutive
+    attempts, where the old code retried in the background indefinitely.
+    Transient failures are still absorbed.
+  - `snapshot_nonfinalized_state` is synchronous and infallible: capturing a
+    view cannot fail and cannot block.
+  - `getchaintips` is answered from the chain head's retained graph with no
+    validator fallback — the same answers the old derivation produced from the
+    same graph.
+  - The `passthrough_*` proptests exercise the chain head rather than the
+    removed passthrough, so they wait for the chain tip rather than the
+    finalised floor.
+  - `ChainIndex::status` and `NodeBackedChainIndexSubscriber::combined_status`
+    account for the chain head alongside the finalised state and the mempool.
+    Nothing else reports on its behalf now that it drives itself, so without
+    this a chain head that had given up on the validator served a frozen tip
+    while the index still reported `Ready`. A chain head in `CriticalError`
+    therefore surfaces as `CriticalError` here, which zainod treats as grounds
+    for teardown.
+- The mempool's coherence epoch is now the chain head's, replacing the
+  `NonfinalizedBlockCacheSnapshot::epoch()` that 0.4.0 introduced. The observer
+  the coherence layer freezes and thaws against reads the same
+  `ChainHeadSubscriber` the rest of ChainIndex serves snapshots from, so the two
+  cannot drift, and the sync loop no longer relays a publication signal for a
+  state it no longer drives. There is no translation: both subsystems name
+  `zaino_primitives::types::ChainStateEpoch`, so the coherence check compares one
+  type rather than converting between two that started identical.
+- The status fold no longer writes its result back into the index's own status
+  cell. It used to latch: the first transient failure in any component pinned
+  the index to `RecoverableError` — and `Readiness::is_ready` to false — for the
+  rest of the process's life. Component statuses are now read live on each call,
+  so a recovered component is reported as recovered.
 ### Deprecated
 ### Removed
+- `chain_index::non_finalised_state` and its test file, the `NonFinalizedSnapshot`
+  trait and its impls, `chain_tips_from_nonfinalized_snapshot`,
+  `branch_len_to_active_chain`, and the never-constructed
+  `error::NonFinalisedStateError`. Reorg metrics move to
+  `zaino-chain-head-service` with their metric strings unchanged.
+- `ChainIndexSnapshot::StillSyncingFinalizedState`, and every match on it. The
+  chain head anchors before `ChainIndex::new` returns, so the variant had no way
+  to be constructed; the snapshot type collapses to `Arc<MapBackedSnapshot>`.
+- The `nonfinalized_listener` port and its stub. Every production source
+  returned `Ok(None)`, so the handler behind it was unreachable.
+- `get_block_height_passthrough`, `SyncError::NodeConnectionError` and two other
+  `SyncError` variants — all carried over from the non-finalised state, and
+  constructed by nothing once the sync worker drives one thing.
 ### Fixed
 
 ## [0.6.0] - 2026-08-04
@@ -115,13 +167,10 @@ and this library adheres to Rust's notion of
   supertraits and no longer declares `get_mempool_txids`. The mempool subsystem
   reads those ports directly, so restating them here as wire-typed methods would
   convert domain types out and back for no reader.
-- The mempool's coherence epoch is now the chain head's. The observer the
-  coherence layer freezes and thaws against reads the same `ChainHeadSubscriber`
-  the rest of ChainIndex serves snapshots from, so the two cannot drift, and the
-  sync loop no longer relays a publication signal for a state it no longer
-  drives. There is no translation: both subsystems name
-  `zaino_primitives::types::ChainStateEpoch`, so the coherence check compares one
-  type rather than converting between two that started identical.
+- `NonfinalizedBlockCacheSnapshot` carries a `generation`, bumped when the best
+  tip changes rather than on every publication, and exposes an `epoch()`. This
+  is what the coherence layer freezes and thaws against; bumping per publication
+  would churn it every sync iteration and defeat the agreement check.
 - `CommonBackendConfig` / `ChainIndexConfig` carry a `mempool: MempoolConfig`,
   shared by clone so the two services see one `max_cost_bytes` cell.
 - The `RawTransaction.data` served over gRPC is now `bytes::Bytes` rather than
@@ -134,37 +183,6 @@ and this library adheres to Rust's notion of
   when coherence stays frozen past 120s. A freeze is the normal shape of a tip
   transition; a sustained one means tip-coherent reads have been failing with
   nothing in the log to say so.
-- The non-finalised state is no longer part of this crate. It is now the
-  `zaino-chain-head` / `zaino-chain-head-service` subsystem, which owns its own
-  writer task and never reads the finalised state; `ChainIndex` reads the
-  snapshots it publishes. See ADR-0011. Consequences visible from here:
-  - The two layers advance independently. This crate's sync worker keeps only
-    the finalised half, so a slow database no longer holds the chain tip back;
-    both derive the seam from the same tip and the same depth.
-  - `ChainIndex::new` is fallible where the chain head cannot anchor — the
-    validator being unreachable for `max_consecutive_failures` consecutive
-    attempts, where the old code retried in the background indefinitely.
-    Transient failures are still absorbed.
-  - `snapshot_nonfinalized_state` is synchronous and infallible: capturing a
-    view cannot fail and cannot block.
-  - `getchaintips` is answered from the chain head's retained graph with no
-    validator fallback — the same answers the old derivation produced from the
-    same graph.
-  - The `passthrough_*` proptests exercise the chain head rather than the
-    removed passthrough, so they wait for the chain tip rather than the
-    finalised floor.
-  - `ChainIndex::status` and `NodeBackedChainIndexSubscriber::combined_status`
-    account for the chain head alongside the finalised state and the mempool.
-    Nothing else reports on its behalf now that it drives itself, so without
-    this a chain head that had given up on the validator served a frozen tip
-    while the index still reported `Ready`. A chain head in `CriticalError`
-    therefore surfaces as `CriticalError` here, which zainod treats as grounds
-    for teardown.
-- The status fold no longer writes its result back into the index's own status
-  cell. It used to latch: the first transient failure in any component pinned
-  the index to `RecoverableError` — and `Readiness::is_ready` to false — for the
-  rest of the process's life. Component statuses are now read live on each call,
-  so a recovered component is reported as recovered.
 - `chain_index::finalised_state` renames (internal, `pub(crate)`):
   - facade type `ZainoDB` -> `FinalisedState`
   - module `db` -> `finalised_source`; enum `DbBackend` -> `FinalisedSource`
@@ -216,19 +234,6 @@ and this library adheres to Rust's notion of
   a consumer that only needs to ask whether a component is ready no longer
   depends on the indexer to find out. `AtomicStatus` is deleted outright, having
   had no callers.
-- `chain_index::non_finalised_state` and its test file, the `NonFinalizedSnapshot`
-  trait and its impls, `chain_tips_from_nonfinalized_snapshot`,
-  `branch_len_to_active_chain`, and the never-constructed
-  `error::NonFinalisedStateError`. Reorg metrics move to
-  `zaino-chain-head-service` with their metric strings unchanged.
-- `ChainIndexSnapshot::StillSyncingFinalizedState`, and every match on it. The
-  chain head anchors before `ChainIndex::new` returns, so the variant had no way
-  to be constructed; the snapshot type collapses to `Arc<MapBackedSnapshot>`.
-- The `nonfinalized_listener` port and its stub. Every production source
-  returned `Ok(None)`, so the handler behind it was unreachable.
-- `get_block_height_passthrough`, `SyncError::NodeConnectionError` and two other
-  `SyncError` variants — all carried over from the non-finalised state, and
-  constructed by nothing once the sync worker drives one thing.
 - `zaino-fetch` is no longer a dependency, and the crate is deleted from the
   workspace. Its transport is `zaino-rpc`, its inbound parsing
   `zaino-source-zebra-rpc`, its outbound serialization `zaino-serve`'s wire
