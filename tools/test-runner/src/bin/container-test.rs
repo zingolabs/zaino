@@ -120,7 +120,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         "--init".into(),
         "--pids-limit=-1".into(),
         "--tmpfs".into(),
-        "/tmp:rw,exec,nosuid,nodev".into(),
+        // `size` must stay set: podman caps a `--tmpfs` mount at 64 MiB rather
+        // than inheriting the kernel's tmpfs default. That starves the tests
+        // that build LMDB databases in `tempfile` directories under /tmp.
+        // tmpfs occupies only the memory actually written, so this reserves
+        // nothing up front.
+        "/tmp:rw,exec,nosuid,nodev,size=8g".into(),
         "--name".into(),
         container_name,
         "-v".into(),
