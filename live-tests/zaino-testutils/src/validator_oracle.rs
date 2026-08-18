@@ -35,7 +35,9 @@ impl ValidatorOracle {
     ///
     /// Panics on failure: an oracle that cannot reach the validator has nothing
     /// to compare against, so the test has already failed.
-    pub async fn call(&self, method: &str, params: Vec<Value>) -> Value {
+    ///
+    /// - `&'static str` follows `RpcClient::call`: the name is also a metric label
+    pub async fn call(&self, method: &'static str, params: Vec<Value>) -> Value {
         self.client
             .call(method, params)
             .await
@@ -43,7 +45,7 @@ impl ValidatorOracle {
     }
 
     /// Calls `method` with no parameters.
-    pub async fn get(&self, method: &str) -> Value {
+    pub async fn get(&self, method: &'static str) -> Value {
         self.call(method, Vec::new()).await
     }
 }

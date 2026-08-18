@@ -63,6 +63,7 @@ pub mod chain_head;
 pub mod encoding;
 /// All state below [`OPERATIONAL_NFS_DEPTH`] blocks of the best-known chain tip.
 pub mod finalised_state;
+mod ingest;
 mod mempool;
 
 /// How long the mempool may stay frozen before the sync loop says so.
@@ -125,17 +126,6 @@ pub(crate) const OPERATIONAL_NFS_DEPTH: u32 = zaino_consensus::FAST_TEST_MAX_NON
 /// (see zingolabs/zaino#1128).
 pub(crate) fn finalized_height_floor(chain_tip: u32) -> crate::Height {
     crate::Height(chain_tip.saturating_sub(OPERATIONAL_NFS_DEPTH))
-}
-
-/// Current wall-clock time as a Unix timestamp in fractional seconds, for
-/// "event happened at" gauges. Falls back to `0.0` if the clock is before the
-/// Unix epoch (never in practice).
-#[cfg(feature = "prometheus")]
-pub(crate) fn unix_now_secs() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0)
 }
 
 /// The interface to the chain index.
@@ -961,8 +951,6 @@ impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedChainIndex<Source
             // rather than a block signal, and the mempool would poll at the sync
             // loop's cadence instead of its own.
             let mut last_woken_height: Option<u32> = None;
-            #[cfg(feature = "prometheus")]
-            let mut has_reached_tip = false;
 
             loop {
                 let source = source.clone();
@@ -971,8 +959,6 @@ impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedChainIndex<Source
                 }
 
                 status.store(StatusType::Syncing);
-                #[cfg(feature = "prometheus")]
-                let iteration_start = std::time::Instant::now();
 
                 // Race the iter body against cancellation: every await inside
                 // — `source.get_best_block_height`, `fs.sync_to_height` — is a
@@ -1000,13 +986,13 @@ impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedChainIndex<Source
                                 "node returned no best block height",
                             ))
                         })?;
-                    let finalised_height = finalized_height_floor(chain_height.0);
+                    // lag = CHAIN_TIP_HEIGHT - SYNC_FINALIZED_HEIGHT, consumer-derived. Not
+                    // exported: this scope knows the tip, not the committed height, and the old
+                    // gauge substituted the target (`finalized_height_floor(tip)`) — reporting a
+                    // constant `OPERATIONAL_NFS_DEPTH` through every sync
                     #[cfg(feature = "prometheus")]
-                    {
-                        metrics::gauge!(CHAIN_TIP_HEIGHT).set(chain_height.0 as f64);
-                        metrics::gauge!(SYNC_LAG_BLOCKS)
-                            .set((chain_height.0 - finalised_height.0) as f64);
-                    }
+                    metrics::gauge!(CHAIN_TIP_HEIGHT).set(chain_height.0 as f64);
+                    let finalised_height = finalized_height_floor(chain_height.0);
 
                     // The finalised state is all this worker drives now.
                     // ChainHead reconciles its own window on its own task, so
@@ -1047,6 +1033,15 @@ impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedChainIndex<Source
                     } => r,
                 };
 
+                // The heartbeat: throughput goes flat both on a quiet chain and on
+                // a stopped loop, this ticks only in the first.
+                // `consecutive_failures` + backoff then say retrying vs fine
+                #[cfg(feature = "prometheus")]
+                {
+                    let outcome = if sync_result.is_ok() { "ok" } else { "error" };
+                    metrics::counter!(SYNC_ITERATIONS_TOTAL, SYNC_OUTCOME => outcome).increment(1);
+                }
+
                 match sync_result {
                     Ok(()) => {
                         consecutive_failures = 0;
@@ -1054,14 +1049,8 @@ impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedChainIndex<Source
                         status.store(StatusType::Ready);
                         #[cfg(feature = "prometheus")]
                         {
-                            metrics::counter!(SYNC_ITERATIONS_TOTAL).increment(1);
-                            metrics::histogram!(SYNC_ITERATION_DURATION_SECONDS)
-                                .record(iteration_start.elapsed().as_secs_f64());
-                            if !has_reached_tip {
-                                has_reached_tip = true;
-                                metrics::gauge!(SYNC_HAS_REACHED_TIP).set(1.0);
-                                metrics::gauge!(SYNC_REACHED_TIP_AT).set(unix_now_secs());
-                            }
+                            metrics::gauge!(SYNC_CONSECUTIVE_FAILURES).set(0.0);
+                            metrics::gauge!(SYNC_BACKOFF_SECONDS).set(0.0);
                         }
                         // Race the post-success wait against cancellation
                         // and a source-change notification. `shutdown()`'s
@@ -1082,16 +1071,16 @@ impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedChainIndex<Source
                     }
                     Err(e) => {
                         consecutive_failures += 1;
+                        // Before the give-up check, so the fatal value reaches the
+                        // wire — the worker returns below, never sampling again
                         #[cfg(feature = "prometheus")]
                         {
-                            metrics::counter!(SYNC_ITERATIONS_TOTAL).increment(1);
-                            metrics::histogram!(SYNC_ITERATION_DURATION_SECONDS)
-                                .record(iteration_start.elapsed().as_secs_f64());
+                            metrics::gauge!(SYNC_CONSECUTIVE_FAILURES)
+                                .set(consecutive_failures as f64);
+                            metrics::gauge!(SYNC_BACKOFF_SECONDS)
+                                .set(current_backoff.as_secs_f64());
                         }
                         if consecutive_failures >= timings.max_consecutive_failures {
-                            #[cfg(feature = "prometheus")]
-                            metrics::counter!(SYNC_ERRORS_TOTAL, "severity" => "critical")
-                                .increment(1);
                             tracing::error!(
                                 consecutive_failures,
                                 ?e,
@@ -1108,9 +1097,6 @@ impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedChainIndex<Source
                             "sync loop iteration failed, retrying"
                         );
                         status.store(StatusType::RecoverableError);
-                        #[cfg(feature = "prometheus")]
-                        metrics::counter!(SYNC_ERRORS_TOTAL, "severity" => "recoverable")
-                            .increment(1);
                         // Race the failure-path backoff sleep against
                         // cancellation. Without this, `shutdown()` after
                         // `fs.shutdown()` would force the worker through

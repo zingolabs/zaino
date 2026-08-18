@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 #[cfg(any(
     feature = "no_tls_use_unencrypted_traffic",
-    feature = "allow_unencrypted_public_json_rpc_bind"
+    feature = "allow_unencrypted_public_json_rpc_bind",
+    feature = "prometheus"
 ))]
 use tracing::warn;
 
@@ -297,6 +298,20 @@ impl ZainodConfig {
                 "Zaino built with allow_unencrypted_public_json_rpc_bind: the JSON-RPC \
                  server may bind to public addresses without encryption. Proceed with caution."
             );
+        }
+
+        // Public bind publishes chain tip, sync progress, request volumes & RSS
+        // - Warn, not reject (read-only telemetry, and containers bind 0.0.0.0 by norm)
+        #[cfg(feature = "prometheus")]
+        if let Some(endpoint) = self.metrics_endpoint {
+            if !is_private_listen_addr(&endpoint) {
+                warn!(
+                    %endpoint,
+                    "metrics_endpoint binds a non-private address; /metrics is \
+                     unauthenticated and exposes operational detail. Restrict it to \
+                     loopback, a private interface, or a network only the scraper reaches."
+                );
+            }
         }
 
         // Check gRPC and JsonRPC server are not listening on the same address.

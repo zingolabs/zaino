@@ -153,11 +153,11 @@ against the port rather than the concrete type.
 
 ## Routing summary (as wired in `zaino-state`)
 
-| RPC / read | Layer |
-|---|---|
-| `getrawmempool`, `getmempoolinfo`, `GetMempoolTx` | core (`MempoolSubscriber`) |
-| `get_raw_transaction`, `get_transaction_status` | coherence (`CoherentSnapshot`) |
-| `get_mempool_stream` | coherence (`stream_transactions_until_tip_change`) |
+| RPC / read                                        | Layer                                              |
+| ------------------------------------------------- | -------------------------------------------------- |
+| `getrawmempool`, `getmempoolinfo`, `GetMempoolTx` | core (`MempoolSubscriber`)                         |
+| `get_raw_transaction`, `get_transaction_status`   | coherence (`CoherentSnapshot`)                     |
+| `get_mempool_stream`                              | coherence (`stream_transactions_until_tip_change`) |
 
 ## Observing it
 
@@ -189,3 +189,21 @@ The two loops each run inside one long-lived span — `mempool_poll_loop` and
 For alerting rather than reading, prefer the status and the freeze clock:
 `MempoolSubscriber::status()`, `CoherentSubscriber::frozen_for()`, and the
 `zaino.mempool.coherence_frozen_seconds` gauge `zainod` exports.
+
+### Metrics (feature `prometheus`)
+
+What each poll produced, sampled by a `Drop` guard (covers the early returns, not
+just the success path):
+
+| Metric                                    | Meaning                                    |
+| ----------------------------------------- | ------------------------------------------ |
+| `zaino.mempool.transactions`              | entries in the published set               |
+| `zaino.mempool.bytes{kind="raw"\|"cost"}` | serialized size / ZIP-401 cost             |
+| `zaino.mempool.unadmitted`                | refused by the capacity backstop           |
+| `zaino.mempool.completeness`              | non-zero = known partial view (value names the cause) |
+| `zaino.mempool.poll_seconds`              | poll duration (`_count` = writer heartbeat) |
+
+- `metric_names` holds the names; registration/help/buckets in `zainod`
+- Without the feature the guard and its type compile away
+- Flat `poll_seconds` `_count` = writer wedged, whatever `transactions` says (a
+  stale set holds its gauge value)

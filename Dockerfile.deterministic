@@ -3,9 +3,6 @@
 ############################
 # Global build args
 ############################
-ARG UID=1000
-ARG GID=1000
-ARG USER=container_user
 ARG HOME=/home/container_user
 
 ############################
@@ -29,14 +26,17 @@ COPY --from=abseil-cpp . /
 
 WORKDIR /usr/src/app
 
-# Toggle to build without TLS feature if needed
-ARG NO_TLS=false
+# Comma-separated; empty = default feature set
+# - No profile switch (reproducible artifact → no debug info, no frame pointers)
+ARG CARGO_FEATURES=""
 
 ENV CARGO_HOME=/usr/local/cargo
 
 ENV CXXSTDLIB="c++"
 
 ENV RUST_BACKTRACE=1
+# >1 partitions nondeterministically → breaks byte-reproducibility
+# - Kept out of `[profile.release]` (would slow every other build for this image)
 ENV RUSTFLAGS="-C codegen-units=1"
 ENV RUSTFLAGS="${RUSTFLAGS} -C target-feature=+crt-static"
 ENV RUSTFLAGS="${RUSTFLAGS} -C linker=clang -C link-arg=-fuse-ld=mold"
@@ -65,11 +65,8 @@ RUN --network=none \
     --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/usr/src/app/target \
-    if [ "${NO_TLS}" = "true" ]; then \
-      cargo build --release --frozen --target $TARGET_ARCH --bin zainod --features no_tls_use_unencrypted_traffic; \
-    else \
-      cargo build --release --frozen --target $TARGET_ARCH --bin zainod; \
-    fi && \
+    cargo build --release --frozen --target $TARGET_ARCH --bin zainod \
+      --features "${CARGO_FEATURES}" && \
     install -D -m 0755 /usr/src/app/target/${TARGET_ARCH}/release/zainod /usr/local/bin/zainod
 
 ############################
@@ -79,8 +76,11 @@ FROM scratch AS export
 COPY --from=builder /usr/local/bin/zainod /zainod
 
 ############################
-# Runtime (slim, non-root)
+# Runtime (slim)
 ############################
+# Runs as root (stage creates no user, chowns no data dir → `USER` here would only
+# break writes to ${HOME})
+# - Fixing it changes the attested image's runtime: own PR
 FROM busybox AS runtime
 
 ARG HOME
@@ -95,9 +95,10 @@ ARG ZAINO_GRPC_PORT=8137
 ARG ZAINO_JSON_RPC_PORT=8237
 EXPOSE ${ZAINO_GRPC_PORT} ${ZAINO_JSON_RPC_PORT}
 
-# Healthcheck that doesn't assume specific HTTP/gRPC endpoints
+# No HTTP/gRPC endpoint assumed
+# - Path `/zainod`: runtime copies to `/`, not the builder's /usr/local/bin
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD /usr/local/bin/zainod --version >/dev/null 2>&1 || exit 1
+  CMD /zainod --version >/dev/null 2>&1 || exit 1
 
 ENTRYPOINT ["/zainod"]
 CMD []

@@ -776,8 +776,14 @@ impl DbV1 {
         &self,
         height: Height,
     ) -> Result<(), FinalisedStateError> {
-        match self.read_tx_out_set_accumulator_built_height().await? {
-            Some(built) if built.0 >= height.0 => {}
+        // Timed per branch, never as one distribution: delta is O(range), rebuild
+        // is a whole-chain scan, and at mainnet height they differ by orders of
+        // magnitude. Merged, rebuilds read as an extreme tail
+        #[cfg(feature = "prometheus")]
+        let started = std::time::Instant::now();
+        #[allow(unused_variables)]
+        let mode = match self.read_tx_out_set_accumulator_built_height().await? {
+            Some(built) if built.0 >= height.0 => "current",
             Some(built) if height.0.saturating_sub(built.0) <= ACCUMULATOR_INCREMENTAL_MAX_GAP => {
                 info!(
                     "write_blocks_to_height: updating txout-set accumulator {}..={}",
@@ -786,6 +792,7 @@ impl DbV1 {
                 );
                 self.update_tx_out_set_accumulator_for_range(built, height)
                     .await?;
+                "delta"
             }
             _ => {
                 info!(
@@ -793,6 +800,20 @@ impl DbV1 {
                     height.0
                 );
                 self.rebuild_tx_out_set_accumulator().await?;
+                "rebuild"
+            }
+        };
+
+        #[cfg(feature = "prometheus")]
+        {
+            use crate::metric_names::*;
+            metrics::histogram!(SYNC_ACCUMULATOR_SECONDS, ACCUMULATOR_MODE => mode)
+                .record(started.elapsed().as_secs_f64());
+            // Third progress frontier, independent of the finalised tip:
+            // `gettxoutsetinfo` is correct only up to it. Re-read, not assumed from
+            // `height` — a partial pass must not publish a frontier it never reached
+            if let Ok(Some(built)) = self.read_tx_out_set_accumulator_built_height().await {
+                metrics::gauge!(SYNC_ACCUMULATOR_HEIGHT).set(built.0 as f64);
             }
         }
         Ok(())
