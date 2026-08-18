@@ -9,7 +9,11 @@
 # on the actual Mountpoint directory, and force-recreate a stale record so the
 # DB and on-disk storage stay in sync.
 for vol in zaino-container-target zaino-cargo-git zaino-cargo-registry; do
-    mountpoint="$(podman volume inspect --format '{{.Mountpoint}}' "$vol" 2>/dev/null)"
+    # `|| true`: cargo-make runs task scripts under `set -e`, and an assignment
+    # takes the exit status of its command substitution. `volume inspect` exits
+    # 125 on a missing volume, so without this the script dies here — on the
+    # very case it exists to repair — and creates nothing.
+    mountpoint="$(podman volume inspect --format '{{.Mountpoint}}' "$vol" 2>/dev/null || true)"
     if [[ -z "$mountpoint" || ! -d "$mountpoint" ]]; then
         # -z: no DB record. `! -d`: DB record present but backing dir gone;
         # rm --force drops the dangling record before we recreate it.
