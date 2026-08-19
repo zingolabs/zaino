@@ -2,8 +2,8 @@
 
 use anyhow::Context;
 use wire_serialized_transaction_test_data::transactions::get_test_vectors;
-use zaino_fetch::chain::transaction::FullTransaction;
-use zaino_fetch::chain::utils::ParseFromSlice;
+use zaino_testutils::legacy_parser::transaction::FullTransaction;
+use zaino_testutils::legacy_parser::utils::ParseFromSlice;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn pre_v4_txs_parsing() -> anyhow::Result<()> {

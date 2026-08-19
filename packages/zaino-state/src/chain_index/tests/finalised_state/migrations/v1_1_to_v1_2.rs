@@ -15,8 +15,8 @@ use crate::chain_index::finalised_state::finalised_source::v1::DB_SCHEMA_V1_HASH
 use crate::chain_index::finalised_state::finalised_source::v1::TX_OUT_SET_INFO_ACCUMULATOR_KEY;
 use crate::chain_index::finalised_state::finalised_source::FinalisedSource;
 use crate::chain_index::finalised_state::FinalisedState;
-use crate::chain_index::source::mockchain_source::MockchainSource;
 use crate::chain_index::tests::init_tracing;
+use crate::chain_index::tests::vectors::MockSource;
 use crate::chain_index::tests::vectors::{
     build_active_mockchain_source, load_test_vectors, TestVectorData,
 };
@@ -28,7 +28,7 @@ use crate::{ChainIndexConfig, Height, TransparentTxList, TxLocation, ZainoVersio
 /// migration the commitment rows are still in the legacy table, so validation would fail; the
 /// migration data these tests assert on (`txid_location`, `spent`, txout-set) is unaffected.
 fn read_block_transparent_direct(
-    database_backend: &FinalisedSource<MockchainSource>,
+    database_backend: &FinalisedSource<MockSource>,
     height: Height,
 ) -> TransparentTxList {
     use lmdb::Transaction as _;
@@ -50,7 +50,7 @@ fn read_block_transparent_direct(
 /// `get_block_transparent`, so it works on a database whose commitment rows are still in the legacy
 /// table (validation would fail there). The oracle logic is otherwise identical.
 async fn expected_tx_out_set_info_accumulator_direct(
-    database_backend: &FinalisedSource<MockchainSource>,
+    database_backend: &FinalisedSource<MockSource>,
     max_height: Height,
 ) -> crate::chain_index::types::db::metadata::FinalisedTxOutSetInfoAccumulator {
     use lmdb::Transaction as _;
@@ -132,7 +132,7 @@ async fn expected_tx_out_set_info_accumulator_direct(
 /// [`expected_tx_out_set_info_accumulator_direct`]. Direct-read equivalent of the production
 /// `assert_tx_out_set_info_accumulator_matches_transparent_data`.
 async fn assert_tx_out_set_info_accumulator_matches_transparent_data_direct(
-    database_backend: &FinalisedSource<MockchainSource>,
+    database_backend: &FinalisedSource<MockSource>,
 ) {
     let database_height = database_backend.db_height().await.unwrap().unwrap();
     let expected_accumulator =
@@ -167,7 +167,7 @@ fn v1_2_0() -> DbVersion {
     }
 }
 
-async fn assert_v1_2_migration_complete(zaino_database: &FinalisedState<MockchainSource>) {
+async fn assert_v1_2_migration_complete(zaino_database: &FinalisedState<MockSource>) {
     let metadata = zaino_database.get_metadata().await.unwrap();
 
     assert_eq!(metadata.version, v1_2_0());
@@ -187,7 +187,7 @@ async fn assert_v1_2_migration_complete(zaino_database: &FinalisedState<Mockchai
 /// its txid (via `get_txid`), and that txid resolves back to the same location (via
 /// `get_tx_location`, which reads the `txid_location` table).
 async fn assert_txid_location_index_matches_block_data(
-    database_backend: &FinalisedSource<MockchainSource>,
+    database_backend: &FinalisedSource<MockSource>,
 ) {
     let database_height = database_backend.db_height().await.unwrap().unwrap();
 
@@ -212,7 +212,7 @@ async fn assert_txid_location_index_matches_block_data(
 
 /// Empties the `txid_location` table, simulating a 0.4.0-alpha.1 cache that finished the old
 /// migration without ever building the reverse index.
-fn clear_txid_location_index(database_backend: &FinalisedSource<MockchainSource>) {
+fn clear_txid_location_index(database_backend: &FinalisedSource<MockSource>) {
     let environment = database_backend.env().expect("v1 finalised-source env");
     let txid_location_database = database_backend.txid_location_db().unwrap();
 
@@ -239,7 +239,7 @@ fn clear_txid_location_index(database_backend: &FinalisedSource<MockchainSource>
 }
 
 async fn simulate_interrupted_v1_1_to_v1_2_spent_index_migration(
-    database_backend: &FinalisedSource<MockchainSource>,
+    database_backend: &FinalisedSource<MockSource>,
     resume_height: Height,
 ) {
     let environment = database_backend.env().unwrap();
@@ -345,7 +345,7 @@ async fn simulate_interrupted_v1_1_to_v1_2_spent_index_migration(
 }
 
 async fn assert_spent_index_matches_transparent_data(
-    database_backend: &FinalisedSource<MockchainSource>,
+    database_backend: &FinalisedSource<MockSource>,
 ) {
     let environment = database_backend.env().unwrap();
     let spent_database = database_backend.spent_db().unwrap();
@@ -425,6 +425,7 @@ async fn v1_1_to_v1_2_spent_index_backfill_from_old_version() {
             ..Default::default()
         },
         ephemeral: false,
+        mempool: Default::default(),
         db_version: 1,
         network: ActivationHeights::default().to_regtest_network(),
     };
@@ -497,6 +498,7 @@ async fn v1_1_to_v1_2_spent_index_migration_resumes_after_crash() {
             ..Default::default()
         },
         ephemeral: false,
+        mempool: Default::default(),
         db_version: 1,
         network: ActivationHeights::default().to_regtest_network(),
     };
@@ -596,6 +598,7 @@ async fn v1_2_0_cache_missing_txid_location_index_is_rebuilt() {
             ..Default::default()
         },
         ephemeral: false,
+        mempool: Default::default(),
         db_version: 1,
         network: ActivationHeights::default().to_regtest_network(),
     };

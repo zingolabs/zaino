@@ -1,0 +1,16 @@
+[package]
+name = "zaino-primitives"
+description = "Zero-dependency Zcash chain-level domain types (heights, hashes, blocks, transactions) for the Zaino indexer."
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

@@ -11,7 +11,7 @@ use tracing::info;
 // Metric names are owned by the crates that emit them, so the `describe_*`
 // registrations below share one source of truth with the emit sites and can
 // never drift.
-use zaino_fetch::metric_names::*;
+use zaino_rpc::metric_names::*;
 use zaino_serve::metric_names::*;
 use zaino_state::metric_names::*;
 
@@ -164,6 +164,12 @@ fn describe_metrics() {
     metrics::describe_counter!(
         MEMPOOL_TIP_CHANGES_TOTAL,
         "Total mempool resets due to chain tip changes"
+    );
+    metrics::describe_gauge!(
+        MEMPOOL_COHERENCE_FROZEN_SECONDS,
+        "How long tip-coherent mempool reads have been frozen; 0 when live. \
+         Brief spikes are normal tip transitions — a sustained non-zero value \
+         means the validator tip and Zaino's have stopped agreeing"
     );
 }
 

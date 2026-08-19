@@ -375,12 +375,23 @@ pub async fn assert_send_to_transparent_finalization<V, Conn>(
         .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
         .await;
 
-    let fetch_service = test_manager.full_node_jsonrpc_connector().await;
-    let height = fetch_service.get_blockchain_info().await.unwrap().blocks.0;
-    let unfinalised_transactions = fetch_service
-        .get_address_txids(vec![recipient_taddr.clone()], height, height)
-        .await
-        .unwrap();
+    let oracle = test_manager.full_node_jsonrpc_connector().await;
+    let height = oracle.get("getblockchaininfo").await["blocks"]
+        .as_u64()
+        .expect("a chain height") as u32;
+    let address_txids = async |address: &str| {
+        oracle
+            .call(
+                "getaddresstxids",
+                vec![serde_json::json!({
+                    "addresses": [address],
+                    "start": height,
+                    "end": height,
+                })],
+            )
+            .await
+    };
+    let unfinalised_transactions = address_txids(&recipient_taddr).await;
 
     // The load-bearing advance: these blocks push the send below the seam
     // (`FAST_TEST_MAX_NONFINALISED_DEPTH`) into the finalized DB.
@@ -388,16 +399,13 @@ pub async fn assert_send_to_transparent_finalization<V, Conn>(
         .generate_blocks_bulk_and_wait_for_tips(
             // Advance past the seam so the send crosses the finalised floor
             // (`tip - seam`); a small margin above it keeps the boundary unambiguous.
-            zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH + 5,
+            zaino_consensus::FAST_TEST_MAX_NONFINALISED_DEPTH + 5,
             test_manager.subscriber(),
             test_manager.subscriber(),
         )
         .await;
 
-    let finalised_transactions = fetch_service
-        .get_address_txids(vec![recipient_taddr], height, height)
-        .await
-        .unwrap();
+    let finalised_transactions = address_txids(&recipient_taddr).await;
 
     clients.sync_recipient().await;
     assert_eq!(
@@ -405,84 +413,6 @@ pub async fn assert_send_to_transparent_finalization<V, Conn>(
         250_000
     );
     assert_eq!(unfinalised_transactions, finalised_transactions);
-
-    test_manager.close().await;
-}
-
-/// Broadcast two unmined shielded sends, observe them in the validator mempool,
-/// then mine them in. Shared body of the per-validator gated
-/// `monitor_unverified_mempool` tests; the caller launches and funds the faucet
-/// (two notes — one per unmined send) first.
-///
-/// The unconfirmed/confirmed balance assertions of the zingolib original stay
-/// commented out: devtool's `WalletBalance` surfaces only `*_spendable` (its sync
-/// is block-based and never scans the mempool). Restore them and un-ignore the
-/// callers when devtool surfaces unconfirmed balances.
-pub async fn assert_monitor_unverified_mempool<V, Conn>(
-    mut test_manager: zaino_testutils::TestManager<V, Conn>,
-    mut clients: DevtoolClients,
-) where
-    V: zaino_testutils::ValidatorExt,
-    Conn: zaino_testutils::ValidatorConnectionMarker,
-{
-    let recipient_ua = clients.get_recipient_address("unified").await;
-    let txid_1 = clients.send_from_faucet(&recipient_ua, 250_000).await;
-    let recipient_zaddr = clients.get_recipient_address("sapling").await;
-    let txid_2 = clients.send_from_faucet(&recipient_zaddr, 250_000).await;
-
-    clients.rescan_recipient().await;
-
-    let fetch_service = test_manager.full_node_jsonrpc_connector().await;
-    let mempool_txids = fetch_service.get_raw_mempool().await.unwrap();
-    dbg!(txid_1);
-    dbg!(txid_2);
-    dbg!(mempool_txids.clone());
-
-    let _transaction_1 = dbg!(
-        fetch_service
-            .get_raw_transaction(mempool_txids.transactions[0].clone(), Some(1))
-            .await
-    );
-    let _transaction_2 = dbg!(
-        fetch_service
-            .get_raw_transaction(mempool_txids.transactions[1].clone(), Some(1))
-            .await
-    );
-
-    // Unconfirmed (mempool) balances — devtool's WalletBalance has no
-    // unconfirmed_* fields (block-based sync, no mempool scan):
-    // assert_eq!(
-    //     clients.recipient_balance().await.unconfirmed_orchard_balance.unwrap().into_u64(),
-    //     250_000
-    // );
-    // assert_eq!(
-    //     clients.recipient_balance().await.unconfirmed_sapling_balance.unwrap().into_u64(),
-    //     250_000
-    // );
-
-    test_manager
-        .generate_blocks_and_wait_for_tip(1, test_manager.subscriber())
-        .await;
-
-    let _transaction_1 = dbg!(
-        fetch_service
-            .get_raw_transaction(mempool_txids.transactions[0].clone(), Some(1))
-            .await
-    );
-    let _transaction_2 = dbg!(
-        fetch_service
-            .get_raw_transaction(mempool_txids.transactions[1].clone(), Some(1))
-            .await
-    );
-
-    clients.sync_recipient().await;
-
-    // Confirmed balances — original asserts WalletBalance::confirmed_orchard_balance,
-    // also absent on devtool. Restore as e.g.:
-    // assert_eq!(
-    //     Pool::Orchard.spendable_balance(&clients.recipient_balance().await),
-    //     250_000
-    // );
 
     test_manager.close().await;
 }

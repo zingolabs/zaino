@@ -46,6 +46,7 @@ pub mod metric_names {
 
     pub const MEMPOOL_TRANSACTIONS: &str = "zaino.mempool.transactions";
     pub const MEMPOOL_TIP_CHANGES_TOTAL: &str = "zaino.mempool.tip_changes_total";
+    pub const MEMPOOL_COHERENCE_FROZEN_SECONDS: &str = "zaino.mempool.coherence_frozen_seconds";
 }
 
 // Zaino's Indexer library frontend.
@@ -67,13 +68,18 @@ pub use chain_index::{
     ChainIndex, ChainIndexRpcExt, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
 };
 // Source types for ChainIndex backends
-pub use chain_index::source::{BlockchainSource, State, ValidatorConnector};
+pub use chain_index::source::BlockchainSource;
+pub use chain_index::source_ports::ChainIndexSourcePorts;
+pub use chain_index::validator_source::{ValidatorSource, ZebraValidatorSource};
 // Supporting types
 pub use chain_index::encoding::*;
-pub use chain_index::mempool::Mempool;
+// Mempool statistics for `getmempoolinfo`. Currently an on-disk shape in
+// `types/db/metadata.rs`; moving it into `zaino-primitives` belongs with the
+// persistence rework.
 pub use chain_index::non_finalised_state::{
     ChainIndexSnapshot, InitError, NodeConnectionError, NonFinalizedState, SyncError, UpdateError,
 };
+pub use chain_index::types::db::metadata::MempoolInfo;
 // NOTE: Should these be pub at all?
 pub use chain_index::types::{
     AddrHistRecord, AddrScript, BlockContext, BlockData, BlockHash, BlockHeaderData, BlockMetadata,
@@ -84,8 +90,6 @@ pub use chain_index::types::{
     ShardIndex, ShardRoot, TransactionHash, TransparentCompactTx, TransparentTxList, TreeRootData,
     TxInCompact, TxLocation, TxOutCompact, TxidList,
 };
-
-pub use chain_index::mempool::{MempoolKey, MempoolValue};
 
 #[cfg(feature = "test_dependencies")]
 /// allow public access to additional APIs, for testing
@@ -107,11 +111,7 @@ pub use config::{
 
 pub(crate) mod error;
 
-pub use error::NodeBackedIndexerServiceError;
-
-pub(crate) mod status;
-
-pub use status::{AtomicStatus, NamedAtomicStatus, Status, StatusType};
+pub use error::{LegacyRpcError, NodeBackedIndexerServiceError};
 
 pub(crate) mod stream;
 
@@ -120,6 +120,6 @@ pub use stream::{
     SubtreeRootReplyStream, UtxoReplyStream,
 };
 
-pub(crate) mod broadcast;
-
 pub(crate) mod utils;
+
+pub mod source_caps;

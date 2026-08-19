@@ -2,7 +2,7 @@
 //!
 //! In ephemeral mode no persistent database is opened; the `FinalisedState`
 //! backing is `FinalisedSource::Ephemeral`, which serves finalised reads
-//! directly from the `BlockchainSource` (here a `MockchainSource`). These tests
+//! directly from the `BlockchainSource` (here a `MockSource`). These tests
 //! assert the passthrough semantics: reads match the source, `db_height` is
 //! pinned at `0`, and sync/write paths are no-ops.
 //!
@@ -19,19 +19,20 @@ use zaino_common::{DatabaseConfig, StorageConfig};
 use zaino_proto::proto::utils::{prune_compact_block, PoolTypeFilter};
 
 use crate::chain_index::finalised_state::FinalisedState;
-use crate::chain_index::source::mockchain_source::MockchainSource;
 use crate::chain_index::tests::init_tracing;
+use crate::chain_index::tests::vectors::MockSource;
 use crate::chain_index::tests::vectors::{
     build_mockchain_source, indexed_block_chain, load_test_vectors,
 };
 use crate::error::FinalisedStateError;
-use crate::{ChainIndexConfig, Height, StatusType};
+use crate::{ChainIndexConfig, Height};
+use zaino_status::StatusType;
 
 /// Spawns a `FinalisedState` in ephemeral mode over `source`. The database path
 /// is a throwaway tempdir that is never opened (ephemeral mode opens no DB).
 pub(crate) async fn spawn_ephemeral_finalised_state(
-    source: MockchainSource,
-) -> Result<(TempDir, FinalisedState<MockchainSource>), FinalisedStateError> {
+    source: MockSource,
+) -> Result<(TempDir, FinalisedState<MockSource>), FinalisedStateError> {
     let temp_dir: TempDir = tempfile::tempdir().unwrap();
     let db_path: PathBuf = temp_dir.path().to_path_buf();
 
@@ -44,6 +45,7 @@ pub(crate) async fn spawn_ephemeral_finalised_state(
             ..Default::default()
         },
         ephemeral: true,
+        mempool: Default::default(),
         db_version: 1,
         network: ActivationHeights::default().to_regtest_network(),
     };

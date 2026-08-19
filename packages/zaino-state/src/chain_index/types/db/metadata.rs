@@ -114,26 +114,6 @@ impl FixedEncodedLen for MempoolInfo {
     }
 }
 
-impl From<zaino_fetch::jsonrpsee::response::GetMempoolInfoResponse> for MempoolInfo {
-    fn from(resp: zaino_fetch::jsonrpsee::response::GetMempoolInfoResponse) -> Self {
-        MempoolInfo {
-            size: resp.size,
-            bytes: resp.bytes,
-            usage: resp.usage,
-        }
-    }
-}
-
-impl From<MempoolInfo> for zaino_fetch::jsonrpsee::response::GetMempoolInfoResponse {
-    fn from(info: MempoolInfo) -> Self {
-        zaino_fetch::jsonrpsee::response::GetMempoolInfoResponse {
-            size: info.size,
-            bytes: info.bytes,
-            usage: info.usage,
-        }
-    }
-}
-
 /// Holds finalised-state UTXO set accumulator data for `gettxoutsetinfo`.
 ///
 /// This is not the full RPC response. It only contains values that the

@@ -35,13 +35,17 @@ first two and deliberately leaves the third alone:
    "Cannot use state backend with zcashd" guard. Downstream test crates
    (`walletless-tests`, wallet-tests) inherit the gate.
 
-2. **Production connection-parsing** (`zaino-fetch`): the
+2. **The zcashd-shaped `getpeerinfo` response** (`zaino-serve`'s
+   `rpc/jsonrpc/wire/peer_info.rs`): the
    `GetPeerInfo::Zcashd(Vec<ZcashdPeerInfo>)` variant and the `ZcashdPeerInfo`
-   struct — the serde path that lets `FetchService` parse a live zcashd node's
-   `getpeerinfo` response. This is self-contained: the only consumers of the
-   variant live inside `peer_info.rs` (the custom `Deserialize` impl plus
-   tests), so gating it simply makes a no-zcashd build fall through to the
-   zebrad parse branch.
+   struct. This is self-contained: the only consumers of the variant live
+   inside `peer_info.rs`, so gating it simply makes a no-zcashd build fall
+   through to the zebrad branch.
+
+   > This lived in `zaino-fetch` when the ADR was written, where it was an
+   > *inbound* parse of a live zcashd node's reply. `zaino-fetch` was deleted
+   > by ADR-0008 and the type moved to the served-schema module, so it is now
+   > an *outbound* shape. The feature gates the same fields either way.
 
 3. **Frozen wire fields** (`zaino-proto`, populated in `zaino-state`):
    `zcashd_build` / `zcashd_subversion` in the `LightdInfo` message. These are
@@ -74,8 +78,17 @@ not in this feature.
 `zcashd_support` is declared and forwarded through every crate in both chains,
 mirroring the existing `transparent_address_history_experimental` pattern:
 
-- production: `zaino-fetch` → `zaino-state` → `zaino-serve` → `zainod`
-- test: `zaino-testutils` → `walletless-tests` / wallet-tests
+- production: `zaino-serve` → `zainod`
+- test: `zaino-testutils` → `clientless` / `e2e`
+
+> The production chain was originally `zaino-fetch` → `zaino-state` →
+> `zaino-serve` → `zainod`. `zaino-fetch` has since been deleted, and the
+> zcashd-shaped response types it carried now live in `zaino-serve`'s wire
+> module, which gates them directly. `zaino-state` gated nothing once that
+> move landed, so its declaration was removed rather than left as an empty
+> pass-through: a feature that forwards to nothing still has to be threaded
+> through every consumer's manifest, and reads as coverage it does not
+> provide. `zaino-serve` is now the only crate where the feature gates code.
 
 Each crate carries it in `default = [...]`. It is **not** placed under the
 `experimental_features` umbrella — that umbrella is for opt-in alpha features,

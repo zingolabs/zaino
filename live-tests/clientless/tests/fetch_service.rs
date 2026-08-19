@@ -2,15 +2,18 @@
 
 use clientless::rpc::z_validate_address::run_z_validate_for;
 use futures::StreamExt as _;
-use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
+use zaino_address::ValidatedAddress;
 use zaino_proto::proto::compact_formats::CompactBlock;
 use zaino_proto::proto::service::{BlockId, BlockRange, GetSubtreeRootsArg};
-use zaino_state::{
-    LightWalletIndexer, NodeBackedIndexerServiceSubscriber, Status, StatusType, ZcashIndexer,
+use zaino_serve::rpc::jsonrpc::wire::{
+    block_header::GetBlockHeader, block_subsidy::GetBlockSubsidy, mining_info::GetMiningInfoWire,
+    peer_info::GetPeerInfo,
 };
+use zaino_state::{LightWalletIndexer, NodeBackedIndexerServiceSubscriber, ZcashIndexer};
+use zaino_status::{Status, StatusType};
+use zaino_testutils::ValidatorOracle;
 use zaino_testutils::{Rpc, TestManager, ValidatorExt, ValidatorKind};
 use zebra_chain::parameters::subsidy::ParameterSubsidy as _;
-use zebra_rpc::client::ValidateAddressResponse;
 use zebra_rpc::methods::{GetBlock, GetBlockHash};
 
 async fn launch_fetch_service<V: ValidatorExt>(
@@ -22,11 +25,13 @@ async fn launch_fetch_service<V: ValidatorExt>(
     assert_eq!(fetch_service_subscriber.status(), StatusType::Ready);
     dbg!(fetch_service_subscriber.data.clone());
     dbg!(fetch_service_subscriber.get_info().await.unwrap());
-    dbg!(fetch_service_subscriber
-        .get_blockchain_info()
-        .await
-        .unwrap()
-        .blocks());
+    dbg!(
+        fetch_service_subscriber
+            .get_blockchain_info()
+            .await
+            .unwrap()
+            .blocks
+    );
 
     test_manager.close().await;
 }
@@ -71,11 +76,27 @@ async fn fetch_service_get_latest_block<V: ValidatorExt>(validator: &ValidatorKi
     let fetch_service_get_latest_block =
         dbg!(fetch_service_subscriber.get_latest_block().await.unwrap());
 
-    let json_service_blockchain_info = json_service.get_blockchain_info().await.unwrap();
+    let json_service_blockchain_info = json_service.get("getblockchaininfo").await;
+
+    // The validator writes its tip hash in display order; `BlockId.hash` is
+    // internal order, so it is reversed on the way in.
+    let mut tip_hash = <[u8; 32]>::try_from(
+        hex::decode(
+            json_service_blockchain_info["bestblockhash"]
+                .as_str()
+                .expect("a best block hash"),
+        )
+        .expect("a hex best block hash")
+        .as_slice(),
+    )
+    .expect("a 32-byte best block hash");
+    tip_hash.reverse();
 
     let json_service_get_latest_block = dbg!(BlockId {
-        height: json_service_blockchain_info.blocks.0 as u64,
-        hash: json_service_blockchain_info.best_block_hash.0.to_vec(),
+        height: json_service_blockchain_info["blocks"]
+            .as_u64()
+            .expect("a chain height"),
+        hash: tip_hash.to_vec(),
     });
 
     assert_eq!(fetch_service_get_latest_block.height, 3);
@@ -95,7 +116,7 @@ async fn fetch_service_get_latest_block<V: ValidatorExt>(validator: &ValidatorKi
 async fn assert_subscriber_matches_rpc<V, T, FFut, RFut>(
     validator: &ValidatorKind,
     fetch_query: impl FnOnce(NodeBackedIndexerServiceSubscriber) -> FFut,
-    rpc_query: impl FnOnce(JsonRpSeeConnector) -> RFut,
+    rpc_query: impl FnOnce(ValidatorOracle) -> RFut,
 ) where
     V: ValidatorExt,
     T: std::fmt::Debug + PartialEq,
@@ -115,19 +136,52 @@ async fn assert_fetch_service_difficulty_matches_rpc<V: ValidatorExt>(validator:
     assert_subscriber_matches_rpc::<V, _, _, _>(
         validator,
         |sub| async move { sub.get_difficulty().await.unwrap() },
-        |client| async move { client.get_difficulty().await.unwrap().0 },
+        |client| async move {
+            client
+                .get("getdifficulty")
+                .await
+                .as_f64()
+                .expect("a difficulty")
+        },
     )
     .await;
 }
 
+/// Every `getmininginfo` field the validator reports must match what Zaino
+/// serves.
+///
+/// Compared key by key over the validator's own response rather than as whole
+/// objects. Zaino additionally emits the zcashd-only local-miner fields
+/// (`genproclimit`, `localsolps`, `generate`, `pooledtx`, `errorstimestamp`) as
+/// explicit JSON `null`, where zebrad omits the keys — long-standing behaviour
+/// of this response type, and a client asking a zcashd-shaped interface gets a
+/// zcashd-shaped answer. What must not differ is any value the validator
+/// actually sent.
 #[allow(deprecated)]
 async fn assert_fetch_service_mininginfo_matches_rpc<V: ValidatorExt>(validator: &ValidatorKind) {
-    assert_subscriber_matches_rpc::<V, _, _, _>(
-        validator,
-        |sub| async move { sub.get_mining_info().await.unwrap() },
-        |client| async move { client.get_mining_info().await.unwrap() },
-    )
-    .await;
+    let (test_manager, fetch_service_subscriber) =
+        zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
+
+    let served = serde_json::to_value(GetMiningInfoWire::from_domain(
+        fetch_service_subscriber.get_mining_info().await.unwrap(),
+    ))
+    .unwrap();
+
+    let reported = test_manager
+        .full_node_jsonrpc_connector()
+        .await
+        .get("getmininginfo")
+        .await;
+
+    for (field, expected) in reported
+        .as_object()
+        .expect("getmininginfo returns an object")
+    {
+        assert_eq!(
+            &served[field], expected,
+            "`{field}` differs from the validator's own getmininginfo"
+        );
+    }
 }
 
 #[cfg(feature = "zcashd_support")]
@@ -145,50 +199,51 @@ async fn assert_fetch_service_gettxoutsetinfo_matches_rpc<V: ValidatorExt>(
 
     let jsonrpc_client = test_manager.full_node_jsonrpc_connector().await;
 
-    let rpc_txoutset_info = jsonrpc_client.get_tx_out_set_info().await.unwrap();
+    let rpc_txoutset_info = jsonrpc_client.get("gettxoutsetinfo").await;
 
     // Structural parity with zcashd: height, bestblock, transactions, txouts and total_amount
     // must match. `bytes_serialized` and `hash_serialized` are Zaino-defined (see the
     // `gettxoutsetinfo` spec in zaino-state) and intentionally diverge from zcashd; only
     // Zaino-internal invariants are asserted on those fields.
-    use zaino_fetch::jsonrpsee::response::GetTxOutSetInfoResponse;
-    let (zaino, zcashd) = match (fetch_service_txoutset_info, rpc_txoutset_info) {
-        (GetTxOutSetInfoResponse::Info(z), GetTxOutSetInfoResponse::Info(r)) => (z, r),
-        other => panic!("expected non-empty gettxoutsetinfo from both sides, got {other:?}"),
-    };
-
-    assert_eq!(zaino.height, zcashd.height, "`height` differs from zcashd");
-    assert_eq!(
-        zaino.best_block, zcashd.best_block,
-        "`bestblock` differs from zcashd"
-    );
-    assert_eq!(
-        zaino.transactions, zcashd.transactions,
-        "`transactions` count differs from zcashd"
-    );
-    assert_eq!(zaino.txouts, zcashd.txouts, "`txouts` differs from zcashd");
+    let zaino = serde_json::to_value(fetch_service_txoutset_info).unwrap();
+    let zcashd = rpc_txoutset_info;
     assert!(
-        (zaino.total_amount - zcashd.total_amount).abs() < 1e-8,
+        zaino.get("height").is_some() && zcashd.get("height").is_some(),
+        "expected non-empty gettxoutsetinfo from both sides, got {zaino:?} / {zcashd:?}"
+    );
+
+    for field in ["height", "bestblock", "transactions", "txouts"] {
+        assert_eq!(zaino[field], zcashd[field], "`{field}` differs from zcashd");
+    }
+    let amount = |value: &serde_json::Value| {
+        value["total_amount"]
+            .as_f64()
+            .expect("gettxoutsetinfo reports total_amount as a number")
+    };
+    assert!(
+        (amount(&zaino) - amount(&zcashd)).abs() < 1e-8,
         "`total_amount` differs from zcashd: zaino={} zcashd={}",
-        zaino.total_amount,
-        zcashd.total_amount
+        amount(&zaino),
+        amount(&zcashd)
     );
 
     // Zaino-only invariants on the redefined fields.
     assert_eq!(
-        zaino.bytes_serialized,
-        zaino.txouts * 65,
+        zaino["bytes_serialized"].as_u64().expect("a byte count"),
+        zaino["txouts"].as_u64().expect("a txout count") * 65,
         "`bytes_serialized` must equal `txouts * 65` under Zaino's UTXO entry encoding"
     );
+    let hash_serialized = zaino["hash_serialized"]
+        .as_str()
+        .expect("`hash_serialized` is a string");
     assert_eq!(
-        zaino.hash_serialized.len(),
+        hash_serialized.len(),
         64,
         "`hash_serialized` must be 64 lowercase hex chars"
     );
     assert!(
-        zaino.hash_serialized.chars().all(|c| c.is_ascii_hexdigit()),
-        "`hash_serialized` must be hex: got {}",
-        zaino.hash_serialized
+        hash_serialized.chars().all(|c| c.is_ascii_hexdigit()),
+        "`hash_serialized` must be hex: got {hash_serialized}"
     );
 }
 
@@ -196,8 +251,11 @@ async fn assert_fetch_service_gettxoutsetinfo_matches_rpc<V: ValidatorExt>(
 async fn assert_fetch_service_peerinfo_matches_rpc<V: ValidatorExt>(validator: &ValidatorKind) {
     assert_subscriber_matches_rpc::<V, _, _, _>(
         validator,
-        |sub| async move { sub.get_peer_info().await.unwrap() },
-        |client| async move { client.get_peer_info().await.unwrap() },
+        |sub| async move {
+            serde_json::to_value(GetPeerInfo::from_domain(sub.get_peer_info().await.unwrap()))
+                .unwrap()
+        },
+        |client| async move { client.get("getpeerinfo").await },
     )
     .await;
 }
@@ -225,8 +283,16 @@ async fn fetch_service_get_block_subsidy<V: ValidatorExt>(validator: &ValidatorK
             .await
             .unwrap();
 
-        let rpc_block_subsidy_response = jsonrpc_client.get_block_subsidy(height).await.unwrap();
-        assert_eq!(fetch_service_get_block_subsidy, rpc_block_subsidy_response);
+        let rpc_block_subsidy_response = jsonrpc_client
+            .call("getblocksubsidy", vec![serde_json::json!(height)])
+            .await;
+        assert_eq!(
+            serde_json::to_value(GetBlockSubsidy::from_domain(
+                fetch_service_get_block_subsidy
+            ))
+            .unwrap(),
+            rpc_block_subsidy_response
+        );
     }
 }
 
@@ -284,29 +350,46 @@ async fn fetch_service_get_block_header<V: ValidatorExt>(validator: &ValidatorKi
                     GetBlock::Raw(_) => panic!("Expected block object"),
                 };
 
-                let fetch_service_get_block_header = fetch_service_subscriber
-                    .get_block_header(block_hash.to_string(), false)
-                    .await
-                    .unwrap();
+                let fetch_service_get_block_header = GetBlockHeader::compact_from_domain(
+                    fetch_service_subscriber
+                        .get_raw_block_header(block_hash.to_string())
+                        .await
+                        .unwrap(),
+                );
 
                 let rpc_block_header_response = jsonrpc_client
-                    .get_block_header(block_hash.to_string(), false)
-                    .await
-                    .unwrap();
+                    .call(
+                        "getblockheader",
+                        vec![
+                            serde_json::json!(block_hash.to_string()),
+                            serde_json::json!(false),
+                        ],
+                    )
+                    .await;
 
-                let fetch_service_get_block_header_verbose = fetch_service_subscriber
-                    .get_block_header(block_hash.to_string(), true)
-                    .await
-                    .unwrap();
+                let fetch_service_get_block_header_verbose = GetBlockHeader::verbose_from_domain(
+                    fetch_service_subscriber
+                        .get_block_header(block_hash.to_string())
+                        .await
+                        .unwrap(),
+                );
 
                 let rpc_block_header_response_verbose = jsonrpc_client
-                    .get_block_header(block_hash.to_string(), true)
-                    .await
-                    .unwrap();
+                    .call(
+                        "getblockheader",
+                        vec![
+                            serde_json::json!(block_hash.to_string()),
+                            serde_json::json!(true),
+                        ],
+                    )
+                    .await;
 
-                assert_eq!(fetch_service_get_block_header, rpc_block_header_response);
                 assert_eq!(
-                    fetch_service_get_block_header_verbose,
+                    serde_json::to_value(fetch_service_get_block_header).unwrap(),
+                    rpc_block_header_response
+                );
+                assert_eq!(
+                    serde_json::to_value(fetch_service_get_block_header_verbose).unwrap(),
                     rpc_block_header_response_verbose
                 );
             },
@@ -381,11 +464,10 @@ async fn fetch_service_validate_address<V: ValidatorExt>(validator: &ValidatorKi
         zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
 
     // scriptpubkey: "76a914000000000000000000000000000000000000000088ac"
-    let expected_validation = ValidateAddressResponse::new(
-        true,
-        Some("tm9iMLAuYMzJ6jtFLcA7rzUmfreGuKvr7Ma".to_string()),
-        Some(false),
-    );
+    let expected_validation = ValidatedAddress::Transparent {
+        address: "tm9iMLAuYMzJ6jtFLcA7rzUmfreGuKvr7Ma".to_string(),
+        is_script: false,
+    };
     let fetch_service_validate_address = fetch_service_subscriber
         .validate_address("tm9iMLAuYMzJ6jtFLcA7rzUmfreGuKvr7Ma".to_string())
         .await
@@ -394,11 +476,10 @@ async fn fetch_service_validate_address<V: ValidatorExt>(validator: &ValidatorKi
     assert_eq!(fetch_service_validate_address, expected_validation);
 
     // scriptpubkey: "a914000000000000000000000000000000000000000087"
-    let expected_validation_script = ValidateAddressResponse::new(
-        true,
-        Some("t26YoyZ1iPgiMEWL4zGUm74eVWfhyDMXzY2".to_string()),
-        Some(true),
-    );
+    let expected_validation_script = ValidatedAddress::Transparent {
+        address: "t26YoyZ1iPgiMEWL4zGUm74eVWfhyDMXzY2".to_string(),
+        is_script: true,
+    };
 
     let fetch_service_validate_address_script = fetch_service_subscriber
         .validate_address("t26YoyZ1iPgiMEWL4zGUm74eVWfhyDMXzY2".to_string())
@@ -576,7 +657,13 @@ async fn assert_fetch_service_getnetworksols_matches_rpc<V: ValidatorExt>(
     assert_subscriber_matches_rpc::<V, _, _, _>(
         validator,
         |sub| async move { sub.get_network_sol_ps(None, None).await.unwrap() },
-        |client| async move { client.get_network_sol_ps(None, None).await.unwrap() },
+        |client| async move {
+            client
+                .get("getnetworksolps")
+                .await
+                .as_u64()
+                .expect("a solution rate")
+        },
     )
     .await;
 }
@@ -584,6 +671,8 @@ async fn assert_fetch_service_getnetworksols_matches_rpc<V: ValidatorExt>(
 #[cfg(feature = "zcashd_support")]
 #[allow(deprecated)]
 async fn fetch_service_get_block_deltas<V: ValidatorExt>(validator: &ValidatorKind) {
+    use zaino_serve::rpc::jsonrpc::wire::block_deltas::BlockDeltas;
+
     let (test_manager, fetch_service_subscriber) =
         zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
 
@@ -607,7 +696,11 @@ async fn fetch_service_get_block_deltas<V: ValidatorExt>(validator: &ValidatorKi
         .await
         .unwrap();
 
-    assert_eq!(fetch_service_block_deltas, rpc_block_deltas);
+    assert_eq!(
+        serde_json::to_value(BlockDeltas::from_domain(fetch_service_block_deltas).unwrap())
+            .unwrap(),
+        serde_json::to_value(rpc_block_deltas).unwrap()
+    );
 }
 
 #[cfg(feature = "zcashd_support")]

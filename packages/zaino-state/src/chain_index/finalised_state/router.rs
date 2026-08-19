@@ -122,8 +122,9 @@ use super::{
 use crate::{
     chain_index::finalised_state::capability::{Capability, CapabilityRequest},
     error::FinalisedStateError,
-    BlockHash, BlockchainSource, Height, IndexedBlock, StatusType,
+    BlockHash, BlockchainSource, Height, IndexedBlock,
 };
+use zaino_status::StatusType;
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 use std::sync::{

@@ -1,4 +1,64 @@
-//! Traits and types for the blockchain source thats serves zaino, commonly a validator connection.
+//! ChainIndex's driven port onto the backing validator.
+//!
+//! # This is temporary scaffolding
+//!
+//! [`BlockchainSource`] is not the abstraction Zaino wants over a validator. It
+//! is declared in the transport's vocabulary — its methods return
+//! `zebra_chain` and `zebra_rpc` types — so anything depending on
+//! it inherits that whole graph. That is why no subsystem could be extracted
+//! from `zaino-state` without dragging those crates along, and it is the reason
+//! the `zaino-source` ports exist.
+//!
+//! The real port layer now lives in `zaino-source`: one trait per question a
+//! consumer can ask, in domain vocabulary, with per-query errors. The composite
+//! in `zaino-source-zebra` routes each question to whichever transport can
+//! answer it.
+//!
+//! This trait survives only as an **anti-corruption layer**, so that ChainIndex
+//! and everything above it keep working while the new stack is wired in
+//! underneath. Its single implementation,
+//! [`ZebraValidatorSource`](crate::chain_index::validator_source::ZebraValidatorSource),
+//! delegates to that composite and converts back into the shapes these
+//! signatures still demand.
+//!
+//! **Do not extend it.** A new capability belongs in `zaino-source`, where it
+//! can be expressed as its own question and implemented only by the transports
+//! that can answer it. This module shrinks as each ChainIndex subsystem is
+//! isolated onto the real ports, and is deleted with the last of them.
+//!
+//! # How it shrinks: methods become supertraits
+//!
+//! `zaino-state` is being taken apart one subsystem at a time. Each moves into
+//! its own crate and is wired back in here with the *smallest* change to the
+//! surrounding code, so the extraction never has to happen at the same time as
+//! a rewrite of every caller. The mempool has gone (`zaino-mempool` /
+//! `zaino-mempool-service`); the non-finalised state and the finalised state
+//! follow; then a new ChainHead crate replaces `ChainIndex` and this crate
+//! retires.
+//!
+//! The mechanism, and the thing that is easy to misread: **before** a subsystem
+//! migrates, its needs sit on this trait as wire-typed *methods*; **after**, they
+//! sit on it as `zaino-source` *supertraits*. The requirement does not
+//! disappear — ChainIndex still has to hand the subsystem a source that can
+//! answer it — but the answering stops being routed through here.
+//!
+//! So a growing supertrait list is this trait *dissolving*, not accreting. Each
+//! migration converts method-surface into port-surface, and the trait tends
+//! toward a bound with no methods of its own, at which point deleting it at the
+//! ChainHead cutover is mechanical. A subsystem bounded on `BlockchainSource`
+//! but calling none of its methods — as the mempool wiring now is — is the
+//! finished state for that subsystem, not a subsystem that failed to leave.
+//!
+//! Two things to notice when the last of it goes:
+//!
+//! - A migrated subsystem's ports are named **twice**: here as supertraits, and
+//!   in `ChainIndexSourcePorts` (see the sibling `source_ports` module), which
+//!   is what `ValidatorSource`'s type parameter is bounded on. They sit at
+//!   different levels, so this is not redundant today — but nothing enforces
+//!   that they agree, so a new port has to be added in both places.
+//! - Because of that, the end state converges on this trait being substantially
+//!   a duplicate of `ChainIndexSourcePorts`. That convergence is the signal that
+//!   both are ready to delete, rather than something to reconcile earlier.
 
 use std::{error::Error, sync::Arc};
 
@@ -7,47 +67,21 @@ use crate::chain_index::{
     ShieldedPool,
 };
 use crate::SendFut;
-use futures::TryFutureExt as _;
-use incrementalmerkletree::frontier::CommitmentTree;
-use tower::{Service, ServiceExt as _};
-use zaino_fetch::jsonrpsee::{
-    connector::{JsonRpSeeConnector, RpcRequestError},
-    response::{
-        address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
-        block_header::GetBlockHeader,
-        block_subsidy::GetBlockSubsidy,
-        mining_info::GetMiningInfoWire,
-        peer_info::GetPeerInfo,
-        GetBlockError, GetBlockResponse, GetNetworkSolPsResponse, GetSpentInfoRequest,
-        GetSpentInfoResponse, GetTransactionResponse, GetTreestateResponse, GetTxOutResponse,
-    },
+use zaino_primitives::types::rpc::{
+    AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
+    NodeInfo, PeerInfo,
 };
-use zcash_primitives::merkle_tree::{read_commitment_tree, write_commitment_tree};
-use zebra_chain::{
-    block::TryIntoHeight, serialization::ZcashDeserialize, subtree::NoteCommitmentSubtreeIndex,
-};
-use zebra_rpc::{
-    client::{GetAddressBalanceRequest, GetAddressTxIdsRequest},
-    methods::{
-        AddressBalance, GetAddressUtxos, GetBlockchainInfoResponse, GetInfo, SentTransactionHash,
-    },
-};
-use zebra_state::{HashOrHeight, ReadRequest, ReadResponse, ReadStateService};
+use zebra_rpc::client::{GetAddressBalanceRequest, GetAddressTxIdsRequest};
+use zebra_state::HashOrHeight;
 
 #[cfg(test)]
 pub(crate) mod mockchain_source;
 
-pub mod validator_connector;
-pub use validator_connector::*;
-
-/// One pool's treestate for a block, as reported by the backing validator.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PoolTreestate {
-    /// The pool's note commitment tree root (32 bytes), when the validator reports one.
-    pub final_root: Option<Vec<u8>>,
-    /// The pool's serialized note commitment tree.
-    pub final_state: Vec<u8>,
-}
+/// One pool's treestate for a block.
+///
+/// Re-exported from the domain vocabulary so the scaffolding port and the
+/// driving ports name the same type.
+pub use zaino_primitives::types::PoolTreestate;
 
 /// Per-pool treestates `(sapling, orchard, ironwood)`, each `None` when the pool has no
 /// treestate at the queried block.
@@ -69,10 +103,46 @@ pub(crate) type ShieldedTreeRoots = (
 pub(crate) type NonfinalizedBlockReceiver =
     tokio::sync::mpsc::Receiver<(zebra_chain::block::Hash, Arc<zebra_chain::block::Block>)>;
 
-/// A trait for accessing blockchain data from different backends.
+/// ChainIndex's driven port onto the backing validator.
 ///
-/// TODO: Explore whether this should be split into separate capability based traits.
-pub trait BlockchainSource: Clone + Send + Sync + 'static {
+/// Temporary scaffolding — see the [module docs](self). The capability-based
+/// split this once carried a TODO for now exists in `zaino-source`; this trait
+/// remains only so ChainIndex can keep its current shape while the new stack is
+/// wired in beneath it.
+///
+/// # The mempool ports are supertraits, not methods
+///
+/// The four mempool questions are required here rather than declared as methods
+/// below, because the mempool subsystem has already completed the migration this
+/// trait is scaffolding for: it reads `zaino-source` directly and never sees a
+/// `BlockchainSource`. Restating those questions as wire-typed methods would
+/// mean converting domain types out and back for no reader.
+///
+/// This is what "methods leave `BlockchainSource` as subsystems move onto the
+/// ports" looks like from the other side — the requirement stays (ChainIndex
+/// still needs a source that can answer them, to hand to the mempool), but the
+/// answering is no longer routed through here. See the [module docs](self) for
+/// why a growing supertrait list is this trait dissolving rather than accreting.
+///
+/// A consequence worth stating, because it looks like a defect and is not:
+/// `MempoolSourceAdapter` (in the sibling `mempool` module) is bounded on this
+/// trait while calling none of its methods — it only forwards the supertraits
+/// above. That is the migrated state. Narrowing its bound to those four ports
+/// would decouple nothing on its own, because ChainIndex only ever instantiates
+/// it from its own `Source: BlockchainSource`; the change that decouples is
+/// removing the supertraits, which pushes the requirement onto every
+/// `NodeBackedChainIndex` bound and is churn this staging exists to avoid until
+/// the ChainHead cutover does it once.
+pub trait BlockchainSource:
+    zaino_source::GetMempoolTxids
+    + zaino_source::GetMempoolMetadata
+    + zaino_source::GetRawMempoolTransaction
+    + zaino_source::GetMempoolSourceTip
+    + Clone
+    + Send
+    + Sync
+    + 'static
+{
     // ********** Block methods **********
 
     /// Returns a best-chain block by hash or height
@@ -98,15 +168,18 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     fn get_block_header(
         &self,
         hash: String,
-        verbose: bool,
-    ) -> impl SendFut<BlockchainSourceResult<GetBlockHeader>>;
+    ) -> impl SendFut<BlockchainSourceResult<BlockHeaderVerbose>>;
+
+    /// Returns the raw serialised header of the block with the given hash.
+    ///
+    /// The non-verbose half of `getblockheader`. Verbosity is chosen by the
+    /// caller, so it selects between two questions here rather than making one
+    /// answer polymorphic; the serving layer picks which to ask.
+    fn get_raw_block_header(&self, hash: String) -> impl SendFut<BlockchainSourceResult<Vec<u8>>>;
 
     /// Returns the `getblockdeltas`-shaped transparent input/output deltas for the block
     /// with the given hash.
-    fn get_block_deltas(
-        &self,
-        hash: String,
-    ) -> impl SendFut<BlockchainSourceResult<zaino_fetch::jsonrpsee::response::block_deltas::BlockDeltas>>;
+    fn get_block_deltas(&self, hash: String) -> impl SendFut<BlockchainSourceResult<BlockDeltas>>;
 
     // ********** Transaction methods **********
 
@@ -122,11 +195,6 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
             )>,
         >,
     >;
-
-    /// Returns the complete list of txids currently in the mempool.
-    fn get_mempool_txids(
-        &self,
-    ) -> impl SendFut<BlockchainSourceResult<Option<Vec<zebra_chain::transaction::Hash>>>>;
 
     // ********** Chain methods **********
 
@@ -155,7 +223,7 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     /// Returns the `getblockchaininfo` response.
     fn get_blockchain_info(
         &self,
-    ) -> impl SendFut<BlockchainSourceResult<GetBlockchainInfoResponse>>;
+    ) -> impl SendFut<BlockchainSourceResult<zaino_primitives::types::BlockchainInfo>>;
 
     // ********** Node-passthrough methods **********
     //
@@ -163,28 +231,23 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     // JSON-RPC interface.
 
     /// Returns the `getinfo` response.
-    fn get_info(&self) -> impl SendFut<BlockchainSourceResult<GetInfo>>;
+    fn get_info(&self) -> impl SendFut<BlockchainSourceResult<NodeInfo>>;
 
     /// Returns the `getpeerinfo` response.
-    fn get_peer_info(&self) -> impl SendFut<BlockchainSourceResult<GetPeerInfo>>;
+    fn get_peer_info(&self) -> impl SendFut<BlockchainSourceResult<Vec<PeerInfo>>>;
 
     /// Returns the validator's `getchaintips` response. Serves as the
     /// `getchaintips` fallback while the local index is still building its
     /// finalised state and has no non-finalised snapshot to answer from.
     fn get_chain_tips(
         &self,
-    ) -> impl SendFut<
-        BlockchainSourceResult<zaino_fetch::jsonrpsee::response::chain_tips::GetChainTipsResponse>,
-    >;
+    ) -> impl SendFut<BlockchainSourceResult<Vec<zaino_primitives::types::rpc::ChainTip>>>;
 
     /// Returns the `getblocksubsidy` response at the given height.
-    fn get_block_subsidy(
-        &self,
-        height: u32,
-    ) -> impl SendFut<BlockchainSourceResult<GetBlockSubsidy>>;
+    fn get_block_subsidy(&self, height: u32) -> impl SendFut<BlockchainSourceResult<BlockSubsidy>>;
 
     /// Returns the `getmininginfo` response.
-    fn get_mining_info(&self) -> impl SendFut<BlockchainSourceResult<GetMiningInfoWire>>;
+    fn get_mining_info(&self) -> impl SendFut<BlockchainSourceResult<MiningInfo>>;
 
     /// Returns the `gettxout` response for the given outpoint.
     fn get_tx_out(
@@ -192,27 +255,27 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
         txid: String,
         n: u32,
         include_mempool: Option<bool>,
-    ) -> impl SendFut<BlockchainSourceResult<GetTxOutResponse>>;
+    ) -> impl SendFut<BlockchainSourceResult<Option<zaino_primitives::types::rpc::TxOut>>>;
 
     /// Returns the `getspentinfo` response for the given request.
     fn get_spent_info(
         &self,
-        request: GetSpentInfoRequest,
-    ) -> impl SendFut<BlockchainSourceResult<GetSpentInfoResponse>>;
+        outpoint: zaino_primitives::types::rpc::SpentOutpoint,
+    ) -> impl SendFut<BlockchainSourceResult<zaino_primitives::types::rpc::SpentInfo>>;
 
     /// Returns the `getnetworksolps` response.
     fn get_network_sol_ps(
         &self,
         blocks: Option<i32>,
         height: Option<i32>,
-    ) -> impl SendFut<BlockchainSourceResult<GetNetworkSolPsResponse>>;
+    ) -> impl SendFut<BlockchainSourceResult<u64>>;
 
     /// Submits a raw transaction to the network via the validator's mempool
     /// (`sendrawtransaction`).
     fn send_raw_transaction(
         &self,
         raw_transaction_hex: String,
-    ) -> impl SendFut<BlockchainSourceResult<SentTransactionHash>>;
+    ) -> impl SendFut<BlockchainSourceResult<zaino_primitives::types::TransactionId>>;
 
     /// Returns the full `z_gettreestate` response for the given hash-or-height string.
     ///
@@ -220,7 +283,7 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     fn get_treestate_by_id(
         &self,
         hash_or_height: String,
-    ) -> impl SendFut<BlockchainSourceResult<zebra_rpc::client::GetTreestateResponse>>;
+    ) -> impl SendFut<BlockchainSourceResult<zaino_primitives::types::Treestate>>;
 
     /// Returns the sapling and orchard treestate by hash
     fn get_treestate(&self, id: BlockHash) -> impl SendFut<BlockchainSourceResult<TreestateBytes>>;
@@ -259,10 +322,10 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     /// tags: address
     fn get_address_deltas(
         &self,
-        params: GetAddressDeltasParams,
-    ) -> impl SendFut<BlockchainSourceResult<GetAddressDeltasResponse>>;
+        params: AddressDeltasRequest,
+    ) -> impl SendFut<BlockchainSourceResult<AddressDeltas>>;
 
-    /// Returns the total balance of a provided `addresses` in an [`AddressBalance`] instance.
+    /// Returns the total balance of a provided `addresses` in an [`AddressBalance`](zaino_primitives::types::AddressBalance) instance.
     ///
     /// zcashd reference: [`getaddressbalance`](https://zcash.github.io/rpc/getaddressbalance.html)
     /// method: post
@@ -287,7 +350,7 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     fn get_address_balance(
         &self,
         address_strings: GetAddressBalanceRequest,
-    ) -> impl SendFut<BlockchainSourceResult<AddressBalance>>;
+    ) -> impl SendFut<BlockchainSourceResult<zaino_primitives::types::AddressBalance>>;
 
     /// Returns the transaction ids made by the provided transparent addresses.
     ///
@@ -328,7 +391,7 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     fn get_address_utxos(
         &self,
         address_strings: GetAddressBalanceRequest,
-    ) -> impl SendFut<BlockchainSourceResult<Vec<GetAddressUtxos>>>;
+    ) -> impl SendFut<BlockchainSourceResult<Vec<zaino_primitives::types::Utxo>>>;
 
     // ********** Utility methods **********
 
@@ -362,9 +425,9 @@ pub trait BlockchainSource: Clone + Send + Sync + 'static {
     /// Release any long-lived resources the source owns (e.g. a background
     /// syncer task feeding a `ReadStateService`).
     ///
-    /// Default is a no-op — poll-only sources (`JsonRpSeeConnector`) and test
+    /// Default is a no-op — poll-only sources (the RPC adapter) and test
     /// mockchains own nothing to tear down. Sources that spawn their own
-    /// validator plumbing (the `State` arm of `ValidatorConnector`, which owns
+    /// validator plumbing (the read-state adapter, which owns
     /// the Zebra syncer task) override this to abort that task on shutdown.
     fn shutdown(&self) {}
 }

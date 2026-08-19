@@ -1,0 +1,24 @@
+[package]
+name = "zaino-source"
+description = "Driven-port traits for Zcash validator access, backing the Zaino indexer's source adapters."
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+
+[dependencies]
+zaino-primitives = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
+
+[features]
+testing = []
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

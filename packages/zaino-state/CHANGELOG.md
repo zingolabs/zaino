@@ -13,6 +13,14 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.7.0] - 2026-08-14
+
+### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
 ## [0.6.0] - 2026-08-04
 
 ### Added
@@ -66,6 +74,71 @@ and this library adheres to Rust's notion of
   sync/migration to reach its target (distinct from `wait_until_ready`, which
   reflects serving-readiness).
 ### Changed
+- `BlockchainSource` documents how it dissolves, not just that it will. Before a
+  subsystem migrates, its needs sit on the trait as wire-typed *methods*; after,
+  as `zaino-source` *supertraits* — so each migration converts method-surface
+  into port-surface and the trait tends toward a bound with no methods of its
+  own, at which point the ChainHead cutover deletes it mechanically. Written
+  down because the opposite reading is available and was reached in review: a
+  growing supertrait list looks like accretion, and an adapter bounded on the
+  trait while calling none of its methods looks like coupling, when both are the
+  *finished* state for a migrated subsystem. Also records the two things to
+  notice at the end — a migrated subsystem's ports are named both here and in
+  `ChainIndexSourcePorts` with nothing enforcing that they agree, and the end
+  state converges on the two being duplicates.
+- **The mempool is now the `zaino-mempool` / `zaino-mempool-service` subsystem.**
+  `chain_index::mempool` (`Mempool`, `MempoolKey`, `MempoolValue`) and the
+  `Broadcast`/`BroadcastSubscriber` map it was built on are deleted, along with
+  their re-exports from the crate root. The ChainIndex now owns a tip-agnostic
+  `MempoolService` and a tip-aware `CoherenceService` over it.
+
+  The `chain_index::mempool` path is reused, deliberately: it is now
+  ChainIndex's side of the mempool boundary — the private module holding the
+  two adapters that wire the subsystem in — rather than a mempool
+  implementation. It is named for the boundary, as `chain_head.rs` is, so the
+  name survives the module's contents changing.
+
+  The behavioural change this buys: the live reads (`getrawmempool`,
+  `getmempoolinfo`, `GetMempoolTx`) no longer stall across a tip transition,
+  because they are served from the tip-agnostic set; and the reads that place a
+  transaction relative to a tip (`get_raw_transaction`, `get_transaction_status`,
+  `GetMempoolStream`) now refuse to answer against a snapshot the mempool has
+  moved past, instead of answering with a consensus branch id derived from the
+  wrong height.
+- `ChainIndex::get_mempool_transactions` takes raw txid suffixes
+  (`Vec<Vec<u8>>`, client byte order, exactly as they arrive on the wire) and
+  returns `Arc<MempoolEntry>` rather than taking hex strings and returning
+  `Vec<Vec<u8>>`. Callers reach the shared buffer without a copy, and an
+  over-long list or an unusably short suffix is now rejected as
+  `InvalidArgument` rather than silently clamped.
+- `ChainIndex::get_mempool_stream` yields `bytes::Bytes`, and is driven by the
+  coherence layer's own "stream until the tip moves" loop rather than a local
+  mpsc relay. `ChainIndex::get_mempool_height` / `mempool_branch_id` are gone;
+  the branch id is derived from the caller's own snapshot.
+- `ChainIndexErrorKind` gains `Unavailable` (retryable — the request is fine,
+  Zaino's view has moved) and `InvalidArgument` (the request is wrong), mapping
+  to `tonic::Status::unavailable` / `invalid_argument`. `child_process_status_error`
+  is removed with the relay that used it.
+- `BlockchainSource` requires the four `zaino-source` mempool ports as
+  supertraits and no longer declares `get_mempool_txids`. The mempool subsystem
+  reads those ports directly, so restating them here as wire-typed methods would
+  convert domain types out and back for no reader.
+- `NonfinalizedBlockCacheSnapshot` carries a `generation`, bumped when the best
+  tip changes rather than on every publication, and exposes an `epoch()`. This
+  is what the coherence layer freezes and thaws against; bumping per publication
+  would churn it every sync iteration and defeat the agreement check.
+- `CommonBackendConfig` / `ChainIndexConfig` carry a `mempool: MempoolConfig`,
+  shared by clone so the two services see one `max_cost_bytes` cell.
+- The `RawTransaction.data` served over gRPC is now `bytes::Bytes` rather than
+  `Vec<u8>` at every construction site, following the proto change. The wire
+  format is unchanged.
+- `GetTransaction` reports height `0` — the wire sentinel for unmined — for a
+  mempool transaction, rather than reporting the chain tip (which claimed it was
+  mined at a height it is not in) or failing with `UnavailableNotSyncedEnough`.
+- New metric `zaino.mempool.coherence_frozen_seconds`, and a sync-loop warning
+  when coherence stays frozen past 120s. A freeze is the normal shape of a tip
+  transition; a sustained one means tip-coherent reads have been failing with
+  nothing in the log to say so.
 - `chain_index::finalised_state` renames (internal, `pub(crate)`):
   - facade type `ZainoDB` -> `FinalisedState`
   - module `db` -> `finalised_source`; enum `DbBackend` -> `FinalisedSource`
@@ -85,9 +158,65 @@ and this library adheres to Rust's notion of
   dedicated `storage.database.accumulator_rebuild_memory_size` budget instead of
   reusing `sync_write_batch_size`, so the bulk-sync block buffer and the rebuild
   can no longer inflate each other's peak memory.
+- **Breaking** — all 25 non-proto `ZcashIndexer` return types are now
+  `zaino-primitives` domain types (ADR-0009), including those that previously
+  returned `zebra_rpc::methods::*`. Two exceptions remain by decision:
+  `z_getblock` and `getrawtransaction` still return zebra's presentation
+  shapes, which are built from block bytes plus chain facts using zebra's own
+  builders. The zcashd-shaped JSON now lives in `zaino-serve`.
+- **Breaking** — `NodeBackedIndexerService` is constructed over the
+  `zaino-source-zebra` stack. `ValidatorConnector` and its
+  `spawn_fetch`/`spawn_state` are gone; `ValidatorSource<V>` /
+  `ZebraValidatorSource` replace them.
+- `BlockchainSource` (`chain_index::source`) is now documented as **temporary
+  scaffolding** — ChainIndex's driven port, kept so the crate keeps working
+  while the `zaino-source` ports are wired in underneath, with a "do not
+  extend" note. Its signatures now carry domain types. It shrinks as each
+  ChainIndex subsystem moves onto the real ports and is deleted with the last
+  of them.
+- `ValidatorSource<V>` is generic over the ports, so the production composite
+  and the test mocks (`MockchainSource`, `ProptestMockchain`) reach ChainIndex
+  through the same conversion code. `mockchain_tests.rs` and
+  `proptest_blockgen.rs` therefore now exercise the production conversion
+  layer rather than a parallel implementation of it.
+- `chain_index::source_ports::ChainIndexSourcePorts` and
+  `source_caps` — per-consumer capability aliases, declared here rather than in
+  `zaino-source`, because an alias states a requirement of its consumer
+  (ADR-0008).
 ### Deprecated
 ### Removed
+- **Breaking** — `zaino_state::{Status, StatusType, NamedAtomicStatus}` and the
+  `status` module behind them. The status vocabulary lives in `zaino-status`;
+  a consumer that only needs to ask whether a component is ready no longer
+  depends on the indexer to find out. `AtomicStatus` is deleted outright, having
+  had no callers.
+- `zaino-fetch` is no longer a dependency, and the crate is deleted from the
+  workspace. Its transport is `zaino-rpc`, its inbound parsing
+  `zaino-source-zebra-rpc`, its outbound serialization `zaino-serve`'s wire
+  module, and its legacy protocol parser moved to
+  `live-tests/zaino-testutils` as a test-only independent oracle.
+- `chain_index::source::validator_connector` (~3,000 lines). Its
+  `ReadStateService` query logic moved to `zaino-source-zebra-readstate`, where
+  it is independently testable.
+- Two dead `TryFrom` impls in `types/db/legacy.rs`
+  (`TryFrom<(FullBlock, ..)> for IndexedBlock`, `TryFrom<(u64, FullTransaction)>
+  for CompactTxData`). Both were unreachable — every call site used
+  `BlockWithMetadata` or `::new` — and survived only because trait impls are
+  invisible to the dead-code lint. No `types/db/**` shape changed.
+- Address classification moved out to the new `zaino-address` crate;
+  `error::ChainParseError` is unproducible and removed.
+- The `zcashd_support` feature declaration, which gated nothing in this crate
+  once the zcashd-shaped response types moved to `zaino-serve`.
 ### Fixed
+- `LegacyRpcError` — carries a zcashd-compatible legacy code as a typed
+  `source` through the error chain, so a domain rejection reaches the serving
+  layer with the code clients key on rather than as a generic internal error.
+- The mempool stream parses each transaction once, not twice. It deserialized
+  the same bytes into a `zebra_chain` transaction and then again into
+  `zaino-fetch`'s `FullTransaction` purely to reach the latter's `to_compact`;
+  the domain conversion reaches the same compact shape directly. Removes an
+  `.unwrap()` on the same path, and closes the in-code TODO that asked for
+  exactly this.
 - The finalised-state txout-set accumulator rebuild at chain tip no longer
   OOM-crashes on memory-constrained hosts. It auto-shards its in-memory spent set
   by creating-txid prefix and now enforces the per-shard budget *strictly*: each

@@ -13,6 +13,14 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.4.0] - 2026-08-14
+
+### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
 ## [0.3.0] - 2026-08-04
 
 ### Added
@@ -38,6 +46,10 @@ and this library adheres to Rust's notion of
   clients that predate the field still receive `ironwoodActions` (unknown
   protobuf fields are carried harmlessly).
 ### Changed
+- `RawTransaction.data` is generated as `bytes::Bytes` rather than `Vec<u8>`
+  (prost `bytes` config, scoped to this one field). The wire format is unchanged;
+  it lets the serving path hand the same transaction to many streaming clients as
+  refcount bumps instead of a copy each.
 - Lightwallet protocol vendored subtree updated to v0.5.0:
   `CompactTx.ironwoodActions` (field 9, `CompactOrchardAction`-shaped) and
   `CompactBlock.ironwoodCommitmentTreeSize`.

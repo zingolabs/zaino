@@ -10,8 +10,8 @@ use zaino_proto::proto::utils::{prune_compact_block, PoolTypeFilter};
 use crate::chain_index::finalised_state::finalised_source::FinalisedSource;
 use crate::chain_index::finalised_state::reader::DbReader;
 use crate::chain_index::finalised_state::FinalisedState;
-use crate::chain_index::source::mockchain_source::MockchainSource;
 use crate::chain_index::tests::init_tracing;
+use crate::chain_index::tests::vectors::MockSource;
 use crate::chain_index::tests::vectors::{
     build_mockchain_source, copy_dir_recursive, index_test_vector_blocks, indexed_block_chain,
     load_test_vectors, TestVectorBlockData, TestVectorData,
@@ -29,8 +29,8 @@ use crate::{
 use crate::{AddrScript, Outpoint};
 
 pub(crate) async fn spawn_v1_zaino_db(
-    source: MockchainSource,
-) -> Result<(TempDir, FinalisedState<MockchainSource>), FinalisedStateError> {
+    source: MockSource,
+) -> Result<(TempDir, FinalisedState<MockSource>), FinalisedStateError> {
     let temp_dir: TempDir = tempfile::tempdir().unwrap();
     let db_path: PathBuf = temp_dir.path().to_path_buf();
 
@@ -43,6 +43,7 @@ pub(crate) async fn spawn_v1_zaino_db(
             ..Default::default()
         },
         ephemeral: false,
+        mempool: Default::default(),
         db_version: 1,
         network: ActivationHeights::default().to_regtest_network(),
     };
@@ -53,7 +54,7 @@ pub(crate) async fn spawn_v1_zaino_db(
 }
 
 pub(crate) async fn load_vectors_and_spawn_and_sync_v1_zaino_db(
-) -> (TestVectorData, TempDir, FinalisedState<MockchainSource>) {
+) -> (TestVectorData, TempDir, FinalisedState<MockSource>) {
     let test_vector_data = load_test_vectors().unwrap();
     let blocks = test_vector_data.blocks.clone();
 
@@ -72,8 +73,8 @@ pub(crate) async fn load_vectors_and_spawn_and_sync_v1_zaino_db(
 pub(crate) async fn load_vectors_v1db_and_reader() -> (
     TestVectorData,
     TempDir,
-    std::sync::Arc<FinalisedState<MockchainSource>>,
-    DbReader<MockchainSource>,
+    std::sync::Arc<FinalisedState<MockSource>>,
+    DbReader<MockSource>,
 ) {
     let (test_vector_data, db_dir, zaino_db) = load_vectors_and_spawn_and_sync_v1_zaino_db().await;
 
@@ -192,6 +193,7 @@ async fn save_db_to_file_and_reload() {
             ..Default::default()
         },
         ephemeral: false,
+        mempool: Default::default(),
         db_version: 1,
         network: ActivationHeights::default().to_regtest_network(),
     };
@@ -271,10 +273,11 @@ async fn load_db_backend_from_file() {
             ..Default::default()
         },
         ephemeral: false,
+        mempool: Default::default(),
         db_version: 1,
         network: ActivationHeights::default().to_regtest_network(),
     };
-    let finalized_state_backend: FinalisedSource<MockchainSource> =
+    let finalized_state_backend: FinalisedSource<MockSource> =
         FinalisedSource::spawn_v1(&config).await.unwrap();
 
     // Read block headers directly from the `headers` table rather than via `get_chain_block`, which

@@ -1,615 +1,191 @@
-//! Holds Zaino's mempool implementation.
+//! ChainIndex's side of the mempool boundary.
+//!
+//! What the mempool subsystem needs from `zaino-state`, and how it gets it.
+//!
+//! Named for the boundary, not for what it currently holds. These are adapters
+//! today, but a suffix saying so would rot the first time a bound or a
+//! conversion joined them — which is exactly how `_ports` came to mean two
+//! different things in this crate (`source_ports` really does hold a port).
+//! Each subsystem extracted from ChainIndex gets a module named this way, so
+//! the name survives the contents changing.
+//!
+//! The mempool reads the validator through [`zaino_source`]'s ports, which
+//! ChainIndex's source already answers, so nothing here translates validator
+//! data. What the two adapters below supply is the part `zaino-source` has
+//! nothing to say about, because it is a fact about *Zaino's* state rather than
+//! the validator's:
+//!
+//! - [`MempoolSourceAdapter`] supplies the block-arrival wake, which must come
+//!   from ChainIndex's sync loop rather than from the source. Its port impls
+//!   forward the validator questions untouched.
+//! - [`NfsEpochAdapter`] exposes the non-finalized state's epoch, which is what
+//!   the coherence layer freezes and thaws against.
+//!
+//! Dependencies point inward: these adapters know about the mempool crates; the
+//! mempool crates never name a `zaino-state` type.
 
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
 
-#[cfg(feature = "prometheus")]
-use crate::metric_names::*;
-use crate::{
-    broadcast::{Broadcast, BroadcastSubscriber},
-    chain_index::{
-        source::{BlockchainSource, BlockchainSourceError},
-        types::db::metadata::MempoolInfo,
-    },
-    error::{MempoolError, StatusError},
-    status::{NamedAtomicStatus, StatusType},
-    BlockHash,
-};
-use tracing::{info, instrument, warn};
-use zaino_fetch::jsonrpsee::response::GetMempoolInfoResponse;
-use zebra_chain::{block::Hash, transaction::SerializedTransaction};
+use arc_swap::ArcSwapOption;
 
-/// Mempool key
+use crate::chain_index::non_finalised_state::NonFinalizedState;
+use crate::chain_index::source::BlockchainSource;
+
+/// The tip-agnostic core mempool the ChainIndex owns.
 ///
-/// Holds txid.
+/// Serves the live, never-frozen reads — `getrawmempool`, `getmempoolinfo`,
+/// `GetMempoolTx` — which must keep answering across a tip transition.
+pub(crate) type ChainIndexMempool<Source> =
+    zaino_mempool_service::MempoolService<MempoolSourceAdapter<Source>>;
+
+/// The tip-aware coherence layer the ChainIndex owns.
 ///
-/// TODO: Update to hold zebra_chain::Transaction::Hash ( or internal version )
-/// `https://github.com/zingolabs/zaino/issues/661`
-#[derive(Debug, Clone, PartialEq, Hash, Eq)]
-pub struct MempoolKey {
-    /// currently txid (as string) - see above TODO, could be stronger type
-    pub txid: String,
+/// Wraps the core's read handle and this crate's non-finalized-state epoch
+/// observer to serve the reads that place a transaction relative to a tip —
+/// `get_raw_transaction`, `get_transaction_status`, and the coherent
+/// raw-transaction stream.
+pub(crate) type ChainIndexCoherence<Source> = zaino_mempool_service::CoherenceService<
+    zaino_mempool_service::MempoolSubscriber,
+    NfsEpochAdapter<Source>,
+>;
+
+/// Wraps ChainIndex's source to give the mempool a block-arrival wake.
+///
+/// Every mempool data port forwards to the wrapped source untouched; those impls
+/// exist only because a trait impl does not travel through a wrapper on its own.
+/// The one thing this adds is `SubscribeBlocks`.
+///
+/// It has to. `ValidatorSource` has no push path in production — reaching the
+/// validator over request/response gives none — so without a wake the mempool's
+/// addition latency would always be a full poll interval. The ChainIndex sync
+/// loop *does* know when a block landed, so it fires this signal, and the
+/// mempool gets a block-driven push path the source cannot offer.
+///
+/// This is a wake hint and nothing more. The tip is re-read from the source on
+/// every tick regardless, so a missed or spurious signal costs latency, never
+/// correctness.
+#[derive(Clone)]
+pub(crate) struct MempoolSourceAdapter<S> {
+    source: S,
+    block_wake: tokio::sync::watch::Receiver<()>,
 }
 
-/// Mempool value.
-///
-/// Holds zebra_chain::transaction::SerializedTransaction.
-#[derive(Debug, Clone, PartialEq)]
-pub struct MempoolValue {
-    /// Stores bytes that are guaranteed to be deserializable into a Transaction (zebra_chain enum).
-    /// Sorts in lexicographic order of the transaction's serialized data.
-    pub serialized_tx: Arc<SerializedTransaction>,
-}
-
-/// Zcash mempool, uses dashmap for efficient serving of mempool tx.
-#[derive(Debug)]
-pub struct Mempool<T: BlockchainSource> {
-    /// Zcash chain fetch service.
-    fetcher: T,
-    /// Wrapper for a dashmap of mempool transactions.
-    state: Broadcast<MempoolKey, MempoolValue>,
-    /// The hash of the chain tip for which this mempool is currently serving.
-    mempool_chain_tip: tokio::sync::watch::Sender<BlockHash>,
-    /// Mempool sync handle.
-    sync_task_handle: Option<std::sync::Mutex<tokio::task::JoinHandle<()>>>,
-    /// mempool status.
-    status: NamedAtomicStatus,
-}
-
-impl<T: BlockchainSource> Mempool<T> {
-    /// Spawns a new [`Mempool`].
-    #[instrument(name = "Mempool::spawn", skip(fetcher, capacity_and_shard_amount))]
-    pub async fn spawn(
-        fetcher: T,
-        capacity_and_shard_amount: Option<(usize, usize)>,
-    ) -> Result<Self, MempoolError> {
-        // Wait for mempool in validator to come online.
-        loop {
-            match fetcher.get_mempool_txids().await {
-                Ok(_) => {
-                    break;
-                }
-                Err(_) => {
-                    info!("Waiting for Validator mempool to come online");
-                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                }
-            }
-        }
-
-        let best_block_hash: BlockHash = match fetcher.get_best_block_hash().await {
-            Ok(block_hash_opt) => match block_hash_opt {
-                Some(hash) => hash.into(),
-                None => {
-                    return Err(MempoolError::Critical(
-                        "Error in mempool: Error connecting with validator".to_string(),
-                    ))
-                }
-            },
-            Err(_e) => {
-                return Err(MempoolError::Critical(
-                    "Error in mempool: Error connecting with validator".to_string(),
-                ))
-            }
-        };
-
-        let (chain_tip_sender, _chain_tip_reciever) = tokio::sync::watch::channel(best_block_hash);
-
-        info!(chain_tip = %best_block_hash, "Launching Mempool");
-        let mut mempool = Mempool {
-            fetcher: fetcher.clone(),
-            state: match capacity_and_shard_amount {
-                Some((capacity, shard_amount)) => {
-                    Broadcast::new(Some(capacity), Some(shard_amount))
-                }
-                None => Broadcast::new(None, None),
-            },
-            mempool_chain_tip: chain_tip_sender,
-            sync_task_handle: None,
-            status: NamedAtomicStatus::new("Mempool", StatusType::Spawning),
-        };
-
-        loop {
-            match mempool.get_mempool_transactions().await {
-                Ok(mempool_transactions) => {
-                    mempool.status.store(StatusType::Ready);
-                    mempool
-                        .state
-                        .insert_filtered_set(mempool_transactions, mempool.status.load());
-                    break;
-                }
-                Err(e) => {
-                    mempool.state.notify(mempool.status.load());
-                    warn!(%e, "mempool source fetch failed");
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    continue;
-                }
-            };
-        }
-
-        mempool.sync_task_handle = Some(std::sync::Mutex::new(mempool.serve().await?));
-
-        Ok(mempool)
+impl<S> MempoolSourceAdapter<S> {
+    pub(crate) fn new(source: S, block_wake: tokio::sync::watch::Receiver<()>) -> Self {
+        Self { source, block_wake }
     }
+}
 
-    async fn serve(&self) -> Result<tokio::task::JoinHandle<()>, MempoolError> {
-        let mempool = Self {
-            fetcher: self.fetcher.clone(),
-            state: self.state.clone(),
-            mempool_chain_tip: self.mempool_chain_tip.clone(),
-            sync_task_handle: None,
-            status: self.status.clone(),
-        };
-
-        let state = self.state.clone();
-        let status = self.status.clone();
-        status.store(StatusType::Spawning);
-
-        let sync_handle = tokio::spawn(async move {
-            let mut best_block_hash: Hash;
-            let mut check_block_hash: Hash;
-
-            // Initialise tip.
-            loop {
-                match mempool.fetcher.get_best_block_hash().await {
-                    Ok(block_hash_opt) => match block_hash_opt {
-                        Some(hash) => {
-                            mempool.mempool_chain_tip.send_replace(hash.into());
-                            best_block_hash = hash;
-                            break;
-                        }
-                        None => {
-                            mempool.status.store(StatusType::RecoverableError);
-                            state.notify(status.load());
-                            warn!("error fetching best_block_hash from validator");
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                            continue;
-                        }
-                    },
-                    Err(e) => {
-                        mempool.status.store(StatusType::RecoverableError);
-                        state.notify(status.load());
-                        warn!(%e, "mempool initial block hash fetch failed");
-                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        continue;
-                    }
-                }
-            }
-
-            // Main loop
-            loop {
-                // Check chain tip.
-                match mempool.fetcher.get_best_block_hash().await {
-                    Ok(block_hash_opt) => match block_hash_opt {
-                        Some(hash) => {
-                            check_block_hash = hash;
-                        }
-                        None => {
-                            mempool.status.store(StatusType::RecoverableError);
-                            state.notify(status.load());
-                            warn!("error fetching best_block_hash from validator");
-                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                            continue;
-                        }
-                    },
-                    Err(e) => {
-                        state.notify(status.load());
-                        warn!(%e, "mempool chain tip check failed");
-                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        continue;
-                    }
-                }
-
-                // If chain tip has changed reset mempool.
-                if check_block_hash != best_block_hash {
-                    status.store(StatusType::Syncing);
-                    state.notify(status.load());
-                    state.clear();
-                    #[cfg(feature = "prometheus")]
-                    {
-                        metrics::counter!(MEMPOOL_TIP_CHANGES_TOTAL).increment(1);
-                        metrics::gauge!(MEMPOOL_TRANSACTIONS).set(0.0);
-                    }
-
-                    mempool
-                        .mempool_chain_tip
-                        .send_replace(check_block_hash.into());
-                    best_block_hash = check_block_hash;
-
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    continue;
-                }
-
-                match mempool.get_mempool_transactions().await {
-                    Ok(mempool_transactions) => {
-                        status.store(StatusType::Ready);
-                        state.insert_filtered_set(mempool_transactions, status.load());
-                        #[cfg(feature = "prometheus")]
-                        metrics::gauge!(MEMPOOL_TRANSACTIONS).set(state.len() as f64);
-                    }
-                    Err(e) => {
-                        status.store(StatusType::RecoverableError);
-                        state.notify(status.load());
-                        warn!(%e, "mempool transaction fetch failed");
-                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                        continue;
-                    }
-                };
-
-                if status.load() == StatusType::Closing {
-                    state.notify(status.load());
-                    return;
-                }
-
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
-        });
-
-        Ok(sync_handle)
-    }
-
-    /// Returns all transactions in the mempool.
-    async fn get_mempool_transactions(
+impl<S: BlockchainSource> zaino_source::GetMempoolTxids for MempoolSourceAdapter<S> {
+    fn get_mempool_txids(
         &self,
-    ) -> Result<Vec<(MempoolKey, MempoolValue)>, MempoolError> {
-        let mut transactions = Vec::new();
-
-        let txids = self.fetcher.get_mempool_txids().await?.ok_or_else(|| {
-            MempoolError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
-                "could not fetch mempool data: mempool txid list was None".to_string(),
-            ))
-        })?;
-
-        for txid in txids {
-            let (transaction, _location) = self
-                .fetcher
-                .get_transaction(txid.0.into())
-                .await?
-                .ok_or_else(|| {
-                    MempoolError::BlockchainSourceError(
-                        crate::chain_index::source::BlockchainSourceError::Unrecoverable(format!(
-                            "could not fetch mempool data: transaction not found for txid {txid}"
-                        )),
-                    )
-                })?;
-
-            transactions.push((
-                MempoolKey {
-                    txid: txid.to_string(),
-                },
-                MempoolValue {
-                    serialized_tx: Arc::new(transaction.into()),
-                },
-            ));
-        }
-
-        Ok(transactions)
-    }
-
-    /// Returns a [`MempoolSubscriber`].
-    pub fn subscriber(&self) -> MempoolSubscriber {
-        MempoolSubscriber {
-            subscriber: self.state.subscriber(),
-            seen_txids: HashSet::new(),
-            mempool_chain_tip: self.mempool_chain_tip.subscribe(),
-            status: self.status.clone(),
-        }
-    }
-
-    /// Returns the current tx count
-    pub async fn size(&self) -> Result<usize, MempoolError> {
-        Ok(self
-            .fetcher
-            .get_mempool_txids()
-            .await?
-            .map_or(0, |v| v.len()))
-    }
-
-    /// Returns information about the mempool. Used by the `getmempoolinfo` RPC.
-    /// Computed from local Broadcast state.
-    pub async fn get_mempool_info(&self) -> Result<GetMempoolInfoResponse, MempoolError> {
-        let map = self.state.get_state();
-
-        let size = map.len() as u64;
-
-        let mut bytes: u64 = 0;
-        let mut key_heap_bytes: u64 = 0;
-
-        for entry in map.iter() {
-            // payload bytes are exact (we store SerializedTransaction)
-            bytes =
-                bytes.saturating_add(Self::tx_serialized_len_bytes(&entry.value().serialized_tx));
-
-            // heap used by the key txid (String)
-            key_heap_bytes = key_heap_bytes.saturating_add(entry.key().txid.capacity() as u64);
-        }
-
-        let usage = bytes.saturating_add(key_heap_bytes);
-
-        Ok(GetMempoolInfoResponse { size, bytes, usage })
-    }
-
-    #[inline]
-    fn tx_serialized_len_bytes(tx: &SerializedTransaction) -> u64 {
-        tx.as_ref().len() as u64
-    }
-
-    // TODO knock this out if possible
-    // private fields in remaining references
-    //
-    /// Returns the status of the mempool.
-    pub fn status(&self) -> StatusType {
-        self.status.load()
-    }
-
-    /// Sets the mempool to close gracefully.
-    pub fn close(&self) {
-        self.status.store(StatusType::Closing);
-        self.state.notify(self.status.load());
-        if let Some(ref handle) = self.sync_task_handle {
-            if let Ok(handle) = handle.lock() {
-                handle.abort();
-            }
-        }
+    ) -> impl std::future::Future<
+        Output = Result<
+            Vec<zaino_primitives::types::TransactionId>,
+            zaino_source::QueryError<zaino_source::GetMempoolTxidsError>,
+        >,
+    > + Send {
+        self.source.get_mempool_txids()
     }
 }
 
-impl<T: BlockchainSource> Drop for Mempool<T> {
-    fn drop(&mut self) {
-        self.status.store(StatusType::Closing);
-        self.state.notify(StatusType::Closing);
-        if let Some(handle) = self.sync_task_handle.take() {
-            if let Ok(handle) = handle.lock() {
-                handle.abort();
-            }
-        }
-    }
-}
-
-/// A subscriber to a [`Mempool`].
-#[derive(Debug, Clone)]
-pub struct MempoolSubscriber {
-    subscriber: BroadcastSubscriber<MempoolKey, MempoolValue>,
-    seen_txids: HashSet<MempoolKey>,
-    mempool_chain_tip: tokio::sync::watch::Receiver<BlockHash>,
-    status: NamedAtomicStatus,
-}
-
-impl MempoolSubscriber {
-    /// Returns all tx currently in the mempool.
-    pub async fn get_mempool(&self) -> Vec<(MempoolKey, MempoolValue)> {
-        self.subscriber.get_filtered_state(&HashSet::new())
-    }
-
-    /// Returns all tx currently in the mempool filtered by `exclude_list`.
-    ///
-    /// The transaction IDs in the Exclude list can be shortened to any number of bytes to make the request
-    /// more bandwidth-efficient; if two or more transactions in the mempool
-    /// match a shortened txid, they are all sent (none is excluded). Transactions
-    /// in the exclude list that don't exist in the mempool are ignored.
-    pub async fn get_filtered_mempool(
+impl<S: BlockchainSource> zaino_source::GetMempoolMetadata for MempoolSourceAdapter<S> {
+    fn get_mempool_metadata(
         &self,
-        exclude_list: Vec<String>,
-    ) -> Vec<(MempoolKey, MempoolValue)> {
-        let mempool_tx = self.subscriber.get_filtered_state(&HashSet::new());
-
-        let mempool_txids: HashSet<String> = mempool_tx
-            .iter()
-            .map(|(mempool_key, _)| mempool_key.txid.clone())
-            .collect();
-
-        let mut txids_to_exclude: HashSet<MempoolKey> = HashSet::new();
-        for exclude_txid in &exclude_list {
-            let matching_txids: Vec<&String> = mempool_txids
-                .iter()
-                .filter(|txid| txid.starts_with(exclude_txid))
-                .collect();
-
-            if matching_txids.len() == 1 {
-                txids_to_exclude.insert(MempoolKey {
-                    txid: matching_txids[0].clone(),
-                });
-            }
-        }
-
-        mempool_tx
-            .into_iter()
-            .filter(|(mempool_key, _)| !txids_to_exclude.contains(mempool_key))
-            .collect()
+    ) -> impl std::future::Future<
+        Output = Result<
+            Vec<zaino_source::MempoolTxMeta>,
+            zaino_source::QueryError<zaino_source::GetMempoolMetadataError>,
+        >,
+    > + Send {
+        self.source.get_mempool_metadata()
     }
+}
 
-    /// Returns a stream of mempool txids, closes the channel when a new block has been mined.
-    pub async fn get_mempool_stream(
-        &mut self,
-        expected_chain_tip: Option<BlockHash>,
-    ) -> Result<
-        (
-            tokio::sync::mpsc::Receiver<Result<(MempoolKey, MempoolValue), StatusError>>,
-            tokio::task::JoinHandle<()>,
-        ),
-        MempoolError,
-    > {
-        let mut subscriber = self.clone();
-        subscriber.seen_txids.clear();
-        let (channel_tx, channel_rx) = tokio::sync::mpsc::channel(32);
-
-        if let Some(expected_chain_tip_hash) = expected_chain_tip {
-            if expected_chain_tip_hash != *self.mempool_chain_tip.borrow() {
-                return Err(MempoolError::IncorrectChainTip {
-                    expected_chain_tip: expected_chain_tip_hash,
-                    current_chain_tip: *self.mempool_chain_tip.borrow(),
-                });
-            }
-        }
-
-        let streamer_handle = tokio::spawn(async move {
-            let mempool_result: Result<(), MempoolError> = async {
-                loop {
-                    let (mempool_status, mempool_updates) = subscriber
-                        .wait_on_mempool_updates(expected_chain_tip)
-                        .await?;
-                    match mempool_status {
-                        StatusType::Ready => {
-                            for (mempool_key, mempool_value) in mempool_updates {
-                                loop {
-                                    match channel_tx
-                                        .try_send(Ok((mempool_key.clone(), mempool_value.clone())))
-                                    {
-                                        Ok(_) => break,
-                                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                                            tokio::time::sleep(std::time::Duration::from_millis(
-                                                100,
-                                            ))
-                                            .await;
-                                            continue;
-                                        }
-                                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                                            return Ok(());
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        StatusType::Syncing => {
-                            return Ok(());
-                        }
-                        StatusType::Closing => {
-                            return Err(MempoolError::StatusError(StatusError {
-                                server_status: StatusType::Closing,
-                            }));
-                        }
-                        StatusType::RecoverableError => {
-                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                            continue;
-                        }
-                        status => {
-                            return Err(MempoolError::StatusError(StatusError {
-                                server_status: status,
-                            }));
-                        }
-                    }
-                    if subscriber.status.load() == StatusType::Closing {
-                        return Err(MempoolError::StatusError(StatusError {
-                            server_status: StatusType::Closing,
-                        }));
-                    }
-                }
-            }
-            .await;
-
-            if let Err(mempool_error) = mempool_result {
-                warn!(?mempool_error, "error in mempool stream");
-                match mempool_error {
-                    MempoolError::StatusError(error_status) => {
-                        let _ = channel_tx.send(Err(error_status)).await;
-                    }
-                    _ => {
-                        let _ = channel_tx
-                            .send(Err(StatusError {
-                                server_status: StatusType::RecoverableError,
-                            }))
-                            .await;
-                    }
-                }
-            }
-        });
-
-        Ok((channel_rx, streamer_handle))
+impl<S: BlockchainSource> zaino_source::GetRawMempoolTransaction for MempoolSourceAdapter<S> {
+    fn get_raw_mempool_transaction(
+        &self,
+        txid: zaino_primitives::types::TransactionId,
+    ) -> impl std::future::Future<
+        Output = Result<
+            Vec<u8>,
+            zaino_source::QueryError<zaino_source::GetRawMempoolTransactionError>,
+        >,
+    > + Send {
+        self.source.get_raw_mempool_transaction(txid)
     }
+}
 
-    /// Returns true if mempool contains the given txid.
-    pub async fn contains_txid(&self, txid: &MempoolKey) -> bool {
-        self.subscriber.contains_key(txid)
+impl<S: BlockchainSource> zaino_source::GetMempoolSourceTip for MempoolSourceAdapter<S> {
+    fn get_mempool_source_tip(
+        &self,
+    ) -> impl std::future::Future<
+        Output = Result<
+            (
+                zaino_primitives::types::BlockHash,
+                zaino_primitives::types::Height,
+            ),
+            zaino_source::QueryError<std::convert::Infallible>,
+        >,
+    > + Send {
+        self.source.get_mempool_source_tip()
     }
+}
 
-    /// Returns transaction by txid if in the mempool, else returns none.
-    pub async fn get_transaction(&self, txid: &MempoolKey) -> Option<Arc<MempoolValue>> {
-        self.subscriber.get(txid)
+impl<S: BlockchainSource> zaino_source::SubscribeBlocks for MempoolSourceAdapter<S> {
+    fn subscribe_to_blocks_received(&self) -> Option<tokio::sync::watch::Receiver<()>> {
+        Some(self.block_wake.clone())
     }
+}
 
-    /// Returns information about the mempool. Used by the `getmempoolinfo` RPC.
-    /// Computed from local Broadcast state.
-    pub async fn get_mempool_info(&self) -> MempoolInfo {
-        let mempool_transactions: Vec<(MempoolKey, MempoolValue)> =
-            self.subscriber.get_filtered_state(&HashSet::new());
+/// Presents the ChainIndex's non-finalized state as the mempool's epoch
+/// observer.
+///
+/// Reads the *same* `ArcSwapOption` the ChainIndex publishes into, so the
+/// mempool observes exactly the epoch the rest of the ChainIndex serves. Holding
+/// a separate copy would let the two drift, and the coherence layer would be
+/// freezing against a tip nobody was being served.
+///
+/// It never owns or mutates the non-finalized state — it only reads its epoch.
+pub(crate) struct NfsEpochAdapter<Source: BlockchainSource> {
+    non_finalized_state: Arc<ArcSwapOption<NonFinalizedState<Source>>>,
+    /// Fired by the ChainIndex sync loop on each publication.
+    epoch_wake: tokio::sync::watch::Receiver<()>,
+}
 
-        let size: u64 = mempool_transactions.len() as u64;
-
-        let mut bytes: u64 = 0;
-        let mut key_heap_bytes: u64 = 0;
-
-        for (mempool_key, mempool_value) in mempool_transactions.iter() {
-            // payload bytes are exact (we store SerializedTransaction)
-            bytes =
-                bytes.saturating_add(mempool_value.serialized_tx.as_ref().as_ref().len() as u64);
-
-            // heap used by the key String (txid)
-            key_heap_bytes = key_heap_bytes.saturating_add(mempool_key.txid.capacity() as u64);
-        }
-
-        let usage: u64 = bytes.saturating_add(key_heap_bytes);
-
-        MempoolInfo { size, bytes, usage }
-    }
-
-    // TODO noted here too
-    /// Returns the status of the mempool.
-    pub fn status(&self) -> StatusType {
-        self.status.load()
-    }
-
-    /// Returns all tx currently in the mempool and updates seen_txids.
-    fn get_mempool_and_update_seen(&mut self) -> Vec<(MempoolKey, MempoolValue)> {
-        let mempool_updates = self.subscriber.get_filtered_state(&HashSet::new());
-        for (mempool_key, _) in mempool_updates.clone() {
-            self.seen_txids.insert(mempool_key);
-        }
-        mempool_updates
-    }
-
-    /// Returns txids not yet seen by the subscriber and updates seen_txids.
-    fn get_mempool_updates_and_update_seen(&mut self) -> Vec<(MempoolKey, MempoolValue)> {
-        let mempool_updates = self.subscriber.get_filtered_state(&self.seen_txids);
-        for (mempool_key, _) in mempool_updates.clone() {
-            self.seen_txids.insert(mempool_key);
-        }
-        mempool_updates
-    }
-
-    /// Waits on update from mempool and updates the mempool, returning either the new mempool or the mempool updates, along with the mempool status.
-    async fn wait_on_mempool_updates(
-        &mut self,
-        expected_chain_tip: Option<BlockHash>,
-    ) -> Result<(StatusType, Vec<(MempoolKey, MempoolValue)>), MempoolError> {
-        if expected_chain_tip.is_some()
-            && expected_chain_tip.unwrap() != *self.mempool_chain_tip.borrow()
-        {
-            self.clear_seen();
-            return Ok((StatusType::Syncing, self.get_mempool_and_update_seen()));
-        }
-
-        let update_status = self.subscriber.wait_on_notifier().await?;
-        match update_status {
-            StatusType::Ready => Ok((
-                StatusType::Ready,
-                self.get_mempool_updates_and_update_seen(),
-            )),
-            StatusType::Syncing => {
-                self.clear_seen();
-                Ok((StatusType::Syncing, self.get_mempool_and_update_seen()))
-            }
-            StatusType::Closing => Ok((StatusType::Closing, Vec::new())),
-            status => Err(MempoolError::StatusError(StatusError {
-                server_status: status,
-            })),
+impl<Source: BlockchainSource> NfsEpochAdapter<Source> {
+    /// Wrap the ChainIndex's shared non-finalized-state handle and its
+    /// publication signal.
+    pub(crate) fn new(
+        non_finalized_state: Arc<ArcSwapOption<NonFinalizedState<Source>>>,
+        epoch_wake: tokio::sync::watch::Receiver<()>,
+    ) -> Self {
+        Self {
+            non_finalized_state,
+            epoch_wake,
         }
     }
+}
 
-    /// Clears the subscribers seen_txids.
-    fn clear_seen(&mut self) {
-        self.seen_txids.clear();
+/// Written out rather than derived: `derive(Clone)` would demand
+/// `Source: Clone`, which the adapter does not need — it holds only shared
+/// handles.
+impl<Source: BlockchainSource> Clone for NfsEpochAdapter<Source> {
+    fn clone(&self) -> Self {
+        Self {
+            non_finalized_state: Arc::clone(&self.non_finalized_state),
+            epoch_wake: self.epoch_wake.clone(),
+        }
+    }
+}
+
+impl<Source: BlockchainSource> zaino_mempool::NfsEpochObserver for NfsEpochAdapter<Source> {
+    fn current_epoch(&self) -> Option<zaino_mempool::NonFinalizedEpoch> {
+        let non_finalized_state = self.non_finalized_state.load_full()?;
+        Some(non_finalized_state.get_snapshot().epoch())
     }
 
-    /// Get the chain tip that the mempool is atop
-    pub fn mempool_chain_tip(&self) -> BlockHash {
-        *self.mempool_chain_tip.borrow()
+    fn subscribe_epoch_changes(&self) -> Option<tokio::sync::watch::Receiver<()>> {
+        Some(self.epoch_wake.clone())
     }
 }

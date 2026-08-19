@@ -9,20 +9,10 @@ pub(crate) mod node_backed_indexer;
 use crate::SendFut;
 use tokio::{sync::mpsc, time::timeout};
 use tracing::warn;
-use zaino_fetch::jsonrpsee::response::{
-    address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
-    block_deltas::BlockDeltas,
-    block_header::GetBlockHeader,
-    block_subsidy::GetBlockSubsidy,
-    chain_tips::GetChainTipsResponse,
-    mining_info::GetMiningInfoWire,
-    peer_info::GetPeerInfo,
-    z_validate_address::{
-        InvalidZValidateAddress, KnownZValidateAddress, ZValidateAddressResponse,
-        DEPRECATION_NOTICE as Z_VALIDATE_DEPRECATION,
-    },
-    GetMempoolInfoResponse, GetNetworkSolPsResponse, GetSpentInfoRequest, GetSpentInfoResponse,
-    GetSubtreesResponse, GetTxOutSetInfoResponse,
+use zaino_address::{ValidatedAddress, ZValidatedAddress};
+use zaino_primitives::types::rpc::{
+    AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
+    NodeInfo, PeerInfo,
 };
 use zaino_proto::proto::{
     compact_formats::CompactBlock,
@@ -36,24 +26,15 @@ use zaino_proto::proto::{
 use zebra_chain::{
     block::Height, serialization::BytesInDisplayOrder as _, subtree::NoteCommitmentSubtreeIndex,
 };
-use zebra_rpc::{
-    client::{
-        GetSubtreesByIndexResponse, GetTreestateResponse, SubtreeRpcData, ValidateAddressResponse,
-    },
-    methods::{
-        AddressBalance, GetAddressBalanceRequest, GetAddressTxIdsRequest, GetAddressUtxos,
-        GetBlock, GetBlockHash, GetBlockchainInfoResponse, GetInfo, GetRawTransaction,
-        SentTransactionHash,
-    },
+use zebra_rpc::methods::{
+    GetAddressBalanceRequest, GetAddressTxIdsRequest, GetBlock, GetBlockHash, GetRawTransaction,
 };
 
-use crate::{
-    status::Status,
-    stream::{
-        AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
-        SubtreeRootReplyStream, UtxoReplyStream,
-    },
+use crate::stream::{
+    AddressStream, CompactBlockStream, CompactTransactionStream, RawTransactionStream,
+    SubtreeRootReplyStream, UtxoReplyStream,
 };
+use zaino_status::Status;
 
 /// Wrapper struct for a ZainoState chain-fetch service (currently the single
 /// [`node_backed_indexer::NodeBackedIndexerService`]).
@@ -94,8 +75,8 @@ where
 
 /// Zcash Service functionality.
 ///
-/// Implementors automatically gain [`Liveness`](zaino_common::probing::Liveness) and
-/// [`Readiness`](zaino_common::probing::Readiness) via the [`Status`] supertrait.
+/// Implementors automatically gain [`Liveness`](zaino_status::probing::Liveness) and
+/// [`Readiness`](zaino_status::probing::Readiness) via the [`Status`] supertrait.
 pub trait ZcashService: Sized + Status {
     /// A subscriber to the service, used to fetch chain data.
     type Subscriber: Clone + ZcashIndexer + LightWalletIndexer + Status;
@@ -162,7 +143,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         + Sync
         + 'static;
 
-    /// Returns software information from the RPC server, as a [`GetInfo`] JSON struct.
+    /// Returns software information from the RPC server, as a [`NodeInfo`] JSON struct.
     ///
     /// zcashd reference: [`getinfo`](https://zcash.github.io/rpc/getinfo.html)
     /// method: post
@@ -171,12 +152,22 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// # Notes
     ///
     /// [The zcashd reference](https://zcash.github.io/rpc/getinfo.html) might not show some fields
-    /// in Zebra's [`GetInfo`]. Zebra uses the field names and formats from the
+    /// in Zebra's [`NodeInfo`]. Zebra uses the field names and formats from the
     /// [zcashd code](https://github.com/zcash/zcash/blob/v4.6.0-1/src/rpc/misc.cpp#L86-L87).
     ///
-    /// Some fields from the zcashd reference are missing from Zebra's [`GetInfo`]. It only contains the fields
+    /// Some fields from the zcashd reference are missing from Zebra's [`NodeInfo`]. It only contains the fields
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L91-L95)
-    fn get_info(&self) -> impl SendFut<Result<GetInfo, Self::Error>>;
+    fn get_info(&self) -> impl SendFut<Result<NodeInfo, Self::Error>>;
+
+    /// The network this indexer serves, carrying the activation schedule
+    /// adopted from the validator (zaino#1076).
+    ///
+    /// Not an RPC method. It is on this port because a consumer rendering
+    /// [`get_blockchain_info`](Self::get_blockchain_info) needs it: the domain
+    /// names network upgrades by consensus branch id — the protocol-defined
+    /// identity — while the served JSON names them by their enum variant, and
+    /// only the activation schedule maps one to the other.
+    fn network(&self) -> zebra_chain::parameters::Network;
 
     /// Returns all changes for an address.
     ///
@@ -195,10 +186,10 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// tags: address
     fn get_address_deltas(
         &self,
-        params: GetAddressDeltasParams,
-    ) -> impl SendFut<Result<GetAddressDeltasResponse, Self::Error>>;
+        params: AddressDeltasRequest,
+    ) -> impl SendFut<Result<AddressDeltas, Self::Error>>;
 
-    /// Returns blockchain state information, as a [`GetBlockchainInfoResponse`] JSON struct.
+    /// Returns blockchain state information, as a [`BlockchainInfo`](zaino_primitives::types::BlockchainInfo) JSON struct.
     ///
     /// zcashd reference: [`getblockchaininfo`](https://zcash.github.io/rpc/getblockchaininfo.html)
     /// method: post
@@ -206,9 +197,11 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// # Notes
     ///
-    /// Some fields from the zcashd reference are missing from Zebra's [`GetBlockchainInfoResponse`]. It only contains the fields
+    /// Some fields from the zcashd reference are missing from Zebra's [`BlockchainInfo`](zaino_primitives::types::BlockchainInfo). It only contains the fields
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L72-L89)
-    fn get_blockchain_info(&self) -> impl SendFut<Result<GetBlockchainInfoResponse, Self::Error>>;
+    fn get_blockchain_info(
+        &self,
+    ) -> impl SendFut<Result<zaino_primitives::types::BlockchainInfo, Self::Error>>;
 
     /// Returns the proof-of-work difficulty as a multiple of the minimum difficulty.
     ///
@@ -226,7 +219,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// # Parameters
     ///
     /// - `height`: (number, optional) The block height. If not provided, defaults to the current height of the chain.
-    fn get_block_subsidy(&self, height: u32) -> impl SendFut<Result<GetBlockSubsidy, Self::Error>>;
+    fn get_block_subsidy(&self, height: u32) -> impl SendFut<Result<BlockSubsidy, Self::Error>>;
 
     /// Returns details on the active state of the TX memory pool.
     ///
@@ -235,7 +228,9 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// tags: mempool
     ///
     /// Original implementation: [`getmempoolinfo`](https://github.com/zcash/zcash/blob/18238d90cd0b810f5b07d5aaa1338126aa128c06/src/rpc/blockchain.cpp#L1555)
-    fn get_mempool_info(&self) -> impl SendFut<Result<GetMempoolInfoResponse, Self::Error>>;
+    fn get_mempool_info(
+        &self,
+    ) -> impl SendFut<Result<crate::chain_index::types::db::metadata::MempoolInfo, Self::Error>>;
 
     /// Returns data about each connected network node as a json array of objects.
     ///
@@ -243,9 +238,9 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// tags: network
     ///
     /// Current `zebrad` does not include the same fields as `zcashd`.
-    fn get_peer_info(&self) -> impl SendFut<Result<GetPeerInfo, Self::Error>>;
+    fn get_peer_info(&self) -> impl SendFut<Result<Vec<PeerInfo>, Self::Error>>;
 
-    /// Returns the total balance of a provided `addresses` in an [`AddressBalance`] instance.
+    /// Returns the total balance of a provided `addresses` in an [`AddressBalance`](zaino_primitives::types::AddressBalance) instance.
     ///
     /// zcashd reference: [`getaddressbalance`](https://zcash.github.io/rpc/getaddressbalance.html)
     /// method: post
@@ -270,10 +265,10 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     fn z_get_address_balance(
         &self,
         address_strings: GetAddressBalanceRequest,
-    ) -> impl SendFut<Result<AddressBalance, Self::Error>>;
+    ) -> impl SendFut<Result<zaino_primitives::types::AddressBalance, Self::Error>>;
 
     /// Sends the raw bytes of a signed transaction to the local node's mempool, if the transaction is valid.
-    /// Returns the [`SentTransactionHash`] for the transaction, as a JSON string.
+    /// Returns the [`TransactionHash`](zaino_primitives::types::TransactionHash) for the transaction, as a JSON string.
     ///
     /// zcashd reference: [`sendrawtransaction`](https://zcash.github.io/rpc/sendrawtransaction.html)
     /// method: post
@@ -290,7 +285,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     fn send_raw_transaction(
         &self,
         raw_transaction_hex: String,
-    ) -> impl SendFut<Result<SentTransactionHash, Self::Error>>;
+    ) -> impl SendFut<Result<zaino_primitives::types::TransactionId, Self::Error>>;
 
     /// If verbose is false, returns a string that is serialized, hex-encoded data for blockheader `hash`.
     /// If verbose is true, returns an Object with information about blockheader `hash`.
@@ -306,8 +301,16 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     fn get_block_header(
         &self,
         hash: String,
-        verbose: bool,
-    ) -> impl SendFut<Result<GetBlockHeader, Self::Error>>;
+    ) -> impl SendFut<Result<BlockHeaderVerbose, Self::Error>>;
+
+    /// Returns the raw serialised header of the block with the given hash.
+    ///
+    /// The non-verbose half of `getblockheader`. Verbosity is a property of the
+    /// request, so it selects between two questions rather than making one
+    /// answer polymorphic; the serving layer picks which to ask.
+    ///
+    /// zcashd reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
+    fn get_raw_block_header(&self, hash: String) -> impl SendFut<Result<Vec<u8>, Self::Error>>;
 
     /// Returns the requested block by hash or height, as a [`GetBlock`] JSON string.
     /// If the block is not in Zebra's state, returns
@@ -362,7 +365,9 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// zcashd builds the response from all block-index leaves, always includes the active
     /// tip, sorts by descending height, and classifies leaves as `invalid`, `headers-only`,
     /// `valid-headers`, `valid-fork`, `active`, or `unknown`.
-    fn get_chain_tips(&self) -> impl SendFut<Result<GetChainTipsResponse, Self::Error>>;
+    fn get_chain_tips(
+        &self,
+    ) -> impl SendFut<Result<Vec<zaino_primitives::types::rpc::ChainTip>, Self::Error>>;
 
     /// Return information about the given Zcash address.
     ///
@@ -375,13 +380,13 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     fn validate_address(
         &self,
         address: String,
-    ) -> impl SendFut<Result<ValidateAddressResponse, Self::Error>>;
+    ) -> impl SendFut<Result<ValidatedAddress, Self::Error>>;
 
     /// Return information about the given address.
     ///
     /// # Deprecation
     ///
-    /// See [`z_validate_address::DEPRECATION_NOTICE`](zaino_fetch::jsonrpsee::response::z_validate_address::DEPRECATION_NOTICE).
+    /// See [`zaino_address::DEPRECATION_NOTICE`].
     ///
     /// # Parameters
     /// - `address`: (string, required) The address to validate.
@@ -393,7 +398,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     fn z_validate_address(
         &self,
         address: String,
-    ) -> impl SendFut<Result<ZValidateAddressResponse, Self::Error>>;
+    ) -> impl SendFut<Result<ZValidatedAddress, Self::Error>>;
 
     /// Returns the hash of the best block (tip) of the longest chain.
     /// online zcashd reference: [`getbestblockhash`](https://zcash.github.io/rpc/getbestblockhash.html)
@@ -432,7 +437,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     fn z_get_treestate(
         &self,
         hash_or_height: String,
-    ) -> impl SendFut<Result<GetTreestateResponse, Self::Error>>;
+    ) -> impl SendFut<Result<zaino_primitives::types::Treestate, Self::Error>>;
 
     /// Returns information about a range of Sapling or Orchard subtrees.
     ///
@@ -454,10 +459,10 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// available yet. (But `zcashd` does its rebuild before syncing any blocks.)
     fn z_get_subtrees_by_index(
         &self,
-        pool: String,
+        pool: zaino_primitives::types::ShieldedPool,
         start_index: NoteCommitmentSubtreeIndex,
         limit: Option<NoteCommitmentSubtreeIndex>,
-    ) -> impl SendFut<Result<GetSubtreesByIndexResponse, Self::Error>>;
+    ) -> impl SendFut<Result<zaino_primitives::types::rpc::SubtreeRoots, Self::Error>>;
 
     /// Returns the raw transaction data, as a [`GetRawTransaction`] JSON string or structure.
     ///
@@ -500,7 +505,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         txid: String,
         n: u32,
         include_mempool: Option<bool>,
-    ) -> impl SendFut<Result<zaino_fetch::jsonrpsee::response::GetTxOutResponse, Self::Error>>;
+    ) -> impl SendFut<Result<Option<zaino_primitives::types::rpc::TxOut>, Self::Error>>;
 
     /// Returns the txid, input index, and block height where an output is spent.
     ///
@@ -518,8 +523,8 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     /// the documented `txid` and `index` fields.
     fn get_spent_info(
         &self,
-        request: GetSpentInfoRequest,
-    ) -> impl SendFut<Result<GetSpentInfoResponse, Self::Error>>;
+        outpoint: zaino_primitives::types::rpc::SpentOutpoint,
+    ) -> impl SendFut<Result<zaino_primitives::types::rpc::SpentInfo, Self::Error>>;
 
     /// Returns the transaction ids made by the provided transparent addresses.
     ///
@@ -560,19 +565,21 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     fn z_get_address_utxos(
         &self,
         address_strings: GetAddressBalanceRequest,
-    ) -> impl SendFut<Result<Vec<GetAddressUtxos>, Self::Error>>;
+    ) -> impl SendFut<Result<Vec<zaino_primitives::types::Utxo>, Self::Error>>;
 
     /// Returns a json object containing mining-related information.
     ///
     /// `zcashd` reference (may be outdated): [`getmininginfo`](https://zcash.github.io/rpc/getmininginfo.html)
-    fn get_mining_info(&self) -> impl SendFut<Result<GetMiningInfoWire, Self::Error>>;
+    fn get_mining_info(&self) -> impl SendFut<Result<MiningInfo, Self::Error>>;
 
     /// Returns statistics about the unspent transaction output set.
     ///
     /// zcashd reference: [`gettxoutsetinfo`](https://zcash.github.io/rpc/gettxoutsetinfo.html)
     /// method: post
     /// tags: blockchain
-    fn get_tx_out_set_info(&self) -> impl SendFut<Result<GetTxOutSetInfoResponse, Self::Error>>;
+    fn get_tx_out_set_info(
+        &self,
+    ) -> impl SendFut<Result<Option<zaino_primitives::types::TxOutSetInfo>, Self::Error>>;
 
     /// Returns the estimated network solutions per second based on the last n blocks.
     ///
@@ -591,7 +598,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         &self,
         blocks: Option<i32>,
         height: Option<i32>,
-    ) -> impl SendFut<Result<GetNetworkSolPsResponse, Self::Error>>;
+    ) -> impl SendFut<Result<u64, Self::Error>>;
 
     /// Helper function to get the chain height
     fn chain_height(&self) -> impl SendFut<Result<Height, Self::Error>>;
@@ -765,7 +772,8 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
     ) -> impl SendFut<Result<SubtreeRootReplyStream, <Self as ZcashIndexer>::Error>> {
         async move {
             let pool = match ShieldedProtocol::try_from(request.shielded_protocol) {
-                Ok(protocol) => protocol.as_str_name(),
+                Ok(ShieldedProtocol::Sapling) => zaino_primitives::types::ShieldedPool::Sapling,
+                Ok(ShieldedProtocol::Orchard) => zaino_primitives::types::ShieldedPool::Orchard,
                 Err(_) => {
                     return Err(<Self as ZcashIndexer>::Error::from(
                         tonic::Status::invalid_argument("Error: Invalid shielded protocol value."),
@@ -799,7 +807,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
             let service_clone = self.clone();
             let subtrees = service_clone
                 .z_get_subtrees_by_index(
-                    pool.to_string(),
+                    pool,
                     NoteCommitmentSubtreeIndex(start_index),
                     limit.map(NoteCommitmentSubtreeIndex),
                 )
@@ -810,9 +818,9 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                 let timeout = timeout(
                 std::time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
-                    for subtree in subtrees.subtrees() {
+                    for subtree in &subtrees.subtrees {
                         match service_clone
-                            .z_get_block(subtree.end_height.0.to_string(), Some(1))
+                            .z_get_block(u32::from(subtree.end_height).to_string(), Some(1))
                             .await
                         {
                             Ok(GetBlock::Object(block_object)) => {
@@ -836,29 +844,14 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                                         }
                                     }
                                 };
-                                let checked_root_hash = match hex::decode(&subtree.root) {
-                                    Ok(hash) => hash,
-                                    Err(e) => {
-                                        match channel_tx
-                                            .send(Err(tonic::Status::unknown(format!(
-                                                "Error: Failed to hex decode root hash: {e}."
-                                            ))))
-                                            .await
-                                        {
-                                            Ok(_) => break,
-                                            Err(e) => {
-                                                warn!(
-                                                    %e,
-                                                    "GetSubtreeRoots channel closed unexpectedly"
-                                                );
-                                                break;
-                                            }
-                                        }
-                                    }
-                                };
                                 if channel_tx
                                     .send(Ok(SubtreeRoot {
-                                        root_hash: checked_root_hash,
+                                        // The domain carries the root as
+                                        // bytes, so the hex round-trip this
+                                        // path used to do — and its
+                                        // unreachable decode-failure arm — are
+                                        // gone.
+                                        root_hash: <[u8; 32]>::from(subtree.root).to_vec(),
                                         completing_block_hash: block_object
                                             .hash()
                                             .bytes_in_display_order()
@@ -888,7 +881,8 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
                                 if channel_tx
                                     .send(Err(tonic::Status::unknown(format!(
                                         "Error: Could not fetch block at height [{}] from node: {}",
-                                        subtree.end_height.0, e
+                                        u32::from(subtree.end_height),
+                                        e
                                     ))))
                                     .await
                                     .is_err()
@@ -969,7 +963,7 @@ pub(crate) async fn handle_raw_transaction<Indexer: LightWalletIndexer>(
             };
             transmitter
                 .send(Ok(RawTransaction {
-                    data: transaction_obj.hex().as_ref().to_vec(),
+                    data: bytes::Bytes::copy_from_slice(transaction_obj.hex().as_ref()),
                     height,
                 }))
                 .await
@@ -990,263 +984,52 @@ pub(crate) async fn handle_raw_transaction<Indexer: LightWalletIndexer>(
     }
 }
 
-/// Maps a Zebra network to the `zcash_protocol` network type used for address decoding.
-fn address_network_type(
-    network: &zebra_chain::parameters::Network,
-) -> zcash_protocol::consensus::NetworkType {
-    use zcash_protocol::consensus::NetworkType;
-    use zebra_chain::parameters::NetworkKind;
-    match network.kind() {
-        NetworkKind::Mainnet => NetworkType::Main,
-        NetworkKind::Testnet => NetworkType::Test,
-        NetworkKind::Regtest => NetworkType::Regtest,
-    }
-}
-
-/// Validates a Zcash address for the `validateaddress` RPC.
-///
-/// Pure address parsing over `network`; no chain data required, so both backends share
-/// this implementation.
-pub(crate) fn validate_address(
-    raw_address: String,
-    network: &zebra_chain::parameters::Network,
-) -> ValidateAddressResponse {
-    use zcash_keys::address::Address;
-    use zcash_transparent::address::TransparentAddress;
-
-    let Ok(address) = raw_address.parse::<zcash_address::ZcashAddress>() else {
-        return ValidateAddressResponse::invalid();
-    };
-
-    let address = match address.convert_if_network::<Address>(address_network_type(network)) {
-        Ok(address) => address,
-        Err(err) => {
-            tracing::debug!(?err, "conversion error");
-            return ValidateAddressResponse::invalid();
-        }
-    };
-
-    match address {
-        Address::Transparent(taddr) => ValidateAddressResponse::new(
-            true,
-            Some(raw_address),
-            Some(matches!(taddr, TransparentAddress::ScriptHash(_))),
-        ),
-        _ => ValidateAddressResponse::invalid(),
-    }
-}
-
-/// Validates a Zcash address for the deprecated `z_validateaddress` RPC.
-///
-/// Pure address parsing over `network`; shared by both backends.
-pub(crate) fn z_validate_address(
-    address: String,
-    network: &zebra_chain::parameters::Network,
-) -> ZValidateAddressResponse {
-    use zcash_keys::address::Address;
-    use zcash_keys::encoding::AddressCodec as _;
-    use zcash_transparent::address::TransparentAddress;
-
-    tracing::warn!("{}", Z_VALIDATE_DEPRECATION);
-
-    let invalid = || {
-        ZValidateAddressResponse::Known(KnownZValidateAddress::Invalid(
-            InvalidZValidateAddress::new(),
-        ))
-    };
-
-    let Ok(parsed_address) = address.parse::<zcash_address::ZcashAddress>() else {
-        return invalid();
-    };
-
-    let converted_address =
-        match parsed_address.convert_if_network::<Address>(address_network_type(network)) {
-            Ok(address) => address,
-            Err(err) => {
-                tracing::debug!(?err, "conversion error");
-                return invalid();
-            }
-        };
-
-    // Note: It could be the case that Zaino needs to support Sprout. For now, it's been disabled.
-    match converted_address {
-        Address::Transparent(TransparentAddress::PublicKeyHash(_)) => {
-            ZValidateAddressResponse::p2pkh(address)
-        }
-        Address::Transparent(TransparentAddress::ScriptHash(_)) => {
-            ZValidateAddressResponse::p2sh(address)
-        }
-        Address::Unified(u) => ZValidateAddressResponse::unified(u.encode(network)),
-        Address::Sapling(s) => {
-            let (diversifier, pk_d) = sapling_key_bytes(&s);
-            ZValidateAddressResponse::sapling(
-                s.encode(network),
-                Some(hex::encode(diversifier)),
-                Some(hex::encode(pk_d)),
-            )
-        }
-        _ => invalid(),
-    }
-}
-
-/// Extracts the diversifier and pk_d bytes from a validated Sapling
-/// [`sapling_crypto::PaymentAddress`], returning pk_d in zcashd's big-endian byte order.
-///
-/// # Deprecation
-///
-/// See [`Z_VALIDATE_DEPRECATION`]. This function exists to support the `z_validateaddress`
-/// RPC endpoint, which itself exists solely for zcashd compatibility. The pk_d bytes are
-/// reversed from `sapling-crypto`'s native little-endian representation to match zcashd's
-/// big-endian hex output.
-///
-/// # Precondition
-///
-/// The caller must have obtained `s` through `PaymentAddress::from_bytes` or equivalent
-/// (e.g. `ZcashAddress::convert_if_network`), which guarantees the diversifier has a valid
-/// `g_d()` and pk_d is a non-identity Jubjub subgroup point. No additional validation is
-/// performed here.
-///
-/// # Layout
-///
-/// `PaymentAddress::to_bytes()` returns 43 bytes: `diversifier (11) || pk_d (32)`.
-pub(crate) fn sapling_key_bytes(s: &sapling_crypto::PaymentAddress) -> ([u8; 11], [u8; 32]) {
-    let bytes = s.to_bytes();
-    let diversifier: [u8; 11] = bytes[..11]
-        .try_into()
-        .expect("PaymentAddress::to_bytes always returns 43 bytes: diversifier is the first 11");
-    let mut pk_d: [u8; 32] = bytes[11..]
-        .try_into()
-        .expect("PaymentAddress::to_bytes always returns 43 bytes: pk_d is the last 32");
-    pk_d.reverse();
-    (diversifier, pk_d)
-}
-
-/// Shapes a `z_getsubtreesbyindex` JSON-RPC response from raw subtree roots.
-///
-/// The `(root, end_height)` pairs from [`ChainIndex::get_subtree_roots`] are already in
-/// the byte order the JSON-RPC uses (sapling `to_bytes`, orchard `to_repr` — zcashd's
-/// `z_getsubtreesbyindex` does not reverse orchard subtree roots), so they are hex-encoded
-/// as-is. Shared by both backends so the shaping lives in one place.
-///
-/// [`ChainIndex::get_subtree_roots`]: crate::ChainIndex::get_subtree_roots
-pub(crate) fn build_subtrees_by_index_response(
-    pool: String,
-    start_index: NoteCommitmentSubtreeIndex,
-    roots: Vec<([u8; 32], u32)>,
-) -> GetSubtreesByIndexResponse {
-    use hex::ToHex as _;
-
-    let subtrees = roots
-        .into_iter()
-        .map(|(root, end_height)| {
-            SubtreeRpcData {
-                root: root.encode_hex(),
-                end_height: Height(end_height),
-            }
-            .into()
-        })
-        .collect();
-
-    GetSubtreesResponse {
-        pool,
-        start_index,
-        subtrees,
-    }
-    .into()
-}
-
 /// Builds the gRPC [`TreeState`](zaino_proto::proto::service::TreeState) from a
-/// `z_gettreestate` response: hex-encoded per-pool final states (the ironwood field is
+/// `z_gettreestate` answer: hex-encoded per-pool final states (the ironwood field is
 /// the empty string below NU6.3 activation, matching lightwalletd behaviour).
 fn tree_state_from_treestate_response(
     network: String,
-    treestate_response: zebra_rpc::client::GetTreestateResponse,
+    treestate: zaino_primitives::types::Treestate,
 ) -> zaino_proto::proto::service::TreeState {
-    let sapling_tree = hex::encode(
-        treestate_response
-            .sapling()
-            .commitments()
-            .final_state()
-            .clone()
-            .unwrap_or_default(),
-    );
-    let orchard_tree = hex::encode(
-        treestate_response
-            .orchard()
-            .commitments()
-            .final_state()
-            .clone()
-            .unwrap_or_default(),
-    );
-    let ironwood_tree = treestate_response
-        .ironwood()
-        .clone()
-        .and_then(|treestate| treestate.commitments().final_state().clone())
-        .map(hex::encode)
-        .unwrap_or_default();
+    fn final_state(pool: Option<zaino_primitives::types::PoolTreestate>) -> String {
+        pool.map(|pool| hex::encode(pool.final_state))
+            .unwrap_or_default()
+    }
 
     zaino_proto::proto::service::TreeState {
         network,
-        height: treestate_response.height().0 as u64,
-        hash: treestate_response.hash().to_string(),
-        time: treestate_response.time(),
-        sapling_tree,
-        orchard_tree,
-        ironwood_tree,
+        height: u64::from(u32::from(treestate.height)),
+        hash: treestate.block_hash.to_string(),
+        time: treestate.time,
+        sapling_tree: final_state(treestate.sapling),
+        orchard_tree: final_state(treestate.orchard),
+        ironwood_tree: final_state(treestate.ironwood),
     }
 }
 
-/// Builds the `z_gettreestate` response from the per-pool treestates the chain index
+/// Builds the `z_gettreestate` answer from the per-pool treestates the chain index
 /// reported.
 ///
-/// `Commitments::new(final_root, final_state)`: the note-commitment tree is the
-/// `final_state`. The ironwood treestate is `Some` only from NU6.3 activation, so
-/// pre-NU6.3 responses omit the field exactly as zebrad does.
+/// The ironwood treestate is `Some` only from NU6.3 activation, so pre-NU6.3
+/// answers omit the pool exactly as zebrad does.
 fn build_treestate_response(
-    hash: zebra_chain::block::Hash,
-    height: zebra_chain::block::Height,
+    hash: zaino_primitives::types::BlockHash,
+    height: zaino_primitives::types::Height,
     time: u32,
     (sapling, orchard, ironwood): (
-        Option<crate::chain_index::source::PoolTreestate>,
-        Option<crate::chain_index::source::PoolTreestate>,
-        Option<crate::chain_index::source::PoolTreestate>,
+        Option<zaino_primitives::types::PoolTreestate>,
+        Option<zaino_primitives::types::PoolTreestate>,
+        Option<zaino_primitives::types::PoolTreestate>,
     ),
-) -> zebra_rpc::client::GetTreestateResponse {
-    fn treestate(
-        pool: Option<crate::chain_index::source::PoolTreestate>,
-    ) -> zebra_rpc::client::Treestate {
-        let (final_root, final_state) = match pool {
-            Some(pool) => (pool.final_root, Some(pool.final_state)),
-            None => (None, None),
-        };
-        zebra_rpc::client::Treestate::new(zebra_rpc::client::Commitments::new(
-            final_root,
-            final_state,
-        ))
-    }
-
-    let sprout_treestate = None;
-    let ironwood_treestate = ironwood.map(|pool| treestate(Some(pool)));
-    zebra_rpc::client::GetTreestateResponse::new(
-        hash,
+) -> zaino_primitives::types::Treestate {
+    zaino_primitives::types::Treestate {
+        block_hash: hash,
         height,
         time,
-        sprout_treestate,
-        treestate(sapling),
-        treestate(orchard),
-        ironwood_treestate,
-    )
-}
-
-fn latest_network_upgrade(
-    upgrades: &indexmap::IndexMap<
-        zebra_rpc::methods::ConsensusBranchIdHex,
-        zebra_rpc::methods::NetworkUpgradeInfo,
-    >,
-) -> Result<&zebra_rpc::methods::NetworkUpgradeInfo, tonic::Status> {
-    upgrades.last().map(|(_, upgrade)| upgrade).ok_or_else(|| {
-        tonic::Status::failed_precondition("validator returned no network upgrade metadata")
-    })
+        sapling,
+        orchard,
+        ironwood,
+    }
 }
 
 /// Maximum number of addresses a single `get_address_utxos` / `get_address_utxos_stream`
@@ -1275,14 +1058,25 @@ fn validate_utxo_address_count(count: usize) -> Result<(), tonic::Status> {
     Ok(())
 }
 
+/// The most recently activated network upgrade the validator reported.
+///
+/// The domain preserves the validator's ordering, so the last entry is the
+/// newest. An empty list is a failure rather than a default: `getlightdinfo`
+/// reports the upgrade name and height to wallets, and inventing either would
+/// have them believe they are on a chain they are not.
+fn latest_network_upgrade(
+    upgrades: &[zaino_primitives::types::NetworkUpgradeInfo],
+) -> Result<&zaino_primitives::types::NetworkUpgradeInfo, tonic::Status> {
+    upgrades.last().ok_or_else(|| {
+        tonic::Status::failed_precondition("validator returned no network upgrade metadata")
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn latest_network_upgrade_rejects_empty_metadata() {
-        let upgrades = indexmap::IndexMap::new();
-        let err = super::latest_network_upgrade(&upgrades).expect_err("empty upgrades must fail");
+        let err = super::latest_network_upgrade(&[]).expect_err("empty upgrades must fail");
 
         assert_eq!(err.code(), tonic::Code::FailedPrecondition);
         assert_eq!(
@@ -1303,209 +1097,5 @@ mod tests {
             .expect_err("over-limit address count must fail");
 
         assert_eq!(err.code(), tonic::Code::InvalidArgument);
-    }
-
-    #[test]
-    fn build_subtrees_by_index_response_hex_encodes_roots() {
-        let roots = vec![([0xabu8; 32], 100u32), ([0xcdu8; 32], 200u32)];
-        let response = build_subtrees_by_index_response(
-            "orchard".to_string(),
-            NoteCommitmentSubtreeIndex(5),
-            roots,
-        );
-
-        assert_eq!(response.pool().as_str(), "orchard");
-        assert_eq!(response.start_index(), NoteCommitmentSubtreeIndex(5));
-
-        let subtrees = response.subtrees();
-        assert_eq!(subtrees.len(), 2);
-        assert_eq!(subtrees[0].root, hex::encode([0xabu8; 32]));
-        assert_eq!(subtrees[0].end_height, Height(100));
-        assert_eq!(subtrees[1].root, hex::encode([0xcdu8; 32]));
-        assert_eq!(subtrees[1].end_height, Height(200));
-    }
-
-    /// Classifies the byte-level relationship between two slices.
-    #[derive(Debug, PartialEq)]
-    enum ByteRelation {
-        /// The slices are identical.
-        Equal,
-        /// `actual` fully byte-reversed equals `expected` (endian swap).
-        FullByteReversal,
-        /// Each byte's bits reversed maps `actual` to `expected`.
-        PerByteBitReversal,
-        /// Reversing bytes within 16-bit chunks maps `actual` to `expected`.
-        ChunkSwap16,
-        /// Reversing bytes within 32-bit chunks maps `actual` to `expected`.
-        ChunkSwap32,
-        /// Reversing bytes within 64-bit chunks maps `actual` to `expected`.
-        ChunkSwap64,
-        /// No recognized transformation.
-        Unrecognized,
-    }
-
-    impl std::fmt::Display for ByteRelation {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            match self {
-                Self::Equal => write!(f, "equal"),
-                Self::FullByteReversal => write!(f, "full byte-reversal (endian swap)"),
-                Self::PerByteBitReversal => write!(f, "per-byte bit-reversal"),
-                Self::ChunkSwap16 => write!(f, "16-bit pairwise byte-swap"),
-                Self::ChunkSwap32 => write!(f, "32-bit chunk byte-reversal"),
-                Self::ChunkSwap64 => write!(f, "64-bit chunk byte-reversal"),
-                Self::Unrecognized => write!(f, "unrecognized mismatch"),
-            }
-        }
-    }
-
-    /// Applies each candidate byte transformation to `actual` and returns
-    /// the first that produces `expected`, or [`ByteRelation::Unrecognized`].
-    // `u32::is_multiple_of` is only stable from Rust 1.87; keep `% n == 0` for our older MSRV.
-    #[allow(clippy::manual_is_multiple_of)]
-    fn classify_byte_relation(actual: &[u8], expected: &[u8]) -> ByteRelation {
-        if actual == expected {
-            return ByteRelation::Equal;
-        }
-
-        let chunk_swap = |size: usize| -> Vec<u8> {
-            actual
-                .chunks(size)
-                .flat_map(|c| c.iter().rev())
-                .copied()
-                .collect()
-        };
-
-        let mut reversed = actual.to_vec();
-        reversed.reverse();
-        if reversed == expected {
-            return ByteRelation::FullByteReversal;
-        }
-
-        let bit_reversed: Vec<u8> = actual.iter().map(|b| b.reverse_bits()).collect();
-        if bit_reversed == expected {
-            return ByteRelation::PerByteBitReversal;
-        }
-
-        if actual.len() % 2 == 0 && chunk_swap(2) == expected {
-            return ByteRelation::ChunkSwap16;
-        }
-        if actual.len() % 4 == 0 && chunk_swap(4) == expected {
-            return ByteRelation::ChunkSwap32;
-        }
-        if actual.len() % 8 == 0 && chunk_swap(8) == expected {
-            return ByteRelation::ChunkSwap64;
-        }
-
-        ByteRelation::Unrecognized
-    }
-
-    /// Verifies that our Sapling address parsing logic produces the same
-    /// diversifier and diversified transmission key (pk_d) hex strings as
-    /// zcashd's `z_validateaddress` RPC.
-    ///
-    /// # Guarantees
-    ///
-    /// - Exercises the production `sapling_key_bytes` function directly.
-    /// - The 11-byte diversifier matches the zcashd-derived test vector.
-    /// - The 32-byte pk_d (after the endian reversal inside `sapling_key_bytes`)
-    ///   matches the zcashd-derived test vector.
-    /// - If the upstream serialization changes, the failure message
-    ///   classifies the mismatch (endian swap, bit-reversal, chunk swap,
-    ///   or unrecognized) to aid diagnosis.
-    ///
-    /// # Non-guarantees
-    ///
-    /// - Does not prove the test vector constants themselves are correct;
-    ///   they were captured from zcashd and are trusted as ground truth.
-    /// - Does not exercise the full `z_validate_address` RPC path through
-    ///   `StateService` — only the `sapling_key_bytes` extraction function.
-    /// - Does not verify behavior for malformed Sapling addresses or
-    ///   addresses on other networks (mainnet, testnet).
-    #[test]
-    fn sapling_pk_d_byte_order_matches_test_vector() {
-        use crate::indexer::sapling_key_bytes;
-        use zcash_keys::address::Address;
-        use zcash_protocol::consensus::NetworkType;
-
-        // Canonical source: live-tests/clientless/src/lib.rs::rpc::json_rpc
-        // Tracked for DRY consolidation: https://github.com/zingolabs/zaino/issues/988
-        const SAPLING_ADDRESS: &str = "zregtestsapling1jalqhycwumq3unfxlzyzcktq3n478n82k2wacvl8gwfxk6ahshkxmtp2034qj28n7gl92ka5wca";
-        const EXPECTED_DIVERSIFIER: &str = "977e0b930ee6c11e4d26f8";
-        const EXPECTED_PK_D: &str =
-            "553ef2f328096a7c2aac6dec85b76b6b9243e733dc9db2eacce3eb8c60592c88";
-
-        let parsed: zcash_address::ZcashAddress = SAPLING_ADDRESS.parse().unwrap();
-        let converted = parsed
-            .convert_if_network::<Address>(NetworkType::Regtest)
-            .unwrap();
-
-        let Address::Sapling(s) = converted else {
-            panic!("expected Sapling address");
-        };
-
-        let (diversifier, pk_d) = sapling_key_bytes(&s);
-
-        let expected_diversifier = hex::decode(EXPECTED_DIVERSIFIER).unwrap();
-        let expected_pk_d = hex::decode(EXPECTED_PK_D).unwrap();
-
-        // Diversifier
-        match classify_byte_relation(&diversifier, &expected_diversifier) {
-            ByteRelation::Equal => {}
-            relation => panic!(
-                "diversifier mismatch.\n  relation: {relation}\n  actual:   {}\n  expected: {}",
-                hex::encode(diversifier),
-                hex::encode(expected_diversifier),
-            ),
-        }
-
-        // pk_d (sapling_key_bytes already applies the endian reversal)
-        match classify_byte_relation(&pk_d, &expected_pk_d) {
-            ByteRelation::Equal => {}
-            relation => panic!(
-                "pk_d mismatch — upstream serialization may have changed.\
-                \n  relation: {relation}\n  actual:   {}\n  expected: {}",
-                hex::encode(pk_d),
-                hex::encode(expected_pk_d),
-            ),
-        }
-    }
-
-    #[test]
-    fn classify_byte_relation_detects_known_transforms() {
-        let original = [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
-
-        assert_eq!(
-            classify_byte_relation(&original, &original),
-            ByteRelation::Equal,
-        );
-
-        let mut reversed = original.to_vec();
-        reversed.reverse();
-        assert_eq!(
-            classify_byte_relation(&original, &reversed),
-            ByteRelation::FullByteReversal,
-        );
-
-        let bit_rev: Vec<u8> = original.iter().map(|b| b.reverse_bits()).collect();
-        assert_eq!(
-            classify_byte_relation(&original, &bit_rev),
-            ByteRelation::PerByteBitReversal,
-        );
-
-        let swapped_16: Vec<u8> = original
-            .chunks(2)
-            .flat_map(|c| c.iter().rev())
-            .copied()
-            .collect();
-        assert_eq!(
-            classify_byte_relation(&original, &swapped_16),
-            ByteRelation::ChunkSwap16,
-        );
-
-        let garbage = [0xFF; 8];
-        assert_eq!(
-            classify_byte_relation(&original, &garbage),
-            ByteRelation::Unrecognized,
-        );
     }
 }

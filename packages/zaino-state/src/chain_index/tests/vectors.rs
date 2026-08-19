@@ -12,6 +12,7 @@ use zebra_chain::serialization::ZcashDeserialize as _;
 use zebra_rpc::methods::GetAddressUtxos;
 
 use crate::chain_index::source::mockchain_source::MockchainSource;
+use crate::chain_index::validator_source::ValidatorSource;
 use crate::{
     read_u32_le, read_u64_le, BlockHash, BlockMetadata, BlockWithMetadata, ChainWork, CompactSize,
     CompactTxData, IndexedBlock,
@@ -292,12 +293,28 @@ pub(crate) fn load_test_vectors() -> io::Result<TestVectorData> {
     read_vectors_from_file(&base_dir)
 }
 
+/// The mock as ChainIndex consumes it.
+pub(crate) type MockSource = ValidatorSource<MockchainSource>;
+
+/// Present the mock through ChainIndex's driven port, exactly as a validator
+/// is presented: the same `ValidatorSource` conversion runs in tests and in
+/// production, so these suites exercise it rather than a parallel copy of it.
+fn wrap(source: MockchainSource) -> MockSource {
+    ValidatorSource::new(
+        source,
+        crate::chain_index::source::mockchain_source::mockchain_network(),
+        // The mock has no zebra state service, so no `ChainTipChange` stream —
+        // the same as an RPC-only deployment.
+        None,
+    )
+}
+
 #[allow(clippy::type_complexity)]
 pub(crate) fn build_mockchain_source(
     // the input data for this function could be reduced for wider use
     // but is more simple to pass all test block data here.
     blockchain_data: Vec<TestVectorBlockData>,
-) -> MockchainSource {
+) -> MockSource {
     let (mut heights, mut zebra_blocks, mut block_roots, mut block_hashes, mut block_treestates) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
 
@@ -314,7 +331,12 @@ pub(crate) fn build_mockchain_source(
         block_treestates.push((block.sapling_tree_state, block.orchard_tree_state));
     }
 
-    MockchainSource::new(zebra_blocks, block_roots, block_treestates, block_hashes)
+    wrap(MockchainSource::new(
+        zebra_blocks,
+        block_roots,
+        block_treestates,
+        block_hashes,
+    ))
 }
 
 #[allow(clippy::type_complexity)]
@@ -323,7 +345,7 @@ pub(crate) fn build_active_mockchain_source(
     // the input data for this function could be reduced for wider use
     // but is more simple to pass all test block data here.
     blockchain_data: Vec<TestVectorBlockData>,
-) -> MockchainSource {
+) -> MockSource {
     let (mut heights, mut zebra_blocks, mut block_roots, mut block_hashes, mut block_treestates) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
 
@@ -350,13 +372,13 @@ pub(crate) fn build_active_mockchain_source(
         block_treestates.push((sapling_tree_state, orchard_tree_state));
     }
 
-    MockchainSource::new_with_active_height(
+    wrap(MockchainSource::new_with_active_height(
         zebra_blocks,
         block_roots,
         block_treestates,
         block_hashes,
         loaded_chain_height,
-    )
+    ))
 }
 
 // ***** Tests *****

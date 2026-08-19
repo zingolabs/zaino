@@ -20,34 +20,26 @@ use crate::chain_index::types::{BestChainLocation, NonBestChainLocation};
 use crate::error::{ChainIndexError, ChainIndexErrorKind, FinalisedStateError};
 #[cfg(feature = "prometheus")]
 use crate::metric_names::*;
-use crate::status::Status;
-use crate::{
-    CompactBlockStream, NamedAtomicStatus, NonFinalizedState, StatusType, SyncError, TxOutCompact,
-};
+use crate::{CompactBlockStream, NonFinalizedState, SyncError, TxOutCompact};
 use crate::{IndexedBlock, Outpoint, TransactionHash};
 use std::collections::HashSet;
 use std::str::FromStr;
 use std::{sync::Arc, time::Duration};
+use zaino_primitives::types::TxOutSetInfo;
+use zaino_status::{NamedAtomicStatus, Status, StatusType};
 
 use arc_swap::ArcSwapOption;
-use futures::{FutureExt, Stream};
-use hex::FromHex as _;
+use futures::Stream;
 use non_finalised_state::NonfinalizedBlockCacheSnapshot;
-use source::{BlockchainSource, ValidatorConnector};
+use source::BlockchainSource;
 use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, instrument};
-use zaino_fetch::jsonrpsee::raw_transaction::validate_raw_transaction_hex;
-use zaino_fetch::jsonrpsee::response::{
-    address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse},
-    block_deltas::BlockDeltas,
-    block_header::GetBlockHeader,
-    block_subsidy::GetBlockSubsidy,
-    chain_tips::{ChainTip, ChainTipStatus, GetChainTipsResponse},
-    mining_info::GetMiningInfoWire,
-    peer_info::GetPeerInfo,
-    EmptyTxOutSetInfo, GetNetworkSolPsResponse, GetSpentInfoRequest, GetSpentInfoResponse,
-    GetTxOutResponse, GetTxOutSetInfo, GetTxOutSetInfoResponse,
+use zaino_consensus::validate_raw_transaction_hex;
+use zaino_mempool::ports::TipAwareMempool as _;
+use zaino_primitives::types::rpc::{
+    AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
+    NodeInfo, PeerInfo,
 };
 use zaino_proto::proto::utils::{prune_compact_block, PoolTypeFilter};
 use zebra_chain::parameters::ConsensusBranchId;
@@ -55,25 +47,44 @@ pub use zebra_chain::parameters::Network as ZebraNetwork;
 use zebra_chain::serialization::ZcashSerialize;
 use zebra_rpc::{
     client::{GetAddressBalanceRequest, GetAddressTxIdsRequest},
-    methods::{
-        AddressBalance, GetAddressUtxos, GetBlock, GetBlockchainInfoResponse, GetInfo,
-        SentTransactionHash,
-    },
+    methods::GetBlock,
 };
 use zebra_state::HashOrHeight;
 
 pub mod encoding;
 /// All state below [`OPERATIONAL_NFS_DEPTH`] blocks of the best-known chain tip.
 pub mod finalised_state;
-/// State in the mempool, not yet on-chain
-pub mod mempool;
+mod mempool;
+
+/// How long the mempool may stay frozen before the sync loop says so.
+///
+/// A freeze is the normal shape of a tip transition and clears in well under a
+/// second. This is two orders of magnitude above that, so it fires only when the
+/// validator tip and Zaino's have genuinely stopped agreeing — a state in which
+/// tip-coherent reads have been failing the whole time, and which otherwise
+/// leaves no trace in the log.
+const COHERENCE_FREEZE_ESCALATION: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Bridge `zaino-state`'s legacy txid type to the domain one the mempool speaks.
+///
+/// Both are the same 32 bytes in the same order; the mempool subsystem was built
+/// on `zaino-primitives` and this crate has not finished moving. One function
+/// rather than an inline `From` at each call site so the conversion disappears
+/// in a single edit once it has.
+fn types_txid_to_domain(txid: &types::TransactionHash) -> zaino_primitives::types::TransactionId {
+    zaino_primitives::types::TransactionId::from(<[u8; 32]>::from(*txid))
+}
+mod network_adoption;
 /// State within [`OPERATIONAL_NFS_DEPTH`] blocks of the best-known chain tip;
 /// stored separately as it may be reorged.
 pub mod non_finalised_state;
-/// BlockchainSource
+/// ChainIndex's driven port onto the validator. Temporary scaffolding — see
+/// the module docs.
 pub mod source;
+pub mod source_ports;
 /// Common types used by the rest of this module
 pub mod types;
+pub mod validator_source;
 
 #[cfg(test)]
 mod tests;
@@ -82,7 +93,7 @@ mod tests;
 /// zaino treats as part of the finalised DB — the finalised / non-finalised seam.
 ///
 /// Sourced from the workspace's single source of truth,
-/// [`zaino_common::consensus`]. Production uses the real
+/// [`zaino_consensus`]. Production uses the real
 /// [`MAX_NONFINALISED_DEPTH`]. The tractable [`FAST_TEST_MAX_NONFINALISED_DEPTH`]
 /// (= depth / 10) is selected for in-crate unit tests (`cfg(test)`) *and* for
 /// cross-crate live tests that enable the `fast-test-seam` feature — so short mock
@@ -91,13 +102,12 @@ mod tests;
 /// the eviction/seam invariants become untestable (see zingolabs/zaino#1288). Both
 /// arms derive from the same upstream reorg bound, so neither is a hard-coded literal.
 ///
-/// [`MAX_NONFINALISED_DEPTH`]: zaino_common::consensus::MAX_NONFINALISED_DEPTH
-/// [`FAST_TEST_MAX_NONFINALISED_DEPTH`]: zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH
+/// [`MAX_NONFINALISED_DEPTH`]: zaino_consensus::MAX_NONFINALISED_DEPTH
+/// [`FAST_TEST_MAX_NONFINALISED_DEPTH`]: zaino_consensus::FAST_TEST_MAX_NONFINALISED_DEPTH
 #[cfg(not(any(test, feature = "fast-test-seam")))]
-pub(crate) const OPERATIONAL_NFS_DEPTH: u32 = zaino_common::consensus::MAX_NONFINALISED_DEPTH;
+pub(crate) const OPERATIONAL_NFS_DEPTH: u32 = zaino_consensus::MAX_NONFINALISED_DEPTH;
 #[cfg(any(test, feature = "fast-test-seam"))]
-pub(crate) const OPERATIONAL_NFS_DEPTH: u32 =
-    zaino_common::consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
+pub(crate) const OPERATIONAL_NFS_DEPTH: u32 = zaino_consensus::FAST_TEST_MAX_NONFINALISED_DEPTH;
 
 /// Lower bound on zaino's finalized-DB tip, derived from the current
 /// best-known chain tip.
@@ -130,7 +140,9 @@ pub(crate) fn unix_now_secs() -> f64 {
 /// this conversion can currently emit.
 pub(crate) fn chain_tips_from_nonfinalized_snapshot(
     snapshot: &NonfinalizedBlockCacheSnapshot,
-) -> GetChainTipsResponse {
+) -> Vec<zaino_primitives::types::rpc::ChainTip> {
+    use zaino_primitives::types::rpc::{ChainTip, ChainTipStatus};
+
     let parent_hashes = snapshot
         .blocks
         .values()
@@ -155,26 +167,42 @@ pub(crate) fn chain_tips_from_nonfinalized_snapshot(
             } else {
                 ChainTipStatus::ValidFork
             };
-            let branchlen = if is_active_tip {
+            let branch_len = if is_active_tip {
                 0
             } else {
                 branch_len_to_active_chain(snapshot, block)
             };
 
-            ChainTip::new(
-                u32::from(block.height()),
-                block.hash().to_rpc_hex(),
-                branchlen,
+            // Every height in the index passed `Height::try_from` when the block
+            // was ingested, so an out-of-range value here means the index itself
+            // is corrupt. Propagating would make a pure snapshot read fallible
+            // and ripple through its callers for a state that cannot arise.
+            let height = zaino_primitives::types::Height::try_from(u32::from(block.height()))
+                .expect("an indexed block's height is within the protocol maximum");
+
+            ChainTip {
+                height,
+                hash: zaino_primitives::types::BlockHash::from(block.hash().0),
+                branch_len,
                 status,
-            )
+            }
         })
         .collect::<Vec<_>>();
 
+    // Descending height, then ascending hash. The tie-break compares
+    // *display-order* bytes, which is the ordering the hex strings this
+    // previously sorted on would produce — hashes are byte-reversed for display,
+    // so sorting internal bytes would silently reorder equal-height tips.
     tips.sort_by(|left, right| {
+        let display_order = |hash: zaino_primitives::types::BlockHash| {
+            let mut bytes = <[u8; 32]>::from(hash);
+            bytes.reverse();
+            bytes
+        };
         right
             .height
             .cmp(&left.height)
-            .then_with(|| left.hash.cmp(&right.hash))
+            .then_with(|| display_order(left.hash).cmp(&display_order(right.hash)))
     });
     tips
 }
@@ -213,113 +241,43 @@ fn branch_len_to_active_chain(
 /// - Direct read access to a zebrad database via `ReadStateService` (preferred)
 /// - A JSON-RPC connection to a validator node (zcashd, zebrad, or another zainod)
 ///
-/// # Example with ReadStateService (Preferred)
+/// # Constructing one
+///
+/// Both backends are selected by config and built through
+/// [`NodeBackedIndexerService`](crate::NodeBackedIndexerService), which
+/// resolves the connection type, probes the validator, adopts its activation
+/// schedule and waits for the initial sync:
 ///
 /// ```no_run
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use zaino_state::{ChainIndex, NodeBackedChainIndex, ValidatorConnector, BlockCacheConfig};
-/// use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
-/// use zebra_state::{ReadStateService, Config as ZebraConfig};
-/// use std::path::PathBuf;
+/// use zaino_state::{
+///     LightWalletService, NodeBackedIndexerService, NodeBackedIndexerServiceConfig, ZcashService,
+/// };
 ///
-/// // Create a ReadStateService for direct database access
-/// let zebra_config = ZebraConfig::default();
-/// let read_state_service = ReadStateService::new(&zebra_config).await?;
-///
-/// // Create a JSON-RPC connector for mempool access (temporary requirement)
-/// let mempool_connector = JsonRpSeeConnector::new_from_config_parts(
-///     false, // no cookie auth
-///     "127.0.0.1:8232".parse()?,
-///     "user".to_string(),
-///     "password".to_string(),
-///     None,  // no cookie path
-/// ).await?;
-///
-/// // Create the State source combining both services
-/// let source = ValidatorConnector::State(zaino_state::chain_index::source::State {
-///     read_state_service,
-///     mempool_fetcher: mempool_connector,
-/// });
-///
-/// // Configure the block cache
-/// let config = BlockCacheConfig::new(
-///     None,  // map capacity
-///     None,  // shard amount
-///     1,     // db version
-///     PathBuf::from("/path/to/cache"),
-///     None,  // db size
-///     zebra_chain::parameters::Network::Mainnet,
-///     false, // sync enabled
-///     false, // db enabled
-/// );
-///
-/// // Create the chain index and get a subscriber for queries
-/// let chain_index = NodeBackedChainIndex::new(source, config).await?;
-/// let subscriber = chain_index.subscriber().await;
-///
-/// // Take a snapshot for consistent queries
-/// let snapshot = subscriber.snapshot_nonfinalized_state();
-///
-/// // Query blocks in a range using the subscriber
-/// if let Some(stream) = subscriber.get_block_range(
-///     &snapshot,
-///     zaino_state::Height(100000),
-///     Some(zaino_state::Height(100010))
-/// ) {
-///     // Process the block stream...
-/// }
+/// // `ValidatorConnectionType::Rpc` reaches the validator over JSON-RPC only;
+/// // `Direct` additionally reads its state database, and is preferred where
+/// // available.
+/// let config = NodeBackedIndexerServiceConfig::default();
+/// let service = NodeBackedIndexerService::spawn(config).await?;
 /// # Ok(())
 /// # }
 /// ```
 ///
-/// # Example with JSON-RPC Only (Fallback)
+/// Consumers then query through the service's subscriber, which implements this
+/// trait. A snapshot pins the non-finalised state so a sequence of queries sees
+/// one consistent chain:
 ///
 /// ```no_run
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use zaino_state::{ChainIndex, NodeBackedChainIndex, ValidatorConnector, BlockCacheConfig};
-/// use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
-/// use std::path::PathBuf;
+/// # async fn example(
+/// #     subscriber: impl zaino_state::ChainIndex,
+/// # ) -> Result<(), Box<dyn std::error::Error>> {
+/// use zaino_state::ChainIndex as _;
 ///
-/// // Create a JSON-RPC connector to your validator node
-/// let connector = JsonRpSeeConnector::new_from_config_parts(
-///     false, // no cookie auth
-///     "127.0.0.1:8232".parse()?,
-///     "user".to_string(),
-///     "password".to_string(),
-///     None,  // no cookie path
-/// ).await?;
-///
-/// // Wrap the connector for use with ChainIndex
-/// let source = ValidatorConnector::Fetch(connector);
-///
-/// // Configure the block cache (same as above)
-/// let config = BlockCacheConfig::new(
-///     None,  // map capacity
-///     None,  // shard amount
-///     1,     // db version
-///     PathBuf::from("/path/to/cache"),
-///     None,  // db size
-///     zebra_chain::parameters::Network::Mainnet,
-///     false, // sync enabled
-///     false, // db enabled
-/// );
-///
-/// // Create the chain index and get a subscriber for queries
-/// let chain_index = NodeBackedChainIndex::new(source, config).await?;
-/// let subscriber = chain_index.subscriber().await;
-///
-/// // Use the subscriber to access ChainIndex trait methods
-/// let snapshot = subscriber.snapshot_nonfinalized_state();
+/// let snapshot = subscriber.snapshot_nonfinalized_state().await?;
+/// let tip = subscriber.best_chaintip(&snapshot).await?;
 /// # Ok(())
 /// # }
 /// ```
-///
-/// # Migrating from FetchService or StateService
-///
-/// If you were previously using `FetchService::spawn()` or `StateService::spawn()`:
-/// 1. Extract the relevant fields from your service config into a `BlockCacheConfig`
-/// 2. Create the appropriate `ValidatorConnector` variant (State or Fetch)
-/// 3. Call `NodeBackedChainIndex::new(source, config).await`
 ///
 /// When a call asks for info (e.g. a block), Zaino selects sources in this order:
 #[doc = simple_mermaid::mermaid!("chain_index_passthrough.mmd")]
@@ -433,13 +391,23 @@ pub trait ChainIndex {
         &self,
     ) -> impl std::future::Future<Output = Result<Vec<types::TransactionHash>, Self::Error>>;
 
-    /// Returns all transactions currently in the mempool, filtered by `exclude_list`.
+    /// Returns all transactions currently in the mempool, minus those matching
+    /// `exclude_list`.
     ///
-    /// The `exclude_list` may contain shortened transaction ID hex prefixes (client-endian).
+    /// Each entry of `exclude_list` is a raw txid *suffix* in the client's byte
+    /// order, exactly as it arrives on the wire — no hex, no reversal. Returning
+    /// entries rather than bytes lets the caller reach the shared `Bytes` buffer
+    /// without a copy, and gives it the entry height it needs to serve one.
+    ///
+    /// Rejects a list that is too long, or a suffix too short to identify a
+    /// transaction, rather than clamping: silently truncating would serve
+    /// transactions the caller believes it excluded.
     fn get_mempool_transactions(
         &self,
-        exclude_list: Vec<String>,
-    ) -> impl std::future::Future<Output = Result<Vec<Vec<u8>>, Self::Error>>;
+        exclude_list: Vec<Vec<u8>>,
+    ) -> impl std::future::Future<
+        Output = Result<Vec<std::sync::Arc<zaino_mempool::MempoolEntry>>, Self::Error>,
+    >;
 
     /// Returns a stream of mempool transactions, ending the stream when the chain tip block hash
     /// changes (a new block is mined or a reorg occurs).
@@ -449,7 +417,7 @@ pub trait ChainIndex {
     fn get_mempool_stream(
         &self,
         snapshot: Option<&Self::Snapshot>,
-    ) -> Option<impl futures::Stream<Item = Result<Vec<u8>, Self::Error>>>;
+    ) -> Option<impl futures::Stream<Item = Result<bytes::Bytes, Self::Error>>>;
 
     // ********** Chain methods **********
 
@@ -500,7 +468,7 @@ pub trait ChainIndex {
     fn get_address_balance(
         &self,
         address_strings: GetAddressBalanceRequest,
-    ) -> impl std::future::Future<Output = Result<AddressBalance, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<zaino_primitives::types::AddressBalance, Self::Error>>;
 
     /// Returns the transaction ids made by the given transparent addresses.
     fn get_address_txids(
@@ -512,7 +480,7 @@ pub trait ChainIndex {
     fn get_address_utxos(
         &self,
         address_strings: GetAddressBalanceRequest,
-    ) -> impl std::future::Future<Output = Result<Vec<GetAddressUtxos>, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<Vec<zaino_primitives::types::Utxo>, Self::Error>>;
 
     /// For each outpoint, returns the txid of the transaction that spent it on the best
     /// chain, or `None` if the outpoint is unspent or unknown.
@@ -609,8 +577,16 @@ pub trait ChainIndexRpcExt: ChainIndex {
     fn get_block_header(
         &self,
         hash: String,
-        verbose: bool,
-    ) -> impl std::future::Future<Output = Result<GetBlockHeader, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<BlockHeaderVerbose, Self::Error>>;
+
+    /// Returns the raw serialised header of the block with the given hash.
+    ///
+    /// The non-verbose half of `getblockheader`; see
+    /// [`BlockchainSource::get_raw_block_header`].
+    fn get_raw_block_header(
+        &self,
+        hash: String,
+    ) -> impl std::future::Future<Output = Result<Vec<u8>, Self::Error>>;
 
     /// Returns the `getblockdeltas`-shaped transparent input/output deltas for the block
     /// with the given hash.
@@ -632,26 +608,27 @@ pub trait ChainIndexRpcExt: ChainIndex {
     // No local-index equivalent; always delegate to the backing validator.
 
     /// Returns the `getinfo` response.
-    fn get_info(&self) -> impl std::future::Future<Output = Result<GetInfo, Self::Error>>;
+    fn get_info(&self) -> impl std::future::Future<Output = Result<NodeInfo, Self::Error>>;
 
     /// Returns the `getblockchaininfo` response.
     fn get_blockchain_info(
         &self,
-    ) -> impl std::future::Future<Output = Result<GetBlockchainInfoResponse, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<zaino_primitives::types::BlockchainInfo, Self::Error>>;
 
     /// Returns the `getpeerinfo` response.
-    fn get_peer_info(&self) -> impl std::future::Future<Output = Result<GetPeerInfo, Self::Error>>;
+    fn get_peer_info(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<PeerInfo>, Self::Error>>;
 
     /// Returns the `getblocksubsidy` response at the given height.
     fn get_block_subsidy(
         &self,
         height: u32,
-    ) -> impl std::future::Future<Output = Result<GetBlockSubsidy, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<BlockSubsidy, Self::Error>>;
 
     /// Returns the `getmininginfo` response.
-    fn get_mining_info(
-        &self,
-    ) -> impl std::future::Future<Output = Result<GetMiningInfoWire, Self::Error>>;
+    fn get_mining_info(&self)
+        -> impl std::future::Future<Output = Result<MiningInfo, Self::Error>>;
 
     /// Returns the `gettxout` response for the given outpoint.
     fn get_tx_out(
@@ -659,41 +636,43 @@ pub trait ChainIndexRpcExt: ChainIndex {
         txid: String,
         n: u32,
         include_mempool: Option<bool>,
-    ) -> impl std::future::Future<Output = Result<GetTxOutResponse, Self::Error>>;
+    ) -> impl std::future::Future<
+        Output = Result<Option<zaino_primitives::types::rpc::TxOut>, Self::Error>,
+    >;
 
     /// Returns the `getspentinfo` response for the given request.
     fn get_spent_info(
         &self,
-        request: GetSpentInfoRequest,
-    ) -> impl std::future::Future<Output = Result<GetSpentInfoResponse, Self::Error>>;
+        outpoint: zaino_primitives::types::rpc::SpentOutpoint,
+    ) -> impl std::future::Future<Output = Result<zaino_primitives::types::rpc::SpentInfo, Self::Error>>;
 
     /// Returns the `getnetworksolps` response.
     fn get_network_sol_ps(
         &self,
         blocks: Option<i32>,
         height: Option<i32>,
-    ) -> impl std::future::Future<Output = Result<GetNetworkSolPsResponse, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<u64, Self::Error>>;
 
     /// Submits a raw transaction to the network (`sendrawtransaction`).
     fn send_raw_transaction(
         &self,
         raw_transaction_hex: String,
-    ) -> impl std::future::Future<Output = Result<SentTransactionHash, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<zaino_primitives::types::TransactionId, Self::Error>>;
 
     /// Returns the full `z_gettreestate` response for the given hash-or-height, via the
     /// backing validator (node-passthrough fallback for treestates not locally serviceable).
     fn get_treestate_by_id(
         &self,
         hash_or_height: String,
-    ) -> impl std::future::Future<Output = Result<zebra_rpc::client::GetTreestateResponse, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<zaino_primitives::types::Treestate, Self::Error>>;
 
     // ********** Transparent address history methods **********
 
     /// Returns all changes for the given transparent addresses.
     fn get_address_deltas(
         &self,
-        params: GetAddressDeltasParams,
-    ) -> impl std::future::Future<Output = Result<GetAddressDeltasResponse, Self::Error>>;
+        params: AddressDeltasRequest,
+    ) -> impl std::future::Future<Output = Result<AddressDeltas, Self::Error>>;
 
     // ********** Metadata methods **********
 
@@ -706,11 +685,12 @@ pub trait ChainIndexRpcExt: ChainIndex {
     /// Returns the full `gettxoutsetinfo` response, folding the non-finalised state on top of
     /// the finalised txout-set accumulator.
     ///
-    /// Returns [`GetTxOutSetInfoResponse::Empty`] while the indexer is still syncing the
-    /// finalised state (the accumulator's spent-index invariants are not yet established).
+    /// Returns `None` while the indexer is still syncing the finalised state (the
+    /// accumulator's spent-index invariants are not yet established). The wire
+    /// layer renders that as zcashd's empty object.
     fn get_tx_out_set_info(
         &self,
-    ) -> impl std::future::Future<Output = Result<GetTxOutSetInfoResponse, Self::Error>>;
+    ) -> impl std::future::Future<Output = Result<Option<TxOutSetInfo>, Self::Error>>;
 }
 
 /// The combined index. Contains a view of the mempool, and the full
@@ -728,107 +708,33 @@ pub trait ChainIndexRpcExt: ChainIndex {
 /// # Construction
 ///
 /// Use [`NodeBackedChainIndex::new()`] with:
-/// - A [`ValidatorConnector`] source (State variant preferred, Fetch as fallback)
-/// - A [`crate::config::BlockCacheConfig`] containing cache and database settings
-///
-/// # Example with StateService (Preferred)
+/// - A source implementing [`BlockchainSource`] — in production
+///   [`ZebraValidatorSource`](crate::chain_index::validator_source::ZebraValidatorSource),
+///   built by `spawn_rpc` or `spawn_direct` from the backend config
+/// - A [`ChainIndexConfig`](crate::ChainIndexConfig) containing cache and database settings
 ///
 /// ```no_run
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use zaino_state::{NodeBackedChainIndex, ValidatorConnector, BlockCacheConfig};
-/// use zaino_state::chain_index::source::State;
-/// use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
-/// use zebra_state::{ReadStateService, Config as ZebraConfig};
-/// use std::path::PathBuf;
+/// use zaino_state::chain_index::validator_source::ZebraValidatorSource;
+/// use zaino_state::{ChainIndexConfig, NodeBackedChainIndex};
 ///
-/// // Create ReadStateService for direct database access
-/// let zebra_config = ZebraConfig::default();
-/// let read_state_service = ReadStateService::new(&zebra_config).await?;
+/// # let common = unimplemented!();
+/// // `spawn_rpc` reaches the validator over JSON-RPC only; `spawn_direct`
+/// // additionally reads its state database, and is preferred where available.
+/// // Both adopt the validator's activation schedule at first contact.
+/// let (source, _node_info, network) = ZebraValidatorSource::spawn_rpc(common).await?;
 ///
-/// // Temporary: Create JSON-RPC connector for mempool access
-/// let mempool_connector = JsonRpSeeConnector::new_from_config_parts(
-///     false,
-///     "127.0.0.1:8232".parse()?,
-///     "user".to_string(),
-///     "password".to_string(),
-///     None,
-/// ).await?;
-///
-/// let source = ValidatorConnector::State(State {
-///     read_state_service,
-///     mempool_fetcher: mempool_connector,
-/// });
-///
-/// // Configure the cache (extract these from your previous StateServiceConfig)
-/// let config = BlockCacheConfig {
-///     map_capacity: Some(1000),
-///     map_shard_amount: Some(16),
-///     db_version: 1,
-///     db_path: PathBuf::from("/path/to/cache"),
-///     db_size: Some(10), // GB
-///     network: zebra_chain::parameters::Network::Mainnet,
-///     no_sync: false,
-///     no_db: false,
-/// };
-///
-/// let chain_index = NodeBackedChainIndex::new(source, config).await?;
+/// let chain_index =
+///     NodeBackedChainIndex::new(source, ChainIndexConfig::from_backend_config(common, network))
+///         .await?;
 /// let subscriber = chain_index.subscriber().await;
-///
-/// // Use the subscriber to access ChainIndex trait methods
-/// let snapshot = subscriber.snapshot_nonfinalized_state();
 /// # Ok(())
 /// # }
 /// ```
 ///
-/// # Example with JSON-RPC Only (Fallback)
-///
-/// ```no_run
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// use zaino_state::{NodeBackedChainIndex, ValidatorConnector, BlockCacheConfig};
-/// use zaino_fetch::jsonrpsee::connector::JsonRpSeeConnector;
-/// use std::path::PathBuf;
-///
-/// // For JSON-RPC backend (replaces FetchService::spawn)
-/// let connector = JsonRpSeeConnector::new_from_config_parts(
-///     false,
-///     "127.0.0.1:8232".parse()?,
-///     "user".to_string(),
-///     "password".to_string(),
-///     None,
-/// ).await?;
-/// let source = ValidatorConnector::Fetch(connector);
-///
-/// // Configure the cache (extract these from your previous FetchServiceConfig)
-/// let config = BlockCacheConfig {
-///     map_capacity: Some(1000),
-///     map_shard_amount: Some(16),
-///     db_version: 1,
-///     db_path: PathBuf::from("/path/to/cache"),
-///     db_size: Some(10), // GB
-///     network: zebra_chain::parameters::Network::Mainnet,
-///     no_sync: false,
-///     no_db: false,
-/// };
-///
-/// let chain_index = NodeBackedChainIndex::new(source, config).await?;
-/// let subscriber = chain_index.subscriber().await;
-///
-/// // Use the subscriber to access ChainIndex trait methods
-/// # Ok(())
-/// # }
-/// ```
-///
-/// # Migration from StateService/FetchService
-///
-/// If migrating from `StateService::spawn(config)`:
-/// 1. Create a `ReadStateService` and temporary JSON-RPC connector for mempool
-/// 2. Convert config to `BlockCacheConfig` (or use `From` impl)
-/// 3. Call `NodeBackedChainIndex::new(ValidatorConnector::State(...), block_config)`
-///
-/// If migrating from `FetchService::spawn(config)`:
-/// 1. Create a `JsonRpSeeConnector` using the RPC fields from your `FetchServiceConfig`
-/// 2. Convert remaining config fields to `BlockCacheConfig` (or use `From` impl)
-/// 3. Call `NodeBackedChainIndex::new(ValidatorConnector::Fetch(connector), block_config)`
+/// Most consumers should not build one directly:
+/// [`NodeBackedIndexerService`](crate::NodeBackedIndexerService) does all of the
+/// above from config, and additionally waits for the initial sync to complete.
 ///
 /// # Current Features
 ///
@@ -837,9 +743,22 @@ pub trait ChainIndexRpcExt: ChainIndex {
 /// - Automatic synchronization between state layers
 /// - Snapshot-based consistency for queries
 #[derive(Debug)]
-pub struct NodeBackedChainIndex<Source: BlockchainSource = ValidatorConnector> {
-    #[allow(dead_code)]
-    mempool: std::sync::Arc<mempool::Mempool<Source>>,
+pub struct NodeBackedChainIndex<
+    Source: BlockchainSource = crate::chain_index::validator_source::ZebraValidatorSource,
+> {
+    /// The tip-agnostic mempool: always live, never frozen.
+    mempool: std::sync::Arc<mempool::ChainIndexMempool<Source>>,
+    /// The tip-aware view over it, for the reads that place a transaction
+    /// relative to a chain tip.
+    coherence: std::sync::Arc<mempool::ChainIndexCoherence<Source>>,
+    /// Fired by the sync loop after each non-finalized publication, so the
+    /// coherence layer thaws on the block rather than on its next poll tick.
+    /// Without it every block is followed by a freeze lasting a full tick.
+    nfs_epoch_signal: tokio::sync::watch::Sender<()>,
+    /// Fired by the sync loop when the chain height moves, giving the mempool a
+    /// push path the source does not have. A hint only — see
+    /// [`MempoolSourceAdapter`](mempool::MempoolSourceAdapter).
+    block_wake_signal: tokio::sync::watch::Sender<()>,
     non_finalized_state: Arc<ArcSwapOption<crate::NonFinalizedState<Source>>>,
     finalized_db: std::sync::Arc<finalised_state::FinalisedState<Source>>,
     sync_loop_handle: Option<tokio::task::JoinHandle<Result<(), SyncError>>>,
@@ -910,8 +829,12 @@ impl SyncTimings {
 }
 
 impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
-    /// Creates a new chainindex from a connection to a validator
-    /// Currently this is a ReadStateService or JsonRpSeeConnector
+    /// Creates a new chainindex from a connection to a validator.
+    ///
+    /// In production `Source` is
+    /// [`ZebraValidatorSource`](crate::chain_index::validator_source::ZebraValidatorSource),
+    /// which routes each query to Zebra's read-state service or its JSON-RPC
+    /// interface according to which can answer it.
     pub async fn new(
         source: Source,
         config: crate::config::ChainIndexConfig,
@@ -926,24 +849,49 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         config: crate::config::ChainIndexConfig,
         sync_timings: SyncTimings,
     ) -> Result<Self, crate::InitError> {
-        use futures::TryFutureExt as _;
-
         let finalized_db =
             Arc::new(finalised_state::FinalisedState::spawn(config.clone(), source.clone()).await?);
-        let mempool_state = mempool::Mempool::spawn(source.clone(), None)
-            .map_err(crate::InitError::MempoolInitialzationError)
-            .await?;
+
+        // Built before the mempool services so the epoch observer can share the
+        // very handle the sync loop publishes into. A separate handle would let
+        // the two drift, and the coherence layer would be freezing against a tip
+        // nobody was being served.
+        let non_finalized_state = Arc::new(ArcSwapOption::empty());
+
+        let (nfs_epoch_signal, nfs_epoch_wake) = tokio::sync::watch::channel(());
+        let (block_wake_signal, block_wake) = tokio::sync::watch::channel(());
+
+        let cancel_token = CancellationToken::new();
+
+        let mempool = zaino_mempool_service::MempoolService::spawn(
+            mempool::MempoolSourceAdapter::new(source.clone(), block_wake),
+            config.mempool.clone(),
+            cancel_token.child_token(),
+        );
+
+        let coherence = zaino_mempool_service::CoherenceService::spawn(
+            mempool.subscriber(),
+            mempool::NfsEpochAdapter::new(non_finalized_state.clone(), nfs_epoch_wake),
+            // Cloned rather than rebuilt: `MempoolConfig` shares its
+            // `max_cost_bytes` cell across clones, so an operator changing the
+            // bound moves both services at once.
+            config.mempool.clone(),
+            cancel_token.child_token(),
+        );
 
         let mut chain_index = Self {
-            mempool: std::sync::Arc::new(mempool_state),
-            non_finalized_state: Arc::new(ArcSwapOption::empty()),
+            mempool,
+            coherence,
+            nfs_epoch_signal,
+            block_wake_signal,
+            non_finalized_state,
             finalized_db,
             sync_loop_handle: None,
             status: NamedAtomicStatus::new("ChainIndex", StatusType::Spawning),
             network: config.network.clone(),
             source,
             sync_timings,
-            cancel_token: CancellationToken::new(),
+            cancel_token,
         };
         chain_index.sync_loop_handle = Some(chain_index.start_sync_loop());
 
@@ -955,6 +903,7 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
     pub fn subscriber(&self) -> NodeBackedChainIndexSubscriber<Source> {
         NodeBackedChainIndexSubscriber {
             mempool: self.mempool.subscriber(),
+            coherence: self.coherence.subscriber(),
             non_finalized_state: self.non_finalized_state.clone(),
             finalized_state: self.finalized_db.to_reader(),
             status: self.status.clone(),
@@ -996,6 +945,13 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         self.source.shutdown();
     }
 
+    /// How long tip-coherent mempool reads have been frozen, or `None` if live.
+    ///
+    /// See [`NodeBackedChainIndexSubscriber::mempool_coherence_health`].
+    pub fn mempool_coherence_health(&self) -> Option<std::time::Duration> {
+        self.coherence.subscriber().frozen_for()
+    }
+
     /// Displays the status of the chain_index
     pub fn status(&self) -> StatusType {
         let finalized_status = self.finalized_db.status();
@@ -1016,6 +972,9 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         let fs = self.finalized_db.clone();
         let status = self.status.clone();
         let source = self.source.clone();
+        let nfs_epoch_signal = self.nfs_epoch_signal.clone();
+        let block_wake_signal = self.block_wake_signal.clone();
+        let coherence = self.coherence.subscriber();
         let network = self.network.clone();
         let timings = self.sync_timings;
         let cancel_token = self.cancel_token.clone();
@@ -1029,6 +988,11 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
             let mut change_rx = source.subscribe_to_blocks_received();
             let mut consecutive_failures: u32 = 0;
             let mut current_backoff = timings.initial_backoff;
+            // Fires the mempool's block wake only when the height actually
+            // moves. Firing every iteration would make the wake a second timer
+            // rather than a block signal, and the mempool would poll at the sync
+            // loop's cadence instead of its own.
+            let mut last_woken_height: Option<u32> = None;
             #[cfg(feature = "prometheus")]
             let mut has_reached_tip = false;
 
@@ -1119,6 +1083,40 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                         .sync(fs.clone(), chain_height.into())
                         .await?;
                     std::mem::drop(intermediate_nfs_for_scoping);
+
+                    // Unconditional: the epoch is bumped only on a real tip
+                    // change (see `NonfinalizedBlockCacheSnapshot::generation`),
+                    // so the coherence layer re-reads a cheap unchanged value on
+                    // the quiet iterations and thaws on the block rather than on
+                    // its next tick. Both signals are hints — a lost send costs
+                    // latency, never correctness — so the result is discarded.
+                    let _ = nfs_epoch_signal.send(());
+
+                    if last_woken_height != Some(chain_height.0) {
+                        last_woken_height = Some(chain_height.0);
+                        let _ = block_wake_signal.send(());
+                    }
+
+                    // A freeze is normal and brief — it is how a tip transition
+                    // is meant to look. A freeze that outlives
+                    // `COHERENCE_FREEZE_ESCALATION` is not: the validator tip and
+                    // Zaino's have stopped agreeing, and tip-coherent reads have
+                    // been failing that whole time with nothing in the log to say
+                    // so. Reported here rather than from the coherence layer
+                    // because this loop is the thing that would have to fix it.
+                    let frozen_for = coherence.frozen_for();
+                    #[cfg(feature = "prometheus")]
+                    metrics::gauge!(MEMPOOL_COHERENCE_FROZEN_SECONDS)
+                        .set(frozen_for.map_or(0.0, |d| d.as_secs_f64()));
+                    if let Some(frozen_for) = frozen_for {
+                        if frozen_for >= COHERENCE_FREEZE_ESCALATION {
+                            tracing::warn!(
+                                frozen_for_secs = frozen_for.as_secs(),
+                                "mempool coherence has been frozen far longer than a tip \
+                                 transition should take; tip-coherent reads are unavailable"
+                            );
+                        }
+                    }
 
                     Ok(())
                     } => r,
@@ -1233,8 +1231,14 @@ impl<Source: BlockchainSource> Drop for NodeBackedChainIndex<Source> {
 ///
 /// [`NodeBackedChainIndexSubscriber`] can safely be cloned and dropped freely.
 #[derive(Clone, Debug)]
-pub struct NodeBackedChainIndexSubscriber<Source: BlockchainSource = ValidatorConnector> {
-    mempool: mempool::MempoolSubscriber,
+pub struct NodeBackedChainIndexSubscriber<
+    Source: BlockchainSource = crate::chain_index::validator_source::ZebraValidatorSource,
+> {
+    /// The live set: answers regardless of what the tip is doing.
+    mempool: zaino_mempool_service::MempoolSubscriber,
+    /// The tip-coherent view over it, consulted by the reads that place a
+    /// transaction relative to a tip.
+    coherence: zaino_mempool_service::CoherentSubscriber,
     non_finalized_state: Arc<ArcSwapOption<crate::NonFinalizedState<Source>>>,
     finalized_state: finalised_state::reader::DbReader<Source>,
     status: NamedAtomicStatus,
@@ -1335,12 +1339,21 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
 
     /// The indexer's mempool subscriber.
     ///
-    /// Test-only escape hatch: live tests recompute expected `getmempoolinfo`
-    /// values directly off the mempool's entries. Production code goes through
-    /// the `ChainIndex` mempool API.
+    /// Test-only escape hatch. Production code goes through the `ChainIndex`
+    /// mempool API.
     #[cfg(feature = "test_dependencies")]
-    pub(crate) fn mempool_subscriber(&self) -> &mempool::MempoolSubscriber {
+    pub(crate) fn mempool_subscriber(&self) -> &zaino_mempool_service::MempoolSubscriber {
         &self.mempool
+    }
+
+    /// How long tip-coherent mempool reads have been frozen, or `None` if live.
+    ///
+    /// A brief non-`None` value is the normal shape of a tip transition. A
+    /// sustained one means the validator tip and Zaino's have stopped agreeing,
+    /// and every tip-coherent read is failing — which is why this is exposed
+    /// rather than left to the metric alone.
+    pub fn mempool_coherence_health(&self) -> Option<std::time::Duration> {
+        self.coherence.frozen_for()
     }
 
     /// Returns the combined status of all chain index components.
@@ -1605,29 +1618,6 @@ impl<Source: BlockchainSource> NodeBackedChainIndexSubscriber<Source> {
             }
         }
     }
-
-    // Get the height of the mempool
-    fn get_mempool_height(&self, snapshot: &ChainIndexSnapshot) -> Option<types::Height> {
-        let ChainIndexSnapshot::NonFinalizedStateExists {
-            non_finalized_snapshot,
-        } = snapshot
-        else {
-            return None;
-        };
-
-        non_finalized_snapshot
-            .blocks
-            .iter()
-            .find(|(hash, _block)| **hash == self.mempool.mempool_chain_tip())
-            .map(|(_hash, block)| block.height())
-    }
-
-    fn mempool_branch_id(&self, snapshot: &ChainIndexSnapshot) -> Option<u32> {
-        self.get_mempool_height(snapshot).and_then(|height| {
-            ConsensusBranchId::current(&self.network, zebra_chain::block::Height::from(height + 1))
-                .map(u32::from)
-        })
-    }
 }
 
 impl<Source: BlockchainSource> Status for NodeBackedChainIndexSubscriber<Source> {
@@ -1873,18 +1863,38 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
         snapshot: &Self::Snapshot,
         txid: &types::TransactionHash,
     ) -> Result<Option<(Vec<u8>, Option<u32>)>, Self::Error> {
-        // ChainIndex step 1
-        if let Some(mempool_tx) = self
-            .mempool
-            .get_transaction(&mempool::MempoolKey {
-                txid: txid.to_rpc_hex(),
-            })
-            .await
-        {
-            let bytes = mempool_tx.serialized_tx.as_ref().as_ref().to_vec();
-            let mempool_branch_id = self.mempool_branch_id(snapshot);
+        // ChainIndex step 1: the mempool, but only if it is coherent with the
+        // snapshot this caller is reading against.
+        //
+        // An unmined transaction's consensus branch id is derived from the
+        // height it *would* be mined at, so serving it against a stale snapshot
+        // would attach the wrong branch id — and a caller cannot tell a wrong
+        // branch id from a right one. `Unavailable` says "ask again with a fresh
+        // snapshot", which is recoverable; the wrong answer is not.
+        let coherent = self.coherence.coherent_snapshot();
+        let coherent_here = snapshot
+            .nfs_epoch()
+            .filter(|epoch| coherent.is_valid_for_snapshot(*epoch));
 
-            return Ok(Some((bytes, mempool_branch_id)));
+        if let Some(epoch) = coherent_here {
+            if let Some(entry) = coherent.get(&types_txid_to_domain(txid)) {
+                // The branch id an unmined transaction would be validated under
+                // is the one at the *next* height, derived from the caller's own
+                // tip — not from wherever the mempool happens to be.
+                let branch_id = ConsensusBranchId::current(
+                    &self.network,
+                    zebra_chain::block::Height(u32::from(epoch.best_tip.height) + 1),
+                )
+                .map(u32::from);
+
+                return Ok(Some((entry.wire_bytes().to_vec(), branch_id)));
+            }
+        } else if self.mempool.contains_txid(&types_txid_to_domain(txid)) {
+            // The transaction *is* in the mempool, but this caller's view of the
+            // chain has moved on from the one the mempool is coherent with.
+            return Err(ChainIndexError::unavailable(
+                "mempool is not coherent with the requested snapshot; retry with a fresh snapshot",
+            ));
         }
 
         let Some((transaction, location)) = self
@@ -1979,15 +1989,11 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                         })
                         .map(|block| NonBestChainLocation::Block(*block.hash(), block.height()))
                         .collect();
-                let in_mempool = self
-                    .mempool
-                    .contains_txid(&mempool::MempoolKey {
-                        txid: txid.to_rpc_hex(),
-                    })
-                    .await;
+                let domain_txid = types_txid_to_domain(txid);
+                let in_mempool = self.mempool.contains_txid(&domain_txid);
                 if in_mempool {
-                    let mempool_tip_hash = self.mempool.mempool_chain_tip();
-                    if mempool_tip_hash == non_finalized_snapshot.best_tip.hash {
+                    let coherent = self.coherence.coherent_snapshot();
+                    if coherent.is_valid_for_snapshot(non_finalized_snapshot.epoch()) {
                         if best_chain_block.is_some() {
                             return Err(ChainIndexError {
                         kind: ChainIndexErrorKind::InvalidSnapshot,
@@ -2008,14 +2014,19 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
                             non_finalized_snapshot: new_snapshot,
                         } = self.snapshot_nonfinalized_state().await?
                         {
-                            let target_height =
-                                new_snapshot.blocks.iter().find_map(|(hash, block)| {
-                                    if *hash == mempool_tip_hash {
-                                        Some(block.height() + 1)
-                                        // found the block that is the tip that the mempool is hanging on to
-                                    } else {
-                                        None
-                                    }
+                            // The mempool is coherent with some *other* tip than
+                            // this caller's. Report the height it would be mined
+                            // at under that tip, if we still hold that block.
+                            let target_height = self
+                                .coherence
+                                .coherent_snapshot()
+                                .valid_for
+                                .and_then(|epoch| {
+                                    new_snapshot.blocks.iter().find_map(|(hash, block)| {
+                                        (<[u8; 32]>::from(*hash)
+                                            == <[u8; 32]>::from(epoch.best_tip.hash))
+                                        .then(|| block.height() + 1)
+                                    })
                                 });
                             non_best_chain_blocks
                                 .insert(NonBestChainLocation::Mempool(target_height));
@@ -2054,15 +2065,14 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
 
     /// Returns all txids currently in the mempool.
     async fn get_mempool_txids(&self) -> Result<Vec<types::TransactionHash>, Self::Error> {
-        self.mempool
-            .get_mempool()
-            .await
-            .into_iter()
-            .map(|(txid_key, _)| {
-                TransactionHash::from_hex(&txid_key.txid)
-                    .map_err(ChainIndexError::backing_validator)
-            })
-            .collect::<Result<_, _>>()
+        // The tip-agnostic set: this read is a listing, not a placement, so it
+        // stays live across a tip transition.
+        Ok(self
+            .mempool
+            .get_txids()
+            .iter()
+            .map(|txid| types::TransactionHash::from(<[u8; 32]>::from(*txid)))
+            .collect())
     }
 
     /// Returns all transactions currently in the mempool, filtered by `exclude_list`.
@@ -2074,19 +2084,17 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     /// in the exclude list that don't exist in the mempool are ignored.
     async fn get_mempool_transactions(
         &self,
-        exclude_list: Vec<String>,
-    ) -> Result<Vec<Vec<u8>>, Self::Error> {
-        // Use the mempool's own filtering (it already handles client-endian shortened prefixes).
-        let pairs: Vec<(mempool::MempoolKey, mempool::MempoolValue)> =
-            self.mempool.get_filtered_mempool(exclude_list).await;
+        exclude_list: Vec<Vec<u8>>,
+    ) -> Result<Vec<std::sync::Arc<zaino_mempool::MempoolEntry>>, Self::Error> {
+        // Validated rather than clamped: an over-long list or an unusably short
+        // suffix is a caller mistake, and silently truncating it would serve
+        // transactions the caller believes it excluded.
+        let suffixes = self
+            .mempool
+            .validate_exclude_suffixes(&exclude_list)
+            .map_err(|e| ChainIndexError::invalid_argument(e.to_string()))?;
 
-        // Transform to the Vec<Vec<u8>> that the trait requires.
-        let bytes: Vec<Vec<u8>> = pairs
-            .into_iter()
-            .map(|(_, v)| v.serialized_tx.as_ref().as_ref().to_vec())
-            .collect();
-
-        Ok(bytes)
+        Ok(self.mempool.get_filtered_entries(&suffixes))
     }
 
     /// Returns a stream of mempool transactions, ending the stream when the chain tip block hash
@@ -2096,72 +2104,31 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     fn get_mempool_stream(
         &self,
         snapshot: Option<&Self::Snapshot>,
-    ) -> Option<impl futures::Stream<Item = Result<Vec<u8>, Self::Error>>> {
-        let non_finalized_snapshot = match snapshot {
-            Some(s) => match s {
-                ChainIndexSnapshot::NonFinalizedStateExists {
-                    non_finalized_snapshot,
-                } => Some(non_finalized_snapshot),
-                // If we're still syncing the finalized state, the chain tip
-                // is newer than the snapshot's tip. Return None.
-                ChainIndexSnapshot::StillSyncingFinalizedState { .. } => return None,
-            },
+    ) -> Option<impl futures::Stream<Item = Result<bytes::Bytes, Self::Error>>> {
+        let expected_epoch = match snapshot {
+            // Still syncing the finalized state means the chain tip is ahead of
+            // this snapshot; there is no epoch to be coherent with.
+            Some(ChainIndexSnapshot::StillSyncingFinalizedState { .. }) => return None,
+            Some(snapshot) => snapshot.nfs_epoch(),
             None => None,
         };
-        let expected_chain_tip = non_finalized_snapshot.map(|snapshot| snapshot.best_tip.hash);
-        let mut subscriber = self.mempool.clone();
 
-        match subscriber
-            .get_mempool_stream(expected_chain_tip)
-            .now_or_never()
-        {
-            Some(Ok((in_rx, _handle))) => {
-                let (out_tx, out_rx) =
-                    tokio::sync::mpsc::channel::<Result<Vec<u8>, ChainIndexError>>(32);
+        // One ready-made loop rather than the mpsc relay this used to run: the
+        // coherence layer already owns "stream until the tip moves", including
+        // the `Lagged` signal, so relaying it here only added a task, a channel,
+        // and a place for the two notions of "ended" to drift apart.
+        let stream = self
+            .coherence
+            .stream_transactions_until_tip_change(expected_epoch)?;
 
-                tokio::spawn(async move {
-                    let mut in_stream = tokio_stream::wrappers::ReceiverStream::new(in_rx);
-                    while let Some(item) = in_stream.next().await {
-                        match item {
-                            Ok((_key, value)) => {
-                                let _ = out_tx
-                                    .send(Ok(value.serialized_tx.as_ref().as_ref().to_vec()))
-                                    .await;
-                            }
-                            Err(e) => {
-                                let _ = out_tx
-                                    .send(Err(ChainIndexError::child_process_status_error(
-                                        "mempool", e,
-                                    )))
-                                    .await;
-                                break;
-                            }
-                        }
-                    }
-                });
-
-                Some(tokio_stream::wrappers::ReceiverStream::new(out_rx))
-            }
-            Some(Err(crate::error::MempoolError::IncorrectChainTip { .. })) => None,
-            Some(Err(e)) => {
-                let (out_tx, out_rx) =
-                    tokio::sync::mpsc::channel::<Result<Vec<u8>, ChainIndexError>>(1);
-                let _ = out_tx.try_send(Err(e.into()));
-                Some(tokio_stream::wrappers::ReceiverStream::new(out_rx))
-            }
-            None => {
-                // Should not happen because the inner tip check is synchronous, but fail safe.
-                let (out_tx, out_rx) =
-                    tokio::sync::mpsc::channel::<Result<Vec<u8>, ChainIndexError>>(1);
-                let _ = out_tx.try_send(Err(ChainIndexError::child_process_status_error(
-                    "mempool",
-                    crate::error::StatusError {
-                        server_status: crate::StatusType::RecoverableError,
-                    },
-                )));
-                Some(tokio_stream::wrappers::ReceiverStream::new(out_rx))
-            }
-        }
+        // Qualified: this module has more than one `map` in scope on a stream.
+        Some(futures::StreamExt::map(stream, |item| {
+            item.map_err(|e| {
+                // A lag is not a normal end. Reporting it as one would have the
+                // client believe it had received the whole mempool.
+                ChainIndexError::unavailable(format!("mempool stream ended early: {e}"))
+            })
+        }))
     }
 
     // ********** Chain methods **********
@@ -2317,7 +2284,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     async fn get_address_balance(
         &self,
         address_strings: GetAddressBalanceRequest,
-    ) -> Result<AddressBalance, Self::Error> {
+    ) -> Result<zaino_primitives::types::AddressBalance, Self::Error> {
         self.source()
             .get_address_balance(address_strings)
             .await
@@ -2339,7 +2306,7 @@ impl<Source: BlockchainSource> ChainIndex for NodeBackedChainIndexSubscriber<Sou
     async fn get_address_utxos(
         &self,
         address_strings: GetAddressBalanceRequest,
-    ) -> Result<Vec<GetAddressUtxos>, Self::Error> {
+    ) -> Result<Vec<zaino_primitives::types::Utxo>, Self::Error> {
         self.source()
             .get_address_utxos(address_strings)
             .await
@@ -2763,12 +2730,10 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
         let snapshot = self.snapshot_nonfinalized_state().await?;
         let tip = self.best_chaintip(&snapshot).await?;
         let id = HashOrHeight::new(&hash_or_height, Some(tip.height.into())).map_err(|error| {
-            ChainIndexError::internal_from(
-                zaino_fetch::jsonrpsee::connector::RpcError::new_from_legacycode(
-                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                    error,
-                ),
-            )
+            ChainIndexError::internal_from(crate::error::LegacyRpcError::new(
+                zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                error,
+            ))
         })?;
         self.source()
             .get_block_verbose(id, verbosity)
@@ -2776,13 +2741,16 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
             .map_err(ChainIndexError::backing_validator)
     }
 
-    async fn get_block_header(
-        &self,
-        hash: String,
-        verbose: bool,
-    ) -> Result<GetBlockHeader, Self::Error> {
+    async fn get_block_header(&self, hash: String) -> Result<BlockHeaderVerbose, Self::Error> {
         self.source()
-            .get_block_header(hash, verbose)
+            .get_block_header(hash)
+            .await
+            .map_err(ChainIndexError::backing_validator)
+    }
+
+    async fn get_raw_block_header(&self, hash: String) -> Result<Vec<u8>, Self::Error> {
+        self.source()
+            .get_raw_block_header(hash)
             .await
             .map_err(ChainIndexError::backing_validator)
     }
@@ -2808,7 +2776,7 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
             .map_err(ChainIndexError::backing_validator)
     }
 
-    async fn get_info(&self) -> Result<GetInfo, Self::Error> {
+    async fn get_info(&self) -> Result<NodeInfo, Self::Error> {
         self.source()
             .get_info()
             .await
@@ -2818,28 +2786,30 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
     // `getblockchaininfo` needs cumulative pool value balances (TipPoolValues) and on-disk
     // size, which are not in the ChainIndex's indexed data, so it cannot be built
     // internally: always delegate to the backing validator.
-    async fn get_blockchain_info(&self) -> Result<GetBlockchainInfoResponse, Self::Error> {
+    async fn get_blockchain_info(
+        &self,
+    ) -> Result<zaino_primitives::types::BlockchainInfo, Self::Error> {
         self.source()
             .get_blockchain_info()
             .await
             .map_err(ChainIndexError::backing_validator)
     }
 
-    async fn get_peer_info(&self) -> Result<GetPeerInfo, Self::Error> {
+    async fn get_peer_info(&self) -> Result<Vec<PeerInfo>, Self::Error> {
         self.source()
             .get_peer_info()
             .await
             .map_err(ChainIndexError::backing_validator)
     }
 
-    async fn get_block_subsidy(&self, height: u32) -> Result<GetBlockSubsidy, Self::Error> {
+    async fn get_block_subsidy(&self, height: u32) -> Result<BlockSubsidy, Self::Error> {
         self.source()
             .get_block_subsidy(height)
             .await
             .map_err(ChainIndexError::backing_validator)
     }
 
-    async fn get_mining_info(&self) -> Result<GetMiningInfoWire, Self::Error> {
+    async fn get_mining_info(&self) -> Result<MiningInfo, Self::Error> {
         self.source()
             .get_mining_info()
             .await
@@ -2851,7 +2821,7 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
         txid: String,
         n: u32,
         include_mempool: Option<bool>,
-    ) -> Result<GetTxOutResponse, Self::Error> {
+    ) -> Result<Option<zaino_primitives::types::rpc::TxOut>, Self::Error> {
         self.source()
             .get_tx_out(txid, n, include_mempool)
             .await
@@ -2860,10 +2830,10 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
 
     async fn get_spent_info(
         &self,
-        request: GetSpentInfoRequest,
-    ) -> Result<GetSpentInfoResponse, Self::Error> {
+        outpoint: zaino_primitives::types::rpc::SpentOutpoint,
+    ) -> Result<zaino_primitives::types::rpc::SpentInfo, Self::Error> {
         self.source()
-            .get_spent_info(request)
+            .get_spent_info(outpoint)
             .await
             .map_err(ChainIndexError::backing_validator)
     }
@@ -2872,7 +2842,7 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
         &self,
         blocks: Option<i32>,
         height: Option<i32>,
-    ) -> Result<GetNetworkSolPsResponse, Self::Error> {
+    ) -> Result<u64, Self::Error> {
         self.source()
             .get_network_sol_ps(blocks, height)
             .await
@@ -2882,9 +2852,18 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
     async fn send_raw_transaction(
         &self,
         raw_transaction_hex: String,
-    ) -> Result<SentTransactionHash, Self::Error> {
-        validate_raw_transaction_hex(&raw_transaction_hex)
-            .map_err(ChainIndexError::internal_from)?;
+    ) -> Result<zaino_primitives::types::TransactionId, Self::Error> {
+        // A local rejection, before the validator round trip. It carries
+        // zcashd's `InvalidParameter` so the client sees the same code it
+        // would have got from the validator, rather than a generic internal
+        // error — the serving layer recovers it by downcasting the source
+        // chain.
+        validate_raw_transaction_hex(&raw_transaction_hex).map_err(|error| {
+            ChainIndexError::internal_from(crate::error::LegacyRpcError::new(
+                zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                error.to_string(),
+            ))
+        })?;
         self.source()
             .send_raw_transaction(raw_transaction_hex)
             .await
@@ -2894,7 +2873,7 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
     async fn get_treestate_by_id(
         &self,
         hash_or_height: String,
-    ) -> Result<zebra_rpc::client::GetTreestateResponse, Self::Error> {
+    ) -> Result<zaino_primitives::types::Treestate, Self::Error> {
         self.source()
             .get_treestate_by_id(hash_or_height)
             .await
@@ -2904,8 +2883,8 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
     /// Returns all changes for the given transparent addresses.
     async fn get_address_deltas(
         &self,
-        params: GetAddressDeltasParams,
-    ) -> Result<GetAddressDeltasResponse, Self::Error> {
+        params: AddressDeltasRequest,
+    ) -> Result<AddressDeltas, Self::Error> {
         self.source()
             .get_address_deltas(params)
             .await
@@ -2917,10 +2896,17 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
     /// - bytes: Sum of all tx sizes
     /// - usage: Total memory usage for the mempool
     async fn get_mempool_info(&self) -> MempoolInfo {
-        self.mempool.get_mempool_info().await
+        // Read off the tip-agnostic set: `getmempoolinfo` reports what is in the
+        // mempool, not where the chain is, so it must not freeze.
+        let info = self.mempool.get_mempool_info();
+        MempoolInfo {
+            size: info.size,
+            bytes: info.bytes,
+            usage: info.usage,
+        }
     }
 
-    async fn get_tx_out_set_info(&self) -> Result<GetTxOutSetInfoResponse, Self::Error> {
+    async fn get_tx_out_set_info(&self) -> Result<Option<TxOutSetInfo>, Self::Error> {
         use crate::chain_index::types::db::metadata::{
             is_unspendable_tx_out, ZAINO_TXOUTSET_ENTRY_LEN,
         };
@@ -2937,7 +2923,7 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
             ChainIndexSnapshot::StillSyncingFinalizedState { .. } => {
                 // Accumulator invariants are not established until the finalised state catches
                 // up. Match zcashd's "stats collection failed" empty-object shape.
-                return Ok(GetTxOutSetInfoResponse::Empty(EmptyTxOutSetInfo {}));
+                return Ok(None);
             }
         };
 
@@ -3087,18 +3073,18 @@ impl<Source: BlockchainSource> ChainIndexRpcExt for NodeBackedChainIndexSubscrib
             )));
         }
 
-        let total_amount = accumulator.total_zatoshis as f64 / 1e8;
-        let hash_serialized: String = accumulator.hash_serialized.encode_hex();
-        let best_block: String = best_tip.hash.encode_hex();
-
-        Ok(GetTxOutSetInfoResponse::Info(GetTxOutSetInfo {
-            height: best_tip.height.0.into(),
-            best_block,
+        // ZEC denomination and display-order hex are the wire's business; this
+        // hands over integer zatoshis and the hash bytes as they are.
+        Ok(Some(TxOutSetInfo {
+            height: zaino_primitives::types::Height::try_from(best_tip.height.0)
+                .map_err(|e| ChainIndexError::internal(e.to_string()))?,
+            best_block: zaino_primitives::types::BlockHash::from(best_tip.hash.0),
             transactions: accumulator.transactions,
-            txouts: accumulator.transaction_outputs,
+            tx_outs: accumulator.transaction_outputs,
             bytes_serialized: accumulator.bytes_serialized,
-            hash_serialized,
-            total_amount,
+            hash_serialized: accumulator.hash_serialized.encode_hex(),
+            total_amount: zaino_primitives::types::Zatoshis::new(accumulator.total_zatoshis)
+                .map_err(|e| ChainIndexError::internal(e.to_string()))?,
         }))
     }
 }

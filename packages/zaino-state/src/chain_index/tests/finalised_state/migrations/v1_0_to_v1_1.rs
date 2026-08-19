@@ -33,6 +33,7 @@ async fn v1_0_to_v1_1_metadata_migration() {
             ..Default::default()
         },
         ephemeral: false,
+        mempool: Default::default(),
         db_version: 1,
         network: ActivationHeights::default().to_regtest_network(),
     };
@@ -99,6 +100,7 @@ async fn v1_0_to_v1_1_mixed_blockheaderdata_formats() {
             ..Default::default()
         },
         ephemeral: false,
+        mempool: Default::default(),
         db_version: 1,
         network: ActivationHeights::default().to_regtest_network(),
     };
@@ -128,15 +130,15 @@ async fn v1_0_to_v1_1_mixed_blockheaderdata_formats() {
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let blocks_to_mine = source.max_chain_height() - source.active_height();
+    let blocks_to_mine = source.source().max_chain_height() - source.source().active_height();
     assert!(
         blocks_to_mine > 0,
         "test vectors must contain blocks above the initial active height"
     );
 
-    source.mine_blocks(blocks_to_mine);
+    source.source().mine_blocks(blocks_to_mine);
 
-    let target_height = Height(source.active_height());
+    let target_height = Height(source.source().active_height());
     assert!(
         target_height > initial_active_height,
         "mock chain source must advance beyond the old v1.0.0 database height"

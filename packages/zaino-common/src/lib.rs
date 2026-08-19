@@ -4,12 +4,9 @@
 //! and common utilities used across the Zaino blockchain indexer ecosystem.
 
 pub mod config;
-pub mod consensus;
 pub mod crypto;
 pub mod logging;
 pub mod net;
-pub mod probing;
-pub mod status;
 pub mod xdg;
 
 // Re-export network utilities

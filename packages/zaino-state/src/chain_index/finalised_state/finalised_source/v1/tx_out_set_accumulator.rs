@@ -7,9 +7,9 @@ use crate::chain_index::finalised_state::finalised_source::v1::{
     TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY, TX_OUT_SET_INFO_ACCUMULATOR_KEY,
 };
 use crate::chain_index::finalised_state::finalised_source::FinalisedSource;
-#[cfg(test)]
-use crate::chain_index::source::mockchain_source::MockchainSource;
 use crate::chain_index::source::BlockchainSource;
+#[cfg(test)]
+use crate::chain_index::tests::vectors::MockSource;
 use crate::chain_index::types::db::metadata::{
     is_unspendable_tx_out, tx_out_set_entry_digest, FinalisedTxOutSetInfoAccumulator,
     ZAINO_TXOUTSET_ENTRY_LEN,
@@ -1580,7 +1580,7 @@ impl<T: BlockchainSource> FinalisedSource<T> {
 /// `transparent` + `spent` tables, for assertions in the v1.1->v1.2 migration tests.
 #[cfg(test)]
 pub(crate) async fn expected_tx_out_set_info_accumulator(
-    database_backend: &FinalisedSource<MockchainSource>,
+    database_backend: &FinalisedSource<MockSource>,
     max_height: Height,
 ) -> FinalisedTxOutSetInfoAccumulator {
     let environment = database_backend.env().unwrap();
@@ -1675,7 +1675,7 @@ pub(crate) async fn expected_tx_out_set_info_accumulator(
 /// [`expected_tx_out_set_info_accumulator`]. Used by the v1.1->v1.2 migration tests.
 #[cfg(test)]
 pub(crate) async fn assert_tx_out_set_info_accumulator_matches_transparent_data(
-    database_backend: &FinalisedSource<MockchainSource>,
+    database_backend: &FinalisedSource<MockSource>,
 ) {
     let database_height = database_backend.db_height().await.unwrap().unwrap();
 
@@ -2110,6 +2110,7 @@ mod tests {
                 ..Default::default()
             },
             ephemeral: false,
+            mempool: Default::default(),
             db_version: 1,
             network: ActivationHeights::default().to_regtest_network(),
         };
@@ -2171,7 +2172,7 @@ mod tests {
         use crate::chain_index::finalised_state::capability::{
             CapabilityRequest, DbRead, TransparentHistExt,
         };
-        use zaino_common::consensus::COINBASE_MATURITY;
+        use zaino_consensus::COINBASE_MATURITY;
 
         let blocks = load_test_vectors().unwrap().blocks;
         let source = build_mockchain_source(blocks);
@@ -2185,6 +2186,7 @@ mod tests {
                 ..Default::default()
             },
             ephemeral: false,
+            mempool: Default::default(),
             db_version: 1,
             network: ActivationHeights::default().to_regtest_network(),
         };

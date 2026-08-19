@@ -1,0 +1,40 @@
+[package]
+name = "zaino-mempool"
+description = "Zaino's mempool ports and foundational types (hexagonal core)."
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+version = "0.1.0"
+
+[dependencies]
+# The domain vocabulary. This crate names no wire, node, or `zaino-state` type.
+zaino-primitives = { workspace = true }
+
+# The validator ports the core reads through. Depending on the port crate rather
+# than restating the questions keeps one definition of each, and lets any adapter
+# that already answers them drive a mempool.
+zaino-source = { workspace = true }
+
+# Runtime — ports express the change feed as `tokio::sync::broadcast` and block
+# wake hints as `tokio::sync::watch`.
+tokio = { workspace = true, features = ["sync"] }
+
+# Streams — only the tip-aware `TipAwareMempool` port returns a `Stream`.
+futures = { workspace = true, optional = true }
+
+# Utility
+thiserror = { workspace = true }
+bytes.workspace = true
+
+[features]
+# Opt-in tip-coherence layer: the NS-epoch observer port, the `TipAwareMempool`
+# port (whose stream method pulls in `futures`), and the coherent-view types
+# (`CoherentSnapshot`, freeze/thaw metadata). Off by default so the tip-agnostic
+# core can be used standalone.
+tip_aware_mempool = ["dep:futures"]
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
