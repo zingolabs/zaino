@@ -503,7 +503,7 @@ impl zaino_source::GetBlockVerboseByHash for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetBlockHeader for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlockHeader for ZebraRpcAdapter {
     async fn get_block_header(
         &self,
         hash: BlockHash,

@@ -1561,7 +1561,7 @@ impl zaino_source::GetBlockVerboseByHash for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetBlockHeader for ProptestMockchain {
+impl zaino_source::OneShotGetBlockHeader for ProptestMockchain {
     async fn get_block_header(
         &self,
         _hash: zaino_primitives::types::BlockHash,

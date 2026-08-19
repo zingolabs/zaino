@@ -24,7 +24,7 @@ pub enum GetBlockHeaderError {
 /// choice belongs in the request, not in a response the caller must match on.
 ///
 /// Maps to `getblockheader(hash, verbose = true)` over JSON-RPC.
-pub trait GetBlockHeader: Send + Sync {
+pub trait OneShotGetBlockHeader: Send + Sync {
     /// Fetch a verbose block header.
     fn get_block_header(
         &self,

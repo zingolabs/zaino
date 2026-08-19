@@ -93,7 +93,7 @@ pub trait ChainIndexSourceCaps:
     + MempoolSourceCaps
     + OneShotGetBlock
     + GetBlockVerbose
-    + GetBlockHeader
+    + OneShotGetBlockHeader
     + GetRawBlockHeader
     + OneShotGetBlockDeltas
     + GetBlockSubsidy
@@ -124,7 +124,7 @@ impl<T> ChainIndexSourceCaps for T where
         + MempoolSourceCaps
         + OneShotGetBlock
         + GetBlockVerbose
-        + GetBlockHeader
+        + OneShotGetBlockHeader
         + GetRawBlockHeader
         + OneShotGetBlockDeltas
         + GetBlockSubsidy

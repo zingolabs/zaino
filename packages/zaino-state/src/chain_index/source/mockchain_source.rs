@@ -963,7 +963,7 @@ impl zaino_source::GetSubtreeRoots for MockchainSource {
     }
 }
 
-impl zaino_source::GetBlockHeader for MockchainSource {
+impl zaino_source::OneShotGetBlockHeader for MockchainSource {
     async fn get_block_header(
         &self,
         hash: domain::BlockHash,
