@@ -1,0 +1,35 @@
+# Isolated dev-tooling workspace: its own `[workspace]` root (like
+# `tools/workbench`), so `relman` is NOT a member of Zaino's production
+# workspace and never drags into (or is dragged by) the production graph.
+# Every member is `publish = false` — relman runs in-repo only.
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/domain",
+    "crates/config",
+    "crates/cli",
+    "crates/app",
+]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+repository = ""
+publish = false
+
+[workspace.dependencies]
+relman-core = { path = "crates/core", version = "0.1.0" }
+relman-domain = { path = "crates/domain", version = "0.1.0" }
+relman-config = { path = "crates/config", version = "0.1.0" }
+relman-cli = { path = "crates/cli", version = "0.1.0" }
+anyhow = "1"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+clap = { version = "4", features = ["derive"] }
+# Declared once for later slices: config (relman.toml parsing) will pull in
+# serde + toml; the derivation services will use thiserror for typed errors.
+# An unreferenced workspace dependency is not compiled, so these are free until
+# a member opts in.
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+toml = "0.8"

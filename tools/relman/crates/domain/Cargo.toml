@@ -1,0 +1,14 @@
+[package]
+name = "relman-domain"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Application services (implements driving ports over driven ports)"
+
+[dependencies]
+relman-core = { workspace = true }
+
+[dev-dependencies]
+relman-core = { workspace = true, features = ["test-support"] }
