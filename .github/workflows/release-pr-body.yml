@@ -1,0 +1,85 @@
+# INERT until the repo variable RELMAN_PIPELINE_ACTIVE=true. Activated only at
+# the coordinated pipeline cutover; until then this workflow does nothing.
+#
+# Keep the standing Release PR (`release-ready` -> `stable`) current. On every
+# push to `release-ready` (soak-pass advance), re-render the PR body from the
+# derived version table + changelog and update the open PR — creating it if none
+# exists. See docs/decision_records/release/pipeline.md § "Blessing" and
+# implementation.md (`relman pr-body`).
+
+name: Release PR body
+
+on:
+  push:
+    branches: [release-ready]
+  workflow_dispatch:
+
+# Least privilege: read the tree, write the PR (create/edit).
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  release-pr-body:
+    name: Keep release PR current
+    if: vars.RELMAN_PIPELINE_ACTIVE == 'true'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # Full history + tags so the cycle-numbering helper can read them.
+          fetch-depth: 0
+
+      - name: Compute open cycle N
+        id: cycle
+        run: |
+          set -euo pipefail
+
+          # --- shared cycle tag-numbering (see rc-gate.yml for the full doc) ---
+          # Cycle identity is derived purely from existing git tags:
+          #   cycle-<N>        final (blessed) cycle tag
+          #   cycle-<N>-rc.<M> soak prerelease tag within cycle N
+          highest_cycle() {
+            git tag --list 'cycle-*' \
+              | sed -n 's/^cycle-\([0-9][0-9]*\)\(-rc\.[0-9][0-9]*\)\{0,1\}$/\1/p' \
+              | sort -n | tail -1
+          }
+          open_cycle() {
+            hi="$(highest_cycle)"
+            if [ -z "$hi" ]; then
+              echo 1
+            elif git rev-parse -q --verify "refs/tags/cycle-${hi}" >/dev/null; then
+              echo $((hi + 1))
+            else
+              echo "$hi"
+            fi
+          }
+
+          N="$(open_cycle)"
+          echo "Open cycle: $N"
+          echo "n=$N" >> "$GITHUB_OUTPUT"
+
+      - name: Render release PR body
+        run: |
+          set -euo pipefail
+          # relman runs from the repo root and writes markdown to stdout.
+          cargo run -q --manifest-path tools/relman/Cargo.toml -- \
+            pr-body --cycle "${{ steps.cycle.outputs.n }}" > body.md
+
+      - name: Create or update the release PR
+        run: |
+          set -euo pipefail
+          num="$(gh pr list --base stable --head release-ready --state open \
+            --json number --jq '.[0].number // empty')"
+          if [ -n "$num" ]; then
+            gh pr edit "$num" --body-file body.md
+            echo "Updated release PR #$num"
+          else
+            gh pr create --base stable --head release-ready \
+              --title "Release cycle-${{ steps.cycle.outputs.n }}" \
+              --body-file body.md
+            echo "Opened release PR release-ready -> stable"
+          fi

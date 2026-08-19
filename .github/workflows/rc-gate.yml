@@ -1,0 +1,165 @@
+# INERT until the repo variable RELMAN_PIPELINE_ACTIVE=true. Activated only at
+# the coordinated pipeline cutover; until then this workflow does nothing.
+#
+# rc-gate: nightly RC advancement + prerelease tag. Fast-forwards `rc` to `dev`
+# HEAD and cuts a `cycle-<N>-rc.<M>` prerelease tag at the new rc HEAD, which is
+# what the soak (release-gate) is pinned to. This is CI glue: relman prints the
+# tag name, the workflow applies it. See
+# docs/decision_records/release/pipeline.md § "The rc-gate" and "Promotion Flow".
+#
+# NOTE ON THE NIGHTLY-GREEN PRECONDITION: this draft does NOT run the full e2e
+# `rc-gate` suite. See the TODO(cutover) step below — do not treat scheduled
+# advancement as gated until that condition is wired.
+
+name: RC gate
+
+on:
+  schedule:
+    - cron: '30 4 * * *' # nightly at 04:30 UTC
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Advance rc even though the nightly rc-gate green condition is not wired yet (draft escape hatch)."
+        type: boolean
+        default: false
+
+# rc advancement pushes the protected `rc` branch and a prerelease tag.
+permissions:
+  contents: write
+
+jobs:
+  rc-gate:
+    name: Advance rc and cut prerelease tag
+    if: vars.RELMAN_PIPELINE_ACTIVE == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout dev
+        uses: actions/checkout@v7
+        with:
+          ref: dev
+          # Full history + all tags: needed for fast-forward checks and the
+          # cycle-numbering helper.
+          fetch-depth: 0
+          # Pushing to the *protected* `rc` branch needs a token that can bypass
+          # branch protection. GITHUB_TOKEN CANNOT push to a protected branch, so
+          # a PAT / GitHub App token (secrets.RELEASE_TOKEN) with push rights is
+          # required at cutover. Falls back to GITHUB_TOKEN so checkout still works
+          # in a dry/test run, but the push step below will then fail against a
+          # truly protected `rc` — that failure is expected without RELEASE_TOKEN.
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      # TODO(cutover): gate advancement on the nightly full-e2e `rc-gate` suite
+      # being GREEN on dev HEAD (e.g. query a required workflow_run conclusion, or
+      # a commit status). This draft runs NO e2e here — doing so would duplicate
+      # the suite runner. Until the green signal is wired, scheduled runs advance
+      # unconditionally and workflow_dispatch `force` is the manual override. DO
+      # NOT set RELMAN_PIPELINE_ACTIVE=true until this precondition is real, or
+      # un-vetted dev HEAD will flow straight to `rc`.
+      - name: Nightly-green precondition (placeholder)
+        run: |
+          set -euo pipefail
+          echo "::warning::rc-gate green precondition is a TODO(cutover); advancing on schedule/force without an e2e check (draft)."
+
+      - name: Fetch dev and rc
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin dev rc || git fetch --no-tags origin dev
+
+      - name: Fast-forward rc to dev HEAD
+        id: ff
+        run: |
+          set -euo pipefail
+          dev_head="$(git rev-parse origin/dev)"
+
+          # rc may not exist yet on the very first run; treat that as "create rc at dev".
+          if git rev-parse -q --verify origin/rc >/dev/null; then
+            rc_head="$(git rev-parse origin/rc)"
+          else
+            rc_head=""
+          fi
+
+          if [ "$rc_head" = "$dev_head" ]; then
+            echo "rc already at dev HEAD ($dev_head); nothing to advance."
+          elif [ -n "$rc_head" ] && ! git merge-base --is-ancestor "$rc_head" "$dev_head"; then
+            # rc has commit(s) dev lacks (e.g. an un-backported hotfix). A pure
+            # fast-forward is impossible; NEVER force. A human must backport the
+            # rc-only commits to dev first (see the hotfix/backport protocol).
+            echo "::error::rc ($rc_head) is not an ancestor of dev HEAD ($dev_head); refusing non-fast-forward advance. Backport rc-only commits to dev first (hotfix protocol)."
+            exit 1
+          else
+            echo "Fast-forwarding rc -> $dev_head"
+            git push origin "${dev_head}:refs/heads/rc"
+          fi
+
+          # The prerelease tag is applied at rc HEAD, which is now dev_head.
+          echo "rc_sha=$dev_head" >> "$GITHUB_OUTPUT"
+
+      - name: Compute cycle N and next rc M
+        id: ids
+        run: |
+          set -euo pipefail
+
+          # --- shared cycle tag-numbering scheme (canonical documentation) ---
+          # Identity is derived purely from existing git tags (checkout fetched
+          # them via fetch-depth: 0). Two tag shapes carry the numbers:
+          #   cycle-<N>          final (blessed) cycle tag
+          #   cycle-<N>-rc.<M>   soak prerelease tag number M within cycle N
+          #
+          # highest_cycle(): the max integer N seen across BOTH shapes (empty if
+          #   no cycle tags exist). The sed matches `cycle-<N>` and
+          #   `cycle-<N>-rc.<M>` exactly and prints N; date-style ids like
+          #   `cycle-2026-08-15` do not match and are ignored (this scheme is
+          #   integer-numbered per the pipeline draft).
+          highest_cycle() {
+            git tag --list 'cycle-*' \
+              | sed -n 's/^cycle-\([0-9][0-9]*\)\(-rc\.[0-9][0-9]*\)\{0,1\}$/\1/p' \
+              | sort -n | tail -1
+          }
+          # open_cycle(): the cycle a NEW rc (or a blessing) belongs to.
+          #   - no cycle tags yet            -> 1
+          #   - a final `cycle-<hi>` exists  -> hi+1 (that cycle already released)
+          #   - otherwise                    -> hi   (cycle hi still open/soaking)
+          open_cycle() {
+            hi="$(highest_cycle)"
+            if [ -z "$hi" ]; then
+              echo 1
+            elif git rev-parse -q --verify "refs/tags/cycle-${hi}" >/dev/null; then
+              echo $((hi + 1))
+            else
+              echo "$hi"
+            fi
+          }
+          # next_rc(N): the next prerelease number M within cycle N (max existing
+          #   `cycle-<N>-rc.<M>` + 1, or 1 if none).
+          next_rc() {
+            n="$1"
+            last="$(git tag --list "cycle-${n}-rc.*" \
+              | sed -n "s/^cycle-${n}-rc\.\([0-9][0-9]*\)$/\1/p" \
+              | sort -n | tail -1)"
+            if [ -z "$last" ]; then echo 1; else echo $((last + 1)); fi
+          }
+
+          N="$(open_cycle)"
+          M="$(next_rc "$N")"
+          echo "Open cycle N=$N, next rc M=$M"
+          echo "n=$N" >> "$GITHUB_OUTPUT"
+          echo "m=$M" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push prerelease tag
+        run: |
+          set -euo pipefail
+          # relman prints the single prerelease tag name for cycle N, rc M.
+          tag="$(cargo run -q --manifest-path tools/relman/Cargo.toml -- \
+            tags --cycle "${{ steps.ids.outputs.n }}" --rc "${{ steps.ids.outputs.m }}" \
+            | tr -d '[:space:]')"
+          echo "Prerelease tag: $tag"
+
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "Tag $tag already exists; skipping (rc HEAD unchanged since last cut)."
+            exit 0
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "$tag" "${{ steps.ff.outputs.rc_sha }}"
+          git push origin "$tag"
