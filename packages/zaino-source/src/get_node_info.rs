@@ -17,6 +17,7 @@ pub enum GetNodeInfoError {
 /// Fetch version, connection count, fee floors and health of the validator.
 ///
 /// Maps to `getinfo` over JSON-RPC.
+#[zaino_source_macros::resilient_port]
 pub trait OneShotGetNodeInfo: Send + Sync {
     /// Fetch validator information.
     fn get_node_info(

@@ -67,6 +67,7 @@ pub enum GetSpentInfoError {
 /// database, and not implemented in `zaino-state` in this change because it
 /// would be new indexer capability rather than the rewire this work is doing.
 /// Recorded so the gap is a decision rather than an oversight.
+#[zaino_source_macros::resilient_port]
 pub trait OneShotGetSpentInfo: Send + Sync {
     /// Locate an output's spender.
     fn get_spent_info(

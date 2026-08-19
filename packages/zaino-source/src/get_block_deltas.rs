@@ -22,6 +22,7 @@ pub enum GetBlockDeltasError {
 /// transparent address.
 ///
 /// Maps to `getblockdeltas` over JSON-RPC.
+#[zaino_source_macros::resilient_port]
 pub trait OneShotGetBlockDeltas: Send + Sync {
     /// Fetch a block's transparent deltas.
     fn get_block_deltas(

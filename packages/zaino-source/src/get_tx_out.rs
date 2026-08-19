@@ -21,6 +21,7 @@ pub enum GetTxOutError {
 /// error because the question could not be evaluated at all.
 ///
 /// Maps to `gettxout` over JSON-RPC.
+#[zaino_source_macros::resilient_port]
 pub trait OneShotGetTxOut: Send + Sync {
     /// Fetch an unspent output.
     ///

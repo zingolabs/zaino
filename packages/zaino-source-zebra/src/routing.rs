@@ -377,7 +377,7 @@ impl OneShotGetBlockVerbose for ZebraValidator {
     }
 }
 
-impl GetBlockVerboseByHash for ZebraValidator {
+impl OneShotGetBlockVerboseByHash for ZebraValidator {
     async fn get_block_verbose_by_hash(
         &self,
         hash: BlockHash,

@@ -18,6 +18,7 @@ pub enum GetSubtreeRootsError {
 ///
 /// Maps to `z_getsubtreesbyindex(pool, start_index, limit)` over
 /// JSON-RPC.
+#[zaino_source_macros::resilient_port]
 pub trait OneShotGetSubtreeRoots: Send + Sync {
     /// Fetch subtree roots.
     fn get_subtree_roots(

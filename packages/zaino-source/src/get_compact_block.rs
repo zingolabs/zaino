@@ -15,6 +15,7 @@ pub use super::GetBlockError;
 ///
 /// The adapter deserializes from its wire format into
 /// [`PreIndexCompactBlock`], skipping proofs and signatures.
+#[zaino_source_macros::resilient_port]
 pub trait OneShotGetPreIndexCompactBlock: Send + Sync {
     /// Fetch a pre-index compact block.
     fn get_pre_index_compact_block(

@@ -31,6 +31,7 @@ pub enum GetRawMempoolTransactionError {
 /// [`GetMempoolTxids`](super::GetMempoolTxids) — otherwise a consumer
 /// reconstructing the mempool would be assembling bytes from one source against
 /// a listing from another.
+#[zaino_source_macros::resilient_port]
 pub trait OneShotGetRawMempoolTransaction: Send + Sync {
     /// Fetch one mempool transaction's raw bytes.
     fn get_raw_mempool_transaction(

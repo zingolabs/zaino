@@ -52,6 +52,7 @@ pub enum GetMempoolMetadataError {
 /// diff with the cheap txid listing and reach for this only when that diff
 /// shows additions, and should coalesce repeated calls rather than issuing one
 /// per poll.
+#[zaino_source_macros::resilient_port]
 pub trait OneShotGetMempoolMetadata: Send + Sync {
     /// Fetch mempool metadata.
     fn get_mempool_metadata(

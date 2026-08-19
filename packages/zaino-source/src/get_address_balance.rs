@@ -17,6 +17,7 @@ pub enum GetAddressBalanceError {
 /// Fetch the balance of one or more transparent addresses.
 ///
 /// Maps to `getaddressbalance` over JSON-RPC.
+#[zaino_source_macros::resilient_port]
 pub trait OneShotGetAddressBalance: Send + Sync {
     /// Fetch address balance.
     fn get_address_balance(

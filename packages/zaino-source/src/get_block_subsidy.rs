@@ -18,6 +18,7 @@ pub enum GetBlockSubsidyError {
 /// founders' reward, funding streams and development lockboxes.
 ///
 /// Maps to `getblocksubsidy` over JSON-RPC.
+#[zaino_source_macros::resilient_port]
 pub trait OneShotGetBlockSubsidy: Send + Sync {
     /// Fetch the subsidy split at a height.
     fn get_block_subsidy(

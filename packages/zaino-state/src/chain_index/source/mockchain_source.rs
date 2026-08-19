@@ -788,7 +788,7 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for MockchainSource {
     }
 }
 
-impl zaino_source::GetBlockVerboseByHash for MockchainSource {
+impl zaino_source::OneShotGetBlockVerboseByHash for MockchainSource {
     async fn get_block_verbose_by_hash(
         &self,
         hash: domain::BlockHash,

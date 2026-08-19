@@ -27,6 +27,7 @@ pub enum GetMempoolTxidsError {
 /// Fetch the txids of all transactions currently in the mempool.
 ///
 /// Maps to `getrawmempool` over JSON-RPC.
+#[zaino_source_macros::resilient_port]
 pub trait OneShotGetMempoolTxids: Send + Sync {
     /// Fetch mempool txids.
     fn get_mempool_txids(

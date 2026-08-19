@@ -21,6 +21,7 @@ pub enum GetMiningInfoError {
 /// local-mining fields some validators include are not modelled.
 ///
 /// Maps to `getmininginfo` over JSON-RPC.
+#[zaino_source_macros::resilient_port]
 pub trait OneShotGetMiningInfo: Send + Sync {
     /// Fetch network mining statistics.
     fn get_mining_info(

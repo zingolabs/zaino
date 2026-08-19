@@ -1552,7 +1552,7 @@ mod proptest_helpers {
 // reaching one means a test started depending on something the generator does
 // not model, which is worth a panic rather than a plausible-looking zero.
 
-impl zaino_source::GetBlockVerboseByHash for ProptestMockchain {
+impl zaino_source::OneShotGetBlockVerboseByHash for ProptestMockchain {
     async fn get_block_verbose_by_hash(
         &self,
         _hash: zaino_primitives::types::BlockHash,

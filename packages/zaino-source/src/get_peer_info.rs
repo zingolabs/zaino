@@ -25,6 +25,7 @@ pub enum GetPeerInfoError {
 /// implement that trait rather than returning fields that are always absent.
 ///
 /// Maps to `getpeerinfo` over JSON-RPC.
+#[zaino_source_macros::resilient_port]
 pub trait OneShotGetPeerInfo: Send + Sync {
     /// List peer connections.
     fn get_peer_info(
