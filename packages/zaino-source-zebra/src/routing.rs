@@ -440,13 +440,13 @@ impl GetPeerInfo for ZebraValidator {
     }
 }
 
-impl GetMiningInfo for ZebraValidator {
+impl OneShotGetMiningInfo for ZebraValidator {
     async fn get_mining_info(&self) -> Result<rpc::MiningInfo, QueryError<GetMiningInfoError>> {
         self.rpc.get_mining_info().await
     }
 }
 
-impl GetNetworkSolPs for ZebraValidator {
+impl OneShotGetNetworkSolPs for ZebraValidator {
     async fn get_network_sol_ps(
         &self,
         blocks: Option<u32>,

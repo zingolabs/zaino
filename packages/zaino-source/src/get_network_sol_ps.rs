@@ -20,7 +20,7 @@ pub enum GetNetworkSolPsError {
 /// Returns a bare `u64` rather than a newtype: the value is a rate with no
 /// invariant to protect and no other quantity it could be confused with at
 /// these call sites.
-pub trait GetNetworkSolPs: Send + Sync {
+pub trait OneShotGetNetworkSolPs: Send + Sync {
     /// Estimate the network solution rate.
     ///
     /// `blocks` is the averaging window; `height` the block to measure at.

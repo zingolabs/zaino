@@ -21,7 +21,7 @@ pub enum GetMiningInfoError {
 /// local-mining fields some validators include are not modelled.
 ///
 /// Maps to `getmininginfo` over JSON-RPC.
-pub trait GetMiningInfo: Send + Sync {
+pub trait OneShotGetMiningInfo: Send + Sync {
     /// Fetch network mining statistics.
     fn get_mining_info(
         &self,

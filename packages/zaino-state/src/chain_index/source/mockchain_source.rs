@@ -1413,7 +1413,7 @@ impl zaino_source::GetPeerInfo for MockchainSource {
     }
 }
 
-impl zaino_source::GetMiningInfo for MockchainSource {
+impl zaino_source::OneShotGetMiningInfo for MockchainSource {
     async fn get_mining_info(
         &self,
     ) -> Result<domain::rpc::MiningInfo, PortError<zaino_source::GetMiningInfoError>> {
@@ -1434,7 +1434,7 @@ impl zaino_source::OneShotGetBlockSubsidy for MockchainSource {
     }
 }
 
-impl zaino_source::GetNetworkSolPs for MockchainSource {
+impl zaino_source::OneShotGetNetworkSolPs for MockchainSource {
     async fn get_network_sol_ps(
         &self,
         _blocks: Option<u32>,

@@ -101,8 +101,8 @@ pub trait ChainIndexSourceCaps:
     + OneShotGetDifficulty
     + GetNodeInfo
     + GetPeerInfo
-    + GetMiningInfo
-    + GetNetworkSolPs
+    + OneShotGetMiningInfo
+    + OneShotGetNetworkSolPs
     + GetTxOut
     + GetSpentInfo
     + GetSubtreeRoots
@@ -132,8 +132,8 @@ impl<T> ChainIndexSourceCaps for T where
         + OneShotGetDifficulty
         + GetNodeInfo
         + GetPeerInfo
-        + GetMiningInfo
-        + GetNetworkSolPs
+        + OneShotGetMiningInfo
+        + OneShotGetNetworkSolPs
         + GetTxOut
         + GetSpentInfo
         + GetSubtreeRoots

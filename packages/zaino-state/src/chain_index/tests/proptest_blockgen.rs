@@ -1697,7 +1697,7 @@ impl zaino_source::OneShotGetBlockSubsidy for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetMiningInfo for ProptestMockchain {
+impl zaino_source::OneShotGetMiningInfo for ProptestMockchain {
     async fn get_mining_info(
         &self,
     ) -> Result<zaino_primitives::types::rpc::MiningInfo, PortError<zaino_source::GetMiningInfoError>>
@@ -1728,7 +1728,7 @@ impl zaino_source::GetSpentInfo for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetNetworkSolPs for ProptestMockchain {
+impl zaino_source::OneShotGetNetworkSolPs for ProptestMockchain {
     async fn get_network_sol_ps(
         &self,
         _blocks: Option<u32>,

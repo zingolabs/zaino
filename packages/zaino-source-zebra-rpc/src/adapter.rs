@@ -909,7 +909,7 @@ impl zaino_source::GetPeerInfo for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetMiningInfo for ZebraRpcAdapter {
+impl zaino_source::OneShotGetMiningInfo for ZebraRpcAdapter {
     async fn get_mining_info(
         &self,
     ) -> Result<
@@ -940,7 +940,7 @@ impl zaino_source::OneShotGetBlockSubsidy for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetNetworkSolPs for ZebraRpcAdapter {
+impl zaino_source::OneShotGetNetworkSolPs for ZebraRpcAdapter {
     async fn get_network_sol_ps(
         &self,
         blocks: Option<u32>,
