@@ -9,6 +9,8 @@ description = "Application services (implements driving ports over driven ports)
 
 [dependencies]
 relman-core = { workspace = true }
+relman-config = { workspace = true }
 
 [dev-dependencies]
 relman-core = { workspace = true, features = ["test-support"] }
+relman-config = { workspace = true, features = ["test-support"] }

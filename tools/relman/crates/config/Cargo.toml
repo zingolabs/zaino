@@ -7,6 +7,11 @@ repository.workspace = true
 publish.workspace = true
 description = "relman.toml config adapter: parses the manifest into typed core newtypes"
 
+[features]
+# Exposes a hand-built `ReleaseConfig` constructor for downstream unit tests,
+# bypassing the `relman.toml` load path. Never enabled in release builds.
+test-support = []
+
 [dependencies]
 relman-core = { workspace = true }
 serde = { workspace = true }

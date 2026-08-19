@@ -21,6 +21,13 @@ impl ReleaseConfig {
         Self { options, targets }
     }
 
+    /// Build a config from already-validated parts, for downstream unit tests
+    /// that need a hand-built target set without a `relman.toml` on disk.
+    #[cfg(feature = "test-support")]
+    pub fn for_test(options: ReleaseOptions, targets: Vec<Target>) -> Self {
+        Self::new(options, targets)
+    }
+
     /// The workspace-wide `[options]`.
     pub fn options(&self) -> &ReleaseOptions {
         &self.options
