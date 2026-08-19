@@ -41,21 +41,24 @@ use crate::{service::ChainHeadService, snapshot::MapBackedSnapshot};
 /// A valid nBits value: non-negative, non-zero, no overflow.
 const VALID_BITS: u32 = 0x2007_ffff;
 
-fn hash(byte: u8) -> BlockHash {
-    BlockHash::from([byte; 32])
+fn hash(id: u16) -> BlockHash {
+    let mut bytes = [0; 32];
+    bytes[..2].copy_from_slice(&id.to_le_bytes());
+    BlockHash::from(bytes)
 }
 
-/// The single byte a test hash was built from, so a chain can be walked by id.
-fn id_of(hash: &BlockHash) -> u8 {
-    <[u8; 32]>::from(*hash)[0]
+/// The id a test hash was built from, so a chain can be walked by id.
+fn id_of(hash: &BlockHash) -> u16 {
+    let bytes = <[u8; 32]>::from(*hash);
+    u16::from_le_bytes([bytes[0], bytes[1]])
 }
 
 fn height(h: u32) -> Height {
     Height::try_from(h).expect("test height in range")
 }
 
-/// A block identified by a single byte, so test chains read as `1 -> 2 -> 3`.
-fn block(h: u32, id: u8, parent: u8) -> Block {
+/// A block identified by a small integer, so test chains read as `1 -> 2 -> 3`.
+fn block(h: u32, id: u16, parent: u16) -> Block {
     Block {
         header: BlockHeader {
             hash: hash(id),
@@ -96,10 +99,10 @@ struct MockValidator {
 
 impl MockValidator {
     /// A best chain of `len` blocks, ids `0..len`, block `n` at height `n`.
-    fn linear(len: u32) -> Self {
+    fn linear(len: u16) -> Self {
         let mut state = MockState::default();
-        for h in 0..len {
-            let id = h as u8;
+        for id in 0..len {
+            let h = u32::from(id);
             let parent = id.saturating_sub(1);
             state.blocks.insert(hash(id), block(h, id, parent));
             state.best_chain.push(hash(id));
@@ -114,9 +117,9 @@ impl MockValidator {
     }
 
     /// Appends one block to the best chain.
-    fn extend(&self, id: u8) {
+    fn extend(&self, id: u16) {
         let mut state = self.lock();
-        let h = state.best_chain.len() as u32;
+        let h = u32::try_from(state.best_chain.len()).expect("test chain height in range");
         let parent = state.best_chain.last().map(id_of).unwrap_or(0);
         state.blocks.insert(hash(id), block(h, id, parent));
         state.best_chain.push(hash(id));
@@ -124,7 +127,7 @@ impl MockValidator {
 
     /// Replaces the best chain from `from_height` upwards with `ids`, leaving
     /// the displaced blocks known but no longer canonical.
-    fn reorg(&self, from_height: u32, ids: &[u8]) {
+    fn reorg(&self, from_height: u32, ids: &[u16]) {
         let mut state = self.lock();
         state.best_chain.truncate(from_height as usize);
         for (offset, &id) in ids.iter().enumerate() {
@@ -138,7 +141,8 @@ impl MockValidator {
     fn tip(&self) -> (BlockHash, Height) {
         let state = self.lock();
         let index = state.best_chain.len() - 1;
-        (state.best_chain[index], height(index as u32))
+        let h = u32::try_from(index).expect("test chain height in range");
+        (state.best_chain[index], height(h))
     }
 }
 
@@ -163,8 +167,9 @@ impl GetChainTips for MockValidator {
     async fn get_chain_tips(&self) -> Result<Vec<ChainTip>, QueryError<GetChainTipsError>> {
         let state = self.lock();
         let active_index = state.best_chain.len() - 1;
+        let active_height = u32::try_from(active_index).expect("test chain height in range");
         let tips = vec![ChainTip {
-            height: height(active_index as u32),
+            height: height(active_height),
             hash: state.best_chain[active_index],
             branch_len: 0,
             status: ChainTipStatus::Active,
