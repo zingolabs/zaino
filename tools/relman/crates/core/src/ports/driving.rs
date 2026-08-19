@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use crate::ports::{ChangesetStoreError, VcsError};
-use crate::types::{AboutReport, CrateName, Description, Slug};
+use crate::ports::{ChangesetStoreError, VcsError, WorkspaceError};
+use crate::types::{AboutReport, BumpTable, CrateName, Description, Slug};
 
 /// Inbound port: report who relman is (version) and what it thinks "now" is.
 ///
@@ -146,4 +146,55 @@ pub enum CheckError {
 pub trait ChangesetCheck: Send + Sync {
     /// Check `HEAD` against `base`, returning the report of any violations.
     fn check(&self, base: &str) -> Result<CheckReport, CheckError>;
+}
+
+/// Everything that can go wrong deriving the per-crate version bumps.
+///
+/// Unlike changeset *enforcement* (which returns non-compliance as data), a
+/// derivation failure means we could not produce a correct table at all — a
+/// broken changeset, an unknown target, or a workspace/store I/O failure — so
+/// each is a hard error rather than a `Violation`.
+#[derive(Debug, thiserror::Error)]
+pub enum DeriveError {
+    /// A changeset in the store could not be parsed.
+    #[error("failed to parse changeset {slug:?}: {error}")]
+    ChangesetParse {
+        /// The slug of the offending changeset.
+        slug: String,
+        /// The rendered parse error.
+        error: String,
+    },
+    /// A changeset entry named a `crate` that is not a declared target. We fail
+    /// rather than silently drop it, so a mis-targeted bump can never vanish.
+    #[error("changeset entry names {crate_name:?}, which is not a declared target")]
+    UnknownTarget {
+        /// The undeclared crate name.
+        crate_name: String,
+    },
+    /// A crate that must bump has no known current version in the workspace.
+    #[error("no workspace version found for {crate_name:?}")]
+    MissingVersion {
+        /// The crate whose version could not be resolved.
+        crate_name: String,
+    },
+    /// Reading the workspace metadata failed.
+    #[error("workspace query failed")]
+    Workspace(#[from] WorkspaceError),
+    /// A changeset-store operation failed.
+    #[error("changeset store operation failed")]
+    Store(#[from] ChangesetStoreError),
+}
+
+/// Inbound port: derive the per-crate version bump table from the accumulated
+/// changesets and the workspace crate graph.
+///
+/// Implemented by the domain (`VersionService`) over the [`ChangesetStore`] and
+/// [`Workspace`] driven ports and the loaded config. Read-only over the *whole*
+/// `.changesets/` set — it never consumes or clears.
+///
+/// [`ChangesetStore`]: crate::ports::ChangesetStore
+/// [`Workspace`]: crate::ports::Workspace
+pub trait Versions: Send + Sync {
+    /// Aggregate changesets into direct + transitive per-crate bumps.
+    fn derive(&self) -> Result<BumpTable, DeriveError>;
 }

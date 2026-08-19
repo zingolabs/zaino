@@ -1,6 +1,7 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use crate::types::{DateTime, Slug, Utc};
+use crate::types::{CrateName, DateTime, Slug, Utc, Version};
 
 /// Outbound port: the current time.
 ///
@@ -101,4 +102,47 @@ pub trait Vcs: Send + Sync {
     /// (`git diff --name-only <base>...HEAD`), i.e. changes on `HEAD` since its
     /// merge-base with `base`.
     fn changed_files(&self, base: &str) -> Result<Vec<PathBuf>, VcsError>;
+}
+
+/// Everything that can go wrong reading the workspace's crate graph.
+#[derive(Debug, thiserror::Error)]
+pub enum WorkspaceError {
+    /// The backend that reads the workspace (e.g. `cargo metadata`) failed.
+    #[error("failed to read the workspace metadata: {message}")]
+    Backend {
+        /// The rendered backend failure.
+        message: String,
+    },
+    /// A governed target from `relman.toml` was absent from the workspace — the
+    /// two manifests have drifted, and silently dropping the target would
+    /// under-derive its version.
+    #[error("governed target {crate_name:?} was not found in the workspace")]
+    MissingTarget {
+        /// The target that was declared but not found.
+        crate_name: String,
+    },
+}
+
+/// Outbound port: the workspace's view of governed-crate versions and the
+/// dependency edges among them.
+///
+/// The domain depends on this rather than parsing `Cargo.toml` directly, so
+/// version derivation stays deterministic under test (see `MapWorkspace`). The
+/// binary wires an adapter backed by `cargo metadata`, which resolves
+/// `version.workspace` / `workspace.dependencies` inheritance for us.
+///
+/// Both methods report **only the governed set** (the targets declared in
+/// `relman.toml`): [`versions`](Workspace::versions) yields each target's
+/// current version, and [`internal_deps`](Workspace::internal_deps) yields, per
+/// target, its dependency edges to *other governed targets* with the declared
+/// [`semver::VersionReq`].
+pub trait Workspace: Send + Sync {
+    /// The current version of each governed target.
+    fn versions(&self) -> Result<BTreeMap<CrateName, Version>, WorkspaceError>;
+
+    /// For each governed target `D`, its dependency edges `(T, req)` to other
+    /// governed targets `T`, where `req` is the requirement `D` declares on `T`.
+    fn internal_deps(
+        &self,
+    ) -> Result<BTreeMap<CrateName, Vec<(CrateName, semver::VersionReq)>>, WorkspaceError>;
 }

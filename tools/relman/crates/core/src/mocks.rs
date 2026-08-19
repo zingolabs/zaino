@@ -13,8 +13,10 @@ mod clock;
 pub mod fixtures;
 mod slug_source;
 mod vcs;
+mod workspace;
 
 pub use changeset_store::MapChangesetStore;
 pub use clock::FixedClock;
 pub use slug_source::SequenceSlugSource;
 pub use vcs::StubVcs;
+pub use workspace::MapWorkspace;
