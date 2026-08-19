@@ -1,14 +1,18 @@
 //! Value types. One module per type; invariants enforced at construction.
 
 mod about;
+mod change_kind;
 mod crate_name;
 mod release_options;
+mod section;
 mod target;
 mod workspace_path;
 
 pub use about::AboutReport;
+pub use change_kind::{ChangeKind, InvalidChangeKind};
 pub use crate_name::{CrateName, InvalidCrateName};
 pub use release_options::ReleaseOptions;
+pub use section::{InvalidSection, Section};
 pub use target::Target;
 pub use workspace_path::{InvalidWorkspacePath, WorkspacePath};
 
