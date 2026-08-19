@@ -1268,7 +1268,7 @@ impl zaino_source::GetMempoolTxids for ProptestMockchain {
 /// Generated chains carry no mempool, so all three answer empty or absent. The
 /// impls exist because `ChainIndexSourcePorts` requires them, not because the
 /// proptest suite exercises mempool behaviour — `mockchain_tests` does that.
-impl zaino_source::GetMempoolMetadata for ProptestMockchain {
+impl zaino_source::OneShotGetMempoolMetadata for ProptestMockchain {
     async fn get_mempool_metadata(
         &self,
     ) -> Result<Vec<zaino_source::MempoolTxMeta>, PortError<zaino_source::GetMempoolMetadataError>>
@@ -1594,7 +1594,7 @@ impl zaino_source::OneShotGetBlockDeltas for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetDifficulty for ProptestMockchain {
+impl zaino_source::OneShotGetDifficulty for ProptestMockchain {
     async fn get_difficulty(
         &self,
     ) -> Result<zaino_primitives::types::Difficulty, PortError<zaino_source::GetDifficultyError>>

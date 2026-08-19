@@ -571,7 +571,7 @@ impl zaino_source::OneShotGetChainTips for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetDifficulty for ZebraRpcAdapter {
+impl zaino_source::OneShotGetDifficulty for ZebraRpcAdapter {
     async fn get_difficulty(
         &self,
     ) -> Result<zaino_primitives::types::Difficulty, QueryError<zaino_source::GetDifficultyError>>
@@ -612,7 +612,7 @@ impl zaino_source::GetMempoolTxids for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetMempoolMetadata for ZebraRpcAdapter {
+impl zaino_source::OneShotGetMempoolMetadata for ZebraRpcAdapter {
     async fn get_mempool_metadata(
         &self,
     ) -> Result<Vec<zaino_source::MempoolTxMeta>, QueryError<zaino_source::GetMempoolMetadataError>>

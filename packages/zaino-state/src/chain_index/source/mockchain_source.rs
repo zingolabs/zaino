@@ -595,7 +595,7 @@ impl zaino_source::OneShotGetBestBlockHeight for MockchainSource {
     }
 }
 
-impl zaino_source::GetDifficulty for MockchainSource {
+impl zaino_source::OneShotGetDifficulty for MockchainSource {
     async fn get_difficulty(
         &self,
     ) -> Result<domain::Difficulty, PortError<zaino_source::GetDifficultyError>> {
@@ -642,7 +642,7 @@ impl zaino_source::GetMempoolTxids for MockchainSource {
     }
 }
 
-impl zaino_source::GetMempoolMetadata for MockchainSource {
+impl zaino_source::OneShotGetMempoolMetadata for MockchainSource {
     async fn get_mempool_metadata(
         &self,
     ) -> Result<Vec<zaino_source::MempoolTxMeta>, PortError<zaino_source::GetMempoolMetadataError>>

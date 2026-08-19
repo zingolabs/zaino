@@ -453,7 +453,7 @@ impl<V: ChainIndexSourcePorts> zaino_source::GetMempoolTxids for ValidatorSource
     }
 }
 
-impl<V: ChainIndexSourcePorts> zaino_source::GetMempoolMetadata for ValidatorSource<V> {
+impl<V: ChainIndexSourcePorts> zaino_source::OneShotGetMempoolMetadata for ValidatorSource<V> {
     async fn get_mempool_metadata(
         &self,
     ) -> Result<

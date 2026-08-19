@@ -98,7 +98,7 @@ pub trait ChainIndexSourceCaps:
     + OneShotGetBlockDeltas
     + OneShotGetBlockSubsidy
     + OneShotGetBlockchainInfo
-    + GetDifficulty
+    + OneShotGetDifficulty
     + GetNodeInfo
     + GetPeerInfo
     + GetMiningInfo
@@ -129,7 +129,7 @@ impl<T> ChainIndexSourceCaps for T where
         + OneShotGetBlockDeltas
         + OneShotGetBlockSubsidy
         + OneShotGetBlockchainInfo
-        + GetDifficulty
+        + OneShotGetDifficulty
         + GetNodeInfo
         + GetPeerInfo
         + GetMiningInfo

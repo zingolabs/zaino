@@ -331,7 +331,7 @@ impl GetMempoolTxids for ZebraValidator {
     }
 }
 
-impl GetMempoolMetadata for ZebraValidator {
+impl OneShotGetMempoolMetadata for ZebraValidator {
     async fn get_mempool_metadata(
         &self,
     ) -> Result<Vec<MempoolTxMeta>, QueryError<GetMempoolMetadataError>> {
@@ -492,7 +492,7 @@ impl SendRawTransaction for ZebraValidator {
 // Chain-wide facts
 // ---------------------------------------------------------------------------
 
-impl GetDifficulty for ZebraValidator {
+impl OneShotGetDifficulty for ZebraValidator {
     async fn get_difficulty(&self) -> Result<Difficulty, QueryError<GetDifficultyError>> {
         fast_or_slow!(self, get_difficulty)
     }

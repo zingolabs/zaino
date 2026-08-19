@@ -909,7 +909,7 @@ impl zaino_source::GetTransaction for ZebraReadStateAdapter {
     }
 }
 
-impl zaino_source::GetDifficulty for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetDifficulty for ZebraReadStateAdapter {
     async fn get_difficulty(
         &self,
     ) -> Result<zaino_primitives::types::Difficulty, QueryError<zaino_source::GetDifficultyError>>

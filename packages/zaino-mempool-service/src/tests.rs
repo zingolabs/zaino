@@ -143,7 +143,7 @@ impl zaino_source::GetMempoolTxids for MockSource {
     }
 }
 
-impl zaino_source::GetMempoolMetadata for MockSource {
+impl zaino_source::OneShotGetMempoolMetadata for MockSource {
     async fn get_mempool_metadata(
         &self,
     ) -> Result<Vec<MempoolTxMeta>, QueryError<GetMempoolMetadataError>> {

@@ -135,7 +135,7 @@ pub(crate) type NonfinalizedBlockReceiver =
 /// the ChainHead cutover does it once.
 pub trait BlockchainSource:
     zaino_source::GetMempoolTxids
-    + zaino_source::GetMempoolMetadata
+    + zaino_source::OneShotGetMempoolMetadata
     + zaino_source::GetRawMempoolTransaction
     + zaino_source::GetMempoolSourceTip
     + Clone
