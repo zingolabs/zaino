@@ -26,7 +26,8 @@ on:
   push:
     branches: [stable]
 
-# Committing the release + tags to protected `stable` needs write (via RELEASE_TOKEN).
+# Committing the release + tags to protected `stable` uses the GitHub App token
+# minted below (not GITHUB_TOKEN, which cannot push a protected branch).
 permissions:
   contents: write
 
