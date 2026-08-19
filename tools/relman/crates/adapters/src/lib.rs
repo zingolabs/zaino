@@ -1,0 +1,12 @@
+//! Adapters: concrete driven-port implementations.
+//!
+//! The outer ring of the hexagon. Each type here implements a `relman-core`
+//! driven port against a real resource (the filesystem, a random generator).
+//! Only the binary's composition root names these; the domain depends on the
+//! port traits, never on this crate.
+
+mod fs_changeset_store;
+mod random_slug_source;
+
+pub use fs_changeset_store::FsChangesetStore;
+pub use random_slug_source::RandomSlugSource;

@@ -8,6 +8,7 @@ members = [
     "crates/core",
     "crates/domain",
     "crates/config",
+    "crates/adapters",
     "crates/cli",
     "crates/app",
 ]
@@ -22,6 +23,7 @@ publish = false
 relman-core = { path = "crates/core", version = "0.1.0" }
 relman-domain = { path = "crates/domain", version = "0.1.0" }
 relman-config = { path = "crates/config", version = "0.1.0" }
+relman-adapters = { path = "crates/adapters", version = "0.1.0" }
 relman-cli = { path = "crates/cli", version = "0.1.0" }
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
