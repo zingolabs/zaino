@@ -63,7 +63,7 @@ pub trait ChainHeadBlockSource:
     zaino_source::OneShotGetChainTip
     + zaino_source::OneShotGetBlock
     + zaino_source::OneShotGetBlockByHash
-    + zaino_source::GetCommitmentTreeRoots
+    + zaino_source::OneShotGetCommitmentTreeRoots
     + zaino_source::SubscribeBlocks
     + Send
     + Sync
@@ -75,7 +75,7 @@ impl<T> ChainHeadBlockSource for T where
     T: zaino_source::OneShotGetChainTip
         + zaino_source::OneShotGetBlock
         + zaino_source::OneShotGetBlockByHash
-        + zaino_source::GetCommitmentTreeRoots
+        + zaino_source::OneShotGetCommitmentTreeRoots
         + zaino_source::SubscribeBlocks
         + Send
         + Sync

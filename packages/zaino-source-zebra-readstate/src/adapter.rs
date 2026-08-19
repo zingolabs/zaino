@@ -678,7 +678,7 @@ impl zaino_source::SourceLifecycle for ZebraReadStateAdapter {
 /// signal belongs to the syncer, not the read handle.
 impl zaino_source::SubscribeBlocks for ZebraReadStateAdapter {}
 
-impl zaino_source::GetCommitmentTreeRoots for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetCommitmentTreeRoots for ZebraReadStateAdapter {
     async fn get_commitment_tree_roots(
         &self,
         block: BlockHash,

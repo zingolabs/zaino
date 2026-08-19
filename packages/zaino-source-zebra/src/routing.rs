@@ -224,7 +224,7 @@ impl GetTreestateByHash for ZebraValidator {
     }
 }
 
-impl GetCommitmentTreeRoots for ZebraValidator {
+impl OneShotGetCommitmentTreeRoots for ZebraValidator {
     async fn get_commitment_tree_roots(
         &self,
         block: BlockHash,
@@ -360,7 +360,7 @@ impl GetMempoolSourceTip for ZebraValidator {
     }
 }
 
-impl GetChainTips for ZebraValidator {
+impl OneShotGetChainTips for ZebraValidator {
     async fn get_chain_tips(&self) -> Result<Vec<rpc::ChainTip>, QueryError<GetChainTipsError>> {
         // Enumerating the block tree includes side-chain tips, which the
         // finalized state does not retain.

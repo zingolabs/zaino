@@ -38,8 +38,8 @@ pub trait ChainIndexSourcePorts:
     + zaino_source::GetBlockVerboseByHash
     + zaino_source::OneShotGetBlockchainInfo
     + zaino_source::OneShotGetChainTip
-    + zaino_source::GetChainTips
-    + zaino_source::GetCommitmentTreeRoots
+    + zaino_source::OneShotGetChainTips
+    + zaino_source::OneShotGetCommitmentTreeRoots
     + zaino_source::GetDifficulty
     + zaino_source::GetMempoolMetadata
     + zaino_source::GetMempoolSourceTip
@@ -79,8 +79,8 @@ impl<T> ChainIndexSourcePorts for T where
         + zaino_source::GetBlockVerboseByHash
         + zaino_source::OneShotGetBlockchainInfo
         + zaino_source::OneShotGetChainTip
-        + zaino_source::GetChainTips
-        + zaino_source::GetCommitmentTreeRoots
+        + zaino_source::OneShotGetChainTips
+        + zaino_source::OneShotGetCommitmentTreeRoots
         + zaino_source::GetDifficulty
         + zaino_source::GetMempoolMetadata
         + zaino_source::GetMempoolSourceTip

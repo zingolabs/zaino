@@ -559,7 +559,7 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetChainTips for ZebraRpcAdapter {
+impl zaino_source::OneShotGetChainTips for ZebraRpcAdapter {
     async fn get_chain_tips(
         &self,
     ) -> Result<
@@ -771,7 +771,7 @@ impl zaino_source::GetTreestateByHash for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetCommitmentTreeRoots for ZebraRpcAdapter {
+impl zaino_source::OneShotGetCommitmentTreeRoots for ZebraRpcAdapter {
     async fn get_commitment_tree_roots(
         &self,
         block: BlockHash,

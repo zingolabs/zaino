@@ -32,7 +32,7 @@ use zaino_primitives::types::{
 };
 use zaino_source::{
     FailureMode, FetchError, OneShotGetBlock, OneShotGetBlockByHash, GetBlockByHashError, GetBlockError,
-    OneShotGetChainTip, GetChainTipError, GetChainTips, GetChainTipsError, GetCommitmentTreeRoots,
+    OneShotGetChainTip, GetChainTipError, OneShotGetChainTips, GetChainTipsError, OneShotGetCommitmentTreeRoots,
     GetCommitmentTreeRootsError, QueryError, SubscribeBlocks,
 };
 
@@ -163,7 +163,7 @@ impl OneShotGetChainTip for MockValidator {
     }
 }
 
-impl GetChainTips for MockValidator {
+impl OneShotGetChainTips for MockValidator {
     async fn get_chain_tips(&self) -> Result<Vec<ChainTip>, QueryError<GetChainTipsError>> {
         let state = self.lock();
         let active_index = state.best_chain.len() - 1;
@@ -203,7 +203,7 @@ impl OneShotGetBlockByHash for MockValidator {
     }
 }
 
-impl GetCommitmentTreeRoots for MockValidator {
+impl OneShotGetCommitmentTreeRoots for MockValidator {
     async fn get_commitment_tree_roots(
         &self,
         _block: BlockHash,

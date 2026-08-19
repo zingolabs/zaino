@@ -758,7 +758,7 @@ impl zaino_source::GetTransaction for MockchainSource {
     }
 }
 
-impl zaino_source::GetCommitmentTreeRoots for MockchainSource {
+impl zaino_source::OneShotGetCommitmentTreeRoots for MockchainSource {
     async fn get_commitment_tree_roots(
         &self,
         block: domain::BlockHash,
@@ -1004,7 +1004,7 @@ impl zaino_source::OneShotGetBlockHeader for MockchainSource {
     }
 }
 
-impl zaino_source::GetChainTips for MockchainSource {
+impl zaino_source::OneShotGetChainTips for MockchainSource {
     async fn get_chain_tips(
         &self,
     ) -> Result<Vec<domain::rpc::ChainTip>, PortError<zaino_source::GetChainTipsError>> {

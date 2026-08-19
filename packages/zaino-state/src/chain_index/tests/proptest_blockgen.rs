@@ -1314,7 +1314,7 @@ impl zaino_source::GetMempoolSourceTip for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetCommitmentTreeRoots for ProptestMockchain {
+impl zaino_source::OneShotGetCommitmentTreeRoots for ProptestMockchain {
     async fn get_commitment_tree_roots(
         &self,
         block: zaino_primitives::types::BlockHash,
@@ -1640,7 +1640,7 @@ impl zaino_source::GetPeerInfo for ProptestMockchain {
 /// state never learned about competing branches at all. The chain head does
 /// ask, and answering with the real branches is what puts its competing-branch
 /// retention under these property tests rather than leaving it untested here.
-impl zaino_source::GetChainTips for ProptestMockchain {
+impl zaino_source::OneShotGetChainTips for ProptestMockchain {
     async fn get_chain_tips(
         &self,
     ) -> Result<
