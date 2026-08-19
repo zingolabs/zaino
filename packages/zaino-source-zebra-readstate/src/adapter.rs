@@ -1230,7 +1230,7 @@ impl ZebraReadStateAdapter {
     }
 }
 
-impl zaino_source::GetBlockDeltas for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
     /// Derives `getblockdeltas` from the state service.
     ///
     /// # Why this is derived rather than proxied

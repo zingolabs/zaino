@@ -1582,7 +1582,7 @@ impl zaino_source::GetRawBlockHeader for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetBlockDeltas for ProptestMockchain {
+impl zaino_source::OneShotGetBlockDeltas for ProptestMockchain {
     async fn get_block_deltas(
         &self,
         _hash: zaino_primitives::types::BlockHash,

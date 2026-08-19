@@ -404,7 +404,7 @@ impl GetRawBlockHeader for ZebraValidator {
     }
 }
 
-impl GetBlockDeltas for ZebraValidator {
+impl OneShotGetBlockDeltas for ZebraValidator {
     async fn get_block_deltas(
         &self,
         hash: BlockHash,

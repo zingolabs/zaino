@@ -541,7 +541,7 @@ impl zaino_source::GetRawBlockHeader for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetBlockDeltas for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlockDeltas for ZebraRpcAdapter {
     async fn get_block_deltas(
         &self,
         hash: BlockHash,

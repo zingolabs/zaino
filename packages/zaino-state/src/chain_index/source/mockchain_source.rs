@@ -1217,7 +1217,7 @@ impl MockchainSource {
     }
 }
 
-impl zaino_source::GetBlockDeltas for MockchainSource {
+impl zaino_source::OneShotGetBlockDeltas for MockchainSource {
     async fn get_block_deltas(
         &self,
         hash: domain::BlockHash,

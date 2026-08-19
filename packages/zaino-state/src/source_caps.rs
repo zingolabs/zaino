@@ -95,7 +95,7 @@ pub trait ChainIndexSourceCaps:
     + GetBlockVerbose
     + GetBlockHeader
     + GetRawBlockHeader
-    + GetBlockDeltas
+    + OneShotGetBlockDeltas
     + GetBlockSubsidy
     + GetBlockchainInfo
     + GetDifficulty
@@ -126,7 +126,7 @@ impl<T> ChainIndexSourceCaps for T where
         + GetBlockVerbose
         + GetBlockHeader
         + GetRawBlockHeader
-        + GetBlockDeltas
+        + OneShotGetBlockDeltas
         + GetBlockSubsidy
         + GetBlockchainInfo
         + GetDifficulty

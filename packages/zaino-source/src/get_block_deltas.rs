@@ -22,7 +22,7 @@ pub enum GetBlockDeltasError {
 /// transparent address.
 ///
 /// Maps to `getblockdeltas` over JSON-RPC.
-pub trait GetBlockDeltas: Send + Sync {
+pub trait OneShotGetBlockDeltas: Send + Sync {
     /// Fetch a block's transparent deltas.
     fn get_block_deltas(
         &self,

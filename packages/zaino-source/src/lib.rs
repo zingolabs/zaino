@@ -59,7 +59,7 @@ pub use get_address_utxos::{GetAddressUtxosError, OneShotGetAddressUtxos};
 pub use get_best_block_height::{GetBestBlockHeightError, OneShotGetBestBlockHeight};
 pub use get_block::{GetBlockError, OneShotGetBlock};
 pub use get_block_by_hash::{GetBlockByHashError, OneShotGetBlockByHash};
-pub use get_block_deltas::{GetBlockDeltas, GetBlockDeltasError};
+pub use get_block_deltas::{GetBlockDeltasError, OneShotGetBlockDeltas};
 pub use get_block_header::{GetBlockHeader, GetBlockHeaderError};
 pub use get_block_subsidy::{GetBlockSubsidy, GetBlockSubsidyError};
 pub use get_block_verbose::{GetBlockVerbose, GetBlockVerboseByHash, GetBlockVerboseError};
