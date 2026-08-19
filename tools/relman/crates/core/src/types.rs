@@ -8,6 +8,7 @@ mod crate_name;
 mod description;
 mod release_options;
 mod section;
+mod slug;
 mod target;
 mod workspace_path;
 
@@ -19,6 +20,7 @@ pub use crate_name::{CrateName, InvalidCrateName};
 pub use description::{Description, EmptyDescription};
 pub use release_options::ReleaseOptions;
 pub use section::{InvalidSection, Section};
+pub use slug::{InvalidSlug, Slug};
 pub use target::Target;
 pub use workspace_path::{InvalidWorkspacePath, WorkspacePath};
 
