@@ -518,23 +518,44 @@ sentinels then catch the fallout: the forward Release PR flags `release-ready`
 as behind `stable` (forcing the fix into `rc`/`release-ready`), and the reverse
 sentinel forces it into `dev`.
 
+## Implementation
+
+**Logic lives in a Rust CLI; CI stays thin.** The changeset parse/aggregate,
+semver derivation, transitive-bump computation, format-preserving `Cargo.toml`
+edits (via `toml_edit` — never `sed`, per the repo's Rust-native rule),
+changelog generation, and release-PR body rendering are all **subcommands of
+the in-repo `tools/workbench`** crate (which already hosts release-adjacent
+guards like `check-published-versions`). CI workflows call
+`workbench <subcommand>` and do only git/`gh` glue. This keeps the derivation
+**unit-testable and locally runnable** (the same commands a maintainer can run
+by hand), rather than trapped in untestable shell. No external release manager
+(`release-plz`, `cargo-release`, `knope`) is adopted: our model
+(version-agnostic branches, cycle tags, continuous soak, derived-only versions)
+diverges enough that config-fighting would cost more than it saves; ideas may be
+borrowed, the tool is not.
+
+**Existing-workflow teardown** (first implementation step, before building the
+replacement):
+
+| Workflow | Verdict |
+| -------- | ------- |
+| `auto-tag-rc.yml` | **delete** — derives version from the `rc/<version>` branch name; obsolete under version-agnostic branches |
+| `final-tag-on-stable.yml` | **delete** — same branch-name→version coupling; replaced by blessing-time tagging from changesets |
+| `release.yaml` | **rework** — retarget to `cycle-*` + `<crate>-vX.Y.Z` tags; Docker image = `zainod` version + cycle handle |
+| `publish-dry-run.yml` + `check-published-versions` | **keep / rework** — the Rust guard is reusable; fold into the new publish flow |
+| `ci.yml`, `ci-nightly.yaml` | **rework** into the `dev`-gate and `rc`-gate suite runners |
+| `compute-tag.yml`, `build-n-push-ci-image.yaml`, `trigger-integration-tests.yml`, `shellcheck.yaml` | **keep** — orthogonal to release versioning |
+
 ## Open Questions (deferred to the build slice)
 
 The design above is settled. These *mechanism* details are deferred to
 implementation and do not block the branch/gate/identity model:
 
-### Changeset tooling & format details
+### Changeset format & generation details (open)
 
-Exact TOML schema validation, the CI enforcement check, the aggregation
-command, changelog generation, and the bot commit that mechanically edits the
-per-crate `Cargo.toml` versions **and** the root `[workspace.dependencies]`
-pins (which are duplicated today with no inheritance). No external release
-manager (`release-plz`, `cargo-release`, `knope`) is currently used; whether to
-adopt one or extend the in-repo `tools/workbench` binaries is a build-slice
-decision. Existing workflows `auto-tag-rc.yml` and `final-tag-on-stable.yml`
-derive the version by **parsing the `rc/<version>` branch name**; under
-version-agnostic branches both must be reworked to derive from changesets
-instead.
+Exact `.changesets/` TOML schema, the aggregation command's changelog-rendering
+rules, and the precise shape of the bot commit's edits. The *how* (below) is
+decided; these content specifics are for the build slice.
 
 ### Transitive version bumps
 
