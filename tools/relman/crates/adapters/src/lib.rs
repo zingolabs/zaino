@@ -6,7 +6,9 @@
 //! port traits, never on this crate.
 
 mod fs_changeset_store;
+mod git_vcs;
 mod random_slug_source;
 
 pub use fs_changeset_store::FsChangesetStore;
+pub use git_vcs::GitVcs;
 pub use random_slug_source::RandomSlugSource;
