@@ -1,0 +1,22 @@
+# CODEOWNERS — drives automatic review requests on pull requests.
+#
+# Listing an owner for a path makes GitHub REQUEST that owner's review when a PR
+# touches it. That is all this file does. It does NOT by itself require approval:
+# the approval COUNTS are branch-protection rules, configured separately per the
+# release ADR —
+#   * 1 CODEOWNER approval to merge into `dev`
+#   * 2 CODEOWNER approvals to merge into `stable`
+# (see docs/decision_records/release/pipeline.md § "Branching and approvals").
+#
+# The team handles below are PLACEHOLDERS. Replace every `@zingolabs/PLACEHOLDER-*`
+# with a real GitHub team (or user) slug before this file is relied upon; an
+# unresolvable owner silently requests no one.
+
+# Default owner for everything in the repo.
+* @zingolabs/PLACEHOLDER-maintainers
+
+# Example per-path ownership. Uncomment and point at real teams as the review
+# structure firms up — more specific paths win over the default above.
+# /tools/relman/                    @zingolabs/PLACEHOLDER-release-tooling
+# /.github/workflows/               @zingolabs/PLACEHOLDER-ci
+# /docs/decision_records/release/   @zingolabs/PLACEHOLDER-maintainers

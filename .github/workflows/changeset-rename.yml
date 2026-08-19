@@ -1,0 +1,73 @@
+# INERT until the repo variable RELMAN_PIPELINE_ACTIVE=true. Activated only at
+# the coordinated pipeline cutover; until then this workflow does nothing.
+#
+# pr-<N> rename bot: when a PR is opened/reopened against a pipeline branch, this
+# renames the author's changeset file(s) to the canonical `pr-<N>.toml` name and
+# pushes the rename back onto the PR head branch, so changeset filenames are
+# deterministic. relman does the working-tree rename; the workflow is only the
+# imperative git shell around it. See docs/decision_records/release/pipeline.md
+# § Changesets and implementation.md (`relman changeset rename`).
+
+name: Changeset rename
+
+on:
+  pull_request:
+    types: [opened, reopened]
+    branches: [dev, rc, release-ready]
+
+# Least privilege: read PR metadata, write the PR head branch (the rename commit).
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  changeset-rename:
+    name: Name changeset for PR
+    # Master safety switch (see file header). Every job in every pipeline
+    # workflow carries this gate so these files can land dormant.
+    if: vars.RELMAN_PIPELINE_ACTIVE == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      # Fork PRs cannot be pushed to with GITHUB_TOKEN, so the rename cannot be
+      # committed back. Skip with a notice; the contributor (or a maintainer at
+      # merge) runs `relman changeset rename` by hand instead.
+      - name: Guard same-repo PR
+        id: guard
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.repository }}" ]; then
+            echo "::notice::Changeset rename skipped for fork PR (cannot push to a fork head). Run \`relman changeset rename --pr ${{ github.event.number }}\` locally."
+            echo "same_repo=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "same_repo=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout PR head branch
+        if: steps.guard.outputs.same_repo == 'true'
+        uses: actions/checkout@v7
+        with:
+          # Check out the real head branch (not the detached merge ref) so the
+          # rename commit can be pushed back to it.
+          ref: ${{ github.event.pull_request.head.ref }}
+          # GITHUB_TOKEN can push to same-repo head branches; persist it for push.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Rename changeset(s) to pr-<N> and push if changed
+        if: steps.guard.outputs.same_repo == 'true'
+        run: |
+          set -euo pipefail
+          # relman runs from the repo root (discovers relman.toml upward) and only
+          # edits the working tree; committing/pushing is this workflow's job.
+          cargo run -q --manifest-path tools/relman/Cargo.toml -- \
+            changeset rename --pr "${{ github.event.number }}"
+
+          if [ -z "$(git status --porcelain .changesets/)" ]; then
+            echo "Changesets already canonically named; nothing to commit."
+            exit 0
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .changesets/
+          git commit -m "chore: name changeset for PR #${{ github.event.number }}"
+          git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
