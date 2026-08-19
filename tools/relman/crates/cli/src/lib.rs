@@ -10,4 +10,5 @@ mod context;
 mod format;
 
 pub use app::{Cli, Command};
+pub use commands::changeset::ChangesetCommandError;
 pub use context::Ctx;

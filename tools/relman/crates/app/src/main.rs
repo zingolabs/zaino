@@ -5,19 +5,25 @@
 //! ports, not implementations — so swapping an adapter (e.g. a fixed clock for
 //! the system one) touches only this file.
 //!
-//! Slice 0 wires a single trivial live thread — `relman about` — end to end
-//! through the hexagon: CLI → `About` driving port → `AboutService` → `Clock`
-//! driven port. Later slices add the real release adapters and commands.
+//! Two live threads run through the hexagon: `relman about` (CLI → `About` →
+//! `AboutService` → `Clock`) and `relman changeset new` (CLI → `Changesets` →
+//! `ChangesetService` → `ChangesetStore` + `SlugSource`). Later slices add the
+//! remaining release adapters and commands.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 
+use relman_adapters::{FsChangesetStore, RandomSlugSource};
 use relman_cli::{Cli, Command, Ctx, commands};
-use relman_core::ports::Clock;
+use relman_core::ports::{ChangesetStore, Changesets, Clock, SlugSource};
 use relman_core::types::{DateTime, Utc};
-use relman_domain::services::AboutService;
+use relman_domain::services::{AboutService, ChangesetService};
+
+/// The repo-committed manifest, looked up in the current working directory.
+const MANIFEST_NAME: &str = "relman.toml";
 
 /// Real system-clock adapter for the [`Clock`] driven port.
 struct SystemClock;
@@ -36,14 +42,37 @@ fn main() -> Result<()> {
             commands::about::run(args, ctx);
             Ok(())
         }),
+        Command::Changeset(args) => with_ctx(|ctx| {
+            commands::changeset::run(args, ctx)?;
+            Ok(())
+        }),
     }
 }
 
 /// Build the driving-port context and hand it to a command.
+///
+/// Loads `relman.toml` from the current directory, resolves the changesets
+/// directory relative to it, and wires the real adapters into the services.
 fn with_ctx(f: impl FnOnce(&Ctx) -> Result<()>) -> Result<()> {
+    let manifest_path = PathBuf::from(MANIFEST_NAME);
+    let config = relman_config::load(&manifest_path)
+        .with_context(|| format!("failed to load {MANIFEST_NAME} from the current directory"))?;
+
+    // The manifest lives at the repo root; resolve the changesets dir against
+    // that root (the manifest's parent, i.e. the current directory here).
+    let changesets_dir = config.options().changesets_dir().as_path().to_path_buf();
+
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let about = Arc::new(AboutService::new(clock));
 
-    let ctx = Ctx { about };
+    let store: Arc<dyn ChangesetStore> = Arc::new(FsChangesetStore::new(changesets_dir.clone()));
+    let slugs: Arc<dyn SlugSource> = Arc::new(RandomSlugSource::new());
+    let changesets: Arc<dyn Changesets> = Arc::new(ChangesetService::new(store, slugs));
+
+    let ctx = Ctx {
+        about,
+        changesets,
+        changesets_dir,
+    };
     f(&ctx)
 }

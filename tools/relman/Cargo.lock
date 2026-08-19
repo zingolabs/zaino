@@ -409,7 +409,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "relman-adapters",
  "relman-cli",
+ "relman-config",
  "relman-core",
  "relman-domain",
 ]
@@ -429,6 +431,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "relman-core",
+ "thiserror",
 ]
 
 [[package]]

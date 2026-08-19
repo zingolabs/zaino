@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 
-use crate::commands::about;
+use crate::commands::{about, changeset};
 
 #[derive(Parser)]
 #[command(
@@ -16,4 +16,6 @@ pub struct Cli {
 pub enum Command {
     /// Report relman's version and the current date/time
     About(about::Args),
+    /// Author and manage changeset files
+    Changeset(changeset::Args),
 }
