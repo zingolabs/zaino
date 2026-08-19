@@ -4,4 +4,5 @@
 //! `Arc<dyn Trait>`. It never names a concrete adapter, so it is unit-tested
 //! against the in-memory mocks from `relman-core`'s `test-support` feature.
 
+pub mod render;
 pub mod services;
