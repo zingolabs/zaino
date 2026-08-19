@@ -3,5 +3,6 @@
 
 pub mod about;
 pub mod bump;
+pub mod changelog;
 pub mod changeset;
 pub mod versions;

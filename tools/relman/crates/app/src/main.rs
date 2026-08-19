@@ -18,16 +18,18 @@ use anyhow::{Context, Result};
 use clap::Parser;
 
 use relman_adapters::{
-    CargoMetadataWorkspace, FsChangesetStore, GitVcs, RandomSlugSource, TomlEditManifestEditor,
+    CargoMetadataWorkspace, FsChangelogStore, FsChangesetStore, GitVcs, RandomSlugSource,
+    TomlEditManifestEditor,
 };
 use relman_cli::{Cli, Command, Ctx, commands};
 use relman_core::ports::{
-    ApplyBump, ChangesetCheck, ChangesetStore, Changesets, Clock, ManifestEditor, SlugSource, Vcs,
-    Versions, Workspace,
+    ApplyBump, Changelog, ChangelogStore, ChangesetCheck, ChangesetStore, Changesets, Clock,
+    ManifestEditor, SlugSource, Vcs, Versions, Workspace,
 };
 use relman_core::types::{CrateName, DateTime, Utc};
 use relman_domain::services::{
-    AboutService, BumpService, ChangesetCheckService, ChangesetService, VersionService,
+    AboutService, BumpService, ChangelogService, ChangesetCheckService, ChangesetService,
+    VersionService,
 };
 
 /// The repo-committed manifest, looked up in the current working directory.
@@ -60,6 +62,10 @@ fn main() -> Result<()> {
         }),
         Command::Bump(args) => with_ctx(|ctx| {
             commands::bump::run(args, ctx)?;
+            Ok(())
+        }),
+        Command::Changelog(args) => with_ctx(|ctx| {
+            commands::changelog::run(args, ctx)?;
             Ok(())
         }),
     }
@@ -109,6 +115,18 @@ fn with_ctx(f: impl FnOnce(&Ctx) -> Result<()>) -> Result<()> {
     let editor: Arc<dyn ManifestEditor> = Arc::new(TomlEditManifestEditor::new());
     let apply_bump: Arc<dyn ApplyBump> = Arc::new(BumpService::new(config.clone(), editor));
 
+    // Generates changelog sections and splices them into the per-crate and
+    // workspace `CHANGELOG.md` files (a fresh clock: the earlier one moved into
+    // the about service).
+    let changelog_store: Arc<dyn ChangelogStore> = Arc::new(FsChangelogStore::new());
+    let changelog: Arc<dyn Changelog> = Arc::new(ChangelogService::new(
+        config.clone(),
+        versions.clone(),
+        store.clone(),
+        changelog_store,
+        Arc::new(SystemClock),
+    ));
+
     let changeset_check: Arc<dyn ChangesetCheck> =
         Arc::new(ChangesetCheckService::new(config, vcs, store));
 
@@ -118,6 +136,7 @@ fn with_ctx(f: impl FnOnce(&Ctx) -> Result<()>) -> Result<()> {
         changeset_check,
         versions,
         apply_bump,
+        changelog,
         changesets_dir,
         root_manifest,
     };
