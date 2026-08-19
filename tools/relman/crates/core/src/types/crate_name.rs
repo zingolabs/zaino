@@ -9,7 +9,7 @@ use std::fmt;
 ///
 /// Parse-don't-validate: once you hold a `CrateName`, the string is known
 /// good, so consumers never re-check it.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CrateName(String);
 
 /// Why a string was rejected as a [`CrateName`].

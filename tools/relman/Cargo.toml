@@ -35,3 +35,11 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 toml = "0.8"
+# Semantic versioning: the `Version` newtype wraps `semver::Version`, and the
+# `Workspace` port traffics in `semver::VersionReq` for dependency-edge
+# requirements. `cargo_metadata` re-uses semver 1.x, so the types unify.
+semver = "1"
+# Reads resolved crate versions and inter-crate dependency requirements from the
+# repo-root workspace, handling `version.workspace`/`workspace.dependencies`
+# inheritance that hand-parsing Cargo.toml would miss. Adapters-only.
+cargo_metadata = "0.19"
