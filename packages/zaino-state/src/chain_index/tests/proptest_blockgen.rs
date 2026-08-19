@@ -1196,7 +1196,7 @@ impl zaino_source::GetChainTip for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetBestBlockHeight for ProptestMockchain {
+impl zaino_source::OneShotGetBestBlockHeight for ProptestMockchain {
     async fn get_best_block_height(
         &self,
     ) -> Result<zaino_primitives::types::Height, PortError<zaino_source::GetBestBlockHeightError>>

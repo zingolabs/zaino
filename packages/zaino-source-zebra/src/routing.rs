@@ -171,7 +171,7 @@ impl GetChainTip for ZebraValidator {
     }
 }
 
-impl GetBestBlockHeight for ZebraValidator {
+impl OneShotGetBestBlockHeight for ZebraValidator {
     async fn get_best_block_height(&self) -> Result<Height, QueryError<GetBestBlockHeightError>> {
         fast_or_slow!(self, get_best_block_height)
     }

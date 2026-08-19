@@ -457,7 +457,7 @@ impl zaino_source::GetBlockByHash for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetBestBlockHeight for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBestBlockHeight for ZebraRpcAdapter {
     async fn get_best_block_height(
         &self,
     ) -> Result<Height, QueryError<zaino_source::GetBestBlockHeightError>> {

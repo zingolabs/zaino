@@ -18,7 +18,7 @@ pub enum GetBestBlockHeightError {
 ///
 /// Maps to `getblockcount` over JSON-RPC, or the equivalent ReadState
 /// query. Lighter than [`super::GetChainTip`] when the hash isn't needed.
-pub trait GetBestBlockHeight: Send + Sync {
+pub trait OneShotGetBestBlockHeight: Send + Sync {
     /// Fetch current tip height.
     fn get_best_block_height(
         &self,

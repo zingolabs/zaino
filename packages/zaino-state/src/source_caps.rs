@@ -24,12 +24,12 @@ use zaino_source::*;
 /// representation from them, and needs the exact bytes the block hash commits
 /// to rather than a shape something else has already interpreted.
 pub trait FinalisedSourceCaps:
-    GetBestBlockHeight + GetRawBlock + GetCommitmentTreeRoots + GetTransaction + Send + Sync + 'static
+    OneShotGetBestBlockHeight + GetRawBlock + GetCommitmentTreeRoots + GetTransaction + Send + Sync + 'static
 {
 }
 
 impl<T> FinalisedSourceCaps for T where
-    T: GetBestBlockHeight
+    T: OneShotGetBestBlockHeight
         + GetRawBlock
         + GetCommitmentTreeRoots
         + GetTransaction

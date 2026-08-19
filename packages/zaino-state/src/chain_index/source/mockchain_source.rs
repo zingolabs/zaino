@@ -573,7 +573,7 @@ impl zaino_source::GetChainTip for MockchainSource {
     }
 }
 
-impl zaino_source::GetBestBlockHeight for MockchainSource {
+impl zaino_source::OneShotGetBestBlockHeight for MockchainSource {
     async fn get_best_block_height(
         &self,
     ) -> Result<domain::Height, PortError<zaino_source::GetBestBlockHeightError>> {

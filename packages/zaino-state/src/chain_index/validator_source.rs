@@ -604,7 +604,7 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
 
         // The interface's range is open-ended and unvalidated; the port's is
         // neither, so the bounds are resolved against the tip here.
-        let tip = zaino_source::GetBestBlockHeight::get_best_block_height(&*self.validator)
+        let tip = zaino_source::OneShotGetBestBlockHeight::get_best_block_height(&*self.validator)
             .await
             .map_err(err)?;
         let (start, end) = clamp_deltas_range_to_tip(tip, start, end);
