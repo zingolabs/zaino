@@ -18,6 +18,7 @@ pub enum GetBlockError {
 ///
 /// The adapter deserializes from its wire format into the domain
 /// [`Block`] type. The consumer receives typed data, not bytes.
+#[zaino_source_macros::resilient_port]
 pub trait OneShotGetBlock: Send + Sync {
     /// Fetch a parsed block.
     fn get_block(

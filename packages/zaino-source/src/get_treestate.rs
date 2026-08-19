@@ -18,6 +18,7 @@ pub enum GetTreestateError {
 ///
 /// Maps to `z_gettreestate(height)` over JSON-RPC, or the equivalent
 /// ReadState query.
+#[zaino_source_macros::resilient_port]
 pub trait OneShotGetTreestate: Send + Sync {
     /// Fetch treestate.
     fn get_treestate(

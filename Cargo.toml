@@ -5,6 +5,7 @@ members = [
     "packages/zaino-consensus",
     "packages/zaino-primitives",
     "packages/zaino-address",
+    "packages/zaino-source-macros",
     "packages/zaino-source",
     "packages/zaino-rpc",
     "packages/zaino-convert-zebra",
@@ -34,6 +35,7 @@ default-members = [
     "packages/zaino-consensus",
     "packages/zaino-primitives",
     "packages/zaino-address",
+    "packages/zaino-source-macros",
     "packages/zaino-source",
     "packages/zaino-rpc",
     "packages/zaino-convert-zebra",
@@ -163,6 +165,7 @@ zaino-address = { path = "packages/zaino-address", version = "0.1.0" }
 # ask, so each consumer's bound names exactly the capabilities it uses and an
 # adapter that cannot answer a question simply does not implement it.
 zaino-source = { path = "packages/zaino-source", version = "0.1.0" }
+zaino-source-macros = { path = "packages/zaino-source-macros", version = "0.1.0" }
 zaino-mempool = { path = "packages/zaino-mempool", version = "0.1.0" }
 zaino-mempool-service = { path = "packages/zaino-mempool-service", version = "0.1.0" }
 # JSON-RPC 2.0 transport shared by the RPC-backed source adapters.

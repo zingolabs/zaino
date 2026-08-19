@@ -6066,6 +6066,16 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "zaino-primitives",
+ "zaino-source-macros",
+]
+
+[[package]]
+name = "zaino-source-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
 ]
 
 [[package]]
