@@ -7,7 +7,9 @@
 #
 # WARNING: step 4 publishes to crates.io, which CANNOT be undone. This workflow
 # stays dormant until RELMAN_PIPELINE_ACTIVE=true AND it requires:
-#   - secrets.RELEASE_TOKEN         push to protected `stable` (branch + tags)
+#   - a GitHub App (RELEASE_APP_ID + RELEASE_APP_PRIVATE_KEY secrets) installed
+#     with `contents: write` and on the `stable` branch-protection bypass list,
+#     to push the release commit + tags to protected `stable`
 #   - secrets.CARGO_REGISTRY_TOKEN  crates.io publish credential
 # Validate on a dry run / test crate before the first real bless. `stable`
 # already exists and is pushed by the current live release process — the
@@ -39,17 +41,26 @@ jobs:
       !startsWith(github.event.head_commit.message, 'chore(release): ')
     runs-on: ubuntu-latest
     steps:
+      # Mint a short-lived GitHub App installation token (no PATs). The App must
+      # be installed on this repo with `contents: write`, and added to the
+      # `stable` branch-protection bypass list so it can push the release commit
+      # + tags. Store its credentials as RELEASE_APP_ID / RELEASE_APP_PRIVATE_KEY.
+      - name: Mint GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
       - name: Checkout stable
         uses: actions/checkout@v7
         with:
           ref: stable
           # Full history + all tags for the cycle-numbering helper and tagging.
           fetch-depth: 0
-          # Committing bump/changelog back to protected `stable` needs a token
-          # that can bypass branch protection. GITHUB_TOKEN cannot push to a
-          # protected branch — provide a PAT / GitHub App token as
-          # secrets.RELEASE_TOKEN. Fallback keeps checkout working in a dry run.
-          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          # Use the App token so the commit/tag pushes below can write to the
+          # *protected* `stable` branch (GITHUB_TOKEN cannot).
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Compute cycle N being released
         id: cycle

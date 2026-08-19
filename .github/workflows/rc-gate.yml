@@ -33,6 +33,18 @@ jobs:
     if: vars.RELMAN_PIPELINE_ACTIVE == 'true'
     runs-on: ubuntu-latest
     steps:
+      # Mint a short-lived GitHub App installation token (no PATs). The App must
+      # be installed on this repo with `contents: write`, and added to the `rc`
+      # branch-protection bypass list so it can fast-forward protected `rc`.
+      # Store its credentials as the RELEASE_APP_ID / RELEASE_APP_PRIVATE_KEY
+      # secrets.
+      - name: Mint GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
       - name: Checkout dev
         uses: actions/checkout@v7
         with:
@@ -40,13 +52,9 @@ jobs:
           # Full history + all tags: needed for fast-forward checks and the
           # cycle-numbering helper.
           fetch-depth: 0
-          # Pushing to the *protected* `rc` branch needs a token that can bypass
-          # branch protection. GITHUB_TOKEN CANNOT push to a protected branch, so
-          # a PAT / GitHub App token (secrets.RELEASE_TOKEN) with push rights is
-          # required at cutover. Falls back to GITHUB_TOKEN so checkout still works
-          # in a dry/test run, but the push step below will then fail against a
-          # truly protected `rc` — that failure is expected without RELEASE_TOKEN.
-          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          # Use the App token so the push step below can advance the *protected*
+          # `rc` branch (GITHUB_TOKEN cannot push a protected branch).
+          token: ${{ steps.app-token.outputs.token }}
 
       # TODO(cutover): gate advancement on the nightly full-e2e `rc-gate` suite
       # being GREEN on dev HEAD (e.g. query a required workflow_run conclusion, or
