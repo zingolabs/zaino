@@ -75,6 +75,65 @@ per-commit soak, derived-only versions, PR-numbered changesets, semantic `kind`
 tool. `relman` is a handful of pure functions plus `toml_edit`. We borrow the
 *idea* (changeset-driven derivation), not the tool.
 
+### `relman` internal structure (hexagonal)
+
+`relman` is generated from the `rust-cli-starter` `cargo-generate` template
+(ports & adapters), as its **own isolated workspace** under `tools/relman/`
+(kept out of the production graph, like `workbench`). The template's
+functional-core/imperative-shell shape *is* the boundary specified above.
+
+| Crate | Role |
+| ----- | ---- |
+| `relman-core` | pure types (newtype-per-module, parse-don't-validate) + port traits |
+| `relman-domain` | the derivation services (aggregation, highest-`kind` + pre-1.0 map, transitive bumps) — unit-tested against mocks. The heart. |
+| `relman-config` | parses the committed `relman.toml` into a typed `ReleaseConfig` (targets + options) at the boundary |
+| `relman-adapters` | concrete driven ports: fs changeset/changelog store, `toml_edit`/`cargo_metadata` workspace + manifest editor, git subprocess, crates.io index (reuse `workbench`) |
+| `relman-cli` | clap delivery adapter — subcommands call driving ports via a `Ctx` |
+| `relman` (bin) | composition root; the only place naming concrete adapters |
+
+- **Driven ports** (what relman needs): `Workspace`, `ChangesetStore`,
+  `ManifestEditor`, `ChangelogStore`, `Vcs`, `Registry`. **Driving ports** (what
+  relman offers, one per CLI concern): `Changesets`, `Versions`, `Bump`,
+  `Changelog`, `ReleaseArtifacts`.
+
+#### `relman.toml` — the versioning-target manifest
+
+A **repo-committed** manifest (not an XDG user config) is the single source of
+truth for what relman governs. It lists each versioning target, its location,
+and per-target options; `relman-config` parses it into typed core newtypes at
+the composition root.
+
+```toml
+# relman.toml — repo root
+[options]
+changesets_dir      = ".changesets"
+root_manifest       = "Cargo.toml"        # where [workspace.dependencies] pins live
+workspace_changelog = "CHANGELOG.md"
+
+[[target]]
+name = "zaino-state"
+path = "packages/zaino-state"
+# changelog defaults to <path>/CHANGELOG.md; publish defaults to true
+
+[[target]]
+name = "zainod"
+path = "packages/zainod"
+```
+
+This is **the** authority for the governed-target set: changeset enforcement
+validates a change's `crate` against the declared targets, versions/bumps are
+applied only to declared targets, and the publish plan covers exactly them. No
+`cargo metadata` heuristic decides governance.
+
+- **Pruned from the template:** the `installer` crate (relman runs in-repo, no
+  XDG install) and the `status`/`Health` demo thread.
+- **Kept & repurposed:** the `config` crate (parses `relman.toml`, above); the
+  `Clock` driven port (relman needs "today" to date
+  `## [x.y.z] - YYYY-MM-DD` changelog headers); the `mocks`/`test-support` seam
+  (what makes the derivation services testable).
+- **Conventions inherited:** no `mod.rs`, parse-don't-validate newtypes, depend
+  on `dyn Trait` (concretes only in the binary).
+
 ## The soak bridge: GitHub Deployments ↔ Argo
 
 The `release`-gate is modeled as a **GitHub Deployment to a `soak`

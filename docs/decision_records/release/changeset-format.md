@@ -77,10 +77,12 @@ A single PR (one file) may declare changes to multiple crates.
 | `migration`   | no       | string | Migration/upgrade notes. Expected on `breaking`; rendered in a "Breaking changes" block. |
 | `issues`      | no       | array  | Issue references, e.g. `["#987"]`. The PR number is linked automatically at merge; this is for *additional* refs. |
 
-- `crate` must be one of the governed published crates ([pipeline.md §
-  Context](./pipeline.md#context)). Internal-only crates (`e2e`, `clientless`,
-  `zaino-testutils`) are never changeset subjects; a change there that *forces*
-  a change in a governed crate is recorded against the **governed** crate.
+- `crate` must be a **versioning target declared in `relman.toml`**
+  ([Implementation § relman.toml](./implementation.md#relmantoml--the-versioning-target-manifest)) —
+  that manifest, not a `cargo metadata` heuristic, is the authority for what is
+  governed. Non-target crates (`e2e`, `clientless`, `zaino-testutils`, and any
+  crate not listed) are never changeset subjects; a change there that *forces* a
+  change in a declared target is recorded against the **target**.
 - `description` is written to stand alone as a changelog bullet. Each entry is
   exactly one bullet.
 
@@ -190,12 +192,12 @@ one irreversible step, and it happens exactly once per cycle, at the blessing.
 
 A `dev`-gate CI check (`relman changeset check`) fails a PR when:
 
-1. The PR changes **source of a governed crate** but no changeset entry covers
-   that crate. The check maps changed file paths → owning crate; every governed
-   crate with changed source must appear in ≥1 `[[changes]]` entry (of any
-   `kind`).
-2. A changeset names a `crate` that is not a governed published crate, or uses
-   an unknown `kind`/`section`.
+1. The PR changes **source of a declared target** but no changeset entry covers
+   it. The check maps changed file paths → owning target using each target's
+   `path` in `relman.toml`; every target with changed source must appear in ≥1
+   `[[changes]]` entry (of any `kind`).
+2. A changeset names a `crate` that is not a declared target, or uses an unknown
+   `kind`/`section`.
 3. A `[[changes]]` entry is missing a required field.
 
 ### Escape hatch: the empty changeset
