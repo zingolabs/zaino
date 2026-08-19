@@ -212,9 +212,13 @@ mod tests {
     #[test]
     fn rename_to_pr_renames_only_the_author_file() {
         let store = Arc::new(MapChangesetStore::new());
-        store.write(&slug("wandering-quokka"), "[empty]\n").expect("seed author");
+        store
+            .write(&slug("wandering-quokka"), "[empty]\n")
+            .expect("seed author");
         // An accumulated changeset from an earlier merged PR — already canonical.
-        store.write(&slug("pr-1490"), "[empty]\n").expect("seed accumulated");
+        store
+            .write(&slug("pr-1490"), "[empty]\n")
+            .expect("seed accumulated");
         let svc = service(store.clone(), vec![slug("unused-source")]);
 
         let renamed = svc.rename_to_pr(1501).expect("rename should succeed");
@@ -226,7 +230,9 @@ mod tests {
     #[test]
     fn rename_to_pr_numbers_multiple_author_files_deterministically() {
         let store = Arc::new(MapChangesetStore::new());
-        store.write(&slug("wandering-quokka"), "a").expect("seed one");
+        store
+            .write(&slug("wandering-quokka"), "a")
+            .expect("seed one");
         store.write(&slug("brisk-heron"), "b").expect("seed two");
         let svc = service(store.clone(), vec![slug("unused-source")]);
 
@@ -240,9 +246,13 @@ mod tests {
     #[test]
     fn rename_to_pr_errors_when_target_already_exists() {
         let store = Arc::new(MapChangesetStore::new());
-        store.write(&slug("wandering-quokka"), "a").expect("seed author");
+        store
+            .write(&slug("wandering-quokka"), "a")
+            .expect("seed author");
         // A stale `pr-1501` already occupies the canonical target.
-        store.write(&slug("pr-1501"), "occupied").expect("seed target");
+        store
+            .write(&slug("pr-1501"), "occupied")
+            .expect("seed target");
         let svc = service(store.clone(), vec![slug("unused-source")]);
 
         let err = svc
@@ -257,8 +267,12 @@ mod tests {
     #[test]
     fn rename_to_pr_is_a_noop_without_author_files() {
         let store = Arc::new(MapChangesetStore::new());
-        store.write(&slug("pr-1490"), "a").expect("seed accumulated");
-        store.write(&slug("pr-1491"), "b").expect("seed accumulated");
+        store
+            .write(&slug("pr-1490"), "a")
+            .expect("seed accumulated");
+        store
+            .write(&slug("pr-1491"), "b")
+            .expect("seed accumulated");
         let svc = service(store.clone(), vec![slug("unused-source")]);
 
         let renamed = svc.rename_to_pr(1501).expect("no-op should succeed");
@@ -270,7 +284,9 @@ mod tests {
     #[test]
     fn clear_empties_the_store_and_reports_removed() {
         let store = Arc::new(MapChangesetStore::new());
-        store.write(&slug("wandering-quokka"), "a").expect("seed one");
+        store
+            .write(&slug("wandering-quokka"), "a")
+            .expect("seed one");
         store.write(&slug("pr-1490"), "b").expect("seed two");
         let svc = service(store.clone(), vec![slug("unused-source")]);
 

@@ -176,7 +176,10 @@ mod tests {
         let err = store
             .rename(&from, &to)
             .expect_err("rename onto an existing target must fail");
-        assert!(matches!(err, ChangesetStoreError::RenameTargetExists { .. }));
+        assert!(matches!(
+            err,
+            ChangesetStoreError::RenameTargetExists { .. }
+        ));
         // Neither file was disturbed.
         assert_eq!(store.read(&from).expect("source intact"), "source");
         assert_eq!(store.read(&to).expect("target intact"), "occupied");
@@ -189,7 +192,10 @@ mod tests {
         let err = store
             .rename(&slug("absent-slug"), &slug("pr-1501"))
             .expect_err("renaming an absent source must fail");
-        assert!(matches!(err, ChangesetStoreError::RenameSourceMissing { .. }));
+        assert!(matches!(
+            err,
+            ChangesetStoreError::RenameSourceMissing { .. }
+        ));
     }
 
     #[test]

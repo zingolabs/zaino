@@ -171,7 +171,10 @@ mod tests {
         // Whatever `for_pr` produces is a valid slug.
         for index in 0..4 {
             let s = Slug::for_pr(42, index);
-            assert_eq!(Slug::parse(s.as_str()).expect("for_pr yields valid slug"), s);
+            assert_eq!(
+                Slug::parse(s.as_str()).expect("for_pr yields valid slug"),
+                s
+            );
         }
     }
 
