@@ -44,7 +44,7 @@ impl<T> FinalisedSourceCaps for T where
 /// Needs blocks by hash as well as by height: it tracks competing branches, and
 /// a hash is the only way to name a block that is not on the best chain.
 pub trait ChainHeadSourceCaps:
-    GetChainTip
+    OneShotGetChainTip
     + GetRawBlock
     + GetRawBlockByHash
     + GetCommitmentTreeRoots
@@ -56,7 +56,7 @@ pub trait ChainHeadSourceCaps:
 }
 
 impl<T> ChainHeadSourceCaps for T where
-    T: GetChainTip
+    T: OneShotGetChainTip
         + GetRawBlock
         + GetRawBlockByHash
         + GetCommitmentTreeRoots
@@ -72,9 +72,9 @@ impl<T> ChainHeadSourceCaps for T where
 /// Deliberately narrow, and deliberately not satisfied by a state-database
 /// adapter: the mempool is reachable only over JSON-RPC, and this bound is what
 /// makes that a compile-time fact rather than a comment.
-pub trait MempoolSourceCaps: GetMempoolTxids + GetChainTip + Send + Sync + 'static {}
+pub trait MempoolSourceCaps: GetMempoolTxids + OneShotGetChainTip + Send + Sync + 'static {}
 
-impl<T> MempoolSourceCaps for T where T: GetMempoolTxids + GetChainTip + Send + Sync + 'static {}
+impl<T> MempoolSourceCaps for T where T: GetMempoolTxids + OneShotGetChainTip + Send + Sync + 'static {}
 
 /// What the indexer service asks of the validator.
 pub trait IndexerSourceCaps: SubscribeChainTip + Send + Sync + 'static {}

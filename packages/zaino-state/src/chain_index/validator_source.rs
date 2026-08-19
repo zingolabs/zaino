@@ -1112,7 +1112,7 @@ impl ZebraValidatorSource {
             .await
             .map_err(err)?;
 
-        while let Err(e) = zaino_source::GetChainTip::get_chain_tip(&adapter).await {
+        while let Err(e) = zaino_source::OneShotGetChainTip::get_chain_tip(&adapter).await {
             tracing::info!(%e, "Waiting for validator to serve its first block");
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         }
@@ -1172,7 +1172,7 @@ impl ZebraValidatorSource {
 
         loop {
             let (validator_hash, validator_height) =
-                zaino_source::GetChainTip::get_chain_tip(&adapter)
+                zaino_source::OneShotGetChainTip::get_chain_tip(&adapter)
                     .await
                     .map_err(err)?;
 

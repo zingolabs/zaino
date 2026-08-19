@@ -228,7 +228,7 @@ impl zaino_source::OneShotGetBlock for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetChainTip for ZebraRpcAdapter {
+impl zaino_source::OneShotGetChainTip for ZebraRpcAdapter {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     async fn get_chain_tip(&self) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
         let hash_value = self

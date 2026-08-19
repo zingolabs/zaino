@@ -547,7 +547,7 @@ impl zaino_source::OneShotGetBlockByHash for MockchainSource {
     }
 }
 
-impl zaino_source::GetChainTip for MockchainSource {
+impl zaino_source::OneShotGetChainTip for MockchainSource {
     async fn get_chain_tip(
         &self,
     ) -> Result<(domain::BlockHash, domain::Height), PortError<zaino_source::GetChainTipError>>
@@ -696,7 +696,7 @@ impl zaino_source::GetMempoolSourceTip for MockchainSource {
         // `active_height` — so the single-source rule holds trivially here.
         // Routed through `GetChainTip` rather than duplicated so it stays that
         // way as the mock changes.
-        use zaino_source::GetChainTip as _;
+        use zaino_source::OneShotGetChainTip as _;
 
         // `GetChainTip` has a domain answer for "no tip yet"; this port has
         // none, by design (see `GetMempoolSourceTip`). Reported as a fault,

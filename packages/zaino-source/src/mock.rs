@@ -117,7 +117,7 @@ impl crate::OneShotGetBlockByHash for MockChain {
     }
 }
 
-impl crate::GetChainTip for MockChain {
+impl crate::OneShotGetChainTip for MockChain {
     async fn get_chain_tip(&self) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
         if let Some(err) = self.maybe_fail() {
             return Err(err);
@@ -184,7 +184,7 @@ mod tests {
     #[tokio::test]
     async fn tip_of_empty_chain_is_not_ready() {
         let mock = MockChain::new();
-        let err = crate::GetChainTip::get_chain_tip(&mock).await.unwrap_err();
+        let err = crate::OneShotGetChainTip::get_chain_tip(&mock).await.unwrap_err();
         assert!(matches!(
             err,
             QueryError::Domain(GetChainTipError::NotReady)
@@ -226,7 +226,7 @@ mod tests {
         let mock = MockChain::new()
             .with_block(test_block(0, 1))
             .with_block(test_block(1, 2));
-        let (tip_hash, tip_height) = crate::GetChainTip::get_chain_tip(&mock)
+        let (tip_hash, tip_height) = crate::OneShotGetChainTip::get_chain_tip(&mock)
             .await
             .expect("has tip");
         assert_eq!(tip_hash, hash(2));

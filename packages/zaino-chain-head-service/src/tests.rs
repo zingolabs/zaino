@@ -32,7 +32,7 @@ use zaino_primitives::types::{
 };
 use zaino_source::{
     FailureMode, FetchError, OneShotGetBlock, OneShotGetBlockByHash, GetBlockByHashError, GetBlockError,
-    GetChainTip, GetChainTipError, GetChainTips, GetChainTipsError, GetCommitmentTreeRoots,
+    OneShotGetChainTip, GetChainTipError, GetChainTips, GetChainTipsError, GetCommitmentTreeRoots,
     GetCommitmentTreeRootsError, QueryError, SubscribeBlocks,
 };
 
@@ -150,7 +150,7 @@ fn transport_failure<E: std::fmt::Debug + std::fmt::Display>() -> QueryError<E> 
     QueryError::Fetch(FetchError::new(FailureMode::Connection, "mock is down"))
 }
 
-impl GetChainTip for MockValidator {
+impl OneShotGetChainTip for MockValidator {
     async fn get_chain_tip(&self) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
         {
             let mut state = self.lock();

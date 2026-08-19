@@ -145,7 +145,7 @@ impl<V: crate::OneShotGetBlock> Resilient<V> {
     }
 }
 
-impl<V: crate::GetChainTip> Resilient<V> {
+impl<V: crate::OneShotGetChainTip> Resilient<V> {
     /// Fetch chain tip with retry.
     pub async fn get_chain_tip(
         &self,

@@ -64,7 +64,7 @@ pub use get_block_header::{GetBlockHeaderError, OneShotGetBlockHeader};
 pub use get_block_subsidy::{GetBlockSubsidyError, OneShotGetBlockSubsidy};
 pub use get_block_verbose::{GetBlockVerboseByHash, GetBlockVerboseError, OneShotGetBlockVerbose};
 pub use get_blockchain_info::{GetBlockchainInfoError, OneShotGetBlockchainInfo};
-pub use get_chain_tip::{GetChainTip, GetChainTipError};
+pub use get_chain_tip::{GetChainTipError, OneShotGetChainTip};
 pub use get_chain_tips::{GetChainTips, GetChainTipsError};
 pub use get_commitment_tree_roots::{GetCommitmentTreeRoots, GetCommitmentTreeRootsError};
 pub use get_compact_block::GetPreIndexCompactBlock;

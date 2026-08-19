@@ -71,7 +71,7 @@ impl ZebraValidator {
         interval: Duration,
     ) -> Result<Self, QueryError<GetChainTipError>>
     where
-        S: GetChainTip + Send + 'static,
+        S: OneShotGetChainTip + Send + 'static,
     {
         self.tip = Some(PolledChainTip::spawn(source, interval).await?);
         Ok(self)
@@ -165,7 +165,7 @@ impl GetRawBlockByHash for ZebraValidator {
     }
 }
 
-impl GetChainTip for ZebraValidator {
+impl OneShotGetChainTip for ZebraValidator {
     async fn get_chain_tip(&self) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
         fast_or_slow!(self, get_chain_tip)
     }

@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-use crate::{GetChainTip, GetChainTipError, QueryError, SubscribeChainTip, TipObservation};
+use crate::{OneShotGetChainTip, GetChainTipError, QueryError, SubscribeChainTip, TipObservation};
 
 /// A tip subscription built by polling a source that has no native stream.
 ///
@@ -51,7 +51,7 @@ impl PolledChainTip {
         interval: Duration,
     ) -> Result<Self, QueryError<GetChainTipError>>
     where
-        S: GetChainTip + Send + 'static,
+        S: OneShotGetChainTip + Send + 'static,
     {
         let (hash, height) = source.get_chain_tip().await?;
         let (tx, tip) = watch::channel(TipObservation::now(hash, height));

@@ -1170,7 +1170,7 @@ impl zaino_source::OneShotGetBlockByHash for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetChainTip for ProptestMockchain {
+impl zaino_source::OneShotGetChainTip for ProptestMockchain {
     async fn get_chain_tip(
         &self,
     ) -> Result<
@@ -1300,7 +1300,7 @@ impl zaino_source::GetMempoolSourceTip for ProptestMockchain {
         ),
         PortError<std::convert::Infallible>,
     > {
-        use zaino_source::GetChainTip as _;
+        use zaino_source::OneShotGetChainTip as _;
 
         // No domain answer on this port by design — see `GetMempoolSourceTip`.
         self.get_chain_tip().await.map_err(|e| match e {
