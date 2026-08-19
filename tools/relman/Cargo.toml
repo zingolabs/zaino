@@ -43,3 +43,7 @@ semver = "1"
 # repo-root workspace, handling `version.workspace`/`workspace.dependencies`
 # inheritance that hand-parsing Cargo.toml would miss. Adapters-only.
 cargo_metadata = "0.19"
+# Format-preserving TOML editing: the manifest editor mutates a single field of
+# a `Cargo.toml` and writes it back with all comments and formatting intact.
+# Adapters-only. (Same 0.22 line `toml` 0.8 already pulls in transitively.)
+toml_edit = "0.22"

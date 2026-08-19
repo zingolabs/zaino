@@ -9,8 +9,10 @@ mod cargo_metadata_workspace;
 mod fs_changeset_store;
 mod git_vcs;
 mod random_slug_source;
+mod toml_edit_manifest_editor;
 
 pub use cargo_metadata_workspace::CargoMetadataWorkspace;
 pub use fs_changeset_store::FsChangesetStore;
 pub use git_vcs::GitVcs;
 pub use random_slug_source::RandomSlugSource;
+pub use toml_edit_manifest_editor::TomlEditManifestEditor;
