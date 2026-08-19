@@ -97,7 +97,8 @@
 //! Caveat during a large background sync/migration: blocks served by the ephemeral passthrough carry
 //! a chainwork of `0`. This is consistent for the non-finalised state's *relative* fork-choice (every
 //! block shares the same baseline) but means absolute chainwork is offset-low until the persistent
-//! database catches up and the anchor is re-seeded. See `chain_index::non_finalised_state`
+//! database catches up. The chain head is independent of this: it derives its
+//! own window from the chain tip and never reads the finalised state
 //! (`MAX_NFS_DEPTH`).
 //!
 //! # Database types and serialization strategy

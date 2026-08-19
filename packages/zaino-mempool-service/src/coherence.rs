@@ -28,10 +28,9 @@ use zaino_status::{NamedAtomicStatus, StatusType};
 
 use zaino_mempool::config::MempoolConfig;
 use zaino_mempool::event::MempoolEvent;
-use zaino_mempool::ports::{
-    Mempool, MempoolStreamError, NfsEpochObserver, NoNfs, NonFinalizedEpoch,
-};
+use zaino_mempool::ports::{Mempool, MempoolStreamError, NfsEpochObserver, NoNfs};
 use zaino_mempool::tip::CoherentSnapshot;
+use zaino_primitives::types::ChainStateEpoch;
 
 mod publish;
 mod reconcile;
@@ -218,7 +217,7 @@ impl zaino_mempool::ports::TipAwareMempool for CoherentSubscriber {
 
     fn stream_transactions_until_tip_change(
         &self,
-        expected_epoch: Option<NonFinalizedEpoch>,
+        expected_epoch: Option<ChainStateEpoch>,
     ) -> Option<impl futures::Stream<Item = Result<bytes::Bytes, MempoolStreamError>> + Send> {
         // Subscribe before snapshotting so no event between the snapshot load and
         // the subscribe is missed; events at or below `start_sequence` are then
