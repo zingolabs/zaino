@@ -1707,7 +1707,7 @@ impl zaino_source::OneShotGetMiningInfo for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetTxOut for ProptestMockchain {
+impl zaino_source::OneShotGetTxOut for ProptestMockchain {
     async fn get_tx_out(
         &self,
         _txid: zaino_primitives::types::TransactionId,

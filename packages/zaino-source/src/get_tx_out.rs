@@ -21,7 +21,7 @@ pub enum GetTxOutError {
 /// error because the question could not be evaluated at all.
 ///
 /// Maps to `gettxout` over JSON-RPC.
-pub trait GetTxOut: Send + Sync {
+pub trait OneShotGetTxOut: Send + Sync {
     /// Fetch an unspent output.
     ///
     /// `include_mempool` asks the validator to account for unconfirmed spends,

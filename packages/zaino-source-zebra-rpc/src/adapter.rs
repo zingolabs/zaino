@@ -847,7 +847,7 @@ impl zaino_source::OneShotGetSpentInfo for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetTxOut for ZebraRpcAdapter {
+impl zaino_source::OneShotGetTxOut for ZebraRpcAdapter {
     async fn get_tx_out(
         &self,
         txid: TransactionId,

@@ -456,7 +456,7 @@ impl OneShotGetNetworkSolPs for ZebraValidator {
     }
 }
 
-impl GetTxOut for ZebraValidator {
+impl OneShotGetTxOut for ZebraValidator {
     async fn get_tx_out(
         &self,
         txid: TransactionId,

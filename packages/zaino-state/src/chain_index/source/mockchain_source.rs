@@ -1467,7 +1467,7 @@ impl zaino_source::OneShotGetSpentInfo for MockchainSource {
     }
 }
 
-impl zaino_source::GetTxOut for MockchainSource {
+impl zaino_source::OneShotGetTxOut for MockchainSource {
     async fn get_tx_out(
         &self,
         _txid: domain::TransactionId,

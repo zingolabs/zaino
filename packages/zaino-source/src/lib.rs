@@ -86,7 +86,7 @@ pub use get_subtree_roots::{GetSubtreeRootsError, OneShotGetSubtreeRoots};
 pub use get_transaction::{GetTransactionError, OneShotGetTransaction, TransactionResponse};
 pub use get_treestate::{GetTreestateError, OneShotGetTreestate};
 pub use get_treestate_by_hash::{GetTreestateByHashError, OneShotGetTreestateByHash};
-pub use get_tx_out::{GetTxOut, GetTxOutError};
+pub use get_tx_out::{GetTxOutError, OneShotGetTxOut};
 pub use lifecycle::SourceLifecycle;
 pub use polled_chain_tip::PolledChainTip;
 pub use resilient::{Resilient, RetryPolicy};
