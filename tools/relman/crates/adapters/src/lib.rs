@@ -6,12 +6,14 @@
 //! port traits, never on this crate.
 
 mod cargo_metadata_workspace;
+mod fs_changelog_store;
 mod fs_changeset_store;
 mod git_vcs;
 mod random_slug_source;
 mod toml_edit_manifest_editor;
 
 pub use cargo_metadata_workspace::CargoMetadataWorkspace;
+pub use fs_changelog_store::FsChangelogStore;
 pub use fs_changeset_store::FsChangesetStore;
 pub use git_vcs::GitVcs;
 pub use random_slug_source::RandomSlugSource;
