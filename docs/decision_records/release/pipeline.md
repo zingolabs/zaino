@@ -383,18 +383,20 @@ version. Version identity is **late-bound** and lives in three layers, all
 ### Changesets
 
 Every PR to `dev` (and every hotfix on `rc`) must include a **changeset file**
-under `.changesets/`, declaring which crates it affects, at what semver level,
-with a description:
+under `.changesets/`, declaring which crates it affects, at what *semantic*
+level (`kind`), with a description. The full field contract, filename scheme,
+aggregation, and enforcement live in [Changeset
+Format](./changeset-format.md); in brief:
 
 ```toml
 [[changes]]
 crate = "zaino-state"
-bump = "minor"
+kind = "feature"   # breaking | feature | fix | internal — CI derives the semver bump
 description = "New parallel sync mode"
 
 [[changes]]
 crate = "zainod"
-bump = "minor"
+kind = "feature"
 description = "Expose parallel sync mode in CLI config"
 ```
 
