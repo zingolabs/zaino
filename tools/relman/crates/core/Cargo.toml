@@ -13,4 +13,6 @@ test-support = []
 
 [dependencies]
 chrono = { workspace = true }
+serde = { workspace = true }
 thiserror = { workspace = true }
+toml = { workspace = true }
