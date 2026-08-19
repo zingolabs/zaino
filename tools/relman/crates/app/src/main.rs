@@ -10,17 +10,22 @@
 //! `ChangesetService` → `ChangesetStore` + `SlugSource`). Later slices add the
 //! remaining release adapters and commands.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use relman_adapters::{FsChangesetStore, GitVcs, RandomSlugSource};
+use relman_adapters::{CargoMetadataWorkspace, FsChangesetStore, GitVcs, RandomSlugSource};
 use relman_cli::{Cli, Command, Ctx, commands};
-use relman_core::ports::{ChangesetCheck, ChangesetStore, Changesets, Clock, SlugSource, Vcs};
-use relman_core::types::{DateTime, Utc};
-use relman_domain::services::{AboutService, ChangesetCheckService, ChangesetService};
+use relman_core::ports::{
+    ChangesetCheck, ChangesetStore, Changesets, Clock, SlugSource, Vcs, Versions, Workspace,
+};
+use relman_core::types::{CrateName, DateTime, Utc};
+use relman_domain::services::{
+    AboutService, ChangesetCheckService, ChangesetService, VersionService,
+};
 
 /// The repo-committed manifest, looked up in the current working directory.
 const MANIFEST_NAME: &str = "relman.toml";
@@ -44,6 +49,10 @@ fn main() -> Result<()> {
         }),
         Command::Changeset(args) => with_ctx(|ctx| {
             commands::changeset::run(args, ctx)?;
+            Ok(())
+        }),
+        Command::Versions(args) => with_ctx(|ctx| {
+            commands::versions::run(args, ctx)?;
             Ok(())
         }),
     }
@@ -72,6 +81,23 @@ fn with_ctx(f: impl FnOnce(&Ctx) -> Result<()>) -> Result<()> {
     // The manifest lives at the repo root, i.e. the current directory, so git
     // runs there and reports repo-relative paths.
     let vcs: Arc<dyn Vcs> = Arc::new(GitVcs::new(PathBuf::from(".")));
+
+    // The workspace adapter reads resolved versions and dependency edges from
+    // the repo-root manifest via `cargo metadata`, filtered to the governed set.
+    let governed: BTreeSet<CrateName> = config
+        .targets()
+        .iter()
+        .map(|target| target.name().clone())
+        .collect();
+    let root_manifest = config.options().root_manifest().as_path().to_path_buf();
+    let workspace: Arc<dyn Workspace> =
+        Arc::new(CargoMetadataWorkspace::new(root_manifest, governed));
+    let versions: Arc<dyn Versions> = Arc::new(VersionService::new(
+        config.clone(),
+        store.clone(),
+        workspace,
+    ));
+
     let changeset_check: Arc<dyn ChangesetCheck> =
         Arc::new(ChangesetCheckService::new(config, vcs, store));
 
@@ -79,6 +105,7 @@ fn with_ctx(f: impl FnOnce(&Ctx) -> Result<()>) -> Result<()> {
         about,
         changesets,
         changeset_check,
+        versions,
         changesets_dir,
     };
     f(&ctx)

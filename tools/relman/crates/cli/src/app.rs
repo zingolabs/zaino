@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 
-use crate::commands::{about, changeset};
+use crate::commands::{about, changeset, versions};
 
 #[derive(Parser)]
 #[command(
@@ -18,4 +18,6 @@ pub enum Command {
     About(about::Args),
     /// Author and manage changeset files
     Changeset(changeset::Args),
+    /// Derive and print the per-crate version bump table
+    Versions(versions::Args),
 }
