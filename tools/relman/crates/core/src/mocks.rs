@@ -8,7 +8,11 @@
 //! relman-core = { workspace = true, features = ["test-support"] }
 //! ```
 
+mod changeset_store;
 mod clock;
 pub mod fixtures;
+mod slug_source;
 
+pub use changeset_store::MapChangesetStore;
 pub use clock::FixedClock;
+pub use slug_source::SequenceSlugSource;
