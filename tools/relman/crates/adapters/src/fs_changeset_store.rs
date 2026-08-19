@@ -77,6 +77,26 @@ impl ChangesetStore for FsChangesetStore {
         std::fs::create_dir_all(&self.dir).map_err(|source| Self::io_err(slug, source))?;
         std::fs::write(self.path_for(slug), contents).map_err(|source| Self::io_err(slug, source))
     }
+
+    fn rename(&self, from: &Slug, to: &Slug) -> Result<(), ChangesetStoreError> {
+        if !self.path_for(from).exists() {
+            return Err(ChangesetStoreError::RenameSourceMissing {
+                from: from.as_str().to_owned(),
+            });
+        }
+        if self.path_for(to).exists() {
+            return Err(ChangesetStoreError::RenameTargetExists {
+                from: from.as_str().to_owned(),
+                to: to.as_str().to_owned(),
+            });
+        }
+        std::fs::rename(self.path_for(from), self.path_for(to))
+            .map_err(|source| Self::io_err(from, source))
+    }
+
+    fn remove(&self, slug: &Slug) -> Result<(), ChangesetStoreError> {
+        std::fs::remove_file(self.path_for(slug)).map_err(|source| Self::io_err(slug, source))
+    }
 }
 
 #[cfg(test)]
@@ -128,5 +148,61 @@ mod tests {
         let s = slug("fresh-slug");
         store.write(&s, "body").expect("write into missing dir");
         assert_eq!(store.read(&s).expect("read back"), "body");
+    }
+
+    #[test]
+    fn rename_moves_the_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = FsChangesetStore::new(dir.path().to_path_buf());
+        let from = slug("wandering-quokka");
+        let to = slug("pr-1501");
+        store.write(&from, "body").expect("write source");
+
+        store.rename(&from, &to).expect("rename should succeed");
+
+        assert!(!store.exists(&from).expect("source gone"));
+        assert_eq!(store.read(&to).expect("read target"), "body");
+    }
+
+    #[test]
+    fn rename_onto_existing_target_errors() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = FsChangesetStore::new(dir.path().to_path_buf());
+        let from = slug("wandering-quokka");
+        let to = slug("pr-1501");
+        store.write(&from, "source").expect("write source");
+        store.write(&to, "occupied").expect("write target");
+
+        let err = store
+            .rename(&from, &to)
+            .expect_err("rename onto an existing target must fail");
+        assert!(matches!(err, ChangesetStoreError::RenameTargetExists { .. }));
+        // Neither file was disturbed.
+        assert_eq!(store.read(&from).expect("source intact"), "source");
+        assert_eq!(store.read(&to).expect("target intact"), "occupied");
+    }
+
+    #[test]
+    fn rename_missing_source_errors() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = FsChangesetStore::new(dir.path().to_path_buf());
+        let err = store
+            .rename(&slug("absent-slug"), &slug("pr-1501"))
+            .expect_err("renaming an absent source must fail");
+        assert!(matches!(err, ChangesetStoreError::RenameSourceMissing { .. }));
+    }
+
+    #[test]
+    fn remove_deletes_the_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = FsChangesetStore::new(dir.path().to_path_buf());
+        let s = slug("wandering-quokka");
+        store.write(&s, "body").expect("write");
+
+        store.remove(&s).expect("remove should succeed");
+
+        assert!(!store.exists(&s).expect("file gone"));
+        // Removing an absent file surfaces the underlying I/O error.
+        assert!(store.remove(&s).is_err());
     }
 }

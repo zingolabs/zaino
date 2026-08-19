@@ -34,6 +34,20 @@ pub enum ChangesetStoreError {
         #[source]
         source: std::io::Error,
     },
+    /// A rename was asked to move a changeset that does not exist.
+    #[error("cannot rename changeset {from:?}: source does not exist")]
+    RenameSourceMissing {
+        /// The absent source slug.
+        from: String,
+    },
+    /// A rename would overwrite a changeset that already exists.
+    #[error("cannot rename changeset {from:?} to {to:?}: target already exists")]
+    RenameTargetExists {
+        /// The source slug.
+        from: String,
+        /// The already-occupied target slug.
+        to: String,
+    },
 }
 
 /// Outbound port: the raw store of changeset files.
@@ -55,6 +69,16 @@ pub trait ChangesetStore: Send + Sync {
     /// Write `contents` as the changeset for `slug`, creating the store's
     /// directory if it is missing.
     fn write(&self, slug: &Slug, contents: &str) -> Result<(), ChangesetStoreError>;
+
+    /// Rename the changeset file `from` to `to` (`<from>.toml` → `<to>.toml`).
+    ///
+    /// Errors with [`ChangesetStoreError::RenameSourceMissing`] when `from` has
+    /// no file, and [`ChangesetStoreError::RenameTargetExists`] when `to`
+    /// already exists — a rename never silently clobbers a canonical name.
+    fn rename(&self, from: &Slug, to: &Slug) -> Result<(), ChangesetStoreError>;
+
+    /// Delete the changeset file for `slug` (`<slug>.toml`).
+    fn remove(&self, slug: &Slug) -> Result<(), ChangesetStoreError>;
 }
 
 /// Everything that can go wrong at the changelog-store I/O boundary.

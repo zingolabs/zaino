@@ -70,4 +70,35 @@ impl ChangesetStore for MapChangesetStore {
         self.lock().insert(slug.clone(), contents.to_owned());
         Ok(())
     }
+
+    fn rename(&self, from: &Slug, to: &Slug) -> Result<(), ChangesetStoreError> {
+        let mut files = self.lock();
+        if files.contains_key(to) {
+            return Err(ChangesetStoreError::RenameTargetExists {
+                from: from.as_str().to_owned(),
+                to: to.as_str().to_owned(),
+            });
+        }
+        match files.remove(from) {
+            Some(contents) => {
+                files.insert(to.clone(), contents);
+                Ok(())
+            }
+            None => Err(ChangesetStoreError::RenameSourceMissing {
+                from: from.as_str().to_owned(),
+            }),
+        }
+    }
+
+    fn remove(&self, slug: &Slug) -> Result<(), ChangesetStoreError> {
+        // Mirror `std::fs::remove_file`: removing an absent file is an error.
+        if self.lock().remove(slug).is_some() {
+            Ok(())
+        } else {
+            Err(ChangesetStoreError::Io {
+                slug: slug.as_str().to_owned(),
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "no such changeset"),
+            })
+        }
+    }
 }
