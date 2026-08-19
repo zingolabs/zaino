@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
-description = "relman.toml config adapter (slice-0 placeholder; parsing lands in a later slice)"
+description = "relman.toml config adapter: parses the manifest into typed core newtypes"
 
 [dependencies]
+relman-core = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
