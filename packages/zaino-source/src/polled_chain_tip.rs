@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-use crate::{OneShotGetChainTip, GetChainTipError, QueryError, SubscribeChainTip, TipObservation};
+use crate::{GetChainTipError, OneShotGetChainTip, QueryError, SubscribeChainTip, TipObservation};
 
 /// A tip subscription built by polling a source that has no native stream.
 ///

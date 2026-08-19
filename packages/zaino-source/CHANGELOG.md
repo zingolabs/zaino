@@ -18,11 +18,21 @@ and this library adheres to Rust's notion of
   (`Connection | Timeout | HttpStatus(u16) | RpcError(i64) | Parse | Auth`),
   so retry policy is a function of the type and a zcashd legacy code can
   survive from the validator to the served response.
+- Two port layers. Each question is both a single-attempt `OneShot*` port
+  (returning `QueryError`, implemented by adapters) and a canonical resilient
+  port under the unqualified name (`GetBlock`, `GetChainTip`, … returning
+  `SourceError`, bound by consumers). The resilient port is the default name
+  because resilience is the default; reaching the single-attempt contract means
+  naming the awkward `OneShot*`.
+- `#[resilient_port]` (in `zaino-source-macros`) — an attribute on a `OneShot*`
+  trait that derives its resilient twin and the `Resilient<V>` blanket impl,
+  rewriting `QueryError<E>` -> `SourceError<E>`. The twin's signature is never
+  restated and the retry/translation lives once in `Resilient::with_retry`.
 - `Resilient<V>` / `RetryPolicy` — retry with exponential backoff, replacing
   the hand-rolled consecutive-failure ladder in the ChainIndex sync loop.
-  Deliberately does *not* implement the port traits: it has its own methods
-  returning `SourceError`, so a consumer cannot be handed a bare adapter by
-  mistake.
+  Implements the canonical resilient ports (sealed, so only `Resilient` can),
+  and forwards subscriptions unchanged. `SendRawTransaction` gets no resilient
+  port — retrying a non-idempotent send risks a double-submit.
 - `SourceLifecycle` (shutdown), `SubscribeChainTip` / `SubscribeBlocks`, and
   `PolledChainTip` (built and tested; not yet wired to a consumer).
 - `mock::MockChain` behind the `testing` feature — an in-memory chain with

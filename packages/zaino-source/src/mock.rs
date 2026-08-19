@@ -184,7 +184,9 @@ mod tests {
     #[tokio::test]
     async fn tip_of_empty_chain_is_not_ready() {
         let mock = MockChain::new();
-        let err = crate::OneShotGetChainTip::get_chain_tip(&mock).await.unwrap_err();
+        let err = crate::OneShotGetChainTip::get_chain_tip(&mock)
+            .await
+            .unwrap_err();
         assert!(matches!(
             err,
             QueryError::Domain(GetChainTipError::NotReady)

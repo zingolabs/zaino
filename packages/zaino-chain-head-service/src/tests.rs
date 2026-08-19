@@ -31,9 +31,10 @@ use zaino_primitives::types::{
     MerkleRoot, TreeRoots,
 };
 use zaino_source::{
-    FailureMode, FetchError, OneShotGetBlock, OneShotGetBlockByHash, GetBlockByHashError, GetBlockError,
-    OneShotGetChainTip, GetChainTipError, OneShotGetChainTips, GetChainTipsError, OneShotGetCommitmentTreeRoots,
-    GetCommitmentTreeRootsError, QueryError, SubscribeBlocks,
+    FailureMode, FetchError, GetBlockByHashError, GetBlockError, GetChainTipError,
+    GetChainTipsError, GetCommitmentTreeRootsError, OneShotGetBlock, OneShotGetBlockByHash,
+    OneShotGetChainTip, OneShotGetChainTips, OneShotGetCommitmentTreeRoots, QueryError,
+    SubscribeBlocks,
 };
 
 use crate::{service::ChainHeadService, snapshot::MapBackedSnapshot};

@@ -74,7 +74,10 @@ fn expand(one_shot: &ItemTrait) -> syn::Result<proc_macro2::TokenStream> {
         let mut arg_names = Vec::new();
         for input in sig.inputs.iter().skip(1) {
             let FnArg::Typed(pat_ty) = input else {
-                return Err(syn::Error::new(input.span(), "unexpected receiver argument"));
+                return Err(syn::Error::new(
+                    input.span(),
+                    "unexpected receiver argument",
+                ));
             };
             let Pat::Ident(pat_ident) = pat_ty.pat.as_ref() else {
                 return Err(syn::Error::new(
@@ -155,9 +158,11 @@ fn extract_payloads(output: &ReturnType) -> syn::Result<(Type, Type)> {
         .bounds
         .iter()
         .find_map(|bound| match bound {
-            syn::TypeParamBound::Trait(t) => t.path.segments.last().and_then(|seg| {
-                (seg.ident == "Future").then_some(&seg.arguments)
-            }),
+            syn::TypeParamBound::Trait(t) => t
+                .path
+                .segments
+                .last()
+                .and_then(|seg| (seg.ident == "Future").then_some(&seg.arguments)),
             _ => None,
         })
         .ok_or_else(|| err("expected a `Future` bound"))?;
@@ -176,9 +181,8 @@ fn extract_payloads(output: &ReturnType) -> syn::Result<(Type, Type)> {
         .ok_or_else(|| err("`Future` bound needs an `Output = ...` binding"))?;
 
     // Result<T, QueryError<E>>
-    let (ok_ty, query_err_ty) = result_args(output_ty).ok_or_else(|| {
-        err("`Future`'s Output must be `Result<T, QueryError<E>>`")
-    })?;
+    let (ok_ty, query_err_ty) = result_args(output_ty)
+        .ok_or_else(|| err("`Future`'s Output must be `Result<T, QueryError<E>>`"))?;
 
     // QueryError<E>  ->  E
     let err_ty = sole_generic(query_err_ty, "QueryError")
