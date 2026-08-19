@@ -120,17 +120,16 @@ pub(crate) fn render_crate_section(
     out
 }
 
-/// Render the workspace changelog section: a date-labelled `## [DATE]` heading,
-/// then one `### <crate> <version>` subsection per bumping crate carrying that
-/// crate's flattened bullets. Ends with a trailing newline.
+/// Render the date-free aggregated changelog digest: one `### <crate> <version>`
+/// subsection per bumping crate carrying that crate's flattened bullets. Ends
+/// with a trailing newline.
 ///
 /// Each element pairs a bumping crate with its direct entries (empty for a
-/// transitive-only crate), in the order the subsections should appear.
-pub(crate) fn render_workspace_section(
-    crates: &[(&CrateBump, Vec<&ChangeEntry>)],
-    date: NaiveDate,
-) -> String {
-    let mut lines = vec![format!("## [{}]", iso(date))];
+/// transitive-only crate), in the order the subsections should appear. This is
+/// the body shared by the workspace changelog section (which prepends a dated
+/// heading) and the release-PR changelog block (which needs no date).
+pub(crate) fn render_changelog_digest(crates: &[(&CrateBump, Vec<&ChangeEntry>)]) -> String {
+    let mut lines = Vec::new();
     for (bump, direct) in crates {
         lines.push(format!(
             "### {} {}",
@@ -144,6 +143,15 @@ pub(crate) fn render_workspace_section(
     let mut out = lines.join("\n");
     out.push('\n');
     out
+}
+
+/// Render the workspace changelog section: a date-labelled `## [DATE]` heading
+/// above the [`render_changelog_digest`] body. Ends with a trailing newline.
+pub(crate) fn render_workspace_section(
+    crates: &[(&CrateBump, Vec<&ChangeEntry>)],
+    date: NaiveDate,
+) -> String {
+    format!("## [{}]\n{}", iso(date), render_changelog_digest(crates))
 }
 
 /// Whether `line` is a *released-version* heading — a `## ` heading whose text,

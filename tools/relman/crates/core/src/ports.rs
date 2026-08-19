@@ -13,7 +13,7 @@ pub use driven::{
     ManifestError, SlugSource, Vcs, VcsError, Workspace, WorkspaceError,
 };
 pub use driving::{
-    About, ApplyBump, ApplyError, Changelog, ChangelogEdit, ChangelogGenError, ChangesetCheck,
-    Changesets, ChangesetsError, CheckError, CheckReport, DeriveError, NewChangeset, Versions,
-    Violation,
+    About, ApplyBump, ApplyError, ArtifactError, Changelog, ChangelogEdit, ChangelogGenError,
+    ChangesetCheck, Changesets, ChangesetsError, CheckError, CheckReport, DeriveError,
+    NewChangeset, ReleaseArtifacts, Versions, Violation,
 };

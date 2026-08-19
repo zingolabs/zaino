@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
 use crate::ports::{ChangelogError, ChangesetStoreError, ManifestError, VcsError, WorkspaceError};
-use crate::types::{AboutReport, BumpTable, CrateName, Description, Slug};
+use crate::types::{
+    AboutReport, BumpTable, CrateName, CycleId, Description, PublishPlan, Slug, TagPlan,
+};
 
 /// Inbound port: report who relman is (version) and what it thinks "now" is.
 ///
@@ -318,4 +320,66 @@ pub trait Changelog: Send + Sync {
     ///
     /// [`ChangelogStore`]: crate::ports::ChangelogStore
     fn apply(&self) -> Result<Vec<ChangelogEdit>, ChangelogGenError>;
+}
+
+/// Everything that can go wrong computing a release artifact (tag plan, PR body,
+/// or publish plan).
+///
+/// These commands are pure planners — they read the derived [`BumpTable`], the
+/// changesets, and the crate graph, and print a plan for CI to apply. A failure
+/// means the plan could not be *computed* correctly, so each variant is a hard
+/// error rather than data.
+#[derive(Debug, thiserror::Error)]
+pub enum ArtifactError {
+    /// Deriving the per-crate bump table failed.
+    #[error("version derivation failed")]
+    Derive(#[from] DeriveError),
+    /// A changeset in the store could not be parsed while gathering its entries
+    /// for the changelog block.
+    #[error("failed to parse changeset {slug:?}: {error}")]
+    ChangesetParse {
+        /// The slug of the offending changeset.
+        slug: String,
+        /// The rendered parse error.
+        error: String,
+    },
+    /// A changeset-store operation failed.
+    #[error("changeset store operation failed")]
+    Store(#[from] ChangesetStoreError),
+    /// Reading the workspace crate graph failed.
+    #[error("workspace query failed")]
+    Workspace(#[from] WorkspaceError),
+    /// The governed dependency graph among the bumping crates contains a cycle,
+    /// so no publish order exists. This should never happen for a real Cargo
+    /// workspace (Cargo itself forbids dependency cycles), but detecting it
+    /// keeps the topological sort from looping forever.
+    #[error("dependency cycle among bumping crates: no publish order exists")]
+    DependencyCycle,
+}
+
+/// Inbound port: compute the release artifacts CI applies at a soak cut or a
+/// blessing — the git tag plan, the release-PR body, and the publish order.
+///
+/// Implemented by the domain (`ReleaseArtifactsService`) over the [`Versions`]
+/// driving port, the [`ChangesetStore`] and [`Workspace`] driven ports, and the
+/// loaded config. Every method is a pure planner: it computes and returns, and
+/// never mutates a ref, the working tree, or a registry.
+///
+/// [`ChangesetStore`]: crate::ports::ChangesetStore
+/// [`Workspace`]: crate::ports::Workspace
+pub trait ReleaseArtifacts: Send + Sync {
+    /// The tag plan for `cycle`.
+    ///
+    /// - `rc = Some(n)` (a soak/prerelease cut): a single `cycle-<id>-rc.<n>`
+    ///   prerelease tag.
+    /// - `rc = None` (a blessing): the `cycle-<id>` period tag followed by one
+    ///   `<crate>-v<next>` provenance tag per bumping crate, in config order.
+    fn tags(&self, cycle: &CycleId, rc: Option<u32>) -> Result<TagPlan, ArtifactError>;
+
+    /// The rendered release-PR body for `cycle`: a title, the derived version
+    /// table, a CI-filled soak-status placeholder, and the aggregated changelog.
+    fn pr_body(&self, cycle: &CycleId) -> Result<String, ArtifactError>;
+
+    /// The bumping crates in dependency (publish) order.
+    fn publish_plan(&self) -> Result<PublishPlan, ArtifactError>;
 }
