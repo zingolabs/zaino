@@ -51,6 +51,20 @@ impl Section {
         }
     }
 
+    /// The title-case Keep-a-Changelog heading for this section, as rendered
+    /// under a version's `### ` sub-heading (e.g. `Added`, `Fixed`).
+    pub fn heading(&self) -> &'static str {
+        match self {
+            Self::Added => "Added",
+            Self::Changed => "Changed",
+            Self::Fixed => "Fixed",
+            Self::Removed => "Removed",
+            Self::Security => "Security",
+            Self::Deprecated => "Deprecated",
+            Self::Internal => "Internal",
+        }
+    }
+
     /// The lowercase wire name of this section.
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -104,6 +118,13 @@ mod tests {
                 found: "performance".to_owned()
             })
         );
+    }
+
+    #[test]
+    fn heading_is_title_case() {
+        assert_eq!(Section::Added.heading(), "Added");
+        assert_eq!(Section::Internal.heading(), "Internal");
+        assert_eq!(Section::Deprecated.heading(), "Deprecated");
     }
 
     #[test]

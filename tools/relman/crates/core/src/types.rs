@@ -31,4 +31,4 @@ pub use version::{InvalidVersion, Version};
 pub use workspace_path::{InvalidWorkspacePath, WorkspacePath};
 
 // Re-exported so downstream crates get a single, consistent chrono surface.
-pub use chrono::{DateTime, Utc};
+pub use chrono::{DateTime, NaiveDate, Utc};

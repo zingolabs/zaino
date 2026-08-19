@@ -57,6 +57,41 @@ pub trait ChangesetStore: Send + Sync {
     fn write(&self, slug: &Slug, contents: &str) -> Result<(), ChangesetStoreError>;
 }
 
+/// Everything that can go wrong at the changelog-store I/O boundary.
+///
+/// I/O-only, like [`ChangesetStoreError`]: rendering and insertion live in the
+/// domain, so this carries just the low-level failure of reading or writing a
+/// `CHANGELOG.md` file.
+#[derive(Debug, thiserror::Error)]
+pub enum ChangelogError {
+    /// Reading or writing a changelog file failed.
+    #[error("changelog I/O failed for {path}")]
+    Io {
+        /// The changelog path being operated on, for diagnostics.
+        path: String,
+        /// The underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+/// Outbound port: the raw store of changelog files.
+///
+/// Deliberately *dumb* — it moves Markdown text in and out of `CHANGELOG.md`
+/// files keyed by their repo-relative path. Rendering the new section and
+/// splicing it into the existing history is the domain's job; this port only
+/// [`read`](ChangelogStore::read)s (returning `None` for a not-yet-existing
+/// file) and [`write`](ChangelogStore::write)s whole files.
+pub trait ChangelogStore: Send + Sync {
+    /// Read the current contents of the changelog at `path`, or `None` when the
+    /// file does not exist yet.
+    fn read(&self, path: &Path) -> Result<Option<String>, ChangelogError>;
+
+    /// Write `contents` as the changelog at `path`, creating parent directories
+    /// as needed.
+    fn write(&self, path: &Path, contents: &str) -> Result<(), ChangelogError>;
+}
+
 /// Outbound port: a source of fresh candidate slugs.
 ///
 /// Each call yields a candidate that is *not guaranteed unique* — the domain

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::ports::{ChangesetStoreError, ManifestError, VcsError, WorkspaceError};
+use crate::ports::{ChangelogError, ChangesetStoreError, ManifestError, VcsError, WorkspaceError};
 use crate::types::{AboutReport, BumpTable, CrateName, Description, Slug};
 
 /// Inbound port: report who relman is (version) and what it thinks "now" is.
@@ -231,4 +231,91 @@ pub trait ApplyBump: Send + Sync {
     ///
     /// [`CrateBump`]: crate::types::CrateBump
     fn apply(&self, table: &BumpTable) -> Result<(), ApplyError>;
+}
+
+/// A single planned changelog edit: the target file, its complete new contents,
+/// and — for display — just the section that was spliced in.
+///
+/// [`Changelog::generate`] returns these without touching disk;
+/// [`Changelog::apply`] returns the same set after writing them. `inserted`
+/// lets a `--dry-run` show exactly what would be added without diffing whole
+/// files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangelogEdit {
+    path: PathBuf,
+    contents: String,
+    inserted: String,
+}
+
+impl ChangelogEdit {
+    /// Construct from the target path, the full new file contents, and the
+    /// rendered section that was inserted.
+    pub fn new(path: PathBuf, contents: String, inserted: String) -> Self {
+        Self {
+            path,
+            contents,
+            inserted,
+        }
+    }
+
+    /// The changelog file this edit targets (repo-relative).
+    pub fn path(&self) -> &PathBuf {
+        &self.path
+    }
+
+    /// The complete new contents to write.
+    pub fn contents(&self) -> &str {
+        &self.contents
+    }
+
+    /// Just the newly-inserted section, for display.
+    pub fn inserted(&self) -> &str {
+        &self.inserted
+    }
+}
+
+/// Everything that can go wrong generating changelog edits.
+#[derive(Debug, thiserror::Error)]
+pub enum ChangelogGenError {
+    /// Deriving the per-crate bump table failed.
+    #[error("version derivation failed")]
+    Derive(#[from] DeriveError),
+    /// A changeset in the store could not be parsed while gathering its entries.
+    #[error("failed to parse changeset {slug:?}: {error}")]
+    ChangesetParse {
+        /// The slug of the offending changeset.
+        slug: String,
+        /// The rendered parse error.
+        error: String,
+    },
+    /// A changeset-store operation failed.
+    #[error("changeset store operation failed")]
+    ChangesetStore(#[from] ChangesetStoreError),
+    /// A changelog-store operation failed.
+    #[error("changelog store operation failed")]
+    Changelog(#[from] ChangelogError),
+}
+
+/// Inbound port: generate Keep-a-Changelog entries for each bumping crate and
+/// the workspace, from the accumulated changesets.
+///
+/// Implemented by the domain (`ChangelogService`) over the [`Versions`] and
+/// [`ChangesetStore`] and [`ChangelogStore`] driven ports, a [`Clock`], and the
+/// loaded config. [`generate`](Changelog::generate) plans the edits without
+/// touching disk; [`apply`](Changelog::apply) writes them and returns the same
+/// set.
+///
+/// [`ChangesetStore`]: crate::ports::ChangesetStore
+/// [`ChangelogStore`]: crate::ports::ChangelogStore
+/// [`Clock`]: crate::ports::Clock
+pub trait Changelog: Send + Sync {
+    /// Plan the changelog edits (per bumping crate + the workspace) without
+    /// writing anything.
+    fn generate(&self) -> Result<Vec<ChangelogEdit>, ChangelogGenError>;
+
+    /// Generate the edits and write them through the [`ChangelogStore`],
+    /// returning what was written.
+    ///
+    /// [`ChangelogStore`]: crate::ports::ChangelogStore
+    fn apply(&self) -> Result<Vec<ChangelogEdit>, ChangelogGenError>;
 }

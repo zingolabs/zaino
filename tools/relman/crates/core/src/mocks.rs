@@ -8,6 +8,7 @@
 //! relman-core = { workspace = true, features = ["test-support"] }
 //! ```
 
+mod changelog_store;
 mod changeset_store;
 mod clock;
 pub mod fixtures;
@@ -16,6 +17,7 @@ mod slug_source;
 mod vcs;
 mod workspace;
 
+pub use changelog_store::MapChangelogStore;
 pub use changeset_store::MapChangesetStore;
 pub use clock::FixedClock;
 pub use manifest_editor::RecordingManifestEditor;
