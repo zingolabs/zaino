@@ -1751,7 +1751,7 @@ impl zaino_source::SendRawTransaction for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetTreestate for ProptestMockchain {
+impl zaino_source::OneShotGetTreestate for ProptestMockchain {
     async fn get_treestate(
         &self,
         _height: zaino_primitives::types::Height,
@@ -1761,7 +1761,7 @@ impl zaino_source::GetTreestate for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetTreestateByHash for ProptestMockchain {
+impl zaino_source::OneShotGetTreestateByHash for ProptestMockchain {
     async fn get_treestate_by_hash(
         &self,
         _hash: zaino_primitives::types::BlockHash,

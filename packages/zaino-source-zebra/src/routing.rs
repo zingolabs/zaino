@@ -206,7 +206,7 @@ impl OneShotGetTransaction for ZebraValidator {
 // Shielded state
 // ---------------------------------------------------------------------------
 
-impl GetTreestate for ZebraValidator {
+impl OneShotGetTreestate for ZebraValidator {
     async fn get_treestate(
         &self,
         height: Height,
@@ -215,7 +215,7 @@ impl GetTreestate for ZebraValidator {
     }
 }
 
-impl GetTreestateByHash for ZebraValidator {
+impl OneShotGetTreestateByHash for ZebraValidator {
     async fn get_treestate_by_hash(
         &self,
         hash: BlockHash,

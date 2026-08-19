@@ -844,7 +844,7 @@ impl zaino_source::OneShotGetRawBlockHeader for MockchainSource {
     }
 }
 
-impl zaino_source::GetTreestateByHash for MockchainSource {
+impl zaino_source::OneShotGetTreestateByHash for MockchainSource {
     async fn get_treestate_by_hash(
         &self,
         hash: domain::BlockHash,
@@ -1376,7 +1376,7 @@ impl zaino_source::OneShotGetAddressDeltas for MockchainSource {
 // the vectors would have to be extended to serve these, and the panic names
 // what is missing rather than inventing a plausible value.
 
-impl zaino_source::GetTreestate for MockchainSource {
+impl zaino_source::OneShotGetTreestate for MockchainSource {
     async fn get_treestate(
         &self,
         _height: domain::Height,

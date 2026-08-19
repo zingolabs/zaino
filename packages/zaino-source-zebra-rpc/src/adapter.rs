@@ -268,7 +268,7 @@ impl zaino_source::OneShotGetPreIndexCompactBlock for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetTreestate for ZebraRpcAdapter {
+impl zaino_source::OneShotGetTreestate for ZebraRpcAdapter {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(h = u32::from(height))))]
     async fn get_treestate(
         &self,
@@ -756,7 +756,7 @@ impl zaino_source::OneShotGetAddressUtxos for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetTreestateByHash for ZebraRpcAdapter {
+impl zaino_source::OneShotGetTreestateByHash for ZebraRpcAdapter {
     async fn get_treestate_by_hash(
         &self,
         hash: BlockHash,

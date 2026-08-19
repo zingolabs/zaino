@@ -730,7 +730,7 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for ZebraReadStateAdapter {
     }
 }
 
-impl zaino_source::GetTreestateByHash for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetTreestateByHash for ZebraReadStateAdapter {
     async fn get_treestate_by_hash(
         &self,
         hash: BlockHash,
@@ -742,7 +742,7 @@ impl zaino_source::GetTreestateByHash for ZebraReadStateAdapter {
     }
 }
 
-impl zaino_source::GetTreestate for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetTreestate for ZebraReadStateAdapter {
     async fn get_treestate(
         &self,
         height: Height,

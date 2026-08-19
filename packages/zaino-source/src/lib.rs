@@ -84,8 +84,8 @@ pub use get_raw_mempool_transaction::{
 pub use get_spent_info::{GetSpentInfoError, OneShotGetSpentInfo};
 pub use get_subtree_roots::{GetSubtreeRootsError, OneShotGetSubtreeRoots};
 pub use get_transaction::{GetTransactionError, OneShotGetTransaction, TransactionResponse};
-pub use get_treestate::{GetTreestate, GetTreestateError};
-pub use get_treestate_by_hash::{GetTreestateByHash, GetTreestateByHashError};
+pub use get_treestate::{GetTreestateError, OneShotGetTreestate};
+pub use get_treestate_by_hash::{GetTreestateByHashError, OneShotGetTreestateByHash};
 pub use get_tx_out::{GetTxOut, GetTxOutError};
 pub use lifecycle::SourceLifecycle;
 pub use polled_chain_tip::PolledChainTip;

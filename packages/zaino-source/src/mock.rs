@@ -127,7 +127,7 @@ impl crate::OneShotGetChainTip for MockChain {
     }
 }
 
-impl crate::GetTreestate for MockChain {
+impl crate::OneShotGetTreestate for MockChain {
     async fn get_treestate(
         &self,
         height: Height,
@@ -249,7 +249,7 @@ mod tests {
         let mock = MockChain::new()
             .with_block(test_block(0, 1))
             .with_treestate(height(0), ts);
-        let result = crate::GetTreestate::get_treestate(&mock, height(0))
+        let result = crate::OneShotGetTreestate::get_treestate(&mock, height(0))
             .await
             .expect("treestate exists");
         assert_eq!(

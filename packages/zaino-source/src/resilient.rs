@@ -154,7 +154,7 @@ impl<V: crate::OneShotGetChainTip> Resilient<V> {
     }
 }
 
-impl<V: crate::GetTreestate> Resilient<V> {
+impl<V: crate::OneShotGetTreestate> Resilient<V> {
     /// Fetch treestate with retry.
     pub async fn get_treestate(
         &self,
