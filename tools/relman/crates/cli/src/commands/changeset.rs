@@ -6,7 +6,9 @@ use relman_core::types::EmptyDescription;
 use crate::context::Ctx;
 
 mod check;
+mod clear;
 mod new;
+mod rename;
 
 /// `relman changeset <action>` — author and manage changeset files.
 #[derive(ClapArgs)]
@@ -21,6 +23,10 @@ enum Action {
     New(new::Args),
     /// Enforce that a PR touching governed source carries a covering changeset
     Check(check::Args),
+    /// Rename this PR's author changeset(s) to the canonical `pr-<N>` name(s)
+    Rename(rename::Args),
+    /// Remove every changeset file (the release consume step; needs `--yes`)
+    Clear(clear::Args),
 }
 
 /// What can go wrong running a `changeset` subcommand.
@@ -49,5 +55,7 @@ pub fn run(args: &Args, ctx: &Ctx) -> Result<(), ChangesetCommandError> {
     match &args.action {
         Action::New(new_args) => new::run(new_args, ctx),
         Action::Check(check_args) => check::run(check_args, ctx),
+        Action::Rename(rename_args) => rename::run(rename_args, ctx),
+        Action::Clear(clear_args) => clear::run(clear_args, ctx),
     }
 }
