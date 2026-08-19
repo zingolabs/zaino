@@ -1,7 +1,7 @@
 //! Presentation helpers: turn core types into terminal output. Keeping this
 //! separate from command logic makes both easy to change independently.
 
-use relman_core::types::{AboutReport, BumpTable};
+use relman_core::types::{AboutReport, BumpTable, PublishPlan, TagPlan};
 
 pub fn about(report: &AboutReport) -> String {
     format!(
@@ -39,6 +39,28 @@ pub fn bump_table(table: &BumpTable) -> String {
         for reason in bump.reasons() {
             out.push_str(&format!("    - {reason}\n"));
         }
+    }
+    out
+}
+
+/// Render a tag plan: one tag name per line, for CI to `git tag` verbatim.
+pub fn tag_plan(plan: &TagPlan) -> String {
+    let mut out = String::new();
+    for tag in plan.tags() {
+        out.push_str(tag.as_str());
+        out.push('\n');
+    }
+    out
+}
+
+/// Render a publish plan: one `crate version` per line, in publish order.
+pub fn publish_plan(plan: &PublishPlan) -> String {
+    if plan.is_empty() {
+        return "relman: nothing to publish (no changesets affect a governed target)\n".to_owned();
+    }
+    let mut out = String::new();
+    for (name, version) in plan.entries() {
+        out.push_str(&format!("{name} {version}\n"));
     }
     out
 }

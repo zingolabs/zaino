@@ -13,5 +13,8 @@ pub use app::{Cli, Command};
 pub use commands::bump::BumpCommandError;
 pub use commands::changelog::ChangelogCommandError;
 pub use commands::changeset::ChangesetCommandError;
+pub use commands::pr_body::PrBodyCommandError;
+pub use commands::publish_plan::PublishPlanCommandError;
+pub use commands::tags::TagsCommandError;
 pub use commands::versions::VersionsCommandError;
 pub use context::Ctx;

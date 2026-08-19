@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 
-use crate::commands::{about, bump, changelog, changeset, versions};
+use crate::commands::{about, bump, changelog, changeset, pr_body, publish_plan, tags, versions};
 
 #[derive(Parser)]
 #[command(
@@ -24,4 +24,10 @@ pub enum Command {
     Bump(bump::Args),
     /// Generate changelog entries for each bumping crate and the workspace
     Changelog(changelog::Args),
+    /// Print the git tag plan for a release cycle
+    Tags(tags::Args),
+    /// Render the release-PR body markdown
+    PrBody(pr_body::Args),
+    /// Print the bumping crates in publish (dependency) order
+    PublishPlan(publish_plan::Args),
 }

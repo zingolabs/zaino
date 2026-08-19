@@ -24,12 +24,12 @@ use relman_adapters::{
 use relman_cli::{Cli, Command, Ctx, commands};
 use relman_core::ports::{
     ApplyBump, Changelog, ChangelogStore, ChangesetCheck, ChangesetStore, Changesets, Clock,
-    ManifestEditor, SlugSource, Vcs, Versions, Workspace,
+    ManifestEditor, ReleaseArtifacts, SlugSource, Vcs, Versions, Workspace,
 };
 use relman_core::types::{CrateName, DateTime, Utc};
 use relman_domain::services::{
     AboutService, BumpService, ChangelogService, ChangesetCheckService, ChangesetService,
-    VersionService,
+    ReleaseArtifactsService, VersionService,
 };
 
 /// The repo-committed manifest, looked up in the current working directory.
@@ -66,6 +66,18 @@ fn main() -> Result<()> {
         }),
         Command::Changelog(args) => with_ctx(|ctx| {
             commands::changelog::run(args, ctx)?;
+            Ok(())
+        }),
+        Command::Tags(args) => with_ctx(|ctx| {
+            commands::tags::run(args, ctx)?;
+            Ok(())
+        }),
+        Command::PrBody(args) => with_ctx(|ctx| {
+            commands::pr_body::run(args, ctx)?;
+            Ok(())
+        }),
+        Command::PublishPlan(args) => with_ctx(|ctx| {
+            commands::publish_plan::run(args, ctx)?;
             Ok(())
         }),
     }
@@ -108,7 +120,7 @@ fn with_ctx(f: impl FnOnce(&Ctx) -> Result<()>) -> Result<()> {
     let versions: Arc<dyn Versions> = Arc::new(VersionService::new(
         config.clone(),
         store.clone(),
-        workspace,
+        workspace.clone(),
     ));
 
     // Applies the derived table to the manifests via format-preserving edits.
@@ -127,6 +139,15 @@ fn with_ctx(f: impl FnOnce(&Ctx) -> Result<()>) -> Result<()> {
         Arc::new(SystemClock),
     ));
 
+    // Computes the release artifacts (tag plan, PR body, publish order) as pure
+    // plans for CI to apply — reuses the derived table, the changesets, and the
+    // crate graph, and mutates nothing.
+    let release_artifacts: Arc<dyn ReleaseArtifacts> = Arc::new(ReleaseArtifactsService::new(
+        versions.clone(),
+        store.clone(),
+        workspace,
+    ));
+
     let changeset_check: Arc<dyn ChangesetCheck> =
         Arc::new(ChangesetCheckService::new(config, vcs, store));
 
@@ -137,6 +158,7 @@ fn with_ctx(f: impl FnOnce(&Ctx) -> Result<()>) -> Result<()> {
         versions,
         apply_bump,
         changelog,
+        release_artifacts,
         changesets_dir,
         root_manifest,
     };

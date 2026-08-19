@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use relman_config::ReleaseConfig;
 use relman_core::ports::{ArtifactError, ChangesetStore, ReleaseArtifacts, Versions, Workspace};
 use relman_core::types::{
     BumpTable, ChangeEntry, Changeset, CrateName, CycleId, PublishPlan, Tag, TagPlan,
@@ -12,14 +11,17 @@ use crate::render;
 /// Computes the release artifacts CI applies — the git tag plan, the release-PR
 /// body, and the publish order. Implements the [`ReleaseArtifacts`] driving port
 /// over the [`Versions`] driving port (for the [`BumpTable`]), the
-/// [`ChangesetStore`] driven port (for the changelog block), the [`Workspace`]
-/// driven port (for topological publish order), and the loaded [`ReleaseConfig`].
+/// [`ChangesetStore`] driven port (for the changelog block), and the
+/// [`Workspace`] driven port (for topological publish order).
+///
+/// The derived [`BumpTable`] already arrives in config-target order (and filtered
+/// to the bumping crates), so this service needs no direct handle on the config —
+/// every ordering/filtering decision was made in the [`Versions`] derivation.
 ///
 /// Every method is a pure planner: it reads and returns, and touches no ref,
 /// working tree, or registry. The "already published" guard stays out of here —
 /// `publish_plan` only computes the *order* of the crates that bump.
 pub struct ReleaseArtifactsService {
-    config: ReleaseConfig,
     versions: Arc<dyn Versions>,
     changesets: Arc<dyn ChangesetStore>,
     workspace: Arc<dyn Workspace>,
@@ -27,13 +29,11 @@ pub struct ReleaseArtifactsService {
 
 impl ReleaseArtifactsService {
     pub fn new(
-        config: ReleaseConfig,
         versions: Arc<dyn Versions>,
         changesets: Arc<dyn ChangesetStore>,
         workspace: Arc<dyn Workspace>,
     ) -> Self {
         Self {
-            config,
             versions,
             changesets,
             workspace,
@@ -215,6 +215,7 @@ impl ReleaseArtifacts for ReleaseArtifactsService {
 mod tests {
     use super::*;
 
+    use relman_config::ReleaseConfig;
     use relman_core::mocks::{MapChangesetStore, MapWorkspace};
     use relman_core::types::{ReleaseOptions, Slug, Target, Version, WorkspacePath};
 
@@ -279,14 +280,9 @@ mod tests {
             store.clone(),
             Arc::new(workspace),
         ));
-        // A second workspace handle for the topo sort — rebuilt to sidestep the
-        // move into VersionService above; the mock is cheap and stateless.
-        ReleaseArtifactsService::new(
-            config(names),
-            versions,
-            store,
-            Arc::new(MapWorkspace::default()),
-        )
+        // tags/pr_body don't touch the topo sort, so an empty workspace handle
+        // suffices here; publish_plan tests build their own edge-carrying one.
+        ReleaseArtifactsService::new(versions, store, Arc::new(MapWorkspace::default()))
     }
 
     #[test]
@@ -387,12 +383,7 @@ description=\"d\"
                 edges,
             )),
         ));
-        let svc = ReleaseArtifactsService::new(
-            config(&["a", "b", "c", "d"]),
-            versions,
-            store,
-            Arc::new(workspace),
-        );
+        let svc = ReleaseArtifactsService::new(versions, store, Arc::new(workspace));
 
         let plan = svc.publish_plan().expect("plan");
         let order: Vec<&str> = plan.entries().iter().map(|(n, _)| n.as_str()).collect();
@@ -424,7 +415,6 @@ description=\"d\"
             )),
         ));
         let svc = ReleaseArtifactsService::new(
-            config(&["zaino-state", "zainod"]),
             versions,
             store,
             Arc::new(MapWorkspace::new(
@@ -460,12 +450,7 @@ description=\"d\"
                 vec![(name("zainod"), name("zaino-state"), req("=0.6.0"))],
             )),
         ));
-        let svc = ReleaseArtifactsService::new(
-            config(&["zaino-state", "zainod"]),
-            versions,
-            store,
-            Arc::new(MapWorkspace::default()),
-        );
+        let svc = ReleaseArtifactsService::new(versions, store, Arc::new(MapWorkspace::default()));
 
         let body = svc.pr_body(&cycle("2026-08-15")).expect("pr body");
 

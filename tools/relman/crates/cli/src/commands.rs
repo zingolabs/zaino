@@ -5,4 +5,7 @@ pub mod about;
 pub mod bump;
 pub mod changelog;
 pub mod changeset;
+pub mod pr_body;
+pub mod publish_plan;
+pub mod tags;
 pub mod versions;
