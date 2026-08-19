@@ -17,7 +17,7 @@ pub enum GetNodeInfoError {
 /// Fetch version, connection count, fee floors and health of the validator.
 ///
 /// Maps to `getinfo` over JSON-RPC.
-pub trait GetNodeInfo: Send + Sync {
+pub trait OneShotGetNodeInfo: Send + Sync {
     /// Fetch validator information.
     fn get_node_info(
         &self,

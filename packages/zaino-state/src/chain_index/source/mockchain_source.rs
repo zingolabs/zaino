@@ -1397,7 +1397,7 @@ impl zaino_source::OneShotGetBlockchainInfo for MockchainSource {
     }
 }
 
-impl zaino_source::GetNodeInfo for MockchainSource {
+impl zaino_source::OneShotGetNodeInfo for MockchainSource {
     async fn get_node_info(
         &self,
     ) -> Result<domain::rpc::NodeInfo, PortError<zaino_source::GetNodeInfoError>> {
@@ -1405,7 +1405,7 @@ impl zaino_source::GetNodeInfo for MockchainSource {
     }
 }
 
-impl zaino_source::GetPeerInfo for MockchainSource {
+impl zaino_source::OneShotGetPeerInfo for MockchainSource {
     async fn get_peer_info(
         &self,
     ) -> Result<Vec<domain::rpc::PeerInfo>, PortError<zaino_source::GetPeerInfoError>> {

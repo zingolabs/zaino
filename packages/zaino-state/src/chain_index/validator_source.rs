@@ -1108,7 +1108,7 @@ impl ZebraValidatorSource {
         BlockchainSourceError,
     > {
         let adapter = rpc_adapter(common)?;
-        let info = zaino_source::GetNodeInfo::get_node_info(&adapter)
+        let info = zaino_source::OneShotGetNodeInfo::get_node_info(&adapter)
             .await
             .map_err(err)?;
 
@@ -1148,7 +1148,7 @@ impl ZebraValidatorSource {
         use zebra_state::{ReadRequest, ReadResponse};
 
         let adapter = rpc_adapter(common)?;
-        let info = zaino_source::GetNodeInfo::get_node_info(&adapter)
+        let info = zaino_source::OneShotGetNodeInfo::get_node_info(&adapter)
             .await
             .map_err(err)?;
 

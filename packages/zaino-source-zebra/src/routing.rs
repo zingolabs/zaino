@@ -428,13 +428,13 @@ impl OneShotGetBlockSubsidy for ZebraValidator {
     }
 }
 
-impl GetNodeInfo for ZebraValidator {
+impl OneShotGetNodeInfo for ZebraValidator {
     async fn get_node_info(&self) -> Result<rpc::NodeInfo, QueryError<GetNodeInfoError>> {
         self.rpc.get_node_info().await
     }
 }
 
-impl GetPeerInfo for ZebraValidator {
+impl OneShotGetPeerInfo for ZebraValidator {
     async fn get_peer_info(&self) -> Result<Vec<rpc::PeerInfo>, QueryError<GetPeerInfoError>> {
         self.rpc.get_peer_info().await
     }

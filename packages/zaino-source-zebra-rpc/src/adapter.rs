@@ -887,7 +887,7 @@ impl zaino_source::SendRawTransaction for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetNodeInfo for ZebraRpcAdapter {
+impl zaino_source::OneShotGetNodeInfo for ZebraRpcAdapter {
     async fn get_node_info(
         &self,
     ) -> Result<zaino_primitives::types::rpc::NodeInfo, QueryError<zaino_source::GetNodeInfoError>>
@@ -897,7 +897,7 @@ impl zaino_source::GetNodeInfo for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetPeerInfo for ZebraRpcAdapter {
+impl zaino_source::OneShotGetPeerInfo for ZebraRpcAdapter {
     async fn get_peer_info(
         &self,
     ) -> Result<

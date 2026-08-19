@@ -1614,7 +1614,7 @@ impl zaino_source::OneShotGetBlockchainInfo for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetNodeInfo for ProptestMockchain {
+impl zaino_source::OneShotGetNodeInfo for ProptestMockchain {
     async fn get_node_info(
         &self,
     ) -> Result<zaino_primitives::types::rpc::NodeInfo, PortError<zaino_source::GetNodeInfoError>>
@@ -1623,7 +1623,7 @@ impl zaino_source::GetNodeInfo for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetPeerInfo for ProptestMockchain {
+impl zaino_source::OneShotGetPeerInfo for ProptestMockchain {
     async fn get_peer_info(
         &self,
     ) -> Result<
