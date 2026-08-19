@@ -10,6 +10,6 @@ mod driving;
 
 pub use driven::{ChangesetStore, ChangesetStoreError, Clock, SlugSource, Vcs, VcsError};
 pub use driving::{
-    About, ChangesetCheck, CheckError, CheckReport, Changesets, ChangesetsError, NewChangeset,
+    About, ChangesetCheck, Changesets, ChangesetsError, CheckError, CheckReport, NewChangeset,
     Violation,
 };

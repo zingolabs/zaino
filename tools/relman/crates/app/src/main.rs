@@ -16,11 +16,11 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use relman_adapters::{FsChangesetStore, RandomSlugSource};
+use relman_adapters::{FsChangesetStore, GitVcs, RandomSlugSource};
 use relman_cli::{Cli, Command, Ctx, commands};
-use relman_core::ports::{ChangesetStore, Changesets, Clock, SlugSource};
+use relman_core::ports::{ChangesetCheck, ChangesetStore, Changesets, Clock, SlugSource, Vcs};
 use relman_core::types::{DateTime, Utc};
-use relman_domain::services::{AboutService, ChangesetService};
+use relman_domain::services::{AboutService, ChangesetCheckService, ChangesetService};
 
 /// The repo-committed manifest, looked up in the current working directory.
 const MANIFEST_NAME: &str = "relman.toml";
@@ -67,11 +67,18 @@ fn with_ctx(f: impl FnOnce(&Ctx) -> Result<()>) -> Result<()> {
 
     let store: Arc<dyn ChangesetStore> = Arc::new(FsChangesetStore::new(changesets_dir.clone()));
     let slugs: Arc<dyn SlugSource> = Arc::new(RandomSlugSource::new());
-    let changesets: Arc<dyn Changesets> = Arc::new(ChangesetService::new(store, slugs));
+    let changesets: Arc<dyn Changesets> = Arc::new(ChangesetService::new(store.clone(), slugs));
+
+    // The manifest lives at the repo root, i.e. the current directory, so git
+    // runs there and reports repo-relative paths.
+    let vcs: Arc<dyn Vcs> = Arc::new(GitVcs::new(PathBuf::from(".")));
+    let changeset_check: Arc<dyn ChangesetCheck> =
+        Arc::new(ChangesetCheckService::new(config, vcs, store));
 
     let ctx = Ctx {
         about,
         changesets,
+        changeset_check,
         changesets_dir,
     };
     f(&ctx)
