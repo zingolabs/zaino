@@ -522,6 +522,10 @@ sentinel forces it into `dev`.
 
 ## Implementation
 
+> The execution-substrate map (GitHub control plane / Argo soak data plane), the
+> `relman` responsibility boundary, and the GitHub↔cluster soak bridge are
+> detailed in [Implementation Architecture](./implementation.md). Summary below.
+
 **Logic lives in a Rust CLI; CI stays thin.** The changeset parse/aggregate,
 semver derivation, transitive-bump computation, format-preserving `Cargo.toml`
 edits (via `toml_edit` — never `sed`, per the repo's Rust-native rule),
