@@ -1739,7 +1739,7 @@ impl zaino_source::OneShotGetNetworkSolPs for ProptestMockchain {
     }
 }
 
-impl zaino_source::SendRawTransaction for ProptestMockchain {
+impl zaino_source::OneShotSendRawTransaction for ProptestMockchain {
     async fn send_raw_transaction(
         &self,
         _transaction: Vec<u8>,

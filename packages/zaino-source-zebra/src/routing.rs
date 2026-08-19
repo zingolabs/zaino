@@ -479,7 +479,7 @@ impl OneShotGetSpentInfo for ZebraValidator {
     }
 }
 
-impl SendRawTransaction for ZebraValidator {
+impl OneShotSendRawTransaction for ZebraValidator {
     async fn send_raw_transaction(
         &self,
         transaction: Vec<u8>,

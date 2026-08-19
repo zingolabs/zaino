@@ -58,7 +58,7 @@ pub trait ChainIndexSourcePorts:
     + zaino_source::OneShotGetTreestate
     + zaino_source::OneShotGetTreestateByHash
     + zaino_source::OneShotGetTxOut
-    + zaino_source::SendRawTransaction
+    + zaino_source::OneShotSendRawTransaction
     + zaino_source::SourceLifecycle
     + zaino_source::SubscribeBlocks
     + Send
@@ -99,7 +99,7 @@ impl<T> ChainIndexSourcePorts for T where
         + zaino_source::OneShotGetTreestate
         + zaino_source::OneShotGetTreestateByHash
         + zaino_source::OneShotGetTxOut
-        + zaino_source::SendRawTransaction
+        + zaino_source::OneShotSendRawTransaction
         + zaino_source::SourceLifecycle
         + zaino_source::SubscribeBlocks
         + Send

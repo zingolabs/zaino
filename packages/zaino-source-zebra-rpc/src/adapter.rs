@@ -865,7 +865,7 @@ impl zaino_source::OneShotGetTxOut for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::SendRawTransaction for ZebraRpcAdapter {
+impl zaino_source::OneShotSendRawTransaction for ZebraRpcAdapter {
     async fn send_raw_transaction(
         &self,
         transaction: Vec<u8>,

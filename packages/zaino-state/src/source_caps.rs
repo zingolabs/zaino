@@ -124,7 +124,7 @@ pub trait ChainIndexSourceCaps:
     + OneShotGetAddressDeltas
     + OneShotGetAddressTxids
     + OneShotGetAddressUtxos
-    + SendRawTransaction
+    + OneShotSendRawTransaction
     + SubscribeBlocks
     + SourceLifecycle
 {
@@ -155,7 +155,7 @@ impl<T> ChainIndexSourceCaps for T where
         + OneShotGetAddressDeltas
         + OneShotGetAddressTxids
         + OneShotGetAddressUtxos
-        + SendRawTransaction
+        + OneShotSendRawTransaction
         + SubscribeBlocks
         + SourceLifecycle
 {

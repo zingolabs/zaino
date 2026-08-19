@@ -90,7 +90,7 @@ pub use get_tx_out::{GetTxOutError, OneShotGetTxOut};
 pub use lifecycle::SourceLifecycle;
 pub use polled_chain_tip::PolledChainTip;
 pub use resilient::{Resilient, RetryPolicy};
-pub use send_raw_transaction::{SendRawTransaction, SendRawTransactionError};
+pub use send_raw_transaction::{OneShotSendRawTransaction, SendRawTransactionError};
 pub use subscribe_blocks::SubscribeBlocks;
 pub use subscribe_chain_tip::{SubscribeChainTip, TipObservation};
 

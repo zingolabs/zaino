@@ -1446,7 +1446,7 @@ impl zaino_source::OneShotGetNetworkSolPs for MockchainSource {
     }
 }
 
-impl zaino_source::SendRawTransaction for MockchainSource {
+impl zaino_source::OneShotSendRawTransaction for MockchainSource {
     async fn send_raw_transaction(
         &self,
         _transaction: Vec<u8>,
