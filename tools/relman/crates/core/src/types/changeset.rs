@@ -35,9 +35,15 @@ pub enum ChangesetError {
     /// Both a `[[changes]]` array and an `[empty]` table were present.
     #[error("a changeset must not declare both [[changes]] and [empty]")]
     BothChangesAndEmpty,
-    /// Neither a `[[changes]]` array nor an `[empty]` table was present.
-    #[error("a changeset must declare either [[changes]] or [empty]")]
-    NeitherChangesNorEmpty,
+    /// The document declared nothing at all — neither a `[[changes]]` array nor
+    /// an `[empty]` table, and no unrecognized content. This is the genuine
+    /// "ran `changeset new` and haven't edited the template yet" state: a
+    /// comments-only or whitespace-only file. Distinct from the malformed
+    /// variants above/below so aggregation can *tolerate* it (skip with a
+    /// warning) while `changeset check` flags it — an unfilled template is not
+    /// yet a valid changeset, but neither is it a broken one.
+    #[error("changeset is an unfilled template: declares neither [[changes]] nor [empty]")]
+    Unfilled,
     /// A `changes` array was present but empty.
     #[error("[[changes]] is present but empty; use [empty] with a reason instead")]
     EmptyChanges,
@@ -116,6 +122,7 @@ impl Changeset {
 /// Both fields are `Option` so an *absent* key is distinguishable from a
 /// present-but-empty one — the shape rules turn on that distinction.
 #[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 struct RawChangeset {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     changes: Option<Vec<RawChange>>,
@@ -148,7 +155,7 @@ impl RawChangeset {
     fn into_changeset(self) -> Result<Changeset, ChangesetError> {
         match (self.changes, self.empty) {
             (Some(_), Some(_)) => Err(ChangesetError::BothChangesAndEmpty),
-            (None, None) => Err(ChangesetError::NeitherChangesNorEmpty),
+            (None, None) => Err(ChangesetError::Unfilled),
             (Some(raw_changes), None) => {
                 if raw_changes.is_empty() {
                     return Err(ChangesetError::EmptyChanges);
@@ -332,11 +339,47 @@ reason = "nope"
     }
 
     #[test]
-    fn rejects_neither_changes_nor_empty() {
+    fn comments_only_is_unfilled() {
+        // The commented scaffold `changeset new` writes: inert until edited.
         assert!(matches!(
             Changeset::parse_toml("# just a comment\n"),
-            Err(ChangesetError::NeitherChangesNorEmpty)
+            Err(ChangesetError::Unfilled)
         ));
+    }
+
+    #[test]
+    fn whitespace_only_is_unfilled() {
+        assert!(matches!(
+            Changeset::parse_toml("   \n\n\t\n"),
+            Err(ChangesetError::Unfilled)
+        ));
+    }
+
+    #[test]
+    fn empty_string_is_unfilled() {
+        assert!(matches!(
+            Changeset::parse_toml(""),
+            Err(ChangesetError::Unfilled)
+        ));
+    }
+
+    #[test]
+    fn typoed_table_is_malformed_not_unfilled() {
+        // A typo'd top-level table (`[[chagnes]]` for `[[changes]]`) has real
+        // content that violates the schema. `deny_unknown_fields` makes it a
+        // parse error, NOT the unfilled-template state — so it still hard-errors
+        // through the aggregation path instead of being silently skipped.
+        let input = r#"
+[[chagnes]]
+crate = "zaino-state"
+kind = "fix"
+description = "A change."
+"#;
+        let parsed = Changeset::parse_toml(input);
+        assert!(
+            matches!(parsed, Err(ChangesetError::Toml(_))),
+            "expected a Toml parse error, got {parsed:?}"
+        );
     }
 
     #[test]
