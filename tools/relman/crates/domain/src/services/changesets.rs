@@ -81,12 +81,49 @@ impl Changesets for ChangesetService {
         self.store.write(&slug, &contents)?;
         Ok(slug)
     }
+
+    fn list(&self) -> Result<Vec<Slug>, ChangesetsError> {
+        let mut slugs = self.store.list()?;
+        slugs.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        Ok(slugs)
+    }
+
+    fn rename_to_pr(&self, pr: u32) -> Result<Vec<Slug>, ChangesetsError> {
+        // Only the author's random-slug files belong to this PR; accumulated
+        // `pr-*` files from earlier merged PRs are already canonical and left
+        // alone. Sort for deterministic ordinal assignment.
+        let mut sources: Vec<Slug> = self
+            .store
+            .list()?
+            .into_iter()
+            .filter(|slug| !slug.is_canonical_pr())
+            .collect();
+        sources.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+
+        let mut renamed = Vec::with_capacity(sources.len());
+        for (index, from) in sources.iter().enumerate() {
+            let to = Slug::for_pr(pr, index);
+            self.store.rename(from, &to)?;
+            renamed.push(to);
+        }
+        Ok(renamed)
+    }
+
+    fn clear(&self) -> Result<Vec<Slug>, ChangesetsError> {
+        let mut removed = self.store.list()?;
+        removed.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        for slug in &removed {
+            self.store.remove(slug)?;
+        }
+        Ok(removed)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use relman_core::mocks::{MapChangesetStore, SequenceSlugSource};
+    use relman_core::ports::ChangesetStoreError;
     use relman_core::types::Description;
 
     fn slug(raw: &str) -> Slug {
@@ -154,6 +191,93 @@ mod tests {
             .expect("should fall through to the free slug");
 
         assert_eq!(written.as_str(), "brisk-heron");
+    }
+
+    /// The store's current slugs, as sorted `&str`s, for terse assertions.
+    fn slugs_in(store: &MapChangesetStore) -> Vec<String> {
+        let mut names: Vec<String> = store
+            .list()
+            .expect("list")
+            .iter()
+            .map(|s| s.as_str().to_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn as_strs(slugs: &[Slug]) -> Vec<&str> {
+        slugs.iter().map(Slug::as_str).collect()
+    }
+
+    #[test]
+    fn rename_to_pr_renames_only_the_author_file() {
+        let store = Arc::new(MapChangesetStore::new());
+        store.write(&slug("wandering-quokka"), "[empty]\n").expect("seed author");
+        // An accumulated changeset from an earlier merged PR — already canonical.
+        store.write(&slug("pr-1490"), "[empty]\n").expect("seed accumulated");
+        let svc = service(store.clone(), vec![slug("unused-source")]);
+
+        let renamed = svc.rename_to_pr(1501).expect("rename should succeed");
+
+        assert_eq!(as_strs(&renamed), ["pr-1501"]);
+        assert_eq!(slugs_in(&store), ["pr-1490", "pr-1501"]);
+    }
+
+    #[test]
+    fn rename_to_pr_numbers_multiple_author_files_deterministically() {
+        let store = Arc::new(MapChangesetStore::new());
+        store.write(&slug("wandering-quokka"), "a").expect("seed one");
+        store.write(&slug("brisk-heron"), "b").expect("seed two");
+        let svc = service(store.clone(), vec![slug("unused-source")]);
+
+        let renamed = svc.rename_to_pr(1501).expect("rename should succeed");
+
+        // Sorted sources: brisk-heron < wandering-quokka, so brisk-heron is first.
+        assert_eq!(as_strs(&renamed), ["pr-1501", "pr-1501-2"]);
+        assert_eq!(slugs_in(&store), ["pr-1501", "pr-1501-2"]);
+    }
+
+    #[test]
+    fn rename_to_pr_errors_when_target_already_exists() {
+        let store = Arc::new(MapChangesetStore::new());
+        store.write(&slug("wandering-quokka"), "a").expect("seed author");
+        // A stale `pr-1501` already occupies the canonical target.
+        store.write(&slug("pr-1501"), "occupied").expect("seed target");
+        let svc = service(store.clone(), vec![slug("unused-source")]);
+
+        let err = svc
+            .rename_to_pr(1501)
+            .expect_err("colliding target must error");
+        assert!(matches!(
+            err,
+            ChangesetsError::Store(ChangesetStoreError::RenameTargetExists { .. })
+        ));
+    }
+
+    #[test]
+    fn rename_to_pr_is_a_noop_without_author_files() {
+        let store = Arc::new(MapChangesetStore::new());
+        store.write(&slug("pr-1490"), "a").expect("seed accumulated");
+        store.write(&slug("pr-1491"), "b").expect("seed accumulated");
+        let svc = service(store.clone(), vec![slug("unused-source")]);
+
+        let renamed = svc.rename_to_pr(1501).expect("no-op should succeed");
+
+        assert!(renamed.is_empty());
+        assert_eq!(slugs_in(&store), ["pr-1490", "pr-1491"]);
+    }
+
+    #[test]
+    fn clear_empties_the_store_and_reports_removed() {
+        let store = Arc::new(MapChangesetStore::new());
+        store.write(&slug("wandering-quokka"), "a").expect("seed one");
+        store.write(&slug("pr-1490"), "b").expect("seed two");
+        let svc = service(store.clone(), vec![slug("unused-source")]);
+
+        let removed = svc.clear().expect("clear should succeed");
+
+        assert_eq!(as_strs(&removed), ["pr-1490", "wandering-quokka"]);
+        assert!(slugs_in(&store).is_empty());
     }
 
     #[test]

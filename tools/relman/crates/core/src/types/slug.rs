@@ -61,6 +61,48 @@ impl Slug {
     pub fn file_name(&self) -> String {
         format!("{}.toml", self.0)
     }
+
+    /// The canonical changeset slug for PR number `pr`, `index`-th file.
+    ///
+    /// The two-phase naming from the changeset-format record: the PR-rename bot
+    /// renames a PR's author changeset(s) to `pr-<pr>`. A PR carrying more than
+    /// one changeset needs conflict-free names, so the first file (`index == 0`)
+    /// takes the bare `pr-<pr>`, the second `pr-<pr>-2`, the third `pr-<pr>-3`,
+    /// and so on. The result is always a valid [`Slug`], so it is constructed
+    /// directly rather than through [`parse`](Slug::parse).
+    pub fn for_pr(pr: u32, index: usize) -> Self {
+        if index == 0 {
+            Self(format!("pr-{pr}"))
+        } else {
+            Self(format!("pr-{pr}-{}", index + 1))
+        }
+    }
+
+    /// Whether this slug is a canonical PR name — `pr-<digits>`, optionally with
+    /// a `-<digits>` ordinal suffix (`pr-1501`, `pr-1501-2`).
+    ///
+    /// These are the names the PR-rename bot assigns; a PR's author slugs (the
+    /// random `adjective-noun`) never match, so this is how `rename_to_pr`
+    /// distinguishes files it still owns from ones already made canonical (an
+    /// accumulated changeset from an earlier merged PR). Matches the predicate
+    /// `^pr-\d+(-\d+)?$`.
+    pub fn is_canonical_pr(&self) -> bool {
+        let Some(rest) = self.0.strip_prefix("pr-") else {
+            return false;
+        };
+        let mut parts = rest.split('-');
+        let is_digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+        let Some(number) = parts.next() else {
+            return false;
+        };
+        if !is_digits(number) {
+            return false;
+        }
+        match parts.next() {
+            None => true,
+            Some(ordinal) => is_digits(ordinal) && parts.next().is_none(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -119,6 +161,47 @@ mod tests {
             Slug::parse("quokka-"),
             Err(InvalidSlug::BoundaryDash("quokka-".to_owned()))
         );
+    }
+
+    #[test]
+    fn for_pr_names_the_canonical_slugs() {
+        assert_eq!(Slug::for_pr(1501, 0).as_str(), "pr-1501");
+        assert_eq!(Slug::for_pr(1501, 1).as_str(), "pr-1501-2");
+        assert_eq!(Slug::for_pr(1501, 2).as_str(), "pr-1501-3");
+        // Whatever `for_pr` produces is a valid slug.
+        for index in 0..4 {
+            let s = Slug::for_pr(42, index);
+            assert_eq!(Slug::parse(s.as_str()).expect("for_pr yields valid slug"), s);
+        }
+    }
+
+    #[test]
+    fn is_canonical_pr_matches_only_pr_names() {
+        for canonical in ["pr-1", "pr-1501", "pr-1501-2", "pr-1501-3", "pr-0"] {
+            assert!(
+                slug(canonical).is_canonical_pr(),
+                "{canonical} should be canonical"
+            );
+        }
+        for author in [
+            "wandering-quokka",
+            "brisk-heron",
+            "pr",
+            "pr-quokka",
+            "pr-1501-quokka",
+            "pr-1501-2-3",
+            "prefix-1501",
+            "x-pr-1501",
+        ] {
+            assert!(
+                !slug(author).is_canonical_pr(),
+                "{author} should not be canonical"
+            );
+        }
+    }
+
+    fn slug(raw: &str) -> Slug {
+        Slug::parse(raw).expect("valid test slug")
     }
 
     #[test]

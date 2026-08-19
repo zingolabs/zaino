@@ -63,6 +63,34 @@ pub trait Changesets: Send + Sync {
     /// constructor — hence the lint allow.
     #[allow(clippy::new_ret_no_self, clippy::wrong_self_convention)]
     fn new(&self, req: NewChangeset) -> Result<Slug, ChangesetsError>;
+
+    /// The slugs of every changeset currently in the store, sorted.
+    ///
+    /// A read-only listing — it mutates nothing. Backs the dry-run of `relman
+    /// changeset clear`, which must show what *would* be removed without
+    /// removing it.
+    fn list(&self) -> Result<Vec<Slug>, ChangesetsError>;
+
+    /// Rename this PR's author changeset file(s) to the canonical `pr-<pr>`
+    /// name(s), returning the new slug(s).
+    ///
+    /// Backs the `relman changeset rename --pr <N>` step the PR-gate bot runs.
+    /// "This PR's files" are the changesets whose slug is *not* already a
+    /// [canonical PR name](Slug::is_canonical_pr) — the author's random slug(s);
+    /// accumulated `pr-*` files from earlier merged PRs are left untouched. The
+    /// non-canonical sources are renamed in sorted order: the first becomes
+    /// `pr-<pr>`, the second `pr-<pr>-2`, and so on
+    /// ([`Slug::for_pr`](crate::types::Slug::for_pr)). A pre-existing target
+    /// name is an error. Zero author files is a no-op returning an empty vec —
+    /// the bot may safely re-run, since renaming is idempotent once canonical.
+    fn rename_to_pr(&self, pr: u32) -> Result<Vec<Slug>, ChangesetsError>;
+
+    /// Remove *every* changeset file, returning the removed slugs (sorted).
+    ///
+    /// The release "consume" step: after a release PR merges, `relman` clears
+    /// `.changesets/` so the next cycle starts empty. This is the one
+    /// irreversible lifecycle step and must run only at a true release.
+    fn clear(&self) -> Result<Vec<Slug>, ChangesetsError>;
 }
 
 /// A single reason a PR fails changeset enforcement.
