@@ -27,7 +27,7 @@ pub enum GetTransactionError {
 ///
 /// Maps to `getrawtransaction(txid, 1)` over JSON-RPC, or the
 /// equivalent ReadState query.
-pub trait GetTransaction: Send + Sync {
+pub trait OneShotGetTransaction: Send + Sync {
     /// Fetch transaction.
     fn get_transaction(
         &self,

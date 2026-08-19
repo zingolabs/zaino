@@ -298,7 +298,7 @@ impl zaino_source::OneShotGetBestBlockHeight for ZebraReadStateAdapter {
     }
 }
 
-impl zaino_source::GetSubtreeRoots for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetSubtreeRoots for ZebraReadStateAdapter {
     async fn get_subtree_roots(
         &self,
         pool: zaino_primitives::types::ShieldedPool,
@@ -862,7 +862,7 @@ fn hash_or_height(hash: BlockHash) -> zebra_state::HashOrHeight {
     zebra_state::HashOrHeight::Hash(zebra_chain::block::Hash(hash.into()))
 }
 
-impl zaino_source::GetTransaction for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetTransaction for ZebraReadStateAdapter {
     async fn get_transaction(
         &self,
         txid: zaino_primitives::types::TransactionId,

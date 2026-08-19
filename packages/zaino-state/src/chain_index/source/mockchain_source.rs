@@ -722,7 +722,7 @@ impl zaino_source::SourceLifecycle for MockchainSource {
     }
 }
 
-impl zaino_source::GetTransaction for MockchainSource {
+impl zaino_source::OneShotGetTransaction for MockchainSource {
     async fn get_transaction(
         &self,
         txid: domain::TransactionId,
@@ -880,7 +880,7 @@ impl zaino_source::GetTreestateByHash for MockchainSource {
     }
 }
 
-impl zaino_source::GetSubtreeRoots for MockchainSource {
+impl zaino_source::OneShotGetSubtreeRoots for MockchainSource {
     async fn get_subtree_roots(
         &self,
         pool: domain::ShieldedPool,
@@ -1456,7 +1456,7 @@ impl zaino_source::SendRawTransaction for MockchainSource {
     }
 }
 
-impl zaino_source::GetSpentInfo for MockchainSource {
+impl zaino_source::OneShotGetSpentInfo for MockchainSource {
     async fn get_spent_info(
         &self,
         _outpoint: domain::rpc::SpentOutpoint,

@@ -789,7 +789,7 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetSubtreeRoots for ZebraRpcAdapter {
+impl zaino_source::OneShotGetSubtreeRoots for ZebraRpcAdapter {
     async fn get_subtree_roots(
         &self,
         pool: zaino_primitives::types::ShieldedPool,
@@ -813,7 +813,7 @@ impl zaino_source::GetSubtreeRoots for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetSpentInfo for ZebraRpcAdapter {
+impl zaino_source::OneShotGetSpentInfo for ZebraRpcAdapter {
     async fn get_spent_info(
         &self,
         outpoint: zaino_primitives::types::rpc::SpentOutpoint,
@@ -969,7 +969,7 @@ impl zaino_source::SourceLifecycle for ZebraRpcAdapter {}
 /// pace themselves on their own timer.
 impl zaino_source::SubscribeBlocks for ZebraRpcAdapter {}
 
-impl zaino_source::GetTransaction for ZebraRpcAdapter {
+impl zaino_source::OneShotGetTransaction for ZebraRpcAdapter {
     async fn get_transaction(
         &self,
         txid: TransactionId,

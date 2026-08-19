@@ -1215,7 +1215,7 @@ impl zaino_source::OneShotGetBestBlockHeight for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetTransaction for ProptestMockchain {
+impl zaino_source::OneShotGetTransaction for ProptestMockchain {
     async fn get_transaction(
         &self,
         txid: zaino_primitives::types::TransactionId,
@@ -1719,7 +1719,7 @@ impl zaino_source::GetTxOut for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetSpentInfo for ProptestMockchain {
+impl zaino_source::OneShotGetSpentInfo for ProptestMockchain {
     async fn get_spent_info(
         &self,
         _outpoint: zaino_primitives::types::rpc::SpentOutpoint,
@@ -1771,7 +1771,7 @@ impl zaino_source::GetTreestateByHash for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetSubtreeRoots for ProptestMockchain {
+impl zaino_source::OneShotGetSubtreeRoots for ProptestMockchain {
     async fn get_subtree_roots(
         &self,
         _pool: zaino_primitives::types::ShieldedPool,

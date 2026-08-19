@@ -81,9 +81,9 @@ pub use get_raw_block_header::OneShotGetRawBlockHeader;
 pub use get_raw_mempool_transaction::{
     GetRawMempoolTransactionError, OneShotGetRawMempoolTransaction,
 };
-pub use get_spent_info::{GetSpentInfo, GetSpentInfoError};
-pub use get_subtree_roots::{GetSubtreeRoots, GetSubtreeRootsError};
-pub use get_transaction::{GetTransaction, GetTransactionError, TransactionResponse};
+pub use get_spent_info::{GetSpentInfoError, OneShotGetSpentInfo};
+pub use get_subtree_roots::{GetSubtreeRootsError, OneShotGetSubtreeRoots};
+pub use get_transaction::{GetTransactionError, OneShotGetTransaction, TransactionResponse};
 pub use get_treestate::{GetTreestate, GetTreestateError};
 pub use get_treestate_by_hash::{GetTreestateByHash, GetTreestateByHashError};
 pub use get_tx_out::{GetTxOut, GetTxOutError};

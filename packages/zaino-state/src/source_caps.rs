@@ -27,7 +27,7 @@ pub trait FinalisedSourceCaps:
     OneShotGetBestBlockHeight
     + OneShotGetRawBlock
     + OneShotGetCommitmentTreeRoots
-    + GetTransaction
+    + OneShotGetTransaction
     + Send
     + Sync
     + 'static
@@ -38,7 +38,7 @@ impl<T> FinalisedSourceCaps for T where
     T: OneShotGetBestBlockHeight
         + OneShotGetRawBlock
         + OneShotGetCommitmentTreeRoots
-        + GetTransaction
+        + OneShotGetTransaction
         + Send
         + Sync
         + 'static
@@ -116,8 +116,8 @@ pub trait ChainIndexSourceCaps:
     + OneShotGetMiningInfo
     + OneShotGetNetworkSolPs
     + GetTxOut
-    + GetSpentInfo
-    + GetSubtreeRoots
+    + OneShotGetSpentInfo
+    + OneShotGetSubtreeRoots
     + GetTreestate
     + GetTreestateByHash
     + OneShotGetAddressBalance
@@ -147,8 +147,8 @@ impl<T> ChainIndexSourceCaps for T where
         + OneShotGetMiningInfo
         + OneShotGetNetworkSolPs
         + GetTxOut
-        + GetSpentInfo
-        + GetSubtreeRoots
+        + OneShotGetSpentInfo
+        + OneShotGetSubtreeRoots
         + GetTreestate
         + GetTreestateByHash
         + OneShotGetAddressBalance

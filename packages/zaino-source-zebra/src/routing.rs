@@ -190,7 +190,7 @@ impl OneShotGetPreIndexCompactBlock for ZebraValidator {
 // Transactions
 // ---------------------------------------------------------------------------
 
-impl GetTransaction for ZebraValidator {
+impl OneShotGetTransaction for ZebraValidator {
     async fn get_transaction(
         &self,
         txid: TransactionId,
@@ -236,7 +236,7 @@ impl OneShotGetCommitmentTreeRoots for ZebraValidator {
     }
 }
 
-impl GetSubtreeRoots for ZebraValidator {
+impl OneShotGetSubtreeRoots for ZebraValidator {
     async fn get_subtree_roots(
         &self,
         pool: ShieldedPool,
@@ -467,7 +467,7 @@ impl GetTxOut for ZebraValidator {
     }
 }
 
-impl GetSpentInfo for ZebraValidator {
+impl OneShotGetSpentInfo for ZebraValidator {
     async fn get_spent_info(
         &self,
         outpoint: rpc::SpentOutpoint,
