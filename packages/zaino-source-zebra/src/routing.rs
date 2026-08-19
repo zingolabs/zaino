@@ -263,7 +263,7 @@ impl OneShotGetAddressBalance for ZebraValidator {
     }
 }
 
-impl GetAddressTxids for ZebraValidator {
+impl OneShotGetAddressTxids for ZebraValidator {
     async fn get_address_txids(
         &self,
         addresses: Vec<String>,
@@ -277,7 +277,7 @@ impl GetAddressTxids for ZebraValidator {
     }
 }
 
-impl GetAddressUtxos for ZebraValidator {
+impl OneShotGetAddressUtxos for ZebraValidator {
     async fn get_address_utxos(
         &self,
         addresses: Vec<String>,

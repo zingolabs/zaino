@@ -1070,7 +1070,7 @@ impl zaino_source::OneShotGetAddressBalance for MockchainSource {
     }
 }
 
-impl zaino_source::GetAddressTxids for MockchainSource {
+impl zaino_source::OneShotGetAddressTxids for MockchainSource {
     async fn get_address_txids(
         &self,
         addresses: Vec<String>,
@@ -1117,7 +1117,7 @@ impl zaino_source::GetAddressTxids for MockchainSource {
     }
 }
 
-impl zaino_source::GetAddressUtxos for MockchainSource {
+impl zaino_source::OneShotGetAddressUtxos for MockchainSource {
     async fn get_address_utxos(
         &self,
         addresses: Vec<String>,
@@ -1308,7 +1308,7 @@ impl zaino_source::OneShotGetAddressDeltas for MockchainSource {
         start: domain::Height,
         end: domain::Height,
     ) -> Result<Vec<domain::AddressDelta>, PortError<zaino_source::GetAddressDeltasError>> {
-        use zaino_source::GetAddressTxids as _;
+        use zaino_source::OneShotGetAddressTxids as _;
 
         let valid = GetAddressBalanceRequest::new(addresses.clone())
             .valid_addresses()

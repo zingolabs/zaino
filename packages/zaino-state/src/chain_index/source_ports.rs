@@ -29,8 +29,8 @@
 pub trait ChainIndexSourcePorts:
     zaino_source::OneShotGetAddressBalance
     + zaino_source::OneShotGetAddressDeltas
-    + zaino_source::GetAddressTxids
-    + zaino_source::GetAddressUtxos
+    + zaino_source::OneShotGetAddressTxids
+    + zaino_source::OneShotGetAddressUtxos
     + zaino_source::GetBestBlockHeight
     + zaino_source::GetBlockDeltas
     + zaino_source::GetBlockHeader
@@ -70,8 +70,8 @@ pub trait ChainIndexSourcePorts:
 impl<T> ChainIndexSourcePorts for T where
     T: zaino_source::OneShotGetAddressBalance
         + zaino_source::OneShotGetAddressDeltas
-        + zaino_source::GetAddressTxids
-        + zaino_source::GetAddressUtxos
+        + zaino_source::OneShotGetAddressTxids
+        + zaino_source::OneShotGetAddressUtxos
         + zaino_source::GetBestBlockHeight
         + zaino_source::GetBlockDeltas
         + zaino_source::GetBlockHeader

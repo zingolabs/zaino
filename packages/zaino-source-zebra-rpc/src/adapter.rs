@@ -718,7 +718,7 @@ impl zaino_source::OneShotGetAddressDeltas for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetAddressTxids for ZebraRpcAdapter {
+impl zaino_source::OneShotGetAddressTxids for ZebraRpcAdapter {
     async fn get_address_txids(
         &self,
         addresses: Vec<String>,
@@ -740,7 +740,7 @@ impl zaino_source::GetAddressTxids for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetAddressUtxos for ZebraRpcAdapter {
+impl zaino_source::OneShotGetAddressUtxos for ZebraRpcAdapter {
     async fn get_address_utxos(
         &self,
         addresses: Vec<String>,

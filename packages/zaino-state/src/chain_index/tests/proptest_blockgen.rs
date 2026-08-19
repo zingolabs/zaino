@@ -1810,7 +1810,7 @@ impl zaino_source::OneShotGetAddressBalance for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetAddressTxids for ProptestMockchain {
+impl zaino_source::OneShotGetAddressTxids for ProptestMockchain {
     async fn get_address_txids(
         &self,
         _addresses: Vec<String>,
@@ -1824,7 +1824,7 @@ impl zaino_source::GetAddressTxids for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetAddressUtxos for ProptestMockchain {
+impl zaino_source::OneShotGetAddressUtxos for ProptestMockchain {
     async fn get_address_utxos(
         &self,
         _addresses: Vec<String>,

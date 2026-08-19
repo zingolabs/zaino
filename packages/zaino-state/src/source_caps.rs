@@ -110,8 +110,8 @@ pub trait ChainIndexSourceCaps:
     + GetTreestateByHash
     + OneShotGetAddressBalance
     + OneShotGetAddressDeltas
-    + GetAddressTxids
-    + GetAddressUtxos
+    + OneShotGetAddressTxids
+    + OneShotGetAddressUtxos
     + SendRawTransaction
     + SubscribeBlocks
     + SourceLifecycle
@@ -141,8 +141,8 @@ impl<T> ChainIndexSourceCaps for T where
         + GetTreestateByHash
         + OneShotGetAddressBalance
         + OneShotGetAddressDeltas
-        + GetAddressTxids
-        + GetAddressUtxos
+        + OneShotGetAddressTxids
+        + OneShotGetAddressUtxos
         + SendRawTransaction
         + SubscribeBlocks
         + SourceLifecycle

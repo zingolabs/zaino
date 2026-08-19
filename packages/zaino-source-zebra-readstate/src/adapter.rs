@@ -414,7 +414,7 @@ fn subtree_end_height(height: zebra_chain::block::Height) -> Result<Height, Fetc
     })
 }
 
-impl zaino_source::GetAddressUtxos for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetAddressUtxos for ZebraReadStateAdapter {
     async fn get_address_utxos(
         &self,
         addresses: Vec<String>,
@@ -466,7 +466,7 @@ impl zaino_source::GetAddressUtxos for ZebraReadStateAdapter {
     }
 }
 
-impl zaino_source::GetAddressTxids for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetAddressTxids for ZebraReadStateAdapter {
     async fn get_address_txids(
         &self,
         addresses: Vec<String>,
