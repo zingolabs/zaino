@@ -65,7 +65,12 @@ mod tests {
 
     #[test]
     fn accepts_relative_paths() {
-        for raw in ["packages/zaino-state", "Cargo.toml", ".changesets", "a/b/c.md"] {
+        for raw in [
+            "packages/zaino-state",
+            "Cargo.toml",
+            ".changesets",
+            "a/b/c.md",
+        ] {
             let parsed = WorkspacePath::parse(raw).expect("should be valid");
             assert_eq!(parsed.as_str(), raw);
             assert_eq!(parsed.as_path(), Path::new(raw));

@@ -110,10 +110,11 @@ impl RawOptions {
 
 impl RawTarget {
     fn into_target(self) -> Result<Target, ConfigError> {
-        let name = CrateName::parse(&self.name).map_err(|source| ConfigError::InvalidCrateName {
-            name: self.name.clone(),
-            source,
-        })?;
+        let name =
+            CrateName::parse(&self.name).map_err(|source| ConfigError::InvalidCrateName {
+                name: self.name.clone(),
+                source,
+            })?;
         let path = parse_path("target.path", &self.path)?;
         // Default: `<path>/CHANGELOG.md`. `path` is a validated relative path,
         // so joining a basename keeps it a valid workspace path.
@@ -153,7 +154,8 @@ mod tests {
         );
         let path = dir.join(unique);
         let mut file = std::fs::File::create(&path).expect("create temp file");
-        file.write_all(contents.as_bytes()).expect("write temp file");
+        file.write_all(contents.as_bytes())
+            .expect("write temp file");
         path
     }
 
@@ -186,7 +188,10 @@ publish = false
         assert_eq!(state.name().as_str(), "zaino-state");
         assert_eq!(state.path().as_str(), "packages/zaino-state");
         // changelog defaulted to <path>/CHANGELOG.md
-        assert_eq!(state.changelog().as_str(), "packages/zaino-state/CHANGELOG.md");
+        assert_eq!(
+            state.changelog().as_str(),
+            "packages/zaino-state/CHANGELOG.md"
+        );
         // publish defaulted to true
         assert!(state.publish());
 
@@ -284,6 +289,46 @@ path = "../escape"
         assert!(matches!(err, ConfigError::Io { .. }));
     }
 
+    /// The real repo-committed manifest parses and yields the governed set.
+    ///
+    /// Path is resolved from this crate's manifest dir up to the repo root,
+    /// so the test is independent of the process working directory.
+    #[test]
+    fn loads_real_repo_manifest() {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../relman.toml");
+        let config = load(&manifest).expect("repo relman.toml should parse");
+
+        // The 13 crates.io-published targets from the release ADR § Context.
+        assert_eq!(config.targets().len(), 13);
+        for name in [
+            "zainod",
+            "zaino-serve",
+            "zaino-state",
+            "zaino-proto",
+            "zaino-common",
+            "zaino-primitives",
+            "zaino-address",
+            "zaino-source",
+            "zaino-rpc",
+            "zaino-convert-zebra",
+            "zaino-source-zebra-rpc",
+            "zaino-source-zebra-readstate",
+            "zaino-source-zebra",
+        ] {
+            let crate_name = CrateName::parse(name).expect("governed name is valid");
+            assert!(
+                config.target_by_name(&crate_name).is_some(),
+                "missing governed target {name}"
+            );
+        }
+
+        // A source file maps to its owning target via path prefix.
+        let owner = config
+            .target_owning_path(Path::new("packages/zaino-state/src/lib.rs"))
+            .expect("should map to zaino-state");
+        assert_eq!(owner.name().as_str(), "zaino-state");
+    }
+
     #[test]
     fn target_owning_path_picks_longest_prefix() {
         let toml = r#"
@@ -304,15 +349,23 @@ path = "packages/zainod"
         std::fs::remove_file(&path).ok();
 
         let file = Path::new("packages/zaino-state/src/lib.rs");
-        let owner = config.target_owning_path(file).expect("should map to a target");
+        let owner = config
+            .target_owning_path(file)
+            .expect("should map to a target");
         assert_eq!(owner.name().as_str(), "zaino-state");
 
         // A file under the nested target resolves to the longer prefix.
         let nested = Path::new("packages/zaino-state/inner/src/lib.rs");
-        let owner = config.target_owning_path(nested).expect("should map to nested");
+        let owner = config
+            .target_owning_path(nested)
+            .expect("should map to nested");
         assert_eq!(owner.name().as_str(), "zaino-state-inner");
 
         // A file outside every target has no owner.
-        assert!(config.target_owning_path(Path::new("live-tests/e2e/x.rs")).is_none());
+        assert!(
+            config
+                .target_owning_path(Path::new("live-tests/e2e/x.rs"))
+                .is_none()
+        );
     }
 }
