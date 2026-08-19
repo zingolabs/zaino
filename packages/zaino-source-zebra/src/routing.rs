@@ -323,7 +323,7 @@ impl OneShotGetAddressDeltas for ZebraValidator {
 // These need no routing decision — there is one transport that can answer.
 // ---------------------------------------------------------------------------
 
-impl GetMempoolTxids for ZebraValidator {
+impl OneShotGetMempoolTxids for ZebraValidator {
     async fn get_mempool_txids(
         &self,
     ) -> Result<Vec<TransactionId>, QueryError<GetMempoolTxidsError>> {

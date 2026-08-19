@@ -62,7 +62,7 @@ use crate::update::MempoolUpdate;
 /// `Clone` is required because the core clones the source to fan out bounded,
 /// concurrent raw-transaction fetches, so implementations must be cheap to clone.
 pub trait MempoolSource:
-    zaino_source::GetMempoolTxids
+    zaino_source::OneShotGetMempoolTxids
     + zaino_source::OneShotGetMempoolMetadata
     + zaino_source::GetRawMempoolTransaction
     + zaino_source::OneShotGetMempoolSourceTip
@@ -75,7 +75,7 @@ pub trait MempoolSource:
 }
 
 impl<T> MempoolSource for T where
-    T: zaino_source::GetMempoolTxids
+    T: zaino_source::OneShotGetMempoolTxids
         + zaino_source::OneShotGetMempoolMetadata
         + zaino_source::GetRawMempoolTransaction
         + zaino_source::OneShotGetMempoolSourceTip

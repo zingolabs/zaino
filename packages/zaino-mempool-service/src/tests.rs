@@ -130,7 +130,7 @@ fn outage<E: std::fmt::Debug + std::fmt::Display>(message: String) -> QueryError
     QueryError::Fetch(FetchError::new(FailureMode::Connection, message))
 }
 
-impl zaino_source::GetMempoolTxids for MockSource {
+impl zaino_source::OneShotGetMempoolTxids for MockSource {
     async fn get_mempool_txids(
         &self,
     ) -> Result<Vec<TransactionId>, QueryError<GetMempoolTxidsError>> {

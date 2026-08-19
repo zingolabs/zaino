@@ -1252,7 +1252,7 @@ impl zaino_source::GetTransaction for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetMempoolTxids for ProptestMockchain {
+impl zaino_source::OneShotGetMempoolTxids for ProptestMockchain {
     async fn get_mempool_txids(
         &self,
     ) -> Result<

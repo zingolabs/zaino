@@ -43,7 +43,7 @@ pub trait ChainIndexSourcePorts:
     + zaino_source::OneShotGetDifficulty
     + zaino_source::OneShotGetMempoolMetadata
     + zaino_source::OneShotGetMempoolSourceTip
-    + zaino_source::GetMempoolTxids
+    + zaino_source::OneShotGetMempoolTxids
     + zaino_source::GetMiningInfo
     + zaino_source::GetNetworkSolPs
     + zaino_source::GetNodeInfo
@@ -84,7 +84,7 @@ impl<T> ChainIndexSourcePorts for T where
         + zaino_source::OneShotGetDifficulty
         + zaino_source::OneShotGetMempoolMetadata
         + zaino_source::OneShotGetMempoolSourceTip
-        + zaino_source::GetMempoolTxids
+        + zaino_source::OneShotGetMempoolTxids
         + zaino_source::GetMiningInfo
         + zaino_source::GetNetworkSolPs
         + zaino_source::GetNodeInfo

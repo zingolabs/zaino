@@ -71,7 +71,7 @@ impl<S> MempoolSourceAdapter<S> {
     }
 }
 
-impl<S: BlockchainSource> zaino_source::GetMempoolTxids for MempoolSourceAdapter<S> {
+impl<S: BlockchainSource> zaino_source::OneShotGetMempoolTxids for MempoolSourceAdapter<S> {
     fn get_mempool_txids(
         &self,
     ) -> impl std::future::Future<

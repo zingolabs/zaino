@@ -72,9 +72,9 @@ impl<T> ChainHeadSourceCaps for T where
 /// Deliberately narrow, and deliberately not satisfied by a state-database
 /// adapter: the mempool is reachable only over JSON-RPC, and this bound is what
 /// makes that a compile-time fact rather than a comment.
-pub trait MempoolSourceCaps: GetMempoolTxids + OneShotGetChainTip + Send + Sync + 'static {}
+pub trait MempoolSourceCaps: OneShotGetMempoolTxids + OneShotGetChainTip + Send + Sync + 'static {}
 
-impl<T> MempoolSourceCaps for T where T: GetMempoolTxids + OneShotGetChainTip + Send + Sync + 'static {}
+impl<T> MempoolSourceCaps for T where T: OneShotGetMempoolTxids + OneShotGetChainTip + Send + Sync + 'static {}
 
 /// What the indexer service asks of the validator.
 pub trait IndexerSourceCaps: SubscribeChainTip + Send + Sync + 'static {}

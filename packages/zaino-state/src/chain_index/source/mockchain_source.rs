@@ -631,7 +631,7 @@ impl MockchainSource {
     }
 }
 
-impl zaino_source::GetMempoolTxids for MockchainSource {
+impl zaino_source::OneShotGetMempoolTxids for MockchainSource {
     async fn get_mempool_txids(
         &self,
     ) -> Result<Vec<domain::TransactionId>, PortError<zaino_source::GetMempoolTxidsError>> {

@@ -442,7 +442,7 @@ fn value_pool_array(
 // routes them together, and the mempool's coherence check depends on it.
 // ---------------------------------------------------------------------------
 
-impl<V: ChainIndexSourcePorts> zaino_source::GetMempoolTxids for ValidatorSource<V> {
+impl<V: ChainIndexSourcePorts> zaino_source::OneShotGetMempoolTxids for ValidatorSource<V> {
     async fn get_mempool_txids(
         &self,
     ) -> Result<

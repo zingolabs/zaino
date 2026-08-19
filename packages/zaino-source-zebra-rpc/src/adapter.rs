@@ -593,7 +593,7 @@ impl zaino_source::OneShotGetBlockchainInfo for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetMempoolTxids for ZebraRpcAdapter {
+impl zaino_source::OneShotGetMempoolTxids for ZebraRpcAdapter {
     async fn get_mempool_txids(
         &self,
     ) -> Result<Vec<TransactionId>, QueryError<zaino_source::GetMempoolTxidsError>> {
