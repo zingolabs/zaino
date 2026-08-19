@@ -1,9 +1,12 @@
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use relman_config::ReleaseConfig;
 use relman_core::ports::{ChangesetStore, DeriveError, Versions, Workspace};
-use relman_core::types::{Bump, BumpTable, ChangeKind, Changeset, CrateBump, CrateName, Version};
+use relman_core::types::{
+    Bump, BumpTable, ChangeKind, Changeset, ChangesetError, CrateBump, CrateName, Version,
+};
 
 /// Derives the per-crate version [`BumpTable`] from the accumulated changesets
 /// and the workspace crate graph. Implements the [`Versions`] driving port over
@@ -54,8 +57,9 @@ impl VersionService {
     }
 
     /// Read and parse the whole changeset set, folding each `WithChanges` entry
-    /// into the per-crate highest kind + reasons. `Empty` changesets contribute
-    /// nothing; an entry naming a non-target crate is a hard error.
+    /// into the per-crate highest kind + reasons. `Empty` changesets and
+    /// unfilled templates contribute nothing (both are skipped); an entry naming
+    /// a non-target crate is a hard error, as is a malformed changeset.
     fn collect_direct(&self) -> Result<DirectInputs, DeriveError> {
         let mut slugs = self.store.list()?;
         // Deterministic traversal order regardless of the store's backing.
@@ -64,11 +68,18 @@ impl VersionService {
         let mut inputs = DirectInputs::default();
         for slug in &slugs {
             let raw = self.store.read(slug)?;
-            let changeset =
-                Changeset::parse_toml(&raw).map_err(|error| DeriveError::ChangesetParse {
-                    slug: slug.as_str().to_owned(),
-                    error: error.to_string(),
-                })?;
+            let changeset = match Changeset::parse_toml(&raw) {
+                Ok(changeset) => changeset,
+                // An unfilled template is not yet a changeset: skip it, as the
+                // caller's `unfilled_templates` scan is what surfaces the warning.
+                Err(ChangesetError::Unfilled) => continue,
+                Err(error) => {
+                    return Err(DeriveError::ChangesetParse {
+                        slug: slug.as_str().to_owned(),
+                        error: error.to_string(),
+                    });
+                }
+            };
             let Changeset::WithChanges(entries) = changeset else {
                 continue;
             };
@@ -216,6 +227,24 @@ impl Versions for VersionService {
             bumps.push(CrateBump::new(name.clone(), current, next, *bump, reasons));
         }
         Ok(BumpTable::new(bumps))
+    }
+
+    fn unfilled_templates(&self) -> Result<Vec<PathBuf>, DeriveError> {
+        let mut slugs = self.store.list()?;
+        slugs.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+
+        let changesets_dir = self.config.options().changesets_dir().as_path();
+        let mut unfilled = Vec::new();
+        for slug in &slugs {
+            let raw = self.store.read(slug)?;
+            // Only the genuine empty-document state counts. A malformed
+            // changeset is deliberately excluded here: it is `derive`'s hard
+            // error to raise, not a skippable template.
+            if matches!(Changeset::parse_toml(&raw), Err(ChangesetError::Unfilled)) {
+                unfilled.push(changesets_dir.join(slug.file_name()));
+            }
+        }
+        Ok(unfilled)
     }
 }
 
@@ -398,6 +427,54 @@ description=\"a break\"
         );
         let table = svc.derive().expect("derives");
         assert!(table.is_empty(), "empty changeset should not bump anything");
+    }
+
+    #[test]
+    fn unfilled_template_is_skipped_and_reported() {
+        // A comments-only file: the scaffold `changeset new` writes, left
+        // unedited. It must not fail the derivation, must contribute no bump,
+        // and must be reported by `unfilled_templates` (by its `.changesets`
+        // path) so the CLI can warn.
+        let store = store_with(&[("velvet-pebble", "# just a comment, not yet filled in\n")]);
+        let svc = service(
+            &["zaino-state"],
+            store,
+            workspace(&[("zaino-state", "0.3.1")]),
+        );
+
+        let table = svc.derive().expect("derive tolerates an unfilled template");
+        assert!(table.is_empty(), "an unfilled template contributes no bump");
+
+        let unfilled = svc.unfilled_templates().expect("scan succeeds");
+        assert_eq!(
+            unfilled,
+            vec![std::path::PathBuf::from(".changesets/velvet-pebble.toml")]
+        );
+    }
+
+    #[test]
+    fn malformed_changeset_still_errors_and_is_not_reported_unfilled() {
+        // Both [[changes]] and [empty] present: malformed, not unfilled. It must
+        // still hard-error through derive, and must NOT appear in the unfilled
+        // scan.
+        let store = store_with(&[(
+            "broken",
+            "[[changes]]\ncrate=\"zaino-state\"\nkind=\"fix\"\ndescription=\"x\"\n[empty]\nreason=\"y\"\n",
+        )]);
+        let svc = service(
+            &["zaino-state"],
+            store,
+            workspace(&[("zaino-state", "0.3.1")]),
+        );
+
+        assert!(matches!(
+            svc.derive(),
+            Err(DeriveError::ChangesetParse { .. })
+        ));
+        assert!(
+            svc.unfilled_templates().expect("scan succeeds").is_empty(),
+            "a malformed changeset is not an unfilled template"
+        );
     }
 
     #[test]

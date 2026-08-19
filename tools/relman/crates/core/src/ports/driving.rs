@@ -86,6 +86,11 @@ pub enum Violation {
         /// The rendered parse error.
         error: String,
     },
+    /// A this-PR changeset file is an unfilled template — a `changeset new`
+    /// scaffold that declares neither `[[changes]]` nor `[empty]`, so it covers
+    /// nothing. Distinct from [`ChangesetParse`](Violation::ChangesetParse): the
+    /// file is not broken, just not yet filled in.
+    UnfilledTemplate(PathBuf),
 }
 
 impl Violation {
@@ -103,6 +108,13 @@ impl Violation {
             }
             Violation::ChangesetParse { file, error } => {
                 format!("failed to parse changeset `{}`: {error}", file.display())
+            }
+            Violation::UnfilledTemplate(file) => {
+                format!(
+                    "unfilled changeset template `{}`: fill in a [[changes]] block or run \
+                     `relman changeset new --empty \"<reason>\"`",
+                    file.display()
+                )
             }
         }
     }
@@ -198,7 +210,20 @@ pub enum DeriveError {
 /// [`Workspace`]: crate::ports::Workspace
 pub trait Versions: Send + Sync {
     /// Aggregate changesets into direct + transitive per-crate bumps.
+    ///
+    /// Tolerates unfilled templates (a `changeset new` scaffold not yet edited,
+    /// which parses to an empty document): they contribute nothing and are
+    /// skipped, never failing the derivation. A *malformed* changeset is still a
+    /// hard [`DeriveError::ChangesetParse`].
     fn derive(&self) -> Result<BumpTable, DeriveError>;
+
+    /// The repo-relative paths of unfilled changeset templates in the store —
+    /// files that parse to an empty document (a `changeset new` scaffold not yet
+    /// edited). [`derive`](Versions::derive) skips these silently; this reports
+    /// them so a delivery mechanism can warn the user that a template was left
+    /// unfilled. Malformed changesets are excluded — they are surfaced as hard
+    /// errors by `derive`, not as skippable templates here.
+    fn unfilled_templates(&self) -> Result<Vec<PathBuf>, DeriveError>;
 }
 
 /// Everything that can go wrong applying a derived [`BumpTable`] to the

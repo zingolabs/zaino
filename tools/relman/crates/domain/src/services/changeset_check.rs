@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use relman_config::ReleaseConfig;
 use relman_core::ports::{ChangesetCheck, ChangesetStore, CheckError, CheckReport, Vcs, Violation};
-use relman_core::types::{Changeset, CrateName, Slug};
+use relman_core::types::{Changeset, ChangesetError, CrateName, Slug};
 
 /// The changeset-file extension. Only `*.toml` under the changesets dir count as
 /// this-PR changeset files.
@@ -97,6 +97,13 @@ impl ChangesetCheck for ChangesetCheckService {
                         }
                     }
                 }
+                // An unfilled template covers nothing, but it is not malformed:
+                // flag it as its own violation so the author gets a targeted
+                // "fill this in" message rather than a generic parse error. The
+                // target it should have covered stays uncovered below.
+                Err(ChangesetError::Unfilled) => violations.push(Violation::UnfilledTemplate(
+                    changesets_dir.join(slug.file_name()),
+                )),
                 Err(error) => violations.push(Violation::ChangesetParse {
                     file: changesets_dir.join(slug.file_name()),
                     error: error.to_string(),
@@ -278,6 +285,28 @@ description = "Touched a non-target crate."
             [Violation::ChangesetParse { file, .. }]
                 if file == &PathBuf::from(".changesets/pr-1.toml")
         ));
+    }
+
+    #[test]
+    fn unfilled_template_reports_its_own_violation_and_leaves_target_uncovered() {
+        // The PR touches zaino-state source and adds a changeset file, but the
+        // file is still the unedited comments-only scaffold. It must flag the
+        // unfilled template *and* leave the touched target uncovered (an empty
+        // template waives nothing and covers nothing).
+        let template = "# Changeset for this PR — not yet filled in.\n";
+        let store = store_with(&[("pr-1", template)]);
+        let svc = service(
+            vec!["packages/zaino-state/src/lib.rs", ".changesets/pr-1.toml"],
+            store,
+        );
+        let report = svc.check("dev").expect("check runs");
+        assert_eq!(
+            report.violations,
+            vec![
+                Violation::UnfilledTemplate(PathBuf::from(".changesets/pr-1.toml")),
+                Violation::TargetUncovered(crate_name("zaino-state")),
+            ]
+        );
     }
 
     #[test]
