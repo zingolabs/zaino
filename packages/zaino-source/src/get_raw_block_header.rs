@@ -15,7 +15,7 @@ pub use super::GetBlockHeaderError;
 /// [`GetBlockHeader`](super::GetBlockHeader) instead.
 ///
 /// Maps to `getblockheader(hash, verbose = false)` over JSON-RPC.
-pub trait GetRawBlockHeader: Send + Sync {
+pub trait OneShotGetRawBlockHeader: Send + Sync {
     /// Fetch a serialised block header.
     fn get_raw_block_header(
         &self,

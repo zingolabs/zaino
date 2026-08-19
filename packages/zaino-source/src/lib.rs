@@ -76,9 +76,11 @@ pub use get_mining_info::{GetMiningInfoError, OneShotGetMiningInfo};
 pub use get_network_sol_ps::{GetNetworkSolPsError, OneShotGetNetworkSolPs};
 pub use get_node_info::{GetNodeInfoError, OneShotGetNodeInfo};
 pub use get_peer_info::{GetPeerInfoError, OneShotGetPeerInfo};
-pub use get_raw_block::{GetRawBlock, GetRawBlockByHash};
-pub use get_raw_block_header::GetRawBlockHeader;
-pub use get_raw_mempool_transaction::{GetRawMempoolTransaction, GetRawMempoolTransactionError};
+pub use get_raw_block::{OneShotGetRawBlock, OneShotGetRawBlockByHash};
+pub use get_raw_block_header::OneShotGetRawBlockHeader;
+pub use get_raw_mempool_transaction::{
+    GetRawMempoolTransactionError, OneShotGetRawMempoolTransaction,
+};
 pub use get_spent_info::{GetSpentInfo, GetSpentInfoError};
 pub use get_subtree_roots::{GetSubtreeRoots, GetSubtreeRootsError};
 pub use get_transaction::{GetTransaction, GetTransactionError, TransactionResponse};

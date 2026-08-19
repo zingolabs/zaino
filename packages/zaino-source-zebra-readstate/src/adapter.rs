@@ -1105,7 +1105,7 @@ fn serialize_block(block: &zebra_chain::block::Block) -> Result<Vec<u8>, FetchEr
         .map_err(|e| FetchError::new(FailureMode::Parse, format!("serialize block: {e}")))
 }
 
-impl zaino_source::GetRawBlock for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetRawBlock for ZebraReadStateAdapter {
     async fn get_raw_block(
         &self,
         height: Height,
@@ -1122,7 +1122,7 @@ impl zaino_source::GetRawBlock for ZebraReadStateAdapter {
     }
 }
 
-impl zaino_source::GetRawBlockByHash for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetRawBlockByHash for ZebraReadStateAdapter {
     async fn get_raw_block_by_hash(
         &self,
         hash: BlockHash,

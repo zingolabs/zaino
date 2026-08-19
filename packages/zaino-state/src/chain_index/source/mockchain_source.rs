@@ -474,7 +474,7 @@ impl MockchainSource {
     }
 }
 
-impl zaino_source::GetRawBlock for MockchainSource {
+impl zaino_source::OneShotGetRawBlock for MockchainSource {
     async fn get_raw_block(
         &self,
         height: domain::Height,
@@ -488,7 +488,7 @@ impl zaino_source::GetRawBlock for MockchainSource {
     }
 }
 
-impl zaino_source::GetRawBlockByHash for MockchainSource {
+impl zaino_source::OneShotGetRawBlockByHash for MockchainSource {
     async fn get_raw_block_by_hash(
         &self,
         hash: domain::BlockHash,
@@ -667,7 +667,7 @@ impl zaino_source::OneShotGetMempoolMetadata for MockchainSource {
     }
 }
 
-impl zaino_source::GetRawMempoolTransaction for MockchainSource {
+impl zaino_source::OneShotGetRawMempoolTransaction for MockchainSource {
     async fn get_raw_mempool_transaction(
         &self,
         txid: domain::TransactionId,
@@ -829,7 +829,7 @@ impl zaino_source::GetBlockVerboseByHash for MockchainSource {
     }
 }
 
-impl zaino_source::GetRawBlockHeader for MockchainSource {
+impl zaino_source::OneShotGetRawBlockHeader for MockchainSource {
     async fn get_raw_block_header(
         &self,
         hash: domain::BlockHash,

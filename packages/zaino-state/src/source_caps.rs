@@ -24,13 +24,19 @@ use zaino_source::*;
 /// representation from them, and needs the exact bytes the block hash commits
 /// to rather than a shape something else has already interpreted.
 pub trait FinalisedSourceCaps:
-    OneShotGetBestBlockHeight + GetRawBlock + OneShotGetCommitmentTreeRoots + GetTransaction + Send + Sync + 'static
+    OneShotGetBestBlockHeight
+    + OneShotGetRawBlock
+    + OneShotGetCommitmentTreeRoots
+    + GetTransaction
+    + Send
+    + Sync
+    + 'static
 {
 }
 
 impl<T> FinalisedSourceCaps for T where
     T: OneShotGetBestBlockHeight
-        + GetRawBlock
+        + OneShotGetRawBlock
         + OneShotGetCommitmentTreeRoots
         + GetTransaction
         + Send
@@ -45,8 +51,8 @@ impl<T> FinalisedSourceCaps for T where
 /// a hash is the only way to name a block that is not on the best chain.
 pub trait ChainHeadSourceCaps:
     OneShotGetChainTip
-    + GetRawBlock
-    + GetRawBlockByHash
+    + OneShotGetRawBlock
+    + OneShotGetRawBlockByHash
     + OneShotGetCommitmentTreeRoots
     + OneShotGetChainTips
     + Send
@@ -57,8 +63,8 @@ pub trait ChainHeadSourceCaps:
 
 impl<T> ChainHeadSourceCaps for T where
     T: OneShotGetChainTip
-        + GetRawBlock
-        + GetRawBlockByHash
+        + OneShotGetRawBlock
+        + OneShotGetRawBlockByHash
         + OneShotGetCommitmentTreeRoots
         + OneShotGetChainTips
         + Send
@@ -72,9 +78,15 @@ impl<T> ChainHeadSourceCaps for T where
 /// Deliberately narrow, and deliberately not satisfied by a state-database
 /// adapter: the mempool is reachable only over JSON-RPC, and this bound is what
 /// makes that a compile-time fact rather than a comment.
-pub trait MempoolSourceCaps: OneShotGetMempoolTxids + OneShotGetChainTip + Send + Sync + 'static {}
+pub trait MempoolSourceCaps:
+    OneShotGetMempoolTxids + OneShotGetChainTip + Send + Sync + 'static
+{
+}
 
-impl<T> MempoolSourceCaps for T where T: OneShotGetMempoolTxids + OneShotGetChainTip + Send + Sync + 'static {}
+impl<T> MempoolSourceCaps for T where
+    T: OneShotGetMempoolTxids + OneShotGetChainTip + Send + Sync + 'static
+{
+}
 
 /// What the indexer service asks of the validator.
 pub trait IndexerSourceCaps: SubscribeChainTip + Send + Sync + 'static {}
@@ -94,7 +106,7 @@ pub trait ChainIndexSourceCaps:
     + OneShotGetBlock
     + OneShotGetBlockVerbose
     + OneShotGetBlockHeader
-    + GetRawBlockHeader
+    + OneShotGetRawBlockHeader
     + OneShotGetBlockDeltas
     + OneShotGetBlockSubsidy
     + OneShotGetBlockchainInfo
@@ -125,7 +137,7 @@ impl<T> ChainIndexSourceCaps for T where
         + OneShotGetBlock
         + OneShotGetBlockVerbose
         + OneShotGetBlockHeader
-        + GetRawBlockHeader
+        + OneShotGetRawBlockHeader
         + OneShotGetBlockDeltas
         + OneShotGetBlockSubsidy
         + OneShotGetBlockchainInfo

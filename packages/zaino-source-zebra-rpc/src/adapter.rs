@@ -525,7 +525,7 @@ impl zaino_source::OneShotGetBlockHeader for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetRawBlockHeader for ZebraRpcAdapter {
+impl zaino_source::OneShotGetRawBlockHeader for ZebraRpcAdapter {
     async fn get_raw_block_header(
         &self,
         hash: BlockHash,
@@ -637,7 +637,7 @@ impl zaino_source::OneShotGetMempoolMetadata for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetRawMempoolTransaction for ZebraRpcAdapter {
+impl zaino_source::OneShotGetRawMempoolTransaction for ZebraRpcAdapter {
     async fn get_raw_mempool_transaction(
         &self,
         txid: TransactionId,
@@ -992,7 +992,7 @@ impl zaino_source::GetTransaction for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetRawBlock for ZebraRpcAdapter {
+impl zaino_source::OneShotGetRawBlock for ZebraRpcAdapter {
     async fn get_raw_block(
         &self,
         height: Height,
@@ -1008,7 +1008,7 @@ impl zaino_source::GetRawBlock for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetRawBlockByHash for ZebraRpcAdapter {
+impl zaino_source::OneShotGetRawBlockByHash for ZebraRpcAdapter {
     async fn get_raw_block_by_hash(
         &self,
         hash: BlockHash,

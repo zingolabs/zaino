@@ -97,7 +97,7 @@ impl<S: BlockchainSource> zaino_source::OneShotGetMempoolMetadata for MempoolSou
     }
 }
 
-impl<S: BlockchainSource> zaino_source::GetRawMempoolTransaction for MempoolSourceAdapter<S> {
+impl<S: BlockchainSource> zaino_source::OneShotGetRawMempoolTransaction for MempoolSourceAdapter<S> {
     fn get_raw_mempool_transaction(
         &self,
         txid: zaino_primitives::types::TransactionId,

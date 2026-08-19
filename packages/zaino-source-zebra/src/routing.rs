@@ -148,13 +148,13 @@ impl OneShotGetBlockByHash for ZebraValidator {
     }
 }
 
-impl GetRawBlock for ZebraValidator {
+impl OneShotGetRawBlock for ZebraValidator {
     async fn get_raw_block(&self, height: Height) -> Result<Vec<u8>, QueryError<GetBlockError>> {
         fast_or_slow!(self, get_raw_block, height)
     }
 }
 
-impl GetRawBlockByHash for ZebraValidator {
+impl OneShotGetRawBlockByHash for ZebraValidator {
     async fn get_raw_block_by_hash(
         &self,
         hash: BlockHash,
@@ -339,7 +339,7 @@ impl OneShotGetMempoolMetadata for ZebraValidator {
     }
 }
 
-impl GetRawMempoolTransaction for ZebraValidator {
+impl OneShotGetRawMempoolTransaction for ZebraValidator {
     async fn get_raw_mempool_transaction(
         &self,
         txid: TransactionId,
@@ -395,7 +395,7 @@ impl OneShotGetBlockHeader for ZebraValidator {
     }
 }
 
-impl GetRawBlockHeader for ZebraValidator {
+impl OneShotGetRawBlockHeader for ZebraValidator {
     async fn get_raw_block_header(
         &self,
         hash: BlockHash,

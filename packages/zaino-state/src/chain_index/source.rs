@@ -136,7 +136,7 @@ pub(crate) type NonfinalizedBlockReceiver =
 pub trait BlockchainSource:
     zaino_source::OneShotGetMempoolTxids
     + zaino_source::OneShotGetMempoolMetadata
-    + zaino_source::GetRawMempoolTransaction
+    + zaino_source::OneShotGetRawMempoolTransaction
     + zaino_source::OneShotGetMempoolSourceTip
     + Clone
     + Send

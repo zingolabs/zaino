@@ -1093,7 +1093,7 @@ impl ProptestMockchain {
     }
 }
 
-impl zaino_source::GetRawBlock for ProptestMockchain {
+impl zaino_source::OneShotGetRawBlock for ProptestMockchain {
     async fn get_raw_block(
         &self,
         height: zaino_primitives::types::Height,
@@ -1124,7 +1124,7 @@ impl zaino_source::GetRawBlock for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetRawBlockByHash for ProptestMockchain {
+impl zaino_source::OneShotGetRawBlockByHash for ProptestMockchain {
     async fn get_raw_block_by_hash(
         &self,
         hash: zaino_primitives::types::BlockHash,
@@ -1155,7 +1155,7 @@ impl zaino_source::OneShotGetBlock for ProptestMockchain {
         &self,
         height: zaino_primitives::types::Height,
     ) -> Result<zaino_primitives::types::Block, PortError<zaino_source::GetBlockError>> {
-        let bytes = zaino_source::GetRawBlock::get_raw_block(self, height).await?;
+        let bytes = zaino_source::OneShotGetRawBlock::get_raw_block(self, height).await?;
         Self::parse_domain_block(&bytes).map_err(port_fault)
     }
 }
@@ -1165,7 +1165,8 @@ impl zaino_source::OneShotGetBlockByHash for ProptestMockchain {
         &self,
         hash: zaino_primitives::types::BlockHash,
     ) -> Result<zaino_primitives::types::Block, PortError<zaino_source::GetBlockByHashError>> {
-        let bytes = zaino_source::GetRawBlockByHash::get_raw_block_by_hash(self, hash).await?;
+        let bytes =
+            zaino_source::OneShotGetRawBlockByHash::get_raw_block_by_hash(self, hash).await?;
         Self::parse_domain_block(&bytes).map_err(port_fault)
     }
 }
@@ -1278,7 +1279,7 @@ impl zaino_source::OneShotGetMempoolMetadata for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetRawMempoolTransaction for ProptestMockchain {
+impl zaino_source::OneShotGetRawMempoolTransaction for ProptestMockchain {
     async fn get_raw_mempool_transaction(
         &self,
         txid: zaino_primitives::types::TransactionId,
@@ -1573,7 +1574,7 @@ impl zaino_source::OneShotGetBlockHeader for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetRawBlockHeader for ProptestMockchain {
+impl zaino_source::OneShotGetRawBlockHeader for ProptestMockchain {
     async fn get_raw_block_header(
         &self,
         _hash: zaino_primitives::types::BlockHash,

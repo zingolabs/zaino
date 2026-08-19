@@ -164,7 +164,7 @@ impl zaino_source::OneShotGetMempoolMetadata for MockSource {
     }
 }
 
-impl zaino_source::GetRawMempoolTransaction for MockSource {
+impl zaino_source::OneShotGetRawMempoolTransaction for MockSource {
     async fn get_raw_mempool_transaction(
         &self,
         txid: TransactionId,

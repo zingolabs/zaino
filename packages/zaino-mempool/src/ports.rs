@@ -64,7 +64,7 @@ use crate::update::MempoolUpdate;
 pub trait MempoolSource:
     zaino_source::OneShotGetMempoolTxids
     + zaino_source::OneShotGetMempoolMetadata
-    + zaino_source::GetRawMempoolTransaction
+    + zaino_source::OneShotGetRawMempoolTransaction
     + zaino_source::OneShotGetMempoolSourceTip
     + zaino_source::SubscribeBlocks
     + Clone
@@ -77,7 +77,7 @@ pub trait MempoolSource:
 impl<T> MempoolSource for T where
     T: zaino_source::OneShotGetMempoolTxids
         + zaino_source::OneShotGetMempoolMetadata
-        + zaino_source::GetRawMempoolTransaction
+        + zaino_source::OneShotGetRawMempoolTransaction
         + zaino_source::OneShotGetMempoolSourceTip
         + zaino_source::SubscribeBlocks
         + Clone

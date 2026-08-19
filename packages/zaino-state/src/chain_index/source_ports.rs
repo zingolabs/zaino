@@ -48,10 +48,10 @@ pub trait ChainIndexSourcePorts:
     + zaino_source::OneShotGetNetworkSolPs
     + zaino_source::OneShotGetNodeInfo
     + zaino_source::OneShotGetPeerInfo
-    + zaino_source::GetRawBlock
-    + zaino_source::GetRawBlockByHash
-    + zaino_source::GetRawBlockHeader
-    + zaino_source::GetRawMempoolTransaction
+    + zaino_source::OneShotGetRawBlock
+    + zaino_source::OneShotGetRawBlockByHash
+    + zaino_source::OneShotGetRawBlockHeader
+    + zaino_source::OneShotGetRawMempoolTransaction
     + zaino_source::GetSpentInfo
     + zaino_source::GetSubtreeRoots
     + zaino_source::GetTransaction
@@ -89,10 +89,10 @@ impl<T> ChainIndexSourcePorts for T where
         + zaino_source::OneShotGetNetworkSolPs
         + zaino_source::OneShotGetNodeInfo
         + zaino_source::OneShotGetPeerInfo
-        + zaino_source::GetRawBlock
-        + zaino_source::GetRawBlockByHash
-        + zaino_source::GetRawBlockHeader
-        + zaino_source::GetRawMempoolTransaction
+        + zaino_source::OneShotGetRawBlock
+        + zaino_source::OneShotGetRawBlockByHash
+        + zaino_source::OneShotGetRawBlockHeader
+        + zaino_source::OneShotGetRawMempoolTransaction
         + zaino_source::GetSpentInfo
         + zaino_source::GetSubtreeRoots
         + zaino_source::GetTransaction
