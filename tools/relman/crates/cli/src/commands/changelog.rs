@@ -22,6 +22,7 @@ pub enum ChangelogCommandError {
 }
 
 pub fn run(args: &Args, ctx: &Ctx) -> Result<(), ChangelogCommandError> {
+    crate::warn::unfilled_templates(ctx);
     let edits = if args.dry_run {
         ctx.changelog.generate()?
     } else {

@@ -19,6 +19,7 @@ pub enum VersionsCommandError {
 }
 
 pub fn run(_args: &Args, ctx: &Ctx) -> Result<(), VersionsCommandError> {
+    crate::warn::unfilled_templates(ctx);
     let table = ctx.versions.derive()?;
     print!("{}", format::bump_table(&table));
     Ok(())

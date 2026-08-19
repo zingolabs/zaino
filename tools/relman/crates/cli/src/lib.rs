@@ -8,6 +8,7 @@ mod app;
 pub mod commands;
 mod context;
 mod format;
+mod warn;
 
 pub use app::{Cli, Command};
 pub use commands::bump::BumpCommandError;

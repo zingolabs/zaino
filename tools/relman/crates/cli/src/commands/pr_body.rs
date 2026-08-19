@@ -26,6 +26,7 @@ pub enum PrBodyCommandError {
 
 pub fn run(args: &Args, ctx: &Ctx) -> Result<(), PrBodyCommandError> {
     let cycle = CycleId::parse(&args.cycle)?;
+    crate::warn::unfilled_templates(ctx);
     let body = ctx.release_artifacts.pr_body(&cycle)?;
     print!("{body}");
     Ok(())

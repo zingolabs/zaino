@@ -27,6 +27,7 @@ pub enum BumpCommandError {
 }
 
 pub fn run(args: &Args, ctx: &Ctx) -> Result<(), BumpCommandError> {
+    crate::warn::unfilled_templates(ctx);
     let table = ctx.versions.derive()?;
 
     // Nothing to do, and nothing to render beyond the "nothing bumps" note —

@@ -19,6 +19,7 @@ pub enum PublishPlanCommandError {
 }
 
 pub fn run(_args: &Args, ctx: &Ctx) -> Result<(), PublishPlanCommandError> {
+    crate::warn::unfilled_templates(ctx);
     let plan = ctx.release_artifacts.publish_plan()?;
     print!("{}", format::publish_plan(&plan));
     Ok(())

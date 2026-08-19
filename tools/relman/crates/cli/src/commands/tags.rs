@@ -32,6 +32,7 @@ pub enum TagsCommandError {
 
 pub fn run(args: &Args, ctx: &Ctx) -> Result<(), TagsCommandError> {
     let cycle = CycleId::parse(&args.cycle)?;
+    crate::warn::unfilled_templates(ctx);
     let plan = ctx.release_artifacts.tags(&cycle, args.rc)?;
     print!("{}", format::tag_plan(&plan));
     Ok(())
