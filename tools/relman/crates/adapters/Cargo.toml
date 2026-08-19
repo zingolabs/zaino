@@ -8,8 +8,10 @@ publish.workspace = true
 description = "Concrete driven-port adapters (filesystem changeset store, random slug source)"
 
 [dependencies]
+cargo_metadata = { workspace = true }
 rand = "0.10.2"
 relman-core = { workspace = true }
+semver = { workspace = true }
 
 [dev-dependencies]
 relman-core = { workspace = true, features = ["test-support"] }
