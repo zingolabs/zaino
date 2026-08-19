@@ -659,7 +659,7 @@ impl zaino_source::GetRawMempoolTransaction for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetMempoolSourceTip for ZebraRpcAdapter {
+impl zaino_source::OneShotGetMempoolSourceTip for ZebraRpcAdapter {
     async fn get_mempool_source_tip(
         &self,
     ) -> Result<(BlockHash, Height), QueryError<std::convert::Infallible>> {

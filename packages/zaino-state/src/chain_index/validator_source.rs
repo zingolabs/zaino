@@ -474,7 +474,7 @@ impl<V: ChainIndexSourcePorts> zaino_source::GetRawMempoolTransaction for Valida
     }
 }
 
-impl<V: ChainIndexSourcePorts> zaino_source::GetMempoolSourceTip for ValidatorSource<V> {
+impl<V: ChainIndexSourcePorts> zaino_source::OneShotGetMempoolSourceTip for ValidatorSource<V> {
     async fn get_mempool_source_tip(
         &self,
     ) -> Result<

@@ -70,7 +70,7 @@ pub use get_commitment_tree_roots::{GetCommitmentTreeRootsError, OneShotGetCommi
 pub use get_compact_block::OneShotGetPreIndexCompactBlock;
 pub use get_difficulty::{GetDifficultyError, OneShotGetDifficulty};
 pub use get_mempool_metadata::{GetMempoolMetadataError, MempoolTxMeta, OneShotGetMempoolMetadata};
-pub use get_mempool_source_tip::GetMempoolSourceTip;
+pub use get_mempool_source_tip::OneShotGetMempoolSourceTip;
 pub use get_mempool_txids::{GetMempoolTxids, GetMempoolTxidsError};
 pub use get_mining_info::{GetMiningInfo, GetMiningInfoError};
 pub use get_network_sol_ps::{GetNetworkSolPs, GetNetworkSolPsError};

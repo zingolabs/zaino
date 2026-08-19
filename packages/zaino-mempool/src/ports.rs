@@ -65,7 +65,7 @@ pub trait MempoolSource:
     zaino_source::GetMempoolTxids
     + zaino_source::OneShotGetMempoolMetadata
     + zaino_source::GetRawMempoolTransaction
-    + zaino_source::GetMempoolSourceTip
+    + zaino_source::OneShotGetMempoolSourceTip
     + zaino_source::SubscribeBlocks
     + Clone
     + Send
@@ -78,7 +78,7 @@ impl<T> MempoolSource for T where
     T: zaino_source::GetMempoolTxids
         + zaino_source::OneShotGetMempoolMetadata
         + zaino_source::GetRawMempoolTransaction
-        + zaino_source::GetMempoolSourceTip
+        + zaino_source::OneShotGetMempoolSourceTip
         + zaino_source::SubscribeBlocks
         + Clone
         + Send

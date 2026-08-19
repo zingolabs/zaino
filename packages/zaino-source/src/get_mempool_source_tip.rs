@@ -45,7 +45,7 @@ use super::QueryError;
 /// variant. A domain error no implementation can return is worse than none: it
 /// tells a consumer to handle a case that cannot arise, and reads as though the
 /// condition were being reported when it is not.
-pub trait GetMempoolSourceTip: Send + Sync {
+pub trait OneShotGetMempoolSourceTip: Send + Sync {
     /// Fetch the mempool source's tip.
     fn get_mempool_source_tip(
         &self,

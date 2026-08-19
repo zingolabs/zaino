@@ -192,7 +192,7 @@ impl zaino_source::GetRawMempoolTransaction for MockSource {
     }
 }
 
-impl zaino_source::GetMempoolSourceTip for MockSource {
+impl zaino_source::OneShotGetMempoolSourceTip for MockSource {
     async fn get_mempool_source_tip(
         &self,
     ) -> Result<(BlockHash, Height), QueryError<std::convert::Infallible>> {

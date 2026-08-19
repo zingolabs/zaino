@@ -687,7 +687,7 @@ impl zaino_source::GetRawMempoolTransaction for MockchainSource {
     }
 }
 
-impl zaino_source::GetMempoolSourceTip for MockchainSource {
+impl zaino_source::OneShotGetMempoolSourceTip for MockchainSource {
     async fn get_mempool_source_tip(
         &self,
     ) -> Result<(domain::BlockHash, domain::Height), PortError<std::convert::Infallible>> {

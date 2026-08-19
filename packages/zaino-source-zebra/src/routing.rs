@@ -348,7 +348,7 @@ impl GetRawMempoolTransaction for ZebraValidator {
     }
 }
 
-impl GetMempoolSourceTip for ZebraValidator {
+impl OneShotGetMempoolSourceTip for ZebraValidator {
     async fn get_mempool_source_tip(
         &self,
     ) -> Result<(BlockHash, Height), QueryError<std::convert::Infallible>> {

@@ -111,7 +111,7 @@ impl<S: BlockchainSource> zaino_source::GetRawMempoolTransaction for MempoolSour
     }
 }
 
-impl<S: BlockchainSource> zaino_source::GetMempoolSourceTip for MempoolSourceAdapter<S> {
+impl<S: BlockchainSource> zaino_source::OneShotGetMempoolSourceTip for MempoolSourceAdapter<S> {
     fn get_mempool_source_tip(
         &self,
     ) -> impl std::future::Future<

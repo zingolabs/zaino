@@ -1290,7 +1290,7 @@ impl zaino_source::GetRawMempoolTransaction for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetMempoolSourceTip for ProptestMockchain {
+impl zaino_source::OneShotGetMempoolSourceTip for ProptestMockchain {
     async fn get_mempool_source_tip(
         &self,
     ) -> Result<

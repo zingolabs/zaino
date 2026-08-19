@@ -137,7 +137,7 @@ pub trait BlockchainSource:
     zaino_source::GetMempoolTxids
     + zaino_source::OneShotGetMempoolMetadata
     + zaino_source::GetRawMempoolTransaction
-    + zaino_source::GetMempoolSourceTip
+    + zaino_source::OneShotGetMempoolSourceTip
     + Clone
     + Send
     + Sync
