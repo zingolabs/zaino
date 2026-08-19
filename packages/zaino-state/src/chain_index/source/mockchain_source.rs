@@ -521,7 +521,7 @@ impl MockchainSource {
     }
 }
 
-impl zaino_source::GetBlock for MockchainSource {
+impl zaino_source::OneShotGetBlock for MockchainSource {
     async fn get_block(
         &self,
         height: domain::Height,

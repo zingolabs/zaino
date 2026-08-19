@@ -31,7 +31,7 @@ use zaino_primitives::types::{
     MerkleRoot, TreeRoots,
 };
 use zaino_source::{
-    FailureMode, FetchError, GetBlock, GetBlockByHash, GetBlockByHashError, GetBlockError,
+    FailureMode, FetchError, OneShotGetBlock, GetBlockByHash, GetBlockByHashError, GetBlockError,
     GetChainTip, GetChainTipError, GetChainTips, GetChainTipsError, GetCommitmentTreeRoots,
     GetCommitmentTreeRootsError, QueryError, SubscribeBlocks,
 };
@@ -178,7 +178,7 @@ impl GetChainTips for MockValidator {
     }
 }
 
-impl GetBlock for MockValidator {
+impl OneShotGetBlock for MockValidator {
     async fn get_block(&self, height: Height) -> Result<Block, QueryError<GetBlockError>> {
         let state = self.lock();
         state

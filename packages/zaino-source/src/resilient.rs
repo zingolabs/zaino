@@ -135,7 +135,7 @@ impl<V> Resilient<V> {
 
 use zaino_primitives::types::{BlockHash, Height, Treestate};
 
-impl<V: crate::GetBlock> Resilient<V> {
+impl<V: crate::OneShotGetBlock> Resilient<V> {
     /// Fetch a parsed block with retry.
     pub async fn get_block(
         &self,

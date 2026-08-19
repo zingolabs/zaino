@@ -61,7 +61,7 @@ use crate::{block::ChainHeadBlock, snapshot::ChainHeadSnapshot};
 /// satisfies this bound directly rather than through a wrapper.
 pub trait ChainHeadBlockSource:
     zaino_source::GetChainTip
-    + zaino_source::GetBlock
+    + zaino_source::OneShotGetBlock
     + zaino_source::GetBlockByHash
     + zaino_source::GetCommitmentTreeRoots
     + zaino_source::SubscribeBlocks
@@ -73,7 +73,7 @@ pub trait ChainHeadBlockSource:
 
 impl<T> ChainHeadBlockSource for T where
     T: zaino_source::GetChainTip
-        + zaino_source::GetBlock
+        + zaino_source::OneShotGetBlock
         + zaino_source::GetBlockByHash
         + zaino_source::GetCommitmentTreeRoots
         + zaino_source::SubscribeBlocks

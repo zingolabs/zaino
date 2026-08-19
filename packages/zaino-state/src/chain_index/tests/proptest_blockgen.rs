@@ -1150,7 +1150,7 @@ impl zaino_source::GetRawBlockByHash for ProptestMockchain {
 ///
 /// Shares `get_raw_block`'s deliberate arbitrary-branch choice, so a reader
 /// walking by height sees the same instability whichever form it asks for.
-impl zaino_source::GetBlock for ProptestMockchain {
+impl zaino_source::OneShotGetBlock for ProptestMockchain {
     async fn get_block(
         &self,
         height: zaino_primitives::types::Height,

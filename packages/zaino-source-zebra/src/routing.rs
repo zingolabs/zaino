@@ -126,7 +126,7 @@ macro_rules! fast_or_slow {
 // Blocks and chain
 // ---------------------------------------------------------------------------
 
-impl GetBlock for ZebraValidator {
+impl OneShotGetBlock for ZebraValidator {
     async fn get_block(&self, height: Height) -> Result<Block, QueryError<GetBlockError>> {
         // A height names a best-chain block, which the finalized state has, so
         // there is nothing the slow path could add on a miss.

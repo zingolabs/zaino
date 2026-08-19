@@ -191,7 +191,7 @@ where
     }
 }
 
-impl zaino_source::GetBlock for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlock for ZebraRpcAdapter {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(h = u32::from(height))))]
     async fn get_block(&self, height: Height) -> Result<Block, QueryError<GetBlockError>> {
         // Fetch raw hex block via getblock(height, 0).
@@ -262,7 +262,7 @@ impl zaino_source::GetPreIndexCompactBlock for ZebraRpcAdapter {
         //
         // TODO: once compact_deserialize supports streaming (Reader instead of
         // &[u8]), we can skip the full zebra deserialize on this path too.
-        use zaino_source::GetBlock;
+        use zaino_source::OneShotGetBlock;
         let block = self.get_block(height).await?;
         Ok(zaino_primitives::types::PreIndexCompactBlock::from(&block))
     }

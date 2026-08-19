@@ -154,7 +154,7 @@ impl zaino_source::GetPreIndexCompactBlock for ZebraReadStateAdapter {
         // Zebra's read-state service serves whole blocks only; there is no
         // compact-block read request. Read the full block and strip it down
         // through the domain `Block`, exactly as the RPC adapter does.
-        use zaino_source::GetBlock;
+        use zaino_source::OneShotGetBlock;
         let block = self.get_block(height).await?;
         Ok(zaino_primitives::types::PreIndexCompactBlock::from(&block))
     }
@@ -185,7 +185,7 @@ impl ZebraReadStateAdapter {
     }
 }
 
-impl zaino_source::GetBlock for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetBlock for ZebraReadStateAdapter {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(h = u32::from(height))))]
     async fn get_block(&self, height: Height) -> Result<Block, QueryError<GetBlockError>> {
         let zebra_height = zebra_chain::block::Height(u32::from(height));

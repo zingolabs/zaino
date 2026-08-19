@@ -18,7 +18,7 @@ pub enum GetBlockError {
 ///
 /// The adapter deserializes from its wire format into the domain
 /// [`Block`] type. The consumer receives typed data, not bytes.
-pub trait GetBlock: Send + Sync {
+pub trait OneShotGetBlock: Send + Sync {
     /// Fetch a parsed block.
     fn get_block(
         &self,
