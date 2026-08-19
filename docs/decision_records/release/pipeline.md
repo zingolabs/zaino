@@ -523,16 +523,31 @@ sentinel forces it into `dev`.
 **Logic lives in a Rust CLI; CI stays thin.** The changeset parse/aggregate,
 semver derivation, transitive-bump computation, format-preserving `Cargo.toml`
 edits (via `toml_edit` — never `sed`, per the repo's Rust-native rule),
-changelog generation, and release-PR body rendering are all **subcommands of
-the in-repo `tools/workbench`** crate (which already hosts release-adjacent
-guards like `check-published-versions`). CI workflows call
-`workbench <subcommand>` and do only git/`gh` glue. This keeps the derivation
+changelog generation, and release-PR body rendering live in a Rust CLI. CI
+workflows call it and do only git/`gh` glue. This keeps the derivation
 **unit-testable and locally runnable** (the same commands a maintainer can run
-by hand), rather than trapped in untestable shell. No external release manager
-(`release-plz`, `cargo-release`, `knope`) is adopted: our model
-(version-agnostic branches, cycle tags, continuous soak, derived-only versions)
-diverges enough that config-fighting would cost more than it saves; ideas may be
-borrowed, the tool is not.
+by hand), rather than trapped in untestable shell.
+
+**A new sibling tool crate, not an extension of `workbench`.** The existing
+`tools/workbench` is a deliberately **std-only, no-framework, one-binary-per-file**
+dev-tooling crate in its own isolated workspace, doing heavy lifting by shelling
+out (`curl`/`tar`/`diff`/`cargo`/`git`) specifically to avoid pulling in Rust
+crates. The release CLI needs the opposite — real dependencies (`toml_edit`,
+`semver`, `serde`/`toml`) and a subcommand router (`clap`) so `changeset` /
+`bump` / `changelog` operations can share the crate-graph logic. Adding those to
+`workbench` would break its documented "tiny, never touch the production graph"
+contract. Instead, a **new sibling crate under `tools/`** (e.g. `tools/relman`)
+**copies workbench's isolation pattern** — its own workspace, `publish = false`,
+fmt/clippy/tested in CI — but is a clap-based multi-subcommand binary carrying
+the release deps. That isolation is exactly what licenses using those crates
+without affecting production or `cargo-deny`. The existing
+`check-published-versions` guard stays in `workbench` and is reused as-is from
+the publish flow.
+
+No external release manager (`release-plz`, `cargo-release`, `knope`) is
+adopted: our model (version-agnostic branches, cycle tags, continuous soak,
+derived-only versions) diverges enough that config-fighting would cost more than
+it saves; ideas may be borrowed, the tool is not.
 
 **Existing-workflow teardown** (first implementation step, before building the
 replacement):
