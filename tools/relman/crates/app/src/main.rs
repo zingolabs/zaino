@@ -17,14 +17,17 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 
-use relman_adapters::{CargoMetadataWorkspace, FsChangesetStore, GitVcs, RandomSlugSource};
+use relman_adapters::{
+    CargoMetadataWorkspace, FsChangesetStore, GitVcs, RandomSlugSource, TomlEditManifestEditor,
+};
 use relman_cli::{Cli, Command, Ctx, commands};
 use relman_core::ports::{
-    ChangesetCheck, ChangesetStore, Changesets, Clock, SlugSource, Vcs, Versions, Workspace,
+    ApplyBump, ChangesetCheck, ChangesetStore, Changesets, Clock, ManifestEditor, SlugSource, Vcs,
+    Versions, Workspace,
 };
 use relman_core::types::{CrateName, DateTime, Utc};
 use relman_domain::services::{
-    AboutService, ChangesetCheckService, ChangesetService, VersionService,
+    AboutService, BumpService, ChangesetCheckService, ChangesetService, VersionService,
 };
 
 /// The repo-committed manifest, looked up in the current working directory.
@@ -53,6 +56,10 @@ fn main() -> Result<()> {
         }),
         Command::Versions(args) => with_ctx(|ctx| {
             commands::versions::run(args, ctx)?;
+            Ok(())
+        }),
+        Command::Bump(args) => with_ctx(|ctx| {
+            commands::bump::run(args, ctx)?;
             Ok(())
         }),
     }
@@ -91,12 +98,16 @@ fn with_ctx(f: impl FnOnce(&Ctx) -> Result<()>) -> Result<()> {
         .collect();
     let root_manifest = config.options().root_manifest().as_path().to_path_buf();
     let workspace: Arc<dyn Workspace> =
-        Arc::new(CargoMetadataWorkspace::new(root_manifest, governed));
+        Arc::new(CargoMetadataWorkspace::new(root_manifest.clone(), governed));
     let versions: Arc<dyn Versions> = Arc::new(VersionService::new(
         config.clone(),
         store.clone(),
         workspace,
     ));
+
+    // Applies the derived table to the manifests via format-preserving edits.
+    let editor: Arc<dyn ManifestEditor> = Arc::new(TomlEditManifestEditor::new());
+    let apply_bump: Arc<dyn ApplyBump> = Arc::new(BumpService::new(config.clone(), editor));
 
     let changeset_check: Arc<dyn ChangesetCheck> =
         Arc::new(ChangesetCheckService::new(config, vcs, store));
@@ -106,7 +117,9 @@ fn with_ctx(f: impl FnOnce(&Ctx) -> Result<()>) -> Result<()> {
         changesets,
         changeset_check,
         versions,
+        apply_bump,
         changesets_dir,
+        root_manifest,
     };
     f(&ctx)
 }

@@ -2,5 +2,6 @@
 //! `run(&Args, &Ctx)` that calls the application through driving ports.
 
 pub mod about;
+pub mod bump;
 pub mod changeset;
 pub mod versions;

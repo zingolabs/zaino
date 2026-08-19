@@ -10,6 +10,7 @@ mod context;
 mod format;
 
 pub use app::{Cli, Command};
+pub use commands::bump::BumpCommandError;
 pub use commands::changeset::ChangesetCommandError;
 pub use commands::versions::VersionsCommandError;
 pub use context::Ctx;
