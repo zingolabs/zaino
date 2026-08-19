@@ -368,7 +368,7 @@ impl GetChainTips for ZebraValidator {
     }
 }
 
-impl GetBlockVerbose for ZebraValidator {
+impl OneShotGetBlockVerbose for ZebraValidator {
     async fn get_block_verbose(
         &self,
         height: Height,
@@ -419,7 +419,7 @@ impl OneShotGetBlockDeltas for ZebraValidator {
     }
 }
 
-impl GetBlockSubsidy for ZebraValidator {
+impl OneShotGetBlockSubsidy for ZebraValidator {
     async fn get_block_subsidy(
         &self,
         height: Height,
@@ -498,7 +498,7 @@ impl GetDifficulty for ZebraValidator {
     }
 }
 
-impl GetBlockchainInfo for ZebraValidator {
+impl OneShotGetBlockchainInfo for ZebraValidator {
     async fn get_blockchain_info(
         &self,
     ) -> Result<BlockchainInfo, QueryError<GetBlockchainInfoError>> {

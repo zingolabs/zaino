@@ -22,7 +22,7 @@ pub enum GetBlockchainInfoError {
 /// the response as a consensus input.
 ///
 /// Maps to `getblockchaininfo` over JSON-RPC.
-pub trait GetBlockchainInfo: Send + Sync {
+pub trait OneShotGetBlockchainInfo: Send + Sync {
     /// Fetch chain state and the upgrade schedule.
     fn get_blockchain_info(
         &self,

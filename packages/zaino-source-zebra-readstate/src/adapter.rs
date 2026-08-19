@@ -930,7 +930,7 @@ impl zaino_source::GetDifficulty for ZebraReadStateAdapter {
     }
 }
 
-impl zaino_source::GetBlockchainInfo for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetBlockchainInfo for ZebraReadStateAdapter {
     async fn get_blockchain_info(
         &self,
     ) -> Result<

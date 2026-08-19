@@ -92,12 +92,12 @@ pub trait ChainIndexSourceCaps:
     + ChainHeadSourceCaps
     + MempoolSourceCaps
     + OneShotGetBlock
-    + GetBlockVerbose
+    + OneShotGetBlockVerbose
     + OneShotGetBlockHeader
     + GetRawBlockHeader
     + OneShotGetBlockDeltas
-    + GetBlockSubsidy
-    + GetBlockchainInfo
+    + OneShotGetBlockSubsidy
+    + OneShotGetBlockchainInfo
     + GetDifficulty
     + GetNodeInfo
     + GetPeerInfo
@@ -123,12 +123,12 @@ impl<T> ChainIndexSourceCaps for T where
         + ChainHeadSourceCaps
         + MempoolSourceCaps
         + OneShotGetBlock
-        + GetBlockVerbose
+        + OneShotGetBlockVerbose
         + OneShotGetBlockHeader
         + GetRawBlockHeader
         + OneShotGetBlockDeltas
-        + GetBlockSubsidy
-        + GetBlockchainInfo
+        + OneShotGetBlockSubsidy
+        + OneShotGetBlockchainInfo
         + GetDifficulty
         + GetNodeInfo
         + GetPeerInfo

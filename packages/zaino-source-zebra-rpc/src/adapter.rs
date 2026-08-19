@@ -466,7 +466,7 @@ impl zaino_source::OneShotGetBestBlockHeight for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetBlockVerbose for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlockVerbose for ZebraRpcAdapter {
     async fn get_block_verbose(
         &self,
         height: Height,
@@ -581,7 +581,7 @@ impl zaino_source::GetDifficulty for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetBlockchainInfo for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlockchainInfo for ZebraRpcAdapter {
     async fn get_blockchain_info(
         &self,
     ) -> Result<
@@ -921,7 +921,7 @@ impl zaino_source::GetMiningInfo for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetBlockSubsidy for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlockSubsidy for ZebraRpcAdapter {
     async fn get_block_subsidy(
         &self,
         height: Height,

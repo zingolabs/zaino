@@ -1387,7 +1387,7 @@ impl zaino_source::GetTreestate for MockchainSource {
     }
 }
 
-impl zaino_source::GetBlockchainInfo for MockchainSource {
+impl zaino_source::OneShotGetBlockchainInfo for MockchainSource {
     async fn get_blockchain_info(
         &self,
     ) -> Result<domain::BlockchainInfo, PortError<zaino_source::GetBlockchainInfoError>> {
@@ -1423,7 +1423,7 @@ impl zaino_source::GetMiningInfo for MockchainSource {
     }
 }
 
-impl zaino_source::GetBlockSubsidy for MockchainSource {
+impl zaino_source::OneShotGetBlockSubsidy for MockchainSource {
     async fn get_block_subsidy(
         &self,
         _height: domain::Height,

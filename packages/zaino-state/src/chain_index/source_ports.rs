@@ -34,9 +34,9 @@ pub trait ChainIndexSourcePorts:
     + zaino_source::OneShotGetBestBlockHeight
     + zaino_source::OneShotGetBlockDeltas
     + zaino_source::OneShotGetBlockHeader
-    + zaino_source::GetBlockSubsidy
+    + zaino_source::OneShotGetBlockSubsidy
     + zaino_source::GetBlockVerboseByHash
-    + zaino_source::GetBlockchainInfo
+    + zaino_source::OneShotGetBlockchainInfo
     + zaino_source::GetChainTip
     + zaino_source::GetChainTips
     + zaino_source::GetCommitmentTreeRoots
@@ -75,9 +75,9 @@ impl<T> ChainIndexSourcePorts for T where
         + zaino_source::OneShotGetBestBlockHeight
         + zaino_source::OneShotGetBlockDeltas
         + zaino_source::OneShotGetBlockHeader
-        + zaino_source::GetBlockSubsidy
+        + zaino_source::OneShotGetBlockSubsidy
         + zaino_source::GetBlockVerboseByHash
-        + zaino_source::GetBlockchainInfo
+        + zaino_source::OneShotGetBlockchainInfo
         + zaino_source::GetChainTip
         + zaino_source::GetChainTips
         + zaino_source::GetCommitmentTreeRoots

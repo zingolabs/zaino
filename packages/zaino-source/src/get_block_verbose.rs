@@ -26,7 +26,7 @@ pub enum GetBlockVerboseError {
 /// Fetch verbose block metadata at a given height.
 ///
 /// Maps to `getblock(height, 1)` over JSON-RPC.
-pub trait GetBlockVerbose: Send + Sync {
+pub trait OneShotGetBlockVerbose: Send + Sync {
     /// Fetch verbose metadata.
     fn get_block_verbose(
         &self,
