@@ -52,8 +52,8 @@ mod subscribe_chain_tip;
 pub mod resilient;
 
 pub use error::{FailureMode, FetchError, QueryError, SourceError, UnavailableError};
-pub use get_address_balance::{GetAddressBalance, GetAddressBalanceError};
-pub use get_address_deltas::{GetAddressDeltas, GetAddressDeltasError};
+pub use get_address_balance::{GetAddressBalanceError, OneShotGetAddressBalance};
+pub use get_address_deltas::{GetAddressDeltasError, OneShotGetAddressDeltas};
 pub use get_address_txids::{GetAddressTxids, GetAddressTxidsError};
 pub use get_address_utxos::{GetAddressUtxos, GetAddressUtxosError};
 pub use get_best_block_height::{GetBestBlockHeight, GetBestBlockHeightError};

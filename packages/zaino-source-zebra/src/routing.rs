@@ -251,7 +251,7 @@ impl GetSubtreeRoots for ZebraValidator {
 // Transparent addresses
 // ---------------------------------------------------------------------------
 
-impl GetAddressBalance for ZebraValidator {
+impl OneShotGetAddressBalance for ZebraValidator {
     async fn get_address_balance(
         &self,
         addresses: Vec<String>,
@@ -289,7 +289,7 @@ impl GetAddressUtxos for ZebraValidator {
     }
 }
 
-impl GetAddressDeltas for ZebraValidator {
+impl OneShotGetAddressDeltas for ZebraValidator {
     async fn get_address_deltas(
         &self,
         addresses: Vec<String>,

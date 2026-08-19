@@ -675,7 +675,7 @@ impl zaino_source::GetMempoolSourceTip for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetAddressBalance for ZebraRpcAdapter {
+impl zaino_source::OneShotGetAddressBalance for ZebraRpcAdapter {
     async fn get_address_balance(
         &self,
         addresses: Vec<String>,
@@ -693,7 +693,7 @@ impl zaino_source::GetAddressBalance for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetAddressDeltas for ZebraRpcAdapter {
+impl zaino_source::OneShotGetAddressDeltas for ZebraRpcAdapter {
     async fn get_address_deltas(
         &self,
         addresses: Vec<String>,

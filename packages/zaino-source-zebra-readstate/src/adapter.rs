@@ -355,7 +355,7 @@ impl zaino_source::GetSubtreeRoots for ZebraReadStateAdapter {
     }
 }
 
-impl zaino_source::GetAddressBalance for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetAddressBalance for ZebraReadStateAdapter {
     async fn get_address_balance(
         &self,
         addresses: Vec<String>,
@@ -548,7 +548,7 @@ impl zaino_source::GetAddressTxids for ZebraReadStateAdapter {
 /// This matches the behaviour of the connector this replaced, which built the
 /// same answer through a verbose-transaction shape whose inputs likewise
 /// carried no address.
-impl zaino_source::GetAddressDeltas for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetAddressDeltas for ZebraReadStateAdapter {
     async fn get_address_deltas(
         &self,
         addresses: Vec<String>,

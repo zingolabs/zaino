@@ -1026,7 +1026,7 @@ impl zaino_source::GetChainTips for MockchainSource {
     }
 }
 
-impl zaino_source::GetAddressBalance for MockchainSource {
+impl zaino_source::OneShotGetAddressBalance for MockchainSource {
     async fn get_address_balance(
         &self,
         addresses: Vec<String>,
@@ -1301,7 +1301,7 @@ impl zaino_source::GetBlockDeltas for MockchainSource {
     }
 }
 
-impl zaino_source::GetAddressDeltas for MockchainSource {
+impl zaino_source::OneShotGetAddressDeltas for MockchainSource {
     async fn get_address_deltas(
         &self,
         addresses: Vec<String>,

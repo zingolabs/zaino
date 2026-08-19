@@ -108,8 +108,8 @@ pub trait ChainIndexSourceCaps:
     + GetSubtreeRoots
     + GetTreestate
     + GetTreestateByHash
-    + GetAddressBalance
-    + GetAddressDeltas
+    + OneShotGetAddressBalance
+    + OneShotGetAddressDeltas
     + GetAddressTxids
     + GetAddressUtxos
     + SendRawTransaction
@@ -139,8 +139,8 @@ impl<T> ChainIndexSourceCaps for T where
         + GetSubtreeRoots
         + GetTreestate
         + GetTreestateByHash
-        + GetAddressBalance
-        + GetAddressDeltas
+        + OneShotGetAddressBalance
+        + OneShotGetAddressDeltas
         + GetAddressTxids
         + GetAddressUtxos
         + SendRawTransaction

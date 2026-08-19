@@ -1784,7 +1784,7 @@ impl zaino_source::GetSubtreeRoots for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetAddressDeltas for ProptestMockchain {
+impl zaino_source::OneShotGetAddressDeltas for ProptestMockchain {
     async fn get_address_deltas(
         &self,
         _addresses: Vec<String>,
@@ -1798,7 +1798,7 @@ impl zaino_source::GetAddressDeltas for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetAddressBalance for ProptestMockchain {
+impl zaino_source::OneShotGetAddressBalance for ProptestMockchain {
     async fn get_address_balance(
         &self,
         _addresses: Vec<String>,

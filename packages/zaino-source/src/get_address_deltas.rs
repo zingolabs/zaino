@@ -31,7 +31,7 @@ pub enum GetAddressDeltasError {
 /// Fetch balance deltas for transparent addresses over a height range.
 ///
 /// Maps to `getaddressdeltas` over JSON-RPC.
-pub trait GetAddressDeltas: Send + Sync {
+pub trait OneShotGetAddressDeltas: Send + Sync {
     /// Fetch address deltas.
     fn get_address_deltas(
         &self,
