@@ -464,7 +464,9 @@ impl<V: ChainIndexSourcePorts> zaino_source::OneShotGetMempoolMetadata for Valid
     }
 }
 
-impl<V: ChainIndexSourcePorts> zaino_source::OneShotGetRawMempoolTransaction for ValidatorSource<V> {
+impl<V: ChainIndexSourcePorts> zaino_source::OneShotGetRawMempoolTransaction
+    for ValidatorSource<V>
+{
     async fn get_raw_mempool_transaction(
         &self,
         txid: zaino_primitives::types::TransactionId,
