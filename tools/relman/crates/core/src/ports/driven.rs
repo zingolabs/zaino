@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::types::{DateTime, Slug, Utc};
 
 /// Outbound port: the current time.
@@ -63,4 +65,40 @@ pub trait ChangesetStore: Send + Sync {
 pub trait SlugSource: Send + Sync {
     /// Produce a fresh candidate slug.
     fn generate(&self) -> Slug;
+}
+
+/// Everything that can go wrong querying version control.
+///
+/// I/O-only, like [`ChangesetStoreError`]: it carries the low-level failure of
+/// shelling out to `git`, not any interpretation of the diff (that is the
+/// domain's job).
+#[derive(Debug, thiserror::Error)]
+pub enum VcsError {
+    /// The version-control process could not be launched.
+    #[error("failed to launch the version-control command")]
+    Spawn(#[source] std::io::Error),
+    /// The version-control command ran but exited non-zero.
+    #[error("version-control command `{command}` failed: {stderr}")]
+    Command {
+        /// The command line that was run, for diagnostics.
+        command: String,
+        /// Whatever the command wrote to stderr, trimmed.
+        stderr: String,
+    },
+    /// The command's output was not valid UTF-8.
+    #[error("version-control output was not valid UTF-8")]
+    Encoding(#[source] std::string::FromUtf8Error),
+}
+
+/// Outbound port: the version-control view of what a PR changed.
+///
+/// The domain depends on this rather than shelling out to `git` directly, so
+/// changeset enforcement stays deterministic under test (see the `StubVcs`
+/// mock). The binary wires a real git adapter.
+pub trait Vcs: Send + Sync {
+    /// Repo-relative paths changed on `HEAD` relative to `base` — the PR's
+    /// changes. The real adapter computes this as the three-dot diff
+    /// (`git diff --name-only <base>...HEAD`), i.e. changes on `HEAD` since its
+    /// merge-base with `base`.
+    fn changed_files(&self, base: &str) -> Result<Vec<PathBuf>, VcsError>;
 }

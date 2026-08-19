@@ -12,7 +12,9 @@ mod changeset_store;
 mod clock;
 pub mod fixtures;
 mod slug_source;
+mod vcs;
 
 pub use changeset_store::MapChangesetStore;
 pub use clock::FixedClock;
 pub use slug_source::SequenceSlugSource;
+pub use vcs::StubVcs;

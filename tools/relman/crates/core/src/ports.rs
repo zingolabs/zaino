@@ -8,5 +8,8 @@
 mod driven;
 mod driving;
 
-pub use driven::{ChangesetStore, ChangesetStoreError, Clock, SlugSource};
-pub use driving::{About, Changesets, ChangesetsError, NewChangeset};
+pub use driven::{ChangesetStore, ChangesetStoreError, Clock, SlugSource, Vcs, VcsError};
+pub use driving::{
+    About, ChangesetCheck, CheckError, CheckReport, Changesets, ChangesetsError, NewChangeset,
+    Violation,
+};
