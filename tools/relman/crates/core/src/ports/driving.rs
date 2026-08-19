@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::ports::{ChangesetStoreError, VcsError, WorkspaceError};
+use crate::ports::{ChangesetStoreError, ManifestError, VcsError, WorkspaceError};
 use crate::types::{AboutReport, BumpTable, CrateName, Description, Slug};
 
 /// Inbound port: report who relman is (version) and what it thinks "now" is.
@@ -197,4 +197,38 @@ pub enum DeriveError {
 pub trait Versions: Send + Sync {
     /// Aggregate changesets into direct + transitive per-crate bumps.
     fn derive(&self) -> Result<BumpTable, DeriveError>;
+}
+
+/// Everything that can go wrong applying a derived [`BumpTable`] to the
+/// workspace manifests.
+#[derive(Debug, thiserror::Error)]
+pub enum ApplyError {
+    /// A `CrateBump` named a crate that is not a declared target, so no manifest
+    /// path could be resolved for it. We fail rather than silently skip, so a
+    /// mis-targeted bump can never vanish.
+    #[error("bump names {crate_name:?}, which is not a declared target")]
+    UnknownTarget {
+        /// The undeclared crate name.
+        crate_name: String,
+    },
+    /// Editing one of the manifests failed.
+    #[error("manifest edit failed")]
+    Manifest(#[from] ManifestError),
+}
+
+/// Inbound port: mechanically apply a derived [`BumpTable`] to the workspace
+/// manifests.
+///
+/// Implemented by the domain (`BumpService`) over the [`ManifestEditor`] driven
+/// port and the loaded config: it sets each bumped crate's `[package] version`
+/// and updates the matching root `[workspace.dependencies]` pin. Named
+/// `ApplyBump` (not `Bump`) to avoid clashing with the [`Bump`] *type*.
+///
+/// [`ManifestEditor`]: crate::ports::ManifestEditor
+/// [`Bump`]: crate::types::Bump
+pub trait ApplyBump: Send + Sync {
+    /// Apply every [`CrateBump`] in `table` to the manifests.
+    ///
+    /// [`CrateBump`]: crate::types::CrateBump
+    fn apply(&self, table: &BumpTable) -> Result<(), ApplyError>;
 }

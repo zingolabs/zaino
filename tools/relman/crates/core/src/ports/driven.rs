@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::types::{CrateName, DateTime, Slug, Utc, Version};
 
@@ -145,4 +145,84 @@ pub trait Workspace: Send + Sync {
     fn internal_deps(
         &self,
     ) -> Result<BTreeMap<CrateName, Vec<(CrateName, semver::VersionReq)>>, WorkspaceError>;
+}
+
+/// Everything that can go wrong applying a derived bump to a manifest.
+///
+/// Parsing is rendered to a `String` (like [`DeriveError::ChangesetParse`]) so
+/// the port stays free of any concrete TOML library — the `toml_edit` adapter
+/// owns that dependency, the core does not.
+///
+/// [`DeriveError::ChangesetParse`]: crate::ports::DeriveError::ChangesetParse
+#[derive(Debug, thiserror::Error)]
+pub enum ManifestError {
+    /// Reading or writing the manifest file failed.
+    #[error("manifest I/O failed for {path}")]
+    Io {
+        /// The manifest path being operated on, for diagnostics.
+        path: String,
+        /// The underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The manifest text was not well-formed TOML.
+    #[error("failed to parse manifest {path} as TOML: {message}")]
+    TomlParse {
+        /// The manifest path being parsed.
+        path: String,
+        /// The rendered parse error.
+        message: String,
+    },
+    /// A crate manifest had no `[package]` table, so there is no version to set.
+    #[error("manifest {path} has no [package] table")]
+    MissingPackageTable {
+        /// The offending manifest path.
+        path: String,
+    },
+    /// A crate manifest inherits its version with `version.workspace = true`.
+    /// Zaino crates carry a literal per-crate `version`; silently editing an
+    /// inherited version would touch the wrong place, so we refuse.
+    #[error(
+        "manifest {path} sets `version.workspace = true`; \
+         relman expects a literal per-crate [package] version"
+    )]
+    VersionIsWorkspaceInherited {
+        /// The offending manifest path.
+        path: String,
+    },
+}
+
+/// Outbound port: format-preserving edits to workspace manifests.
+///
+/// The domain depends on this rather than parsing `Cargo.toml` itself, so the
+/// bump service stays deterministic under test (see `RecordingManifestEditor`).
+/// The binary wires a `toml_edit`-backed adapter that mutates exactly one field
+/// and preserves all surrounding formatting and comments.
+pub trait ManifestEditor: Send + Sync {
+    /// Set `[package] version = "<version>"` in the crate manifest at
+    /// `manifest_path`. Returns [`ManifestError::VersionIsWorkspaceInherited`]
+    /// if the manifest inherits its version rather than carrying a literal one.
+    fn set_package_version(
+        &self,
+        manifest_path: &Path,
+        version: &Version,
+    ) -> Result<(), ManifestError>;
+
+    /// Update the pinned version of `dep` in the root manifest's
+    /// `[workspace.dependencies]`, handling both the string form
+    /// (`dep = "0.6.0"`) and the inline-table form
+    /// (`dep = { version = "0.6.0", ... }`) — only the version changes, every
+    /// other key and all formatting is preserved.
+    ///
+    /// Returns `Ok(true)` when a version pin was updated and `Ok(false)` when
+    /// `dep` carries no version pin to update — either it is absent from
+    /// `[workspace.dependencies]` or it is a path-only entry with no `version`
+    /// key. Not every governed crate is pinned with a version, so that is a
+    /// normal outcome, not an error.
+    fn set_workspace_dep_version(
+        &self,
+        root_manifest: &Path,
+        dep: &CrateName,
+        version: &Version,
+    ) -> Result<bool, ManifestError>;
 }
