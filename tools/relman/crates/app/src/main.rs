@@ -14,7 +14,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
 
 use relman_adapters::{
@@ -32,8 +32,29 @@ use relman_domain::services::{
     ReleaseArtifactsService, VersionService,
 };
 
-/// The repo-committed manifest, looked up in the current working directory.
+/// The repo-committed manifest, discovered by walking up from the current
+/// directory (like `git`/`cargo` find their roots).
 const MANIFEST_NAME: &str = "relman.toml";
+
+/// Find the directory containing `relman.toml`, starting at the current
+/// directory and walking up to the filesystem root. This lets `relman` run
+/// from any subdirectory of the repo, resolving all paths against the root.
+fn find_manifest_dir() -> Result<PathBuf> {
+    let start = std::env::current_dir().context("failed to read the current directory")?;
+    let mut dir = start.as_path();
+    loop {
+        if dir.join(MANIFEST_NAME).is_file() {
+            return Ok(dir.to_path_buf());
+        }
+        match dir.parent() {
+            Some(parent) => dir = parent,
+            None => bail!(
+                "could not find {MANIFEST_NAME} in {} or any parent directory",
+                start.display()
+            ),
+        }
+    }
+}
 
 /// Real system-clock adapter for the [`Clock`] driven port.
 struct SystemClock;
@@ -88,13 +109,15 @@ fn main() -> Result<()> {
 /// Loads `relman.toml` from the current directory, resolves the changesets
 /// directory relative to it, and wires the real adapters into the services.
 fn with_ctx(f: impl FnOnce(&Ctx) -> Result<()>) -> Result<()> {
-    let manifest_path = PathBuf::from(MANIFEST_NAME);
+    let root_dir = find_manifest_dir()?;
+    let manifest_path = root_dir.join(MANIFEST_NAME);
     let config = relman_config::load(&manifest_path)
-        .with_context(|| format!("failed to load {MANIFEST_NAME} from the current directory"))?;
+        .with_context(|| format!("failed to load {}", manifest_path.display()))?;
 
-    // The manifest lives at the repo root; resolve the changesets dir against
-    // that root (the manifest's parent, i.e. the current directory here).
-    let changesets_dir = config.options().changesets_dir().as_path().to_path_buf();
+    // Every manifest-declared path is relative to the repo root (where
+    // `relman.toml` lives); resolve them against the discovered root so the
+    // command works regardless of the current directory.
+    let changesets_dir = root_dir.join(config.options().changesets_dir().as_path());
 
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let about = Arc::new(AboutService::new(clock));
@@ -103,9 +126,9 @@ fn with_ctx(f: impl FnOnce(&Ctx) -> Result<()>) -> Result<()> {
     let slugs: Arc<dyn SlugSource> = Arc::new(RandomSlugSource::new());
     let changesets: Arc<dyn Changesets> = Arc::new(ChangesetService::new(store.clone(), slugs));
 
-    // The manifest lives at the repo root, i.e. the current directory, so git
-    // runs there and reports repo-relative paths.
-    let vcs: Arc<dyn Vcs> = Arc::new(GitVcs::new(PathBuf::from(".")));
+    // Run git in the repo root so it reports paths relative to that root,
+    // matching the target `path`s in `relman.toml`.
+    let vcs: Arc<dyn Vcs> = Arc::new(GitVcs::new(root_dir.clone()));
 
     // The workspace adapter reads resolved versions and dependency edges from
     // the repo-root manifest via `cargo metadata`, filtered to the governed set.
@@ -114,7 +137,7 @@ fn with_ctx(f: impl FnOnce(&Ctx) -> Result<()>) -> Result<()> {
         .iter()
         .map(|target| target.name().clone())
         .collect();
-    let root_manifest = config.options().root_manifest().as_path().to_path_buf();
+    let root_manifest = root_dir.join(config.options().root_manifest().as_path());
     let workspace: Arc<dyn Workspace> =
         Arc::new(CargoMetadataWorkspace::new(root_manifest.clone(), governed));
     let versions: Arc<dyn Versions> = Arc::new(VersionService::new(

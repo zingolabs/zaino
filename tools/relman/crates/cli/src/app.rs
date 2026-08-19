@@ -5,6 +5,7 @@ use crate::commands::{about, bump, changelog, changeset, pr_body, publish_plan, 
 #[derive(Parser)]
 #[command(
     name = "relman",
+    version,
     about = "Zaino release manager: changeset-driven versioning, changelogs, and release orchestration"
 )]
 pub struct Cli {
