@@ -6,9 +6,9 @@
 # and the publish plan covers exactly this set. No `cargo metadata` heuristic
 # decides governance — this file does.
 #
-# Target set: the 13 crates.io-published packages named in the release ADR
-# (docs/decision_records/release/pipeline.md § Context). The internal-only
-# crates (live-tests/{e2e,clientless,zaino-testutils}) are deliberately absent.
+# Target set: the 17 crates.io-published packages (docs/decision_records/release/
+# pipeline.md § Context). The internal-only crates
+# (live-tests/{e2e,clientless,zaino-testutils}) are deliberately absent.
 
 [options]
 changesets_dir      = ".changesets"
@@ -68,3 +68,19 @@ path = "packages/zaino-source-zebra-readstate"
 [[target]]
 name = "zaino-source-zebra"
 path = "packages/zaino-source-zebra"
+
+[[target]]
+name = "zaino-consensus"
+path = "packages/zaino-consensus"
+
+[[target]]
+name = "zaino-mempool"
+path = "packages/zaino-mempool"
+
+[[target]]
+name = "zaino-mempool-service"
+path = "packages/zaino-mempool-service"
+
+[[target]]
+name = "zaino-status"
+path = "packages/zaino-status"

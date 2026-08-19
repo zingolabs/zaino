@@ -45,12 +45,15 @@ landed. We do not cherry-pick from `dev` to cut releases — a release is always
 a **prefix** of `dev`'s history (the hotfix path, below, is the sole, contained
 exception).
 
-There are 13 publishable crates (`zainod`, `zaino-serve`, `zaino-state`,
+There are 17 publishable crates (`zainod`, `zaino-serve`, `zaino-state`,
 `zaino-proto`, `zaino-common`, `zaino-primitives`, `zaino-address`,
 `zaino-source`, `zaino-rpc`, `zaino-convert-zebra`, `zaino-source-zebra-rpc`,
-`zaino-source-zebra-readstate`, `zaino-source-zebra`) and 3 internal-only
+`zaino-source-zebra-readstate`, `zaino-source-zebra`, `zaino-consensus`,
+`zaino-mempool`, `zaino-mempool-service`, `zaino-status`) and 3 internal-only
 (`e2e`, `clientless`, `zaino-testutils`). Each public crate is versioned and
-released **independently**.
+released **independently**. The authoritative, machine-read list of governed
+targets is [`relman.toml`](../../../relman.toml) at the repo root; this prose
+list mirrors it.
 
 > Some worked examples below predate ADR-0008 (which deleted `zaino-fetch` and
 > added the source stack) and name the old 6-crate set. The release
@@ -818,16 +821,19 @@ From [ADR 003 §5, "Public interfaces governed by this ADR"](https://github.com/
 > This section defines the "compatibility surface" that drives SemVer bumps and stable-branch gatekeeping.
 
 **Authoritative crate list (this repo)**: [Context](#context) enumerates the
-**13 crates.io-published packages** and **3 internal-only packages** (`e2e`,
-`clientless`, `zaino-testutils`). This list has grown since ADR 003: `zaino-fetch`
-was **deleted** and the source stack (`zaino-source*`, `zaino-primitives`,
-`zaino-address`, `zaino-rpc`, `zaino-convert-zebra`) **added** by ADR-0008, and
-`integration` was renamed `clientless` by ADR-0004. The per-crate
-public-interface subsections below still reflect the **older** set; deriving the
-governed public-item lists for the source-stack crates is a **pending
-follow-up** (tracked with the drift note at the end of this section). The
-release *mechanism* in the body above is unaffected — it operates over whatever
-the current crate list is.
+**17 crates.io-published packages** and **3 internal-only packages** (`e2e`,
+`clientless`, `zaino-testutils`), mirroring the machine-read
+[`relman.toml`](../../../relman.toml). This list has grown since ADR 003:
+`zaino-fetch` was **deleted** and the source stack (`zaino-source*`,
+`zaino-primitives`, `zaino-address`, `zaino-rpc`, `zaino-convert-zebra`)
+**added** by ADR-0008; `integration` was renamed `clientless` by ADR-0004; and
+`zaino-consensus`, `zaino-mempool`, `zaino-mempool-service`, `zaino-status` were
+added later and brought under governance. The per-crate public-interface
+subsections below still reflect the **older** set; deriving the governed
+public-item lists for the source-stack, consensus, mempool, and status crates is
+a **pending follow-up** (tracked with the drift note at the end of this
+section). The release *mechanism* in the body above is unaffected — it operates
+over whatever the current crate list is.
 
 `zainodlib` exists as a library target inside the `zainod` package
 (`packages/zainod/Cargo.toml`: `[[bin]] name = "zainod"` alongside
