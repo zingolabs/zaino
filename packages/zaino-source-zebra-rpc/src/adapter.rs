@@ -427,7 +427,7 @@ impl ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetBlockByHash for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlockByHash for ZebraRpcAdapter {
     async fn get_block_by_hash(
         &self,
         hash: BlockHash,

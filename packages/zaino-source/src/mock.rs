@@ -98,7 +98,7 @@ impl crate::OneShotGetBlock for MockChain {
     }
 }
 
-impl crate::GetBlockByHash for MockChain {
+impl crate::OneShotGetBlockByHash for MockChain {
     async fn get_block_by_hash(
         &self,
         hash: BlockHash,
@@ -215,7 +215,7 @@ mod tests {
     #[tokio::test]
     async fn get_block_by_hash_roundtrip() {
         let mock = MockChain::new().with_block(test_block(0, 1));
-        let block = crate::GetBlockByHash::get_block_by_hash(&mock, hash(1))
+        let block = crate::OneShotGetBlockByHash::get_block_by_hash(&mock, hash(1))
             .await
             .expect("block exists");
         assert_eq!(block.header.height, height(0));

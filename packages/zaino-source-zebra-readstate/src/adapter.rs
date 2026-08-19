@@ -249,7 +249,7 @@ impl zaino_source::GetChainTip for ZebraReadStateAdapter {
     }
 }
 
-impl zaino_source::GetBlockByHash for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetBlockByHash for ZebraReadStateAdapter {
     async fn get_block_by_hash(
         &self,
         hash: BlockHash,

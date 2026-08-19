@@ -1160,7 +1160,7 @@ impl zaino_source::OneShotGetBlock for ProptestMockchain {
     }
 }
 
-impl zaino_source::GetBlockByHash for ProptestMockchain {
+impl zaino_source::OneShotGetBlockByHash for ProptestMockchain {
     async fn get_block_by_hash(
         &self,
         hash: zaino_primitives::types::BlockHash,

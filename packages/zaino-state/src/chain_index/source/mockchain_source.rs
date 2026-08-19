@@ -535,7 +535,7 @@ impl zaino_source::OneShotGetBlock for MockchainSource {
     }
 }
 
-impl zaino_source::GetBlockByHash for MockchainSource {
+impl zaino_source::OneShotGetBlockByHash for MockchainSource {
     async fn get_block_by_hash(
         &self,
         hash: domain::BlockHash,
