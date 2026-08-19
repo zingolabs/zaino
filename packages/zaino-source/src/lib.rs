@@ -67,7 +67,7 @@ pub use get_blockchain_info::{GetBlockchainInfoError, OneShotGetBlockchainInfo};
 pub use get_chain_tip::{GetChainTipError, OneShotGetChainTip};
 pub use get_chain_tips::{GetChainTipsError, OneShotGetChainTips};
 pub use get_commitment_tree_roots::{GetCommitmentTreeRootsError, OneShotGetCommitmentTreeRoots};
-pub use get_compact_block::GetPreIndexCompactBlock;
+pub use get_compact_block::OneShotGetPreIndexCompactBlock;
 pub use get_difficulty::{GetDifficulty, GetDifficultyError};
 pub use get_mempool_metadata::{GetMempoolMetadata, GetMempoolMetadataError, MempoolTxMeta};
 pub use get_mempool_source_tip::GetMempoolSourceTip;

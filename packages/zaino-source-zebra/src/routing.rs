@@ -177,7 +177,7 @@ impl OneShotGetBestBlockHeight for ZebraValidator {
     }
 }
 
-impl GetPreIndexCompactBlock for ZebraValidator {
+impl OneShotGetPreIndexCompactBlock for ZebraValidator {
     async fn get_pre_index_compact_block(
         &self,
         height: Height,

@@ -249,7 +249,7 @@ impl zaino_source::OneShotGetChainTip for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetPreIndexCompactBlock for ZebraRpcAdapter {
+impl zaino_source::OneShotGetPreIndexCompactBlock for ZebraRpcAdapter {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(h = u32::from(height))))]
     async fn get_pre_index_compact_block(
         &self,
