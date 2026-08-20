@@ -69,75 +69,74 @@ jobs:
           echo "stable is $ahead commit(s) ahead of dev"
           echo "ahead=$ahead" >> "$GITHUB_OUTPUT"
 
-      - name: Skip if a sync PR is already open
-        id: existing
+      # Ensure exactly one sync PR is open AND carries auto-merge. This is
+      # idempotent and SELF-HEALING: if a sync PR is already open we re-assert
+      # auto-merge on it (rather than skip), so a PR that never got auto-merge —
+      # e.g. a transient failure, or the post-create mergeability race below —
+      # is not left stuck blocking every future backport. Re-asserting never
+      # touches the branch, so any in-flight human conflict resolution is safe,
+      # and a genuinely conflicting PR just stays open (auto-merge pending) as
+      # the signal for a human.
+      - name: Ensure a backport PR with auto-merge
         if: steps.delta.outputs.ahead != '0'
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          set -euo pipefail
-          # An open sync PR may carry in-flight human conflict resolution on its
-          # branch; never clobber it. Let the existing PR absorb the new commits
-          # when its author next reconciles.
-          num="$(gh pr list --base dev --head sync/stable-to-dev --state open \
-            --json number --jq '.[0].number // empty')"
-          if [ -n "$num" ]; then
-            echo "::notice::Backport PR #$num already open; leaving in-flight resolution untouched."
-            echo "open=$num" >> "$GITHUB_OUTPUT"
-          else
-            echo "open=" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Open the backport PR and enable auto-merge
-        if: steps.delta.outputs.ahead != '0' && steps.existing.outputs.open == ''
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           branch="sync/stable-to-dev"
 
-          # A disposable snapshot of stable's tip. Force is safe: we only reach
-          # here with no open sync PR, so no in-flight resolution can be lost.
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git branch -f "$branch" origin/stable
-          git push -f origin "$branch"
+          num="$(gh pr list --base dev --head "$branch" --state open \
+            --json number --jq '.[0].number // empty')"
 
-          # Build the PR body with printf, not a heredoc: an unindented heredoc
-          # body would break out of this YAML block scalar. printf keeps every
-          # line inside the scalar while emitting a flush-left markdown body.
-          # SC2016: the backticks below are literal markdown code-spans, not
-          # command substitution — single quotes are deliberate.
-          # shellcheck disable=SC2016
-          {
-            printf '%s\n' 'Automated backport: `stable` is ahead of `dev`, so this carries the release'
-            printf '%s\n' 'commit (version bumps, CHANGELOGs, `.changesets/` consumed marks) and any'
-            printf '%s\n\n' 'straight-to-`stable` hotfix back into `dev`, keeping the lineage append-only.'
-            printf '%s\n' "From \`dev\`'s point of view this is an ordinary feature PR. If it conflicts,"
-            printf '%s\n' "resolve on \`$branch\` (never on \`stable\`). It is exempt from the dev-gate"
-            printf '%s\n\n' 'changeset check by design — a mechanical backport introduces no new changeset.'
-            printf '%s\n\n' 'Commits being carried back:'
-            printf '%s\n' '```'
-            git log --oneline origin/dev..origin/stable
-            printf '%s\n\n' '```'
-            printf '%s\n' 'See docs/decision_records/release/pipeline.md § "Reverse: the Backport Sentinel".'
-          } > body.md
+          if [ -z "$num" ]; then
+            # No open sync PR: cut a fresh snapshot of stable's tip and open one.
+            # Force is safe — with no open PR there is no resolution to lose.
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git branch -f "$branch" origin/stable
+            git push -f origin "$branch"
 
-          url="$(gh pr create --base dev --head "$branch" \
-            --title "sync: backport stable → dev" \
-            --body-file body.md)"
-          echo "Opened backport PR: $url"
+            # printf, not a heredoc: an unindented heredoc body would break out of
+            # this YAML block scalar. SC2016: the backticks are literal markdown
+            # code-spans, not command substitution — single quotes are deliberate.
+            # shellcheck disable=SC2016
+            {
+              printf '%s\n' 'Automated backport: `stable` is ahead of `dev`, so this carries the release'
+              printf '%s\n' 'commit (version bumps, CHANGELOGs, `.changesets/` consumed marks) and any'
+              printf '%s\n\n' 'straight-to-`stable` hotfix back into `dev`, keeping the lineage append-only.'
+              printf '%s\n' "From \`dev\`'s point of view this is an ordinary feature PR. If it conflicts,"
+              printf '%s\n' "resolve on \`$branch\` (never on \`stable\`). It is exempt from the dev-gate"
+              printf '%s\n\n' 'changeset check by design — a mechanical backport introduces no new changeset.'
+              printf '%s\n\n' 'Commits being carried back:'
+              printf '%s\n' '```'
+              git log --oneline origin/dev..origin/stable
+              printf '%s\n\n' '```'
+              printf '%s\n' 'See docs/decision_records/release/pipeline.md § "Reverse: the Backport Sentinel".'
+            } > body.md
 
-          # Enable auto-merge with a MERGE COMMIT (never squash/rebase): only a
-          # true merge brings stable's commits into `dev`, so `stable \ dev`
-          # empties and this sentinel stops firing; squash/rebase mint new SHAs
-          # and it would re-fire forever. GitHub then merges the instant the PR
-          # is mergeable and the dev-gate is green — so a clean, CI-green backport
-          # lands with no human toil, while a textual conflict OR a red gate
-          # leaves the PR open as the visible desync signal for a human. The
-          # dev-gate runs on the *merged* result, catching a semantic conflict a
-          # textually-clean merge would hide. Best-effort: if the repo has not
-          # enabled auto-merge, warn and leave the PR for a manual merge.
-          if ! gh pr merge "$url" --auto --merge; then
-            echo "::warning::Could not enable auto-merge (is 'Allow auto-merge' enabled on the repo?); leaving the PR open for a manual merge."
+            num="$(gh pr create --base dev --head "$branch" \
+              --title "sync: backport stable → dev" --body-file body.md \
+              | sed 's#.*/##')"
+            echo "Opened backport PR #$num"
+          else
+            echo "::notice::Backport PR #$num already open; re-asserting auto-merge (branch untouched)."
           fi
+
+          # Already enabled? Nothing to do.
+          if [ "$(gh pr view "$num" --json autoMergeRequest --jq '.autoMergeRequest != null')" = "true" ]; then
+            echo "auto-merge already enabled on #$num"
+            exit 0
+          fi
+
+          # (Re-)assert auto-merge with a MERGE COMMIT (never squash/rebase: only a
+          # true merge empties `stable \ dev` and stops this sentinel re-firing).
+          # Retry past GitHub's post-create mergeability race ("not mergeable yet").
+          for attempt in 1 2 3 4 5; do
+            if gh pr merge "$num" --auto --merge; then
+              echo "auto-merge enabled on #$num (attempt $attempt)"
+              exit 0
+            fi
+            echo "auto-merge enable attempt $attempt failed (mergeability still computing?); retrying..."
+            sleep 6
+          done
+          echo "::warning::Could not enable auto-merge on #$num after retries; leaving it for a manual merge."
