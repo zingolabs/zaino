@@ -2058,7 +2058,7 @@ async fn get_outpoint_spenders_fetch_vs_state() {
 
     // Both backends must agree and resolve each scope correctly.
     for indexer in [&svc.fetch_subscriber.indexer, &svc.state_subscriber.indexer] {
-        let snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
+        let snapshot = indexer.snapshot_nonfinalized_state();
 
         // FullChain resolves both the finalised and the non-finalised spend.
         let full = indexer

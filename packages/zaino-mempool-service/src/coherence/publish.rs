@@ -7,9 +7,10 @@ use std::time::Instant;
 use zaino_status::StatusType;
 
 use zaino_mempool::event::MempoolEvent;
-use zaino_mempool::ports::{Mempool, NfsEpochObserver, NonFinalizedEpoch};
+use zaino_mempool::ports::{Mempool, NfsEpochObserver};
 use zaino_mempool::snapshot::MempoolSnapshot;
 use zaino_mempool::tip::{CoherentSnapshot, FreezeReason, MempoolMode, ObservedTips};
+use zaino_primitives::types::ChainStateEpoch;
 
 impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
     pub(super) fn publish_live(
@@ -17,7 +18,7 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
         prev: &CoherentSnapshot,
         core: Arc<MempoolSnapshot>,
         observed: ObservedTips,
-        epoch: NonFinalizedEpoch,
+        epoch: ChainStateEpoch,
     ) {
         // Serving live: the freeze clock (if any) stops here.
         let was_frozen = matches!(prev.mode, MempoolMode::Frozen { .. });
