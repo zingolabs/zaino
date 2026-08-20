@@ -5,8 +5,8 @@ use std::sync::Arc;
 use relman_config::ReleaseConfig;
 use relman_core::ports::{ChangesetStore, DeriveError, Versions, Workspace};
 use relman_core::types::{
-    Bump, BumpTable, ChangeKind, Changeset, ChangesetError, CrateBump, CrateName, StoredChangeset,
-    Version,
+    Bump, BumpTable, ChangeKind, Changeset, ChangesetError, ConsumedLedger, CrateBump, CrateName,
+    StoredChangeset, Version,
 };
 
 /// Derives the per-crate version [`BumpTable`] from the accumulated changesets
@@ -28,6 +28,10 @@ pub struct VersionService {
     config: ReleaseConfig,
     store: Arc<dyn ChangesetStore>,
     workspace: Arc<dyn Workspace>,
+    /// The already-shipped changeset ids to exclude, on top of the per-file
+    /// `consumed_in` mark. A pure derivation input, loaded once at the CLI
+    /// boundary and held here so the service stays unit-testable in memory.
+    ledger: ConsumedLedger,
 }
 
 /// The direct-bump inputs collected from the changeset set, per crate: the
@@ -44,17 +48,27 @@ impl VersionService {
         config: ReleaseConfig,
         store: Arc<dyn ChangesetStore>,
         workspace: Arc<dyn Workspace>,
+        ledger: ConsumedLedger,
     ) -> Self {
         Self {
             config,
             store,
             workspace,
+            ledger,
         }
     }
 
     /// Whether `name` is a governed target declared in `relman.toml`.
     fn is_target(&self, name: &CrateName) -> bool {
         self.config.target_by_name(name).is_some()
+    }
+
+    /// Whether a parsed changeset has already shipped — either by its per-file
+    /// `consumed_in` mark or by its id appearing in the consumed-UID ledger. The
+    /// ledger closes the window where a released changeset's mark hasn't yet
+    /// backported from `stable` to `dev`.
+    fn is_shipped(&self, stored: &StoredChangeset) -> bool {
+        stored.consumed_in().is_some() || stored.id().is_some_and(|id| self.ledger.contains(id))
     }
 
     /// Read and parse the whole changeset set, folding each `WithChanges` entry
@@ -82,11 +96,12 @@ impl VersionService {
                     });
                 }
             };
-            // A consumed changeset was folded into a past release; it is left on
+            // A shipped changeset was folded into a past release; it is left on
             // disk as provenance and must not bump anything again. Skipping it
             // makes aggregation self-defending against a released changeset that
-            // lingers in `.changesets/`.
-            if stored.consumed_in().is_some() {
+            // lingers in `.changesets/` — whether marked in-file or only known
+            // shipped through the ledger.
+            if self.is_shipped(&stored) {
                 continue;
             }
             let Changeset::WithChanges(entries) = stored.into_body() else {
@@ -246,10 +261,16 @@ impl Versions for VersionService {
         let mut unfilled = Vec::new();
         for slug in &slugs {
             let raw = self.store.read(slug)?;
-            // A consumed changeset is historical provenance, never a "you left a
+            // A shipped changeset is historical provenance, never a "you left a
             // template unfilled" warning — even if consume stamped a still-empty
-            // template. Its mark reads without validating the body.
+            // template. Both the in-file mark and the id read without validating
+            // the body, so a ledgered-but-unmarked template is skipped too.
             if matches!(StoredChangeset::consumed_marker(&raw), Ok(Some(_))) {
+                continue;
+            }
+            if let Ok(Some(id)) = StoredChangeset::id_marker(&raw)
+                && self.ledger.contains(&id)
+            {
                 continue;
             }
             // Only the genuine empty-document state counts. A malformed
@@ -269,7 +290,9 @@ mod tests {
 
     use relman_core::mocks::{MapChangesetStore, MapWorkspace};
     use relman_core::ports::ChangesetStore;
-    use relman_core::types::{ReleaseOptions, Slug, Target, WorkspacePath};
+    use relman_core::types::{
+        ConsumedLedger, CycleId, ReleaseOptions, Slug, Target, Uid, WorkspacePath,
+    };
 
     fn name(raw: &str) -> CrateName {
         CrateName::parse(raw).expect("valid crate name")
@@ -302,6 +325,7 @@ mod tests {
             path(".changesets"),
             path("Cargo.toml"),
             path("CHANGELOG.md"),
+            path(".release/consumed-ledger.toml"),
         );
         ReleaseConfig::for_test(options, names.iter().map(|n| target(n)).collect())
     }
@@ -321,7 +345,30 @@ mod tests {
         store: Arc<dyn ChangesetStore>,
         workspace: MapWorkspace,
     ) -> VersionService {
-        VersionService::new(config(names), store, Arc::new(workspace))
+        VersionService::new(
+            config(names),
+            store,
+            Arc::new(workspace),
+            ConsumedLedger::default(),
+        )
+    }
+
+    /// As [`service`], but with a pre-populated consumed-UID ledger.
+    fn service_with_ledger(
+        names: &[&str],
+        store: Arc<dyn ChangesetStore>,
+        workspace: MapWorkspace,
+        ledger: ConsumedLedger,
+    ) -> VersionService {
+        VersionService::new(config(names), store, Arc::new(workspace), ledger)
+    }
+
+    fn uid(raw: &str) -> Uid {
+        Uid::parse(raw).expect("valid test uid")
+    }
+
+    fn cycle(raw: &str) -> CycleId {
+        CycleId::parse(raw).expect("valid test cycle id")
     }
 
     /// A workspace with the given `(crate, current-version)` pairs and no edges.
@@ -467,6 +514,45 @@ description=\"a break\"
         let table = svc.derive().expect("derives");
         let bump = table.get(&name("zaino-state")).expect("bumps");
         // Only the pending fix counts: a patch, not the consumed breaking's minor.
+        assert_eq!(bump.bump(), Bump::Patch);
+        assert_eq!(bump.next(), &version("0.3.2"));
+        assert_eq!(bump.reasons(), ["new fix"]);
+    }
+
+    #[test]
+    fn ledgered_changeset_contributes_nothing_even_without_an_in_file_mark() {
+        // A changeset that is *not* stamped `consumed_in` but whose id the ledger
+        // records as already-shipped must be excluded exactly as a consumed one —
+        // this is the backport-independent dedup. A pending sibling still bumps.
+        const SHIPPED_UID: &str = "018f4e0a-7b2c-7c3d-8e4f-1a2b3c4d5e6f";
+        let store = store_with(&[
+            (
+                "shipped",
+                &format!(
+                    "id = \"{SHIPPED_UID}\"\n[[changes]]\ncrate=\"zaino-state\"\nkind=\"breaking\"\ndescription=\"already shipped\"\n"
+                ),
+            ),
+            (
+                "pending",
+                "[[changes]]\ncrate=\"zaino-state\"\nkind=\"fix\"\ndescription=\"new fix\"\n",
+            ),
+        ]);
+        let mut ledger = ConsumedLedger::default();
+        ledger.insert(
+            uid(SHIPPED_UID),
+            cycle("cycle-0"),
+            Some("shipped".to_owned()),
+        );
+
+        let svc = service_with_ledger(
+            &["zaino-state"],
+            store,
+            workspace(&[("zaino-state", "0.3.1")]),
+            ledger,
+        );
+        let table = svc.derive().expect("derives");
+        let bump = table.get(&name("zaino-state")).expect("bumps");
+        // Only the pending fix counts: a patch, not the ledgered breaking's minor.
         assert_eq!(bump.bump(), Bump::Patch);
         assert_eq!(bump.next(), &version("0.3.2"));
         assert_eq!(bump.reasons(), ["new fix"]);

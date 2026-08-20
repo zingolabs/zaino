@@ -226,26 +226,45 @@ Three reasons this beats erasing:
 `relman changeset clear` still exists as a manual garbage-collect for pruning old
 consumed changesets; it is not part of the release path.
 
-### Future hardening (designed, not yet built)
+### The consumed-UID ledger (backport-independent dedup)
 
-The mark + backport closes the double-consume bug in practice. Two further layers
-are designed but deliberately deferred:
+The per-file `consumed_in` mark only reaches `dev` once the backport lands. The
+**consumed-UID ledger** removes that dependency: consumption also records each
+shipped changeset's [`id`](#machine-identity-the-immutable-id) in a single ledger
+file (default `.release/consumed-ledger.toml`), and **every derivation also
+excludes any changeset whose `id` is in the ledger** — on top of the `consumed_in`
+skip. So a released changeset that lingers on `dev` *without* its mark is still
+inert, because its `id` is ledgered.
 
-- **Consumed-UID ledger (backport-independent dedup).** Consumption also records
-  each shipped changeset's [`id`](#machine-identity-the-immutable-id) in a ledger
-  committed on `stable`. Derivation excludes any changeset whose `id` is in that
-  ledger, reading it from an authoritative ref (`git show origin/stable:…`, or the
-  latest `cycle-*` tag's tree) — which every branch sees **without merging**. This
-  makes dedup correct even if the `stable → dev` backport never runs; the backport
-  becomes a convenience (keeping dev's manifests/changelogs current) rather than a
-  correctness dependency. relman stays a pure function: CI reads the ledger and
-  passes it in as a file, exactly as `release-pr-body` passes its gathered git
-  facts. Worth building only if we want backport-*independence* as a hard
-  guarantee.
-- **Running (chained) hash — out of scope.** A hash-of-hashes accumulator over the
-  ledger would give tamper-evidence, but that is a supply-chain-integrity concern,
-  not double-consume prevention (a threat we do not currently have). Noted here so
-  the option is on record; not planned.
+```toml
+# .release/consumed-ledger.toml — appended once per changeset at the blessing.
+[[consumed]]
+id    = "018f4e0a-7b2c-7c3d-8e4f-1a2b3c4d5e6f"
+cycle = "cycle-1"
+slug  = "pr-9"
+```
+
+**relman stays a pure function of files:** it reads the ledger from its configured
+path and never consults git. CI supplies the authoritative content:
+
+- **At the blessing** (on `stable`), before deriving and consuming, CI restores
+  the ledger from the **last released `cycle-*` tag** — so the accumulation is
+  clean regardless of what the release merge dragged in — then `consume` appends
+  this cycle's ids and the release commit carries the ledger forward on `stable`.
+- **When deriving off another branch** (e.g. `release-pr-body` on `release-ready`),
+  CI overwrites the working-tree ledger with `git show origin/stable:…` first, so
+  the derived table reflects everything `stable` has shipped **without waiting for
+  a merge**.
+
+The ledger only grows, only on `stable`, only at a blessing; other branches treat
+their copy as advisory and CI refreshes it from the authoritative ref before any
+derivation that must be exact. This makes dedup correct even if the `stable → dev`
+backport never runs — the backport becomes a convenience (keeping dev's manifests
+and changelogs current), not a correctness dependency.
+
+**Out of scope — a running (chained) hash.** A hash-of-hashes accumulator over the
+ledger would add tamper-evidence, but that is a supply-chain-integrity concern,
+not double-consume prevention (a threat we do not have). On record; not planned.
 
 ## Changelog rendering
 

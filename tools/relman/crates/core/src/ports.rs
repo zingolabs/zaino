@@ -9,8 +9,9 @@ mod driven;
 mod driving;
 
 pub use driven::{
-    ChangelogError, ChangelogStore, ChangesetStore, ChangesetStoreError, Clock, ManifestEditor,
-    ManifestError, SlugSource, UidSource, Vcs, VcsError, Workspace, WorkspaceError,
+    ChangelogError, ChangelogStore, ChangesetStore, ChangesetStoreError, Clock,
+    ConsumedLedgerStore, ConsumedLedgerStoreError, ManifestEditor, ManifestError, SlugSource,
+    UidSource, Vcs, VcsError, Workspace, WorkspaceError,
 };
 pub use driving::{
     About, ApplyBump, ApplyError, ArtifactError, Changelog, ChangelogEdit, ChangelogGenError,

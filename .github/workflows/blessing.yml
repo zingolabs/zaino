@@ -91,6 +91,33 @@ jobs:
           echo "Releasing cycle: $N"
           echo "n=$N" >> "$GITHUB_OUTPUT"
 
+      # Restore the authoritative consumed-UID ledger from the LAST released
+      # cycle tag, so the accumulation is a clean function of past releases and
+      # not whatever the `release-ready -> stable` merge dragged in. relman reads
+      # the ledger from this path to exclude already-shipped changesets by `id`
+      # (backport-independent dedup) during the derive below; `consume` (step 2)
+      # appends this cycle's ids and the release commit carries it forward on
+      # `stable`. See docs/decision_records/release/changeset-format.md
+      # § "The consumed-UID ledger".
+      - name: Restore authoritative consumed-ledger
+        run: |
+          set -euo pipefail
+          ledger=".release/consumed-ledger.toml"
+          # Highest FINAL `cycle-<K>` tag (no `-rc.` suffix) = the last release.
+          last="$(git tag --list 'cycle-*' | grep -vE 'rc\.' | sort -V | tail -1 || true)"
+          if [ -n "$last" ] && git cat-file -e "${last}:${ledger}" 2>/dev/null; then
+            mkdir -p "$(dirname "$ledger")"
+            git show "${last}:${ledger}" > "$ledger"
+            echo "Restored ${ledger} from ${last}:"
+            cat "$ledger"
+          else
+            # First release, or the ledger predates this feature: no authoritative
+            # prior. Drop any stale working-tree copy; `consume` recreates it fresh
+            # (relman treats an absent ledger as empty).
+            rm -f "$ledger" 2>/dev/null || true
+            echo "No prior ledger (last release: ${last:-none}); starting empty."
+          fi
+
       # 1. Derive the tag set, publish plan, and release notes from the changesets
       # NOW — BEFORE bump/consume mark them. relman derives per-crate versions
       # from the *unconsumed* changesets + the current Cargo.toml, so running these

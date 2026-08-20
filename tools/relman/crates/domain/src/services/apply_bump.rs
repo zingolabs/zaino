@@ -105,6 +105,7 @@ mod tests {
             path(".changesets"),
             path("Cargo.toml"),
             path("CHANGELOG.md"),
+            path(".release/consumed-ledger.toml"),
         );
         ReleaseConfig::for_test(options, names.iter().map(|n| target(n)).collect())
     }

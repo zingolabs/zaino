@@ -18,13 +18,14 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 
 use relman_adapters::{
-    CargoMetadataWorkspace, FsChangelogStore, FsChangesetStore, GitVcs, RandomSlugSource,
-    RandomUidSource, TomlEditManifestEditor,
+    CargoMetadataWorkspace, FsChangelogStore, FsChangesetStore, FsConsumedLedgerStore, GitVcs,
+    RandomSlugSource, RandomUidSource, TomlEditManifestEditor,
 };
 use relman_cli::{Cli, Command, Ctx, commands};
 use relman_core::ports::{
     ApplyBump, Changelog, ChangelogStore, ChangesetCheck, ChangesetStore, Changesets, Clock,
-    ManifestEditor, ReleaseArtifacts, SlugSource, UidSource, Vcs, Versions, Workspace,
+    ConsumedLedgerStore, ManifestEditor, ReleaseArtifacts, SlugSource, UidSource, Vcs, Versions,
+    Workspace,
 };
 use relman_core::types::{CrateName, DateTime, Utc};
 use relman_domain::services::{
@@ -122,11 +123,27 @@ fn with_ctx(f: impl FnOnce(&Ctx) -> Result<()>) -> Result<()> {
     let clock: Arc<dyn Clock> = Arc::new(SystemClock);
     let about = Arc::new(AboutService::new(clock));
 
+    // The consumed-UID ledger store, rooted at the resolved path. CI refreshes
+    // the file from `origin/stable` before a derivation; relman reads it as a
+    // pure input and `consume` appends to it.
+    let ledger_path = root_dir.join(config.options().consumed_ledger().as_path());
+    let ledger_store: Arc<dyn ConsumedLedgerStore> =
+        Arc::new(FsConsumedLedgerStore::new(ledger_path));
+    // Load the ledger once; the derivation services take it by value so they stay
+    // pure functions of their inputs.
+    let ledger = ledger_store
+        .read()
+        .context("failed to read the consumed-UID ledger")?;
+
     let store: Arc<dyn ChangesetStore> = Arc::new(FsChangesetStore::new(changesets_dir.clone()));
     let slugs: Arc<dyn SlugSource> = Arc::new(RandomSlugSource::new());
     let uids: Arc<dyn UidSource> = Arc::new(RandomUidSource::new());
-    let changesets: Arc<dyn Changesets> =
-        Arc::new(ChangesetService::new(store.clone(), slugs, uids));
+    let changesets: Arc<dyn Changesets> = Arc::new(ChangesetService::new(
+        store.clone(),
+        slugs,
+        uids,
+        ledger_store.clone(),
+    ));
 
     // Run git in the repo root so it reports paths relative to that root,
     // matching the target `path`s in `relman.toml`.
@@ -146,6 +163,7 @@ fn with_ctx(f: impl FnOnce(&Ctx) -> Result<()>) -> Result<()> {
         config.clone(),
         store.clone(),
         workspace.clone(),
+        ledger.clone(),
     ));
 
     // Applies the derived table to the manifests via format-preserving edits.
@@ -162,6 +180,7 @@ fn with_ctx(f: impl FnOnce(&Ctx) -> Result<()>) -> Result<()> {
         store.clone(),
         changelog_store,
         Arc::new(SystemClock),
+        ledger.clone(),
     ));
 
     // Computes the release artifacts (tag plan, PR body, publish order) as pure
@@ -171,10 +190,11 @@ fn with_ctx(f: impl FnOnce(&Ctx) -> Result<()>) -> Result<()> {
         versions.clone(),
         store.clone(),
         workspace,
+        ledger.clone(),
     ));
 
     let changeset_check: Arc<dyn ChangesetCheck> =
-        Arc::new(ChangesetCheckService::new(config, vcs, store));
+        Arc::new(ChangesetCheckService::new(config, vcs, store, ledger));
 
     let ctx = Ctx {
         about,

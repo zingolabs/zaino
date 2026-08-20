@@ -10,6 +10,7 @@ pub struct ReleaseOptions {
     changesets_dir: WorkspacePath,
     root_manifest: WorkspacePath,
     workspace_changelog: WorkspacePath,
+    consumed_ledger: WorkspacePath,
 }
 
 impl ReleaseOptions {
@@ -18,11 +19,13 @@ impl ReleaseOptions {
         changesets_dir: WorkspacePath,
         root_manifest: WorkspacePath,
         workspace_changelog: WorkspacePath,
+        consumed_ledger: WorkspacePath,
     ) -> Self {
         Self {
             changesets_dir,
             root_manifest,
             workspace_changelog,
+            consumed_ledger,
         }
     }
 
@@ -39,5 +42,12 @@ impl ReleaseOptions {
     /// The workspace-level changelog.
     pub fn workspace_changelog(&self) -> &WorkspacePath {
         &self.workspace_changelog
+    }
+
+    /// The consumed-UID ledger listing every already-shipped changeset id. CI
+    /// refreshes this file from `origin/stable` before a derivation so dedup does
+    /// not depend on the per-file `consumed_in` mark having backported to `dev`.
+    pub fn consumed_ledger(&self) -> &WorkspacePath {
+        &self.consumed_ledger
     }
 }

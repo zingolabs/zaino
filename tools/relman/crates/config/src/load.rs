@@ -12,6 +12,7 @@ use crate::error::ConfigError;
 const DEFAULT_CHANGESETS_DIR: &str = ".changesets";
 const DEFAULT_ROOT_MANIFEST: &str = "Cargo.toml";
 const DEFAULT_WORKSPACE_CHANGELOG: &str = "CHANGELOG.md";
+const DEFAULT_CONSUMED_LEDGER: &str = ".release/consumed-ledger.toml";
 const CHANGELOG_BASENAME: &str = "CHANGELOG.md";
 
 /// Load and parse a `relman.toml` into a typed [`ReleaseConfig`].
@@ -47,6 +48,7 @@ struct RawOptions {
     changesets_dir: Option<String>,
     root_manifest: Option<String>,
     workspace_changelog: Option<String>,
+    consumed_ledger: Option<String>,
 }
 
 /// One `[[target]]` entry; `changelog`/`publish` are optional and defaulted.
@@ -100,10 +102,17 @@ impl RawOptions {
                 .workspace_changelog
                 .unwrap_or_else(|| DEFAULT_WORKSPACE_CHANGELOG.to_owned()),
         )?;
+        let consumed_ledger = parse_path(
+            "options.consumed_ledger",
+            &self
+                .consumed_ledger
+                .unwrap_or_else(|| DEFAULT_CONSUMED_LEDGER.to_owned()),
+        )?;
         Ok(ReleaseOptions::new(
             changesets_dir,
             root_manifest,
             workspace_changelog,
+            consumed_ledger,
         ))
     }
 }
@@ -216,6 +225,29 @@ path = "packages/zaino-state"
         assert_eq!(options.changesets_dir().as_str(), ".changesets");
         assert_eq!(options.root_manifest().as_str(), "Cargo.toml");
         assert_eq!(options.workspace_changelog().as_str(), "CHANGELOG.md");
+        assert_eq!(
+            options.consumed_ledger().as_str(),
+            ".release/consumed-ledger.toml"
+        );
+    }
+
+    #[test]
+    fn honours_an_explicit_consumed_ledger() {
+        let toml = r#"
+[options]
+consumed_ledger = ".ci/ledger.toml"
+
+[[target]]
+name = "zaino-state"
+path = "packages/zaino-state"
+"#;
+        let path = write_temp(toml);
+        let config = load(&path).expect("config with consumed_ledger should load");
+        std::fs::remove_file(&path).ok();
+        assert_eq!(
+            config.options().consumed_ledger().as_str(),
+            ".ci/ledger.toml"
+        );
     }
 
     #[test]

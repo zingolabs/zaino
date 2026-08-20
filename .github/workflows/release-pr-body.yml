@@ -140,6 +140,24 @@ jobs:
           cat "$status"
           echo "path=$status" >> "$GITHUB_OUTPUT"
 
+      # Overwrite the working-tree consumed-UID ledger with `stable`'s authoritative
+      # copy, so the derived version table excludes everything already shipped
+      # without waiting for the `stable -> dev` backport to land. relman reads the
+      # ledger from this path. `stable` was fetched in "Gather cycle status" above.
+      # See docs/decision_records/release/changeset-format.md § "The consumed-UID ledger".
+      - name: Refresh consumed-ledger from stable
+        run: |
+          set -euo pipefail
+          ledger=".release/consumed-ledger.toml"
+          if git cat-file -e "origin/stable:${ledger}" 2>/dev/null; then
+            mkdir -p "$(dirname "$ledger")"
+            git show "origin/stable:${ledger}" > "$ledger"
+            echo "Refreshed ${ledger} from origin/stable."
+          else
+            rm -f "$ledger" 2>/dev/null || true
+            echo "stable has no ledger yet; treating as empty."
+          fi
+
       - name: Render release PR body
         run: |
           set -euo pipefail

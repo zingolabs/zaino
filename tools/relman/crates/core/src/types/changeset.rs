@@ -198,6 +198,15 @@ impl StoredChangeset {
         raw.consumed_in_parsed()
     }
 
+    /// Read only the immutable [`id`](StoredChangeset::id), without validating
+    /// the release body. Lets the consume path recover a changeset's identity for
+    /// the ledger even when its body is an unfilled template (which would
+    /// otherwise fail to parse). `None` for a legacy file that predates the field.
+    pub fn id_marker(input: &str) -> Result<Option<Uid>, ChangesetError> {
+        let raw: RawChangeset = toml::from_str(input).map_err(ChangesetError::Toml)?;
+        raw.id_parsed()
+    }
+
     /// The changeset's immutable identity, or `None` for a legacy file that
     /// predates the `id` field.
     pub fn id(&self) -> Option<&Uid> {
@@ -736,6 +745,21 @@ description = "A change."
         assert!(
             consumed_at < body_at,
             "bare keys must precede the array-of-tables"
+        );
+    }
+
+    #[test]
+    fn id_marker_reads_the_id_without_validating_the_body() {
+        // An unfilled template (no [[changes]]/[empty]) still yields its id.
+        let input = format!("id = \"{SAMPLE_UID}\"\n# nothing else\n");
+        assert_eq!(
+            StoredChangeset::id_marker(&input).expect("marker parses"),
+            Some(uid(SAMPLE_UID))
+        );
+        // A legacy file with no id yields None.
+        assert_eq!(
+            StoredChangeset::id_marker("# just a comment\n").expect("marker parses"),
+            None
         );
     }
 

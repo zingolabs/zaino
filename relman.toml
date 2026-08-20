@@ -14,6 +14,11 @@
 changesets_dir      = ".changesets"
 root_manifest       = "Cargo.toml"
 workspace_changelog = "CHANGELOG.md"
+# The consumed-UID ledger: one file listing every already-shipped changeset id.
+# CI refreshes it from `origin/stable` before deriving, so a released changeset
+# is excluded by id even when its per-file `consumed_in` mark hasn't yet
+# backported to `dev`. relman reads it as a pure input; it never edits it here.
+consumed_ledger     = ".release/consumed-ledger.toml"
 
 # Per target: `changelog` defaults to `<path>/CHANGELOG.md`; `publish` to true.
 

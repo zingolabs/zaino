@@ -11,6 +11,7 @@
 mod changelog_store;
 mod changeset_store;
 mod clock;
+mod consumed_ledger_store;
 pub mod fixtures;
 mod manifest_editor;
 mod slug_source;
@@ -21,6 +22,7 @@ mod workspace;
 pub use changelog_store::MapChangelogStore;
 pub use changeset_store::MapChangesetStore;
 pub use clock::FixedClock;
+pub use consumed_ledger_store::MapConsumedLedgerStore;
 pub use manifest_editor::RecordingManifestEditor;
 pub use slug_source::SequenceSlugSource;
 pub use uid_source::SequenceUidSource;

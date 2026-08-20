@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use relman_core::ports::{
-    ChangesetStore, Changesets, ChangesetsError, NewChangeset, SlugSource, UidSource,
+    ChangesetStore, Changesets, ChangesetsError, ConsumedLedgerStore, NewChangeset, SlugSource,
+    UidSource,
 };
 use relman_core::types::{CONSUMED_IN_KEY, Changeset, CycleId, Slug, StoredChangeset, Uid};
 
@@ -54,6 +55,10 @@ pub struct ChangesetService {
     store: Arc<dyn ChangesetStore>,
     slugs: Arc<dyn SlugSource>,
     uids: Arc<dyn UidSource>,
+    /// The consumed-UID ledger store. [`consume`](Changesets::consume) appends
+    /// each newly-consumed changeset's id here so a later derivation on `dev` can
+    /// exclude it by id even before the per-file `consumed_in` mark backports.
+    ledger: Arc<dyn ConsumedLedgerStore>,
 }
 
 impl ChangesetService {
@@ -61,8 +66,14 @@ impl ChangesetService {
         store: Arc<dyn ChangesetStore>,
         slugs: Arc<dyn SlugSource>,
         uids: Arc<dyn UidSource>,
+        ledger: Arc<dyn ConsumedLedgerStore>,
     ) -> Self {
-        Self { store, slugs, uids }
+        Self {
+            store,
+            slugs,
+            uids,
+            ledger,
+        }
     }
 
     /// Map a changeset-parse failure to a [`ChangesetsError::Parse`] carrying
@@ -147,11 +158,27 @@ impl Changesets for ChangesetService {
 
     fn consume(&self, cycle: &CycleId) -> Result<Vec<Slug>, ChangesetsError> {
         let pending = self.pending()?;
+        // `pending` already excludes anything with a `consumed_in` mark, so a
+        // re-consume finds nothing and never rewrites the ledger — idempotent.
+        if pending.is_empty() {
+            return Ok(pending);
+        }
+
+        let mut ledger = self.ledger.read()?;
         for slug in &pending {
             let raw = self.store.read(slug)?;
+            // Record the changeset's id in the ledger before stamping. A legacy
+            // changeset with no id contributes no entry (nothing to key on) — it
+            // is still stamped below. `insert` is idempotent on a duplicate id.
+            if let Some(id) =
+                StoredChangeset::id_marker(&raw).map_err(|e| Self::parse_error(slug, e))?
+            {
+                ledger.insert(id, cycle.clone(), Some(slug.as_str().to_owned()));
+            }
             let stamped = stamp_consumed(&raw, cycle).map_err(|e| Self::parse_error(slug, e))?;
             self.store.write(slug, &stamped)?;
         }
+        self.ledger.write(&ledger)?;
         Ok(pending)
     }
 
@@ -196,8 +223,10 @@ fn stamp_consumed(raw: &str, cycle: &CycleId) -> Result<String, toml_edit::TomlE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use relman_core::mocks::{MapChangesetStore, SequenceSlugSource, SequenceUidSource};
-    use relman_core::ports::ChangesetStoreError;
+    use relman_core::mocks::{
+        MapChangesetStore, MapConsumedLedgerStore, SequenceSlugSource, SequenceUidSource,
+    };
+    use relman_core::ports::{ChangesetStoreError, ConsumedLedgerStore};
     use relman_core::types::{ChangesetError, Description};
 
     /// A canonical UUIDv7 the test uid source hands out, so a created changeset's
@@ -213,10 +242,21 @@ mod tests {
     }
 
     fn service(store: Arc<dyn ChangesetStore>, slugs: Vec<Slug>) -> ChangesetService {
+        service_with_ledger(store, slugs, Arc::new(MapConsumedLedgerStore::new()))
+    }
+
+    /// As [`service`], but with a caller-visible ledger store so a test can
+    /// inspect what `consume` appended.
+    fn service_with_ledger(
+        store: Arc<dyn ChangesetStore>,
+        slugs: Vec<Slug>,
+        ledger: Arc<dyn ConsumedLedgerStore>,
+    ) -> ChangesetService {
         ChangesetService::new(
             store,
             Arc::new(SequenceSlugSource::new(slugs)),
             Arc::new(SequenceUidSource::new(vec![uid(SAMPLE_UID)])),
+            ledger,
         )
     }
 
@@ -456,6 +496,46 @@ description = \"Replace sync().\"
         let stored = StoredChangeset::parse_toml(&raw).expect("consumed file still parses");
         assert_eq!(stored.id(), Some(&uid(SAMPLE_UID)));
         assert_eq!(stored.consumed_in(), Some(&cycle("cycle-1")));
+    }
+
+    #[test]
+    fn consume_appends_ids_to_the_ledger_skips_legacy_and_is_idempotent() {
+        let store = Arc::new(MapChangesetStore::new());
+        // An id-bearing changeset: its id must land in the ledger.
+        let with_id = format!(
+            "id = \"{SAMPLE_UID}\"\n[[changes]]\ncrate = \"zaino-state\"\nkind = \"fix\"\ndescription = \"x\"\n"
+        );
+        store
+            .write(&slug("pr-1"), &with_id)
+            .expect("seed id-bearing");
+        // A legacy changeset with no id: stamped, but contributes no ledger row.
+        store
+            .write(&slug("pr-2"), FILLED_WITH_COMMENT)
+            .expect("seed legacy");
+
+        let ledger_store = Arc::new(MapConsumedLedgerStore::new());
+        let svc = service_with_ledger(
+            store.clone(),
+            vec![slug("unused-source")],
+            ledger_store.clone(),
+        );
+
+        let consumed = svc.consume(&cycle("cycle-1")).expect("consume");
+        assert_eq!(as_strs(&consumed), ["pr-1", "pr-2"]);
+
+        let ledger = ledger_store.read().expect("read ledger");
+        // Only the id-bearing changeset produced a row (the legacy one is skipped).
+        assert_eq!(ledger.len(), 1);
+        assert!(ledger.contains(&uid(SAMPLE_UID)));
+        let entry = ledger.entries().next().expect("one row");
+        assert_eq!(entry.cycle(), &cycle("cycle-1"));
+        assert_eq!(entry.slug(), Some("pr-1"));
+
+        // Re-consuming finds nothing pending (both now marked) and leaves the
+        // ledger untouched — idempotent.
+        let again = svc.consume(&cycle("cycle-2")).expect("second consume");
+        assert!(again.is_empty());
+        assert_eq!(ledger_store.read().expect("read ledger").len(), 1);
     }
 
     #[test]

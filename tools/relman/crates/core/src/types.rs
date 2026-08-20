@@ -6,6 +6,7 @@ mod bump_table;
 mod change_entry;
 mod change_kind;
 mod changeset;
+mod consumed_ledger;
 mod crate_name;
 mod cycle_id;
 mod cycle_status;
@@ -27,6 +28,7 @@ pub use bump_table::{BumpTable, CrateBump};
 pub use change_entry::ChangeEntry;
 pub use change_kind::{ChangeKind, InvalidChangeKind};
 pub use changeset::{CONSUMED_IN_KEY, Changeset, ChangesetError, StoredChangeset};
+pub use consumed_ledger::{ConsumedEntry, ConsumedLedger, ConsumedLedgerError};
 pub use crate_name::{CrateName, InvalidCrateName};
 pub use cycle_id::{CycleId, InvalidCycleId};
 pub use cycle_status::{

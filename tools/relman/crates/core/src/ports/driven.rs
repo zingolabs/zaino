@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::types::{CrateName, DateTime, Slug, Uid, Utc, Version};
+use crate::types::{
+    ConsumedLedger, ConsumedLedgerError, CrateName, DateTime, Slug, Uid, Utc, Version,
+};
 
 /// Outbound port: the current time.
 ///
@@ -114,6 +116,49 @@ pub trait ChangelogStore: Send + Sync {
     /// Write `contents` as the changelog at `path`, creating parent directories
     /// as needed.
     fn write(&self, path: &Path, contents: &str) -> Result<(), ChangelogError>;
+}
+
+/// Everything that can go wrong at the consumed-ledger I/O boundary.
+///
+/// Unlike [`ChangesetStore`] (which traffics raw text and leaves parsing to the
+/// domain), the ledger store returns an already-parsed [`ConsumedLedger`] — the
+/// task fixes that shape — so a malformed file surfaces here as
+/// [`Parse`](ConsumedLedgerStoreError::Parse) rather than downstream.
+#[derive(Debug, thiserror::Error)]
+pub enum ConsumedLedgerStoreError {
+    /// Reading or writing the ledger file failed.
+    #[error("consumed-ledger I/O failed for {path}")]
+    Io {
+        /// The ledger path being operated on, for diagnostics.
+        path: String,
+        /// The underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// The ledger file's contents could not be parsed.
+    #[error("failed to parse the consumed ledger at {path}")]
+    Parse {
+        /// The ledger path being parsed.
+        path: String,
+        /// Why it was rejected.
+        #[source]
+        source: ConsumedLedgerError,
+    },
+}
+
+/// Outbound port: the store of the consumed-UID ledger file.
+///
+/// A single file, keyed only by its configured path. [`read`](ConsumedLedgerStore::read)
+/// yields the parsed [`ConsumedLedger`], treating an *absent* file as an empty
+/// ledger (never an error — exactly as [`ChangesetStore::list`] treats a missing
+/// directory). [`write`](ConsumedLedgerStore::write) persists the whole ledger,
+/// creating parent directories as needed.
+pub trait ConsumedLedgerStore: Send + Sync {
+    /// Read the ledger, or an empty ledger when the file does not exist yet.
+    fn read(&self) -> Result<ConsumedLedger, ConsumedLedgerStoreError>;
+
+    /// Persist `ledger`, creating parent directories as needed.
+    fn write(&self, ledger: &ConsumedLedger) -> Result<(), ConsumedLedgerStoreError>;
 }
 
 /// Outbound port: a source of fresh candidate slugs.

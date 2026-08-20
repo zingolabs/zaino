@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use relman_core::ports::{ArtifactError, ChangesetStore, ReleaseArtifacts, Versions, Workspace};
 use relman_core::types::{
-    BumpTable, ChangeEntry, Changeset, ChangesetError, CrateName, CycleId, CycleStatus,
-    PublishPlan, StoredChangeset, Tag, TagPlan,
+    BumpTable, ChangeEntry, Changeset, ChangesetError, ConsumedLedger, CrateName, CycleId,
+    CycleStatus, PublishPlan, StoredChangeset, Tag, TagPlan,
 };
 
 use crate::render;
@@ -26,6 +26,11 @@ pub struct ReleaseArtifactsService {
     versions: Arc<dyn Versions>,
     changesets: Arc<dyn ChangesetStore>,
     workspace: Arc<dyn Workspace>,
+    /// The already-shipped changeset ids to exclude from the changelog digest,
+    /// on top of the per-file `consumed_in` mark — the same pure derivation input
+    /// the version service reads, so the PR body never re-lists a shipped
+    /// changeset whose mark has not yet backported to `dev`.
+    ledger: ConsumedLedger,
 }
 
 impl ReleaseArtifactsService {
@@ -33,11 +38,13 @@ impl ReleaseArtifactsService {
         versions: Arc<dyn Versions>,
         changesets: Arc<dyn ChangesetStore>,
         workspace: Arc<dyn Workspace>,
+        ledger: ConsumedLedger,
     ) -> Self {
         Self {
             versions,
             changesets,
             workspace,
+            ledger,
         }
     }
 
@@ -65,9 +72,12 @@ impl ReleaseArtifactsService {
                     });
                 }
             };
-            // A consumed changeset belongs to a past release's artifacts; skip
-            // it so this cycle's PR body / changelog digest never re-lists it.
-            if stored.consumed_in().is_some() {
+            // A shipped changeset belongs to a past release's artifacts; skip it
+            // so this cycle's PR body / changelog digest never re-lists it —
+            // whether marked in-file or only known shipped through the ledger.
+            if stored.consumed_in().is_some()
+                || stored.id().is_some_and(|id| self.ledger.contains(id))
+            {
                 continue;
             }
             let Changeset::WithChanges(entries) = stored.into_body() else {
@@ -239,7 +249,9 @@ mod tests {
 
     use relman_config::ReleaseConfig;
     use relman_core::mocks::{MapChangesetStore, MapWorkspace};
-    use relman_core::types::{ReleaseOptions, Slug, Target, Version, WorkspacePath};
+    use relman_core::types::{
+        ConsumedLedger, ReleaseOptions, Slug, Target, Version, WorkspacePath,
+    };
 
     use crate::services::VersionService;
 
@@ -277,6 +289,7 @@ mod tests {
             path(".changesets"),
             path("Cargo.toml"),
             path("CHANGELOG.md"),
+            path(".release/consumed-ledger.toml"),
         );
         ReleaseConfig::for_test(options, names.iter().map(|n| target(n)).collect())
     }
@@ -301,10 +314,16 @@ mod tests {
             config(names),
             store.clone(),
             Arc::new(workspace),
+            ConsumedLedger::default(),
         ));
         // tags/pr_body don't touch the topo sort, so an empty workspace handle
         // suffices here; publish_plan tests build their own edge-carrying one.
-        ReleaseArtifactsService::new(versions, store, Arc::new(MapWorkspace::default()))
+        ReleaseArtifactsService::new(
+            versions,
+            store,
+            Arc::new(MapWorkspace::default()),
+            ConsumedLedger::default(),
+        )
     }
 
     #[test]
@@ -404,8 +423,14 @@ description=\"d\"
                 ],
                 edges,
             )),
+            ConsumedLedger::default(),
         ));
-        let svc = ReleaseArtifactsService::new(versions, store, Arc::new(workspace));
+        let svc = ReleaseArtifactsService::new(
+            versions,
+            store,
+            Arc::new(workspace),
+            ConsumedLedger::default(),
+        );
 
         let plan = svc.publish_plan().expect("plan");
         let order: Vec<&str> = plan.entries().iter().map(|(n, _)| n.as_str()).collect();
@@ -435,6 +460,7 @@ description=\"d\"
                 ],
                 Vec::new(),
             )),
+            ConsumedLedger::default(),
         ));
         let svc = ReleaseArtifactsService::new(
             versions,
@@ -446,6 +472,7 @@ description=\"d\"
                 ],
                 Vec::new(),
             )),
+            ConsumedLedger::default(),
         );
 
         let plan = svc.publish_plan().expect("plan");
@@ -471,8 +498,14 @@ description=\"d\"
                 ],
                 vec![(name("zainod"), name("zaino-state"), req("=0.6.0"))],
             )),
+            ConsumedLedger::default(),
         ));
-        let svc = ReleaseArtifactsService::new(versions, store, Arc::new(MapWorkspace::default()));
+        let svc = ReleaseArtifactsService::new(
+            versions,
+            store,
+            Arc::new(MapWorkspace::default()),
+            ConsumedLedger::default(),
+        );
 
         let body = svc.pr_body(&cycle("2026-08-15"), None).expect("pr body");
 
@@ -512,8 +545,14 @@ description=\"d\"
                 ],
                 vec![(name("zainod"), name("zaino-state"), req("=0.6.0"))],
             )),
+            ConsumedLedger::default(),
         ));
-        let svc = ReleaseArtifactsService::new(versions, store, Arc::new(MapWorkspace::default()));
+        let svc = ReleaseArtifactsService::new(
+            versions,
+            store,
+            Arc::new(MapWorkspace::default()),
+            ConsumedLedger::default(),
+        );
 
         let status = CycleStatus::parse_toml(
             "\

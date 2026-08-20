@@ -5,7 +5,9 @@ use relman_config::ReleaseConfig;
 use relman_core::ports::{
     Changelog, ChangelogEdit, ChangelogGenError, ChangelogStore, ChangesetStore, Clock, Versions,
 };
-use relman_core::types::{ChangeEntry, Changeset, ChangesetError, CrateName, StoredChangeset};
+use relman_core::types::{
+    ChangeEntry, Changeset, ChangesetError, ConsumedLedger, CrateName, StoredChangeset,
+};
 
 use crate::render;
 
@@ -26,6 +28,11 @@ pub struct ChangelogService {
     changesets: Arc<dyn ChangesetStore>,
     changelogs: Arc<dyn ChangelogStore>,
     clock: Arc<dyn Clock>,
+    /// The already-shipped changeset ids to exclude from the gathered entries,
+    /// on top of the per-file `consumed_in` mark — the same pure derivation input
+    /// the version service reads, so the changelog block never re-lists a shipped
+    /// changeset whose mark has not yet backported to `dev`.
+    ledger: ConsumedLedger,
 }
 
 impl ChangelogService {
@@ -35,6 +42,7 @@ impl ChangelogService {
         changesets: Arc<dyn ChangesetStore>,
         changelogs: Arc<dyn ChangelogStore>,
         clock: Arc<dyn Clock>,
+        ledger: ConsumedLedger,
     ) -> Self {
         Self {
             config,
@@ -42,6 +50,7 @@ impl ChangelogService {
             changesets,
             changelogs,
             clock,
+            ledger,
         }
     }
 
@@ -69,9 +78,12 @@ impl ChangelogService {
                     });
                 }
             };
-            // A consumed changeset was folded into a past release's changelog;
-            // skip it so it never re-appears in a later cycle's entries.
-            if stored.consumed_in().is_some() {
+            // A shipped changeset was folded into a past release's changelog;
+            // skip it so it never re-appears in a later cycle's entries — whether
+            // marked in-file or only known shipped through the ledger.
+            if stored.consumed_in().is_some()
+                || stored.id().is_some_and(|id| self.ledger.contains(id))
+            {
                 continue;
             }
             let Changeset::WithChanges(entries) = stored.into_body() else {
@@ -153,7 +165,9 @@ mod tests {
     use super::*;
 
     use relman_core::mocks::{FixedClock, MapChangelogStore, MapChangesetStore, MapWorkspace};
-    use relman_core::types::{DateTime, ReleaseOptions, Slug, Target, Utc, Version, WorkspacePath};
+    use relman_core::types::{
+        ConsumedLedger, DateTime, ReleaseOptions, Slug, Target, Utc, Version, WorkspacePath,
+    };
 
     use crate::services::VersionService;
 
@@ -183,6 +197,7 @@ mod tests {
             path(".changesets"),
             path("Cargo.toml"),
             path("CHANGELOG.md"),
+            path(".release/consumed-ledger.toml"),
         );
         ReleaseConfig::for_test(options, names.iter().map(|n| target(n)).collect())
     }
@@ -230,6 +245,7 @@ mod tests {
             config(&["zaino-state", "zainod"]),
             changesets.clone(),
             Arc::new(workspace),
+            ConsumedLedger::default(),
         ));
 
         // Existing per-crate changelog for zaino-state; the rest are absent.
@@ -254,6 +270,7 @@ mod tests {
             changesets,
             changelogs.clone(),
             clock(),
+            ConsumedLedger::default(),
         );
 
         let edits = svc.apply().expect("generates and writes");
@@ -317,6 +334,7 @@ mod tests {
             config(&["zaino-state"]),
             changesets.clone(),
             Arc::new(workspace),
+            ConsumedLedger::default(),
         ));
         let svc = ChangelogService::new(
             config(&["zaino-state"]),
@@ -324,6 +342,7 @@ mod tests {
             changesets,
             Arc::new(MapChangelogStore::new()),
             clock(),
+            ConsumedLedger::default(),
         );
         assert!(svc.generate().expect("generates").is_empty());
     }

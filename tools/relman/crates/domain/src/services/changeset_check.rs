@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use relman_config::ReleaseConfig;
 use relman_core::ports::{ChangesetCheck, ChangesetStore, CheckError, CheckReport, Vcs, Violation};
-use relman_core::types::{Changeset, ChangesetError, CrateName, Slug, StoredChangeset};
+use relman_core::types::{
+    Changeset, ChangesetError, ConsumedLedger, CrateName, Slug, StoredChangeset,
+};
 
 /// The changeset-file extension. Only `*.toml` under the changesets dir count as
 /// this-PR changeset files.
@@ -24,11 +26,25 @@ pub struct ChangesetCheckService {
     config: ReleaseConfig,
     vcs: Arc<dyn Vcs>,
     store: Arc<dyn ChangesetStore>,
+    /// The already-shipped changeset ids. A this-PR changeset whose id the ledger
+    /// records neither covers a touched target nor waives the PR — it is already
+    /// shipped provenance — exactly as a `consumed_in`-marked one is skipped.
+    ledger: ConsumedLedger,
 }
 
 impl ChangesetCheckService {
-    pub fn new(config: ReleaseConfig, vcs: Arc<dyn Vcs>, store: Arc<dyn ChangesetStore>) -> Self {
-        Self { config, vcs, store }
+    pub fn new(
+        config: ReleaseConfig,
+        vcs: Arc<dyn Vcs>,
+        store: Arc<dyn ChangesetStore>,
+        ledger: ConsumedLedger,
+    ) -> Self {
+        Self {
+            config,
+            vcs,
+            store,
+            ledger,
+        }
     }
 
     /// The slug of a changed path iff it is a this-PR changeset file: a
@@ -103,10 +119,13 @@ impl ChangesetCheck for ChangesetCheckService {
                     continue;
                 }
             };
-            // A changeset already consumed by a past release is historical
+            // A changeset already shipped by a past release is historical
             // provenance: it neither covers this PR's touched targets nor waives
-            // the PR. Skip it, exactly as the derivation does.
-            if stored.consumed_in().is_some() {
+            // the PR. Skip it, exactly as the derivation does — whether marked
+            // in-file or only known shipped through the ledger.
+            if stored.consumed_in().is_some()
+                || stored.id().is_some_and(|id| self.ledger.contains(id))
+            {
                 continue;
             }
             match stored.into_body() {
@@ -151,7 +170,7 @@ mod tests {
     use relman_config::ReleaseConfig;
     use relman_core::mocks::{MapChangesetStore, StubVcs};
     use relman_core::ports::ChangesetStore;
-    use relman_core::types::{CrateName, ReleaseOptions, Target, WorkspacePath};
+    use relman_core::types::{ConsumedLedger, CrateName, ReleaseOptions, Target, WorkspacePath};
 
     fn path(raw: &str) -> WorkspacePath {
         WorkspacePath::parse(raw).expect("valid workspace path")
@@ -168,6 +187,7 @@ mod tests {
             path(".changesets"),
             path("Cargo.toml"),
             path("CHANGELOG.md"),
+            path(".release/consumed-ledger.toml"),
         );
         let targets = vec![
             Target::new(
@@ -192,7 +212,12 @@ mod tests {
 
     fn service(changed: Vec<&str>, store: Arc<dyn ChangesetStore>) -> ChangesetCheckService {
         let changed = changed.into_iter().map(PathBuf::from).collect();
-        ChangesetCheckService::new(config(), Arc::new(StubVcs::new(changed)), store)
+        ChangesetCheckService::new(
+            config(),
+            Arc::new(StubVcs::new(changed)),
+            store,
+            ConsumedLedger::default(),
+        )
     }
 
     /// A store seeded with `(slug, toml)` entries.

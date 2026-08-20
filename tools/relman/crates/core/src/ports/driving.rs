@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 
-use crate::ports::{ChangelogError, ChangesetStoreError, ManifestError, VcsError, WorkspaceError};
+use crate::ports::{
+    ChangelogError, ChangesetStoreError, ConsumedLedgerStoreError, ManifestError, VcsError,
+    WorkspaceError,
+};
 use crate::types::{
     AboutReport, BumpTable, CrateName, CycleId, CycleStatus, Description, PublishPlan, Slug,
     TagPlan,
@@ -39,6 +42,9 @@ pub enum ChangesetsError {
     /// A store operation failed.
     #[error("changeset store operation failed")]
     Store(#[from] ChangesetStoreError),
+    /// A consumed-ledger store operation failed while recording shipped ids.
+    #[error("consumed-ledger store operation failed")]
+    Ledger(#[from] ConsumedLedgerStoreError),
     /// Every candidate slug collided with an existing file within the retry
     /// budget — vanishingly unlikely, so it signals an exhausted or degenerate
     /// slug source rather than ordinary contention.
