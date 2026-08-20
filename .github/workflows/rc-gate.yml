@@ -68,24 +68,32 @@ jobs:
       # unconditionally and workflow_dispatch `force` is the manual override. DO
       # NOT set RELMAN_PIPELINE_ACTIVE=true until this precondition is real, or
       # un-vetted dev HEAD will flow straight to `rc`.
-      # Gate 2: the full-e2e nightly (CI - Nightly) must have passed for the
-      # EXACT dev commit rc is about to advance to — anything on `rc` has cleared
-      # both the dev-gate (on its PR) and this nightly. A `force` dispatch
-      # bypasses (recovery, or before the nightly has run for a fresh commit).
-      - name: Require a green nightly on dev HEAD
+      # Gate 2 (the rc-gate suite) must be green for the EXACT dev commit rc is
+      # about to advance to. The gate is DECOUPLED from what runs the suite: it
+      # requires a NAMED SIGNAL — a check-run or commit status whose context is
+      # `vars.RELMAN_RC_GATE_CHECK` (default `rc-gate`) — to be `success` on dev
+      # HEAD. Whatever publishes that signal (a nextest e2e workflow, an external
+      # runner, a manual sign-off) is the swappable membership; this gate never
+      # names a specific workflow or test mode. A `force` dispatch bypasses
+      # (recovery, or before the suite has run for a fresh commit).
+      - name: Require the rc-gate suite green on dev HEAD
         if: ${{ ! inputs.force }}
         env:
           GH_TOKEN: ${{ github.token }}
+          GATE: ${{ vars.RELMAN_RC_GATE_CHECK || 'rc-gate' }}
         run: |
           set -euo pipefail
           head="$(git rev-parse HEAD)"   # the checked-out dev tip
-          green="$(gh run list --repo "${{ github.repository }}" \
-            --workflow ci-nightly.yaml --status success \
-            --json headSha --jq "[.[] | select(.headSha == \"$head\")] | length")"
-          if [ "${green:-0}" -ge 1 ]; then
-            echo "CI - Nightly is green for dev HEAD ${head:0:9}; advancing rc."
+          # Accept either a check-run (Actions/App) or a commit status (external)
+          # with this context = success — suite-type-agnostic.
+          cr="$(gh api "repos/${{ github.repository }}/commits/${head}/check-runs" \
+                 --jq '[.check_runs[] | select(.name == env.GATE and .conclusion == "success")] | length')"
+          st="$(gh api "repos/${{ github.repository }}/commits/${head}/status" \
+                 --jq '[.statuses[] | select(.context == env.GATE and .state == "success")] | length')"
+          if [ "$(( ${cr:-0} + ${st:-0} ))" -ge 1 ]; then
+            echo "rc-gate suite signal '${GATE}' is green for dev HEAD ${head:0:9}; advancing rc."
           else
-            echo "::error::No successful 'CI - Nightly' run for dev HEAD ${head:0:9}. rc-gate refuses to advance until the nightly is green for this commit (dispatch with force=true to override)."
+            echo "::error::rc-gate suite signal '${GATE}' is not green for dev HEAD ${head:0:9}. Whatever runs the rc-gate suite must publish a '${GATE}' check-run/status; refusing to advance (dispatch force=true to override)."
             exit 1
           fi
 

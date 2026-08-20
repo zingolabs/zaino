@@ -150,6 +150,17 @@ plus a deployment-launch descriptor; the exact selectors are an implementation
 detail deferred to the build slice. This document fixes the **indirection**,
 not the contents.
 
+**How a gate reads its suite (the indirection, wired).** A gate never names a
+workflow or a test mode. It requires a **named signal** — a check-run or commit
+status whose context is the suite name (e.g. `rc-gate`, configurable per repo) —
+to be `success` on the commit it is admitting. *Whatever* produces that signal
+is the swappable membership: a `nextest` workflow, an external runner, or a human
+posting a manual attestation all satisfy the same gate identically. Concretely:
+`rc-gate` checks for a green `rc-gate` check/status on `dev` HEAD before
+advancing; the deployment gate runs a **named WorkflowTemplate** whose content is
+the suite. So the gate↔flow-point mapping is fixed in code while the gate↔suite
+mapping is pure configuration — the two concerns never touch.
+
 ## Gates
 
 Three gates, each named for the branch it admits a commit to. A gate runs a
