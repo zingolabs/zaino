@@ -25,12 +25,12 @@ and this library adheres to Rust's notion of
   because resilience is the default; reaching the single-attempt contract means
   naming the awkward `OneShot*`.
 - `#[resilient_port]` (in `zaino-source-macros`) — an attribute on a `OneShot*`
-  trait that derives its resilient twin and the `Resilient<V>` blanket impl,
+  trait that derives its resilient twin and the `ValidatorClient<V>` blanket impl,
   rewriting `QueryError<E>` -> `SourceError<E>`. The twin's signature is never
-  restated and the retry/translation lives once in `Resilient::with_retry`.
-- `Resilient<V>` / `RetryPolicy` — retry with exponential backoff, replacing
+  restated and the retry/translation lives once in `ValidatorClient::with_retry`.
+- `ValidatorClient<V>` / `RetryPolicy` — retry with exponential backoff, replacing
   the hand-rolled consecutive-failure ladder in the ChainIndex sync loop.
-  Implements the canonical resilient ports (sealed, so only `Resilient` can),
+  Implements the canonical resilient ports (sealed, so only `ValidatorClient` can),
   and forwards subscriptions unchanged. `SendRawTransaction` gets no resilient
   port — retrying a non-idempotent send risks a double-submit.
 - `SourceLifecycle` (shutdown), `SubscribeChainTip` / `SubscribeBlocks`, and

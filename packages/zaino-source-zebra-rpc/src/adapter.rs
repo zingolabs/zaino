@@ -13,7 +13,7 @@ use crate::parse;
 ///
 /// Implements zaino-source query traits by delegating to an [`RpcClient`],
 /// deserializing via `zebra-chain`, and converting to domain types.
-/// Single-attempt — wrap with [`zaino_source::Resilient`] for retries.
+/// Single-attempt — wrap with [`zaino_source::ValidatorClient`] for retries.
 pub struct ZebraRpcAdapter {
     rpc: RpcClient,
 }
@@ -94,7 +94,7 @@ fn is_not_found(error: &FetchError) -> bool {
 ///
 /// The distinction is load-bearing, not cosmetic: [`QueryError::Domain`] is an
 /// answer and is returned immediately, while [`QueryError::Fetch`] is a failure
-/// and is retried by [`Resilient`](zaino_source::Resilient) and escalated by
+/// and is retried by [`ValidatorClient`](zaino_source::ValidatorClient) and escalated by
 /// consumers. A missing block reported as a fetch failure stalls the sync loop
 /// against a healthy validator, which is exactly what it did before this
 /// existed.

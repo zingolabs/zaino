@@ -10,7 +10,7 @@ use crate::{GetChainTipError, OneShotGetChainTip, QueryError, SubscribeChainTip,
 /// A tip subscription built by polling a source that has no native stream.
 ///
 /// A decorator rather than something baked into each adapter, matching
-/// [`Resilient`](crate::Resilient): the capability is synthesised on top of any
+/// [`ValidatorClient`](crate::ValidatorClient): the capability is synthesised on top of any
 /// source that can answer [`GetChainTip`], so one implementation serves every
 /// pollable source rather than each adapter growing its own poll loop.
 ///

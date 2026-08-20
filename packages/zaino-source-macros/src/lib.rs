@@ -3,8 +3,8 @@
 //! [`macro@resilient_port`] derives a *resilient* port from a single-attempt
 //! `OneShot*` port: it reads the annotated trait's method signatures and emits
 //! the canonical (unqualified) twin trait plus a blanket impl of it for
-//! `Resilient<V>`, so the retry ladder and the `QueryError -> SourceError`
-//! translation are written once (in `Resilient::with_retry`) and the twin's
+//! `ValidatorClient<V>`, so the retry ladder and the `QueryError -> SourceError`
+//! translation are written once (in `ValidatorClient::with_retry`) and the twin's
 //! signature is never restated.
 
 use proc_macro::TokenStream;
@@ -20,7 +20,7 @@ use syn::{
 /// canonical `X` trait whose methods return
 /// [`SourceError`](zaino_source::SourceError) instead of
 /// [`QueryError`](zaino_source::QueryError), plus
-/// `impl X for Resilient<V> where V: OneShotX`. The twin name is the annotated
+/// `impl X for ValidatorClient<V> where V: OneShotX`. The twin name is the annotated
 /// name with the `OneShot` prefix stripped.
 ///
 /// Every method's return type must be
@@ -92,7 +92,7 @@ fn expand(one_shot: &ItemTrait) -> syn::Result<proc_macro2::TokenStream> {
         }
 
         let doc = format!(
-            "Resilient [`{one_shot}::{name}`](crate::{one_shot}::{name}): retries transient \
+            "ValidatorClient [`{one_shot}::{name}`](crate::{one_shot}::{name}): retries transient \
              transport failures, surfacing [`SourceError::Unavailable`](crate::SourceError::Unavailable) \
              once the retry ladder is spent.",
             one_shot = one_shot_ident,
@@ -115,8 +115,8 @@ fn expand(one_shot: &ItemTrait) -> syn::Result<proc_macro2::TokenStream> {
     }
 
     let twin_doc = format!(
-        "Resilient counterpart of [`{0}`](crate::{0}). Implemented only by \
-         [`Resilient`](crate::Resilient); binding it means retries are already handled below.",
+        "ValidatorClient counterpart of [`{0}`](crate::{0}). Implemented only by \
+         [`ValidatorClient`](crate::ValidatorClient); binding it means retries are already handled below.",
         one_shot_ident,
     );
 
@@ -125,12 +125,12 @@ fn expand(one_shot: &ItemTrait) -> syn::Result<proc_macro2::TokenStream> {
         #one_shot
 
         #[doc = #twin_doc]
-        pub trait #twin_ident: crate::resilient::sealed::Sealed + Send + Sync {
+        pub trait #twin_ident: crate::validator_client::sealed::Sealed + Send + Sync {
             #(#twin_methods)*
         }
 
         #[allow(clippy::clone_on_copy)]
-        impl<V> #twin_ident for crate::Resilient<V>
+        impl<V> #twin_ident for crate::ValidatorClient<V>
         where
             V: #one_shot_ident + Send + Sync,
         {
