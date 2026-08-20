@@ -42,6 +42,21 @@ jobs:
             echo "same_repo=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # Push the rename via a GitHub App token, NOT GITHUB_TOKEN: a GITHUB_TOKEN
+      # push does not trigger new workflow runs (GitHub's recursion guard), which
+      # would leave the dev-gate's re-run stuck `action_required` on the renamed
+      # changeset — blocking the PR if changeset-check is a required check. An
+      # App-token push DOES trigger the resulting `synchronize` re-run, and since
+      # this workflow fires only on opened/reopened (not synchronize), there is
+      # no loop.
+      - name: Mint GitHub App token
+        id: app-token
+        if: steps.guard.outputs.same_repo == 'true'
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
       - name: Checkout PR head branch
         if: steps.guard.outputs.same_repo == 'true'
         uses: actions/checkout@v7
@@ -49,8 +64,9 @@ jobs:
           # Check out the real head branch (not the detached merge ref) so the
           # rename commit can be pushed back to it.
           ref: ${{ github.event.pull_request.head.ref }}
-          # GITHUB_TOKEN can push to same-repo head branches; persist it for push.
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # Push with the App token (see the mint step above) so the resulting
+          # synchronize re-runs the dev-gate on the canonical pr-<N> changeset.
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Rename changeset(s) to pr-<N> and push if changed
         if: steps.guard.outputs.same_repo == 'true'
