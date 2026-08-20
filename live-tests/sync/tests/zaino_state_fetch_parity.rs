@@ -69,7 +69,7 @@ use serde_json::{json, Value};
 use ztest::prelude::*;
 use ztest::snapshots::ORCHARD_MAINNET;
 use ztest::sync::{
-    hours, mins, secs, Severity, Snapshot, Subject, SyncCtx, SyncOutcome, SyncRunner, Verdict,
+    hours, mins, secs, Severity, Snapshot, SyncCtx, SyncOutcome, SyncRunner, Verdict,
     Violation,
 };
 
@@ -155,7 +155,7 @@ async fn zaino_state_fetch_parity(mut run: SyncRunner) -> SyncOutcome {
     // margin. Binding the laggard means completion is very nearly "both are
     // done" — and `indexes_converged` covers the remainder rather than assuming
     // it away.
-    run.sync(Subject::zaino(&zaino_fetch));
+    run.sync(zaino_fetch);
     run.tick(TICK).timeout(RUN_CAP);
 
     // ── safety: neither index may misbehave, and they may never disagree ──
