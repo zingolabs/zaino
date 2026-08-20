@@ -37,6 +37,92 @@ const SYNC_WRITE_BATCH_MAX_BLOCKS: usize = 100_000;
 #[cfg(not(feature = "transparent_address_history_experimental"))]
 const SYNC_PROGRESS_LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// Immutable inputs shared by every batch of one bulk-sync run.
+#[cfg(not(feature = "transparent_address_history_experimental"))]
+struct BatchBuild {
+    zebra_network: zebra_chain::parameters::Network,
+    sapling_activation_height: zebra_chain::block::Height,
+    nu5_activation_height: Option<zebra_chain::block::Height>,
+    nu6_3_activation_height: Option<zebra_chain::block::Height>,
+    /// Highest block this run will write.
+    target: u32,
+    budget_bytes: u64,
+    interval: std::time::Duration,
+}
+
+/// Position carried from one batch to the next.
+///
+/// Separate from [`BatchBuild`] because the pipeline mutates it while the previous batch is still
+/// being committed: the cursor is where the *builder* has reached, which now runs ahead of the
+/// committed tip by up to one batch.
+#[cfg(not(feature = "transparent_address_history_experimental"))]
+struct BatchCursor {
+    /// Height of the next block to build.
+    next: u32,
+    parent_chainwork: Option<crate::ChainWork>,
+    last_progress_log: std::time::Instant,
+}
+
+/// Builds one bulk-sync batch, stopping at the first of: the byte budget, the block-count cap, the
+/// time cap, or the run's target height.
+///
+/// Returns an empty batch only once the target is reached, which is what ends the pipeline loop.
+#[cfg(not(feature = "transparent_address_history_experimental"))]
+async fn fill_sync_batch<S: crate::chain_index::source::BlockchainSource>(
+    build: &BatchBuild,
+    cursor: &mut BatchCursor,
+    source: &S,
+) -> Result<Vec<IndexedBlock>, FinalisedStateError> {
+    let mut batch: Vec<IndexedBlock> = Vec::new();
+    let mut batch_bytes: u64 = 0;
+    let started = std::time::Instant::now();
+
+    while cursor.next <= build.target
+        && batch_bytes < build.budget_bytes
+        && batch.len() < SYNC_WRITE_BATCH_MAX_BLOCKS
+        && started.elapsed() < build.interval
+    {
+        #[cfg(feature = "prometheus")]
+        let build_start = std::time::Instant::now();
+        let block = crate::chain_index::finalised_state::build_indexed_block_from_source(
+            source,
+            build.zebra_network.clone(),
+            build.sapling_activation_height,
+            build.nu5_activation_height,
+            build.nu6_3_activation_height,
+            cursor.next,
+            cursor.parent_chainwork,
+        )
+        .await?;
+        #[cfg(feature = "prometheus")]
+        metrics::histogram!(SYNC_BLOCK_BUILD_SECONDS).record(build_start.elapsed().as_secs_f64());
+        cursor.parent_chainwork = Some(block.context.chainwork);
+        batch_bytes = batch_bytes.saturating_add(approx_indexed_block_bytes(&block));
+        batch.push(block);
+        cursor.next += 1;
+
+        // In-flight progress: the block just built, throttled by time. The committed tip is
+        // reported separately by `note_sync_batch_committed`, and the two now differ by up to a
+        // full batch while the pipeline is running.
+        if cursor.last_progress_log.elapsed() >= SYNC_PROGRESS_LOG_INTERVAL {
+            #[cfg(feature = "prometheus")]
+            {
+                metrics::gauge!(SYNC_FINALIZED_HEIGHT).set((cursor.next - 1) as f64);
+                metrics::gauge!(SYNC_TARGET_HEIGHT).set(build.target as f64);
+            }
+            info!(
+                current = cursor.next - 1,
+                target = build.target,
+                zebra_network = ?build.zebra_network,
+                "write_blocks_to_height: syncing"
+            );
+            cursor.last_progress_log = std::time::Instant::now();
+        }
+    }
+
+    Ok(batch)
+}
+
 #[cfg(test)]
 use crate::version;
 
@@ -229,9 +315,9 @@ impl DbWrite for DbV1 {
         height: Height,
         source: &S,
     ) -> Result<(), FinalisedStateError> {
-        use crate::chain_index::finalised_state::{
-            build_indexed_block_from_source, PoolActivationHeights,
-        };
+        #[cfg(feature = "transparent_address_history_experimental")]
+        use crate::chain_index::finalised_state::build_indexed_block_from_source;
+        use crate::chain_index::finalised_state::PoolActivationHeights;
 
         let zebra_network = self.config.network.clone();
         let pool_activations = PoolActivationHeights::resolve(&zebra_network);
@@ -246,6 +332,12 @@ impl DbWrite for DbV1 {
         // `get_block_header`, which routes through `resolve_validated_hash_or_height` →
         // `validate_block_blocking` (a full re-validation for any height above `validated_tip`); the
         // tip is already on disk and trusted here, exactly as the v1.2 migration reads block data.
+        // `mut` only under the address-history path, which advances it per block; the pipelined
+        // path moves it into the batch cursor, which owns it from there on.
+        #[cfg_attr(
+            not(feature = "transparent_address_history_experimental"),
+            allow(unused_mut)
+        )]
         let (start_height, mut parent_chainwork): (u32, Option<crate::ChainWork>) =
             match self.tip_height().await? {
                 None => (GENESIS_HEIGHT.0, None),
@@ -290,6 +382,16 @@ impl DbWrite for DbV1 {
         // order (sequential B-tree sweep instead of random faults once the DB exceeds RAM). The
         // address-history feature can't be batched (its prev-output resolution can't see
         // earlier-in-batch uncommitted blocks), so it keeps the per-block path.
+        //
+        // The two halves are *pipelined*: batch N is committed on a scoped thread while batch N+1
+        // is built on this one. Measured on a mainnet sync at height ~1.2M, the serial form spent
+        // 60% of wall-clock building and 40% inside `write_block_batch_blocking` + `env.sync`, with
+        // the builder idle for the whole commit — a mean 79s pause every 120s. Overlapping them
+        // hides the shorter half behind the longer.
+        //
+        // Peak heap for buffered blocks is therefore up to *twice* `sync_write_batch_size`: the
+        // batch being committed is still resident while its successor fills. Size that knob for the
+        // host accordingly — the budget bounds one batch, not the pipeline.
         #[cfg(not(feature = "transparent_address_history_experimental"))]
         {
             // `.max(1)` guards a misconfigured `sync_write_batch_size = 0`: a 0 budget would fail
@@ -306,94 +408,55 @@ impl DbWrite for DbV1 {
             let batch_interval = std::time::Duration::from_secs(
                 self.config.storage.database.sync_checkpoint_interval,
             );
-            let mut next = start_height;
-            let mut last_progress_log = std::time::Instant::now();
-            while next <= height.0 {
-                // Fetch blocks (async; an LMDB write txn is `!Send` and cannot be held across the
-                // await) into a buffer, flushing on the *first* of: byte budget, block-count cap, or
-                // time cap. The count/time caps keep the first commit (and progress, and crash-loss
-                // window) prompt even on the tiny early-chain blocks, where the byte budget alone
-                // would buffer a huge number of blocks before committing.
-                let mut batch: Vec<IndexedBlock> = Vec::new();
-                let mut batch_bytes: u64 = 0;
-                let batch_started = std::time::Instant::now();
-                while next <= height.0
-                    && batch_bytes < batch_budget
-                    && batch.len() < SYNC_WRITE_BATCH_MAX_BLOCKS
-                    && batch_started.elapsed() < batch_interval
-                {
-                    #[cfg(feature = "prometheus")]
-                    let build_start = std::time::Instant::now();
-                    let block = build_indexed_block_from_source(
-                        source,
-                        zebra_network.clone(),
-                        sapling_activation_height,
-                        nu5_activation_height,
-                        nu6_3_activation_height,
-                        next,
-                        parent_chainwork,
-                    )
-                    .await?;
-                    #[cfg(feature = "prometheus")]
-                    metrics::histogram!(SYNC_BLOCK_BUILD_SECONDS)
-                        .record(build_start.elapsed().as_secs_f64());
-                    parent_chainwork = Some(block.context.chainwork);
-                    batch_bytes = batch_bytes.saturating_add(approx_indexed_block_bytes(&block));
-                    batch.push(block);
-                    next += 1;
 
-                    // In-flight progress: the block being fetched, throttled by time. (The committed
-                    // tip is reported by the per-batch commit log below.)
-                    if last_progress_log.elapsed() >= SYNC_PROGRESS_LOG_INTERVAL {
-                        #[cfg(feature = "prometheus")]
-                        {
-                            metrics::gauge!(SYNC_FINALIZED_HEIGHT).set((next - 1) as f64);
-                            metrics::gauge!(SYNC_TARGET_HEIGHT).set(height.0 as f64);
-                        }
-                        info!(
-                            current = next - 1,
-                            target = height.0,
-                            ?zebra_network,
-                            "write_blocks_to_height: syncing"
-                        );
-                        last_progress_log = std::time::Instant::now();
-                    }
-                }
+            let build = BatchBuild {
+                zebra_network,
+                sapling_activation_height,
+                nu5_activation_height,
+                nu6_3_activation_height,
+                target: height.0,
+                budget_bytes: batch_budget,
+                interval: batch_interval,
+            };
+            let mut cursor = BatchCursor {
+                next: start_height,
+                parent_chainwork,
+                last_progress_log: std::time::Instant::now(),
+            };
 
-                if batch.is_empty() {
-                    break;
-                }
+            // Prime the pipeline: the first batch has nothing to overlap with.
+            let mut pending = fill_sync_batch(&build, &mut cursor, source).await?;
 
-                // Write + sort + commit the batch atomically, then force durability. The on-disk
-                // `headers` tip never runs ahead of the indexes, so resume is gap-free.
-                #[cfg(feature = "prometheus")]
-                let write_start = std::time::Instant::now();
-                tokio::task::block_in_place(|| self.write_block_batch_blocking(&batch))?;
-                tokio::task::block_in_place(|| self.env.sync(true)).map_err(|e| {
-                    FinalisedStateError::Custom(format!("LMDB checkpoint sync failed: {e}"))
-                })?;
-                #[cfg(feature = "prometheus")]
-                metrics::histogram!(SYNC_BLOCK_WRITE_SECONDS)
-                    .record(write_start.elapsed().as_secs_f64());
+            while !pending.is_empty() {
+                // `block_in_place` (rather than a plain `thread::scope`) keeps the runtime's
+                // promise that a worker is available while this one is busy: it hands the
+                // remaining tasks to a replacement worker for the duration. Inside it, the scoped
+                // thread commits and `Handle::block_on` drives the builder on this thread, so the
+                // two run genuinely concurrently while both still borrow `self` and `source`
+                // — no `'static` bound, and no `Arc` around either.
+                let (committed, fetched) =
+                    tokio::task::block_in_place(|| {
+                        std::thread::scope(|scope| {
+                            let committer =
+                                scope.spawn(|| self.commit_sync_batch_blocking(&pending));
+                            let fetched = tokio::runtime::Handle::current()
+                                .block_on(fill_sync_batch(&build, &mut cursor, source));
+                            // Propagate a writer panic as a panic, as the serial `block_in_place`
+                            // form did; swallowing it into an error would change how a poisoned
+                            // write surfaces.
+                            let committed = match committer.join() {
+                                Ok(result) => result,
+                                Err(panic) => std::panic::resume_unwind(panic),
+                            };
+                            (committed, fetched)
+                        })
+                    });
 
-                // Only after the batch is committed + synced do we advance the validated tip.
-                for block in &batch {
-                    self.mark_validated(block.context.index.height.0);
-                    #[cfg(feature = "prometheus")]
-                    record_block_throughput(block);
-                }
-                self.status.store(StatusType::Ready);
-                info!(
-                    height = next - 1,
-                    blocks = batch.len(),
-                    "write_blocks_to_height: committed batch"
-                );
-                #[cfg(feature = "prometheus")]
-                {
-                    metrics::gauge!(DB_TIP_HEIGHT).set((next - 1) as f64);
-                    metrics::gauge!(SYNC_LAST_BLOCK_WRITTEN_AT)
-                        .set(crate::chain_index::unix_now_secs());
-                }
+                // Commit first: a fetch error is worth reporting, but a failed *write* is the
+                // one that decides whether the tip may advance.
+                committed?;
+                self.note_sync_batch_committed(&pending);
+                pending = fetched?;
             }
         }
         #[cfg(feature = "transparent_address_history_experimental")]
@@ -441,6 +504,57 @@ impl DbWrite for DbV1 {
 impl DbV1 {
     //! *** DB write / delete methods ***
     //! **These should only ever be used in a single DB control task.**
+
+    /// Writes one bulk-sync batch in a single transaction and forces durability.
+    ///
+    /// Blocking, and deliberately free of `block_in_place`: the pipeline runs this on a scoped
+    /// thread of its own, which is not a runtime worker, so there is no worker to hand off.
+    #[cfg(not(feature = "transparent_address_history_experimental"))]
+    fn commit_sync_batch_blocking(
+        &self,
+        batch: &[IndexedBlock],
+    ) -> Result<(), FinalisedStateError> {
+        #[cfg(feature = "prometheus")]
+        let write_start = std::time::Instant::now();
+        self.write_block_batch_blocking(batch)?;
+        self.env.sync(true).map_err(|e| {
+            FinalisedStateError::Custom(format!("LMDB checkpoint sync failed: {e}"))
+        })?;
+        #[cfg(feature = "prometheus")]
+        metrics::histogram!(SYNC_BLOCK_WRITE_SECONDS).record(write_start.elapsed().as_secs_f64());
+        Ok(())
+    }
+
+    /// Advances the validated tip and reports progress, once a batch is durably committed.
+    ///
+    /// Only ever called after [`Self::commit_sync_batch_blocking`] has returned `Ok`, so the
+    /// on-disk `headers` tip never runs ahead of the indexes and resume stays gap-free.
+    #[cfg(not(feature = "transparent_address_history_experimental"))]
+    fn note_sync_batch_committed(&self, batch: &[IndexedBlock]) {
+        for block in batch {
+            self.mark_validated(block.context.index.height.0);
+            #[cfg(feature = "prometheus")]
+            record_block_throughput(block);
+        }
+        self.status.store(StatusType::Ready);
+
+        let Some(last) = batch.last() else {
+            return;
+        };
+        // Taken from the batch rather than the cursor: the cursor has already moved on to the
+        // batch being built behind this one.
+        let height = last.context.index.height.0;
+        info!(
+            height,
+            blocks = batch.len(),
+            "write_blocks_to_height: committed batch"
+        );
+        #[cfg(feature = "prometheus")]
+        {
+            metrics::gauge!(DB_TIP_HEIGHT).set(height as f64);
+            metrics::gauge!(SYNC_LAST_BLOCK_WRITTEN_AT).set(crate::chain_index::unix_now_secs());
+        }
+    }
 
     /// Writes a given (finalised) [`IndexedBlock`] to FinalisedState.
     ///

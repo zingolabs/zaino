@@ -76,6 +76,21 @@ and this library adheres to Rust's notion of
   cadence and exclude-list caps operator-configurable.
 
 ### Changed
+- **Bulk finalised-state sync now pipelines its write batches.**
+  `DbV1::write_blocks_to_height` commits batch N on a scoped thread while it
+  builds batch N+1, instead of alternating between the two. Measured on a
+  mainnet sync at height ~1.2M, the serial form spent 60% of wall-clock building
+  blocks and 40% inside `write_block_batch_blocking` + `env.sync`, with the
+  builder idle for every commit — a mean 79s pause every 120s. Overlapping them
+  hides the shorter half behind the longer.
+
+  Durability and resume semantics are unchanged: a batch is still written in one
+  transaction and fsynced before the validated tip advances, so the on-disk
+  `headers` tip never runs ahead of the indexes. The one operational change is
+  memory — peak heap for buffered blocks is now up to *twice*
+  `storage.database.sync_write_batch_size`, since the batch being committed is
+  still resident while its successor fills. That knob bounds one batch, not the
+  pipeline; size it for the host accordingly.
 - **The mempool no longer stalls across a tip transition.** `getrawmempool`,
   `getmempoolinfo` and `GetMempoolTx` are served from a tip-agnostic set that
   never clears; the old mempool wiped its whole map on every tip change and
