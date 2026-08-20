@@ -51,11 +51,13 @@ jobs:
             echo "::notice::rc carries hotfix commits but no release PR is open to note it on."
             exit 0
           fi
-          sha="$(git rev-parse --short origin/rc)"
+          full="$(git rev-parse origin/rc)"
+          sha="${full:0:9}"
           # The newest NON-merge commit rc has that dev lacks — the hotfix itself,
           # not the merge commit that brought it in. Fall back to rc's tip subject.
           subj="$(git log origin/dev..origin/rc --no-merges --format='%s' | head -1)"
           [ -n "$subj" ] || subj="$(git log -1 --format='%s' origin/rc)"
+          repo="${{ github.server_url }}/${{ github.repository }}"
           gh pr comment "$pr" --body \
-            "🚑 Hotfix landed on \`rc\` at \`${sha}\`: ${subj}. Backport to \`dev\` is required before rc can advance (rc-gate will refuse until then)."
+            "🚑 Hotfix landed on \`rc\` at [\`${sha}\`](${repo}/commit/${full}): ${subj}. Backport to \`dev\` is required before rc can advance (rc-gate will refuse until then)."
           echo "Noted hotfix on release PR #${pr}"

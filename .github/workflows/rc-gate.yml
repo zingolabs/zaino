@@ -197,8 +197,12 @@ jobs:
             echo "::notice::No open release PR yet; the ${{ steps.tag.outputs.tag }} tag is its own record."
             exit 0
           fi
+          repo="${{ github.server_url }}/${{ github.repository }}"
+          tag="${{ steps.tag.outputs.tag }}"
+          sha="${{ steps.ff.outputs.rc_sha }}"
+          # Markdown links (backtick-wrapped SHAs/tags don't autolink on their own).
           gh pr comment "$pr" --body \
-            "🔖 Cut \`${{ steps.tag.outputs.tag }}\` at \`${{ steps.ff.outputs.rc_sha }}\` — deployment: pending."
+            "🔖 Cut [\`${tag}\`](${repo}/tree/${tag}) at [\`${sha:0:9}\`](${repo}/commit/${sha}) — deployment: pending."
           # Re-render the body snapshot (RC list / watermarks) via the sole
           # renderer, keeping the description current without duplicating it here.
           gh workflow run release-pr-body.yml --ref release-ready || \
