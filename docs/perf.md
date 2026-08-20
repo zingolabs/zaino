@@ -46,8 +46,10 @@ value of co-location. It is optional — record it only if a second full sync is
 worth the wall-clock.
 
 Sync curve: `sync-mainnet.csv` (from `--csv`), columns `elapsed_secs,
-finalized_height, target_height, lag_blocks, db_tip_height, chain_tip_height,
-transactions_total, interval_blocks_per_sec`.
+finalized_height, target_height, lag_blocks, node_lag_gauge, db_tip_height,
+chain_tip_height, transactions_total, interval_blocks_per_sec`. `lag_blocks` is
+derived as `target - finalized`; `node_lag_gauge` is the node's own
+`zaino.sync.lag_blocks`, which reports the seam depth rather than the sync lag.
 
 ## 2. Concurrent connections
 

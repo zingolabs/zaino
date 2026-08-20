@@ -50,9 +50,9 @@ struct Sample {
     elapsed: Duration,
     finalized_height: u64,
     target_height: u64,
-    /// The node's own lag gauge, preferred over `target - finalized`: it is
-    /// what zainod believes, and a disagreement between the two is itself a
-    /// finding rather than something to smooth over.
+    /// The node's own `zaino.sync.lag_blocks` gauge, recorded raw. Not used
+    /// for progress or completion — see [`Sample::lag`] for why — but kept in
+    /// the CSV so the run has the node's own reading next to the derived one.
     lag_blocks: Option<u64>,
     db_tip_height: Option<u64>,
     chain_tip_height: Option<u64>,
@@ -61,10 +61,35 @@ struct Sample {
 }
 
 impl Sample {
-    /// Blocks still to go, from the node's gauge where it has one.
+    /// Blocks still to go.
+    ///
+    /// Derived from the two height gauges rather than read from
+    /// `zaino.sync.lag_blocks`. That gauge is set to
+    /// `chain_tip - finalized_height_floor(chain_tip)`, which is the
+    /// non-finalised seam depth — a constant, not the distance left to sync. It
+    /// reads as ~100 whether the node is at the tip or three million blocks
+    /// short of it, so it cannot drive progress or completion here. It is still
+    /// recorded in the CSV as the node reported it.
     fn lag(&self) -> u64 {
-        self.lag_blocks
-            .unwrap_or_else(|| self.target_height.saturating_sub(self.finalized_height))
+        self.target_height.saturating_sub(self.finalized_height)
+    }
+
+    /// Whether the finalised writer has caught up with the height it is syncing
+    /// to.
+    ///
+    /// This, not the `zaino.sync.has_reached_tip` gauge, is what ends a run.
+    /// That gauge is set when the sync loop's iteration returns `Ok`, and
+    /// `FinalisedState::sync_to_height` returns `Ok` as soon as it has *spawned*
+    /// the background sync (it is single-flight: a poll landing on an in-flight
+    /// sync is a no-op that also returns `Ok`). So the gauge goes to 1 seconds
+    /// after start-up and stays there for the whole multi-hour sync — it means
+    /// "the sync loop is healthy", not "the index is at the tip".
+    ///
+    /// `target_height` is the finalised floor the writer was spawned against,
+    /// so `finalized >= target` is the writer's own definition of done, read
+    /// from the outside.
+    fn caught_up(&self) -> bool {
+        self.target_height > 0 && self.finalized_height >= self.target_height
     }
 }
 
@@ -131,8 +156,8 @@ pub(super) async fn run(args: SyncArgs) -> Result<(), BenchError> {
     Ok(())
 }
 
-/// Whether the run is done: the node says it reached the tip, or the caller's
-/// `--until-height` has been passed.
+/// Whether the run is done: the finalised height has caught up with the height
+/// being synced to, or the caller's `--until-height` has been passed.
 fn finished(latest: Option<&Sample>, until_height: Option<u64>) -> bool {
     let Some(latest) = latest else {
         return false;
@@ -140,7 +165,7 @@ fn finished(latest: Option<&Sample>, until_height: Option<u64>) -> bool {
 
     match until_height {
         Some(target) => latest.finalized_height >= target,
-        None => latest.reached_tip,
+        None => latest.caught_up(),
     }
 }
 
@@ -173,8 +198,8 @@ fn progress_line(current: &Sample, previous: Option<&Sample>) -> String {
     if let Some(rate) = interval_rate(current, previous) {
         let _ = write!(line, "  {rate:>9.0} blocks/s");
     }
-    if current.reached_tip {
-        line.push_str("  ✅ at tip");
+    if current.caught_up() {
+        line.push_str("  ✅ caught up");
     }
 
     line
@@ -229,8 +254,13 @@ fn report(samples: &[Sample], start_height: u64) {
         );
     }
     eprintln!(
-        "  Reached tip:        {}",
-        if last.reached_tip { "yes" } else { "no" }
+        "  Caught up:          {}",
+        if last.caught_up() { "yes" } else { "no" }
+    );
+    eprintln!(
+        "  Node's has_reached_tip gauge: {} (set once the sync loop is healthy, \
+         not on arrival at the tip)",
+        if last.reached_tip { "1" } else { "0" }
     );
 }
 
@@ -254,7 +284,7 @@ fn write_csv(path: &str, samples: &[Sample]) -> Result<(), BenchError> {
     let mut file = std::fs::File::create(path).map_err(csv_error)?;
     writeln!(
         file,
-        "elapsed_secs,finalized_height,target_height,lag_blocks,db_tip_height,chain_tip_height,transactions_total,interval_blocks_per_sec"
+        "elapsed_secs,finalized_height,target_height,lag_blocks,node_lag_gauge,db_tip_height,chain_tip_height,transactions_total,interval_blocks_per_sec"
     )
     .map_err(csv_error)?;
 
@@ -262,11 +292,12 @@ fn write_csv(path: &str, samples: &[Sample]) -> Result<(), BenchError> {
     for current in samples {
         writeln!(
             file,
-            "{:.3},{},{},{},{},{},{},{}",
+            "{:.3},{},{},{},{},{},{},{},{}",
             current.elapsed.as_secs_f64(),
             current.finalized_height,
             current.target_height,
             current.lag(),
+            optional(current.lag_blocks),
             optional(current.db_tip_height),
             optional(current.chain_tip_height),
             optional(current.transactions),
@@ -302,19 +333,44 @@ mod tests {
         }
     }
 
+    /// The node's `lag_blocks` gauge reports the non-finalised seam depth, a
+    /// constant, so a run three million blocks short of the tip and one sitting
+    /// on it both publish roughly the same value. `lag` must therefore derive
+    /// from the heights and ignore the gauge entirely.
     #[test]
-    fn lag_prefers_the_nodes_own_gauge() {
+    fn lag_is_derived_from_the_heights_not_the_nodes_gauge() {
         let mut sample = at(10, 3_000_000, false);
-        assert_eq!(sample.lag(), 390_744, "falls back to target - finalized");
+        assert_eq!(sample.lag(), 390_744, "target - finalized");
 
-        sample.lag_blocks = Some(7);
-        assert_eq!(sample.lag(), 7, "the node's gauge wins when present");
+        sample.lag_blocks = Some(100);
+        assert_eq!(
+            sample.lag(),
+            390_744,
+            "the seam-depth gauge must not override the derived lag"
+        );
+    }
+
+    /// The regression behind an early exit: the node sets `has_reached_tip` as
+    /// soon as its sync loop is healthy, which is seconds into a multi-hour
+    /// sync. Completion must follow the heights instead.
+    #[test]
+    fn the_nodes_reached_tip_gauge_does_not_end_a_run() {
+        let early = at(30, 8_897, true);
+        assert!(
+            !early.caught_up(),
+            "8897 of 3390744 is not caught up, whatever the gauge says"
+        );
+        assert!(!finished(Some(&early), None), "the run must keep going");
+
+        let done = at(9_000, 3_390_744, false);
+        assert!(done.caught_up(), "finalized == target is caught up");
+        assert!(finished(Some(&done), None), "and ends the run");
     }
 
     #[test]
-    fn a_run_without_until_height_finishes_at_the_tip() {
+    fn a_run_without_until_height_finishes_when_it_catches_up() {
         assert!(!finished(Some(&at(10, 100, false)), None));
-        assert!(finished(Some(&at(10, 100, true)), None));
+        assert!(finished(Some(&at(10, 3_390_744, false)), None));
     }
 
     #[test]

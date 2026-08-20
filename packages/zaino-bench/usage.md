@@ -60,9 +60,25 @@ Three things about them matter:
 
 ## `sync` — initial sync time
 
-Samples `zaino.sync.finalized_height` / `target_height` / `has_reached_tip` until
-zainod reports it has reached the tip, then prints wall-clock time, blocks
-synced, and mean blocks/s.
+Samples `zaino.sync.finalized_height` / `target_height` until the finalised
+height catches up with the height being synced to, then prints wall-clock time,
+blocks synced, and mean blocks/s.
+
+Completion is derived from those two heights, deliberately, rather than read
+from the node's own `zaino.sync.has_reached_tip` and `zaino.sync.lag_blocks`
+gauges. Neither means what its name suggests:
+
+- `has_reached_tip` is set when the sync loop's iteration returns `Ok`, and
+  `sync_to_height` returns `Ok` as soon as it has *spawned* the background sync
+  (it is single-flight, so a poll landing on an in-flight sync is also an `Ok`
+  no-op). It goes to 1 seconds after start-up and stays there — it means "the
+  sync loop is healthy", not "the index is at the tip".
+- `lag_blocks` is `chain_tip - finalized_height_floor(chain_tip)`: the
+  non-finalised seam depth, a constant, not the distance left to sync.
+
+Both are still recorded — `has_reached_tip` in the summary, `lag_blocks` in the
+CSV's `node_lag_gauge` column — so a run carries the node's own readings next to
+the derived ones.
 
 **Start it before zainod.** It waits for the `zaino.sync.finalized_height`
 gauge to appear — not merely for `/metrics` to answer, since zainod binds the
