@@ -24,14 +24,23 @@ jobs:
     name: Keep release PR current
     if: vars.RELMAN_PIPELINE_ACTIVE == 'true'
     runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
           # Full history + tags so the cycle-numbering helper can read them.
           fetch-depth: 0
+
+      # Create/edit the PR with a GitHub App token: GITHUB_TOKEN cannot create
+      # pull requests unless the repo enables "Allow GitHub Actions to create and
+      # approve pull requests" (off by default). An App with pull_requests:write
+      # is not subject to that restriction, so this is setting-independent.
+      - name: Mint GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
       - name: Compute open cycle N
         id: cycle
@@ -70,6 +79,8 @@ jobs:
             pr-body --cycle "${{ steps.cycle.outputs.n }}" > body.md
 
       - name: Create or update the release PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           num="$(gh pr list --base stable --head release-ready --state open \
