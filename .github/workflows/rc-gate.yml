@@ -68,10 +68,26 @@ jobs:
       # unconditionally and workflow_dispatch `force` is the manual override. DO
       # NOT set RELMAN_PIPELINE_ACTIVE=true until this precondition is real, or
       # un-vetted dev HEAD will flow straight to `rc`.
-      - name: Nightly-green precondition (placeholder)
+      # Gate 2: the full-e2e nightly (CI - Nightly) must have passed for the
+      # EXACT dev commit rc is about to advance to — anything on `rc` has cleared
+      # both the dev-gate (on its PR) and this nightly. A `force` dispatch
+      # bypasses (recovery, or before the nightly has run for a fresh commit).
+      - name: Require a green nightly on dev HEAD
+        if: ${{ ! inputs.force }}
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          echo "::warning::rc-gate green precondition is a TODO(cutover); advancing on schedule/force without an e2e check (draft)."
+          head="$(git rev-parse HEAD)"   # the checked-out dev tip
+          green="$(gh run list --repo "${{ github.repository }}" \
+            --workflow ci-nightly.yaml --status success \
+            --json headSha --jq "[.[] | select(.headSha == \"$head\")] | length")"
+          if [ "${green:-0}" -ge 1 ]; then
+            echo "CI - Nightly is green for dev HEAD ${head:0:9}; advancing rc."
+          else
+            echo "::error::No successful 'CI - Nightly' run for dev HEAD ${head:0:9}. rc-gate refuses to advance until the nightly is green for this commit (dispatch with force=true to override)."
+            exit 1
+          fi
 
       - name: Fetch dev and rc
         run: |

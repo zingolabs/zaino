@@ -114,8 +114,11 @@ cmd_merge() { # <pr#>
 }
 
 cmd_rc() {
-  gh workflow run rc-gate.yml -R "$REPO" --ref dev
-  echo "Dispatched rc-gate. Watch: gh run list -R ${REPO} --workflow 'RC gate' --limit 3"
+  # force=true: the sandbox disables 'CI - Nightly', so rc-gate's green-nightly
+  # precondition can never be satisfied here; the real pipeline dispatches
+  # without force and requires the nightly.
+  gh workflow run rc-gate.yml -R "$REPO" --ref dev -f force=true
+  echo "Dispatched rc-gate (force). Watch: gh run list -R ${REPO} --workflow 'RC gate' --limit 3"
 }
 
 cmd_deploy_pass() {
