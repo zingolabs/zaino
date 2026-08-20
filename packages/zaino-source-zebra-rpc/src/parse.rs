@@ -1351,6 +1351,54 @@ mod tests {
         assert_eq!(u64::from(info.chain_supply.chain_value), 1_000);
     }
 
+    /// The wire reports each pool balance twice — an exact `chainValueZat` and a
+    /// ZEC `chainValue` float. A large mainnet balance has a `chainValue` that
+    /// does not round-trip to a whole zatoshi: real sapling `529544.04149098`
+    /// gives `529544.04149098 * 1e8 = 52954404149097.99`, off by a fraction of a
+    /// zatoshi. The domain must read the exact integer and never the float.
+    ///
+    /// Regression gate for the mainnet-boot crash: `adopt_network` bypassed this
+    /// parser and deserialized into zebra's `Zec`-typed response, whose
+    /// `try_from = "f64"` rejected exactly this value with "floating point had
+    /// fractional zatoshis". Reading `chainValueZat` here is what makes the
+    /// domain immune, so if this ever flips to the float, boot breaks again.
+    #[test]
+    fn a_value_pool_reads_the_exact_zatoshi_over_a_lossy_zec_float() {
+        // A real mainnet sapling balance, reported both ways. The ZEC float does
+        // not round-trip: `SAPLING_ZEC * 1e8 = 52954404149097.99`, a fractional
+        // zatoshi. Reading SAPLING_ZAT is what keeps the domain immune.
+        const SAPLING_ZAT: u64 = 52_954_404_149_098;
+        const SAPLING_ZEC: f64 = 529_544.04149098;
+
+        let info = parse_blockchain_info(&serde_json::json!({
+            "chain": "main",
+            "blocks": 3_451_543,
+            "headers": 3_451_543,
+            "estimatedheight": 3_451_544,
+            "bestblockhash": "00".repeat(32),
+            "difficulty": 1.0,
+            "verificationprogress": 1.0,
+            "chainwork": "00",
+            "chainSupply": { "chainValue": 16_882_668.9155448, "chainValueZat": 1_688_266_891_554_480u64 },
+            "valuePools": [
+                { "id": "sapling", "chainValue": SAPLING_ZEC, "chainValueZat": SAPLING_ZAT },
+            ],
+            "consensus": { "chaintip": "00000000", "nextblock": "00000000" },
+        }))
+        .expect("a getblockchaininfo with lossy value-pool floats must still parse");
+
+        let sapling = info
+            .value_pools
+            .iter()
+            .find(|pool| pool.id == "sapling")
+            .expect("sapling pool present");
+        assert_eq!(
+            u64::from(sapling.chain_value),
+            SAPLING_ZAT,
+            "must read the exact chainValueZat, not the lossy chainValue float"
+        );
+    }
+
     /// A validator that reports no pools at all is not an error: the field is
     /// optional, and an empty list says exactly that.
     #[test]

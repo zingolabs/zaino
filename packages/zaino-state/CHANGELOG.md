@@ -65,6 +65,14 @@ and this library adheres to Rust's notion of
   constructed by nothing once the sync worker drives one thing.
 ### Fixed
 
+## [0.7.0] - 2026-08-14
+
+### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
 ## [0.6.0] - 2026-08-04
 
 ### Added
