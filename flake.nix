@@ -2,7 +2,7 @@
   description = "Zaino — indexer and proxy server for the Zcash protocol";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     flake-utils.url = "github:numtide/flake-utils";
 
     crane.url = "github:ipetkov/crane";
@@ -74,6 +74,11 @@
         };
 
         devShells.default = craneLib.devShell {
+          # Carry the package's own buildInputs into the shell. commonArgs.env
+          # names store paths (ROCKSDB_LIB_DIR); only buildInputs puts them in
+          # the shell's closure.
+          inputsFrom = [ zainod ];
+
           packages = with pkgs; [
             protobuf
             pkg-config
@@ -89,7 +94,12 @@
             kind
           ];
 
-          inherit (commonArgs) env;
+          # `nix build` gets its RPATH from autoPatchelfHook; cargo-linked
+          # binaries in this shell run no such hook, so the loader needs these
+          # paths at exec time or every test binary dies on a missing .so.
+          env = commonArgs.env // {
+            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath commonArgs.buildInputs;
+          };
         };
 
         checks = {
