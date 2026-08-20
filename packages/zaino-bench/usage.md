@@ -64,7 +64,9 @@ Samples `zaino.sync.finalized_height` / `target_height` / `has_reached_tip` unti
 zainod reports it has reached the tip, then prints wall-clock time, blocks
 synced, and mean blocks/s.
 
-**Start it before zainod.** It waits for `/metrics` to answer, so t0 is the
+**Start it before zainod.** It waits for the `zaino.sync.finalized_height`
+gauge to appear — not merely for `/metrics` to answer, since zainod binds the
+exporter well before the write loop first sets that gauge — so t0 is the
 moment the node starts rather than the moment you reached a second terminal:
 
 ```sh

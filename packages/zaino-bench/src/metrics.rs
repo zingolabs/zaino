@@ -69,19 +69,33 @@ impl Scrape {
     }
 }
 
-/// Polls `url` until it answers, then returns the first successful scrape.
+/// Polls `url` until it serves `required`, then returns that scrape.
 ///
 /// Waiting rather than failing is deliberate: the operator starts the harness
 /// *before* zainod so that t0 is the moment zainod begins, not the moment
 /// someone got to a second terminal.
-pub(crate) async fn await_endpoint(
+///
+/// Readiness is the *metric*, not the endpoint. zainod binds its exporter
+/// during startup, but the sync gauges are first set from inside the write
+/// loop — after network adoption and the db open, and then only on a ten-second
+/// throttle. So there is a window, unbounded on a cold start, where the endpoint
+/// answers 200 with a body that does not mention `zaino.sync.*` yet. Returning
+/// the first successful scrape lands in that window and fails the run before it
+/// begins; waiting for the gauge is what "zainod has started syncing" actually
+/// means.
+pub(crate) async fn await_metric(
     client: &reqwest::Client,
     url: &str,
+    required: &'static str,
     poll_interval: Duration,
 ) -> Scrape {
     loop {
         match scrape(client, url).await {
-            Ok(scrape) => return scrape,
+            Ok(scrape) if scrape.get(required).is_some() => return scrape,
+            Ok(_) => {
+                eprintln!("  {url} is up; waiting for `{required}` (zainod is still starting)");
+                tokio::time::sleep(poll_interval).await;
+            }
             Err(error) => {
                 eprintln!("  waiting for {url}: {error}");
                 tokio::time::sleep(poll_interval).await;
@@ -172,6 +186,29 @@ zaino_grpc_request_duration_seconds{method=\"get_block_range\",quantile=\"0.5\"}
         assert!(
             error.to_string().contains(names::SYNC_FINALIZED_HEIGHT),
             "error should name the missing metric: {error}"
+        );
+    }
+
+    /// The scrape zainod serves between binding its exporter and the write
+    /// loop's first gauge set: a healthy 200 that does not carry `zaino.sync.*`
+    /// yet. `await_metric` must keep waiting on this, not accept it — accepting
+    /// it is what failed a run before it started.
+    #[test]
+    fn a_started_exporter_without_the_sync_gauges_is_not_ready() {
+        const STARTING_UP: &str = "\
+# TYPE zaino_grpc_request_duration_seconds histogram
+zaino_grpc_request_duration_seconds{method=\"get_block_range\",quantile=\"0.5\"} 0.012
+";
+        let scrape = Scrape::parse(STARTING_UP);
+        assert!(
+            scrape.get(names::SYNC_FINALIZED_HEIGHT).is_none(),
+            "the readiness predicate must treat this scrape as not-yet-ready"
+        );
+        assert!(
+            Scrape::parse(SAMPLE)
+                .get(names::SYNC_FINALIZED_HEIGHT)
+                .is_some(),
+            "and must treat a scrape carrying the gauge as ready"
         );
     }
 

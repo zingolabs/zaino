@@ -77,7 +77,13 @@ pub(super) async fn run(args: SyncArgs) -> Result<(), BenchError> {
     eprintln!("Sampling every {}s", poll_interval.as_secs());
     eprintln!();
 
-    let first = metrics::await_endpoint(&client, &args.metrics_url, poll_interval).await;
+    let first = metrics::await_metric(
+        &client,
+        &args.metrics_url,
+        names::SYNC_FINALIZED_HEIGHT,
+        poll_interval,
+    )
+    .await;
     let started = Instant::now();
     let start_height = first.height(names::SYNC_FINALIZED_HEIGHT)?;
 
