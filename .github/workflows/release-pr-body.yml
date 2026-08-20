@@ -71,12 +71,82 @@ jobs:
           echo "Open cycle: $N"
           echo "n=$N" >> "$GITHUB_OUTPUT"
 
+      - name: Gather cycle status
+        id: status
+        run: |
+          set -euo pipefail
+          # relman renders; this step gathers the live git facts it renders
+          # from, keeping relman a pure function of a TOML file. See
+          # relman-core `CycleStatus` and docs/decision_records/release/pipeline.md
+          # § "Blessing".
+          status="$RUNNER_TEMP/status.toml"
+          N="${{ steps.cycle.outputs.n }}"
+
+          # Fetch the four gate branches so their tips are readable; each may be
+          # missing in an early cycle, so never fail on a branch that is absent.
+          for b in dev rc release-ready stable; do
+            git fetch --no-tags --quiet origin "$b" || true
+          done
+
+          # Top-level scalars must precede the [[rc]] array-of-tables (a bare key
+          # after an array-of-tables header binds to that table in TOML), so
+          # `released_cycle` is written first, then [watermarks], then the RCs.
+          : > "$status"
+
+          # released_cycle: the highest final `cycle-<K>` tag (no -rc suffix)
+          # reachable on stable, if any.
+          if git rev-parse -q --verify origin/stable >/dev/null 2>&1; then
+            released="$(git tag --merged origin/stable --list 'cycle-*' \
+              | sed -n 's/^cycle-\([0-9][0-9]*\)$/\1/p' \
+              | sort -n | tail -1)"
+            if [ -n "$released" ]; then
+              printf 'released_cycle = "cycle-%s"\n\n' "$released" >> "$status"
+            fi
+          fi
+
+          # [watermarks]: the short sha at each gate branch tip; a missing
+          # branch simply contributes no row.
+          echo "[watermarks]" >> "$status"
+          wm() {
+            local sha
+            sha="$(git rev-parse --short "$2" 2>/dev/null || true)"
+            [ -n "$sha" ] && printf '%s = "%s"\n' "$1" "$sha" >> "$status" || true
+          }
+          wm dev           origin/dev
+          wm rc            origin/rc
+          wm release_ready origin/release-ready
+          wm stable        origin/stable
+
+          # [[rc]]: every cycle-<N>-rc.<M> prerelease tag for the open cycle,
+          # sorted by M, each with the short sha it points at.
+          # TODO: populate deployment from the GitHub Deployments deployment-gate bridge
+          #       (the Argo side is out of scope here); until then, `pending`.
+          rc_nums="$(git tag --list "cycle-${N}-rc.*" \
+            | sed -n "s/^cycle-${N}-rc\.\([0-9][0-9]*\)$/\1/p" \
+            | sort -n)"
+          for m in $rc_nums; do
+            tag="cycle-${N}-rc.${m}"
+            sha="$(git rev-parse --short "refs/tags/$tag" 2>/dev/null || true)"
+            [ -n "$sha" ] || continue
+            {
+              printf '\n[[rc]]\n'
+              printf 'tag = "%s"\n' "$tag"
+              printf 'sha = "%s"\n' "$sha"
+              printf 'deployment = "pending"\n'
+            } >> "$status"
+          done
+
+          echo "Gathered $status:"
+          cat "$status"
+          echo "path=$status" >> "$GITHUB_OUTPUT"
+
       - name: Render release PR body
         run: |
           set -euo pipefail
           # relman runs from the repo root and writes markdown to stdout.
           cargo run -q --manifest-path tools/relman/Cargo.toml -- \
-            pr-body --cycle "${{ steps.cycle.outputs.n }}" > body.md
+            pr-body --cycle "${{ steps.cycle.outputs.n }}" \
+            --status "${{ steps.status.outputs.path }}" > body.md
 
       - name: Create or update the release PR
         env:
