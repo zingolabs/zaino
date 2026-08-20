@@ -87,6 +87,27 @@ cmd_feature() { # <slug> <crate> <kind> <desc>
     --body "Sandbox spin: ${kind} change to ${crate}. Changeset id ${uid} (the rename bot will rename \`${slug}.toml\` -> \`pr-<N>.toml\`)."
 }
 
+cmd_hotfix() { # <slug> <crate> <kind> <desc>  — land a fix directly on rc (bypasses dev)
+  local slug="$1" crate="$2" kind="$3" desc="$4"
+  git fetch -q "$REMOTE" rc
+  local base uid content blob tmpidx tree commit
+  base="$(git rev-parse "${REMOTE}/rc")"
+  uid="$(cat /proc/sys/kernel/random/uuid)"
+  content="$(printf 'id = "%s"\n\n[[changes]]\ncrate = "%s"\nkind = "%s"\ndescription = "%s"\n' \
+    "$uid" "$crate" "$kind" "$desc")"
+  tmpidx="$(mktemp)"
+  GIT_INDEX_FILE="$tmpidx" git read-tree "$base"
+  blob="$(printf '%s' "$content" | git hash-object -w --stdin)"
+  GIT_INDEX_FILE="$tmpidx" git update-index --add --cacheinfo "100644,${blob},.changesets/${slug}.toml"
+  tree="$(GIT_INDEX_FILE="$tmpidx" git write-tree)"
+  rm -f "$tmpidx"
+  commit="$(git commit-tree "$tree" -p "$base" -m "fix(${crate}): ${desc} [hotfix]")"
+  git push "$REMOTE" "${commit}:refs/heads/hot/${slug}"
+  gh pr create -R "$REPO" --base rc --head "hot/${slug}" \
+    --title "hotfix(${crate}): ${desc}" \
+    --body "HOTFIX landing directly on \`rc\` (bypasses dev). Changeset id ${uid}. Backport to dev is enforced by the sentinel once it reaches stable."
+}
+
 cmd_merge() { # <pr#>
   gh pr merge "$1" -R "$REPO" --merge --delete-branch
   echo "Merged PR #$1 into dev."
@@ -137,10 +158,11 @@ case "${1:-}" in
   reset)       cmd_reset "${2:-}" ;;
   align)       cmd_align ;;
   feature)     shift; cmd_feature "$@" ;;
+  hotfix)      shift; cmd_hotfix "$@" ;;
   merge)       cmd_merge "${2:?pr number}" ;;
   rc)          cmd_rc ;;
   deploy-pass) cmd_deploy_pass ;;
   bless)       cmd_bless ;;
   status)      cmd_status ;;
-  *) echo "usage: $0 {reset [base]|align|feature <slug> <crate> <kind> <desc>|merge <pr#>|rc|deploy-pass|bless|status}" >&2; exit 2 ;;
+  *) echo "usage: $0 {reset [base]|align|feature <slug> <crate> <kind> <desc>|hotfix <slug> <crate> <kind> <desc>|merge <pr#>|rc|deploy-pass|bless|status}" >&2; exit 2 ;;
 esac
