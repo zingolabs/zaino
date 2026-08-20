@@ -83,6 +83,11 @@ jobs:
 
       - name: Rename changeset(s) to pr-<N> and push if changed
         if: steps.guard.outputs.same_repo == 'true'
+        env:
+          # Pass the PR head branch through the environment, not inline into the
+          # script — a branch name is attacker-controlled and inlining it risks
+          # script injection (actionlint expression check).
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           set -euo pipefail
           # relman runs from the repo root (discovers relman.toml upward) and only
@@ -99,4 +104,4 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .changesets/
           git commit -m "chore: name changeset for PR #${{ github.event.number }}"
-          git push origin "HEAD:${{ github.event.pull_request.head.ref }}"
+          git push origin "HEAD:${HEAD_REF}"
