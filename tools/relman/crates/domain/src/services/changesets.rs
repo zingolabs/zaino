@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
-use relman_core::ports::{ChangesetStore, Changesets, ChangesetsError, NewChangeset, SlugSource};
-use relman_core::types::{CONSUMED_IN_KEY, Changeset, CycleId, Slug, StoredChangeset};
+use relman_core::ports::{
+    ChangesetStore, Changesets, ChangesetsError, NewChangeset, SlugSource, UidSource,
+};
+use relman_core::types::{CONSUMED_IN_KEY, Changeset, CycleId, Slug, StoredChangeset, Uid};
 
 /// How many distinct candidate slugs to try before giving up on uniqueness.
 ///
@@ -43,18 +45,24 @@ const TEMPLATE: &str = "\
 ";
 
 /// Authors new changeset files. Implements the [`Changesets`] driving port over
-/// the [`ChangesetStore`] and [`SlugSource`] driven ports.
+/// the [`ChangesetStore`], [`SlugSource`], and [`UidSource`] driven ports.
 ///
-/// Its whole job: pick a slug that doesn't already exist, render the requested
-/// shape to TOML text, write it, and return the chosen slug.
+/// Its whole job: mint an immutable id, pick a slug that doesn't already exist,
+/// render the requested shape (id-stamped) to TOML text, write it, and return
+/// the chosen slug.
 pub struct ChangesetService {
     store: Arc<dyn ChangesetStore>,
     slugs: Arc<dyn SlugSource>,
+    uids: Arc<dyn UidSource>,
 }
 
 impl ChangesetService {
-    pub fn new(store: Arc<dyn ChangesetStore>, slugs: Arc<dyn SlugSource>) -> Self {
-        Self { store, slugs }
+    pub fn new(
+        store: Arc<dyn ChangesetStore>,
+        slugs: Arc<dyn SlugSource>,
+        uids: Arc<dyn UidSource>,
+    ) -> Self {
+        Self { store, slugs, uids }
     }
 
     /// Map a changeset-parse failure to a [`ChangesetsError::Parse`] carrying
@@ -82,9 +90,14 @@ impl ChangesetService {
 
 impl Changesets for ChangesetService {
     fn new(&self, req: NewChangeset) -> Result<Slug, ChangesetsError> {
+        // Every changeset gets an immutable id at creation — before it is
+        // written — so its identity is stamped from birth regardless of shape.
+        let id = self.uids.generate();
         let contents = match req {
-            NewChangeset::Empty { reason } => Changeset::empty(reason).to_toml(),
-            NewChangeset::Template => TEMPLATE.to_owned(),
+            NewChangeset::Empty { reason } => {
+                StoredChangeset::new(Some(id), None, Changeset::empty(reason)).to_toml()
+            }
+            NewChangeset::Template => template_with_id(&id),
         };
         let slug = self.unique_slug()?;
         self.store.write(&slug, &contents)?;
@@ -152,6 +165,22 @@ impl Changesets for ChangesetService {
     }
 }
 
+/// Render the commented [`TEMPLATE`] scaffold with a real `id` line prepended,
+/// so a templated changeset carries its machine-assigned identity from birth.
+///
+/// The `id` is a bare top-level key emitted *before* the commented body, which
+/// keeps it at the document root (a bare key after a `[[changes]]` header would
+/// bind to that table). The body itself stays an unfilled template — no
+/// `[[changes]]`/`[empty]` — so the dev-gate's unfilled detection still fires
+/// until the author edits it; only the identity is real.
+fn template_with_id(id: &Uid) -> String {
+    format!(
+        "# Machine-assigned changeset identity — do not edit.\n\
+         id = \"{id}\"\n\
+         {TEMPLATE}"
+    )
+}
+
 /// Stamp `consumed_in = "<cycle>"` into a changeset's raw TOML text, preserving
 /// all existing comments and formatting. A format-preserving edit — hence
 /// `toml_edit` rather than the value-model round-trip — so a consumed changeset
@@ -167,16 +196,28 @@ fn stamp_consumed(raw: &str, cycle: &CycleId) -> Result<String, toml_edit::TomlE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use relman_core::mocks::{MapChangesetStore, SequenceSlugSource};
+    use relman_core::mocks::{MapChangesetStore, SequenceSlugSource, SequenceUidSource};
     use relman_core::ports::ChangesetStoreError;
-    use relman_core::types::Description;
+    use relman_core::types::{ChangesetError, Description};
+
+    /// A canonical UUIDv7 the test uid source hands out, so a created changeset's
+    /// id is deterministic.
+    const SAMPLE_UID: &str = "018f4e0a-7b2c-7c3d-8e4f-1a2b3c4d5e6f";
 
     fn slug(raw: &str) -> Slug {
         Slug::parse(raw).expect("valid test slug")
     }
 
+    fn uid(raw: &str) -> Uid {
+        Uid::parse(raw).expect("valid test uid")
+    }
+
     fn service(store: Arc<dyn ChangesetStore>, slugs: Vec<Slug>) -> ChangesetService {
-        ChangesetService::new(store, Arc::new(SequenceSlugSource::new(slugs)))
+        ChangesetService::new(
+            store,
+            Arc::new(SequenceSlugSource::new(slugs)),
+            Arc::new(SequenceUidSource::new(vec![uid(SAMPLE_UID)])),
+        )
     }
 
     #[test]
@@ -193,8 +234,10 @@ mod tests {
         let raw = store
             .read(&written)
             .expect("written slug should be readable");
-        let parsed = Changeset::parse_toml(&raw).expect("empty changeset should parse");
-        let Changeset::Empty { reason } = parsed else {
+        let stored = StoredChangeset::parse_toml(&raw).expect("empty changeset should parse");
+        // The changeset carries its machine-assigned id from birth.
+        assert_eq!(stored.id(), Some(&uid(SAMPLE_UID)));
+        let Changeset::Empty { reason } = stored.body() else {
             panic!("expected Empty");
         };
         assert_eq!(reason.as_str(), "Comment-only fix; no API change.");
@@ -213,10 +256,24 @@ mod tests {
         let raw = store
             .read(&written)
             .expect("written slug should be readable");
-        assert_eq!(raw, TEMPLATE);
-        // The scaffold is inert (all comments) until a human edits it.
+        // The scaffold now carries a real id line above the commented body.
+        assert!(raw.contains(&format!("id = \"{SAMPLE_UID}\"")));
+        assert!(raw.contains("# Machine-assigned changeset identity — do not edit."));
+        assert!(raw.contains(TEMPLATE));
+        // The body is still inert (all comments) until a human edits it.
         assert!(raw.contains("[[changes]]"));
         assert!(raw.contains("--empty"));
+
+        // The id is readable, but the body still classifies as unfilled — so the
+        // dev-gate's unfilled detection is not regressed by the stamped identity.
+        assert_eq!(
+            StoredChangeset::consumed_marker(&raw).expect("marker reads"),
+            None
+        );
+        assert!(matches!(
+            StoredChangeset::parse_toml(&raw),
+            Err(ChangesetError::Unfilled)
+        ));
     }
 
     #[test]
@@ -380,6 +437,25 @@ description = \"Replace sync().\"
             stored.body(),
             &Changeset::parse_toml(FILLED_WITH_COMMENT).expect("body")
         );
+    }
+
+    #[test]
+    fn consume_preserves_a_changesets_id() {
+        // Author an empty changeset through the service so it carries a real id,
+        // then consume it and confirm the stamp left the id intact.
+        let store = Arc::new(MapChangesetStore::new());
+        let svc = service(store.clone(), vec![slug("wandering-quokka")]);
+        let reason = Description::parse("Comment-only; no API change.").expect("non-empty");
+        let written = svc
+            .new(NewChangeset::Empty { reason })
+            .expect("empty changeset should be created");
+
+        svc.consume(&cycle("cycle-1")).expect("consume succeeds");
+
+        let raw = store.read(&written).expect("read consumed file");
+        let stored = StoredChangeset::parse_toml(&raw).expect("consumed file still parses");
+        assert_eq!(stored.id(), Some(&uid(SAMPLE_UID)));
+        assert_eq!(stored.consumed_in(), Some(&cycle("cycle-1")));
     }
 
     #[test]

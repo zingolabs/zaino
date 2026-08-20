@@ -17,6 +17,7 @@ mod slug;
 mod tag;
 mod tag_plan;
 mod target;
+mod uid;
 mod version;
 mod workspace_path;
 
@@ -40,6 +41,7 @@ pub use slug::{InvalidSlug, Slug};
 pub use tag::{InvalidTag, Tag};
 pub use tag_plan::TagPlan;
 pub use target::Target;
+pub use uid::{InvalidUid, Uid};
 pub use version::{InvalidVersion, Version};
 pub use workspace_path::{InvalidWorkspacePath, WorkspacePath};
 

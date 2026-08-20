@@ -10,7 +10,7 @@ mod driving;
 
 pub use driven::{
     ChangelogError, ChangelogStore, ChangesetStore, ChangesetStoreError, Clock, ManifestEditor,
-    ManifestError, SlugSource, Vcs, VcsError, Workspace, WorkspaceError,
+    ManifestError, SlugSource, UidSource, Vcs, VcsError, Workspace, WorkspaceError,
 };
 pub use driving::{
     About, ApplyBump, ApplyError, ArtifactError, Changelog, ChangelogEdit, ChangelogGenError,

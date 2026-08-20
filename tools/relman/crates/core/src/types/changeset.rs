@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{
     ChangeEntry, ChangeKind, CrateName, CycleId, Description, InvalidChangeKind, InvalidCrateName,
-    InvalidCycleId, InvalidSection, Section,
+    InvalidCycleId, InvalidSection, InvalidUid, Section, Uid,
 };
 
 /// The top-level TOML key that stamps a released changeset as consumed. Holds a
@@ -99,6 +99,16 @@ pub enum ChangesetError {
         #[source]
         source: InvalidCycleId,
     },
+    /// The optional [`id`](StoredChangeset::id) was present but not a valid
+    /// [`Uid`], so the changeset's stamped identity cannot be trusted.
+    #[error("invalid id {value:?} in changeset")]
+    InvalidUid {
+        /// The rejected raw string.
+        value: String,
+        /// Why it was rejected.
+        #[source]
+        source: InvalidUid,
+    },
 }
 
 impl Changeset {
@@ -132,8 +142,14 @@ impl Changeset {
     }
 }
 
-/// A changeset as it lives on disk: its release-facing [`Changeset`] body plus
-/// the optional [`consumed_in`](CONSUMED_IN_KEY) provenance mark.
+/// A changeset as it lives on disk: its immutable [`id`](StoredChangeset::id),
+/// its release-facing [`Changeset`] body, and the optional
+/// [`consumed_in`](CONSUMED_IN_KEY) provenance mark.
+///
+/// The `id` is a stable [`Uid`] assigned once at creation; it is `Option` so a
+/// legacy or hand-written changeset that predates the field still parses (as
+/// `None`) rather than erroring. Nothing consumes the id yet — it is baked in
+/// now so identity is stable before real changesets ship.
 ///
 /// The mark is orthogonal to the body shape — a `WithChanges` *or* an `Empty`
 /// changeset can be consumed — so it lives here rather than polluting the pure
@@ -143,25 +159,35 @@ impl Changeset {
 /// `Some`). A *pending* changeset has no mark and still contributes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredChangeset {
+    id: Option<Uid>,
     consumed_in: Option<CycleId>,
     body: Changeset,
 }
 
 impl StoredChangeset {
-    /// Wrap a body with its (optional) consumed mark.
-    pub fn new(consumed_in: Option<CycleId>, body: Changeset) -> Self {
-        Self { consumed_in, body }
+    /// Wrap a body with its (optional) immutable id and consumed mark.
+    pub fn new(id: Option<Uid>, consumed_in: Option<CycleId>, body: Changeset) -> Self {
+        Self {
+            id,
+            consumed_in,
+            body,
+        }
     }
 
-    /// Parse a stored changeset from its TOML representation: the release body
-    /// (validated exactly as [`Changeset::parse_toml`]) plus the optional
-    /// [`consumed_in`](CONSUMED_IN_KEY) mark, itself validated through
-    /// [`CycleId`].
+    /// Parse a stored changeset from its TOML representation: the optional
+    /// [`id`](StoredChangeset::id) (validated through [`Uid`]), the release body
+    /// (validated exactly as [`Changeset::parse_toml`]), and the optional
+    /// [`consumed_in`](CONSUMED_IN_KEY) mark (validated through [`CycleId`]).
     pub fn parse_toml(input: &str) -> Result<Self, ChangesetError> {
         let raw: RawChangeset = toml::from_str(input).map_err(ChangesetError::Toml)?;
+        let id = raw.id_parsed()?;
         let consumed_in = raw.consumed_in_parsed()?;
         let body = raw.into_changeset()?;
-        Ok(Self { consumed_in, body })
+        Ok(Self {
+            id,
+            consumed_in,
+            body,
+        })
     }
 
     /// Read only the [`consumed_in`](CONSUMED_IN_KEY) mark, without validating
@@ -170,6 +196,12 @@ impl StoredChangeset {
     pub fn consumed_marker(input: &str) -> Result<Option<CycleId>, ChangesetError> {
         let raw: RawChangeset = toml::from_str(input).map_err(ChangesetError::Toml)?;
         raw.consumed_in_parsed()
+    }
+
+    /// The changeset's immutable identity, or `None` for a legacy file that
+    /// predates the `id` field.
+    pub fn id(&self) -> Option<&Uid> {
+        self.id.as_ref()
     }
 
     /// The cycle that consumed this changeset, or `None` if it is still pending.
@@ -188,9 +220,10 @@ impl StoredChangeset {
     }
 
     /// Serialize back to TOML such that [`parse_toml`](StoredChangeset::parse_toml)
-    /// round-trips to `self`, mark included.
+    /// round-trips to `self`, id and mark included.
     pub fn to_toml(&self) -> String {
         let mut raw = RawChangeset::from_changeset(&self.body);
+        raw.id = self.id.as_ref().map(|u| u.as_str().to_owned());
         raw.consumed_in = self.consumed_in.as_ref().map(|c| c.as_str().to_owned());
         raw.to_toml()
     }
@@ -204,9 +237,15 @@ impl StoredChangeset {
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct RawChangeset {
-    /// The provenance mark. Optional and serialized first so a consumed file's
-    /// top-level key precedes any `[[changes]]`/`[empty]` table (a bare key
-    /// after a table header would parse into that table, not the document root).
+    /// The immutable changeset identity. Optional (a legacy file may lack it)
+    /// and serialized first so this bare key precedes any `[[changes]]`/`[empty]`
+    /// table (a bare key after a table header would parse into that table, not
+    /// the document root).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+    /// The provenance mark. Optional and serialized after `id` (but still before
+    /// the body tables) so a consumed file's top-level keys precede any
+    /// `[[changes]]`/`[empty]` table.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     consumed_in: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -237,6 +276,19 @@ struct RawEmpty {
 }
 
 impl RawChangeset {
+    /// Validate the raw `id` string through [`Uid`], if present.
+    fn id_parsed(&self) -> Result<Option<Uid>, ChangesetError> {
+        match &self.id {
+            Some(raw) => Uid::parse(raw)
+                .map(Some)
+                .map_err(|source| ChangesetError::InvalidUid {
+                    value: raw.clone(),
+                    source,
+                }),
+            None => Ok(None),
+        }
+    }
+
     /// Validate the raw `consumed_in` string through [`CycleId`], if present.
     fn consumed_in_parsed(&self) -> Result<Option<CycleId>, ChangesetError> {
         match &self.consumed_in {
@@ -277,11 +329,13 @@ impl RawChangeset {
     fn from_changeset(changeset: &Changeset) -> Self {
         match changeset {
             Changeset::WithChanges(entries) => Self {
+                id: None,
                 consumed_in: None,
                 changes: Some(entries.iter().map(RawChange::from_entry).collect()),
                 empty: None,
             },
             Changeset::Empty { reason } => Self {
+                id: None,
                 consumed_in: None,
                 changes: None,
                 empty: Some(RawEmpty {
@@ -640,13 +694,64 @@ description = "A change."
 
     #[test]
     fn stored_changeset_round_trips_with_and_without_mark() {
-        let pending = StoredChangeset::new(None, parse_ok(MULTI_ENTRY));
+        let pending = StoredChangeset::new(None, None, parse_ok(MULTI_ENTRY));
         let reparsed = StoredChangeset::parse_toml(&pending.to_toml()).expect("reparse");
         assert_eq!(pending, reparsed);
 
-        let consumed = StoredChangeset::new(Some(cycle("cycle-1")), parse_ok(MULTI_ENTRY));
+        let consumed = StoredChangeset::new(None, Some(cycle("cycle-1")), parse_ok(MULTI_ENTRY));
         let reparsed = StoredChangeset::parse_toml(&consumed.to_toml()).expect("reparse");
         assert_eq!(consumed, reparsed);
         assert_eq!(reparsed.consumed_in(), Some(&cycle("cycle-1")));
+    }
+
+    fn uid(raw: &str) -> Uid {
+        Uid::parse(raw).expect("valid test uid")
+    }
+
+    /// A canonical UUIDv7 in hyphenated lowercase form.
+    const SAMPLE_UID: &str = "018f4e0a-7b2c-7c3d-8e4f-1a2b3c4d5e6f";
+
+    #[test]
+    fn stored_changeset_round_trips_with_id() {
+        let with_id = StoredChangeset::new(Some(uid(SAMPLE_UID)), None, parse_ok(MULTI_ENTRY));
+        let reparsed = StoredChangeset::parse_toml(&with_id.to_toml()).expect("reparse");
+        assert_eq!(with_id, reparsed);
+        assert_eq!(reparsed.id(), Some(&uid(SAMPLE_UID)));
+    }
+
+    #[test]
+    fn stored_changeset_emits_id_before_consumed_in_and_body() {
+        let stored = StoredChangeset::new(
+            Some(uid(SAMPLE_UID)),
+            Some(cycle("cycle-1")),
+            parse_ok(MULTI_ENTRY),
+        );
+        let toml = stored.to_toml();
+        let id_at = toml.find("id = ").expect("id key present");
+        let consumed_at = toml
+            .find("consumed_in = ")
+            .expect("consumed_in key present");
+        let body_at = toml.find("[[changes]]").expect("body table present");
+        assert!(id_at < consumed_at, "id must precede consumed_in");
+        assert!(
+            consumed_at < body_at,
+            "bare keys must precede the array-of-tables"
+        );
+    }
+
+    #[test]
+    fn stored_changeset_tolerates_a_missing_id() {
+        // A legacy file with no `id` still parses, yielding `None`.
+        let stored = StoredChangeset::parse_toml(MULTI_ENTRY).expect("should parse");
+        assert!(stored.id().is_none());
+    }
+
+    #[test]
+    fn stored_changeset_rejects_a_malformed_id() {
+        let input = format!("id = \"not-a-uuid\"\n{MULTI_ENTRY}");
+        assert!(matches!(
+            StoredChangeset::parse_toml(&input),
+            Err(ChangesetError::InvalidUid { value, .. }) if value == "not-a-uuid"
+        ));
     }
 }

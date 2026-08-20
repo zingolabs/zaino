@@ -19,12 +19,12 @@ use clap::Parser;
 
 use relman_adapters::{
     CargoMetadataWorkspace, FsChangelogStore, FsChangesetStore, GitVcs, RandomSlugSource,
-    TomlEditManifestEditor,
+    RandomUidSource, TomlEditManifestEditor,
 };
 use relman_cli::{Cli, Command, Ctx, commands};
 use relman_core::ports::{
     ApplyBump, Changelog, ChangelogStore, ChangesetCheck, ChangesetStore, Changesets, Clock,
-    ManifestEditor, ReleaseArtifacts, SlugSource, Vcs, Versions, Workspace,
+    ManifestEditor, ReleaseArtifacts, SlugSource, UidSource, Vcs, Versions, Workspace,
 };
 use relman_core::types::{CrateName, DateTime, Utc};
 use relman_domain::services::{
@@ -124,7 +124,9 @@ fn with_ctx(f: impl FnOnce(&Ctx) -> Result<()>) -> Result<()> {
 
     let store: Arc<dyn ChangesetStore> = Arc::new(FsChangesetStore::new(changesets_dir.clone()));
     let slugs: Arc<dyn SlugSource> = Arc::new(RandomSlugSource::new());
-    let changesets: Arc<dyn Changesets> = Arc::new(ChangesetService::new(store.clone(), slugs));
+    let uids: Arc<dyn UidSource> = Arc::new(RandomUidSource::new());
+    let changesets: Arc<dyn Changesets> =
+        Arc::new(ChangesetService::new(store.clone(), slugs, uids));
 
     // Run git in the repo root so it reports paths relative to that root,
     // matching the target `path`s in `relman.toml`.

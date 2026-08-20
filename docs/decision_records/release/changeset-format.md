@@ -44,6 +44,26 @@ been renamed yet still links correctly. Fork PRs — where the bot cannot push t
 the contributor's branch — simply keep their slug; the check still passes and
 linkage still works.
 
+### Machine identity: the immutable `id`
+
+Because the filename is a *mutable* convention (slug → `pr-<N>`), it cannot serve
+as a stable identity. So every changeset also carries a machine-assigned
+`id = "<uuid>"` (a time-sortable UUIDv7), written once by `relman changeset new`
+and **never edited thereafter** — the slug rename moves the file without touching
+its content, and consumption only *appends* the `consumed_in` mark, so the `id`
+survives both. The `id` is distinct in purpose from the slug: the **slug** is the
+human/PR-facing handle, the **`id`** is the durable identity a machine dedups on.
+
+The field is optional in the schema (a hand-written or legacy changeset without
+one still parses), and today nothing yet consults it — it is deliberate
+groundwork. It is the identity primitive for the **consumed-UID ledger** (see
+[§ Consume by marking](#consume-by-marking-not-erasing)): a future increment
+records shipped `id`s in a ledger on `stable`, so derivation can reject an
+already-shipped changeset **independent of the backport** having delivered its
+per-file `consumed_in` mark. Baking the `id` in now — while the pipeline is
+pre-launch and no real changeset has shipped — is cheap; retrofitting stable
+identity onto already-released changesets later would not be.
+
 On release, `relman` **marks** the aggregated changesets consumed (it stamps
 each with the cycle that shipped it) rather than deleting them. Derivation
 filters consumed changesets out, so the next cycle sees an effectively empty set
@@ -205,6 +225,27 @@ Three reasons this beats erasing:
 
 `relman changeset clear` still exists as a manual garbage-collect for pruning old
 consumed changesets; it is not part of the release path.
+
+### Future hardening (designed, not yet built)
+
+The mark + backport closes the double-consume bug in practice. Two further layers
+are designed but deliberately deferred:
+
+- **Consumed-UID ledger (backport-independent dedup).** Consumption also records
+  each shipped changeset's [`id`](#machine-identity-the-immutable-id) in a ledger
+  committed on `stable`. Derivation excludes any changeset whose `id` is in that
+  ledger, reading it from an authoritative ref (`git show origin/stable:…`, or the
+  latest `cycle-*` tag's tree) — which every branch sees **without merging**. This
+  makes dedup correct even if the `stable → dev` backport never runs; the backport
+  becomes a convenience (keeping dev's manifests/changelogs current) rather than a
+  correctness dependency. relman stays a pure function: CI reads the ledger and
+  passes it in as a file, exactly as `release-pr-body` passes its gathered git
+  facts. Worth building only if we want backport-*independence* as a hard
+  guarantee.
+- **Running (chained) hash — out of scope.** A hash-of-hashes accumulator over the
+  ledger would give tamper-evidence, but that is a supply-chain-integrity concern,
+  not double-consume prevention (a threat we do not currently have). Noted here so
+  the option is on record; not planned.
 
 ## Changelog rendering
 

@@ -14,6 +14,7 @@ mod clock;
 pub mod fixtures;
 mod manifest_editor;
 mod slug_source;
+mod uid_source;
 mod vcs;
 mod workspace;
 
@@ -22,5 +23,6 @@ pub use changeset_store::MapChangesetStore;
 pub use clock::FixedClock;
 pub use manifest_editor::RecordingManifestEditor;
 pub use slug_source::SequenceSlugSource;
+pub use uid_source::SequenceUidSource;
 pub use vcs::StubVcs;
 pub use workspace::MapWorkspace;

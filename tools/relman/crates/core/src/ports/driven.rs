@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::types::{CrateName, DateTime, Slug, Utc, Version};
+use crate::types::{CrateName, DateTime, Slug, Uid, Utc, Version};
 
 /// Outbound port: the current time.
 ///
@@ -125,6 +125,18 @@ pub trait ChangelogStore: Send + Sync {
 pub trait SlugSource: Send + Sync {
     /// Produce a fresh candidate slug.
     fn generate(&self) -> Slug;
+}
+
+/// Outbound port: a source of fresh changeset identities.
+///
+/// Each call yields a brand-new [`Uid`] to stamp onto a changeset at creation.
+/// Unlike [`SlugSource`], the identity is meant to be globally unique on its
+/// own — the domain does not check it against the store or retry — so the real
+/// adapter draws a time-sortable UUIDv7. The test mock replays a fixed sequence
+/// for determinism.
+pub trait UidSource: Send + Sync {
+    /// Produce a fresh changeset identity.
+    fn generate(&self) -> Uid;
 }
 
 /// Everything that can go wrong querying version control.
