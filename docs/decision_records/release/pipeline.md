@@ -356,7 +356,27 @@ exactly what ships, right now."* Blessing is merging it (see below).
 Guarantees no commit that reached `stable` is ever stranded outside `dev` (a
 released hotfix, or the release merge itself). Modeled event-driven: a bot
 watches for `stable \ dev ≠ ∅` and, when non-empty, prepares the backport and
-opens a PR into `dev`, auto-closing it once reconciled.
+opens a PR into `dev` with **auto-merge enabled**, so it self-dissolves once
+reconciled.
+
+**The PR self-dissolves; it is not manual ceremony.** The backport carries only
+already-vetted content (the blessing's release commit, or a hotfix that already
+cleared the `rc`- and deployment-gates), so it needs no *review*. The PR exists
+for two reasons: to run the `dev`-gate on the **merged result** — catching a
+*semantic* conflict a textually-clean merge would hide — and to be a **visible
+desync signal** exactly when one is needed. Auto-merge (with a **merge commit**,
+never squash/rebase — only a true merge makes `stable \ dev` empty and stops the
+sentinel re-firing) delivers both:
+
+- **clean + gate-green** → merges instantly, no human touch, `dev` catches up,
+  the sentinel goes quiet;
+- **textual conflict *or* red gate** → the PR stays open as the signal a human
+  must act on (resolve on the aux branch, or fix the breakage).
+
+So a no-conflict backport is *not* left as a manual PR to click, and it is *not*
+direct-pushed past the gate either — it auto-merges through the gate. Choosing
+auto-merge over a direct push also avoids putting the App on `dev`'s
+protection-bypass list.
 
 **Why not a direct `stable → dev` PR:** keeping such a PR mergeable would mean
 rebasing/"update branch"-ing its head — which is `stable`, a protected branch —

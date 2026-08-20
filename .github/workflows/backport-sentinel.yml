@@ -88,7 +88,7 @@ jobs:
             echo "open=" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Open the backport PR
+      - name: Open the backport PR and enable auto-merge
         if: steps.delta.outputs.ahead != '0' && steps.existing.outputs.open == ''
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -123,7 +123,21 @@ jobs:
             printf '%s\n' 'See docs/decision_records/release/pipeline.md § "Reverse: the Backport Sentinel".'
           } > body.md
 
-          gh pr create --base dev --head "$branch" \
+          url="$(gh pr create --base dev --head "$branch" \
             --title "sync: backport stable → dev" \
-            --body-file body.md
-          echo "Opened backport PR sync/stable-to-dev -> dev"
+            --body-file body.md)"
+          echo "Opened backport PR: $url"
+
+          # Enable auto-merge with a MERGE COMMIT (never squash/rebase): only a
+          # true merge brings stable's commits into `dev`, so `stable \ dev`
+          # empties and this sentinel stops firing; squash/rebase mint new SHAs
+          # and it would re-fire forever. GitHub then merges the instant the PR
+          # is mergeable and the dev-gate is green — so a clean, CI-green backport
+          # lands with no human toil, while a textual conflict OR a red gate
+          # leaves the PR open as the visible desync signal for a human. The
+          # dev-gate runs on the *merged* result, catching a semantic conflict a
+          # textually-clean merge would hide. Best-effort: if the repo has not
+          # enabled auto-merge, warn and leave the PR for a manual merge.
+          if ! gh pr merge "$url" --auto --merge; then
+            echo "::warning::Could not enable auto-merge (is 'Allow auto-merge' enabled on the repo?); leaving the PR open for a manual merge."
+          fi
