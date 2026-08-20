@@ -182,8 +182,10 @@ jobs:
             # here). Nothing to do — the cut is recorded by its tag.
             echo "::notice::release-ready is not ahead of stable; no release PR to open yet."
           else
-            gh pr create --base stable --head release-ready \
+            new="$(gh pr create --base stable --head release-ready \
               --title "Release cycle-${{ steps.cycle.outputs.n }}" \
-              --body-file body.md
-            echo "Opened release PR release-ready -> stable"
+              --body-file body.md | sed 's#.*/##')"
+            gh pr edit "$new" --add-label "automated,release" \
+              || echo "::warning::labels 'automated'/'release' not applied (create them once on the repo)."
+            echo "Opened release PR #$new (release-ready -> stable)"
           fi

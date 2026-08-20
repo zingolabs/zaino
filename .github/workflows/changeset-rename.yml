@@ -15,10 +15,11 @@ on:
     types: [opened, reopened]
     branches: [dev, rc, release-ready]
 
-# Least privilege: read PR metadata, write the PR head branch (the rename commit).
+# Least privilege: read PR metadata, write the PR head branch (the rename commit),
+# and label the PR (a hotfix PR targets `rc`).
 permissions:
   contents: write
-  pull-requests: read
+  pull-requests: write
 
 jobs:
   changeset-rename:
@@ -28,6 +29,18 @@ jobs:
     if: vars.RELMAN_PIPELINE_ACTIVE == 'true'
     runs-on: ubuntu-latest
     steps:
+      # A PR opened against `rc` is a hotfix (the normal path advances rc by a
+      # CI fast-forward, not a PR). Label it for scannability. Independent of the
+      # rename below and of the same-repo guard, so fork hotfix PRs get labelled
+      # too. GITHUB_TOKEN with pull-requests:write suffices.
+      - name: Label hotfix PRs (base rc)
+        if: github.event.pull_request.base.ref == 'rc'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr edit "${{ github.event.number }}" --add-label hotfix \
+            || echo "::warning::'hotfix' label not applied (create it once on the repo)."
+
       # Fork PRs cannot be pushed to with GITHUB_TOKEN, so the rename cannot be
       # committed back. Skip with a notice; the contributor (or a maintainer at
       # merge) runs `relman changeset rename` by hand instead.

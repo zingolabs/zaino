@@ -117,6 +117,10 @@ jobs:
             num="$(gh pr create --base dev --head "$branch" \
               --title "sync: backport stable → dev" --body-file body.md \
               | sed 's#.*/##')"
+            # Scannability labels; tolerate their absence (a fresh repo may not
+            # have them until the one-time label setup runs).
+            gh pr edit "$num" --add-label "automated,backport" \
+              || echo "::warning::labels 'automated'/'backport' not applied (create them once on the repo)."
             echo "Opened backport PR #$num"
           else
             echo "::notice::Backport PR #$num already open; re-asserting auto-merge (branch untouched)."
