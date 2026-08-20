@@ -24,10 +24,7 @@ license = "Apache-2.0"
 version = "0.2.0"
 
 [workspace.dependencies]
-# ztest — the k8s-based test harness that owns the validator / indexer / wallet
-# lifecycle and hands tests typed RPC handles. Lives in a sibling repo
-# (`ZingoLabs/ztest`) and requires a sibling checkout for path resolution.
-ztest = { path = "../../../ztest" }
+ztest = "0.1"
 
 # Runtime
 tokio = { version = "1.38", features = ["full"] }

@@ -94,7 +94,7 @@
 use ztest::prelude::*;
 use ztest::snapshots::ORCHARD_MAINNET;
 use ztest::sync::{
-    hours, mins, secs, Op, OpSet, Severity, Snapshot, Subject, SyncCtx, SyncOutcome, SyncRunner,
+    hours, mins, secs, Op, OpSet, Severity, Snapshot, SyncCtx, SyncOutcome, SyncRunner,
     Verdict, Violation,
 };
 
@@ -229,7 +229,7 @@ async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
     // and the manifest was written by the producer before either pod existed.
     let chain = run.chain();
 
-    run.sync(Subject::zaino(&zaino_state));
+    run.sync(zaino_state);
     run.tick(TICK).timeout(RUN_CAP);
     // The same op list `indexed_work_monotonic` reads with `Work::require`,
     // declared up front so the engine checks it against one live reading before
