@@ -162,6 +162,23 @@ advancing; the deployment gate runs a **named WorkflowTemplate** whose content i
 the suite. So the gate↔flow-point mapping is fixed in code while the gate↔suite
 mapping is pure configuration — the two concerns never touch.
 
+**The publishers, wired.** The signal producers exist; the gate still names none
+of them:
+
+- `rc-gate` signal — `CI - Nightly` (`ci-nightly.yaml`) is the current publisher.
+  It runs the full suite (the complete `nextest` run plus
+  check/fmt/clippy/doc/whitespace/cargo-hack) and, once every job is green, its
+  `publish-rc-gate-signal` job posts a `success` commit status with context
+  `vars.RELMAN_RC_GATE_CHECK` (default `rc-gate`) on the tested commit. Repoint
+  the context at a different workflow to swap the suite; drop the job to retire
+  this one. `GITHUB_TOKEN` suffices — the gate only reads the status.
+- `release-gate` (deployment) signal — normally the cluster deployment gate posts
+  a `deployment_status` back (poller → live-chain WorkflowTemplate). The manual
+  path is `deployment-signoff.yml`: a human dispatches `success`/`failure` for an
+  RC's Deployment. Both post **as the release App** (not `GITHUB_TOKEN`) so
+  `deployment-advance.yml` re-triggers. Manual mode requires the auto-poller
+  suspended so it does not claim the Deployment first.
+
 ## Gates
 
 Three gates, each named for the branch it admits a commit to. A gate runs a

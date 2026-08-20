@@ -173,8 +173,13 @@ environment protection rules) — the "visible marker" story for the
    and signs off (an Argo `suspend` step or a GitHub environment approval).
 5. Its final step reports **`deployment_status`** back to GitHub
    (`in_progress` → `success` / `failure`). The poster is deliberately
-   unopinionated: the automated Workflow, a fixture job, or a **human** (via the
-   environment approval or `mark-deployment.sh`) — the GitHub side reacts the same.
+   unopinionated: the automated Workflow, a fixture job, or a **human** — the
+   GitHub side reacts the same. The human path is `deployment-signoff.yml`
+   (`workflow_dispatch`): it mints the release App token and posts the verdict
+   for an RC's Deployment, the in-CI counterpart of the local `mark-deployment.sh`
+   helper. Both post **as the App** so `deployment-advance` re-triggers; manual
+   mode needs the cluster auto-poller suspended so it does not claim the
+   Deployment first.
 6. `deployment-advance.yml` reacts to `deployment_status`: on `success`,
    fast-forwards `release-ready` (which refreshes the release PR); on `failure`,
    the frontier stays put and the team fixes forward on `dev`.
