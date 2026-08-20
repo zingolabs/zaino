@@ -1,0 +1,129 @@
+# ============================================================================
+# BACKPORT SENTINEL — carry `stable` back into `dev`.
+#
+# INERT until the repo variable RELMAN_PIPELINE_ACTIVE=true. Activated only at
+# the coordinated pipeline cutover; until then this workflow does nothing.
+#
+# Guarantees no commit that reached `stable` is ever stranded outside `dev`:
+# the release (blessing) commit — version bumps, CHANGELOGs, and `.changesets/`
+# consumed marks — plus any emergency hotfix pushed straight to `stable`. It
+# fires on every push to `stable`; when `stable \ dev` is non-empty it opens an
+# ordinary PR into `dev` from a disposable `sync/stable-to-dev` branch cut at
+# stable's tip, so any conflict resolution happens off to the side and never
+# blocks `stable`. This is the reverse of the forward desync sentinel (the
+# standing release PR). See docs/decision_records/release/pipeline.md
+# § "Reverse: the Backport Sentinel".
+#
+# No self-trigger: it pushes `sync/stable-to-dev` and opens a PR into `dev` —
+# neither writes to `stable` — so it never re-fires itself.
+#
+# Requires the GitHub App (RELEASE_APP_ID / RELEASE_APP_PRIVATE_KEY): a
+# GITHUB_TOKEN cannot create pull requests (setting-dependent) and any PR it
+# opens does not trigger the dev-gate checks. An App with pull_requests:write
+# is subject to neither limit.
+# ============================================================================
+
+name: Backport sentinel
+
+on:
+  push:
+    branches: [stable]
+  workflow_dispatch:
+
+# Least privilege: create/update the disposable sync branch, and open the PR.
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  backport:
+    name: Carry stable into dev
+    if: vars.RELMAN_PIPELINE_ACTIVE == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: stable
+          # Full history so `origin/dev..origin/stable` is computable and the
+          # sync branch carries real ancestry. Token so `git push` (below)
+          # authenticates as the App.
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Determine whether stable is ahead of dev
+        id: delta
+        run: |
+          set -euo pipefail
+          # `origin/dev` is not fetched by a single-ref checkout; fetch it (and
+          # stable) so the set difference is readable.
+          git fetch --no-tags --quiet origin dev stable
+          ahead="$(git rev-list --count origin/dev..origin/stable)"
+          echo "stable is $ahead commit(s) ahead of dev"
+          echo "ahead=$ahead" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if a sync PR is already open
+        id: existing
+        if: steps.delta.outputs.ahead != '0'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          # An open sync PR may carry in-flight human conflict resolution on its
+          # branch; never clobber it. Let the existing PR absorb the new commits
+          # when its author next reconciles.
+          num="$(gh pr list --base dev --head sync/stable-to-dev --state open \
+            --json number --jq '.[0].number // empty')"
+          if [ -n "$num" ]; then
+            echo "::notice::Backport PR #$num already open; leaving in-flight resolution untouched."
+            echo "open=$num" >> "$GITHUB_OUTPUT"
+          else
+            echo "open=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open the backport PR
+        if: steps.delta.outputs.ahead != '0' && steps.existing.outputs.open == ''
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          branch="sync/stable-to-dev"
+
+          # A disposable snapshot of stable's tip. Force is safe: we only reach
+          # here with no open sync PR, so no in-flight resolution can be lost.
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git branch -f "$branch" origin/stable
+          git push -f origin "$branch"
+
+          # Build the PR body with printf, not a heredoc: an unindented heredoc
+          # body would break out of this YAML block scalar. printf keeps every
+          # line inside the scalar while emitting a flush-left markdown body.
+          # SC2016: the backticks below are literal markdown code-spans, not
+          # command substitution — single quotes are deliberate.
+          # shellcheck disable=SC2016
+          {
+            printf '%s\n' 'Automated backport: `stable` is ahead of `dev`, so this carries the release'
+            printf '%s\n' 'commit (version bumps, CHANGELOGs, `.changesets/` consumed marks) and any'
+            printf '%s\n\n' 'straight-to-`stable` hotfix back into `dev`, keeping the lineage append-only.'
+            printf '%s\n' "From \`dev\`'s point of view this is an ordinary feature PR. If it conflicts,"
+            printf '%s\n' "resolve on \`$branch\` (never on \`stable\`). It is exempt from the dev-gate"
+            printf '%s\n\n' 'changeset check by design — a mechanical backport introduces no new changeset.'
+            printf '%s\n\n' 'Commits being carried back:'
+            printf '%s\n' '```'
+            git log --oneline origin/dev..origin/stable
+            printf '%s\n\n' '```'
+            printf '%s\n' 'See docs/decision_records/release/pipeline.md § "Reverse: the Backport Sentinel".'
+          } > body.md
+
+          gh pr create --base dev --head "$branch" \
+            --title "sync: backport stable → dev" \
+            --body-file body.md
+          echo "Opened backport PR sync/stable-to-dev -> dev"

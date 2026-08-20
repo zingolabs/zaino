@@ -17,8 +17,16 @@ on:
 jobs:
   changeset-check:
     name: Changeset coverage
-    # GitHub-hosted so it runs on pull requests. Skip drafts.
-    if: github.event.pull_request.draft == false
+    # GitHub-hosted so it runs on pull requests. Skip drafts, and skip the
+    # backport sentinel's `sync/stable-to-dev` PR: it mechanically carries a
+    # release commit (Cargo.toml bumps, CHANGELOGs, and `.changesets/`
+    # consumed marks) back into `dev` and by design introduces no *new*
+    # changeset — same spirit as an RC-cut PR of already-reviewed work. See
+    # docs/decision_records/release/pipeline.md § "Reverse: the Backport
+    # Sentinel".
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.head_ref != 'sync/stable-to-dev'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout PR
