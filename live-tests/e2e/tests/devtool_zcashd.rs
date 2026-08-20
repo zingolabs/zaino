@@ -347,7 +347,7 @@ mod json_server {
 
         let chain_height: u32 = {
             let idx = &services.zcashd_subscriber.indexer;
-            let snapshot = idx.snapshot_nonfinalized_state().await.unwrap();
+            let snapshot = idx.snapshot_nonfinalized_state();
             u32::from(idx.best_chaintip(&snapshot).await.unwrap().height)
         };
         dbg!(&chain_height);

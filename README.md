@@ -66,6 +66,8 @@ packages/                          Cargo workspace member crates, in dependency 
   zaino-mempool-service/             The mempool runtime: poll loop, read handles, coherence
   zaino-common/                      Shared utilities and configuration
   zaino-proto/                       Protocol buffer definitions
+  zaino-chain-head/                  Non-finalised chain head: vocabulary and ports
+  zaino-chain-head-service/          Non-finalised chain head: the runtime
   zaino-state/                       Chain state and indexer service library
   zaino-serve/                       gRPC + JSON-RPC servers, and the served JSON schema
   zainod/                            Daemon binary
@@ -167,6 +169,7 @@ these before changing the structure they describe.
 - [ADR-0007](./docs/adr/0007-block-persistence-is-a-row-set-boundary.md): block persistence is a row-set boundary.
 - [ADR-0008](./docs/adr/0008-source-ports-and-domain-primitives.md): validator access is a set of single-question ports over domain primitives.
 - [ADR-0009](./docs/adr/0009-served-json-schema-lives-in-zaino-serve.md): the served JSON schema lives in `zaino-serve`.
+- [ADR-0011](./docs/adr/0011-chain-head-subsystem-separation.md): the non-finalised chain head is a self-synchronising subsystem.
 
 ### Crate usage guides
 Practical guidance for working *in* a crate — its scope, its invariants, and the
@@ -183,6 +186,8 @@ mistakes its design is trying to prevent.
 - [`zaino-address`](./packages/zaino-address/usage.md): address classification, and what is not classified.
 - [`zaino-mempool`](./packages/zaino-mempool/usage.md): the two-layer model, the ports, and the bounds.
 - [`zaino-mempool-service`](./packages/zaino-mempool-service/usage.md): spawning and consuming the mempool.
+- [`zaino-chain-head`](./packages/zaino-chain-head/usage.md): the chain head's ports, why reads live on the snapshot, and why there is no way to make it synchronise.
+- [`zaino-chain-head-service`](./packages/zaino-chain-head-service/usage.md): the chain head runtime, its two testing styles, and the properties to keep when editing the advance path.
 
 
 ## Security Vulnerability Disclosure

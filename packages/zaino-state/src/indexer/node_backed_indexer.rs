@@ -2,9 +2,11 @@
 
 use futures::StreamExt;
 use hex::FromHex;
+use std::sync::Arc;
 use std::{io::Cursor, str::FromStr, time};
 use tokio::{sync::mpsc, time::timeout};
 use tracing::{info, instrument, warn};
+use zaino_chain_head::ChainHeadSnapshot as _;
 use zebra_state::HashOrHeight;
 
 use zebra_chain::{
@@ -35,9 +37,12 @@ use zaino_proto::proto::{
     },
 };
 
+use crate::{
+    chain_index::chain_head::WithChainHeadSource, ChainIndex, ChainIndexRpcExt, MapBackedSnapshot,
+    NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
+};
 #[allow(deprecated)]
 use crate::{
-    chain_index::chain_tips_from_nonfinalized_snapshot,
     chain_index::{source::BlockchainSource, types, validator_source::ZebraValidatorSource},
     config::{
         ChainIndexConfig, CommonBackendConfig, DonationAddress, NodeBackedIndexerServiceConfig,
@@ -52,10 +57,6 @@ use crate::{
         UtxoReplyStream,
     },
     utils::{get_build_info, ServiceMetadata},
-};
-use crate::{
-    chain_index::{non_finalised_state::ChainIndexSnapshot, NonFinalizedSnapshot},
-    ChainIndex, ChainIndexRpcExt, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
 };
 use zaino_status::{Status, StatusType};
 
@@ -74,9 +75,8 @@ use zaino_status::{Status, StatusType};
 ///
 /// NOTE: We do not implement `Clone` for the central service: it owns and closes its
 /// child processes. Subscribers are the clone-safe read handles.
-#[derive(Debug)]
 pub struct NodeBackedIndexerService<
-    Source: BlockchainSource = crate::chain_index::validator_source::ZebraValidatorSource,
+    Source: BlockchainSource + WithChainHeadSource = crate::chain_index::validator_source::ZebraValidatorSource,
 > {
     /// Core indexer.
     indexer: NodeBackedChainIndex<Source>,
@@ -86,13 +86,13 @@ pub struct NodeBackedIndexerService<
     config: CommonBackendConfig,
 }
 
-impl<Source: BlockchainSource> Status for NodeBackedIndexerService<Source> {
+impl<Source: BlockchainSource + WithChainHeadSource> Status for NodeBackedIndexerService<Source> {
     fn status(&self) -> StatusType {
         self.indexer.status()
     }
 }
 
-impl<Source: BlockchainSource> NodeBackedIndexerService<Source> {
+impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedIndexerService<Source> {
     /// Tears down the indexer (sync loop, finalised DB, mempool, and any source-owned
     /// syncer task) from a synchronous context. Shared by [`ZcashService::close`] and
     /// [`Drop`].
@@ -202,7 +202,7 @@ impl ZcashService for NodeBackedIndexerService<ZebraValidatorSource> {
     }
 }
 
-impl<Source: BlockchainSource> Drop for NodeBackedIndexerService<Source> {
+impl<Source: BlockchainSource + WithChainHeadSource> Drop for NodeBackedIndexerService<Source> {
     fn drop(&mut self) {
         self.shutdown_blocking();
     }
@@ -211,7 +211,7 @@ impl<Source: BlockchainSource> Drop for NodeBackedIndexerService<Source> {
 /// A clone-safe, read-only subscriber to a [`NodeBackedIndexerService`].
 #[derive(Debug, Clone)]
 pub struct NodeBackedIndexerServiceSubscriber<
-    Source: BlockchainSource = crate::chain_index::validator_source::ZebraValidatorSource,
+    Source: BlockchainSource + WithChainHeadSource = crate::chain_index::validator_source::ZebraValidatorSource,
 > {
     /// Core indexer.
     pub indexer: NodeBackedChainIndexSubscriber<Source>,
@@ -221,13 +221,15 @@ pub struct NodeBackedIndexerServiceSubscriber<
     config: CommonBackendConfig,
 }
 
-impl<Source: BlockchainSource> Status for NodeBackedIndexerServiceSubscriber<Source> {
+impl<Source: BlockchainSource + WithChainHeadSource> Status
+    for NodeBackedIndexerServiceSubscriber<Source>
+{
     fn status(&self) -> StatusType {
         self.indexer.status()
     }
 }
 
-impl<Source: BlockchainSource> NodeBackedIndexerServiceSubscriber<Source> {
+impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedIndexerServiceSubscriber<Source> {
     /// Fetches the current status
     #[deprecated(note = "Use the Status trait method instead")]
     pub fn get_status(&self) -> StatusType {
@@ -318,23 +320,17 @@ fn compact_tx_to_proto(
     }
 }
 
-/// `getchaintips` served from the non-finalised snapshot when it exists,
-/// falling back to the validator's own response during the initial
-/// finalised-state build — matching both pre-merge backends, which proxied
-/// the validator for that window instead of erroring.
-pub(crate) async fn chain_tips_for_snapshot<Source: BlockchainSource>(
-    snapshot: &ChainIndexSnapshot,
-    source: &Source,
-) -> Result<Vec<zaino_primitives::types::rpc::ChainTip>, NodeBackedIndexerServiceError> {
-    match snapshot.get_nfs_snapshot() {
-        Some(non_finalized_snapshot) => Ok(chain_tips_from_nonfinalized_snapshot(
-            non_finalized_snapshot,
-        )),
-        None => Ok(source
-            .get_chain_tips()
-            .await
-            .map_err(crate::error::ChainIndexError::backing_validator)?),
-    }
+/// `getchaintips`, derived from the chain head's retained graph.
+///
+/// No validator fallback any more: the chain head always holds a window, so
+/// there is no startup period during which this could not be answered locally.
+/// The tips it reports are the branches the chain head itself retains, which
+/// is what makes the answer consistent with every other query served from the
+/// same snapshot.
+pub(crate) fn chain_tips_for_snapshot(
+    snapshot: &Arc<MapBackedSnapshot>,
+) -> Vec<zaino_primitives::types::rpc::ChainTip> {
+    snapshot.chain_tips()
 }
 
 /// Placeholder metadata and config for test-only service construction. Takes the
@@ -367,7 +363,7 @@ fn test_service_parts(
 }
 
 #[cfg(test)]
-impl<Source: BlockchainSource> NodeBackedIndexerService<Source> {
+impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedIndexerService<Source> {
     /// Wraps a chain index in a service for tests, with placeholder
     /// metadata/config. Lets unit tests exercise the service lifecycle over a
     /// mock source (no real validator). Production builds go through
@@ -386,7 +382,7 @@ impl<Source: BlockchainSource> NodeBackedIndexerService<Source> {
 }
 
 #[cfg(test)]
-impl<Source: BlockchainSource> NodeBackedIndexerServiceSubscriber<Source> {
+impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedIndexerServiceSubscriber<Source> {
     /// Wraps a chain-index subscriber in a service subscriber for tests, with placeholder
     /// metadata/config. Lets unit tests drive the service RPC layer over a mock source
     /// (no real validator). Production builds go through [`ZcashService::get_subscriber`].
@@ -422,7 +418,7 @@ impl ChainTipSubscriber {
     }
 }
 
-impl<Source: BlockchainSource> NodeBackedIndexerServiceSubscriber<Source> {
+impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedIndexerServiceSubscriber<Source> {
     /// A subscriber to chain-tip updates, when the backing source exposes a
     /// local tip-change stream. `Some` only on the `Direct` connection; the
     /// `Rpc` connection (and any other stream-less source) observes tips by
@@ -454,28 +450,15 @@ impl<Source: BlockchainSource> NodeBackedIndexerServiceSubscriber<Source> {
         let service_clone = self.clone();
         let service_timeout = self.config.service.timeout;
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
-        let snapshot = service_clone.indexer.snapshot_nonfinalized_state().await?;
+        let snapshot = service_clone.indexer.snapshot_nonfinalized_state();
 
         tokio::spawn(async move {
             let timeout_result = timeout(
                 time::Duration::from_secs((service_timeout * 4) as u64),
                 async {
-                    let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
-                        // TODO: This probably shouldn't be an error.
-                        // this is an improvement over previous behaviour of
-                        // acting as if we are only synced to the genesis block
-                        if let Err(e) = channel_tx
-                            .send(Err(tonic::Status::failed_precondition(
-                                "zaino not yet synced".to_string(),
-                            )))
-                            .await
-                        {
-                            warn!(%e, "{rpc_name} channel closed unexpectedly");
-                        };
-                        return;
-                    };
+                    let non_finalized_snapshot = &snapshot;
                     // Use the snapshot tip directly, as this function doesn't support passthrough
-                    let chain_height = non_finalized_snapshot.best_tip.height.0;
+                    let chain_height = u32::from(non_finalized_snapshot.best_tip().height);
 
                     let height_out_of_range_status = move || {
                         let offending_height = if start > chain_height { start } else { end };
@@ -577,7 +560,9 @@ impl NodeBackedIndexerServiceSubscriber<ZebraValidatorSource> {
     }
 }
 
-impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscriber<Source> {
+impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
+    for NodeBackedIndexerServiceSubscriber<Source>
+{
     type Error = NodeBackedIndexerServiceError;
 
     /// Returns information about all changes to the given transparent addresses within the given inclusive block-height range.
@@ -813,7 +798,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
     /// [The function in rpc/blockchain.cpp](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L325)
     /// where `return chainActive.Tip()->GetBlockHash().GetHex();` is the [return expression](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L339)returning a `std::string`
     async fn get_best_blockhash(&self) -> Result<GetBlockHashResponse, Self::Error> {
-        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let snapshot = self.indexer.snapshot_nonfinalized_state();
         let tip = self.indexer.best_chaintip(&snapshot).await?;
         Ok(GetBlockHashResponse::new(tip.hash.into()))
     }
@@ -824,7 +809,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
     /// method: post
     /// tags: blockchain
     async fn get_block_count(&self) -> Result<Height, Self::Error> {
-        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let snapshot = self.indexer.snapshot_nonfinalized_state();
         let tip = self.indexer.best_chaintip(&snapshot).await?;
         Ok(tip.height.into())
     }
@@ -833,8 +818,8 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
     async fn get_chain_tips(
         &self,
     ) -> Result<Vec<zaino_primitives::types::rpc::ChainTip>, Self::Error> {
-        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
-        chain_tips_for_snapshot(&snapshot, self.indexer.source()).await
+        let snapshot = self.indexer.snapshot_nonfinalized_state();
+        Ok(chain_tips_for_snapshot(&snapshot))
     }
 
     /// Return information about the given Zcash address.
@@ -905,7 +890,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
         let fallback_hash_or_height = hash_or_height.clone();
         let local_result: Result<zaino_primitives::types::Treestate, Self::Error> = async {
             let hash_or_height_struct: HashOrHeight = HashOrHeight::from_str(&hash_or_height)?;
-            let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+            let snapshot = self.indexer.snapshot_nonfinalized_state();
 
             let block_data = match hash_or_height_struct {
                 HashOrHeight::Hash(hash) => self
@@ -958,7 +943,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
             return Ok(response);
         }
 
-        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let snapshot = self.indexer.snapshot_nonfinalized_state();
         if !self
             .indexer
             .hash_or_height_known_for_treestate(&snapshot, &fallback_hash_or_height)
@@ -1083,7 +1068,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
             ))
         };
 
-        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let snapshot = self.indexer.snapshot_nonfinalized_state();
 
         let Some((serialized_transaction, _consensus_branch_id)) =
             self.indexer.get_raw_transaction(&snapshot, &txid).await?
@@ -1109,9 +1094,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
 
         let (height, confirmations, block_hash, in_best_chain) = match best_chain_location {
             Some(types::BestChainLocation::Block(block_hash, height)) => {
-                let confirmations: i64 = snapshot
-                    .max_serviceable_height()
-                    .0
+                let confirmations: i64 = u32::from(snapshot.best_tip().height)
                     .saturating_sub(height.0)
                     .saturating_add(1)
                     .into();
@@ -1164,7 +1147,7 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
     }
 
     async fn chain_height(&self) -> Result<Height, Self::Error> {
-        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let snapshot = self.indexer.snapshot_nonfinalized_state();
         Ok(self.indexer.best_chaintip(&snapshot).await?.height.into())
     }
     /// Returns the transaction ids made by the provided transparent addresses.
@@ -1241,21 +1224,17 @@ impl<Source: BlockchainSource> ZcashIndexer for NodeBackedIndexerServiceSubscrib
 }
 
 #[allow(deprecated)]
-impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSubscriber<Source> {
+impl<Source: BlockchainSource + WithChainHeadSource> LightWalletIndexer
+    for NodeBackedIndexerServiceSubscriber<Source>
+{
     /// Return the height of the tip of the best chain
     async fn get_latest_block(&self) -> Result<BlockId, Self::Error> {
-        match self.indexer.snapshot_nonfinalized_state().await? {
-            ChainIndexSnapshot::NonFinalizedStateExists {
-                non_finalized_snapshot,
-            } => Ok(non_finalized_snapshot.best_tip.to_wire()),
-            ChainIndexSnapshot::StillSyncingFinalizedState { .. } => {
-                // TODO: This probably shouldn't be an error.
-                // this is an improvement over previous behaviour of reporting
-                // the genesis block
-                Err(NodeBackedIndexerServiceError::UnavailableNotSyncedEnough)
-            }
+        let tip = self.indexer.snapshot_nonfinalized_state().best_tip();
+        Ok(types::BlockIndex {
+            height: types::Height(u32::from(tip.height)),
+            hash: types::BlockHash(tip.hash.into()),
         }
-        // dbg!(&tip);
+        .to_wire())
     }
 
     /// Return the compact block corresponding to the given block identifier
@@ -1266,7 +1245,7 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
             )),
         )?;
 
-        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let snapshot = self.indexer.snapshot_nonfinalized_state();
         let height = match hash_or_height {
             HashOrHeight::Height(height) => height.0,
             HashOrHeight::Hash(hash) => {
@@ -1286,12 +1265,7 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
             }
         };
 
-        let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
-            // TODO: This probably shouldn't be an error.
-            // this is an improvement over previous behaviour of
-            // acting as if we are only synced to the genesis block
-            return Err(NodeBackedIndexerServiceError::UnavailableNotSyncedEnough);
-        };
+        let non_finalized_snapshot = &snapshot;
 
         match self
             .indexer
@@ -1304,7 +1278,7 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
         {
             Ok(Some(block)) => Ok(block),
             Ok(None) => {
-                let chain_height = non_finalized_snapshot.best_tip.height.0;
+                let chain_height = u32::from(non_finalized_snapshot.best_tip().height);
                 match hash_or_height {
                     HashOrHeight::Height(Height(height)) if height >= chain_height => {
                         Err(NodeBackedIndexerServiceError::TonicStatusError(
@@ -1320,7 +1294,7 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
                 }
             }
             Err(e) => {
-                let chain_height = non_finalized_snapshot.best_tip.height.0;
+                let chain_height = u32::from(non_finalized_snapshot.best_tip().height);
                 match hash_or_height {
                     HashOrHeight::Height(Height(height)) if height >= chain_height => {
                         Err(NodeBackedIndexerServiceError::TonicStatusError(
@@ -1353,7 +1327,7 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
                 "Error: Invalid hash and/or height out of range. Failed to convert to u32.",
             )),
         )?;
-        let snapshot = self.indexer.snapshot_nonfinalized_state().await?;
+        let snapshot = self.indexer.snapshot_nonfinalized_state();
         let height = match hash_or_height {
             HashOrHeight::Height(height) => height.0,
             HashOrHeight::Hash(hash) => {
@@ -1372,12 +1346,7 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
                 }
             }
         };
-        let Some(non_finalized_snapshot) = snapshot.get_nfs_snapshot() else {
-            // TODO: This probably shouldn't be an error.
-            // this is an improvement over previous behaviour of
-            // acting as if we are only synced to the genesis block
-            return Err(NodeBackedIndexerServiceError::UnavailableNotSyncedEnough);
-        };
+        let non_finalized_snapshot = &snapshot;
         match self
             .indexer
             .get_compact_block(
@@ -1389,7 +1358,7 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
         {
             Ok(Some(block)) => Ok(compact_block_to_nullifiers(block)),
             Ok(None) => {
-                let chain_height = non_finalized_snapshot.best_tip.height.0;
+                let chain_height = u32::from(non_finalized_snapshot.best_tip().height);
                 match hash_or_height {
                     HashOrHeight::Height(Height(height)) if height >= chain_height => {
                         Err(NodeBackedIndexerServiceError::TonicStatusError(
@@ -1415,7 +1384,7 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
                 }
             }
             Err(e) => {
-                let chain_height = non_finalized_snapshot.best_tip.height.0;
+                let chain_height = u32::from(non_finalized_snapshot.best_tip().height);
                 match hash_or_height {
                     HashOrHeight::Height(Height(height)) if height >= chain_height => {
                         Err(NodeBackedIndexerServiceError::TonicStatusError(
@@ -1811,25 +1780,11 @@ impl<Source: BlockchainSource> LightWalletIndexer for NodeBackedIndexerServiceSu
         let indexer = self.indexer.clone();
         let service_timeout = self.config.service.timeout;
         let (channel_tx, channel_rx) = mpsc::channel(self.config.service.channel_size as usize);
-        let snapshot = indexer.snapshot_nonfinalized_state().await?;
+        let snapshot = indexer.snapshot_nonfinalized_state();
         tokio::spawn(async move {
             let timeout = timeout(
                 time::Duration::from_secs((service_timeout * 6) as u64),
                 async {
-                    // The snapshot must exist for the stream to be coherent
-                    // against anything; its contents are the mempool's business,
-                    // not this handler's.
-                    if snapshot.get_nfs_snapshot().is_none() {
-                        if let Err(e) = channel_tx
-                            .send(Err(tonic::Status::failed_precondition(
-                                "zaino not yet synced".to_string(),
-                            )))
-                            .await
-                        {
-                            warn!(%e, "GetMempoolStream channel closed unexpectedly");
-                        };
-                        return;
-                    }
                     // The snapshot is passed in, not dropped: the stream must be
                     // coherent with the tip this request was admitted against,
                     // and `None` would take whatever the mempool is coherent
