@@ -18,7 +18,6 @@ use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, StorageConfig};
 use zaino_proto::proto::utils::{prune_compact_block, PoolTypeFilter};
 
-use crate::chain_index::finalised_state::router::FinalisedStateMode;
 use crate::chain_index::finalised_state::FinalisedState;
 use crate::chain_index::tests::init_tracing;
 use crate::chain_index::tests::vectors::MockSource;
@@ -231,83 +230,4 @@ async fn reader_chain_block_and_header_identity_matches_source() {
 #[tokio::test]
 async fn shutdown_returns_promptly() {
     super::assert_shutdown_returns_promptly("Ephemeral", spawn_ephemeral_finalised_state).await;
-}
-
-/// `ephemeral_finalised_state = true` must be reported as a configuration choice, not as a
-/// transient sync state — the two are indistinguishable from `StatusType` alone, which is the
-/// ambiguity `FinalisedStateMode` exists to remove.
-#[tokio::test]
-async fn configured_ephemeral_reports_its_mode() {
-    init_tracing();
-
-    let source = build_mockchain_source(load_test_vectors().unwrap().blocks);
-    let (_db_dir, finalised_state) = spawn_ephemeral_finalised_state(source).await.unwrap();
-
-    finalised_state.wait_until_ready().await;
-
-    // `Ready` alone cannot distinguish this from a fully synced persistent database.
-    assert_eq!(finalised_state.status(), StatusType::Ready);
-    assert_eq!(
-        finalised_state.finalised_state_mode(),
-        FinalisedStateMode::EphemeralConfigured
-    );
-}
-
-/// Installing and releasing the ephemeral passthrough must move `finalised_state_mode` between
-/// `Persistent` and `EphemeralRouted`, and the released passthrough must hand reads back to the
-/// persistent database.
-///
-/// This is the transition the new routing logs describe, and the one `StatusType` cannot express:
-/// the passthrough reports `Ready` for the whole span, so a caller gating on `Ready` alone would
-/// see no change across either edge.
-///
-/// Drives the router directly rather than through `sync_to_height`: that path installs the
-/// passthrough in the foreground but releases it from a spawned task, so observing the
-/// intermediate state would race the background sync.
-///
-/// `multi_thread` required: the persistent v1 backend's validation path calls
-/// `block_in_place`, which panics on a current-thread runtime.
-#[tokio::test(flavor = "multi_thread")]
-async fn ephemeral_routing_transitions_are_visible_in_mode() {
-    init_tracing();
-
-    let source = build_mockchain_source(load_test_vectors().unwrap().blocks);
-    let (_db_dir, finalised_state) =
-        crate::chain_index::tests::finalised_state::v1::spawn_v1_zaino_db(source.clone())
-            .await
-            .unwrap();
-
-    // A persistent database serves its own reads before any ephemeral routing is installed.
-    assert_eq!(
-        finalised_state.finalised_state_mode(),
-        FinalisedStateMode::Persistent
-    );
-
-    let router = finalised_state.router_arc();
-    let network = ActivationHeights::default().to_regtest_network();
-
-    let ephemeral_reference = router
-        .init_or_take_ephemeral(
-            source.clone(),
-            network,
-            crate::chain_index::finalised_state::router::EphemeralMode::ReadOnly,
-            None,
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(
-        finalised_state.finalised_state_mode(),
-        FinalisedStateMode::EphemeralRouted,
-        "an installed passthrough must be reported as ephemeral, not persistent"
-    );
-
-    // Dropping the last reference restores primary routing.
-    drop(ephemeral_reference);
-
-    assert_eq!(
-        finalised_state.finalised_state_mode(),
-        FinalisedStateMode::Persistent,
-        "releasing the last ephemeral reference must hand reads back to the persistent database"
-    );
 }

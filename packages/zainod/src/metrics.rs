@@ -126,23 +126,6 @@ fn describe_metrics() {
         SYNC_LAST_BLOCK_WRITTEN_AT,
         "Unix timestamp of the last block written to the finalized database"
     );
-    metrics::describe_gauge!(
-        FINALISED_EPHEMERAL,
-        "1 while finalised-state reads are served by the ephemeral passthrough rather than the \
-         persistent database (initial sync, or a migration in progress); 0 once the on-disk index \
-         is serving. Note this reads 1 for the whole life of a process configured with \
-         ephemeral_finalised_state = true"
-    );
-    metrics::describe_gauge!(
-        ACCUMULATOR_BUILT_HEIGHT,
-        "Height the persisted txout-set accumulator currently reflects. Lagging far behind the DB \
-         tip means the next sync will trigger a full from-genesis rebuild"
-    );
-    metrics::describe_gauge!(
-        ACCUMULATOR_REBUILD_ACTIVE,
-        "1 while a from-genesis txout-set accumulator rebuild is running. This is a multi-pass \
-         full-chain scan; expect elevated read I/O for its duration"
-    );
 
     // Inbound gRPC
     metrics::describe_counter!(GRPC_REQUESTS_TOTAL, "Total inbound gRPC requests by method");

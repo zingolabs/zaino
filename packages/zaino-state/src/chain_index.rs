@@ -11,7 +11,6 @@
 //!     - b. Build trasparent tx indexes efficiently
 //!   - NOTE: Full transaction and block data is served from the backend finalizer.
 
-use crate::chain_index::finalised_state::router::FinalisedStateMode;
 use crate::chain_index::non_finalised_state::ChainIndexSnapshot;
 use crate::chain_index::source::GetTransactionLocation;
 use crate::chain_index::types::db::metadata::MempoolInfo;
@@ -953,14 +952,6 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
         self.coherence.subscriber().frozen_for()
     }
 
-    /// Returns which backend is currently answering finalised-state reads.
-    ///
-    /// Companion to [`NodeBackedChainIndex::status`], which cannot express this: an ephemeral
-    /// passthrough reports [`StatusType::Ready`] identically to a synced persistent database.
-    pub fn finalised_state_mode(&self) -> FinalisedStateMode {
-        self.finalized_db.finalised_state_mode()
-    }
-
     /// Displays the status of the chain_index
     pub fn status(&self) -> StatusType {
         let finalized_status = self.finalized_db.status();
@@ -1044,6 +1035,8 @@ impl<Source: BlockchainSource> NodeBackedChainIndex<Source> {
                                 "node returned no best block height",
                             ))
                         })?;
+                    #[cfg(feature = "prometheus")]
+                    metrics::gauge!("zaino.chain.tip_height").set(chain_height.0 as f64);
                     let finalised_height = finalized_height_floor(chain_height.0);
                     #[cfg(feature = "prometheus")]
                     {

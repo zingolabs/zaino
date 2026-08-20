@@ -33,6 +33,10 @@ fn approx_indexed_block_bytes(block: &IndexedBlock) -> u64 {
 #[cfg(not(feature = "transparent_address_history_experimental"))]
 const SYNC_WRITE_BATCH_MAX_BLOCKS: usize = 100_000;
 
+/// Interval between in-flight "syncing height" progress logs during bulk sync.
+#[cfg(not(feature = "transparent_address_history_experimental"))]
+const SYNC_PROGRESS_LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
 #[cfg(test)]
 use crate::version;
 
@@ -340,7 +344,7 @@ impl DbWrite for DbV1 {
 
                     // In-flight progress: the block being fetched, throttled by time. (The committed
                     // tip is reported by the per-batch commit log below.)
-                    if last_progress_log.elapsed() >= PROGRESS_LOG_INTERVAL {
+                    if last_progress_log.elapsed() >= SYNC_PROGRESS_LOG_INTERVAL {
                         #[cfg(feature = "prometheus")]
                         {
                             metrics::gauge!(SYNC_FINALIZED_HEIGHT).set((next - 1) as f64);

@@ -9,19 +9,6 @@ and this crate adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
-- An `fs_mode` field on the periodic `Zaino status check` log line, reporting
-  whether finalised-state reads are served by the persistent database
-  (`persistent`), by the ephemeral passthrough during sync or migration
-  (`ephemeral(syncing)`), or by a process configured with
-  `ephemeral_finalised_state = true` (`ephemeral(configured)`). `chain_state:
-  Ready` alone is ambiguous — the passthrough reports `Ready` identically to a
-  synced on-disk index — so containerised tests should gate startup on
-  `fs_mode: persistent`, or on the `finalised state online` log line, rather
-  than on `Ready`.
-- Metric descriptions for `zaino.db.finalised_ephemeral`,
-  `zaino.db.accumulator_built_height` and
-  `zaino.db.accumulator_rebuild_active`. Note the `prometheus` feature is off
-  by default, so these are inert unless explicitly enabled.
 ### Changed
 ### Deprecated
 ### Removed

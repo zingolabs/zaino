@@ -14,8 +14,6 @@ use crate::chain_index::types::db::metadata::{
     is_unspendable_tx_out, tx_out_set_entry_digest, FinalisedTxOutSetInfoAccumulator,
     ZAINO_TXOUTSET_ENTRY_LEN,
 };
-#[cfg(feature = "prometheus")]
-use crate::metric_names::*;
 
 /// Direction of an accumulator update.
 ///
@@ -847,12 +845,7 @@ impl DbV1 {
             db_tip.0
         );
 
-        let started = std::time::Instant::now();
-
-        #[cfg(feature = "prometheus")]
-        metrics::gauge!(ACCUMULATOR_REBUILD_ACTIVE).set(1.0);
-
-        let result = tokio::task::block_in_place(|| {
+        tokio::task::block_in_place(|| {
             let accumulator =
                 self.build_tx_out_set_accumulator_blocking(db_tip, shards, max_spent_entries)?;
 
@@ -865,28 +858,7 @@ impl DbV1 {
             self.env.sync(true)?;
 
             Ok::<_, FinalisedStateError>(())
-        });
-
-        #[cfg(feature = "prometheus")]
-        {
-            metrics::gauge!(ACCUMULATOR_REBUILD_ACTIVE).set(0.0);
-            if result.is_ok() {
-                metrics::gauge!(ACCUMULATOR_BUILT_HEIGHT).set(db_tip.0 as f64);
-            }
-        }
-
-        // The commit is the only durable evidence the rebuild happened; without this line the sole
-        // sign of completion is the absence of further output.
-        if result.is_ok() {
-            info!(
-                db_tip = db_tip.0,
-                shards,
-                elapsed = ?started.elapsed(),
-                "txout-set accumulator rebuild complete and committed"
-            );
-        }
-
-        result
+        })
     }
 
     /// Chooses the number of [`DbV1::build_tx_out_set_accumulator_blocking`] shards so the per-shard
@@ -938,11 +910,6 @@ impl DbV1 {
             // yields references into the mmap), so this is O(1) heap regardless of table size.
             let mut count: u64 = 0;
             let mut op = lmdb_sys::MDB_FIRST;
-            // On a mainnet-sized `spent` table this walk is a multi-gigabyte sequential scan that
-            // sits between the two `rebuild_tx_out_set_accumulator` log lines. Report progress so it
-            // is distinguishable from a stall.
-            let started = std::time::Instant::now();
-            let mut last_progress_log = started;
             loop {
                 match cursor.get(None, None, op) {
                     Ok(_) => {
@@ -950,26 +917,12 @@ impl DbV1 {
                         if count >= max_useful_entries {
                             break;
                         }
-                        if last_progress_log.elapsed() >= PROGRESS_LOG_INTERVAL {
-                            info!(
-                                counted = count,
-                                elapsed = ?started.elapsed(),
-                                "txout-set accumulator rebuild: sizing shards, counting spent entries"
-                            );
-                            last_progress_log = std::time::Instant::now();
-                        }
                     }
                     Err(lmdb::Error::NotFound) => break,
                     Err(error) => return Err(FinalisedStateError::LmdbError(error)),
                 }
                 op = lmdb_sys::MDB_NEXT;
             }
-
-            info!(
-                spent_entries = count,
-                elapsed = ?started.elapsed(),
-                "txout-set accumulator rebuild: spent-entry count complete"
-            );
 
             Ok(count.saturating_mul(SPENT_SET_ENTRY_BYTES_ESTIMATE))
         })
@@ -1018,45 +971,11 @@ impl DbV1 {
             })
             .collect();
 
-        let started = std::time::Instant::now();
-        let planned = pending.len();
-        let mut completed: usize = 0;
-
         while let Some((lo, hi)) = pending.pop() {
-            let shard_ordinal = completed + 1;
-            info!(
-                shard = shard_ordinal,
-                planned,
-                lo,
-                hi,
-                remaining = pending.len(),
-                db_tip = db_tip.0,
-                elapsed = ?started.elapsed(),
-                "txout-set accumulator rebuild: starting shard"
-            );
-
-            match self.accumulate_tx_out_set_shard_blocking(
-                db_tip,
-                lo,
-                hi,
-                max_spent_entries,
-                shard_ordinal,
-                planned,
-            )? {
-                Some(shard_acc) => {
-                    completed += 1;
-                    info!(
-                        shard = shard_ordinal,
-                        planned,
-                        lo,
-                        hi,
-                        elapsed = ?started.elapsed(),
-                        "txout-set accumulator rebuild: shard complete"
-                    );
-                    total
-                        .combine(&shard_acc)
-                        .map_err(|error| FinalisedStateError::Custom(error.to_string()))?
-                }
+            match self.accumulate_tx_out_set_shard_blocking(db_tip, lo, hi, max_spent_entries)? {
+                Some(shard_acc) => total
+                    .combine(&shard_acc)
+                    .map_err(|error| FinalisedStateError::Custom(error.to_string()))?,
                 None => {
                     if hi - lo <= 1 {
                         // A single creating-txid first-byte value cannot be split further. Fail with
@@ -1069,33 +988,11 @@ impl DbV1 {
                         )));
                     }
                     let mid = lo + (hi - lo) / 2;
-                    // WARN, not INFO: a bisect means the shard-count estimate under-provisioned for
-                    // this txid distribution, and every split adds a further full-chain block scan.
-                    // This is the actionable signal that `accumulator_rebuild_memory_size` is too
-                    // low for the host, so it should survive a default log filter.
-                    warn!(
-                        lo,
-                        hi,
-                        mid,
-                        max_spent_entries,
-                        planned,
-                        "txout-set accumulator rebuild: shard exceeded the spent-set budget, \
-                         bisecting (raise storage.database.accumulator_rebuild_memory_size to \
-                         avoid the extra full-chain pass)"
-                    );
                     pending.push((lo, mid));
                     pending.push((mid, hi));
                 }
             }
         }
-
-        info!(
-            planned,
-            completed,
-            db_tip = db_tip.0,
-            elapsed = ?started.elapsed(),
-            "txout-set accumulator rebuild: all shards complete"
-        );
 
         Ok(total)
     }
@@ -1107,25 +1004,17 @@ impl DbV1 {
     /// Aborting *during* the spent load (before the limit is exceeded, dropping the partial set) is
     /// what makes the per-shard memory a hard cap rather than an estimate. An aborted shard does no
     /// block-table work, so a split wastes only a bounded partial spent scan.
-    ///
-    /// `shard_ordinal` / `shard_total` are carried for progress logging only — they name this pass
-    /// in the operator-visible output and have no effect on the computed partial.
     fn accumulate_tx_out_set_shard_blocking(
         &self,
         db_tip: Height,
         lo: u16,
         hi: u16,
         max_spent_entries: u64,
-        shard_ordinal: usize,
-        shard_total: usize,
     ) -> Result<Option<FinalisedTxOutSetInfoAccumulator>, FinalisedStateError> {
         let in_shard = |first_byte: u8| -> bool {
             let b = first_byte as u16;
             b >= lo && b < hi
         };
-
-        // Covers both phases below: the spent-set load and the full-chain block scan.
-        let started = std::time::Instant::now();
 
         // One read snapshot for the whole shard pass (subsumes the per-lookup RO-txn churn the old
         // per-block path incurred).
@@ -1182,22 +1071,9 @@ impl DbV1 {
             }
         }
 
-        // The number that decides whether this shard fitted the budget, and the best predictor of
-        // whether the next one will: worth a line even though the scan below dominates wall-clock.
-        info!(
-            shard = shard_ordinal,
-            shard_total,
-            lo,
-            hi,
-            spent_outpoints = spent_set.len(),
-            elapsed = ?started.elapsed(),
-            "txout-set accumulator rebuild: shard spent set loaded"
-        );
-
         // (2) Sequential pass over block transparent data, height-ascending.
         let mut shard_acc = FinalisedTxOutSetInfoAccumulator::empty();
         let mut height = GENESIS_HEIGHT.0;
-        let mut last_progress_log = std::time::Instant::now();
         while height <= db_tip.0 {
             let block_height = Height::try_from(height)
                 .map_err(|error| FinalisedStateError::Custom(error.to_string()))?;
@@ -1278,20 +1154,6 @@ impl DbV1 {
                             )
                         })?;
                 }
-            }
-
-            if last_progress_log.elapsed() >= PROGRESS_LOG_INTERVAL {
-                info!(
-                    shard = shard_ordinal,
-                    shard_total,
-                    lo,
-                    hi,
-                    height,
-                    db_tip = db_tip.0,
-                    elapsed = ?started.elapsed(),
-                    "txout-set accumulator rebuild: progress"
-                );
-                last_progress_log = std::time::Instant::now();
             }
 
             height += 1;
@@ -1400,10 +1262,6 @@ impl DbV1 {
             let mut spends: Vec<Outpoint> = Vec::new();
 
             let mut height = built.0 + 1;
-            // Bounded by `ACCUMULATOR_INCREMENTAL_MAX_GAP`, but that is still up to a thousand
-            // heights of random prev-output resolution — slow enough on cold storage to be worth
-            // reporting rather than leaving as a silent gap before the commit line.
-            let mut last_progress_log = std::time::Instant::now();
             while height <= tip.0 {
                 let height_bytes = Height(height).to_bytes()?;
 
@@ -1468,16 +1326,6 @@ impl DbV1 {
                     }
 
                     spends.extend(transparent_tx.spent_outpoints());
-                }
-
-                if last_progress_log.elapsed() >= PROGRESS_LOG_INTERVAL {
-                    info!(
-                        height,
-                        from = built.0 + 1,
-                        target = tip.0,
-                        "txout-set accumulator incremental update: progress"
-                    );
-                    last_progress_log = std::time::Instant::now();
                 }
 
                 height += 1;
@@ -1586,12 +1434,7 @@ impl DbV1 {
             self.env.sync(true)?;
 
             Ok::<_, FinalisedStateError>(())
-        })?;
-
-        #[cfg(feature = "prometheus")]
-        metrics::gauge!(ACCUMULATOR_BUILT_HEIGHT).set(tip.0 as f64);
-
-        Ok(())
+        })
     }
 
     /// `true` iff `outpoint` is absent from the `spent` table (read through `txn`).

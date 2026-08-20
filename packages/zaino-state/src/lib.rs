@@ -43,9 +43,6 @@ pub mod metric_names {
     pub const SYNC_LAST_BLOCK_WRITTEN_AT: &str = "zaino.sync.last_block_written_at";
 
     pub const DB_TIP_HEIGHT: &str = "zaino.db.tip_height";
-    pub const FINALISED_EPHEMERAL: &str = "zaino.db.finalised_ephemeral";
-    pub const ACCUMULATOR_BUILT_HEIGHT: &str = "zaino.db.accumulator_built_height";
-    pub const ACCUMULATOR_REBUILD_ACTIVE: &str = "zaino.db.accumulator_rebuild_active";
 
     pub const MEMPOOL_TRANSACTIONS: &str = "zaino.mempool.transactions";
     pub const MEMPOOL_TIP_CHANGES_TOTAL: &str = "zaino.mempool.tip_changes_total";
@@ -65,8 +62,6 @@ pub use indexer::node_backed_indexer::{
 };
 
 pub mod chain_index;
-
-pub use chain_index::finalised_state::router::FinalisedStateMode;
 
 // Core ChainIndex trait and implementations
 pub use chain_index::{

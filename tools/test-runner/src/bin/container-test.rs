@@ -87,45 +87,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     // num-cpus profile each test spawns a full zebrad whose rayon pool also
     // sizes to num-cpus, so peak task count scales ~num_cpus^2 and breaches the
     // default cap on many-core hosts (EAGAIN / rayon ThreadPoolBuildError).
-    //
-    // `--tmpfs /tmp` keeps the live suite's scratch off the container's overlay
-    // layer.
-    //
-    // Why it is needed: the validator launcher polls the spawned validator's
-    // captured stdout for its readiness line, re-`open`ing that file every
-    // 50-100ms while a drainer thread appends the validator's debug output to
-    // it. On a host running IMA appraisal (which the kernel enables
-    // automatically under Secure Boot), IMA caches its verdict per inode, but
-    // overlayfs inodes do not carry stable identity, so every one of those
-    // opens misses the cache and re-hashes the whole file. Against a
-    // continuously growing log, several tests at once, the `openat` calls wedge
-    // in uninterruptible sleep (`ima_file_check` -> `process_measurement`) and
-    // the test hangs until the nextest timeout kills it. tmpfs inodes are
-    // stable and IMA policies do not appraise tmpfs, so the loop stays cheap.
-    //
-    // Why it is safe: everything the suite puts in /tmp is per-run scratch —
-    // generated validator configs, validator data directories, and the captured
-    // stdout/stderr logs — all of which are already discarded with the
-    // container, which runs `--rm`. Nothing that has to outlive the run is
-    // written there: the repository is bind-mounted at
-    // /home/container_user/zaino and build output goes to the named target
-    // volume. The mount keeps the default `exec` behaviour of the directory it
-    // replaces so build and link steps that use TMPDIR are unaffected, and it
-    // is left at the kernel's default size cap (half of RAM) rather than a
-    // guessed limit, so a large run fails no earlier than it does today.
-    // Hosts without IMA appraisal are unaffected apart from faster scratch I/O.
     let mut argv: Vec<String> = vec![
         "run".into(),
         "--rm".into(),
         "--init".into(),
         "--pids-limit=-1".into(),
-        "--tmpfs".into(),
-        // `size` must stay set: podman caps a `--tmpfs` mount at 64 MiB rather
-        // than inheriting the kernel's tmpfs default. That starves the tests
-        // that build LMDB databases in `tempfile` directories under /tmp.
-        // tmpfs occupies only the memory actually written, so this reserves
-        // nothing up front.
-        "/tmp:rw,exec,nosuid,nodev,size=8g".into(),
         "--name".into(),
         container_name,
         "-v".into(),

@@ -195,17 +195,6 @@ pub(crate) const ACCUMULATOR_BUILD_MAX_SHARDS: u16 = 256;
 /// budget, and over-counting only adds shards (less memory per shard), it never under-bounds.
 pub(crate) const SPENT_SET_ENTRY_BYTES_ESTIMATE: u64 = 256;
 
-/// Minimum wall-clock interval between successive progress logs emitted by a long-running
-/// finalised-state scan (bulk sync, the txout-set accumulator rebuild, and the startup `spent`
-/// integrity check).
-///
-/// Throttling on *time* rather than on a height/entry modulus keeps the output bounded no matter
-/// how the underlying work is partitioned. The accumulator rebuild in particular scans the whole
-/// chain once per shard, and the shard count scales with how little memory the host has (up to
-/// [`ACCUMULATOR_BUILD_MAX_SHARDS`]), so a per-height modulus would emit orders of magnitude more
-/// lines on exactly the constrained deployments where logs are most expensive.
-pub(super) const PROGRESS_LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
-
 /// Number of committed block writes / migration heights between explicit
 /// `env.sync(true)` durability checkpoints.
 ///
@@ -746,21 +735,7 @@ impl DbV1 {
             // error propagates cleanly and the scan only ends on a genuine end-of-table `NotFound`.
             let mut entry_index: u64 = 0;
             let mut op = lmdb_sys::MDB_FIRST;
-            // This checksums every `spent` entry before the node serves anything, so on a
-            // mainnet-sized table it is the first long silence of every boot. Report progress so it
-            // reads as work rather than a hang.
-            let started = std::time::Instant::now();
-            let mut last_progress_log = started;
             loop {
-                if last_progress_log.elapsed() >= PROGRESS_LOG_INTERVAL {
-                    info!(
-                        verified = entry_index,
-                        elapsed = ?started.elapsed(),
-                        "finalised-state spent table integrity check in progress"
-                    );
-                    last_progress_log = std::time::Instant::now();
-                }
-
                 let (key_bytes, val_bytes) = match cursor.get(None, None, op) {
                     Ok((Some(key), value)) => (key, value),
                     // `MDB_FIRST`/`MDB_NEXT` always report the key; treat a missing key as end-of-data.
@@ -792,11 +767,7 @@ impl DbV1 {
                 entry_index += 1;
             }
 
-            info!(
-                entries = entry_index,
-                elapsed = ?started.elapsed(),
-                "finalised-state spent table integrity check passed"
-            );
+            info!("finalised-state spent table integrity check passed ({entry_index} entries)");
             Ok(())
         })
         .await

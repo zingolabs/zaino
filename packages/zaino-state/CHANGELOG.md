@@ -8,49 +8,10 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
-- Progress logging for the from-genesis txout-set accumulator rebuild. The
-  rebuild previously logged two lines up front and nothing again until it
-  committed, so a multi-shard full-chain scan — tens of minutes on a
-  mainnet-sized database — was indistinguishable from a hang. It now reports
-  the spent-entry count pass, each shard's start, spent-set size and
-  completion, and intra-shard height progress, all throttled to one line per
-  10s so output stays bounded regardless of shard count. A shard that exceeds
-  its memory budget and has to be bisected now logs a **warning** naming
-  `storage.database.accumulator_rebuild_memory_size`, since each bisect adds a
-  further full-chain pass.
-- Progress logging for the startup `spent` table integrity check and for the
-  incremental accumulator update.
-- `FinalisedStateMode` (`EphemeralConfigured` / `EphemeralRouted` /
-  `Persistent`) and `NodeBackedChainIndex::finalised_state_mode`, reporting
-  which backend currently answers finalised-state reads. `StatusType` cannot
-  express this: an ephemeral passthrough tracks the backing validator and
-  reports `Ready` exactly like a fully synced persistent database, so a caller
-  gating on `Ready` alone could not tell whether it was querying the real
-  on-disk index or a passthrough standing in for one during sync or migration.
-- Logging for every finalised-state routing transition: passthrough install,
-  mode escalation, downgrade, hand-back to the persistent database, and
-  teardown at shutdown. A one-shot "finalised state online" line marks the
-  first time reads are served from disk, covering both the post-sync/migration
-  edge and a restart against an already-current database.
-- A startup banner naming the finalised-state mode. A process configured with
-  `ephemeral_finalised_state = true` previously started completely silently
-  about it; it now warns, since a test suite believing it is exercising the
-  on-disk index while every read is served by the validator is nearly always a
-  misconfiguration.
-- A log line when a background migration completes; previously only the failure
-  path logged, so a finished migration looked identical to one still running.
-- `zaino.db.finalised_ephemeral`, `zaino.db.accumulator_built_height` and
-  `zaino.db.accumulator_rebuild_active` metric names (emitted under the
-  `prometheus` feature).
-
 ### Changed
 ### Deprecated
 ### Removed
 ### Fixed
-- `zaino.chain.tip_height` was emitted twice per sync iteration — once through a
-  hard-coded string literal and once through the `CHAIN_TIP_HEIGHT` constant,
-  with the same value. The redundant literal emission is removed, leaving the
-  constant as the single source of truth for the metric name.
 
 ## [0.7.0] - 2026-08-14
 
