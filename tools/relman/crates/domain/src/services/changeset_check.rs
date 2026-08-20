@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use relman_config::ReleaseConfig;
 use relman_core::ports::{ChangesetCheck, ChangesetStore, CheckError, CheckReport, Vcs, Violation};
-use relman_core::types::{Changeset, ChangesetError, CrateName, Slug};
+use relman_core::types::{Changeset, ChangesetError, CrateName, Slug, StoredChangeset};
 
 /// The changeset-file extension. Only `*.toml` under the changesets dir count as
 /// this-PR changeset files.
@@ -83,9 +83,35 @@ impl ChangesetCheck for ChangesetCheckService {
         let mut waiver = false;
         for slug in &pr_changeset_slugs {
             let raw = self.store.read(slug)?;
-            match Changeset::parse_toml(&raw) {
-                Ok(Changeset::Empty { .. }) => waiver = true,
-                Ok(Changeset::WithChanges(entries)) => {
+            let stored = match StoredChangeset::parse_toml(&raw) {
+                Ok(stored) => stored,
+                // An unfilled template covers nothing, but it is not malformed:
+                // flag it as its own violation so the author gets a targeted
+                // "fill this in" message rather than a generic parse error. The
+                // target it should have covered stays uncovered below.
+                Err(ChangesetError::Unfilled) => {
+                    violations.push(Violation::UnfilledTemplate(
+                        changesets_dir.join(slug.file_name()),
+                    ));
+                    continue;
+                }
+                Err(error) => {
+                    violations.push(Violation::ChangesetParse {
+                        file: changesets_dir.join(slug.file_name()),
+                        error: error.to_string(),
+                    });
+                    continue;
+                }
+            };
+            // A changeset already consumed by a past release is historical
+            // provenance: it neither covers this PR's touched targets nor waives
+            // the PR. Skip it, exactly as the derivation does.
+            if stored.consumed_in().is_some() {
+                continue;
+            }
+            match stored.into_body() {
+                Changeset::Empty { .. } => waiver = true,
+                Changeset::WithChanges(entries) => {
                     for entry in entries {
                         let name = entry.crate_name();
                         if self.config.target_by_name(name).is_some() {
@@ -97,17 +123,6 @@ impl ChangesetCheck for ChangesetCheckService {
                         }
                     }
                 }
-                // An unfilled template covers nothing, but it is not malformed:
-                // flag it as its own violation so the author gets a targeted
-                // "fill this in" message rather than a generic parse error. The
-                // target it should have covered stays uncovered below.
-                Err(ChangesetError::Unfilled) => violations.push(Violation::UnfilledTemplate(
-                    changesets_dir.join(slug.file_name()),
-                )),
-                Err(error) => violations.push(Violation::ChangesetParse {
-                    file: changesets_dir.join(slug.file_name()),
-                    error: error.to_string(),
-                }),
             }
         }
 

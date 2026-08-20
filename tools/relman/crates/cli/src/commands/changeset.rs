@@ -1,12 +1,13 @@
 use clap::{Args as ClapArgs, Subcommand};
 
 use relman_core::ports::{ChangesetsError, CheckError};
-use relman_core::types::EmptyDescription;
+use relman_core::types::{EmptyDescription, InvalidCycleId};
 
 use crate::context::Ctx;
 
 mod check;
 mod clear;
+mod consume;
 mod new;
 mod rename;
 
@@ -25,7 +26,11 @@ enum Action {
     Check(check::Args),
     /// Rename this PR's author changeset(s) to the canonical `pr-<N>` name(s)
     Rename(rename::Args),
-    /// Remove every changeset file (the release consume step; needs `--yes`)
+    /// Mark every pending changeset consumed by a cycle, in place (the release
+    /// consume step; needs `--yes`)
+    Consume(consume::Args),
+    /// Remove every changeset file (a manual GC for old ledger entries; needs
+    /// `--yes`)
     Clear(clear::Args),
 }
 
@@ -35,6 +40,9 @@ pub enum ChangesetCommandError {
     /// The `--empty` reason was blank.
     #[error("--empty requires a non-empty reason")]
     EmptyReason(#[from] EmptyDescription),
+    /// The `--cycle` value was not a valid cycle id.
+    #[error("invalid --cycle value")]
+    Cycle(#[from] InvalidCycleId),
     /// The changeset could not be created.
     #[error(transparent)]
     Changesets(#[from] ChangesetsError),
@@ -56,6 +64,7 @@ pub fn run(args: &Args, ctx: &Ctx) -> Result<(), ChangesetCommandError> {
         Action::New(new_args) => new::run(new_args, ctx),
         Action::Check(check_args) => check::run(check_args, ctx),
         Action::Rename(rename_args) => rename::run(rename_args, ctx),
+        Action::Consume(consume_args) => consume::run(consume_args, ctx),
         Action::Clear(clear_args) => clear::run(clear_args, ctx),
     }
 }

@@ -25,7 +25,7 @@ pub use bump::Bump;
 pub use bump_table::{BumpTable, CrateBump};
 pub use change_entry::ChangeEntry;
 pub use change_kind::{ChangeKind, InvalidChangeKind};
-pub use changeset::{Changeset, ChangesetError};
+pub use changeset::{CONSUMED_IN_KEY, Changeset, ChangesetError, StoredChangeset};
 pub use crate_name::{CrateName, InvalidCrateName};
 pub use cycle_id::{CycleId, InvalidCycleId};
 pub use cycle_status::{

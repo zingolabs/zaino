@@ -5,10 +5,12 @@ use crate::context::Ctx;
 
 /// `relman changeset clear [--yes]`.
 ///
-/// The release "consume" step: remove every changeset file so the next cycle
-/// starts empty. This is destructive and irreversible, so it is guarded: without
-/// `--yes` the command is a dry run that lists what *would* be removed and makes
-/// no changes (exit 0). Pass `--yes` to actually delete.
+/// A manual garbage-collect: remove every changeset file — e.g. to prune old
+/// consumed ledger entries. This is *not* the release consume step (that is
+/// `relman changeset consume`, which stamps rather than deletes). Destructive
+/// and irreversible, so it is guarded: without `--yes` the command is a dry run
+/// that lists what *would* be removed and makes no changes (exit 0). Pass
+/// `--yes` to actually delete.
 #[derive(ClapArgs)]
 pub struct Args {
     /// Actually delete the changesets. Without this flag `clear` is a dry run:

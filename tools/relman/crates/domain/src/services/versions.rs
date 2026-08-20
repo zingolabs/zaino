@@ -5,7 +5,8 @@ use std::sync::Arc;
 use relman_config::ReleaseConfig;
 use relman_core::ports::{ChangesetStore, DeriveError, Versions, Workspace};
 use relman_core::types::{
-    Bump, BumpTable, ChangeKind, Changeset, ChangesetError, CrateBump, CrateName, Version,
+    Bump, BumpTable, ChangeKind, Changeset, ChangesetError, CrateBump, CrateName, StoredChangeset,
+    Version,
 };
 
 /// Derives the per-crate version [`BumpTable`] from the accumulated changesets
@@ -57,9 +58,10 @@ impl VersionService {
     }
 
     /// Read and parse the whole changeset set, folding each `WithChanges` entry
-    /// into the per-crate highest kind + reasons. `Empty` changesets and
-    /// unfilled templates contribute nothing (both are skipped); an entry naming
-    /// a non-target crate is a hard error, as is a malformed changeset.
+    /// into the per-crate highest kind + reasons. `Empty` changesets, unfilled
+    /// templates, and already-consumed changesets contribute nothing (all are
+    /// skipped); an entry naming a non-target crate is a hard error, as is a
+    /// malformed changeset.
     fn collect_direct(&self) -> Result<DirectInputs, DeriveError> {
         let mut slugs = self.store.list()?;
         // Deterministic traversal order regardless of the store's backing.
@@ -68,8 +70,8 @@ impl VersionService {
         let mut inputs = DirectInputs::default();
         for slug in &slugs {
             let raw = self.store.read(slug)?;
-            let changeset = match Changeset::parse_toml(&raw) {
-                Ok(changeset) => changeset,
+            let stored = match StoredChangeset::parse_toml(&raw) {
+                Ok(stored) => stored,
                 // An unfilled template is not yet a changeset: skip it, as the
                 // caller's `unfilled_templates` scan is what surfaces the warning.
                 Err(ChangesetError::Unfilled) => continue,
@@ -80,7 +82,14 @@ impl VersionService {
                     });
                 }
             };
-            let Changeset::WithChanges(entries) = changeset else {
+            // A consumed changeset was folded into a past release; it is left on
+            // disk as provenance and must not bump anything again. Skipping it
+            // makes aggregation self-defending against a released changeset that
+            // lingers in `.changesets/`.
+            if stored.consumed_in().is_some() {
+                continue;
+            }
+            let Changeset::WithChanges(entries) = stored.into_body() else {
                 continue;
             };
             for entry in entries {
@@ -237,6 +246,12 @@ impl Versions for VersionService {
         let mut unfilled = Vec::new();
         for slug in &slugs {
             let raw = self.store.read(slug)?;
+            // A consumed changeset is historical provenance, never a "you left a
+            // template unfilled" warning — even if consume stamped a still-empty
+            // template. Its mark reads without validating the body.
+            if matches!(StoredChangeset::consumed_marker(&raw), Ok(Some(_))) {
+                continue;
+            }
             // Only the genuine empty-document state counts. A malformed
             // changeset is deliberately excluded here: it is `derive`'s hard
             // error to raise, not a skippable template.
@@ -427,6 +442,49 @@ description=\"a break\"
         );
         let table = svc.derive().expect("derives");
         assert!(table.is_empty(), "empty changeset should not bump anything");
+    }
+
+    #[test]
+    fn consumed_changeset_contributes_nothing() {
+        // A released changeset lingering in `.changesets/` (stamped `consumed_in`)
+        // must not bump anything, while a pending sibling still does. This is the
+        // self-defending property: aggregation filters the consumed set out.
+        let store = store_with(&[
+            (
+                "consumed",
+                "consumed_in = \"cycle-0\"\n[[changes]]\ncrate=\"zaino-state\"\nkind=\"breaking\"\ndescription=\"already released\"\n",
+            ),
+            (
+                "pending",
+                "[[changes]]\ncrate=\"zaino-state\"\nkind=\"fix\"\ndescription=\"new fix\"\n",
+            ),
+        ]);
+        let svc = service(
+            &["zaino-state"],
+            store,
+            workspace(&[("zaino-state", "0.3.1")]),
+        );
+        let table = svc.derive().expect("derives");
+        let bump = table.get(&name("zaino-state")).expect("bumps");
+        // Only the pending fix counts: a patch, not the consumed breaking's minor.
+        assert_eq!(bump.bump(), Bump::Patch);
+        assert_eq!(bump.next(), &version("0.3.2"));
+        assert_eq!(bump.reasons(), ["new fix"]);
+    }
+
+    #[test]
+    fn a_fully_consumed_set_bumps_nothing_and_reports_no_unfilled() {
+        let store = store_with(&[(
+            "consumed",
+            "consumed_in = \"cycle-0\"\n[[changes]]\ncrate=\"zaino-state\"\nkind=\"breaking\"\ndescription=\"released\"\n",
+        )]);
+        let svc = service(
+            &["zaino-state"],
+            store,
+            workspace(&[("zaino-state", "0.3.1")]),
+        );
+        assert!(svc.derive().expect("derives").is_empty());
+        assert!(svc.unfilled_templates().expect("scan").is_empty());
     }
 
     #[test]

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use relman_core::ports::{ArtifactError, ChangesetStore, ReleaseArtifacts, Versions, Workspace};
 use relman_core::types::{
     BumpTable, ChangeEntry, Changeset, ChangesetError, CrateName, CycleId, CycleStatus,
-    PublishPlan, Tag, TagPlan,
+    PublishPlan, StoredChangeset, Tag, TagPlan,
 };
 
 use crate::render;
@@ -52,8 +52,8 @@ impl ReleaseArtifactsService {
         let mut by_crate: BTreeMap<CrateName, Vec<ChangeEntry>> = BTreeMap::new();
         for slug in &slugs {
             let raw = self.changesets.read(slug)?;
-            let changeset = match Changeset::parse_toml(&raw) {
-                Ok(changeset) => changeset,
+            let stored = match StoredChangeset::parse_toml(&raw) {
+                Ok(stored) => stored,
                 // Skip an unfilled template exactly as an `Empty` changeset is
                 // skipped below — it carries no entries. The warning is surfaced
                 // by the version derivation, which reads the same set.
@@ -65,7 +65,12 @@ impl ReleaseArtifactsService {
                     });
                 }
             };
-            let Changeset::WithChanges(entries) = changeset else {
+            // A consumed changeset belongs to a past release's artifacts; skip
+            // it so this cycle's PR body / changelog digest never re-lists it.
+            if stored.consumed_in().is_some() {
+                continue;
+            }
+            let Changeset::WithChanges(entries) = stored.into_body() else {
                 continue;
             };
             for entry in entries {

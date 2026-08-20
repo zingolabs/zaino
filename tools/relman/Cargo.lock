@@ -503,6 +503,7 @@ dependencies = [
  "relman-config",
  "relman-core",
  "semver",
+ "toml_edit",
 ]
 
 [[package]]

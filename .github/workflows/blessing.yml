@@ -92,12 +92,13 @@ jobs:
           echo "n=$N" >> "$GITHUB_OUTPUT"
 
       # 1. Derive the tag set, publish plan, and release notes from the changesets
-      # NOW — BEFORE bump/clear consume them. relman derives per-crate versions
-      # from the changesets + the current Cargo.toml, so running these AFTER the
-      # bump (new versions) and clear (no changesets) yields an EMPTY per-crate
-      # tag set and publish plan (the cycle tag is still emitted, which is why a
-      # naive order produces `cycle-N` but no `<crate>-vX.Y.Z`). Written to
-      # RUNNER_TEMP so they are never swept into the release commit by `git add -A`.
+      # NOW — BEFORE bump/consume mark them. relman derives per-crate versions
+      # from the *unconsumed* changesets + the current Cargo.toml, so running these
+      # AFTER the bump (new versions) and consume (changesets marked, filtered out)
+      # yields an EMPTY per-crate tag set and publish plan (the cycle tag is still
+      # emitted, which is why a naive order produces `cycle-N` but no
+      # `<crate>-vX.Y.Z`). Written to RUNNER_TEMP so they are never swept into the
+      # release commit by `git add -A`.
       - name: Derive tag + publish plans and release notes (before consuming changesets)
         run: |
           set -euo pipefail
@@ -109,13 +110,23 @@ jobs:
           echo "--- publish plan ---"; cat "$RUNNER_TEMP/plan.txt"
 
       # 2. Apply versions + changelogs, consume changesets. All working-tree edits.
-      - name: Apply bump, changelog, clear changesets
+      # `consume` MARKS each changeset with `consumed_in = "cycle-N"` (it does not
+      # delete): derivation filters consumed changesets out, so the next cycle sees
+      # an empty set while `.changesets/` keeps the provenance ledger. The stamp is
+      # delivered to `dev` by the stable->dev backport, same as the bump/changelog
+      # edits. See docs/decision_records/release/changeset-format.md § Lifecycle.
+      - name: Apply bump, changelog, consume changesets
         run: |
           set -euo pipefail
           root="tools/relman/Cargo.toml"
           cargo run -q --manifest-path "$root" -- bump              # edit manifests + root pins
           cargo run -q --manifest-path "$root" -- changelog         # write CHANGELOGs
-          cargo run -q --manifest-path "$root" -- changeset clear --yes  # consume changesets
+          # `consume` stores its --cycle verbatim as the on-disk audit stamp, so
+          # we pass the fully-rendered period id `cycle-N` (matching the git tag)
+          # for a clean cross-reference — unlike `tags`/`pr-body`, which take the
+          # bare ordinal N and render the `cycle-` prefix themselves.
+          cargo run -q --manifest-path "$root" -- \
+            changeset consume --cycle "cycle-${{ steps.cycle.outputs.n }}" --yes  # mark consumed
 
       # 3. Pre-flight publishability check — validate the ENTIRE publish plan is
       # actually publishable (no version-reuse, no yanked/unresolvable deps)

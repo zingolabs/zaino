@@ -47,6 +47,17 @@ pub enum ChangesetsError {
         /// How many candidates were tried before giving up.
         tries: usize,
     },
+    /// A changeset file could not be parsed while consuming the set — its TOML
+    /// is malformed or its `consumed_in` mark is invalid. Consuming runs at a
+    /// true release over the accumulated set, so a broken file there is a hard
+    /// error, not something to skip.
+    #[error("failed to parse changeset {slug:?}: {error}")]
+    Parse {
+        /// The slug of the offending changeset.
+        slug: String,
+        /// The rendered parse error.
+        error: String,
+    },
 }
 
 /// Inbound port: author new changeset files.
@@ -86,11 +97,32 @@ pub trait Changesets: Send + Sync {
     /// the bot may safely re-run, since renaming is idempotent once canonical.
     fn rename_to_pr(&self, pr: u32) -> Result<Vec<Slug>, ChangesetsError>;
 
+    /// The slugs of every *pending* (not-yet-consumed) changeset in the store,
+    /// sorted. A read-only listing that mutates nothing, backing the dry run of
+    /// `relman changeset consume`. A changeset carrying a `consumed_in` mark —
+    /// one a past release already folded in — is excluded.
+    fn pending(&self) -> Result<Vec<Slug>, ChangesetsError>;
+
+    /// Mark every currently-pending changeset as consumed by `cycle`, stamping
+    /// its `consumed_in` in place and leaving the file on disk. Returns the
+    /// slugs it stamped (sorted).
+    ///
+    /// The release consume step: after a release PR merges, `relman` stamps
+    /// `.changesets/` so the next cycle's derivation filters the released set
+    /// out, while the files remain as a provenance ledger. Already-consumed
+    /// files are skipped, so it is idempotent, and unlike [`clear`] it deletes
+    /// nothing.
+    ///
+    /// [`clear`]: Changesets::clear
+    fn consume(&self, cycle: &CycleId) -> Result<Vec<Slug>, ChangesetsError>;
+
     /// Remove *every* changeset file, returning the removed slugs (sorted).
     ///
-    /// The release "consume" step: after a release PR merges, `relman` clears
-    /// `.changesets/` so the next cycle starts empty. This is the one
-    /// irreversible lifecycle step and must run only at a true release.
+    /// A manual garbage-collect for pruning changeset files — e.g. old consumed
+    /// ledger entries. This is destructive and irreversible; it is *not* the
+    /// release consume step ([`consume`] is), so it never runs automatically.
+    ///
+    /// [`consume`]: Changesets::consume
     fn clear(&self) -> Result<Vec<Slug>, ChangesetsError>;
 }
 

@@ -5,7 +5,7 @@ use relman_config::ReleaseConfig;
 use relman_core::ports::{
     Changelog, ChangelogEdit, ChangelogGenError, ChangelogStore, ChangesetStore, Clock, Versions,
 };
-use relman_core::types::{ChangeEntry, Changeset, ChangesetError, CrateName};
+use relman_core::types::{ChangeEntry, Changeset, ChangesetError, CrateName, StoredChangeset};
 
 use crate::render;
 
@@ -56,8 +56,8 @@ impl ChangelogService {
         let mut by_crate: BTreeMap<CrateName, Vec<ChangeEntry>> = BTreeMap::new();
         for slug in &slugs {
             let raw = self.changesets.read(slug)?;
-            let changeset = match Changeset::parse_toml(&raw) {
-                Ok(changeset) => changeset,
+            let stored = match StoredChangeset::parse_toml(&raw) {
+                Ok(stored) => stored,
                 // Skip an unfilled template exactly as an `Empty` changeset is
                 // skipped below — it carries no entries. The warning is surfaced
                 // by the version derivation, which reads the same set.
@@ -69,7 +69,12 @@ impl ChangelogService {
                     });
                 }
             };
-            let Changeset::WithChanges(entries) = changeset else {
+            // A consumed changeset was folded into a past release's changelog;
+            // skip it so it never re-appears in a later cycle's entries.
+            if stored.consumed_in().is_some() {
+                continue;
+            }
+            let Changeset::WithChanges(entries) = stored.into_body() else {
                 continue;
             };
             for entry in entries {

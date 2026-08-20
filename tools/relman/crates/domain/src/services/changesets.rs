@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use relman_core::ports::{ChangesetStore, Changesets, ChangesetsError, NewChangeset, SlugSource};
-use relman_core::types::{Changeset, Slug};
+use relman_core::types::{CONSUMED_IN_KEY, Changeset, CycleId, Slug, StoredChangeset};
 
 /// How many distinct candidate slugs to try before giving up on uniqueness.
 ///
@@ -57,6 +57,15 @@ impl ChangesetService {
         Self { store, slugs }
     }
 
+    /// Map a changeset-parse failure to a [`ChangesetsError::Parse`] carrying
+    /// the offending slug — the shared shape for the consume path's reads.
+    fn parse_error(slug: &Slug, error: impl std::fmt::Display) -> ChangesetsError {
+        ChangesetsError::Parse {
+            slug: slug.as_str().to_owned(),
+            error: error.to_string(),
+        }
+    }
+
     /// Draw candidate slugs until one is free, up to [`MAX_SLUG_TRIES`].
     fn unique_slug(&self) -> Result<Slug, ChangesetsError> {
         for _ in 0..MAX_SLUG_TRIES {
@@ -109,6 +118,30 @@ impl Changesets for ChangesetService {
         Ok(renamed)
     }
 
+    fn pending(&self) -> Result<Vec<Slug>, ChangesetsError> {
+        // `list()` already returns the slugs sorted.
+        let mut pending = Vec::new();
+        for slug in self.list()? {
+            let raw = self.store.read(&slug)?;
+            let marker =
+                StoredChangeset::consumed_marker(&raw).map_err(|e| Self::parse_error(&slug, e))?;
+            if marker.is_none() {
+                pending.push(slug);
+            }
+        }
+        Ok(pending)
+    }
+
+    fn consume(&self, cycle: &CycleId) -> Result<Vec<Slug>, ChangesetsError> {
+        let pending = self.pending()?;
+        for slug in &pending {
+            let raw = self.store.read(slug)?;
+            let stamped = stamp_consumed(&raw, cycle).map_err(|e| Self::parse_error(slug, e))?;
+            self.store.write(slug, &stamped)?;
+        }
+        Ok(pending)
+    }
+
     fn clear(&self) -> Result<Vec<Slug>, ChangesetsError> {
         let mut removed = self.store.list()?;
         removed.sort_by(|a, b| a.as_str().cmp(b.as_str()));
@@ -117,6 +150,18 @@ impl Changesets for ChangesetService {
         }
         Ok(removed)
     }
+}
+
+/// Stamp `consumed_in = "<cycle>"` into a changeset's raw TOML text, preserving
+/// all existing comments and formatting. A format-preserving edit — hence
+/// `toml_edit` rather than the value-model round-trip — so a consumed changeset
+/// survives on disk as a faithful ledger entry. Overwrites any existing mark
+/// (the consume path only ever calls this on pending files, so that is moot in
+/// practice, but it keeps the edit total).
+fn stamp_consumed(raw: &str, cycle: &CycleId) -> Result<String, toml_edit::TomlError> {
+    let mut doc = raw.parse::<toml_edit::DocumentMut>()?;
+    doc[CONSUMED_IN_KEY] = toml_edit::value(cycle.as_str());
+    Ok(doc.to_string())
 }
 
 #[cfg(test)]
@@ -294,6 +339,84 @@ mod tests {
 
         assert_eq!(as_strs(&removed), ["pr-1490", "wandering-quokka"]);
         assert!(slugs_in(&store).is_empty());
+    }
+
+    /// A filled changeset with a leading comment, to prove `consume` preserves
+    /// both the body and the surrounding formatting.
+    const FILLED_WITH_COMMENT: &str = "\
+# This PR replaces the sync entrypoint.
+[[changes]]
+crate = \"zaino-state\"
+kind = \"breaking\"
+description = \"Replace sync().\"
+";
+
+    fn cycle(raw: &str) -> CycleId {
+        CycleId::parse(raw).expect("valid cycle id")
+    }
+
+    #[test]
+    fn consume_stamps_pending_files_and_preserves_their_body() {
+        let store = Arc::new(MapChangesetStore::new());
+        store
+            .write(&slug("pr-1"), FILLED_WITH_COMMENT)
+            .expect("seed one");
+        store
+            .write(&slug("pr-2"), "[empty]\nreason = \"comment-only\"\n")
+            .expect("seed two");
+        let svc = service(store.clone(), vec![slug("unused-source")]);
+
+        let consumed = svc.consume(&cycle("cycle-1")).expect("consume succeeds");
+        assert_eq!(as_strs(&consumed), ["pr-1", "pr-2"]);
+        // Nothing was deleted — the ledger stays on disk.
+        assert_eq!(slugs_in(&store), ["pr-1", "pr-2"]);
+
+        // pr-1 gained the mark, kept its comment, and its body still parses.
+        let raw = store.read(&slug("pr-1")).expect("read pr-1");
+        assert!(raw.contains("# This PR replaces the sync entrypoint."));
+        let stored = StoredChangeset::parse_toml(&raw).expect("stamped file still parses");
+        assert_eq!(stored.consumed_in(), Some(&cycle("cycle-1")));
+        assert_eq!(
+            stored.body(),
+            &Changeset::parse_toml(FILLED_WITH_COMMENT).expect("body")
+        );
+    }
+
+    #[test]
+    fn consume_is_idempotent_on_already_consumed_files() {
+        let store = Arc::new(MapChangesetStore::new());
+        store
+            .write(&slug("pr-1"), FILLED_WITH_COMMENT)
+            .expect("seed");
+        let svc = service(store.clone(), vec![slug("unused-source")]);
+
+        let first = svc.consume(&cycle("cycle-1")).expect("first consume");
+        assert_eq!(as_strs(&first), ["pr-1"]);
+        let after_first = store.read(&slug("pr-1")).expect("read");
+
+        // A second consume (even naming a different cycle) stamps nothing new
+        // and leaves the already-consumed file byte-for-byte unchanged.
+        let second = svc.consume(&cycle("cycle-2")).expect("second consume");
+        assert!(second.is_empty());
+        assert_eq!(store.read(&slug("pr-1")).expect("read"), after_first);
+    }
+
+    #[test]
+    fn pending_excludes_consumed_changesets() {
+        let store = Arc::new(MapChangesetStore::new());
+        store
+            .write(&slug("pending"), FILLED_WITH_COMMENT)
+            .expect("seed pending");
+        store
+            .write(
+                &slug("consumed"),
+                "consumed_in = \"cycle-0\"\n[empty]\nreason = \"old\"\n",
+            )
+            .expect("seed consumed");
+        let svc = service(store, vec![slug("unused-source")]);
+
+        let pending = svc.pending().expect("pending listing");
+        assert_eq!(as_strs(&pending), ["pending"]);
     }
 
     #[test]

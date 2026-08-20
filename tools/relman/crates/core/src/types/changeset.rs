@@ -1,9 +1,15 @@
 use serde::{Deserialize, Serialize};
 
 use crate::types::{
-    ChangeEntry, ChangeKind, CrateName, Description, InvalidChangeKind, InvalidCrateName,
-    InvalidSection, Section,
+    ChangeEntry, ChangeKind, CrateName, CycleId, Description, InvalidChangeKind, InvalidCrateName,
+    InvalidCycleId, InvalidSection, Section,
 };
+
+/// The top-level TOML key that stamps a released changeset as consumed. Holds a
+/// [`CycleId`] string (e.g. `"cycle-1"`). Exported so the format-preserving
+/// stamp path shares one source of truth with the serde field below — a test
+/// round-trips through both, so the two can never silently drift.
+pub const CONSUMED_IN_KEY: &str = "consumed_in";
 
 /// A parsed changeset file: the release-facing content of one PR.
 ///
@@ -83,6 +89,16 @@ pub enum ChangesetError {
     /// An `[empty]` changeset had an empty `reason`.
     #[error("[empty] changeset has an empty reason")]
     EmptyReason,
+    /// The optional [`consumed_in`](CONSUMED_IN_KEY) mark was present but not a
+    /// valid [`CycleId`], so the provenance stamp cannot be trusted.
+    #[error("invalid consumed_in cycle id {value:?} in changeset")]
+    InvalidConsumedIn {
+        /// The rejected raw string.
+        value: String,
+        /// Why it was rejected.
+        #[source]
+        source: InvalidCycleId,
+    },
 }
 
 impl Changeset {
@@ -116,6 +132,70 @@ impl Changeset {
     }
 }
 
+/// A changeset as it lives on disk: its release-facing [`Changeset`] body plus
+/// the optional [`consumed_in`](CONSUMED_IN_KEY) provenance mark.
+///
+/// The mark is orthogonal to the body shape — a `WithChanges` *or* an `Empty`
+/// changeset can be consumed — so it lives here rather than polluting the pure
+/// [`Changeset`] enum. A consumed changeset is one that a past release folded
+/// in; it is left on disk as a ledger entry, and every version/changelog
+/// derivation filters it out ([`consumed_in`](StoredChangeset::consumed_in) is
+/// `Some`). A *pending* changeset has no mark and still contributes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredChangeset {
+    consumed_in: Option<CycleId>,
+    body: Changeset,
+}
+
+impl StoredChangeset {
+    /// Wrap a body with its (optional) consumed mark.
+    pub fn new(consumed_in: Option<CycleId>, body: Changeset) -> Self {
+        Self { consumed_in, body }
+    }
+
+    /// Parse a stored changeset from its TOML representation: the release body
+    /// (validated exactly as [`Changeset::parse_toml`]) plus the optional
+    /// [`consumed_in`](CONSUMED_IN_KEY) mark, itself validated through
+    /// [`CycleId`].
+    pub fn parse_toml(input: &str) -> Result<Self, ChangesetError> {
+        let raw: RawChangeset = toml::from_str(input).map_err(ChangesetError::Toml)?;
+        let consumed_in = raw.consumed_in_parsed()?;
+        let body = raw.into_changeset()?;
+        Ok(Self { consumed_in, body })
+    }
+
+    /// Read only the [`consumed_in`](CONSUMED_IN_KEY) mark, without validating
+    /// the release body. Lets a caller decide pending-vs-consumed even for an
+    /// unfilled template (whose body would otherwise fail to parse).
+    pub fn consumed_marker(input: &str) -> Result<Option<CycleId>, ChangesetError> {
+        let raw: RawChangeset = toml::from_str(input).map_err(ChangesetError::Toml)?;
+        raw.consumed_in_parsed()
+    }
+
+    /// The cycle that consumed this changeset, or `None` if it is still pending.
+    pub fn consumed_in(&self) -> Option<&CycleId> {
+        self.consumed_in.as_ref()
+    }
+
+    /// The release-facing body.
+    pub fn body(&self) -> &Changeset {
+        &self.body
+    }
+
+    /// Take the release-facing body, discarding the mark.
+    pub fn into_body(self) -> Changeset {
+        self.body
+    }
+
+    /// Serialize back to TOML such that [`parse_toml`](StoredChangeset::parse_toml)
+    /// round-trips to `self`, mark included.
+    pub fn to_toml(&self) -> String {
+        let mut raw = RawChangeset::from_changeset(&self.body);
+        raw.consumed_in = self.consumed_in.as_ref().map(|c| c.as_str().to_owned());
+        raw.to_toml()
+    }
+}
+
 /// The changeset document, mirrored for serde. `[[changes]]` deserializes as
 /// the `changes` array; `[empty]` as the `empty` table.
 ///
@@ -124,6 +204,11 @@ impl Changeset {
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct RawChangeset {
+    /// The provenance mark. Optional and serialized first so a consumed file's
+    /// top-level key precedes any `[[changes]]`/`[empty]` table (a bare key
+    /// after a table header would parse into that table, not the document root).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    consumed_in: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     changes: Option<Vec<RawChange>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -152,6 +237,21 @@ struct RawEmpty {
 }
 
 impl RawChangeset {
+    /// Validate the raw `consumed_in` string through [`CycleId`], if present.
+    fn consumed_in_parsed(&self) -> Result<Option<CycleId>, ChangesetError> {
+        match &self.consumed_in {
+            Some(raw) => {
+                CycleId::parse(raw)
+                    .map(Some)
+                    .map_err(|source| ChangesetError::InvalidConsumedIn {
+                        value: raw.clone(),
+                        source,
+                    })
+            }
+            None => Ok(None),
+        }
+    }
+
     fn into_changeset(self) -> Result<Changeset, ChangesetError> {
         match (self.changes, self.empty) {
             (Some(_), Some(_)) => Err(ChangesetError::BothChangesAndEmpty),
@@ -177,10 +277,12 @@ impl RawChangeset {
     fn from_changeset(changeset: &Changeset) -> Self {
         match changeset {
             Changeset::WithChanges(entries) => Self {
+                consumed_in: None,
                 changes: Some(entries.iter().map(RawChange::from_entry).collect()),
                 empty: None,
             },
             Changeset::Empty { reason } => Self {
+                consumed_in: None,
                 changes: None,
                 empty: Some(RawEmpty {
                     reason: reason.as_str().to_owned(),
@@ -479,5 +581,72 @@ description = "A change."
             Changeset::with_changes(Vec::new()),
             Err(ChangesetError::EmptyChanges)
         ));
+    }
+
+    fn cycle(raw: &str) -> CycleId {
+        CycleId::parse(raw).expect("valid cycle id")
+    }
+
+    #[test]
+    fn stored_changeset_parses_pending_body_with_no_mark() {
+        let stored = StoredChangeset::parse_toml(MULTI_ENTRY).expect("should parse");
+        assert!(stored.consumed_in().is_none());
+        let Changeset::WithChanges(entries) = stored.body() else {
+            panic!("expected WithChanges");
+        };
+        assert_eq!(entries.len(), 2);
+    }
+
+    #[test]
+    fn stored_changeset_parses_consumed_mark() {
+        let input = format!("consumed_in = \"cycle-1\"\n{MULTI_ENTRY}");
+        let stored = StoredChangeset::parse_toml(&input).expect("should parse");
+        assert_eq!(stored.consumed_in(), Some(&cycle("cycle-1")));
+        // The mark leaves the body untouched.
+        assert_eq!(stored.body(), &parse_ok(MULTI_ENTRY));
+    }
+
+    #[test]
+    fn consumed_mark_is_orthogonal_to_the_empty_body() {
+        let input = "consumed_in = \"cycle-2\"\n[empty]\nreason = \"comment-only\"\n";
+        let stored = StoredChangeset::parse_toml(input).expect("should parse");
+        assert_eq!(stored.consumed_in(), Some(&cycle("cycle-2")));
+        assert!(matches!(stored.body(), Changeset::Empty { .. }));
+    }
+
+    #[test]
+    fn stored_changeset_rejects_invalid_consumed_mark() {
+        let input = format!("consumed_in = \"Cycle_1\"\n{MULTI_ENTRY}");
+        assert!(matches!(
+            StoredChangeset::parse_toml(&input),
+            Err(ChangesetError::InvalidConsumedIn { value, .. }) if value == "Cycle_1"
+        ));
+    }
+
+    #[test]
+    fn consumed_marker_reads_the_mark_without_validating_the_body() {
+        // An unfilled template (no [[changes]]/[empty]) still yields its mark.
+        let input = "consumed_in = \"cycle-3\"\n# nothing else\n";
+        assert_eq!(
+            StoredChangeset::consumed_marker(input).expect("marker parses"),
+            Some(cycle("cycle-3"))
+        );
+        // A pending template has no mark.
+        assert_eq!(
+            StoredChangeset::consumed_marker("# just a comment\n").expect("marker parses"),
+            None
+        );
+    }
+
+    #[test]
+    fn stored_changeset_round_trips_with_and_without_mark() {
+        let pending = StoredChangeset::new(None, parse_ok(MULTI_ENTRY));
+        let reparsed = StoredChangeset::parse_toml(&pending.to_toml()).expect("reparse");
+        assert_eq!(pending, reparsed);
+
+        let consumed = StoredChangeset::new(Some(cycle("cycle-1")), parse_ok(MULTI_ENTRY));
+        let reparsed = StoredChangeset::parse_toml(&consumed.to_toml()).expect("reparse");
+        assert_eq!(consumed, reparsed);
+        assert_eq!(reparsed.consumed_in(), Some(&cycle("cycle-1")));
     }
 }

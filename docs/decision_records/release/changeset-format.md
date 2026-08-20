@@ -44,8 +44,10 @@ been renamed yet still links correctly. Fork PRs — where the bot cannot push t
 the contributor's branch — simply keep their slug; the check still passes and
 linkage still works.
 
-On release, `relman` clears `.changesets/` (the aggregated content has been
-written into changelogs and versions). The next cycle starts empty.
+On release, `relman` **marks** the aggregated changesets consumed (it stamps
+each with the cycle that shipped it) rather than deleting them. Derivation
+filters consumed changesets out, so the next cycle sees an effectively empty set
+while `.changesets/` retains the full provenance ledger. See [§ Lifecycle](#lifecycle-read-on-every-derivation-consumed-only-at-release).
 
 ## File structure
 
@@ -171,9 +173,38 @@ release, and the release's bump is a function of everything accumulated since th
 last release; a partially-consumed set would under-count a later RC.
 
 Only a **true release (blessing)** consumes the changesets: after the release PR
-merges into `stable`, `relman` clears `.changesets/` and the next cycle starts
-empty. In short — **prereleases use, the release consumes.** The clearing is the
-one irreversible step, and it happens exactly once per cycle, at the blessing.
+merges into `stable`, `relman changeset consume --cycle <N>` stamps each pending
+changeset with `consumed_in = "cycle-<N>"`. In short — **prereleases use, the
+release consumes** — and consumption happens exactly once per cycle, at the
+blessing.
+
+### Consume by marking, not erasing
+
+Consumption **marks** files; it never deletes them. A consumed changeset stays
+on disk carrying its `consumed_in` stamp, and every derivation **filters out any
+changeset with `consumed_in` set** — exactly as it skips an unfilled template.
+Three reasons this beats erasing:
+
+- **Self-defending aggregation.** A released changeset that lingers in
+  `.changesets/` (a lagging backport, a stray cherry-pick) is *inert*, not
+  silently re-counted. Erasing has no such defense: a present file is always
+  counted, so a missed cleanup corrupts the next cycle's derived version — the
+  worst failure class, because it is invisible. Marking degrades that to a
+  cosmetic stale file.
+- **Merge-safe delivery.** The stamp is written on `stable` at the blessing, but
+  `dev` is the root of the branch flow (`dev → rc → release-ready → stable`), so
+  the stamp — like the version bumps and changelog edits — only reaches `dev`
+  via the **stable → dev backport** ([pipeline.md § Hotfix / backport](./pipeline.md)).
+  Replaying an *additive* `consumed_in` stamp 3-way-merges cleanly; replaying a
+  *deletion* races badly against any changeset `dev` touched in the interim
+  (delete/modify conflict). Marking makes the backport forgiving; the backport is
+  still what delivers consumption to `dev`.
+- **Provenance ledger.** `.changesets/` records which cycle each change shipped
+  in; `git log .changesets/pr-<N>.toml` tells the whole story without spelunking
+  release tags.
+
+`relman changeset clear` still exists as a manual garbage-collect for pruning old
+consumed changesets; it is not part of the release path.
 
 ## Changelog rendering
 
@@ -214,8 +245,8 @@ reason = "Comment-only fix in zaino-state; no behavioural or API change."
 
 This satisfies enforcement without forcing a spurious patch bump and leaves an
 auditable justification. `relman changeset new --empty "<reason>"` creates it.
-Empty changesets contribute nothing to versions or changelogs and are cleared
-like any other on release.
+Empty changesets contribute nothing to versions or changelogs and are marked
+consumed like any other on release.
 
 ## Worked example
 
