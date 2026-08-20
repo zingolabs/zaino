@@ -229,9 +229,15 @@ use router::Router;
 use tracing::{info, instrument};
 use zebra_chain::parameters::NetworkKind;
 
+#[cfg(feature = "prometheus")]
+use crate::metric_names::*;
+
 use crate::{
     chain_index::{
-        finalised_state::{finalised_source::v1::DB_VERSION_V1, router::EphemeralMode},
+        finalised_state::{
+            finalised_source::v1::DB_VERSION_V1,
+            router::{EphemeralMode, FinalisedStateMode},
+        },
         source::BlockchainSourceError,
         types::GENESIS_HEIGHT,
     },
@@ -489,6 +495,15 @@ impl<T: BlockchainSource> FinalisedState<T> {
         source: T,
     ) -> Result<Self, FinalisedStateError> {
         if cfg.ephemeral {
+            // WARN, not INFO: this branch previously returned silently, and a run that serves every
+            // finalised-state read from the validator while a test suite believes it is exercising
+            // the on-disk index is nearly always a misconfiguration worth surfacing loudly.
+            tracing::warn!(
+                mode = %FinalisedStateMode::EphemeralConfigured,
+                "finalised state running in EPHEMERAL mode (ephemeral_finalised_state = true): no \
+                 persistent database will be opened or written, and all finalised-state reads are \
+                 served from the backing validator"
+            );
             return Ok(Self {
                 db: Arc::new(Router::new(Arc::new(FinalisedSource::ephemeral(
                     source,
@@ -498,6 +513,11 @@ impl<T: BlockchainSource> FinalisedState<T> {
                 cfg,
             });
         } else {
+            info!(
+                mode = %FinalisedStateMode::Persistent,
+                path = %cfg.storage.database.path.display(),
+                "finalised state running in PERSISTENT mode"
+            );
             let version_opt = Self::try_find_current_db_version(&cfg).await;
 
             let target_version = match cfg.db_version {
@@ -573,6 +593,13 @@ impl<T: BlockchainSource> FinalisedState<T> {
 
                     match migration_manager.migrate().await {
                         Ok(()) => {
+                            // Previously only the failure path logged, so a successful migration was
+                            // indistinguishable from one still running.
+                            info!(
+                                from_version = %current_version,
+                                to_version = %target_version,
+                                "FinalisedState migration complete"
+                            );
                             // Start the background validator only now that every migration has
                             // finished: its initial scan reads tables a migration populates (e.g.
                             // `commitment_tree_data_1_3_0`), so starting it earlier would race the
@@ -614,7 +641,40 @@ impl<T: BlockchainSource> FinalisedState<T> {
     /// migrations, the router determines which backend serves `READ_CORE`, and the status reflects
     /// that routing decision.
     pub(crate) fn status(&self) -> StatusType {
-        self.db.status()
+        let status = self.db.status();
+
+        // The reliable production hook for the one-shot "online" announcement. The ephemeral-release
+        // edge in `Router::release_ephemeral_reference` covers a first sync or a migration, but a
+        // restart against an already-current database never installs a passthrough at all
+        // (`sync_is_long_running` is false), so that edge never fires and nothing would mark the
+        // finalised state as live. `Indexer::log_status` polls this every ~10s, and
+        // `note_persistent_online` is latched, so the announcement lands exactly once either way.
+        //
+        // Deliberately not hooked to `wait_until_ready`: despite its name it has no production
+        // caller — only tests and the `reader` wrapper use it.
+        let mode = self.db.finalised_state_mode();
+
+        #[cfg(feature = "prometheus")]
+        metrics::gauge!(FINALISED_EPHEMERAL).set(if mode == FinalisedStateMode::Persistent {
+            0.0
+        } else {
+            1.0
+        });
+
+        if status == StatusType::Ready && mode == FinalisedStateMode::Persistent {
+            self.db.note_persistent_online();
+        }
+
+        status
+    }
+
+    /// Returns which backend is currently answering finalised-state reads.
+    ///
+    /// Distinct from [`FinalisedState::status`]: an ephemeral passthrough reports
+    /// [`StatusType::Ready`] just like a synced persistent database, so `status` alone cannot tell a
+    /// caller whether the finalised state it is querying is the real on-disk index.
+    pub(crate) fn finalised_state_mode(&self) -> FinalisedStateMode {
+        self.db.finalised_state_mode()
     }
 
     /// Waits until the database reports [`StatusType::Ready`].
@@ -1017,6 +1077,16 @@ impl<T: BlockchainSource> FinalisedState<T> {
     /// Production code should use the public `FinalisedState` API instead of depending on the router
     /// directly.
     pub(crate) fn router(&self) -> &Router<T> {
+        &self.db
+    }
+
+    /// Shared handle to the router, for tests that need to drive ephemeral routing transitions
+    /// directly (`init_or_take_ephemeral` takes `&Arc<Router<T>>`).
+    ///
+    /// Exercising those transitions through `sync_to_height` instead would race the spawned
+    /// background task, so the deterministic routing tests reach for this.
+    #[cfg(test)]
+    pub(crate) fn router_arc(&self) -> &Arc<Router<T>> {
         &self.db
     }
 
