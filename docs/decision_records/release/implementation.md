@@ -167,6 +167,36 @@ One platform primitive (Deployments) carries the bridge in both directions —
 preferred over a raw `repository_dispatch` precisely for the native visibility
 and protection rules.
 
+### Testability: never wait days to test the pipeline
+
+The deployment gate is days-long in production, but *duration must never be the
+thing under test*. Two properties are **built in** so the whole pipeline is
+testable in seconds/minutes:
+
+1. **Duration is a parameter, not a constant.** The deployment Argo
+   `WorkflowTemplate` takes a `duration` (and sync-target/chain) input.
+   Production = "days on mainnet"; a test run = "~10 minutes on regtest/a short
+   chain", evaluating the *same* pass/fail criteria over a shorter window. The
+   gate's logic (deploy → observe → evaluate metrics → verdict) is identical;
+   only the window shrinks. So the gate's behaviour is validated without the
+   endurance wait — and the genuine endurance property is a separate, infra-side
+   concern with its own short-window checks.
+
+2. **The pass/fail signal is injectable.** Because the bridge is a GitHub
+   Deployment → `deployment_status` callback, the *pipeline's reaction* is
+   testable completely independently of any real deployment run: create a GitHub
+   Deployment for an RC commit and POST `deployment_status = success` (or
+   `failure`) by hand. That fires the `release-ready` advance (step 6) — proving
+   the `rc → release-ready` promotion + the release-PR refresh + blessing **with
+   no deployment run at all**. The helper `tools/scripts/mark-deployment.sh`
+   wraps this one `gh api` call.
+
+Corollary for the reacting GH Action (step 6): it must key off the real
+`deployment_status` event/payload only — no hidden assumption that a run
+actually happened — so a simulated status is indistinguishable from a real one.
+This keeps the mechanics test path (dispatch + simulated status) and the
+endurance test path (short-duration real run) fully decoupled.
+
 ## Ownership split (two repos)
 
 The bridge is the only contract between the repos, so responsibilities divide
