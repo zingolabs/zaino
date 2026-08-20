@@ -137,26 +137,43 @@ jobs:
             git push origin "$tag"
           done < tags.txt
 
-      # 4. Publish to crates.io in dependency order. IRREVERSIBLE.
+      # 4. Publish to crates.io in dependency order.
+      # IRREVERSIBLE unless RELMAN_PUBLISH_DRY_RUN=true (fork/sandbox testing),
+      # which runs `cargo publish --dry-run --no-verify` — packages each crate and
+      # exercises the orchestration WITHOUT uploading. (`--no-verify` is required
+      # in dry-run: a dependent's verify build would resolve its new dependency
+      # against crates.io, where this cycle's not-yet-uploaded versions don't
+      # exist. The fork validates the workflow wiring; leave the flag unset for a
+      # real release.)
       - name: Publish to crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          DRY_RUN: ${{ vars.RELMAN_PUBLISH_DRY_RUN }}
         run: |
           set -euo pipefail
 
-          # Safety guard BEFORE any publish: fail if a to-be-published version is
-          # already on crates.io with DIFFERENT content (a version-reuse
-          # violation). Reuses the workbench guard in blocking mode.
+          publish_flags="--locked"
+          guard_mode="blocking"
+          if [ "${DRY_RUN:-}" = "true" ]; then
+            echo "::notice::RELMAN_PUBLISH_DRY_RUN=true — cargo publish --dry-run --no-verify (no upload)."
+            publish_flags="--locked --dry-run --no-verify"
+            guard_mode="advisory"
+          fi
+
+          # Safety guard BEFORE any real publish: fail if a to-be-published version
+          # is already on crates.io with DIFFERENT content (a version-reuse
+          # violation). Advisory in dry-run mode.
           cargo run -q --manifest-path tools/workbench/Cargo.toml \
-            --bin check-published-versions -- --mode blocking
+            --bin check-published-versions -- --mode "${guard_mode}"
 
           # relman publish-plan prints "<crate> <version>" lines in dependency order.
           cargo run -q --manifest-path tools/relman/Cargo.toml -- publish-plan > plan.txt
 
           while read -r crate version; do
             [ -z "${crate:-}" ] && continue
-            echo "::group::Publish ${crate} ${version}"
-            if out="$(cargo publish -p "${crate}" --locked 2>&1)"; then
+            echo "::group::Publish ${crate} ${version}${DRY_RUN:+ (dry-run)}"
+            # shellcheck disable=SC2086 # publish_flags is intentionally word-split
+            if out="$(cargo publish -p "${crate}" ${publish_flags} 2>&1)"; then
               echo "${out}"
             else
               echo "${out}"
@@ -171,8 +188,9 @@ jobs:
             fi
             echo "::endgroup::"
             # cargo (>= 1.66, sparse index) already blocks until the new version is
-            # visible in the index; this pause is extra margin before dependents publish.
-            sleep 15
+            # visible in the index; this pause is extra margin before dependents
+            # publish. Skipped in dry-run (nothing was uploaded).
+            [ "${DRY_RUN:-}" = "true" ] || sleep 15
           done < plan.txt
 
       # 5. TODO(cutover): Docker image (zainod version + cycle handle), GitHub
