@@ -31,14 +31,16 @@ jobs:
       - name: Fetch base branch
         run: git fetch --no-tags origin "${{ github.event.pull_request.base.ref }}"
 
+      - name: Set up relman
+        uses: ./.github/actions/setup-relman
+
       - name: Run relman changeset check
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
           ENFORCE: ${{ vars.RELMAN_ENFORCE_CHANGESETS }}
         run: |
           set -o pipefail
-          if cargo run -q --manifest-path tools/relman/Cargo.toml -- \
-               changeset check --base "origin/${BASE_REF}"; then
+          if relman changeset check --base "origin/${BASE_REF}"; then
             echo "changeset check passed"
           elif [ "${ENFORCE}" = "true" ]; then
             echo "::error::Changeset coverage check failed. Add a covering changeset (\`relman changeset new\`) for the governed crates this PR touches, or \`relman changeset new --empty \"<reason>\"\` if it is release-irrelevant."
