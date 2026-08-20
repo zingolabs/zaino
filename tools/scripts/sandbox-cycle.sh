@@ -29,6 +29,29 @@ set_enforcement() { # <ruleset-id> <active|disabled>
     --jq '.name + " -> " + .enforcement'
 }
 
+cmd_reset() { # [base-ref]  — pristine slate: all 4 branches := base, no changesets/tags
+  local base; base="$(git rev-parse "${1:-HEAD}")"
+  echo "Resetting all branches to ${base:0:12}; closing spin PRs; clearing tags/releases..."
+  local pr
+  for pr in $(gh pr list -R "$REPO" --state open --json number,headRefName \
+      --jq '.[] | select(.headRefName|startswith("spin/")) | .number'); do
+    gh pr close "$pr" -R "$REPO" --delete-branch || true
+  done
+  local r b
+  for r in "$DEV_RULESET" "$RC_RULESET" "$RR_RULESET" "$STABLE_RULESET"; do set_enforcement "$r" disabled; done
+  for b in dev rc release-ready stable; do git push -f "$REMOTE" "${base}:refs/heads/${b}"; done
+  local tags t
+  mapfile -t tags < <(git ls-remote --tags "$REMOTE" \
+    | sed -n 's#.*refs/tags/\([^^]*\)$#\1#p' | grep -E '^cycle-|-v[0-9]' | sort -u)
+  for t in "${tags[@]}"; do echo "  del tag $t"; git push --quiet "$REMOTE" ":refs/tags/$t" || true; done
+  local id
+  for id in $(gh api "repos/${REPO}/releases" --jq '.[].id'); do
+    echo "  del release $id"; gh api -X DELETE "repos/${REPO}/releases/${id}" || true
+  done
+  for r in "$DEV_RULESET" "$RC_RULESET" "$RR_RULESET" "$STABLE_RULESET"; do set_enforcement "$r" active; done
+  echo "Pristine. All branches at ${base:0:12}; no cycle tags; next bless = cycle-1."
+}
+
 cmd_align() {
   git fetch -q "$REMOTE"
   local dev; dev="$(git rev-parse "${REMOTE}/dev")"
@@ -111,6 +134,7 @@ cmd_status() {
 }
 
 case "${1:-}" in
+  reset)       cmd_reset "${2:-}" ;;
   align)       cmd_align ;;
   feature)     shift; cmd_feature "$@" ;;
   merge)       cmd_merge "${2:?pr number}" ;;
@@ -118,5 +142,5 @@ case "${1:-}" in
   deploy-pass) cmd_deploy_pass ;;
   bless)       cmd_bless ;;
   status)      cmd_status ;;
-  *) echo "usage: $0 {align|feature <slug> <crate> <kind> <desc>|merge <pr#>|rc|deploy-pass|bless|status}" >&2; exit 2 ;;
+  *) echo "usage: $0 {reset [base]|align|feature <slug> <crate> <kind> <desc>|merge <pr#>|rc|deploy-pass|bless|status}" >&2; exit 2 ;;
 esac
