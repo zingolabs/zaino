@@ -8,6 +8,7 @@ mod change_kind;
 mod changeset;
 mod crate_name;
 mod cycle_id;
+mod cycle_status;
 mod description;
 mod publish_plan;
 mod release_options;
@@ -27,6 +28,10 @@ pub use change_kind::{ChangeKind, InvalidChangeKind};
 pub use changeset::{Changeset, ChangesetError};
 pub use crate_name::{CrateName, InvalidCrateName};
 pub use cycle_id::{CycleId, InvalidCycleId};
+pub use cycle_status::{
+    Commit, CycleStatus, CycleStatusError, DeploymentStatus, InvalidCommit,
+    InvalidDeploymentStatus, RcEntry, Watermarks,
+};
 pub use description::{Description, EmptyDescription};
 pub use publish_plan::PublishPlan;
 pub use release_options::ReleaseOptions;
