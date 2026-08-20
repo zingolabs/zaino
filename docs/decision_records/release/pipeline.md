@@ -492,9 +492,12 @@ cleared the deployment gate after the cut simply ships the next cycle — *easy 
 
 At blessing, CI: finalizes the derived versions, applies the `<crate>-vX.Y.Z`
 and `cycle-<id>` tags, publishes (Docker, GitHub Release, crates.io in
-dependency order), clears `.changesets/`, and the reverse [backport
+dependency order), **marks the shipped changesets consumed** (stamps each
+`consumed_in`, rather than deleting — see
+[changeset-format.md § Consume by marking](./changeset-format.md#consume-by-marking-not-erasing)),
+and the reverse [backport
 sentinel](#reverse-the-backport-sentinel-aux-branch--dev) fires to carry the
-merge back into `dev`.
+release commit — bumps, changelogs, and the consumed marks — back into `dev`.
 
 ## Hotfix Protocol
 
