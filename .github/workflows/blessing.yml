@@ -117,7 +117,37 @@ jobs:
           cargo run -q --manifest-path "$root" -- changelog         # write CHANGELOGs
           cargo run -q --manifest-path "$root" -- changeset clear --yes  # consume changesets
 
-      # 2. Commit the release edits back to `stable`.
+      # 3. Pre-flight publishability check — validate the ENTIRE publish plan is
+      # actually publishable (no version-reuse, no yanked/unresolvable deps)
+      # BEFORE any commit/tag/Release, so a real release fails fast and leaves
+      # nothing orphaned on stable. BLOCKING for a real release; ADVISORY under
+      # RELMAN_PUBLISH_DRY_RUN (a fork can't truly publish — crate names are a
+      # global namespace — so it warns and proceeds to exercise the rest).
+      - name: Pre-flight publishability check
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          DRY_RUN: ${{ vars.RELMAN_PUBLISH_DRY_RUN }}
+        run: |
+          set -euo pipefail
+          block() {  # abort the release (real) or just warn (dry-run)
+            if [ "${DRY_RUN:-}" = "true" ]; then echo "::warning::pre-flight (advisory): $1";
+            else echo "::error::pre-flight: $1"; exit 1; fi
+          }
+          guard_mode=blocking; [ "${DRY_RUN:-}" = "true" ] && guard_mode=advisory
+          cargo run -q --manifest-path tools/workbench/Cargo.toml \
+            --bin check-published-versions -- --mode "$guard_mode" \
+            || block "version-reuse violations — bump the offending crates before releasing."
+          while read -r crate version; do
+            [ -z "${crate:-}" ] && continue
+            if out="$(cargo publish -p "${crate}" --locked --dry-run --no-verify 2>&1)"; then
+              echo "pre-flight ok: ${crate} ${version}"
+            else
+              echo "${out}" | tail -5
+              block "${crate} ${version} is not publishable (see above)."
+            fi
+          done < "$RUNNER_TEMP/plan.txt"
+
+      # 4. Commit the release edits back to `stable`.
       - name: Commit release
         id: commit
         run: |
@@ -186,19 +216,19 @@ jobs:
         run: |
           set -euo pipefail
 
-          publish_flags="--locked"
-          guard_mode="blocking"
+          # Under dry-run the pre-flight step already exercised
+          # `cargo publish --dry-run` for the whole plan, and a fork cannot upload
+          # anyway — so there is nothing left to do here.
           if [ "${DRY_RUN:-}" = "true" ]; then
-            echo "::notice::RELMAN_PUBLISH_DRY_RUN=true — cargo publish --dry-run --no-verify (no upload)."
-            publish_flags="--locked --dry-run --no-verify"
-            guard_mode="advisory"
+            echo "::notice::dry-run: upload skipped (publishability validated in pre-flight)."
+            exit 0
           fi
+          publish_flags="--locked"
 
-          # Safety guard BEFORE any real publish: fail if a to-be-published version
-          # is already on crates.io with DIFFERENT content (a version-reuse
-          # violation). Advisory in dry-run mode.
+          # Real release only. Re-run the version-reuse guard (blocking) as a last
+          # gate before the irreversible upload.
           cargo run -q --manifest-path tools/workbench/Cargo.toml \
-            --bin check-published-versions -- --mode "${guard_mode}"
+            --bin check-published-versions -- --mode blocking
 
           # plan.txt ("<crate> <version>" lines, dependency order) was derived in
           # step 1, before the changesets were consumed.
