@@ -64,15 +64,20 @@ build_relman() {
 
   [ -x "${RELMAN_BIN}" ] || { echo "relman binary missing at ${RELMAN_BIN}" >&2; exit 1; }
   # Confirm it is static-ish and actually runs.
-  file "${RELMAN_BIN}" | grep -Eq "static-pie|statically linked" \
-    && ok "binary is statically linked ($(file -b "${RELMAN_BIN}" | cut -d, -f1-2))" \
-    || fail "binary does not look static: $(file -b "${RELMAN_BIN}")"
+  if file "${RELMAN_BIN}" | grep -Eq "static-pie|statically linked"; then
+    ok "binary is statically linked ($(file -b "${RELMAN_BIN}" | cut -d, -f1-2))"
+  else
+    fail "binary does not look static: $(file -b "${RELMAN_BIN}")"
+  fi
   "${RELMAN_BIN}" --version >/dev/null && ok "relman --version runs: $("${RELMAN_BIN}" --version)"
 }
 
 # --- 2. Build the fixture repo ---------------------------------------------
 
 FIXTURE=""
+# Reached via `trap cleanup EXIT`, not a direct call. SC2317/SC2329 are the same
+# trap-handler false positive under different linter versions; disable both.
+# shellcheck disable=SC2317,SC2329
 cleanup() { [ -n "${FIXTURE}" ] && rm -rf "${FIXTURE}"; }
 trap cleanup EXIT
 
