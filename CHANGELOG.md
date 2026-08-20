@@ -8,6 +8,31 @@ and this library adheres to Rust's notion of
 ## Unreleased
 
 ### Added
+- **`zaino-bench`** — a benchmark harness answering three operational questions
+  against a running zainod, from the outside, over the interfaces a real client
+  uses. A workspace member but not a `default-member`, so a bare
+  `cargo nextest run` never builds it; select it with `makers bench` or
+  `-p zaino-bench`.
+  - `sync` — initial-sync time, sampled from zainod's existing Prometheus
+    endpoint (`zaino.sync.*`). No new instrumentation: it reads what
+    `zaino-state` already emits behind the `prometheus` feature, with a unit
+    test pinning the metric names to `zaino_state::metric_names` so a rename
+    fails the build rather than the run. `--csv` writes the sync curve.
+  - `concurrent` — concurrent-connection load test with a `--sweep` mode that
+    locates the knee, tail percentiles (p50/p95/p99) alongside min/mean/max, and
+    an `RLIMIT_NOFILE` preflight so a client-side `ulimit` is not mistaken for a
+    server-side ceiling. Ported from the `zaino-admin concurrent-test` tool on
+    the `hahn/store` branch.
+  - `serve` — single-stream block serve rate, verifying every `prev_hash` link
+    in the same pass. Ported from that branch's `zaino-admin check`.
+  - `docs/perf.md` records the results and, next to them, the machine spec and
+    node configs that produced them:
+    `docs/example_configs/zainod-bench-mainnet{,-ephemeral}.toml`. Both select
+    `backend = 'direct'` deliberately — the fastest path Zaino has, and so the
+    honest ceiling to quote — and differ only in
+    `ephemeral_finalised_state`. `concurrent` and `serve` are reported under
+    both modes, since a finalised read is answered from Zaino's own index in one
+    and by passthrough to the validator in the other; `sync` is persistent-only.
 - **Eight new crates** implementing validator access as a hexagonal port /
   adapter stack (ADR-0008, ADR-0009). Each carries a `usage.md`:
   - `zaino-primitives` — Zaino's domain vocabulary. Depends on `thiserror` and
