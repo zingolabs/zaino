@@ -52,7 +52,10 @@ jobs:
             exit 0
           fi
           sha="$(git rev-parse --short origin/rc)"
-          subj="$(git log -1 --format='%s' origin/rc)"
+          # The newest NON-merge commit rc has that dev lacks — the hotfix itself,
+          # not the merge commit that brought it in. Fall back to rc's tip subject.
+          subj="$(git log origin/dev..origin/rc --no-merges --format='%s' | head -1)"
+          [ -n "$subj" ] || subj="$(git log -1 --format='%s' origin/rc)"
           gh pr comment "$pr" --body \
             "🚑 Hotfix landed on \`rc\` at \`${sha}\`: ${subj}. Backport to \`dev\` is required before rc can advance (rc-gate will refuse until then)."
           echo "Noted hotfix on release PR #${pr}"
