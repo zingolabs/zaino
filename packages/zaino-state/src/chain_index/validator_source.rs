@@ -94,6 +94,17 @@ impl<V: ChainIndexSourcePorts> ValidatorSource<V> {
     pub fn source(&self) -> &V {
         &self.validator
     }
+
+    /// The underlying validator, shared.
+    ///
+    /// A subsystem driven by its own runtime — ChainHead, and the mempool after
+    /// it — holds the validator directly rather than through this wrapper,
+    /// because it speaks the `zaino-source` ports and does not need the
+    /// wire-typed scaffolding this type provides. Sharing rather than cloning
+    /// matters: a validator may own connections and a database handle.
+    pub(crate) fn validator(&self) -> Arc<V> {
+        Arc::clone(&self.validator)
+    }
 }
 
 #[cfg(feature = "test_dependencies")]

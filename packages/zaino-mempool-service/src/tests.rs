@@ -24,7 +24,8 @@ use zaino_mempool::config::MempoolConfig;
 use zaino_primitives::types::BlockRef;
 
 #[cfg(feature = "tip_aware_mempool")]
-use zaino_mempool::ports::{NfsEpochObserver, NonFinalizedEpoch};
+use zaino_mempool::ports::NfsEpochObserver;
+use zaino_primitives::types::ChainStateEpoch;
 
 // ---- mock ports --------------------------------------------------------
 
@@ -217,7 +218,7 @@ impl zaino_source::SubscribeBlocks for MockSource {
 #[cfg(feature = "tip_aware_mempool")]
 #[derive(Clone)]
 struct MockNfs {
-    epoch: Arc<Mutex<Option<NonFinalizedEpoch>>>,
+    epoch: Arc<Mutex<Option<ChainStateEpoch>>>,
     /// Publication signal, as the real `zaino-state` adapter supplies.
     wake: Arc<tokio::sync::watch::Sender<()>>,
 }
@@ -231,7 +232,7 @@ impl MockNfs {
         }
     }
 
-    fn set(&self, epoch: NonFinalizedEpoch) {
+    fn set(&self, epoch: ChainStateEpoch) {
         *self.epoch.lock().expect("mock nfs poisoned") = Some(epoch);
         let _ = self.wake.send(());
     }
@@ -239,7 +240,7 @@ impl MockNfs {
 
 #[cfg(feature = "tip_aware_mempool")]
 impl NfsEpochObserver for MockNfs {
-    fn current_epoch(&self) -> Option<NonFinalizedEpoch> {
+    fn current_epoch(&self) -> Option<ChainStateEpoch> {
         *self.epoch.lock().expect("mock nfs poisoned")
     }
 
@@ -282,8 +283,8 @@ fn block_ref(at: u32, hash_byte: u8) -> BlockRef {
 }
 
 #[cfg(feature = "tip_aware_mempool")]
-fn epoch(generation: u64, height: u32, hash_byte: u8) -> NonFinalizedEpoch {
-    NonFinalizedEpoch {
+fn epoch(generation: u64, height: u32, hash_byte: u8) -> ChainStateEpoch {
+    ChainStateEpoch {
         generation,
         best_tip: block_ref(height, hash_byte),
     }

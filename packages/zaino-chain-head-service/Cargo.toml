@@ -1,0 +1,51 @@
+[package]
+name = "zaino-chain-head-service"
+description = "Self-synchronising in-memory runtime for Zaino's ChainHead."
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+version = "0.1.0"
+
+[features]
+default = []
+
+# Forwards the domain crate's declaration-only transparent capability, so a
+# consumer enabling it here gets the same types and port.
+transparent_address_history_experimental = [
+    "zaino-chain-head/transparent_address_history_experimental",
+]
+
+# Prometheus metric emission from the advance path.
+prometheus = ["metrics"]
+
+# TEST-ONLY: exposes `spawn_without_writer` and `advance_once`, so a downstream
+# test crate can step the chain head deterministically instead of racing its
+# timer. MUST appear only in `[dev-dependencies]` — `resolver = "2"` keeps
+# dev-dependency features out of production dependency graphs. In-crate tests
+# get both from `cfg(test)` without enabling anything.
+testing = []
+
+[dependencies]
+zaino-chain-head = { workspace = true }
+zaino-consensus = { workspace = true }
+zaino-primitives = { workspace = true }
+zaino-source = { workspace = true }
+zaino-status = { workspace = true }
+
+arc-swap = { workspace = true }
+futures = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+
+metrics = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "test-util"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

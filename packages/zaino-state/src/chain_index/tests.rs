@@ -1,8 +1,9 @@
 //! Zaino-State ChainIndex unit tests.
 
+use zaino_chain_head::ChainHeadSnapshot as _;
+mod chain_head;
 pub(crate) mod finalised_state;
 mod mockchain_tests;
-mod non_finalised_state;
 mod poll;
 mod proptest_blockgen;
 mod sync_loop;
@@ -162,12 +163,8 @@ async fn load_with_settings(
     const NFS_READY_BUDGET: Duration = Duration::from_secs(10);
     tokio::time::timeout(NFS_READY_BUDGET, async {
         loop {
-            let nfs_ready = match index_reader.snapshot_nonfinalized_state().await {
-                Ok(snap) => snap
-                    .get_nfs_snapshot()
-                    .is_some_and(|nfs| nfs.best_tip.height.0 == expected_nfs_tip),
-                Err(_) => false,
-            };
+            let nfs_ready = u32::from(index_reader.snapshot_nonfinalized_state().best_tip().height)
+                == expected_nfs_tip;
             if nfs_ready {
                 break;
             }
