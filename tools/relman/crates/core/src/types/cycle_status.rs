@@ -346,12 +346,13 @@ impl RawCycleStatus {
             rc.push(raw.into_entry()?);
         }
 
-        let released_cycle = match self.released_cycle {
-            Some(raw) => Some(Tag::parse(&raw).map_err(|source| {
-                CycleStatusError::InvalidReleasedCycle { value: raw, source }
-            })?),
-            None => None,
-        };
+        let released_cycle =
+            match self.released_cycle {
+                Some(raw) => Some(Tag::parse(&raw).map_err(|source| {
+                    CycleStatusError::InvalidReleasedCycle { value: raw, source }
+                })?),
+                None => None,
+            };
 
         Ok(CycleStatus::new(watermarks, rc, released_cycle))
     }
@@ -360,9 +361,13 @@ impl RawCycleStatus {
 impl RawWatermarks {
     fn into_watermarks(self) -> Result<Watermarks, CycleStatusError> {
         let parse = |gate: &'static str, raw: Option<String>| match raw {
-            Some(value) => Commit::parse(&value)
-                .map(Some)
-                .map_err(|source| CycleStatusError::InvalidWatermark { gate, value, source }),
+            Some(value) => Commit::parse(&value).map(Some).map_err(|source| {
+                CycleStatusError::InvalidWatermark {
+                    gate,
+                    value,
+                    source,
+                }
+            }),
             None => Ok(None),
         };
         Ok(Watermarks::new(
