@@ -1,0 +1,38 @@
+name: Set up relman
+description: >-
+  Put the `relman` release-manager CLI on PATH without assuming cargo is
+  available. Prefers an already-installed binary, then a prebuilt one under
+  tools/relman/target, and only falls back to building with cargo. This lets
+  changeset-only checks (which need no cargo) run in a minimal container while
+  real CI (which has cargo) still builds from source.
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve relman onto PATH
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # Candidate prebuilt binaries, in preference order. A static musl build
+        # is what the local integration harness stages; the plain release path
+        # is what a prior `cargo build` in this job would have produced.
+        musl="tools/relman/target/x86_64-unknown-linux-musl/release/relman"
+        release="tools/relman/target/release/relman"
+
+        if command -v relman >/dev/null 2>&1; then
+          echo "setup-relman: using relman already on PATH ($(command -v relman))"
+        elif [ -x "${musl}" ]; then
+          echo "setup-relman: using prebuilt musl binary ${musl}"
+          echo "${GITHUB_WORKSPACE}/$(dirname "${musl}")" >> "${GITHUB_PATH}"
+        elif [ -x "${release}" ]; then
+          echo "setup-relman: using prebuilt binary ${release}"
+          echo "${GITHUB_WORKSPACE}/$(dirname "${release}")" >> "${GITHUB_PATH}"
+        elif command -v cargo >/dev/null 2>&1; then
+          echo "setup-relman: no prebuilt binary; building with cargo"
+          cargo build --release --manifest-path tools/relman/Cargo.toml
+          echo "${GITHUB_WORKSPACE}/tools/relman/target/release" >> "${GITHUB_PATH}"
+        else
+          echo "::error::setup-relman: relman is not on PATH, no prebuilt binary was found at ${musl} or ${release}, and cargo is unavailable to build it." >&2
+          exit 1
+        fi
