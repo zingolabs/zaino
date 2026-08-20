@@ -7,9 +7,11 @@
 # tag name, the workflow applies it. See
 # docs/release/pipeline.md § "The rc-gate" and "Promotion Flow".
 #
-# NOTE ON THE NIGHTLY-GREEN PRECONDITION: this draft does NOT run the full e2e
-# `rc-gate` suite. See the TODO(cutover) step below — do not treat scheduled
-# advancement as gated until that condition is wired.
+# NOTE ON THE NIGHTLY-GREEN PRECONDITION: advancement requires the `rc-gate`
+# named signal (a check-run/commit-status, context `vars.RELMAN_RC_GATE_CHECK`)
+# to be green on dev HEAD. `CI - Nightly` publishes it on a fully-green run; this
+# workflow only reads it (a `force` dispatch bypasses). The gate does not run the
+# suite itself — that would duplicate the runner.
 
 name: RC gate
 
@@ -61,21 +63,16 @@ jobs:
           # `rc` branch (GITHUB_TOKEN cannot push a protected branch).
           token: ${{ steps.app-token.outputs.token }}
 
-      # TODO(cutover): gate advancement on the nightly full-e2e `rc-gate` suite
-      # being GREEN on dev HEAD (e.g. query a required workflow_run conclusion, or
-      # a commit status). This draft runs NO e2e here — doing so would duplicate
-      # the suite runner. Until the green signal is wired, scheduled runs advance
-      # unconditionally and workflow_dispatch `force` is the manual override. DO
-      # NOT set RELMAN_PIPELINE_ACTIVE=true until this precondition is real, or
-      # un-vetted dev HEAD will flow straight to `rc`.
       # Gate 2 (the rc-gate suite) must be green for the EXACT dev commit rc is
       # about to advance to. The gate is DECOUPLED from what runs the suite: it
       # requires a NAMED SIGNAL — a check-run or commit status whose context is
       # `vars.RELMAN_RC_GATE_CHECK` (default `rc-gate`) — to be `success` on dev
-      # HEAD. Whatever publishes that signal (a nextest e2e workflow, an external
-      # runner, a manual sign-off) is the swappable membership; this gate never
-      # names a specific workflow or test mode. A `force` dispatch bypasses
-      # (recovery, or before the suite has run for a fresh commit).
+      # HEAD. `CI - Nightly` (ci-nightly.yaml) is the current publisher — its
+      # `publish-rc-gate-signal` job posts this status on a fully-green run — but
+      # the gate never names it: whatever publishes the signal (a nextest e2e
+      # workflow, an external runner, a manual sign-off) is the swappable
+      # membership. A `force` dispatch bypasses (recovery, or before the suite
+      # has run for a fresh commit).
       - name: Require the rc-gate suite green on dev HEAD
         if: ${{ ! inputs.force }}
         env:
