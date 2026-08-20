@@ -91,7 +91,24 @@ jobs:
           echo "Releasing cycle: $N"
           echo "n=$N" >> "$GITHUB_OUTPUT"
 
-      # 1. Apply versions + changelogs, consume changesets. All working-tree edits.
+      # 1. Derive the tag set, publish plan, and release notes from the changesets
+      # NOW — BEFORE bump/clear consume them. relman derives per-crate versions
+      # from the changesets + the current Cargo.toml, so running these AFTER the
+      # bump (new versions) and clear (no changesets) yields an EMPTY per-crate
+      # tag set and publish plan (the cycle tag is still emitted, which is why a
+      # naive order produces `cycle-N` but no `<crate>-vX.Y.Z`). Written to
+      # RUNNER_TEMP so they are never swept into the release commit by `git add -A`.
+      - name: Derive tag + publish plans and release notes (before consuming changesets)
+        run: |
+          set -euo pipefail
+          root="tools/relman/Cargo.toml"
+          cargo run -q --manifest-path "$root" -- tags --cycle "${{ steps.cycle.outputs.n }}" > "$RUNNER_TEMP/tags.txt"
+          cargo run -q --manifest-path "$root" -- publish-plan > "$RUNNER_TEMP/plan.txt"
+          cargo run -q --manifest-path "$root" -- pr-body --cycle "${{ steps.cycle.outputs.n }}" > "$RUNNER_TEMP/notes.md"
+          echo "--- tag plan ---"; cat "$RUNNER_TEMP/tags.txt"
+          echo "--- publish plan ---"; cat "$RUNNER_TEMP/plan.txt"
+
+      # 2. Apply versions + changelogs, consume changesets. All working-tree edits.
       - name: Apply bump, changelog, clear changesets
         run: |
           set -euo pipefail
@@ -118,15 +135,13 @@ jobs:
           git push origin "HEAD:refs/heads/stable"
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      # 3. Tags: final `cycle-<N>` + per-crate `<crate>-vX.Y.Z`, all at the release commit.
+      # 4. Tags: final `cycle-<N>` + per-crate `<crate>-vX.Y.Z`, all at the release
+      # commit. tags.txt was derived in step 1, before the changesets were consumed.
       - name: Create and push release tags
         run: |
           set -euo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # relman (no --rc) prints the blessing tag set, one tag per line.
-          cargo run -q --manifest-path tools/relman/Cargo.toml -- \
-            tags --cycle "${{ steps.cycle.outputs.n }}" > tags.txt
           while IFS= read -r tag; do
             [ -z "$tag" ] && continue
             if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
@@ -135,7 +150,26 @@ jobs:
             fi
             git tag "$tag" "${{ steps.commit.outputs.sha }}"
             git push origin "$tag"
-          done < tags.txt
+          done < "$RUNNER_TEMP/tags.txt"
+
+      # 5. A GitHub Release for the cycle — the visible UI entry. Body = the
+      # derived per-crate version table + changelog (rendered in step 1). Anchored
+      # on the `cycle-<N>` tag; the per-crate `<crate>-vX.Y.Z` tags are pushed
+      # above and referenced in the notes. Marked prerelease iff RC-only (never
+      # here — blessing is the final release).
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          tag="cycle-${{ steps.cycle.outputs.n }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --notes-file "$RUNNER_TEMP/notes.md" --title "Release $tag"
+            echo "Updated release $tag"
+          else
+            gh release create "$tag" --title "Release $tag" --notes-file "$RUNNER_TEMP/notes.md" --target stable
+            echo "Created release $tag"
+          fi
 
       # 4. Publish to crates.io in dependency order.
       # IRREVERSIBLE unless RELMAN_PUBLISH_DRY_RUN=true (fork/sandbox testing),
@@ -166,9 +200,8 @@ jobs:
           cargo run -q --manifest-path tools/workbench/Cargo.toml \
             --bin check-published-versions -- --mode "${guard_mode}"
 
-          # relman publish-plan prints "<crate> <version>" lines in dependency order.
-          cargo run -q --manifest-path tools/relman/Cargo.toml -- publish-plan > plan.txt
-
+          # plan.txt ("<crate> <version>" lines, dependency order) was derived in
+          # step 1, before the changesets were consumed.
           while read -r crate version; do
             [ -z "${crate:-}" ] && continue
             echo "::group::Publish ${crate} ${version}${DRY_RUN:+ (dry-run)}"
@@ -191,7 +224,7 @@ jobs:
             # visible in the index; this pause is extra margin before dependents
             # publish. Skipped in dry-run (nothing was uploaded).
             [ "${DRY_RUN:-}" = "true" ] || sleep 15
-          done < plan.txt
+          done < "$RUNNER_TEMP/plan.txt"
 
       # 5. TODO(cutover): Docker image (zainod version + cycle handle), GitHub
       # Release, and gh-pages doc publish follow from the pushed tags, via a
