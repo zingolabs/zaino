@@ -25,7 +25,9 @@
 //!   section is appended; a missing file is created with a Keep-a-Changelog
 //!   preamble.
 
-use relman_core::types::{ChangeEntry, CrateBump, NaiveDate, Section};
+use relman_core::types::{
+    BumpTable, ChangeEntry, CrateBump, CycleId, CycleStatus, NaiveDate, Section, Tag,
+};
 
 /// The order sections are emitted in, regardless of the order changes were
 /// authored. Keep-a-Changelog's canonical order, with `Internal` last.
@@ -152,6 +154,144 @@ pub(crate) fn render_workspace_section(
     date: NaiveDate,
 ) -> String {
     format!("## [{}]\n{}", iso(date), render_changelog_digest(crates))
+}
+
+/// The placeholder for an empty marker/cell, so every table cell is non-blank.
+const EMPTY_CELL: &str = "—";
+
+/// The trailing `rc.<M>` label of a prerelease tag (e.g. `cycle-1-rc.1` →
+/// `rc.1`). Falls back to the whole tag if it carries no `-rc.` segment.
+fn rc_label(tag: &str) -> &str {
+    match tag.rfind("-rc.") {
+        Some(idx) => &tag[idx + 1..],
+        None => tag,
+    }
+}
+
+/// The numeric `<M>` of a prerelease tag's `rc.<M>` suffix, for ordering RCs by
+/// recency independent of the input order. A tag with no parseable suffix
+/// sorts as `0`.
+fn rc_number(tag: &str) -> u32 {
+    tag.rfind("-rc.")
+        .and_then(|idx| tag[idx + 4..].parse().ok())
+        .unwrap_or(0)
+}
+
+/// The most recent release-candidate tag in `status` — the `[[rc]]` entry with
+/// the highest `rc.<M>` number, chosen deterministically regardless of the
+/// order the entries were listed in.
+fn latest_rc_tag(status: &CycleStatus) -> Option<&Tag> {
+    status
+        .rc()
+        .iter()
+        .max_by_key(|entry| rc_number(entry.tag().as_str()))
+        .map(|entry| entry.tag())
+}
+
+/// Render the `## Gate watermarks` table: one row per gate whose branch tip is
+/// known, mapping each gate to its branch, its commit, and a marker. Ends with a
+/// trailing newline. Rows for absent watermarks are omitted.
+///
+/// Marker column: `stable` shows the released cycle tag; `rc` shows the latest
+/// prerelease tag; the remaining gates carry a placeholder.
+pub(crate) fn render_gate_watermarks(status: &CycleStatus) -> String {
+    let wm = status.watermarks();
+    let released = status
+        .released_cycle()
+        .map(|t| t.as_str().to_owned())
+        .unwrap_or_else(|| EMPTY_CELL.to_owned());
+    let latest_rc = latest_rc_tag(status)
+        .map(|t| t.as_str().to_owned())
+        .unwrap_or_else(|| EMPTY_CELL.to_owned());
+
+    // (gate, branch, commit, marker) — only rows whose commit is present render.
+    let rows = [
+        ("verified", "dev", wm.dev(), EMPTY_CELL.to_owned()),
+        ("candidate", "rc", wm.rc(), latest_rc),
+        (
+            "release-ready",
+            "release-ready",
+            wm.release_ready(),
+            EMPTY_CELL.to_owned(),
+        ),
+        ("released", "stable", wm.stable(), released),
+    ];
+
+    let mut out = String::from("## Gate watermarks\n\n");
+    out.push_str("| Gate | Branch | Commit | Marker |\n");
+    out.push_str("| ---- | ------ | ------ | ------ |\n");
+    for (gate, branch, commit, marker) in rows {
+        let Some(commit) = commit else {
+            continue;
+        };
+        out.push_str(&format!("| {gate} | {branch} | {commit} | {marker} |\n"));
+    }
+    out
+}
+
+/// Render the `## Release candidates — cycle <N>` table from the `[[rc]]`
+/// entries, in listed order: `| RC | Commit | Tag | Deployment |`, deployment as
+/// a glyph + word. Ends with a trailing newline; an empty candidate list renders
+/// a note instead of an empty table.
+pub(crate) fn render_rc_table(cycle: &CycleId, status: &CycleStatus) -> String {
+    let mut out = format!("## Release candidates — cycle {cycle}\n\n");
+    if status.rc().is_empty() {
+        out.push_str("_No release candidates cut yet this cycle._\n");
+        return out;
+    }
+    out.push_str("| RC | Commit | Tag | Deployment |\n");
+    out.push_str("| -- | ------ | --- | ---------- |\n");
+    for entry in status.rc() {
+        let deployment = entry.deployment();
+        out.push_str(&format!(
+            "| {} | {} | {} | {} {} |\n",
+            rc_label(entry.tag().as_str()),
+            entry.sha(),
+            entry.tag(),
+            deployment.glyph(),
+            deployment.as_str(),
+        ));
+    }
+    out
+}
+
+/// Render the `## Version bumps (derived, since last stable)` table. Ends with a
+/// trailing newline.
+///
+/// With `with_tags`, a per-target `Tag` column carries each bumping crate's
+/// `<crate>-v<next>` provenance tag (the tag CI applies at blessing); without
+/// it, the classic four-column table.
+pub(crate) fn render_version_table(table: &BumpTable, with_tags: bool) -> String {
+    let mut out = String::from("## Version bumps (derived, since last stable)\n\n");
+    if with_tags {
+        out.push_str("| Crate | Current | Next | Bump | Tag |\n");
+        out.push_str("| ----- | ------- | ---- | ---- | --- |\n");
+    } else {
+        out.push_str("| Crate | Current | Next | Bump |\n");
+        out.push_str("| ----- | ------- | ---- | ---- |\n");
+    }
+    for bump in table.bumps() {
+        if with_tags {
+            let tag = Tag::crate_version(bump.crate_name(), bump.next());
+            out.push_str(&format!(
+                "| {} | {} | {} | {} | {} |\n",
+                bump.crate_name(),
+                bump.current(),
+                bump.next(),
+                bump.bump().as_str(),
+                tag,
+            ));
+        } else {
+            out.push_str(&format!(
+                "| {} | {} | {} | {} |\n",
+                bump.crate_name(),
+                bump.current(),
+                bump.next(),
+                bump.bump().as_str(),
+            ));
+        }
+    }
+    out
 }
 
 /// Whether `line` is a *released-version* heading — a `## ` heading whose text,
@@ -439,6 +579,144 @@ All notable changes to this library will be documented in this file.
         let result = insert_section(Some(existing), section);
         assert!(result.contains("## [Unreleased]"));
         assert!(result.trim_end().ends_with("- First."));
+    }
+
+    fn cycle(raw: &str) -> CycleId {
+        CycleId::parse(raw).expect("valid cycle id")
+    }
+
+    fn status(toml: &str) -> CycleStatus {
+        CycleStatus::parse_toml(toml).expect("valid status")
+    }
+
+    const FULL_STATUS: &str = "\
+released_cycle = \"cycle-0\"
+
+[watermarks]
+dev = \"dd73705\"
+rc = \"dd73705\"
+release_ready = \"aa11bb2\"
+stable = \"5e3caa1\"
+
+[[rc]]
+tag = \"cycle-1-rc.2\"
+sha = \"aa11bb2\"
+deployment = \"running\"
+
+[[rc]]
+tag = \"cycle-1-rc.1\"
+sha = \"dd73705\"
+deployment = \"passed\"
+";
+
+    #[test]
+    fn gate_watermarks_renders_exact_table() {
+        let expected = "\
+## Gate watermarks
+
+| Gate | Branch | Commit | Marker |
+| ---- | ------ | ------ | ------ |
+| verified | dev | dd73705 | — |
+| candidate | rc | dd73705 | cycle-1-rc.2 |
+| release-ready | release-ready | aa11bb2 | — |
+| released | stable | 5e3caa1 | cycle-0 |
+";
+        // The `rc` marker is the *latest* rc tag (rc.2), chosen by number even
+        // though rc.1 was listed after it.
+        assert_eq!(render_gate_watermarks(&status(FULL_STATUS)), expected);
+    }
+
+    #[test]
+    fn gate_watermarks_omits_absent_branches() {
+        // Only dev and stable exist yet; rc / release-ready rows are omitted,
+        // and with no rc entries the (absent) rc row's marker never matters.
+        let toml = "\
+[watermarks]
+dev = \"abc1234\"
+stable = \"def5678\"
+";
+        let expected = "\
+## Gate watermarks
+
+| Gate | Branch | Commit | Marker |
+| ---- | ------ | ------ | ------ |
+| verified | dev | abc1234 | — |
+| released | stable | def5678 | — |
+";
+        assert_eq!(render_gate_watermarks(&status(toml)), expected);
+    }
+
+    #[test]
+    fn rc_table_renders_exact_rows_with_glyphs() {
+        let expected = "\
+## Release candidates — cycle 1
+
+| RC | Commit | Tag | Deployment |
+| -- | ------ | --- | ---------- |
+| rc.2 | aa11bb2 | cycle-1-rc.2 | ● running |
+| rc.1 | dd73705 | cycle-1-rc.1 | ✓ passed |
+";
+        // Listed order is preserved (rc.2 then rc.1).
+        assert_eq!(render_rc_table(&cycle("1"), &status(FULL_STATUS)), expected);
+    }
+
+    #[test]
+    fn rc_table_notes_when_no_candidates() {
+        let toml = "[watermarks]\ndev = \"abc1234\"\n";
+        let expected = "\
+## Release candidates — cycle 1
+
+_No release candidates cut yet this cycle._
+";
+        assert_eq!(render_rc_table(&cycle("1"), &status(toml)), expected);
+    }
+
+    #[test]
+    fn version_table_with_tags_renders_per_target_tag_column() {
+        let table = BumpTable::new(vec![
+            CrateBump::new(
+                name("zaino-state"),
+                version("0.6.0"),
+                version("0.7.0"),
+                Bump::Minor,
+                vec!["x".to_owned()],
+            ),
+            CrateBump::new(
+                name("zainod"),
+                version("0.4.3"),
+                version("0.4.4"),
+                Bump::Patch,
+                vec!["y".to_owned()],
+            ),
+        ]);
+        let expected = "\
+## Version bumps (derived, since last stable)
+
+| Crate | Current | Next | Bump | Tag |
+| ----- | ------- | ---- | ---- | --- |
+| zaino-state | 0.6.0 | 0.7.0 | minor | zaino-state-v0.7.0 |
+| zainod | 0.4.3 | 0.4.4 | patch | zainod-v0.4.4 |
+";
+        assert_eq!(render_version_table(&table, true), expected);
+    }
+
+    #[test]
+    fn version_table_without_tags_keeps_classic_four_columns() {
+        let table = BumpTable::new(vec![CrateBump::new(
+            name("zaino-state"),
+            version("0.6.0"),
+            version("0.7.0"),
+            Bump::Minor,
+            vec!["x".to_owned()],
+        )]);
+        let expected = "\
+## Version bumps (derived, since last stable)
+
+| Crate | Current | Next | Bump |
+| ----- | ------- | ---- | ---- |
+| zaino-state | 0.6.0 | 0.7.0 | minor |
+";
+        assert_eq!(render_version_table(&table, false), expected);
     }
 
     #[test]

@@ -2,7 +2,8 @@ use std::path::PathBuf;
 
 use crate::ports::{ChangelogError, ChangesetStoreError, ManifestError, VcsError, WorkspaceError};
 use crate::types::{
-    AboutReport, BumpTable, CrateName, CycleId, Description, PublishPlan, Slug, TagPlan,
+    AboutReport, BumpTable, CrateName, CycleId, CycleStatus, Description, PublishPlan, Slug,
+    TagPlan,
 };
 
 /// Inbound port: report who relman is (version) and what it thinks "now" is.
@@ -429,9 +430,20 @@ pub trait ReleaseArtifacts: Send + Sync {
     ///   `<crate>-v<next>` provenance tag per bumping crate, in config order.
     fn tags(&self, cycle: &CycleId, rc: Option<u32>) -> Result<TagPlan, ArtifactError>;
 
-    /// The rendered release-PR body for `cycle`: a title, the derived version
-    /// table, a CI-filled soak-status placeholder, and the aggregated changelog.
-    fn pr_body(&self, cycle: &CycleId) -> Result<String, ArtifactError>;
+    /// The rendered release-PR body for `cycle`.
+    ///
+    /// - `status = None`: a title, the derived version table, a CI-filled
+    ///   soak-status placeholder, and the aggregated changelog (the plain
+    ///   derivation view).
+    /// - `status = Some(..)`: the same, enriched into a live dashboard — two
+    ///   extra sections above the version table (gate watermarks and the
+    ///   release-candidate list), a per-target `Tag` column on the version
+    ///   table, and no soak placeholder (the RC list supersedes it).
+    fn pr_body(
+        &self,
+        cycle: &CycleId,
+        status: Option<&CycleStatus>,
+    ) -> Result<String, ArtifactError>;
 
     /// The bumping crates in dependency (publish) order.
     fn publish_plan(&self) -> Result<PublishPlan, ArtifactError>;

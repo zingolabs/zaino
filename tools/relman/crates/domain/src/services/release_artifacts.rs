@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use relman_core::ports::{ArtifactError, ChangesetStore, ReleaseArtifacts, Versions, Workspace};
 use relman_core::types::{
-    BumpTable, ChangeEntry, Changeset, ChangesetError, CrateName, CycleId, PublishPlan, Tag,
-    TagPlan,
+    BumpTable, ChangeEntry, Changeset, ChangesetError, CrateName, CycleId, CycleStatus,
+    PublishPlan, Tag, TagPlan,
 };
 
 use crate::render;
@@ -162,36 +162,44 @@ impl ReleaseArtifacts for ReleaseArtifactsService {
         Ok(TagPlan::new(tags))
     }
 
-    fn pr_body(&self, cycle: &CycleId) -> Result<String, ArtifactError> {
+    fn pr_body(
+        &self,
+        cycle: &CycleId,
+        status: Option<&CycleStatus>,
+    ) -> Result<String, ArtifactError> {
         let table = self.versions.derive()?;
 
         let mut body = String::new();
         body.push_str(&format!("# Release {}\n\n", Tag::cycle(cycle)));
+
+        // Live-dashboard sections, above the version table: the gate
+        // high-water marks and the release-candidate list. Rendered whenever a
+        // status is supplied, even if no crate bumps — the watermarks are still
+        // worth showing.
+        if let Some(status) = status {
+            body.push_str(&render::render_gate_watermarks(status));
+            body.push('\n');
+            body.push_str(&render::render_rc_table(cycle, status));
+            body.push('\n');
+        }
 
         if table.is_empty() {
             body.push_str(NOTHING_BUMPS);
             return Ok(body);
         }
 
-        // Version table (derived, since last stable).
-        body.push_str("## Version bumps (derived, since last stable)\n\n");
-        body.push_str("| Crate | Current | Next | Bump |\n");
-        body.push_str("| ----- | ------- | ---- | ---- |\n");
-        for bump in table.bumps() {
-            body.push_str(&format!(
-                "| {} | {} | {} | {} |\n",
-                bump.crate_name(),
-                bump.current(),
-                bump.next(),
-                bump.bump().as_str(),
-            ));
-        }
+        // Version table (derived, since last stable). With a live status it
+        // carries the per-target provenance-tag column.
+        body.push_str(&render::render_version_table(&table, status.is_some()));
 
-        // Soak status: a stub table CI fills in later.
-        body.push_str("\n## Soak status\n\n");
-        body.push_str("<!-- soak status: filled by CI -->\n\n");
-        body.push_str("| RC commit | tag | soak |\n");
-        body.push_str("| --------- | --- | ---- |\n");
+        // Soak status: a stub table CI fills in later. Only in the plain
+        // (no-status) view — with a status the RC table above is the real thing.
+        if status.is_none() {
+            body.push_str("\n## Soak status\n\n");
+            body.push_str("<!-- soak status: filled by CI -->\n\n");
+            body.push_str("| RC commit | tag | soak |\n");
+            body.push_str("| --------- | --- | ---- |\n");
+        }
 
         // Aggregated changelog, reusing the changelog renderer over the same
         // changesets that drove the derivation.
@@ -461,14 +469,17 @@ description=\"d\"
         ));
         let svc = ReleaseArtifactsService::new(versions, store, Arc::new(MapWorkspace::default()));
 
-        let body = svc.pr_body(&cycle("2026-08-15")).expect("pr body");
+        let body = svc.pr_body(&cycle("2026-08-15"), None).expect("pr body");
 
         assert!(body.contains("# Release cycle-2026-08-15"), "title: {body}");
         // Version table with correct current -> next for both crates.
         assert!(body.contains("| Crate | Current | Next | Bump |"));
         assert!(body.contains("| zaino-state | 0.6.0 | 0.7.0 | minor |"));
         assert!(body.contains("| zainod | 0.4.3 | 0.4.4 | patch |"));
-        // Soak placeholder.
+        // No live-dashboard sections without a status.
+        assert!(!body.contains("## Gate watermarks"));
+        assert!(!body.contains("## Release candidates"));
+        // Soak placeholder (plain view keeps the old shape).
         assert!(body.contains("## Soak status"));
         assert!(body.contains("<!-- soak status: filled by CI -->"));
         // Changelog block: the direct bullet and the crate subsection headings.
@@ -479,13 +490,74 @@ description=\"d\"
     }
 
     #[test]
+    fn pr_body_with_status_renders_watermarks_rc_and_tag_column() {
+        // zaino-state breaks directly; zainod bumps transitively through it.
+        let store = store_with(&[(
+            "pr-1",
+            "[[changes]]\ncrate=\"zaino-state\"\nkind=\"breaking\"\n\
+             description=\"Replace the sync entrypoint.\"\n",
+        )]);
+        let versions: Arc<dyn Versions> = Arc::new(VersionService::new(
+            config(&["zaino-state", "zainod"]),
+            store.clone(),
+            Arc::new(MapWorkspace::new(
+                vec![
+                    (name("zaino-state"), version("0.6.0")),
+                    (name("zainod"), version("0.4.3")),
+                ],
+                vec![(name("zainod"), name("zaino-state"), req("=0.6.0"))],
+            )),
+        ));
+        let svc = ReleaseArtifactsService::new(versions, store, Arc::new(MapWorkspace::default()));
+
+        let status = CycleStatus::parse_toml(
+            "\
+released_cycle = \"cycle-0\"
+
+[watermarks]
+dev = \"dd73705\"
+rc = \"dd73705\"
+release_ready = \"dd73705\"
+stable = \"5e3caa1\"
+
+[[rc]]
+tag = \"cycle-1-rc.1\"
+sha = \"dd73705\"
+deployment = \"passed\"
+",
+        )
+        .expect("valid status");
+
+        let body = svc.pr_body(&cycle("1"), Some(&status)).expect("pr body");
+
+        // Gate watermarks table, with rc's latest-tag marker and stable's
+        // released-cycle marker.
+        assert!(body.contains("## Gate watermarks"), "body: {body}");
+        assert!(body.contains("| verified | dev | dd73705 | — |"));
+        assert!(body.contains("| candidate | rc | dd73705 | cycle-1-rc.1 |"));
+        assert!(body.contains("| released | stable | 5e3caa1 | cycle-0 |"));
+        // Release-candidate table with the deployment glyph + word.
+        assert!(body.contains("## Release candidates — cycle 1"));
+        assert!(body.contains("| rc.1 | dd73705 | cycle-1-rc.1 | ✓ passed |"));
+        // Version table gains the per-target Tag column.
+        assert!(body.contains("| Crate | Current | Next | Bump | Tag |"));
+        assert!(body.contains("| zaino-state | 0.6.0 | 0.7.0 | minor | zaino-state-v0.7.0 |"));
+        assert!(body.contains("| zainod | 0.4.3 | 0.4.4 | patch | zainod-v0.4.4 |"));
+        // The soak stub is replaced by the real RC table.
+        assert!(!body.contains("## Soak status"));
+        // Changelog still present.
+        assert!(body.contains("## Changelog"));
+        assert!(body.contains("### zaino-state 0.7.0"));
+    }
+
+    #[test]
     fn pr_body_says_so_when_nothing_bumps() {
         let store: Arc<MapChangesetStore> = Arc::new(MapChangesetStore::new());
         let workspace =
             MapWorkspace::new(vec![(name("zaino-state"), version("0.6.0"))], Vec::new());
         let svc = service(&["zaino-state"], store, workspace);
 
-        let body = svc.pr_body(&cycle("2026-08-15")).expect("pr body");
+        let body = svc.pr_body(&cycle("2026-08-15"), None).expect("pr body");
         assert!(body.contains("# Release cycle-2026-08-15"));
         assert!(body.contains("nothing to release"));
         assert!(!body.contains("| Crate |"), "no version table when empty");
