@@ -176,6 +176,11 @@ jobs:
           if [ -n "$num" ]; then
             gh pr edit "$num" --body-file body.md
             echo "Updated release PR #$num"
+          elif [ "$(git rev-list --count origin/stable..origin/release-ready)" -eq 0 ]; then
+            # release-ready has not advanced past stable yet, so there is no diff
+            # to open a PR from (a re-render triggered by an early rc cut lands
+            # here). Nothing to do — the cut is recorded by its tag.
+            echo "::notice::release-ready is not ahead of stable; no release PR to open yet."
           else
             gh pr create --base stable --head release-ready \
               --title "Release cycle-${{ steps.cycle.outputs.n }}" \
