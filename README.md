@@ -3,6 +3,27 @@ Zaino is an indexer for the Zcash blockchain implemented in Rust.
 
 Zaino provides all necessary functionality for "light" clients (wallets and other applications that don't rely on the complete history of blockchain) and "full" clients / wallets and block explorers providing access to both the finalized chain and the non-finalized best chain and mempool held by either a Zebra or Zcashd full validator.
 
+## Release pipeline
+
+Zaino ships through a gated pipeline (`dev → rc → release-ready → stable`); the
+gates, tags, and blessing flow are specified in the
+[release decision record](./docs/decision_records/release/pipeline.md).
+
+| Gate | Workflow |
+| ---- | -------- |
+| Changeset check (`dev`-gate) | [![changeset-check](https://github.com/zingolabs/zaino/actions/workflows/changeset-check.yml/badge.svg)](https://github.com/zingolabs/zaino/actions/workflows/changeset-check.yml) |
+| RC gate (nightly) | [![rc-gate](https://github.com/zingolabs/zaino/actions/workflows/rc-gate.yml/badge.svg)](https://github.com/zingolabs/zaino/actions/workflows/rc-gate.yml) |
+| Blessing (release) | [![blessing](https://github.com/zingolabs/zaino/actions/workflows/blessing.yml/badge.svg)](https://github.com/zingolabs/zaino/actions/workflows/blessing.yml) |
+
+Latest cycle tags:
+[![latest RC](https://img.shields.io/github/v/tag/zingolabs/zaino?filter=cycle-*-rc.*&label=latest%20RC)](https://github.com/zingolabs/zaino/tags)
+[![latest release](https://img.shields.io/github/v/tag/zingolabs/zaino?filter=cycle-*%2C!*-rc.*&label=latest%20release)](https://github.com/zingolabs/zaino/tags)
+
+The "latest RC" badge shows the newest `cycle-<N>-rc.<M>` prerelease tag; "latest
+release" filters those out to show the newest blessed `cycle-<N>` tag. (Both use
+shields.io tag filtering; if a shields update ever stops distinguishing the two,
+fall back to a single unfiltered `github/v/tag` "latest cycle tag" badge.)
+
 
 ### Motivations
 With the ongoing Zcashd deprecation project, there is a push to transition to a modern, Rust-based software stack for the Zcash ecosystem. By implementing Zaino in Rust, we aim to modernize the codebase, enhance performance and improve overall security. This work will build on the foundations laid down by [Librustzcash](https://github.com/zcash/librustzcash) and [Zebra](https://github.com/ZcashFoundation/zebra), helping to ensure that the Zcash infrastructure remains robust and maintainable for the future.
