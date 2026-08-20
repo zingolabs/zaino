@@ -162,14 +162,22 @@ environment protection rules) — the "visible marker" story for the
    `gate/candidate`).
 
 **cluster → GitHub (report result):**
-4. The deployment Workflow drives a full-chain sync on live data, then evaluates
-   pass/fail against **metrics thresholds** (sync completed, no crash, perf in
-   bounds).
+4. The deployment Workflow boots mainnet **`zebra`** + the RC's **`zainod`** and
+   exercises it. Depth is a **dial, not a fixed days-long soak**:
+   - **warm-start** from the golden synced snapshot (`serve-zaino use-cache=true`)
+     and validate at the **tip** in minutes–hours — wallet-sync fixtures, sending
+     transactions, light-RPC probes; or
+   - **fresh full-index sync** from genesis (hours–days) when a release warrants it.
+   Validation is **automated** (fixtures + metrics: sync completed, no crash, perf
+   in bounds) **and/or manual** — a tester syncs a wallet against it, sends txs,
+   and signs off (an Argo `suspend` step or a GitHub environment approval).
 5. Its final step reports **`deployment_status`** back to GitHub
-   (`in_progress` → `success` / `failure`).
-6. A GH Action reacts to `deployment_status`: on `success`, advance
-   `release-ready` and refresh the release-PR body; on `failure`, record it on
-   the dashboard and leave the frontier where it is (fix-forward on `dev`).
+   (`in_progress` → `success` / `failure`). The poster is deliberately
+   unopinionated: the automated Workflow, a fixture job, or a **human** (via the
+   environment approval or `mark-deployment.sh`) — the GitHub side reacts the same.
+6. `deployment-advance.yml` reacts to `deployment_status`: on `success`,
+   fast-forwards `release-ready` (which refreshes the release PR); on `failure`,
+   the frontier stays put and the team fixes forward on `dev`.
 
 One platform primitive (Deployments) carries the bridge in both directions —
 preferred over a raw `repository_dispatch` precisely for the native visibility

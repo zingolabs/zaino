@@ -228,7 +228,7 @@ jobs:
 
       # Dispatch the freshly-cut RC to the deployment gate: create a GitHub
       # Deployment for its commit in the `deployment` environment. On the cluster,
-      # Argo Events catches this and runs the days-long live-chain soak; on
+      # Argo Events catches this and runs the live-chain deployment validation; on
       # completion it posts a `deployment_status` back, which the
       # `deployment-advance` workflow reacts to by advancing `release-ready`.
       # `required_contexts:[]` so the Deployment is not gated on status checks —

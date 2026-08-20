@@ -3,7 +3,8 @@
 #
 # INERT until the repo variable RELMAN_PIPELINE_ACTIVE=true.
 #
-# The cluster (Argo) runs the days-long live-chain soak for an RC commit and, on
+# The cluster (Argo) runs the live-chain deployment validation for an RC commit
+# (warm-tip fixtures in minutes–hours, or a fresh full-index sync over days) and, on
 # completion, posts a `deployment_status` back to that commit's GitHub Deployment
 # (environment `deployment`, created by rc-gate). This workflow reacts: on a
 # SUCCESS it fast-forwards `release-ready` to the deployed commit — the automated
