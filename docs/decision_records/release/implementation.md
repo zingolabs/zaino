@@ -136,6 +136,14 @@ applied only to declared targets, and the publish plan covers exactly them. No
 
 ## The deployment-gate bridge: GitHub Deployments ↔ Argo
 
+> **Status.** The **GitHub side of this bridge is built**: `rc-gate` creates the
+> Deployment on a cut (step 1) and `deployment-advance.yml` reacts to
+> `deployment_status` by fast-forwarding `release-ready` (step 6). The **cluster
+> side** (Argo Events eventsource + sensor + the soak Workflow, steps 2–5) lives
+> in the `devops` repo and is the remaining build. `tools/scripts/mark-deployment.sh`
+> injects the `deployment_status` so the GitHub half is testable without the
+> cluster.
+
 Each RC commit is dispatched to the **deployment gate** via a **GitHub
 Deployment** targeting a dedicated `deployment` environment, executed by the
 cluster. Routing it through GitHub's Deployments primitive makes each

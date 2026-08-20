@@ -24,11 +24,13 @@ on:
         default: false
 
 # rc advancement pushes the protected `rc` branch and a prerelease tag; it also
-# notes the cut on the standing release PR (comment) and re-renders its body.
+# notes the cut on the standing release PR (comment) and re-renders its body,
+# and dispatches the cut RC to the deployment gate via a GitHub Deployment.
 permissions:
   contents: write
   pull-requests: write
   actions: write
+  deployments: write
 
 jobs:
   rc-gate:
@@ -207,3 +209,29 @@ jobs:
           # renderer, keeping the description current without duplicating it here.
           gh workflow run release-pr-body.yml --ref release-ready || \
             echo "::warning::could not dispatch release-pr-body to refresh the body."
+
+      # Dispatch the freshly-cut RC to the deployment gate: create a GitHub
+      # Deployment for its commit in the `deployment` environment. On the cluster,
+      # Argo Events catches this and runs the days-long live-chain soak; on
+      # completion it posts a `deployment_status` back, which the
+      # `deployment-advance` workflow reacts to by advancing `release-ready`.
+      # `required_contexts:[]` so the Deployment is not gated on status checks —
+      # the soak itself IS the gate. See implementation.md § "The deployment-gate
+      # bridge". (`tools/scripts/mark-deployment.sh` injects the same signal for
+      # testing without waiting days.)
+      - name: Dispatch the RC to the deployment gate
+        if: steps.tag.outputs.cut == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if jq -n --arg ref "${{ steps.ff.outputs.rc_sha }}" --arg tag "${{ steps.tag.outputs.tag }}" \
+               '{ref:$ref, environment:"deployment", auto_merge:false,
+                 required_contexts:[], production_environment:false,
+                 description:("deployment-gate soak for "+$tag)}' \
+             | gh api "repos/${{ github.repository }}/deployments" -X POST --input - \
+                 --jq '"dispatched deployment "+(.id|tostring)+" for "+.sha[0:9]'; then
+            :
+          else
+            echo "::warning::could not create the GitHub Deployment; the soak was not dispatched for ${{ steps.tag.outputs.tag }}."
+          fi
