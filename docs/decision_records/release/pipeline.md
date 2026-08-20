@@ -10,7 +10,7 @@ reproduced verbatim under [Cross References](#cross-references).
 ### Revision history
 
 - **2026-08-18 — pipeline redesign (this revision).** Reworked the branch
-  model, gate naming, soak model, release identity/tagging, hotfix protocol,
+  model, gate naming, deployment-gate model, release identity/tagging, hotfix protocol,
   and the PR chain. The prior revision (below) described a single advancing
   `rc` branch, "tier 1/2/3" gates, version-named RC branches, and left the
   hotfix protocol as an open question. This revision replaces all of that. The
@@ -113,7 +113,7 @@ Divided by cost / infra / duration / definition-location:
 | **unit**        | no                       | ms–s          | within a single module/crate     |
 | **integration** | no                       | s             | crates integrating, in-repo      |
 | **e2e**         | yes (validator, wallets) | ~minutes–tens | full stack, orchestrated in-repo |
-| **soak**        | yes (live chains, infra) | days          | long deployments on a cluster    |
+| **deployment**  | yes (live chains, infra) | days          | long deployments on a cluster    |
 | **manual**      | human                    | minutes       | operator checklist, at blessing  |
 
 > **Project-jargon note (inherited):** the current codebase historically calls
@@ -132,7 +132,7 @@ a swappable definition.
 
 - `dev-gate` suite — unit + integration + **fast e2e smoke**
 - `rc-gate` suite — the full e2e suite
-- `release-gate` suite — the soak suite
+- `release-gate` suite — the deployment suite
 - `bless` checklist — the **manual** suite (human attestation at release time)
 
 Two properties this buys us:
@@ -146,7 +146,7 @@ Two properties this buys us:
    total.
 
 The suites are expected to be realized as `cargo nextest` profiles / filtersets
-plus a soak-launch descriptor; the exact selectors are an implementation
+plus a deployment-launch descriptor; the exact selectors are an implementation
 detail deferred to the build slice. This document fixes the **indirection**,
 not the contents.
 
@@ -192,7 +192,7 @@ constraints govern what may live in this suite:
 
 Runs nightly against `dev` HEAD as a **batch**: whatever is on HEAD at run time
 is tested as a unit. On pass, HEAD is admitted to the `rc` branch (see
-[Promotion](#promotion-flow)) and a soak run is launched. On fail, the `rc`
+[Promotion](#promotion-flow)) and a deployment run is launched. On fail, the `rc`
 frontier does not advance; the team fixes forward on `dev` and the next nightly
 attempt tests the new HEAD.
 
@@ -201,22 +201,26 @@ Contents: the full e2e suite. We deliberately do **not** bisect between the last
 marginal granularity. Batch-and-wait is simpler and preferred to start. (Manual
 override exists for emergencies.)
 
-### The `release`-gate (continuous soak)
+### The `release`-gate (continuous deployment)
 
-Runs the soak suite — days-long, on live chains — against **`rc` commits**.
-Soak is **continuous and per-commit-pinned**: when the `rc`-gate advances `rc`
-to a new commit, a soak run pinned to *that exact commit* is launched
-immediately. The frontier keeps moving; each soak target is frozen.
+Runs the deployment suite — days-long, on live chains — against **`rc`
+commits**. The deployment gate is **continuous and per-commit-pinned**: when
+the `rc`-gate advances `rc` to a new commit, a deployment run pinned to *that
+exact commit* is launched immediately. The frontier keeps moving; each
+deployment target is frozen.
 
-- Infra supports 3–4 parallel soak slots plus a queue.
-- **Coalescing rule:** when a slot frees, soak the *latest* available `rc`
-  commit, skipping any it leapfrogged. Never spend a slot soaking a commit that
-  is already superseded and unsoaked.
-- On pass, the soaked commit is admitted to `release-ready`. On fail, the fix
-  goes forward on `dev` (or as a hotfix on `rc`) and a later commit re-soaks.
+- Infra supports 3–4 parallel deployment slots plus a queue.
+- **Coalescing rule:** when a slot frees, run the deployment gate on the
+  *latest* available `rc` commit, skipping any it leapfrogged. Never spend a
+  slot on a commit that is already superseded and has not been through the
+  deployment gate.
+- On pass, the tested commit is admitted to `release-ready`. On fail, the fix
+  goes forward on `dev` (or as a hotfix on `rc`) and a later commit re-runs the
+  deployment gate.
 
-The soaked-and-passed commit is what "cleared all gates" means. There is no
-further gate at blessing — see [Blessing](#blessing-the-only-human-decision).
+The commit that passed the deployment gate is what "cleared all gates" means.
+There is no further gate at blessing — see
+[Blessing](#blessing-the-only-human-decision).
 
 ## Branch Model
 
@@ -226,7 +230,7 @@ Four branches, each the high-water mark of the gate that admits to it:
 dev  ──►  rc  ──►  release-ready  ──►  stable
  │         │            │                │
  │    passed rc-gate    │           blessed (human)
- │    (soaking now)  passed          published release
+ │  (in deployment)  passed          published release
 passed dev-gate      release-gate
 (everything here)    (fully gated,
                       always blessable)
@@ -234,22 +238,23 @@ passed dev-gate      release-gate
 
 - **`dev`** — linear queue of all accepted work; passed the `dev`-gate. Only
   moves forward (fast-forward merges).
-- **`rc`** — commits that passed the `rc`-gate and are **under soak**. This is
-  what "release candidate" conventionally means: a build being validated.
-  Carries the `cycle-*-rc.N` prerelease tags and is the **landing zone for
-  hotfixes**.
-- **`release-ready`** — commits that passed the `release`-gate (soak). Always
-  fully gated, therefore **always safe to bless**. This is the head of the
-  release PR into `stable`.
+- **`rc`** — commits that passed the `rc`-gate and are **under deployment
+  testing**. This is what "release candidate" conventionally means: a build
+  being validated. Carries the `cycle-*-rc.N` prerelease tags and is the
+  **landing zone for hotfixes**.
+- **`release-ready`** — commits that passed the `release`-gate (deployment).
+  Always fully gated, therefore **always safe to bless**. This is the head of
+  the release PR into `stable`.
 - **`stable`** (a.k.a. `main`) — the latest published release.
 
 **Why two intermediate branches, not one.** `rc` advances on *nightly* pass so
-soak can start immediately — which means `rc`'s HEAD is routinely *freshly
-un-soaked*. If the release PR pointed at `rc`, blessing could ship un-soaked
-code. Graduating soak-passed commits to a second branch, `release-ready`,
-guarantees the release PR's head is *always* fully gated, so blessing is a
-pure human timing decision, never a gamble. `rc → release-ready` is a CI
-fast-forward on soak-pass.
+the deployment gate can start immediately — which means `rc`'s HEAD is routinely
+*freshly untested by the deployment gate*. If the release PR pointed at `rc`,
+blessing could ship code that never cleared the deployment gate. Graduating
+deployment-passed commits to a second branch, `release-ready`, guarantees the
+release PR's head is *always* fully gated, so blessing is a pure human timing
+decision, never a gamble. `rc → release-ready` is a CI fast-forward on
+deployment-pass.
 
 **Branches carry no version in their name — on purpose.** The release version
 is *derived* from changesets and is not knowable until blessing (more changesets
@@ -271,8 +276,8 @@ not development.
 
 ```
                      nightly rc-gate            continuous release-gate
-dev HEAD ───────────────► rc ──(pinned soak, 3–4 slots)──► release-ready ──► stable
-  (dev-gate,              (soaking,                         (soak-passed,     (blessed)
+dev HEAD ───────────────► rc ──(pinned deployment, 3–4 slots)──► release-ready ──► stable
+  (dev-gate,              (deploying,                       (deployment-passed, (blessed)
    every push)            cycle-*-rc.N tags)                always blessable)
 ```
 
@@ -433,7 +438,7 @@ the next cycle starts fresh.
 
 1. **Cycle (period) tags — drive the deliverables.** A release *cycle* (e.g.
    Friday-to-Friday) has an identity independent of any version:
-   `cycle-<id>` (e.g. `cycle-2026-08-15`). Soak prerelease builds within the
+   `cycle-<id>` (e.g. `cycle-2026-08-15`). Prerelease builds within the
    cycle are tagged `cycle-<id>-rc.<N>` and produce prerelease Docker images /
    GitHub prereleases. This is the stable human handle for "the Friday release,"
    and it carries no version — so it can never lie.
@@ -456,7 +461,7 @@ requirement that images be version-tagged and SHOULD also carry the commit SHA.)
 
 A long-lived **Release PR** (`release-ready → stable`) is the dashboard. Its
 head is always fully gated, so it is always safe to merge. CI keeps it showing
-recent soak status, the derived per-crate version table, and the aggregated
+recent deployment status, the derived per-crate version table, and the aggregated
 changelog. Sketch:
 
 ```
@@ -464,8 +469,8 @@ changelog. Sketch:
 
 All gates passed. Merging promotes this commit to stable.
 
-## Soak status
-| RC commit | tag                 | soak            |
+## Deployment status
+| RC commit | tag                 | deployment      |
 | --------- | ------------------- | --------------- |
 | abc123    | cycle-…-rc.7        | day 2/3 running |
 | def456    | cycle-…-rc.6        | passed          |
@@ -483,7 +488,7 @@ satisfied, merges the Release PR. That merge is the **blessing** — and it is t
 *only* human decision in the pipeline. It is **not a gate**: all three gates
 were already cleared by the commit being promoted. "Whatever cleared all gates
 by Friday" is exactly whatever is on `release-ready` on Friday; work that only
-finished soaking after the cut simply ships the next cycle — *easy as that*.
+cleared the deployment gate after the cut simply ships the next cycle — *easy as that*.
 
 At blessing, CI: finalizes the derived versions, applies the `<crate>-vX.Y.Z`
 and `cycle-<id>` tags, publishes (Docker, GitHub Release, crates.io in
@@ -501,9 +506,9 @@ needed in the *current* release line.
 **The protocol (one rule):**
 
 1. Land the fix **on `rc`**, with its changeset. It carries an `rc`-gate check
-   like anything entering `rc`, then **soaks** like any other `rc` commit —
-   hotfixes are not exempt from soak.
-2. On soak-pass it graduates to `release-ready` and can be blessed.
+   like anything entering `rc`, then goes through the **deployment gate** like
+   any other `rc` commit — hotfixes are not exempt from it.
+2. On deployment-pass it graduates to `release-ready` and can be blessed.
 3. **Backport to `dev` before `rc`'s next fast-forward advance.** The reverse
    [backport sentinel](#reverse-the-backport-sentinel-aux-branch--dev) enforces
    this: once the hotfix reaches `stable`, `stable \ dev` is non-empty and the
@@ -525,8 +530,8 @@ sentinel forces it into `dev`.
 
 ## Implementation
 
-> The execution-substrate map (GitHub control plane / Argo soak data plane), the
-> `relman` responsibility boundary, and the GitHub↔cluster soak bridge are
+> The execution-substrate map (GitHub control plane / Argo deployment data plane), the
+> `relman` responsibility boundary, and the GitHub↔cluster deployment-gate bridge are
 > detailed in [Implementation Architecture](./implementation.md). Summary below.
 
 **Logic lives in a Rust CLI; CI stays thin.** The changeset parse/aggregate,
@@ -554,7 +559,7 @@ without affecting production or `cargo-deny`. The existing
 the publish flow.
 
 No external release manager (`release-plz`, `cargo-release`, `knope`) is
-adopted: our model (version-agnostic branches, cycle tags, continuous soak,
+adopted: our model (version-agnostic branches, cycle tags, continuous deployment,
 derived-only versions) diverges enough that config-fighting would cost more than
 it saves; ideas may be borrowed, the tool is not.
 
@@ -632,15 +637,16 @@ and prerelease notes, and is finalized exactly once, at blessing. There is no
 "estimated" version anywhere — only a deterministic derivation re-evaluated on
 demand.
 
-### Gotcha: soak needs a frozen target, but freezing the branch is wrong
+### Gotcha: the deployment gate needs a frozen target, but freezing the branch is wrong
 
-Soak takes days; if its target moved with the frontier, it would always be
-soaking stale code. But *freezing a branch* for a period blocks the "soak
-whatever passed, ASAP" goal. Resolution: freeze the **soak run** (pin it to a
-commit + `cycle-*-rc.N` tag), not the branch. The frontier keeps advancing and
-launching fresh pinned soaks (3–4 slots, coalesce-to-latest); `release-ready`
-tracks the newest soak that passed. Whatever also had time to clear soak by
-Friday ships; the rest waits.
+The deployment gate takes days; if its target moved with the frontier, it would
+always be testing stale code. But *freezing a branch* for a period blocks the
+"deploy whatever passed, ASAP" goal. Resolution: freeze the **deployment run**
+(pin it to a commit + `cycle-*-rc.N` tag), not the branch. The frontier keeps
+advancing and launching fresh pinned deployment runs (3–4 slots,
+coalesce-to-latest); `release-ready` tracks the newest deployment that passed.
+Whatever also had time to clear the deployment gate by Friday ships; the rest
+waits.
 
 ### Gotcha: a protected branch must never be a PR head
 
@@ -720,11 +726,11 @@ running a [named suite](#named-suites). Mapping:
 | -------------------------------- | -------------------------------------------------------------- |
 | Fast test set (PRs into `dev`)   | `dev`-gate — `dev-gate` suite (unit + integration + e2e smoke) |
 | Full suite (nightly on `dev`)    | `rc`-gate — `rc-gate` suite (full e2e), nightly                |
-| —                                | `release`-gate — `release-gate` suite (soak), continuous per RC |
+| —                                | `release`-gate — `release-gate` suite (deployment), continuous per RC |
 | Full suite (`dev → stable` PR)   | **Superseded**: no gate on the blessing merge                  |
 
 **Superseded by this ADR** (gate placement): ADR 003 places a full-suite gate
-on the `dev → stable` PR. In this repo, the `release`-gate (soak) runs against
+on the `dev → stable` PR. In this repo, the `release`-gate (deployment) runs against
 `rc` commits (days-long each), and its outcome is recorded on the [Release
 PR](#blessing-the-only-human-decision). The final merge that promotes
 `release-ready` into `stable` is a manual blessing, not a gate — all three gates
@@ -734,7 +740,7 @@ authoritative: no new suite runs at blessing; blessing is a deterministic
 promotion of the most-advanced fully-gated commit.
 
 The `release`-gate is also genuinely new content: ADR 003's single "full suite"
-collapsed integration and long-sync testing, which is incompatible with gating
+collapsed integration and long-running deployment testing, which is incompatible with gating
 a synchronous PR on days-long operations.
 
 ### Dependency policy (inherited from ADR 003 §1)
@@ -959,7 +965,7 @@ left rc creation/validation and a concrete cadence as open TODOs. Those TODOs
 are resolved in the body of this document:
 
 - **Cadence** — [Blessing: the Only Human Decision](#blessing-the-only-human-decision)
-- **RC creation and validation** — [Promotion Flow](#promotion-flow), [The `rc`-gate](#the-rc-gate-nightly), [The `release`-gate](#the-release-gate-continuous-soak)
+- **RC creation and validation** — [Promotion Flow](#promotion-flow), [The `rc`-gate](#the-rc-gate-nightly), [The `release`-gate](#the-release-gate-continuous-deployment)
 - **Release steps** — [Blessing: the Only Human Decision](#blessing-the-only-human-decision)
 - **Container image publication** — follows ADR 003 §6 step 7: images MUST be tagged with the release version (`vMAJOR.MINOR.PATCH`) and SHOULD also be tagged with the Git commit SHA (see [Release Identity](#release-identity-versions-tags-changesets)).
 

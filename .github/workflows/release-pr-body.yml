@@ -2,7 +2,7 @@
 # the coordinated pipeline cutover; until then this workflow does nothing.
 #
 # Keep the standing Release PR (`release-ready` -> `stable`) current. On every
-# push to `release-ready` (soak-pass advance), re-render the PR body from the
+# push to `release-ready` (deployment-pass advance), re-render the PR body from the
 # derived version table + changelog and update the open PR — creating it if none
 # exists. See docs/decision_records/release/pipeline.md § "Blessing" and
 # implementation.md (`relman pr-body`).
@@ -41,7 +41,7 @@ jobs:
           # --- shared cycle tag-numbering (see rc-gate.yml for the full doc) ---
           # Cycle identity is derived purely from existing git tags:
           #   cycle-<N>        final (blessed) cycle tag
-          #   cycle-<N>-rc.<M> soak prerelease tag within cycle N
+          #   cycle-<N>-rc.<M> deployment prerelease tag within cycle N
           highest_cycle() {
             git tag --list 'cycle-*' \
               | sed -n 's/^cycle-\([0-9][0-9]*\)\(-rc\.[0-9][0-9]*\)\{0,1\}$/\1/p' \

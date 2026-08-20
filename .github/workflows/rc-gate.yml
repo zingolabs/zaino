@@ -3,7 +3,7 @@
 #
 # rc-gate: nightly RC advancement + prerelease tag. Fast-forwards `rc` to `dev`
 # HEAD and cuts a `cycle-<N>-rc.<M>` prerelease tag at the new rc HEAD, which is
-# what the soak (release-gate) is pinned to. This is CI glue: relman prints the
+# what the deployment gate (release-gate) is pinned to. This is CI glue: relman prints the
 # tag name, the workflow applies it. See
 # docs/decision_records/release/pipeline.md § "The rc-gate" and "Promotion Flow".
 #
@@ -111,7 +111,7 @@ jobs:
           # Identity is derived purely from existing git tags (checkout fetched
           # them via fetch-depth: 0). Two tag shapes carry the numbers:
           #   cycle-<N>          final (blessed) cycle tag
-          #   cycle-<N>-rc.<M>   soak prerelease tag number M within cycle N
+          #   cycle-<N>-rc.<M>   deployment prerelease tag number M within cycle N
           #
           # highest_cycle(): the max integer N seen across BOTH shapes (empty if
           #   no cycle tags exist). The sed matches `cycle-<N>` and
@@ -126,7 +126,7 @@ jobs:
           # open_cycle(): the cycle a NEW rc (or a blessing) belongs to.
           #   - no cycle tags yet            -> 1
           #   - a final `cycle-<hi>` exists  -> hi+1 (that cycle already released)
-          #   - otherwise                    -> hi   (cycle hi still open/soaking)
+          #   - otherwise                    -> hi   (cycle hi still open/deploying)
           open_cycle() {
             hi="$(highest_cycle)"
             if [ -z "$hi" ]; then
