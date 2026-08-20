@@ -694,8 +694,8 @@ _No release candidates cut yet this cycle._
 
 | Crate | Current | Next | Bump | Tag |
 | ----- | ------- | ---- | ---- | --- |
-| zaino-state | 0.6.0 | 0.7.0 | minor | zaino-state-v0.7.0 |
-| zainod | 0.4.3 | 0.4.4 | patch | zainod-v0.4.4 |
+| zaino-state | 0.6.0 | 0.7.0 | minor | zaino-state-0.7.0 |
+| zainod | 0.4.3 | 0.4.4 | patch | zainod-0.4.4 |
 ";
         assert_eq!(render_version_table(&table, true), expected);
     }

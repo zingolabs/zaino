@@ -346,7 +346,7 @@ mod tests {
         let names: Vec<&str> = plan.tags().iter().map(|t| t.as_str()).collect();
         assert_eq!(
             names,
-            ["cycle-2026-08-15", "zaino-state-v0.7.0", "zainod-v0.4.4",]
+            ["cycle-2026-08-15", "zaino-state-0.7.0", "zainod-0.4.4",]
         );
     }
 
@@ -585,8 +585,8 @@ deployment = \"passed\"
         assert!(body.contains("| rc.1 | dd73705 | cycle-1-rc.1 | ✓ passed |"));
         // Version table gains the per-target Tag column.
         assert!(body.contains("| Crate | Current | Next | Bump | Tag |"));
-        assert!(body.contains("| zaino-state | 0.6.0 | 0.7.0 | minor | zaino-state-v0.7.0 |"));
-        assert!(body.contains("| zainod | 0.4.3 | 0.4.4 | patch | zainod-v0.4.4 |"));
+        assert!(body.contains("| zaino-state | 0.6.0 | 0.7.0 | minor | zaino-state-0.7.0 |"));
+        assert!(body.contains("| zainod | 0.4.3 | 0.4.4 | patch | zainod-0.4.4 |"));
         // The soak stub is replaced by the real RC table.
         assert!(!body.contains("## Soak status"));
         // Changelog still present.

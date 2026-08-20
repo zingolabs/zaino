@@ -463,7 +463,7 @@ the next cycle starts fresh.
    GitHub prereleases. This is the stable human handle for "the Friday release,"
    and it carries no version — so it can never lie.
 2. **Per-crate version tags — crates.io provenance.** At blessing, each crate
-   that bumped is tagged `<crate>-v<X.Y.Z>` (e.g. `zaino-state-v0.4.0`), one git
+   that bumped is tagged `<crate>-<X.Y.Z>` (e.g. `zaino-state-0.4.0`), one git
    point per published `crate@version`. This is standard independent-versioning
    provenance and makes "which commit was `zaino-state 0.4.0` cut from?"
    answerable.

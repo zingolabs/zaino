@@ -51,10 +51,11 @@ impl Tag {
         Self(name)
     }
 
-    /// The per-crate provenance tag `"{crate}-v{version}"` (e.g.
-    /// `zaino-state-v0.4.0`) — one git point per published `crate@version`.
+    /// The per-crate provenance tag `"{crate}-{version}"` (e.g.
+    /// `zaino-state-0.4.0`) — one git point per published `crate@version`.
+    /// No `v` prefix: the trailing `X.Y.Z` already reads as the version.
     pub fn crate_version(crate_name: &CrateName, version: &Version) -> Self {
-        Self::from_valid(format!("{crate_name}-v{version}"))
+        Self::from_valid(format!("{crate_name}-{version}"))
     }
 
     /// The cycle (period) tag `"cycle-{id}"` (e.g. `cycle-2026-08-15`) applied
@@ -116,9 +117,9 @@ mod tests {
     }
 
     #[test]
-    fn crate_version_tag_is_crate_dash_v_version() {
+    fn crate_version_tag_is_crate_dash_version() {
         let tag = Tag::crate_version(&crate_name("zaino-state"), &version("0.4.0"));
-        assert_eq!(tag.as_str(), "zaino-state-v0.4.0");
+        assert_eq!(tag.as_str(), "zaino-state-0.4.0");
     }
 
     #[test]
@@ -136,7 +137,7 @@ mod tests {
     #[test]
     fn parse_accepts_the_constructed_shapes() {
         for raw in [
-            "zaino-state-v0.4.0",
+            "zaino-state-0.4.0",
             "cycle-2026-08-15",
             "cycle-2026-08-15-rc.6",
             "v1.2.3",
