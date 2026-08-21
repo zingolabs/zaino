@@ -131,10 +131,13 @@ suite's *membership* is defined separately, in one manifest, decoupled from the
 gate. The gate is the stable concept ("the `dev`-gate suite"); the contents are
 a swappable definition.
 
-- `dev-gate` suite — unit + integration + **fast e2e smoke**
-- `rc-gate` suite — the full e2e suite
-- `release-gate` suite — the deployment suite
+- `dev-gate` suite — unit + integration + a **bounded, non-flaky e2e smoke**
+- `rc-gate` suite — dev-gate **+** the **full** e2e / live-crate suite
+- `release-gate` suite — the live-chain deployment soak (not a nextest suite)
 - `bless` checklist — the **manual** suite (human attestation at release time)
+
+The precise rule that sorts a test into a suite, and the manifest that records
+it, are in § "Suite membership" below.
 
 Two properties this buys us:
 
@@ -146,10 +149,11 @@ Two properties this buys us:
    `dev-gate`). Suites name the *additional* cost admitted at each step, not the
    total.
 
-The suites are expected to be realized as `cargo nextest` profiles / filtersets
-plus a deployment-launch descriptor; the exact selectors are an implementation
-detail deferred to the build slice. This document fixes the **indirection**,
-not the contents.
+The suites are realized as `cargo nextest` filtersets plus a deployment-launch
+descriptor. The **sorting criterion** and the **manifest schema** that fix
+membership are specified below (§ "Suite membership"); the concrete selector
+strings are filled in when the categorization pass runs against the tree. This
+document fixes the **indirection and the rule**, not the final per-test list.
 
 **How a gate reads its suite (the indirection, wired).** A gate never names a
 workflow or a test mode. It requires a **named signal** — a check-run or commit
@@ -183,6 +187,99 @@ of them:
   RC's Deployment. Both post **as the release App** (not `GITHUB_TOKEN`) so
   `deployment-advance.yml` re-triggers. Manual mode requires the auto-poller
   suspended so it does not claim the Deployment first.
+
+### Suite membership
+
+Which test lands in which suite is decided **here**, never by the runner. The
+runner — `ztest`, a restored self-hosted fleet, or plain CI — is a *scheduler and
+reporter*: it resolves a gate name to a selection this repo defines, executes it,
+and posts the named signal (§ "How a gate reads its suite"). A "gate-aware"
+runner is simply one that reads the manifest below; that awareness grants it no
+authority over membership. This is what lets `ztest` give a "simple standard
+answer" (`rc-gate: green`) without owning any policy.
+
+**The sorting criterion.** The axis is **fidelity vs. cost**. Each suite admits
+the next tier of fidelity and pays the next tier of cost; membership is cumulative
+(§ above), so a test belongs to the *cheapest* suite whose fidelity it needs and
+is never duplicated into a richer one. The `dev-gate`/`rc-gate` split is governed
+not by "does it touch a validator" but by the **two hard constraints on the
+`dev`-gate** (§ "The `dev`-gate"): a fixed **wall-clock ceiling** (~10–15 min, on
+every contributor's critical path) and **non-flakiness** (a flaky *blocking* check
+is a worse tax than a slow one). A test that violates either drops to `rc-gate`.
+
+| Suite | Admits at | Rule | Cost |
+| --- | --- | --- | --- |
+| `dev-gate` | every PR push | Fits the wall-clock ceiling **and** is non-flaky. Hermetic unit + integration **plus** a curated e2e *smoke* subset (may spin a validator, but stays cheap and deterministic). *"Is the code internally correct + does a cheap real-chain sanity check pass?"* | ≤ ~10–15 min |
+| `rc-gate` | dev→rc, nightly | dev-gate **+** the **full** e2e / live-crate suite — everything too slow or flake-budgeted for pre-merge. *"Does it work against real chain software, exhaustively?"* | tens of minutes |
+| `release-gate` | rc→release-ready | **not a nextest suite** — a live-chain soak (serve-zaino warm-start, wallet fixtures, tip/sync validation). *"Does it survive a real deployment?"* | minutes–days (dial) |
+| `bless` | release | human attestation checklist. | — |
+
+The rule resolves today's inherited debt explicitly: a test leaves `dev-gate`
+only because it *exceeds the ceiling or is flaky* (→ `rc-gate`), **not** because
+it currently hangs or is misfiled. The present `CI - PR` exclusions
+(`clientless::chain_cache` timeouts, the misplaced `e2e::*` group) are **bugs to
+fix, tracked as debt** — the rule places each test by cost/flakiness, and a
+disabled test is recorded as disabled, never re-labelled into a higher tier to
+hide a hang. Corollary: the `clientless` partitions currently run pre-merge stay
+in `dev-gate` only where each provably fits the ceiling and is non-flaky;
+otherwise they move to `rc-gate`, and any e2e *smoke* kept pre-merge is curated to
+the same two constraints.
+
+**The manifest (contract 1 — build this).** One declarative artifact maps each
+nextest-realized gate to a selection. It is the single source of truth the runner
+*and* CI read; nothing else enumerates tests. Convention: `.release/gate-suites.toml`,
+sibling to `.release/consumed-ledger.toml`.
+
+```toml
+# .release/gate-suites.toml — authored here; read by whatever runs the suite.
+# filterset = one cargo-nextest `--filterset` expression for the WHOLE tier.
+# ILLUSTRATIVE selectors — the concrete strings are the categorization pass
+# (apply the ceiling+non-flaky rule per live-test binary; relocate the misfiled
+# e2e; decide which clientless/smoke partitions provably fit the ceiling).
+
+[dev-gate]
+# hermetic production tests + a curated e2e smoke that fits the ceiling.
+filterset = "(!package(clientless) & !package(e2e)) | test(/smoke/)"
+
+[rc-gate]
+extends   = "dev-gate"                                 # cumulative; names only the ADDED cost
+filterset = "package(clientless) | package(e2e)"       # the full live suite: real zcashd/zebra
+# chain_cache is disabled-for-hang debt, tracked separately, not excluded by tier.
+
+# release-gate is intentionally ABSENT: it is not a nextest suite. Its "membership"
+# is the deployment WorkflowTemplate + its inputs (network, depth, fixtures), which
+# live in the devops declarative repo and answer via `deployment_status`.
+```
+
+Two consequences: moving a test between tiers is a one-line edit (no gate rename,
+no policy-doc churn), and a gate-aware runner resolves `rc-gate` by reading
+`extends` + `filterset` from here — so "`ztest` knows the gates" costs nothing
+beyond parsing this file.
+
+**The answer envelope (contract 3 — a documented target, NOT built yet).** The
+gate mechanism needs only the boolean signal (§ "How a gate reads its suite").
+*Richer* reporting — for the release PR and relman's changelog/audit — would want
+a producer-agnostic shape so `ztest` and the devops soak repo could both feed it.
+When (and only when) a second live producer exists, that shape is a thin
+**ref-carrying envelope**, never a per-test dump:
+
+```json
+{
+  "commit":     "<sha>",
+  "gate":       "rc-gate",
+  "verdict":    "success | failure",
+  "producer":   "ztest | ci-nightly | deployment-soak",
+  "detail_ref": "<url to the run / junit / soak dashboard>",
+  "at":         "<iso8601>"
+}
+```
+
+Per **refs over content**, `detail_ref` is a pointer the consumer follows on
+demand; relman never ingests per-test rows. This is deliberately *unbuilt*: the
+deployment gate already has its own answer schema (GitHub `deployment_status`),
+and unifying two producers before both exist is speculative. The envelope is
+recorded here as the boundary so it is not re-invented ad hoc — implement it at
+the first heterogeneous-producer aggregation, not before.
 
 ## Gates
 
