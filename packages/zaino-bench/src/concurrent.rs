@@ -609,9 +609,18 @@ mod tests {
         );
     }
 
+    /// `Barrier::new(connections + 1)` would panic on a zero-party barrier, and
+    /// the gap arithmetic divides by the connection count.
     #[test]
-    fn a_single_connection_ramp_does_not_divide_by_zero() {
+    fn a_degenerate_connection_count_is_handled() {
         assert_eq!(spawn_gap(1, 2000, 0), Duration::from_millis(1));
+        assert_eq!(spawn_gap(1, 2000, 1), Duration::from_millis(1));
+    }
+
+    /// A zero window means "no ramp": spawn as fast as the loop allows.
+    #[test]
+    fn a_zero_window_removes_the_ramp() {
+        assert!(spawn_gap(1, 0, 100).is_zero());
     }
 
     #[test]
