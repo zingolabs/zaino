@@ -76,6 +76,20 @@ and this library adheres to Rust's notion of
   cadence and exclude-list caps operator-configurable.
 
 ### Changed
+- **LMDB reader slots raised from 512 to 2048–8192.** The clamp was
+  `(cpu * 32).clamp(512, 4096)`, which gives exactly 512 — the floor — on any
+  host with 16 cores or fewer. With `NO_TLS` a slot belongs to a read
+  *transaction* rather than a thread, so 512 is a hard ceiling on concurrent
+  reads, and an ordinary concurrency benchmark exhausted it: reads failed with
+  `MDB_READERS_FULL`, the startup block scan treats that as fatal, and the node
+  restarted in a loop. A slot is one cache line (the measured `lock.mdb` is
+  32,896 bytes at 512 readers), so 8192 slots costs ~512 KiB of shared memory.
+
+  **This does not make exhaustion safe.** A client can still open more
+  concurrent reads than there are slots. `MDB_READERS_FULL` being classified as
+  a critical error — rather than the backpressure it is — remains an open bug,
+  and until it is fixed a client can restart a node by exceeding whatever limit
+  is configured.
 - **Bulk finalised-state sync now assembles blocks concurrently too.** Making
   the fetch concurrent exposed the other half: a profile through the sandblast
   heights put **54% of all CPU on a single thread**, holding the run to 8

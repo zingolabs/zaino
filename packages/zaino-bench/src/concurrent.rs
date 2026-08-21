@@ -7,6 +7,7 @@
 //! hides the tail that clients actually feel, and a client-side `ulimit` is
 //! easily mistaken for a server-side ceiling.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -212,13 +213,15 @@ async fn round(args: &ConcurrentArgs, pool_size: u64, connections: usize) -> Rou
     // when the first one was created. The ramp is then a setup cost outside the
     // measurement, not part of it.
     let barrier = Arc::new(Barrier::new(connections + 1));
+    let established = Arc::new(AtomicUsize::new(0));
 
     let mut handles = Vec::with_capacity(connections);
     for (index, (range_start, range_end)) in ranges.into_iter().enumerate() {
         let server = args.server.clone();
         let barrier = Arc::clone(&barrier);
+        let established = Arc::clone(&established);
         handles.push(tokio::spawn(async move {
-            fetch_one(index, &server, range_start, range_end, barrier).await
+            fetch_one(index, &server, range_start, range_end, barrier, established).await
         }));
         if !gap.is_zero() {
             tokio::time::sleep(gap).await;
@@ -226,7 +229,18 @@ async fn round(args: &ConcurrentArgs, pool_size: u64, connections: usize) -> Rou
     }
 
     barrier.wait().await;
-    eprintln!("  all {connections} connected; starting fetch");
+    // Report what actually connected, not what was asked for: a failed dial
+    // still reaches the barrier (so one failure cannot strand the round), so
+    // "all N" would be a lie exactly when the server is refusing connections.
+    let established = established.load(Ordering::Relaxed);
+    if established == connections {
+        eprintln!("  all {connections} connected; starting fetch");
+    } else {
+        eprintln!(
+            "  {established}/{connections} connected ({} failed to dial); starting fetch",
+            connections - established
+        );
+    }
     eprintln!();
     let wall_start = Instant::now();
 
@@ -267,6 +281,7 @@ async fn fetch_one(
     range_start: u64,
     range_end: u64,
     barrier: Arc<Barrier>,
+    established: Arc<AtomicUsize>,
 ) -> ConnectionResult {
     let connect_start = Instant::now();
     // Bound the connect so a single hung dial cannot hold the barrier — and
@@ -280,6 +295,9 @@ async fn fetch_one(
             )),
         };
     let connect_elapsed = connect_start.elapsed();
+    if client.is_ok() {
+        established.fetch_add(1, Ordering::Relaxed);
+    }
 
     barrier.wait().await;
 
