@@ -526,10 +526,10 @@ const ORCHARD_ONLY_HEIGHTS: ActivationHeights = ActivationHeights {
     nu7: None,
 };
 
-/// Orchard-only era (NU6.3 never activates): fake Orchard content from height 2, and —
-/// since the stock strategy's V6 arm is reachable only from an NU6.3/NU7 ledger state,
-/// which `nu6_3: None` never produces — ironwood provably never appears anywhere in the
-/// chain or the served form.
+/// Orchard-only era: ironwood never appears in the chain or the served form, because the
+/// stock strategy reaches its V6 arm only through a `transaction_version_override` of 6 or
+/// an NU6.3/NU7 ledger state, and this harness leaves the override `None` and never
+/// activates `nu6_3`.
 #[test]
 fn passthrough_metadata_consistency_orchard_only() {
     metadata_consistency_for_era(ORCHARD_ONLY_HEIGHTS, None, false)
