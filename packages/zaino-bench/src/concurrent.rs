@@ -50,8 +50,21 @@ pub(super) struct ConcurrentArgs {
 
     /// Milliseconds between spawning each connection, to avoid a SYN burst that
     /// would measure the kernel's accept backlog rather than the server.
+    ///
+    /// An upper bound only: the actual gap is whichever is smaller, this or an
+    /// even spread across `--spawn-window-ms`. See [`spawn_gap`].
     #[arg(long, default_value = "1")]
     spawn_delay_ms: u64,
+
+    /// Longest the whole round may take to bring every connection up.
+    ///
+    /// At high connection counts a fixed per-connection delay stops measuring
+    /// concurrency: 10,000 connections at 1ms apart take 10s to establish, by
+    /// which time the first ones have finished and the peak overlap is nowhere
+    /// near 10,000. Capping the total ramp keeps the round a concurrency
+    /// measurement instead of a throughput one.
+    #[arg(long, default_value = "2000")]
+    spawn_window_ms: u64,
 
     /// Seconds to settle between sweep rounds, so one round's teardown does not
     /// land on the next round's connects.
@@ -180,6 +193,14 @@ async fn round(args: &ConcurrentArgs, pool_size: u64, connections: usize) -> Rou
     );
     eprintln!();
 
+    let gap = spawn_gap(args.spawn_delay_ms, args.spawn_window_ms, connections);
+    eprintln!(
+        "  ramp: {:.0}µs between connects, {:.1}s to bring all {connections} up",
+        gap.as_secs_f64() * 1e6,
+        gap.as_secs_f64() * connections as f64
+    );
+    eprintln!();
+
     let wall_start = Instant::now();
 
     let mut handles = Vec::with_capacity(connections);
@@ -188,8 +209,8 @@ async fn round(args: &ConcurrentArgs, pool_size: u64, connections: usize) -> Rou
         handles.push(tokio::spawn(async move {
             fetch_one(index, &server, range_start, range_end).await
         }));
-        if args.spawn_delay_ms > 0 {
-            tokio::time::sleep(Duration::from_millis(args.spawn_delay_ms)).await;
+        if !gap.is_zero() {
+            tokio::time::sleep(gap).await;
         }
     }
 
@@ -429,6 +450,19 @@ fn verbose_line(result: &ConnectionResult) -> String {
 ///
 /// Without this, a client-side `ulimit -n` of 1024 reads as "the server tops out
 /// near 1000 connections", which is the wrong answer to the question being asked.
+/// Gap between two connects: the per-connection delay, or an even spread across
+/// the ramp window, whichever is smaller.
+///
+/// Sub-millisecond by design at high counts — 10,000 connections across a 2s
+/// window is 200µs apart, which still avoids a SYN burst but keeps every
+/// connection up inside the window rather than 10s later.
+fn spawn_gap(delay_ms: u64, window_ms: u64, connections: usize) -> Duration {
+    let requested = Duration::from_millis(delay_ms);
+    let connections = connections.max(1) as u32;
+    let spread = Duration::from_millis(window_ms) / connections;
+    requested.min(spread)
+}
+
 fn fd_limit_warning(limit: u64, max_connections: usize) -> Option<String> {
     let needed = (max_connections as u64).saturating_mul(2);
 
@@ -505,6 +539,41 @@ mod tests {
         assert!(pool_size(2_000, 1_000).is_err());
         assert_eq!(pool_size(1_000, 1_000).ok(), Some(1));
         assert_eq!(pool_size(1_000, 1_999).ok(), Some(1_000));
+    }
+
+    /// At low counts the per-connection delay governs and the ramp is short. At
+    /// high counts the window governs, so the round stays a concurrency
+    /// measurement: 10,000 connections come up inside the window rather than
+    /// 10s apart, which is what a fixed 1ms delay would have done.
+    #[test]
+    fn the_spawn_ramp_is_bounded_by_the_window() {
+        let ramp =
+            |connections: usize| spawn_gap(1, 2000, connections).as_secs_f64() * connections as f64;
+
+        assert_eq!(
+            spawn_gap(1, 2000, 100),
+            Duration::from_millis(1),
+            "at 100 connections the per-connection delay is the smaller bound"
+        );
+        assert!(
+            ramp(100) < 0.2,
+            "and the whole ramp is a fraction of a second"
+        );
+
+        assert_eq!(
+            spawn_gap(1, 2000, 10_000),
+            Duration::from_micros(200),
+            "at 10,000 the window is the smaller bound: 2s / 10,000"
+        );
+        assert!(
+            (ramp(10_000) - 2.0).abs() < 0.01,
+            "so the ramp is the window, not the 10s a fixed 1ms delay would give"
+        );
+    }
+
+    #[test]
+    fn a_single_connection_ramp_does_not_divide_by_zero() {
+        assert_eq!(spawn_gap(1, 2000, 0), Duration::from_millis(1));
     }
 
     #[test]
