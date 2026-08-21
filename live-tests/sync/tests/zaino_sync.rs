@@ -41,44 +41,33 @@
 //! `sapling_outputs` and `orchard_actions`; a throughput number drawn from a
 //! sparse testnet chain describes a corpus nobody runs against.
 //!
-//! The Orchard rung — mainnet 1,693,104, NU5 activation (1,687,104) plus 6,000
-//! blocks — because it is the deepest registered mainnet artifact, and because
-//! of *where it stops*. Mainnet's density is not one regime: in June 2022 the
-//! sandblasting spam attack begins, and within two days the median block goes
-//! from 2.5 kB to over 100 kB and never comes back down. This fixture ends
-//! below that, so every block it holds belongs to the pre-sandblast chain and
-//! the throughput this profile measures describes normal mainnet rather than an
-//! anomaly averaged into it.
+//! The Ironwood rung — mainnet 3,434,143, NU6.3 activation (3,428,143) plus
+//! 6,000 blocks — because it is the deepest artifact either network ships, and
+//! the only mainnet one *above* the sandblast onset.
 //!
-//! **The onset height is derived, not cited.** No published source states one —
-//! ECC's own retrospective dates the attack to "June 2022" and no finer.
-//! Measured over per-block sizes, mainnet's median block holds at 2,508 bytes
-//! through 1,703,449; the first 500-block window with a median above 3x that
-//! begins at **1,704,323** (2022-06-15 18:18 UTC); and from **1,706,605**
-//! (2022-06-17) the median sits above 100 kB permanently. This fixture's pin is
-//! ~11,000 blocks below the onset — the closest any registered artifact reaches
-//! it. A profile wanting the boundary itself needs a rung produced for it, not a
-//! different stop height: the chain's tip is fixed by the seed archive, so
-//! `until_height` can only stop short of a pin, never past one.
+//! **That inverts the reason the Orchard rung was chosen, deliberately.** In
+//! June 2022 the sandblasting spam attack begins, and within two days mainnet's
+//! median block goes from 2.5 kB to over 100 kB and never comes back down. The
+//! onset is derived rather than cited — ECC's retrospective says only "June
+//! 2022" — and measures out as the first 500-block window above 3x baseline at
+//! **1,704,323** (2022-06-15 18:18 UTC), permanent from **1,706,605**. The
+//! Orchard rung stopped ~11,000 blocks below it to hold the pre-spam regime
+//! fixed; this one spans both, because the regime an operator runs against today
+//! is the post-sandblast one. Throughput measured here and on the Orchard rung
+//! are not comparable numbers, and a run of one is not a regression signal for
+//! the other.
 //!
-//! **What this rung gains over the Blossom one this profile used to ride.**
-//! 659,600 stopped a million blocks below NU5, so no Orchard action was ever
-//! indexed, and Blossom introduces no value pool — the producer's boundary gate
-//! had nothing to check and the activation it straddled was a block-timing
-//! change. This artifact crosses NU5 with a producer-verified Orchard pool
-//! (0 -> 325,252,861,549 zatoshi over 1,687,104..1,693,104), so
-//! `orchard_actions` is a counter with content behind it and
-//! `crossed_the_straddled_activation` now means the build indexed a pool the
-//! upgrade introduced.
+//! **What it costs.** 3,434,143 blocks and 257.85 GiB extracted — roughly twice
+//! the Orchard rung's height and eight times its bytes. The seed PVC is sized
+//! from the artifact's own manifest; zaino's index is not, and is declared below.
 //!
-//! **What the seed volume is, since this rung is the first to strain it.** The
-//! seed PVC (`ZTEST_SEED_SIZE`/`materialize::seed_size`) holds the *extracted
-//! chain archive* and nothing else — zebra's state DB, pulled once per cluster
-//! and CoW-cloned per pod. Zaino's index is not seeded and never was: it is
-//! built from empty into a pod-local `emptyDir`, bounded by node ephemeral
-//! storage. This archive is 30.5 GiB extracted, which is why ztest's flat
-//! default moved from 32Gi to 48Gi — at 32Gi it was 95% full before any
-//! filesystem overhead.
+//! **Two volumes, sized two different ways.** The seed PVC holds the *extracted
+//! chain archive* and nothing else — zebra's state DB, pulled once per cluster and
+//! CoW-cloned per pod — and `seed_size_for` requests it from the artifact's own
+//! manifest (257.85 GiB here, plus headroom). Zaino's index is not seeded and
+//! never was: it is built from empty, and under the sync tier it must declare its
+//! own PVC rather than take unbounded node ephemeral storage. That declaration is
+//! the `.disk(..)` on the indexer below.
 //!
 //! Every probe here reads the pools and heights off the artifact's manifest
 //! rather than hardcoding them, so moving this profile to a deeper mainnet rung
@@ -92,10 +81,10 @@
 //! Launched detached via `ztest sync start zaino_index_construction`.
 
 use ztest::prelude::*;
-use ztest::snapshots::ORCHARD_MAINNET;
+use ztest::snapshots::IRONWOOD_MAINNET;
 use ztest::sync::{
-    hours, mins, secs, Op, OpSet, Severity, Snapshot, SyncCtx, SyncOutcome, SyncRunner,
-    Verdict, Violation,
+    hours, mins, secs, Op, OpSet, Severity, Snapshot, SyncCtx, SyncOutcome, SyncRunner, Verdict,
+    Violation,
 };
 
 /// How often the engine captures a snapshot. A full-history index build is
@@ -150,15 +139,15 @@ const INDEX_UP_WINDOW: std::time::Duration = mins(30);
 /// is a step change, not a curve worth resolving.
 const INDEX_UP_POLL: std::time::Duration = secs(10);
 
-#[ztest::needs(ORCHARD_MAINNET)]
+#[ztest::needs(IRONWOOD_MAINNET)]
 #[ztest::sync_test(
     name = "zaino_index_construction",
-    description = "zaino builds its chain index over the pinned pre-sandblast mainnet snapshot; zebrad is the authority",
+    description = "zaino builds its chain index over the pinned NU6.3 mainnet snapshot; zebrad is the authority",
     subject = indexer,
     timeout = "48h",
     qos = sync,
     footprint = "15c/29Gi",
-    tags = ["mainnet", "zaino", "index", "orchard", "pre-sandblast"],
+    tags = ["mainnet", "zaino", "index", "ironwood", "nu6.3"],
 )]
 async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
     // Topology: one zebrad serving the snapshot, and one zaino building a state
@@ -177,9 +166,12 @@ async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
             //
             // These two must sum inside the declared `footprint` above; the deploy
             // budget checks exactly that before creating a pod.
+            // No `.disk(..)`: zebra boots from the archive clone and this chain is
+            // frozen, so the clone never grows past the seed floor the manifest sized.
+            // A to-tip profile would need one; this one reads what it was given.
             let zebra = t.add_validator(
                 Validator::zebrad("6.2.3")
-                    .snapshot(ORCHARD_MAINNET)
+                    .snapshot(IRONWOOD_MAINNET)
                     .resources(Cpu::cores(5), Mem::gib(4)),
             );
             // Zaino is the SUT: built from this repo's Dockerfile with metrics,
@@ -202,11 +194,17 @@ async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
                 // The same chain the validator runs, as a private CoW clone this
                 // pod *reads*. Zaino's own index is pod-local scratch and starts
                 // empty — building it is what this profile watches.
-                .snapshot(ORCHARD_MAINNET)
+                .snapshot(IRONWOOD_MAINNET)
                 // The whole subject of the test: `Fetch` forwards to the
                 // validator and builds no index, so there would be nothing to
                 // observe.
                 .tuning(ZainoTuning::State)
+                // Zaino's index is pod-local scratch, and under the sync tier that must be
+                // a reserved PVC rather than node ephemeral storage — a 48-hour build
+                // evicted under DiskPressure at hour 39 costs the whole run. Unmeasured:
+                // this is headroom over 3.4M mainnet blocks, and the first number to
+                // revisit once a run reports `zaino_db_used_bytes` at the pin.
+                .disk(Disk::gib(325))
                 // The SUT gets the bulk of the declared 29 GiB reserve: 24 GiB,
                 // leaving the validator its 4 and a GiB of slack. Not a measured
                 // requirement — it is headroom while the write transaction's
@@ -240,11 +238,10 @@ async fn zaino_index_construction(mut run: SyncRunner) -> SyncOutcome {
     run.requires_work(OpSet::of(&INDEXED_POOLS));
     // Deliberately no `until_height`: a declared stop height is what makes two
     // runs' throughput comparable, and it is the wrong trade here. The reason
-    // this fixture was chosen is the 6,000 blocks above the NU5 activation, and
+    // this fixture was chosen is the 6,000 blocks above the NU6.3 activation, and
     // any stop height low enough to bound the run is also low enough to end it
     // before that boundary — buying comparability by never reaching the thing
-    // under test. The chain is frozen, so the span is already fixed by the pin,
-    // and the pin is already the pre-sandblast edge.
+    // under test. The chain is frozen, so the span is already fixed by the pin.
 
     // ── safety: what the index must never do while it is being built ──
     run.always(Severity::Fatal)
@@ -340,8 +337,9 @@ fn indexed_work_monotonic(s: &Snapshot) -> Verdict {
 /// The op classes the chain this profile rides actually contains.
 ///
 /// Written out rather than derived. The chain is named at the declaration now —
-/// `ORCHARD_MAINNET` straddles NU5, so it holds Sapling outputs and Orchard
-/// actions and nothing later — which makes this a property of *this* profile,
+/// `IRONWOOD_MAINNET` spans every activation mainnet has had, so Sapling outputs
+/// and Orchard actions are both dense across it — which makes this a property of
+/// *this* profile,
 /// not something to rediscover from a manifest at runtime.
 ///
 /// **What makes writing it out safe.** Naming a pool the chain never reaches used
@@ -356,13 +354,13 @@ fn indexed_work_monotonic(s: &Snapshot) -> Verdict {
 /// the intended cost: a fixture and the pools it carries are one decision.
 const INDEXED_POOLS: [Op; 2] = [Op::SaplingOutput, Op::OrchardAction];
 
-/// Mainnet NU5, the upgrade `ORCHARD_MAINNET` straddles — 6,000 blocks below its pin.
+/// Mainnet NU6.3, the upgrade `IRONWOOD_MAINNET` straddles — 6,000 blocks below its pin.
 ///
 /// Stated here for the same reason as [`INDEXED_POOLS`]: it is a consensus constant
 /// about the chain this profile rides, and ztest carries no table of those. A wrong
 /// value weakens [`crossed_activation`] rather than breaking it — the coverage probe
 /// would latch early — so it is checked by review, next to the prose that derives it.
-const STRADDLED_ACTIVATION: u32 = 1_687_104;
+const STRADDLED_ACTIVATION: u32 = 3_428_143;
 
 /// The frontier never claims more chain than exists.
 ///
@@ -436,12 +434,13 @@ fn observed_a_partial_index(s: &Snapshot) -> Verdict {
 /// new rules, so every claim it made was about history that predates them. That
 /// is a weak pass, and coverage is how the harness says so.
 ///
-/// On the current fixture that claim is at full strength. The straddled upgrade
-/// is NU5, which introduces the Orchard pool, and the producer's boundary gate
-/// records it funding that pool (0 -> 325,252,861,549 zatoshi) inside the 6,000
-/// blocks above the activation — so crossing [`STRADDLED_ACTIVATION`] here means
-/// the build indexed blocks that provably contain Orchard actions, not merely
-/// blocks written under a new rule.
+/// On this fixture the claim is weaker than it was on the Orchard rung, and the
+/// difference is worth stating. NU5 funded a pool inside its 6,000-block tail, so
+/// crossing it proved Orchard actions were indexed. NU6.3's tail carries whatever
+/// Ironwood adoption existed in those blocks, which nothing here measures — so
+/// crossing [`STRADDLED_ACTIVATION`] proves the build indexed blocks written under
+/// the new rules, and not that those blocks contain Ironwood actions.
+/// [`INDEXED_POOLS`] omits `IronwoodAction` for the same reason.
 fn crossed_activation(s: &Snapshot) -> Verdict {
     if s.height() >= STRADDLED_ACTIVATION {
         Verdict::Satisfied
