@@ -198,11 +198,30 @@ async fn sync_to_height_across_many_write_batches() {
     // Gap-free, not just tip-correct: a pipeline that dropped or double-committed a batch could
     // still land on the right tip.
     let reader = std::sync::Arc::new(zaino_db).to_reader();
+    let mut previous_chainwork: Option<crate::chain_index::types::ChainWork> = None;
     for height in 0..=200u32 {
-        assert!(
-            reader.get_block_header(Height(height)).await.is_ok(),
-            "height {height} must be readable after a multi-batch sync"
+        let header = reader
+            .get_block_header(Height(height))
+            .await
+            .unwrap_or_else(|e| panic!("height {height} must be readable after a sync: {e}"));
+
+        // The chainwork fold is the one ordering constraint left in block building: the window is
+        // folded in height order, then assembled concurrently. A fold that paired a block with the
+        // wrong parent still yields a readable, gap-free, strictly-increasing range — so assert the
+        // exact increment against this block's own stored difficulty, which an off-by-one breaks.
+        let chainwork = *header.context.chainwork();
+        let block_work = header.data().bits.to_work();
+        let expected = match previous_chainwork {
+            Some(previous) => previous
+                .add(&block_work)
+                .expect("no overflow in test vectors"),
+            None => block_work,
+        };
+        assert_eq!(
+            chainwork, expected,
+            "chainwork at height {height} must be its parent's plus this block's own work"
         );
+        previous_chainwork = Some(chainwork);
     }
 }
 

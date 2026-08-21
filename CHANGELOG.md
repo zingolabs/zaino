@@ -76,6 +76,22 @@ and this library adheres to Rust's notion of
   cadence and exclude-list caps operator-configurable.
 
 ### Changed
+- **Bulk finalised-state sync now assembles blocks concurrently too.** Making
+  the fetch concurrent exposed the other half: a profile through the sandblast
+  heights put **54% of all CPU on a single thread**, holding the run to 8
+  blocks/s on 1.8 of 16 cores. That thread was the chainwork fold, which ran
+  `assemble_indexed_block` in block order. Assembly is as expensive as the
+  fetch and for the mirror-image reason — converting to the compact form
+  re-serialises the Jubjub points zebra just decompressed, and returning to
+  affine coordinates costs a field inversion per point. By Amdahl that capped
+  the whole run at 1.85x however many cores the fetches used.
+
+  A block's own proof-of-work depends only on its own header, so the cumulative
+  chainwork is a running sum that can be folded over already-fetched blocks in a
+  separate pass. Bulk sync is now three: fetch a window concurrently, fold the
+  chainwork in order (integer arithmetic, microseconds), then assemble the
+  window concurrently on `spawn_blocking`. The ordering guarantee is unchanged —
+  every block still gets exactly its parent's chainwork plus its own.
 - **Bulk finalised-state sync now fetches blocks concurrently.** A profile of a
   mainnet sync through the sandblast heights (~1.7M) put **91% of cycles in
   BLS12-381 scalar arithmetic** — `sqrt_tonelli_shanks`, `Scalar::square`,

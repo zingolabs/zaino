@@ -312,6 +312,21 @@ pub(crate) struct FetchedBlock {
     tree_roots: crate::chain_index::source::ShieldedTreeRoots,
 }
 
+impl FetchedBlock {
+    /// This block's own proof-of-work contribution.
+    ///
+    /// Lets a caller fold the cumulative chainwork over a run of already-fetched blocks before
+    /// assembling any of them — the fold is the only ordering constraint in block building, and it
+    /// is pure integer arithmetic, so it must not hold the expensive conversion in block order.
+    pub(crate) fn block_work(&self) -> Result<ChainWork, FinalisedStateError> {
+        crate::chain_index::types::helpers::block_work(&self.block.header).map_err(|reason| {
+            FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
+                format!("cannot read block work from header: {reason}"),
+            ))
+        })
+    }
+}
+
 /// Reads one block and its commitment-tree roots from the source.
 pub(crate) async fn fetch_block_for_indexing<S: BlockchainSource>(
     source: &S,

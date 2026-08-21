@@ -144,17 +144,60 @@ async fn fill_sync_batch<S: crate::chain_index::source::BlockchainSource>(
         ))
         .await?;
 
+        // Fold the cumulative chainwork over the window, in order. This is the run's only
+        // ordering constraint, and it is a running integer sum over each block's own header — so
+        // it costs microseconds and, once done, every block's `parent_chainwork` is known and the
+        // conversion below no longer has to happen in block order.
+        let mut prepared = Vec::with_capacity(fetched.len());
         for (height_int, parts) in heights.into_iter().zip(fetched) {
-            let block = crate::chain_index::finalised_state::assemble_indexed_block(
-                parts,
-                build.zebra_network.clone(),
-                build.sapling_activation_height,
-                build.nu5_activation_height,
-                build.nu6_3_activation_height,
-                height_int,
-                cursor.parent_chainwork,
-            )?;
-            cursor.parent_chainwork = Some(block.context.chainwork);
+            let parent_chainwork = cursor.parent_chainwork;
+            let block_work = parts.block_work()?;
+            cursor.parent_chainwork = Some(match parent_chainwork {
+                Some(parent) => parent
+                    .add(&block_work)
+                    .map_err(|e| FinalisedStateError::Custom(format!("chainwork overflow: {e}")))?,
+                None => block_work,
+            });
+            prepared.push((height_int, parts, parent_chainwork));
+        }
+
+        // Assemble concurrently. This half is as expensive as the fetch and for the same reason:
+        // converting to the compact form re-serialises the Jubjub points zebra just decompressed,
+        // and going back to affine coordinates costs a field inversion per point. Left in the fold
+        // it was a serial 54% of the sync's CPU, capping the whole run at 1.85x however many cores
+        // the fetches used. `spawn_blocking` because it is CPU-bound and owns everything it needs.
+        let assemblies = futures::StreamExt::map(
+            futures::stream::iter(prepared),
+            |(height_int, parts, parent_chainwork)| {
+                let zebra_network = build.zebra_network.clone();
+                let sapling_activation_height = build.sapling_activation_height;
+                let nu5_activation_height = build.nu5_activation_height;
+                let nu6_3_activation_height = build.nu6_3_activation_height;
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        crate::chain_index::finalised_state::assemble_indexed_block(
+                            parts,
+                            zebra_network,
+                            sapling_activation_height,
+                            nu5_activation_height,
+                            nu6_3_activation_height,
+                            height_int,
+                            parent_chainwork,
+                        )
+                    })
+                    .await
+                    .map_err(|join| {
+                        FinalisedStateError::Custom(format!("block assembly task failed: {join}"))
+                    })?
+                }
+            },
+        );
+        let assembled: Vec<IndexedBlock> = futures::TryStreamExt::try_collect(
+            futures::StreamExt::buffered(assemblies, build.concurrency),
+        )
+        .await?;
+
+        for block in assembled {
             batch_bytes = batch_bytes.saturating_add(approx_indexed_block_bytes(&block));
             batch.push(block);
             cursor.next += 1;
