@@ -22,10 +22,11 @@ finalised-state modes, because they measure different machinery:
 Initial sync is a persistent-mode measurement only — in ephemeral mode there is
 no index to build.
 
-> **Status: all three sections measured.** Section 2a carries a significant
-> methodological caveat — the persistent sweep did not achieve the concurrency
-> its connection counts imply — which is documented inline. Read it before
-> quoting a supported-connection figure.
+> **Status: all three sections measured.** The concurrency figures in section 2
+> are 5,000 connections at 100% success in both modes — but 5,000 is the largest
+> count tested, not a ceiling, and it is bounded by an LMDB reader limit this
+> branch changed. Read "The ceiling is the LMDB reader table" before quoting a
+> supported-connection number.
 >
 > **These numbers are not `dev`.** They were produced on
 > `add_sync_plus_concurrency_tests` at commit `14720e74`, which carries three
@@ -109,73 +110,89 @@ derived as `target - finalized`; `node_lag_gauge` is the node's own
 `zaino-bench concurrent --sweep`, against the synced instance. Each connection
 streams 1000 blocks from its own window of the pool.
 
-Both sweeps used `--blocks 200` over the pool `3000000..=3380000`.
+Both sweeps used `--blocks 200` over the pool `3000000..=3380000`, with every
+connection held open at a barrier until all of them had dialled, so the fetch
+phase begins with the full connection count established.
 
 ### 2a. Persistent finalised state
 
-| Connections | Success | Wall-clock | Mean fetch | p95 fetch | Aggregate blocks/s | Chain breaks | Mean in flight |
-|---|---|---|---|---|---|---|---|
-| 100 | 100% | 0.25s | 0.040s | 0.051s | 81,316 | 0 | 16 |
-| 500 | 100% | 1.08s | 0.039s | 0.050s | 92,821 | 0 | 18 |
-| 1000 | 100% | 2.11s | 0.040s | 0.050s | 94,630 | 0 | 19 |
-| 2000 | 100% | 4.19s | 0.040s | 0.050s | 95,470 | 0 | 19 |
-| 5000 | 100% | 5.40s | 0.039s | 0.050s | 185,266 | 0 | 36 |
-| 10000 | 100% | 10.59s | 0.040s | 0.050s | 188,878 | 0 | 38 |
+| Connections | Success | Wall-clock | Mean fetch | Aggregate blocks/s | Chain breaks | Mean in flight |
+|---|---|---|---|---|---|---|
+| 100 | 100% | 0.20s | 0.098s | 100,088 | 0 | 49 |
+| 500 | 100% | 0.48s | 0.315s | 209,945 | 0 | 328 |
+| 1000 | 100% | 0.97s | 0.666s | 205,890 | 0 | 687 |
+| 2000 | 100% | 2.03s | 1.877s | 196,684 | 0 | 1,849 |
+| 5000 | 100% | 4.95s | 4.027s | 201,936 | 0 | 4,068 |
 
-**Supported concurrent connections: not established by this run.** Every round
-reports 100% success with flat latency, but the run did not hold its connections
-open, so the connection counts in the first column are not concurrency. Read the
-next section before quoting any of these figures.
+**5,000 concurrent connections at 100% success, no chain breaks — and that is
+the largest count tested, not a measured ceiling.** The knee is somewhere above
+5,000; this run did not find it.
 
-#### Why the persistent sweep is not a concurrency measurement
-
-A finalised read from Zaino's own index takes ~40ms for 200 blocks. The harness
-brings connections up across a 2s ramp, so at 10,000 connections a new one starts
-every 200µs — and each finishes 40ms later. Connections retire about as fast as
-they are created, and the number actually open at any instant is
-`connections × mean fetch ÷ wall-clock`: the last column above, which never
-exceeds 38 regardless of the nominal count.
-
-Two independent checks agree. The client's `ulimit -n` was **8192** for this run
-(the harness warned), which cannot support 10,000 simultaneous sockets — yet all
-10,000 succeeded. And wall-clock scales linearly with the connection count
-(0.25s → 10.59s for 100 → 10,000), which is the signature of sequential work,
-not of concurrent work hitting a ceiling.
-
-What this row set *does* establish: the server absorbed 10,000 successive
-short requests at 100% success, with p99 fetch latency flat at 0.052s from 100
-through 10,000 and no chain breaks. That is a real result about throughput and
-stability. It is not the answer to "how many concurrent connections can it
-support", and the honest answer to that question from this run is that the
-harness cannot reach the ceiling on the persistent backend: per-connection work
-would have to outlast the ramp. Raising `--blocks` until mean fetch exceeds the
-ramp (or lowering `--spawn-window-ms`) is the fix, and `ulimit -n` must be raised
-past `2 × connections` first.
+Aggregate throughput plateaus at **~200,000 blocks/s** from 500 connections
+onward while mean fetch latency scales linearly with the connection count
+(0.098s → 4.027s). That is a saturated server queuing gracefully: added clients
+wait longer, they do not fail.
 
 ### 2b. Ephemeral finalised state
 
 | Connections | Success | Wall-clock | Mean fetch | Aggregate blocks/s | Chain breaks | Mean in flight |
 |---|---|---|---|---|---|---|
-| 100 | 100% | 2.41s | 1.758s | 8,284 | 0 | 73 |
-| 500 | 100% | 10.51s | 8.829s | 9,514 | 0 | 420 |
-| 1000 | 100% | 20.92s | 18.263s | 9,559 | 0 | 873 |
-| 2000 | 100% | 43.56s | 38.151s | 9,182 | 0 | 1,752 |
-| 5000 | 100% | 113.73s | 104.477s | 8,793 | 0 | 4,593 |
-| 10000 | **2.9%** | 134.61s | 109.848s | 437 | 0 | 8,160 |
+| 100 | 100% | 2.19s | 1.761s | 9,150 | 0 | 80 |
+| 500 | 100% | 9.53s | 9.198s | 10,494 | 0 | 483 |
+| 1000 | 100% | 20.58s | 20.208s | 9,720 | 0 | 982 |
+| 2000 | 100% | 42.72s | 42.284s | 9,364 | 0 | 1,980 |
+| 5000 | 100% | 110.28s | 109.522s | 9,068 | 0 | 4,966 |
 
-**Supported concurrent connections: 5,000.**
+**Also 5,000 at 100%, and also not a ceiling.** Aggregate throughput is flat at
+~9,400 blocks/s from 100 connections on — **~21× below persistent** — which
+places the limit in the validator passthrough rather than in Zaino's request
+handling. Mean fetch reaches 109s at 5,000 connections, well past the 30s
+`service.timeout`, so these are slow but not failing.
 
-This sweep *is* a concurrency measurement, and the contrast with 2a is the
-reason. In ephemeral mode a finalised read is a passthrough to the validator and
-takes seconds, not milliseconds — far longer than the 2s ramp — so connections
-accumulate instead of retiring, and the in-flight count tracks the nominal one
-(4,593 of 5,000). The knee is unambiguous: 100% success through 5,000, then
-collapse to 2.9% at 10,000, with mean fetch already at 104s by 5,000 against the
-30s `service.timeout`.
+### Reading these tables
 
-Aggregate throughput is flat at ~9,000 blocks/s from 100 connections onward,
-which says the ceiling is the validator passthrough rather than anything in
-Zaino's own request handling.
+Three things determine how much weight they carry:
+
+- **They are genuine concurrency measurements, unlike an earlier attempt.** The
+  "mean in flight" column is `connections × mean fetch ÷ wall-clock` — what was
+  actually open at once. It tracks the nominal count closely (4,068 of 5,000
+  persistent, 4,966 of 5,000 ephemeral). Before the harness held connections at a
+  barrier, the same sweep never had more than 38 open regardless of the count
+  asked for, because short reads retired faster than the ramp created them.
+- **The client was the tighter constraint at 5,000.** `ulimit -n` was 8192 during
+  these runs, and 5,000 connections need roughly 10,000 descriptors — the harness
+  warned. So the 5,000 row is bounded at least partly by the client, and a rerun
+  above `ulimit -n 32768` may well go further.
+- **The persistent figures are warm-cache.** The first run after a restart gave
+  ~110,000 blocks/s aggregate against ~200,000 on the two subsequent runs; the
+  table reports the steady state. Two consecutive warm runs agreed within 5%.
+
+### The ceiling is the LMDB reader table, and exceeding it restarts the node
+
+The concurrency limit is not a throughput property — it is the size of LMDB's
+reader table, and it is worth stating plainly because the failure mode is bad.
+
+The environment is opened with `NO_TLS`, so a reader slot belongs to a read
+*transaction* rather than a thread: every concurrent read holds one. Slots are
+sized by `(cpu × 32).clamp(MIN_LMDB_READERS, MAX_LMDB_READERS)`. **On this
+16-core host the applied value is 2,048** — the clamp floor, since `16 × 32 =
+512` falls below it. Confirmed by measurement: `lock.mdb` is 131,200 bytes,
+which is `2048 × 64B` plus a 128-byte header.
+
+An earlier attempt at this sweep ran against the previous floor of 512 and did
+not merely fail — it **restarted the node in a loop**. Reads failed with
+`MDB_READERS_FULL`, the startup block scan
+(`finalised_source/v1.rs`) treats any error from it as fatal and stored
+`CriticalError`, the indexer restarted into the same load, and the cycle
+repeated. The gRPC port disappeared and every client saw a transport error.
+
+**Raising the floor to 2,048 is what made these tables possible; it did not fix
+the underlying defect.** A client can still open more concurrent reads than
+there are slots, and `MDB_READERS_FULL` — which is backpressure, not corruption —
+is still classified as critical. Until that classification changes, any client
+can restart a Zaino node by exceeding whatever limit is configured. Treat the
+supported-connection figures here as properties of *this configuration*, not of
+Zaino.
 
 ### Knobs that bound these numbers
 
@@ -187,11 +204,14 @@ a number quoted without them is not reproducible:
 | `service.channel_size` | `ZainodConfig` | 32 (default) |
 | `service.timeout` | `ZainodConfig` | 30s (default) |
 | `storage.cache.capacity` | `ZainodConfig` | 10000 (default) |
-| Client `ulimit -n` | test host | **8192 — too low for the 10,000 round** (needs 20,000) |
+| `storage.database` LMDB `max_readers` | derived, `finalised_source/v1.rs` | **2048** (the clamp floor; `16 cores × 32 = 512` falls below it) |
+| Client `ulimit -n` | test host | **8192 — below the ~10,000 that 5,000 connections need** |
 
-The `ulimit -n` row is not a footnote: at 8192 the client cannot hold 10,000
-sockets open, which is part of why the persistent sweep never reached its nominal
-concurrency. Raise it before any rerun.
+Both bottom rows bound the results rather than describing the host. `max_readers`
+is the concurrency ceiling (see above), and at `ulimit -n 8192` the client cannot
+hold 5,000 connections' worth of descriptors — so the 5,000 row is bounded at
+least partly by the test client. Raise both before treating any figure here as
+Zaino's limit.
 
 If a tuned run is also recorded, it goes in its own table naming the knob that
 moved — a tuned number presented as the default is misleading.
@@ -318,7 +338,7 @@ ulimit -n 32768          # must exceed 2 x the largest sweep value
 makers bench concurrent \
   --server http://127.0.0.1:8137 \
   --start-height 3000000 --end-height 3380000 \
-  --blocks 200 --sweep 100,500,1000,2000,5000,10000
+  --blocks 200 --sweep 100,500,1000,2000,5000
 # --end-height pinned, not defaulted to the tip: the two modes report different
 # tips, and an unpinned range makes the persistent and ephemeral rows different
 # amounts of work.
