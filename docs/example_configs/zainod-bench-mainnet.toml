@@ -67,6 +67,7 @@ shard_power = 4
 
 [storage.database]
 path = '/home/idky137/.cache/zaino/'
-# GiB. A full mainnet index is ~275 GiB, so this needs headroom above that and
+# GiB. Measured: a full mainnet index is ~76 GiB at height 3.45M. This is the map
+# size (an upper bound, not a reservation), so leave headroom above that and
 # the volume needs the free space to match.
 size = 384

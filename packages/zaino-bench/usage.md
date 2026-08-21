@@ -94,12 +94,13 @@ zainod start --config docs/example_configs/zainod-bench-mainnet.toml
 
 To measure a *fresh* sync, empty `storage.database.path` first — an existing
 finalised-state db means you are measuring a catch-up, not an initial sync.
-Check free space before you do: a full mainnet index is ~275 GiB and shares a
-volume with zebrad's ~260 GiB, so an old index backup left in place is enough to
-run the volume out partway through a run that takes hours.
+Check free space before you do: a full mainnet index measures ~76 GiB and shares
+a volume with zebrad's ~260 GiB. Use an NVMe volume — a USB-attached disk makes
+the batch commit the bottleneck and roughly halves the sync rate.
 
 `--csv` writes every sample (elapsed, heights, lag, transactions, interval rate)
-for graphing the curve. `--until-height N` bounds the run to a fixed span instead
+for graphing the curve. **Known bug:** the file is only written when the run ends
+normally, so a run that ends on `--stall-timeout-secs` discards its curve. `--until-height N` bounds the run to a fixed span instead
 of waiting for the tip. `--stall-timeout-secs` fails the run, non-zero, if the
 finalised height stops advancing — so an overnight run does not silently hang.
 
@@ -111,10 +112,11 @@ fetch latency (min/mean/max **and** p50/p95/p99), chain breaks, and aggregate
 plus per-connection blocks/s.
 
 ```sh
+ulimit -n 32768          # must exceed 2 x the largest sweep value
 makers bench concurrent \
   --server http://127.0.0.1:8137 \
   --start-height 3000000 --end-height 3380000 \
-  --blocks 1000 --sweep 100,250,500,1000,2000
+  --blocks 200 --sweep 100,500,1000,2000,5000,10000
 ```
 
 Use `--sweep`, not a single `--connections` value. The answer to "how many
@@ -126,8 +128,17 @@ Two things that will otherwise give you the wrong number:
 
 - **File descriptors.** Each connection needs a socket. The harness reads
   `/proc/self/limits` and warns when the soft limit is under roughly
-  `connections × 2`; heed it (`ulimit -n 8192`) or the ceiling you measure is
-  this client's, not the server's.
+  `connections × 2`; heed it (`ulimit -n 32768` for a 10,000 round) or the
+  ceiling you measure is this client's, not the server's.
+- **Per-connection work must outlast the ramp, or the round measures nothing.**
+  Connections are brought up over `--spawn-window-ms` (default 2000). If each
+  finishes faster than the ramp creates the next, they retire as fast as they
+  arrive and the number actually open never approaches the nominal count — the
+  round becomes a throughput test wearing a concurrency test's label. A
+  persistent-mode finalised read of 200 blocks takes ~40ms, so a 10,000-connection
+  round held only ~38 open at once (see `docs/perf.md` §2a). Sanity-check every
+  round with `connections × mean fetch ÷ wall-clock`; if that is far below the
+  nominal count, raise `--blocks` until mean fetch exceeds the ramp.
 - **Server-side bounds.** `service.channel_size` (default 32) and
   `service.timeout` (default 30s) in `ZainodConfig` cap concurrency directly.
   Run at defaults first. If you tune them, report both numbers and name the knob
@@ -145,8 +156,13 @@ payload MB/s, and verifies every `prev_hash` link as blocks arrive, because a
 fast answer that does not link up is not an answer.
 
 ```sh
-makers bench serve --server http://127.0.0.1:8137 --start-height 3300000
+makers bench serve --server http://127.0.0.1:8137 \
+  --start-height 3300000 --end-height 3454000
 ```
+
+Pin `--end-height` rather than letting it default to the tip when comparing the
+two finalised-state modes: they report different tips, so an unpinned range makes
+the two runs different amounts of work.
 
 Run it — and the sweep above — once per finalised-state mode: restart zainod on
 the other config and repeat the same commands unchanged.

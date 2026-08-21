@@ -22,9 +22,10 @@ finalised-state modes, because they measure different machinery:
 Initial sync is a persistent-mode measurement only — in ephemeral mode there is
 no index to build.
 
-> **Status: initial sync measured; concurrency and serve rate not yet.**
-> Section 1 is filled in from a real mainnet run. Sections 2 and 3 are still
-> `TBD` — do not quote them.
+> **Status: all three sections measured.** Section 2a carries a significant
+> methodological caveat — the persistent sweep did not achieve the concurrency
+> its connection counts imply — which is documented inline. Read it before
+> quoting a supported-connection figure.
 >
 > **These numbers are not `dev`.** They were produced on
 > `add_sync_plus_concurrency_tests` at commit `14720e74`, which carries three
@@ -108,30 +109,73 @@ derived as `target - finalized`; `node_lag_gauge` is the node's own
 `zaino-bench concurrent --sweep`, against the synced instance. Each connection
 streams 1000 blocks from its own window of the pool.
 
+Both sweeps used `--blocks 200` over the pool `3000000..=3380000`.
+
 ### 2a. Persistent finalised state
 
-| Connections | Success | Wall-clock | Mean fetch | p95 fetch | Aggregate blocks/s | Chain breaks |
-|---|---|---|---|---|---|---|
-| 100 | TBD | TBD | TBD | TBD | TBD | TBD |
-| 250 | TBD | TBD | TBD | TBD | TBD | TBD |
-| 500 | TBD | TBD | TBD | TBD | TBD | TBD |
-| 1000 | TBD | TBD | TBD | TBD | TBD | TBD |
-| 2000 | TBD | TBD | TBD | TBD | TBD | TBD |
+| Connections | Success | Wall-clock | Mean fetch | p95 fetch | Aggregate blocks/s | Chain breaks | Mean in flight |
+|---|---|---|---|---|---|---|---|
+| 100 | 100% | 0.25s | 0.040s | 0.051s | 81,316 | 0 | 16 |
+| 500 | 100% | 1.08s | 0.039s | 0.050s | 92,821 | 0 | 18 |
+| 1000 | 100% | 2.11s | 0.040s | 0.050s | 94,630 | 0 | 19 |
+| 2000 | 100% | 4.19s | 0.040s | 0.050s | 95,470 | 0 | 19 |
+| 5000 | 100% | 5.40s | 0.039s | 0.050s | 185,266 | 0 | 36 |
+| 10000 | 100% | 10.59s | 0.040s | 0.050s | 188,878 | 0 | 38 |
 
-**Supported concurrent connections: TBD** — the largest row still at 100%
-success, with no chain breaks.
+**Supported concurrent connections: not established by this run.** Every round
+reports 100% success with flat latency, but the run did not hold its connections
+open, so the connection counts in the first column are not concurrency. Read the
+next section before quoting any of these figures.
+
+#### Why the persistent sweep is not a concurrency measurement
+
+A finalised read from Zaino's own index takes ~40ms for 200 blocks. The harness
+brings connections up across a 2s ramp, so at 10,000 connections a new one starts
+every 200µs — and each finishes 40ms later. Connections retire about as fast as
+they are created, and the number actually open at any instant is
+`connections × mean fetch ÷ wall-clock`: the last column above, which never
+exceeds 38 regardless of the nominal count.
+
+Two independent checks agree. The client's `ulimit -n` was **8192** for this run
+(the harness warned), which cannot support 10,000 simultaneous sockets — yet all
+10,000 succeeded. And wall-clock scales linearly with the connection count
+(0.25s → 10.59s for 100 → 10,000), which is the signature of sequential work,
+not of concurrent work hitting a ceiling.
+
+What this row set *does* establish: the server absorbed 10,000 successive
+short requests at 100% success, with p99 fetch latency flat at 0.052s from 100
+through 10,000 and no chain breaks. That is a real result about throughput and
+stability. It is not the answer to "how many concurrent connections can it
+support", and the honest answer to that question from this run is that the
+harness cannot reach the ceiling on the persistent backend: per-connection work
+would have to outlast the ramp. Raising `--blocks` until mean fetch exceeds the
+ramp (or lowering `--spawn-window-ms`) is the fix, and `ulimit -n` must be raised
+past `2 × connections` first.
 
 ### 2b. Ephemeral finalised state
 
-| Connections | Success | Wall-clock | Mean fetch | p95 fetch | Aggregate blocks/s | Chain breaks |
+| Connections | Success | Wall-clock | Mean fetch | Aggregate blocks/s | Chain breaks | Mean in flight |
 |---|---|---|---|---|---|---|
-| 100 | TBD | TBD | TBD | TBD | TBD | TBD |
-| 250 | TBD | TBD | TBD | TBD | TBD | TBD |
-| 500 | TBD | TBD | TBD | TBD | TBD | TBD |
-| 1000 | TBD | TBD | TBD | TBD | TBD | TBD |
-| 2000 | TBD | TBD | TBD | TBD | TBD | TBD |
+| 100 | 100% | 2.41s | 1.758s | 8,284 | 0 | 73 |
+| 500 | 100% | 10.51s | 8.829s | 9,514 | 0 | 420 |
+| 1000 | 100% | 20.92s | 18.263s | 9,559 | 0 | 873 |
+| 2000 | 100% | 43.56s | 38.151s | 9,182 | 0 | 1,752 |
+| 5000 | 100% | 113.73s | 104.477s | 8,793 | 0 | 4,593 |
+| 10000 | **2.9%** | 134.61s | 109.848s | 437 | 0 | 8,160 |
 
-**Supported concurrent connections: TBD.**
+**Supported concurrent connections: 5,000.**
+
+This sweep *is* a concurrency measurement, and the contrast with 2a is the
+reason. In ephemeral mode a finalised read is a passthrough to the validator and
+takes seconds, not milliseconds — far longer than the 2s ramp — so connections
+accumulate instead of retiring, and the in-flight count tracks the nominal one
+(4,593 of 5,000). The knee is unambiguous: 100% success through 5,000, then
+collapse to 2.9% at 10,000, with mean fetch already at 104s by 5,000 against the
+30s `service.timeout`.
+
+Aggregate throughput is flat at ~9,000 blocks/s from 100 connections onward,
+which says the ceiling is the validator passthrough rather than anything in
+Zaino's own request handling.
 
 ### Knobs that bound these numbers
 
@@ -143,7 +187,11 @@ a number quoted without them is not reproducible:
 | `service.channel_size` | `ZainodConfig` | 32 (default) |
 | `service.timeout` | `ZainodConfig` | 30s (default) |
 | `storage.cache.capacity` | `ZainodConfig` | 10000 (default) |
-| Client `ulimit -n` | test host | TBD |
+| Client `ulimit -n` | test host | **8192 — too low for the 10,000 round** (needs 20,000) |
+
+The `ulimit -n` row is not a footnote: at 8192 the client cannot hold 10,000
+sockets open, which is part of why the persistent sweep never reached its nominal
+concurrency. Raise it before any rerun.
 
 If a tuned run is also recorded, it goes in its own table naming the knob that
 moved — a tuned number presented as the default is misleading.
@@ -155,11 +203,23 @@ request. The same pass verifies every `prev_hash` link.
 
 | Mode | Range | Blocks | Wall-clock | Blocks/s | Payload MB/s | Errors |
 |---|---|---|---|---|---|---|
-| Persistent | TBD..=tip | TBD | TBD | TBD | TBD | TBD |
-| Ephemeral | TBD..=tip | TBD | TBD | TBD | TBD | TBD |
+| Persistent | 3300000..=3454000 | 154,001 | 1.00s | **154,203** | 99.9 | 0 |
+| Ephemeral | 3300000..=3454000 | 47,821 (of 154,001) | 120.00s | **399** | 0.2 | timed out |
 
-Aggregate (multi-connection) throughput is the last column of the sweep tables in
-section 2; this section is the single-stream figure.
+Both modes verified every `prev_hash` link over the blocks they delivered — the
+chain is valid in each case, including the truncated ephemeral stream.
+
+**Persistent serves finalised blocks ~390× faster than ephemeral.** That is the
+whole point of the index: in persistent mode the read is answered from Zaino's
+own finalised state, in ephemeral mode it is a passthrough to the validator. The
+ephemeral run did not finish — it hit the gRPC deadline after 47,821 blocks and
+120s, which is itself the finding: a full-range `GetBlockRange` over 154,001
+blocks is not serviceable by passthrough within the client's timeout.
+
+Aggregate (multi-connection) throughput is in the sweep tables in section 2; this
+section is the single-stream figure. Note the two are not directly comparable —
+the sweeps draw from a 380,001-block pool with heavy range overlap at high
+connection counts, so cache hit rates differ.
 
 ---
 
@@ -215,7 +275,7 @@ numbers; a validator build is part of the configuration.
 and [`zainod-bench-mainnet-ephemeral.toml`](example_configs/zainod-bench-mainnet-ephemeral.toml),
 built with `--features prometheus` (required for the `sync` measurement).
 
-**zebrad** — `[state] cache_dir = '/mnt/framework_ssd/.cache/zebra'`,
+**zebrad** — `[state] cache_dir = '/home/idky137/.cache/zebra'`,
 `[rpc] listen_addr = '127.0.0.1:18232'`, `indexer_listen_addr = '127.0.0.1:18230'`.
 Record any other non-default `[state]` or `[sync]` settings.
 
@@ -249,17 +309,21 @@ cargo build --release -p zaino-bench
 # 1. Initial sync, persistent mode. Start the harness first, so t0 is the
 #    moment zainod starts. Removing the database is what makes it an *initial*
 #    sync rather than a catch-up — check free space first (see below).
-rm -rf /mnt/framework_ssd/.cache/zaino/*
+rm -rf ~/.cache/zaino/*
 makers bench sync --csv sync-mainnet.csv
 zainod start --config docs/example_configs/zainod-bench-mainnet.toml
 
 # 2 + 3. Against the now-synced instance, persistent mode.
-ulimit -n 8192
+ulimit -n 32768          # must exceed 2 x the largest sweep value
 makers bench concurrent \
   --server http://127.0.0.1:8137 \
   --start-height 3000000 --end-height 3380000 \
-  --blocks 1000 --sweep 100,250,500,1000,2000
-makers bench serve --server http://127.0.0.1:8137 --start-height 3300000
+  --blocks 200 --sweep 100,500,1000,2000,5000,10000
+# --end-height pinned, not defaulted to the tip: the two modes report different
+# tips, and an unpinned range makes the persistent and ephemeral rows different
+# amounts of work.
+makers bench serve --server http://127.0.0.1:8137 \
+  --start-height 3300000 --end-height 3454000
 
 # 4. Restart zainod on the ephemeral config, then repeat 2 + 3 unchanged.
 zainod start --config docs/example_configs/zainod-bench-mainnet-ephemeral.toml
