@@ -24,7 +24,7 @@
 backend = 'direct'
 
 # Zebra's `[state] cache_dir`, verbatim.
-zebra_db_path = '/home/idky137/.cache/zebra/'
+zebra_db_path = '<PATH_TO_ZEBRA>'
 
 network = 'Mainnet'
 
@@ -66,7 +66,7 @@ capacity = 10000
 shard_power = 4
 
 [storage.database]
-path = '/home/idky137/.cache/zaino/'
+path = '<ZAINO_CACHE>'
 # GiB. Measured: a full mainnet index is ~76 GiB at height 3.45M. This is the map
 # size (an upper bound, not a reservation), so leave headroom above that and
 # the volume needs the free space to match.

@@ -14,7 +14,7 @@
 #   zainod start --config docs/example_configs/zainod-bench-mainnet-ephemeral.toml
 
 backend = 'direct'
-zebra_db_path = '/home/idky137/.cache/zebra/'
+zebra_db_path = '<PATH_TO_ZEBRA>'
 network = 'Mainnet'
 
 # The ephemeral half of the pair — the one line that differs.
@@ -42,5 +42,5 @@ shard_power = 4
 # Still required by the config schema, and still the cache location, even though
 # no finalised-state database is written here in ephemeral mode.
 [storage.database]
-path = '/home/idky137/.cache/zaino/'
+path = '<ZAINO_CACHE>'
 size = 384

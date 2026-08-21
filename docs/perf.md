@@ -295,7 +295,7 @@ numbers; a validator build is part of the configuration.
 and [`zainod-bench-mainnet-ephemeral.toml`](example_configs/zainod-bench-mainnet-ephemeral.toml),
 built with `--features prometheus` (required for the `sync` measurement).
 
-**zebrad** — `[state] cache_dir = '/home/idky137/.cache/zebra'`,
+**zebrad** — `[state] cache_dir = '<PATH_TO_ZEBRA>'`,
 `[rpc] listen_addr = '127.0.0.1:18232'`, `indexer_listen_addr = '127.0.0.1:18230'`.
 Record any other non-default `[state]` or `[sync]` settings.
 
@@ -329,7 +329,7 @@ cargo build --release -p zaino-bench
 # 1. Initial sync, persistent mode. Start the harness first, so t0 is the
 #    moment zainod starts. Removing the database is what makes it an *initial*
 #    sync rather than a catch-up — check free space first (see below).
-rm -rf ~/.cache/zaino/*
+rm -rf <ZAINO_CACHE>/*
 makers bench sync --csv sync-mainnet.csv
 zainod start --config docs/example_configs/zainod-bench-mainnet.toml
 
