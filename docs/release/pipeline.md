@@ -214,47 +214,72 @@ is a worse tax than a slow one). A test that violates either drops to `rc-gate`.
 | `release-gate` | rc→release-ready | **not a nextest suite** — a live-chain soak (serve-zaino warm-start, wallet fixtures, tip/sync validation). *"Does it survive a real deployment?"* | minutes–days (dial) |
 | `bless` | release | human attestation checklist. | — |
 
-The rule resolves today's inherited debt explicitly: a test leaves `dev-gate`
-only because it *exceeds the ceiling or is flaky* (→ `rc-gate`), **not** because
-it currently hangs or is misfiled. The present `CI - PR` exclusions
-(`clientless::chain_cache` timeouts, the misplaced `e2e::*` group) are **bugs to
-fix, tracked as debt** — the rule places each test by cost/flakiness, and a
-disabled test is recorded as disabled, never re-labelled into a higher tier to
-hide a hang. Corollary: the `clientless` partitions currently run pre-merge stay
-in `dev-gate` only where each provably fits the ceiling and is non-flaky;
-otherwise they move to `rc-gate`, and any e2e *smoke* kept pre-merge is curated to
-the same two constraints.
+The rule resolves today's inherited `CI - PR` exclusions explicitly, and they
+are not one kind of thing:
 
-**The manifest (contract 1 — build this).** One declarative artifact maps each
-nextest-realized gate to a selection. It is the single source of truth the runner
-*and* CI read; nothing else enumerates tests. Convention: `.release/gate-suites.toml`,
-sibling to `.release/consumed-ledger.toml`.
+- `clientless::chain_cache` — excluded because it **hangs** (zingolabs/zaino#1312).
+  That is **debt to fix, tracked as disabled**, never relabelled up a tier to
+  hide the hang.
+- the `e2e::*` group — excluded for **CI capacity** (zingolabs/zaino#1308). Under
+  the rule that is simply the correct `rc-gate` placement (validator-heavy, over
+  the pre-merge budget); the one small regtest binary `e2e::compact_block_wire`
+  is pulled back as a smoke.
+- `clientless::json_server`, `e2e::devtool_zcashd` — `zcashd_support`-feature-gated.
+  A **separate axis**, not a dev/rc cost tier: the default `--no-default-features`
+  build holds zero of their tests.
+
+Two subtleties the first cut turns on. (1) The ceiling counts **fixture/snapshot
+provisioning**, not just execution: a test that needs a multi-GB testnet snapshot
+is over the pre-merge budget even when it runs fast once loaded — and where it
+*skips* without the snapshot it gives no pre-merge signal anyway. (2) The testnet
+caches are **local snapshot dirs**, so those tests are deterministic, *not*
+network-flaky — they are `rc`-tier on provisioning cost, not on flakiness.
+
+**The manifest (contract 1 — committed, first cut).** One declarative artifact
+maps each nextest-realized gate to a selection. It is the single source of truth
+the runner *and* CI read; nothing else enumerates tests. Lives at
+`.release/gate-suites.toml`, sibling to `.release/consumed-ledger.toml`; no
+consumer reads it yet (wired when the runner lands), but the classification is
+now data rather than scattered YAML. `release-gate` is intentionally absent — not
+a nextest suite; it answers via `deployment_status` from the devops repo.
 
 ```toml
-# .release/gate-suites.toml — authored here; read by whatever runs the suite.
-# filterset = one cargo-nextest `--filterset` expression for the WHOLE tier.
-# ILLUSTRATIVE selectors — the concrete strings are the categorization pass
-# (apply the ceiling+non-flaky rule per live-test binary; relocate the misfiled
-# e2e; decide which clientless/smoke partitions provably fit the ceiling).
-
 [dev-gate]
-# hermetic production tests + a curated e2e smoke that fits the ceiling.
-filterset = "(!package(clientless) & !package(e2e)) | test(/smoke/)"
+filterset = "(!package(clientless) & !package(e2e)) | binary_id(=clientless::test_vectors) | binary_id(=clientless::validator_heights) | binary_id(=clientless::compact_block_consistency) | binary_id(=e2e::compact_block_wire)"
 
 [rc-gate]
-extends   = "dev-gate"                                 # cumulative; names only the ADDED cost
-filterset = "package(clientless) | package(e2e)"       # the full live suite: real zcashd/zebra
-# chain_cache is disabled-for-hang debt, tracked separately, not excluded by tier.
-
-# release-gate is intentionally ABSENT: it is not a nextest suite. Its "membership"
-# is the deployment WorkflowTemplate + its inputs (network, depth, fixtures), which
-# live in the devops declarative repo and answer via `deployment_status`.
+extends = "dev-gate"                                     # cumulative: runs dev-gate's selection too
+filterset = "(package(clientless) | package(e2e)) & !binary_id(=clientless::chain_cache)"  # full live suite minus the hang (#1312)
 ```
 
-Two consequences: moving a test between tiers is a one-line edit (no gate rename,
-no policy-doc churn), and a gate-aware runner resolves `rc-gate` by reading
-`extends` + `filterset` from here — so "`ztest` knows the gates" costs nothing
-beyond parsing this file.
+The first-cut classification of the 13 live-crate binaries (the file's header
+carries the full rationale):
+
+| Binary | Tier | Why |
+| --- | --- | --- |
+| `clientless::test_vectors` | **dev** | ~2 tests, no validator launch |
+| `clientless::validator_heights` | **dev** | ~5 tests, regtest mining |
+| `clientless::compact_block_consistency` | **dev** | ~13 tests, regtest mining |
+| `e2e::compact_block_wire` | **dev** | ~7 tests, regtest — pulled from the capacity-excluded e2e group |
+| `clientless::fetch_service` | **rc** | ~35 tests — over the smoke budget |
+| `clientless::state_service` | **rc** | ~75 tests; cached-testnet + regtest mix (needs snapshot) |
+| `clientless::the_pub_testnet_ironwood_boundary` | **rc** | needs a testnet snapshot; skips without one |
+| `e2e::test_vectors` | **rc** | heavy zebra fixtures |
+| `e2e::ironwood_activation` | **rc** | ~22 tests, validator-heavy |
+| `e2e::devtool` | **rc** | ~170 tests |
+| `clientless::chain_cache` | **disabled** | hangs → #1312; excluded both tiers until fixed |
+| `clientless::json_server` | *feature axis* | `zcashd_support`-gated; absent from the default build |
+| `e2e::devtool_zcashd` | *feature axis* | `zcashd_support`-gated; absent from the default build |
+
+Deltas from today's `CI - PR` set: `state_service`, `fetch_service`,
+`the_pub_testnet_ironwood_boundary` move **out** of pre-merge (size / snapshot
+dependency); `e2e::compact_block_wire` moves **in**. A finer within-binary split
+(keeping the regtest subset of `state_service`/`fetch_service` as a smoke) is
+deferred to per-test filtersets once real wall-clock data exists — the manifest
+edit is one line when it does. That one-line-edit property is the point: moving a
+test between tiers needs no gate rename or policy-doc churn, and a gate-aware
+runner resolves `rc-gate` by reading `extends` + `filterset` from here, so
+"`ztest` knows the gates" costs nothing beyond parsing this file.
 
 **The answer envelope (contract 3 — a documented target, NOT built yet).** The
 gate mechanism needs only the boolean signal (§ "How a gate reads its suite").
