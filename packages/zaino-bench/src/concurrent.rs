@@ -7,7 +7,10 @@
 //! hides the tail that clients actually feel, and a client-side `ulimit` is
 //! easily mistaken for a server-side ceiling.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use tokio::sync::Barrier;
 
 use clap::Args;
 use tonic::transport::Channel;
@@ -121,6 +124,10 @@ impl RoundSummary {
     }
 }
 
+/// Longest a single connection may take to establish before the round gives up
+/// on it. Bounds the barrier: without it one hung dial stalls the whole round.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
+
 pub(super) async fn run(args: ConcurrentArgs) -> Result<(), BenchError> {
     let pool_size = pool_size(args.start_height, args.end_height)?;
 
@@ -199,20 +206,29 @@ async fn round(args: &ConcurrentArgs, pool_size: u64, connections: usize) -> Rou
         gap.as_secs_f64() * 1e6,
         gap.as_secs_f64() * connections as f64
     );
-    eprintln!();
 
-    let wall_start = Instant::now();
+    // `connections + 1`: every connection, plus this task, so the round's
+    // wall-clock starts the instant the last socket is established rather than
+    // when the first one was created. The ramp is then a setup cost outside the
+    // measurement, not part of it.
+    let barrier = Arc::new(Barrier::new(connections + 1));
 
     let mut handles = Vec::with_capacity(connections);
     for (index, (range_start, range_end)) in ranges.into_iter().enumerate() {
         let server = args.server.clone();
+        let barrier = Arc::clone(&barrier);
         handles.push(tokio::spawn(async move {
-            fetch_one(index, &server, range_start, range_end).await
+            fetch_one(index, &server, range_start, range_end, barrier).await
         }));
         if !gap.is_zero() {
             tokio::time::sleep(gap).await;
         }
     }
+
+    barrier.wait().await;
+    eprintln!("  all {connections} connected; starting fetch");
+    eprintln!();
+    let wall_start = Instant::now();
 
     // A task that panicked has no timing to contribute; dropping it here keeps
     // it out of the statistics, and it still shows in the success/total counts.
@@ -234,26 +250,48 @@ async fn round(args: &ConcurrentArgs, pool_size: u64, connections: usize) -> Rou
     summarise(connections, args.blocks, wall_elapsed, &results)
 }
 
-/// Connect, fetch, verify — the whole of one connection's work.
+/// Connect, wait for every other connection, then fetch and verify.
+///
+/// The barrier is what makes the round a concurrency measurement. Without it a
+/// connection whose work is shorter than the spawn ramp finishes before its
+/// successors are even created, so the number open at once never approaches the
+/// nominal count — the round silently becomes a throughput test. Holding every
+/// connection open until all of them have connected means the fetch phase starts
+/// with exactly `connections` sockets established, whatever the work costs.
+///
+/// A connection that fails to connect still waits, so one failure cannot strand
+/// the rest; it just skips the fetch.
 async fn fetch_one(
     index: usize,
     server: &str,
     range_start: u64,
     range_end: u64,
+    barrier: Arc<Barrier>,
 ) -> ConnectionResult {
-    let started = Instant::now();
+    let connect_start = Instant::now();
+    // Bound the connect so a single hung dial cannot hold the barrier — and
+    // with it the whole round — open indefinitely.
+    let client =
+        match tokio::time::timeout(CONNECT_TIMEOUT, grpc_client::connect_eager(server)).await {
+            Ok(result) => result.map_err(|error| error.to_string()),
+            Err(_) => Err(format!(
+                "connect timed out after {}s",
+                CONNECT_TIMEOUT.as_secs()
+            )),
+        };
+    let connect_elapsed = connect_start.elapsed();
 
-    let client = grpc_client::connect_eager(server).await;
-    let connect_elapsed = started.elapsed();
+    barrier.wait().await;
 
-    let failed = |error: grpc_client::Error| ConnectionResult {
+    let fetch_start = Instant::now();
+    let failed = |error: String| ConnectionResult {
         index,
         range_start,
         range_end,
         blocks: 0,
         connect_elapsed,
-        fetch_elapsed: started.elapsed().saturating_sub(connect_elapsed),
-        error: Some(error.to_string()),
+        fetch_elapsed: fetch_start.elapsed(),
+        error: Some(error),
         chain_breaks: 0,
     };
 
@@ -274,12 +312,12 @@ async fn fetch_one(
                 range_end,
                 blocks: blocks.len(),
                 connect_elapsed,
-                fetch_elapsed: started.elapsed().saturating_sub(connect_elapsed),
+                fetch_elapsed: fetch_start.elapsed(),
                 error: None,
                 chain_breaks: verifier.total_errors(),
             }
         }
-        Err(error) => failed(error),
+        Err(error) => failed(error.to_string()),
     }
 }
 
