@@ -76,6 +76,30 @@ and this library adheres to Rust's notion of
   cadence and exclude-list caps operator-configurable.
 
 ### Changed
+- **Bulk finalised-state sync now fetches blocks concurrently.** A profile of a
+  mainnet sync through the sandblast heights (~1.7M) put **91% of cycles in
+  BLS12-381 scalar arithmetic** — `sqrt_tonelli_shanks`, `Scalar::square`,
+  `Scalar::invert` — against **1.3% in LMDB**. That is Jubjub point
+  decompression: zebra's block deserializer resolves `cv` and `ephemeral_key`
+  for every Sapling output via `from_bytes_not_small_order` (a modular square
+  root plus a cofactor multiplication), and Zaino discards all of it, keeping
+  only the compact representation. Sandblast-era blocks carry hundreds of
+  outputs each, which took block building from 1.4ms to 200ms per block — a
+  sync doing 5 blocks/s on one core with fifteen idle.
+
+  The fetch does not depend on `parent_chainwork`, so it no longer runs in block
+  order: `write_blocks_to_height` now issues one fetch per core (less one, capped
+  at 16) and folds the results back in height order. The read-state service runs
+  each read on `spawn_blocking`, so the decompression spreads across cores. The
+  order-dependent half — chaining `parent_chainwork` — is unchanged.
+
+  This divides the waste rather than removing it. The fix that removes it is
+  upstream in zebra: decompress `cv`/`ephemeral_key` lazily, since reading a
+  historical block never verifies it.
+
+  `zaino.sync.block_build_seconds` still records per-block cost, so with N
+  fetches in flight its sum approaches N x wall-clock; divide by the concurrency
+  before comparing it against elapsed time.
 - **Bulk finalised-state sync now pipelines its write batches.**
   `DbV1::write_blocks_to_height` commits batch N on a scoped thread while it
   builds batch N+1, instead of alternating between the two. Measured on a

@@ -37,6 +37,30 @@ const SYNC_WRITE_BATCH_MAX_BLOCKS: usize = 100_000;
 #[cfg(not(feature = "transparent_address_history_experimental"))]
 const SYNC_PROGRESS_LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// Upper bound on how many blocks a bulk sync fetches from the source at once.
+///
+/// Bulk sync is CPU-bound inside the source, not in this crate's write path: a profile of a
+/// mainnet sync through the sandblast heights put 91% of cycles in BLS12-381 scalar arithmetic
+/// (`sqrt_tonelli_shanks`, `Scalar::square`/`invert`) — Jubjub point decompression, performed
+/// while deserialising each Sapling output — against 1.3% in LMDB. Fetching one block at a time
+/// left that on a single core with the rest of the machine idle.
+///
+/// The fetches are independent (see `fetch_block_for_indexing`) and the read-state service runs
+/// each on `spawn_blocking`, so issuing them together spreads the decompression across cores. The
+/// order-dependent half still runs in block order.
+#[cfg(not(feature = "transparent_address_history_experimental"))]
+const SYNC_BUILD_CONCURRENCY_LIMIT: usize = 16;
+
+/// Blocks to fetch concurrently: one per core, less one left for the committing thread and the
+/// rest of the node, and never more than [`SYNC_BUILD_CONCURRENCY_LIMIT`].
+#[cfg(not(feature = "transparent_address_history_experimental"))]
+fn sync_build_concurrency() -> usize {
+    std::thread::available_parallelism()
+        .map(|cores| cores.get().saturating_sub(1))
+        .unwrap_or(4)
+        .clamp(1, SYNC_BUILD_CONCURRENCY_LIMIT)
+}
+
 /// Immutable inputs shared by every batch of one bulk-sync run.
 #[cfg(not(feature = "transparent_address_history_experimental"))]
 struct BatchBuild {
@@ -48,6 +72,8 @@ struct BatchBuild {
     target: u32,
     budget_bytes: u64,
     interval: std::time::Duration,
+    /// Blocks fetched from the source at once; see [`sync_build_concurrency`].
+    concurrency: usize,
 }
 
 /// Position carried from one batch to the next.
@@ -82,26 +108,59 @@ async fn fill_sync_batch<S: crate::chain_index::source::BlockchainSource>(
         && batch.len() < SYNC_WRITE_BATCH_MAX_BLOCKS
         && started.elapsed() < build.interval
     {
-        #[cfg(feature = "prometheus")]
-        let build_start = std::time::Instant::now();
-        let block = crate::chain_index::finalised_state::build_indexed_block_from_source(
-            source,
-            build.zebra_network.clone(),
-            build.sapling_activation_height,
-            build.nu5_activation_height,
-            build.nu6_3_activation_height,
-            cursor.next,
-            cursor.parent_chainwork,
-        )
-        .await?;
-        #[cfg(feature = "prometheus")]
-        metrics::histogram!(SYNC_BLOCK_BUILD_SECONDS).record(build_start.elapsed().as_secs_f64());
-        cursor.parent_chainwork = Some(block.context.chainwork);
-        batch_bytes = batch_bytes.saturating_add(approx_indexed_block_bytes(&block));
-        batch.push(block);
-        cursor.next += 1;
+        // One window of heights, fetched together. Capped by the caps themselves so a window
+        // never overshoots the target or the block-count cap; the byte and time caps are checked
+        // per window rather than per block, which can overshoot by at most one window.
+        let remaining_blocks = SYNC_WRITE_BATCH_MAX_BLOCKS.saturating_sub(batch.len());
+        let window = build
+            .concurrency
+            .min(remaining_blocks)
+            .min((build.target - cursor.next + 1) as usize);
+        let heights: Vec<u32> = (cursor.next..cursor.next + window as u32).collect();
 
-        // In-flight progress: the block just built, throttled by time. The committed tip is
+        // `buffered` keeps the results in height order while letting the fetches run together,
+        // so the fold below still sees blocks in the order the chain has them.
+        let fetches = futures::StreamExt::map(
+            futures::stream::iter(heights.iter().copied()),
+            |height_int| async move {
+                #[cfg(feature = "prometheus")]
+                let build_start = std::time::Instant::now();
+                let fetched = crate::chain_index::finalised_state::fetch_block_for_indexing(
+                    source, height_int,
+                )
+                .await;
+                // Per-block cost, so it stays comparable across concurrency settings. With N
+                // fetches in flight the sum of this histogram approaches N x wall-clock; compare
+                // it against wall-clock only after dividing by the concurrency in force.
+                #[cfg(feature = "prometheus")]
+                metrics::histogram!(SYNC_BLOCK_BUILD_SECONDS)
+                    .record(build_start.elapsed().as_secs_f64());
+                fetched
+            },
+        );
+        let fetched: Vec<_> = futures::TryStreamExt::try_collect(futures::StreamExt::buffered(
+            fetches,
+            build.concurrency,
+        ))
+        .await?;
+
+        for (height_int, parts) in heights.into_iter().zip(fetched) {
+            let block = crate::chain_index::finalised_state::assemble_indexed_block(
+                parts,
+                build.zebra_network.clone(),
+                build.sapling_activation_height,
+                build.nu5_activation_height,
+                build.nu6_3_activation_height,
+                height_int,
+                cursor.parent_chainwork,
+            )?;
+            cursor.parent_chainwork = Some(block.context.chainwork);
+            batch_bytes = batch_bytes.saturating_add(approx_indexed_block_bytes(&block));
+            batch.push(block);
+            cursor.next += 1;
+        }
+
+        // In-flight progress: the last block built, throttled by time. The committed tip is
         // reported separately by `note_sync_batch_committed`, and the two now differ by up to a
         // full batch while the pipeline is running.
         if cursor.last_progress_log.elapsed() >= SYNC_PROGRESS_LOG_INTERVAL {
@@ -417,6 +476,7 @@ impl DbWrite for DbV1 {
                 target: height.0,
                 budget_bytes: batch_budget,
                 interval: batch_interval,
+                concurrency: sync_build_concurrency(),
             };
             let mut cursor = BatchCursor {
                 next: start_height,
@@ -2105,4 +2165,26 @@ fn record_block_throughput(block: &IndexedBlock) {
     metrics::counter!(SYNC_TRANSACTIONS_TOTAL).increment(transactions);
     metrics::counter!(SYNC_SAPLING_OUTPUTS_TOTAL).increment(sapling_outputs);
     metrics::counter!(SYNC_ORCHARD_ACTIONS_TOTAL).increment(orchard_actions);
+}
+
+#[cfg(test)]
+mod concurrency_tests {
+    /// The fetch window must leave headroom for the committing thread and never run away on a
+    /// many-core host, and must still be at least one block on a single-core one.
+    #[test]
+    #[cfg(not(feature = "transparent_address_history_experimental"))]
+    fn build_concurrency_stays_within_its_bounds() {
+        let concurrency = super::sync_build_concurrency();
+        assert!(
+            (1..=super::SYNC_BUILD_CONCURRENCY_LIMIT).contains(&concurrency),
+            "concurrency {concurrency} is outside 1..={}",
+            super::SYNC_BUILD_CONCURRENCY_LIMIT
+        );
+        if let Ok(cores) = std::thread::available_parallelism() {
+            assert!(
+                concurrency < cores.get().max(2),
+                "a core must be left for the committing thread"
+            );
+        }
+    }
 }

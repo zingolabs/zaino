@@ -164,8 +164,12 @@ async fn sync_to_height() {
 /// batch boundary is where the builder's cursor and the committed tip diverge, and where an
 /// off-by-one would land. With the default 8 GiB budget the whole vector fits in a single batch
 /// and none of that machinery runs. `sync_write_batch_size = 0` floors the budget at one byte
-/// (the documented guard), which puts exactly one block in every batch and so crosses a boundary
-/// on every block in the range.
+/// (the documented guard), so every fetch window closes its batch — dozens of boundaries across
+/// the range instead of none.
+///
+/// It covers the concurrent fetch window too: the window is filled by `buffered`, which must yield
+/// blocks in height order for the `parent_chainwork` fold to chain them correctly. Out-of-order
+/// results would pair a block with the wrong height and show up as a gap below.
 ///
 /// multi_thread required: the pipeline commits on a scoped thread while the builder runs under
 /// `block_in_place` on this one, which a current-thread runtime cannot do.

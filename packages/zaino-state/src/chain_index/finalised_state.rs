@@ -287,6 +287,36 @@ pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
     height_int: u32,
     parent_chainwork: Option<ChainWork>,
 ) -> Result<IndexedBlock, FinalisedStateError> {
+    let fetched = fetch_block_for_indexing(source, height_int).await?;
+    assemble_indexed_block(
+        fetched,
+        network,
+        sapling_activation_height,
+        nu5_activation_height,
+        nu6_3_activation_height,
+        height_int,
+        parent_chainwork,
+    )
+}
+
+/// The two source reads behind one indexed block, kept together.
+///
+/// Split out of [`build_indexed_block_from_source`] because this half does not depend on
+/// `parent_chainwork` and so does not have to run in block order — which is what lets a bulk sync
+/// issue many of them at once. It is also where a sync spends nearly all of its CPU: deserialising
+/// a block decompresses two Jubjub points per Sapling output (`from_bytes_not_small_order` — a
+/// modular square root plus a cofactor multiplication), work Zaino discards, since it keeps only
+/// the compact representation. On sandblast-era blocks that dwarfs everything else the sync does.
+pub(crate) struct FetchedBlock {
+    block: Arc<zebra_chain::block::Block>,
+    tree_roots: crate::chain_index::source::ShieldedTreeRoots,
+}
+
+/// Reads one block and its commitment-tree roots from the source.
+pub(crate) async fn fetch_block_for_indexing<S: BlockchainSource>(
+    source: &S,
+    height_int: u32,
+) -> Result<FetchedBlock, FinalisedStateError> {
     let block = match source
         .get_block(zebra_state::HashOrHeight::Height(
             zebra_chain::block::Height(height_int),
@@ -306,8 +336,29 @@ pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
     let block_hash = BlockHash::from(block.hash().0);
 
     // Fetch sapling / orchard commitment tree data if above the relevant network upgrade.
-    let (sapling_opt, orchard_opt, ironwood_opt) =
-        source.get_commitment_tree_roots(block_hash).await?;
+    let tree_roots = source.get_commitment_tree_roots(block_hash).await?;
+
+    Ok(FetchedBlock { block, tree_roots })
+}
+
+/// Turns a [`FetchedBlock`] into an [`IndexedBlock`], given the chainwork of its parent.
+///
+/// The order-dependent half: `parent_chainwork` chains each block to the one before it, so this
+/// runs in block order even when the fetches above did not. Cheap next to the fetch — no curve
+/// arithmetic, just the metadata assembly and the compact-form conversion.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn assemble_indexed_block(
+    fetched: FetchedBlock,
+    network: zebra_chain::parameters::Network,
+    sapling_activation_height: zebra_chain::block::Height,
+    nu5_activation_height: Option<zebra_chain::block::Height>,
+    nu6_3_activation_height: Option<zebra_chain::block::Height>,
+    height_int: u32,
+    parent_chainwork: Option<ChainWork>,
+) -> Result<IndexedBlock, FinalisedStateError> {
+    let FetchedBlock { block, tree_roots } = fetched;
+    let (sapling_opt, orchard_opt, ironwood_opt) = tree_roots;
+    let block_hash = BlockHash::from(block.hash().0);
 
     let is_sapling_active = height_int >= sapling_activation_height.0;
     let is_orchard_active = nu5_activation_height
