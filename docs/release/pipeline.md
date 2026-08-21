@@ -165,13 +165,18 @@ mapping is pure configuration — the two concerns never touch.
 **The publishers, wired.** The signal producers exist; the gate still names none
 of them:
 
-- `rc-gate` signal — `CI - Nightly` (`ci-nightly.yaml`) is the current publisher.
-  It runs the full suite (the complete `nextest` run plus
-  check/fmt/clippy/doc/whitespace/cargo-hack) and, once every job is green, its
-  `publish-rc-gate-signal` job posts a `success` commit status with context
-  `vars.RELMAN_RC_GATE_CHECK` (default `rc-gate`) on the tested commit. Repoint
-  the context at a different workflow to swap the suite; drop the job to retire
-  this one. `GITHUB_TOKEN` suffices — the gate only reads the status.
+- `rc-gate` signal — any producer that posts a `success` check-run/commit-status
+  with context `vars.RELMAN_RC_GATE_CHECK` (default `rc-gate`) on the tested
+  commit. `CI - Nightly` (`ci-nightly.yaml`) carries a reference producer: it runs
+  the full suite (the complete `nextest` run plus check/fmt/clippy/doc/whitespace/
+  cargo-hack) and, once every job is green, its `publish-rc-gate-signal` job posts
+  that status. **Caveat (current):** those suite jobs run on self-hosted
+  `arc-sh-runners`, of which there are none right now — so the publish job's
+  `needs` are unmet and no signal is produced (the gate simply won't advance
+  without `force`; no false green). The anticipated real producer is a **cluster
+  job driven by `ztest`** that runs the suite and posts the same status; when it
+  lands it becomes the publisher with no change to the gate. `GITHUB_TOKEN`
+  suffices for whichever producer runs inside Actions — the gate only reads.
 - `release-gate` (deployment) signal — normally the cluster deployment gate posts
   a `deployment_status` back (poller → live-chain WorkflowTemplate). The manual
   path is `deployment-signoff.yml`: a human dispatches `success`/`failure` for an

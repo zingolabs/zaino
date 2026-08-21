@@ -208,15 +208,19 @@ jobs:
         with:
           hack-subcommand: build
 
-  # This job makes `CI - Nightly` the PUBLISHER of the rc-gate's named signal.
-  # The rc-gate flow point (rc-gate.yml) never names a suite; it only requires a
-  # `success` check-run/commit-status whose context is
-  # `vars.RELMAN_RC_GATE_CHECK` (default `rc-gate`) on the commit it is about to
-  # advance rc to. This job posts exactly that status on the tested commit once
-  # every suite job above is green — so a fully-green nightly on dev HEAD is what
-  # unlocks the next rc cut. Swapping the suite is pure config: point a different
-  # workflow at the same context and drop this job. INERT until the pipeline is
-  # activated (guards against posting a live signal from a draft).
+  # This job is a REFERENCE publisher of the rc-gate's named signal. The rc-gate
+  # flow point (rc-gate.yml) never names a suite; it only requires a `success`
+  # check-run/commit-status whose context is `vars.RELMAN_RC_GATE_CHECK` (default
+  # `rc-gate`) on the commit it is about to advance rc to. This job posts exactly
+  # that status on the tested commit once every suite job above is green.
+  #
+  # CAVEAT: the suite jobs it `needs` run on self-hosted `arc-sh-runners`, of
+  # which there are none at present. Until runners return (or `ztest` delegates
+  # the suite to a cluster job that posts the same status directly), this job's
+  # `needs` never complete and NO signal is produced — the gate just won't advance
+  # without `force` (no false green). Swapping the producer is pure config: post
+  # the same context from wherever the suite actually runs; this job is not
+  # load-bearing. INERT until the pipeline is activated regardless.
   #
   # A GITHUB_TOKEN-posted commit status is fine here: rc-gate only READS it, so
   # no App identity is needed (unlike deployment_status, which must re-trigger a
