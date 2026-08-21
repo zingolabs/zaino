@@ -31,49 +31,49 @@
 //!
 //! ## The fixture
 //!
-//! Mainnet, pinned at 1,693,104 — the NU5/Orchard rung, and the deepest
-//! registered mainnet artifact. Mainnet matters more here than it might appear:
+//! Mainnet, pinned at 3,434,143 — the NU6.3/Ironwood rung, and the deepest
+//! artifact either network ships. Mainnet matters more here than it might appear:
 //! a differential is only as sharp as the corpus it runs over, and the source
 //! layer this profile is trying to catch differs most on dense, irregular
 //! blocks. Testnet's sparse history is where two ingest paths agree most easily.
 //!
-//! Being above NU5 (1,687,104) is what puts v5 transactions and a funded Orchard
-//! pool on both sides of the comparison — the producer's boundary gate recorded
-//! it funding that pool, 0 -> 325,252,861,549 zatoshi, inside the 6,000 blocks
-//! above the activation. On the Blossom rung this profile used to
-//! ride, `z_gettreestate` had no Orchard tree to disagree about.
+//! Spanning every activation mainnet has had puts v5 transactions, a funded
+//! Orchard pool, and NU6.3's rules on both sides of the comparison — so
+//! `z_gettreestate` has every tree to disagree about, where the Blossom rung this
+//! profile once rode had none.
 //!
-//! **Where it stops is chosen, not incidental.** Mainnet's density is not one
-//! regime: in June 2022 the sandblasting spam attack begins, and within two days
-//! the median block goes from 2.5 kB to over 100 kB and stays there. The onset
-//! is derived rather than cited — no published source gives a height, ECC's
-//! retrospective says only "June 2022" — and measures out as the first
-//! 500-block window above 3x baseline at **1,704,323** (2022-06-15 18:18 UTC),
-//! permanent from **1,706,605**. This pin sits ~11,000 blocks below that, so
-//! both indexes are built entirely over the pre-sandblast chain. Reaching the
-//! boundary itself would take a rung produced for it: the tip is fixed by the
-//! seed archive, so no stop height can go past a pin.
+//! **Where it stops now spans both density regimes, by choice.** In June 2022 the
+//! sandblasting spam attack begins, and within two days mainnet's median block
+//! goes from 2.5 kB to over 100 kB and stays there. The onset is derived rather
+//! than cited — no published source gives a height, ECC's retrospective says only
+//! "June 2022" — and measures out as the first 500-block window above 3x baseline
+//! at **1,704,323** (2022-06-15 18:18 UTC), permanent from **1,706,605**. The
+//! Orchard rung this profile used to ride stopped below that to hold the pre-spam
+//! regime fixed; this pin sits ~1.7M blocks above it, so both indexes are built
+//! across the transition and over the regime an operator runs against today.
+//!
+//! For a differential that is the better corpus either way: the source layer is
+//! most likely to diverge on the dense, irregular blocks the spam era produced.
 //!
 //! Every height this profile queries comes from the artifact's manifest, so
 //! repointing it at a deeper rung needs no change but the handle.
 //!
-//! The seed PVC holding the extracted chain archive is sized by a flat
-//! `ZTEST_SEED_SIZE` rather than per-artifact. This archive is 30.5 GiB
-//! extracted, which is what moved that default from 32Gi to 48Gi. Neither indexer's own DB is
-//! seeded — both build from empty into a pod-local `emptyDir` — so only the
-//! `direct` pod's CoW clone of the archive touches this volume at all.
+//! The seed PVC holding the extracted chain archive is sized from its own
+//! manifest: 257.85 GiB extracted, and `seed_size_for` requests that plus
+//! headroom. Neither indexer's own DB is seeded — both build from empty — so each
+//! declares its own index PVC (`INDEX_DISK_GIB`), and only the `direct` pod's CoW
+//! clone of the archive touches the seed at all.
 //!
 //! Launched detached via `ztest sync start zaino_state_fetch_parity`.
 
 use serde_json::{json, Value};
 use ztest::prelude::*;
-use ztest::snapshots::ORCHARD_MAINNET;
+use ztest::snapshots::IRONWOOD_MAINNET;
 use ztest::sync::{
-    hours, mins, secs, Severity, Snapshot, SyncCtx, SyncOutcome, SyncRunner, Verdict,
-    Violation,
+    hours, mins, secs, Severity, Snapshot, SyncCtx, SyncOutcome, SyncRunner, Verdict, Violation,
 };
 
-/// Snapshot cadence. Two indexers over 1,693,104 dense mainnet blocks is an
+/// Snapshot cadence. Two indexers over 3,434,143 dense mainnet blocks is an
 /// hours-long run; the frontier does not need resolving finer than this, and
 /// every tick costs two exporter scrapes.
 const TICK: std::time::Duration = secs(15);
@@ -110,6 +110,11 @@ const CONVERGE_BUDGET: std::time::Duration = hours(4);
 /// Re-probe interval while waiting for that convergence.
 const CONVERGE_POLL: std::time::Duration = secs(30);
 
+/// Per-pod index reservation. Two full indexes over 3.4M mainnet blocks, each in its own
+/// PVC — the sync tier refuses an `emptyDir` scratch, and a 48-hour build evicted under
+/// DiskPressure costs the whole run. Unmeasured; revisit off `zaino_db_used_bytes`
+const INDEX_DISK_GIB: u64 = 325;
+
 /// The JSON-RPC error a *proxied* call comes back with.
 ///
 /// Matched on the wire text because ztest's `RpcError` keeps the JSON-RPC code
@@ -117,14 +122,14 @@ const CONVERGE_POLL: std::time::Duration = secs(30);
 /// code is the stable half of that string.
 const PROXY_METHOD_NOT_FOUND: &str = "-32601";
 
-#[ztest::needs(ORCHARD_MAINNET)]
+#[ztest::needs(IRONWOOD_MAINNET)]
 #[ztest::sync_test(
     name = "zaino_state_fetch_parity",
-    description = "two zaino pods index the pinned pre-sandblast mainnet snapshot over different ingest paths; their indexes must agree",
+    description = "two zaino pods index the pinned NU6.3 mainnet snapshot over different ingest paths; their indexes must agree",
     subject = indexer,
     timeout = "48h",
     qos = sync,
-    tags = ["mainnet", "zaino", "index", "differential", "orchard", "pre-sandblast"],
+    tags = ["mainnet", "zaino", "index", "differential", "ironwood", "nu6.3"],
 )]
 async fn zaino_state_fetch_parity(mut run: SyncRunner) -> SyncOutcome {
     // One validator, two indexers over it. The direct pod gets its own CoW clone
@@ -133,11 +138,19 @@ async fn zaino_state_fetch_parity(mut run: SyncRunner) -> SyncOutcome {
     // blocks from the validator and would never open the mount.
     let (zaino_state, zaino_fetch) = match run
         .topology(|t| {
-            t.add_validator(Validator::zebrad("6.2.3").snapshot(ORCHARD_MAINNET));
-            let zaino_state =
-                t.add_indexer(zaino().snapshot(ORCHARD_MAINNET).tuning(ZainoTuning::State));
-            let zaino_fetch =
-                t.add_indexer(zaino().snapshot(ORCHARD_MAINNET).tuning(ZainoTuning::Fetch));
+            t.add_validator(Validator::zebrad("6.2.3").snapshot(IRONWOOD_MAINNET));
+            let zaino_state = t.add_indexer(
+                zaino()
+                    .snapshot(IRONWOOD_MAINNET)
+                    .tuning(ZainoTuning::State)
+                    .disk(Disk::gib(INDEX_DISK_GIB)),
+            );
+            let zaino_fetch = t.add_indexer(
+                zaino()
+                    .snapshot(IRONWOOD_MAINNET)
+                    .tuning(ZainoTuning::Fetch)
+                    .disk(Disk::gib(INDEX_DISK_GIB)),
+            );
             (zaino_state, zaino_fetch)
         })
         .await
@@ -151,7 +164,7 @@ async fn zaino_state_fetch_parity(mut run: SyncRunner) -> SyncOutcome {
     // The **rpc** pod is the bound subject, and which one that is matters. The
     // engine's completion predicate is the subject's, and the two pods do not
     // finish together: the direct path reads blocks from a local RocksDB while
-    // this one pulls all 1,693,104 over JSON-RPC, so it is the long pole by a wide
+    // this one pulls all 3,434,143 over JSON-RPC, so it is the long pole by a wide
     // margin. Binding the laggard means completion is very nearly "both are
     // done" — and `indexes_converged` covers the remainder rather than assuming
     // it away.
@@ -370,10 +383,13 @@ async fn observed_both_mid_build(s: &Snapshot, direct: &ZainoIndexer) -> Verdict
 /// the validator compared against itself, twice, and would pass having measured
 /// nothing.
 ///
-/// `getaddressdeltas` is the discriminator. Zaino synthesizes it from its own
-/// index and zebra serves no such method, so while a pod proxies, the call is
-/// forwarded and comes back `-32601`. Any other answer is that pod's index
-/// speaking.
+/// `getaddressdeltas` is the discriminator, and it is **one-sided**. Zebra implements
+/// no such method, and `ChainIndex::get_address_deltas` forwards to the source rather
+/// than synthesizing — so only the pod holding a read-state (`direct`) can ever answer
+/// it. The `rpc` pod returns `-32601` for the life of the run, by construction.
+///
+/// So the pair that proves the two pods are distinct implementations is: `direct`
+/// answers, `rpc` refuses. Requiring *both* to answer would latch `Pending` forever.
 async fn both_answered_from_their_own_index(
     s: &Snapshot,
     cx: &SyncCtx,
@@ -387,17 +403,23 @@ async fn both_answered_from_their_own_index(
     // the *method* is served, and an empty result proves that as well as a
     // populated one.
     let selector = json!([{ "addresses": [], "start": 0, "end": s.height().max(1) }]);
-    for (label, client) in [("rpc", &rpc_rpc), ("direct", &direct_rpc)] {
-        match client
-            .call_value("getaddressdeltas", selector.clone())
-            .await
-        {
-            Ok(_) => {}
-            Err(e) if e.to_string().contains(PROXY_METHOD_NOT_FOUND) => return Verdict::Pending,
-            Err(e) => return Verdict::ProbeError(format!("{label} getaddressdeltas: {e}")),
-        }
+    match direct_rpc
+        .call_value("getaddressdeltas", selector.clone())
+        .await
+    {
+        Ok(_) => {}
+        Err(e) if e.to_string().contains(PROXY_METHOD_NOT_FOUND) => return Verdict::Pending,
+        Err(e) => return Verdict::ProbeError(format!("direct getaddressdeltas: {e}")),
     }
-    Verdict::Satisfied
+    match rpc_rpc.call_value("getaddressdeltas", selector).await {
+        Err(e) if e.to_string().contains(PROXY_METHOD_NOT_FOUND) => Verdict::Satisfied,
+        Ok(v) => Verdict::ProbeError(format!(
+            "the rpc pod served getaddressdeltas ({v}); it holds no read-state, so either \
+             the tuning did not take or both pods share one source and every sweep in this \
+             profile is an identity"
+        )),
+        Err(e) => Verdict::ProbeError(format!("rpc getaddressdeltas: {e}")),
+    }
 }
 
 // ── terminal ─────────────────────────────────────────────────────────────
@@ -472,8 +494,8 @@ fn boundary_heights(tip: u32) -> Vec<u32> {
     heights
 }
 
-/// Mainnet NU5, the upgrade `ORCHARD_MAINNET` straddles — 6,000 blocks below its pin
-const STRADDLED_ACTIVATION: u32 = 1_687_104;
+/// Mainnet NU6.3, the upgrade `IRONWOOD_MAINNET` straddles — 6,000 blocks below its pin
+const STRADDLED_ACTIVATION: u32 = 3_428_143;
 
 /// Blocks below the tip whose coinbase outputs are certainly spendable. 10x the
 /// 100-block maturity: a query against an immature coinbase returns a legitimately
@@ -618,7 +640,7 @@ fn violated(height: u32, detail: String) -> Verdict {
 /// The sampling ladder is this profile's coverage policy — how much of two
 /// full-chain indexes each sweep actually compares — so it is pinned here
 /// rather than left to be read off the arithmetic. The windows below span the
-/// current fixture (1,693,104) and a rung deeper still, because
+/// current fixture (3,434,143) and a rung deeper still, because
 /// the ladder's properties must hold wherever the profile is repointed.
 #[cfg(test)]
 mod tests {
@@ -627,7 +649,7 @@ mod tests {
     /// A sweep may only ask about blocks both indexes have written.
     #[test]
     fn every_sample_lies_inside_the_common_window() {
-        for window in [1, 2, 9, 1_000, 1_693_104, 4_140_000] {
+        for window in [1, 2, 9, 1_000, 3_434_143, 4_140_000] {
             let heights = sweep_heights(window);
             assert!(
                 heights.iter().all(|&h| h >= 1 && h <= window),
@@ -645,7 +667,7 @@ mod tests {
     /// corrupted early cannot stop being checked as the window grows past it.
     #[test]
     fn both_ends_of_the_window_are_always_sampled() {
-        for window in [1, 2, 9, 1_000, 1_693_104, 4_140_000] {
+        for window in [1, 2, 9, 1_000, 3_434_143, 4_140_000] {
             let heights = sweep_heights(window);
             assert!(heights.contains(&1), "window {window} skipped the base");
             assert!(
@@ -661,7 +683,7 @@ mod tests {
     /// thorough.
     #[test]
     fn the_ladder_stays_small_over_a_full_chain() {
-        for window in [1_693_104, 4_140_000] {
+        for window in [3_434_143, 4_140_000] {
             let heights = sweep_heights(window);
             assert!(
                 heights.len() <= 12,
@@ -676,7 +698,7 @@ mod tests {
     /// history that every previous sweep already agreed about.
     #[test]
     fn most_samples_sit_near_the_frontier() {
-        for window in [1_693_104u32, 4_140_000] {
+        for window in [3_434_143u32, 4_140_000] {
             let heights = sweep_heights(window);
             let newest_tenth = window - window / 10;
             let near = heights.iter().filter(|&&h| h >= newest_tenth).count();
