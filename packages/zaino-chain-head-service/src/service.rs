@@ -176,8 +176,7 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         config: ChainHeadConfig,
         cancel: CancellationToken,
     ) -> Result<Arc<Self>, ChainHeadInitError> {
-        let status = NamedAtomicStatus::new(COMPONENT, StatusType::Spawning);
-        status.store(StatusType::Syncing);
+        let status = NamedAtomicStatus::new(COMPONENT, StatusType::Syncing);
 
         let snapshot = anchor_with_retry(&source, &config, &cancel).await?;
         info!(
