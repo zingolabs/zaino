@@ -202,7 +202,10 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
             task: Mutex::new(None),
             config,
         });
-        service.status.store(StatusType::Ready);
+        // Still `Syncing`: the anchor is the window's floor, not its tip, so a
+        // reader served now would see a head up to `max_depth` below the
+        // chain. `Ready` is published by the first successful advance, which
+        // is the first moment the snapshot matches the validator's tip.
 
         Ok(service)
     }
@@ -276,9 +279,8 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                 Ok(()) => {
                     consecutive_failures = 0;
                     backoff = self.config.initial_backoff();
-                    if self.status.load() != StatusType::Closing {
-                        self.status.store(StatusType::Ready);
-                    }
+                    // `Ready` is already published from inside `tick`, before
+                    // the advanced snapshot becomes observable to readers.
                     if self.wait_for_work(&mut wake).await.is_break() {
                         break;
                     }
@@ -353,12 +355,26 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         // for a same-height reorg, which costs a round trip per poll for an
         // answer that cannot have changed.
         if tip == previous.best_tip() {
+            self.mark_fresh();
             return Ok(());
         }
 
         let next = self.next_graph(&previous, tip.height).await?;
+        self.mark_fresh();
         self.publish_snapshot(&previous, next);
         Ok(())
+    }
+
+    /// Publishes `Ready` on a successful advance, once the built graph matches
+    /// the validator tip read this iteration — stored before the snapshot swap
+    /// so no reader can observe a fresh snapshot under a stale `Syncing`.
+    ///
+    /// `Closing` is not overwritten: a shutdown that races the final tick must
+    /// stay observable on every handle.
+    fn mark_fresh(&self) {
+        if self.status.load() != StatusType::Closing {
+            self.status.store(StatusType::Ready);
+        }
     }
 
     /// Builds the graph as it should be at `chain_height`.
