@@ -5937,7 +5937,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-common"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "rustls",
  "serde",
@@ -6006,7 +6006,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-proto"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "prost",
  "tonic",
@@ -6033,7 +6033,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-serve"
-version = "0.5.1"
+version = "0.6.0"
 dependencies = [
  "futures",
  "hex",
@@ -6118,7 +6118,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-state"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "arc-swap",
  "bitflags 2.13.0",
@@ -6218,7 +6218,7 @@ dependencies = [
 
 [[package]]
 name = "zainod"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "clap",
  "config",
