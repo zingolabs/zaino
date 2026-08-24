@@ -220,16 +220,7 @@ impl NamedAtomicStatus {
 
     /// Sets the value held in the NamedAtomicStatus, logging the transition.
     pub fn store(&self, status: StatusType) {
-        let old = self.load();
-        if old != status {
-            debug!(
-                component = self.name,
-                from = %old,
-                to = %status,
-                "[STATUS] transition"
-            );
-        }
-        self.inner.store(status.into(), Ordering::SeqCst);
+        self.apply(|_| status);
     }
 }
 
