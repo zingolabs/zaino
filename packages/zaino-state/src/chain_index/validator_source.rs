@@ -1121,7 +1121,7 @@ impl ZebraValidatorSource {
 
         // Adopted before anything consumes a `Network`, so the index and its
         // validator cannot disagree about where an upgrade activates.
-        let network = super::network_adoption::adopt_network(common, &rpc_client(common)?).await?;
+        let network = super::network_adoption::adopt_network(common, &rpc_adapter(common)?).await?;
 
         let validator = zaino_source_zebra::ZebraValidator::rpc_only(adapter);
 
@@ -1154,7 +1154,7 @@ impl ZebraValidatorSource {
             .await
             .map_err(err)?;
 
-        let network = super::network_adoption::adopt_network(common, &rpc_client(common)?).await?;
+        let network = super::network_adoption::adopt_network(common, &rpc_adapter(common)?).await?;
 
         tracing::info!(
             grpc_address = %direct.validator_grpc_address,

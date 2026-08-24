@@ -180,7 +180,7 @@ zaino-source-zebra-readstate = { path = "packages/zaino-source-zebra-readstate",
 # Composite over the two adapters: capability decides what each can answer,
 # this decides which to ask.
 zaino-source-zebra = { path = "packages/zaino-source-zebra", version = "0.1.0" }
-zaino-common = { path = "packages/zaino-common", version = "0.4.0" }
+zaino-common = { path = "packages/zaino-common", version = "0.5.0" }
 # ChainHead: the bounded non-finalised block graph, its canonical chain, and the
 # competing branches retained alongside it. This crate is the domain half —
 # types and ports only, no runtime — so a consumer can name what ChainHead
@@ -191,9 +191,9 @@ zaino-chain-head = { path = "packages/zaino-chain-head", version = "0.1.0" }
 # crate so a consumer can name what ChainHead answers without depending on the
 # machinery that answers it.
 zaino-chain-head-service = { path = "packages/zaino-chain-head-service", version = "0.1.0" }
-zaino-proto = { path = "packages/zaino-proto", version = "0.3.0" }
-zaino-state = { path = "packages/zaino-state", version = "0.6.0", default-features = false }
-zaino-serve = { path = "packages/zaino-serve", version = "0.5.1", default-features = false }
+zaino-proto = { path = "packages/zaino-proto", version = "0.4.0" }
+zaino-state = { path = "packages/zaino-state", version = "0.7.0", default-features = false }
+zaino-serve = { path = "packages/zaino-serve", version = "0.6.0", default-features = false }
 zaino-testutils = { path = "live-tests/zaino-testutils" }
 
 # Zingo-infra (validator launcher driving the live tests; not a prod dep).
