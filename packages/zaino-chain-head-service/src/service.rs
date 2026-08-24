@@ -293,11 +293,11 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                             attempts = consecutive_failures,
                             "ChainHead giving up on the validator; last published snapshot is now stale",
                         );
-                        self.status.store(StatusType::CriticalError);
+                        self.status.apply(|s| next_status(s, TickOutcome::GaveUp));
                         break;
                     }
                     warn!(%error, attempts = consecutive_failures, "ChainHead failed to advance; retrying");
-                    self.status.store(StatusType::RecoverableError);
+                    self.status.apply(|s| next_status(s, TickOutcome::Retrying));
                     if sleep_or_cancel(backoff, &self.cancel).await.is_break() {
                         break;
                     }
@@ -365,16 +365,10 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         Ok(())
     }
 
-    /// Publishes `Ready` on a successful advance, once the built graph matches
-    /// the validator tip read this iteration — stored before the snapshot swap
-    /// so no reader can observe a fresh snapshot under a stale `Syncing`.
-    ///
-    /// `Closing` is not overwritten: a shutdown that races the final tick must
-    /// stay observable on every handle.
+    /// Publishes the [`TickOutcome::Advanced`] transition before the snapshot
+    /// swap, so no reader can observe a fresh snapshot under a stale `Syncing`.
     fn mark_fresh(&self) {
-        if self.status.load() != StatusType::Closing {
-            self.status.store(StatusType::Ready);
-        }
+        self.status.apply(|s| next_status(s, TickOutcome::Advanced));
     }
 
     /// Builds the graph as it should be at `chain_height`.
@@ -730,6 +724,30 @@ impl<S: ChainHeadBlockSource> Drop for ChainHeadService<S> {
     }
 }
 
+/// What one writer iteration concluded about the published snapshot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TickOutcome {
+    /// The snapshot now matches the validator tip read this iteration.
+    Advanced,
+    /// The advance failed and the backoff ladder will retry it.
+    Retrying,
+    /// The advance failed `max_consecutive_failures` times and the writer is exiting.
+    GaveUp,
+}
+
+/// The chain head's status transition rule, pure and total so its invariants
+/// are stated once here instead of re-derived at every store site.
+fn next_status(current: StatusType, outcome: TickOutcome) -> StatusType {
+    match (current, outcome) {
+        // Closing absorbs every outcome: a shutdown that races the final
+        // iteration must stay observable on every handle.
+        (StatusType::Closing, _) => StatusType::Closing,
+        (_, TickOutcome::Advanced) => StatusType::Ready,
+        (_, TickOutcome::Retrying) => StatusType::RecoverableError,
+        (_, TickOutcome::GaveUp) => StatusType::CriticalError,
+    }
+}
+
 /// Builds a [`ChainHeadBlock`], accumulating work onto its parent's.
 ///
 /// The old `create_indexed_block_with_optional_roots`, less the parts only a
@@ -925,5 +943,56 @@ impl Block for zaino_primitives::types::Block {
         service: &ChainHeadService<S>,
     ) -> Result<ChainHeadBlock, ChainHeadAdvanceError> {
         service.block_to_chainblock(prev_block, self).await
+    }
+}
+
+#[cfg(test)]
+mod next_status_rule {
+    use super::{next_status, StatusType, TickOutcome};
+
+    const OUTCOMES: [TickOutcome; 3] = [
+        TickOutcome::Advanced,
+        TickOutcome::Retrying,
+        TickOutcome::GaveUp,
+    ];
+
+    /// No outcome may overwrite `Closing`, so a shutdown stays observable.
+    #[test]
+    fn closing_absorbs_every_outcome() {
+        for outcome in OUTCOMES {
+            assert_eq!(
+                next_status(StatusType::Closing, outcome),
+                StatusType::Closing,
+                "{outcome:?} must not overwrite Closing"
+            );
+        }
+    }
+
+    /// Every non-`Closing` state takes the status its outcome names.
+    #[test]
+    fn every_live_state_takes_the_outcome_status() {
+        let live_states = [
+            StatusType::Spawning,
+            StatusType::Syncing,
+            StatusType::Ready,
+            StatusType::Busy,
+            StatusType::RecoverableError,
+            StatusType::CriticalError,
+            StatusType::Offline,
+        ];
+        for current in live_states {
+            assert_eq!(
+                next_status(current, TickOutcome::Advanced),
+                StatusType::Ready
+            );
+            assert_eq!(
+                next_status(current, TickOutcome::Retrying),
+                StatusType::RecoverableError
+            );
+            assert_eq!(
+                next_status(current, TickOutcome::GaveUp),
+                StatusType::CriticalError
+            );
+        }
     }
 }
