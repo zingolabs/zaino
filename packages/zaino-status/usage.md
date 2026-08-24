@@ -31,6 +31,15 @@ impl Status for MyService {
 // Or hold one directly. Cloning shares the cell.
 let status = NamedAtomicStatus::new("MyService", StatusType::Spawning);
 status.store(StatusType::Ready);
+
+// A transition that depends on the current status goes through `apply`,
+// which runs the closure inside one compare-and-swap loop. A `load`
+// followed by a guarded `store` leaves a window in which another writer's
+// transition is silently overwritten; `apply` closes it.
+status.apply(|current| match current {
+    StatusType::Closing => StatusType::Closing, // shutdown stays observable
+    _ => StatusType::Ready,
+});
 ```
 
 `Liveness` and `Readiness` arrive for free: they are blanket impls over
