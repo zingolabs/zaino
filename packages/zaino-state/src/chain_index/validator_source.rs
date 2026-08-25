@@ -1121,6 +1121,18 @@ impl ZebraValidatorSource {
 
         // Adopted before anything consumes a `Network`, so the index and its
         // validator cannot disagree about where an upgrade activates.
+        //
+        // This is the first place in Zaino that actually constructs a
+        // `ValidatorClient` (the sealed resilient client): `adopt_network`
+        // binds the canonical `GetBlockchainInfo` port, which only
+        // `ValidatorClient<V>` implements, so the adapter has to be wrapped
+        // here. Wrapping buys resilience to transient unreachability for this
+        // one boot RPC — not readiness: waiting for the validator to *become*
+        // ready is a lifecycle concern the caller owns (that is what the
+        // tip-serving wait above does), never the client's. The remaining
+        // `OneShotGet*` calls stay on the bare adapter for now; migrating
+        // every consumer onto `ValidatorClient` is follow-up work, kept out to
+        // bound this PR's size.
         let source = zaino_source::ValidatorClient::new(
             rpc_adapter(common)?,
             zaino_source::RetryPolicy::default(),
@@ -1158,6 +1170,9 @@ impl ZebraValidatorSource {
             .await
             .map_err(err)?;
 
+        // As in `spawn_rpc`: `adopt_network` needs the sealed resilient port,
+        // so wrap the adapter in a `ValidatorClient`. The `OneShotGet*` call
+        // above stays on the bare adapter for now (see the note there).
         let source = zaino_source::ValidatorClient::new(
             rpc_adapter(common)?,
             zaino_source::RetryPolicy::default(),
