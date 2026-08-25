@@ -1,0 +1,73 @@
+# Zaino mainnet benchmark configuration — persistent finalised state
+#
+# The node config behind the numbers in `docs/perf.md`. Paths and ports match
+# the measuring host; change them for yours, but keep the two choices that make
+# the numbers mean what they claim:
+#
+#   backend = 'direct'                  the fastest path Zaino has
+#   ephemeral_finalised_state = false   Zaino answers from its own index
+#
+# Pair it with `zainod-bench-mainnet-ephemeral.toml`, which flips the second.
+# `docs/perf.md` reports the serve and concurrency numbers under both.
+#
+# zainod must be built with the `prometheus` feature for `metrics_endpoint` to
+# bind — `zaino-bench sync` reads sync progress from there:
+#
+#   cargo build --release -p zainod --features prometheus
+#   zainod start --config docs/example_configs/zainod-bench-mainnet.toml
+#
+# See `packages/zaino-bench/usage.md` for the full run procedure.
+
+# "direct" reads Zebra's ReadStateService in-process; requires zainod and zebrad
+# on the same host. ("state" is the legacy spelling of the same value.) The
+# alternative, "rpc" ("fetch"), goes over JSON-RPC — a different question.
+backend = 'direct'
+
+# Zebra's `[state] cache_dir`, verbatim.
+zebra_db_path = '<PATH_TO_ZEBRA>'
+
+network = 'Mainnet'
+
+# The persistent half of the pair: Zaino keeps its own finalised-state database
+# and serves finalised reads from it.
+ephemeral_finalised_state = false
+
+# Where `zaino-bench sync` scrapes progress from. Requires --features prometheus;
+# the field parses either way, it just has no effect without it.
+metrics_endpoint = '127.0.0.1:9998'
+
+[grpc_settings]
+listen_address = '127.0.0.1:8137'
+
+[validator_settings]
+# Must match zebrad.toml's `[rpc]`, and the two must differ from each other
+# (zainod rejects a config where they collide):
+#
+#   [rpc]
+#   listen_addr         = '127.0.0.1:18232'   -> validator_jsonrpc_listen_address
+#   indexer_listen_addr = '127.0.0.1:18230'   -> validator_grpc_listen_address
+#
+# The gRPC address is required by the Direct backend; zainod refuses to start on
+# Direct without it.
+validator_grpc_listen_address = '127.0.0.1:18230'
+validator_jsonrpc_listen_address = '127.0.0.1:18232'
+validator_user = 'xxxxxx'
+validator_password = 'xxxxxx'
+
+# Left at defaults for the published numbers. `channel_size` in particular
+# bounds concurrency, so raising it changes the answer to "how many connections
+# can you support" — if you tune it, say so in docs/perf.md alongside the number.
+[service]
+timeout = 30
+channel_size = 32
+
+[storage.cache]
+capacity = 10000
+shard_power = 4
+
+[storage.database]
+path = '<ZAINO_CACHE>'
+# GiB. Measured: a full mainnet index is ~76 GiB at height 3.45M. This is the map
+# size (an upper bound, not a reservation), so leave headroom above that and
+# the volume needs the free space to match.
+size = 384

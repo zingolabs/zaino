@@ -19,6 +19,10 @@ and this library adheres to Rust's notion of
 - Probing moved with status rather than after it: `Liveness` and `Readiness` are
   blanket impls over `Status`, so the two cannot be separated without giving up
   the blanket impls.
+- `NamedAtomicStatus::apply` replaces the status with `f(current)` in one
+  compare-and-swap loop, for transitions that depend on the current status; a
+  `load` followed by a guarded `store` leaves a window in which a concurrent
+  transition is silently overwritten, and `apply` closes it.
 
 ### Changed
 ### Deprecated
