@@ -20,6 +20,10 @@ members = [
     "packages/zaino-serve",
     "packages/zaino-state",
     "packages/zaino-proto",
+    # Benchmark harness. Excluded from `default-members` for the same reason as
+    # the live-test crates: it is an operator tool run explicitly
+    # (`-p zaino-bench`), never part of the fast test loop.
+    "packages/zaino-bench",
     # Live-test suite (docs/adr/0002, docs/adr/0003, docs/adr/0004).
     # zaino-testutils first: the e2e/clientless partitions depend on it.
     "live-tests/zaino-testutils",

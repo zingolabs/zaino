@@ -8,6 +8,31 @@ and this library adheres to Rust's notion of
 ## Unreleased
 
 ### Added
+- **`zaino-bench`** — a benchmark harness answering three operational questions
+  against a running zainod, from the outside, over the interfaces a real client
+  uses. A workspace member but not a `default-member`, so a bare
+  `cargo nextest run` never builds it; select it with `makers bench` or
+  `-p zaino-bench`.
+  - `sync` — initial-sync time, sampled from zainod's existing Prometheus
+    endpoint (`zaino.sync.*`). No new instrumentation: it reads what
+    `zaino-state` already emits behind the `prometheus` feature, with a unit
+    test pinning the metric names to `zaino_state::metric_names` so a rename
+    fails the build rather than the run. `--csv` writes the sync curve.
+  - `concurrent` — concurrent-connection load test with a `--sweep` mode that
+    locates the knee, tail percentiles (p50/p95/p99) alongside min/mean/max, and
+    an `RLIMIT_NOFILE` preflight so a client-side `ulimit` is not mistaken for a
+    server-side ceiling. Ported from the `zaino-admin concurrent-test` tool on
+    the `hahn/store` branch.
+  - `serve` — single-stream block serve rate, verifying every `prev_hash` link
+    in the same pass. Ported from that branch's `zaino-admin check`.
+  - `docs/perf.md` records the results and, next to them, the machine spec and
+    node configs that produced them:
+    `docs/example_configs/zainod-bench-mainnet{,-ephemeral}.toml`. Both select
+    `backend = 'direct'` deliberately — the fastest path Zaino has, and so the
+    honest ceiling to quote — and differ only in
+    `ephemeral_finalised_state`. `concurrent` and `serve` are reported under
+    both modes, since a finalised read is answered from Zaino's own index in one
+    and by passthrough to the validator in the other; `sync` is persistent-only.
 - **Eight new crates** implementing validator access as a hexagonal port /
   adapter stack (ADR-0008, ADR-0009). Each carries a `usage.md`:
   - `zaino-primitives` — Zaino's domain vocabulary. Depends on `thiserror` and
@@ -51,6 +76,75 @@ and this library adheres to Rust's notion of
   cadence and exclude-list caps operator-configurable.
 
 ### Changed
+- **LMDB reader slots raised from 512 to 2048–8192.** The clamp was
+  `(cpu * 32).clamp(512, 4096)`, which gives exactly 512 — the floor — on any
+  host with 16 cores or fewer. With `NO_TLS` a slot belongs to a read
+  *transaction* rather than a thread, so 512 is a hard ceiling on concurrent
+  reads, and an ordinary concurrency benchmark exhausted it: reads failed with
+  `MDB_READERS_FULL`, the startup block scan treats that as fatal, and the node
+  restarted in a loop. A slot is one cache line (the measured `lock.mdb` is
+  32,896 bytes at 512 readers), so 8192 slots costs ~512 KiB of shared memory.
+
+  **This does not make exhaustion safe.** A client can still open more
+  concurrent reads than there are slots. `MDB_READERS_FULL` being classified as
+  a critical error — rather than the backpressure it is — remains an open bug,
+  and until it is fixed a client can restart a node by exceeding whatever limit
+  is configured.
+- **Bulk finalised-state sync now assembles blocks concurrently too.** Making
+  the fetch concurrent exposed the other half: a profile through the sandblast
+  heights put **54% of all CPU on a single thread**, holding the run to 8
+  blocks/s on 1.8 of 16 cores. That thread was the chainwork fold, which ran
+  `assemble_indexed_block` in block order. Assembly is as expensive as the
+  fetch and for the mirror-image reason — converting to the compact form
+  re-serialises the Jubjub points zebra just decompressed, and returning to
+  affine coordinates costs a field inversion per point. By Amdahl that capped
+  the whole run at 1.85x however many cores the fetches used.
+
+  A block's own proof-of-work depends only on its own header, so the cumulative
+  chainwork is a running sum that can be folded over already-fetched blocks in a
+  separate pass. Bulk sync is now three: fetch a window concurrently, fold the
+  chainwork in order (integer arithmetic, microseconds), then assemble the
+  window concurrently on `spawn_blocking`. The ordering guarantee is unchanged —
+  every block still gets exactly its parent's chainwork plus its own.
+- **Bulk finalised-state sync now fetches blocks concurrently.** A profile of a
+  mainnet sync through the sandblast heights (~1.7M) put **91% of cycles in
+  BLS12-381 scalar arithmetic** — `sqrt_tonelli_shanks`, `Scalar::square`,
+  `Scalar::invert` — against **1.3% in LMDB**. That is Jubjub point
+  decompression: zebra's block deserializer resolves `cv` and `ephemeral_key`
+  for every Sapling output via `from_bytes_not_small_order` (a modular square
+  root plus a cofactor multiplication), and Zaino discards all of it, keeping
+  only the compact representation. Sandblast-era blocks carry hundreds of
+  outputs each, which took block building from 1.4ms to 200ms per block — a
+  sync doing 5 blocks/s on one core with fifteen idle.
+
+  The fetch does not depend on `parent_chainwork`, so it no longer runs in block
+  order: `write_blocks_to_height` now issues one fetch per core (less one, capped
+  at 16) and folds the results back in height order. The read-state service runs
+  each read on `spawn_blocking`, so the decompression spreads across cores. The
+  order-dependent half — chaining `parent_chainwork` — is unchanged.
+
+  This divides the waste rather than removing it. The fix that removes it is
+  upstream in zebra: decompress `cv`/`ephemeral_key` lazily, since reading a
+  historical block never verifies it.
+
+  `zaino.sync.block_build_seconds` still records per-block cost, so with N
+  fetches in flight its sum approaches N x wall-clock; divide by the concurrency
+  before comparing it against elapsed time.
+- **Bulk finalised-state sync now pipelines its write batches.**
+  `DbV1::write_blocks_to_height` commits batch N on a scoped thread while it
+  builds batch N+1, instead of alternating between the two. Measured on a
+  mainnet sync at height ~1.2M, the serial form spent 60% of wall-clock building
+  blocks and 40% inside `write_block_batch_blocking` + `env.sync`, with the
+  builder idle for every commit — a mean 79s pause every 120s. Overlapping them
+  hides the shorter half behind the longer.
+
+  Durability and resume semantics are unchanged: a batch is still written in one
+  transaction and fsynced before the validated tip advances, so the on-disk
+  `headers` tip never runs ahead of the indexes. The one operational change is
+  memory — peak heap for buffered blocks is now up to *twice*
+  `storage.database.sync_write_batch_size`, since the batch being committed is
+  still resident while its successor fills. That knob bounds one batch, not the
+  pipeline; size it for the host accordingly.
 - **The mempool no longer stalls across a tip transition.** `getrawmempool`,
   `getmempoolinfo` and `GetMempoolTx` are served from a tip-agnostic set that
   never clears; the old mempool wiped its whole map on every tip change and
