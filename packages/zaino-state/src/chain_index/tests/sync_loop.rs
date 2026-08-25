@@ -2,9 +2,10 @@ use super::{
     load_test_vectors_and_sync_chain_index, load_test_vectors_and_sync_chain_index_with_timings,
     MockchainMode,
 };
-use crate::chain_index::{ChainIndex, SyncTimings};
+use crate::chain_index::{combine_component_statuses, ChainIndex, SyncTimings};
 use std::time::Instant;
 use tokio::time::{sleep, Duration};
+use zaino_chain_head::ChainHeadSnapshot as _;
 use zaino_status::{Status as _, StatusType};
 
 /// Regression test (fixes #593): a source failure should not kill the
@@ -81,6 +82,79 @@ async fn escalates_to_critical_after_persistent_failure() {
     );
 }
 
+/// The chain head is one of the components the status fold accounts for.
+///
+/// ChainHead synchronises itself, so nothing else reports on its behalf: if it
+/// is left out of the fold, a head that has given up on the validator serves a
+/// frozen tip while the index still reports `Ready`. Asserting on the fold
+/// directly pins *which* components are accounted for, which the integration
+/// tests below cannot — they cannot fail a single component in isolation.
+#[test]
+fn the_fold_accounts_for_every_component() {
+    let ready = StatusType::Ready;
+
+    assert_eq!(
+        combine_component_statuses(ready, ready, ready, StatusType::CriticalError),
+        StatusType::CriticalError,
+        "a chain head that has given up must not be reported as Ready"
+    );
+    assert_eq!(
+        combine_component_statuses(ready, ready, ready, StatusType::RecoverableError),
+        StatusType::RecoverableError,
+    );
+    assert_eq!(
+        combine_component_statuses(ready, StatusType::Syncing, ready, ready),
+        StatusType::Syncing,
+    );
+    assert_eq!(
+        combine_component_statuses(ready, ready, StatusType::RecoverableError, ready),
+        StatusType::RecoverableError,
+    );
+    assert_eq!(
+        combine_component_statuses(ready, ready, ready, ready),
+        ready,
+        "all components healthy is the only way to report Ready"
+    );
+}
+
+/// Component failures are reported while they last, and stop being reported
+/// once the component recovers.
+///
+/// The fold used to write its result back into the index's own status cell,
+/// which latched: the first transient failure pinned the index to
+/// `RecoverableError` — and `is_ready()` to false — for the rest of the
+/// process's life. That mattered little while the fold covered only the
+/// finalised state and the mempool; the chain head enters `RecoverableError`
+/// on any transient validator blip, so a latch would make a single blip
+/// permanent.
+#[tokio::test(flavor = "multi_thread")]
+async fn status_recovers_after_a_transient_source_failure() {
+    let (_blocks, _indexer, index_reader, mockchain) =
+        load_test_vectors_and_sync_chain_index(MockchainMode::Active).await;
+
+    mockchain.source().set_failing(true);
+    super::poll::poll_until(
+        "the index to report a component failure",
+        Duration::from_secs(10),
+        Duration::from_millis(25),
+        || async { (index_reader.status() == StatusType::RecoverableError).then_some(()) },
+    )
+    .await;
+
+    mockchain.source().set_failing(false);
+
+    // Generous budget: each failing component is on its own backoff ladder, and
+    // the chain head's doubles from 500 ms, so the last one to notice the
+    // source is healthy again can be several seconds behind the first.
+    super::poll::poll_until(
+        "the index to report Ready again",
+        Duration::from_secs(30),
+        Duration::from_millis(50),
+        || async { (index_reader.status() == StatusType::Ready).then_some(()) },
+    )
+    .await;
+}
+
 /// Moved here from the integration test
 /// `chain_cache::sync_large_chain_{zebrad,zcashd}`. That test contained one
 /// whitebox read — `snapshot.best_tip.height` (W11 in the issue #1044
@@ -116,27 +190,12 @@ async fn tip_converges_after_burst_mine() {
         Duration::from_secs(10),
         Duration::from_millis(25),
         || async {
-            let tip = index_reader
-                .snapshot_nonfinalized_state()
-                .await
-                .ok()?
-                .get_nfs_snapshot()?
-                .best_tip
-                .height
-                .0;
+            let tip = u32::from(index_reader.snapshot_nonfinalized_state().best_tip().height);
             (tip == expected_tip).then_some(())
         },
     )
     .await;
 
-    let indexer_tip = index_reader
-        .snapshot_nonfinalized_state()
-        .await
-        .unwrap()
-        .get_nfs_snapshot()
-        .unwrap()
-        .best_tip
-        .height
-        .0;
+    let indexer_tip = u32::from(index_reader.snapshot_nonfinalized_state().best_tip().height);
     assert_eq!(indexer_tip, expected_tip);
 }

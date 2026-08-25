@@ -33,8 +33,8 @@ pub mod metric_names {
     pub const SYNC_ERRORS_TOTAL: &str = "zaino.sync.errors_total";
     pub const SYNC_HAS_REACHED_TIP: &str = "zaino.sync.has_reached_tip";
     pub const SYNC_REACHED_TIP_AT: &str = "zaino.sync.reached_tip_at";
-    pub const SYNC_REORG_TOTAL: &str = "zaino.sync.reorg_total";
-    pub const SYNC_REORG_DEPTH: &str = "zaino.sync.reorg_depth";
+    // Reorg metrics moved to `zaino-chain-head-service`, which is where the
+    // reorg is now observed. Their strings are unchanged.
     pub const SYNC_BLOCK_BUILD_SECONDS: &str = "zaino.sync.block_build_seconds";
     pub const SYNC_BLOCK_WRITE_SECONDS: &str = "zaino.sync.block_write_seconds";
     pub const SYNC_TRANSACTIONS_TOTAL: &str = "zaino.sync.transactions_total";
@@ -73,6 +73,7 @@ pub use chain_index::{
     ChainIndex, ChainIndexRpcExt, NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
 };
 // Source types for ChainIndex backends
+pub use chain_index::chain_head::WithChainHeadSource;
 pub use chain_index::source::BlockchainSource;
 pub use chain_index::source_ports::ChainIndexSourcePorts;
 pub use chain_index::validator_source::{ValidatorSource, ZebraValidatorSource};
@@ -81,10 +82,13 @@ pub use chain_index::encoding::*;
 // Mempool statistics for `getmempoolinfo`. Currently an on-disk shape in
 // `types/db/metadata.rs`; moving it into `zaino-primitives` belongs with the
 // persistence rework.
-pub use chain_index::non_finalised_state::{
-    ChainIndexSnapshot, InitError, NodeConnectionError, NonFinalizedState, SyncError, UpdateError,
-};
+// The non-finalised chain head is `zaino-chain-head`; its runtime is
+// `zaino-chain-head-service`. Re-exported here so a consumer wiring a
+// ChainIndex does not need to name those crates directly.
 pub use chain_index::types::db::metadata::MempoolInfo;
+pub use error::{InitError, SyncError};
+pub use zaino_chain_head::{ChainHeadBlock, ChainHeadSnapshot};
+pub use zaino_chain_head_service::MapBackedSnapshot;
 // NOTE: Should these be pub at all?
 pub use chain_index::types::{
     AddrHistRecord, AddrScript, BlockContext, BlockData, BlockHash, BlockHeaderData, BlockMetadata,

@@ -11,6 +11,7 @@ use tracing::info;
 // Metric names are owned by the crates that emit them, so the `describe_*`
 // registrations below share one source of truth with the emit sites and can
 // never drift.
+use zaino_chain_head_service::metric_names::*;
 use zaino_rpc::metric_names::*;
 use zaino_serve::metric_names::*;
 use zaino_state::metric_names::*;
@@ -109,11 +110,11 @@ fn describe_metrics() {
         "Total sync loop errors by severity (recoverable or critical)"
     );
     metrics::describe_counter!(
-        SYNC_REORG_TOTAL,
-        "Total chain reorganization events detected in the non-finalized state"
+        CHAIN_HEAD_REORG_TOTAL,
+        "Total chain reorganization events observed by the chain head"
     );
     metrics::describe_histogram!(
-        SYNC_REORG_DEPTH,
+        CHAIN_HEAD_REORG_DEPTH,
         "Depth of chain reorganizations in blocks (0 for same-height reorgs)"
     );
 

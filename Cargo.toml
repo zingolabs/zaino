@@ -14,6 +14,8 @@ members = [
     "packages/zaino-mempool",
     "packages/zaino-mempool-service",
     "packages/zaino-common",
+    "packages/zaino-chain-head",
+    "packages/zaino-chain-head-service",
     "packages/zainod",
     "packages/zaino-serve",
     "packages/zaino-state",
@@ -41,6 +43,8 @@ default-members = [
     "packages/zaino-mempool",
     "packages/zaino-mempool-service",
     "packages/zaino-common",
+    "packages/zaino-chain-head",
+    "packages/zaino-chain-head-service",
     "packages/zainod",
     "packages/zaino-serve",
     "packages/zaino-state",
@@ -174,6 +178,16 @@ zaino-source-zebra-readstate = { path = "packages/zaino-source-zebra-readstate",
 # this decides which to ask.
 zaino-source-zebra = { path = "packages/zaino-source-zebra", version = "0.1.0" }
 zaino-common = { path = "packages/zaino-common", version = "0.5.0" }
+# ChainHead: the bounded non-finalised block graph, its canonical chain, and the
+# competing branches retained alongside it. This crate is the domain half —
+# types and ports only, no runtime — so a consumer can name what ChainHead
+# answers without depending on the service that answers it. See docs/adr/0011.
+zaino-chain-head = { path = "packages/zaino-chain-head", version = "0.1.0" }
+# The ChainHead runtime: owns the writer task that keeps the graph reconciled
+# with the validator, and publishes each snapshot. Separate from the domain
+# crate so a consumer can name what ChainHead answers without depending on the
+# machinery that answers it.
+zaino-chain-head-service = { path = "packages/zaino-chain-head-service", version = "0.1.0" }
 zaino-proto = { path = "packages/zaino-proto", version = "0.4.0" }
 zaino-state = { path = "packages/zaino-state", version = "0.7.0", default-features = false }
 zaino-serve = { path = "packages/zaino-serve", version = "0.6.0", default-features = false }
