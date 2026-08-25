@@ -787,6 +787,16 @@ pub(crate) fn parse_tree_roots(value: &serde_json::Value) -> Result<TreeRoots, P
     parse_tree_roots_inner(value)
 }
 
+/// Parse a `z_gettreestate` response into tree roots plus the answering block's hash.
+pub(crate) fn parse_tree_roots_with_hash(
+    value: &serde_json::Value,
+) -> Result<(BlockHash, TreeRoots), ParseError> {
+    Ok((
+        parse_block_hash(field(value, "hash")?)?,
+        parse_tree_roots_inner(value)?,
+    ))
+}
+
 /// The serialised tree for one pool, if the response carries that pool at all.
 fn pool_final_state(pool: Option<&serde_json::Value>) -> Result<Option<Vec<u8>>, ParseError> {
     let Some(pool) = pool else { return Ok(None) };

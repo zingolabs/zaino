@@ -64,6 +64,7 @@ pub trait ChainHeadBlockSource:
     + zaino_source::GetBlock
     + zaino_source::GetBlockByHash
     + zaino_source::GetCommitmentTreeRoots
+    + zaino_source::GetCommitmentTreeRootsByHeight
     + zaino_source::SubscribeBlocks
     + Send
     + Sync
@@ -76,6 +77,7 @@ impl<T> ChainHeadBlockSource for T where
         + zaino_source::GetBlock
         + zaino_source::GetBlockByHash
         + zaino_source::GetCommitmentTreeRoots
+        + zaino_source::GetCommitmentTreeRootsByHeight
         + zaino_source::SubscribeBlocks
         + Send
         + Sync

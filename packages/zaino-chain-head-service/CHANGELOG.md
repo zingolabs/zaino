@@ -8,6 +8,10 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- The catch-up walk fetches each block and its tree roots concurrently, via the
+  height-addressed `GetCommitmentTreeRootsByHeight` port. The two reads can
+  straddle a reorg, so the walk compares the hash the roots answer names
+  against the block it fetched, and refetches the roots by hash on a mismatch.
 - New crate. The chain head runtime: carries over the synchronisation, reorg
   handling and retention logic from `zaino-state`'s
   `chain_index/non_finalised_state.rs`, now owning its own writer task. See

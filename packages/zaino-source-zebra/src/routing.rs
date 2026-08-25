@@ -236,6 +236,15 @@ impl GetCommitmentTreeRoots for ZebraValidator {
     }
 }
 
+impl GetCommitmentTreeRootsByHeight for ZebraValidator {
+    async fn get_commitment_tree_roots_by_height(
+        &self,
+        height: Height,
+    ) -> Result<(BlockHash, TreeRoots), QueryError<GetCommitmentTreeRootsByHeightError>> {
+        fast_or_slow!(self, get_commitment_tree_roots_by_height, height)
+    }
+}
+
 impl GetSubtreeRoots for ZebraValidator {
     async fn get_subtree_roots(
         &self,

@@ -25,6 +25,7 @@ mod get_blockchain_info;
 mod get_chain_tip;
 mod get_chain_tips;
 mod get_commitment_tree_roots;
+mod get_commitment_tree_roots_by_height;
 mod get_compact_block;
 mod get_difficulty;
 mod get_mempool_metadata;
@@ -67,6 +68,9 @@ pub use get_blockchain_info::{GetBlockchainInfo, GetBlockchainInfoError};
 pub use get_chain_tip::{GetChainTip, GetChainTipError};
 pub use get_chain_tips::{GetChainTips, GetChainTipsError};
 pub use get_commitment_tree_roots::{GetCommitmentTreeRoots, GetCommitmentTreeRootsError};
+pub use get_commitment_tree_roots_by_height::{
+    GetCommitmentTreeRootsByHeight, GetCommitmentTreeRootsByHeightError,
+};
 pub use get_compact_block::GetPreIndexCompactBlock;
 pub use get_difficulty::{GetDifficulty, GetDifficultyError};
 pub use get_mempool_metadata::{GetMempoolMetadata, GetMempoolMetadataError, MempoolTxMeta};
