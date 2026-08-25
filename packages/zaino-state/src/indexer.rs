@@ -439,7 +439,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         hash_or_height: String,
     ) -> impl SendFut<Result<zaino_primitives::types::Treestate, Self::Error>>;
 
-    /// Returns information about a range of Sapling or Orchard subtrees.
+    /// Returns information about a range of Sapling, Orchard, or Ironwood subtrees.
     ///
     /// zcashd reference: [`z_getsubtreesbyindex`](https://zcash.github.io/rpc/z_getsubtreesbyindex.html) - TODO: fix link
     /// method: post
@@ -447,7 +447,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// # Parameters
     ///
-    /// - `pool`: (string, required) The pool from which subtrees should be returned. Either "sapling" or "orchard".
+    /// - `pool`: (string, required) The pool from which subtrees should be returned. Either "sapling", "orchard", or "ironwood".
     /// - `start_index`: (number, required) The index of the first 2^16-leaf subtree to return.
     /// - `limit`: (number, optional) The maximum number of subtree values to return.
     ///
@@ -764,7 +764,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
     /// Helper function to get timeout and channel size from config
     fn timeout_channel_size(&self) -> (u32, u32);
 
-    /// Returns a stream of information about roots of subtrees of the Sapling and Orchard
+    /// Returns a stream of information about roots of subtrees of the Sapling, Orchard, and Ironwood
     /// note commitment trees.
     fn get_subtree_roots(
         &self,
@@ -774,6 +774,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
             let pool = match ShieldedProtocol::try_from(request.shielded_protocol) {
                 Ok(ShieldedProtocol::Sapling) => zaino_primitives::types::ShieldedPool::Sapling,
                 Ok(ShieldedProtocol::Orchard) => zaino_primitives::types::ShieldedPool::Orchard,
+                Ok(ShieldedProtocol::Ironwood) => zaino_primitives::types::ShieldedPool::Ironwood,
                 Err(_) => {
                     return Err(<Self as ZcashIndexer>::Error::from(
                         tonic::Status::invalid_argument("Error: Invalid shielded protocol value."),

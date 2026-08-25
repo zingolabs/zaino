@@ -958,7 +958,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
             .await?)
     }
 
-    /// Returns information about a range of Sapling or Orchard subtrees.
+    /// Returns information about a range of Sapling, Orchard, or Ironwood subtrees.
     ///
     /// zcashd reference: [`z_getsubtreesbyindex`](https://zcash.github.io/rpc/z_getsubtreesbyindex.html) - TODO: fix link
     /// method: post
@@ -966,7 +966,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ZcashIndexer
     ///
     /// # Parameters
     ///
-    /// - `pool`: (string, required) The pool from which subtrees should be returned. Either "sapling" or "orchard".
+    /// - `pool`: (string, required) The pool from which subtrees should be returned. Either "sapling", "orchard", or "ironwood".
     /// - `start_index`: (number, required) The index of the first 2^16-leaf subtree to return.
     /// - `limit`: (number, optional) The maximum number of subtree values to return.
     ///
