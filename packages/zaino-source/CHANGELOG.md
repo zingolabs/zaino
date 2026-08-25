@@ -8,6 +8,10 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- `GetCommitmentTreeRootsByHeight` — tree roots at the best-chain block at a
+  height, answering with the block's hash alongside the roots. The hash names
+  which block answered, so a consumer pairing this query with a concurrent
+  hash-addressed read can detect a reorg between the two.
 - New crate. The driven ports for validator access: 36 single-method traits,
   one per question a consumer can ask about the chain, declared in
   `zaino-primitives` vocabulary with a per-question error type.

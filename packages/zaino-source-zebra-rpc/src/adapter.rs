@@ -789,6 +789,24 @@ impl zaino_source::GetCommitmentTreeRoots for ZebraRpcAdapter {
     }
 }
 
+impl zaino_source::GetCommitmentTreeRootsByHeight for ZebraRpcAdapter {
+    async fn get_commitment_tree_roots_by_height(
+        &self,
+        height: Height,
+    ) -> Result<
+        (BlockHash, zaino_primitives::types::TreeRoots),
+        QueryError<zaino_source::GetCommitmentTreeRootsByHeightError>,
+    > {
+        self.call_parsed_or_absent(
+            "z_gettreestate",
+            vec![serde_json::Value::String(u32::from(height).to_string())],
+            parse::parse_tree_roots_with_hash,
+            || zaino_source::GetCommitmentTreeRootsByHeightError::HeightNotFound(height),
+        )
+        .await
+    }
+}
+
 impl zaino_source::GetSubtreeRoots for ZebraRpcAdapter {
     async fn get_subtree_roots(
         &self,

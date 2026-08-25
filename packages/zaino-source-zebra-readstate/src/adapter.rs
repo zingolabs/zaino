@@ -730,6 +730,40 @@ impl zaino_source::GetCommitmentTreeRoots for ZebraReadStateAdapter {
     }
 }
 
+impl zaino_source::GetCommitmentTreeRootsByHeight for ZebraReadStateAdapter {
+    async fn get_commitment_tree_roots_by_height(
+        &self,
+        height: Height,
+    ) -> Result<
+        (BlockHash, zaino_primitives::types::TreeRoots),
+        QueryError<zaino_source::GetCommitmentTreeRootsByHeightError>,
+    > {
+        let zebra_height = zebra_chain::block::Height(u32::from(height));
+        let hash = match read(&self.state, ReadRequest::BestChainBlockHash(zebra_height)).await? {
+            ReadResponse::BlockHash(Some(hash)) => BlockHash::from(hash.0),
+            ReadResponse::BlockHash(None) => {
+                return Err(QueryError::Domain(
+                    zaino_source::GetCommitmentTreeRootsByHeightError::HeightNotFound(height),
+                ))
+            }
+            _ => return Err(unexpected_response("BlockHash").into()),
+        };
+        // The hash-addressed read can no longer miss: the hash was just
+        // resolved from the same state, so its `BlockNotFound` is a fault.
+        let roots = zaino_source::GetCommitmentTreeRoots::get_commitment_tree_roots(self, hash)
+            .await
+            .map_err(|error| match error {
+                QueryError::Domain(zaino_source::GetCommitmentTreeRootsError::BlockNotFound(_)) => {
+                    QueryError::Domain(
+                        zaino_source::GetCommitmentTreeRootsByHeightError::HeightNotFound(height),
+                    )
+                }
+                QueryError::Fetch(fetch) => QueryError::Fetch(fetch),
+            })?;
+        Ok((hash, roots))
+    }
+}
+
 impl zaino_source::GetTreestateByHash for ZebraReadStateAdapter {
     async fn get_treestate_by_hash(
         &self,
