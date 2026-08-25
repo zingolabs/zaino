@@ -86,7 +86,7 @@ impl Default for MockChain {
     }
 }
 
-impl crate::GetBlock for MockChain {
+impl crate::OneShotGetBlock for MockChain {
     async fn get_block(&self, height: Height) -> Result<Block, QueryError<GetBlockError>> {
         if let Some(err) = self.maybe_fail() {
             return Err(err);
@@ -98,7 +98,7 @@ impl crate::GetBlock for MockChain {
     }
 }
 
-impl crate::GetBlockByHash for MockChain {
+impl crate::OneShotGetBlockByHash for MockChain {
     async fn get_block_by_hash(
         &self,
         hash: BlockHash,
@@ -117,7 +117,7 @@ impl crate::GetBlockByHash for MockChain {
     }
 }
 
-impl crate::GetChainTip for MockChain {
+impl crate::OneShotGetChainTip for MockChain {
     async fn get_chain_tip(&self) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
         if let Some(err) = self.maybe_fail() {
             return Err(err);
@@ -127,7 +127,7 @@ impl crate::GetChainTip for MockChain {
     }
 }
 
-impl crate::GetTreestate for MockChain {
+impl crate::OneShotGetTreestate for MockChain {
     async fn get_treestate(
         &self,
         height: Height,
@@ -184,7 +184,9 @@ mod tests {
     #[tokio::test]
     async fn tip_of_empty_chain_is_not_ready() {
         let mock = MockChain::new();
-        let err = crate::GetChainTip::get_chain_tip(&mock).await.unwrap_err();
+        let err = crate::OneShotGetChainTip::get_chain_tip(&mock)
+            .await
+            .unwrap_err();
         assert!(matches!(
             err,
             QueryError::Domain(GetChainTipError::NotReady)
@@ -194,7 +196,7 @@ mod tests {
     #[tokio::test]
     async fn get_block_roundtrip() {
         let mock = MockChain::new().with_block(test_block(0, 1));
-        let block = crate::GetBlock::get_block(&mock, height(0))
+        let block = crate::OneShotGetBlock::get_block(&mock, height(0))
             .await
             .expect("block exists");
         assert_eq!(block.header.hash, hash(1));
@@ -203,7 +205,7 @@ mod tests {
     #[tokio::test]
     async fn get_block_not_found() {
         let mock = MockChain::new();
-        let err = crate::GetBlock::get_block(&mock, height(99))
+        let err = crate::OneShotGetBlock::get_block(&mock, height(99))
             .await
             .unwrap_err();
         assert!(matches!(
@@ -215,7 +217,7 @@ mod tests {
     #[tokio::test]
     async fn get_block_by_hash_roundtrip() {
         let mock = MockChain::new().with_block(test_block(0, 1));
-        let block = crate::GetBlockByHash::get_block_by_hash(&mock, hash(1))
+        let block = crate::OneShotGetBlockByHash::get_block_by_hash(&mock, hash(1))
             .await
             .expect("block exists");
         assert_eq!(block.header.height, height(0));
@@ -226,7 +228,7 @@ mod tests {
         let mock = MockChain::new()
             .with_block(test_block(0, 1))
             .with_block(test_block(1, 2));
-        let (tip_hash, tip_height) = crate::GetChainTip::get_chain_tip(&mock)
+        let (tip_hash, tip_height) = crate::OneShotGetChainTip::get_chain_tip(&mock)
             .await
             .expect("has tip");
         assert_eq!(tip_hash, hash(2));
@@ -249,7 +251,7 @@ mod tests {
         let mock = MockChain::new()
             .with_block(test_block(0, 1))
             .with_treestate(height(0), ts);
-        let result = crate::GetTreestate::get_treestate(&mock, height(0))
+        let result = crate::OneShotGetTreestate::get_treestate(&mock, height(0))
             .await
             .expect("treestate exists");
         assert_eq!(
@@ -265,12 +267,12 @@ mod tests {
             .with_block(test_block(0, 1))
             .fail_next(1, FailureMode::Timeout);
 
-        let err = crate::GetBlock::get_block(&mock, height(0))
+        let err = crate::OneShotGetBlock::get_block(&mock, height(0))
             .await
             .unwrap_err();
         assert!(matches!(err, QueryError::Fetch(ref e) if e.mode == FailureMode::Timeout));
 
-        let block = crate::GetBlock::get_block(&mock, height(0))
+        let block = crate::OneShotGetBlock::get_block(&mock, height(0))
             .await
             .expect("succeeds after failure consumed");
         assert_eq!(block.header.hash, hash(1));
@@ -283,13 +285,13 @@ mod tests {
             .fail_next(3, FailureMode::Connection);
 
         for _ in 0..3 {
-            let err = crate::GetBlock::get_block(&mock, height(0))
+            let err = crate::OneShotGetBlock::get_block(&mock, height(0))
                 .await
                 .unwrap_err();
             assert!(matches!(err, QueryError::Fetch(_)));
         }
 
-        let block = crate::GetBlock::get_block(&mock, height(0))
+        let block = crate::OneShotGetBlock::get_block(&mock, height(0))
             .await
             .expect("succeeds after 3 failures");
         assert_eq!(block.header.hash, hash(1));

@@ -26,7 +26,7 @@ and this library adheres to Rust's notion of
   misconfigured, or impersonated validator exhaust the process's memory with a
   single reply. Bodies are now abandoned part-way rather than buffered, and the
   new `RpcError::ResponseBodyTooLarge` classifies as `FailureMode::Parse` so
-  `Resilient` does not re-issue the request and buffer the same body again.
+  `ValidatorClient` does not re-issue the request and buffer the same body again.
 - `RpcClient::call_with_timeout` and `HEAVY_METHOD_TIMEOUT` (120s), for the few
   methods that are inherently heavy on the validator (`getrawmempool verbose`
   walks the whole mempool). The client-wide timeout (30s) stays tight for the

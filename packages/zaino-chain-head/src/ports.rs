@@ -60,10 +60,10 @@ use crate::{block::ChainHeadBlock, snapshot::ChainHeadSnapshot};
 /// which is why `zaino_source_zebra::ZebraValidator` — which is not `Clone` —
 /// satisfies this bound directly rather than through a wrapper.
 pub trait ChainHeadBlockSource:
-    zaino_source::GetChainTip
-    + zaino_source::GetBlock
-    + zaino_source::GetBlockByHash
-    + zaino_source::GetCommitmentTreeRoots
+    zaino_source::OneShotGetChainTip
+    + zaino_source::OneShotGetBlock
+    + zaino_source::OneShotGetBlockByHash
+    + zaino_source::OneShotGetCommitmentTreeRoots
     + zaino_source::SubscribeBlocks
     + Send
     + Sync
@@ -72,10 +72,10 @@ pub trait ChainHeadBlockSource:
 }
 
 impl<T> ChainHeadBlockSource for T where
-    T: zaino_source::GetChainTip
-        + zaino_source::GetBlock
-        + zaino_source::GetBlockByHash
-        + zaino_source::GetCommitmentTreeRoots
+    T: zaino_source::OneShotGetChainTip
+        + zaino_source::OneShotGetBlock
+        + zaino_source::OneShotGetBlockByHash
+        + zaino_source::OneShotGetCommitmentTreeRoots
         + zaino_source::SubscribeBlocks
         + Send
         + Sync

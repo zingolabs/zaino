@@ -22,7 +22,8 @@ pub enum GetChainTipsError {
 /// with a single active tip, so the result is never empty on a synced node.
 ///
 /// Maps to `getchaintips` over JSON-RPC.
-pub trait GetChainTips: Send + Sync {
+#[zaino_source_macros::resilient_port]
+pub trait OneShotGetChainTips: Send + Sync {
     /// Fetch all known chain tips.
     fn get_chain_tips(
         &self,

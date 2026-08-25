@@ -18,7 +18,8 @@ pub enum GetCommitmentTreeRootsError {
 ///
 /// Available via Zebra ReadState; over JSON-RPC this is assembled
 /// from `z_gettreestate`.
-pub trait GetCommitmentTreeRoots: Send + Sync {
+#[zaino_source_macros::resilient_port]
+pub trait OneShotGetCommitmentTreeRoots: Send + Sync {
     /// Fetch tree roots.
     fn get_commitment_tree_roots(
         &self,

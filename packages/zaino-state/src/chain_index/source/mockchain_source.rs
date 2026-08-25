@@ -474,7 +474,7 @@ impl MockchainSource {
     }
 }
 
-impl zaino_source::GetRawBlock for MockchainSource {
+impl zaino_source::OneShotGetRawBlock for MockchainSource {
     async fn get_raw_block(
         &self,
         height: domain::Height,
@@ -488,7 +488,7 @@ impl zaino_source::GetRawBlock for MockchainSource {
     }
 }
 
-impl zaino_source::GetRawBlockByHash for MockchainSource {
+impl zaino_source::OneShotGetRawBlockByHash for MockchainSource {
     async fn get_raw_block_by_hash(
         &self,
         hash: domain::BlockHash,
@@ -521,7 +521,7 @@ impl MockchainSource {
     }
 }
 
-impl zaino_source::GetBlock for MockchainSource {
+impl zaino_source::OneShotGetBlock for MockchainSource {
     async fn get_block(
         &self,
         height: domain::Height,
@@ -535,7 +535,7 @@ impl zaino_source::GetBlock for MockchainSource {
     }
 }
 
-impl zaino_source::GetBlockByHash for MockchainSource {
+impl zaino_source::OneShotGetBlockByHash for MockchainSource {
     async fn get_block_by_hash(
         &self,
         hash: domain::BlockHash,
@@ -547,7 +547,7 @@ impl zaino_source::GetBlockByHash for MockchainSource {
     }
 }
 
-impl zaino_source::GetChainTip for MockchainSource {
+impl zaino_source::OneShotGetChainTip for MockchainSource {
     async fn get_chain_tip(
         &self,
     ) -> Result<(domain::BlockHash, domain::Height), PortError<zaino_source::GetChainTipError>>
@@ -573,7 +573,7 @@ impl zaino_source::GetChainTip for MockchainSource {
     }
 }
 
-impl zaino_source::GetBestBlockHeight for MockchainSource {
+impl zaino_source::OneShotGetBestBlockHeight for MockchainSource {
     async fn get_best_block_height(
         &self,
     ) -> Result<domain::Height, PortError<zaino_source::GetBestBlockHeightError>> {
@@ -595,7 +595,7 @@ impl zaino_source::GetBestBlockHeight for MockchainSource {
     }
 }
 
-impl zaino_source::GetDifficulty for MockchainSource {
+impl zaino_source::OneShotGetDifficulty for MockchainSource {
     async fn get_difficulty(
         &self,
     ) -> Result<domain::Difficulty, PortError<zaino_source::GetDifficultyError>> {
@@ -631,7 +631,7 @@ impl MockchainSource {
     }
 }
 
-impl zaino_source::GetMempoolTxids for MockchainSource {
+impl zaino_source::OneShotGetMempoolTxids for MockchainSource {
     async fn get_mempool_txids(
         &self,
     ) -> Result<Vec<domain::TransactionId>, PortError<zaino_source::GetMempoolTxidsError>> {
@@ -642,7 +642,7 @@ impl zaino_source::GetMempoolTxids for MockchainSource {
     }
 }
 
-impl zaino_source::GetMempoolMetadata for MockchainSource {
+impl zaino_source::OneShotGetMempoolMetadata for MockchainSource {
     async fn get_mempool_metadata(
         &self,
     ) -> Result<Vec<zaino_source::MempoolTxMeta>, PortError<zaino_source::GetMempoolMetadataError>>
@@ -667,7 +667,7 @@ impl zaino_source::GetMempoolMetadata for MockchainSource {
     }
 }
 
-impl zaino_source::GetRawMempoolTransaction for MockchainSource {
+impl zaino_source::OneShotGetRawMempoolTransaction for MockchainSource {
     async fn get_raw_mempool_transaction(
         &self,
         txid: domain::TransactionId,
@@ -687,7 +687,7 @@ impl zaino_source::GetRawMempoolTransaction for MockchainSource {
     }
 }
 
-impl zaino_source::GetMempoolSourceTip for MockchainSource {
+impl zaino_source::OneShotGetMempoolSourceTip for MockchainSource {
     async fn get_mempool_source_tip(
         &self,
     ) -> Result<(domain::BlockHash, domain::Height), PortError<std::convert::Infallible>> {
@@ -696,7 +696,7 @@ impl zaino_source::GetMempoolSourceTip for MockchainSource {
         // `active_height` — so the single-source rule holds trivially here.
         // Routed through `GetChainTip` rather than duplicated so it stays that
         // way as the mock changes.
-        use zaino_source::GetChainTip as _;
+        use zaino_source::OneShotGetChainTip as _;
 
         // `GetChainTip` has a domain answer for "no tip yet"; this port has
         // none, by design (see `GetMempoolSourceTip`). Reported as a fault,
@@ -722,7 +722,7 @@ impl zaino_source::SourceLifecycle for MockchainSource {
     }
 }
 
-impl zaino_source::GetTransaction for MockchainSource {
+impl zaino_source::OneShotGetTransaction for MockchainSource {
     async fn get_transaction(
         &self,
         txid: domain::TransactionId,
@@ -758,7 +758,7 @@ impl zaino_source::GetTransaction for MockchainSource {
     }
 }
 
-impl zaino_source::GetCommitmentTreeRoots for MockchainSource {
+impl zaino_source::OneShotGetCommitmentTreeRoots for MockchainSource {
     async fn get_commitment_tree_roots(
         &self,
         block: domain::BlockHash,
@@ -788,7 +788,7 @@ impl zaino_source::GetCommitmentTreeRoots for MockchainSource {
     }
 }
 
-impl zaino_source::GetBlockVerboseByHash for MockchainSource {
+impl zaino_source::OneShotGetBlockVerboseByHash for MockchainSource {
     async fn get_block_verbose_by_hash(
         &self,
         hash: domain::BlockHash,
@@ -829,7 +829,7 @@ impl zaino_source::GetBlockVerboseByHash for MockchainSource {
     }
 }
 
-impl zaino_source::GetRawBlockHeader for MockchainSource {
+impl zaino_source::OneShotGetRawBlockHeader for MockchainSource {
     async fn get_raw_block_header(
         &self,
         hash: domain::BlockHash,
@@ -844,7 +844,7 @@ impl zaino_source::GetRawBlockHeader for MockchainSource {
     }
 }
 
-impl zaino_source::GetTreestateByHash for MockchainSource {
+impl zaino_source::OneShotGetTreestateByHash for MockchainSource {
     async fn get_treestate_by_hash(
         &self,
         hash: domain::BlockHash,
@@ -880,7 +880,7 @@ impl zaino_source::GetTreestateByHash for MockchainSource {
     }
 }
 
-impl zaino_source::GetSubtreeRoots for MockchainSource {
+impl zaino_source::OneShotGetSubtreeRoots for MockchainSource {
     async fn get_subtree_roots(
         &self,
         pool: domain::ShieldedPool,
@@ -963,7 +963,7 @@ impl zaino_source::GetSubtreeRoots for MockchainSource {
     }
 }
 
-impl zaino_source::GetBlockHeader for MockchainSource {
+impl zaino_source::OneShotGetBlockHeader for MockchainSource {
     async fn get_block_header(
         &self,
         hash: domain::BlockHash,
@@ -1004,7 +1004,7 @@ impl zaino_source::GetBlockHeader for MockchainSource {
     }
 }
 
-impl zaino_source::GetChainTips for MockchainSource {
+impl zaino_source::OneShotGetChainTips for MockchainSource {
     async fn get_chain_tips(
         &self,
     ) -> Result<Vec<domain::rpc::ChainTip>, PortError<zaino_source::GetChainTipsError>> {
@@ -1026,7 +1026,7 @@ impl zaino_source::GetChainTips for MockchainSource {
     }
 }
 
-impl zaino_source::GetAddressBalance for MockchainSource {
+impl zaino_source::OneShotGetAddressBalance for MockchainSource {
     async fn get_address_balance(
         &self,
         addresses: Vec<String>,
@@ -1070,7 +1070,7 @@ impl zaino_source::GetAddressBalance for MockchainSource {
     }
 }
 
-impl zaino_source::GetAddressTxids for MockchainSource {
+impl zaino_source::OneShotGetAddressTxids for MockchainSource {
     async fn get_address_txids(
         &self,
         addresses: Vec<String>,
@@ -1117,7 +1117,7 @@ impl zaino_source::GetAddressTxids for MockchainSource {
     }
 }
 
-impl zaino_source::GetAddressUtxos for MockchainSource {
+impl zaino_source::OneShotGetAddressUtxos for MockchainSource {
     async fn get_address_utxos(
         &self,
         addresses: Vec<String>,
@@ -1217,7 +1217,7 @@ impl MockchainSource {
     }
 }
 
-impl zaino_source::GetBlockDeltas for MockchainSource {
+impl zaino_source::OneShotGetBlockDeltas for MockchainSource {
     async fn get_block_deltas(
         &self,
         hash: domain::BlockHash,
@@ -1301,14 +1301,14 @@ impl zaino_source::GetBlockDeltas for MockchainSource {
     }
 }
 
-impl zaino_source::GetAddressDeltas for MockchainSource {
+impl zaino_source::OneShotGetAddressDeltas for MockchainSource {
     async fn get_address_deltas(
         &self,
         addresses: Vec<String>,
         start: domain::Height,
         end: domain::Height,
     ) -> Result<Vec<domain::AddressDelta>, PortError<zaino_source::GetAddressDeltasError>> {
-        use zaino_source::GetAddressTxids as _;
+        use zaino_source::OneShotGetAddressTxids as _;
 
         let valid = GetAddressBalanceRequest::new(addresses.clone())
             .valid_addresses()
@@ -1376,7 +1376,7 @@ impl zaino_source::GetAddressDeltas for MockchainSource {
 // the vectors would have to be extended to serve these, and the panic names
 // what is missing rather than inventing a plausible value.
 
-impl zaino_source::GetTreestate for MockchainSource {
+impl zaino_source::OneShotGetTreestate for MockchainSource {
     async fn get_treestate(
         &self,
         _height: domain::Height,
@@ -1387,7 +1387,7 @@ impl zaino_source::GetTreestate for MockchainSource {
     }
 }
 
-impl zaino_source::GetBlockchainInfo for MockchainSource {
+impl zaino_source::OneShotGetBlockchainInfo for MockchainSource {
     async fn get_blockchain_info(
         &self,
     ) -> Result<domain::BlockchainInfo, PortError<zaino_source::GetBlockchainInfoError>> {
@@ -1397,7 +1397,7 @@ impl zaino_source::GetBlockchainInfo for MockchainSource {
     }
 }
 
-impl zaino_source::GetNodeInfo for MockchainSource {
+impl zaino_source::OneShotGetNodeInfo for MockchainSource {
     async fn get_node_info(
         &self,
     ) -> Result<domain::rpc::NodeInfo, PortError<zaino_source::GetNodeInfoError>> {
@@ -1405,7 +1405,7 @@ impl zaino_source::GetNodeInfo for MockchainSource {
     }
 }
 
-impl zaino_source::GetPeerInfo for MockchainSource {
+impl zaino_source::OneShotGetPeerInfo for MockchainSource {
     async fn get_peer_info(
         &self,
     ) -> Result<Vec<domain::rpc::PeerInfo>, PortError<zaino_source::GetPeerInfoError>> {
@@ -1413,7 +1413,7 @@ impl zaino_source::GetPeerInfo for MockchainSource {
     }
 }
 
-impl zaino_source::GetMiningInfo for MockchainSource {
+impl zaino_source::OneShotGetMiningInfo for MockchainSource {
     async fn get_mining_info(
         &self,
     ) -> Result<domain::rpc::MiningInfo, PortError<zaino_source::GetMiningInfoError>> {
@@ -1423,7 +1423,7 @@ impl zaino_source::GetMiningInfo for MockchainSource {
     }
 }
 
-impl zaino_source::GetBlockSubsidy for MockchainSource {
+impl zaino_source::OneShotGetBlockSubsidy for MockchainSource {
     async fn get_block_subsidy(
         &self,
         _height: domain::Height,
@@ -1434,7 +1434,7 @@ impl zaino_source::GetBlockSubsidy for MockchainSource {
     }
 }
 
-impl zaino_source::GetNetworkSolPs for MockchainSource {
+impl zaino_source::OneShotGetNetworkSolPs for MockchainSource {
     async fn get_network_sol_ps(
         &self,
         _blocks: Option<u32>,
@@ -1446,7 +1446,7 @@ impl zaino_source::GetNetworkSolPs for MockchainSource {
     }
 }
 
-impl zaino_source::SendRawTransaction for MockchainSource {
+impl zaino_source::OneShotSendRawTransaction for MockchainSource {
     async fn send_raw_transaction(
         &self,
         _transaction: Vec<u8>,
@@ -1456,7 +1456,7 @@ impl zaino_source::SendRawTransaction for MockchainSource {
     }
 }
 
-impl zaino_source::GetSpentInfo for MockchainSource {
+impl zaino_source::OneShotGetSpentInfo for MockchainSource {
     async fn get_spent_info(
         &self,
         _outpoint: domain::rpc::SpentOutpoint,
@@ -1467,7 +1467,7 @@ impl zaino_source::GetSpentInfo for MockchainSource {
     }
 }
 
-impl zaino_source::GetTxOut for MockchainSource {
+impl zaino_source::OneShotGetTxOut for MockchainSource {
     async fn get_tx_out(
         &self,
         _txid: domain::TransactionId,

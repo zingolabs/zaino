@@ -12,6 +12,7 @@ license.workspace = true
 zaino-primitives = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
+zaino-source-macros.workspace = true
 
 [features]
 testing = []

@@ -13,7 +13,7 @@ use crate::parse;
 ///
 /// Implements zaino-source query traits by delegating to an [`RpcClient`],
 /// deserializing via `zebra-chain`, and converting to domain types.
-/// Single-attempt — wrap with [`zaino_source::Resilient`] for retries.
+/// Single-attempt — wrap with [`zaino_source::ValidatorClient`] for retries.
 pub struct ZebraRpcAdapter {
     rpc: RpcClient,
 }
@@ -94,7 +94,7 @@ fn is_not_found(error: &FetchError) -> bool {
 ///
 /// The distinction is load-bearing, not cosmetic: [`QueryError::Domain`] is an
 /// answer and is returned immediately, while [`QueryError::Fetch`] is a failure
-/// and is retried by [`Resilient`](zaino_source::Resilient) and escalated by
+/// and is retried by [`ValidatorClient`](zaino_source::ValidatorClient) and escalated by
 /// consumers. A missing block reported as a fetch failure stalls the sync loop
 /// against a healthy validator, which is exactly what it did before this
 /// existed.
@@ -191,7 +191,7 @@ where
     }
 }
 
-impl zaino_source::GetBlock for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlock for ZebraRpcAdapter {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(h = u32::from(height))))]
     async fn get_block(&self, height: Height) -> Result<Block, QueryError<GetBlockError>> {
         // Fetch raw hex block via getblock(height, 0).
@@ -228,7 +228,7 @@ impl zaino_source::GetBlock for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetChainTip for ZebraRpcAdapter {
+impl zaino_source::OneShotGetChainTip for ZebraRpcAdapter {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     async fn get_chain_tip(&self) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
         let hash_value = self
@@ -249,7 +249,7 @@ impl zaino_source::GetChainTip for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetPreIndexCompactBlock for ZebraRpcAdapter {
+impl zaino_source::OneShotGetPreIndexCompactBlock for ZebraRpcAdapter {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(h = u32::from(height))))]
     async fn get_pre_index_compact_block(
         &self,
@@ -262,13 +262,13 @@ impl zaino_source::GetPreIndexCompactBlock for ZebraRpcAdapter {
         //
         // TODO: once compact_deserialize supports streaming (Reader instead of
         // &[u8]), we can skip the full zebra deserialize on this path too.
-        use zaino_source::GetBlock;
+        use zaino_source::OneShotGetBlock;
         let block = self.get_block(height).await?;
         Ok(zaino_primitives::types::PreIndexCompactBlock::from(&block))
     }
 }
 
-impl zaino_source::GetTreestate for ZebraRpcAdapter {
+impl zaino_source::OneShotGetTreestate for ZebraRpcAdapter {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(h = u32::from(height))))]
     async fn get_treestate(
         &self,
@@ -427,7 +427,7 @@ impl ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetBlockByHash for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlockByHash for ZebraRpcAdapter {
     async fn get_block_by_hash(
         &self,
         hash: BlockHash,
@@ -457,7 +457,7 @@ impl zaino_source::GetBlockByHash for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetBestBlockHeight for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBestBlockHeight for ZebraRpcAdapter {
     async fn get_best_block_height(
         &self,
     ) -> Result<Height, QueryError<zaino_source::GetBestBlockHeightError>> {
@@ -466,7 +466,7 @@ impl zaino_source::GetBestBlockHeight for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetBlockVerbose for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlockVerbose for ZebraRpcAdapter {
     async fn get_block_verbose(
         &self,
         height: Height,
@@ -486,7 +486,7 @@ impl zaino_source::GetBlockVerbose for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetBlockVerboseByHash for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlockVerboseByHash for ZebraRpcAdapter {
     async fn get_block_verbose_by_hash(
         &self,
         hash: BlockHash,
@@ -503,7 +503,7 @@ impl zaino_source::GetBlockVerboseByHash for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetBlockHeader for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlockHeader for ZebraRpcAdapter {
     async fn get_block_header(
         &self,
         hash: BlockHash,
@@ -525,7 +525,7 @@ impl zaino_source::GetBlockHeader for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetRawBlockHeader for ZebraRpcAdapter {
+impl zaino_source::OneShotGetRawBlockHeader for ZebraRpcAdapter {
     async fn get_raw_block_header(
         &self,
         hash: BlockHash,
@@ -541,7 +541,7 @@ impl zaino_source::GetRawBlockHeader for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetBlockDeltas for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlockDeltas for ZebraRpcAdapter {
     async fn get_block_deltas(
         &self,
         hash: BlockHash,
@@ -559,7 +559,7 @@ impl zaino_source::GetBlockDeltas for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetChainTips for ZebraRpcAdapter {
+impl zaino_source::OneShotGetChainTips for ZebraRpcAdapter {
     async fn get_chain_tips(
         &self,
     ) -> Result<
@@ -571,7 +571,7 @@ impl zaino_source::GetChainTips for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetDifficulty for ZebraRpcAdapter {
+impl zaino_source::OneShotGetDifficulty for ZebraRpcAdapter {
     async fn get_difficulty(
         &self,
     ) -> Result<zaino_primitives::types::Difficulty, QueryError<zaino_source::GetDifficultyError>>
@@ -581,7 +581,7 @@ impl zaino_source::GetDifficulty for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetBlockchainInfo for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlockchainInfo for ZebraRpcAdapter {
     async fn get_blockchain_info(
         &self,
     ) -> Result<
@@ -593,7 +593,7 @@ impl zaino_source::GetBlockchainInfo for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetMempoolTxids for ZebraRpcAdapter {
+impl zaino_source::OneShotGetMempoolTxids for ZebraRpcAdapter {
     async fn get_mempool_txids(
         &self,
     ) -> Result<Vec<TransactionId>, QueryError<zaino_source::GetMempoolTxidsError>> {
@@ -612,7 +612,7 @@ impl zaino_source::GetMempoolTxids for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetMempoolMetadata for ZebraRpcAdapter {
+impl zaino_source::OneShotGetMempoolMetadata for ZebraRpcAdapter {
     async fn get_mempool_metadata(
         &self,
     ) -> Result<Vec<zaino_source::MempoolTxMeta>, QueryError<zaino_source::GetMempoolMetadataError>>
@@ -637,7 +637,7 @@ impl zaino_source::GetMempoolMetadata for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetRawMempoolTransaction for ZebraRpcAdapter {
+impl zaino_source::OneShotGetRawMempoolTransaction for ZebraRpcAdapter {
     async fn get_raw_mempool_transaction(
         &self,
         txid: TransactionId,
@@ -659,7 +659,7 @@ impl zaino_source::GetRawMempoolTransaction for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetMempoolSourceTip for ZebraRpcAdapter {
+impl zaino_source::OneShotGetMempoolSourceTip for ZebraRpcAdapter {
     async fn get_mempool_source_tip(
         &self,
     ) -> Result<(BlockHash, Height), QueryError<std::convert::Infallible>> {
@@ -675,7 +675,7 @@ impl zaino_source::GetMempoolSourceTip for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetAddressBalance for ZebraRpcAdapter {
+impl zaino_source::OneShotGetAddressBalance for ZebraRpcAdapter {
     async fn get_address_balance(
         &self,
         addresses: Vec<String>,
@@ -693,7 +693,7 @@ impl zaino_source::GetAddressBalance for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetAddressDeltas for ZebraRpcAdapter {
+impl zaino_source::OneShotGetAddressDeltas for ZebraRpcAdapter {
     async fn get_address_deltas(
         &self,
         addresses: Vec<String>,
@@ -718,7 +718,7 @@ impl zaino_source::GetAddressDeltas for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetAddressTxids for ZebraRpcAdapter {
+impl zaino_source::OneShotGetAddressTxids for ZebraRpcAdapter {
     async fn get_address_txids(
         &self,
         addresses: Vec<String>,
@@ -740,7 +740,7 @@ impl zaino_source::GetAddressTxids for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetAddressUtxos for ZebraRpcAdapter {
+impl zaino_source::OneShotGetAddressUtxos for ZebraRpcAdapter {
     async fn get_address_utxos(
         &self,
         addresses: Vec<String>,
@@ -756,7 +756,7 @@ impl zaino_source::GetAddressUtxos for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetTreestateByHash for ZebraRpcAdapter {
+impl zaino_source::OneShotGetTreestateByHash for ZebraRpcAdapter {
     async fn get_treestate_by_hash(
         &self,
         hash: BlockHash,
@@ -771,7 +771,7 @@ impl zaino_source::GetTreestateByHash for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetCommitmentTreeRoots for ZebraRpcAdapter {
+impl zaino_source::OneShotGetCommitmentTreeRoots for ZebraRpcAdapter {
     async fn get_commitment_tree_roots(
         &self,
         block: BlockHash,
@@ -789,7 +789,7 @@ impl zaino_source::GetCommitmentTreeRoots for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetSubtreeRoots for ZebraRpcAdapter {
+impl zaino_source::OneShotGetSubtreeRoots for ZebraRpcAdapter {
     async fn get_subtree_roots(
         &self,
         pool: zaino_primitives::types::ShieldedPool,
@@ -813,7 +813,7 @@ impl zaino_source::GetSubtreeRoots for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetSpentInfo for ZebraRpcAdapter {
+impl zaino_source::OneShotGetSpentInfo for ZebraRpcAdapter {
     async fn get_spent_info(
         &self,
         outpoint: zaino_primitives::types::rpc::SpentOutpoint,
@@ -847,7 +847,7 @@ impl zaino_source::GetSpentInfo for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetTxOut for ZebraRpcAdapter {
+impl zaino_source::OneShotGetTxOut for ZebraRpcAdapter {
     async fn get_tx_out(
         &self,
         txid: TransactionId,
@@ -865,7 +865,7 @@ impl zaino_source::GetTxOut for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::SendRawTransaction for ZebraRpcAdapter {
+impl zaino_source::OneShotSendRawTransaction for ZebraRpcAdapter {
     async fn send_raw_transaction(
         &self,
         transaction: Vec<u8>,
@@ -887,7 +887,7 @@ impl zaino_source::SendRawTransaction for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetNodeInfo for ZebraRpcAdapter {
+impl zaino_source::OneShotGetNodeInfo for ZebraRpcAdapter {
     async fn get_node_info(
         &self,
     ) -> Result<zaino_primitives::types::rpc::NodeInfo, QueryError<zaino_source::GetNodeInfoError>>
@@ -897,7 +897,7 @@ impl zaino_source::GetNodeInfo for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetPeerInfo for ZebraRpcAdapter {
+impl zaino_source::OneShotGetPeerInfo for ZebraRpcAdapter {
     async fn get_peer_info(
         &self,
     ) -> Result<
@@ -909,7 +909,7 @@ impl zaino_source::GetPeerInfo for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetMiningInfo for ZebraRpcAdapter {
+impl zaino_source::OneShotGetMiningInfo for ZebraRpcAdapter {
     async fn get_mining_info(
         &self,
     ) -> Result<
@@ -921,7 +921,7 @@ impl zaino_source::GetMiningInfo for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetBlockSubsidy for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlockSubsidy for ZebraRpcAdapter {
     async fn get_block_subsidy(
         &self,
         height: Height,
@@ -940,7 +940,7 @@ impl zaino_source::GetBlockSubsidy for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetNetworkSolPs for ZebraRpcAdapter {
+impl zaino_source::OneShotGetNetworkSolPs for ZebraRpcAdapter {
     async fn get_network_sol_ps(
         &self,
         blocks: Option<u32>,
@@ -969,7 +969,7 @@ impl zaino_source::SourceLifecycle for ZebraRpcAdapter {}
 /// pace themselves on their own timer.
 impl zaino_source::SubscribeBlocks for ZebraRpcAdapter {}
 
-impl zaino_source::GetTransaction for ZebraRpcAdapter {
+impl zaino_source::OneShotGetTransaction for ZebraRpcAdapter {
     async fn get_transaction(
         &self,
         txid: TransactionId,
@@ -992,7 +992,7 @@ impl zaino_source::GetTransaction for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetRawBlock for ZebraRpcAdapter {
+impl zaino_source::OneShotGetRawBlock for ZebraRpcAdapter {
     async fn get_raw_block(
         &self,
         height: Height,
@@ -1008,7 +1008,7 @@ impl zaino_source::GetRawBlock for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetRawBlockByHash for ZebraRpcAdapter {
+impl zaino_source::OneShotGetRawBlockByHash for ZebraRpcAdapter {
     async fn get_raw_block_by_hash(
         &self,
         hash: BlockHash,
