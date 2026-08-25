@@ -1,0 +1,44 @@
+[package]
+name = "zaino-bench"
+description = "Benchmark harness for Zaino: initial-sync time, concurrent-connection load, and block serve rate."
+authors = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+edition = { workspace = true }
+license = { workspace = true }
+version = "0.1.0"
+publish = false
+
+[[bin]]
+name = "zaino-bench"
+path = "src/main.rs"
+
+[dependencies]
+zaino-proto = { workspace = true }
+# For `ensure_default_crypto_provider`: the workspace enables reqwest's
+# `rustls-no-provider`, so a provider must be installed explicitly before any
+# rustls config is built, or `reqwest::Client::new` panics with "No provider
+# set" (ADR-0006).
+zaino-common = { workspace = true }
+
+# Runtime
+tokio = { workspace = true, features = ["full"] }
+
+# Network / RPC
+# TLS features match `zaino-serve`'s, so pointing the harness at an https
+# endpoint adds no second rustls CryptoProvider path to the graph (ADR-0006).
+tonic = { workspace = true, features = ["tls-native-roots", "tls-aws-lc"] }
+reqwest = { workspace = true }
+
+# CLI
+clap = { workspace = true, features = ["derive"] }
+
+# Utility
+futures = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Test-only, so the `prometheus` feature is not unified into non-test builds of
+# the workspace. `metric_names_match_zaino_state` asserts the metric names this
+# crate scrapes are still the ones `zaino-state` emits.
+zaino-state = { workspace = true, features = ["prometheus"] }

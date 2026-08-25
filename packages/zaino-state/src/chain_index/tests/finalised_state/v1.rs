@@ -31,15 +31,28 @@ use crate::{AddrScript, Outpoint};
 pub(crate) async fn spawn_v1_zaino_db(
     source: MockSource,
 ) -> Result<(TempDir, FinalisedState<MockSource>), FinalisedStateError> {
+    spawn_v1_zaino_db_with(source, |_database| {}).await
+}
+
+/// `spawn_v1_zaino_db`, with a chance to adjust the database config first.
+///
+/// The tempdir path is set before `tune` runs, so a caller only overrides the knob it cares about.
+async fn spawn_v1_zaino_db_with(
+    source: MockSource,
+    tune: impl FnOnce(&mut DatabaseConfig),
+) -> Result<(TempDir, FinalisedState<MockSource>), FinalisedStateError> {
     let temp_dir: TempDir = tempfile::tempdir().unwrap();
     let db_path: PathBuf = temp_dir.path().to_path_buf();
 
+    let mut database = DatabaseConfig {
+        path: db_path,
+        ..Default::default()
+    };
+    tune(&mut database);
+
     let config = ChainIndexConfig {
         storage: StorageConfig {
-            database: DatabaseConfig {
-                path: db_path,
-                ..Default::default()
-            },
+            database,
             ..Default::default()
         },
         ephemeral: false,
@@ -143,6 +156,73 @@ async fn sync_to_height() {
     let built_db_height = dbg!(zaino_db.db_height().await.unwrap()).unwrap();
 
     assert_eq!(built_db_height, Height(200));
+}
+
+/// Bulk sync must stay correct when the run spans many write batches.
+///
+/// The batches are pipelined — batch N commits on its own thread while batch N+1 is built — so a
+/// batch boundary is where the builder's cursor and the committed tip diverge, and where an
+/// off-by-one would land. With the default 8 GiB budget the whole vector fits in a single batch
+/// and none of that machinery runs. `sync_write_batch_size = 0` floors the budget at one byte
+/// (the documented guard), so every fetch window closes its batch — dozens of boundaries across
+/// the range instead of none.
+///
+/// It covers the concurrent fetch window too: the window is filled by `buffered`, which must yield
+/// blocks in height order for the `parent_chainwork` fold to chain them correctly. Out-of-order
+/// results would pair a block with the wrong height and show up as a gap below.
+///
+/// multi_thread required: the pipeline commits on a scoped thread while the builder runs under
+/// `block_in_place` on this one, which a current-thread runtime cannot do.
+#[tokio::test(flavor = "multi_thread")]
+async fn sync_to_height_across_many_write_batches() {
+    init_tracing();
+
+    let blocks = load_test_vectors().unwrap().blocks;
+    let source = build_mockchain_source(blocks.clone());
+
+    let (_db_dir, zaino_db) = spawn_v1_zaino_db_with(source.clone(), |database| {
+        database.sync_write_batch_size = zaino_common::SyncWriteBatchSize(0);
+    })
+    .await
+    .unwrap();
+
+    zaino_db.sync_to_height(Height(200), &source).await.unwrap();
+    zaino_db.wait_until_synced().await;
+
+    assert_eq!(
+        zaino_db.db_height().await.unwrap(),
+        Some(Height(200)),
+        "the tip must reach the target even when every block is its own batch"
+    );
+
+    // Gap-free, not just tip-correct: a pipeline that dropped or double-committed a batch could
+    // still land on the right tip.
+    let reader = std::sync::Arc::new(zaino_db).to_reader();
+    let mut previous_chainwork: Option<crate::chain_index::types::ChainWork> = None;
+    for height in 0..=200u32 {
+        let header = reader
+            .get_block_header(Height(height))
+            .await
+            .unwrap_or_else(|e| panic!("height {height} must be readable after a sync: {e}"));
+
+        // The chainwork fold is the one ordering constraint left in block building: the window is
+        // folded in height order, then assembled concurrently. A fold that paired a block with the
+        // wrong parent still yields a readable, gap-free, strictly-increasing range — so assert the
+        // exact increment against this block's own stored difficulty, which an off-by-one breaks.
+        let chainwork = *header.context.chainwork();
+        let block_work = header.data().bits.to_work();
+        let expected = match previous_chainwork {
+            Some(previous) => previous
+                .add(&block_work)
+                .expect("no overflow in test vectors"),
+            None => block_work,
+        };
+        assert_eq!(
+            chainwork, expected,
+            "chainwork at height {height} must be its parent's plus this block's own work"
+        );
+        previous_chainwork = Some(chainwork);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
