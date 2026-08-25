@@ -310,11 +310,7 @@ impl<'a> BlockWithMetadata<'a> {
             .map(|height| Height(height.0))
             .ok_or_else(|| String::from("Any valid block has a coinbase height"))?;
 
-        let bits = CompactDifficulty::try_from_be_bytes(
-            block.header.difficulty_threshold.bytes_in_display_order(),
-        )
-        .map_err(|e| format!("invalid nBits: {e}"))?;
-        let block_work = bits.to_work();
+        let block_work = block_work(&block.header)?;
         let chainwork = match self.metadata.parent_chainwork {
             Some(parent) => parent
                 .add(&block_work)
@@ -324,6 +320,18 @@ impl<'a> BlockWithMetadata<'a> {
 
         Ok(BlockContext::new(hash, parent_hash, chainwork, height))
     }
+}
+
+/// A block's own proof-of-work contribution, decoded from its header's difficulty threshold.
+///
+/// Depends on nothing but this one header, which is what makes the cumulative chainwork a running
+/// sum that can be folded over already-fetched blocks in a separate pass from assembling them.
+/// Shared so the fold and [`BlockWithMetadata`]'s own assembly cannot drift apart.
+pub(crate) fn block_work(header: &zebra_chain::block::Header) -> Result<ChainWork, String> {
+    let bits =
+        CompactDifficulty::try_from_be_bytes(header.difficulty_threshold.bytes_in_display_order())
+            .map_err(|e| format!("invalid nBits: {e}"))?;
+    Ok(bits.to_work())
 }
 
 impl BlockMetadata {
