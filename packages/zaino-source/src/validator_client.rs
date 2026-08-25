@@ -42,6 +42,30 @@ use crate::error::{FailureMode, QueryError, SourceError, UnavailableError};
 /// Each canonical port names `Sealed` as a supertrait; `Sealed` is implemented
 /// only for [`ValidatorClient<V>`], so "holds a resilient port" is a proof the value
 /// went through [`ValidatorClient::with_retry`], not a claim a consumer can fake.
+///
+/// # If the compiler sent you here because you wanted your own retrying
+///
+/// You tried to implement a canonical port and the seal stopped you. That is
+/// deliberate, but it is not a dead end — "roll your own retry" is really three
+/// different asks, and only the last one needs this seal to move:
+///
+/// - **Different tuning** — more attempts, longer backoff, a different delay
+///   curve. You need no new type at all: hand [`ValidatorClient::new`] a custom
+///   [`RetryPolicy`]. The seal was never in your way here; this is the common
+///   case, so reach for it before anything below.
+/// - **Different classification** — which failures are worth retrying. That
+///   decision lives in exactly one place, the `is_retryable` function in this
+///   module. A PR extending it is small and welcome; prefer teaching it through
+///   [`RetryPolicy`] so the choice stays configuration rather than a fork.
+/// - **A structurally different strategy** — circuit breaking, hedged requests,
+///   failover across several validators — something no policy can express. This
+///   is the only case the seal actually blocks, and on purpose: such a type
+///   could *claim* a resilient port while quietly not honoring the retry
+///   contract. Open an issue to unseal (or to widen this seal to a sanctioned
+///   set). Unsealing is a small, non-breaking change; it is held back only until
+///   a real second strategy exists to justify trading the compile-time proof for
+///   a documented contract — at which point the tests in this module become the
+///   conformance kit that contract is checked against.
 pub(crate) mod sealed {
     /// Implemented only for [`ValidatorClient`](super::ValidatorClient).
     pub trait Sealed {}
