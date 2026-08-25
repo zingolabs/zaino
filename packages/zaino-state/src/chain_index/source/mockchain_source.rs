@@ -788,6 +788,34 @@ impl zaino_source::GetCommitmentTreeRoots for MockchainSource {
     }
 }
 
+impl zaino_source::GetCommitmentTreeRootsByHeight for MockchainSource {
+    async fn get_commitment_tree_roots_by_height(
+        &self,
+        height: domain::Height,
+    ) -> Result<
+        (domain::BlockHash, domain::TreeRoots),
+        PortError<zaino_source::GetCommitmentTreeRootsByHeightError>,
+    > {
+        let Some(index) = self.served_index_at_height(height) else {
+            return Err(PortError::Domain(
+                zaino_source::GetCommitmentTreeRootsByHeightError::HeightNotFound(height),
+            ));
+        };
+        let hash = domain::BlockHash::from(self.blocks[index].hash().0);
+        let roots = zaino_source::GetCommitmentTreeRoots::get_commitment_tree_roots(self, hash)
+            .await
+            .map_err(|error| match error {
+                // The hash was just resolved from this same chain, so a
+                // missing block is the mock's own fault, not an answer.
+                PortError::Domain(zaino_source::GetCommitmentTreeRootsError::BlockNotFound(
+                    hash,
+                )) => port_fault(format!("mockchain lost block {hash} it just indexed")),
+                PortError::Fetch(fetch) => PortError::Fetch(fetch),
+            })?;
+        Ok((hash, roots))
+    }
+}
+
 impl zaino_source::GetBlockVerboseByHash for MockchainSource {
     async fn get_block_verbose_by_hash(
         &self,

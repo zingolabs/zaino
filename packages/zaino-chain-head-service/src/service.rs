@@ -402,10 +402,17 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         //
         // see https://github.com/ZcashFoundation/zebra/issues/9541
         while u32::from(graph.best_tip().height) < u32::from(chain_height) {
-            let Some(block) = self
-                .block_at_height(next_height(graph.best_tip().height))
-                .await?
-            else {
+            let next = next_height(graph.best_tip().height);
+            // Both reads address the best-chain block at `next`, so they are
+            // independent and run concurrently; the hash check below closes
+            // the reorg race the concurrency opens.
+            let (block, roots) = tokio::join!(
+                self.block_at_height(next),
+                self.source.get_commitment_tree_roots_by_height(next),
+            );
+            let Some(block) = block? else {
+                // Past the tip; the roots result is dropped unexamined, since
+                // its `HeightNotFound` there is expected, not a failure.
                 break;
             };
 
@@ -422,7 +429,14 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
                         ))
                     })?
                     .clone();
-                let chainblock = self.block_to_chainblock(&prev_block, &block).await?;
+                let roots = match roots {
+                    Ok((roots_hash, roots)) if roots_hash == block.header.hash => roots,
+                    // A reorg swapped the best-chain block between the two
+                    // reads, or the height-addressed read failed; the hash we
+                    // hold is authoritative, so refetch by it.
+                    _ => self.tree_roots(block.header.hash).await?,
+                };
+                let chainblock = chain_head_block(block.clone(), &roots, Some(prev_block.work))?;
                 info!(
                     height = u32::from(chainblock.height()),
                     hash = %chainblock.hash(),

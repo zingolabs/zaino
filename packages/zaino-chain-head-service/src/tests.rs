@@ -33,6 +33,7 @@ use zaino_primitives::types::{
 use zaino_source::{
     FailureMode, FetchError, GetBlock, GetBlockByHash, GetBlockByHashError, GetBlockError,
     GetChainTip, GetChainTipError, GetChainTips, GetChainTipsError, GetCommitmentTreeRoots,
+    GetCommitmentTreeRootsByHeight, GetCommitmentTreeRootsByHeightError,
     GetCommitmentTreeRootsError, QueryError, SubscribeBlocks,
 };
 
@@ -213,6 +214,30 @@ impl GetCommitmentTreeRoots for MockValidator {
             orchard: None,
             ironwood: None,
         })
+    }
+}
+
+impl GetCommitmentTreeRootsByHeight for MockValidator {
+    async fn get_commitment_tree_roots_by_height(
+        &self,
+        height: Height,
+    ) -> Result<(BlockHash, TreeRoots), QueryError<GetCommitmentTreeRootsByHeightError>> {
+        let hash = self
+            .lock()
+            .best_chain
+            .get(u32::from(height) as usize)
+            .copied()
+            .ok_or(QueryError::Domain(
+                GetCommitmentTreeRootsByHeightError::HeightNotFound(height),
+            ))?;
+        Ok((
+            hash,
+            TreeRoots {
+                sapling: None,
+                orchard: None,
+                ironwood: None,
+            },
+        ))
     }
 }
 
