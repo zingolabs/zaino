@@ -774,9 +774,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
             let pool = match ShieldedProtocol::try_from(request.shielded_protocol) {
                 Ok(ShieldedProtocol::Sapling) => zaino_primitives::types::ShieldedPool::Sapling,
                 Ok(ShieldedProtocol::Orchard) => zaino_primitives::types::ShieldedPool::Orchard,
-                Ok(ShieldedProtocol::Ironwood) => {
-                    zaino_primitives::types::ShieldedPool::Ironwood
-                }
+                Ok(ShieldedProtocol::Ironwood) => zaino_primitives::types::ShieldedPool::Ironwood,
                 Err(_) => {
                     return Err(<Self as ZcashIndexer>::Error::from(
                         tonic::Status::invalid_argument("Error: Invalid shielded protocol value."),

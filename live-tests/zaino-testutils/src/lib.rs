@@ -467,9 +467,15 @@ pub static ZEBRAD_CHAIN_CACHE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
 });
 
 /// Path for the Zebra chain cache of The Public Testnet in the user's home directory.
-pub static ZEBRAD_THE_PUB_TESTNET_CACHE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
+pub static ZEBRAD_HOME_CACHE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
     let home_path = PathBuf::from(std::env::var("HOME").unwrap());
     Some(home_path.join(".cache/zebra"))
+});
+
+/// Path for the Zebra chain cache testnet state directory of The Public Testnet in the user's home directory.
+pub static ZEBRAD_TESTNET_STATE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
+    let home_path = PathBuf::from(std::env::var("HOME").unwrap());
+    Some(home_path.join(".cache/zebra/state/testnet"))
 });
 
 #[derive(Debug, PartialEq, Clone, Copy)]
