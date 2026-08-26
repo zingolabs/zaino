@@ -17,7 +17,8 @@ pub enum GetAddressUtxosError {
 /// Fetch unspent transparent outputs for one or more addresses.
 ///
 /// Maps to `getaddressutxos` over JSON-RPC.
-pub trait GetAddressUtxos: Send + Sync {
+#[zaino_source_macros::resilient_port]
+pub trait OneShotGetAddressUtxos: Send + Sync {
     /// Fetch UTXOs.
     fn get_address_utxos(
         &self,

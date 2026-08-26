@@ -15,8 +15,8 @@
 use std::sync::Arc;
 
 use crate::entry::MempoolEntry;
-use crate::ports::NonFinalizedEpoch;
 use crate::tip::FreezeReason;
+use zaino_primitives::types::ChainStateEpoch;
 
 /// A coherent mempool change event, keyed to an NS epoch.
 #[derive(Debug, Clone)]
@@ -26,7 +26,7 @@ pub enum MempoolEvent {
         /// Event sequence of the publishing coherent snapshot.
         sequence: u64,
         /// The epoch the coherent set is valid for.
-        valid_for: NonFinalizedEpoch,
+        valid_for: ChainStateEpoch,
         /// The added entry (shared; not cloned per subscriber).
         entry: Arc<MempoolEntry>,
     },
@@ -45,7 +45,7 @@ pub enum MempoolEvent {
         /// Event sequence of the live snapshot.
         sequence: u64,
         /// The epoch the coherent set is now live for.
-        valid_for: NonFinalizedEpoch,
+        valid_for: ChainStateEpoch,
     },
 
     /// The service is closing.

@@ -8,7 +8,7 @@
 use zaino_rpc::{RpcClient, RpcClientConfig};
 use zaino_source_zebra_rpc::ZebraRpcAdapter;
 
-use zaino_source::{GetBlock, GetChainTip};
+use zaino_source::{OneShotGetBlock, OneShotGetChainTip};
 
 #[tokio::main]
 async fn main() {

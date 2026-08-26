@@ -8,9 +8,145 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- Progress logging for the from-genesis txout-set accumulator rebuild. The
+  rebuild previously logged two lines up front and nothing again until it
+  committed, so a multi-shard full-chain scan — tens of minutes on a
+  mainnet-sized database — was indistinguishable from a hang. It now reports
+  the spent-entry count pass, each shard's start, spent-set size and
+  completion, and intra-shard height progress, all throttled to one line per
+  10s so output stays bounded regardless of shard count. A shard that exceeds
+  its memory budget and has to be bisected now logs a **warning** naming
+  `storage.database.accumulator_rebuild_memory_size`, since each bisect adds a
+  further full-chain pass.
+- Progress logging for the startup `spent` table integrity check and for the
+  incremental accumulator update.
+- `FinalisedStateMode` (`EphemeralConfigured` / `EphemeralRouted` /
+  `Persistent`) and `NodeBackedChainIndex::finalised_state_mode`, reporting
+  which backend currently answers finalised-state reads. `StatusType` cannot
+  express this: an ephemeral passthrough tracks the backing validator and
+  reports `Ready` exactly like a fully synced persistent database, so a caller
+  gating on `Ready` alone could not tell whether it was querying the real
+  on-disk index or a passthrough standing in for one during sync or migration.
+- Logging for every finalised-state routing transition: passthrough install,
+  mode escalation, downgrade, hand-back to the persistent database, and
+  teardown at shutdown. A one-shot "finalised state online" line marks the
+  first time reads are served from disk, covering both the post-sync/migration
+  edge and a restart against an already-current database.
+- A startup banner naming the finalised-state mode. A process configured with
+  `ephemeral_finalised_state = true` previously started completely silently
+  about it; it now warns, since a test suite believing it is exercising the
+  on-disk index while every read is served by the validator is nearly always a
+  misconfiguration.
+- A log line when a background migration completes; previously only the failure
+  path logged, so a finished migration looked identical to one still running.
+- `zaino.db.finalised_ephemeral`, `zaino.db.accumulator_built_height` and
+  `zaino.db.accumulator_rebuild_active` metric names (emitted under the
+  `prometheus` feature).
+
+### Changed
+- The non-finalised state is no longer part of this crate. It is now the
+  `zaino-chain-head` / `zaino-chain-head-service` subsystem, which owns its own
+  writer task and never reads the finalised state; `ChainIndex` reads the
+  snapshots it publishes. See ADR-0011. Consequences visible from here:
+  - The two layers advance independently. This crate's sync worker keeps only
+    the finalised half, so a slow database no longer holds the chain tip back;
+    both derive the seam from the same tip and the same depth.
+  - `ChainIndex::new` is fallible where the chain head cannot anchor — the
+    validator being unreachable for `max_consecutive_failures` consecutive
+    attempts, where the old code retried in the background indefinitely.
+    Transient failures are still absorbed.
+  - `snapshot_nonfinalized_state` is synchronous and infallible: capturing a
+    view cannot fail and cannot block.
+  - `getchaintips` is answered from the chain head's retained graph with no
+    validator fallback — the same answers the old derivation produced from the
+    same graph.
+  - The `passthrough_*` proptests exercise the chain head rather than the
+    removed passthrough, so they wait for the chain tip rather than the
+    finalised floor.
+  - `ChainIndex::status` and `NodeBackedChainIndexSubscriber::combined_status`
+    account for the chain head alongside the finalised state and the mempool.
+    Nothing else reports on its behalf now that it drives itself, so without
+    this a chain head that had given up on the validator served a frozen tip
+    while the index still reported `Ready`. A chain head in `CriticalError`
+    therefore surfaces as `CriticalError` here, which zainod treats as grounds
+    for teardown.
+- The mempool's coherence epoch is now the chain head's, replacing the
+  `NonfinalizedBlockCacheSnapshot::epoch()` that 0.4.0 introduced. The observer
+  the coherence layer freezes and thaws against reads the same
+  `ChainHeadSubscriber` the rest of ChainIndex serves snapshots from, so the two
+  cannot drift, and the sync loop no longer relays a publication signal for a
+  state it no longer drives. There is no translation: both subsystems name
+  `zaino_primitives::types::ChainStateEpoch`, so the coherence check compares one
+  type rather than converting between two that started identical.
+- The status fold no longer writes its result back into the index's own status
+  cell. It used to latch: the first transient failure in any component pinned
+  the index to `RecoverableError` — and `Readiness::is_ready` to false — for the
+  rest of the process's life. Component statuses are now read live on each call,
+  so a recovered component is reported as recovered.
+### Deprecated
+### Removed
+- `chain_index::non_finalised_state` and its test file, the `NonFinalizedSnapshot`
+  trait and its impls, `chain_tips_from_nonfinalized_snapshot`,
+  `branch_len_to_active_chain`, and the never-constructed
+  `error::NonFinalisedStateError`. Reorg metrics move to
+  `zaino-chain-head-service` with their metric strings unchanged.
+- `ChainIndexSnapshot::StillSyncingFinalizedState`, and every match on it. The
+  chain head anchors before `ChainIndex::new` returns, so the variant had no way
+  to be constructed; the snapshot type collapses to `Arc<MapBackedSnapshot>`.
+- The `nonfinalized_listener` port and its stub. Every production source
+  returned `Ok(None)`, so the handler behind it was unreachable.
+- `get_block_height_passthrough`, `SyncError::NodeConnectionError` and two other
+  `SyncError` variants — all carried over from the non-finalised state, and
+  constructed by nothing once the sync worker drives one thing.
+### Fixed
+- `zaino.chain.tip_height` was emitted twice per sync iteration — once through a
+  hard-coded string literal and once through the `CHAIN_TIP_HEIGHT` constant,
+  with the same value. The redundant literal emission is removed, leaving the
+  constant as the single source of truth for the metric name.
+
+## [0.7.0] - 2026-08-14
+
+### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.6.0] - 2026-08-04
+
+### Added
+### Changed
+- The six public stream types (`RawTransactionStream`,
+  `CompactTransactionStream`, `CompactBlockStream`, `UtxoReplyStream`,
+  `SubtreeRootReplyStream`, `AddressStream`) are collapsed to
+  `pub type X = ChannelStream<T>` aliases. Their names, constructors, and
+  `Stream` impls are preserved, so this is **not** a breaking change for
+  typical use.
+- Adopted the DRY'd `zaino-proto` proto utilities.
+- Internal refactor of the error and indexer plumbing.
+### Deprecated
+### Removed
+- **Breaking** — the public constructors `BlockData::new` and
+  `BlockMetadata::new` (construct these types via struct literals instead).
+- **Breaking** — `impl ZainoVersionedSerde for IndexedBlock` and
+  `impl ZainoVersionedSerde for CompactTxData` (the never-adopted
+  wholesale-block serde path).
+### Fixed
+
+## [0.5.0] - 2026-07-13
+
+### Added
 - The chain index tracks Ironwood (NU6.3) note-commitment treestate roots,
   storing `None` while the pool has no treestate rather than fabricating a
   root.
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.4.0] - 2026-07-02
+
+### Added
 - `ChainIndex` / `NodeBackedChainIndexSubscriber` gain `get_outpoint_spenders` —
   for each transparent `Outpoint`, returns the txid that spent it on the best
   chain (index-aligned with the input, `None` if unspent or unknown).

@@ -195,23 +195,68 @@ impl NamedAtomicStatus {
         StatusType::from(self.inner.load(Ordering::SeqCst))
     }
 
-    /// Sets the value held in the NamedAtomicStatus, logging the transition.
-    pub fn store(&self, status: StatusType) {
-        let old = self.load();
-        if old != status {
+    /// Atomically replaces the status with `f(current)` in one
+    /// compare-and-swap loop — closing the check-then-store window a
+    /// `load`/`store` pair leaves open — and returns the installed status.
+    pub fn apply(&self, f: impl Fn(StatusType) -> StatusType) -> StatusType {
+        let old = self
+            .inner
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |raw| {
+                Some(f(StatusType::from(raw)).into())
+            })
+            .map(StatusType::from)
+            .expect("fetch_update closure always returns Some");
+        let new = f(old);
+        if old != new {
             debug!(
                 component = self.name,
                 from = %old,
-                to = %status,
+                to = %new,
                 "[STATUS] transition"
             );
         }
-        self.inner.store(status.into(), Ordering::SeqCst);
+        new
+    }
+
+    /// Sets the value held in the NamedAtomicStatus, logging the transition.
+    pub fn store(&self, status: StatusType) {
+        self.apply(|_| status);
     }
 }
 
 impl Status for NamedAtomicStatus {
     fn status(&self) -> StatusType {
         self.load()
+    }
+}
+
+#[cfg(test)]
+mod apply {
+    use super::{NamedAtomicStatus, StatusType};
+
+    /// The installed status is `f(current)`, and it is also the return value.
+    #[test]
+    fn installs_and_returns_the_mapped_status() {
+        let status = NamedAtomicStatus::new("test", StatusType::Syncing);
+
+        let installed = status.apply(|_| StatusType::Ready);
+
+        assert_eq!(installed, StatusType::Ready);
+        assert_eq!(status.load(), StatusType::Ready);
+    }
+
+    /// A closure that maps a state to itself leaves the cell unchanged, which
+    /// is how a caller expresses a transition guard.
+    #[test]
+    fn an_identity_arm_holds_the_current_status() {
+        let status = NamedAtomicStatus::new("test", StatusType::Closing);
+
+        let installed = status.apply(|current| match current {
+            StatusType::Closing => StatusType::Closing,
+            _ => StatusType::Ready,
+        });
+
+        assert_eq!(installed, StatusType::Closing);
+        assert_eq!(status.load(), StatusType::Closing);
     }
 }

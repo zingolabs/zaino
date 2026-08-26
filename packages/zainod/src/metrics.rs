@@ -11,6 +11,7 @@ use tracing::info;
 // Metric names are owned by the crates that emit them, so the `describe_*`
 // registrations below share one source of truth with the emit sites and can
 // never drift.
+use zaino_chain_head_service::metric_names::*;
 use zaino_rpc::metric_names::*;
 use zaino_serve::metric_names::*;
 use zaino_state::metric_names::*;
@@ -109,11 +110,11 @@ fn describe_metrics() {
         "Total sync loop errors by severity (recoverable or critical)"
     );
     metrics::describe_counter!(
-        SYNC_REORG_TOTAL,
-        "Total chain reorganization events detected in the non-finalized state"
+        CHAIN_HEAD_REORG_TOTAL,
+        "Total chain reorganization events observed by the chain head"
     );
     metrics::describe_histogram!(
-        SYNC_REORG_DEPTH,
+        CHAIN_HEAD_REORG_DEPTH,
         "Depth of chain reorganizations in blocks (0 for same-height reorgs)"
     );
 
@@ -125,6 +126,23 @@ fn describe_metrics() {
     metrics::describe_gauge!(
         SYNC_LAST_BLOCK_WRITTEN_AT,
         "Unix timestamp of the last block written to the finalized database"
+    );
+    metrics::describe_gauge!(
+        FINALISED_EPHEMERAL,
+        "1 while finalised-state reads are served by the ephemeral passthrough rather than the \
+         persistent database (initial sync, or a migration in progress); 0 once the on-disk index \
+         is serving. Note this reads 1 for the whole life of a process configured with \
+         ephemeral_finalised_state = true"
+    );
+    metrics::describe_gauge!(
+        ACCUMULATOR_BUILT_HEIGHT,
+        "Height the persisted txout-set accumulator currently reflects. Lagging far behind the DB \
+         tip means the next sync will trigger a full from-genesis rebuild"
+    );
+    metrics::describe_gauge!(
+        ACCUMULATOR_REBUILD_ACTIVE,
+        "1 while a from-genesis txout-set accumulator rebuild is running. This is a multi-pass \
+         full-chain scan; expect elevated read I/O for its duration"
     );
 
     // Inbound gRPC

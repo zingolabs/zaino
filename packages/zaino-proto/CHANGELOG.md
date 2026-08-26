@@ -8,6 +8,40 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.4.0] - 2026-08-14
+
+### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.3.0] - 2026-08-04
+
+### Added
+- `PoolTypeError::DuplicatePoolType` variant.
+### Changed
+- **Breaking** — `ValidatedBlockRangeRequest` now stores its parsed `u32`
+  block-height endpoints. Consumers read the heights directly and drop their
+  own `as u32` casts at the call site.
+- **Breaking** — pool-type validation now rejects a request that names the
+  same pool more than once (returning `PoolTypeError::DuplicatePoolType`)
+  instead of silently collapsing the duplicate into a single pool.
+- Internal — the hand-written proto utility helpers were DRY'd and made
+  expression-oriented (parse-don't-validate), and the build script was
+  deduplicated. No effect on the generated wire types beyond the changes above.
+### Deprecated
+### Removed
+### Fixed
+
+## [0.2.0] - 2026-07-13
+
+### Added
 - Pool-type filter serves Ironwood by default (`include_ironwood: true`), so
   clients that predate the field still receive `ironwoodActions` (unknown
   protobuf fields are carried harmlessly).

@@ -6,7 +6,7 @@ repository = { workspace = true }
 homepage = { workspace = true }
 edition = { workspace = true }
 license = { workspace = true }
-version = "0.3.1"
+version = "0.7.0"
 
 [features]
 default = []
@@ -99,6 +99,8 @@ zaino-consensus.workspace = true
 bytes.workspace = true
 zaino-mempool = { workspace = true, features = ["tip_aware_mempool"] }
 zaino-mempool-service = { workspace = true, features = ["tip_aware_mempool"] }
+zaino-chain-head = { workspace = true }
+zaino-chain-head-service = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -108,6 +110,7 @@ zebra-chain = { workspace = true, features = ["proptest-impl"] }
 proptest.workspace = true
 incrementalmerkletree = "0.8.2"
 rand = "0.10.1"
+zaino-consensus = { workspace = true }
 
 [build-dependencies]
 whoami = { workspace = true }

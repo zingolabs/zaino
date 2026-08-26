@@ -8,6 +8,14 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.6.0] - 2026-08-14
+
+### Added
 - `rpc::jsonrpc::wire` — **this crate now owns the served JSON schema**
   (ADR-0009). Serde structs carrying zcashd's exact field names, one module per
   response family (`address`, `address_deltas`, `address_queries`,
@@ -18,6 +26,24 @@ and this library adheres to Rust's notion of
 - Interface asymmetries are now recorded and tested where they are served:
   `z_gettreestate`'s `finalRoot` is display-order, `z_getsubtreesbyindex`'s
   subtree roots are not.
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.5.1] - 2026-08-04
+
+### Changed
+- Internal DRY refactor with no public API or behavior change: JSON-RPC
+  error-object construction is deduplicated, and the error-source walk is
+  expressed as an `unfold`.
+### Deprecated
+### Removed
+### Fixed
+
+## [0.5.0] - 2026-07-13
+
+### Added
 ### Changed
 - tonic's TLS provider feature switches from `tls-ring` to `tls-aws-lc`,
   following the workspace's aws-lc-rs preferred CryptoProvider (ADR-0006).
@@ -47,6 +73,12 @@ and this library adheres to Rust's notion of
   `RpcError` the recovery walks for, and the first rewrite reported `-8`.
 - `getblockchaininfo` no longer fails against zebra 6.0, which serialises the
   deferred-development-fund value pool as `lockbox` rather than `deferred`.
+
+## [0.4.0] - 2026-07-02
+
+### Changed
+- Version-alignment bump for the 0.5.0 workspace release; no changes to this
+  crate's own public API or behavior.
 
 ## [0.3.0] - 2026-06-17
 

@@ -94,6 +94,17 @@ impl<V: ChainIndexSourcePorts> ValidatorSource<V> {
     pub fn source(&self) -> &V {
         &self.validator
     }
+
+    /// The underlying validator, shared.
+    ///
+    /// A subsystem driven by its own runtime — ChainHead, and the mempool after
+    /// it — holds the validator directly rather than through this wrapper,
+    /// because it speaks the `zaino-source` ports and does not need the
+    /// wire-typed scaffolding this type provides. Sharing rather than cloning
+    /// matters: a validator may own connections and a database handle.
+    pub(crate) fn validator(&self) -> Arc<V> {
+        Arc::clone(&self.validator)
+    }
 }
 
 #[cfg(feature = "test_dependencies")]
@@ -431,7 +442,7 @@ fn value_pool_array(
 // routes them together, and the mempool's coherence check depends on it.
 // ---------------------------------------------------------------------------
 
-impl<V: ChainIndexSourcePorts> zaino_source::GetMempoolTxids for ValidatorSource<V> {
+impl<V: ChainIndexSourcePorts> zaino_source::OneShotGetMempoolTxids for ValidatorSource<V> {
     async fn get_mempool_txids(
         &self,
     ) -> Result<
@@ -442,7 +453,7 @@ impl<V: ChainIndexSourcePorts> zaino_source::GetMempoolTxids for ValidatorSource
     }
 }
 
-impl<V: ChainIndexSourcePorts> zaino_source::GetMempoolMetadata for ValidatorSource<V> {
+impl<V: ChainIndexSourcePorts> zaino_source::OneShotGetMempoolMetadata for ValidatorSource<V> {
     async fn get_mempool_metadata(
         &self,
     ) -> Result<
@@ -453,7 +464,9 @@ impl<V: ChainIndexSourcePorts> zaino_source::GetMempoolMetadata for ValidatorSou
     }
 }
 
-impl<V: ChainIndexSourcePorts> zaino_source::GetRawMempoolTransaction for ValidatorSource<V> {
+impl<V: ChainIndexSourcePorts> zaino_source::OneShotGetRawMempoolTransaction
+    for ValidatorSource<V>
+{
     async fn get_raw_mempool_transaction(
         &self,
         txid: zaino_primitives::types::TransactionId,
@@ -463,7 +476,7 @@ impl<V: ChainIndexSourcePorts> zaino_source::GetRawMempoolTransaction for Valida
     }
 }
 
-impl<V: ChainIndexSourcePorts> zaino_source::GetMempoolSourceTip for ValidatorSource<V> {
+impl<V: ChainIndexSourcePorts> zaino_source::OneShotGetMempoolSourceTip for ValidatorSource<V> {
     async fn get_mempool_source_tip(
         &self,
     ) -> Result<
@@ -593,7 +606,7 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
 
         // The interface's range is open-ended and unvalidated; the port's is
         // neither, so the bounds are resolved against the tip here.
-        let tip = zaino_source::GetBestBlockHeight::get_best_block_height(&*self.validator)
+        let tip = zaino_source::OneShotGetBestBlockHeight::get_best_block_height(&*self.validator)
             .await
             .map_err(err)?;
         let (start, end) = clamp_deltas_range_to_tip(tip, start, end);
@@ -1097,18 +1110,34 @@ impl ZebraValidatorSource {
         BlockchainSourceError,
     > {
         let adapter = rpc_adapter(common)?;
-        let info = zaino_source::GetNodeInfo::get_node_info(&adapter)
+        let info = zaino_source::OneShotGetNodeInfo::get_node_info(&adapter)
             .await
             .map_err(err)?;
 
-        while let Err(e) = zaino_source::GetChainTip::get_chain_tip(&adapter).await {
+        while let Err(e) = zaino_source::OneShotGetChainTip::get_chain_tip(&adapter).await {
             tracing::info!(%e, "Waiting for validator to serve its first block");
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         }
 
         // Adopted before anything consumes a `Network`, so the index and its
         // validator cannot disagree about where an upgrade activates.
-        let network = super::network_adoption::adopt_network(common, &rpc_client(common)?).await?;
+        //
+        // This is the first place in Zaino that actually constructs a
+        // `ValidatorClient` (the sealed resilient client): `adopt_network`
+        // binds the canonical `GetBlockchainInfo` port, which only
+        // `ValidatorClient<V>` implements, so the adapter has to be wrapped
+        // here. Wrapping buys resilience to transient unreachability for this
+        // one boot RPC — not readiness: waiting for the validator to *become*
+        // ready is a lifecycle concern the caller owns (that is what the
+        // tip-serving wait above does), never the client's. The remaining
+        // `OneShotGet*` calls stay on the bare adapter for now; migrating
+        // every consumer onto `ValidatorClient` is follow-up work, kept out to
+        // bound this PR's size.
+        let source = zaino_source::ValidatorClient::new(
+            rpc_adapter(common)?,
+            zaino_source::RetryPolicy::default(),
+        );
+        let network = super::network_adoption::adopt_network(common, &source).await?;
 
         let validator = zaino_source_zebra::ZebraValidator::rpc_only(adapter);
 
@@ -1137,11 +1166,18 @@ impl ZebraValidatorSource {
         use zebra_state::{ReadRequest, ReadResponse};
 
         let adapter = rpc_adapter(common)?;
-        let info = zaino_source::GetNodeInfo::get_node_info(&adapter)
+        let info = zaino_source::OneShotGetNodeInfo::get_node_info(&adapter)
             .await
             .map_err(err)?;
 
-        let network = super::network_adoption::adopt_network(common, &rpc_client(common)?).await?;
+        // As in `spawn_rpc`: `adopt_network` needs the sealed resilient port,
+        // so wrap the adapter in a `ValidatorClient`. The `OneShotGet*` call
+        // above stays on the bare adapter for now (see the note there).
+        let source = zaino_source::ValidatorClient::new(
+            rpc_adapter(common)?,
+            zaino_source::RetryPolicy::default(),
+        );
+        let network = super::network_adoption::adopt_network(common, &source).await?;
 
         tracing::info!(
             grpc_address = %direct.validator_grpc_address,
@@ -1161,7 +1197,7 @@ impl ZebraValidatorSource {
 
         loop {
             let (validator_hash, validator_height) =
-                zaino_source::GetChainTip::get_chain_tip(&adapter)
+                zaino_source::OneShotGetChainTip::get_chain_tip(&adapter)
                     .await
                     .map_err(err)?;
 

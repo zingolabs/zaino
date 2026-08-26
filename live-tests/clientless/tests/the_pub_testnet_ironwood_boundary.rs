@@ -27,7 +27,7 @@
 //! (`network_type: NetworkType::Testnet`, which makes zebrad ignore
 //! `activation_heights` and `miner_address`).
 
-use zaino_testutils::{ValidatorOracle, ZEBRAD_THE_PUB_TESTNET_CACHE_DIR};
+use zaino_testutils::{ValidatorOracle, ZEBRAD_HOME_CACHE_DIR, ZEBRAD_TESTNET_STATE_DIR};
 use zcash_local_net::process::Process as _;
 use zcash_local_net::protocol::NetworkType;
 use zcash_local_net::validator::zebrad::{Zebrad, ZebradConfig};
@@ -63,7 +63,23 @@ async fn pool_zats(connector: &ValidatorOracle, height: u32, pool_id: &str) -> i
 /// it over RPC.
 #[tokio::test(flavor = "multi_thread")]
 async fn value_pools_respect_the_boundary_on_the_pub_testnet() {
-    let Some(cache_dir) = ZEBRAD_THE_PUB_TESTNET_CACHE_DIR.clone() else {
+    // Check if there is a testnet state cache else skip.
+    // NOTE: the check below only checks and fetches the zebra cache dir,
+    // which would hold either testnet or mainnet data, this checks that
+    // testnet data exists.
+    let Some(cache_dir) = ZEBRAD_TESTNET_STATE_DIR.clone() else {
+        eprintln!("skipping: no cache dir configured for The Public Testnet");
+        return;
+    };
+    if !cache_dir.exists() {
+        eprintln!(
+            "skipping: no zebrad chain cache of The Public Testnet at {}",
+            cache_dir.display()
+        );
+        return;
+    }
+
+    let Some(cache_dir) = ZEBRAD_HOME_CACHE_DIR.clone() else {
         eprintln!("skipping: no cache dir configured for The Public Testnet");
         return;
     };
