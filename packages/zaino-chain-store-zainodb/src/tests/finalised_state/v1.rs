@@ -7,30 +7,30 @@ use zaino_common::network::ActivationHeights;
 use zaino_common::{DatabaseConfig, StorageConfig};
 use zaino_proto::proto::utils::{prune_compact_block, PoolTypeFilter};
 
-use crate::chain_index::finalised_state::finalised_source::FinalisedSource;
-use crate::chain_index::finalised_state::reader::DbReader;
-use crate::chain_index::finalised_state::FinalisedState;
-use crate::chain_index::tests::init_tracing;
-use crate::chain_index::tests::vectors::MockSource;
-use crate::chain_index::tests::vectors::{
-    build_mockchain_source, copy_dir_recursive, index_test_vector_blocks, indexed_block_chain,
-    load_test_vectors, TestVectorBlockData, TestVectorData,
+use crate::store::finalised_source::FinalisedSource;
+use crate::store::reader::DbReader;
+use crate::store::FinalisedState;
+use crate::tests::fixtures::FakeValidator;
+use crate::tests::fixtures::{
+    copy_dir_recursive, fake_validator_from_vectors, index_vector_blocks, indexed_block_chain,
+    load_test_vectors, TestVectorData, VectorBlock,
 };
+use crate::tests::init_tracing;
 
-use crate::chain_index::types::TransactionHash;
+use crate::types::TransactionHash;
 
-use crate::chain_index::finalised_state::entry::StoredEntryVar;
-use crate::error::FinalisedStateError;
-use crate::{
-    BlockHeaderData, BlockMetadata, BlockWithMetadata, ChainIndexConfig, Height, IndexedBlock,
-    ZainoVersionedSerde as _,
-};
+use crate::config::{StoreSettings, ZainoDbConfig};
+use crate::entry::StoredEntryVar;
+use crate::error::StoreError;
+use crate::types::{BlockHeaderData, BlockMetadata, BlockWithMetadata, Height, IndexedBlock};
+use zaino_chain_store::ChainStoreConfig;
+use zaino_encoding::ZainoVersionedSerde as _;
 
-use crate::{AddrScript, Outpoint};
+use crate::types::{AddrScript, Outpoint};
 
 pub(crate) async fn spawn_v1_zaino_db(
-    source: MockSource,
-) -> Result<(TempDir, FinalisedState<MockSource>), FinalisedStateError> {
+    source: std::sync::Arc<FakeValidator>,
+) -> Result<(TempDir, FinalisedState<FakeValidator>), StoreError> {
     spawn_v1_zaino_db_with(source, |_database| {}).await
 }
 
@@ -38,47 +38,52 @@ pub(crate) async fn spawn_v1_zaino_db(
 ///
 /// The tempdir path is set before `tune` runs, so a caller only overrides the knob it cares about.
 async fn spawn_v1_zaino_db_with(
-    source: MockSource,
+    source: std::sync::Arc<FakeValidator>,
     tune: impl FnOnce(&mut DatabaseConfig),
-) -> Result<(TempDir, FinalisedState<MockSource>), FinalisedStateError> {
+) -> Result<(TempDir, FinalisedState<FakeValidator>), StoreError> {
     let temp_dir: TempDir = tempfile::tempdir().unwrap();
     let db_path: PathBuf = temp_dir.path().to_path_buf();
 
     let mut database = DatabaseConfig {
-        path: db_path,
+        path: db_path.clone(),
         ..Default::default()
     };
     tune(&mut database);
 
-    let config = ChainIndexConfig {
-        storage: StorageConfig {
-            database,
-            ..Default::default()
-        },
-        ephemeral: false,
-        mempool: Default::default(),
-        db_version: 1,
-        network: ActivationHeights::default().to_regtest_network(),
+    let storage = StorageConfig {
+        database,
+        ..Default::default()
     };
-
-    let zaino_db = FinalisedState::spawn(config, source).await.unwrap();
+    let zaino_db = FinalisedState::spawn(
+        ChainStoreConfig::at_path(&db_path),
+        ZainoDbConfig::from_storage(&storage, ActivationHeights::default().to_regtest_network()),
+        source,
+    )
+    .await
+    .unwrap();
 
     Ok((temp_dir, zaino_db))
 }
 
 pub(crate) async fn load_vectors_and_spawn_and_sync_v1_zaino_db(
-) -> (TestVectorData, TempDir, FinalisedState<MockSource>) {
+) -> (TestVectorData, TempDir, FinalisedState<FakeValidator>) {
     let test_vector_data = load_test_vectors().unwrap();
     let blocks = test_vector_data.blocks.clone();
 
     dbg!(blocks.len());
 
-    let source = build_mockchain_source(blocks.clone());
+    let source = fake_validator_from_vectors(&blocks.clone());
 
     let (db_dir, zaino_db) = spawn_v1_zaino_db(source).await.unwrap();
 
-    crate::chain_index::tests::vectors::sync_db_with_blockdata(zaino_db.router(), blocks, None)
-        .await;
+    crate::tests::fixtures::sync_db_with_blockdata(zaino_db.router(), &blocks, None).await;
+
+    // The fill above writes straight to the backend, deliberately skipping the
+    // store's ingest machinery — so it also skips the watermark publish that
+    // machinery does. Restoring it here leaves the store in the state a real
+    // build would leave it in, which is what the reads bounded by the watermark
+    // are entitled to assume.
+    zaino_db.refresh_watermark().await;
 
     (test_vector_data, db_dir, zaino_db)
 }
@@ -86,8 +91,8 @@ pub(crate) async fn load_vectors_and_spawn_and_sync_v1_zaino_db(
 pub(crate) async fn load_vectors_v1db_and_reader() -> (
     TestVectorData,
     TempDir,
-    std::sync::Arc<FinalisedState<MockSource>>,
-    DbReader<MockSource>,
+    std::sync::Arc<FinalisedState<FakeValidator>>,
+    DbReader<FakeValidator>,
 ) {
     let (test_vector_data, db_dir, zaino_db) = load_vectors_and_spawn_and_sync_v1_zaino_db().await;
 
@@ -123,7 +128,7 @@ async fn no_ironwood_row_for_blocks_without_ironwood_data() {
     let (_test_vector_data, _db_dir, _zaino_db, db_reader) = load_vectors_v1db_and_reader().await;
 
     let ironwood_list = db_reader
-        .get_block_ironwood(crate::Height(1))
+        .get_block_ironwood(crate::types::Height(1))
         .await
         .unwrap();
     assert!(
@@ -145,7 +150,7 @@ async fn sync_to_height() {
 
     let blocks = load_test_vectors().unwrap().blocks;
 
-    let source = build_mockchain_source(blocks.clone());
+    let source = fake_validator_from_vectors(&blocks.clone());
 
     let (_db_dir, zaino_db) = spawn_v1_zaino_db(source.clone()).await.unwrap();
 
@@ -178,7 +183,7 @@ async fn sync_to_height_across_many_write_batches() {
     init_tracing();
 
     let blocks = load_test_vectors().unwrap().blocks;
-    let source = build_mockchain_source(blocks.clone());
+    let source = fake_validator_from_vectors(&blocks);
 
     let (_db_dir, zaino_db) = spawn_v1_zaino_db_with(source.clone(), |database| {
         database.sync_write_batch_size = zaino_common::SyncWriteBatchSize(0);
@@ -198,7 +203,7 @@ async fn sync_to_height_across_many_write_batches() {
     // Gap-free, not just tip-correct: a pipeline that dropped or double-committed a batch could
     // still land on the right tip.
     let reader = std::sync::Arc::new(zaino_db).to_reader();
-    let mut previous_chainwork: Option<crate::chain_index::types::ChainWork> = None;
+    let mut previous_chainwork: Option<crate::types::ChainWork> = None;
     for height in 0..=200u32 {
         let header = reader
             .get_block_header(Height(height))
@@ -246,7 +251,7 @@ async fn delete_blocks_from_db() {
     for h in (1..=200).rev() {
         // dbg!("Deleting block at height {}", h);
         zaino_db
-            .delete_block_at_height(crate::Height(h))
+            .delete_block_at_height(crate::types::Height(h))
             .await
             .unwrap();
     }
@@ -264,35 +269,21 @@ async fn save_db_to_file_and_reload() {
 
     let temp_dir: TempDir = tempfile::tempdir().unwrap();
     let db_path: PathBuf = temp_dir.path().to_path_buf();
-    let config = ChainIndexConfig {
-        storage: StorageConfig {
-            database: DatabaseConfig {
-                path: db_path,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        ephemeral: false,
-        mempool: Default::default(),
-        db_version: 1,
-        network: ActivationHeights::default().to_regtest_network(),
-    };
+    let store_config = ChainStoreConfig::at_path(&db_path);
+    let db_config = ZainoDbConfig::new(ActivationHeights::default().to_regtest_network());
 
-    let source = build_mockchain_source(blocks.clone());
+    let source = fake_validator_from_vectors(&blocks.clone());
     let source_clone = source.clone();
 
-    let config_clone = config.clone();
+    let (store_clone, db_clone) = (store_config.clone(), db_config.clone());
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async move {
-            let zaino_db = FinalisedState::spawn(config_clone, source).await.unwrap();
+            let zaino_db = FinalisedState::spawn(store_clone, db_clone, source)
+                .await
+                .unwrap();
 
-            crate::chain_index::tests::vectors::sync_db_with_blockdata(
-                zaino_db.router(),
-                blocks.clone(),
-                None,
-            )
-            .await;
+            crate::tests::fixtures::sync_db_with_blockdata(zaino_db.router(), &blocks, None).await;
             zaino_db.wait_until_ready().await;
             dbg!(zaino_db.status());
             dbg!(zaino_db.db_height().await.unwrap());
@@ -308,14 +299,10 @@ async fn save_db_to_file_and_reload() {
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async move {
-            dbg!(config
-                .storage
-                .database
-                .path
-                .read_dir()
-                .unwrap()
-                .collect::<Vec<_>>());
-            let zaino_db_2 = FinalisedState::spawn(config, source_clone).await.unwrap();
+            dbg!(db_path.read_dir().unwrap().collect::<Vec<_>>());
+            let zaino_db_2 = FinalisedState::spawn(store_config, db_config, source_clone)
+                .await
+                .unwrap();
 
             zaino_db_2.wait_until_ready().await;
             dbg!(zaino_db_2.status());
@@ -334,30 +321,19 @@ async fn save_db_to_file_and_reload() {
 async fn load_db_backend_from_file() {
     init_tracing();
 
-    let fixture_db_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("src")
-        .join("chain_index")
-        .join("tests")
-        .join("vectors")
-        .join("v1_test_db");
+    // Through `vectors_dir` rather than a path literal: this one still spelled
+    // out the old crate's layout, and a wrong path here fails as a missing
+    // file rather than as a wrong fixture.
+    let fixture_db_path = crate::tests::vectors::vectors_dir().join("v1_test_db");
     let temp_dir = tempfile::tempdir().unwrap();
     let db_path = temp_dir.path().join("v1_test_db");
     copy_dir_recursive(&fixture_db_path, &db_path).unwrap();
 
-    let config = ChainIndexConfig {
-        storage: StorageConfig {
-            database: DatabaseConfig {
-                path: db_path.clone(),
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        ephemeral: false,
-        mempool: Default::default(),
-        db_version: 1,
-        network: ActivationHeights::default().to_regtest_network(),
-    };
-    let finalized_state_backend: FinalisedSource<MockSource> =
+    let config = StoreSettings::new(
+        ChainStoreConfig::at_path(db_path.clone()),
+        ZainoDbConfig::new(ActivationHeights::default().to_regtest_network()),
+    );
+    let finalized_state_backend: FinalisedSource<FakeValidator> =
         FinalisedSource::spawn_v1(&config).await.unwrap();
 
     // Read block headers directly from the `headers` table rather than via `get_chain_block`, which
@@ -404,7 +380,7 @@ async fn try_write_invalid_block() {
     dbg!(zaino_db.status());
     dbg!(zaino_db.db_height().await.unwrap());
 
-    let TestVectorBlockData {
+    let VectorBlock {
         height,
         zebra_block,
         sapling_root,
@@ -428,7 +404,7 @@ async fn try_write_invalid_block() {
     let mut chain_block =
         IndexedBlock::try_from(BlockWithMetadata::new(&zebra_block, metadata)).unwrap();
 
-    chain_block.context.index.height = crate::Height(height + 1);
+    chain_block.context.index.height = crate::types::Height(height + 1);
     dbg!(chain_block.context.index.height);
 
     let db_err = dbg!(zaino_db.write_block(chain_block).await);
@@ -456,7 +432,7 @@ async fn try_delete_block_with_invalid_height() {
 
     let db_err = dbg!(
         zaino_db
-            .delete_block_at_height(crate::Height(delete_height))
+            .delete_block_at_height(crate::types::Height(delete_height))
             .await
     );
 
@@ -865,7 +841,7 @@ async fn check_faucet_spent_map() {
     let faucet_addr_script = AddrScript::from_script(faucet_script.as_raw_bytes())
         .expect("faucet script must be standard P2PKH or P2SH");
 
-    let (indexed_blocks, tx_by_index) = index_test_vector_blocks(&blocks);
+    let (indexed_blocks, tx_by_index) = index_vector_blocks(&blocks);
 
     let mut faucet_outpoints = Vec::new();
     let mut faucet_ouptpoints_spent_status = Vec::new();
@@ -963,7 +939,7 @@ async fn check_recipient_spent_map() {
     let recipient_addr_script = AddrScript::from_script(recipient_script.as_raw_bytes())
         .expect("faucet script must be standard P2PKH or P2SH");
 
-    let (indexed_blocks, tx_by_index) = index_test_vector_blocks(&blocks);
+    let (indexed_blocks, tx_by_index) = index_vector_blocks(&blocks);
 
     let mut recipient_outpoints = Vec::new();
     let mut recipient_ouptpoints_spent_status = Vec::new();
@@ -1056,12 +1032,10 @@ async fn write_path_advances_validated_tip() {
     // the bulk write path should have marked every synced height validated by the time
     // `sync_to_height` returned.
     let backend = zaino_db
-        .backend_for_cap(
-            crate::chain_index::finalised_state::capability::CapabilityRequest::WriteCore,
-        )
+        .backend_for_cap(crate::store::capability::CapabilityRequest::WriteCore)
         .unwrap();
 
-    use crate::chain_index::finalised_state::capability::DbRead;
+    use crate::store::capability::DbRead;
     let db_tip = backend.db_height().await.unwrap().unwrap();
 
     assert_eq!(

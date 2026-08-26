@@ -2,7 +2,7 @@
 //!
 //! In ephemeral mode no persistent database is opened; the `FinalisedState`
 //! backing is `FinalisedSource::Ephemeral`, which serves finalised reads
-//! directly from the `BlockchainSource` (here a `MockSource`). These tests
+//! directly from the `BlockchainSource` (here a `FakeValidator`). These tests
 //! assert the passthrough semantics: reads match the source, `db_height` is
 //! pinned at `0`, and sync/write paths are no-ops.
 //!
@@ -10,48 +10,38 @@
 //! (no DB validation loop), so each test only needs `.await` (current-thread
 //! `#[tokio::test]`); none justifies `multi_thread`.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use tempfile::TempDir;
 use zaino_common::network::ActivationHeights;
-use zaino_common::{DatabaseConfig, StorageConfig};
 use zaino_proto::proto::utils::{prune_compact_block, PoolTypeFilter};
 
-use crate::chain_index::finalised_state::router::FinalisedStateMode;
-use crate::chain_index::finalised_state::FinalisedState;
-use crate::chain_index::tests::init_tracing;
-use crate::chain_index::tests::vectors::MockSource;
-use crate::chain_index::tests::vectors::{
-    build_mockchain_source, indexed_block_chain, load_test_vectors,
-};
-use crate::error::FinalisedStateError;
-use crate::{ChainIndexConfig, Height};
+use crate::config::ZainoDbConfig;
+use crate::error::StoreError;
+use crate::store::router::FinalisedStateMode;
+use crate::store::FinalisedState;
+use crate::tests::fixtures::FakeValidator;
+use crate::tests::fixtures::{fake_validator_from_vectors, indexed_block_chain, load_test_vectors};
+use crate::tests::init_tracing;
+use crate::types::Height;
+use zaino_chain_store::ChainStoreConfig;
 use zaino_status::StatusType;
 
 /// Spawns a `FinalisedState` in ephemeral mode over `source`. The database path
 /// is a throwaway tempdir that is never opened (ephemeral mode opens no DB).
 pub(crate) async fn spawn_ephemeral_finalised_state(
-    source: MockSource,
-) -> Result<(TempDir, FinalisedState<MockSource>), FinalisedStateError> {
+    source: std::sync::Arc<FakeValidator>,
+) -> Result<(TempDir, FinalisedState<FakeValidator>), StoreError> {
     let temp_dir: TempDir = tempfile::tempdir().unwrap();
-    let db_path: PathBuf = temp_dir.path().to_path_buf();
 
-    let config = ChainIndexConfig {
-        storage: StorageConfig {
-            database: DatabaseConfig {
-                path: db_path,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        ephemeral: true,
-        mempool: Default::default(),
-        db_version: 1,
-        network: ActivationHeights::default().to_regtest_network(),
-    };
-
-    let finalised_state = FinalisedState::spawn(config, source).await?;
+    // No path at all, which *is* the ephemeral configuration: the tempdir is
+    // kept only so the caller can assert nothing was written to it.
+    let finalised_state = FinalisedState::spawn(
+        ChainStoreConfig::default(),
+        ZainoDbConfig::new(ActivationHeights::default().to_regtest_network()),
+        source,
+    )
+    .await?;
 
     Ok((temp_dir, finalised_state))
 }
@@ -60,7 +50,7 @@ pub(crate) async fn spawn_ephemeral_finalised_state(
 async fn spawn_is_ephemeral_and_ready() {
     init_tracing();
 
-    let source = build_mockchain_source(load_test_vectors().unwrap().blocks);
+    let source = fake_validator_from_vectors(&load_test_vectors().unwrap().blocks);
     let (_db_dir, finalised_state) = spawn_ephemeral_finalised_state(source).await.unwrap();
 
     assert!(
@@ -80,7 +70,7 @@ async fn db_height_reports_zero() {
 
     // The source holds a full test-vector chain, but an ephemeral finalised
     // state persists nothing, so it reports height 0.
-    let source = build_mockchain_source(load_test_vectors().unwrap().blocks);
+    let source = fake_validator_from_vectors(&load_test_vectors().unwrap().blocks);
     let (_db_dir, finalised_state) = spawn_ephemeral_finalised_state(source).await.unwrap();
 
     assert_eq!(finalised_state.db_height().await.unwrap(), Some(Height(0)));
@@ -90,7 +80,7 @@ async fn db_height_reports_zero() {
 async fn sync_to_height_is_noop() {
     init_tracing();
 
-    let source = build_mockchain_source(load_test_vectors().unwrap().blocks);
+    let source = fake_validator_from_vectors(&load_test_vectors().unwrap().blocks);
     let (_db_dir, finalised_state) = spawn_ephemeral_finalised_state(source.clone())
         .await
         .unwrap();
@@ -109,7 +99,7 @@ async fn writes_are_noops() {
     init_tracing();
 
     let blocks = load_test_vectors().unwrap().blocks;
-    let source = build_mockchain_source(blocks.clone());
+    let source = fake_validator_from_vectors(&blocks.clone());
     let (_db_dir, finalised_state) = spawn_ephemeral_finalised_state(source).await.unwrap();
 
     // A write against an ephemeral backing is accepted but persists nothing.
@@ -128,7 +118,7 @@ async fn reader_compact_blocks_match_source() {
     init_tracing();
 
     let blocks = load_test_vectors().unwrap().blocks;
-    let source = build_mockchain_source(blocks.clone());
+    let source = fake_validator_from_vectors(&blocks.clone());
     let (_db_dir, finalised_state) = spawn_ephemeral_finalised_state(source).await.unwrap();
     let finalised_state = Arc::new(finalised_state);
     let reader = finalised_state.to_reader();
@@ -161,7 +151,7 @@ async fn reader_compact_block_stream_matches_source() {
     init_tracing();
 
     let blocks = load_test_vectors().unwrap().blocks;
-    let source = build_mockchain_source(blocks.clone());
+    let source = fake_validator_from_vectors(&blocks.clone());
     let (_db_dir, finalised_state) = spawn_ephemeral_finalised_state(source).await.unwrap();
     let finalised_state = Arc::new(finalised_state);
     let reader = finalised_state.to_reader();
@@ -204,7 +194,7 @@ async fn reader_chain_block_and_header_identity_matches_source() {
     init_tracing();
 
     let blocks = load_test_vectors().unwrap().blocks;
-    let source = build_mockchain_source(blocks.clone());
+    let source = fake_validator_from_vectors(&blocks.clone());
     let (_db_dir, finalised_state) = spawn_ephemeral_finalised_state(source).await.unwrap();
     let finalised_state = Arc::new(finalised_state);
     let reader = finalised_state.to_reader();
@@ -240,7 +230,7 @@ async fn shutdown_returns_promptly() {
 async fn configured_ephemeral_reports_its_mode() {
     init_tracing();
 
-    let source = build_mockchain_source(load_test_vectors().unwrap().blocks);
+    let source = fake_validator_from_vectors(&load_test_vectors().unwrap().blocks);
     let (_db_dir, finalised_state) = spawn_ephemeral_finalised_state(source).await.unwrap();
 
     finalised_state.wait_until_ready().await;
@@ -271,9 +261,9 @@ async fn configured_ephemeral_reports_its_mode() {
 async fn ephemeral_routing_transitions_are_visible_in_mode() {
     init_tracing();
 
-    let source = build_mockchain_source(load_test_vectors().unwrap().blocks);
+    let source = fake_validator_from_vectors(&load_test_vectors().unwrap().blocks);
     let (_db_dir, finalised_state) =
-        crate::chain_index::tests::finalised_state::v1::spawn_v1_zaino_db(source.clone())
+        crate::tests::finalised_state::v1::spawn_v1_zaino_db(source.clone())
             .await
             .unwrap();
 
@@ -290,7 +280,7 @@ async fn ephemeral_routing_transitions_are_visible_in_mode() {
         .init_or_take_ephemeral(
             source.clone(),
             network,
-            crate::chain_index::finalised_state::router::EphemeralMode::ReadOnly,
+            crate::store::router::EphemeralMode::ReadOnly,
             None,
         )
         .await

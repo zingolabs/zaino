@@ -2,13 +2,10 @@
 
 use zaino_chain_head::ChainHeadSnapshot as _;
 mod chain_head;
-pub(crate) mod finalised_state;
-mod golden;
 mod mockchain_tests;
 mod poll;
 mod proptest_blockgen;
 mod sync_loop;
-pub(crate) mod types;
 pub(crate) mod vectors;
 
 pub(crate) fn init_tracing() {
@@ -29,14 +26,14 @@ use tokio::sync::OnceCell;
 use tokio::time::Duration;
 use zaino_common::{network::ActivationHeights, DatabaseConfig, StorageConfig};
 
+use crate::chain_index::chain_store::WithChainStoreSource as _;
 use crate::{
     chain_index::{
-        finalised_state::FinalisedState,
         finalized_height_floor,
         tests::vectors::MockSource,
         tests::vectors::{
             build_active_mockchain_source, build_mockchain_source, copy_dir_recursive,
-            load_test_vectors, sync_db_with_blockdata,
+            load_test_vectors,
         },
         ChainIndex, NodeBackedChainIndex, NodeBackedChainIndexSubscriber, SyncTimings,
     },
@@ -224,14 +221,24 @@ async fn v1_finalised_seed_dir(mode: MockchainMode) -> &'static Path {
             network: ActivationHeights::default().to_regtest_network(),
         };
 
-        let zaino_db = FinalisedState::spawn(
+        // Filled block-by-block rather than through `build_to`: the seed only
+        // needs to *be* a database at `target`, and driving the store's ingest
+        // to get there makes every test process pay for the background
+        // validator the batch write path wakes up — enough, under a parallel
+        // runner, to dominate the suite's runtime.
+        let zaino_db = zaino_chain_store_zainodb::store::FinalisedState::spawn(
             config.chain_store_config(),
             config.zainodb_config(),
-            source,
+            source.chain_store_source(),
         )
         .await
         .unwrap();
-        sync_db_with_blockdata(zaino_db.router(), blocks, Some(target)).await;
+        zaino_chain_store_zainodb::tests::fixtures::fill_store_with_blockdata(
+            &zaino_db,
+            &blocks,
+            Some(target),
+        )
+        .await;
         zaino_db.wait_until_ready().await;
         zaino_db.shutdown().await.unwrap();
 

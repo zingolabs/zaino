@@ -3,7 +3,7 @@
 //! Coverage note: these tests use `ActivationHeights::default()`, whose NU6.3 activation is `None`,
 //! so the migration takes the below-activation branch (rebuild each commitment row in place from the
 //! legacy fixed-length table, no ironwood). The at/above-activation *ironwood backfill* branch —
-//! which refetches block data from the validator — cannot be exercised yet: `MockSource`
+//! which refetches block data from the validator — cannot be exercised yet: `FakeValidator`
 //! serves no ironwood commitment roots (see its `get_commitment_tree_roots` TODO) and the test
 //! vectors carry no ironwood actions, so building a post-NU6.3 block would fail resolving the
 //! (required) ironwood root. That path needs ironwood-capable test vectors before it can be tested.
@@ -11,16 +11,15 @@
 use std::path::PathBuf;
 use tempfile::TempDir;
 use zaino_common::network::ActivationHeights;
-use zaino_common::{DatabaseConfig, StorageConfig};
 
-use crate::chain_index::finalised_state::capability::{DbVersion, MigrationStatus};
-use crate::chain_index::finalised_state::finalised_source::v1::DB_VERSION_V1;
-use crate::chain_index::finalised_state::FinalisedState;
-use crate::chain_index::tests::init_tracing;
-use crate::chain_index::tests::vectors::{
-    build_active_mockchain_source, load_test_vectors, TestVectorData,
-};
-use crate::{ChainIndexConfig, Height};
+use crate::config::{StoreSettings, ZainoDbConfig};
+use crate::store::capability::{DbVersion, MigrationStatus};
+use crate::store::finalised_source::v1::DB_VERSION_V1;
+use crate::store::FinalisedState;
+use crate::tests::fixtures::{fake_validator_with_tip, load_test_vectors, TestVectorData};
+use crate::tests::init_tracing;
+use crate::types::Height;
+use zaino_chain_store::ChainStoreConfig;
 use zaino_status::StatusType;
 
 fn v1_2_1() -> DbVersion {
@@ -53,21 +52,12 @@ async fn v1_2_1_cache_migrates_to_current_then_validates() {
     let temporary_directory: TempDir = tempfile::tempdir().unwrap();
     let database_path: PathBuf = temporary_directory.path().to_path_buf();
 
-    let database_config = ChainIndexConfig {
-        storage: StorageConfig {
-            database: DatabaseConfig {
-                path: database_path,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        ephemeral: false,
-        mempool: Default::default(),
-        db_version: 1,
-        network: ActivationHeights::default().to_regtest_network(),
-    };
+    let database_config = StoreSettings::new(
+        ChainStoreConfig::at_path(database_path),
+        ZainoDbConfig::new(ActivationHeights::default().to_regtest_network()),
+    );
 
-    let source = build_active_mockchain_source(active_height.0, blocks.clone());
+    let source = fake_validator_with_tip(&blocks.clone(), active_height.0);
 
     // Build an on-disk v1.2.1 database (the pre-1.3.0 cache shape), then release it.
     let old_database =
@@ -82,9 +72,13 @@ async fn v1_2_1_cache_migrates_to_current_then_validates() {
     // Reopen through the production spawn path: it runs the v1.2.1 → v1.3.0 migration and only then
     // starts the validator. Before the ordering fix this raced the migration and latched
     // `CriticalError`; now it must migrate first and validate cleanly.
-    let migrated_database = FinalisedState::spawn(database_config.clone(), source.clone())
-        .await
-        .unwrap();
+    let migrated_database = FinalisedState::spawn(
+        database_config.store.clone(),
+        database_config.db.clone(),
+        source.clone(),
+    )
+    .await
+    .unwrap();
     migrated_database.wait_until_synced().await;
 
     assert_eq!(

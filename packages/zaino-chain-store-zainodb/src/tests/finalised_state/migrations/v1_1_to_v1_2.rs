@@ -4,23 +4,22 @@ use lmdb::{Cursor as _, Transaction as _, WriteFlags};
 use std::path::PathBuf;
 use tempfile::TempDir;
 use zaino_common::network::ActivationHeights;
-use zaino_common::{DatabaseConfig, StorageConfig};
 
-use crate::chain_index::finalised_state::capability::{
-    BlockCoreExt as _, CapabilityRequest, DbRead as _, DbVersion, MigrationStatus,
-    TransparentHistExt as _,
+use crate::config::{StoreSettings, ZainoDbConfig};
+use crate::entry::{StoredEntryFixed, StoredEntryVar};
+use crate::store::capability::{
+    BlockCoreExt as _, CapabilityRequest, DbRead as _, DbVersion, MigrationStatus, TxOutSetExt as _,
 };
-use crate::chain_index::finalised_state::entry::{StoredEntryFixed, StoredEntryVar};
-use crate::chain_index::finalised_state::finalised_source::v1::DB_SCHEMA_V1_HASH;
-use crate::chain_index::finalised_state::finalised_source::v1::TX_OUT_SET_INFO_ACCUMULATOR_KEY;
-use crate::chain_index::finalised_state::finalised_source::FinalisedSource;
-use crate::chain_index::finalised_state::FinalisedState;
-use crate::chain_index::tests::init_tracing;
-use crate::chain_index::tests::vectors::MockSource;
-use crate::chain_index::tests::vectors::{
-    build_active_mockchain_source, load_test_vectors, TestVectorData,
-};
-use crate::{ChainIndexConfig, Height, TransparentTxList, TxLocation, ZainoVersionedSerde as _};
+use crate::store::finalised_source::v1::DB_SCHEMA_V1_HASH;
+use crate::store::finalised_source::v1::TX_OUT_SET_INFO_ACCUMULATOR_KEY;
+use crate::store::finalised_source::FinalisedSource;
+use crate::store::FinalisedState;
+use crate::tests::fixtures::FakeValidator;
+use crate::tests::fixtures::{fake_validator_with_tip, load_test_vectors, TestVectorData};
+use crate::tests::init_tracing;
+use crate::types::{Height, TransparentTxList, TxLocation};
+use zaino_chain_store::ChainStoreConfig;
+use zaino_encoding::ZainoVersionedSerde as _;
 
 /// Reads a block's `TransparentTxList` **directly** from the `transparent` table, bypassing the
 /// validated accessor (`get_block_transparent`), which routes through `validate_block_blocking` and
@@ -28,7 +27,7 @@ use crate::{ChainIndexConfig, Height, TransparentTxList, TxLocation, ZainoVersio
 /// migration the commitment rows are still in the legacy table, so validation would fail; the
 /// migration data these tests assert on (`txid_location`, `spent`, txout-set) is unaffected.
 fn read_block_transparent_direct(
-    database_backend: &FinalisedSource<MockSource>,
+    database_backend: &FinalisedSource<FakeValidator>,
     height: Height,
 ) -> TransparentTxList {
     use lmdb::Transaction as _;
@@ -50,16 +49,16 @@ fn read_block_transparent_direct(
 /// `get_block_transparent`, so it works on a database whose commitment rows are still in the legacy
 /// table (validation would fail there). The oracle logic is otherwise identical.
 async fn expected_tx_out_set_info_accumulator_direct(
-    database_backend: &FinalisedSource<MockSource>,
+    database_backend: &FinalisedSource<FakeValidator>,
     max_height: Height,
-) -> crate::chain_index::types::db::metadata::FinalisedTxOutSetInfoAccumulator {
+) -> crate::types::db::metadata::FinalisedTxOutSetInfoAccumulator {
     use lmdb::Transaction as _;
 
     let environment = database_backend.env().unwrap();
     let spent_database = database_backend.spent_db().unwrap();
 
     let mut expected_accumulator =
-        crate::chain_index::types::db::metadata::FinalisedTxOutSetInfoAccumulator::empty();
+        crate::types::db::metadata::FinalisedTxOutSetInfoAccumulator::empty();
 
     for height_raw in 0..=max_height.0 {
         let height = Height(height_raw);
@@ -87,12 +86,12 @@ async fn expected_tx_out_set_info_accumulator_direct(
             let read_transaction = environment.begin_ro_txn().unwrap();
 
             for (output_index, output) in transparent_transaction.outputs().iter().enumerate() {
-                if crate::chain_index::types::db::metadata::is_unspendable_tx_out(output) {
+                if crate::types::db::metadata::is_unspendable_tx_out(output) {
                     continue;
                 }
 
                 let output_index = u32::try_from(output_index).unwrap();
-                let outpoint = crate::Outpoint::new(transaction_hash.0, output_index);
+                let outpoint = crate::types::Outpoint::new(transaction_hash.0, output_index);
                 let outpoint_bytes = outpoint.to_bytes().unwrap();
 
                 let still_unspent = match read_transaction.get(spent_database, &outpoint_bytes) {
@@ -132,7 +131,7 @@ async fn expected_tx_out_set_info_accumulator_direct(
 /// [`expected_tx_out_set_info_accumulator_direct`]. Direct-read equivalent of the production
 /// `assert_tx_out_set_info_accumulator_matches_transparent_data`.
 async fn assert_tx_out_set_info_accumulator_matches_transparent_data_direct(
-    database_backend: &FinalisedSource<MockSource>,
+    database_backend: &FinalisedSource<FakeValidator>,
 ) {
     let database_height = database_backend.db_height().await.unwrap().unwrap();
     let expected_accumulator =
@@ -167,7 +166,7 @@ fn v1_2_0() -> DbVersion {
     }
 }
 
-async fn assert_v1_2_migration_complete(zaino_database: &FinalisedState<MockSource>) {
+async fn assert_v1_2_migration_complete(zaino_database: &FinalisedState<FakeValidator>) {
     let metadata = zaino_database.get_metadata().await.unwrap();
 
     assert_eq!(metadata.version, v1_2_0());
@@ -177,7 +176,7 @@ async fn assert_v1_2_migration_complete(zaino_database: &FinalisedState<MockSour
     assert!(
         zaino_database
             .router()
-            .backend(CapabilityRequest::TransparentHistExt)
+            .backend(CapabilityRequest::SpentOutputIndex)
             .is_ok(),
         "v1.2.0 database should expose TransparentHistExt after migration"
     );
@@ -187,7 +186,7 @@ async fn assert_v1_2_migration_complete(zaino_database: &FinalisedState<MockSour
 /// its txid (via `get_txid`), and that txid resolves back to the same location (via
 /// `get_tx_location`, which reads the `txid_location` table).
 async fn assert_txid_location_index_matches_block_data(
-    database_backend: &FinalisedSource<MockSource>,
+    database_backend: &FinalisedSource<FakeValidator>,
 ) {
     let database_height = database_backend.db_height().await.unwrap().unwrap();
 
@@ -212,7 +211,7 @@ async fn assert_txid_location_index_matches_block_data(
 
 /// Empties the `txid_location` table, simulating a 0.4.0-alpha.1 cache that finished the old
 /// migration without ever building the reverse index.
-fn clear_txid_location_index(database_backend: &FinalisedSource<MockSource>) {
+fn clear_txid_location_index(database_backend: &FinalisedSource<FakeValidator>) {
     let environment = database_backend.env().expect("v1 finalised-source env");
     let txid_location_database = database_backend.txid_location_db().unwrap();
 
@@ -239,7 +238,7 @@ fn clear_txid_location_index(database_backend: &FinalisedSource<MockSource>) {
 }
 
 async fn simulate_interrupted_v1_1_to_v1_2_spent_index_migration(
-    database_backend: &FinalisedSource<MockSource>,
+    database_backend: &FinalisedSource<FakeValidator>,
     resume_height: Height,
 ) {
     let environment = database_backend.env().unwrap();
@@ -345,7 +344,7 @@ async fn simulate_interrupted_v1_1_to_v1_2_spent_index_migration(
 }
 
 async fn assert_spent_index_matches_transparent_data(
-    database_backend: &FinalisedSource<MockSource>,
+    database_backend: &FinalisedSource<FakeValidator>,
 ) {
     let environment = database_backend.env().unwrap();
     let spent_database = database_backend.spent_db().unwrap();
@@ -416,21 +415,12 @@ async fn v1_1_to_v1_2_spent_index_backfill_from_old_version() {
     let temporary_directory: TempDir = tempfile::tempdir().unwrap();
     let database_path: PathBuf = temporary_directory.path().to_path_buf();
 
-    let database_config = ChainIndexConfig {
-        storage: StorageConfig {
-            database: DatabaseConfig {
-                path: database_path,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        ephemeral: false,
-        mempool: Default::default(),
-        db_version: 1,
-        network: ActivationHeights::default().to_regtest_network(),
-    };
+    let database_config = StoreSettings::new(
+        ChainStoreConfig::at_path(database_path),
+        ZainoDbConfig::new(ActivationHeights::default().to_regtest_network()),
+    );
 
-    let source = build_active_mockchain_source(initial_active_height.0, blocks.clone());
+    let source = fake_validator_with_tip(&blocks.clone(), initial_active_height.0);
 
     let old_database =
         FinalisedState::build_db_to_version(database_config.clone(), source.clone(), v1_1_0())
@@ -489,21 +479,12 @@ async fn v1_1_to_v1_2_spent_index_migration_resumes_after_crash() {
     let temporary_directory: TempDir = tempfile::tempdir().unwrap();
     let database_path: PathBuf = temporary_directory.path().to_path_buf();
 
-    let database_config = ChainIndexConfig {
-        storage: StorageConfig {
-            database: DatabaseConfig {
-                path: database_path,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        ephemeral: false,
-        mempool: Default::default(),
-        db_version: 1,
-        network: ActivationHeights::default().to_regtest_network(),
-    };
+    let database_config = StoreSettings::new(
+        ChainStoreConfig::at_path(database_path),
+        ZainoDbConfig::new(ActivationHeights::default().to_regtest_network()),
+    );
 
-    let source = build_active_mockchain_source(initial_active_height.0, blocks.clone());
+    let source = fake_validator_with_tip(&blocks.clone(), initial_active_height.0);
 
     let old_database =
         FinalisedState::build_db_to_version(database_config.clone(), source.clone(), v1_1_0())
@@ -589,21 +570,12 @@ async fn v1_2_0_cache_missing_txid_location_index_is_rebuilt() {
     let temporary_directory: TempDir = tempfile::tempdir().unwrap();
     let database_path: PathBuf = temporary_directory.path().to_path_buf();
 
-    let database_config = ChainIndexConfig {
-        storage: StorageConfig {
-            database: DatabaseConfig {
-                path: database_path,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        ephemeral: false,
-        mempool: Default::default(),
-        db_version: 1,
-        network: ActivationHeights::default().to_regtest_network(),
-    };
+    let database_config = StoreSettings::new(
+        ChainStoreConfig::at_path(database_path),
+        ZainoDbConfig::new(ActivationHeights::default().to_regtest_network()),
+    );
 
-    let source = build_active_mockchain_source(initial_active_height.0, blocks.clone());
+    let source = fake_validator_with_tip(&blocks.clone(), initial_active_height.0);
 
     // Build a healthy, fully-migrated v1.2.0 cache.
     let old_database =

@@ -1,17 +1,18 @@
 //! Zaino-State ChainIndex Finalised State (FinalisedState) unit tests.
-mod ephemeral;
+pub(crate) mod ephemeral;
 mod migrations;
+mod ports;
 pub(crate) mod v1;
 
 use std::future::Future;
 use tempfile::TempDir;
 
-use crate::chain_index::finalised_state::FinalisedState;
-use crate::chain_index::tests::init_tracing;
-use crate::chain_index::tests::vectors::MockSource;
-use crate::chain_index::tests::vectors::{build_mockchain_source, load_test_vectors};
-use crate::error::FinalisedStateError;
-use crate::BlockchainSource;
+use crate::error::StoreError;
+use crate::store::FinalisedState;
+use crate::tests::fixtures::FakeValidator;
+use crate::tests::fixtures::{fake_validator_from_vectors, load_test_vectors};
+use crate::tests::init_tracing;
+use zaino_chain_store::ChainStoreSource;
 
 /// Regression helper for zingolabs/zaino#1032.
 ///
@@ -20,13 +21,13 @@ use crate::BlockchainSource;
 /// background handle is awaited, not padded with an unconditional sleep.
 async fn assert_shutdown_returns_promptly<F, Fut, T>(version_label: &str, spawn_fn: F)
 where
-    F: FnOnce(MockSource) -> Fut,
-    Fut: Future<Output = Result<(TempDir, FinalisedState<T>), FinalisedStateError>>,
-    T: BlockchainSource,
+    F: FnOnce(std::sync::Arc<FakeValidator>) -> Fut,
+    Fut: Future<Output = Result<(TempDir, FinalisedState<T>), StoreError>>,
+    T: ChainStoreSource,
 {
     init_tracing();
 
-    let source = build_mockchain_source(load_test_vectors().unwrap().blocks);
+    let source = fake_validator_from_vectors(&load_test_vectors().unwrap().blocks);
     let (_db_dir, zaino_db) = spawn_fn(source).await.unwrap();
     zaino_db.wait_until_ready().await;
 

@@ -3,17 +3,14 @@
 use std::path::PathBuf;
 use tempfile::TempDir;
 use zaino_common::network::ActivationHeights;
-use zaino_common::{DatabaseConfig, StorageConfig};
 
-use crate::chain_index::finalised_state::capability::{
-    DbCore as _, DbRead as _, DbVersion, MigrationStatus,
-};
-use crate::chain_index::finalised_state::FinalisedState;
-use crate::chain_index::tests::init_tracing;
-use crate::chain_index::tests::vectors::{
-    build_active_mockchain_source, load_test_vectors, TestVectorData,
-};
-use crate::{ChainIndexConfig, Height};
+use crate::config::{StoreSettings, ZainoDbConfig};
+use crate::store::capability::{DbCore as _, DbRead as _, DbVersion, MigrationStatus};
+use crate::store::FinalisedState;
+use crate::tests::fixtures::{fake_validator_with_tip, load_test_vectors, TestVectorData};
+use crate::tests::init_tracing;
+use crate::types::Height;
+use zaino_chain_store::ChainStoreConfig;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn v1_0_to_v1_1_metadata_migration() {
@@ -24,21 +21,12 @@ async fn v1_0_to_v1_1_metadata_migration() {
     let temp_dir: TempDir = tempfile::tempdir().unwrap();
     let db_path: PathBuf = temp_dir.path().to_path_buf();
 
-    let v1_config = ChainIndexConfig {
-        storage: StorageConfig {
-            database: DatabaseConfig {
-                path: db_path,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        ephemeral: false,
-        mempool: Default::default(),
-        db_version: 1,
-        network: ActivationHeights::default().to_regtest_network(),
-    };
+    let v1_config = StoreSettings::new(
+        ChainStoreConfig::at_path(db_path),
+        ZainoDbConfig::new(ActivationHeights::default().to_regtest_network()),
+    );
 
-    let source = build_active_mockchain_source(150, blocks.clone());
+    let source = fake_validator_with_tip(&blocks.clone(), 150);
 
     let zaino_db = FinalisedState::build_db_to_version(
         v1_config,
@@ -71,7 +59,7 @@ async fn v1_0_to_v1_1_metadata_migration() {
     assert_eq!(metadata.migration_status, MigrationStatus::Empty);
     assert_eq!(
         metadata.schema_hash,
-        crate::chain_index::finalised_state::finalised_source::v1::DB_SCHEMA_V1_HASH
+        crate::store::finalised_source::v1::DB_SCHEMA_V1_HASH
     );
 
     let db_height = zaino_db.db_height().await.unwrap().unwrap();
@@ -91,21 +79,12 @@ async fn v1_0_to_v1_1_mixed_blockheaderdata_formats() {
     let temp_dir: TempDir = tempfile::tempdir().unwrap();
     let db_path: PathBuf = temp_dir.path().to_path_buf();
 
-    let v1_config = ChainIndexConfig {
-        storage: StorageConfig {
-            database: DatabaseConfig {
-                path: db_path,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-        ephemeral: false,
-        mempool: Default::default(),
-        db_version: 1,
-        network: ActivationHeights::default().to_regtest_network(),
-    };
+    let v1_config = StoreSettings::new(
+        ChainStoreConfig::at_path(db_path),
+        ZainoDbConfig::new(ActivationHeights::default().to_regtest_network()),
+    );
 
-    let source = build_active_mockchain_source(initial_active_height.0, blocks.clone());
+    let source = fake_validator_with_tip(&blocks.clone(), initial_active_height.0);
 
     let old_db = FinalisedState::build_clean_v1_0_0(&v1_config, source.clone())
         .await
@@ -130,22 +109,22 @@ async fn v1_0_to_v1_1_mixed_blockheaderdata_formats() {
 
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    let blocks_to_mine = source.source().max_chain_height() - source.source().active_height();
+    let blocks_to_mine = u32::from(source.loaded_height()) - u32::from(source.reported_tip());
     assert!(
         blocks_to_mine > 0,
         "test vectors must contain blocks above the initial active height"
     );
 
-    source.source().mine_blocks(blocks_to_mine);
+    source.advance_tip(blocks_to_mine);
 
-    let target_height = Height(source.source().active_height());
+    let target_height = Height(u32::from(source.reported_tip()));
     assert!(
         target_height > initial_active_height,
         "mock chain source must advance beyond the old v1.0.0 database height"
     );
 
     let zaino_db = std::sync::Arc::new(
-        FinalisedState::spawn(v1_config, source.clone())
+        FinalisedState::spawn(v1_config.store, v1_config.db, source.clone())
             .await
             .unwrap(),
     );
