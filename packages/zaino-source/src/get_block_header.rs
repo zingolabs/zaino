@@ -24,7 +24,8 @@ pub enum GetBlockHeaderError {
 /// choice belongs in the request, not in a response the caller must match on.
 ///
 /// Maps to `getblockheader(hash, verbose = true)` over JSON-RPC.
-pub trait GetBlockHeader: Send + Sync {
+#[zaino_source_macros::resilient_port]
+pub trait OneShotGetBlockHeader: Send + Sync {
     /// Fetch a verbose block header.
     fn get_block_header(
         &self,

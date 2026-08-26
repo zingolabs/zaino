@@ -21,7 +21,8 @@ pub use super::{GetBlockByHashError, GetBlockError};
 /// [`GetRawBlockHeader`](super::GetRawBlockHeader): the caller already knows
 /// which form it wants, so the choice belongs in the request rather than in a
 /// response the caller must match on.
-pub trait GetRawBlock: Send + Sync {
+#[zaino_source_macros::resilient_port]
+pub trait OneShotGetRawBlock: Send + Sync {
     /// Fetch a serialized block by height.
     fn get_raw_block(
         &self,
@@ -34,7 +35,8 @@ pub trait GetRawBlock: Send + Sync {
 /// Separate from [`GetRawBlock`] because a height names a best-chain block
 /// whereas a hash can name one on a side chain — different questions, which
 /// adapters may answer from different places.
-pub trait GetRawBlockByHash: Send + Sync {
+#[zaino_source_macros::resilient_port]
+pub trait OneShotGetRawBlockByHash: Send + Sync {
     /// Fetch a serialized block by hash.
     fn get_raw_block_by_hash(
         &self,

@@ -236,10 +236,6 @@ pub enum BlockCacheError {
     #[error("Critical error: {0}")]
     Critical(String),
 
-    /// Errors from the NonFinalisedState.
-    #[error("NonFinalisedState Error: {0}")]
-    NonFinalisedStateError(#[from] NonFinalisedStateError),
-
     /// Errors from the FinalisedState.
     #[error("FinalisedState Error: {0}")]
     FinalisedStateError(#[from] FinalisedStateError),
@@ -259,26 +255,6 @@ pub enum BlockCacheError {
     /// Integer conversion error.
     #[error("Integer conversion error: {0}")]
     TryFromIntError(#[from] std::num::TryFromIntError),
-}
-
-/// Errors related to the `NonFinalisedState`.
-#[derive(Debug, thiserror::Error)]
-pub enum NonFinalisedStateError {
-    /// Custom Errors. *Remove before production.
-    #[error("Custom error: {0}")]
-    Custom(String),
-
-    /// Required data is missing from the non-finalised state.
-    #[error("Missing data: {0}")]
-    MissingData(String),
-
-    /// Critical Errors, Restart Zaino.
-    #[error("Critical error: {0}")]
-    Critical(String),
-
-    /// Unexpected status-related error.
-    #[error("Status error: {0:?}")]
-    StatusError(StatusError),
 }
 
 /// Errors related to the `FinalisedState`.
@@ -467,15 +443,55 @@ impl ChainIndexError {
             source,
         }
     }
+}
 
-    pub(crate) fn validator_data_error_block_coinbase_height_missing() -> Self {
-        Self {
-            kind: ChainIndexErrorKind::InternalServerError,
-            message: "validator error: data error: block.coinbase_height() returned None"
-                .to_string(),
-            source: None,
-        }
+/// A chain-head query that could not be answered.
+impl From<zaino_chain_head::ChainHeadError> for ChainIndexError {
+    fn from(value: zaino_chain_head::ChainHeadError) -> Self {
+        ChainIndexError::internal(format!("chain head query failed: {value}"))
     }
+}
+
+/// A chain-head block that cannot be expressed in this crate's shape means the
+/// two disagree about a block both are holding — an internal inconsistency,
+/// not anything the caller did.
+impl From<crate::chain_index::chain_head::ChainHeadConversionError> for ChainIndexError {
+    fn from(value: crate::chain_index::chain_head::ChainHeadConversionError) -> Self {
+        ChainIndexError::internal(format!("chain head block is unusable: {value}"))
+    }
+}
+
+/// An error occurred during a ChainIndex sync iteration.
+///
+/// One variant, because the loop now drives one thing: the finalised state.
+/// Whatever goes wrong — an unreachable validator, a database that will not
+/// advance — the worker's answer is the same, to back off and retry, and to
+/// escalate only after a run of them.
+#[derive(Debug, thiserror::Error)]
+pub enum SyncError {
+    /// The sync iteration failed. Retryable.
+    #[error("sync iteration failed: {0}")]
+    ErrorFromSource(Box<dyn std::error::Error + Send>),
+}
+
+/// An error occurred while constructing a ChainIndex.
+#[derive(Debug, thiserror::Error)]
+pub enum InitError {
+    /// The connected node returned data that could not be used.
+    #[error("validator returned invalid data: {0}")]
+    InvalidNodeData(Box<dyn std::error::Error + Send + Sync + 'static>),
+    /// The mempool failed to initialise.
+    #[error(transparent)]
+    MempoolInitialzationError(#[from] crate::error::MempoolError),
+    /// The finalised state failed to initialise.
+    #[error(transparent)]
+    FinalisedStateInitialzationError(#[from] FinalisedStateError),
+    /// The chain head could not build its first window.
+    ///
+    /// Fatal by design: a chain head with no window has nothing to serve, and
+    /// it holds no persistent state to fall back on.
+    #[error(transparent)]
+    ChainHeadInitialisationError(#[from] zaino_chain_head_service::ChainHeadInitError),
 }
 
 impl From<FinalisedStateError> for ChainIndexError {

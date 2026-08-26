@@ -145,7 +145,7 @@ impl ZebraReadStateAdapter {
     }
 }
 
-impl zaino_source::GetPreIndexCompactBlock for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetPreIndexCompactBlock for ZebraReadStateAdapter {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(h = u32::from(height))))]
     async fn get_pre_index_compact_block(
         &self,
@@ -154,7 +154,7 @@ impl zaino_source::GetPreIndexCompactBlock for ZebraReadStateAdapter {
         // Zebra's read-state service serves whole blocks only; there is no
         // compact-block read request. Read the full block and strip it down
         // through the domain `Block`, exactly as the RPC adapter does.
-        use zaino_source::GetBlock;
+        use zaino_source::OneShotGetBlock;
         let block = self.get_block(height).await?;
         Ok(zaino_primitives::types::PreIndexCompactBlock::from(&block))
     }
@@ -185,7 +185,7 @@ impl ZebraReadStateAdapter {
     }
 }
 
-impl zaino_source::GetBlock for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetBlock for ZebraReadStateAdapter {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(h = u32::from(height))))]
     async fn get_block(&self, height: Height) -> Result<Block, QueryError<GetBlockError>> {
         let zebra_height = zebra_chain::block::Height(u32::from(height));
@@ -223,7 +223,7 @@ impl zaino_source::GetBlock for ZebraReadStateAdapter {
     }
 }
 
-impl zaino_source::GetChainTip for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetChainTip for ZebraReadStateAdapter {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     async fn get_chain_tip(&self) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
         let response = self
@@ -249,7 +249,7 @@ impl zaino_source::GetChainTip for ZebraReadStateAdapter {
     }
 }
 
-impl zaino_source::GetBlockByHash for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetBlockByHash for ZebraReadStateAdapter {
     async fn get_block_by_hash(
         &self,
         hash: BlockHash,
@@ -279,7 +279,7 @@ impl zaino_source::GetBlockByHash for ZebraReadStateAdapter {
     }
 }
 
-impl zaino_source::GetBestBlockHeight for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetBestBlockHeight for ZebraReadStateAdapter {
     async fn get_best_block_height(
         &self,
     ) -> Result<Height, QueryError<zaino_source::GetBestBlockHeightError>> {
@@ -298,7 +298,7 @@ impl zaino_source::GetBestBlockHeight for ZebraReadStateAdapter {
     }
 }
 
-impl zaino_source::GetSubtreeRoots for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetSubtreeRoots for ZebraReadStateAdapter {
     async fn get_subtree_roots(
         &self,
         pool: zaino_primitives::types::ShieldedPool,
@@ -355,7 +355,7 @@ impl zaino_source::GetSubtreeRoots for ZebraReadStateAdapter {
     }
 }
 
-impl zaino_source::GetAddressBalance for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetAddressBalance for ZebraReadStateAdapter {
     async fn get_address_balance(
         &self,
         addresses: Vec<String>,
@@ -414,7 +414,7 @@ fn subtree_end_height(height: zebra_chain::block::Height) -> Result<Height, Fetc
     })
 }
 
-impl zaino_source::GetAddressUtxos for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetAddressUtxos for ZebraReadStateAdapter {
     async fn get_address_utxos(
         &self,
         addresses: Vec<String>,
@@ -466,7 +466,7 @@ impl zaino_source::GetAddressUtxos for ZebraReadStateAdapter {
     }
 }
 
-impl zaino_source::GetAddressTxids for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetAddressTxids for ZebraReadStateAdapter {
     async fn get_address_txids(
         &self,
         addresses: Vec<String>,
@@ -548,7 +548,7 @@ impl zaino_source::GetAddressTxids for ZebraReadStateAdapter {
 /// This matches the behaviour of the connector this replaced, which built the
 /// same answer through a verbose-transaction shape whose inputs likewise
 /// carried no address.
-impl zaino_source::GetAddressDeltas for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetAddressDeltas for ZebraReadStateAdapter {
     async fn get_address_deltas(
         &self,
         addresses: Vec<String>,
@@ -678,7 +678,7 @@ impl zaino_source::SourceLifecycle for ZebraReadStateAdapter {
 /// signal belongs to the syncer, not the read handle.
 impl zaino_source::SubscribeBlocks for ZebraReadStateAdapter {}
 
-impl zaino_source::GetCommitmentTreeRoots for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetCommitmentTreeRoots for ZebraReadStateAdapter {
     async fn get_commitment_tree_roots(
         &self,
         block: BlockHash,
@@ -730,7 +730,7 @@ impl zaino_source::GetCommitmentTreeRoots for ZebraReadStateAdapter {
     }
 }
 
-impl zaino_source::GetTreestateByHash for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetTreestateByHash for ZebraReadStateAdapter {
     async fn get_treestate_by_hash(
         &self,
         hash: BlockHash,
@@ -742,7 +742,7 @@ impl zaino_source::GetTreestateByHash for ZebraReadStateAdapter {
     }
 }
 
-impl zaino_source::GetTreestate for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetTreestate for ZebraReadStateAdapter {
     async fn get_treestate(
         &self,
         height: Height,
@@ -862,7 +862,7 @@ fn hash_or_height(hash: BlockHash) -> zebra_state::HashOrHeight {
     zebra_state::HashOrHeight::Hash(zebra_chain::block::Hash(hash.into()))
 }
 
-impl zaino_source::GetTransaction for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetTransaction for ZebraReadStateAdapter {
     async fn get_transaction(
         &self,
         txid: zaino_primitives::types::TransactionId,
@@ -909,7 +909,7 @@ impl zaino_source::GetTransaction for ZebraReadStateAdapter {
     }
 }
 
-impl zaino_source::GetDifficulty for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetDifficulty for ZebraReadStateAdapter {
     async fn get_difficulty(
         &self,
     ) -> Result<zaino_primitives::types::Difficulty, QueryError<zaino_source::GetDifficultyError>>
@@ -930,7 +930,7 @@ impl zaino_source::GetDifficulty for ZebraReadStateAdapter {
     }
 }
 
-impl zaino_source::GetBlockchainInfo for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetBlockchainInfo for ZebraReadStateAdapter {
     async fn get_blockchain_info(
         &self,
     ) -> Result<
@@ -1105,7 +1105,7 @@ fn serialize_block(block: &zebra_chain::block::Block) -> Result<Vec<u8>, FetchEr
         .map_err(|e| FetchError::new(FailureMode::Parse, format!("serialize block: {e}")))
 }
 
-impl zaino_source::GetRawBlock for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetRawBlock for ZebraReadStateAdapter {
     async fn get_raw_block(
         &self,
         height: Height,
@@ -1122,7 +1122,7 @@ impl zaino_source::GetRawBlock for ZebraReadStateAdapter {
     }
 }
 
-impl zaino_source::GetRawBlockByHash for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetRawBlockByHash for ZebraReadStateAdapter {
     async fn get_raw_block_by_hash(
         &self,
         hash: BlockHash,
@@ -1230,7 +1230,7 @@ impl ZebraReadStateAdapter {
     }
 }
 
-impl zaino_source::GetBlockDeltas for ZebraReadStateAdapter {
+impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
     /// Derives `getblockdeltas` from the state service.
     ///
     /// # Why this is derived rather than proxied

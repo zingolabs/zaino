@@ -200,7 +200,7 @@ where
         values also (even though they can be obtained using GetBlock).
         The block can be specified by either height or hash."
         get_tree_state(BlockId) -> TreeState,
-        "Returns a stream of information about roots of subtrees of the Sapling and Orchard \
+        "Returns a stream of information about roots of subtrees of the Sapling, Orchard, and Ironwood \
         note commitment trees."
         get_subtree_roots(GetSubtreeRootsArg) -> Self::GetSubtreeRootsStream as streaming,
         "Returns all unspent outputs for a list of addresses. \

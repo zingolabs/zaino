@@ -5,12 +5,12 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-use crate::{GetChainTip, GetChainTipError, QueryError, SubscribeChainTip, TipObservation};
+use crate::{GetChainTipError, OneShotGetChainTip, QueryError, SubscribeChainTip, TipObservation};
 
 /// A tip subscription built by polling a source that has no native stream.
 ///
 /// A decorator rather than something baked into each adapter, matching
-/// [`Resilient`](crate::Resilient): the capability is synthesised on top of any
+/// [`ValidatorClient`](crate::ValidatorClient): the capability is synthesised on top of any
 /// source that can answer [`GetChainTip`], so one implementation serves every
 /// pollable source rather than each adapter growing its own poll loop.
 ///
@@ -51,7 +51,7 @@ impl PolledChainTip {
         interval: Duration,
     ) -> Result<Self, QueryError<GetChainTipError>>
     where
-        S: GetChainTip + Send + 'static,
+        S: OneShotGetChainTip + Send + 'static,
     {
         let (hash, height) = source.get_chain_tip().await?;
         let (tx, tip) = watch::channel(TipObservation::now(hash, height));
@@ -108,7 +108,9 @@ impl Drop for PolledChainTip {
 mod tests {
     use super::*;
     use crate::mock::MockChain;
-    use zaino_primitives::types::{Block, BlockHash, BlockHeader, ChainMetadata, Height};
+    use zaino_primitives::types::{
+        Block, BlockHash, BlockHeader, ChainMetadata, EquihashSolution, Height,
+    };
 
     fn height(h: u32) -> Height {
         Height::try_from(h).expect("valid height")
@@ -122,6 +124,7 @@ mod tests {
         Block {
             header: BlockHeader {
                 hash: hash(hash_byte),
+                version: 4,
                 prev_hash: BlockHash::ZERO,
                 height: height(h),
                 time: 0,
@@ -129,6 +132,7 @@ mod tests {
                 block_commitments: [0; 32].into(),
                 bits: 0,
                 nonce: [0; 32],
+                solution: EquihashSolution::Regtest([0; 36]),
             },
             transactions: vec![],
             chain_metadata: ChainMetadata {

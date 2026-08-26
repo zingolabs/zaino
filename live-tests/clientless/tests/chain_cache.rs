@@ -308,7 +308,7 @@ mod chain_query_interface {
         test_manager
             .generate_blocks_and_wait_for_tip(5, &indexer)
             .await;
-        let snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
+        let snapshot = indexer.snapshot_nonfinalized_state();
         let range = indexer
             .get_block_range(&snapshot, Height::try_from(0).unwrap(), None)
             .unwrap()
@@ -359,7 +359,7 @@ mod chain_query_interface {
         test_manager
             .generate_blocks_and_wait_for_tip(seam + 50, &indexer)
             .await;
-        let snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
+        let snapshot = indexer.snapshot_nonfinalized_state();
         let chain_height: u32 = json_service.get("getblockchaininfo").await["blocks"]
             .as_u64()
             .expect("a chain height") as u32;
@@ -462,7 +462,7 @@ mod chain_query_interface {
 
         tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
 
-        let snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
+        let snapshot = indexer.snapshot_nonfinalized_state();
         let chain_height = json_service.get("getblockchaininfo").await["blocks"]
             .as_u64()
             .expect("a chain height") as u32;
@@ -603,7 +603,7 @@ mod chain_query_interface {
             .await;
 
         for iteration in 0..5 {
-            let snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
+            let snapshot = indexer.snapshot_nonfinalized_state();
 
             tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -657,11 +657,11 @@ mod chain_query_interface {
             .generate_blocks_and_wait_for_tip(5, &indexer)
             .await;
 
-        let initial_snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
+        let initial_snapshot = indexer.snapshot_nonfinalized_state();
         let mut prev_tip = indexer.best_chaintip(&initial_snapshot).await.unwrap();
 
         for iteration in 0..5 {
-            let snapshot = indexer.snapshot_nonfinalized_state().await.unwrap();
+            let snapshot = indexer.snapshot_nonfinalized_state();
             let current_tip = indexer.best_chaintip(&snapshot).await.unwrap();
 
             let fork_point = indexer

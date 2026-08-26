@@ -92,6 +92,13 @@ pub trait ZcashService: Sized + Status {
     /// Returns a [`IndexerSubscriber`].
     fn get_subscriber(&self) -> IndexerSubscriber<Self::Subscriber>;
 
+    /// Returns which backend is currently answering finalised-state reads.
+    ///
+    /// Companion to [`Status::status`], which cannot express this: an ephemeral passthrough reports
+    /// [`zaino_status::StatusType::Ready`] identically to a synced persistent database, so a caller
+    /// gating on `Ready` alone cannot tell which one it is about to query.
+    fn finalised_state_mode(&self) -> crate::FinalisedStateMode;
+
     /// Shuts down the StateService.
     fn close(&mut self);
 }
@@ -439,7 +446,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
         hash_or_height: String,
     ) -> impl SendFut<Result<zaino_primitives::types::Treestate, Self::Error>>;
 
-    /// Returns information about a range of Sapling or Orchard subtrees.
+    /// Returns information about a range of Sapling, Orchard, or Ironwood subtrees.
     ///
     /// zcashd reference: [`z_getsubtreesbyindex`](https://zcash.github.io/rpc/z_getsubtreesbyindex.html) - TODO: fix link
     /// method: post
@@ -447,7 +454,7 @@ pub trait ZcashIndexer: Send + Sync + 'static {
     ///
     /// # Parameters
     ///
-    /// - `pool`: (string, required) The pool from which subtrees should be returned. Either "sapling" or "orchard".
+    /// - `pool`: (string, required) The pool from which subtrees should be returned. Either "sapling", "orchard", or "ironwood".
     /// - `start_index`: (number, required) The index of the first 2^16-leaf subtree to return.
     /// - `limit`: (number, optional) The maximum number of subtree values to return.
     ///
@@ -764,7 +771,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
     /// Helper function to get timeout and channel size from config
     fn timeout_channel_size(&self) -> (u32, u32);
 
-    /// Returns a stream of information about roots of subtrees of the Sapling and Orchard
+    /// Returns a stream of information about roots of subtrees of the Sapling, Orchard, and Ironwood
     /// note commitment trees.
     fn get_subtree_roots(
         &self,
@@ -774,6 +781,7 @@ pub trait LightWalletIndexer: Send + Sync + Clone + ZcashIndexer + 'static {
             let pool = match ShieldedProtocol::try_from(request.shielded_protocol) {
                 Ok(ShieldedProtocol::Sapling) => zaino_primitives::types::ShieldedPool::Sapling,
                 Ok(ShieldedProtocol::Orchard) => zaino_primitives::types::ShieldedPool::Orchard,
+                Ok(ShieldedProtocol::Ironwood) => zaino_primitives::types::ShieldedPool::Ironwood,
                 Err(_) => {
                     return Err(<Self as ZcashIndexer>::Error::from(
                         tonic::Status::invalid_argument("Error: Invalid shielded protocol value."),

@@ -18,10 +18,9 @@
 
 use std::sync::Arc;
 
-use zaino_primitives::types::{BlockRef, TransactionId};
+use zaino_primitives::types::{BlockRef, ChainStateEpoch, TransactionId};
 
 use crate::entry::MempoolEntry;
-use crate::ports::NonFinalizedEpoch;
 use crate::snapshot::MempoolSnapshot;
 
 /// The two tips coherence tracks: the validator/mempool-source tip ("V", from the
@@ -36,7 +35,7 @@ pub struct ObservedTips {
     /// Latest observed validator/mempool-source tip ("V").
     pub validator: Option<BlockRef>,
     /// Latest observed non-finalized-state epoch ("NS").
-    pub non_finalized: Option<NonFinalizedEpoch>,
+    pub non_finalized: Option<ChainStateEpoch>,
 }
 
 impl ObservedTips {
@@ -50,7 +49,7 @@ impl ObservedTips {
 
     /// If both tips are known and their hashes agree, the agreed NS epoch the
     /// mempool set is coherent for. Otherwise `None`.
-    pub fn agree(&self) -> Option<NonFinalizedEpoch> {
+    pub fn agree(&self) -> Option<ChainStateEpoch> {
         let validator = self.validator?;
         let non_finalized = self.non_finalized?;
 
@@ -110,13 +109,13 @@ pub enum MempoolMode {
     /// The set is coherent and valid for `valid_for` (V == NS).
     Live {
         /// The agreed NS epoch the set is valid for.
-        valid_for: NonFinalizedEpoch,
+        valid_for: ChainStateEpoch,
     },
     /// The set is frozen at `valid_for` (or never had a coherent epoch), for
     /// `reason`.
     Frozen {
         /// The last agreed epoch the set is valid for, if any.
-        valid_for: Option<NonFinalizedEpoch>,
+        valid_for: Option<ChainStateEpoch>,
         /// Why the view is frozen.
         reason: FreezeReason,
     },
@@ -137,7 +136,7 @@ pub struct CoherentSnapshot {
     pub mode: MempoolMode,
     /// The NS epoch this set is coherent for. `None` means there has never been a
     /// live coherent mempool.
-    pub valid_for: Option<NonFinalizedEpoch>,
+    pub valid_for: Option<ChainStateEpoch>,
     /// The V and NS tips observed at publication.
     pub observed_tips: ObservedTips,
     /// Monotonic coherent-event sequence.
@@ -158,12 +157,12 @@ impl CoherentSnapshot {
 
     /// True when this view's transaction set is valid for `epoch` (live or frozen
     /// at that epoch).
-    pub fn is_valid_for_snapshot(&self, epoch: NonFinalizedEpoch) -> bool {
+    pub fn is_valid_for_snapshot(&self, epoch: ChainStateEpoch) -> bool {
         self.valid_for == Some(epoch)
     }
 
     /// True when this view is a live coherent set valid for exactly `epoch`.
-    pub fn is_live_for(&self, epoch: NonFinalizedEpoch) -> bool {
+    pub fn is_live_for(&self, epoch: ChainStateEpoch) -> bool {
         matches!(self.mode, MempoolMode::Live { valid_for } if valid_for == epoch)
             && self.valid_for == Some(epoch)
     }
