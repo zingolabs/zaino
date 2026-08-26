@@ -71,6 +71,7 @@ packages/                          Cargo workspace member crates, in dependency 
   zaino-state/                       Chain state and indexer service library
   zaino-serve/                       gRPC + JSON-RPC servers, and the served JSON schema
   zainod/                            Daemon binary
+  zaino-bench/                       Benchmark harness (sync time, connection ceiling, serve rate)
 
 live-tests/                        Live-test suite — root-workspace members, run against zcashd/zebrad
   e2e/                               End-to-end partition (wallet client -> Zaino -> validator)
@@ -188,6 +189,7 @@ mistakes its design is trying to prevent.
 - [`zaino-mempool-service`](./packages/zaino-mempool-service/usage.md): spawning and consuming the mempool.
 - [`zaino-chain-head`](./packages/zaino-chain-head/usage.md): the chain head's ports, why reads live on the snapshot, and why there is no way to make it synchronise.
 - [`zaino-chain-head-service`](./packages/zaino-chain-head-service/usage.md): the chain head runtime, its two testing styles, and the properties to keep when editing the advance path.
+- [`zaino-bench`](./packages/zaino-bench/usage.md): measuring sync time, connection ceiling, and serve rate on a running node.
 
 
 ## Security Vulnerability Disclosure

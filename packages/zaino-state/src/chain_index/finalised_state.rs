@@ -230,9 +230,15 @@ use router::Router;
 use tracing::{info, instrument};
 use zebra_chain::parameters::NetworkKind;
 
+#[cfg(feature = "prometheus")]
+use crate::metric_names::*;
+
 use crate::{
     chain_index::{
-        finalised_state::{finalised_source::v1::DB_VERSION_V1, router::EphemeralMode},
+        finalised_state::{
+            finalised_source::v1::DB_VERSION_V1,
+            router::{EphemeralMode, FinalisedStateMode},
+        },
         source::BlockchainSourceError,
         types::GENESIS_HEIGHT,
     },
@@ -287,6 +293,51 @@ pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
     height_int: u32,
     parent_chainwork: Option<ChainWork>,
 ) -> Result<IndexedBlock, FinalisedStateError> {
+    let fetched = fetch_block_for_indexing(source, height_int).await?;
+    assemble_indexed_block(
+        fetched,
+        network,
+        sapling_activation_height,
+        nu5_activation_height,
+        nu6_3_activation_height,
+        height_int,
+        parent_chainwork,
+    )
+}
+
+/// The two source reads behind one indexed block, kept together.
+///
+/// Split out of [`build_indexed_block_from_source`] because this half does not depend on
+/// `parent_chainwork` and so does not have to run in block order — which is what lets a bulk sync
+/// issue many of them at once. It is also where a sync spends nearly all of its CPU: deserialising
+/// a block decompresses two Jubjub points per Sapling output (`from_bytes_not_small_order` — a
+/// modular square root plus a cofactor multiplication), work Zaino discards, since it keeps only
+/// the compact representation. On sandblast-era blocks that dwarfs everything else the sync does.
+pub(crate) struct FetchedBlock {
+    block: Arc<zebra_chain::block::Block>,
+    tree_roots: crate::chain_index::source::ShieldedTreeRoots,
+}
+
+impl FetchedBlock {
+    /// This block's own proof-of-work contribution.
+    ///
+    /// Lets a caller fold the cumulative chainwork over a run of already-fetched blocks before
+    /// assembling any of them — the fold is the only ordering constraint in block building, and it
+    /// is pure integer arithmetic, so it must not hold the expensive conversion in block order.
+    pub(crate) fn block_work(&self) -> Result<ChainWork, FinalisedStateError> {
+        crate::chain_index::types::helpers::block_work(&self.block.header).map_err(|reason| {
+            FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
+                format!("cannot read block work from header: {reason}"),
+            ))
+        })
+    }
+}
+
+/// Reads one block and its commitment-tree roots from the source.
+pub(crate) async fn fetch_block_for_indexing<S: BlockchainSource>(
+    source: &S,
+    height_int: u32,
+) -> Result<FetchedBlock, FinalisedStateError> {
     let block = match source
         .get_block(zebra_state::HashOrHeight::Height(
             zebra_chain::block::Height(height_int),
@@ -306,8 +357,29 @@ pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
     let block_hash = BlockHash::from(block.hash().0);
 
     // Fetch sapling / orchard commitment tree data if above the relevant network upgrade.
-    let (sapling_opt, orchard_opt, ironwood_opt) =
-        source.get_commitment_tree_roots(block_hash).await?;
+    let tree_roots = source.get_commitment_tree_roots(block_hash).await?;
+
+    Ok(FetchedBlock { block, tree_roots })
+}
+
+/// Turns a [`FetchedBlock`] into an [`IndexedBlock`], given the chainwork of its parent.
+///
+/// The order-dependent half: `parent_chainwork` chains each block to the one before it, so this
+/// runs in block order even when the fetches above did not. Cheap next to the fetch — no curve
+/// arithmetic, just the metadata assembly and the compact-form conversion.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn assemble_indexed_block(
+    fetched: FetchedBlock,
+    network: zebra_chain::parameters::Network,
+    sapling_activation_height: zebra_chain::block::Height,
+    nu5_activation_height: Option<zebra_chain::block::Height>,
+    nu6_3_activation_height: Option<zebra_chain::block::Height>,
+    height_int: u32,
+    parent_chainwork: Option<ChainWork>,
+) -> Result<IndexedBlock, FinalisedStateError> {
+    let FetchedBlock { block, tree_roots } = fetched;
+    let (sapling_opt, orchard_opt, ironwood_opt) = tree_roots;
+    let block_hash = BlockHash::from(block.hash().0);
 
     let is_sapling_active = height_int >= sapling_activation_height.0;
     let is_orchard_active = nu5_activation_height
@@ -490,6 +562,15 @@ impl<T: BlockchainSource> FinalisedState<T> {
         source: T,
     ) -> Result<Self, FinalisedStateError> {
         if cfg.ephemeral {
+            // WARN, not INFO: this branch previously returned silently, and a run that serves every
+            // finalised-state read from the validator while a test suite believes it is exercising
+            // the on-disk index is nearly always a misconfiguration worth surfacing loudly.
+            tracing::warn!(
+                mode = %FinalisedStateMode::EphemeralConfigured,
+                "finalised state running in EPHEMERAL mode (ephemeral_finalised_state = true): no \
+                 persistent database will be opened or written, and all finalised-state reads are \
+                 served from the backing validator"
+            );
             return Ok(Self {
                 db: Arc::new(Router::new(Arc::new(FinalisedSource::ephemeral(
                     source,
@@ -499,6 +580,11 @@ impl<T: BlockchainSource> FinalisedState<T> {
                 cfg,
             });
         } else {
+            info!(
+                mode = %FinalisedStateMode::Persistent,
+                path = %cfg.storage.database.path.display(),
+                "finalised state running in PERSISTENT mode"
+            );
             let version_opt = Self::try_find_current_db_version(&cfg).await;
 
             let target_version = match cfg.db_version {
@@ -574,6 +660,13 @@ impl<T: BlockchainSource> FinalisedState<T> {
 
                     match migration_manager.migrate().await {
                         Ok(()) => {
+                            // Previously only the failure path logged, so a successful migration was
+                            // indistinguishable from one still running.
+                            info!(
+                                from_version = %current_version,
+                                to_version = %target_version,
+                                "FinalisedState migration complete"
+                            );
                             // Start the background validator only now that every migration has
                             // finished: its initial scan reads tables a migration populates (e.g.
                             // `commitment_tree_data_1_3_0`), so starting it earlier would race the
@@ -615,7 +708,40 @@ impl<T: BlockchainSource> FinalisedState<T> {
     /// migrations, the router determines which backend serves `READ_CORE`, and the status reflects
     /// that routing decision.
     pub(crate) fn status(&self) -> StatusType {
-        self.db.status()
+        let status = self.db.status();
+
+        // The reliable production hook for the one-shot "online" announcement. The ephemeral-release
+        // edge in `Router::release_ephemeral_reference` covers a first sync or a migration, but a
+        // restart against an already-current database never installs a passthrough at all
+        // (`sync_is_long_running` is false), so that edge never fires and nothing would mark the
+        // finalised state as live. `Indexer::log_status` polls this every ~10s, and
+        // `note_persistent_online` is latched, so the announcement lands exactly once either way.
+        //
+        // Deliberately not hooked to `wait_until_ready`: despite its name it has no production
+        // caller — only tests and the `reader` wrapper use it.
+        let mode = self.db.finalised_state_mode();
+
+        #[cfg(feature = "prometheus")]
+        metrics::gauge!(FINALISED_EPHEMERAL).set(if mode == FinalisedStateMode::Persistent {
+            0.0
+        } else {
+            1.0
+        });
+
+        if status == StatusType::Ready && mode == FinalisedStateMode::Persistent {
+            self.db.note_persistent_online();
+        }
+
+        status
+    }
+
+    /// Returns which backend is currently answering finalised-state reads.
+    ///
+    /// Distinct from [`FinalisedState::status`]: an ephemeral passthrough reports
+    /// [`StatusType::Ready`] just like a synced persistent database, so `status` alone cannot tell a
+    /// caller whether the finalised state it is querying is the real on-disk index.
+    pub(crate) fn finalised_state_mode(&self) -> FinalisedStateMode {
+        self.db.finalised_state_mode()
     }
 
     /// Waits until the database reports [`StatusType::Ready`].
@@ -1018,6 +1144,16 @@ impl<T: BlockchainSource> FinalisedState<T> {
     /// Production code should use the public `FinalisedState` API instead of depending on the router
     /// directly.
     pub(crate) fn router(&self) -> &Router<T> {
+        &self.db
+    }
+
+    /// Shared handle to the router, for tests that need to drive ephemeral routing transitions
+    /// directly (`init_or_take_ephemeral` takes `&Arc<Router<T>>`).
+    ///
+    /// Exercising those transitions through `sync_to_height` instead would race the spawned
+    /// background task, so the deterministic routing tests reach for this.
+    #[cfg(test)]
+    pub(crate) fn router_arc(&self) -> &Arc<Router<T>> {
         &self.db
     }
 

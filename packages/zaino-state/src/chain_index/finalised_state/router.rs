@@ -128,10 +128,47 @@ use zaino_status::StatusType;
 
 use arc_swap::{ArcSwap, ArcSwapOption};
 use std::sync::{
-    atomic::{AtomicU32, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
     Arc, Mutex,
 };
 use tokio::runtime::Handle;
+use tracing::info;
+
+/// Which backend is currently answering finalised-state reads, as an operator-facing fact.
+///
+/// [`StatusType`] cannot express this: an ephemeral passthrough tracks the backing validator and
+/// reports [`StatusType::Ready`] exactly like a fully synced persistent database, so a caller
+/// waiting on `Ready` cannot tell whether the finalised state it is about to query is the real
+/// on-disk index or a passthrough standing in for one while sync or a migration runs.
+///
+/// The two ephemeral cases are kept distinct deliberately. Conflating a deliberate configuration
+/// choice with a transient sync state is the ambiguity this type exists to remove.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FinalisedStateMode {
+    /// `ephemeral_finalised_state = true`: this process has no persistent finalised-state database
+    /// at all, and never will. A permanent property of the run, fixed at startup.
+    EphemeralConfigured,
+
+    /// A persistent database exists but is not currently serving reads — an ephemeral passthrough is
+    /// installed while initial sync or a migration runs. Transient: reads become `Persistent` once
+    /// the work completes.
+    EphemeralRouted,
+
+    /// Reads are served by the persistent on-disk database. This is the steady state, and the only
+    /// mode in which a test asserting on finalised-state behaviour is exercising the real index.
+    Persistent,
+}
+
+impl std::fmt::Display for FinalisedStateMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = match self {
+            FinalisedStateMode::EphemeralConfigured => "ephemeral(configured)",
+            FinalisedStateMode::EphemeralRouted => "ephemeral(syncing)",
+            FinalisedStateMode::Persistent => "persistent",
+        };
+        f.write_str(name)
+    }
+}
 
 /// Ephemeral routing policy used when installing or reusing the ephemeral backend.
 ///
@@ -331,6 +368,13 @@ pub(crate) struct Router<T: BlockchainSource> {
     /// [`FinalisedState::wait_until_synced`], which waits for finalised-state sync/migration to finish
     /// without conflating it with serving-readiness ([`StatusType::Ready`]).
     background_ops: AtomicUsize,
+
+    /// Latch: has this router ever been observed serving reads from the persistent database?
+    ///
+    /// Purely an observability aid — it gates the one-shot "finalised state online" log in
+    /// [`Router::note_persistent_online`] so the transition is announced exactly once per process
+    /// rather than on every status poll. Nothing reads it to make a routing decision.
+    has_been_persistent: AtomicBool,
 }
 
 /// Database capability router.
@@ -362,6 +406,41 @@ impl<T: BlockchainSource> Router<T> {
             primary_mask: AtomicU32::new(cap.bits()),
             ephemeral_mask: AtomicU32::new(0),
             background_ops: AtomicUsize::new(0),
+            has_been_persistent: AtomicBool::new(false),
+        }
+    }
+
+    // ***** Observability *****
+
+    /// Returns which backend is currently answering finalised-state reads.
+    ///
+    /// Read-only; derived from the same state [`Router::backend`] routes on, so it cannot disagree
+    /// with where a read would actually land.
+    pub(crate) fn finalised_state_mode(&self) -> FinalisedStateMode {
+        if self.primary_is_ephemeral() {
+            FinalisedStateMode::EphemeralConfigured
+        } else if self.ephemeral_mask.load(Ordering::Acquire) != 0 {
+            FinalisedStateMode::EphemeralRouted
+        } else {
+            FinalisedStateMode::Persistent
+        }
+    }
+
+    /// Announces, exactly once per process, that the persistent finalised state has come online.
+    ///
+    /// Idempotent via a `compare_exchange` on the latch, so it is safe to call from both the
+    /// ephemeral-release edge and the status poll — the two paths cover different startup shapes
+    /// (see the call sites) and whichever fires first wins.
+    pub(crate) fn note_persistent_online(&self) {
+        if self
+            .has_been_persistent
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            info!(
+                mode = %FinalisedStateMode::Persistent,
+                "finalised state online: reads are now served by the persistent database"
+            );
         }
     }
 
@@ -469,6 +548,11 @@ impl<T: BlockchainSource> Router<T> {
             }
         }
 
+        // Captured before `apply_ephemeral_mode` below so the reuse path can tell an actual mode
+        // change (ReadOnly -> Full) from a no-op refresh; the sync loop calls in here repeatedly, so
+        // logging unconditionally would bury the real transitions.
+        let mode_before = self.active_ephemeral_mode();
+
         let ephemeral = match self.ephemeral.load_full() {
             Some(ephemeral) => {
                 match ephemeral.as_ref() {
@@ -490,6 +574,14 @@ impl<T: BlockchainSource> Router<T> {
             None => {
                 let ephemeral = Arc::new(FinalisedSource::ephemeral(source, network, db_height));
                 self.ephemeral.store(Some(Arc::clone(&ephemeral)));
+                info!(
+                    requested_mode = ?mode,
+                    db_height = db_height.map(|height| height.0),
+                    mode = %FinalisedStateMode::EphemeralRouted,
+                    "finalised state switched to the ephemeral passthrough: reads are served from \
+                     the backing validator, NOT the persistent database, until sync/migration \
+                     completes"
+                );
                 ephemeral
             }
         };
@@ -501,6 +593,20 @@ impl<T: BlockchainSource> Router<T> {
         })?;
 
         self.apply_ephemeral_mode(ephemeral.as_ref(), active_mode);
+
+        // Escalation on an already-installed passthrough (ReadOnly -> Full, i.e. a migration
+        // freezing routed writes on top of a running sync). Only logged when the effective mode
+        // actually moved.
+        if let Some(previous_mode) = mode_before {
+            if previous_mode != active_mode {
+                info!(
+                    from = ?previous_mode,
+                    to = ?active_mode,
+                    requested_mode = ?mode,
+                    "finalised state ephemeral routing escalated"
+                );
+            }
+        }
 
         Ok(EphemeralReference::new(Arc::clone(self), ephemeral, mode))
     }
@@ -549,12 +655,29 @@ impl<T: BlockchainSource> Router<T> {
 
             match self.active_ephemeral_mode() {
                 Some(active_mode) => {
+                    // Still ephemeral, but a holder went away — e.g. a migration finished while a
+                    // sync still holds ReadOnly. Routing narrows; it does not return to disk.
+                    info!(
+                        released_mode = ?mode,
+                        active_mode = ?active_mode,
+                        mode = %FinalisedStateMode::EphemeralRouted,
+                        "finalised state ephemeral routing downgraded (still passthrough-backed)"
+                    );
                     self.apply_ephemeral_mode(active_ephemeral.as_ref(), active_mode);
                     return;
                 }
                 None => {
+                    // Last holder released: reads go back to the persistent database. This is the
+                    // edge CI should gate on rather than `StatusType::Ready`.
                     self.restore_primary_capability();
-                    self.ephemeral.swap(None)
+                    let removed = self.ephemeral.swap(None);
+                    info!(
+                        released_mode = ?mode,
+                        mode = %FinalisedStateMode::Persistent,
+                        "finalised state switched back to the persistent database"
+                    );
+                    self.note_persistent_online();
+                    removed
                 }
             }
         };
@@ -837,9 +960,16 @@ impl<T: BlockchainSource> DbCore for Router<T> {
     /// capability routing, shuts down the primary backend, and then shuts down the removed ephemeral
     /// backend.
     async fn shutdown(&self) -> Result<(), FinalisedStateError> {
+        let was_ephemeral = self.ephemeral_mask.load(Ordering::Acquire) != 0;
         self.ephemeral_mask.store(0, Ordering::Release);
 
         let ephemeral = self.ephemeral.swap(None);
+
+        // Terminal teardown clears routing directly rather than through the reference guards, so
+        // without this the last mode change of a process that shut down mid-sync goes unrecorded.
+        if was_ephemeral {
+            info!("finalised state ephemeral routing torn down during shutdown");
+        }
 
         self.primary_mask.store(
             self.primary.load_full().capability().bits(),

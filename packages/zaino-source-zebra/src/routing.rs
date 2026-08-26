@@ -71,7 +71,7 @@ impl ZebraValidator {
         interval: Duration,
     ) -> Result<Self, QueryError<GetChainTipError>>
     where
-        S: GetChainTip + Send + 'static,
+        S: OneShotGetChainTip + Send + 'static,
     {
         self.tip = Some(PolledChainTip::spawn(source, interval).await?);
         Ok(self)
@@ -126,7 +126,7 @@ macro_rules! fast_or_slow {
 // Blocks and chain
 // ---------------------------------------------------------------------------
 
-impl GetBlock for ZebraValidator {
+impl OneShotGetBlock for ZebraValidator {
     async fn get_block(&self, height: Height) -> Result<Block, QueryError<GetBlockError>> {
         // A height names a best-chain block, which the finalized state has, so
         // there is nothing the slow path could add on a miss.
@@ -134,7 +134,7 @@ impl GetBlock for ZebraValidator {
     }
 }
 
-impl GetBlockByHash for ZebraValidator {
+impl OneShotGetBlockByHash for ZebraValidator {
     async fn get_block_by_hash(
         &self,
         hash: BlockHash,
@@ -148,13 +148,13 @@ impl GetBlockByHash for ZebraValidator {
     }
 }
 
-impl GetRawBlock for ZebraValidator {
+impl OneShotGetRawBlock for ZebraValidator {
     async fn get_raw_block(&self, height: Height) -> Result<Vec<u8>, QueryError<GetBlockError>> {
         fast_or_slow!(self, get_raw_block, height)
     }
 }
 
-impl GetRawBlockByHash for ZebraValidator {
+impl OneShotGetRawBlockByHash for ZebraValidator {
     async fn get_raw_block_by_hash(
         &self,
         hash: BlockHash,
@@ -165,19 +165,19 @@ impl GetRawBlockByHash for ZebraValidator {
     }
 }
 
-impl GetChainTip for ZebraValidator {
+impl OneShotGetChainTip for ZebraValidator {
     async fn get_chain_tip(&self) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
         fast_or_slow!(self, get_chain_tip)
     }
 }
 
-impl GetBestBlockHeight for ZebraValidator {
+impl OneShotGetBestBlockHeight for ZebraValidator {
     async fn get_best_block_height(&self) -> Result<Height, QueryError<GetBestBlockHeightError>> {
         fast_or_slow!(self, get_best_block_height)
     }
 }
 
-impl GetPreIndexCompactBlock for ZebraValidator {
+impl OneShotGetPreIndexCompactBlock for ZebraValidator {
     async fn get_pre_index_compact_block(
         &self,
         height: Height,
@@ -190,7 +190,7 @@ impl GetPreIndexCompactBlock for ZebraValidator {
 // Transactions
 // ---------------------------------------------------------------------------
 
-impl GetTransaction for ZebraValidator {
+impl OneShotGetTransaction for ZebraValidator {
     async fn get_transaction(
         &self,
         txid: TransactionId,
@@ -206,7 +206,7 @@ impl GetTransaction for ZebraValidator {
 // Shielded state
 // ---------------------------------------------------------------------------
 
-impl GetTreestate for ZebraValidator {
+impl OneShotGetTreestate for ZebraValidator {
     async fn get_treestate(
         &self,
         height: Height,
@@ -215,7 +215,7 @@ impl GetTreestate for ZebraValidator {
     }
 }
 
-impl GetTreestateByHash for ZebraValidator {
+impl OneShotGetTreestateByHash for ZebraValidator {
     async fn get_treestate_by_hash(
         &self,
         hash: BlockHash,
@@ -224,7 +224,7 @@ impl GetTreestateByHash for ZebraValidator {
     }
 }
 
-impl GetCommitmentTreeRoots for ZebraValidator {
+impl OneShotGetCommitmentTreeRoots for ZebraValidator {
     async fn get_commitment_tree_roots(
         &self,
         block: BlockHash,
@@ -236,7 +236,7 @@ impl GetCommitmentTreeRoots for ZebraValidator {
     }
 }
 
-impl GetSubtreeRoots for ZebraValidator {
+impl OneShotGetSubtreeRoots for ZebraValidator {
     async fn get_subtree_roots(
         &self,
         pool: ShieldedPool,
@@ -251,7 +251,7 @@ impl GetSubtreeRoots for ZebraValidator {
 // Transparent addresses
 // ---------------------------------------------------------------------------
 
-impl GetAddressBalance for ZebraValidator {
+impl OneShotGetAddressBalance for ZebraValidator {
     async fn get_address_balance(
         &self,
         addresses: Vec<String>,
@@ -263,7 +263,7 @@ impl GetAddressBalance for ZebraValidator {
     }
 }
 
-impl GetAddressTxids for ZebraValidator {
+impl OneShotGetAddressTxids for ZebraValidator {
     async fn get_address_txids(
         &self,
         addresses: Vec<String>,
@@ -277,7 +277,7 @@ impl GetAddressTxids for ZebraValidator {
     }
 }
 
-impl GetAddressUtxos for ZebraValidator {
+impl OneShotGetAddressUtxos for ZebraValidator {
     async fn get_address_utxos(
         &self,
         addresses: Vec<String>,
@@ -289,7 +289,7 @@ impl GetAddressUtxos for ZebraValidator {
     }
 }
 
-impl GetAddressDeltas for ZebraValidator {
+impl OneShotGetAddressDeltas for ZebraValidator {
     async fn get_address_deltas(
         &self,
         addresses: Vec<String>,
@@ -323,7 +323,7 @@ impl GetAddressDeltas for ZebraValidator {
 // These need no routing decision — there is one transport that can answer.
 // ---------------------------------------------------------------------------
 
-impl GetMempoolTxids for ZebraValidator {
+impl OneShotGetMempoolTxids for ZebraValidator {
     async fn get_mempool_txids(
         &self,
     ) -> Result<Vec<TransactionId>, QueryError<GetMempoolTxidsError>> {
@@ -331,7 +331,7 @@ impl GetMempoolTxids for ZebraValidator {
     }
 }
 
-impl GetMempoolMetadata for ZebraValidator {
+impl OneShotGetMempoolMetadata for ZebraValidator {
     async fn get_mempool_metadata(
         &self,
     ) -> Result<Vec<MempoolTxMeta>, QueryError<GetMempoolMetadataError>> {
@@ -339,7 +339,7 @@ impl GetMempoolMetadata for ZebraValidator {
     }
 }
 
-impl GetRawMempoolTransaction for ZebraValidator {
+impl OneShotGetRawMempoolTransaction for ZebraValidator {
     async fn get_raw_mempool_transaction(
         &self,
         txid: TransactionId,
@@ -348,7 +348,7 @@ impl GetRawMempoolTransaction for ZebraValidator {
     }
 }
 
-impl GetMempoolSourceTip for ZebraValidator {
+impl OneShotGetMempoolSourceTip for ZebraValidator {
     async fn get_mempool_source_tip(
         &self,
     ) -> Result<(BlockHash, Height), QueryError<std::convert::Infallible>> {
@@ -360,7 +360,7 @@ impl GetMempoolSourceTip for ZebraValidator {
     }
 }
 
-impl GetChainTips for ZebraValidator {
+impl OneShotGetChainTips for ZebraValidator {
     async fn get_chain_tips(&self) -> Result<Vec<rpc::ChainTip>, QueryError<GetChainTipsError>> {
         // Enumerating the block tree includes side-chain tips, which the
         // finalized state does not retain.
@@ -368,7 +368,7 @@ impl GetChainTips for ZebraValidator {
     }
 }
 
-impl GetBlockVerbose for ZebraValidator {
+impl OneShotGetBlockVerbose for ZebraValidator {
     async fn get_block_verbose(
         &self,
         height: Height,
@@ -377,7 +377,7 @@ impl GetBlockVerbose for ZebraValidator {
     }
 }
 
-impl GetBlockVerboseByHash for ZebraValidator {
+impl OneShotGetBlockVerboseByHash for ZebraValidator {
     async fn get_block_verbose_by_hash(
         &self,
         hash: BlockHash,
@@ -386,7 +386,7 @@ impl GetBlockVerboseByHash for ZebraValidator {
     }
 }
 
-impl GetBlockHeader for ZebraValidator {
+impl OneShotGetBlockHeader for ZebraValidator {
     async fn get_block_header(
         &self,
         hash: BlockHash,
@@ -395,7 +395,7 @@ impl GetBlockHeader for ZebraValidator {
     }
 }
 
-impl GetRawBlockHeader for ZebraValidator {
+impl OneShotGetRawBlockHeader for ZebraValidator {
     async fn get_raw_block_header(
         &self,
         hash: BlockHash,
@@ -404,7 +404,7 @@ impl GetRawBlockHeader for ZebraValidator {
     }
 }
 
-impl GetBlockDeltas for ZebraValidator {
+impl OneShotGetBlockDeltas for ZebraValidator {
     async fn get_block_deltas(
         &self,
         hash: BlockHash,
@@ -419,7 +419,7 @@ impl GetBlockDeltas for ZebraValidator {
     }
 }
 
-impl GetBlockSubsidy for ZebraValidator {
+impl OneShotGetBlockSubsidy for ZebraValidator {
     async fn get_block_subsidy(
         &self,
         height: Height,
@@ -428,25 +428,25 @@ impl GetBlockSubsidy for ZebraValidator {
     }
 }
 
-impl GetNodeInfo for ZebraValidator {
+impl OneShotGetNodeInfo for ZebraValidator {
     async fn get_node_info(&self) -> Result<rpc::NodeInfo, QueryError<GetNodeInfoError>> {
         self.rpc.get_node_info().await
     }
 }
 
-impl GetPeerInfo for ZebraValidator {
+impl OneShotGetPeerInfo for ZebraValidator {
     async fn get_peer_info(&self) -> Result<Vec<rpc::PeerInfo>, QueryError<GetPeerInfoError>> {
         self.rpc.get_peer_info().await
     }
 }
 
-impl GetMiningInfo for ZebraValidator {
+impl OneShotGetMiningInfo for ZebraValidator {
     async fn get_mining_info(&self) -> Result<rpc::MiningInfo, QueryError<GetMiningInfoError>> {
         self.rpc.get_mining_info().await
     }
 }
 
-impl GetNetworkSolPs for ZebraValidator {
+impl OneShotGetNetworkSolPs for ZebraValidator {
     async fn get_network_sol_ps(
         &self,
         blocks: Option<u32>,
@@ -456,7 +456,7 @@ impl GetNetworkSolPs for ZebraValidator {
     }
 }
 
-impl GetTxOut for ZebraValidator {
+impl OneShotGetTxOut for ZebraValidator {
     async fn get_tx_out(
         &self,
         txid: TransactionId,
@@ -467,7 +467,7 @@ impl GetTxOut for ZebraValidator {
     }
 }
 
-impl GetSpentInfo for ZebraValidator {
+impl OneShotGetSpentInfo for ZebraValidator {
     async fn get_spent_info(
         &self,
         outpoint: rpc::SpentOutpoint,
@@ -479,7 +479,7 @@ impl GetSpentInfo for ZebraValidator {
     }
 }
 
-impl SendRawTransaction for ZebraValidator {
+impl OneShotSendRawTransaction for ZebraValidator {
     async fn send_raw_transaction(
         &self,
         transaction: Vec<u8>,
@@ -492,13 +492,13 @@ impl SendRawTransaction for ZebraValidator {
 // Chain-wide facts
 // ---------------------------------------------------------------------------
 
-impl GetDifficulty for ZebraValidator {
+impl OneShotGetDifficulty for ZebraValidator {
     async fn get_difficulty(&self) -> Result<Difficulty, QueryError<GetDifficultyError>> {
         fast_or_slow!(self, get_difficulty)
     }
 }
 
-impl GetBlockchainInfo for ZebraValidator {
+impl OneShotGetBlockchainInfo for ZebraValidator {
     async fn get_blockchain_info(
         &self,
     ) -> Result<BlockchainInfo, QueryError<GetBlockchainInfoError>> {

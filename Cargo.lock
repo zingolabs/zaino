@@ -5906,6 +5906,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-bench"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "futures",
+ "reqwest 0.13.1",
+ "thiserror 2.0.18",
+ "tokio",
+ "tonic",
+ "zaino-common",
+ "zaino-proto",
+ "zaino-state",
+]
+
+[[package]]
 name = "zaino-chain-head"
 version = "0.1.0"
 dependencies = [
@@ -6066,6 +6081,16 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "zaino-primitives",
+ "zaino-source-macros",
+]
+
+[[package]]
+name = "zaino-source-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
 ]
 
 [[package]]

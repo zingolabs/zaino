@@ -5,7 +5,7 @@
 
 use zaino_primitives::types::Height;
 use zaino_rpc::{RpcClient, RpcClientConfig};
-use zaino_source::GetBlock;
+use zaino_source::OneShotGetBlock;
 use zaino_source_zebra_rpc::ZebraRpcAdapter;
 
 const HEIGHTS: &[u32] = &[
