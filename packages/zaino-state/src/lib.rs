@@ -66,7 +66,7 @@ pub use indexer::node_backed_indexer::{
 
 pub mod chain_index;
 
-pub use chain_index::finalised_state::router::FinalisedStateMode;
+pub use zaino_chain_store_zainodb::store::FinalisedStateMode;
 
 // Core ChainIndex trait and implementations
 pub use chain_index::{
@@ -74,6 +74,7 @@ pub use chain_index::{
 };
 // Source types for ChainIndex backends
 pub use chain_index::chain_head::WithChainHeadSource;
+pub use chain_index::chain_store::WithChainStoreSource;
 pub use chain_index::source::BlockchainSource;
 pub use chain_index::source_ports::ChainIndexSourcePorts;
 pub use chain_index::validator_source::{ValidatorSource, ZebraValidatorSource};
@@ -91,16 +92,23 @@ pub use error::{InitError, SyncError};
 pub use zaino_chain_head::{ChainHeadBlock, ChainHeadSnapshot};
 pub use zaino_chain_head_service::MapBackedSnapshot;
 pub use zaino_primitives::types::MempoolInfo;
-// NOTE: Should these be pub at all?
-pub use chain_index::types::{
-    AddrHistRecord, AddrScript, BlockContext, BlockData, BlockHash, BlockHeaderData, BlockMetadata,
-    BlockWithMetadata, ChainWork, ChainWorkError, CommitmentTreeData, CommitmentTreeRoots,
-    CommitmentTreeSizes, CompactDifficulty, CompactDifficultyError, CompactOrchardAction,
-    CompactSaplingOutput, CompactSaplingSpend, CompactTxData, Height, IndexedBlock,
-    OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList, ScriptType,
-    ShardIndex, ShardRoot, TransactionHash, TransparentCompactTx, TransparentTxList, TreeRootData,
-    TxInCompact, TxLocation, TxOutCompact, TxidList,
-};
+
+/// The finalised store's on-disk types, for this crate's own use only.
+///
+/// These were `pub`, with a note asking whether they should be. They should
+/// not: they are `zaino-chain-store-zainodb`'s persisted shapes, and a consumer
+/// written against them is written against one backend's disk layout. A
+/// consumer that genuinely needs them — the live-test legacy parser, which
+/// rebuilds a block independently and compares — names that crate directly.
+///
+/// `pub(crate)` rather than deleted because this crate still reads both halves
+/// of the chain through `IndexedBlock`. The re-export goes when it stops.
+///
+/// `TxOutCompact` has already gone: the finalised reads now come back as
+/// `zaino_chain_store::StoredTxOut` through the ports, so the one place that
+/// held a stored output — the cross-seam UTXO fold — folds domain outputs
+/// instead. The rest of this list shrinks the same way.
+pub(crate) use chain_index::types::{BlockHash, Height, IndexedBlock, Outpoint, TransactionHash};
 
 #[cfg(feature = "test_dependencies")]
 /// allow public access to additional APIs, for testing

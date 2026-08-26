@@ -34,6 +34,11 @@ devtool-incompatible = []
 # zcashd_support drop; re-enabled by forwarding above. See docs/adr/0001.
 zaino-testutils = { workspace = true }
 zaino-state = { workspace = true, features = ["test_dependencies"] }
+
+# Zaino's versioned encoding, and the store types the vector tests decode into.
+# Named directly: `zaino-state` no longer re-exports either.
+zaino-encoding = { workspace = true }
+zaino-chain-store-zainodb = { workspace = true }
 zaino-common = { workspace = true }
 zaino-proto = { workspace = true }
 zainod = { workspace = true }

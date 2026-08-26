@@ -257,73 +257,14 @@ pub enum BlockCacheError {
     TryFromIntError(#[from] std::num::TryFromIntError),
 }
 
-/// Errors related to the `FinalisedState`.
-// TODO: Update name to DbError when FinalisedState replaces legacy finalised state.
-#[derive(Debug, thiserror::Error)]
-pub enum FinalisedStateError {
-    /// Custom Errors.
-    // TODO: Remove before production
-    #[error("Custom error: {0}")]
-    Custom(String),
-
-    /// Requested data is missing from the finalised state.
-    ///
-    /// This could be due to the databae not yet being synced or due to a bad request input.
-    ///
-    /// We could split this into 2 distinct types if needed.
-    #[error("Missing data: {0}")]
-    DataUnavailable(String),
-
-    /// A block is present on disk but failed internal validation.
-    ///
-    /// *Typically means: checksum mismatch, corrupt CBOR, Merkle check
-    /// failed, etc.*  The caller should fetch the correct data and
-    /// overwrite the faulty block.
-    #[error("invalid block @ height {height} (hash {hash}): {reason}")]
-    InvalidBlock {
-        height: u32,
-        hash: BlockHash,
-        reason: String,
-    },
-
-    /// Returned when a caller asks for a feature that the
-    /// currently-opened database version does not advertise.
-    #[error("feature unavailable: {0}")]
-    FeatureUnavailable(&'static str),
-
-    /// Errors originating from the BlockchainSource in use.
-    #[error("blockchain source error: {0}")]
-    BlockchainSourceError(#[from] crate::chain_index::source::BlockchainSourceError),
-
-    /// Critical Errors, Restart Zaino.
-    #[error("Critical error: {0}")]
-    Critical(String),
-
-    /// Error from the LMDB database.
-    // NOTE: Should this error type be here or should we handle all LMDB errors internally?
-    #[error("LMDB database error: {0}")]
-    LmdbError(#[from] lmdb::Error),
-
-    /// Serde Json serialisation / deserialisation errors.
-    // TODO: Remove when FinalisedState replaces legacy finalised state.
-    #[error("LMDB database error: {0}")]
-    SerdeJsonError(#[from] serde_json::Error),
-
-    /// Unexpected status-related error.
-    #[error("Status error: {0:?}")]
-    StatusError(StatusError),
-
-    /// std::io::Error
-    #[error("IO error: {0}")]
-    IoError(#[from] std::io::Error),
-}
-
-/// A general error type to represent error StatusTypes.
-#[derive(Debug, Clone, thiserror::Error)]
-#[error("Unexpected status error: {server_status:?}")]
-pub struct StatusError {
-    pub server_status: zaino_status::StatusType,
-}
+/// Errors from the finalised chain store.
+///
+/// Not defined here: it belongs to the backend that produces it, and is
+/// re-exported under its old name so this crate's callers do not have to be
+/// rewritten while they are being moved onto
+/// [`zaino_chain_store::ChainStoreError`], which is what the ports return and
+/// what a consumer should eventually see.
+pub use zaino_chain_store_zainodb::error::{StatusError, StoreError as FinalisedStateError};
 
 #[derive(Debug, thiserror::Error)]
 #[error("{kind}: {message}")]
@@ -511,14 +452,39 @@ impl From<FinalisedStateError> for ChainIndexError {
             FinalisedStateError::SerdeJsonError(error) => error.to_string(),
             FinalisedStateError::StatusError(status_error) => status_error.to_string(),
             FinalisedStateError::IoError(error) => error.to_string(),
-            FinalisedStateError::BlockchainSourceError(blockchain_source_error) => {
-                blockchain_source_error.to_string()
-            }
+            FinalisedStateError::Source(source_error) => source_error.to_string(),
         };
         ChainIndexError {
             kind: ChainIndexErrorKind::InternalServerError,
             message,
             source: Some(Box::new(value)),
+        }
+    }
+}
+
+/// A chain-store query that could not be answered.
+///
+/// The two retryable conditions keep their kind, because a caller that is told
+/// to retry can, and the rest are internal: a store that lacks an index or is
+/// missing a row it references is not something the caller can act on.
+///
+/// [`ChainStoreError::AboveWatermark`] maps to internal deliberately. It is not
+/// an error a caller should ever see — it means the finalised half was asked
+/// about a height the recent half owns, which is a routing mistake in
+/// ChainIndex rather than anything the caller did. The read helpers in
+/// [`chain_store`](crate::chain_index::chain_store) turn it into "not here"
+/// before it reaches this conversion; reaching it means one did not.
+impl From<zaino_chain_store::ChainStoreError> for ChainIndexError {
+    fn from(value: zaino_chain_store::ChainStoreError) -> Self {
+        use zaino_chain_store::ChainStoreError as Error;
+
+        match &value {
+            Error::NotReady => ChainIndexError::unavailable(value.to_string()),
+            _ => ChainIndexError {
+                kind: ChainIndexErrorKind::InternalServerError,
+                message: value.to_string(),
+                source: Some(Box::new(value)),
+            },
         }
     }
 }

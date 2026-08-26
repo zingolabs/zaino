@@ -10,14 +10,13 @@
 //! Nothing in production builds an `IndexedBlock` this way. The sync path builds
 //! one from `BlockWithMetadata`, and that impl is untouched.
 
-use zaino_state::chain_index::types::{
-    parse_standard_script, BlockContext, BlockData, ChainWork, CommitmentTreeData,
+use zaino_chain_store_zainodb::types::{
+    parse_standard_script, BlockContext, BlockData, BlockHash, ChainWork, CommitmentTreeData,
     CommitmentTreeRoots, CommitmentTreeSizes, CompactDifficulty, CompactOrchardAction,
-    CompactSaplingOutput, CompactSaplingSpend, CompactTxData, EquihashSolution, IndexedBlock,
-    OrchardCompactTx, SaplingCompactTx, ScriptType, TransparentCompactTx, TxInCompact,
-    TxOutCompact,
+    CompactSaplingOutput, CompactSaplingSpend, CompactTxData, EquihashSolution, Height,
+    IndexedBlock, OrchardCompactTx, SaplingCompactTx, ScriptType, TransparentCompactTx,
+    TxInCompact, TxOutCompact,
 };
-use zaino_state::{BlockHash, Height};
 
 use super::{block::FullBlock, transaction::FullTransaction};
 

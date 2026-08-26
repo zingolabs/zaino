@@ -224,7 +224,13 @@ async fn v1_finalised_seed_dir(mode: MockchainMode) -> &'static Path {
             network: ActivationHeights::default().to_regtest_network(),
         };
 
-        let zaino_db = FinalisedState::spawn(config, source).await.unwrap();
+        let zaino_db = FinalisedState::spawn(
+            config.chain_store_config(),
+            config.zainodb_config(),
+            source,
+        )
+        .await
+        .unwrap();
         sync_db_with_blockdata(zaino_db.router(), blocks, Some(target)).await;
         zaino_db.wait_until_ready().await;
         zaino_db.shutdown().await.unwrap();
