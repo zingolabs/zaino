@@ -3,7 +3,7 @@
 //! This module implements [`Router`], the internal dispatch layer used by `FinalisedState` to route
 //! finalised-state operations to:
 //! - the **primary** database backend, which owns the persistent finalised-state database, or
-//! - an optional **ephemeral** backend, which serves requests from a backing [`BlockchainSource`]
+//! - an optional **ephemeral** backend, which serves requests from a backing [`ChainStoreSource`]
 //!   while the persistent database is syncing or migrating.
 //!
 //! The router is designed to separate **service routing** from **maintenance writes**:
@@ -40,7 +40,7 @@
 //! 1. If `ephemeral_mask` contains the requested capability and a ephemeral backend is active,
 //!    return ephemeral.
 //! 2. Otherwise, if `primary_mask` contains the requested capability, return primary.
-//! 3. Otherwise, return [`FinalisedStateError::FeatureUnavailable`].
+//! 3. Otherwise, return [`StoreError::FeatureUnavailable`].
 //!
 //! # Ephemeral modes
 //!
@@ -119,11 +119,12 @@ use super::{
     finalised_source::FinalisedSource,
 };
 
-use crate::{
-    chain_index::finalised_state::capability::{Capability, CapabilityRequest},
-    error::FinalisedStateError,
-    BlockHash, BlockchainSource, Height, IndexedBlock,
-};
+use crate::error::StoreError;
+use crate::store::capability::{Capability, CapabilityRequest};
+use crate::types::{BlockHash, Height, IndexedBlock};
+use tokio::sync::watch;
+use zaino_chain_store::ChainStoreSource;
+use zaino_chain_store::{Provenance, StoreWatermark};
 use zaino_status::StatusType;
 
 use arc_swap::{ArcSwap, ArcSwapOption};
@@ -203,7 +204,7 @@ pub(crate) enum EphemeralMode {
 #[derive(Debug)]
 pub(crate) struct EphemeralReference<T>
 where
-    T: BlockchainSource + Send + Sync + 'static,
+    T: ChainStoreSource + Send + Sync + 'static,
 {
     /// Router that owns the ephemeral backend and routing masks.
     router: Arc<Router<T>>,
@@ -219,7 +220,7 @@ where
 
 impl<T> EphemeralReference<T>
 where
-    T: BlockchainSource + Send + Sync + 'static,
+    T: ChainStoreSource + Send + Sync + 'static,
 {
     fn new(
         router: Arc<Router<T>>,
@@ -246,7 +247,7 @@ where
 
 impl<T> Drop for EphemeralReference<T>
 where
-    T: BlockchainSource + Send + Sync + 'static,
+    T: ChainStoreSource + Send + Sync + 'static,
 {
     fn drop(&mut self) {
         let Some(ephemeral) = self.ephemeral.take() else {
@@ -265,12 +266,12 @@ where
 /// (when that task finishes, on any path) decrements the counter. Holding the guard for the whole
 /// lifetime of the task is what lets [`FinalisedState::wait_until_synced`] observe that the operation is
 /// still running.
-pub(super) struct BackgroundOpGuard<T: BlockchainSource> {
+pub(super) struct BackgroundOpGuard<T: ChainStoreSource> {
     /// Router whose `background_ops` counter this guard holds a claim on.
     router: Arc<Router<T>>,
 }
 
-impl<T: BlockchainSource> Drop for BackgroundOpGuard<T> {
+impl<T: ChainStoreSource> Drop for BackgroundOpGuard<T> {
     fn drop(&mut self) {
         self.router.background_ops.fetch_sub(1, Ordering::AcqRel);
     }
@@ -305,7 +306,7 @@ impl<T: BlockchainSource> Drop for BackgroundOpGuard<T> {
 /// atomics and checked on every routed lookup. Each routed call receives an [`Arc<FinalisedSource<T>>`],
 /// so in-flight calls remain valid even if routing changes immediately afterwards.
 #[derive(Debug)]
-pub(crate) struct Router<T: BlockchainSource> {
+pub(crate) struct Router<T: ChainStoreSource> {
     /// Primary active database backend.
     ///
     /// This backend owns the persistent finalised-state database. In steady state, all capabilities
@@ -328,6 +329,19 @@ pub(crate) struct Router<T: BlockchainSource> {
     /// Routing lookups do not take this lock. The lock only protects lifecycle transitions where the
     /// ephemeral backend is created, removed, or has its capability policy changed.
     ephemeral_lifecycle_lock: Mutex<()>,
+
+    /// The finalised watermark, as last published.
+    ///
+    /// A [`watch`] channel rather than a value behind a lock, because both
+    /// readings of it are wanted: `borrow()` gives the current value for free
+    /// on a read path that must not await, and a subscriber is woken when it
+    /// changes without polling. A composer routing by height needs the second;
+    /// bounding a read against the tip needs the first.
+    ///
+    /// Held here rather than on the store handle because the router is what
+    /// knows *which* backend is serving, and that decides the watermark's
+    /// provenance as much as the height does.
+    watermark: watch::Sender<StoreWatermark>,
 
     /// Number of active read-only ephemeral routing references.
     ///
@@ -383,7 +397,7 @@ pub(crate) struct Router<T: BlockchainSource> {
 /// temporary service routing during sync and migration. Normal callers should access backends
 /// through [`Router::backend`] or the `DbRead` / `DbWrite` trait implementations. Maintenance code
 /// that intentionally bypasses service routing may use [`Router::primary_backend`].
-impl<T: BlockchainSource> Router<T> {
+impl<T: ChainStoreSource> Router<T> {
     // ***** Router creation *****
 
     /// Creates a new [`Router`] with `primary` installed as the active backend.
@@ -407,6 +421,11 @@ impl<T: BlockchainSource> Router<T> {
             ephemeral_mask: AtomicU32::new(0),
             background_ops: AtomicUsize::new(0),
             has_been_persistent: AtomicBool::new(false),
+            // Empty until the first refresh. A store that has not yet read its
+            // tip claims to cover nothing, which is the safe direction: a
+            // consumer routes the read elsewhere rather than asking a store
+            // that cannot answer.
+            watermark: watch::Sender::new(StoreWatermark::empty()),
         }
     }
 
@@ -444,6 +463,70 @@ impl<T: BlockchainSource> Router<T> {
         }
     }
 
+    // ***** Watermark *****
+
+    /// The finalised watermark, as last published.
+    pub(crate) fn watermark(&self) -> StoreWatermark {
+        *self.watermark.borrow()
+    }
+
+    /// Watches the finalised watermark.
+    pub(crate) fn subscribe_watermark(&self) -> watch::Receiver<StoreWatermark> {
+        self.watermark.subscribe()
+    }
+
+    /// What this router will currently serve.
+    ///
+    /// The union of both masks. A capability routed to the ephemeral backend is
+    /// as answerable as one routed to the primary — from the caller's side the
+    /// only difference is provenance, which the watermark already carries.
+    pub(crate) fn service_capability(&self) -> Capability {
+        let primary = Capability::from_bits_truncate(self.primary_mask.load(Ordering::Acquire));
+        let ephemeral = Capability::from_bits_truncate(self.ephemeral_mask.load(Ordering::Acquire));
+        primary | ephemeral
+    }
+
+    /// Publishes a new watermark, waking subscribers only if it changed.
+    ///
+    /// `send_if_modified` rather than `send`: the store refreshes after every
+    /// operation that *could* move the tip, and most of them do not. Waking
+    /// every subscriber to hand it the value it already has is work for
+    /// nothing, and on a composer it would look like chain progress.
+    pub(crate) fn publish_watermark(&self, watermark: StoreWatermark) {
+        self.watermark.send_if_modified(|current| {
+            if *current == watermark {
+                false
+            } else {
+                *current = watermark;
+                true
+            }
+        });
+    }
+
+    /// Whether reads are currently served from durable rows or passed through
+    /// to the validator.
+    ///
+    /// Derived from [`Router::finalised_state_mode`], which is derived from the
+    /// state [`Router::backend`] routes on — so this cannot disagree with where
+    /// a read actually lands.
+    ///
+    /// Both ephemeral modes are passthrough, not just a store configured
+    /// ephemeral. A persistent store part-way through a long build routes its
+    /// *reads* to an ephemeral backend while it writes to the primary, and a
+    /// read served that way came from the validator no matter what the primary
+    /// holds. Reporting it as durable would be a claim about where the answer
+    /// came from, and it would be wrong — and, because the watermark is what
+    /// bounds a read, it would also bound a passthrough answer by rows the
+    /// caller was never going to be served from.
+    pub(crate) fn watermark_provenance(&self) -> Provenance {
+        match self.finalised_state_mode() {
+            FinalisedStateMode::Persistent => Provenance::Durable,
+            FinalisedStateMode::EphemeralConfigured | FinalisedStateMode::EphemeralRouted => {
+                Provenance::Passthrough
+            }
+        }
+    }
+
     // ***** Capability router *****
 
     /// Returns the backend that should serve `cap` under the current routing policy.
@@ -452,7 +535,7 @@ impl<T: BlockchainSource> Router<T> {
     /// 1. If the ephemeral mask contains the requested capability and ephemeral is active, return
     ///    ephemeral.
     /// 2. Otherwise, if the primary mask contains the requested capability, return primary.
-    /// 3. Otherwise, return [`FinalisedStateError::FeatureUnavailable`].
+    /// 3. Otherwise, return [`StoreError::FeatureUnavailable`].
     ///
     /// ## Correctness contract
     ///
@@ -464,7 +547,7 @@ impl<T: BlockchainSource> Router<T> {
     pub(crate) fn backend(
         &self,
         cap: CapabilityRequest,
-    ) -> Result<Arc<FinalisedSource<T>>, FinalisedStateError> {
+    ) -> Result<Arc<FinalisedSource<T>>, StoreError> {
         let bit = cap.as_capability().bits();
 
         if self.ephemeral_mask.load(Ordering::Acquire) & bit != 0 {
@@ -476,7 +559,7 @@ impl<T: BlockchainSource> Router<T> {
             return Ok(self.primary.load_full());
         }
 
-        Err(FinalisedStateError::FeatureUnavailable(cap.name()))
+        Err(StoreError::FeatureUnavailable(cap.name()))
     }
 
     // ***** Ephemeral finalised state control *****
@@ -524,11 +607,11 @@ impl<T: BlockchainSource> Router<T> {
     /// This mode is used by migrations.
     pub(crate) async fn init_or_take_ephemeral(
         self: &Arc<Self>,
-        source: T,
+        source: Arc<T>,
         network: zebra_chain::parameters::Network,
         mode: EphemeralMode,
         db_height: Option<Height>,
-    ) -> Result<EphemeralReference<T>, FinalisedStateError>
+    ) -> Result<EphemeralReference<T>, StoreError>
     where
         T: Send + Sync + 'static,
     {
@@ -562,7 +645,7 @@ impl<T: BlockchainSource> Router<T> {
                     FinalisedSource::V1(_) => {
                         self.decrement_ephemeral_reference_count(mode);
 
-                        return Err(FinalisedStateError::Custom(
+                        return Err(StoreError::Custom(
                             "router ephemeral slot contained a persistent database backend"
                                 .to_string(),
                         ));
@@ -587,7 +670,7 @@ impl<T: BlockchainSource> Router<T> {
         };
 
         let active_mode = self.active_ephemeral_mode().ok_or_else(|| {
-            FinalisedStateError::Custom(
+            StoreError::Custom(
                 "ephemeral routing mode missing after incrementing reference count".to_string(),
             )
         })?;
@@ -717,14 +800,14 @@ impl<T: BlockchainSource> Router<T> {
     pub(crate) fn update_ephemeral_db_height(
         &self,
         db_height: Option<Height>,
-    ) -> Result<(), FinalisedStateError> {
+    ) -> Result<(), StoreError> {
         let Some(ephemeral) = self.ephemeral.load_full() else {
             return Ok(());
         };
 
         match ephemeral.as_ref() {
             FinalisedSource::Ephemeral(ephemeral) => ephemeral.update_db_height(db_height),
-            FinalisedSource::V1(_) => Err(FinalisedStateError::Custom(
+            FinalisedSource::V1(_) => Err(StoreError::Custom(
                 "router ephemeral slot contained a persistent database backend".to_string(),
             )),
         }
@@ -934,8 +1017,8 @@ impl<T: BlockchainSource> Router<T> {
 ///
 /// `DbCore` methods are routed via capability selection:
 /// - `status()` consults the backend that currently serves `READ_CORE`.
-/// - `shutdown()` attempts to shut down both primary and shadow backends (if present).
-impl<T: BlockchainSource> DbCore for Router<T> {
+/// - `shutdown()` attempts to shut down both the primary and the ephemeral backend (if present).
+impl<T: ChainStoreSource> DbCore for Router<T> {
     /// Returns the runtime status of the database system.
     ///
     /// This is derived from whichever backend currently serves `READ_CORE`. If `READ_CORE` is not
@@ -959,7 +1042,7 @@ impl<T: BlockchainSource> DbCore for Router<T> {
     /// This disables ephemeral routing, removes the ephemeral backend if present, restores primary
     /// capability routing, shuts down the primary backend, and then shuts down the removed ephemeral
     /// backend.
-    async fn shutdown(&self) -> Result<(), FinalisedStateError> {
+    async fn shutdown(&self) -> Result<(), StoreError> {
         let was_ephemeral = self.ephemeral_mask.load(Ordering::Acquire) != 0;
         self.ephemeral_mask.store(0, Ordering::Release);
 
@@ -998,34 +1081,34 @@ impl<T: BlockchainSource> DbCore for Router<T> {
 /// Migration code that intentionally mutates the persistent database must not use these methods
 /// while full ephemeral routing is active; it should use [`Router::primary_backend`] or a dedicated
 /// replacement backend.
-impl<T: BlockchainSource> DbWrite for Router<T> {
+impl<T: ChainStoreSource> DbWrite for Router<T> {
     /// Writes a block via the backend currently serving `WRITE_CORE`.
-    async fn write_block(&self, blk: IndexedBlock) -> Result<(), FinalisedStateError> {
+    async fn write_block(&self, blk: IndexedBlock) -> Result<(), StoreError> {
         self.backend(CapabilityRequest::WriteCore)?
             .write_block(blk)
             .await
     }
 
     /// Bulk catch-up ingestion via the backend currently serving `WRITE_CORE`.
-    async fn write_blocks_to_height<S: crate::chain_index::source::BlockchainSource>(
+    async fn write_blocks_to_height<S: zaino_chain_store::ChainStoreSource>(
         &self,
         height: Height,
         source: &S,
-    ) -> Result<(), FinalisedStateError> {
+    ) -> Result<(), StoreError> {
         self.backend(CapabilityRequest::WriteCore)?
             .write_blocks_to_height(height, source)
             .await
     }
 
     /// Deletes the block at height `h` via the backend currently serving `WRITE_CORE`.
-    async fn delete_block_at_height(&self, h: Height) -> Result<(), FinalisedStateError> {
+    async fn delete_block_at_height(&self, h: Height) -> Result<(), StoreError> {
         self.backend(CapabilityRequest::WriteCore)?
             .delete_block_at_height(h)
             .await
     }
 
     /// Deletes the provided block via the backend currently serving `WRITE_CORE`.
-    async fn delete_block(&self, blk: &IndexedBlock) -> Result<(), FinalisedStateError> {
+    async fn delete_block(&self, blk: &IndexedBlock) -> Result<(), StoreError> {
         self.backend(CapabilityRequest::WriteCore)?
             .delete_block(blk)
             .await
@@ -1034,7 +1117,7 @@ impl<T: BlockchainSource> DbWrite for Router<T> {
     /// Updates the persisted metadata singleton via the backend currently serving `WRITE_CORE`.
     ///
     /// This is used by migrations to record progress and completion status.
-    async fn update_metadata(&self, metadata: DbMetadata) -> Result<(), FinalisedStateError> {
+    async fn update_metadata(&self, metadata: DbMetadata) -> Result<(), StoreError> {
         self.backend(CapabilityRequest::WriteCore)?
             .update_metadata(metadata)
             .await
@@ -1045,24 +1128,21 @@ impl<T: BlockchainSource> DbWrite for Router<T> {
 ///
 /// These methods represent normal service reads. During ephemeral routing they may be served by the
 /// ephemeral backend rather than the persistent primary backend.
-impl<T: BlockchainSource> DbRead for Router<T> {
+impl<T: ChainStoreSource> DbRead for Router<T> {
     /// Returns the database tip height via the backend currently serving `READ_CORE`.
-    async fn db_height(&self) -> Result<Option<Height>, FinalisedStateError> {
+    async fn db_height(&self) -> Result<Option<Height>, StoreError> {
         self.backend(CapabilityRequest::ReadCore)?.db_height().await
     }
 
     /// Returns the height for `hash` via the backend currently serving `READ_CORE`.
-    async fn get_block_height(
-        &self,
-        hash: BlockHash,
-    ) -> Result<Option<Height>, FinalisedStateError> {
+    async fn get_block_height(&self, hash: BlockHash) -> Result<Option<Height>, StoreError> {
         self.backend(CapabilityRequest::ReadCore)?
             .get_block_height(hash)
             .await
     }
 
     /// Returns the hash for `h` via the backend currently serving `READ_CORE`.
-    async fn get_block_hash(&self, h: Height) -> Result<Option<BlockHash>, FinalisedStateError> {
+    async fn get_block_hash(&self, h: Height) -> Result<Option<BlockHash>, StoreError> {
         self.backend(CapabilityRequest::ReadCore)?
             .get_block_hash(h)
             .await
@@ -1072,7 +1152,7 @@ impl<T: BlockchainSource> DbRead for Router<T> {
     ///
     /// During migrations, callers should expect `DbMetadata::migration_status` to reflect the state
     /// of the active backend selected by routing.
-    async fn get_metadata(&self) -> Result<DbMetadata, FinalisedStateError> {
+    async fn get_metadata(&self) -> Result<DbMetadata, StoreError> {
         self.backend(CapabilityRequest::ReadCore)?
             .get_metadata()
             .await

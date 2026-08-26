@@ -24,34 +24,49 @@
 //! uses `tokio::task::block_in_place` / `spawn_blocking` for LMDB operations to avoid blocking the
 //! async runtime, and configures `max_readers` to support high read concurrency.
 
-use crate::{
-    chain_index::{
-        finalised_state::{
-            capability::{
-                BlockCoreExt, BlockShieldedExt, BlockTransparentExt, CompactBlockExt, DbCore,
-                DbMetadata, DbRead, DbVersion, DbWrite, IndexedBlockExt, MigrationStatus,
-                TransparentHistExt,
-            },
-            entry::{StoredEntryFixed, StoredEntryVar},
-        },
-        types::{TransactionHash, GENESIS_HEIGHT},
-    },
-    config::ChainIndexConfig,
-    error::FinalisedStateError,
-    BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream, CompactOrchardAction,
-    CompactSaplingSpend, CompactSize, CompactTxData, FixedEncodedLen as _, Height, IndexedBlock,
-    OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList,
-    TransparentCompactTx, TransparentTxList, TxInCompact, TxLocation, TxOutCompact, TxidList,
-    ZainoVersionedSerde as _,
+#[cfg(feature = "transparent_address_history_experimental")]
+use crate::store::capability::TransparentHistExt;
+use crate::store::capability::{
+    BlockCoreExt, BlockShieldedExt, BlockTransparentExt, CompactBlockExt, DbCore, DbMetadata,
+    DbRead, DbVersion, DbWrite, IndexedBlockExt, MigrationStatus, SpentOutputExt, TxOutSetExt,
 };
+use crate::stream::CompactBlockStream;
+use crate::types::{
+    BlockHash, BlockHeaderData, CommitmentTreeData, CompactOrchardAction, CompactSaplingSpend,
+    CompactTxData, Height, IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint,
+    SaplingCompactTx, SaplingTxList, TransactionHash, TransparentCompactTx, TransparentTxList,
+    TxInCompact, TxLocation, TxOutCompact, TxidList, GENESIS_HEIGHT,
+};
+use crate::{config::StoreSettings, error::StoreError};
+use zaino_encoding::{CompactSize, FixedEncodedLen as _, ZainoVersionedSerde as _};
+/// How a caller names a block when asking this backend to resolve it.
+///
+/// Was `zebra_state::HashOrHeight`. Defined here instead: it is the store's own
+/// lookup key — every use resolves against this backend's indexes, not against
+/// a validator — and taking a dependency on a node's state crate for a
+/// two-variant enum would put all of zebra-state in a storage crate's graph.
+///
+/// The payload types are unchanged, so every `.into()` at a call site still
+/// means what it did.
+///
+/// TODO: replace with the domain's height and hash once the reader's internals
+/// stop speaking zebra types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HashOrHeight {
+    /// Resolve by block hash.
+    Hash(zebra_chain::block::Hash),
+    /// Resolve by block height.
+    Height(zebra_chain::block::Height),
+}
+
+use crate::entry::{StoredEntryFixed, StoredEntryVar};
 use zaino_status::{NamedAtomicStatus, StatusType};
 
 #[cfg(feature = "transparent_address_history_experimental")]
-use crate::{chain_index::types::AddrEventBytes, AddrHistRecord, AddrScript};
+use crate::types::{AddrEventBytes, AddrHistRecord, AddrScript};
 
 use zaino_proto::proto::{compact_formats::CompactBlock, utils::PoolTypeFilter};
 use zebra_chain::parameters::NetworkKind;
-use zebra_state::HashOrHeight;
 
 use super::LmdbLifecycle;
 
@@ -266,7 +281,7 @@ impl DbCore for DbV1 {
         LmdbLifecycle::status(self)
     }
 
-    async fn shutdown(&self) -> Result<(), FinalisedStateError> {
+    async fn shutdown(&self) -> Result<(), StoreError> {
         LmdbLifecycle::shutdown(self).await
     }
 }
@@ -418,7 +433,7 @@ pub(crate) struct DbV1 {
     status: NamedAtomicStatus,
 
     /// BlockCache config data.
-    config: ChainIndexConfig,
+    config: StoreSettings,
 }
 
 /// Inherent implementation for [`DbV1`].
@@ -444,7 +459,7 @@ impl DbV1 {
     /// runs: the validator's `initial_block_scan` reads tables (e.g. `commitment_tree_data_1_3_0`)
     /// that a migration populates, so starting it concurrently with a migration races the migration
     /// and can fail on a not-yet-written row.
-    pub(crate) async fn spawn(config: &ChainIndexConfig) -> Result<Self, FinalisedStateError> {
+    pub(crate) async fn spawn(config: &StoreSettings) -> Result<Self, StoreError> {
         let zaino_db = Self::open_env_and_dbs(config).await?;
 
         // Validate (or initialise) the metadata entry before we touch any tables.
@@ -466,7 +481,7 @@ impl DbV1 {
     /// (`StoredEntryVar`). The v1.0.0 fixture builder ([`DbV1::spawn_v1_0_0`]) opens the legacy
     /// `commitment_tree_data_1_0_0` table (`StoredEntryFixed`) instead, via
     /// [`DbV1::open_env_and_dbs_with_commitment_table`].
-    async fn open_env_and_dbs(config: &ChainIndexConfig) -> Result<Self, FinalisedStateError> {
+    async fn open_env_and_dbs(config: &StoreSettings) -> Result<Self, StoreError> {
         Self::open_env_and_dbs_with_commitment_table(config, "commitment_tree_data_1_3_0").await
     }
 
@@ -474,19 +489,29 @@ impl DbV1 {
     /// v1.0.0 fixture opener can select the legacy table without creating the v1.3.0 one
     /// (on-disk version detection keys off which tables exist).
     async fn open_env_and_dbs_with_commitment_table(
-        config: &ChainIndexConfig,
+        config: &StoreSettings,
         commitment_table: &str,
-    ) -> Result<Self, FinalisedStateError> {
+    ) -> Result<Self, StoreError> {
         info!("Launching FinalisedState");
 
         // Prepare database details and path.
-        let db_size_bytes = config.storage.database.size.to_byte_count();
-        let db_path_dir = match config.network.kind() {
+        let db_size_bytes = config.db.size().to_byte_count();
+        let db_path_dir = match config.db.network().kind() {
             NetworkKind::Mainnet => "mainnet",
             NetworkKind::Testnet => "testnet",
             NetworkKind::Regtest => "regtest",
         };
-        let db_path = config.storage.database.path.join(db_path_dir).join("v1");
+        // A v1 backend is only ever opened for a store that persists, so an
+        // absent path is a routing mistake above rather than a configuration an
+        // operator can express: `ChainStoreConfig` with no path is the
+        // passthrough case, and `spawn` takes the ephemeral branch for it.
+        let db_root = config.store.path().ok_or_else(|| {
+            StoreError::Custom(
+                "a persistent v1 database was opened for a store configured to hold nothing"
+                    .to_string(),
+            )
+        })?;
+        let db_path = db_root.join(db_path_dir).join("v1");
         if !db_path.exists() {
             fs::create_dir_all(&db_path)?;
         }
@@ -756,7 +781,7 @@ impl DbV1 {
     /// exit under `NO_SYNC` on networked/evicted storage — see [`SYNC_CHECKPOINT_INTERVAL`]), and the
     /// dumped bytes let an operator confirm torn-page corruption vs. a genuine format problem. The
     /// recovery is to wipe the finalised-state database and re-index.
-    async fn initial_spent_scan(&self) -> Result<(), FinalisedStateError> {
+    async fn initial_spent_scan(&self) -> Result<(), StoreError> {
         let env = self.env.clone();
         let spent = self.spent;
 
@@ -792,13 +817,13 @@ impl DbV1 {
                     // `MDB_FIRST`/`MDB_NEXT` always report the key; treat a missing key as end-of-data.
                     Ok((None, _)) => break,
                     Err(lmdb::Error::NotFound) => break,
-                    Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+                    Err(error) => return Err(StoreError::LmdbError(error)),
                 };
                 op = lmdb_sys::MDB_NEXT;
 
                 let entry =
                     StoredEntryFixed::<TxLocation>::from_bytes(val_bytes).map_err(|error| {
-                        FinalisedStateError::Custom(spent_corruption_detail(
+                        StoreError::Custom(spent_corruption_detail(
                             entry_index,
                             key_bytes,
                             val_bytes,
@@ -807,7 +832,7 @@ impl DbV1 {
                     })?;
 
                 if !entry.verify(key_bytes) {
-                    return Err(FinalisedStateError::Custom(spent_corruption_detail(
+                    return Err(StoreError::Custom(spent_corruption_detail(
                         entry_index,
                         key_bytes,
                         val_bytes,
@@ -826,12 +851,12 @@ impl DbV1 {
             Ok(())
         })
         .await
-        .map_err(|e| FinalisedStateError::Custom(format!("Tokio task error: {e}")))?
+        .map_err(|e| StoreError::Custom(format!("Tokio task error: {e}")))?
     }
 
     /// Validates every stored address-history record (`AddrScript` duplicates of `AddrEventBytes`) by checksum.
     #[cfg(feature = "transparent_address_history_experimental")]
-    async fn initial_address_history_scan(&self) -> Result<(), FinalisedStateError> {
+    async fn initial_address_history_scan(&self) -> Result<(), StoreError> {
         let env = self.env.clone();
         let address_history = self.address_history;
 
@@ -840,13 +865,11 @@ impl DbV1 {
             let mut cursor = ro.open_ro_cursor(address_history)?;
 
             for (addr_bytes, record_bytes) in cursor.iter() {
-                let entry =
-                    StoredEntryFixed::<AddrEventBytes>::from_bytes(record_bytes).map_err(|e| {
-                        FinalisedStateError::Custom(format!("corrupt addrhist entry: {e}"))
-                    })?;
+                let entry = StoredEntryFixed::<AddrEventBytes>::from_bytes(record_bytes)
+                    .map_err(|e| StoreError::Custom(format!("corrupt addrhist entry: {e}")))?;
 
                 if !entry.verify(addr_bytes) {
-                    return Err(FinalisedStateError::Custom(
+                    return Err(StoreError::Custom(
                         "addrhist record checksum mismatch".into(),
                     ));
                 }
@@ -855,7 +878,7 @@ impl DbV1 {
             Ok(())
         })
         .await
-        .map_err(|e| FinalisedStateError::Custom(format!("spawn_blocking failed: {e}")))?
+        .map_err(|e| StoreError::Custom(format!("spawn_blocking failed: {e}")))?
     }
 
     /// Scans the whole finalised chain once at start-up and validates every block by checksum and
@@ -868,7 +891,7 @@ impl DbV1 {
     /// missing height). The previous implementation iterated the hash-keyed `heights` table, which
     /// validated in pseudo-random height order — thrashing the cache and preventing the tip from
     /// advancing until the whole set had been validated.
-    async fn initial_block_scan(&self) -> Result<(), FinalisedStateError> {
+    async fn initial_block_scan(&self) -> Result<(), StoreError> {
         let zaino_db = self.detached_handle();
 
         tokio::task::spawn_blocking(move || {
@@ -879,10 +902,9 @@ impl DbV1 {
             // height order. Both the height and hash are read from the header entry itself.
             for (height_bytes, header_entry_bytes) in cursor.iter() {
                 let height = Height::from_bytes(height_bytes)?;
-                let header_entry = StoredEntryVar::<BlockHeaderData>::from_bytes(
-                    header_entry_bytes,
-                )
-                .map_err(|e| FinalisedStateError::Custom(format!("corrupt header entry: {e}")))?;
+                let header_entry =
+                    StoredEntryVar::<BlockHeaderData>::from_bytes(header_entry_bytes)
+                        .map_err(|e| StoreError::Custom(format!("corrupt header entry: {e}")))?;
                 let hash = *header_entry.inner().context.hash();
 
                 zaino_db.validate_block_blocking(height, hash)?
@@ -891,7 +913,7 @@ impl DbV1 {
             Ok(())
         })
         .await
-        .map_err(|e| FinalisedStateError::Custom(format!("spawn_blocking failed: {e}")))?
+        .map_err(|e| StoreError::Custom(format!("spawn_blocking failed: {e}")))?
     }
 
     /// Provides access to the metadata DB table, enabling the migration manager
@@ -950,7 +972,7 @@ impl DbV1 {
     /// v1.1.0 → v1.2.0 migration rebuilds the index in place rather than forcing a full rebuild.
     ///
     /// TODO: Remove this shim once 0.4.0 is released; from then on no cache can reach this state.
-    async fn reconcile_alpha_txid_location_index(&self) -> Result<(), FinalisedStateError> {
+    async fn reconcile_alpha_txid_location_index(&self) -> Result<(), StoreError> {
         tokio::task::block_in_place(|| {
             let mut txn = self.env.begin_rw_txn()?;
 
@@ -958,17 +980,14 @@ impl DbV1 {
             let raw = match txn.get(self.metadata, b"metadata") {
                 Ok(raw) => raw,
                 Err(lmdb::Error::NotFound) => return Ok(()),
-                Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+                Err(error) => return Err(StoreError::LmdbError(error)),
             };
-            let stored = StoredEntryFixed::<DbMetadata>::from_bytes(raw).map_err(|error| {
-                FinalisedStateError::Custom(format!("corrupt metadata: {error}"))
-            })?;
+            let stored = StoredEntryFixed::<DbMetadata>::from_bytes(raw)
+                .map_err(|error| StoreError::Custom(format!("corrupt metadata: {error}")))?;
             if !stored.verify(b"metadata") {
-                return Err(FinalisedStateError::Custom(
-                    "metadata checksum mismatch".to_string(),
-                ));
+                return Err(StoreError::Custom("metadata checksum mismatch".to_string()));
             }
-            let mut metadata = stored.item;
+            let mut metadata = stored.into_inner();
 
             // Only caches recorded at >= 1.2.0 can be in the broken alpha state.
             if metadata.version
@@ -1014,7 +1033,7 @@ impl DbV1 {
             ] {
                 match txn.del(self.metadata, &key, None) {
                     Ok(()) | Err(lmdb::Error::NotFound) => {}
-                    Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+                    Err(error) => return Err(StoreError::LmdbError(error)),
                 }
             }
 
@@ -1069,9 +1088,7 @@ impl DbV1 {
     /// Unlike [`DbV1::spawn`], this method intentionally does **not** call
     /// [`DbV1::check_schema_version`], because that would initialize fresh metadata using the
     /// current [`DB_VERSION_V1`] value instead of the historical v1.0.0 value required by the tests.
-    pub(crate) async fn spawn_v1_0_0(
-        config: &ChainIndexConfig,
-    ) -> Result<Self, FinalisedStateError> {
+    pub(crate) async fn spawn_v1_0_0(config: &StoreSettings) -> Result<Self, StoreError> {
         // The v1.0.0 fixture reproduces the legacy on-disk layout: its commitment tree data lives in
         // `commitment_tree_data_1_0_0` as a `StoredEntryFixed` (see `write_block_v1_0_0`), which the
         // v1.2.1 -> v1.3.0 migration later rebuilds into the `commitment_tree_data_1_3_0`
@@ -1104,7 +1121,7 @@ impl DbV1 {
     /// this initialises metadata with the historical v1.0.0 value the migration tests require
     /// instead of the current [`DB_VERSION_V1`] — which is why `spawn_v1_0_0` deliberately does not
     /// call `check_schema_version`.
-    fn write_v1_0_0_metadata(&self) -> Result<(), FinalisedStateError> {
+    fn write_v1_0_0_metadata(&self) -> Result<(), StoreError> {
         tokio::task::block_in_place(|| {
             let mut txn = self.env.begin_rw_txn()?;
 
@@ -1129,7 +1146,7 @@ impl DbV1 {
 
             txn.commit()?;
 
-            Ok::<(), FinalisedStateError>(())
+            Ok::<(), StoreError>(())
         })
     }
 }
@@ -1182,24 +1199,16 @@ mod tests {
     /// silent pass.
     #[tokio::test(flavor = "multi_thread")]
     async fn initial_spent_scan_reports_corrupt_value() {
+        use crate::config::ZainoDbConfig;
         use lmdb::{Transaction as _, WriteFlags};
+        use zaino_chain_store::ChainStoreConfig;
         use zaino_common::network::ActivationHeights;
-        use zaino_common::{DatabaseConfig, StorageConfig};
 
         let temp_dir = tempfile::tempdir().expect("tempdir");
-        let config = ChainIndexConfig {
-            storage: StorageConfig {
-                database: DatabaseConfig {
-                    path: temp_dir.path().to_path_buf(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-            ephemeral: false,
-            mempool: Default::default(),
-            db_version: 1,
-            network: ActivationHeights::default().to_regtest_network(),
-        };
+        let config = StoreSettings::new(
+            ChainStoreConfig::at_path(temp_dir.path().to_path_buf()),
+            ZainoDbConfig::new(ActivationHeights::default().to_regtest_network()),
+        );
 
         let db = DbV1::spawn(&config).await.expect("spawn empty v1 db");
 

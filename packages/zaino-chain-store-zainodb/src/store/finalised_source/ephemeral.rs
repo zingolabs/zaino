@@ -9,39 +9,44 @@ use tokio::sync::Mutex;
 use zaino_proto::proto::compact_formats::CompactBlock;
 use zaino_status::{NamedAtomicStatus, StatusType};
 use zcash_protocol::consensus::Parameters as _;
-use zebra_state::HashOrHeight;
 
-use crate::chain_index::finalised_state::capability::{DbCore, DbWrite};
-use crate::chain_index::finalised_state::DbMetadata;
-use crate::chain_index::ShieldedPool;
+use crate::pool::ShieldedPool;
+use crate::store::capability::{DbCore, DbWrite};
+use crate::store::DbMetadata;
 
-use super::super::{optional_pool_root, required_pool_root};
-use crate::chain_index::source::BlockchainSourceError;
-use crate::chain_index::{
-    finalised_state::capability::{
-        BlockCoreExt, BlockShieldedExt, BlockTransparentExt, CompactBlockExt, DbRead,
-        IndexedBlockExt,
-    },
-    source::{BlockchainSource, GetTransactionLocation},
+use super::super::{indexed_block_from_parts, require_pool_roots, PoolActivation};
+use crate::error::{source_error, StoreError};
+use crate::store::capability::{
+    BlockCoreExt, BlockShieldedExt, BlockTransparentExt, CompactBlockExt, DbRead, IndexedBlockExt,
 };
-use crate::{
-    error::FinalisedStateError, BlockHash, BlockHeaderData, CommitmentTreeData, CompactBlockStream,
-    Height, IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx,
-    SaplingTxList, TransactionHash, TransparentCompactTx, TransparentTxList, TxLocation,
-    TxOutCompact, TxidList,
+use crate::stream::CompactBlockStream;
+use crate::types::{
+    BlockHash, BlockHeaderData, CommitmentTreeData, Height, IndexedBlock, OrchardCompactTx,
+    OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList, TransactionHash,
+    TransparentCompactTx, TransparentTxList, TxLocation, TxOutCompact, TxidList,
 };
-use crate::{BlockMetadata, BlockWithMetadata};
+use zaino_chain_store::ChainStoreSource;
 
-use zaino_proto::proto::utils::{prune_compact_block, PoolTypeFilter};
+use zaino_proto::proto::utils::PoolTypeFilter;
 
 const EPHEMERAL_FINALISED_STATE_STATUS_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Converts a raw `u32` block height (a stored [`TxLocation`] height) into a [`Height`],
-/// surfacing an out-of-range value as a [`FinalisedStateError`] instead of panicking.
-fn height_from_u32(height: u32) -> Result<Height, FinalisedStateError> {
-    Height::try_from(height).map_err(|error| {
-        FinalisedStateError::Custom(format!("invalid block height {height}: {error}"))
-    })
+/// surfacing an out-of-range value as a [`StoreError`] instead of panicking.
+fn height_from_u32(height: u32) -> Result<Height, StoreError> {
+    Height::try_from(height)
+        .map_err(|error| StoreError::Custom(format!("invalid block height {height}: {error}")))
+}
+
+/// This crate's height, as the domain names it.
+///
+/// The stored height is any `u32`; the domain's is validated against the
+/// protocol maximum. A height that cannot be expressed is surfaced as an error
+/// rather than clamped, because clamping would silently answer about a
+/// different block.
+fn domain_height(height: Height) -> Result<zaino_primitives::types::Height, StoreError> {
+    zaino_primitives::types::Height::try_from(height.0)
+        .map_err(|error| StoreError::Custom(format!("invalid block height {height}: {error}")))
 }
 
 /// Collects one item per height across the inclusive `start..=end` range, in ascending
@@ -50,9 +55,9 @@ async fn collect_block_range<T, Fut>(
     start: Height,
     end: Height,
     mut get_at: impl FnMut(Height) -> Fut,
-) -> Result<Vec<T>, FinalisedStateError>
+) -> Result<Vec<T>, StoreError>
 where
-    Fut: std::future::Future<Output = Result<T, FinalisedStateError>>,
+    Fut: std::future::Future<Output = Result<T, StoreError>>,
 {
     let mut items = Vec::new();
     for height in Height::range_inclusive(start, end) {
@@ -65,7 +70,7 @@ where
 /// serving normal requests.
 ///
 /// `EphemeralFinalisedState` does not own or mutate an on-disk database. Instead, it answers
-/// finalised-state read requests by querying the backing [`BlockchainSource`] directly and building
+/// finalised-state read requests by querying the backing [`ChainStoreSource`] directly and building
 /// the database-facing response types on demand.
 ///
 /// This backend has two intended roles:
@@ -80,14 +85,14 @@ where
 /// The struct is cloneable because several async tasks and streaming calls may need handles to the
 /// same source-backed backend. Shared runtime state is stored behind [`Arc`] so clones observe the
 /// same status, shutdown signal, status-poll task handle, and reported persistent database height.
-#[derive(Debug, Clone)]
-pub(crate) struct EphemeralFinalisedState<T: BlockchainSource> {
+#[derive(Debug)]
+pub(crate) struct EphemeralFinalisedState<T: ChainStoreSource> {
     /// Backing blockchain source used to answer finalised-state reads.
     ///
     /// This is typically a validator/source service. Ephemeral read methods fetch blocks,
     /// transactions, commitment tree data, and chain metadata from this source and convert them into
     /// the same response types exposed by persistent database backends.
-    source: T,
+    source: Arc<T>,
 
     /// Network whose consensus rules are used when reconstructing finalised-state data.
     ///
@@ -98,7 +103,7 @@ pub(crate) struct EphemeralFinalisedState<T: BlockchainSource> {
     /// Current runtime status of the ephemeral backend.
     ///
     /// The background status-poll task updates this value by periodically checking whether the
-    /// backing [`BlockchainSource`] is reachable. [`DbCore::status`] returns this value directly.
+    /// backing [`ChainStoreSource`] is reachable. [`DbCore::status`] returns this value directly.
     status: NamedAtomicStatus,
 
     /// Shared shutdown signal for the ephemeral backend.
@@ -135,9 +140,27 @@ pub(crate) struct EphemeralFinalisedState<T: BlockchainSource> {
     db_height: Arc<RwLock<Option<Height>>>,
 }
 
-impl<T: BlockchainSource> EphemeralFinalisedState<T> {
+/// Cloned by hand rather than derived.
+///
+/// A derived `Clone` would require `T: Clone`, which a validator is not — it
+/// may own connections that must not be duplicated. Every field here is either
+/// shared behind an [`Arc`] or trivially copied, so the bound is unnecessary.
+impl<T: ChainStoreSource> Clone for EphemeralFinalisedState<T> {
+    fn clone(&self) -> Self {
+        Self {
+            source: Arc::clone(&self.source),
+            network: self.network.clone(),
+            status: self.status.clone(),
+            shutdown_requested: Arc::clone(&self.shutdown_requested),
+            status_poll_task_handle: Arc::clone(&self.status_poll_task_handle),
+            db_height: Arc::clone(&self.db_height),
+        }
+    }
+}
+
+impl<T: ChainStoreSource> EphemeralFinalisedState<T> {
     pub(crate) fn new(
-        source: T,
+        source: Arc<T>,
         network: zebra_chain::parameters::Network,
         db_height: Option<Height>,
     ) -> Self {
@@ -145,7 +168,7 @@ impl<T: BlockchainSource> EphemeralFinalisedState<T> {
 
         let shutdown_requested = Arc::new(AtomicBool::new(false));
 
-        let status_poll_source = source.clone();
+        let status_poll_source = Arc::clone(&source);
         let status_poll_status = status.clone();
         let status_poll_shutdown_requested = Arc::clone(&shutdown_requested);
 
@@ -191,9 +214,9 @@ impl<T: BlockchainSource> EphemeralFinalisedState<T> {
     /// This value is independent of the backing source height. It is used when ephemeral
     /// is temporarily serving requests during sync or migration while the persistent
     /// database continues to progress separately.
-    pub(crate) fn reported_db_height(&self) -> Result<Option<Height>, FinalisedStateError> {
+    pub(crate) fn reported_db_height(&self) -> Result<Option<Height>, StoreError> {
         let db_height_guard = self.db_height.read().map_err(|error| {
-            FinalisedStateError::Custom(format!(
+            StoreError::Custom(format!(
                 "ephemeral finalised state db height lock poisoned: {error}"
             ))
         })?;
@@ -205,12 +228,9 @@ impl<T: BlockchainSource> EphemeralFinalisedState<T> {
     ///
     /// `None` means no persistent database height is available, which is the expected
     /// value when ephemeral is used as the real backend in ephemeral mode.
-    pub(crate) fn update_db_height(
-        &self,
-        db_height: Option<Height>,
-    ) -> Result<(), FinalisedStateError> {
+    pub(crate) fn update_db_height(&self, db_height: Option<Height>) -> Result<(), StoreError> {
         let mut db_height_guard = self.db_height.write().map_err(|error| {
-            FinalisedStateError::Custom(format!(
+            StoreError::Custom(format!(
                 "ephemeral finalised state db height lock poisoned: {error}"
             ))
         })?;
@@ -229,102 +249,91 @@ impl<T: BlockchainSource> EphemeralFinalisedState<T> {
         self.status.store(status);
     }
 
-    fn feature_unavailable(feature_name: &'static str) -> FinalisedStateError {
-        FinalisedStateError::FeatureUnavailable(feature_name)
+    fn feature_unavailable(feature_name: &'static str) -> StoreError {
+        StoreError::FeatureUnavailable(feature_name)
     }
 
+    /// The block at `height`, or `None` when the validator has no such block.
+    ///
+    /// A domain-level rejection is a miss, not a failure: the validator
+    /// answered, and the answer was "no such block". A transport failure is
+    /// propagated, because it says nothing about whether the block exists.
     async fn get_block_by_height(
         &self,
         height: Height,
-    ) -> Result<Option<std::sync::Arc<zebra_chain::block::Block>>, FinalisedStateError> {
-        self.source
-            .get_block(HashOrHeight::Height(height.into()))
-            .await
-            .map_err(FinalisedStateError::from)
+    ) -> Result<Option<zaino_primitives::types::Block>, StoreError> {
+        let height = domain_height(height)?;
+        match self.source.get_block(height).await {
+            Ok(block) => Ok(Some(block)),
+            Err(zaino_source::QueryError::Domain(_)) => Ok(None),
+            Err(error) => Err(StoreError::Source(source_error(error))),
+        }
     }
 
+    /// The block with `hash`, or `None` when the validator has no such block.
     async fn get_block_by_hash(
         &self,
         hash: BlockHash,
-    ) -> Result<Option<std::sync::Arc<zebra_chain::block::Block>>, FinalisedStateError> {
-        self.source
-            .get_block(HashOrHeight::Hash(hash.into()))
+    ) -> Result<Option<zaino_primitives::types::Block>, StoreError> {
+        match self
+            .source
+            .get_block_by_hash(zaino_primitives::types::BlockHash::from(hash.0))
             .await
-            .map_err(FinalisedStateError::from)
+        {
+            Ok(block) => Ok(Some(block)),
+            Err(zaino_source::QueryError::Domain(_)) => Ok(None),
+            Err(error) => Err(StoreError::Source(source_error(error))),
+        }
     }
 
     async fn get_required_block_by_height(
         &self,
         height: Height,
-    ) -> Result<std::sync::Arc<zebra_chain::block::Block>, FinalisedStateError> {
+    ) -> Result<zaino_primitives::types::Block, StoreError> {
         self.get_block_by_height(height).await?.ok_or_else(|| {
-            FinalisedStateError::DataUnavailable(format!(
+            StoreError::DataUnavailable(format!(
                 "Error fetching block at height {height} from validator"
             ))
         })
     }
 
-    async fn get_required_chain_block(
-        &self,
-        height: Height,
-    ) -> Result<IndexedBlock, FinalisedStateError> {
+    async fn get_required_chain_block(&self, height: Height) -> Result<IndexedBlock, StoreError> {
         let block = self.get_required_block_by_height(height).await?;
-        let block_hash = BlockHash::from(block.hash());
         let block_height = zebra_chain::block::Height(height.0);
 
-        let (sapling, orchard, ironwood) =
-            self.source.get_commitment_tree_roots(block_hash).await?;
+        let tree_roots = self
+            .source
+            .get_commitment_tree_roots(block.header.hash)
+            .await
+            .map_err(|error| StoreError::Source(source_error(error)))?;
 
-        let sapling_is_active = self.network.is_nu_active(
-            ShieldedPool::Sapling.zcash_protocol_activation_upgrade(),
-            block_height.into(),
-        );
-        let orchard_is_active = self.network.is_nu_active(
-            ShieldedPool::Orchard.zcash_protocol_activation_upgrade(),
-            block_height.into(),
-        );
-        let ironwood_is_active = self.network.is_nu_active(
-            ShieldedPool::Ironwood.zcash_protocol_activation_upgrade(),
-            block_height.into(),
-        );
-
-        let (sapling_root, sapling_size) =
-            required_pool_root(ShieldedPool::Sapling, sapling_is_active, sapling, || {
-                format!("block at height {height}")
-            })?;
-        let (orchard_root, orchard_size) =
-            required_pool_root(ShieldedPool::Orchard, orchard_is_active, orchard, || {
-                format!("block at height {height}")
-            })?;
-        let ironwood =
-            optional_pool_root(ShieldedPool::Ironwood, ironwood_is_active, ironwood, || {
-                format!("block at height {height}")
-            })?;
-
-        let block_metadata = BlockMetadata {
-            sapling_root,
-            sapling_size,
-            orchard_root,
-            orchard_size,
-            ironwood,
-            // ephemeral store does not track chainwork
-            parent_chainwork: None,
-            network: self.network.clone(),
+        let is_active = |pool: ShieldedPool| {
+            self.network.is_nu_active(
+                pool.zcash_protocol_activation_upgrade(),
+                block_height.into(),
+            )
         };
-        let block_with_metadata = BlockWithMetadata::new(block.as_ref(), block_metadata);
-        let indexed_block = IndexedBlock::try_from(block_with_metadata).map_err(|error| {
-            FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
-                format!("could not build indexed block from validator block: {error}"),
-            ))
-        })?;
 
-        Ok(indexed_block)
+        require_pool_roots(
+            &tree_roots,
+            PoolActivation {
+                sapling: is_active(ShieldedPool::Sapling),
+                orchard: is_active(ShieldedPool::Orchard),
+                ironwood: is_active(ShieldedPool::Ironwood),
+            },
+            block.header.hash,
+        )?;
+
+        // No chainwork: the ephemeral backend has no tip to accumulate from, so
+        // each block carries only its own work. Blocks built here are served,
+        // never written, so the value never reaches disk.
+        indexed_block_from_parts(&block, &tree_roots, None)
     }
 }
 
 impl<T> DbCore for EphemeralFinalisedState<T>
 where
-    T: BlockchainSource + Clone + Send + Sync + 'static,
+    T: ChainStoreSource + Send + Sync + 'static,
 {
     /// Return the current status of the backend.
     ///
@@ -334,7 +343,7 @@ where
     }
 
     /// Shut down the backend and release associated resources.
-    async fn shutdown(&self) -> Result<(), FinalisedStateError> {
+    async fn shutdown(&self) -> Result<(), StoreError> {
         self.shutdown_requested.store(true, Ordering::SeqCst);
 
         let status_poll_task_handle = {
@@ -350,11 +359,9 @@ where
                 Ok(()) => {}
                 Err(error) if error.is_cancelled() => {}
                 Err(error) => {
-                    return Err(FinalisedStateError::BlockchainSourceError(
-                        BlockchainSourceError::Unrecoverable(format!(
+                    return Err(StoreError::Critical(format!(
                         "ephemeral finalised state status poll task failed during shutdown: {error}"
-                    )),
-                    ));
+                    )));
                 }
             }
         }
@@ -365,7 +372,7 @@ where
 
 impl<T> Drop for EphemeralFinalisedState<T>
 where
-    T: BlockchainSource,
+    T: ChainStoreSource,
 {
     fn drop(&mut self) {
         self.shutdown_requested.store(true, Ordering::SeqCst);
@@ -380,32 +387,32 @@ where
     }
 }
 
-impl<T: BlockchainSource> DbWrite for EphemeralFinalisedState<T> {
+impl<T: ChainStoreSource> DbWrite for EphemeralFinalisedState<T> {
     /// Write a fully-indexed block into the database.
     ///
     /// This is a thin delegation wrapper over the concrete implementation.
-    async fn write_block(&self, _block: IndexedBlock) -> Result<(), FinalisedStateError> {
+    async fn write_block(&self, _block: IndexedBlock) -> Result<(), StoreError> {
         Ok(())
     }
 
     /// Delete the block at a given height, if present.
     ///
     /// This is a thin delegation wrapper over the concrete implementation.
-    async fn delete_block_at_height(&self, _height: Height) -> Result<(), FinalisedStateError> {
+    async fn delete_block_at_height(&self, _height: Height) -> Result<(), StoreError> {
         Ok(())
     }
 
     /// Delete a specific indexed block from the database.
     ///
     /// This is a thin delegation wrapper over the concrete implementation.
-    async fn delete_block(&self, _block: &IndexedBlock) -> Result<(), FinalisedStateError> {
+    async fn delete_block(&self, _block: &IndexedBlock) -> Result<(), StoreError> {
         Ok(())
     }
 
     /// Update the database metadata record.
     ///
     /// This is used by migrations and schema management logic.
-    async fn update_metadata(&self, _metadata: DbMetadata) -> Result<(), FinalisedStateError> {
+    async fn update_metadata(&self, _metadata: DbMetadata) -> Result<(), StoreError> {
         Ok(())
     }
 
@@ -414,54 +421,45 @@ impl<T: BlockchainSource> DbWrite for EphemeralFinalisedState<T> {
     /// No-op for the ephemeral passthrough: there is no persistent store to ingest into, and
     /// finalised reads are served straight from the backing source. `sync_to_height` short-circuits
     /// before reaching here when the primary is ephemeral; this satisfies the `DbWrite` contract.
-    async fn write_blocks_to_height<S: BlockchainSource>(
+    async fn write_blocks_to_height<S: ChainStoreSource>(
         &self,
         _height: Height,
         _source: &S,
-    ) -> Result<(), FinalisedStateError> {
+    ) -> Result<(), StoreError> {
         Ok(())
     }
 }
 
-impl<T: BlockchainSource> DbRead for EphemeralFinalisedState<T> {
-    async fn db_height(&self) -> Result<Option<Height>, FinalisedStateError> {
+impl<T: ChainStoreSource> DbRead for EphemeralFinalisedState<T> {
+    async fn db_height(&self) -> Result<Option<Height>, StoreError> {
         Ok(Some(self.reported_db_height()?.unwrap_or(Height(0))))
     }
 
-    async fn get_block_height(
-        &self,
-        hash: BlockHash,
-    ) -> Result<Option<Height>, FinalisedStateError> {
+    async fn get_block_height(&self, hash: BlockHash) -> Result<Option<Height>, StoreError> {
         let Some(block) = self.get_block_by_hash(hash).await? else {
             return Ok(None);
         };
 
-        Ok(block.coinbase_height().map(Height::from))
+        Ok(Some(Height(u32::from(block.header.height))))
     }
 
-    async fn get_block_hash(
-        &self,
-        height: Height,
-    ) -> Result<Option<BlockHash>, FinalisedStateError> {
+    async fn get_block_hash(&self, height: Height) -> Result<Option<BlockHash>, StoreError> {
         let Some(block) = self.get_block_by_height(height).await? else {
             return Ok(None);
         };
 
-        Ok(Some(BlockHash::from(block.hash())))
+        Ok(Some(BlockHash(block.header.hash.into())))
     }
 
-    async fn get_metadata(&self) -> Result<DbMetadata, FinalisedStateError> {
+    async fn get_metadata(&self) -> Result<DbMetadata, StoreError> {
         Err(Self::feature_unavailable(
             "READ_CORE:metadata requires an active DB",
         ))
     }
 }
 
-impl<T: BlockchainSource> BlockCoreExt for EphemeralFinalisedState<T> {
-    async fn get_block_header(
-        &self,
-        height: Height,
-    ) -> Result<BlockHeaderData, FinalisedStateError> {
+impl<T: ChainStoreSource> BlockCoreExt for EphemeralFinalisedState<T> {
+    async fn get_block_header(&self, height: Height) -> Result<BlockHeaderData, StoreError> {
         let chain_block = self.get_required_chain_block(height).await?;
         Ok(BlockHeaderData::new(chain_block.context, chain_block.data))
     }
@@ -470,17 +468,17 @@ impl<T: BlockchainSource> BlockCoreExt for EphemeralFinalisedState<T> {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<BlockHeaderData>, FinalisedStateError> {
+    ) -> Result<Vec<BlockHeaderData>, StoreError> {
         collect_block_range(start, end, |height| self.get_block_header(height)).await
     }
 
-    async fn get_block_txids(&self, height: Height) -> Result<TxidList, FinalisedStateError> {
+    async fn get_block_txids(&self, height: Height) -> Result<TxidList, StoreError> {
         let block = self.get_required_block_by_height(height).await?;
 
         let txids = block
             .transactions
             .iter()
-            .map(|transaction| TransactionHash::from(transaction.hash()))
+            .map(|transaction| TransactionHash(transaction.txid.into()))
             .collect();
 
         Ok(TxidList::new(txids))
@@ -490,32 +488,39 @@ impl<T: BlockchainSource> BlockCoreExt for EphemeralFinalisedState<T> {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<TxidList>, FinalisedStateError> {
+    ) -> Result<Vec<TxidList>, StoreError> {
         collect_block_range(start, end, |height| self.get_block_txids(height)).await
     }
 
-    async fn get_txid(
-        &self,
-        tx_location: TxLocation,
-    ) -> Result<TransactionHash, FinalisedStateError> {
+    async fn get_txid(&self, tx_location: TxLocation) -> Result<TransactionHash, StoreError> {
         let block_height = Height::try_from(tx_location.block_height())
-            .map_err(|error| FinalisedStateError::Custom(error.to_string()))?;
+            .map_err(|error| StoreError::Custom(error.to_string()))?;
 
         let tx_index = usize::from(tx_location.tx_index());
         let txids = self.get_block_txids(block_height).await?;
 
         txids.txids().get(tx_index).copied().ok_or_else(|| {
-            FinalisedStateError::DataUnavailable(format!("transaction at location {tx_location:?}"))
+            StoreError::DataUnavailable(format!("transaction at location {tx_location:?}"))
         })
     }
 
     async fn get_tx_location(
         &self,
         txid: &TransactionHash,
-    ) -> Result<Option<TxLocation>, FinalisedStateError> {
-        match self.source.get_transaction(*txid).await? {
-            Some((_transaction, GetTransactionLocation::BestChain(height))) => {
-                let block_height = Height::from(height);
+    ) -> Result<Option<TxLocation>, StoreError> {
+        let located = match self
+            .source
+            .get_transaction(zaino_primitives::types::TransactionId::from(txid.0))
+            .await
+        {
+            Ok(response) => Some(response.location),
+            Err(zaino_source::QueryError::Domain(_)) => None,
+            Err(error) => return Err(StoreError::Source(source_error(error))),
+        };
+
+        match located {
+            Some(zaino_primitives::types::TransactionLocation::BestChain(height)) => {
+                let block_height = Height(u32::from(height));
                 let txids = self.get_block_txids(block_height).await?;
 
                 let Some(tx_index) = txids
@@ -527,24 +532,24 @@ impl<T: BlockchainSource> BlockCoreExt for EphemeralFinalisedState<T> {
                 };
 
                 let tx_index = u16::try_from(tx_index)
-                    .map_err(|error| FinalisedStateError::Custom(error.to_string()))?;
+                    .map_err(|error| StoreError::Custom(error.to_string()))?;
 
                 Ok(Some(TxLocation::new(u32::from(block_height), tx_index)))
             }
-            Some((
-                _transaction,
-                GetTransactionLocation::Mempool | GetTransactionLocation::NonbestChain,
-            )) => Ok(None),
-            None => Ok(None),
+            Some(
+                zaino_primitives::types::TransactionLocation::Mempool
+                | zaino_primitives::types::TransactionLocation::NonBestChain,
+            )
+            | None => Ok(None),
         }
     }
 }
 
-impl<T: BlockchainSource> BlockTransparentExt for EphemeralFinalisedState<T> {
+impl<T: ChainStoreSource> BlockTransparentExt for EphemeralFinalisedState<T> {
     async fn get_transparent(
         &self,
         tx_location: TxLocation,
-    ) -> Result<Option<TransparentCompactTx>, FinalisedStateError> {
+    ) -> Result<Option<TransparentCompactTx>, StoreError> {
         let chain_block = self
             .get_required_chain_block(height_from_u32(tx_location.block_height())?)
             .await?;
@@ -555,10 +560,7 @@ impl<T: BlockchainSource> BlockTransparentExt for EphemeralFinalisedState<T> {
             .map(|transaction| transaction.transparent().clone()))
     }
 
-    async fn get_block_transparent(
-        &self,
-        height: Height,
-    ) -> Result<TransparentTxList, FinalisedStateError> {
+    async fn get_block_transparent(&self, height: Height) -> Result<TransparentTxList, StoreError> {
         let chain_block = self.get_required_chain_block(height).await?;
 
         Ok(TransparentTxList::new(
@@ -574,20 +576,17 @@ impl<T: BlockchainSource> BlockTransparentExt for EphemeralFinalisedState<T> {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<TransparentTxList>, FinalisedStateError> {
+    ) -> Result<Vec<TransparentTxList>, StoreError> {
         collect_block_range(start, end, |height| self.get_block_transparent(height)).await
     }
 
-    async fn get_previous_output(
-        &self,
-        outpoint: Outpoint,
-    ) -> Result<TxOutCompact, FinalisedStateError> {
+    async fn get_previous_output(&self, outpoint: Outpoint) -> Result<TxOutCompact, StoreError> {
         let previous_transaction_hash = TransactionHash(*outpoint.prev_txid());
 
         let Some(previous_transaction_location) =
             self.get_tx_location(&previous_transaction_hash).await?
         else {
-            return Err(FinalisedStateError::DataUnavailable(format!(
+            return Err(StoreError::DataUnavailable(format!(
                 "previous transaction not found for outpoint {outpoint:?}"
             )));
         };
@@ -595,7 +594,7 @@ impl<T: BlockchainSource> BlockTransparentExt for EphemeralFinalisedState<T> {
         let Some(previous_transaction_transparent_data) =
             self.get_transparent(previous_transaction_location).await?
         else {
-            return Err(FinalisedStateError::DataUnavailable(format!(
+            return Err(StoreError::DataUnavailable(format!(
                 "previous transaction has no transparent data for outpoint {outpoint:?}"
             )));
         };
@@ -603,13 +602,13 @@ impl<T: BlockchainSource> BlockTransparentExt for EphemeralFinalisedState<T> {
         previous_transaction_transparent_data
             .outputs()
             .get(usize::try_from(outpoint.prev_index()).map_err(|error| {
-                FinalisedStateError::Custom(format!(
+                StoreError::Custom(format!(
                     "outpoint output index does not fit into usize: {error}"
                 ))
             })?)
             .copied()
             .ok_or_else(|| {
-                FinalisedStateError::DataUnavailable(format!(
+                StoreError::DataUnavailable(format!(
                     "previous output index {} not found in transaction {:?}",
                     outpoint.prev_index(),
                     previous_transaction_hash,
@@ -618,11 +617,11 @@ impl<T: BlockchainSource> BlockTransparentExt for EphemeralFinalisedState<T> {
     }
 }
 
-impl<T: BlockchainSource> BlockShieldedExt for EphemeralFinalisedState<T> {
+impl<T: ChainStoreSource> BlockShieldedExt for EphemeralFinalisedState<T> {
     async fn get_sapling(
         &self,
         tx_location: TxLocation,
-    ) -> Result<Option<SaplingCompactTx>, FinalisedStateError> {
+    ) -> Result<Option<SaplingCompactTx>, StoreError> {
         let chain_block = self
             .get_required_chain_block(height_from_u32(tx_location.block_height())?)
             .await?;
@@ -633,10 +632,7 @@ impl<T: BlockchainSource> BlockShieldedExt for EphemeralFinalisedState<T> {
             .map(|transaction| transaction.sapling().clone()))
     }
 
-    async fn get_block_sapling(
-        &self,
-        height: Height,
-    ) -> Result<SaplingTxList, FinalisedStateError> {
+    async fn get_block_sapling(&self, height: Height) -> Result<SaplingTxList, StoreError> {
         let chain_block = self.get_required_chain_block(height).await?;
 
         Ok(SaplingTxList::new(
@@ -652,14 +648,14 @@ impl<T: BlockchainSource> BlockShieldedExt for EphemeralFinalisedState<T> {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<SaplingTxList>, FinalisedStateError> {
+    ) -> Result<Vec<SaplingTxList>, StoreError> {
         collect_block_range(start, end, |height| self.get_block_sapling(height)).await
     }
 
     async fn get_orchard(
         &self,
         tx_location: TxLocation,
-    ) -> Result<Option<OrchardCompactTx>, FinalisedStateError> {
+    ) -> Result<Option<OrchardCompactTx>, StoreError> {
         let chain_block = self
             .get_required_chain_block(height_from_u32(tx_location.block_height())?)
             .await?;
@@ -670,10 +666,7 @@ impl<T: BlockchainSource> BlockShieldedExt for EphemeralFinalisedState<T> {
             .map(|transaction| transaction.orchard().clone()))
     }
 
-    async fn get_block_orchard(
-        &self,
-        height: Height,
-    ) -> Result<OrchardTxList, FinalisedStateError> {
+    async fn get_block_orchard(&self, height: Height) -> Result<OrchardTxList, StoreError> {
         let chain_block = self.get_required_chain_block(height).await?;
 
         Ok(OrchardTxList::new(
@@ -689,14 +682,14 @@ impl<T: BlockchainSource> BlockShieldedExt for EphemeralFinalisedState<T> {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<OrchardTxList>, FinalisedStateError> {
+    ) -> Result<Vec<OrchardTxList>, StoreError> {
         collect_block_range(start, end, |height| self.get_block_orchard(height)).await
     }
 
     async fn get_ironwood(
         &self,
         tx_location: TxLocation,
-    ) -> Result<Option<OrchardCompactTx>, FinalisedStateError> {
+    ) -> Result<Option<OrchardCompactTx>, StoreError> {
         let chain_block = self
             .get_required_chain_block(height_from_u32(tx_location.block_height())?)
             .await?;
@@ -707,10 +700,7 @@ impl<T: BlockchainSource> BlockShieldedExt for EphemeralFinalisedState<T> {
             .map(|transaction| transaction.ironwood().clone()))
     }
 
-    async fn get_block_ironwood(
-        &self,
-        height: Height,
-    ) -> Result<OrchardTxList, FinalisedStateError> {
+    async fn get_block_ironwood(&self, height: Height) -> Result<OrchardTxList, StoreError> {
         let chain_block = self.get_required_chain_block(height).await?;
 
         Ok(OrchardTxList::new(
@@ -726,14 +716,14 @@ impl<T: BlockchainSource> BlockShieldedExt for EphemeralFinalisedState<T> {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<OrchardTxList>, FinalisedStateError> {
+    ) -> Result<Vec<OrchardTxList>, StoreError> {
         collect_block_range(start, end, |height| self.get_block_ironwood(height)).await
     }
 
     async fn get_block_commitment_tree_data(
         &self,
         height: Height,
-    ) -> Result<CommitmentTreeData, FinalisedStateError> {
+    ) -> Result<CommitmentTreeData, StoreError> {
         let chain_block = self.get_required_chain_block(height).await?;
         Ok(*chain_block.commitment_tree_data())
     }
@@ -742,7 +732,7 @@ impl<T: BlockchainSource> BlockShieldedExt for EphemeralFinalisedState<T> {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<CommitmentTreeData>, FinalisedStateError> {
+    ) -> Result<Vec<CommitmentTreeData>, StoreError> {
         collect_block_range(start, end, |height| {
             self.get_block_commitment_tree_data(height)
         })
@@ -750,17 +740,35 @@ impl<T: BlockchainSource> BlockShieldedExt for EphemeralFinalisedState<T> {
     }
 }
 
-impl<T: BlockchainSource> CompactBlockExt for EphemeralFinalisedState<T> {
+impl<T: ChainStoreSource> CompactBlockExt for EphemeralFinalisedState<T> {
     async fn get_compact_block(
         &self,
         height: Height,
-        pool_types: PoolTypeFilter,
-    ) -> Result<zaino_proto::proto::compact_formats::CompactBlock, FinalisedStateError> {
+        pool_types: zaino_chain_store::PoolFilter,
+    ) -> Result<zaino_primitives::types::CompactBlock, StoreError> {
         let chain_block = self.get_required_chain_block(height).await?;
-        Ok(prune_compact_block(
-            chain_block.to_compact_block(),
-            &pool_types,
-        ))
+        crate::store::finalised_source::v1::compact_block::compact_block_from_indexed(
+            &chain_block,
+            pool_types,
+        )
+    }
+
+    async fn get_compact_block_range(
+        &self,
+        start: Height,
+        end: Height,
+        pool_types: zaino_chain_store::PoolFilter,
+    ) -> Result<Vec<zaino_primitives::types::CompactBlock>, StoreError> {
+        collect_block_range(start, end, |height| {
+            let pool_types = pool_types.clone();
+            async move {
+                let block = self.get_required_chain_block(height).await?;
+                crate::store::finalised_source::v1::compact_block::compact_block_from_indexed(
+                    &block, pool_types,
+                )
+            }
+        })
+        .await
     }
 
     async fn get_compact_block_stream(
@@ -768,7 +776,7 @@ impl<T: BlockchainSource> CompactBlockExt for EphemeralFinalisedState<T> {
         start_height: Height,
         end_height: Height,
         pool_types: PoolTypeFilter,
-    ) -> Result<CompactBlockStream, FinalisedStateError> {
+    ) -> Result<CompactBlockStream, StoreError> {
         let (compact_block_sender, compact_block_receiver) =
             tokio::sync::mpsc::channel::<Result<CompactBlock, tonic::Status>>(32);
 
@@ -789,8 +797,18 @@ impl<T: BlockchainSource> CompactBlockExt for EphemeralFinalisedState<T> {
                 };
 
                 let compact_block_result = source
-                    .get_compact_block(height, pool_types.clone())
+                    .get_compact_block(
+                        height,
+                        crate::store::finalised_source::v1::compact_block::pool_filter_from_wire(
+                            &pool_types,
+                        ),
+                    )
                     .await
+                    .map(|block| {
+                        crate::store::finalised_source::v1::compact_block::compact_block_to_wire(
+                            &block,
+                        )
+                    })
                     .map_err(|error| tonic::Status::internal(error.to_string()));
 
                 if compact_block_sender
@@ -807,15 +825,26 @@ impl<T: BlockchainSource> CompactBlockExt for EphemeralFinalisedState<T> {
     }
 }
 
-impl<T: BlockchainSource> IndexedBlockExt for EphemeralFinalisedState<T> {
-    async fn get_chain_block(
-        &self,
-        height: Height,
-    ) -> Result<Option<IndexedBlock>, FinalisedStateError> {
+impl<T: ChainStoreSource> IndexedBlockExt for EphemeralFinalisedState<T> {
+    async fn get_chain_block(&self, height: Height) -> Result<Option<IndexedBlock>, StoreError> {
         match self.get_required_chain_block(height).await {
             Ok(chain_block) => Ok(Some(chain_block)),
-            Err(FinalisedStateError::DataUnavailable(_)) => Ok(None),
+            Err(StoreError::DataUnavailable(_)) => Ok(None),
             Err(error) => Err(error),
         }
+    }
+
+    /// One validator round trip per height.
+    ///
+    /// No batching to be had: the passthrough has no transaction to hold open
+    /// and no local rows to walk, so a range is exactly its blocks fetched one
+    /// after another. This is why passthrough is a stopgap and not a mode to
+    /// serve a large range from.
+    async fn get_chain_block_range(
+        &self,
+        start: Height,
+        end: Height,
+    ) -> Result<Vec<IndexedBlock>, StoreError> {
+        collect_block_range(start, end, |height| self.get_required_chain_block(height)).await
     }
 }

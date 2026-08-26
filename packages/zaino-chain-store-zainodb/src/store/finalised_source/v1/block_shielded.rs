@@ -2,8 +2,8 @@
 
 use super::*;
 
-use crate::chain_index::ShieldedPool;
-use crate::{FixedEncodedLen, ZainoVersionedSerde};
+use crate::pool::ShieldedPool;
+use zaino_encoding::{FixedEncodedLen, ZainoVersionedSerde};
 
 /// How a pool point lookup treats a block height with no row in the pool's table.
 enum MissingRow {
@@ -32,14 +32,11 @@ impl BlockShieldedExt for DbV1 {
     async fn get_sapling(
         &self,
         tx_location: TxLocation,
-    ) -> Result<Option<SaplingCompactTx>, FinalisedStateError> {
+    ) -> Result<Option<SaplingCompactTx>, StoreError> {
         self.get_sapling(tx_location).await
     }
 
-    async fn get_block_sapling(
-        &self,
-        height: Height,
-    ) -> Result<SaplingTxList, FinalisedStateError> {
+    async fn get_block_sapling(&self, height: Height) -> Result<SaplingTxList, StoreError> {
         self.get_block_sapling(height).await
     }
 
@@ -47,21 +44,18 @@ impl BlockShieldedExt for DbV1 {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<SaplingTxList>, FinalisedStateError> {
+    ) -> Result<Vec<SaplingTxList>, StoreError> {
         self.get_block_range_sapling(start, end).await
     }
 
     async fn get_orchard(
         &self,
         tx_location: TxLocation,
-    ) -> Result<Option<OrchardCompactTx>, FinalisedStateError> {
+    ) -> Result<Option<OrchardCompactTx>, StoreError> {
         self.get_orchard(tx_location).await
     }
 
-    async fn get_block_orchard(
-        &self,
-        height: Height,
-    ) -> Result<OrchardTxList, FinalisedStateError> {
+    async fn get_block_orchard(&self, height: Height) -> Result<OrchardTxList, StoreError> {
         self.get_block_orchard(height).await
     }
 
@@ -69,21 +63,18 @@ impl BlockShieldedExt for DbV1 {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<OrchardTxList>, FinalisedStateError> {
+    ) -> Result<Vec<OrchardTxList>, StoreError> {
         self.get_block_range_orchard(start, end).await
     }
 
     async fn get_ironwood(
         &self,
         tx_location: TxLocation,
-    ) -> Result<Option<OrchardCompactTx>, FinalisedStateError> {
+    ) -> Result<Option<OrchardCompactTx>, StoreError> {
         self.get_ironwood(tx_location).await
     }
 
-    async fn get_block_ironwood(
-        &self,
-        height: Height,
-    ) -> Result<OrchardTxList, FinalisedStateError> {
+    async fn get_block_ironwood(&self, height: Height) -> Result<OrchardTxList, StoreError> {
         self.get_block_ironwood(height).await
     }
 
@@ -91,14 +82,14 @@ impl BlockShieldedExt for DbV1 {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<OrchardTxList>, FinalisedStateError> {
+    ) -> Result<Vec<OrchardTxList>, StoreError> {
         self.get_block_range_ironwood(start, end).await
     }
 
     async fn get_block_commitment_tree_data(
         &self,
         height: Height,
-    ) -> Result<CommitmentTreeData, FinalisedStateError> {
+    ) -> Result<CommitmentTreeData, StoreError> {
         self.get_block_commitment_tree_data(height).await
     }
 
@@ -106,7 +97,7 @@ impl BlockShieldedExt for DbV1 {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<CommitmentTreeData>, FinalisedStateError> {
+    ) -> Result<Vec<CommitmentTreeData>, StoreError> {
         self.get_block_range_commitment_tree_data(start, end).await
     }
 }
@@ -120,15 +111,12 @@ impl DbV1 {
     async fn get_sapling(
         &self,
         tx_location: TxLocation,
-    ) -> Result<Option<SaplingCompactTx>, FinalisedStateError> {
+    ) -> Result<Option<SaplingCompactTx>, StoreError> {
         self.get_pool_tx(ShieldedPool::Sapling, tx_location)
     }
 
     /// Fetch block sapling transaction data by height.
-    async fn get_block_sapling(
-        &self,
-        height: Height,
-    ) -> Result<SaplingTxList, FinalisedStateError> {
+    async fn get_block_sapling(&self, height: Height) -> Result<SaplingTxList, StoreError> {
         self.get_block_pool_tx_list(ShieldedPool::Sapling, height, || {
             SaplingTxList::new(Vec::new())
         })
@@ -146,7 +134,7 @@ impl DbV1 {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<SaplingTxList>, FinalisedStateError> {
+    ) -> Result<Vec<SaplingTxList>, StoreError> {
         self.get_block_range_pool_tx_list(ShieldedPool::Sapling, start, end, || {
             SaplingTxList::new(Vec::new())
         })
@@ -159,15 +147,12 @@ impl DbV1 {
     async fn get_orchard(
         &self,
         tx_location: TxLocation,
-    ) -> Result<Option<OrchardCompactTx>, FinalisedStateError> {
+    ) -> Result<Option<OrchardCompactTx>, StoreError> {
         self.get_pool_tx(ShieldedPool::Orchard, tx_location)
     }
 
     /// Fetch block orchard transaction data by height.
-    async fn get_block_orchard(
-        &self,
-        height: Height,
-    ) -> Result<OrchardTxList, FinalisedStateError> {
+    async fn get_block_orchard(&self, height: Height) -> Result<OrchardTxList, StoreError> {
         self.get_block_pool_tx_list(ShieldedPool::Orchard, height, || {
             OrchardTxList::new(Vec::new())
         })
@@ -185,7 +170,7 @@ impl DbV1 {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<OrchardTxList>, FinalisedStateError> {
+    ) -> Result<Vec<OrchardTxList>, StoreError> {
         self.get_block_range_pool_tx_list(ShieldedPool::Orchard, start, end, || {
             OrchardTxList::new(Vec::new())
         })
@@ -200,17 +185,14 @@ impl DbV1 {
     async fn get_ironwood(
         &self,
         tx_location: TxLocation,
-    ) -> Result<Option<OrchardCompactTx>, FinalisedStateError> {
+    ) -> Result<Option<OrchardCompactTx>, StoreError> {
         self.get_pool_tx(ShieldedPool::Ironwood, tx_location)
     }
 
     /// Fetch block ironwood transaction data by height.
     ///
     /// A missing ironwood row yields an empty [`OrchardTxList`].
-    async fn get_block_ironwood(
-        &self,
-        height: Height,
-    ) -> Result<OrchardTxList, FinalisedStateError> {
+    async fn get_block_ironwood(&self, height: Height) -> Result<OrchardTxList, StoreError> {
         self.get_block_pool_tx_list(ShieldedPool::Ironwood, height, || {
             OrchardTxList::new(Vec::new())
         })
@@ -226,7 +208,7 @@ impl DbV1 {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<OrchardTxList>, FinalisedStateError> {
+    ) -> Result<Vec<OrchardTxList>, StoreError> {
         self.get_block_range_pool_tx_list(ShieldedPool::Ironwood, start, end, || {
             OrchardTxList::new(Vec::new())
         })
@@ -237,11 +219,11 @@ impl DbV1 {
     async fn get_block_commitment_tree_data(
         &self,
         height: Height,
-    ) -> Result<CommitmentTreeData, FinalisedStateError> {
+    ) -> Result<CommitmentTreeData, StoreError> {
         self.read_row_at_height(self.commitment_tree_data, "commitment_tree", height)
             .await?
             .ok_or_else(|| {
-                FinalisedStateError::DataUnavailable("commitment tree data missing from db".into())
+                StoreError::DataUnavailable("commitment tree data missing from db".into())
             })
     }
 
@@ -256,7 +238,7 @@ impl DbV1 {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<CommitmentTreeData>, FinalisedStateError> {
+    ) -> Result<Vec<CommitmentTreeData>, StoreError> {
         self.scan_rows(self.commitment_tree_data, "commitment_tree", start, end)
             .await
     }
@@ -288,7 +270,7 @@ impl DbV1 {
         pool: ShieldedPool,
         height: Height,
         empty: impl FnOnce() -> T,
-    ) -> Result<T, FinalisedStateError> {
+    ) -> Result<T, StoreError> {
         let label = pool.pool_string();
         match self
             .read_row_at_height(self.pool_table(pool), &label, height)
@@ -296,7 +278,7 @@ impl DbV1 {
         {
             Some(list) => Ok(list),
             None => match MissingRow::for_pool(pool) {
-                MissingRow::Error => Err(FinalisedStateError::DataUnavailable(format!(
+                MissingRow::Error => Err(StoreError::DataUnavailable(format!(
                     "{label} data missing from db"
                 ))),
                 MissingRow::NoPoolData => Ok(empty()),
@@ -315,7 +297,7 @@ impl DbV1 {
         start: Height,
         end: Height,
         empty: impl Fn() -> T,
-    ) -> Result<Vec<T>, FinalisedStateError> {
+    ) -> Result<Vec<T>, StoreError> {
         match MissingRow::for_pool(pool) {
             MissingRow::Error => {
                 self.scan_rows(self.pool_table(pool), &pool.pool_string(), start, end)
@@ -323,7 +305,7 @@ impl DbV1 {
             }
             MissingRow::NoPoolData => {
                 if end.0 < start.0 {
-                    return Err(FinalisedStateError::Custom(
+                    return Err(StoreError::Custom(
                         "invalid block range: end < start".to_string(),
                     ));
                 }
@@ -347,7 +329,7 @@ impl DbV1 {
         &self,
         pool: ShieldedPool,
         tx_location: TxLocation,
-    ) -> Result<Option<T>, FinalisedStateError> {
+    ) -> Result<Option<T>, StoreError> {
         use std::io::{Cursor, Read};
 
         let table = self.pool_table(pool);
@@ -359,7 +341,7 @@ impl DbV1 {
             let txn = self.env.begin_ro_txn()?;
 
             let height = Height::try_from(tx_location.block_height())
-                .map_err(|e| FinalisedStateError::Custom(e.to_string()))?;
+                .map_err(|e| StoreError::Custom(e.to_string()))?;
             let height_bytes = height.to_bytes()?;
 
             let raw = match txn.get(table, &height_bytes) {
@@ -367,12 +349,12 @@ impl DbV1 {
                 Err(lmdb::Error::NotFound) => {
                     return match missing_row {
                         MissingRow::NoPoolData => Ok(None),
-                        MissingRow::Error => Err(FinalisedStateError::DataUnavailable(format!(
+                        MissingRow::Error => Err(StoreError::DataUnavailable(format!(
                             "{label} data missing from db"
                         ))),
                     };
                 }
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                Err(e) => return Err(StoreError::LmdbError(e)),
             };
 
             let mut cursor = Cursor::new(raw);
@@ -381,21 +363,19 @@ impl DbV1 {
             cursor.set_position(1);
 
             // Read CompactSize: length of serialized body
-            CompactSize::read(&mut cursor).map_err(|e| {
-                FinalisedStateError::Custom(format!("compact size read error: {e}"))
-            })?;
+            CompactSize::read(&mut cursor)
+                .map_err(|e| StoreError::Custom(format!("compact size read error: {e}")))?;
 
             // Skip the tx-list version byte
             cursor.set_position(cursor.position() + 1);
 
             // Read CompactSize: number of entries
-            let list_len = CompactSize::read(&mut cursor).map_err(|e| {
-                FinalisedStateError::Custom(format!("{label} tx list len error: {e}"))
-            })?;
+            let list_len = CompactSize::read(&mut cursor)
+                .map_err(|e| StoreError::Custom(format!("{label} tx list len error: {e}")))?;
 
             let idx = tx_location.tx_index() as usize;
             if idx >= list_len as usize {
-                return Err(FinalisedStateError::Custom(format!(
+                return Err(StoreError::Custom(format!(
                     "tx_index out of range in {label} tx list"
                 )));
             }
@@ -403,21 +383,21 @@ impl DbV1 {
             // Skip preceding entries
             for _ in 0..idx {
                 skip_entry(&mut cursor)
-                    .map_err(|e| FinalisedStateError::Custom(format!("skip entry error: {e}")))?;
+                    .map_err(|e| StoreError::Custom(format!("skip entry error: {e}")))?;
             }
 
             let start = cursor.position();
 
             // Peek presence flag
             let mut presence = [0u8; 1];
-            cursor.read_exact(&mut presence).map_err(|e| {
-                FinalisedStateError::Custom(format!("failed to read Option tag: {e}"))
-            })?;
+            cursor
+                .read_exact(&mut presence)
+                .map_err(|e| StoreError::Custom(format!("failed to read Option tag: {e}")))?;
 
             if presence[0] == 0 {
                 return Ok(None);
             } else if presence[0] != 1 {
-                return Err(FinalisedStateError::Custom(format!(
+                return Err(StoreError::Custom(format!(
                     "invalid Option tag: {}",
                     presence[0]
                 )));
@@ -425,9 +405,8 @@ impl DbV1 {
 
             // Rewind to include the presence flag in the returned bytes
             cursor.set_position(start);
-            skip_entry(&mut cursor).map_err(|e| {
-                FinalisedStateError::Custom(format!("skip entry error (second pass): {e}"))
-            })?;
+            skip_entry(&mut cursor)
+                .map_err(|e| StoreError::Custom(format!("skip entry error (second pass): {e}")))?;
 
             let end = cursor.position();
 
@@ -501,7 +480,7 @@ impl DbV1 {
             return Ok(());
         }
         Self::skip_counted_fixed_entries::<CompactSaplingSpend>(cursor)?;
-        Self::skip_counted_fixed_entries::<crate::CompactSaplingOutput>(cursor)
+        Self::skip_counted_fixed_entries::<crate::types::CompactSaplingOutput>(cursor)
     }
 
     /// Skips one `Option<OrchardCompactTx>` from the current cursor position.
@@ -527,7 +506,7 @@ impl DbV1 {
 #[cfg(test)]
 mod skip_opt_sapling_entry {
     use super::*;
-    use crate::CompactSaplingOutput;
+    use crate::types::CompactSaplingOutput;
 
     /// Regression test for the sapling point-lookup skip width: the skip must advance
     /// exactly one encoded `Option<SaplingCompactTx>` entry. A refactor had it skipping

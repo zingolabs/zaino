@@ -1,6 +1,8 @@
 //! FinalisedState::V1 compact block indexing functionality.
 
 use super::*;
+use zaino_chain_store::PoolFilter;
+use zaino_primitives::types::ShieldedPool;
 
 /// [`CompactBlockExt`] capability implementation for [`DbV1`].
 ///
@@ -10,9 +12,18 @@ impl CompactBlockExt for DbV1 {
     async fn get_compact_block(
         &self,
         height: Height,
-        pool_types: PoolTypeFilter,
-    ) -> Result<zaino_proto::proto::compact_formats::CompactBlock, FinalisedStateError> {
+        pool_types: PoolFilter,
+    ) -> Result<zaino_primitives::types::CompactBlock, StoreError> {
         self.get_compact_block(height, pool_types).await
+    }
+
+    async fn get_compact_block_range(
+        &self,
+        start: Height,
+        end: Height,
+        pool_types: PoolFilter,
+    ) -> Result<Vec<zaino_primitives::types::CompactBlock>, StoreError> {
+        self.get_compact_block_range(start, end, pool_types).await
     }
 
     async fn get_compact_block_stream(
@@ -20,7 +31,7 @@ impl CompactBlockExt for DbV1 {
         start_height: Height,
         end_height: Height,
         pool_types: PoolTypeFilter,
-    ) -> Result<CompactBlockStream, FinalisedStateError> {
+    ) -> Result<CompactBlockStream, StoreError> {
         self.get_compact_block_stream(start_height, end_height, pool_types)
             .await
     }
@@ -29,46 +40,87 @@ impl CompactBlockExt for DbV1 {
 impl DbV1 {
     // *** Public fetcher methods - Used by DbReader ***
 
-    /// Returns the CompactBlock for the given Height.
+    /// Returns the compact block at `height`.
     async fn get_compact_block(
         &self,
         height: Height,
-        pool_types: PoolTypeFilter,
-    ) -> Result<zaino_proto::proto::compact_formats::CompactBlock, FinalisedStateError> {
+        pool_types: PoolFilter,
+    ) -> Result<zaino_primitives::types::CompactBlock, StoreError> {
         let validated_height = self
             .resolve_validated_hash_or_height(HashOrHeight::Height(height.into()))
             .await?;
-        let height_bytes = validated_height.to_bytes()?;
 
         tokio::task::block_in_place(|| {
             let txn = self.env.begin_ro_txn()?;
+            self.read_compact_block_in_txn(&txn, validated_height, pool_types)
+        })
+    }
 
+    /// Returns every compact block in `start..=end`, ascending.
+    ///
+    /// One read transaction for the range, for the same reasons as
+    /// [`DbV1::get_chain_block_range`]: coherence between the blocks, and the
+    /// per-block transaction cost paid once. A hole is an error — a wallet
+    /// syncing a range must not be handed a short one and left to infer that
+    /// the chain ended.
+    async fn get_compact_block_range(
+        &self,
+        start: Height,
+        end: Height,
+        pool_types: PoolFilter,
+    ) -> Result<Vec<zaino_primitives::types::CompactBlock>, StoreError> {
+        let (validated_start, validated_end) = self.validate_block_range(start, end).await?;
+
+        tokio::task::block_in_place(|| {
+            let txn = self.env.begin_ro_txn()?;
+            Height::range_inclusive(validated_start, validated_end)
+                .map(|height| self.read_compact_block_in_txn(&txn, height, pool_types.clone()))
+                .collect()
+        })
+    }
+
+    /// Reads one block's rows under an already-open transaction.
+    ///
+    /// Split out so the single read and the range walk cannot drift: they
+    /// assemble the same block from the same rows under the same filter, and
+    /// differ only in how many transactions they open to do it.
+    fn read_compact_block_in_txn(
+        &self,
+        txn: &lmdb::RoTransaction<'_>,
+        height: Height,
+        pool_types: PoolFilter,
+    ) -> Result<zaino_primitives::types::CompactBlock, StoreError> {
+        use lmdb::Transaction as _;
+
+        let height_bytes = height.to_bytes()?;
+
+        {
             // ----- Fetch Header -----
             let raw = match txn.get(self.headers, &height_bytes) {
                 Ok(val) => val,
                 Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
+                    return Err(StoreError::DataUnavailable(
                         "block data missing from db".into(),
                     ));
                 }
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                Err(e) => return Err(StoreError::LmdbError(e)),
             };
             let header: BlockHeaderData = *StoredEntryVar::from_bytes(raw)
-                .map_err(|e| FinalisedStateError::Custom(format!("header decode error: {e}")))?
+                .map_err(|e| StoreError::Custom(format!("header decode error: {e}")))?
                 .inner();
 
             // ----- Fetch Txids -----
             let raw = match txn.get(self.txids, &height_bytes) {
                 Ok(val) => val,
                 Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
+                    return Err(StoreError::DataUnavailable(
                         "block data missing from db".into(),
                     ));
                 }
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                Err(e) => return Err(StoreError::LmdbError(e)),
             };
             let txids_stored_entry_var = StoredEntryVar::<TxidList>::from_bytes(raw)
-                .map_err(|e| FinalisedStateError::Custom(format!("txids decode error: {e}")))?;
+                .map_err(|e| StoreError::Custom(format!("txids decode error: {e}")))?;
             let txids = txids_stored_entry_var.inner().txids();
 
             // ----- Fetch Transparent Tx Data -----
@@ -76,16 +128,16 @@ impl DbV1 {
                 let raw = match txn.get(self.transparent, &height_bytes) {
                     Ok(val) => val,
                     Err(lmdb::Error::NotFound) => {
-                        return Err(FinalisedStateError::DataUnavailable(
+                        return Err(StoreError::DataUnavailable(
                             "block data missing from db".into(),
                         ));
                     }
-                    Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                    Err(e) => return Err(StoreError::LmdbError(e)),
                 };
 
                 Some(
                     StoredEntryVar::<TransparentTxList>::from_bytes(raw).map_err(|e| {
-                        FinalisedStateError::Custom(format!("transparent decode error: {e}"))
+                        StoreError::Custom(format!("transparent decode error: {e}"))
                     })?,
                 )
             } else {
@@ -97,21 +149,20 @@ impl DbV1 {
             };
 
             // ----- Fetch Sapling Tx Data -----
-            let sapling_stored_entry_var = if pool_types.includes_sapling() {
+            let sapling_stored_entry_var = if pool_types.includes(ShieldedPool::Sapling) {
                 let raw = match txn.get(self.sapling, &height_bytes) {
                     Ok(val) => val,
                     Err(lmdb::Error::NotFound) => {
-                        return Err(FinalisedStateError::DataUnavailable(
+                        return Err(StoreError::DataUnavailable(
                             "block data missing from db".into(),
                         ));
                     }
-                    Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                    Err(e) => return Err(StoreError::LmdbError(e)),
                 };
 
                 Some(
-                    StoredEntryVar::<SaplingTxList>::from_bytes(raw).map_err(|e| {
-                        FinalisedStateError::Custom(format!("sapling decode error: {e}"))
-                    })?,
+                    StoredEntryVar::<SaplingTxList>::from_bytes(raw)
+                        .map_err(|e| StoreError::Custom(format!("sapling decode error: {e}")))?,
                 )
             } else {
                 None
@@ -122,21 +173,20 @@ impl DbV1 {
             };
 
             // ----- Fetch Orchard Tx Data -----
-            let orchard_stored_entry_var = if pool_types.includes_orchard() {
+            let orchard_stored_entry_var = if pool_types.includes(ShieldedPool::Orchard) {
                 let raw = match txn.get(self.orchard, &height_bytes) {
                     Ok(val) => val,
                     Err(lmdb::Error::NotFound) => {
-                        return Err(FinalisedStateError::DataUnavailable(
+                        return Err(StoreError::DataUnavailable(
                             "block data missing from db".into(),
                         ));
                     }
-                    Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                    Err(e) => return Err(StoreError::LmdbError(e)),
                 };
 
                 Some(
-                    StoredEntryVar::<OrchardTxList>::from_bytes(raw).map_err(|e| {
-                        FinalisedStateError::Custom(format!("orchard decode error: {e}"))
-                    })?,
+                    StoredEntryVar::<OrchardTxList>::from_bytes(raw)
+                        .map_err(|e| StoreError::Custom(format!("orchard decode error: {e}")))?,
                 )
             } else {
                 None
@@ -150,140 +200,48 @@ impl DbV1 {
             //
             // Ironwood rows exist only from schema v1.3.0 (NU6.3) onward, so a missing row is not an
             // error — it just means the block has no ironwood data.
-            let ironwood_stored_entry_var = if pool_types.includes_ironwood() {
-                match txn.get(self.ironwood, &height_bytes) {
-                    Ok(raw) => Some(StoredEntryVar::<OrchardTxList>::from_bytes(raw).map_err(
-                        |e| FinalisedStateError::Custom(format!("ironwood decode error: {e}")),
-                    )?),
-                    Err(lmdb::Error::NotFound) => None,
-                    Err(e) => return Err(FinalisedStateError::LmdbError(e)),
-                }
-            } else {
-                None
-            };
+            let ironwood_stored_entry_var =
+                if pool_types.includes(ShieldedPool::Ironwood) {
+                    match txn.get(self.ironwood, &height_bytes) {
+                        Ok(raw) => Some(StoredEntryVar::<OrchardTxList>::from_bytes(raw).map_err(
+                            |e| StoreError::Custom(format!("ironwood decode error: {e}")),
+                        )?),
+                        Err(lmdb::Error::NotFound) => None,
+                        Err(e) => return Err(StoreError::LmdbError(e)),
+                    }
+                } else {
+                    None
+                };
             let ironwood = match ironwood_stored_entry_var.as_ref() {
                 Some(stored_entry_var) => stored_entry_var.inner().tx(),
                 None => &[],
             };
 
-            // ----- Construct CompactTx -----
-            let vtx: Vec<zaino_proto::proto::compact_formats::CompactTx> = txids
-                .iter()
-                .enumerate()
-                .filter_map(|(i, txid)| {
-                    let spends = sapling
-                        .get(i)
-                        .and_then(|opt| opt.as_ref())
-                        .map(|s| {
-                            s.spends()
-                                .iter()
-                                .map(|sp| sp.into_compact())
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-
-                    let outputs = sapling
-                        .get(i)
-                        .and_then(|opt| opt.as_ref())
-                        .map(|s| {
-                            s.outputs()
-                                .iter()
-                                .map(|o| o.into_compact())
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-
-                    let actions = orchard
-                        .get(i)
-                        .and_then(|opt| opt.as_ref())
-                        .map(|o| {
-                            o.actions()
-                                .iter()
-                                .map(|a| a.into_compact())
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-
-                    let ironwood_actions = ironwood
-                        .get(i)
-                        .and_then(|opt| opt.as_ref())
-                        .map(|o| {
-                            o.actions()
-                                .iter()
-                                .map(|a| a.into_compact())
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-
-                    let (vin, vout) = transparent
-                        .get(i)
-                        .and_then(|opt| opt.as_ref())
-                        .map(|t| (t.compact_vin(), t.compact_vout()))
-                        .unwrap_or_default();
-
-                    // Omit transactions that have no elements in any requested pool type.
-                    //
-                    // This keeps `vtx` compact (it only contains transactions relevant to the caller’s pool filter),
-                    // but it also means:
-                    // - `vtx.len()` may be smaller than the block transaction count, and
-                    // - transaction indices in `vtx` may be non-contiguous.
-                    // Consumers must use `CompactTx.index` (the original transaction position in the block) rather
-                    // than assuming `vtx` preserves block order densely.
-                    //
-                    // TODO: Re-evaluate whether omitting "empty-for-filter" transactions is the desired API behaviour.
-                    //       Some clients may expect a position-preserving representation (one entry per txid), even if
-                    //       the per-pool fields are empty for a given filter.
-                    let compact_tx = zaino_proto::proto::compact_formats::CompactTx {
-                        index: i as u64,
-                        txid: txid.0.to_vec(),
-                        fee: 0,
-                        spends,
-                        outputs,
-                        actions,
-                        ironwood_actions,
-                        vin,
-                        vout,
-                    };
-                    compact_tx.has_pool_data().then_some(compact_tx)
-                })
-                .collect();
-
             // ----- Fetch Commitment Tree Data -----
             let raw = match txn.get(self.commitment_tree_data, &height_bytes) {
                 Ok(val) => val,
                 Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
+                    return Err(StoreError::DataUnavailable(
                         "block data missing from db".into(),
                     ));
                 }
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                Err(e) => return Err(StoreError::LmdbError(e)),
             };
             let commitment_tree_data: CommitmentTreeData =
                 *StoredEntryVar::<CommitmentTreeData>::from_bytes(raw)
-                    .map_err(|e| {
-                        FinalisedStateError::Custom(format!("commitment_tree decode error: {e}"))
-                    })?
+                    .map_err(|e| StoreError::Custom(format!("commitment_tree decode error: {e}")))?
                     .inner();
 
-            let chain_metadata = zaino_proto::proto::compact_formats::ChainMetadata {
-                sapling_commitment_tree_size: commitment_tree_data.sizes().sapling(),
-                orchard_commitment_tree_size: commitment_tree_data.sizes().orchard(),
-                ironwood_commitment_tree_size: commitment_tree_data.sizes().ironwood(),
-            };
-
-            // ----- Construct CompactBlock -----
-            Ok(zaino_proto::proto::compact_formats::CompactBlock {
-                proto_version: 0,
-                height: header.context.height().0 as u64,
-                hash: header.context.hash().0.to_vec(),
-                prev_hash: header.context.parent_hash().0.to_vec(),
-                // Is this safe?
-                time: header.data().time() as u32,
-                header: Vec::new(),
-                vtx,
-                chain_metadata: Some(chain_metadata),
-            })
-        })
+            assemble_compact_block(
+                &header,
+                txids,
+                transparent,
+                sapling,
+                orchard,
+                ironwood,
+                &commitment_tree_data,
+            )
+        }
     }
 
     /// Streams `CompactBlock` messages for an inclusive height range.
@@ -323,7 +281,7 @@ impl DbV1 {
         start_height: Height,
         end_height: Height,
         pool_types: PoolTypeFilter,
-    ) -> Result<CompactBlockStream, FinalisedStateError> {
+    ) -> Result<CompactBlockStream, StoreError> {
         // Do NOT validate the whole requested range up-front here.
         // Validate heights on-demand inside the blocking task so we can return
         // the stream handle immediately and start sending blocks as they become ready.
@@ -876,7 +834,7 @@ impl DbV1 {
                             Ok(()) => {
                                 // validation succeeded and mark_validated has been called inside the validator.
                             }
-                            Err(FinalisedStateError::LmdbError(lmdb::Error::NotFound)) => {
+                            Err(StoreError::LmdbError(lmdb::Error::NotFound)) => {
                                 // missing data that was expected: emit DataUnavailable -> translate to not_found
                                 send_status(
                                     &sender,
@@ -1379,4 +1337,387 @@ impl DbV1 {
     }
 
     // *** Internal DB methods ***
+}
+
+/// Builds a domain compact block from one block's decoded rows.
+///
+/// Shared by the single-block read and the range walk, which decode the same
+/// rows and differ only in how they get at them. It was duplicated: two copies
+/// of the per-transaction assembly, each of which had to be kept in step with
+/// the pool filter's meaning.
+///
+/// Produces `zaino-primitives` rather than proto messages. A storage crate
+/// building wire messages is the wrong direction — and it forced the read to
+/// commit to one serving format, so the domain port could not be given the
+/// same data without a second conversion.
+fn assemble_compact_block(
+    header: &BlockHeaderData,
+    txids: &[TransactionHash],
+    transparent: &[Option<TransparentCompactTx>],
+    sapling: &[Option<SaplingCompactTx>],
+    orchard: &[Option<OrchardCompactTx>],
+    ironwood: &[Option<OrchardCompactTx>],
+    commitment_tree_data: &CommitmentTreeData,
+) -> Result<zaino_primitives::types::CompactBlock, StoreError> {
+    // One entry per transaction, in block order, including transactions with
+    // nothing in any requested pool.
+    //
+    // The wire format omits those, and this used to omit them here — which made
+    // the result non-dense, so a transaction's position in the block could only
+    // be recovered from an index field carried alongside it. The domain block
+    // has no such field and does not need one: dense means position *is* the
+    // index. The omission now happens where it belongs, in the conversion to
+    // the wire message, which knows each transaction's position because it is
+    // reading a dense block.
+    //
+    // This costs nothing that matters. The saving was never in the empty
+    // entries — a txid and six empty vectors — but in not reading and decoding
+    // the excluded pools' rows at all, and that is untouched: a pool the filter
+    // excludes arrives here as `None` because its table was never opened.
+    let transactions = txids
+        .iter()
+        .enumerate()
+        .map(|(index, txid)| {
+            compact_tx(
+                *txid,
+                at(transparent, index),
+                at(sapling, index),
+                at(orchard, index),
+                at(ironwood, index),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(zaino_primitives::types::CompactBlock {
+        hash: zaino_primitives::types::BlockHash::from(header.context.hash().0),
+        prev_hash: zaino_primitives::types::BlockHash::from(header.context.parent_hash().0),
+        height: header.context.height().0,
+        time: u32::try_from(header.data().time()).map_err(|_| {
+            StoreError::Custom(format!(
+                "stored block time {} does not fit a compact block",
+                header.data().time()
+            ))
+        })?,
+        bits: header.data().bits().as_bits(),
+        transactions,
+        chain_metadata: zaino_primitives::types::ChainMetadata {
+            sapling_tree_size: commitment_tree_data.sizes().sapling(),
+            orchard_tree_size: commitment_tree_data.sizes().orchard(),
+            ironwood_tree_size: commitment_tree_data.sizes().ironwood(),
+        },
+    })
+}
+
+/// The entry at `index`, where a pool the filter excluded has no entries at all.
+///
+/// Generic over the pool type so the four lookups read identically; a closure
+/// cannot be, and four near-identical closures is how the two copies of this
+/// assembly drifted in the first place.
+fn at<T>(list: &[Option<T>], index: usize) -> Option<&T> {
+    list.get(index).and_then(|entry| entry.as_ref())
+}
+
+/// One transaction's per-pool data, as the domain names it.
+///
+/// A pool absent from the filter arrives here as `None` and contributes
+/// nothing, which is how the filter's pushdown reaches the result: the rows
+/// were never read, so there is nothing to drop afterwards.
+fn compact_tx(
+    txid: TransactionHash,
+    transparent: Option<&TransparentCompactTx>,
+    sapling: Option<&SaplingCompactTx>,
+    orchard: Option<&OrchardCompactTx>,
+    ironwood: Option<&OrchardCompactTx>,
+) -> Result<zaino_primitives::types::PreIndexCompactTx, StoreError> {
+    Ok(zaino_primitives::types::PreIndexCompactTx {
+        txid: zaino_primitives::types::TransactionId::from(txid.0),
+        // The coinbase's null prevout is dropped, as it is everywhere on the
+        // serving side: the light-wallet protocol omits it and identifies a
+        // coinbase by position instead, and `zaino-primitives` blocks never
+        // carry one because `zaino-convert-zebra` drops it too.
+        //
+        // Deliberately the opposite of the stored-block path, which keeps it.
+        // That one is describing rows on disk, where the input is a persisted
+        // field; this one is describing a block to a wallet.
+        transparent_inputs: transparent
+            .map(|tx| {
+                tx.inputs()
+                    .iter()
+                    .filter(|input| !input.is_null_prevout())
+                    .map(|input| zaino_primitives::types::TransparentInput {
+                        prev_txid: zaino_primitives::types::TransactionId::from(
+                            *input.prevout_txid(),
+                        ),
+                        prev_index: input.prevout_index(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        transparent_outputs: transparent
+            .map(|tx| tx.outputs().iter().map(domain_tx_out).collect())
+            .transpose()?
+            .unwrap_or_default(),
+        sapling_nullifiers: sapling
+            .map(|tx| {
+                tx.spends()
+                    .iter()
+                    .map(|spend| zaino_primitives::types::Nullifier::from(*spend.nullifier()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        sapling_outputs: sapling
+            .map(|tx| {
+                tx.outputs()
+                    .iter()
+                    .map(|output| zaino_primitives::types::SaplingOutput {
+                        cmu: (*output.cmu()).into(),
+                        ephemeral_key: (*output.ephemeral_key()).into(),
+                        enc_ciphertext: zaino_primitives::types::EncryptedCiphertext::new(
+                            output.ciphertext().to_vec(),
+                        ),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        orchard_actions: orchard.map(domain_actions).unwrap_or_default(),
+        ironwood_actions: ironwood.map(domain_actions).unwrap_or_default(),
+    })
+}
+
+fn domain_actions(pool: &OrchardCompactTx) -> Vec<zaino_primitives::types::OrchardAction> {
+    pool.actions()
+        .iter()
+        .map(|action| zaino_primitives::types::OrchardAction {
+            nullifier: (*action.nullifier()).into(),
+            cmx: (*action.cmx()).into(),
+            ephemeral_key: (*action.ephemeral_key()).into(),
+            enc_ciphertext: zaino_primitives::types::EncryptedCiphertext::new(
+                action.ciphertext().to_vec(),
+            ),
+        })
+        .collect()
+}
+
+/// A stored output, as a domain transparent output.
+///
+/// Rebuilds the locking script from the address key: exact for P2PKH and P2SH,
+/// empty for a non-standard output, which is what this reader has always served
+/// on the wire.
+fn domain_tx_out(
+    output: &TxOutCompact,
+) -> Result<zaino_primitives::types::TransparentOutput, StoreError> {
+    let script = output
+        .script_type_enum()
+        .and_then(|script_type| {
+            crate::types::build_standard_script(*output.script_hash(), script_type)
+        })
+        .unwrap_or_default();
+
+    Ok(zaino_primitives::types::TransparentOutput {
+        // Out of range means a corrupt row, not a caller error: a value beyond
+        // the money supply cannot have been written by a valid block.
+        value: zaino_primitives::types::Zatoshis::new(output.value()).map_err(|error| {
+            StoreError::Custom(format!(
+                "stored output value {} is out of range: {error}",
+                output.value()
+            ))
+        })?,
+        script: zaino_primitives::types::Script::new(script),
+    })
+}
+
+/// Whether a transaction has anything in any pool the caller asked for.
+///
+/// Only the wire conversion asks: the domain block keeps every transaction so
+/// that position and index coincide.
+fn has_pool_data(tx: &zaino_primitives::types::PreIndexCompactTx) -> bool {
+    !tx.transparent_inputs.is_empty()
+        || !tx.transparent_outputs.is_empty()
+        || !tx.sapling_nullifiers.is_empty()
+        || !tx.sapling_outputs.is_empty()
+        || !tx.orchard_actions.is_empty()
+        || !tx.ironwood_actions.is_empty()
+}
+
+/// A domain compact block, as the light-wallet protocol carries it.
+///
+/// Transactions with nothing in any requested pool are dropped here, which is
+/// what the protocol expects and what this reader has always emitted. Because
+/// the domain block is dense, each surviving transaction's index is its
+/// position in it — so dropping the others cannot lose the mapping.
+///
+/// # Temporary
+///
+/// The store has no business building wire messages. This exists because the
+/// legacy inherent reads still return proto blocks to consumers that have not
+/// moved onto the ports; it goes with them, along with this crate's dependency
+/// on `zaino-proto`.
+pub fn compact_block_to_wire(
+    block: &zaino_primitives::types::CompactBlock,
+) -> zaino_proto::proto::compact_formats::CompactBlock {
+    zaino_proto::proto::compact_formats::CompactBlock {
+        proto_version: 0,
+        height: u64::from(block.height),
+        hash: <[u8; 32]>::from(block.hash).to_vec(),
+        prev_hash: <[u8; 32]>::from(block.prev_hash).to_vec(),
+        time: block.time,
+        header: Vec::new(),
+        vtx: block
+            .transactions
+            .iter()
+            .enumerate()
+            .filter(|(_, tx)| has_pool_data(tx))
+            .map(|(index, tx)| compact_tx_to_proto(index, tx))
+            .collect(),
+        chain_metadata: Some(zaino_proto::proto::compact_formats::ChainMetadata {
+            sapling_commitment_tree_size: block.chain_metadata.sapling_tree_size,
+            orchard_commitment_tree_size: block.chain_metadata.orchard_tree_size,
+            ironwood_commitment_tree_size: block.chain_metadata.ironwood_tree_size,
+        }),
+    }
+}
+
+fn compact_tx_to_proto(
+    index: usize,
+    tx: &zaino_primitives::types::PreIndexCompactTx,
+) -> zaino_proto::proto::compact_formats::CompactTx {
+    use zaino_proto::proto::compact_formats as proto;
+
+    proto::CompactTx {
+        // The transaction's position in the block it came from. Load-bearing:
+        // the wire block omits transactions, so a client cannot recover this by
+        // counting, and it tests `index == 0` to identify the coinbase.
+        index: index as u64,
+        txid: <[u8; 32]>::from(tx.txid).to_vec(),
+        fee: 0,
+        spends: tx
+            .sapling_nullifiers
+            .iter()
+            .map(|nullifier| proto::CompactSaplingSpend {
+                nf: <[u8; 32]>::from(*nullifier).to_vec(),
+            })
+            .collect(),
+        outputs: tx
+            .sapling_outputs
+            .iter()
+            .map(|output| proto::CompactSaplingOutput {
+                cmu: <[u8; 32]>::from(output.cmu).to_vec(),
+                ephemeral_key: <[u8; 32]>::from(output.ephemeral_key).to_vec(),
+                ciphertext: Vec::<u8>::from(output.enc_ciphertext.clone()),
+            })
+            .collect(),
+        actions: tx.orchard_actions.iter().map(action_to_proto).collect(),
+        ironwood_actions: tx.ironwood_actions.iter().map(action_to_proto).collect(),
+        vin: tx
+            .transparent_inputs
+            .iter()
+            .map(|input| proto::CompactTxIn {
+                prevout_txid: <[u8; 32]>::from(input.prev_txid).to_vec(),
+                prevout_index: input.prev_index,
+            })
+            .collect(),
+        vout: tx
+            .transparent_outputs
+            .iter()
+            .map(|output| proto::TxOut {
+                value: u64::from(output.value),
+                script_pub_key: Vec::<u8>::from(output.script.clone()),
+            })
+            .collect(),
+    }
+}
+
+fn action_to_proto(
+    action: &zaino_primitives::types::OrchardAction,
+) -> zaino_proto::proto::compact_formats::CompactOrchardAction {
+    zaino_proto::proto::compact_formats::CompactOrchardAction {
+        nullifier: <[u8; 32]>::from(action.nullifier).to_vec(),
+        cmx: <[u8; 32]>::from(action.cmx).to_vec(),
+        ephemeral_key: <[u8; 32]>::from(action.ephemeral_key).to_vec(),
+        ciphertext: Vec::<u8>::from(action.enc_ciphertext.clone()),
+    }
+}
+
+/// A compact block from an already-materialised [`IndexedBlock`].
+///
+/// For the passthrough backend, which has no rows to filter at read time: it
+/// builds a whole block from the validator and then drops what the filter
+/// excludes. The dropping still happens per pool rather than per transaction,
+/// so the result is dense in the same way the on-disk read's is.
+pub(crate) fn compact_block_from_indexed(
+    block: &IndexedBlock,
+    pool_types: PoolFilter,
+) -> Result<zaino_primitives::types::CompactBlock, StoreError> {
+    let transactions = block
+        .transactions
+        .iter()
+        .map(|tx| {
+            compact_tx(
+                *tx.txid(),
+                pool_types.includes_transparent().then(|| tx.transparent()),
+                pool_types
+                    .includes(ShieldedPool::Sapling)
+                    .then(|| tx.sapling()),
+                pool_types
+                    .includes(ShieldedPool::Orchard)
+                    .then(|| tx.orchard()),
+                pool_types
+                    .includes(ShieldedPool::Ironwood)
+                    .then(|| tx.ironwood()),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let sizes = block.commitment_tree_data.sizes();
+
+    Ok(zaino_primitives::types::CompactBlock {
+        hash: zaino_primitives::types::BlockHash::from(block.context.hash().0),
+        prev_hash: zaino_primitives::types::BlockHash::from(block.context.parent_hash().0),
+        height: block.context.height().0,
+        time: u32::try_from(block.data.time()).map_err(|_| {
+            StoreError::Custom(format!(
+                "block time {} does not fit a compact block",
+                block.data.time()
+            ))
+        })?,
+        bits: block.data.bits().as_bits(),
+        transactions,
+        chain_metadata: zaino_primitives::types::ChainMetadata {
+            sapling_tree_size: sizes.sapling(),
+            orchard_tree_size: sizes.orchard(),
+            ironwood_tree_size: sizes.ironwood(),
+        },
+    })
+}
+
+/// The wire pool filter, as the domain names it.
+///
+/// Total, and only in this direction. The wire filter cannot express "no pools
+/// at all" — an empty set means the default, every shielded pool — where the
+/// domain filter can. So a domain filter converted to the wire form and back
+/// would silently gain three pools, and this conversion exists only for the
+/// legacy reads that still arrive with a wire filter.
+pub fn pool_filter_from_wire(filter: &PoolTypeFilter) -> PoolFilter {
+    let mut domain = PoolFilter::none();
+    if filter.includes_transparent() {
+        domain = domain.with_transparent();
+    }
+    for pool in [
+        ShieldedPool::Sapling,
+        ShieldedPool::Orchard,
+        ShieldedPool::Ironwood,
+    ] {
+        if includes_shielded(filter, pool) {
+            domain = domain.with_pool(pool);
+        }
+    }
+    domain
+}
+
+fn includes_shielded(filter: &PoolTypeFilter, pool: ShieldedPool) -> bool {
+    match pool {
+        ShieldedPool::Sapling => filter.includes_sapling(),
+        ShieldedPool::Orchard => filter.includes_orchard(),
+        ShieldedPool::Ironwood => filter.includes_ironwood(),
+    }
 }

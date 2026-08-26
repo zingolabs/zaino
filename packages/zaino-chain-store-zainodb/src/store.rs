@@ -10,8 +10,8 @@
 //! database**: it is one of
 //! - a versioned, LMDB-backed persistent database (`V1`), or
 //! - an **ephemeral** passthrough that serves finalised reads directly from the upstream
-//!   [`BlockchainSource`](crate::chain_index::source::BlockchainSource) and persists nothing
-//!   (selected by `ChainIndexConfig::ephemeral`).
+//!   [`ChainStoreSource`](zaino_chain_store::ChainStoreSource) and persists nothing
+//!   (selected by `StoreSettings::ephemeral`).
 //!
 //! `FinalisedState` is responsible for:
 //! - opening or creating the correct backing source (persistent version or ephemeral),
@@ -23,7 +23,7 @@
 //! - and providing a read-only handle (`DbReader`) that should be used for all chain fetches.
 //!
 //! Note the naming: `FinalisedSource` is the finalised-state *backing* (persistent or ephemeral
-//! passthrough); it is a distinct, lower layer from the upstream `BlockchainSource` (the validator /
+//! passthrough); it is a distinct, lower layer from the upstream `ChainStoreSource` (the validator /
 //! node connector) that the ephemeral variant passes through to.
 //!
 //! # Code layout (submodules)
@@ -44,7 +44,7 @@
 //!
 //! - `router`
 //!   - Implements `router::Router`, a capability router that can direct calls to the primary backing
-//!     source, a shadow database during major migrations, or a ephemeral passthrough during
+//!     source, or an ephemeral passthrough during
 //!     background sync.
 //!
 //! - `migrations`
@@ -64,10 +64,10 @@
 //!
 //! ```text
 //! FinalisedState (facade; owns config; exposes simple methods)
-//!   └─ Router (capability routing; primary + optional shadow + optional ephemeral passthrough)
+//!   └─ Router (capability routing; primary + optional ephemeral passthrough)
 //!       └─ FinalisedSource (enum; V1 / Ephemeral; implements core + extension traits)
 //!           ├─ finalised_source::v1::DbV1 (current persistent schema; full indices incl. transparent history)
-//!           └─ finalised_source::ephemeral::EphemeralFinalisedState (passthrough to the BlockchainSource)
+//!           └─ finalised_source::ephemeral::EphemeralFinalisedState (passthrough to the ChainStoreSource)
 //! ```
 //!
 //! Consumers should avoid depending on the concrete backing version; they should prefer `DbReader`,
@@ -78,14 +78,16 @@
 //!
 //! `FinalisedState` never blocks serving on persistence work:
 //!
-//! - **Ephemeral mode** (`ChainIndexConfig::ephemeral == true`): no persistent database is opened;
+//! - **Ephemeral mode** (`StoreSettings::ephemeral == true`): no persistent database is opened;
 //!   the primary backing source is `Ephemeral`, which answers finalised reads straight from the
-//!   `BlockchainSource`. `sync_to_height` is a no-op and `db_height` reports `0`.
+//!   `ChainStoreSource`. `sync_to_height` is a no-op and `db_height` reports `0`.
 //! - **Background sync**: `sync_to_height` runs **inline** for ranges within
-//!   `LONG_RUNNING_SYNC_THRESHOLD` (so a caller that reads straight back sees the data), and
+//!   `ChainStoreConfig::background_build_threshold` (so a caller that reads straight back
+//!   sees the data), and
 //!   **spawns** for larger ranges. While a large sync runs, read-only ephemeral routing is installed
 //!   so reads are served from the source; the spawned task retries transient failures and escalates
-//!   to `StatusType::CriticalError` after `MAX_BACKGROUND_SYNC_RETRIES` attempts.
+//!   to `StatusType::CriticalError` after `ChainStoreConfig::max_consecutive_failures`
+//!   attempts.
 //! - **Background migration**: a version migration likewise runs in a spawned task while a ephemeral
 //!   passthrough serves reads; on failure it sets `StatusType::CriticalError`.
 //!
@@ -105,7 +107,7 @@
 //!
 //! The finalised database stores **only** types that are explicitly designed for persistence.
 //! Concretely, values written into LMDB are composed from the database-serializable types in
-//! [`crate::chain_index::types::db`] (re-exported via [`crate::chain_index::types`]).
+//! [`crate::types::db`] (re-exported via [`crate::types`]).
 //!
 //! All persisted types implement [`zaino_encoding::ZainoVersionedSerde`], which
 //! defines Zaino’s on-disk wire format:
@@ -146,9 +148,13 @@
 //!   is invoked to migrate the database.
 //!
 //! Major migrations are designed to be low-downtime and disk-conscious:
-//! - a *shadow* DB of the new version is built in parallel,
-//! - the router continues serving from the primary DB until the shadow is complete,
-//! - then the shadow is promoted to primary, and the old DB is deleted once all handles are dropped.
+//! - the migration runs in place on the one database,
+//! - the router installs the ephemeral passthrough so reads keep being answered
+//!   from the validator while it does,
+//! - and the passthrough is released once the work is committed.
+//!
+//! There is no second database built in parallel and nothing is promoted; see
+//! [`migrations`] for why that description used to be here.
 //!
 //! Migration progress is tracked via `DbMetadata::migration_status` (see `capability::MigrationStatus`)
 //! to support resumption after crashes.
@@ -167,7 +173,7 @@
 //! - Writes:
 //!   - `FinalisedState::write_block`: append-only; **must** write `db_tip + 1`
 //!   - `FinalisedState::delete_block_at_height`/`FinalisedState::delete_block`: pop-only; **must** delete tip
-//!   - `FinalisedState::sync_to_height`: convenience sync loop that fetches blocks from a `BlockchainSource`
+//!   - `FinalisedState::sync_to_height`: convenience sync loop that fetches blocks from a `ChainStoreSource`
 //!
 //! - Reads:
 //!   - `db_height`, `get_block_height`, `get_block_hash`, `get_metadata`
@@ -185,7 +191,7 @@
 //! ```rust,no_run
 //! use std::sync::Arc;
 //!
-//! let db = Arc::new(crate::chain_index::finalised_state::FinalisedState::spawn(cfg, source).await?);
+//! let db = Arc::new(crate::store::FinalisedState::spawn(cfg, source).await?);
 //! db.wait_until_ready().await;
 //!
 //! let reader = db.to_reader();
@@ -209,18 +215,26 @@
 //!   6. Add a migration step in `migrations` and register it in `MigrationManager::get_migration`.
 //!
 //! - **Change an on-disk encoding:** treat it as a schema change. Either implement a migration or
-//!   bump the DB major version and rebuild in shadow.
+//!   bump the DB major version and rebuild.
 //!
 
 // TODO / FIX - REMOVE THIS ONCE CHAININDEX LANDS!
 #![allow(dead_code)]
 
 pub(crate) mod capability;
-pub(crate) mod entry;
 pub(crate) mod finalised_source;
 pub(crate) mod migrations;
-pub(crate) mod reader;
+pub mod reader;
 pub(crate) mod router;
+
+/// Which backend is currently answering finalised-state reads.
+///
+/// Re-exported from the router because it is the one piece of routing state a
+/// consumer legitimately needs: an ephemeral passthrough reports
+/// [`StatusType::Ready`] exactly as a synced database does, so status alone
+/// cannot tell an operator whether the finalised state being queried is the
+/// real on-disk index.
+pub use router::FinalisedStateMode;
 
 use capability::*;
 use finalised_source::{FinalisedSource, VERSION_DIRS};
@@ -233,19 +247,13 @@ use zebra_chain::parameters::NetworkKind;
 #[cfg(feature = "prometheus")]
 use crate::metric_names::*;
 
-use crate::{
-    chain_index::{
-        finalised_state::{
-            finalised_source::v1::DB_VERSION_V1,
-            router::{EphemeralMode, FinalisedStateMode},
-        },
-        source::BlockchainSourceError,
-        types::GENESIS_HEIGHT,
-    },
-    config::ChainIndexConfig,
-    error::FinalisedStateError,
-    BlockHash, BlockMetadata, BlockWithMetadata, ChainWork, Height, IndexedBlock,
-};
+use crate::ports::domain_block_ref;
+use crate::store::{finalised_source::v1::DB_VERSION_V1, router::EphemeralMode};
+use crate::types::{BlockHash, ChainWork, Height, IndexedBlock, GENESIS_HEIGHT};
+use zaino_chain_store::ChainStoreConfig;
+
+use crate::config::{StoreSettings, ZainoDbConfig};
+use crate::error::StoreError;
 use zaino_status::StatusType;
 
 use std::{sync::Arc, time::Duration};
@@ -268,35 +276,38 @@ impl PoolActivationHeights {
     /// Resolves the Sapling, NU5 (Orchard), and NU6.3 (Ironwood) activation heights on
     /// `zebra_network`.
     fn resolve(zebra_network: &zebra_chain::parameters::Network) -> Self {
-        let activation_height =
-            |pool: super::ShieldedPool| pool.activation_upgrade().activation_height(zebra_network);
+        let activation_height = |pool: crate::pool::ShieldedPool| {
+            pool.activation_upgrade().activation_height(zebra_network)
+        };
         Self {
-            sapling: activation_height(super::ShieldedPool::Sapling),
-            nu5: activation_height(super::ShieldedPool::Orchard),
-            nu6_3: activation_height(super::ShieldedPool::Ironwood),
+            sapling: activation_height(crate::pool::ShieldedPool::Sapling),
+            nu5: activation_height(crate::pool::ShieldedPool::Orchard),
+            nu6_3: activation_height(crate::pool::ShieldedPool::Ironwood),
         }
     }
 }
 
 /// Fetches the block at `height_int` from `source` and builds its [`IndexedBlock`], threading
-/// `parent_chainwork` into the block metadata.
+/// `parent_chainwork` into the block's context.
 ///
 /// Shared by every backend's [`capability::DbWrite::write_blocks_to_height`] ingestion loop so the
-/// fetch + commitment-tree-root + metadata assembly lives in one place regardless of which backend
+/// fetch + commitment-tree-root + assembly lives in one place regardless of which backend
 /// owns the loop.
-pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
+///
+/// No network parameter. The old path took one to recompute the header's block-commitments
+/// field per network upgrade; the domain block carries that field as it was mined, and the two
+/// agree for every block that parses. See [`crate::conversion`].
+pub(crate) async fn build_indexed_block_from_source<S: ChainStoreSource + ?Sized>(
     source: &S,
-    network: zebra_chain::parameters::Network,
     sapling_activation_height: zebra_chain::block::Height,
     nu5_activation_height: Option<zebra_chain::block::Height>,
     nu6_3_activation_height: Option<zebra_chain::block::Height>,
     height_int: u32,
     parent_chainwork: Option<ChainWork>,
-) -> Result<IndexedBlock, FinalisedStateError> {
+) -> Result<IndexedBlock, StoreError> {
     let fetched = fetch_block_for_indexing(source, height_int).await?;
     assemble_indexed_block(
         fetched,
-        network,
         sapling_activation_height,
         nu5_activation_height,
         nu6_3_activation_height,
@@ -314,8 +325,8 @@ pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
 /// modular square root plus a cofactor multiplication), work Zaino discards, since it keeps only
 /// the compact representation. On sandblast-era blocks that dwarfs everything else the sync does.
 pub(crate) struct FetchedBlock {
-    block: Arc<zebra_chain::block::Block>,
-    tree_roots: crate::chain_index::source::ShieldedTreeRoots,
+    block: zaino_primitives::types::Block,
+    tree_roots: zaino_primitives::types::TreeRoots,
 }
 
 impl FetchedBlock {
@@ -324,41 +335,20 @@ impl FetchedBlock {
     /// Lets a caller fold the cumulative chainwork over a run of already-fetched blocks before
     /// assembling any of them — the fold is the only ordering constraint in block building, and it
     /// is pure integer arithmetic, so it must not hold the expensive conversion in block order.
-    pub(crate) fn block_work(&self) -> Result<ChainWork, FinalisedStateError> {
-        crate::chain_index::types::helpers::block_work(&self.block.header).map_err(|reason| {
-            FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
-                format!("cannot read block work from header: {reason}"),
-            ))
-        })
+    pub(crate) fn block_work(&self) -> Result<ChainWork, StoreError> {
+        let hash = crate::types::BlockHash(self.block.header.hash.into());
+        crate::conversion::block_work(self.block.header.bits, hash)
+            .map_err(|error| inconsistent(error.to_string()))
     }
 }
 
 /// Reads one block and its commitment-tree roots from the source.
-pub(crate) async fn fetch_block_for_indexing<S: BlockchainSource>(
+pub(crate) async fn fetch_block_for_indexing<S: ChainStoreSource + ?Sized>(
     source: &S,
     height_int: u32,
-) -> Result<FetchedBlock, FinalisedStateError> {
-    let block = match source
-        .get_block(zebra_state::HashOrHeight::Height(
-            zebra_chain::block::Height(height_int),
-        ))
-        .await?
-    {
-        Some(block) => block,
-        None => {
-            return Err(FinalisedStateError::BlockchainSourceError(
-                BlockchainSourceError::Unrecoverable(format!(
-                    "error fetching block at height {height_int} from validator"
-                )),
-            ));
-        }
-    };
-
-    let block_hash = BlockHash::from(block.hash().0);
-
-    // Fetch sapling / orchard commitment tree data if above the relevant network upgrade.
-    let tree_roots = source.get_commitment_tree_roots(block_hash).await?;
-
+) -> Result<FetchedBlock, StoreError> {
+    let block = fetch_block(source, height_int).await?;
+    let tree_roots = fetch_tree_roots(source, &block).await?;
     Ok(FetchedBlock { block, tree_roots })
 }
 
@@ -366,126 +356,114 @@ pub(crate) async fn fetch_block_for_indexing<S: BlockchainSource>(
 ///
 /// The order-dependent half: `parent_chainwork` chains each block to the one before it, so this
 /// runs in block order even when the fetches above did not. Cheap next to the fetch — no curve
-/// arithmetic, just the metadata assembly and the compact-form conversion.
-#[allow(clippy::too_many_arguments)]
+/// arithmetic, just the treestate check, the metadata assembly and the compact-form conversion.
 pub(crate) fn assemble_indexed_block(
     fetched: FetchedBlock,
-    network: zebra_chain::parameters::Network,
     sapling_activation_height: zebra_chain::block::Height,
     nu5_activation_height: Option<zebra_chain::block::Height>,
     nu6_3_activation_height: Option<zebra_chain::block::Height>,
     height_int: u32,
     parent_chainwork: Option<ChainWork>,
-) -> Result<IndexedBlock, FinalisedStateError> {
+) -> Result<IndexedBlock, StoreError> {
     let FetchedBlock { block, tree_roots } = fetched;
-    let (sapling_opt, orchard_opt, ironwood_opt) = tree_roots;
-    let block_hash = BlockHash::from(block.hash().0);
 
-    let is_sapling_active = height_int >= sapling_activation_height.0;
-    let is_orchard_active = nu5_activation_height
-        .is_some_and(|nu5_activation_height| height_int >= nu5_activation_height.0);
-    let is_ironwood_active = nu6_3_activation_height
-        .is_some_and(|nu6_3_activation_height| height_int >= nu6_3_activation_height.0);
-
-    let (sapling_root, sapling_size) = required_pool_root(
-        super::ShieldedPool::Sapling,
-        is_sapling_active,
-        sapling_opt,
-        || format!("block {block_hash}"),
-    )?;
-    let (orchard_root, orchard_size) = required_pool_root(
-        super::ShieldedPool::Orchard,
-        is_orchard_active,
-        orchard_opt,
-        || format!("block {block_hash}"),
-    )?;
-    let ironwood = optional_pool_root(
-        super::ShieldedPool::Ironwood,
-        is_ironwood_active,
-        ironwood_opt,
-        || format!("block {block_hash}"),
+    require_pool_roots(
+        &tree_roots,
+        PoolActivation {
+            sapling: height_int >= sapling_activation_height.0,
+            orchard: nu5_activation_height.is_some_and(|activation| height_int >= activation.0),
+            ironwood: nu6_3_activation_height.is_some_and(|activation| height_int >= activation.0),
+        },
+        block.header.hash,
     )?;
 
-    let metadata = BlockMetadata {
-        sapling_root,
-        sapling_size,
-        orchard_root,
-        orchard_size,
-        ironwood,
-        parent_chainwork,
-        network,
+    indexed_block_from_parts(&block, &tree_roots, parent_chainwork)
+}
+
+/// Which pools are expected to have a commitment tree at a block.
+#[derive(Debug, Clone, Copy)]
+struct PoolActivation {
+    sapling: bool,
+    orchard: bool,
+    ironwood: bool,
+}
+
+/// Rejects a treestate that is missing a root the block's height requires.
+///
+/// From a pool's activation onward its root is not optional: a source that
+/// omits one has answered about a chain this store cannot index, and defaulting
+/// the root would write a wrong treestate that no later read could detect.
+/// Below activation the pool has no tree yet, so absence is the correct answer.
+fn require_pool_roots(
+    roots: &zaino_primitives::types::TreeRoots,
+    active: PoolActivation,
+    hash: zaino_primitives::types::BlockHash,
+) -> Result<(), StoreError> {
+    let require = |present: bool, is_active: bool, pool: &str| -> Result<(), StoreError> {
+        if is_active && !present {
+            return Err(inconsistent(format!(
+                "missing {pool} commitment tree root for block {hash}"
+            )));
+        }
+        Ok(())
     };
 
-    let block_with_metadata = BlockWithMetadata::new(block.as_ref(), metadata);
-    IndexedBlock::try_from(block_with_metadata).map_err(|_| {
-        FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(format!(
-            "error building block data at height {height_int}"
-        )))
-    })
+    require(roots.sapling.is_some(), active.sapling, "sapling")?;
+    require(roots.orchard.is_some(), active.orchard, "orchard")?;
+    require(roots.ironwood.is_some(), active.ironwood, "ironwood")
 }
 
-/// Resolves a pool's optional commitment-tree root and size against the pool's activation
-/// status at the block in question.
+/// The block at `height`, or a source error naming what was asked for.
+async fn fetch_block<S: ChainStoreSource + ?Sized>(
+    source: &S,
+    height: u32,
+) -> Result<zaino_primitives::types::Block, StoreError> {
+    let height = zaino_primitives::types::Height::try_from(height)
+        .map_err(|_| inconsistent(format!("height {height} is above the protocol maximum")))?;
+    source
+        .get_block(height)
+        .await
+        .map_err(|error| StoreError::Source(source_error(error)))
+}
+
+/// The commitment tree roots after `block`.
 ///
-/// From activation onward the root is required: a missing root is an unrecoverable source
-/// error. Below activation (or on a network where the pool's upgrade has no activation
-/// height) the pool has no tree yet, so the root defaults and the size is zero.
-///
-/// `location` describes the block for the error message (e.g. `block <hash>` or
-/// `block at height <n>`) and is only evaluated on failure.
-fn required_pool_root<R: Default>(
-    pool: super::ShieldedPool,
-    is_active: bool,
-    root_and_size: Option<(R, u64)>,
-    location: impl FnOnce() -> String,
-) -> Result<(R, u32), FinalisedStateError> {
-    optional_pool_root(pool, is_active, root_and_size, location)
-        .map(|resolved| resolved.unwrap_or_else(|| (R::default(), 0)))
+/// Asked for rather than derived: they are cumulative over the chain, so one
+/// block does not determine them.
+async fn fetch_tree_roots<S: ChainStoreSource + ?Sized>(
+    source: &S,
+    block: &zaino_primitives::types::Block,
+) -> Result<zaino_primitives::types::TreeRoots, StoreError> {
+    source
+        .get_commitment_tree_roots(block.header.hash)
+        .await
+        .map_err(|error| StoreError::Source(source_error(error)))
 }
 
-/// Like [`required_pool_root`], but keeps the below-activation case as `None` instead of
-/// defaulting, for pools whose storage distinguishes "no treestate yet" from a
-/// default-valued one (the stored ironwood root: `None` = no ironwood data, the encoding
-/// the v1.2.1->v1.3.0 migration produces for pre-activation heights).
-fn optional_pool_root<R>(
-    pool: super::ShieldedPool,
-    is_active: bool,
-    root_and_size: Option<(R, u64)>,
-    location: impl FnOnce() -> String,
-) -> Result<Option<(R, u32)>, FinalisedStateError> {
-    let pool = pool.pool_string();
-    match root_and_size {
-        Some((root, size)) => {
-            let size = u32::try_from(size).map_err(|error| {
-                FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
-                    format!("{pool} commitment tree size does not fit into u32: {error}"),
-                ))
-            })?;
-            Ok(Some((root, size)))
-        }
-        None if !is_active => Ok(None),
-        None => Err(FinalisedStateError::BlockchainSourceError(
-            BlockchainSourceError::Unrecoverable(format!(
-                "missing {pool} commitment tree root for {}",
-                location()
-            )),
-        )),
-    }
+/// Accumulates the block's work onto its parent's and builds the stored shape.
+pub(crate) fn indexed_block_from_parts(
+    block: &zaino_primitives::types::Block,
+    tree_roots: &zaino_primitives::types::TreeRoots,
+    parent_chainwork: Option<ChainWork>,
+) -> Result<IndexedBlock, StoreError> {
+    let hash = crate::types::BlockHash(block.header.hash.into());
+    let chainwork =
+        crate::conversion::chainwork_from_parent(block.header.bits, hash, parent_chainwork)
+            .map_err(|error| inconsistent(error.to_string()))?;
+    crate::conversion::indexed_block(block, tree_roots, chainwork)
+        .map_err(|error| inconsistent(error.to_string()))
 }
 
-use super::source::BlockchainSource;
+use zaino_chain_store::ChainStoreSource;
 
-/// A sync wider than this many blocks runs in the background (with ephemeral
-/// passthrough serving reads); anything within it runs to completion inline so
-/// callers that read straight back (e.g. ChainIndex NFS init) observe the data.
-const LONG_RUNNING_SYNC_THRESHOLD: u32 = 10;
+use crate::error::{inconsistent, source_error};
 
-/// Maximum attempts a background sync makes before escalating to
-/// `StatusType::CriticalError`.
-const MAX_BACKGROUND_SYNC_RETRIES: u32 = 5;
-
-/// Delay between background-sync retry attempts.
-const BACKGROUND_SYNC_RETRY_BACKOFF: Duration = Duration::from_secs(5);
+// The build-behaviour knobs — how wide a sync runs in the background, how many
+// attempts it makes, and how long it waits between them — were constants here.
+// They are `ChainStoreConfig` fields now, because they are the same question for
+// any store rather than anything about LMDB, and because a deployment that wants
+// to change one should not have to rebuild. The defaults are the values these
+// constants held, so nothing moves by adopting them.
 
 #[derive(Debug)]
 /// Handle to the finalised on-disk chain index.
@@ -497,27 +475,102 @@ const BACKGROUND_SYNC_RETRY_BACKOFF: Duration = Duration::from_secs(5);
 ///
 /// ## Concurrency model
 /// Internally, `FinalisedState` holds an [`Arc`] to a [`Router`]. The router provides lock-free routing
-/// between a primary database and (during major migrations) an optional shadow database.
+/// between a primary database and, during migrations, the ephemeral passthrough.
 ///
 /// Query paths should not call `FinalisedState` methods directly. Instead, construct a [`DbReader`] using
 /// [`FinalisedState::to_reader`] and perform all reads via that read-only API. This ensures capability-
 /// correct routing (especially during migrations).
 ///
 /// ## Configuration
-/// `FinalisedState` stores the [`ChainIndexConfig`] used to:
+/// `FinalisedState` stores the [`StoreSettings`] used to:
 /// - determine network-specific on-disk paths,
 /// - select a target database version (`cfg.db_version`),
 /// - and compute per-block metadata (e.g., network selection for `BlockMetadata`).
-pub(crate) struct FinalisedState<T: BlockchainSource> {
+pub struct FinalisedState<T: ChainStoreSource> {
+    /// The validator this store builds itself from.
+    ///
+    /// Owned rather than passed per call, so a consumer driving the store
+    /// cannot point it at a different chain part-way through a build. This is
+    /// what lets [`zaino_chain_store::ChainStoreIngest::build_to`] take a
+    /// target height and nothing else.
+    source: Arc<T>,
+
     /// Capability router for the active database backend(s).
     ///
     /// - In steady state, all requests route to the primary backend.
-    /// - During a major migration, some or all capabilities may route to a shadow backend until
-    ///   promotion completes.
+    /// - During a migration or a long sync, some or all capabilities route to
+    ///   the ephemeral passthrough so reads keep being answered.
     db: Arc<Router<T>>,
 
     /// Immutable configuration snapshot used for sync and metadata construction.
-    cfg: ChainIndexConfig,
+    cfg: StoreSettings,
+}
+
+/// Cloned by hand rather than derived.
+///
+/// A derived `Clone` would demand `T: Clone`, which a validator is not. Every
+/// field here is shared or cheap, and — the part that matters — every clone
+/// routes through the *same* [`Router`], which is where all mutable state
+/// lives. Two handles to one store, not two stores.
+impl<T: ChainStoreSource> Clone for FinalisedState<T> {
+    fn clone(&self) -> Self {
+        Self {
+            source: Arc::clone(&self.source),
+            db: Arc::clone(&self.db),
+            cfg: self.cfg.clone(),
+        }
+    }
+}
+
+/// Re-reads the router's tip and publishes it as the watermark.
+///
+/// Free rather than a method because the build path reaches it from a static
+/// context: `sync_to_height_background` holds the router and no
+/// `FinalisedState`, and that is the path the sync worker drives. A method
+/// would have left the one caller that most needs it unable to call it, which
+/// is how it came to be missing.
+///
+/// **A failed read leaves the previous watermark standing.** That is the
+/// conservative direction: a stale watermark under-claims coverage, where
+/// clearing it would make a healthy store look empty and route every read away
+/// from a database that holds the answer. Both reads are guarded, not just the
+/// first — a tip whose hash cannot be read is a store that has a tip, and
+/// saying otherwise would be the very outcome this avoids. Only an *empty*
+/// database publishes an empty watermark, because that one is true.
+async fn refresh_watermark<T: ChainStoreSource>(router: &Arc<Router<T>>) {
+    let tip = match router.db_height().await {
+        Ok(Some(height)) => match router.get_block_hash(height).await {
+            Ok(Some(hash)) => domain_block_ref(height, hash),
+            Ok(None) => {
+                tracing::warn!(
+                    height = height.0,
+                    "finalised store has a tip height with no hash; leaving the watermark standing"
+                );
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    height = height.0,
+                    %error,
+                    "finalised store could not read its tip hash; leaving the watermark standing"
+                );
+                return;
+            }
+        },
+        Ok(None) => None,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "finalised store could not read its tip height; leaving the watermark standing"
+            );
+            return;
+        }
+    };
+
+    router.publish_watermark(zaino_chain_store::StoreWatermark {
+        tip,
+        provenance: router.watermark_provenance(),
+    });
 }
 
 /// Lifecycle, migration control, and core read/write API for the finalised database.
@@ -526,7 +579,7 @@ pub(crate) struct FinalisedState<T: BlockchainSource> {
 /// - version selection and migration orchestration lives in [`FinalisedState::spawn`],
 /// - the storage engine details are encapsulated behind [`FinalisedSource`] and the capability traits,
 /// - higher-level query routing is provided by [`DbReader`].
-impl<T: BlockchainSource> FinalisedState<T> {
+impl<T: ChainStoreSource> FinalisedState<T> {
     // ***** DB control *****
 
     /// Spawns a `FinalisedState` instance.
@@ -548,20 +601,29 @@ impl<T: BlockchainSource> FinalisedState<T> {
     /// reports a lower version than the configured target.
     ///
     /// Migrations may require access to chain data to rebuild indices. For that reason, a
-    /// [`BlockchainSource`] is provided here and passed into the migration manager.
+    /// [`ChainStoreSource`] is provided here and passed into the migration manager.
     ///
     /// ## Errors
-    /// Returns [`FinalisedStateError`] if:
+    /// Returns [`StoreError`] if:
     /// - the configured target version is unsupported,
     /// - the on-disk database version is unsupported,
     /// - opening or creating the database fails,
     /// - or any migration step fails.
-    #[instrument(name = "FinalisedState::spawn", skip(cfg, source), fields(db_version = cfg.db_version))]
-    pub(crate) async fn spawn(
-        cfg: ChainIndexConfig,
-        source: T,
-    ) -> Result<Self, FinalisedStateError> {
-        if cfg.ephemeral {
+    #[instrument(
+        name = "FinalisedState::spawn",
+        skip(store, db, source),
+        fields(db_version = store.target_schema_major())
+    )]
+    pub async fn spawn(
+        store: ChainStoreConfig,
+        db: ZainoDbConfig,
+        source: Arc<T>,
+    ) -> Result<Self, StoreError> {
+        let cfg = StoreSettings::new(store, db);
+
+        // Passthrough is the absence of a path, not a flag beside one: the two
+        // cannot contradict each other because there is only one field.
+        let Some(db_root) = cfg.store.path().map(std::path::Path::to_path_buf) else {
             // WARN, not INFO: this branch previously returned silently, and a run that serves every
             // finalised-state read from the validator while a test suite believes it is exercising
             // the on-disk index is nearly always a misconfiguration worth surfacing loudly.
@@ -571,26 +633,32 @@ impl<T: BlockchainSource> FinalisedState<T> {
                  persistent database will be opened or written, and all finalised-state reads are \
                  served from the backing validator"
             );
-            return Ok(Self {
-                db: Arc::new(Router::new(Arc::new(FinalisedSource::ephemeral(
-                    source,
-                    cfg.network.clone(),
-                    None,
-                )))),
+            let ephemeral = Arc::new(FinalisedSource::ephemeral(
+                Arc::clone(&source),
+                cfg.db.network().clone(),
+                None,
+            ));
+            let state = Self {
+                source,
+                db: Arc::new(Router::new(ephemeral)),
                 cfg,
-            });
-        } else {
+            };
+            state.refresh_watermark().await;
+            return Ok(state);
+        };
+
+        {
             info!(
                 mode = %FinalisedStateMode::Persistent,
-                path = %cfg.storage.database.path.display(),
+                path = %db_root.display(),
                 "finalised state running in PERSISTENT mode"
             );
             let version_opt = Self::try_find_current_db_version(&cfg).await;
 
-            let target_version = match cfg.db_version {
+            let target_version = match cfg.store.target_schema_major() {
                 1 => DB_VERSION_V1,
                 x => {
-                    return Err(FinalisedStateError::Custom(format!(
+                    return Err(StoreError::Custom(format!(
                         "unsupported database version: DbV{x}"
                     )));
                 }
@@ -601,15 +669,15 @@ impl<T: BlockchainSource> FinalisedState<T> {
                     info!(version, "Opening FinalisedState from file");
                     match version {
                         0 => {
-                            return Err(FinalisedStateError::Custom(format!(
+                            return Err(StoreError::Custom(format!(
                                 "legacy v0 database detected at {}; v0 is no longer supported. \
                                  Remove the directory and restart to resync a v1 database from genesis.",
-                                cfg.storage.database.path.display()
+                                db_root.display()
                             )));
                         }
                         1 => FinalisedSource::spawn_v1(&cfg).await?,
                         _ => {
-                            return Err(FinalisedStateError::Custom(format!(
+                            return Err(StoreError::Custom(format!(
                                 "unsupported database version: DbV{version}"
                             )));
                         }
@@ -620,7 +688,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
                     match target_version.major() {
                         1 => FinalisedSource::spawn_v1(&cfg).await?,
                         _ => {
-                            return Err(FinalisedStateError::Custom(format!(
+                            return Err(StoreError::Custom(format!(
                                 "unsupported database version: DbV{target_version}"
                             )));
                         }
@@ -686,7 +754,13 @@ impl<T: BlockchainSource> FinalisedState<T> {
                 router.primary_backend().start_validator();
             }
 
-            Ok(Self { db: router, cfg })
+            let state = Self {
+                source,
+                db: router,
+                cfg,
+            };
+            state.refresh_watermark().await;
+            Ok(state)
         }
     }
 
@@ -694,11 +768,11 @@ impl<T: BlockchainSource> FinalisedState<T> {
     ///
     /// This delegates to the router, which shuts down:
     /// - the primary backend, and
-    /// - any shadow backend currently present (during migrations).
+    /// - any ephemeral passthrough currently present (during migrations).
     ///
     /// After this call returns `Ok(())`, database files may still remain on disk; shutdown does not
     /// delete data. (Deletion of old versions is handled by migrations when applicable.)
-    pub(crate) async fn shutdown(&self) -> Result<(), FinalisedStateError> {
+    pub async fn shutdown(&self) -> Result<(), StoreError> {
         self.db.shutdown().await
     }
 
@@ -707,7 +781,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
     /// This status is provided by the backend implementing `capability::DbCore::status`. During
     /// migrations, the router determines which backend serves `READ_CORE`, and the status reflects
     /// that routing decision.
-    pub(crate) fn status(&self) -> StatusType {
+    pub fn status(&self) -> StatusType {
         let status = self.db.status();
 
         // The reliable production hook for the one-shot "online" announcement. The ephemeral-release
@@ -740,7 +814,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
     /// Distinct from [`FinalisedState::status`]: an ephemeral passthrough reports
     /// [`StatusType::Ready`] just like a synced persistent database, so `status` alone cannot tell a
     /// caller whether the finalised state it is querying is the real on-disk index.
-    pub(crate) fn finalised_state_mode(&self) -> FinalisedStateMode {
+    pub fn finalised_state_mode(&self) -> FinalisedStateMode {
         self.db.finalised_state_mode()
     }
 
@@ -752,7 +826,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
     ///
     /// Call this after [`FinalisedState::spawn`] if downstream services require the database to be fully
     /// initialised before handling requests.
-    pub(crate) async fn wait_until_ready(&self) {
+    pub async fn wait_until_ready(&self) {
         let mut ticker = interval(Duration::from_millis(100));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
@@ -775,7 +849,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
     ///
     /// This polls the router at a fixed interval (100ms) using the same `MissedTickBehavior::Delay`
     /// timer as `FinalisedState::wait_until_ready`.
-    pub(crate) async fn wait_until_synced(&self) {
+    pub async fn wait_until_synced(&self) {
         let mut ticker = interval(Duration::from_millis(100));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {
@@ -791,13 +865,72 @@ impl<T: BlockchainSource> FinalisedState<T> {
         }
     }
 
+    /// The finalised watermark, as last published.
+    pub(crate) fn watermark(&self) -> zaino_chain_store::StoreWatermark {
+        self.db.watermark()
+    }
+
+    /// Watches the finalised watermark.
+    pub(crate) fn subscribe_watermark(
+        &self,
+    ) -> tokio::sync::watch::Receiver<zaino_chain_store::StoreWatermark> {
+        self.db.subscribe_watermark()
+    }
+
+    /// What the router will currently serve.
+    ///
+    /// The union of the primary and ephemeral masks rather than the primary
+    /// backend's own set: during a migration some capabilities route to the
+    /// passthrough backend, and what a consumer can ask for is what is routed,
+    /// not what the primary happens to hold.
+    pub(crate) fn capability(&self) -> crate::store::capability::Capability {
+        self.db.service_capability()
+    }
+
+    /// Builds up to and including `target`, using the store's own validator.
+    pub async fn build_to(&self, target: Height) -> Result<(), StoreError> {
+        let source = Arc::clone(&self.source);
+        self.sync_to_height(target, &source).await
+    }
+
+    /// Discards every block above `height`.
+    ///
+    /// Deletes from the tip downwards, one block at a time, because the writer
+    /// is append-only and its secondary indexes can only be reversed in the
+    /// order they were built. A repair path, not part of following the chain:
+    /// a reorg deep enough to reach the finalised state is outside the window
+    /// the chain head covers.
+    pub async fn rewind_to(&self, height: Height) -> Result<(), StoreError> {
+        while let Some(tip) = self.db.db_height().await? {
+            if tip.0 <= height.0 {
+                break;
+            }
+            self.db.delete_block_at_height(tip).await?;
+        }
+        self.refresh_watermark().await;
+        Ok(())
+    }
+
     /// Creates a read-only view onto the running database.
     ///
     /// All chain fetches should be performed through [`DbReader`] rather than calling read methods
     /// directly on `FinalisedState`.
-    pub(crate) fn to_reader(self: &Arc<Self>) -> DbReader<T> {
+    pub fn to_reader(self: &Arc<Self>) -> DbReader<T> {
         DbReader {
             inner: Arc::clone(self),
+        }
+    }
+
+    /// A reader from a handle that is not already behind an [`Arc`].
+    ///
+    /// The allocation is per reader, not per read, and it buys nothing shared:
+    /// the clone it wraps routes through the same [`Router`] as every other, so
+    /// two readers made this way see one store. Exists because the domain's
+    /// `reader(&self)` takes a plain reference where [`Self::to_reader`] needs
+    /// an `Arc<Self>`.
+    pub(crate) fn reader(&self) -> DbReader<T> {
+        DbReader {
+            inner: Arc::new(self.clone()),
         }
     }
 
@@ -805,7 +938,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
     ///
     /// The detection is intentionally conservative: it returns the **oldest** detected version,
     /// because the process may have been terminated mid-migration, leaving both an older primary
-    /// and a newer shadow directory on disk.
+    /// and a newer partially-migrated directory on disk.
     ///
     /// ## Recognised layouts
     ///
@@ -824,24 +957,27 @@ impl<T: BlockchainSource> FinalisedState<T> {
     ///
     /// Returns:
     /// - `Some(version)` if a compatible database directory is found,
-    /// - `None` if no database is detected (fresh DB creation case).
-    async fn try_find_current_db_version(cfg: &ChainIndexConfig) -> Option<u32> {
-        let legacy_dir = match cfg.network.kind() {
+    /// - `None` if no database is detected (fresh DB creation case), and for a
+    ///   store that holds nothing: there is no directory to look in, and so no
+    ///   version to find.
+    async fn try_find_current_db_version(cfg: &StoreSettings) -> Option<u32> {
+        let db_root = cfg.store.path()?;
+        let legacy_dir = match cfg.db.network().kind() {
             NetworkKind::Mainnet => "live",
             NetworkKind::Testnet => "test",
             NetworkKind::Regtest => "local",
         };
-        let legacy_path = cfg.storage.database.path.join(legacy_dir);
+        let legacy_path = db_root.join(legacy_dir);
         if legacy_path.join("data.mdb").exists() && legacy_path.join("lock.mdb").exists() {
             return Some(0);
         }
 
-        let net_dir = match cfg.network.kind() {
+        let net_dir = match cfg.db.network().kind() {
             NetworkKind::Mainnet => "mainnet",
             NetworkKind::Testnet => "testnet",
             NetworkKind::Regtest => "regtest",
         };
-        let net_path = cfg.storage.database.path.join(net_dir);
+        let net_path = db_root.join(net_dir);
         if net_path.exists() && net_path.is_dir() {
             for (i, version_dir) in VERSION_DIRS.iter().enumerate() {
                 let db_path = net_path.join(version_dir);
@@ -860,17 +996,17 @@ impl<T: BlockchainSource> FinalisedState<T> {
     /// Returns the database backend that should serve the requested capability.
     ///
     /// This is used by [`DbReader`] to route calls to the correct database during major migrations.
-    /// The router may return either the primary or shadow backend depending on the current routing
+    /// The router may return either the primary or the ephemeral backend depending on the current routing
     /// masks.
     ///
     /// ## Errors
-    /// Returns [`FinalisedStateError::FeatureUnavailable`] if neither backend currently serves the
+    /// Returns [`StoreError::FeatureUnavailable`] if neither backend currently serves the
     /// requested capability.
     #[inline]
     pub(crate) fn backend_for_cap(
         &self,
         cap: CapabilityRequest,
-    ) -> Result<Arc<FinalisedSource<T>>, FinalisedStateError> {
+    ) -> Result<Arc<FinalisedSource<T>>, StoreError> {
         self.db.backend(cap)
     }
 
@@ -887,20 +1023,16 @@ impl<T: BlockchainSource> FinalisedState<T> {
     /// An *empty* database is never treated as already holding genesis: it must always sync so the
     /// origin block is written.
     ///
-    /// If the requested sync range is more than `LONG_RUNNING_SYNC_THRESHOLD` blocks ahead of the
+    /// If the requested sync range is more than `background_build_threshold` blocks ahead of the
     /// current persistent database height, the sync runs in the **background**: read-only ephemeral
     /// routing is installed for its duration (keeping finalised-state reads served by the source while
     /// normal routed writes continue appending to primary), and this method returns immediately.
     /// Completion can be awaited via `FinalisedState::wait_until_synced`.
     ///
-    /// If the requested sync range is within `LONG_RUNNING_SYNC_THRESHOLD`, the sync runs **inline**
+    /// If the requested sync range is within `background_build_threshold`, the sync runs **inline**
     /// and this method only returns once every block has been written, so callers that read straight
     /// back (e.g. ChainIndex NFS initialisation) observe the data.
-    pub(crate) async fn sync_to_height(
-        &self,
-        height: Height,
-        source: &T,
-    ) -> Result<(), FinalisedStateError>
+    pub async fn sync_to_height(&self, height: Height, source: &Arc<T>) -> Result<(), StoreError>
     where
         T: Send + Sync + 'static,
     {
@@ -939,11 +1071,13 @@ impl<T: BlockchainSource> FinalisedState<T> {
 
         let db_height = db_height_opt.unwrap_or(GENESIS_HEIGHT);
         let sync_is_long_running =
-            height.0.saturating_sub(db_height.0) > LONG_RUNNING_SYNC_THRESHOLD;
+            height.0.saturating_sub(db_height.0) > self.cfg.store.background_build_threshold();
 
+        let max_attempts = self.cfg.store.max_consecutive_failures();
+        let retry_backoff = self.cfg.store.retry_backoff();
         let router = Arc::clone(&self.db);
         let cfg = self.cfg.clone();
-        let source = source.clone();
+        let source = Arc::clone(source);
 
         if sync_is_long_running {
             // Register the background sync in the foreground, before spawning, so `wait_until_synced`
@@ -954,7 +1088,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
             let ephemeral_reference = router
                 .init_or_take_ephemeral(
                     source.clone(),
-                    cfg.network.clone(),
+                    cfg.db.network().clone(),
                     EphemeralMode::ReadOnly,
                     db_height_opt,
                 )
@@ -984,7 +1118,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
                         Ok(()) => return,
                         Err(error) => {
                             attempt += 1;
-                            if attempt >= MAX_BACKGROUND_SYNC_RETRIES {
+                            if attempt >= max_attempts {
                                 tracing::error!(
                                     "FinalisedState background sync_to_height failed after {attempt} \
                                      attempts, giving up: {error}"
@@ -994,10 +1128,10 @@ impl<T: BlockchainSource> FinalisedState<T> {
                             }
                             tracing::warn!(
                                 "FinalisedState background sync_to_height failed (attempt \
-                                 {attempt}/{MAX_BACKGROUND_SYNC_RETRIES}), retrying: {error}"
+                                 {attempt}/{max_attempts}), retrying: {error}"
                             );
                             router.store_primary_status(StatusType::RecoverableError);
-                            tokio::time::sleep(BACKGROUND_SYNC_RETRY_BACKOFF).await;
+                            tokio::time::sleep(retry_backoff).await;
                         }
                     }
                 }
@@ -1013,10 +1147,10 @@ impl<T: BlockchainSource> FinalisedState<T> {
 
     async fn sync_to_height_background(
         router: Arc<Router<T>>,
-        _cfg: ChainIndexConfig,
+        _cfg: StoreSettings,
         height: Height,
-        source: T,
-    ) -> Result<(), FinalisedStateError>
+        source: Arc<T>,
+    ) -> Result<(), StoreError>
     where
         T: Send + Sync + 'static,
     {
@@ -1032,7 +1166,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
         // deferring secondary-index maintenance) rather than a per-block loop here; progress is
         // logged from within that loop. The batched path is what keeps large catch-up syncs off
         // the random-fault cliff (see the `zaino-state` changelog).
-        let result = router.write_blocks_to_height(height, &source).await;
+        let result = router.write_blocks_to_height(height, source.as_ref()).await;
 
         if result.is_ok() {
             // Keep the ephemeral passthrough's reported finalised height in step with the primary
@@ -1044,8 +1178,21 @@ impl<T: BlockchainSource> FinalisedState<T> {
             // not be on disk yet. Force a durability checkpoint so a `sync_to_height` that returns
             // `Ok` is guaranteed durable; a later crash can only roll back to this height.
             let env = router.backend(CapabilityRequest::WriteCore)?.env()?;
-            tokio::task::block_in_place(|| env.sync(true))
-                .map_err(FinalisedStateError::LmdbError)?;
+            tokio::task::block_in_place(|| env.sync(true)).map_err(StoreError::LmdbError)?;
+
+            // Publish the height this run reached. Without it the watermark
+            // would only ever be what `spawn` published, which on a store that
+            // was empty at startup is nothing at all — so every read bounded by
+            // the watermark would refuse forever while the database filled up
+            // behind it. `write_block` and `rewind_to` publish for the same
+            // reason; this is the path the sync worker actually drives, and it
+            // was the one not doing it.
+            //
+            // Once per completed run, not once per batch: a long catch-up
+            // serves its reads through the ephemeral passthrough it holds a
+            // reference to, so the watermark standing still for the duration is
+            // the correct description of what the primary can answer.
+            refresh_watermark(&router).await;
         }
 
         result
@@ -1059,8 +1206,10 @@ impl<T: BlockchainSource> FinalisedState<T> {
     ///
     /// For reorg handling, callers should delete tip blocks using [`FinalisedState::delete_block_at_height`]
     /// or [`FinalisedState::delete_block`] before re-appending.
-    pub(crate) async fn write_block(&self, b: IndexedBlock) -> Result<(), FinalisedStateError> {
-        self.db.write_block(b).await
+    pub async fn write_block(&self, b: IndexedBlock) -> Result<(), StoreError> {
+        self.db.write_block(b).await?;
+        self.refresh_watermark().await;
+        Ok(())
     }
 
     /// Deletes the block at height `h` from the database.
@@ -1072,11 +1221,10 @@ impl<T: BlockchainSource> FinalisedState<T> {
     /// deletion cannot be completed correctly (for example, if the backend cannot reconstruct all
     /// derived index entries needed for deletion), callers must fall back to [`FinalisedState::delete_block`]
     /// using an [`IndexedBlock`] fetched from the validator/source to ensure a complete wipe.
-    pub(crate) async fn delete_block_at_height(
-        &self,
-        h: Height,
-    ) -> Result<(), FinalisedStateError> {
-        self.db.delete_block_at_height(h).await
+    pub async fn delete_block_at_height(&self, h: Height) -> Result<(), StoreError> {
+        self.db.delete_block_at_height(h).await?;
+        self.refresh_watermark().await;
+        Ok(())
     }
 
     /// Deletes the provided block from the database.
@@ -1086,8 +1234,22 @@ impl<T: BlockchainSource> FinalisedState<T> {
     ///
     /// Prefer [`FinalisedState::delete_block_at_height`] when possible; use this method when the backend
     /// requires full block contents to correctly reverse all indices.
-    pub(crate) async fn delete_block(&self, b: &IndexedBlock) -> Result<(), FinalisedStateError> {
-        self.db.delete_block(b).await
+    pub(crate) async fn delete_block(&self, b: &IndexedBlock) -> Result<(), StoreError> {
+        self.db.delete_block(b).await?;
+        self.refresh_watermark().await;
+        Ok(())
+    }
+
+    /// Re-reads the tip and publishes it as the watermark.
+    ///
+    /// Called after every operation that could move the tip, rather than having
+    /// each of them compute the new value: the operations that change a height
+    /// are spread across the writer, the migration path and the ephemeral
+    /// lifecycle, and a publish site that has to be remembered at each one is a
+    /// publish site that gets forgotten. Re-reading costs two indexed lookups
+    /// and happens per batch, not per block.
+    pub(crate) async fn refresh_watermark(&self) {
+        refresh_watermark(&self.db).await;
     }
 
     // ***** DB Core Read *****
@@ -1097,7 +1259,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
     /// Returns:
     /// - `Ok(Some(height))` if at least one block is present,
     /// - `Ok(None)` if the database is empty.
-    pub(crate) async fn db_height(&self) -> Result<Option<Height>, FinalisedStateError> {
+    pub async fn db_height(&self) -> Result<Option<Height>, StoreError> {
         self.db.db_height().await
     }
 
@@ -1109,7 +1271,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
     pub(crate) async fn get_block_height(
         &self,
         hash: BlockHash,
-    ) -> Result<Option<Height>, FinalisedStateError> {
+    ) -> Result<Option<Height>, StoreError> {
         self.db.get_block_height(hash).await
     }
 
@@ -1121,20 +1283,20 @@ impl<T: BlockchainSource> FinalisedState<T> {
     pub(crate) async fn get_block_hash(
         &self,
         height: Height,
-    ) -> Result<Option<BlockHash>, FinalisedStateError> {
+    ) -> Result<Option<BlockHash>, StoreError> {
         self.db.get_block_hash(height).await
     }
 
     /// Returns the persisted database metadata.
     ///
     /// See `capability::DbMetadata` for the precise fields and on-disk encoding.
-    pub(crate) async fn get_metadata(&self) -> Result<DbMetadata, FinalisedStateError> {
+    pub(crate) async fn get_metadata(&self) -> Result<DbMetadata, StoreError> {
         self.db.get_metadata().await
     }
 }
 
 #[cfg(test)]
-impl<T: BlockchainSource> FinalisedState<T> {
+impl<T: ChainStoreSource> FinalisedState<T> {
     /// Returns the internal router.
     ///
     /// This is a test-only escape hatch for unit and integration tests that need direct access to
@@ -1175,17 +1337,17 @@ impl<T: BlockchainSource> FinalisedState<T> {
     /// migrations stop at a specific target version rather than always migrating to the latest
     /// supported version.
     pub(crate) async fn spawn_with_target_version(
-        cfg: ChainIndexConfig,
-        source: T,
+        cfg: StoreSettings,
+        source: Arc<T>,
         target_version: DbVersion,
-    ) -> Result<Self, FinalisedStateError> {
+    ) -> Result<Self, StoreError> {
         if target_version.major() > DB_VERSION_V1.major() {
-            return Err(FinalisedStateError::Custom(format!(
+            return Err(StoreError::Custom(format!(
                 "unsupported database version: {target_version}"
             )));
         }
         if target_version.major() == DB_VERSION_V1.major() && target_version > DB_VERSION_V1 {
-            return Err(FinalisedStateError::Custom(format!(
+            return Err(StoreError::Custom(format!(
                 "unsupported database version: {target_version}"
             )));
         }
@@ -1198,14 +1360,14 @@ impl<T: BlockchainSource> FinalisedState<T> {
                 match version {
                     1 => FinalisedSource::spawn_v1(&cfg).await?,
                     _ => {
-                        return Err(FinalisedStateError::Custom(format!(
+                        return Err(StoreError::Custom(format!(
                             "unsupported database version: DbV{version}"
                         )));
                     }
                 }
             }
             None => {
-                return Err(FinalisedStateError::Custom(
+                return Err(StoreError::Custom(
                     "expected existing v1.0.0 migration-test database, found no database"
                         .to_string(),
                 ));
@@ -1226,7 +1388,7 @@ impl<T: BlockchainSource> FinalisedState<T> {
                 cfg: cfg.clone(),
                 current_version,
                 target_version,
-                source,
+                source: Arc::clone(&source),
             };
             migration_manager.migrate().await?;
         }
@@ -1241,14 +1403,20 @@ impl<T: BlockchainSource> FinalisedState<T> {
 
         let metadata = router.get_metadata().await?;
         if metadata.version() != target_version {
-            return Err(FinalisedStateError::Custom(format!(
+            return Err(StoreError::Custom(format!(
                 "database version mismatch after test spawn: expected {}, found {}",
                 target_version,
                 metadata.version()
             )));
         }
 
-        Ok(Self { db: router, cfg })
+        let state = Self {
+            source,
+            db: router,
+            cfg,
+        };
+        state.refresh_watermark().await;
+        Ok(state)
     }
 
     /// Builds a clean v1.0.0 database fixture from `source`.
@@ -1266,78 +1434,44 @@ impl<T: BlockchainSource> FinalisedState<T> {
     /// - every block from genesis through that height, and
     /// - Sapling and Orchard commitment tree roots for each block.
     pub(crate) async fn build_clean_v1_0_0(
-        cfg: &ChainIndexConfig,
-        source: T,
-    ) -> Result<FinalisedSource<T>, FinalisedStateError> {
+        cfg: &StoreSettings,
+        source: Arc<T>,
+    ) -> Result<FinalisedSource<T>, StoreError> {
         let db = FinalisedSource::spawn_v1_0_0(cfg).await?;
 
-        let tip = source.get_best_block_height().await?.ok_or_else(|| {
-            FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
-                "source has no best block height".to_string(),
-            ))
-        })?;
-        let tip = Height::from(tip);
+        let tip = source
+            .get_best_block_height()
+            .await
+            .map_err(|error| StoreError::Source(source_error(error)))?;
+        let tip = Height(u32::from(tip));
 
         // Ironwood (NU6.3) commitment tree data is only expected from activation. Below activation
         // (or on a network with no NU6.3 activation height) the source has no ironwood root, so it
         // defaults — mirroring `build_indexed_block_from_source`.
-        let nu6_3_activation_height = super::ShieldedPool::Ironwood
+        let nu6_3_activation_height = crate::pool::ShieldedPool::Ironwood
             .activation_upgrade()
-            .activation_height(&cfg.network);
+            .activation_height(cfg.db.network());
 
         let mut parent_chainwork: Option<ChainWork> = None;
 
-        for height in crate::chain_index::types::GENESIS_HEIGHT.0..=tip.0 {
-            let block = source
-                .get_block(zebra_state::HashOrHeight::Height(
-                    zebra_chain::block::Height(height),
-                ))
-                .await?
-                .ok_or_else(|| {
-                    FinalisedStateError::BlockchainSourceError(
-                        BlockchainSourceError::Unrecoverable(format!(
-                            "source missing block at height {height}"
-                        )),
-                    )
-                })?;
+        for height in crate::types::GENESIS_HEIGHT.0..=tip.0 {
+            let block = fetch_block(source.as_ref(), height).await?;
+            let tree_roots = fetch_tree_roots(source.as_ref(), &block).await?;
 
-            let block_hash = BlockHash::from(block.hash().0);
-            let (sapling_opt, orchard_opt, ironwood_opt) =
-                source.get_commitment_tree_roots(block_hash).await?;
             // Per this builder's contract, the fixture source provides Sapling and Orchard
             // roots for every block, so those pools are unconditionally required.
-            let (sapling_root, sapling_size) =
-                required_pool_root(super::ShieldedPool::Sapling, true, sapling_opt, || {
-                    format!("block {block_hash}")
-                })?;
-            let (orchard_root, orchard_size) =
-                required_pool_root(super::ShieldedPool::Orchard, true, orchard_opt, || {
-                    format!("block {block_hash}")
-                })?;
-            let is_ironwood_active =
-                nu6_3_activation_height.is_some_and(|activation| height >= activation.0);
-            let ironwood = optional_pool_root(
-                super::ShieldedPool::Ironwood,
-                is_ironwood_active,
-                ironwood_opt,
-                || format!("block {block_hash}"),
+            require_pool_roots(
+                &tree_roots,
+                PoolActivation {
+                    sapling: true,
+                    orchard: true,
+                    ironwood: nu6_3_activation_height
+                        .is_some_and(|activation| height >= activation.0),
+                },
+                block.header.hash,
             )?;
 
-            let metadata = BlockMetadata {
-                sapling_root,
-                sapling_size,
-                orchard_root,
-                orchard_size,
-                ironwood,
-                parent_chainwork,
-                network: cfg.network.clone(),
-            };
-            let block_with_metadata = BlockWithMetadata::new(block.as_ref(), metadata);
-            let chain_block = IndexedBlock::try_from(block_with_metadata).map_err(|_| {
-                FinalisedStateError::BlockchainSourceError(BlockchainSourceError::Unrecoverable(
-                    format!("error building block data at height {height}"),
-                ))
-            })?;
+            let chain_block = indexed_block_from_parts(&block, &tree_roots, parent_chainwork)?;
             parent_chainwork = Some(chain_block.context.chainwork);
 
             db.write_block_v1_0_0(chain_block).await?;
@@ -1359,13 +1493,13 @@ impl<T: BlockchainSource> FinalisedState<T> {
     /// exercising the migration path from v1.0.0. The target version must be at least v1.0.0 and no
     /// newer than the current compiled [`DB_VERSION_V1`].
     pub(crate) async fn build_db_to_version(
-        cfg: ChainIndexConfig,
-        source: T,
+        cfg: StoreSettings,
+        source: Arc<T>,
         target_version: DbVersion,
-    ) -> Result<Self, FinalisedStateError> {
+    ) -> Result<Self, StoreError> {
         let v1_0_0 = DbVersion::new(1, 0, 0);
         if target_version < v1_0_0 {
-            return Err(FinalisedStateError::Custom(format!(
+            return Err(StoreError::Custom(format!(
                 "target version {} is older than v1.0.0",
                 target_version
             )));

@@ -6,12 +6,12 @@
 //! Concrete backing implementations live in:
 //! - [`v1`]: current persistent schema (expanded indices and query surface)
 //! - [`ephemeral`]: ephemeral passthrough that serves finalised reads directly from the
-//!   [`BlockchainSource`](crate::chain_index::source::BlockchainSource) and persists nothing
+//!   [`ChainStoreSource`](zaino_chain_store::ChainStoreSource) and persists nothing
 //!   (used for ephemeral mode and as the passthrough during background sync/migration)
 //!
 //! `FinalisedSource` delegates the core traits (`DbCore`, `DbRead`, `DbWrite`) and all extension traits
 //! to the appropriate concrete implementation. It is the finalised-state *backing*, distinct from the
-//! upstream `BlockchainSource` the `Ephemeral` variant passes through to.
+//! upstream `ChainStoreSource` the `Ephemeral` variant passes through to.
 //!
 //! # Capability model integration
 //!
@@ -53,7 +53,7 @@
 //! - and a migration/rebuild plan if the index requires historical backfill.
 //!
 //! Keep unsupported methods explicit: if a DB version does not provide a feature, return
-//! `FinalisedStateError::FeatureUnavailable(...)` rather than silently degrading semantics.
+//! `StoreError::FeatureUnavailable(...)` rather than silently degrading semantics.
 
 pub(crate) mod ephemeral;
 pub(crate) mod v1;
@@ -61,29 +61,32 @@ pub(crate) mod v1;
 use v1::DbV1;
 use zaino_proto::proto::utils::PoolTypeFilter;
 
-use crate::SendFut;
+use crate::support::SendFut;
 
-use crate::{
-    chain_index::{
-        finalised_state::{
-            capability::{
-                BlockCoreExt, BlockShieldedExt, BlockTransparentExt, CompactBlockExt, DbCore,
-                DbMetadata, DbRead, DbWrite, IndexedBlockExt, TransparentHistExt,
-            },
-            finalised_source::ephemeral::EphemeralFinalisedState,
-        },
-        types::{db::metadata::FinalisedTxOutSetInfoAccumulator, TransactionHash},
+#[cfg(feature = "transparent_address_history_experimental")]
+use crate::store::capability::TransparentHistExt;
+use crate::store::{
+    capability::{
+        BlockCoreExt, BlockShieldedExt, BlockTransparentExt, CompactBlockExt, DbCore, DbMetadata,
+        DbRead, DbWrite, IndexedBlockExt, SpentOutputExt, TxOutSetExt,
     },
-    config::ChainIndexConfig,
-    error::FinalisedStateError,
-    BlockHash, BlockHeaderData, BlockchainSource, CommitmentTreeData, CompactBlockStream, Height,
-    IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList,
-    TransparentCompactTx, TransparentTxList, TxLocation, TxOutCompact, TxidList,
+    finalised_source::ephemeral::EphemeralFinalisedState,
 };
+use crate::stream::CompactBlockStream;
+use crate::types::{
+    db::metadata::FinalisedTxOutSetInfoAccumulator, BlockHash, BlockHeaderData, CommitmentTreeData,
+    Height, IndexedBlock, OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx,
+    SaplingTxList, TransactionHash, TransparentCompactTx, TransparentTxList, TxLocation,
+    TxOutCompact, TxidList,
+};
+use crate::{config::StoreSettings, error::StoreError};
+use zaino_chain_store::ChainStoreSource;
 use zaino_status::{NamedAtomicStatus, StatusType};
 
 #[cfg(feature = "transparent_address_history_experimental")]
-use crate::AddrScript;
+use crate::store::capability::AddrUtxo;
+#[cfg(feature = "transparent_address_history_experimental")]
+use crate::types::AddrScript;
 
 use lmdb::{Database, DatabaseFlags, Environment};
 use std::{
@@ -132,7 +135,7 @@ pub(super) trait LmdbLifecycle: Sync {
         }
     }
 
-    fn clean_trailing(&self) -> impl SendFut<Result<(), FinalisedStateError>> {
+    fn clean_trailing(&self) -> impl SendFut<Result<(), StoreError>> {
         async move {
             let txn = self.env().begin_ro_txn()?;
             drop(txn);
@@ -154,7 +157,7 @@ pub(super) trait LmdbLifecycle: Sync {
         }
     }
 
-    fn shutdown(&self) -> impl SendFut<Result<(), FinalisedStateError>> {
+    fn shutdown(&self) -> impl SendFut<Result<(), StoreError>> {
         async move {
             self.status_atomic().store(StatusType::Closing);
             self.cancel_token().cancel();
@@ -197,13 +200,13 @@ pub(super) async fn open_or_create_db(
     env: &Environment,
     name: &str,
     flags: DatabaseFlags,
-) -> Result<Database, FinalisedStateError> {
+) -> Result<Database, StoreError> {
     match env.open_db(Some(name)) {
         Ok(db) => Ok(db),
         Err(lmdb::Error::NotFound) => env
             .create_db(Some(name), flags)
-            .map_err(FinalisedStateError::LmdbError),
-        Err(e) => Err(FinalisedStateError::LmdbError(e)),
+            .map_err(StoreError::LmdbError),
+        Err(e) => Err(StoreError::LmdbError(e)),
     }
 }
 
@@ -226,11 +229,11 @@ pub(super) const VERSION_DIRS: [&str; 1] = ["v1"];
 /// - It is constructed by spawning a concrete backend (for example, v1).
 /// - It implements the core database traits (`DbCore`, `DbRead`, `DbWrite`).
 /// - It implements capability extension traits by delegating to the concrete implementation, or by
-///   returning [`FinalisedStateError::FeatureUnavailable`] when unsupported.
+///   returning [`StoreError::FeatureUnavailable`] when unsupported.
 ///
 /// Capability reporting is provided by [`FinalisedSource::capability`] and must match the methods that
 /// successfully dispatch in the extension trait implementations below.
-pub(crate) enum FinalisedSource<T: BlockchainSource> {
+pub(crate) enum FinalisedSource<T: ChainStoreSource> {
     /// Current schema backend.
     ///
     /// Boxed: `DbV1` is large and dominates the enum, while `Ephemeral` is small. Boxing keeps
@@ -244,18 +247,18 @@ pub(crate) enum FinalisedSource<T: BlockchainSource> {
 
 // ***** Core database functionality *****
 
-impl<T: BlockchainSource> FinalisedSource<T> {
+impl<T: ChainStoreSource> FinalisedSource<T> {
     /// Spawn a v1 database backend.
     ///
     /// This constructs and initializes the current schema implementation and returns it wrapped in
     /// [`FinalisedSource::V1`].
-    pub(crate) async fn spawn_v1(cfg: &ChainIndexConfig) -> Result<Self, FinalisedStateError> {
+    pub(crate) async fn spawn_v1(cfg: &StoreSettings) -> Result<Self, StoreError> {
         Ok(Self::V1(Box::new(DbV1::spawn(cfg).await?)))
     }
 
     /// Spawns a "ephemeral" finalised state.
     pub(crate) fn ephemeral(
-        source: T,
+        source: Arc<T>,
         network: zebra_chain::parameters::Network,
         db_height: Option<Height>,
     ) -> Self {
@@ -330,15 +333,15 @@ impl<T: BlockchainSource> FinalisedSource<T> {
     ///
     /// Shared by the v1-only accessors below so each call site is a single line that names the
     /// feature it requires; `feature` is the message used when the backend is ephemeral.
-    fn require_v1(&self, feature: &'static str) -> Result<&DbV1, FinalisedStateError> {
+    fn require_v1(&self, feature: &'static str) -> Result<&DbV1, StoreError> {
         match self {
             Self::V1(db) => Ok(db.as_ref()),
-            Self::Ephemeral(_) => Err(FinalisedStateError::FeatureUnavailable(feature)),
+            Self::Ephemeral(_) => Err(StoreError::FeatureUnavailable(feature)),
         }
     }
 
     /// Return an arc clone of the underlying LMDB environment, used during some DB migrations.
-    pub(crate) fn env(&self) -> Result<Arc<Environment>, FinalisedStateError> {
+    pub(crate) fn env(&self) -> Result<Arc<Environment>, StoreError> {
         Ok(Arc::clone(
             self.require_v1("no LMDB environment available")?.env(),
         ))
@@ -346,36 +349,36 @@ impl<T: BlockchainSource> FinalisedSource<T> {
 
     /// Provides access to the metadata DB table, enabling the migration manager
     /// to use this DB table to store temporary migration metadata.
-    pub(crate) fn metadata_db(&self) -> Result<Database, FinalisedStateError> {
+    pub(crate) fn metadata_db(&self) -> Result<Database, StoreError> {
         Ok(self
             .require_v1("v1 metadata db not available")?
             .metadata_db())
     }
 
     /// Provudes access to the spent DB table, required for Migration1_1_0To1_2_0.
-    pub(crate) fn spent_db(&self) -> Result<Database, FinalisedStateError> {
+    pub(crate) fn spent_db(&self) -> Result<Database, StoreError> {
         Ok(self.require_v1("v1 spent db not available")?.spent_db())
     }
 
     /// Provides access to the reverse txid-index DB table, required for Migration1_1_0To1_2_0.
-    pub(crate) fn txid_location_db(&self) -> Result<Database, FinalisedStateError> {
+    pub(crate) fn txid_location_db(&self) -> Result<Database, StoreError> {
         Ok(self.require_v1("v1 txid_location db")?.txid_location_db())
     }
 
     /// Provides access to the txids DB table, required for Migration1_1_0To1_2_0.
-    pub(crate) fn txids_db(&self) -> Result<Database, FinalisedStateError> {
+    pub(crate) fn txids_db(&self) -> Result<Database, StoreError> {
         Ok(self.require_v1("v1 txids db")?.txids_db())
     }
 
     /// Provides access to the transparent DB table, required for Migration1_1_0To1_2_0 Stage B to
     /// read block transparent data directly (bypassing per-height block re-validation).
-    pub(crate) fn transparent_db(&self) -> Result<Database, FinalisedStateError> {
+    pub(crate) fn transparent_db(&self) -> Result<Database, StoreError> {
         Ok(self.require_v1("v1 transparent db")?.transparent_db())
     }
 
     /// Provides access to the (v1.3.0) `StoredEntryVar` commitment-tree-data table, required for
     /// Migration1_2_1To1_3_0 to write the rebuilt commitment rows.
-    pub(crate) fn commitment_tree_data_db(&self) -> Result<Database, FinalisedStateError> {
+    pub(crate) fn commitment_tree_data_db(&self) -> Result<Database, StoreError> {
         Ok(self
             .require_v1("v1 commitment_tree_data db")?
             .commitment_tree_data_db())
@@ -383,26 +386,26 @@ impl<T: BlockchainSource> FinalisedSource<T> {
 
     /// Provides access to the (v1.3.0) `ironwood` table, required for Migration1_2_1To1_3_0 to
     /// backfill ironwood rows from validator-fetched block data.
-    pub(super) fn ironwood_db(&self) -> Result<Database, FinalisedStateError> {
+    pub(super) fn ironwood_db(&self) -> Result<Database, StoreError> {
         Ok(self.require_v1("v1 ironwood db")?.ironwood_db())
     }
 }
 
-impl<T: BlockchainSource> From<DbV1> for FinalisedSource<T> {
+impl<T: ChainStoreSource> From<DbV1> for FinalisedSource<T> {
     /// Wrap an already-constructed v1 database backend.
     fn from(value: DbV1) -> Self {
         Self::V1(Box::new(value))
     }
 }
 
-impl<T: BlockchainSource> From<EphemeralFinalisedState<T>> for FinalisedSource<T> {
+impl<T: ChainStoreSource> From<EphemeralFinalisedState<T>> for FinalisedSource<T> {
     /// Wrap an already-constructed ephemeral finalised state backend.
     fn from(value: EphemeralFinalisedState<T>) -> Self {
         Self::Ephemeral(value)
     }
 }
 
-impl<T: BlockchainSource> DbCore for FinalisedSource<T> {
+impl<T: ChainStoreSource> DbCore for FinalisedSource<T> {
     /// Return the current status of the backend.
     ///
     /// This is a thin delegation wrapper over the concrete implementation.
@@ -416,7 +419,7 @@ impl<T: BlockchainSource> DbCore for FinalisedSource<T> {
     /// Shut down the backend and release associated resources.
     ///
     /// This is a thin delegation wrapper over the concrete implementation.
-    async fn shutdown(&self) -> Result<(), FinalisedStateError> {
+    async fn shutdown(&self) -> Result<(), StoreError> {
         match self {
             Self::V1(db) => DbCore::shutdown(db.as_ref()).await,
             Self::Ephemeral(ephemeral) => DbCore::shutdown(ephemeral).await,
@@ -424,11 +427,11 @@ impl<T: BlockchainSource> DbCore for FinalisedSource<T> {
     }
 }
 
-impl<T: BlockchainSource> DbRead for FinalisedSource<T> {
+impl<T: ChainStoreSource> DbRead for FinalisedSource<T> {
     /// Return the highest stored height in the database, if present.
     ///
     /// This is a thin delegation wrapper over the concrete implementation.
-    async fn db_height(&self) -> Result<Option<Height>, FinalisedStateError> {
+    async fn db_height(&self) -> Result<Option<Height>, StoreError> {
         match self {
             Self::V1(db) => db.db_height().await,
             Self::Ephemeral(ephemeral) => ephemeral.db_height().await,
@@ -438,10 +441,7 @@ impl<T: BlockchainSource> DbRead for FinalisedSource<T> {
     /// Resolve a block hash to its stored height, if present.
     ///
     /// This is a thin delegation wrapper over the concrete implementation.
-    async fn get_block_height(
-        &self,
-        hash: BlockHash,
-    ) -> Result<Option<Height>, FinalisedStateError> {
+    async fn get_block_height(&self, hash: BlockHash) -> Result<Option<Height>, StoreError> {
         match self {
             Self::V1(db) => db.get_block_height(hash).await,
             Self::Ephemeral(ephemeral) => ephemeral.get_block_height(hash).await,
@@ -451,10 +451,7 @@ impl<T: BlockchainSource> DbRead for FinalisedSource<T> {
     /// Resolve a block height to its stored block hash, if present.
     ///
     /// This is a thin delegation wrapper over the concrete implementation.
-    async fn get_block_hash(
-        &self,
-        height: Height,
-    ) -> Result<Option<BlockHash>, FinalisedStateError> {
+    async fn get_block_hash(&self, height: Height) -> Result<Option<BlockHash>, StoreError> {
         match self {
             Self::V1(db) => db.get_block_hash(height).await,
             Self::Ephemeral(ephemeral) => ephemeral.get_block_hash(height).await,
@@ -465,7 +462,7 @@ impl<T: BlockchainSource> DbRead for FinalisedSource<T> {
     ///
     /// This includes versioning and migration status and is used by the migration manager and
     /// compatibility checks.
-    async fn get_metadata(&self) -> Result<DbMetadata, FinalisedStateError> {
+    async fn get_metadata(&self) -> Result<DbMetadata, StoreError> {
         match self {
             Self::V1(db) => db.get_metadata().await,
             Self::Ephemeral(ephemeral) => ephemeral.get_metadata().await,
@@ -473,11 +470,11 @@ impl<T: BlockchainSource> DbRead for FinalisedSource<T> {
     }
 }
 
-impl<T: BlockchainSource> DbWrite for FinalisedSource<T> {
+impl<T: ChainStoreSource> DbWrite for FinalisedSource<T> {
     /// Write a fully-indexed block into the database.
     ///
     /// This is a thin delegation wrapper over the concrete implementation.
-    async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
+    async fn write_block(&self, block: IndexedBlock) -> Result<(), StoreError> {
         match self {
             Self::V1(db) => db.write_block(block).await,
             Self::Ephemeral(_ephemeral) => Ok(()),
@@ -485,11 +482,11 @@ impl<T: BlockchainSource> DbWrite for FinalisedSource<T> {
     }
 
     /// Bulk catch-up ingestion, delegated to the concrete backend's strategy.
-    async fn write_blocks_to_height<S: crate::chain_index::source::BlockchainSource>(
+    async fn write_blocks_to_height<S: zaino_chain_store::ChainStoreSource>(
         &self,
         height: Height,
         source: &S,
-    ) -> Result<(), FinalisedStateError> {
+    ) -> Result<(), StoreError> {
         match self {
             Self::V1(db) => db.write_blocks_to_height(height, source).await,
             Self::Ephemeral(db) => db.write_blocks_to_height(height, source).await,
@@ -499,7 +496,7 @@ impl<T: BlockchainSource> DbWrite for FinalisedSource<T> {
     /// Delete the block at a given height, if present.
     ///
     /// This is a thin delegation wrapper over the concrete implementation.
-    async fn delete_block_at_height(&self, height: Height) -> Result<(), FinalisedStateError> {
+    async fn delete_block_at_height(&self, height: Height) -> Result<(), StoreError> {
         match self {
             Self::V1(db) => db.delete_block_at_height(height).await,
             Self::Ephemeral(_ephemeral) => Ok(()),
@@ -509,7 +506,7 @@ impl<T: BlockchainSource> DbWrite for FinalisedSource<T> {
     /// Delete a specific indexed block from the database.
     ///
     /// This is a thin delegation wrapper over the concrete implementation.
-    async fn delete_block(&self, block: &IndexedBlock) -> Result<(), FinalisedStateError> {
+    async fn delete_block(&self, block: &IndexedBlock) -> Result<(), StoreError> {
         match self {
             Self::V1(db) => db.delete_block(block).await,
             Self::Ephemeral(_ephemeral) => Ok(()),
@@ -519,7 +516,7 @@ impl<T: BlockchainSource> DbWrite for FinalisedSource<T> {
     /// Update the database metadata record.
     ///
     /// This is used by migrations and schema management logic.
-    async fn update_metadata(&self, metadata: DbMetadata) -> Result<(), FinalisedStateError> {
+    async fn update_metadata(&self, metadata: DbMetadata) -> Result<(), StoreError> {
         match self {
             Self::V1(db) => db.update_metadata(metadata).await,
             Self::Ephemeral(_ephemeral) => Ok(()),
@@ -531,15 +528,12 @@ impl<T: BlockchainSource> DbWrite for FinalisedSource<T> {
 //
 // Each extension trait corresponds to a distinct capability group. The dispatch rules are:
 // - If the backend supports the capability, delegate to the concrete implementation.
-// - If unsupported, return `FinalisedStateError::FeatureUnavailable("<capability_name>")`.
+// - If unsupported, return `StoreError::FeatureUnavailable("<capability_name>")`.
 //
 // These names must remain consistent with the capability wiring in `capability.rs`.
 
-impl<T: BlockchainSource> BlockCoreExt for FinalisedSource<T> {
-    async fn get_block_header(
-        &self,
-        height: Height,
-    ) -> Result<BlockHeaderData, FinalisedStateError> {
+impl<T: ChainStoreSource> BlockCoreExt for FinalisedSource<T> {
+    async fn get_block_header(&self, height: Height) -> Result<BlockHeaderData, StoreError> {
         match self {
             Self::V1(db) => db.get_block_header(height).await,
             Self::Ephemeral(db) => db.get_block_header(height).await,
@@ -550,14 +544,14 @@ impl<T: BlockchainSource> BlockCoreExt for FinalisedSource<T> {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<BlockHeaderData>, FinalisedStateError> {
+    ) -> Result<Vec<BlockHeaderData>, StoreError> {
         match self {
             Self::V1(db) => db.get_block_range_headers(start, end).await,
             Self::Ephemeral(db) => db.get_block_range_headers(start, end).await,
         }
     }
 
-    async fn get_block_txids(&self, height: Height) -> Result<TxidList, FinalisedStateError> {
+    async fn get_block_txids(&self, height: Height) -> Result<TxidList, StoreError> {
         match self {
             Self::V1(db) => db.get_block_txids(height).await,
             Self::Ephemeral(db) => db.get_block_txids(height).await,
@@ -568,17 +562,14 @@ impl<T: BlockchainSource> BlockCoreExt for FinalisedSource<T> {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<TxidList>, FinalisedStateError> {
+    ) -> Result<Vec<TxidList>, StoreError> {
         match self {
             Self::V1(db) => db.get_block_range_txids(start, end).await,
             Self::Ephemeral(db) => db.get_block_range_txids(start, end).await,
         }
     }
 
-    async fn get_txid(
-        &self,
-        tx_location: TxLocation,
-    ) -> Result<TransactionHash, FinalisedStateError> {
+    async fn get_txid(&self, tx_location: TxLocation) -> Result<TransactionHash, StoreError> {
         match self {
             Self::V1(db) => db.get_txid(tx_location).await,
             Self::Ephemeral(db) => db.get_txid(tx_location).await,
@@ -588,7 +579,7 @@ impl<T: BlockchainSource> BlockCoreExt for FinalisedSource<T> {
     async fn get_tx_location(
         &self,
         txid: &TransactionHash,
-    ) -> Result<Option<TxLocation>, FinalisedStateError> {
+    ) -> Result<Option<TxLocation>, StoreError> {
         match self {
             Self::V1(db) => db.get_tx_location(txid).await,
             Self::Ephemeral(db) => db.get_tx_location(txid).await,
@@ -596,21 +587,18 @@ impl<T: BlockchainSource> BlockCoreExt for FinalisedSource<T> {
     }
 }
 
-impl<T: BlockchainSource> BlockTransparentExt for FinalisedSource<T> {
+impl<T: ChainStoreSource> BlockTransparentExt for FinalisedSource<T> {
     async fn get_transparent(
         &self,
         tx_location: TxLocation,
-    ) -> Result<Option<TransparentCompactTx>, FinalisedStateError> {
+    ) -> Result<Option<TransparentCompactTx>, StoreError> {
         match self {
             Self::V1(db) => db.get_transparent(tx_location).await,
             Self::Ephemeral(db) => db.get_transparent(tx_location).await,
         }
     }
 
-    async fn get_block_transparent(
-        &self,
-        height: Height,
-    ) -> Result<TransparentTxList, FinalisedStateError> {
+    async fn get_block_transparent(&self, height: Height) -> Result<TransparentTxList, StoreError> {
         match self {
             Self::V1(db) => db.get_block_transparent(height).await,
             Self::Ephemeral(db) => db.get_block_transparent(height).await,
@@ -621,17 +609,14 @@ impl<T: BlockchainSource> BlockTransparentExt for FinalisedSource<T> {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<TransparentTxList>, FinalisedStateError> {
+    ) -> Result<Vec<TransparentTxList>, StoreError> {
         match self {
             Self::V1(db) => db.get_block_range_transparent(start, end).await,
             Self::Ephemeral(db) => db.get_block_range_transparent(start, end).await,
         }
     }
 
-    async fn get_previous_output(
-        &self,
-        outpoint: Outpoint,
-    ) -> Result<TxOutCompact, FinalisedStateError> {
+    async fn get_previous_output(&self, outpoint: Outpoint) -> Result<TxOutCompact, StoreError> {
         match self {
             Self::V1(db) => <DbV1 as BlockTransparentExt>::get_previous_output(db, outpoint).await,
             Self::Ephemeral(db) => {
@@ -644,18 +629,18 @@ impl<T: BlockchainSource> BlockTransparentExt for FinalisedSource<T> {
     }
 }
 
-impl<T: BlockchainSource> BlockShieldedExt for FinalisedSource<T> {
+impl<T: ChainStoreSource> BlockShieldedExt for FinalisedSource<T> {
     async fn get_sapling(
         &self,
         tx_location: TxLocation,
-    ) -> Result<Option<SaplingCompactTx>, FinalisedStateError> {
+    ) -> Result<Option<SaplingCompactTx>, StoreError> {
         match self {
             Self::V1(db) => db.get_sapling(tx_location).await,
             Self::Ephemeral(db) => db.get_sapling(tx_location).await,
         }
     }
 
-    async fn get_block_sapling(&self, h: Height) -> Result<SaplingTxList, FinalisedStateError> {
+    async fn get_block_sapling(&self, h: Height) -> Result<SaplingTxList, StoreError> {
         match self {
             Self::V1(db) => db.get_block_sapling(h).await,
             Self::Ephemeral(db) => db.get_block_sapling(h).await,
@@ -666,7 +651,7 @@ impl<T: BlockchainSource> BlockShieldedExt for FinalisedSource<T> {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<SaplingTxList>, FinalisedStateError> {
+    ) -> Result<Vec<SaplingTxList>, StoreError> {
         match self {
             Self::V1(db) => db.get_block_range_sapling(start, end).await,
             Self::Ephemeral(db) => db.get_block_range_sapling(start, end).await,
@@ -676,14 +661,14 @@ impl<T: BlockchainSource> BlockShieldedExt for FinalisedSource<T> {
     async fn get_orchard(
         &self,
         tx_location: TxLocation,
-    ) -> Result<Option<OrchardCompactTx>, FinalisedStateError> {
+    ) -> Result<Option<OrchardCompactTx>, StoreError> {
         match self {
             Self::V1(db) => db.get_orchard(tx_location).await,
             Self::Ephemeral(db) => db.get_orchard(tx_location).await,
         }
     }
 
-    async fn get_block_orchard(&self, h: Height) -> Result<OrchardTxList, FinalisedStateError> {
+    async fn get_block_orchard(&self, h: Height) -> Result<OrchardTxList, StoreError> {
         match self {
             Self::V1(db) => db.get_block_orchard(h).await,
             Self::Ephemeral(db) => db.get_block_orchard(h).await,
@@ -694,7 +679,7 @@ impl<T: BlockchainSource> BlockShieldedExt for FinalisedSource<T> {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<OrchardTxList>, FinalisedStateError> {
+    ) -> Result<Vec<OrchardTxList>, StoreError> {
         match self {
             Self::V1(db) => db.get_block_range_orchard(start, end).await,
             Self::Ephemeral(db) => db.get_block_range_orchard(start, end).await,
@@ -704,14 +689,14 @@ impl<T: BlockchainSource> BlockShieldedExt for FinalisedSource<T> {
     async fn get_ironwood(
         &self,
         tx_location: TxLocation,
-    ) -> Result<Option<OrchardCompactTx>, FinalisedStateError> {
+    ) -> Result<Option<OrchardCompactTx>, StoreError> {
         match self {
             Self::V1(db) => db.get_ironwood(tx_location).await,
             Self::Ephemeral(db) => db.get_ironwood(tx_location).await,
         }
     }
 
-    async fn get_block_ironwood(&self, h: Height) -> Result<OrchardTxList, FinalisedStateError> {
+    async fn get_block_ironwood(&self, h: Height) -> Result<OrchardTxList, StoreError> {
         match self {
             Self::V1(db) => db.get_block_ironwood(h).await,
             Self::Ephemeral(db) => db.get_block_ironwood(h).await,
@@ -722,7 +707,7 @@ impl<T: BlockchainSource> BlockShieldedExt for FinalisedSource<T> {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<OrchardTxList>, FinalisedStateError> {
+    ) -> Result<Vec<OrchardTxList>, StoreError> {
         match self {
             Self::V1(db) => db.get_block_range_ironwood(start, end).await,
             Self::Ephemeral(db) => db.get_block_range_ironwood(start, end).await,
@@ -732,7 +717,7 @@ impl<T: BlockchainSource> BlockShieldedExt for FinalisedSource<T> {
     async fn get_block_commitment_tree_data(
         &self,
         height: Height,
-    ) -> Result<CommitmentTreeData, FinalisedStateError> {
+    ) -> Result<CommitmentTreeData, StoreError> {
         match self {
             Self::V1(db) => db.get_block_commitment_tree_data(height).await,
             Self::Ephemeral(db) => db.get_block_commitment_tree_data(height).await,
@@ -743,7 +728,7 @@ impl<T: BlockchainSource> BlockShieldedExt for FinalisedSource<T> {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<CommitmentTreeData>, FinalisedStateError> {
+    ) -> Result<Vec<CommitmentTreeData>, StoreError> {
         match self {
             Self::V1(db) => db.get_block_range_commitment_tree_data(start, end).await,
             Self::Ephemeral(db) => db.get_block_range_commitment_tree_data(start, end).await,
@@ -751,15 +736,27 @@ impl<T: BlockchainSource> BlockShieldedExt for FinalisedSource<T> {
     }
 }
 
-impl<T: BlockchainSource> CompactBlockExt for FinalisedSource<T> {
+impl<T: ChainStoreSource> CompactBlockExt for FinalisedSource<T> {
     async fn get_compact_block(
         &self,
         height: Height,
-        pool_types: PoolTypeFilter,
-    ) -> Result<zaino_proto::proto::compact_formats::CompactBlock, FinalisedStateError> {
+        pool_types: zaino_chain_store::PoolFilter,
+    ) -> Result<zaino_primitives::types::CompactBlock, StoreError> {
         match self {
             Self::V1(db) => db.get_compact_block(height, pool_types).await,
             Self::Ephemeral(db) => db.get_compact_block(height, pool_types).await,
+        }
+    }
+
+    async fn get_compact_block_range(
+        &self,
+        start: Height,
+        end: Height,
+        pool_types: zaino_chain_store::PoolFilter,
+    ) -> Result<Vec<zaino_primitives::types::CompactBlock>, StoreError> {
+        match self {
+            Self::V1(db) => db.get_compact_block_range(start, end, pool_types).await,
+            Self::Ephemeral(db) => db.get_compact_block_range(start, end, pool_types).await,
         }
     }
 
@@ -768,7 +765,7 @@ impl<T: BlockchainSource> CompactBlockExt for FinalisedSource<T> {
         start_height: Height,
         end_height: Height,
         pool_types: PoolTypeFilter,
-    ) -> Result<CompactBlockStream, FinalisedStateError> {
+    ) -> Result<CompactBlockStream, StoreError> {
         match self {
             Self::V1(db) => {
                 db.get_compact_block_stream(start_height, end_height, pool_types)
@@ -782,132 +779,126 @@ impl<T: BlockchainSource> CompactBlockExt for FinalisedSource<T> {
     }
 }
 
-impl<T: BlockchainSource> IndexedBlockExt for FinalisedSource<T> {
-    async fn get_chain_block(
-        &self,
-        height: Height,
-    ) -> Result<Option<IndexedBlock>, FinalisedStateError> {
+impl<T: ChainStoreSource> IndexedBlockExt for FinalisedSource<T> {
+    async fn get_chain_block(&self, height: Height) -> Result<Option<IndexedBlock>, StoreError> {
         match self {
             Self::V1(db) => db.get_chain_block(height).await,
             Self::Ephemeral(db) => db.get_chain_block(height).await,
         }
     }
+
+    async fn get_chain_block_range(
+        &self,
+        start: Height,
+        end: Height,
+    ) -> Result<Vec<IndexedBlock>, StoreError> {
+        match self {
+            Self::V1(db) => db.get_chain_block_range(start, end).await,
+            Self::Ephemeral(db) => db.get_chain_block_range(start, end).await,
+        }
+    }
 }
 
-impl<T: BlockchainSource> TransparentHistExt for FinalisedSource<T> {
-    #[cfg(feature = "transparent_address_history_experimental")]
+#[cfg(feature = "transparent_address_history_experimental")]
+impl<T: ChainStoreSource> TransparentHistExt for FinalisedSource<T> {
     async fn addr_records(
         &self,
         script: AddrScript,
-    ) -> Result<Option<Vec<crate::chain_index::types::AddrEventBytes>>, FinalisedStateError> {
+    ) -> Result<Option<Vec<crate::types::AddrEventBytes>>, StoreError> {
         match self {
             Self::V1(db) => db.addr_records(script).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable(
-                "transparent_history",
-            )),
+            _ => Err(StoreError::FeatureUnavailable("transparent_history")),
         }
     }
 
-    #[cfg(feature = "transparent_address_history_experimental")]
     async fn addr_and_index_records(
         &self,
         script: AddrScript,
         tx_location: TxLocation,
-    ) -> Result<Option<Vec<crate::chain_index::types::AddrEventBytes>>, FinalisedStateError> {
+    ) -> Result<Option<Vec<crate::types::AddrEventBytes>>, StoreError> {
         match self {
             Self::V1(db) => db.addr_and_index_records(script, tx_location).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable(
-                "transparent_history",
-            )),
+            _ => Err(StoreError::FeatureUnavailable("transparent_history")),
         }
     }
 
-    #[cfg(feature = "transparent_address_history_experimental")]
     async fn addr_tx_locations_by_range(
         &self,
         script: AddrScript,
         start: Height,
         end: Height,
-    ) -> Result<Option<Vec<TxLocation>>, FinalisedStateError> {
+    ) -> Result<Option<Vec<TxLocation>>, StoreError> {
         match self {
             Self::V1(db) => db.addr_tx_locations_by_range(script, start, end).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable(
-                "transparent_history",
-            )),
+            _ => Err(StoreError::FeatureUnavailable("transparent_history")),
         }
     }
 
-    #[cfg(feature = "transparent_address_history_experimental")]
     async fn addr_utxos_by_range(
         &self,
         script: AddrScript,
         start: Height,
         end: Height,
-    ) -> Result<Option<Vec<(TxLocation, u16, u64)>>, FinalisedStateError> {
+    ) -> Result<Option<Vec<AddrUtxo>>, StoreError> {
         match self {
             Self::V1(db) => db.addr_utxos_by_range(script, start, end).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable(
-                "transparent_history",
-            )),
+            _ => Err(StoreError::FeatureUnavailable("transparent_history")),
         }
     }
 
-    #[cfg(feature = "transparent_address_history_experimental")]
     async fn addr_balance_by_range(
         &self,
         script: AddrScript,
         start: Height,
         end: Height,
-    ) -> Result<i64, FinalisedStateError> {
+    ) -> Result<i64, StoreError> {
         match self {
             Self::V1(db) => db.addr_balance_by_range(script, start, end).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable(
-                "transparent_history",
-            )),
+            _ => Err(StoreError::FeatureUnavailable("transparent_history")),
         }
     }
+}
 
+impl<T: ChainStoreSource> SpentOutputExt for FinalisedSource<T> {
     async fn get_outpoint_spender(
         &self,
         outpoint: Outpoint,
-    ) -> Result<Option<TxLocation>, FinalisedStateError> {
+    ) -> Result<Option<TxLocation>, StoreError> {
         match self {
             Self::V1(db) => db.get_outpoint_spender(outpoint).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable(
-                "transparent_history",
-            )),
+            _ => Err(StoreError::FeatureUnavailable("spent_output_index")),
         }
     }
 
     async fn get_outpoint_spenders(
         &self,
         outpoints: Vec<Outpoint>,
-    ) -> Result<Vec<Option<TxLocation>>, FinalisedStateError> {
+    ) -> Result<Vec<Option<TxLocation>>, StoreError> {
         match self {
             Self::V1(db) => db.get_outpoint_spenders(outpoints).await,
-            _ => Err(FinalisedStateError::FeatureUnavailable(
-                "transparent_history",
-            )),
+            _ => Err(StoreError::FeatureUnavailable("spent_output_index")),
         }
     }
+}
 
+impl<T: ChainStoreSource> TxOutSetExt for FinalisedSource<T> {
     async fn get_tx_out_set_info_accumulator(
         &self,
-    ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
+    ) -> Result<FinalisedTxOutSetInfoAccumulator, StoreError> {
         match self {
             Self::V1(database) => database.get_tx_out_set_info_accumulator().await,
-            _ => Err(FinalisedStateError::FeatureUnavailable("gettxoutsetinfo")),
+            _ => Err(StoreError::FeatureUnavailable("txout_set_index")),
         }
     }
 }
 
 #[cfg(test)]
-impl<T: BlockchainSource> FinalisedSource<T> {
+impl<T: ChainStoreSource> FinalisedSource<T> {
     /// Spawn a test-only v1 backend initialized as a v1.0.0 database.
     ///
     /// Used by migration tests to create a historical v1.0.0 database fixture before reopening it
     /// through the current startup / migration path.
-    pub(crate) async fn spawn_v1_0_0(cfg: &ChainIndexConfig) -> Result<Self, FinalisedStateError> {
+    pub(crate) async fn spawn_v1_0_0(cfg: &StoreSettings) -> Result<Self, StoreError> {
         Ok(Self::V1(Box::new(DbV1::spawn_v1_0_0(cfg).await?)))
     }
 
@@ -926,13 +917,10 @@ impl<T: BlockchainSource> FinalisedSource<T> {
     /// This method does not perform safety checks and must not be used in production code.
     ///
     /// Used for migration tests.
-    pub(crate) async fn write_block_v1_0_0(
-        &self,
-        block: IndexedBlock,
-    ) -> Result<(), FinalisedStateError> {
+    pub(crate) async fn write_block_v1_0_0(&self, block: IndexedBlock) -> Result<(), StoreError> {
         match self {
             Self::V1(db) => db.write_block_v1_0_0(block).await,
-            Self::Ephemeral(_) => Err(FinalisedStateError::Custom(
+            Self::Ephemeral(_) => Err(StoreError::Custom(
                 "v1.0.0 test fixture writer requires a v1 backend".to_string(),
             )),
         }
@@ -941,14 +929,14 @@ impl<T: BlockchainSource> FinalisedSource<T> {
 
 /// Accumulator test hooks.
 #[cfg(test)]
-impl<T: BlockchainSource> FinalisedSource<T> {
+impl<T: ChainStoreSource> FinalisedSource<T> {
     /// Reads the height the persisted txout-set accumulator currently reflects (V1 only).
     ///
     /// `None` means it has never been built. Test hook for asserting the incremental range-update
     /// path advances the watermark (and is therefore taken, rather than a silent rebuild fallback).
     pub(crate) async fn read_tx_out_set_accumulator_built_height(
         &self,
-    ) -> Result<Option<Height>, FinalisedStateError> {
+    ) -> Result<Option<Height>, StoreError> {
         self.require_v1("v1 txout-set accumulator builder")?
             .read_tx_out_set_accumulator_built_height()
             .await
@@ -963,7 +951,7 @@ impl<T: BlockchainSource> FinalisedSource<T> {
         db_tip: Height,
         shards: u16,
         max_spent_entries: u64,
-    ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
+    ) -> Result<FinalisedTxOutSetInfoAccumulator, StoreError> {
         self.require_v1("v1 txout-set accumulator builder")?
             .build_tx_out_set_accumulator_blocking(db_tip, shards, max_spent_entries)
     }
@@ -971,10 +959,7 @@ impl<T: BlockchainSource> FinalisedSource<T> {
     /// Resolves the accumulator-rebuild shard count for a memory budget (V1 only).
     ///
     /// Test hook for asserting the rebuild auto-shards to fit the configured memory budget.
-    pub(crate) fn accumulator_build_shards(
-        &self,
-        budget_bytes: u64,
-    ) -> Result<u16, FinalisedStateError> {
+    pub(crate) fn accumulator_build_shards(&self, budget_bytes: u64) -> Result<u16, StoreError> {
         self.require_v1("v1 txout-set accumulator builder")?
             .accumulator_build_shards(budget_bytes)
     }

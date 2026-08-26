@@ -6,10 +6,7 @@ use super::*;
 ///
 /// Provides access to block headers, txid lists, and transaction location mapping.
 impl BlockCoreExt for DbV1 {
-    async fn get_block_header(
-        &self,
-        height: Height,
-    ) -> Result<BlockHeaderData, FinalisedStateError> {
+    async fn get_block_header(&self, height: Height) -> Result<BlockHeaderData, StoreError> {
         self.get_block_header_data(height).await
     }
 
@@ -17,11 +14,11 @@ impl BlockCoreExt for DbV1 {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<BlockHeaderData>, FinalisedStateError> {
+    ) -> Result<Vec<BlockHeaderData>, StoreError> {
         self.get_block_range_headers(start, end).await
     }
 
-    async fn get_block_txids(&self, height: Height) -> Result<TxidList, FinalisedStateError> {
+    async fn get_block_txids(&self, height: Height) -> Result<TxidList, StoreError> {
         self.get_block_txids(height).await
     }
 
@@ -29,21 +26,18 @@ impl BlockCoreExt for DbV1 {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<TxidList>, FinalisedStateError> {
+    ) -> Result<Vec<TxidList>, StoreError> {
         self.get_block_range_txids(start, end).await
     }
 
-    async fn get_txid(
-        &self,
-        tx_location: TxLocation,
-    ) -> Result<TransactionHash, FinalisedStateError> {
+    async fn get_txid(&self, tx_location: TxLocation) -> Result<TransactionHash, StoreError> {
         self.get_txid(tx_location).await
     }
 
     async fn get_tx_location(
         &self,
         txid: &TransactionHash,
-    ) -> Result<Option<TxLocation>, FinalisedStateError> {
+    ) -> Result<Option<TxLocation>, StoreError> {
         self.get_tx_location(txid).await
     }
 }
@@ -55,12 +49,10 @@ impl DbV1 {
     pub(super) async fn get_block_header_data(
         &self,
         height: Height,
-    ) -> Result<BlockHeaderData, FinalisedStateError> {
+    ) -> Result<BlockHeaderData, StoreError> {
         self.read_row_at_height(self.headers, "header", height)
             .await?
-            .ok_or_else(|| {
-                FinalisedStateError::DataUnavailable("header data missing from db".into())
-            })
+            .ok_or_else(|| StoreError::DataUnavailable("header data missing from db".into()))
     }
 
     /// Fetches block headers for the given height range.
@@ -74,7 +66,7 @@ impl DbV1 {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<BlockHeaderData>, FinalisedStateError> {
+    ) -> Result<Vec<BlockHeaderData>, StoreError> {
         self.scan_rows(self.headers, "header", start, end).await
     }
 
@@ -83,27 +75,24 @@ impl DbV1 {
     /// This uses an optimized lookup without decoding the full TxidList.
     ///
     /// NOTE: This method currently ignores the txid version byte for efficiency.
-    async fn get_txid(
-        &self,
-        tx_location: TxLocation,
-    ) -> Result<TransactionHash, FinalisedStateError> {
+    async fn get_txid(&self, tx_location: TxLocation) -> Result<TransactionHash, StoreError> {
         tokio::task::block_in_place(|| {
             let txn = self.env.begin_ro_txn()?;
 
             use std::io::Cursor;
 
             let height = Height::try_from(tx_location.block_height())
-                .map_err(|e| FinalisedStateError::Custom(e.to_string()))?;
+                .map_err(|e| StoreError::Custom(e.to_string()))?;
             let height_bytes = height.to_bytes()?;
 
             let raw = match txn.get(self.txids, &height_bytes) {
                 Ok(val) => val,
                 Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
+                    return Err(StoreError::DataUnavailable(
                         "txid data missing from db".into(),
                     ));
                 }
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                Err(e) => return Err(StoreError::LmdbError(e)),
             };
             let mut cursor = Cursor::new(raw);
 
@@ -113,20 +102,24 @@ impl DbV1 {
             cursor.set_position(1);
 
             // Read CompactSize: length of serialized body
-            let _body_len = CompactSize::read(&mut cursor).map_err(|e| {
-                FinalisedStateError::Custom(format!("compact size read error: {e}"))
-            })?;
+            let _body_len = CompactSize::read(&mut cursor)
+                .map_err(|e| StoreError::Custom(format!("compact size read error: {e}")))?;
 
             // Read [1] TxidList Record version (skip 1 byte)
             cursor.set_position(cursor.position() + 1);
 
             // Read CompactSize: number of txids
             let list_len = CompactSize::read(&mut cursor)
-                .map_err(|e| FinalisedStateError::Custom(format!("txid list len error: {e}")))?;
+                .map_err(|e| StoreError::Custom(format!("txid list len error: {e}")))?;
 
             let idx = tx_location.tx_index() as usize;
             if idx >= list_len as usize {
-                return Err(FinalisedStateError::Custom(
+                // Missing data, not a malformed row: the block is shorter than
+                // the index asked about. `DataUnavailable` is what says so, and
+                // it is what lets a caller distinguish "nothing at that
+                // position" from "this row will not decode" — the port layer
+                // answers `None` for the first and propagates the second.
+                return Err(StoreError::DataUnavailable(
                     "tx_index out of range in txid list".to_string(),
                 ));
             }
@@ -156,17 +149,17 @@ impl DbV1 {
             let mut txid_bytes = [0u8; 32];
             cursor
                 .read_exact(&mut txid_bytes)
-                .map_err(|e| FinalisedStateError::Custom(format!("txid read error: {e}")))?;
+                .map_err(|e| StoreError::Custom(format!("txid read error: {e}")))?;
 
             Ok(TransactionHash::from(txid_bytes))
         })
     }
 
     /// Fetch block txids by height.
-    async fn get_block_txids(&self, height: Height) -> Result<TxidList, FinalisedStateError> {
+    async fn get_block_txids(&self, height: Height) -> Result<TxidList, StoreError> {
         self.read_row_at_height(self.txids, "txids", height)
             .await?
-            .ok_or_else(|| FinalisedStateError::DataUnavailable("txid data missing from db".into()))
+            .ok_or_else(|| StoreError::DataUnavailable("txid data missing from db".into()))
     }
 
     /// Fetches block txids for the given height range.
@@ -180,7 +173,7 @@ impl DbV1 {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<TxidList>, FinalisedStateError> {
+    ) -> Result<Vec<TxidList>, StoreError> {
         self.scan_rows(self.txids, "txids", start, end).await
     }
 
@@ -188,7 +181,7 @@ impl DbV1 {
     async fn get_tx_location(
         &self,
         txid: &TransactionHash,
-    ) -> Result<Option<TxLocation>, FinalisedStateError> {
+    ) -> Result<Option<TxLocation>, StoreError> {
         if let Some(index) = tokio::task::block_in_place(|| self.find_txid_index_blocking(txid))? {
             Ok(Some(index))
         } else {
@@ -205,7 +198,7 @@ impl DbV1 {
     pub(super) fn find_txid_index_blocking(
         &self,
         txid: &TransactionHash,
-    ) -> Result<Option<TxLocation>, FinalisedStateError> {
+    ) -> Result<Option<TxLocation>, StoreError> {
         let ro = self.env.begin_ro_txn()?;
 
         // Reverse-index point lookup: `txid_location` maps a txid directly to its
@@ -214,19 +207,17 @@ impl DbV1 {
 
         match ro.get(self.txid_location, &key) {
             Ok(stored_bytes) => {
-                let entry =
-                    StoredEntryFixed::<TxLocation>::from_bytes(stored_bytes).map_err(|e| {
-                        FinalisedStateError::Custom(format!("corrupt txid_location entry: {e}"))
-                    })?;
+                let entry = StoredEntryFixed::<TxLocation>::from_bytes(stored_bytes)
+                    .map_err(|e| StoreError::Custom(format!("corrupt txid_location entry: {e}")))?;
                 if !entry.verify(key) {
-                    return Err(FinalisedStateError::Custom(
+                    return Err(StoreError::Custom(
                         "txid_location entry checksum mismatch".to_string(),
                     ));
                 }
                 Ok(Some(*entry.inner()))
             }
             Err(lmdb::Error::NotFound) => Ok(None),
-            Err(e) => Err(FinalisedStateError::LmdbError(e)),
+            Err(e) => Err(StoreError::LmdbError(e)),
         }
     }
 }

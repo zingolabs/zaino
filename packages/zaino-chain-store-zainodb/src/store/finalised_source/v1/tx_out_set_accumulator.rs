@@ -2,20 +2,19 @@
 //! `gettxoutsetinfo`.
 
 use super::*;
-use crate::chain_index::finalised_state::finalised_source::v1::{
+#[cfg(feature = "prometheus")]
+use crate::metric_names::*;
+use crate::store::finalised_source::v1::{
     ACCUMULATOR_BUILD_MAX_SHARDS, SPENT_SET_ENTRY_BYTES_ESTIMATE,
     TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY, TX_OUT_SET_INFO_ACCUMULATOR_KEY,
 };
-use crate::chain_index::finalised_state::finalised_source::FinalisedSource;
-use crate::chain_index::source::BlockchainSource;
+use crate::store::finalised_source::FinalisedSource;
 #[cfg(test)]
-use crate::chain_index::tests::vectors::MockSource;
-use crate::chain_index::types::db::metadata::{
+use crate::tests::fixtures::FakeValidator;
+use crate::types::db::metadata::{
     is_unspendable_tx_out, tx_out_set_entry_digest, FinalisedTxOutSetInfoAccumulator,
-    ZAINO_TXOUTSET_ENTRY_LEN,
 };
-#[cfg(feature = "prometheus")]
-use crate::metric_names::*;
+use zaino_chain_store::{ChainStoreSource, TXOUT_SET_ENTRY_LEN};
 
 /// Direction of an accumulator update.
 ///
@@ -37,7 +36,7 @@ fn apply_tx_out_set_entries_delta(
     accumulator: &mut FinalisedTxOutSetInfoAccumulator,
     entries: &[(Outpoint, TxOutCompact)],
     adding: bool,
-) -> Result<(), FinalisedStateError> {
+) -> Result<(), StoreError> {
     for (outpoint, out) in entries {
         let digest = tx_out_set_entry_digest(outpoint, out);
         for (dst, src) in accumulator.hash_serialized.iter_mut().zip(digest.iter()) {
@@ -49,15 +48,13 @@ fn apply_tx_out_set_entries_delta(
                 .total_zatoshis
                 .checked_add(out.value())
                 .ok_or_else(|| {
-                    FinalisedStateError::Custom(
-                        "txout-set accumulator total_zatoshis overflow".to_string(),
-                    )
+                    StoreError::Custom("txout-set accumulator total_zatoshis overflow".to_string())
                 })?;
             accumulator.bytes_serialized = accumulator
                 .bytes_serialized
-                .checked_add(ZAINO_TXOUTSET_ENTRY_LEN)
+                .checked_add(TXOUT_SET_ENTRY_LEN)
                 .ok_or_else(|| {
-                    FinalisedStateError::Custom(
+                    StoreError::Custom(
                         "txout-set accumulator bytes_serialized overflow".to_string(),
                     )
                 })?;
@@ -66,15 +63,13 @@ fn apply_tx_out_set_entries_delta(
                 .total_zatoshis
                 .checked_sub(out.value())
                 .ok_or_else(|| {
-                    FinalisedStateError::Custom(
-                        "txout-set accumulator total_zatoshis underflow".to_string(),
-                    )
+                    StoreError::Custom("txout-set accumulator total_zatoshis underflow".to_string())
                 })?;
             accumulator.bytes_serialized = accumulator
                 .bytes_serialized
-                .checked_sub(ZAINO_TXOUTSET_ENTRY_LEN)
+                .checked_sub(TXOUT_SET_ENTRY_LEN)
                 .ok_or_else(|| {
-                    FinalisedStateError::Custom(
+                    StoreError::Custom(
                         "txout-set accumulator bytes_serialized underflow".to_string(),
                     )
                 })?;
@@ -98,12 +93,12 @@ fn apply_in_block_transitions(
     spendable_spent_count_by_tx: &HashMap<TransactionHash, u32>,
     spent_total_outputs: u64,
     direction: AccumulatorDirection,
-) -> Result<(), FinalisedStateError> {
+) -> Result<(), StoreError> {
     let created_total = spendable_counts
         .values()
         .try_fold(0u64, |total, output_count| {
             total.checked_add(u64::from(*output_count)).ok_or_else(|| {
-                FinalisedStateError::Custom(
+                StoreError::Custom(
                     "txout-set accumulator created output count overflow".to_string(),
                 )
             })
@@ -120,7 +115,7 @@ fn apply_in_block_transitions(
             .and_then(|v| v.checked_add(spent_total_outputs)),
     }
     .ok_or_else(|| {
-        FinalisedStateError::Custom(
+        StoreError::Custom(
             "txout-set accumulator transaction output count underflow or overflow".to_string(),
         )
     })?;
@@ -131,7 +126,7 @@ fn apply_in_block_transitions(
         if let Some(spent_indices) = spent_indices {
             for spent_index in spent_indices {
                 if spent_index >= created_count {
-                    return Err(FinalisedStateError::Custom(format!(
+                    return Err(StoreError::Custom(format!(
                         "txout-set accumulator cannot be calculated: transaction {transaction_hash:?} spends same-block output index {spent_index}, but the transaction only has {created_count} transparent outputs"
                     )));
                 }
@@ -151,7 +146,7 @@ fn apply_in_block_transitions(
                 AccumulatorDirection::Reverse => accumulator.transactions.checked_sub(1),
             }
             .ok_or_else(|| {
-                FinalisedStateError::Custom(
+                StoreError::Custom(
                     "txout-set accumulator transaction count underflow or overflow".to_string(),
                 )
             })?;
@@ -171,7 +166,7 @@ fn apply_entry_deltas(
     created_entries: &[(Outpoint, TxOutCompact)],
     spent_entries: &[(Outpoint, TxOutCompact)],
     direction: AccumulatorDirection,
-) -> Result<(), FinalisedStateError> {
+) -> Result<(), StoreError> {
     let (created_adding, spent_adding) = match direction {
         AccumulatorDirection::Apply => (true, false),
         AccumulatorDirection::Reverse => (false, true),
@@ -193,7 +188,7 @@ fn apply_entry_deltas(
 #[allow(clippy::type_complexity)]
 fn index_created_outputs(
     transactions: &[(TransactionHash, Option<TransparentCompactTx>)],
-) -> Result<(HashMap<TransactionHash, u32>, HashMap<TransactionHash, u32>), FinalisedStateError> {
+) -> Result<(HashMap<TransactionHash, u32>, HashMap<TransactionHash, u32>), StoreError> {
     let mut total_by_tx: HashMap<TransactionHash, u32> = HashMap::with_capacity(transactions.len());
     let mut spendable_by_tx: HashMap<TransactionHash, u32> =
         HashMap::with_capacity(transactions.len());
@@ -213,20 +208,20 @@ fn index_created_outputs(
             .unwrap_or((0, 0));
 
         let total = u32::try_from(total).map_err(|_| {
-            FinalisedStateError::Custom(
+            StoreError::Custom(
                 "txout-set accumulator cannot be calculated: transparent output count does not fit into u32"
                     .to_string(),
             )
         })?;
         let spendable = u32::try_from(spendable).map_err(|_| {
-            FinalisedStateError::Custom(
+            StoreError::Custom(
                 "txout-set accumulator cannot be calculated: spendable output count does not fit into u32"
                     .to_string(),
             )
         })?;
 
         if total_by_tx.insert(*transaction_hash, total).is_some() {
-            return Err(FinalisedStateError::Custom(format!(
+            return Err(StoreError::Custom(format!(
                 "txout-set accumulator cannot be calculated: duplicate transaction hash in block: {transaction_hash:?}"
             )));
         }
@@ -249,7 +244,7 @@ fn index_spent_outpoints(
         HashMap<TransactionHash, HashSet<u32>>,
         Vec<(Outpoint, TxLocation)>,
     ),
-    FinalisedStateError,
+    StoreError,
 > {
     let mut by_tx: HashMap<TransactionHash, HashSet<u32>> = HashMap::new();
     let mut outpoints = Vec::with_capacity(spent_map.len());
@@ -263,7 +258,7 @@ fn index_spent_outpoints(
             .insert(outpoint.prev_index());
 
         if !inserted {
-            return Err(FinalisedStateError::Custom(format!(
+            return Err(StoreError::Custom(format!(
                 "txout-set accumulator cannot be calculated: duplicate transparent spend for outpoint {outpoint:?}"
             )));
         }
@@ -289,7 +284,7 @@ impl DbV1 {
         spent_map: &HashMap<Outpoint, TxLocation>,
         txid_to_block_index: &HashMap<TransactionHash, usize>,
         transactions: &[(TransactionHash, Option<TransparentCompactTx>)],
-    ) -> Result<Vec<(Outpoint, TxOutCompact)>, FinalisedStateError> {
+    ) -> Result<Vec<(Outpoint, TxOutCompact)>, StoreError> {
         let mut resolved = Vec::with_capacity(spent_map.len());
 
         for outpoint in spent_map.keys().copied() {
@@ -298,12 +293,12 @@ impl DbV1 {
 
             let prev_out = if let Some(block_tx_index) = txid_to_block_index.get(&prev_txid) {
                 let tx = transactions[*block_tx_index].1.as_ref().ok_or_else(|| {
-                    FinalisedStateError::Custom(format!(
+                    StoreError::Custom(format!(
                         "txout-set accumulator cannot be calculated: same-block spend of {prev_txid:?} has no transparent transaction data"
                     ))
                 })?;
                 *tx.outputs().get(prev_index).ok_or_else(|| {
-                    FinalisedStateError::Custom(format!(
+                    StoreError::Custom(format!(
                         "txout-set accumulator cannot be calculated: same-block spend of {prev_txid:?} index {prev_index} out of range"
                     ))
                 })?
@@ -329,7 +324,7 @@ impl DbV1 {
         spent_indices_by_tx: &HashMap<TransactionHash, HashSet<u32>>,
         created_in_block: &HashMap<TransactionHash, u32>,
         direction: AccumulatorDirection,
-    ) -> Result<(), FinalisedStateError> {
+    ) -> Result<(), StoreError> {
         for (transaction_hash, spent_indices) in spent_indices_by_tx {
             if created_in_block.contains_key(transaction_hash) {
                 continue;
@@ -338,7 +333,7 @@ impl DbV1 {
             let Some(transaction_location) =
                 <Self as BlockCoreExt>::get_tx_location(self, transaction_hash).await?
             else {
-                return Err(FinalisedStateError::Custom(format!(
+                return Err(StoreError::Custom(format!(
                     "txout-set accumulator cannot be calculated: spent transaction {transaction_hash:?} is missing from the txid index"
                 )));
             };
@@ -346,14 +341,14 @@ impl DbV1 {
             let Some(transparent_transaction) =
                 <Self as BlockTransparentExt>::get_transparent(self, transaction_location).await?
             else {
-                return Err(FinalisedStateError::Custom(format!(
+                return Err(StoreError::Custom(format!(
                     "txout-set accumulator cannot be calculated: spent transaction {transaction_hash:?} has no transparent transaction data"
                 )));
             };
 
             let previous_output_count = u32::try_from(transparent_transaction.outputs().len())
                 .map_err(|_| {
-                    FinalisedStateError::Custom(
+                    StoreError::Custom(
                         "txout-set accumulator previous transparent output count does not fit into u32"
                             .to_string(),
                     )
@@ -361,7 +356,7 @@ impl DbV1 {
 
             for spent_index in spent_indices {
                 if *spent_index >= previous_output_count {
-                    return Err(FinalisedStateError::Custom(format!(
+                    return Err(StoreError::Custom(format!(
                         "txout-set accumulator cannot be calculated: transaction {transaction_hash:?} spends output index {spent_index}, but the previous transaction only has {previous_output_count} transparent outputs"
                     )));
                 }
@@ -387,7 +382,7 @@ impl DbV1 {
                 true
             } else {
                 let remaining_spenders =
-                    <Self as TransparentHistExt>::get_outpoint_spenders(self, remaining_outpoints)
+                    <Self as SpentOutputExt>::get_outpoint_spenders(self, remaining_outpoints)
                         .await?;
                 !remaining_spenders.into_iter().any(|s| s.is_none())
             };
@@ -398,7 +393,7 @@ impl DbV1 {
                     AccumulatorDirection::Reverse => accumulator.transactions.checked_add(1),
                 }
                 .ok_or_else(|| {
-                    FinalisedStateError::Custom(
+                    StoreError::Custom(
                         "txout-set accumulator transaction count underflow or overflow".to_string(),
                     )
                 })?;
@@ -427,7 +422,7 @@ impl DbV1 {
             Vec<(Outpoint, TxOutCompact)>,
             HashMap<TransactionHash, u32>,
         ),
-        FinalisedStateError,
+        StoreError,
     > {
         let mut created_entries: Vec<(Outpoint, TxOutCompact)> = Vec::new();
         let mut txid_to_block_index: HashMap<TransactionHash, usize> =
@@ -482,7 +477,7 @@ impl DbV1 {
     /// accumulator creation, backfill, and updates are handled by migrations and write paths.
     pub(super) async fn get_tx_out_set_info_accumulator(
         &self,
-    ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
+    ) -> Result<FinalisedTxOutSetInfoAccumulator, StoreError> {
         tokio::task::block_in_place(|| {
             let transaction = self.env.begin_ro_txn()?;
 
@@ -492,28 +487,26 @@ impl DbV1 {
             ) {
                 Ok(value) => value,
                 Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
+                    return Err(StoreError::DataUnavailable(
                         "finalised txout-set accumulator missing from database".to_string(),
                     ));
                 }
-                Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+                Err(error) => return Err(StoreError::LmdbError(error)),
             };
 
             let accumulator_entry =
                 StoredEntryFixed::<FinalisedTxOutSetInfoAccumulator>::from_bytes(raw_accumulator)
                     .map_err(|error| {
-                    FinalisedStateError::Custom(format!(
-                        "txout-set accumulator decode error: {error}"
-                    ))
+                    StoreError::Custom(format!("txout-set accumulator decode error: {error}"))
                 })?;
 
             if !accumulator_entry.verify(TX_OUT_SET_INFO_ACCUMULATOR_KEY) {
-                return Err(FinalisedStateError::Custom(
+                return Err(StoreError::Custom(
                     "txout-set accumulator checksum mismatch".to_string(),
                 ));
             }
 
-            Ok(accumulator_entry.item)
+            Ok(accumulator_entry.into_inner())
         })
     }
 
@@ -535,18 +528,18 @@ impl DbV1 {
         block_height: Height,
         transactions: &[(TransactionHash, Option<TransparentCompactTx>)],
         spent_map: &HashMap<Outpoint, TxLocation>,
-    ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
+    ) -> Result<FinalisedTxOutSetInfoAccumulator, StoreError> {
         // Load the existing accumulator. Only a fresh empty DB writing genesis may start from zero.
         let mut accumulator =
-            match <Self as TransparentHistExt>::get_tx_out_set_info_accumulator(self).await {
+            match <Self as TxOutSetExt>::get_tx_out_set_info_accumulator(self).await {
                 Ok(accumulator) => accumulator,
-                Err(FinalisedStateError::DataUnavailable(_)) => {
+                Err(StoreError::DataUnavailable(_)) => {
                     let current_tip = self.tip_height().await?;
 
                     if current_tip.is_none() && block_height == GENESIS_HEIGHT {
                         FinalisedTxOutSetInfoAccumulator::empty()
                     } else {
-                        return Err(FinalisedStateError::Custom(
+                        return Err(StoreError::Custom(
                             "txout-set accumulator missing from non-empty database".to_string(),
                         ));
                     }
@@ -563,15 +556,14 @@ impl DbV1 {
         if !spent_outpoints.is_empty() {
             let outpoints: Vec<Outpoint> = spent_outpoints.iter().map(|(o, _)| *o).collect();
             let existing_spenders =
-                <Self as TransparentHistExt>::get_outpoint_spenders(self, outpoints.clone())
-                    .await?;
+                <Self as SpentOutputExt>::get_outpoint_spenders(self, outpoints.clone()).await?;
             for (spent_outpoint, existing_spender) in outpoints.iter().zip(existing_spenders) {
                 if created_counts.contains_key(&TransactionHash::from(*spent_outpoint.prev_txid()))
                 {
                     continue;
                 }
                 if let Some(existing_spender) = existing_spender {
-                    return Err(FinalisedStateError::Custom(format!(
+                    return Err(StoreError::Custom(format!(
                         "txout-set accumulator cannot be calculated: block spends already-spent outpoint {spent_outpoint:?}; existing spender is {existing_spender:?}"
                     )));
                 }
@@ -582,7 +574,7 @@ impl DbV1 {
             self.build_entry_data(transactions, spent_map)?;
 
         let spent_total_outputs = u64::try_from(spent_entries.len()).map_err(|_| {
-            FinalisedStateError::Custom(
+            StoreError::Custom(
                 "txout-set accumulator spent output count does not fit into u64".to_string(),
             )
         })?;
@@ -623,12 +615,12 @@ impl DbV1 {
         &self,
         transactions: &[(TransactionHash, Option<TransparentCompactTx>)],
         spent_map: &HashMap<Outpoint, TxLocation>,
-    ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
+    ) -> Result<FinalisedTxOutSetInfoAccumulator, StoreError> {
         let mut accumulator =
-            match <Self as TransparentHistExt>::get_tx_out_set_info_accumulator(self).await {
+            match <Self as TxOutSetExt>::get_tx_out_set_info_accumulator(self).await {
                 Ok(accumulator) => accumulator,
-                Err(FinalisedStateError::DataUnavailable(_)) => {
-                    return Err(FinalisedStateError::Custom(
+                Err(StoreError::DataUnavailable(_)) => {
+                    return Err(StoreError::Custom(
                         "txout-set accumulator missing while deleting block".to_string(),
                     ));
                 }
@@ -643,17 +635,17 @@ impl DbV1 {
         if !spent_outpoints.is_empty() {
             let outpoints: Vec<Outpoint> = spent_outpoints.iter().map(|(o, _)| *o).collect();
             let existing_spenders =
-                <Self as TransparentHistExt>::get_outpoint_spenders(self, outpoints).await?;
+                <Self as SpentOutputExt>::get_outpoint_spenders(self, outpoints).await?;
             for ((spent_outpoint, expected_tx_location), existing_spender) in
                 spent_outpoints.iter().zip(existing_spenders)
             {
                 let Some(existing_spender) = existing_spender else {
-                    return Err(FinalisedStateError::Custom(format!(
+                    return Err(StoreError::Custom(format!(
                         "txout-set accumulator cannot be reversed: spent index missing outpoint {spent_outpoint:?}"
                     )));
                 };
                 if existing_spender != *expected_tx_location {
-                    return Err(FinalisedStateError::Custom(format!(
+                    return Err(StoreError::Custom(format!(
                         "txout-set accumulator cannot be reversed: outpoint {spent_outpoint:?} is spent by {existing_spender:?}, expected {expected_tx_location:?}"
                     )));
                 }
@@ -664,7 +656,7 @@ impl DbV1 {
             self.build_entry_data(transactions, spent_map)?;
 
         let spent_total_outputs = u64::try_from(spent_entries.len()).map_err(|_| {
-            FinalisedStateError::Custom(
+            StoreError::Custom(
                 "txout-set accumulator spent output count does not fit into u64".to_string(),
             )
         })?;
@@ -703,7 +695,7 @@ impl DbV1 {
         &self,
         txn: &mut lmdb::RwTransaction,
         accumulator: FinalisedTxOutSetInfoAccumulator,
-    ) -> Result<(), FinalisedStateError> {
+    ) -> Result<(), StoreError> {
         let entry = StoredEntryFixed::new(TX_OUT_SET_INFO_ACCUMULATOR_KEY, accumulator);
         txn.put(
             self.tx_out_set_info_accumulator,
@@ -719,7 +711,7 @@ impl DbV1 {
         &self,
         txn: &mut lmdb::RwTransaction,
         height: Height,
-    ) -> Result<(), FinalisedStateError> {
+    ) -> Result<(), StoreError> {
         let watermark = StoredEntryFixed::new(TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY, height);
         txn.put(
             self.metadata,
@@ -739,7 +731,7 @@ impl DbV1 {
         block_height: Height,
         transactions: &[(TransactionHash, Option<TransparentCompactTx>)],
         spent_map: &HashMap<Outpoint, TxLocation>,
-    ) -> Result<Option<FinalisedTxOutSetInfoAccumulator>, FinalisedStateError> {
+    ) -> Result<Option<FinalisedTxOutSetInfoAccumulator>, StoreError> {
         if update_tx_out_set {
             Ok(Some(
                 self.calculate_tx_out_set_info_accumulator_after_block(
@@ -761,7 +753,7 @@ impl DbV1 {
         txn: &mut lmdb::RwTransaction,
         accumulator: Option<FinalisedTxOutSetInfoAccumulator>,
         height: Height,
-    ) -> Result<(), FinalisedStateError> {
+    ) -> Result<(), StoreError> {
         if let Some(accumulator) = accumulator {
             self.put_tx_out_set_accumulator(txn, accumulator)?;
             self.put_tx_out_set_accumulator_watermark(txn, height)?;
@@ -775,7 +767,7 @@ impl DbV1 {
     pub(super) async fn advance_tx_out_set_accumulator_to_tip(
         &self,
         height: Height,
-    ) -> Result<(), FinalisedStateError> {
+    ) -> Result<(), StoreError> {
         match self.read_tx_out_set_accumulator_built_height().await? {
             Some(built) if built.0 >= height.0 => {}
             Some(built) if height.0.saturating_sub(built.0) <= ACCUMULATOR_INCREMENTAL_MAX_GAP => {
@@ -812,7 +804,7 @@ impl DbV1 {
     /// [`TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY`] watermark, then forces a durability sync. This is
     /// idempotent — it never trusts a pre-existing accumulator — so it is safe to call after an
     /// interrupted sync, and is reused by the v1.2 migration's accumulator stage.
-    pub(crate) async fn rebuild_tx_out_set_accumulator(&self) -> Result<(), FinalisedStateError> {
+    pub(crate) async fn rebuild_tx_out_set_accumulator(&self) -> Result<(), StoreError> {
         let Some(db_tip) = self.tip_height().await? else {
             // Empty database: nothing to build.
             return Ok(());
@@ -824,9 +816,8 @@ impl DbV1 {
         // two operations cannot inflate each other's peak memory.
         let budget = (self
             .config
-            .storage
-            .database
-            .accumulator_rebuild_memory_size
+            .db
+            .accumulator_rebuild_memory_size()
             .to_byte_count() as u64)
             .max(1);
         // Logged before any cursor work: choosing the initial shard count scans the `spent` table,
@@ -864,7 +855,7 @@ impl DbV1 {
             txn.commit()?;
             self.env.sync(true)?;
 
-            Ok::<_, FinalisedStateError>(())
+            Ok::<_, StoreError>(())
         });
 
         #[cfg(feature = "prometheus")]
@@ -901,10 +892,7 @@ impl DbV1 {
     /// The actual memory bound is enforced separately and strictly by that builder (it bisects any
     /// shard whose spent set would exceed the cap), so an inaccurate estimate here only changes how
     /// many passes are made, never whether the rebuild stays within budget.
-    pub(crate) fn accumulator_build_shards(
-        &self,
-        budget_bytes: u64,
-    ) -> Result<u16, FinalisedStateError> {
+    pub(crate) fn accumulator_build_shards(&self, budget_bytes: u64) -> Result<u16, StoreError> {
         let budget = budget_bytes.max(1);
         // Only count the spent set up to the point where we'd hit the shard cap anyway — past it
         // the exact size cannot change the decision, so the count pass is itself bounded.
@@ -923,10 +911,7 @@ impl DbV1 {
     /// early once `max_useful_entries` is reached. The builder's per-shard loads are range-seeks that
     /// together touch `spent` once in total, so this single extra count pass roughly doubles the
     /// spent-table reads — bounded, and dwarfed by the chain-length block scans.
-    fn estimate_spent_set_bytes(
-        &self,
-        max_useful_entries: u64,
-    ) -> Result<u64, FinalisedStateError> {
+    fn estimate_spent_set_bytes(&self, max_useful_entries: u64) -> Result<u64, StoreError> {
         tokio::task::block_in_place(|| {
             let txn = self.env.begin_ro_txn()?;
             let cursor = txn.open_ro_cursor(self.spent)?;
@@ -960,7 +945,7 @@ impl DbV1 {
                         }
                     }
                     Err(lmdb::Error::NotFound) => break,
-                    Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+                    Err(error) => return Err(StoreError::LmdbError(error)),
                 }
                 op = lmdb_sys::MDB_NEXT;
             }
@@ -997,7 +982,7 @@ impl DbV1 {
         db_tip: Height,
         shards: u16,
         max_spent_entries: u64,
-    ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
+    ) -> Result<FinalisedTxOutSetInfoAccumulator, StoreError> {
         let shards = shards.max(1) as usize;
         let max_spent_entries = max_spent_entries.max(1);
         let mut total = FinalisedTxOutSetInfoAccumulator::empty();
@@ -1055,14 +1040,14 @@ impl DbV1 {
                     );
                     total
                         .combine(&shard_acc)
-                        .map_err(|error| FinalisedStateError::Custom(error.to_string()))?
+                        .map_err(|error| StoreError::Custom(error.to_string()))?
                 }
                 None => {
                     if hi - lo <= 1 {
                         // A single creating-txid first-byte value cannot be split further. Fail with
                         // an actionable error rather than OOM-ing: the spent outpoints sharing this
                         // first byte do not fit the configured budget.
-                        return Err(FinalisedStateError::Custom(format!(
+                        return Err(StoreError::Custom(format!(
                             "txout-set accumulator: spent shard for creating-txid first-byte {lo} \
                              exceeds the per-shard budget ({max_spent_entries} outpoints) and cannot \
                              be split further; raise accumulator_rebuild_memory_size"
@@ -1118,7 +1103,7 @@ impl DbV1 {
         max_spent_entries: u64,
         shard_ordinal: usize,
         shard_total: usize,
-    ) -> Result<Option<FinalisedTxOutSetInfoAccumulator>, FinalisedStateError> {
+    ) -> Result<Option<FinalisedTxOutSetInfoAccumulator>, StoreError> {
         let in_shard = |first_byte: u8| -> bool {
             let b = first_byte as u16;
             b >= lo && b < hi
@@ -1155,7 +1140,7 @@ impl DbV1 {
             ) {
                 Ok((key, _value)) => key,
                 Err(lmdb::Error::NotFound) => None,
-                Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+                Err(error) => return Err(StoreError::LmdbError(error)),
             };
             while let Some(key_bytes) = next {
                 if key_bytes.len() >= 2 {
@@ -1177,7 +1162,7 @@ impl DbV1 {
                 next = match cursor.get(None, None, lmdb_sys::MDB_NEXT) {
                     Ok((key, _value)) => key,
                     Err(lmdb::Error::NotFound) => None,
-                    Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+                    Err(error) => return Err(StoreError::LmdbError(error)),
                 };
             }
         }
@@ -1199,20 +1184,20 @@ impl DbV1 {
         let mut height = GENESIS_HEIGHT.0;
         let mut last_progress_log = std::time::Instant::now();
         while height <= db_tip.0 {
-            let block_height = Height::try_from(height)
-                .map_err(|error| FinalisedStateError::Custom(error.to_string()))?;
+            let block_height =
+                Height::try_from(height).map_err(|error| StoreError::Custom(error.to_string()))?;
             let height_bytes = block_height.to_bytes()?;
 
             let transparent_tx_list = {
                 let raw = txn
                     .get(self.transparent, &height_bytes)
-                    .map_err(FinalisedStateError::LmdbError)?;
+                    .map_err(StoreError::LmdbError)?;
                 let entry =
                     StoredEntryVar::<TransparentTxList>::from_bytes(raw).map_err(|error| {
-                        FinalisedStateError::Custom(format!("transparent corrupt data: {error}"))
+                        StoreError::Custom(format!("transparent corrupt data: {error}"))
                     })?;
                 if !entry.verify(&height_bytes) {
-                    return Err(FinalisedStateError::Custom(
+                    return Err(StoreError::Custom(
                         "transparent checksum mismatch".to_string(),
                     ));
                 }
@@ -1222,21 +1207,18 @@ impl DbV1 {
             let txids = {
                 let raw = txn
                     .get(self.txids, &height_bytes)
-                    .map_err(FinalisedStateError::LmdbError)?;
-                let entry = StoredEntryVar::<TxidList>::from_bytes(raw).map_err(|error| {
-                    FinalisedStateError::Custom(format!("txids corrupt data: {error}"))
-                })?;
+                    .map_err(StoreError::LmdbError)?;
+                let entry = StoredEntryVar::<TxidList>::from_bytes(raw)
+                    .map_err(|error| StoreError::Custom(format!("txids corrupt data: {error}")))?;
                 if !entry.verify(&height_bytes) {
-                    return Err(FinalisedStateError::Custom(
-                        "txids checksum mismatch".to_string(),
-                    ));
+                    return Err(StoreError::Custom("txids checksum mismatch".to_string()));
                 }
                 entry.inner().txids().to_vec()
             };
 
             for (tx_index, tx_opt) in transparent_tx_list.tx().iter().enumerate() {
                 let txid = txids.get(tx_index).ok_or_else(|| {
-                    FinalisedStateError::Custom(format!(
+                    StoreError::Custom(format!(
                         "txid/transparent length mismatch at height {height}"
                     ))
                 })?;
@@ -1266,14 +1248,14 @@ impl DbV1 {
 
                     shard_acc
                         .apply_added_output(&outpoint, output)
-                        .map_err(|error| FinalisedStateError::Custom(error.to_string()))?;
+                        .map_err(|error| StoreError::Custom(error.to_string()))?;
                     tx_has_unspent = true;
                 }
 
                 if tx_has_unspent {
                     shard_acc.transactions =
                         shard_acc.transactions.checked_add(1).ok_or_else(|| {
-                            FinalisedStateError::Custom(
+                            StoreError::Custom(
                                 "txout-set accumulator transactions overflow".to_string(),
                             )
                         })?;
@@ -1305,25 +1287,25 @@ impl DbV1 {
     /// in [`DbV1::write_blocks_to_height`].
     pub(crate) async fn read_tx_out_set_accumulator_built_height(
         &self,
-    ) -> Result<Option<Height>, FinalisedStateError> {
+    ) -> Result<Option<Height>, StoreError> {
         tokio::task::block_in_place(|| {
             let txn = self.env.begin_ro_txn()?;
             match txn.get(self.metadata, &TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY) {
                 Ok(bytes) => {
                     let entry = StoredEntryFixed::<Height>::from_bytes(bytes).map_err(|error| {
-                        FinalisedStateError::Custom(format!(
+                        StoreError::Custom(format!(
                             "accumulator built-height decode error: {error}"
                         ))
                     })?;
                     if !entry.verify(TX_OUT_SET_ACCUMULATOR_BUILT_HEIGHT_KEY) {
-                        return Err(FinalisedStateError::Custom(
+                        return Err(StoreError::Custom(
                             "accumulator built-height checksum mismatch".to_string(),
                         ));
                     }
                     Ok(Some(*entry.inner()))
                 }
                 Err(lmdb::Error::NotFound) => Ok(None),
-                Err(error) => Err(FinalisedStateError::LmdbError(error)),
+                Err(error) => Err(StoreError::LmdbError(error)),
             }
         })
     }
@@ -1356,7 +1338,7 @@ impl DbV1 {
         &self,
         built: Height,
         tip: Height,
-    ) -> Result<(), FinalisedStateError> {
+    ) -> Result<(), StoreError> {
         let accumulator = tokio::task::block_in_place(|| {
             let txn = self.env.begin_ro_txn()?;
 
@@ -1368,24 +1350,22 @@ impl DbV1 {
                 ) {
                     Ok(value) => value,
                     Err(lmdb::Error::NotFound) => {
-                        return Err(FinalisedStateError::Custom(
+                        return Err(StoreError::Custom(
                             "txout-set accumulator missing during incremental update".to_string(),
                         ))
                     }
-                    Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+                    Err(error) => return Err(StoreError::LmdbError(error)),
                 };
                 let entry = StoredEntryFixed::<FinalisedTxOutSetInfoAccumulator>::from_bytes(raw)
                     .map_err(|error| {
-                    FinalisedStateError::Custom(format!(
-                        "txout-set accumulator decode error: {error}"
-                    ))
+                    StoreError::Custom(format!("txout-set accumulator decode error: {error}"))
                 })?;
                 if !entry.verify(TX_OUT_SET_INFO_ACCUMULATOR_KEY) {
-                    return Err(FinalisedStateError::Custom(
+                    return Err(StoreError::Custom(
                         "txout-set accumulator checksum mismatch".to_string(),
                     ));
                 }
-                entry.item
+                entry.into_inner()
             };
 
             // ---- Pass 1: scan the range blocks `(built, tip]`. ----
@@ -1410,15 +1390,13 @@ impl DbV1 {
                 let transparent_tx_list = {
                     let raw = txn
                         .get(self.transparent, &height_bytes)
-                        .map_err(FinalisedStateError::LmdbError)?;
+                        .map_err(StoreError::LmdbError)?;
                     let entry =
                         StoredEntryVar::<TransparentTxList>::from_bytes(raw).map_err(|error| {
-                            FinalisedStateError::Custom(format!(
-                                "transparent corrupt data: {error}"
-                            ))
+                            StoreError::Custom(format!("transparent corrupt data: {error}"))
                         })?;
                     if !entry.verify(&height_bytes) {
-                        return Err(FinalisedStateError::Custom(
+                        return Err(StoreError::Custom(
                             "transparent checksum mismatch".to_string(),
                         ));
                     }
@@ -1428,21 +1406,19 @@ impl DbV1 {
                 let txids = {
                     let raw = txn
                         .get(self.txids, &height_bytes)
-                        .map_err(FinalisedStateError::LmdbError)?;
+                        .map_err(StoreError::LmdbError)?;
                     let entry = StoredEntryVar::<TxidList>::from_bytes(raw).map_err(|error| {
-                        FinalisedStateError::Custom(format!("txids corrupt data: {error}"))
+                        StoreError::Custom(format!("txids corrupt data: {error}"))
                     })?;
                     if !entry.verify(&height_bytes) {
-                        return Err(FinalisedStateError::Custom(
-                            "txids checksum mismatch".to_string(),
-                        ));
+                        return Err(StoreError::Custom("txids checksum mismatch".to_string()));
                     }
                     entry.inner().txids().to_vec()
                 };
 
                 for (tx_index, tx_opt) in transparent_tx_list.tx().iter().enumerate() {
                     let txid = txids.get(tx_index).ok_or_else(|| {
-                        FinalisedStateError::Custom(format!(
+                        StoreError::Custom(format!(
                             "txid/transparent length mismatch at height {height}"
                         ))
                     })?;
@@ -1459,7 +1435,7 @@ impl DbV1 {
                         let outpoint = Outpoint::new(txid.0, out_index as u32);
                         accumulator
                             .apply_added_output(&outpoint, output)
-                            .map_err(|error| FinalisedStateError::Custom(error.to_string()))?;
+                            .map_err(|error| StoreError::Custom(error.to_string()))?;
                         range_outputs.insert(outpoint.to_bytes()?, *output);
                         created_outpoints_by_tx
                             .entry(txid.0)
@@ -1500,7 +1476,7 @@ impl DbV1 {
                     // Created at/before `built`: resolve from disk. An unspendable prev-output was
                     // never in the set, so it is neither removed nor a Set B trigger.
                     let Some(output) = self.resolve_prev_output_in_txn(&txn, *outpoint)? else {
-                        return Err(FinalisedStateError::Custom(format!(
+                        return Err(StoreError::Custom(format!(
                             "incremental accumulator update: previous output {outpoint:?} not found"
                         )));
                     };
@@ -1513,7 +1489,7 @@ impl DbV1 {
 
                 accumulator
                     .apply_removed_output(outpoint, &prev_output)
-                    .map_err(|error| FinalisedStateError::Custom(error.to_string()))?;
+                    .map_err(|error| StoreError::Custom(error.to_string()))?;
             }
 
             // ---- Pass 3: `transactions` delta (the only non-additive field). ----
@@ -1541,7 +1517,7 @@ impl DbV1 {
                 let Some(prev_tx) =
                     self.get_transparent_tx_in_txn(&txn, &TransactionHash(*prev_txid))?
                 else {
-                    return Err(FinalisedStateError::Custom(format!(
+                    return Err(StoreError::Custom(format!(
                         "incremental accumulator update: spent transaction {prev_txid:?} missing"
                     )));
                 };
@@ -1566,12 +1542,12 @@ impl DbV1 {
                 .and_then(|count| count.checked_add(transactions_delta))
                 .and_then(|count| u64::try_from(count).ok())
                 .ok_or_else(|| {
-                    FinalisedStateError::Custom(
+                    StoreError::Custom(
                         "txout-set accumulator transactions delta under/overflow".to_string(),
                     )
                 })?;
 
-            Ok::<_, FinalisedStateError>(accumulator)
+            Ok::<_, StoreError>(accumulator)
         })?;
 
         // Persist the updated accumulator and advance the watermark to `tip` atomically, then force
@@ -1585,7 +1561,7 @@ impl DbV1 {
             txn.commit()?;
             self.env.sync(true)?;
 
-            Ok::<_, FinalisedStateError>(())
+            Ok::<_, StoreError>(())
         })?;
 
         #[cfg(feature = "prometheus")]
@@ -1599,11 +1575,11 @@ impl DbV1 {
         &self,
         txn: &T,
         outpoint: &Outpoint,
-    ) -> Result<bool, FinalisedStateError> {
+    ) -> Result<bool, StoreError> {
         match txn.get(self.spent, &outpoint.to_bytes()?) {
             Ok(_) => Ok(false),
             Err(lmdb::Error::NotFound) => Ok(true),
-            Err(error) => Err(FinalisedStateError::LmdbError(error)),
+            Err(error) => Err(StoreError::LmdbError(error)),
         }
     }
 
@@ -1612,22 +1588,22 @@ impl DbV1 {
         &self,
         txn: &T,
         txid: &TransactionHash,
-    ) -> Result<Option<TxLocation>, FinalisedStateError> {
+    ) -> Result<Option<TxLocation>, StoreError> {
         let key: [u8; 32] = (*txid).into();
         match txn.get(self.txid_location, &key) {
             Ok(bytes) => {
                 let entry = StoredEntryFixed::<TxLocation>::from_bytes(bytes).map_err(|error| {
-                    FinalisedStateError::Custom(format!("corrupt txid_location entry: {error}"))
+                    StoreError::Custom(format!("corrupt txid_location entry: {error}"))
                 })?;
                 if !entry.verify(key) {
-                    return Err(FinalisedStateError::Custom(
+                    return Err(StoreError::Custom(
                         "txid_location entry checksum mismatch".to_string(),
                     ));
                 }
                 Ok(Some(*entry.inner()))
             }
             Err(lmdb::Error::NotFound) => Ok(None),
-            Err(error) => Err(FinalisedStateError::LmdbError(error)),
+            Err(error) => Err(StoreError::LmdbError(error)),
         }
     }
 
@@ -1636,7 +1612,7 @@ impl DbV1 {
         &self,
         txn: &T,
         outpoint: Outpoint,
-    ) -> Result<Option<TxOutCompact>, FinalisedStateError> {
+    ) -> Result<Option<TxOutCompact>, StoreError> {
         let prev_txid = TransactionHash::from(*outpoint.prev_txid());
         let Some(location) = self.find_txid_location_in_txn(txn, &prev_txid)? else {
             return Ok(None);
@@ -1645,7 +1621,7 @@ impl DbV1 {
         let stored = match txn.get(self.transparent, &height_bytes) {
             Ok(bytes) => bytes,
             Err(lmdb::Error::NotFound) => return Ok(None),
-            Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+            Err(error) => return Err(StoreError::LmdbError(error)),
         };
         Self::find_txout_in_stored_transparent_tx_list(
             stored,
@@ -1659,7 +1635,7 @@ impl DbV1 {
         &self,
         txn: &T,
         txid: &TransactionHash,
-    ) -> Result<Option<TransparentCompactTx>, FinalisedStateError> {
+    ) -> Result<Option<TransparentCompactTx>, StoreError> {
         let Some(location) = self.find_txid_location_in_txn(txn, txid)? else {
             return Ok(None);
         };
@@ -1667,13 +1643,12 @@ impl DbV1 {
         let raw = match txn.get(self.transparent, &height_bytes) {
             Ok(bytes) => bytes,
             Err(lmdb::Error::NotFound) => return Ok(None),
-            Err(error) => return Err(FinalisedStateError::LmdbError(error)),
+            Err(error) => return Err(StoreError::LmdbError(error)),
         };
-        let entry = StoredEntryVar::<TransparentTxList>::from_bytes(raw).map_err(|error| {
-            FinalisedStateError::Custom(format!("transparent corrupt data: {error}"))
-        })?;
+        let entry = StoredEntryVar::<TransparentTxList>::from_bytes(raw)
+            .map_err(|error| StoreError::Custom(format!("transparent corrupt data: {error}")))?;
         if !entry.verify(&height_bytes) {
-            return Err(FinalisedStateError::Custom(
+            return Err(StoreError::Custom(
                 "transparent checksum mismatch".to_string(),
             ));
         }
@@ -1688,9 +1663,9 @@ impl DbV1 {
 
 /// `FinalisedSource` dispatch for the accumulator capability, co-located with the V1
 /// implementation it forwards to. V1-only; ephemeral backends have no accumulator.
-impl<T: BlockchainSource> FinalisedSource<T> {
+impl<T: ChainStoreSource> FinalisedSource<T> {
     /// Provides access to the finalised txout-set accumulator DB table.
-    pub(crate) fn tx_out_set_info_accumulator_db(&self) -> Result<Database, FinalisedStateError> {
+    pub(crate) fn tx_out_set_info_accumulator_db(&self) -> Result<Database, StoreError> {
         Ok(self
             .require_v1("v1 tx_out_set_info_accumulator db not available")?
             .tx_out_set_info_accumulator_db())
@@ -1703,7 +1678,7 @@ impl<T: BlockchainSource> FinalisedSource<T> {
     /// scans and writes the singleton plus its freshness watermark. Replaces the per-block
     /// accumulator maintenance that dominated sync time at sandblast height; used by
     /// `sync_to_height` after a catch-up run and by the v1.2 migration's accumulator stage.
-    pub(crate) async fn rebuild_tx_out_set_accumulator(&self) -> Result<(), FinalisedStateError> {
+    pub(crate) async fn rebuild_tx_out_set_accumulator(&self) -> Result<(), StoreError> {
         self.require_v1("v1 txout-set accumulator builder")?
             .rebuild_tx_out_set_accumulator()
             .await
@@ -1717,7 +1692,7 @@ impl<T: BlockchainSource> FinalisedSource<T> {
     pub(crate) async fn run_v1_2_migration_accumulator_stage(
         &self,
         db_tip: u32,
-    ) -> Result<(), FinalisedStateError> {
+    ) -> Result<(), StoreError> {
         let stage_started = std::time::Instant::now();
         info!(
             db_tip,
@@ -1737,7 +1712,7 @@ impl<T: BlockchainSource> FinalisedSource<T> {
 /// `transparent` + `spent` tables, for assertions in the v1.1->v1.2 migration tests.
 #[cfg(test)]
 pub(crate) async fn expected_tx_out_set_info_accumulator(
-    database_backend: &FinalisedSource<MockSource>,
+    database_backend: &FinalisedSource<FakeValidator>,
     max_height: Height,
 ) -> FinalisedTxOutSetInfoAccumulator {
     let environment = database_backend.env().unwrap();
@@ -1781,7 +1756,7 @@ pub(crate) async fn expected_tx_out_set_info_accumulator(
                 // see `is_unspendable_tx_out`. The migration oracle must skip them too,
                 // otherwise it overcounts compared to the on-disk accumulator value the
                 // migration backfilled.
-                if crate::chain_index::types::db::metadata::is_unspendable_tx_out(output) {
+                if crate::types::db::metadata::is_unspendable_tx_out(output) {
                     continue;
                 }
 
@@ -1832,7 +1807,7 @@ pub(crate) async fn expected_tx_out_set_info_accumulator(
 /// [`expected_tx_out_set_info_accumulator`]. Used by the v1.1->v1.2 migration tests.
 #[cfg(test)]
 pub(crate) async fn assert_tx_out_set_info_accumulator_matches_transparent_data(
-    database_backend: &FinalisedSource<MockSource>,
+    database_backend: &FinalisedSource<FakeValidator>,
 ) {
     let database_height = database_backend.db_height().await.unwrap().unwrap();
 
@@ -1853,19 +1828,19 @@ pub(crate) async fn assert_tx_out_set_info_accumulator_matches_transparent_data(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chain_index::finalised_state::FinalisedState;
-    use crate::chain_index::tests::finalised_state::v1::load_vectors_and_spawn_and_sync_v1_zaino_db;
-    use crate::chain_index::tests::init_tracing;
-    use crate::chain_index::tests::vectors::{
-        build_mockchain_source, indexed_block_chain, load_test_vectors, TestVectorBlockData,
-        TestVectorData,
+    use crate::config::ZainoDbConfig;
+    use crate::store::FinalisedState;
+    use crate::tests::finalised_state::v1::load_vectors_and_spawn_and_sync_v1_zaino_db;
+    use crate::tests::fixtures::{
+        fake_validator_from_vectors, indexed_block_chain, load_test_vectors, TestVectorData,
+        VectorBlock,
     };
-    use crate::chain_index::types::db::metadata::{
-        FinalisedTxOutSetInfoAccumulator, ZAINO_TXOUTSET_ENTRY_LEN,
-    };
-    use crate::ChainIndexConfig;
+    use crate::tests::init_tracing;
+    use crate::types::db::metadata::FinalisedTxOutSetInfoAccumulator;
     use std::sync::Arc;
     use tempfile::TempDir;
+    use zaino_chain_store::ChainStoreConfig;
+    use zaino_chain_store::TXOUT_SET_ENTRY_LEN;
     use zaino_common::network::ActivationHeights;
     use zaino_common::{DatabaseConfig, StorageConfig, SyncWriteBatchSize};
 
@@ -1888,7 +1863,7 @@ mod tests {
         apply_tx_out_set_entries_delta(&mut acc, &entries, true).expect("add should succeed");
 
         assert_eq!(acc.total_zatoshis, 300);
-        assert_eq!(acc.bytes_serialized, 2 * ZAINO_TXOUTSET_ENTRY_LEN);
+        assert_eq!(acc.bytes_serialized, 2 * TXOUT_SET_ENTRY_LEN);
 
         apply_tx_out_set_entries_delta(&mut acc, &entries, false).expect("remove should succeed");
 
@@ -2071,12 +2046,12 @@ mod tests {
         // From this we derive every accumulator field:
         //   transactions         = number of txids with at least one unspent output
         //   transaction_outputs  = total number of unspent transparent outputs
-        //   bytes_serialized     = transaction_outputs * ZAINO_TXOUTSET_ENTRY_LEN
+        //   bytes_serialized     = transaction_outputs * TXOUT_SET_ENTRY_LEN
         //   hash_serialized      = XOR of tx_out_set_entry_digest over all unspent outputs
         //   total_zatoshis       = sum of `value` over all unspent outputs
         let mut unspent_output_indices_by_transaction_hash: HashMap<
             TransactionHash,
-            HashMap<u32, crate::TxOutCompact>,
+            HashMap<u32, crate::types::TxOutCompact>,
         > = HashMap::new();
 
         for chain_block in indexed_block_chain(&blocks) {
@@ -2126,7 +2101,7 @@ mod tests {
                     // The accumulator skips NonStandard (unspendable) outputs — see
                     // `is_unspendable_tx_out` in
                     // `chain_index::types::db::metadata`. The oracle must mirror that.
-                    if crate::chain_index::types::db::metadata::is_unspendable_tx_out(output) {
+                    if crate::types::db::metadata::is_unspendable_tx_out(output) {
                         continue;
                     }
 
@@ -2169,9 +2144,7 @@ mod tests {
         let (_data, _db_dir, zaino_db) = load_vectors_and_spawn_and_sync_v1_zaino_db().await;
         zaino_db.wait_until_ready().await;
 
-        use crate::chain_index::finalised_state::capability::{
-            CapabilityRequest, DbRead, TransparentHistExt,
-        };
+        use crate::store::capability::{CapabilityRequest, DbRead, TxOutSetExt};
 
         let backend = zaino_db
             .backend_for_cap(CapabilityRequest::WriteCore)
@@ -2225,9 +2198,7 @@ mod tests {
         zaino_db.wait_until_ready().await;
 
         let backend = zaino_db
-            .backend_for_cap(
-                crate::chain_index::finalised_state::capability::CapabilityRequest::WriteCore,
-            )
+            .backend_for_cap(crate::store::capability::CapabilityRequest::WriteCore)
             .unwrap();
 
         // A budget far larger than the (tiny regtest) spent set => the whole set fits in one shard.
@@ -2248,33 +2219,34 @@ mod tests {
     /// Syncs the vector chain to height 200 with the given bulk-write batch budget and returns the
     /// resulting `(db tip, validated tip, txout-set accumulator)`.
     async fn sync_with_batch_budget(
-        blocks: Vec<TestVectorBlockData>,
+        blocks: Vec<VectorBlock>,
         sync_write_batch_size: SyncWriteBatchSize,
     ) -> (Height, u32, FinalisedTxOutSetInfoAccumulator) {
-        use crate::chain_index::finalised_state::capability::{
-            CapabilityRequest, DbRead, TransparentHistExt,
-        };
+        use crate::store::capability::{CapabilityRequest, DbRead, TxOutSetExt};
 
-        let source = build_mockchain_source(blocks);
+        let source = fake_validator_from_vectors(&blocks);
         let temp_dir: TempDir = tempfile::tempdir().unwrap();
-        let config = ChainIndexConfig {
-            storage: StorageConfig {
-                database: DatabaseConfig {
-                    path: temp_dir.path().to_path_buf(),
-                    sync_write_batch_size,
-                    ..Default::default()
-                },
+        let storage = StorageConfig {
+            database: DatabaseConfig {
+                path: temp_dir.path().to_path_buf(),
+                sync_write_batch_size,
                 ..Default::default()
             },
-            ephemeral: false,
-            mempool: Default::default(),
-            db_version: 1,
-            network: ActivationHeights::default().to_regtest_network(),
+            ..Default::default()
         };
 
-        let zaino_db = FinalisedState::spawn(config, source.clone()).await.unwrap();
+        let zaino_db = FinalisedState::spawn(
+            ChainStoreConfig::at_path(temp_dir.path()),
+            ZainoDbConfig::from_storage(
+                &storage,
+                ActivationHeights::default().to_regtest_network(),
+            ),
+            source.clone(),
+        )
+        .await
+        .unwrap();
         zaino_db.sync_to_height(Height(200), &source).await.unwrap();
-        // Catch-up of >LONG_RUNNING_SYNC_THRESHOLD blocks runs in the background; wait for the
+        // Catch-up of >background_build_threshold blocks runs in the background; wait for the
         // persistent DB to actually reach the tip before reading it back.
         zaino_db.wait_until_synced().await;
 
@@ -2326,29 +2298,19 @@ mod tests {
     async fn incremental_accumulator_update_matches_full_rebuild() {
         init_tracing();
 
-        use crate::chain_index::finalised_state::capability::{
-            CapabilityRequest, DbRead, TransparentHistExt,
-        };
+        use crate::store::capability::{CapabilityRequest, DbRead, TxOutSetExt};
         use zaino_consensus::COINBASE_MATURITY;
 
         let blocks = load_test_vectors().unwrap().blocks;
-        let source = build_mockchain_source(blocks);
+        let source = fake_validator_from_vectors(&blocks);
         let temp_dir: TempDir = tempfile::tempdir().unwrap();
-        let config = ChainIndexConfig {
-            storage: StorageConfig {
-                database: DatabaseConfig {
-                    path: temp_dir.path().to_path_buf(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-            ephemeral: false,
-            mempool: Default::default(),
-            db_version: 1,
-            network: ActivationHeights::default().to_regtest_network(),
-        };
-
-        let zaino_db = FinalisedState::spawn(config, source.clone()).await.unwrap();
+        let zaino_db = FinalisedState::spawn(
+            ChainStoreConfig::at_path(temp_dir.path()),
+            ZainoDbConfig::new(ActivationHeights::default().to_regtest_network()),
+            source.clone(),
+        )
+        .await
+        .unwrap();
 
         // First segment builds the accumulator to `COINBASE_MATURITY` (no watermark yet => full
         // rebuild), the second advances it to the fixture tip => the incremental update path under test.
@@ -2356,7 +2318,7 @@ mod tests {
             .sync_to_height(Height(COINBASE_MATURITY), &source)
             .await
             .unwrap();
-        // Background catch-up (>LONG_RUNNING_SYNC_THRESHOLD); wait for the persistent build + watermark.
+        // Background catch-up (>background_build_threshold); wait for the persistent build + watermark.
         zaino_db.wait_until_synced().await;
 
         let backend = zaino_db
@@ -2405,12 +2367,11 @@ mod tests {
     /// Computes the canonical [`FinalisedTxOutSetInfoAccumulator`] for a fully-resolved UTXO set,
     /// used as the source of truth by the write/delete accumulator tests.
     fn accumulator_from_unspent_map(
-        unspent: &HashMap<TransactionHash, HashMap<u32, crate::TxOutCompact>>,
+        unspent: &HashMap<TransactionHash, HashMap<u32, crate::types::TxOutCompact>>,
     ) -> FinalisedTxOutSetInfoAccumulator {
-        use crate::chain_index::types::db::metadata::{
-            tx_out_set_entry_digest, ZAINO_TXOUTSET_ENTRY_LEN,
-        };
-        use crate::Outpoint;
+        use crate::types::db::metadata::tx_out_set_entry_digest;
+        use crate::types::Outpoint;
+        use zaino_chain_store::TXOUT_SET_ENTRY_LEN;
 
         let mut transaction_outputs = 0u64;
         let mut total_zatoshis = 0u64;
@@ -2431,7 +2392,7 @@ mod tests {
         FinalisedTxOutSetInfoAccumulator {
             transactions: unspent.len() as u64,
             transaction_outputs,
-            bytes_serialized: transaction_outputs * ZAINO_TXOUTSET_ENTRY_LEN,
+            bytes_serialized: transaction_outputs * TXOUT_SET_ENTRY_LEN,
             hash_serialized,
             total_zatoshis,
         }
@@ -2465,7 +2426,7 @@ mod tests {
         //   transactions, transaction_outputs, bytes_serialized, hash_serialized, total_zatoshis.
         let mut unspent_output_indices_by_transaction_hash: HashMap<
             TransactionHash,
-            HashMap<u32, crate::TxOutCompact>,
+            HashMap<u32, crate::types::TxOutCompact>,
         > = HashMap::new();
 
         for chain_block in indexed_block_chain(&blocks[..blocks.len() - 1]) {
@@ -2513,7 +2474,7 @@ mod tests {
                     // The accumulator skips NonStandard (unspendable) outputs — see
                     // `is_unspendable_tx_out` in
                     // `chain_index::types::db::metadata`. The oracle must mirror that.
-                    if crate::chain_index::types::db::metadata::is_unspendable_tx_out(output) {
+                    if crate::types::db::metadata::is_unspendable_tx_out(output) {
                         continue;
                     }
 

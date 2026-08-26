@@ -10,14 +10,11 @@ impl BlockTransparentExt for DbV1 {
     async fn get_transparent(
         &self,
         tx_location: TxLocation,
-    ) -> Result<Option<TransparentCompactTx>, FinalisedStateError> {
+    ) -> Result<Option<TransparentCompactTx>, StoreError> {
         self.get_transparent(tx_location).await
     }
 
-    async fn get_block_transparent(
-        &self,
-        height: Height,
-    ) -> Result<TransparentTxList, FinalisedStateError> {
+    async fn get_block_transparent(&self, height: Height) -> Result<TransparentTxList, StoreError> {
         self.get_block_transparent(height).await
     }
 
@@ -25,14 +22,11 @@ impl BlockTransparentExt for DbV1 {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<TransparentTxList>, FinalisedStateError> {
+    ) -> Result<Vec<TransparentTxList>, StoreError> {
         self.get_block_range_transparent(start, end).await
     }
 
-    async fn get_previous_output(
-        &self,
-        outpoint: Outpoint,
-    ) -> Result<TxOutCompact, FinalisedStateError> {
+    async fn get_previous_output(&self, outpoint: Outpoint) -> Result<TxOutCompact, StoreError> {
         tokio::task::block_in_place(|| self.get_previous_output_blocking(outpoint))
     }
 }
@@ -46,24 +40,24 @@ impl DbV1 {
     async fn get_transparent(
         &self,
         tx_location: TxLocation,
-    ) -> Result<Option<TransparentCompactTx>, FinalisedStateError> {
+    ) -> Result<Option<TransparentCompactTx>, StoreError> {
         use std::io::{Cursor, Read};
 
         tokio::task::block_in_place(|| {
             let txn = self.env.begin_ro_txn()?;
 
             let height = Height::try_from(tx_location.block_height())
-                .map_err(|e| FinalisedStateError::Custom(e.to_string()))?;
+                .map_err(|e| StoreError::Custom(e.to_string()))?;
             let height_bytes = height.to_bytes()?;
 
             let raw = match txn.get(self.transparent, &height_bytes) {
                 Ok(val) => val,
                 Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
+                    return Err(StoreError::DataUnavailable(
                         "transparent data missing from db".into(),
                     ));
                 }
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                Err(e) => return Err(StoreError::LmdbError(e)),
             };
             let mut cursor = Cursor::new(raw);
 
@@ -71,20 +65,19 @@ impl DbV1 {
             cursor.set_position(1);
 
             // Read CompactSize: length of serialized body
-            let _body_len = CompactSize::read(&mut cursor).map_err(|e| {
-                FinalisedStateError::Custom(format!("compact size read error: {e}"))
-            })?;
+            let _body_len = CompactSize::read(&mut cursor)
+                .map_err(|e| StoreError::Custom(format!("compact size read error: {e}")))?;
 
             // Read [1] TransparentTxList Record version (skip 1 byte)
             cursor.set_position(cursor.position() + 1);
 
             // Read CompactSize: number of records
             let list_len = CompactSize::read(&mut cursor)
-                .map_err(|e| FinalisedStateError::Custom(format!("txid list len error: {e}")))?;
+                .map_err(|e| StoreError::Custom(format!("txid list len error: {e}")))?;
 
             let idx = tx_location.tx_index() as usize;
             if idx >= list_len as usize {
-                return Err(FinalisedStateError::Custom(
+                return Err(StoreError::Custom(
                     "tx_index out of range in transparent tx data".to_string(),
                 ));
             }
@@ -92,21 +85,21 @@ impl DbV1 {
             // Skip preceding entries
             for _ in 0..idx {
                 Self::skip_opt_transparent_entry(&mut cursor)
-                    .map_err(|e| FinalisedStateError::Custom(format!("skip entry error: {e}")))?;
+                    .map_err(|e| StoreError::Custom(format!("skip entry error: {e}")))?;
             }
 
             let option_start = cursor.position();
 
             // Peek at the 1-byte presence flag
             let mut presence = [0u8; 1];
-            cursor.read_exact(&mut presence).map_err(|e| {
-                FinalisedStateError::Custom(format!("failed to read Option tag: {e}"))
-            })?;
+            cursor
+                .read_exact(&mut presence)
+                .map_err(|e| StoreError::Custom(format!("failed to read Option tag: {e}")))?;
 
             if presence[0] == 0 {
                 return Ok(None);
             } else if presence[0] != 1 {
-                return Err(FinalisedStateError::Custom(format!(
+                return Err(StoreError::Custom(format!(
                     "invalid Option tag: {}",
                     presence[0]
                 )));
@@ -116,9 +109,8 @@ impl DbV1 {
 
             cursor.set_position(option_start);
             // Skip this entry to compute length
-            Self::skip_opt_transparent_entry(&mut cursor).map_err(|e| {
-                FinalisedStateError::Custom(format!("skip entry error (second pass): {e}"))
-            })?;
+            Self::skip_opt_transparent_entry(&mut cursor)
+                .map_err(|e| StoreError::Custom(format!("skip entry error (second pass): {e}")))?;
 
             let end = cursor.position();
             let slice = &raw[tx_start as usize..end as usize];
@@ -128,15 +120,10 @@ impl DbV1 {
     }
 
     /// Fetch block transparent transaction data by height.
-    async fn get_block_transparent(
-        &self,
-        height: Height,
-    ) -> Result<TransparentTxList, FinalisedStateError> {
+    async fn get_block_transparent(&self, height: Height) -> Result<TransparentTxList, StoreError> {
         self.read_row_at_height(self.transparent, "transparent", height)
             .await?
-            .ok_or_else(|| {
-                FinalisedStateError::DataUnavailable("transparent data missing from db".into())
-            })
+            .ok_or_else(|| StoreError::DataUnavailable("transparent data missing from db".into()))
     }
 
     /// Fetches block transparent tx data for the given height range.
@@ -150,7 +137,7 @@ impl DbV1 {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<Vec<TransparentTxList>, FinalisedStateError> {
+    ) -> Result<Vec<TransparentTxList>, StoreError> {
         self.scan_rows(self.transparent, "transparent", start, end)
             .await
     }

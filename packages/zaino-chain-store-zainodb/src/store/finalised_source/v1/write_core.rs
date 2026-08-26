@@ -85,7 +85,7 @@ struct BatchBuild {
 struct BatchCursor {
     /// Height of the next block to build.
     next: u32,
-    parent_chainwork: Option<crate::ChainWork>,
+    parent_chainwork: Option<crate::types::ChainWork>,
     last_progress_log: std::time::Instant,
 }
 
@@ -94,11 +94,11 @@ struct BatchCursor {
 ///
 /// Returns an empty batch only once the target is reached, which is what ends the pipeline loop.
 #[cfg(not(feature = "transparent_address_history_experimental"))]
-async fn fill_sync_batch<S: crate::chain_index::source::BlockchainSource>(
+async fn fill_sync_batch<S: zaino_chain_store::ChainStoreSource>(
     build: &BatchBuild,
     cursor: &mut BatchCursor,
     source: &S,
-) -> Result<Vec<IndexedBlock>, FinalisedStateError> {
+) -> Result<Vec<IndexedBlock>, StoreError> {
     let mut batch: Vec<IndexedBlock> = Vec::new();
     let mut batch_bytes: u64 = 0;
     let started = std::time::Instant::now();
@@ -125,10 +125,7 @@ async fn fill_sync_batch<S: crate::chain_index::source::BlockchainSource>(
             |height_int| async move {
                 #[cfg(feature = "prometheus")]
                 let build_start = std::time::Instant::now();
-                let fetched = crate::chain_index::finalised_state::fetch_block_for_indexing(
-                    source, height_int,
-                )
-                .await;
+                let fetched = crate::store::fetch_block_for_indexing(source, height_int).await;
                 // Per-block cost, so it stays comparable across concurrency settings. With N
                 // fetches in flight the sum of this histogram approaches N x wall-clock; compare
                 // it against wall-clock only after dividing by the concurrency in force.
@@ -155,7 +152,7 @@ async fn fill_sync_batch<S: crate::chain_index::source::BlockchainSource>(
             cursor.parent_chainwork = Some(match parent_chainwork {
                 Some(parent) => parent
                     .add(&block_work)
-                    .map_err(|e| FinalisedStateError::Custom(format!("chainwork overflow: {e}")))?,
+                    .map_err(|e| StoreError::Custom(format!("chainwork overflow: {e}")))?,
                 None => block_work,
             });
             prepared.push((height_int, parts, parent_chainwork));
@@ -169,15 +166,13 @@ async fn fill_sync_batch<S: crate::chain_index::source::BlockchainSource>(
         let assemblies = futures::StreamExt::map(
             futures::stream::iter(prepared),
             |(height_int, parts, parent_chainwork)| {
-                let zebra_network = build.zebra_network.clone();
                 let sapling_activation_height = build.sapling_activation_height;
                 let nu5_activation_height = build.nu5_activation_height;
                 let nu6_3_activation_height = build.nu6_3_activation_height;
                 async move {
                     tokio::task::spawn_blocking(move || {
-                        crate::chain_index::finalised_state::assemble_indexed_block(
+                        crate::store::assemble_indexed_block(
                             parts,
-                            zebra_network,
                             sapling_activation_height,
                             nu5_activation_height,
                             nu6_3_activation_height,
@@ -187,7 +182,7 @@ async fn fill_sync_batch<S: crate::chain_index::source::BlockchainSource>(
                     })
                     .await
                     .map_err(|join| {
-                        FinalisedStateError::Custom(format!("block assembly task failed: {join}"))
+                        StoreError::Custom(format!("block assembly task failed: {join}"))
                     })?
                 }
             },
@@ -226,7 +221,7 @@ async fn fill_sync_batch<S: crate::chain_index::source::BlockchainSource>(
 }
 
 #[cfg(test)]
-use crate::version;
+use zaino_encoding::version;
 
 /// [`DbWrite`] capability implementation for [`DbV1`].
 ///
@@ -246,7 +241,7 @@ struct BlockPoolLists {
 /// Builds the per-transaction pool lists for one block: each pool records
 /// `Some(compact data)` for a transaction with data in that pool, `None` otherwise,
 /// keeping every list index-aligned with the block's txids.
-fn extract_block_pool_lists(block: &IndexedBlock) -> Result<BlockPoolLists, FinalisedStateError> {
+fn extract_block_pool_lists(block: &IndexedBlock) -> Result<BlockPoolLists, StoreError> {
     let block_height = block.context.index.height;
     let block_hash = block.context.index.hash;
 
@@ -261,7 +256,7 @@ fn extract_block_pool_lists(block: &IndexedBlock) -> Result<BlockPoolLists, Fina
     for tx in block.transactions() {
         let hash = tx.txid();
         if !txid_set.insert(*hash) {
-            return Err(FinalisedStateError::InvalidBlock {
+            return Err(StoreError::InvalidBlock {
                 height: block_height.0,
                 hash: block_hash,
                 reason: format!("duplicate transaction hash in block: {hash:?}"),
@@ -316,11 +311,11 @@ fn extract_block_pool_lists(block: &IndexedBlock) -> Result<BlockPoolLists, Fina
 fn verify_header_merkle_root(
     txids: &[TransactionHash],
     block: &IndexedBlock,
-) -> Result<(), FinalisedStateError> {
+) -> Result<(), StoreError> {
     let txid_bytes: Vec<[u8; 32]> = txids.iter().map(|txid| txid.0).collect();
     let computed_merkle_root = DbV1::calculate_block_merkle_root(&txid_bytes);
     if &computed_merkle_root != block.data().merkle_root() {
-        return Err(FinalisedStateError::InvalidBlock {
+        return Err(StoreError::InvalidBlock {
             height: block.context.index.height.0,
             hash: block.context.index.hash,
             reason: "header merkle root does not match block txids".to_string(),
@@ -396,7 +391,7 @@ fn ironwood_entry(
 pub(crate) fn build_block_ironwood_entry(
     block: &IndexedBlock,
     block_height_bytes: &[u8],
-) -> Result<Option<StoredEntryVar<OrchardTxList>>, FinalisedStateError> {
+) -> Result<Option<StoredEntryVar<OrchardTxList>>, StoreError> {
     Ok(ironwood_entry(
         extract_block_pool_lists(block)?.ironwood,
         block_height_bytes,
@@ -404,7 +399,7 @@ pub(crate) fn build_block_ironwood_entry(
 }
 
 impl DbWrite for DbV1 {
-    async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
+    async fn write_block(&self, block: IndexedBlock) -> Result<(), StoreError> {
         self.write_block(block).await
     }
 
@@ -412,16 +407,16 @@ impl DbWrite for DbV1 {
     /// maintenance across the run and rebuilding it once at the end. Each block is written with
     /// `update_tx_out_set = false` (deferred) and `validate = false` (the height is marked
     /// validated directly, since we built the block from the source this session).
-    async fn write_blocks_to_height<S: crate::chain_index::source::BlockchainSource>(
+    async fn write_blocks_to_height<S: zaino_chain_store::ChainStoreSource>(
         &self,
         height: Height,
         source: &S,
-    ) -> Result<(), FinalisedStateError> {
+    ) -> Result<(), StoreError> {
         #[cfg(feature = "transparent_address_history_experimental")]
-        use crate::chain_index::finalised_state::build_indexed_block_from_source;
-        use crate::chain_index::finalised_state::PoolActivationHeights;
+        use crate::store::build_indexed_block_from_source;
+        use crate::store::PoolActivationHeights;
 
-        let zebra_network = self.config.network.clone();
+        let zebra_network = self.config.db.network().clone();
         let pool_activations = PoolActivationHeights::resolve(&zebra_network);
         let sapling_activation_height = pool_activations
             .sapling
@@ -440,7 +435,7 @@ impl DbWrite for DbV1 {
             not(feature = "transparent_address_history_experimental"),
             allow(unused_mut)
         )]
-        let (start_height, mut parent_chainwork): (u32, Option<crate::ChainWork>) =
+        let (start_height, mut parent_chainwork): (u32, Option<crate::types::ChainWork>) =
             match self.tip_height().await? {
                 None => (GENESIS_HEIGHT.0, None),
                 Some(tip) => {
@@ -451,14 +446,12 @@ impl DbWrite for DbV1 {
                             Ok(raw) => {
                                 let entry = StoredEntryVar::<BlockHeaderData>::from_bytes(raw)
                                     .map_err(|e| {
-                                        FinalisedStateError::Custom(format!(
-                                            "tip header decode error: {e}"
-                                        ))
+                                        StoreError::Custom(format!("tip header decode error: {e}"))
                                     })?;
-                                Ok::<_, FinalisedStateError>(Some(entry.inner().context.chainwork))
+                                Ok::<_, StoreError>(Some(entry.inner().context.chainwork))
                             }
                             Err(lmdb::Error::NotFound) => Ok(None),
-                            Err(e) => Err(FinalisedStateError::LmdbError(e)),
+                            Err(e) => Err(StoreError::LmdbError(e)),
                         }
                     })?;
                     (tip.0 + 1, chainwork)
@@ -500,16 +493,10 @@ impl DbWrite for DbV1 {
             // the `batch_bytes < batch_budget` check on the first iteration (`0 < 0`), buffer no
             // blocks, and stall the sync. A 1-byte floor still guarantees forward progress
             // (worst case, one block per batch).
-            let batch_budget = (self
-                .config
-                .storage
-                .database
-                .sync_write_batch_size
-                .to_byte_count() as u64)
-                .max(1);
-            let batch_interval = std::time::Duration::from_secs(
-                self.config.storage.database.sync_checkpoint_interval,
-            );
+            let batch_budget =
+                (self.config.db.sync_write_batch_size().to_byte_count() as u64).max(1);
+            let batch_interval =
+                std::time::Duration::from_secs(self.config.db.sync_checkpoint_interval());
 
             let build = BatchBuild {
                 zebra_network,
@@ -567,7 +554,6 @@ impl DbWrite for DbV1 {
             for height_int in start_height..=height.0 {
                 let block = build_indexed_block_from_source(
                     source,
-                    zebra_network.clone(),
                     sapling_activation_height,
                     nu5_activation_height,
                     nu6_3_activation_height,
@@ -591,15 +577,15 @@ impl DbWrite for DbV1 {
         Ok(())
     }
 
-    async fn delete_block_at_height(&self, height: Height) -> Result<(), FinalisedStateError> {
+    async fn delete_block_at_height(&self, height: Height) -> Result<(), StoreError> {
         self.delete_block_at_height(height).await
     }
 
-    async fn delete_block(&self, block: &IndexedBlock) -> Result<(), FinalisedStateError> {
+    async fn delete_block(&self, block: &IndexedBlock) -> Result<(), StoreError> {
         self.delete_block(block).await
     }
 
-    async fn update_metadata(&self, metadata: DbMetadata) -> Result<(), FinalisedStateError> {
+    async fn update_metadata(&self, metadata: DbMetadata) -> Result<(), StoreError> {
         self.update_metadata(metadata).await
     }
 }
@@ -613,16 +599,13 @@ impl DbV1 {
     /// Blocking, and deliberately free of `block_in_place`: the pipeline runs this on a scoped
     /// thread of its own, which is not a runtime worker, so there is no worker to hand off.
     #[cfg(not(feature = "transparent_address_history_experimental"))]
-    fn commit_sync_batch_blocking(
-        &self,
-        batch: &[IndexedBlock],
-    ) -> Result<(), FinalisedStateError> {
+    fn commit_sync_batch_blocking(&self, batch: &[IndexedBlock]) -> Result<(), StoreError> {
         #[cfg(feature = "prometheus")]
         let write_start = std::time::Instant::now();
         self.write_block_batch_blocking(batch)?;
-        self.env.sync(true).map_err(|e| {
-            FinalisedStateError::Custom(format!("LMDB checkpoint sync failed: {e}"))
-        })?;
+        self.env
+            .sync(true)
+            .map_err(|e| StoreError::Custom(format!("LMDB checkpoint sync failed: {e}")))?;
         #[cfg(feature = "prometheus")]
         metrics::histogram!(SYNC_BLOCK_WRITE_SECONDS).record(write_start.elapsed().as_secs_f64());
         Ok(())
@@ -655,7 +638,7 @@ impl DbV1 {
         #[cfg(feature = "prometheus")]
         {
             metrics::gauge!(DB_TIP_HEIGHT).set(height as f64);
-            metrics::gauge!(SYNC_LAST_BLOCK_WRITTEN_AT).set(crate::chain_index::unix_now_secs());
+            metrics::gauge!(SYNC_LAST_BLOCK_WRITTEN_AT).set(crate::support::unix_now_secs());
         }
     }
 
@@ -667,7 +650,7 @@ impl DbV1 {
     /// [`DbV1::write_block_with_options`]) and rebuilds it once at the tip.
     ///
     /// NOTE: This method should never leave a block partially written to the database.
-    pub(crate) async fn write_block(&self, block: IndexedBlock) -> Result<(), FinalisedStateError> {
+    pub(crate) async fn write_block(&self, block: IndexedBlock) -> Result<(), StoreError> {
         self.write_block_with_options(block, true).await
     }
 
@@ -692,7 +675,7 @@ impl DbV1 {
         &self,
         block: IndexedBlock,
         update_tx_out_set: bool,
-    ) -> Result<(), FinalisedStateError> {
+    ) -> Result<(), StoreError> {
         self.status.store(StatusType::Syncing);
         let block_hash = block.context.index.hash;
         let block_hash_bytes = block_hash.to_bytes()?;
@@ -712,7 +695,7 @@ impl DbV1 {
                     let stored_entry =
                         StoredEntryVar::<BlockHeaderData>::from_bytes(stored_header_bytes)
                             .map_err(|e| {
-                                FinalisedStateError::Custom(format!(
+                                StoreError::Custom(format!(
                                     "header decode error during idempotency check: {e}"
                                 ))
                             })?;
@@ -721,7 +704,7 @@ impl DbV1 {
                         // Same block already written, this is a no-op success
                         return Ok(true);
                     } else {
-                        return Err(FinalisedStateError::Custom(format!(
+                        return Err(StoreError::Custom(format!(
                             "block at height {block_height:?} already exists with different hash \
                              (stored: {:?}, incoming: {:?})",
                             stored_header.context.index.hash, block_hash
@@ -731,7 +714,7 @@ impl DbV1 {
                 Err(lmdb::Error::NotFound) => {
                     // Block doesn't exist at this height, check if it's the next in sequence
                 }
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                Err(e) => return Err(StoreError::LmdbError(e)),
             }
 
             // Now verify this is the next block in the chain
@@ -745,7 +728,7 @@ impl DbV1 {
 
                     // Height must be exactly +1 over the current tip
                     if block_height.0 != last_height.0 + 1 {
-                        return Err(FinalisedStateError::Custom(format!(
+                        return Err(StoreError::Custom(format!(
                             "cannot write block at height {block_height:?}; \
                      current tip is {last_height:?}"
                         )));
@@ -759,12 +742,12 @@ impl DbV1 {
                         last_header_bytes,
                     )
                     .map_err(|e| {
-                        FinalisedStateError::Custom(format!(
+                        StoreError::Custom(format!(
                             "tip header decode error during continuity check: {e}"
                         ))
                     })?;
                     if last_entry.inner().context.hash() != block.context.parent_hash() {
-                        return Err(FinalisedStateError::InvalidBlock {
+                        return Err(StoreError::InvalidBlock {
                             height: block_height.0,
                             hash: block_hash,
                             reason: format!(
@@ -778,14 +761,14 @@ impl DbV1 {
                 // no block in db, this must be genesis block.
                 Err(lmdb::Error::NotFound) => {
                     if block_height.0 != GENESIS_HEIGHT.0 {
-                        return Err(FinalisedStateError::Custom(format!(
+                        return Err(StoreError::Custom(format!(
                             "first block must be height 0, got {block_height:?}"
                         )));
                     }
                 }
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                Err(e) => return Err(StoreError::LmdbError(e)),
             }
-            Ok::<_, FinalisedStateError>(false)
+            Ok::<_, StoreError>(false)
         })?;
 
         // If block already exists with same hash, return success without re-writing
@@ -826,19 +809,18 @@ impl DbV1 {
         #[allow(clippy::unused_enumerate_index)]
         for (_tx_index, tx) in block.transactions().iter().enumerate() {
             // Transaction location
-            let tx_index =
-                u16::try_from(_tx_index).map_err(|_| FinalisedStateError::InvalidBlock {
-                    height: block_height.0,
-                    hash: block_hash,
-                    reason: format!("transaction index {_tx_index} does not fit into u16"),
-                })?;
+            let tx_index = u16::try_from(_tx_index).map_err(|_| StoreError::InvalidBlock {
+                height: block_height.0,
+                hash: block_hash,
+                reason: format!("transaction index {_tx_index} does not fit into u16"),
+            })?;
 
             let tx_location = TxLocation::new(block_height.into(), tx_index);
 
             // Transparent Inputs: Build Spent Outpoints Index
             for prev_outpoint in tx.transparent().spent_outpoints() {
                 if spent_map.insert(prev_outpoint, tx_location).is_some() {
-                    return Err(FinalisedStateError::InvalidBlock {
+                    return Err(StoreError::InvalidBlock {
                         height: block_height.0,
                         hash: block_hash,
                         reason: format!(
@@ -899,12 +881,9 @@ impl DbV1 {
                                     *prev_outpoint.prev_txid(),
                                 ))?
                                 .ok_or_else(|| {
-                                    FinalisedStateError::Custom("Previous txid not found".into())
+                                    StoreError::Custom("Previous txid not found".into())
                                 })?;
-                            Ok::<(_, _), FinalisedStateError>((
-                                prev_output,
-                                prev_output_tx_location,
-                            ))
+                            Ok::<(_, _), StoreError>((prev_output, prev_output_tx_location))
                         })
                     {
                         DbV1::build_input_history(
@@ -916,7 +895,7 @@ impl DbV1 {
                             prev_output_tx_location,
                         );
                     } else {
-                        return Err(FinalisedStateError::InvalidBlock {
+                        return Err(StoreError::InvalidBlock {
                             height: block.height().0,
                             hash: *block.hash(),
                             reason: "Invalid block data: invalid transparent input.".to_string(),
@@ -961,7 +940,7 @@ impl DbV1 {
             Vec::with_capacity(txids.len());
         for (tx_index, txid) in txids.iter().enumerate() {
             let tx_index = u16::try_from(tx_index).map_err(|_| {
-                FinalisedStateError::Custom(format!(
+                StoreError::Custom(format!(
                     "transaction index out of range at height {}",
                     block_height.0
                 ))
@@ -1088,7 +1067,7 @@ impl DbV1 {
                     let mut stored_entries = Vec::with_capacity(records.len());
                     for record in records {
                         let packed_record = AddrEventBytes::from_record(&record).map_err(|e| {
-                            FinalisedStateError::Custom(format!("AddrEventBytes pack error: {e:?}"))
+                            StoreError::Custom(format!("AddrEventBytes pack error: {e:?}"))
                         })?;
                         let entry = StoredEntryFixed::new(&addr_bytes, packed_record);
                         let entry_bytes = entry.to_bytes()?;
@@ -1116,7 +1095,7 @@ impl DbV1 {
                     let mut stored_entries = Vec::with_capacity(records.len());
                     for (record, prev_output) in records {
                         let packed_record = AddrEventBytes::from_record(&record).map_err(|e| {
-                            FinalisedStateError::Custom(format!("AddrEventBytes pack error: {e:?}"))
+                            StoreError::Custom(format!("AddrEventBytes pack error: {e:?}"))
                         })?;
                         let entry = StoredEntryFixed::new(&addr_bytes, packed_record);
                         let entry_bytes = entry.to_bytes()?;
@@ -1140,9 +1119,7 @@ impl DbV1 {
                         let prev_addr_bytes = prev_output_script.to_bytes()?;
                         let packed_prev = AddrEventBytes::from_record(&prev_output_record)
                             .map_err(|e| {
-                                FinalisedStateError::Custom(format!(
-                                    "AddrEventBytes pack error: {e:?}"
-                                ))
+                                StoreError::Custom(format!("AddrEventBytes pack error: {e:?}"))
                             })?;
                         let prev_entry_bytes =
                             StoredEntryFixed::new(&prev_addr_bytes, packed_prev).to_bytes()?;
@@ -1153,7 +1130,7 @@ impl DbV1 {
                         )?;
                         if !updated {
                             // Log and treat as invalid block — marking the prev-output must succeed.
-                            return Err(FinalisedStateError::InvalidBlock {
+                            return Err(StoreError::InvalidBlock {
                                 height: block_height.0,
                                 hash: block_hash,
                                 reason: format!(
@@ -1181,7 +1158,7 @@ impl DbV1 {
             // `initial_block_scan`). Marking validated keeps reads on the `is_validated` fast path.
             zaino_db.mark_validated(block_height.0);
 
-            Ok::<_, FinalisedStateError>(())
+            Ok::<_, StoreError>(())
         });
 
         // Wait for the join and handle panic / cancellation explicitly so we can
@@ -1194,7 +1171,7 @@ impl DbV1 {
                 // Best-effort delete of partially written block; ignore delete result.
                 let _ = self.delete_block(&block).await;
 
-                return Err(FinalisedStateError::Custom(format!(
+                return Err(StoreError::Custom(format!(
                     "Tokio task error: {}",
                     join_err
                 )));
@@ -1211,7 +1188,7 @@ impl DbV1 {
                 self.status.store(StatusType::Ready);
                 if block_height.0 % SYNC_CHECKPOINT_INTERVAL == 0 {
                     tokio::task::block_in_place(|| self.env.sync(true)).map_err(|e| {
-                        FinalisedStateError::Custom(format!("LMDB checkpoint sync failed: {e}"))
+                        StoreError::Custom(format!("LMDB checkpoint sync failed: {e}"))
                     })?;
                 }
                 if block.context.index.height.0 % 100 == 0 {
@@ -1230,7 +1207,7 @@ impl DbV1 {
 
                 Ok(())
             }
-            Err(FinalisedStateError::LmdbError(lmdb::Error::KeyExist)) => {
+            Err(StoreError::LmdbError(lmdb::Error::KeyExist)) => {
                 // Block write failed because key already exists - another process wrote it
                 // between our check and our write.
                 //
@@ -1250,7 +1227,7 @@ impl DbV1 {
                             let stored_entry =
                                 StoredEntryVar::<BlockHeaderData>::from_bytes(stored_header_bytes)
                                     .map_err(|e| {
-                                        FinalisedStateError::Custom(format!(
+                                        StoreError::Custom(format!(
                                             "header decode error in KeyExist handler: {e}"
                                         ))
                                     })?;
@@ -1260,25 +1237,25 @@ impl DbV1 {
                                 self.validate_block_blocking(block_height, block_hash)
                                     .map(|()| true)
                                     .map_err(|e| {
-                                        FinalisedStateError::Custom(format!(
+                                        StoreError::Custom(format!(
                                             "Block write fail at height {}, with hash {:?}, \
                                             validation error: {}",
                                             block_height.0, block_hash, e
                                         ))
                                     })
                             } else {
-                                Err(FinalisedStateError::Custom(format!(
+                                Err(StoreError::Custom(format!(
                                     "KeyExist race: different block at height {} \
                                      (stored: {:?}, incoming: {:?})",
                                     block_height.0, stored_header.context.index.hash, block_hash
                                 )))
                             }
                         }
-                        Err(lmdb::Error::NotFound) => Err(FinalisedStateError::Custom(format!(
+                        Err(lmdb::Error::NotFound) => Err(StoreError::Custom(format!(
                             "KeyExist but block not found at height {} after sync",
                             block_height.0
                         ))),
-                        Err(e) => Err(FinalisedStateError::LmdbError(e)),
+                        Err(e) => Err(StoreError::LmdbError(e)),
                     }
                 });
 
@@ -1302,12 +1279,11 @@ impl DbV1 {
                         );
 
                         let _ = self.delete_block(&block).await;
-                        tokio::task::block_in_place(|| self.env.sync(true)).map_err(|e| {
-                            FinalisedStateError::Custom(format!("LMDB sync failed: {e}"))
-                        })?;
+                        tokio::task::block_in_place(|| self.env.sync(true))
+                            .map_err(|e| StoreError::Custom(format!("LMDB sync failed: {e}")))?;
                         self.status.store(StatusType::CriticalError);
                         self.status.store(StatusType::RecoverableError);
-                        Err(FinalisedStateError::InvalidBlock {
+                        Err(StoreError::InvalidBlock {
                             height: block_height.0,
                             hash: block_hash,
                             reason: e.to_string(),
@@ -1325,7 +1301,7 @@ impl DbV1 {
 
                 let _ = self.delete_block(&block).await;
                 tokio::task::block_in_place(|| self.env.sync(true))
-                    .map_err(|e| FinalisedStateError::Custom(format!("LMDB sync failed: {e}")))?;
+                    .map_err(|e| StoreError::Custom(format!("LMDB sync failed: {e}")))?;
 
                 // NOTE: this does not need to be critical if we implement self healing,
                 // which we have the tools to do.
@@ -1333,12 +1309,12 @@ impl DbV1 {
 
                 if e.to_string().contains("MDB_MAP_FULL") {
                     warn!("Configured max database size exceeded, update `storage.database.size` in zaino's config.");
-                    return Err(FinalisedStateError::Custom(format!(
+                    return Err(StoreError::Custom(format!(
                         "Database configuration error: {e}"
                     )));
                 }
 
-                Err(FinalisedStateError::InvalidBlock {
+                Err(StoreError::InvalidBlock {
                     height: block_height.0,
                     hash: block_hash,
                     reason: e.to_string(),
@@ -1373,7 +1349,7 @@ impl DbV1 {
     pub(crate) fn write_block_batch_blocking(
         &self,
         blocks: &[IndexedBlock],
-    ) -> Result<(), FinalisedStateError> {
+    ) -> Result<(), StoreError> {
         use lmdb::Transaction as _;
 
         if blocks.is_empty() {
@@ -1387,20 +1363,20 @@ impl DbV1 {
             db: Database,
             key: &[u8],
             value: &[u8],
-        ) -> Result<(), FinalisedStateError> {
+        ) -> Result<(), StoreError> {
             match txn.put(db, &key, &value, WriteFlags::NO_OVERWRITE) {
                 Ok(()) => Ok(()),
                 Err(lmdb::Error::KeyExist) => {
-                    let existing = txn.get(db, &key).map_err(FinalisedStateError::LmdbError)?;
+                    let existing = txn.get(db, &key).map_err(StoreError::LmdbError)?;
                     if existing == value {
                         Ok(())
                     } else {
-                        Err(FinalisedStateError::Custom(
+                        Err(StoreError::Custom(
                             "conflicting existing entry during batched block write".to_string(),
                         ))
                     }
                 }
-                Err(e) => Err(FinalisedStateError::LmdbError(e)),
+                Err(e) => Err(StoreError::LmdbError(e)),
             }
         }
 
@@ -1418,16 +1394,14 @@ impl DbV1 {
                     let last_entry = StoredEntryVar::<BlockHeaderData>::from_bytes(
                         last_header_bytes,
                     )
-                    .map_err(|e| {
-                        FinalisedStateError::Custom(format!("tip header decode error: {e}"))
-                    })?;
+                    .map_err(|e| StoreError::Custom(format!("tip header decode error: {e}")))?;
                     (
                         Some(last_height.0),
                         Some(*last_entry.inner().context.hash()),
                     )
                 }
                 Err(lmdb::Error::NotFound) => (None, None),
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                Err(e) => return Err(StoreError::LmdbError(e)),
             }
         };
 
@@ -1445,12 +1419,12 @@ impl DbV1 {
             match prev_height {
                 Some(tip) => {
                     if block_height.0 != tip + 1 {
-                        return Err(FinalisedStateError::Custom(format!(
+                        return Err(StoreError::Custom(format!(
                             "cannot write block at height {block_height:?}; current tip is {tip}"
                         )));
                     }
                     if Some(*block.context.parent_hash()) != prev_hash {
-                        return Err(FinalisedStateError::InvalidBlock {
+                        return Err(StoreError::InvalidBlock {
                             height: block_height.0,
                             hash: block_hash,
                             reason: "parent hash does not extend current tip".to_string(),
@@ -1459,7 +1433,7 @@ impl DbV1 {
                 }
                 None => {
                     if block_height.0 != GENESIS_HEIGHT.0 {
-                        return Err(FinalisedStateError::Custom(format!(
+                        return Err(StoreError::Custom(format!(
                             "first block must be height 0, got {block_height:?}"
                         )));
                     }
@@ -1470,12 +1444,11 @@ impl DbV1 {
             let pool_lists = extract_block_pool_lists(block)?;
 
             for (tx_index, tx) in block.transactions().iter().enumerate() {
-                let tx_index =
-                    u16::try_from(tx_index).map_err(|_| FinalisedStateError::InvalidBlock {
-                        height: block_height.0,
-                        hash: block_hash,
-                        reason: format!("transaction index {tx_index} does not fit into u16"),
-                    })?;
+                let tx_index = u16::try_from(tx_index).map_err(|_| StoreError::InvalidBlock {
+                    height: block_height.0,
+                    hash: block_hash,
+                    reason: format!("transaction index {tx_index} does not fit into u16"),
+                })?;
                 let tx_location = TxLocation::new(block_height.0, tx_index);
 
                 for prev_outpoint in tx.transparent().spent_outpoints() {
@@ -1584,10 +1557,7 @@ impl DbV1 {
     }
 
     /// Deletes a block identified height from every finalised table.
-    pub(crate) async fn delete_block_at_height(
-        &self,
-        height: Height,
-    ) -> Result<(), FinalisedStateError> {
+    pub(crate) async fn delete_block_at_height(&self, height: Height) -> Result<(), StoreError> {
         // Check block is at the top of the finalised state
         tokio::task::block_in_place(|| {
             let height_bytes = height.to_bytes()?;
@@ -1597,27 +1567,27 @@ impl DbV1 {
             let mut iter = cursor.iter_from(&height_bytes);
 
             let Some((current_height_bytes, _)) = iter.next() else {
-                return Err(FinalisedStateError::Custom("block not found".into()));
+                return Err(StoreError::Custom("block not found".into()));
             };
             if current_height_bytes != height_bytes.as_slice() {
-                return Err(FinalisedStateError::Custom(format!(
+                return Err(StoreError::Custom(format!(
                     "block with height {:?} not found in headers",
                     Height::from_bytes(&height_bytes)?
                 )));
             }
 
             if iter.next().is_some() {
-                return Err(FinalisedStateError::Custom(format!(
+                return Err(StoreError::Custom(format!(
                     "can only delete tip block at height {:?}, but higher blocks exist",
                     Height::from_bytes(&height_bytes)?
                 )));
             }
-            Ok::<_, FinalisedStateError>(())
+            Ok::<_, StoreError>(())
         })?;
 
         // fetch chain_block from db and delete
         let Some(chain_block) = self.get_chain_block(height).await? else {
-            return Err(FinalisedStateError::DataUnavailable(format!(
+            return Err(StoreError::DataUnavailable(format!(
                 "attempted to delete missing block: {}",
                 height.0
             )));
@@ -1636,8 +1606,8 @@ impl DbV1 {
         tokio::task::block_in_place(|| {
             self.env
                 .sync(true)
-                .map_err(|e| FinalisedStateError::Custom(format!("LMDB sync failed: {e}")))?;
-            Ok::<_, FinalisedStateError>(())
+                .map_err(|e| StoreError::Custom(format!("LMDB sync failed: {e}")))?;
+            Ok::<_, StoreError>(())
         })?;
 
         Ok(())
@@ -1656,30 +1626,25 @@ impl DbV1 {
     /// NOTE: LMDB database errors are propageted as these show serious database errors,
     /// all other errors are returned as `IncorrectBlock`, if this error is returned the block requested
     /// should be fetched from the validator and this method called with the correct data.
-    pub(crate) async fn delete_block(
-        &self,
-        block: &IndexedBlock,
-    ) -> Result<(), FinalisedStateError> {
+    pub(crate) async fn delete_block(&self, block: &IndexedBlock) -> Result<(), StoreError> {
         // Check block height and hash
         let block_height = block.context.index.height;
-        let block_height_bytes =
-            block_height
-                .to_bytes()
-                .map_err(|_| FinalisedStateError::InvalidBlock {
-                    height: block.height().0,
-                    hash: *block.hash(),
-                    reason: "Corrupt block data: failed to serialise hash".to_string(),
-                })?;
+        let block_height_bytes = block_height
+            .to_bytes()
+            .map_err(|_| StoreError::InvalidBlock {
+                height: block.height().0,
+                hash: *block.hash(),
+                reason: "Corrupt block data: failed to serialise hash".to_string(),
+            })?;
 
         let block_hash = block.context.index.hash;
-        let block_hash_bytes =
-            block_hash
-                .to_bytes()
-                .map_err(|_| FinalisedStateError::InvalidBlock {
-                    height: block.height().0,
-                    hash: *block.hash(),
-                    reason: "Corrupt block data: failed to serialise hash".to_string(),
-                })?;
+        let block_hash_bytes = block_hash
+            .to_bytes()
+            .map_err(|_| StoreError::InvalidBlock {
+                height: block.height().0,
+                hash: *block.hash(),
+                reason: "Corrupt block data: failed to serialise hash".to_string(),
+            })?;
 
         // Build transaction indexes.
         //
@@ -1724,7 +1689,7 @@ impl DbV1 {
             // Build Spent Outpoints Index
             for prev_outpoint in tx.transparent().spent_outpoints() {
                 if spent_map.insert(prev_outpoint, tx_location).is_some() {
-                    return Err(FinalisedStateError::InvalidBlock {
+                    return Err(StoreError::InvalidBlock {
                         height: block_height.0,
                         hash: block_hash,
                         reason: format!(
@@ -1793,21 +1758,18 @@ impl DbV1 {
                                 .find_txid_index_blocking(&TransactionHash::from(
                                     *prev_outpoint.prev_txid(),
                                 ))
-                                .map_err(|e| FinalisedStateError::InvalidBlock {
+                                .map_err(|e| StoreError::InvalidBlock {
                                     height: block.height().0,
                                     hash: *block.hash(),
                                     reason: e.to_string(),
                                 })?
-                                .ok_or_else(|| FinalisedStateError::InvalidBlock {
+                                .ok_or_else(|| StoreError::InvalidBlock {
                                     height: block.height().0,
                                     hash: *block.hash(),
                                     reason: "Invalid block data: invalid txid data.".to_string(),
                                 })?;
 
-                            Ok::<(_, _), FinalisedStateError>((
-                                prev_output,
-                                prev_output_tx_location,
-                            ))
+                            Ok::<(_, _), StoreError>((prev_output, prev_output_tx_location))
                         })
                     {
                         DbV1::build_input_history(
@@ -1819,7 +1781,7 @@ impl DbV1 {
                             prev_output_tx_location,
                         );
                     } else {
-                        return Err(FinalisedStateError::InvalidBlock {
+                        return Err(StoreError::InvalidBlock {
                             height: block.height().0,
                             hash: *block.hash(),
                             reason: "Invalid block data: invalid transparent input.".to_string(),
@@ -1849,17 +1811,15 @@ impl DbV1 {
             // Delete spent data
             for outpoint in spent_map.keys() {
                 let outpoint_bytes =
-                    &outpoint
-                        .to_bytes()
-                        .map_err(|_| FinalisedStateError::InvalidBlock {
-                            height: block_height.0,
-                            hash: block_hash,
-                            reason: "Corrupt block data: failed to serialise outpoint".to_string(),
-                        })?;
+                    &outpoint.to_bytes().map_err(|_| StoreError::InvalidBlock {
+                        height: block_height.0,
+                        hash: block_hash,
+                        reason: "Corrupt block data: failed to serialise outpoint".to_string(),
+                    })?;
 
                 match txn.del(zaino_db.spent, outpoint_bytes, None) {
                     Ok(()) | Err(lmdb::Error::NotFound) => {}
-                    Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                    Err(e) => return Err(StoreError::LmdbError(e)),
                 }
             }
 
@@ -1867,7 +1827,7 @@ impl DbV1 {
             for txid_bytes in &txid_location_keys {
                 match txn.del(zaino_db.txid_location, txid_bytes, None) {
                     Ok(()) | Err(lmdb::Error::NotFound) => {}
-                    Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                    Err(e) => return Err(StoreError::LmdbError(e)),
                 }
             }
 
@@ -1883,9 +1843,7 @@ impl DbV1 {
                             let prev_addr_bytes = prev_output_script.to_bytes()?;
                             let packed_prev = AddrEventBytes::from_record(prev_output_record)
                                 .map_err(|e| {
-                                    FinalisedStateError::Custom(format!(
-                                        "AddrEventBytes pack error: {e:?}"
-                                    ))
+                                    StoreError::Custom(format!("AddrEventBytes pack error: {e:?}"))
                                 })?;
 
                             // Build the *spent* form of the stored entry so it matches the DB
@@ -1913,7 +1871,7 @@ impl DbV1 {
 
                             if !updated {
                                 // Log and treat as invalid block — marking the prev-output must succeed.
-                                return Err(FinalisedStateError::InvalidBlock {
+                                return Err(StoreError::InvalidBlock {
                                     height: block_height.0,
                                     hash: block_hash,
                                     reason: format!(
@@ -1931,21 +1889,21 @@ impl DbV1 {
                     zaino_db
                         .delete_addrhist_dups_in_txn(
                             &mut txn,
-                            &addr_script.to_bytes().map_err(|_| {
-                                FinalisedStateError::InvalidBlock {
+                            &addr_script
+                                .to_bytes()
+                                .map_err(|_| StoreError::InvalidBlock {
                                     height: block_height.0,
                                     hash: block_hash,
                                     reason: "Corrupt block data: failed to serialise addr_script"
                                         .to_string(),
-                                }
-                            })?,
+                                })?,
                             block_height,
                             true,
                             false,
                             records.len(),
                         )
                         // TODO: check internals to propagate important errors.
-                        .map_err(|_| FinalisedStateError::InvalidBlock {
+                        .map_err(|_| StoreError::InvalidBlock {
                             height: block_height.0,
                             hash: block_hash,
                             reason: "Corrupt block data: failed to delete inputs".to_string(),
@@ -1958,7 +1916,7 @@ impl DbV1 {
                         &mut txn,
                         &addr_script
                             .to_bytes()
-                            .map_err(|_| FinalisedStateError::InvalidBlock {
+                            .map_err(|_| StoreError::InvalidBlock {
                                 height: block_height.0,
                                 hash: block_hash,
                                 reason: "Corrupt block data: failed to serialise addr_script"
@@ -1985,13 +1943,13 @@ impl DbV1 {
             ] {
                 match txn.del(db, &block_height_bytes, None) {
                     Ok(()) | Err(lmdb::Error::NotFound) => {}
-                    Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                    Err(e) => return Err(StoreError::LmdbError(e)),
                 }
             }
 
             match txn.del(zaino_db.heights, &block_hash_bytes, None) {
                 Ok(()) | Err(lmdb::Error::NotFound) => {}
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                Err(e) => return Err(StoreError::LmdbError(e)),
             }
 
             let _ = txn.commit();
@@ -1999,20 +1957,17 @@ impl DbV1 {
             zaino_db
                 .env
                 .sync(true)
-                .map_err(|e| FinalisedStateError::Custom(format!("LMDB sync failed: {e}")))?;
+                .map_err(|e| StoreError::Custom(format!("LMDB sync failed: {e}")))?;
 
-            Ok::<_, FinalisedStateError>(())
+            Ok::<_, StoreError>(())
         })
         .await
-        .map_err(|e| FinalisedStateError::Custom(format!("Tokio task error: {e}")))??;
+        .map_err(|e| StoreError::Custom(format!("Tokio task error: {e}")))??;
         Ok(())
     }
 
     /// Updates the metadata hed by the database.
-    pub(crate) async fn update_metadata(
-        &self,
-        metadata: DbMetadata,
-    ) -> Result<(), FinalisedStateError> {
+    pub(crate) async fn update_metadata(&self, metadata: DbMetadata) -> Result<(), StoreError> {
         tokio::task::block_in_place(|| {
             let mut txn = self.env.begin_rw_txn()?;
 
@@ -2046,10 +2001,7 @@ impl DbV1 {
     /// This method does not perform safety checks and must not be used in production code.
     ///
     /// Used for migration tests.
-    pub(crate) async fn write_block_v1_0_0(
-        &self,
-        block: IndexedBlock,
-    ) -> Result<(), FinalisedStateError> {
+    pub(crate) async fn write_block_v1_0_0(&self, block: IndexedBlock) -> Result<(), StoreError> {
         self.status.store(StatusType::Syncing);
 
         let block_hash = block.context.index.hash;
@@ -2193,7 +2145,7 @@ impl DbV1 {
             txn.commit()?;
             self.env.sync(true)?;
 
-            Ok::<_, FinalisedStateError>(())
+            Ok::<_, StoreError>(())
         })?;
 
         self.status.store(StatusType::Ready);

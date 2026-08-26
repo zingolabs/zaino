@@ -1,81 +1,85 @@
 //! FinalisedState::V1 transparent address history indexing functionality.
 
-use crate::chain_index::types::db::metadata::FinalisedTxOutSetInfoAccumulator;
+use crate::types::db::metadata::FinalisedTxOutSetInfoAccumulator;
 
 use super::*;
+#[cfg(feature = "transparent_address_history_experimental")]
+use crate::store::capability::AddrUtxo;
 
 /// [`TransparentHistExt`] capability implementation for [`DbV1`].
 ///
 /// Provides address history queries built over the LMDB `DUP_SORT`/`DUP_FIXED` address-history
 /// database.
+#[cfg(feature = "transparent_address_history_experimental")]
 impl TransparentHistExt for DbV1 {
-    #[cfg(feature = "transparent_address_history_experimental")]
     async fn addr_records(
         &self,
         addr_script: AddrScript,
-    ) -> Result<Option<Vec<AddrEventBytes>>, FinalisedStateError> {
+    ) -> Result<Option<Vec<AddrEventBytes>>, StoreError> {
         self.addr_records(addr_script).await
     }
 
-    #[cfg(feature = "transparent_address_history_experimental")]
     async fn addr_and_index_records(
         &self,
         addr_script: AddrScript,
         tx_location: TxLocation,
-    ) -> Result<Option<Vec<AddrEventBytes>>, FinalisedStateError> {
+    ) -> Result<Option<Vec<AddrEventBytes>>, StoreError> {
         self.addr_and_index_records(addr_script, tx_location).await
     }
 
-    #[cfg(feature = "transparent_address_history_experimental")]
     async fn addr_tx_locations_by_range(
         &self,
         addr_script: AddrScript,
         start_height: Height,
         end_height: Height,
-    ) -> Result<Option<Vec<TxLocation>>, FinalisedStateError> {
+    ) -> Result<Option<Vec<TxLocation>>, StoreError> {
         self.addr_tx_locations_by_range(addr_script, start_height, end_height)
             .await
     }
 
-    #[cfg(feature = "transparent_address_history_experimental")]
     async fn addr_utxos_by_range(
         &self,
         addr_script: AddrScript,
         start_height: Height,
         end_height: Height,
-    ) -> Result<Option<Vec<(TxLocation, u16, u64)>>, FinalisedStateError> {
+    ) -> Result<Option<Vec<AddrUtxo>>, StoreError> {
         self.addr_utxos_by_range(addr_script, start_height, end_height)
             .await
     }
 
-    #[cfg(feature = "transparent_address_history_experimental")]
     async fn addr_balance_by_range(
         &self,
         addr_script: AddrScript,
         start_height: Height,
         end_height: Height,
-    ) -> Result<i64, FinalisedStateError> {
+    ) -> Result<i64, StoreError> {
         self.addr_balance_by_range(addr_script, start_height, end_height)
             .await
     }
+}
 
+/// [`SpentOutputExt`] capability implementation for [`DbV1`].
+impl SpentOutputExt for DbV1 {
     async fn get_outpoint_spender(
         &self,
         outpoint: Outpoint,
-    ) -> Result<Option<TxLocation>, FinalisedStateError> {
+    ) -> Result<Option<TxLocation>, StoreError> {
         self.get_outpoint_spender(outpoint).await
     }
 
     async fn get_outpoint_spenders(
         &self,
         outpoints: Vec<Outpoint>,
-    ) -> Result<Vec<Option<TxLocation>>, FinalisedStateError> {
+    ) -> Result<Vec<Option<TxLocation>>, StoreError> {
         self.get_outpoint_spenders(outpoints).await
     }
+}
 
+/// [`TxOutSetExt`] capability implementation for [`DbV1`].
+impl TxOutSetExt for DbV1 {
     async fn get_tx_out_set_info_accumulator(
         &self,
-    ) -> Result<FinalisedTxOutSetInfoAccumulator, FinalisedStateError> {
+    ) -> Result<FinalisedTxOutSetInfoAccumulator, StoreError> {
         self.get_tx_out_set_info_accumulator().await
     }
 }
@@ -93,7 +97,7 @@ impl DbV1 {
     async fn addr_records(
         &self,
         addr_script: AddrScript,
-    ) -> Result<Option<Vec<AddrEventBytes>>, FinalisedStateError> {
+    ) -> Result<Option<Vec<AddrEventBytes>>, StoreError> {
         let addr_bytes = addr_script.to_bytes()?;
 
         tokio::task::block_in_place(|| {
@@ -102,7 +106,7 @@ impl DbV1 {
             let mut cursor = match txn.open_ro_cursor(self.address_history) {
                 Ok(cursor) => cursor,
                 Err(lmdb::Error::NotFound) => return Ok(None),
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                Err(e) => return Err(StoreError::LmdbError(e)),
             };
 
             let mut raw_records = Vec::new();
@@ -110,7 +114,7 @@ impl DbV1 {
             let iter = match cursor.iter_dup_of(&addr_bytes) {
                 Ok(iter) => iter,
                 Err(lmdb::Error::NotFound) => return Ok(None),
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                Err(e) => return Err(StoreError::LmdbError(e)),
             };
 
             for (key, val) in iter {
@@ -129,10 +133,9 @@ impl DbV1 {
 
             let mut records = Vec::with_capacity(raw_records.len());
             for val in raw_records {
-                let entry = StoredEntryFixed::<AddrEventBytes>::from_bytes(&val).map_err(|e| {
-                    FinalisedStateError::Custom(format!("addrhist decode error: {e}"))
-                })?;
-                records.push(entry.item);
+                let entry = StoredEntryFixed::<AddrEventBytes>::from_bytes(&val)
+                    .map_err(|e| StoreError::Custom(format!("addrhist decode error: {e}")))?;
+                records.push(entry.into_inner());
             }
 
             Ok(Some(records))
@@ -150,7 +153,7 @@ impl DbV1 {
         &self,
         addr_script: AddrScript,
         tx_location: TxLocation,
-    ) -> Result<Option<Vec<AddrEventBytes>>, FinalisedStateError> {
+    ) -> Result<Option<Vec<AddrEventBytes>>, StoreError> {
         let addr_bytes = addr_script.to_bytes()?;
 
         let rec_results = tokio::task::block_in_place(|| {
@@ -163,7 +166,7 @@ impl DbV1 {
 
         let raw_records = match rec_results {
             Ok(records) => records,
-            Err(FinalisedStateError::LmdbError(lmdb::Error::NotFound)) => return Ok(None),
+            Err(StoreError::LmdbError(lmdb::Error::NotFound)) => return Ok(None),
             Err(e) => return Err(e),
         };
 
@@ -175,8 +178,8 @@ impl DbV1 {
 
         for val in raw_records {
             let entry = StoredEntryFixed::<AddrEventBytes>::from_bytes(&val)
-                .map_err(|e| FinalisedStateError::Custom(format!("addrhist decode error: {e}")))?;
-            records.push(entry.item);
+                .map_err(|e| StoreError::Custom(format!("addrhist decode error: {e}")))?;
+            records.push(entry.into_inner());
         }
 
         Ok(Some(records))
@@ -195,7 +198,7 @@ impl DbV1 {
         addr_script: AddrScript,
         start_height: Height,
         end_height: Height,
-    ) -> Result<Option<Vec<TxLocation>>, FinalisedStateError> {
+    ) -> Result<Option<Vec<TxLocation>>, StoreError> {
         let addr_bytes = addr_script.to_bytes()?;
 
         tokio::task::block_in_place(|| {
@@ -204,14 +207,14 @@ impl DbV1 {
             let mut cursor = match txn.open_ro_cursor(self.address_history) {
                 Ok(cursor) => cursor,
                 Err(lmdb::Error::NotFound) => return Ok(None),
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                Err(e) => return Err(StoreError::LmdbError(e)),
             };
             let mut set: HashSet<TxLocation> = HashSet::new();
 
             let iter = match cursor.iter_dup_of(&addr_bytes) {
                 Ok(iter) => iter,
                 Err(lmdb::Error::NotFound) => return Ok(None),
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                Err(e) => return Err(StoreError::LmdbError(e)),
             };
 
             for (key, val) in iter {
@@ -265,7 +268,7 @@ impl DbV1 {
         addr_script: AddrScript,
         start_height: Height,
         end_height: Height,
-    ) -> Result<Option<Vec<(TxLocation, u16, u64)>>, FinalisedStateError> {
+    ) -> Result<Option<Vec<AddrUtxo>>, StoreError> {
         let addr_bytes = addr_script.to_bytes()?;
 
         tokio::task::block_in_place(|| {
@@ -274,14 +277,14 @@ impl DbV1 {
             let mut cursor = match txn.open_ro_cursor(self.address_history) {
                 Ok(cursor) => cursor,
                 Err(lmdb::Error::NotFound) => return Ok(None),
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                Err(e) => return Err(StoreError::LmdbError(e)),
             };
             let mut utxos = Vec::new();
 
             let iter = match cursor.iter_dup_of(&addr_bytes) {
                 Ok(iter) => iter,
                 Err(lmdb::Error::NotFound) => return Ok(None),
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                Err(e) => return Err(StoreError::LmdbError(e)),
             };
 
             for (key, val) in iter {
@@ -344,7 +347,7 @@ impl DbV1 {
         addr_script: AddrScript,
         start_height: Height,
         end_height: Height,
-    ) -> Result<i64, FinalisedStateError> {
+    ) -> Result<i64, StoreError> {
         let addr_bytes = addr_script.to_bytes()?;
 
         tokio::task::block_in_place(|| {
@@ -353,11 +356,11 @@ impl DbV1 {
             let mut cursor = match txn.open_ro_cursor(self.address_history) {
                 Ok(cursor) => cursor,
                 Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
+                    return Err(StoreError::DataUnavailable(
                         "no data for address".to_string(),
                     ))
                 }
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                Err(e) => return Err(StoreError::LmdbError(e)),
             };
 
             let mut balance: i64 = 0;
@@ -365,11 +368,11 @@ impl DbV1 {
             let iter = match cursor.iter_dup_of(&addr_bytes) {
                 Ok(iter) => iter,
                 Err(lmdb::Error::NotFound) => {
-                    return Err(FinalisedStateError::DataUnavailable(
+                    return Err(StoreError::DataUnavailable(
                         "no data for address".to_string(),
                     ))
                 }
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                Err(e) => return Err(StoreError::LmdbError(e)),
             };
 
             for (key, val) in iter {
@@ -419,19 +422,18 @@ impl DbV1 {
     async fn get_outpoint_spender(
         &self,
         outpoint: Outpoint,
-    ) -> Result<Option<TxLocation>, FinalisedStateError> {
+    ) -> Result<Option<TxLocation>, StoreError> {
         let key = outpoint.to_bytes()?;
         let txn = self.env.begin_ro_txn()?;
 
         tokio::task::block_in_place(|| match txn.get(self.spent, &key) {
             Ok(bytes) => {
-                let entry = StoredEntryFixed::<TxLocation>::from_bytes(bytes).map_err(|e| {
-                    FinalisedStateError::Custom(format!("spent entry decode error: {e}"))
-                })?;
-                Ok(Some(entry.item))
+                let entry = StoredEntryFixed::<TxLocation>::from_bytes(bytes)
+                    .map_err(|e| StoreError::Custom(format!("spent entry decode error: {e}")))?;
+                Ok(Some(entry.into_inner()))
             }
             Err(lmdb::Error::NotFound) => Ok(None),
-            Err(e) => Err(FinalisedStateError::LmdbError(e)),
+            Err(e) => Err(StoreError::LmdbError(e)),
         })
     }
 
@@ -444,7 +446,7 @@ impl DbV1 {
     async fn get_outpoint_spenders(
         &self,
         outpoints: Vec<Outpoint>,
-    ) -> Result<Vec<Option<TxLocation>>, FinalisedStateError> {
+    ) -> Result<Vec<Option<TxLocation>>, StoreError> {
         tokio::task::block_in_place(|| {
             let txn = self.env.begin_ro_txn()?;
 
@@ -456,14 +458,14 @@ impl DbV1 {
                         Ok(bytes) => {
                             let entry =
                                 StoredEntryFixed::<TxLocation>::from_bytes(bytes).map_err(|e| {
-                                    FinalisedStateError::Custom(format!(
+                                    StoreError::Custom(format!(
                                         "spent entry decode error for {outpoint:?}: {e}"
                                     ))
                                 })?;
-                            Ok(Some(entry.item))
+                            Ok(Some(entry.into_inner()))
                         }
                         Err(lmdb::Error::NotFound) => Ok(None),
-                        Err(e) => Err(FinalisedStateError::LmdbError(e)),
+                        Err(e) => Err(StoreError::LmdbError(e)),
                     }
                 })
                 .collect()
@@ -485,7 +487,7 @@ impl DbV1 {
         txn: &lmdb::RoTransaction<'_>,
         addr_script_bytes: &[u8],
         tx_location: TxLocation,
-    ) -> Result<Vec<Vec<u8>>, FinalisedStateError> {
+    ) -> Result<Vec<Vec<u8>>, StoreError> {
         // Open a single cursor.
         let cursor = txn.open_ro_cursor(self.address_history)?;
         let mut results: Vec<Vec<u8>> = Vec::new();
@@ -537,20 +539,20 @@ impl DbV1 {
                 loop {
                     // Validate lengths, same as original function.
                     if cur_key.len() != AddrScript::latest_versioned_len()? {
-                        return Err(FinalisedStateError::Custom(
+                        return Err(StoreError::Custom(
                             "address history key length mismatch".into(),
                         ));
                     }
                     if cur_val.len() != StoredEntryFixed::<AddrEventBytes>::latest_versioned_len()?
                     {
-                        return Err(FinalisedStateError::Custom(
+                        return Err(StoreError::Custom(
                             "address history value length mismatch".into(),
                         ));
                     }
                     if cur_val[0] != StoredEntryFixed::<AddrEventBytes>::VERSION
                         || cur_val[1] != AddrEventBytes::VERSION
                     {
-                        return Err(FinalisedStateError::Custom(
+                        return Err(StoreError::Custom(
                             "address history value version tag mismatch".into(),
                         ));
                     }
@@ -684,14 +686,14 @@ impl DbV1 {
         delete_inputs: bool,
         delete_outputs: bool,
         expected: usize,
-    ) -> Result<(), FinalisedStateError> {
+    ) -> Result<(), StoreError> {
         if !delete_inputs && !delete_outputs {
-            return Err(FinalisedStateError::Custom(
+            return Err(StoreError::Custom(
                 "called delete_addrhist_dups with neither inputs nor outputs to delete".into(),
             ));
         }
         if expected == 0 {
-            return Err(FinalisedStateError::Custom(
+            return Err(StoreError::Custom(
                 "called delete_addrhist_dups with 0 expected deletes".into(),
             ));
         }
@@ -740,20 +742,18 @@ impl DbV1 {
                         if remaining == 0 {
                             break;
                         }
-                        return Err(FinalisedStateError::Custom(format!(
+                        return Err(StoreError::Custom(format!(
                             "expected {expected} records, deleted {}",
                             expected - remaining
                         )));
                     }
-                    Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                    Err(e) => return Err(StoreError::LmdbError(e)),
                 }
             },
             Err(lmdb::Error::NotFound) => {
-                return Err(FinalisedStateError::Custom(
-                    "no addrhist record for key".into(),
-                ));
+                return Err(StoreError::Custom("no addrhist record for key".into()));
             }
-            Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+            Err(e) => return Err(StoreError::LmdbError(e)),
         }
 
         drop(cur);
@@ -773,19 +773,19 @@ impl DbV1 {
         addr_script: &AddrScript,
 
         expected_prev_entry_bytes: &[u8],
-    ) -> Result<bool, FinalisedStateError> {
+    ) -> Result<bool, StoreError> {
         let addr_bytes = addr_script.to_bytes()?;
 
         let mut cur = txn.open_rw_cursor(self.address_history)?;
 
         for (key, val) in cur.iter_dup_of(&addr_bytes)? {
             if key.len() != AddrScript::latest_versioned_len()? {
-                return Err(FinalisedStateError::Custom(
+                return Err(StoreError::Custom(
                     "address history key length mismatch".into(),
                 ));
             }
             if val.len() != StoredEntryFixed::<AddrEventBytes>::latest_versioned_len()? {
-                return Err(FinalisedStateError::Custom(
+                return Err(StoreError::Custom(
                     "address history value length mismatch".into(),
                 ));
             }
@@ -796,7 +796,7 @@ impl DbV1 {
 
             let stored_entry_len = StoredEntryFixed::<AddrEventBytes>::latest_versioned_len()?;
             if stored_entry_len != val.len() || stored_entry_len != 51 {
-                return Err(FinalisedStateError::Custom(
+                return Err(StoreError::Custom(
                     "address history value length mismatch".into(),
                 ));
             }
@@ -805,7 +805,7 @@ impl DbV1 {
 
             let flags = hist_record[10];
             if (flags & AddrHistRecord::FLAG_IS_INPUT) != 0 {
-                return Err(FinalisedStateError::Custom(
+                return Err(StoreError::Custom(
                     "attempt to mark an input-row as spent".into(),
                 ));
             }
@@ -815,7 +815,7 @@ impl DbV1 {
             }
 
             if (flags & AddrHistRecord::FLAG_MINED) == 0 {
-                return Err(FinalisedStateError::Custom(
+                return Err(StoreError::Custom(
                     "attempt to mark non-mined addrhist record as spent".into(),
                 ));
             }
@@ -847,19 +847,19 @@ impl DbV1 {
         addr_script: &AddrScript,
 
         expected_prev_entry_bytes: &[u8],
-    ) -> Result<bool, FinalisedStateError> {
+    ) -> Result<bool, StoreError> {
         let addr_bytes = addr_script.to_bytes()?;
 
         let mut cur = txn.open_rw_cursor(self.address_history)?;
 
         for (key, val) in cur.iter_dup_of(&addr_bytes)? {
             if key.len() != AddrScript::latest_versioned_len()? {
-                return Err(FinalisedStateError::Custom(
+                return Err(StoreError::Custom(
                     "address history key length mismatch".into(),
                 ));
             }
             if val.len() != StoredEntryFixed::<AddrEventBytes>::latest_versioned_len()? {
-                return Err(FinalisedStateError::Custom(
+                return Err(StoreError::Custom(
                     "address history value length mismatch".into(),
                 ));
             }
@@ -870,7 +870,7 @@ impl DbV1 {
 
             let stored_entry_len = StoredEntryFixed::<AddrEventBytes>::latest_versioned_len()?;
             if stored_entry_len != val.len() || stored_entry_len != 51 {
-                return Err(FinalisedStateError::Custom(
+                return Err(StoreError::Custom(
                     "address history value length mismatch".into(),
                 ));
             }
@@ -882,7 +882,7 @@ impl DbV1 {
 
             // Sanity: the record we intend to mark should be a mined output (not an input).
             if (flags & AddrHistRecord::FLAG_IS_INPUT) != 0 {
-                return Err(FinalisedStateError::Custom(
+                return Err(StoreError::Custom(
                     "attempt to mark an input-row as unspent".into(),
                 ));
             }
@@ -896,7 +896,7 @@ impl DbV1 {
             // If the record is not marked MINED, that's an invariant failure.
             // We surface it rather than producing a non-mined record.
             if (flags & AddrHistRecord::FLAG_MINED) == 0 {
-                return Err(FinalisedStateError::Custom(
+                return Err(StoreError::Custom(
                     "attempt to mark non-mined addrhist record as unspent".into(),
                 ));
             }
@@ -929,12 +929,12 @@ impl DbV1 {
     pub(crate) fn get_previous_output_blocking(
         &self,
         outpoint: Outpoint,
-    ) -> Result<TxOutCompact, FinalisedStateError> {
+    ) -> Result<TxOutCompact, StoreError> {
         // Find the tx’s location in the chain
         let prev_txid = TransactionHash::from(*outpoint.prev_txid());
         let tx_location = self
             .find_txid_index_blocking(&prev_txid)?
-            .ok_or_else(|| FinalisedStateError::Custom("Previous txid not found".into()))?;
+            .ok_or_else(|| StoreError::Custom("Previous txid not found".into()))?;
 
         // Fetch the output from the transparent db.
         let block_height = tx_location.block_height();
@@ -946,9 +946,7 @@ impl DbV1 {
         let stored_bytes = ro.get(self.transparent, &height_key)?;
 
         Self::find_txout_in_stored_transparent_tx_list(stored_bytes, tx_index, out_index)?
-            .ok_or_else(|| {
-                FinalisedStateError::Custom("Previous output not found at given index".into())
-            })
+            .ok_or_else(|| StoreError::Custom("Previous output not found at given index".into()))
     }
 
     /// Efficiently scans a raw `StoredEntryVar<TransparentTxList>` buffer to locate the
@@ -966,7 +964,7 @@ impl DbV1 {
         stored: &[u8],
         target_tx_idx: usize,
         target_output_idx: usize,
-    ) -> Result<Option<TxOutCompact>, FinalisedStateError> {
+    ) -> Result<Option<TxOutCompact>, StoreError> {
         const CHECKSUM_LEN: usize = 32;
 
         if stored.len() < TransactionHash::VERSION_TAG_LEN + 8 + CHECKSUM_LEN {

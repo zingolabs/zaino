@@ -126,7 +126,7 @@ impl DbV1 {
     /// - If `height` is already known validated (`is_validated`), this is a no-op.
     ///
     /// Error semantics:
-    /// - Returns `FinalisedStateError::InvalidBlock { .. }` when any integrity/continuity check fails.
+    /// - Returns `StoreError::InvalidBlock { .. }` when any integrity/continuity check fails.
     /// - Returns LMDB errors for underlying storage failures (e.g., missing keys), which are then
     ///   typically mapped by callers into `DataUnavailable` where appropriate.
     ///
@@ -137,20 +137,20 @@ impl DbV1 {
         &self,
         height: Height,
         hash: BlockHash,
-    ) -> Result<(), FinalisedStateError> {
+    ) -> Result<(), StoreError> {
         if self.is_validated(height.into()) {
             return Ok(());
         }
 
         let height_key = height
             .to_bytes()
-            .map_err(|e| FinalisedStateError::Custom(format!("height serialize: {e}")))?;
+            .map_err(|e| StoreError::Custom(format!("height serialize: {e}")))?;
         let hash_key = hash
             .to_bytes()
-            .map_err(|e| FinalisedStateError::Custom(format!("hash serialize: {e}")))?;
+            .map_err(|e| StoreError::Custom(format!("hash serialize: {e}")))?;
 
         // Helper to fabricate the error.
-        let fail = |reason: &str| FinalisedStateError::InvalidBlock {
+        let fail = |reason: &str| StoreError::InvalidBlock {
             height: height.into(),
             hash,
             reason: reason.to_owned(),
@@ -162,7 +162,7 @@ impl DbV1 {
         let header_entry = {
             let raw = ro
                 .get(self.headers, &height_key)
-                .map_err(FinalisedStateError::LmdbError)?;
+                .map_err(StoreError::LmdbError)?;
             let entry = StoredEntryVar::<BlockHeaderData>::from_bytes(raw)
                 .map_err(|e| fail(&format!("header corrupt data: {e}")))?;
             if !entry.verify(&height_key) {
@@ -175,7 +175,7 @@ impl DbV1 {
         let txid_list_entry = {
             let raw = ro
                 .get(self.txids, &height_key)
-                .map_err(FinalisedStateError::LmdbError)?;
+                .map_err(StoreError::LmdbError)?;
             let entry = StoredEntryVar::<TxidList>::from_bytes(raw)
                 .map_err(|e| fail(&format!("txids corrupt data: {e}")))?;
             if !entry.verify(&height_key) {
@@ -199,7 +199,7 @@ impl DbV1 {
         {
             let raw = ro
                 .get(self.sapling, &height_key)
-                .map_err(FinalisedStateError::LmdbError)?;
+                .map_err(StoreError::LmdbError)?;
             let entry = StoredEntryVar::<SaplingTxList>::from_bytes(raw)
                 .map_err(|e| fail(&format!("sapling corrupt data: {e}")))?;
             if !entry.verify(&height_key) {
@@ -211,7 +211,7 @@ impl DbV1 {
         {
             let raw = ro
                 .get(self.orchard, &height_key)
-                .map_err(FinalisedStateError::LmdbError)?;
+                .map_err(StoreError::LmdbError)?;
             let entry = StoredEntryVar::<OrchardTxList>::from_bytes(raw)
                 .map_err(|e| fail(&format!("orchard corrupt data: {e}")))?;
             if !entry.verify(&height_key) {
@@ -235,7 +235,7 @@ impl DbV1 {
                     }
                 }
                 Err(lmdb::Error::NotFound) => {}
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                Err(e) => return Err(StoreError::LmdbError(e)),
             }
         }
 
@@ -243,7 +243,7 @@ impl DbV1 {
         {
             let raw = ro
                 .get(self.commitment_tree_data, &height_key)
-                .map_err(FinalisedStateError::LmdbError)?;
+                .map_err(StoreError::LmdbError)?;
             let entry = StoredEntryVar::<CommitmentTreeData>::from_bytes(raw)
                 .map_err(|e| fail(&format!("commitment_tree corrupt bytes: {e}")))?;
             if !entry.verify(&height_key) {
@@ -255,13 +255,13 @@ impl DbV1 {
         {
             let raw = ro
                 .get(self.heights, &hash_key)
-                .map_err(FinalisedStateError::LmdbError)?;
+                .map_err(StoreError::LmdbError)?;
             let entry = StoredEntryFixed::<Height>::from_bytes(raw)
                 .map_err(|e| fail(&format!("hash -> height corrupt bytes: {e}")))?;
             if !entry.verify(&hash_key) {
                 return Err(fail("hash -> height checksum mismatch"));
             }
-            if entry.item != height {
+            if entry.into_inner() != height {
                 return Err(fail("hash -> height mapping mismatch"));
             }
         }
@@ -276,7 +276,7 @@ impl DbV1 {
                     .map_err(|e| fail(&format!("parent height serialize: {e}")))?;
                 let raw = ro
                     .get(self.headers, &parent_block_height_key)
-                    .map_err(FinalisedStateError::LmdbError)?;
+                    .map_err(StoreError::LmdbError)?;
                 let entry = StoredEntryVar::<BlockHeaderData>::from_bytes(raw)
                     .map_err(|e| fail(&format!("parent header corrupt data: {e}")))?;
 
@@ -312,15 +312,13 @@ impl DbV1 {
 
             let raw = ro
                 .get(self.metadata, metadata_key)
-                .map_err(FinalisedStateError::LmdbError)?;
+                .map_err(StoreError::LmdbError)?;
 
             let entry = StoredEntryFixed::<DbMetadata>::from_bytes(raw)
-                .map_err(|e| FinalisedStateError::Custom(format!("metadata corrupt data: {e}")))?;
+                .map_err(|e| StoreError::Custom(format!("metadata corrupt data: {e}")))?;
 
             if !entry.verify(metadata_key) {
-                return Err(FinalisedStateError::Custom(
-                    "metadata checksum mismatch".to_string(),
-                ));
+                return Err(StoreError::Custom("metadata checksum mismatch".to_string()));
             }
 
             entry.inner().version
@@ -516,7 +514,7 @@ impl DbV1 {
         &self,
         height: Height,
         hash: BlockHash,
-    ) -> Result<(), FinalisedStateError> {
+    ) -> Result<(), StoreError> {
         // Cheap fast-path first, no blocking.
         if self.is_validated(height.into()) {
             return Ok(());
@@ -547,7 +545,7 @@ impl DbV1 {
         &self,
         start: Height,
         end: Height,
-    ) -> Result<(Height, Height), FinalisedStateError> {
+    ) -> Result<(Height, Height), StoreError> {
         // Normalize the range for validation, but preserve `(start, end)` ordering in the return.
         let (range_start, range_end) = if start.0 <= end.0 {
             (start, end)
@@ -574,9 +572,9 @@ impl DbV1 {
                 let ro = self.env.begin_ro_txn()?;
                 let bytes = ro.get(self.headers, &height_bytes).map_err(|e| {
                     if e == lmdb::Error::NotFound {
-                        FinalisedStateError::Custom("height not found in best chain".into())
+                        StoreError::Custom("height not found in best chain".into())
                     } else {
-                        FinalisedStateError::LmdbError(e)
+                        StoreError::LmdbError(e)
                     }
                 })?;
 
@@ -588,17 +586,15 @@ impl DbV1 {
 
                 match self.validate_block_blocking(height, hash) {
                     Ok(()) => {}
-                    Err(FinalisedStateError::LmdbError(lmdb::Error::NotFound)) => {
-                        return Err(FinalisedStateError::DataUnavailable(
-                            "block data unavailable".into(),
-                        ));
+                    Err(StoreError::LmdbError(lmdb::Error::NotFound)) => {
+                        return Err(StoreError::DataUnavailable("block data unavailable".into()));
                     }
                     Err(e) => return Err(e),
                 }
 
                 h += 1;
             }
-            Ok::<_, FinalisedStateError>((start, end))
+            Ok::<_, StoreError>((start, end))
         })
     }
 
@@ -606,18 +602,18 @@ impl DbV1 {
     ///
     /// * If the block hasn’t been validated yet we do it on-demand
     /// * On success the block hright is returned; on any failure you get a
-    ///   `FinalisedStateError`
+    ///   `StoreError`
     ///
     /// TODO: Remove HashOrHeight?
     pub(super) async fn resolve_validated_hash_or_height(
         &self,
         hash_or_height: HashOrHeight,
-    ) -> Result<Height, FinalisedStateError> {
+    ) -> Result<Height, StoreError> {
         let height = match hash_or_height {
             // Height lookup path.
             HashOrHeight::Height(z_height) => {
                 let height = Height::try_from(z_height.0)
-                    .map_err(|_| FinalisedStateError::Custom("height out of range".into()))?;
+                    .map_err(|_| StoreError::Custom("height out of range".into()))?;
 
                 // Check if height is below validated tip,
                 // this avoids hash lookups for height based fetch under the valdated tip.
@@ -631,11 +627,9 @@ impl DbV1 {
                     let ro = self.env.begin_ro_txn()?;
                     let bytes = ro.get(self.headers, &hkey).map_err(|e| {
                         if e == lmdb::Error::NotFound {
-                            FinalisedStateError::DataUnavailable(
-                                "height not found in best chain".into(),
-                            )
+                            StoreError::DataUnavailable("height not found in best chain".into())
                         } else {
-                            FinalisedStateError::LmdbError(e)
+                            StoreError::LmdbError(e)
                         }
                     })?;
 
@@ -647,15 +641,15 @@ impl DbV1 {
 
                     match self.validate_block_blocking(height, hash) {
                         Ok(()) => {}
-                        Err(FinalisedStateError::LmdbError(lmdb::Error::NotFound)) => {
-                            return Err(FinalisedStateError::DataUnavailable(
+                        Err(StoreError::LmdbError(lmdb::Error::NotFound)) => {
+                            return Err(StoreError::DataUnavailable(
                                 "block data unavailable".into(),
                             ));
                         }
                         Err(e) => return Err(e),
                     }
 
-                    Ok::<BlockHash, FinalisedStateError>(hash)
+                    Ok::<BlockHash, StoreError>(hash)
                 })?;
                 height
             }
@@ -667,15 +661,15 @@ impl DbV1 {
                 tokio::task::block_in_place(|| {
                     match self.validate_block_blocking(height, hash) {
                         Ok(()) => {}
-                        Err(FinalisedStateError::LmdbError(lmdb::Error::NotFound)) => {
-                            return Err(FinalisedStateError::DataUnavailable(
+                        Err(StoreError::LmdbError(lmdb::Error::NotFound)) => {
+                            return Err(StoreError::DataUnavailable(
                                 "block data unavailable".into(),
                             ));
                         }
                         Err(e) => return Err(e),
                     }
 
-                    Ok::<Height, FinalisedStateError>(height)
+                    Ok::<Height, StoreError>(height)
                 })?;
                 height
             }
@@ -693,11 +687,11 @@ impl DbV1 {
     async fn resolve_hash_or_height(
         &self,
         hash_or_height: HashOrHeight,
-    ) -> Result<Height, FinalisedStateError> {
+    ) -> Result<Height, StoreError> {
         match hash_or_height {
             // Fast path: we already have the hash.
             HashOrHeight::Height(z_height) => Ok(Height::try_from(z_height.0)
-                .map_err(|_| FinalisedStateError::DataUnavailable("height out of range".into()))?),
+                .map_err(|_| StoreError::DataUnavailable("height out of range".into()))?),
 
             // Height lookup path.
             HashOrHeight::Hash(z_hash) => {
@@ -708,16 +702,14 @@ impl DbV1 {
                     let ro = self.env.begin_ro_txn()?;
                     let bytes = ro.get(self.heights, &hkey).map_err(|e| {
                         if e == lmdb::Error::NotFound {
-                            FinalisedStateError::DataUnavailable(
-                                "height not found in best chain".into(),
-                            )
+                            StoreError::DataUnavailable("height not found in best chain".into())
                         } else {
-                            FinalisedStateError::LmdbError(e)
+                            StoreError::LmdbError(e)
                         }
                     })?;
 
                     let entry = *StoredEntryFixed::<Height>::deserialize(bytes)?.inner();
-                    Ok::<Height, FinalisedStateError>(entry)
+                    Ok::<Height, StoreError>(entry)
                 })?;
 
                 Ok(height)
@@ -729,7 +721,7 @@ impl DbV1 {
     ///
     /// * Brand-new DB → insert the entry.
     /// * Existing DB  → verify checksum, version, and schema hash.
-    pub(super) async fn check_schema_version(&self) -> Result<(), FinalisedStateError> {
+    pub(super) async fn check_schema_version(&self) -> Result<(), StoreError> {
         tokio::task::block_in_place(|| {
             let mut txn = self.env.begin_rw_txn()?;
 
@@ -738,19 +730,19 @@ impl DbV1 {
                 Ok(raw_bytes) => {
                     let stored: StoredEntryFixed<DbMetadata> =
                         StoredEntryFixed::from_bytes(raw_bytes).map_err(|e| {
-                            FinalisedStateError::Custom(format!("corrupt metadata CBOR: {e}"))
+                            StoreError::Custom(format!("corrupt metadata CBOR: {e}"))
                         })?;
                     if !stored.verify(b"metadata") {
-                        return Err(FinalisedStateError::Custom(
+                        return Err(StoreError::Custom(
                             "metadata checksum mismatch – DB corruption suspected".into(),
                         ));
                     }
 
-                    let meta = stored.item;
+                    let meta = stored.into_inner();
 
                     // Error if major version differs
                     if meta.version.major != DB_VERSION_V1.major {
-                        return Err(FinalisedStateError::Custom(format!(
+                        return Err(StoreError::Custom(format!(
                             "unsupported schema major version {} (expected {})",
                             meta.version.major, DB_VERSION_V1.major
                         )));
@@ -788,7 +780,7 @@ impl DbV1 {
                 }
 
                 // ***** Any other LMDB error *****
-                Err(e) => return Err(FinalisedStateError::LmdbError(e)),
+                Err(e) => return Err(StoreError::LmdbError(e)),
             }
 
             txn.commit()?;

@@ -19,6 +19,7 @@ members = [
     "packages/zaino-chain-head",
     "packages/zaino-chain-head-service",
     "packages/zaino-chain-store",
+    "packages/zaino-chain-store-zainodb",
     "packages/zainod",
     "packages/zaino-serve",
     "packages/zaino-state",
@@ -55,6 +56,7 @@ default-members = [
     "packages/zaino-chain-head",
     "packages/zaino-chain-head-service",
     "packages/zaino-chain-store",
+    "packages/zaino-chain-store-zainodb",
     "packages/zainod",
     "packages/zaino-serve",
     "packages/zaino-state",
@@ -215,6 +217,11 @@ zaino-chain-head-service = { path = "packages/zaino-chain-head-service", version
 # commitment, which is a contract between implementations rather than any one
 # implementation's business. See docs/adr/0012.
 zaino-chain-store = { path = "packages/zaino-chain-store", version = "0.1.0" }
+# The LMDB implementation of those ports, and the on-disk vocabulary it is
+# built from. Named for the backend rather than for the role: a second
+# implementation is expected, and neither should be able to claim to be *the*
+# chain store. Consumers depend on the ports; this is what a deployment picks.
+zaino-chain-store-zainodb = { path = "packages/zaino-chain-store-zainodb", version = "0.1.0" }
 zaino-proto = { path = "packages/zaino-proto", version = "0.4.0" }
 zaino-state = { path = "packages/zaino-state", version = "0.7.0", default-features = false }
 zaino-serve = { path = "packages/zaino-serve", version = "0.6.0", default-features = false }
