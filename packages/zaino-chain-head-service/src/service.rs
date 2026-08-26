@@ -679,8 +679,16 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
         match self.source.get_block(height).await {
             Ok(block) => Ok(Some(block)),
             // Absent, not failed: the extension loop reads past the tip by
-            // design, which is how it learns where the tip is.
-            Err(zaino_source::QueryError::Domain(_)) => Ok(None),
+            // design, which is how it learns where the tip is. Matched by name
+            // rather than a wildcard so a future second domain variant breaks
+            // the build here — the one site that must reclassify it — instead
+            // of being silently read as end-of-chain.
+            Err(zaino_source::QueryError::Domain(zaino_source::GetBlockError::HeightNotFound(
+                missing,
+            ))) => {
+                debug!(height = %missing, "block_at_height: source reports no block; treating as absent");
+                Ok(None)
+            }
             Err(error) => Err(ChainHeadAdvanceError::SourceUnavailable(error.to_string())),
         }
     }
@@ -692,7 +700,15 @@ impl<S: ChainHeadBlockSource> ChainHeadService<S> {
     ) -> Result<Option<zaino_primitives::types::Block>, ChainHeadAdvanceError> {
         match self.source.get_block_by_hash(hash).await {
             Ok(block) => Ok(Some(block)),
-            Err(zaino_source::QueryError::Domain(_)) => Ok(None),
+            // Absent, not failed. Matched by name, not a wildcard, so a future
+            // second domain variant is caught by the compiler here rather than
+            // silently reclassified as absent.
+            Err(zaino_source::QueryError::Domain(zaino_source::GetBlockByHashError::NotFound(
+                missing,
+            ))) => {
+                debug!(hash = %missing, "block_at_hash: source reports no block; treating as absent");
+                Ok(None)
+            }
             Err(error) => Err(ChainHeadAdvanceError::SourceUnavailable(error.to_string())),
         }
     }
