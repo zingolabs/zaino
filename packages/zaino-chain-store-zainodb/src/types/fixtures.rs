@@ -2,11 +2,10 @@
 
 use std::num::NonZeroU128;
 
-use crate::{
-    chain_index::{tests::init_tracing, types::EquihashSolution},
-    version, BlockContext, BlockData, BlockHeaderData, ChainWork, CompactDifficulty,
-    ZainoVersionedSerde as _,
+use crate::types::{
+    BlockContext, BlockData, BlockHeaderData, ChainWork, CompactDifficulty, EquihashSolution,
 };
+use zaino_encoding::{version, ZainoVersionedSerde as _};
 
 /// A valid nBits value for test fixtures. Passes zebra's compact difficulty
 /// validation but does not correspond to any specific real-world block.
@@ -19,10 +18,10 @@ const TEST_VALID_NBITS: u32 = 0x2007_ffff;
 /// that pins an encoding — regenerate goldens and audit the change for
 /// on-disk-stability implications.
 pub(crate) fn canonical_blockheaderdata() -> BlockHeaderData {
-    let hash = crate::BlockHash::from([1u8; 32]);
-    let parent_hash = crate::BlockHash::from([2u8; 32]);
+    let hash = crate::types::BlockHash::from([1u8; 32]);
+    let parent_hash = crate::types::BlockHash::from([2u8; 32]);
     let chainwork = ChainWork::new(NonZeroU128::new(0x42).expect("nonzero"));
-    let height = crate::Height(42);
+    let height = crate::types::Height(42);
     let solution = EquihashSolution::Standard([6u8; 1344]);
     let bits = CompactDifficulty::try_from_bits(TEST_VALID_NBITS).expect("valid nBits");
 
@@ -111,7 +110,6 @@ pub(crate) fn expected_v2_bytes() -> Vec<u8> {
 /// compatibility-break acknowledgement.
 #[test]
 fn blockheaderdata_v2_golden_bytes() {
-    init_tracing();
     let bheader = canonical_blockheaderdata();
     let actual = bheader.to_bytes().expect("v2 to_bytes");
     assert_eq!(
@@ -125,8 +123,6 @@ fn blockheaderdata_v2_golden_bytes() {
 
 #[test]
 fn blockheaderdata_v1_v2_serde() {
-    init_tracing();
-
     let bheader = canonical_blockheaderdata();
 
     // Produce v1 bytes using the versioned encode API (tag + body).

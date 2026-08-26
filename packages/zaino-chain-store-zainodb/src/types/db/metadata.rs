@@ -1,17 +1,14 @@
 //! Metadata objects
 
-use blake2::{
-    digest::{Update, VariableOutput},
-    Blake2bVar,
-};
 use corez::io::{self, Read, Write};
 
-use crate::{
+use zaino_encoding::{
     read_fixed_le, read_u64_le, version, write_fixed_le, write_u64_le, FixedEncodedLen,
     ZainoVersionedSerde,
 };
 
 use super::legacy::{Outpoint, ScriptType, TxOutCompact};
+use zaino_chain_store::{entry_digest_parts, Delta, TxOutSetAccumulator, TxOutSetError};
 
 /// Returns `true` if `out` should be excluded from the transparent UTXO set.
 ///
@@ -28,40 +25,27 @@ pub fn is_unspendable_tx_out(out: &TxOutCompact) -> bool {
     )
 }
 
-/// Domain separator for the Zaino transparent UTXO set commitment.
-///
-/// Prepended to every per-UTXO byte string before BLAKE2b-256 so the
-/// commitment cannot collide with any other Zaino hash domain.
-const ZAINO_TXOUTSET_DOMAIN_TAG: &[u8; 16] = b"ZcashTxOutSet___";
-
-/// Canonical encoded length of a single UTXO entry inside the Zaino
-/// transparent UTXO set commitment.
-///
-/// Layout (little-endian / raw): `prev_txid [u8;32] || output_index u32
-/// || value u64 || script_hash [u8;20] || script_type u8` = 65 bytes.
-pub const ZAINO_TXOUTSET_ENTRY_LEN: u64 = 32 + 4 + 8 + 20 + 1;
-
 /// Computes the per-UTXO digest used by [`FinalisedTxOutSetInfoAccumulator::hash_serialized`].
 ///
-/// `digest = BLAKE2b-256(ZAINO_TXOUTSET_DOMAIN_TAG || canonical_entry(outpoint, out))`.
+/// Forwards to [`entry_digest_parts`] with this backend's stored bytes. The
+/// digest is not defined here: it is a contract between finalised-state
+/// implementations, because two stores holding the same UTXO set must produce
+/// the same `hash_serialized` or `gettxoutsetinfo` stops meaning one thing.
+/// `zaino_chain_store::txout_set` explains why that cannot be checked at
+/// runtime.
 ///
-/// The 16-byte domain tag separates this hash from any other BLAKE2b-256
-/// used in Zaino. Caller XORs the returned digest into the running
-/// accumulator on add and again on remove (XOR is self-inverse).
+/// The five values go across as bytes, which is why no conversion into domain
+/// types happens here: `script_type()` is a raw stored byte, and turning it
+/// into a `ScriptType` first would put a fallible step on the commitment's hot
+/// path for no gain.
 pub fn tx_out_set_entry_digest(outpoint: &Outpoint, out: &TxOutCompact) -> [u8; 32] {
-    let mut hasher =
-        Blake2bVar::new(32).expect("BLAKE2b-256 hasher initialises with digest_size=32");
-    hasher.update(ZAINO_TXOUTSET_DOMAIN_TAG);
-    hasher.update(outpoint.prev_txid());
-    hasher.update(&outpoint.prev_index().to_le_bytes());
-    hasher.update(&out.value().to_le_bytes());
-    hasher.update(out.script_hash());
-    hasher.update(&[out.script_type()]);
-    let mut output = [0u8; 32];
-    hasher
-        .finalize_variable(&mut output)
-        .expect("BLAKE2b-256 finalises with matching digest_size");
-    output
+    entry_digest_parts(
+        *outpoint.prev_txid(),
+        outpoint.prev_index(),
+        out.value(),
+        *out.script_hash(),
+        out.script_type(),
+    )
 }
 
 /// Holds finalised-state UTXO set accumulator data for `gettxoutsetinfo`.
@@ -76,7 +60,7 @@ pub fn tx_out_set_entry_digest(outpoint: &Outpoint, out: &TxOutCompact) -> [u8; 
 ///
 /// `bytes_serialized` is the total canonical byte-length of the UTXO set
 /// in Zaino's representation, i.e. `transaction_outputs *
-/// ZAINO_TXOUTSET_ENTRY_LEN`. Stored explicitly so the wire mapping is a
+/// TXOUT_SET_ENTRY_LEN`. Stored explicitly so the wire mapping is a
 /// trivial field-copy.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FinalisedTxOutSetInfoAccumulator {
@@ -136,61 +120,64 @@ impl FinalisedTxOutSetInfoAccumulator {
         outpoint: &Outpoint,
         out: &TxOutCompact,
     ) -> Result<(), AccumulatorDeltaError> {
-        self.apply_output_delta(outpoint, out, OutputDelta::Added)
+        self.apply_output_delta(outpoint, out, Delta::Added)
     }
 
-    /// Applies one output entering or leaving the set: XOR its digest into the multiset
-    /// commitment and step every per-output counter in the delta's direction.
+    /// Applies one output entering or leaving the set.
+    ///
+    /// Delegates the fold to [`TxOutSetAccumulator::apply_entry`]. What one
+    /// output does to the accumulator is the commitment's definition, not this
+    /// backend's: `bytes_serialized` in particular moves by the canonical entry
+    /// length rather than by anything measured here, and `gettxoutsetinfo`
+    /// reports that number to a user who may be comparing two deployments.
     fn apply_output_delta(
         &mut self,
         outpoint: &Outpoint,
         out: &TxOutCompact,
-        delta: OutputDelta,
+        delta: Delta,
     ) -> Result<(), AccumulatorDeltaError> {
-        self.xor_into_hash_serialized(&tx_out_set_entry_digest(outpoint, out));
-        self.transaction_outputs =
-            delta.step(self.transaction_outputs, 1, "transaction_outputs")?;
-        self.bytes_serialized = delta.step(
-            self.bytes_serialized,
-            ZAINO_TXOUTSET_ENTRY_LEN,
-            "bytes_serialized",
-        )?;
-        self.total_zatoshis = delta.step(self.total_zatoshis, out.value(), "total_zatoshis")?;
+        let mut folded = self.into_business();
+        folded.apply_entry(&tx_out_set_entry_digest(outpoint, out), out.value(), delta)?;
+        self.replace_business(folded);
         Ok(())
     }
 
-    /// XORs `digest` into the multiset commitment (self-inverse and order-independent).
-    fn xor_into_hash_serialized(&mut self, digest: &[u8; 32]) {
-        for (dst, src) in self.hash_serialized.iter_mut().zip(digest.iter()) {
-            *dst ^= *src;
+    /// Folds another accumulator into this one.
+    ///
+    /// Delegates for the same reason as [`Self::apply_output_delta`]: XOR and
+    /// checked addition over these five fields are the commitment's arithmetic,
+    /// and a shard recombination that disagreed with it would produce a
+    /// perfectly plausible wrong answer.
+    pub fn combine(&mut self, other: &Self) -> Result<(), AccumulatorDeltaError> {
+        let mut folded = self.into_business();
+        folded.combine(&other.into_business())?;
+        self.replace_business(folded);
+        Ok(())
+    }
+
+    /// This row as the domain value it stores.
+    ///
+    /// The persistence boundary, per the `Persistent*` convention: the fields
+    /// are the same because the row *is* the domain value, but the encoding
+    /// below is this backend's and the value is not. Takes `self` by value —
+    /// the row is `Copy`, and the name says the direction.
+    pub(crate) fn into_business(self) -> TxOutSetAccumulator {
+        TxOutSetAccumulator {
+            transactions: self.transactions,
+            transaction_outputs: self.transaction_outputs,
+            bytes_serialized: self.bytes_serialized,
+            hash_serialized: self.hash_serialized,
+            total_zatoshis: self.total_zatoshis,
         }
     }
 
-    /// Folds another accumulator into this one: XOR the multiset commitments (self-inverse and
-    /// order-independent) and checked-sum the additive counters.
-    ///
-    /// Used to recombine the per-shard partials of a sharded rebuild. Because XOR and addition are
-    /// both commutative and associative, the recombined result is independent of the shard count and
-    /// of the order shards are folded in.
-    pub fn combine(&mut self, other: &Self) -> Result<(), AccumulatorDeltaError> {
-        self.xor_into_hash_serialized(&other.hash_serialized);
-        self.transactions = self
-            .transactions
-            .checked_add(other.transactions)
-            .ok_or(AccumulatorDeltaError::Overflow("transactions"))?;
-        self.transaction_outputs = self
-            .transaction_outputs
-            .checked_add(other.transaction_outputs)
-            .ok_or(AccumulatorDeltaError::Overflow("transaction_outputs"))?;
-        self.bytes_serialized = self
-            .bytes_serialized
-            .checked_add(other.bytes_serialized)
-            .ok_or(AccumulatorDeltaError::Overflow("bytes_serialized"))?;
-        self.total_zatoshis = self
-            .total_zatoshis
-            .checked_add(other.total_zatoshis)
-            .ok_or(AccumulatorDeltaError::Overflow("total_zatoshis"))?;
-        Ok(())
+    /// Overwrites this row with a domain value. Inverse of [`Self::into_business`].
+    fn replace_business(&mut self, value: TxOutSetAccumulator) {
+        self.transactions = value.transactions;
+        self.transaction_outputs = value.transaction_outputs;
+        self.bytes_serialized = value.bytes_serialized;
+        self.hash_serialized = value.hash_serialized;
+        self.total_zatoshis = value.total_zatoshis;
     }
 
     /// Applies a single UTXO leaving the set to all per-output fields. Inverse of
@@ -200,41 +187,17 @@ impl FinalisedTxOutSetInfoAccumulator {
         outpoint: &Outpoint,
         out: &TxOutCompact,
     ) -> Result<(), AccumulatorDeltaError> {
-        self.apply_output_delta(outpoint, out, OutputDelta::Removed)
-    }
-}
-
-/// Direction of a single-output change applied to the accumulator's counters.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum OutputDelta {
-    /// The output enters the UTXO set: counters are checked-added.
-    Added,
-    /// The output leaves the UTXO set: counters are checked-subtracted.
-    Removed,
-}
-
-impl OutputDelta {
-    /// Steps `field` by `amount` in this direction, naming `field_name` in the error.
-    fn step(
-        self,
-        field: u64,
-        amount: u64,
-        field_name: &'static str,
-    ) -> Result<u64, AccumulatorDeltaError> {
-        match self {
-            OutputDelta::Added => field
-                .checked_add(amount)
-                .ok_or(AccumulatorDeltaError::Overflow(field_name)),
-            OutputDelta::Removed => field
-                .checked_sub(amount)
-                .ok_or(AccumulatorDeltaError::Underflow(field_name)),
-        }
+        self.apply_output_delta(outpoint, out, Delta::Removed)
     }
 }
 
 /// Failure modes for accumulator delta operations.
 ///
 /// Carries the field name so callers can produce specific error context.
+///
+/// This backend's spelling of [`TxOutSetError`]. Kept distinct because it is
+/// what this crate's callers already match on, and converted rather than
+/// re-exported so the domain error stays the domain's to change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum AccumulatorDeltaError {
     /// A counter or running sum overflowed `u64`.
@@ -243,6 +206,15 @@ pub enum AccumulatorDeltaError {
     /// A counter or running sum underflowed `u64`.
     #[error("txout-set accumulator {0} underflow")]
     Underflow(&'static str),
+}
+
+impl From<TxOutSetError> for AccumulatorDeltaError {
+    fn from(error: TxOutSetError) -> Self {
+        match error {
+            TxOutSetError::Overflow(field) => Self::Overflow(field),
+            TxOutSetError::Underflow(field) => Self::Underflow(field),
+        }
+    }
 }
 
 impl ZainoVersionedSerde for FinalisedTxOutSetInfoAccumulator {
@@ -296,13 +268,14 @@ impl FixedEncodedLen for FinalisedTxOutSetInfoAccumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zaino_chain_store::TXOUT_SET_ENTRY_LEN;
 
     #[test]
     fn finalised_tx_out_set_info_accumulator_roundtrips() {
         let accumulator = FinalisedTxOutSetInfoAccumulator {
             transactions: 12,
             transaction_outputs: 34,
-            bytes_serialized: 34 * ZAINO_TXOUTSET_ENTRY_LEN,
+            bytes_serialized: 34 * TXOUT_SET_ENTRY_LEN,
             hash_serialized: [0xab; 32],
             total_zatoshis: 1_234_567_890,
         };
@@ -486,7 +459,7 @@ mod tests {
         assert_ne!(acc, FinalisedTxOutSetInfoAccumulator::empty());
         assert_eq!(acc.total_zatoshis, 50_000);
         assert_eq!(acc.transaction_outputs, 1);
-        assert_eq!(acc.bytes_serialized, ZAINO_TXOUTSET_ENTRY_LEN);
+        assert_eq!(acc.bytes_serialized, TXOUT_SET_ENTRY_LEN);
 
         acc.apply_removed_output(&outpoint, &out)
             .expect("remove should succeed");
@@ -527,7 +500,7 @@ mod tests {
 
         assert_eq!(acc.total_zatoshis, 300);
         assert_eq!(acc.transaction_outputs, 2);
-        assert_eq!(acc.bytes_serialized, 2 * ZAINO_TXOUTSET_ENTRY_LEN);
+        assert_eq!(acc.bytes_serialized, 2 * TXOUT_SET_ENTRY_LEN);
 
         let digest_a = tx_out_set_entry_digest(&outpoint_a, &out_a);
         let digest_b = tx_out_set_entry_digest(&outpoint_b, &out_b);

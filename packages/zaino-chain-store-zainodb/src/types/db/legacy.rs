@@ -35,7 +35,7 @@ use std::{fmt, io::Cursor};
 use zebra_chain::serialization::BytesInDisplayOrder as _;
 
 use super::block::PersistentBlockContext;
-use crate::chain_index::types::{BlockContext, ChainWork, CompactDifficulty};
+use crate::types::{BlockContext, ChainWork, CompactDifficulty};
 use zaino_encoding::{
     read_fixed_le, read_i64_le, read_option, read_u16_be, read_u32_be, read_u32_le, read_u64_le,
     read_vec, version, write_fixed_le, write_i64_le, write_option, write_u16_be, write_u32_be,
@@ -362,14 +362,21 @@ impl FixedEncodedLen for TransactionHash {
 /// for keys in Lexicographically sorted B-Tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
-pub struct Height(pub(crate) u32);
+pub struct Height(
+    /// Unchecked. `TryFrom<u32>` is the validating constructor; this is `pub`
+    /// because the chain index builds heights from arithmetic it has already
+    /// bounded, and did so from inside this type's own crate until the storage
+    /// split moved the boundary between them. Retired with the type, which
+    /// collapses onto `zaino_primitives::types::Height`.
+    pub u32,
+);
 
 impl Height {
     /// Iterates every height from `start` through `end` inclusive.
     ///
     /// Both bounds are already-valid heights, so every intermediate value is a valid
     /// height by construction — callers walking a range need no per-step validation.
-    pub(crate) fn range_inclusive(start: Self, end: Self) -> impl Iterator<Item = Self> {
+    pub fn range_inclusive(start: Self, end: Self) -> impl Iterator<Item = Self> {
         (start.0..=end.0).map(Self)
     }
 }
@@ -1301,7 +1308,7 @@ impl TransparentCompactTx {
     /// Coinbase inputs carry a null prevout (they reference no prior output) and
     /// are skipped, so every yielded outpoint names a real previously-created
     /// output.
-    pub(crate) fn spent_outpoints(&self) -> impl Iterator<Item = Outpoint> + '_ {
+    pub fn spent_outpoints(&self) -> impl Iterator<Item = Outpoint> + '_ {
         self.inputs()
             .iter()
             .filter(|input| !input.is_null_prevout())
@@ -2253,7 +2260,7 @@ impl FixedEncodedLen for AddrHistRecord {
 /// Note when flag is set to IS_INPUT, vout is actually the index of the input event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(dead_code)]
-pub(crate) struct AddrEventBytes([u8; 17]);
+pub struct AddrEventBytes([u8; 17]);
 
 #[allow(dead_code)]
 impl AddrEventBytes {
@@ -2271,7 +2278,7 @@ impl AddrEventBytes {
     /// Create an [`AddrEventBytes`] from an [`AddrHistRecord`],
     /// returning an I/O error if any write fails.
     #[allow(dead_code)]
-    pub(crate) fn from_record(rec: &AddrHistRecord) -> io::Result<Self> {
+    pub fn from_record(rec: &AddrHistRecord) -> io::Result<Self> {
         let mut buf = [0u8; Self::LEN];
         let mut c = Cursor::new(&mut buf[..]);
 
@@ -2348,6 +2355,19 @@ impl FixedEncodedLen for AddrEventBytes {
 }
 
 // *** Sharding ***
+//
+// # Dead schema
+//
+// `ShardIndex` and `ShardRoot` have encoders, fixed-length metadata and pinned
+// golden vectors, and nothing else. There is no LMDB table for them, no reader
+// and no writer, and neither appears in `db_schema_v1.txt` — so no database has
+// ever held one, and deleting them would not change the schema hash.
+//
+// They were groundwork for serving subtree roots (`GetSubtreeRoots`) from a
+// local index instead of passing the query to the validator, which is what
+// happens today. Kept rather than deleted because removing a persisted type is
+// a one-way door for anyone part-way through building that; if the intent has
+// been abandoned, they should go.
 
 /// Root commitment for a state shard.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -5,7 +5,7 @@
 //! `types/db/` — this module is reserved for types whose role is purely
 //! in-memory / business-logic vocabulary.
 
-use crate::chain_index::types::{BlockHash, Height};
+use crate::types::{BlockHash, Height};
 
 /// The internal `(height, hash)` primitive that uniquely identifies a block.
 ///

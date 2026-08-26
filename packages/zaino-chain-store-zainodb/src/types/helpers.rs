@@ -12,11 +12,11 @@
 //! - BlockWithMetadata - Block with associated metadata
 
 use super::db::legacy::*;
-use crate::chain_index::types::{BlockContext, ChainWork, CompactDifficulty};
+use crate::types::{BlockContext, ChainWork, CompactDifficulty};
 
 /// Selects how far [`ChainIndex::get_outpoint_spenders`] searches for a spend.
 ///
-/// [`ChainIndex::get_outpoint_spenders`]: crate::chain_index::ChainIndex::get_outpoint_spenders
+/// [`ChainIndex::get_outpoint_spenders`]: the chain index
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChainScope {
     /// Finalised DB only. Reorg-stable: never reports a spend that lives only in a

@@ -64,8 +64,13 @@
 //!
 //! If you change the wrapper layout itself, bump the wrapper’s `ZainoVersionedSerde::VERSION` and
 //! maintain a decode path (or bump the DB major version and migrate).
+//!
+//! These wrappers are `pub` only for the duration of the storage split: the
+//! finalised-state implementation that uses them has not moved into this crate
+//! yet, and reaches them from outside. They narrow again once it has — nothing
+//! outside a storage backend should be constructing a checksummed row.
 
-use crate::{
+use zaino_encoding::{
     read_fixed_le, read_u8, version, write_fixed_le, CompactSize, FixedEncodedLen,
     ZainoVersionedSerde,
 };
@@ -100,7 +105,7 @@ use corez::io::{self, Read, Write};
 /// Where the checksum is:
 /// `blake2b256(encoded_key || encoded_item_bytes)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct StoredEntryFixed<T: ZainoVersionedSerde + FixedEncodedLen> {
+pub struct StoredEntryFixed<T: ZainoVersionedSerde + FixedEncodedLen> {
     /// The inner record stored in this entry.
     pub(crate) item: T,
 
@@ -124,7 +129,7 @@ impl<T: ZainoVersionedSerde + FixedEncodedLen> StoredEntryFixed<T> {
     /// Panics if `T::serialize()` fails. Existing code already treated this path
     /// as infallible. If desired, this can be made fallible later without changing
     /// the on-disk format.
-    pub(crate) fn new<K: AsRef<[u8]>>(key: K, item: T) -> Self {
+    pub fn new<K: AsRef<[u8]>>(key: K, item: T) -> Self {
         let body = {
             let len = T::latest_versioned_len().unwrap_or(0);
             let mut v = Vec::with_capacity(len);
@@ -141,7 +146,7 @@ impl<T: ZainoVersionedSerde + FixedEncodedLen> StoredEntryFixed<T> {
     /// Verification tries every supported historical encoding from latest down
     /// to v1. This is required because the decoded in-memory item no longer
     /// remembers which exact version produced the stored checksum.
-    pub(crate) fn verify<K: AsRef<[u8]>>(&self, key: K) -> bool {
+    pub fn verify<K: AsRef<[u8]>>(&self, key: K) -> bool {
         let mut v = T::VERSION;
 
         loop {
@@ -163,12 +168,18 @@ impl<T: ZainoVersionedSerde + FixedEncodedLen> StoredEntryFixed<T> {
     }
 
     /// Returns a reference to the inner decoded record.
-    pub(crate) fn inner(&self) -> &T {
+    /// Consumes the wrapper and yields the value it verified.
+    pub fn into_inner(self) -> T {
+        self.item
+    }
+
+    /// Borrows the value this wrapper verified.
+    pub fn inner(&self) -> &T {
         &self.item
     }
 
     /// Computes a BLAKE2b-256 checksum over `data`.
-    pub(crate) fn blake2b256(data: &[u8]) -> [u8; 32] {
+    pub fn blake2b256(data: &[u8]) -> [u8; 32] {
         let mut hasher = Blake2bVar::new(32).expect("Failed to create hasher");
         hasher.update(data);
 
@@ -186,8 +197,8 @@ impl<T: ZainoVersionedSerde + FixedEncodedLen> StoredEntryFixed<T> {
     ///
     /// The selected `item_version` must be fixed-length according to
     /// `T::versioned_len(item_version)`.
-    #[cfg(test)]
-    pub(crate) fn to_bytes_with_item_version<K: AsRef<[u8]>>(
+    #[cfg(any(test, feature = "testing"))]
+    pub fn to_bytes_with_item_version<K: AsRef<[u8]>>(
         key: K,
         item: &T,
         item_version: u8,
@@ -327,7 +338,7 @@ impl<T: ZainoVersionedSerde + FixedEncodedLen> FixedEncodedLen for StoredEntryFi
 /// Where the checksum is:
 /// `blake2b256(encoded_key || encoded_item_bytes)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct StoredEntryVar<T: ZainoVersionedSerde> {
+pub struct StoredEntryVar<T: ZainoVersionedSerde> {
     /// The inner record stored in this entry.
     pub(crate) item: T,
     /// BLAKE2b-256 checksum of `encoded_key || encoded_item_bytes`.
@@ -342,7 +353,7 @@ impl<T: ZainoVersionedSerde> StoredEntryVar<T> {
     ///
     /// # Key requirements
     /// `key` must be the exact byte encoding used as the LMDB key for this record.
-    pub(crate) fn new<K: AsRef<[u8]>>(key: K, item: T) -> Self {
+    pub fn new<K: AsRef<[u8]>>(key: K, item: T) -> Self {
         let body = {
             let mut v = Vec::new();
             item.serialize(&mut v).unwrap();
@@ -359,7 +370,7 @@ impl<T: ZainoVersionedSerde> StoredEntryVar<T> {
     ///
     /// # Key requirements
     /// `key` must be the exact byte encoding used as the LMDB key for this record.
-    pub(crate) fn verify<K: AsRef<[u8]>>(&self, key: K) -> bool {
+    pub fn verify<K: AsRef<[u8]>>(&self, key: K) -> bool {
         // Iterate from latest (T::VERSION) down to 1 (inclusive).
         let mut v = T::VERSION;
         loop {
@@ -387,12 +398,18 @@ impl<T: ZainoVersionedSerde> StoredEntryVar<T> {
     }
 
     /// Returns a reference to the inner record.
-    pub(crate) fn inner(&self) -> &T {
+    /// Consumes the wrapper and yields the value it verified.
+    pub fn into_inner(self) -> T {
+        self.item
+    }
+
+    /// Borrows the value this wrapper verified.
+    pub fn inner(&self) -> &T {
         &self.item
     }
 
     /// Computes a BLAKE2b-256 checksum over `data`.
-    pub(crate) fn blake2b256(data: &[u8]) -> [u8; 32] {
+    pub fn blake2b256(data: &[u8]) -> [u8; 32] {
         let mut hasher = Blake2bVar::new(32).expect("Failed to create hasher");
         hasher.update(data);
         let mut output = [0u8; 32];
@@ -416,8 +433,8 @@ impl<T: ZainoVersionedSerde> StoredEntryVar<T> {
     /// This method returns serialized bytes directly because `StoredEntryVar<T>` does not store
     /// the inner item version. Constructing `Self` alone would lose the requested item version
     /// before the value is written.
-    #[cfg(test)]
-    pub(crate) fn to_bytes_with_item_version<K: AsRef<[u8]>>(
+    #[cfg(any(test, feature = "testing"))]
+    pub fn to_bytes_with_item_version<K: AsRef<[u8]>>(
         key: K,
         item: &T,
         item_version: u8,
@@ -478,7 +495,7 @@ impl<T: ZainoVersionedSerde> ZainoVersionedSerde for StoredEntryVar<T> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{read_u32_be, read_u32_le, write_u32_be, write_u32_le};
+    use zaino_encoding::{read_u32_be, read_u32_le, write_u32_be, write_u32_le};
 
     use super::*;
 

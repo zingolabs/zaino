@@ -8,11 +8,11 @@
 
 use corez::io::{self, Read, Write};
 
-use crate::{read_option, write_option};
 use zaino_encoding::{
     read_fixed_le, read_u32_le, version, write_fixed_le, write_u32_le, FixedEncodedLen,
     ZainoVersionedSerde,
 };
+use zaino_encoding::{read_option, write_option};
 
 /// Holds commitment tree metadata (roots and sizes) for a block.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,10 +131,13 @@ impl CommitmentTreeRoots {
         &self.orchard
     }
 
-    /// returns orchard commitment tree root.
-    /// No production reader consumes the stored ironwood root yet; the regression test
-    /// for its None-preservation does. Un-gate when a production consumer appears.
-    #[cfg(test)]
+    /// Returns the ironwood commitment tree root, if the block has one.
+    ///
+    /// `None` for a block below NU6.3 activation, or on a network with no
+    /// activation height. That distinction is real and is why this pool stores
+    /// an `Option` where sapling and orchard store a zero root: the v1.2.1 to
+    /// v1.3.0 migration writes `None` for pre-activation heights, and a fresh
+    /// sync must write the same bytes for the same block.
     pub(crate) fn ironwood(&self) -> &Option<[u8; 32]> {
         &self.ironwood
     }

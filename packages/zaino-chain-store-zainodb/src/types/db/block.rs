@@ -19,9 +19,7 @@ use std::num::NonZeroU128;
 
 use corez::io::{self, Read, Write};
 
-use crate::chain_index::types::{
-    BlockContext, BlockHash, BlockIndex, ChainWork, CompactDifficulty, Height,
-};
+use crate::types::{BlockContext, BlockHash, BlockIndex, ChainWork, CompactDifficulty, Height};
 use zaino_encoding::{
     read_fixed_le, read_option, read_u32_le, version, write_fixed_le, write_option, write_u32_le,
     FixedEncodedLen, ZainoVersionedSerde,
@@ -260,9 +258,10 @@ mod tests {
     use std::num::NonZeroU128;
 
     use super::{BlockContext, PersistentBlockContext, PersistentChainWork};
-    use crate::chain_index::tests::types::{canonical_blockheaderdata, expected_v2_bytes};
-    use crate::chain_index::types::{BlockHash, BlockIndex, ChainWork, Height};
-    use crate::{BlockHeaderData, ZainoVersionedSerde as _};
+    use crate::types::fixtures::{canonical_blockheaderdata, expected_v2_bytes};
+    use crate::types::BlockHeaderData;
+    use crate::types::{BlockHash, BlockIndex, ChainWork, Height};
+    use zaino_encoding::ZainoVersionedSerde as _;
 
     /// `BlockContext → PersistentBlockContext → BlockContext` is identity.
     ///
@@ -433,7 +432,7 @@ mod tests {
     /// `parent_hash` and `chainwork`. That asymmetry is the point: the wire
     /// protocol is narrower than the business type, by design.
     #[test]
-    fn block_index_slice_round_trips_across_boundaries() {
+    fn block_header_data_round_trips_through_its_on_disk_bytes() {
         let original_bytes = expected_v2_bytes();
 
         // DB bytes → business.
@@ -445,12 +444,11 @@ mod tests {
         let re_encoded = header.to_bytes().expect("re-encode BlockHeaderData");
         assert_eq!(re_encoded, original_bytes);
 
-        // Extract the (height, hash) slice.
+        // The (height, hash) slice survives the round trip intact. Its own
+        // wire round trip is asserted next to the wire conversions, which no
+        // longer live in this crate — a storage crate has no business naming a
+        // protocol type.
         let index: BlockIndex = header.context.index;
-
-        // Business → wire → business.
-        let wire = index.to_wire();
-        let recovered = BlockIndex::try_from_wire(wire).expect("valid wire shape");
-        assert_eq!(index, recovered);
+        assert_eq!(index, canonical_blockheaderdata().context.index);
     }
 }
