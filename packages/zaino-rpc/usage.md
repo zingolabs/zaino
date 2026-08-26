@@ -38,7 +38,7 @@ RpcError::Transport(..)           // connection, timeout
 RpcError::Auth                    // credentials rejected
 ```
 
-The `code` on `RpcError::Rpc` is the thing a zcashd-compatible client keys on,
+The `code` on `RpcError::Rpc` is the thing a legacy-compatible client keys on,
 so it must survive to the served response. It does, via
 `FailureMode::RpcError(i64)` and the downcast walk in `zaino-serve`.
 
@@ -46,7 +46,7 @@ so it must survive to the served response. It does, via
 
 `-1` (work queue full) is retried here, at the transport, because it is a
 property of the connection rather than of the question. Everything else is left
-to `zaino_source::Resilient`, which has the policy and the backoff. Do not add
+to `zaino_source::ValidatorClient`, which has the policy and the backoff. Do not add
 retry rules here — the layer above cannot see or override them.
 
 ## Probing a validator at startup
@@ -64,9 +64,17 @@ embedding process no say in its own shutdown.
 
 ## Metrics
 
-`metric_names` holds the outbound RPC metric names, moved here from `zainod`
-because this crate is what emits them. Registration (and the descriptions) stay
-with the daemon.
+Names live here (this crate emits them); registration and descriptions in `zainod`.
+
+- `requests_total{method,outcome}` — one increment per *attempt*, so family total =
+  attempt count, each outcome (`ok`, `rpc_error`, `retried`, `transport_error`) a
+  computable fraction
+- Rising `retried` share = validator work queue filling. A refusal is fast, so it
+  drags `duration_seconds` down rather than up — the share is the signal, not latency
+- `duration_seconds{method}` — per attempt that got a response, retry sleeps excluded
+
+`method` is a label → `call` / `call_with_timeout` take `&'static str`: cardinality
+capped at the compiled-in method set as a type error (the recorder never evicts).
 
 ## Related
 

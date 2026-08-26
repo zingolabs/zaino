@@ -140,11 +140,11 @@ nu5 = 2, nu6 = 2, nu6_1 = 2, nu6_2 = 2, nu6_3 = 6
   Confirm nothing else needs a `Network` before the validator RPC is
   reachable; if something does, that is a design conflict to surface, not
   paper over.
-- **zcashd as validator**: the legacy e2e path (`devtool_zcashd.rs`) drives
-  zcashd, whose `getblockchaininfo` also reports an `upgrades` map. Prefer
-  making the adoption path validator-generic so zcashd rides along; if its
+- **the legacy full node as validator**: the legacy e2e path (`devtool_the legacy full node.rs`) drives
+  the legacy full node, whose `getblockchaininfo` also reports an `upgrades` map. Prefer
+  making the adoption path validator-generic so the legacy full node rides along; if its
   map shape differs materially, scope this spec to zebrad and record the
-  divergence in the zcashd test docs.
+  divergence in the legacy full-node test docs.
 - **zaino-testutils**: `live-tests/zaino-testutils/src/lib.rs:497` uses the
   constant to *launch zebrad* — that is legitimate harness-side
   configuration of the truth source, not adoption of it. Keep the height

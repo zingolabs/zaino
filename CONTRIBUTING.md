@@ -77,7 +77,7 @@ Error handling must be included and expose underlying information as much as and
 
 Merges must minimally reflect the zcash RPC spec and include a link to the relevant zcash C++ implementation (URLs that point at the analogous logic), OR reflect the C++ implementation.
 
-Tests are encouraged that show parity bewteen responses from `zcash-cli` + `zcashd` and `zaino`+ a `zebra` backend, and the local cache.
+Tests are encouraged that show parity between responses from `zaino` + a `zebra` backend and the local cache.
 
 ## Local Testing
 Local testing requires a system with ample resources, particularly RAM.

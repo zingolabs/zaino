@@ -49,51 +49,89 @@ mod send_raw_transaction;
 mod subscribe_blocks;
 mod subscribe_chain_tip;
 
-pub mod resilient;
+pub mod validator_client;
 
 pub use error::{FailureMode, FetchError, QueryError, SourceError, UnavailableError};
-pub use get_address_balance::{GetAddressBalance, GetAddressBalanceError};
-pub use get_address_deltas::{GetAddressDeltas, GetAddressDeltasError};
-pub use get_address_txids::{GetAddressTxids, GetAddressTxidsError};
-pub use get_address_utxos::{GetAddressUtxos, GetAddressUtxosError};
-pub use get_best_block_height::{GetBestBlockHeight, GetBestBlockHeightError};
-pub use get_block::{GetBlock, GetBlockError};
-pub use get_block_by_hash::{GetBlockByHash, GetBlockByHashError};
-pub use get_block_deltas::{GetBlockDeltas, GetBlockDeltasError};
-pub use get_block_header::{GetBlockHeader, GetBlockHeaderError};
-pub use get_block_subsidy::{GetBlockSubsidy, GetBlockSubsidyError};
-pub use get_block_verbose::{GetBlockVerbose, GetBlockVerboseByHash, GetBlockVerboseError};
-pub use get_blockchain_info::{GetBlockchainInfo, GetBlockchainInfoError};
-pub use get_chain_tip::{GetChainTip, GetChainTipError};
-pub use get_chain_tips::{GetChainTips, GetChainTipsError};
-pub use get_commitment_tree_roots::{GetCommitmentTreeRoots, GetCommitmentTreeRootsError};
-pub use get_compact_block::GetPreIndexCompactBlock;
-pub use get_difficulty::{GetDifficulty, GetDifficultyError};
-pub use get_mempool_metadata::{GetMempoolMetadata, GetMempoolMetadataError, MempoolTxMeta};
-pub use get_mempool_source_tip::GetMempoolSourceTip;
-pub use get_mempool_txids::{GetMempoolTxids, GetMempoolTxidsError};
-pub use get_mining_info::{GetMiningInfo, GetMiningInfoError};
-pub use get_network_sol_ps::{GetNetworkSolPs, GetNetworkSolPsError};
-pub use get_node_info::{GetNodeInfo, GetNodeInfoError};
-pub use get_peer_info::{GetPeerInfo, GetPeerInfoError};
-pub use get_raw_block::{GetRawBlock, GetRawBlockByHash};
-pub use get_raw_block_header::GetRawBlockHeader;
-pub use get_raw_mempool_transaction::{GetRawMempoolTransaction, GetRawMempoolTransactionError};
-pub use get_spent_info::{GetSpentInfo, GetSpentInfoError};
-pub use get_subtree_roots::{GetSubtreeRoots, GetSubtreeRootsError};
-pub use get_transaction::{GetTransaction, GetTransactionError, TransactionResponse};
-pub use get_treestate::{GetTreestate, GetTreestateError};
-pub use get_treestate_by_hash::{GetTreestateByHash, GetTreestateByHashError};
-pub use get_tx_out::{GetTxOut, GetTxOutError};
+pub use get_address_balance::{GetAddressBalanceError, OneShotGetAddressBalance};
+pub use get_address_deltas::{GetAddressDeltasError, OneShotGetAddressDeltas};
+pub use get_address_txids::{GetAddressTxidsError, OneShotGetAddressTxids};
+pub use get_address_utxos::{GetAddressUtxosError, OneShotGetAddressUtxos};
+pub use get_best_block_height::{GetBestBlockHeightError, OneShotGetBestBlockHeight};
+pub use get_block::{GetBlock, GetBlockError, OneShotGetBlock};
+pub use get_block_by_hash::{GetBlockByHashError, OneShotGetBlockByHash};
+pub use get_block_deltas::{GetBlockDeltasError, OneShotGetBlockDeltas};
+pub use get_block_header::{GetBlockHeaderError, OneShotGetBlockHeader};
+pub use get_block_subsidy::{GetBlockSubsidyError, OneShotGetBlockSubsidy};
+pub use get_block_verbose::{
+    GetBlockVerboseError, OneShotGetBlockVerbose, OneShotGetBlockVerboseByHash,
+};
+pub use get_blockchain_info::{GetBlockchainInfoError, OneShotGetBlockchainInfo};
+pub use get_chain_tip::{GetChainTip, GetChainTipError, OneShotGetChainTip};
+pub use get_chain_tips::{GetChainTipsError, OneShotGetChainTips};
+pub use get_commitment_tree_roots::{GetCommitmentTreeRootsError, OneShotGetCommitmentTreeRoots};
+pub use get_compact_block::OneShotGetPreIndexCompactBlock;
+pub use get_difficulty::{GetDifficultyError, OneShotGetDifficulty};
+pub use get_mempool_metadata::{GetMempoolMetadataError, MempoolTxMeta, OneShotGetMempoolMetadata};
+pub use get_mempool_source_tip::OneShotGetMempoolSourceTip;
+pub use get_mempool_txids::{GetMempoolTxidsError, OneShotGetMempoolTxids};
+pub use get_mining_info::{GetMiningInfoError, OneShotGetMiningInfo};
+pub use get_network_sol_ps::{GetNetworkSolPsError, OneShotGetNetworkSolPs};
+pub use get_node_info::{GetNodeInfoError, OneShotGetNodeInfo};
+pub use get_peer_info::{GetPeerInfoError, OneShotGetPeerInfo};
+pub use get_raw_block::{OneShotGetRawBlock, OneShotGetRawBlockByHash};
+pub use get_raw_block_header::OneShotGetRawBlockHeader;
+pub use get_raw_mempool_transaction::{
+    GetRawMempoolTransactionError, OneShotGetRawMempoolTransaction,
+};
+pub use get_spent_info::{GetSpentInfoError, OneShotGetSpentInfo};
+pub use get_subtree_roots::{GetSubtreeRootsError, OneShotGetSubtreeRoots};
+pub use get_transaction::{GetTransactionError, OneShotGetTransaction, TransactionResponse};
+pub use get_treestate::{GetTreestate, GetTreestateError, OneShotGetTreestate};
+pub use get_treestate_by_hash::{GetTreestateByHashError, OneShotGetTreestateByHash};
+pub use get_tx_out::{GetTxOutError, OneShotGetTxOut};
 pub use lifecycle::SourceLifecycle;
 pub use polled_chain_tip::PolledChainTip;
-pub use resilient::{Resilient, RetryPolicy};
-pub use send_raw_transaction::{SendRawTransaction, SendRawTransactionError};
+pub use send_raw_transaction::{OneShotSendRawTransaction, SendRawTransactionError};
 pub use subscribe_blocks::SubscribeBlocks;
 pub use subscribe_chain_tip::{SubscribeChainTip, TipObservation};
+pub use validator_client::{RetryPolicy, ValidatorClient};
+
+// Canonical (resilient) ports — generated by `#[resilient_port]` on the
+// `OneShot*` traits above and implemented for `ValidatorClient<V>`. `GetBlock`,
+// `GetChainTip` and `GetTreestate` are re-exported with their one-shot siblings.
+pub use get_address_balance::GetAddressBalance;
+pub use get_address_deltas::GetAddressDeltas;
+pub use get_address_txids::GetAddressTxids;
+pub use get_address_utxos::GetAddressUtxos;
+pub use get_best_block_height::GetBestBlockHeight;
+pub use get_block_by_hash::GetBlockByHash;
+pub use get_block_deltas::GetBlockDeltas;
+pub use get_block_header::GetBlockHeader;
+pub use get_block_subsidy::GetBlockSubsidy;
+pub use get_block_verbose::{GetBlockVerbose, GetBlockVerboseByHash};
+pub use get_blockchain_info::GetBlockchainInfo;
+pub use get_chain_tips::GetChainTips;
+pub use get_commitment_tree_roots::GetCommitmentTreeRoots;
+pub use get_compact_block::GetPreIndexCompactBlock;
+pub use get_difficulty::GetDifficulty;
+pub use get_mempool_metadata::GetMempoolMetadata;
+pub use get_mempool_source_tip::GetMempoolSourceTip;
+pub use get_mempool_txids::GetMempoolTxids;
+pub use get_mining_info::GetMiningInfo;
+pub use get_network_sol_ps::GetNetworkSolPs;
+pub use get_node_info::GetNodeInfo;
+pub use get_peer_info::GetPeerInfo;
+pub use get_raw_block::{GetRawBlock, GetRawBlockByHash};
+pub use get_raw_block_header::GetRawBlockHeader;
+pub use get_raw_mempool_transaction::GetRawMempoolTransaction;
+pub use get_spent_info::GetSpentInfo;
+pub use get_subtree_roots::GetSubtreeRoots;
+pub use get_transaction::GetTransaction;
+pub use get_treestate_by_hash::GetTreestateByHash;
+pub use get_tx_out::GetTxOut;
 
 // `cfg(test)` as well as the feature: without it this crate's own tests never
-// compile the mock, so neither its tests nor `Resilient`'s integration tests
+// compile the mock, so neither its tests nor `ValidatorClient`'s integration tests
 // run in a bare `cargo test` — nothing in the workspace enables `testing`, and
 // the gap is invisible because a module that is not compiled reports no
 // failures. The feature stays so downstream crates can opt in; `cfg(test)`

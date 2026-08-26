@@ -1,9 +1,10 @@
 //! Reconcile (freeze / thaw): recomputing the coherent view from the core
 //! snapshot and the observed tips, and classifying why a view must freeze.
 
-use zaino_mempool::ports::{Mempool, NfsEpochObserver, NonFinalizedEpoch};
+use zaino_mempool::ports::{Mempool, NfsEpochObserver};
 use zaino_mempool::snapshot::MempoolSnapshot;
 use zaino_mempool::tip::{FreezeReason, ObservedTips, TipChange};
+use zaino_primitives::types::ChainStateEpoch;
 
 impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
     /// Recompute the coherent view from the core's current snapshot and the NS
@@ -71,13 +72,13 @@ impl<M: Mempool, N: NfsEpochObserver> super::CoherenceService<M, N> {
     fn synthesized_epoch(
         &self,
         validator_tip: zaino_primitives::types::BlockRef,
-    ) -> NonFinalizedEpoch {
+    ) -> ChainStateEpoch {
         let mut state = self.synth_epoch.lock().expect("synth epoch lock poisoned");
         if state.last_validator_hash != Some(validator_tip.hash) {
             state.generation = state.generation.saturating_add(1);
             state.last_validator_hash = Some(validator_tip.hash);
         }
-        NonFinalizedEpoch {
+        ChainStateEpoch {
             generation: state.generation,
             best_tip: validator_tip,
         }

@@ -19,6 +19,8 @@ use std::{
 
 use tracing::debug;
 
+use crate::metric_names::{STATUS, STATUS_COMPONENT};
+
 use crate::probing::{Liveness, Readiness};
 
 // The `Liveness`/`Readiness` blanket impls below are why this module and
@@ -49,18 +51,30 @@ pub enum StatusType {
     CriticalError = 7,
 }
 
+impl StatusType {
+    /// Every variant, ordered by discriminant. Pinned by `all_is_ordered_by_discriminant`
+    ///
+    /// - The one enumeration: `From<usize>` and `zainod`'s scrape legend both read it,
+    ///   so a new variant cannot reach either as an unnamed integer
+    pub const ALL: [StatusType; 8] = [
+        StatusType::Spawning,
+        StatusType::Syncing,
+        StatusType::Ready,
+        StatusType::Busy,
+        StatusType::Closing,
+        StatusType::Offline,
+        StatusType::RecoverableError,
+        StatusType::CriticalError,
+    ];
+}
+
 impl From<usize> for StatusType {
+    /// Out of range = a corrupt cell, which is a critical error by definition
     fn from(value: usize) -> Self {
-        match value {
-            0 => StatusType::Spawning,
-            1 => StatusType::Syncing,
-            2 => StatusType::Ready,
-            3 => StatusType::Busy,
-            4 => StatusType::Closing,
-            5 => StatusType::Offline,
-            6 => StatusType::RecoverableError,
-            _ => StatusType::CriticalError,
-        }
+        Self::ALL
+            .get(value)
+            .copied()
+            .unwrap_or(StatusType::CriticalError)
     }
 }
 
@@ -179,6 +193,8 @@ impl NamedAtomicStatus {
     /// Creates a new NamedAtomicStatus with the given component name and initial status.
     pub fn new(name: &'static str, status: StatusType) -> Self {
         debug!(component = name, status = %status, "[STATUS] initial");
+        // At construction too: a component that never transitions still gets a series
+        metrics::gauge!(STATUS, STATUS_COMPONENT => name).set(status as u8 as f64);
         Self {
             name,
             inner: Arc::new(AtomicUsize::new(status.into())),
@@ -195,23 +211,85 @@ impl NamedAtomicStatus {
         StatusType::from(self.inner.load(Ordering::SeqCst))
     }
 
-    /// Sets the value held in the NamedAtomicStatus, logging the transition.
-    pub fn store(&self, status: StatusType) {
-        let old = self.load();
-        if old != status {
+    /// Atomically replaces the status with `f(current)` in one
+    /// compare-and-swap loop — closing the check-then-store window a
+    /// `load`/`store` pair leaves open — and returns the installed status.
+    pub fn apply(&self, f: impl Fn(StatusType) -> StatusType) -> StatusType {
+        let old = self
+            .inner
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |raw| {
+                Some(f(StatusType::from(raw)).into())
+            })
+            .map(StatusType::from)
+            .expect("fetch_update closure always returns Some");
+        let new = f(old);
+        if old != new {
             debug!(
                 component = self.name,
                 from = %old,
-                to = %status,
+                to = %new,
                 "[STATUS] transition"
             );
         }
-        self.inner.store(status.into(), Ordering::SeqCst);
+        // After the store, so the gauge never leads [`Self::load`]
+        metrics::gauge!(STATUS, STATUS_COMPONENT => self.name).set(new as u8 as f64);
+        new
+    }
+
+    /// Sets the value held in the NamedAtomicStatus, logging the transition.
+    pub fn store(&self, status: StatusType) {
+        self.apply(|_| status);
     }
 }
 
 impl Status for NamedAtomicStatus {
     fn status(&self) -> StatusType {
         self.load()
+    }
+}
+
+#[cfg(test)]
+mod apply {
+    use super::{NamedAtomicStatus, StatusType};
+
+    /// The installed status is `f(current)`, and it is also the return value.
+    #[test]
+    fn installs_and_returns_the_mapped_status() {
+        let status = NamedAtomicStatus::new("test", StatusType::Syncing);
+
+        let installed = status.apply(|_| StatusType::Ready);
+
+        assert_eq!(installed, StatusType::Ready);
+        assert_eq!(status.load(), StatusType::Ready);
+    }
+
+    /// A closure that maps a state to itself leaves the cell unchanged, which
+    /// is how a caller expresses a transition guard.
+    #[test]
+    fn an_identity_arm_holds_the_current_status() {
+        let status = NamedAtomicStatus::new("test", StatusType::Closing);
+
+        let installed = status.apply(|current| match current {
+            StatusType::Closing => StatusType::Closing,
+            _ => StatusType::Ready,
+        });
+
+        assert_eq!(installed, StatusType::Closing);
+        assert_eq!(status.load(), StatusType::Closing);
+    }
+}
+
+#[cfg(test)]
+mod discriminants {
+    use super::*;
+
+    /// - `ALL`'s order *is* the wire encoding: `From<usize>` indexes it, the gauge
+    ///   stores `as usize`, and the scrape legend numbers it by position
+    #[test]
+    fn all_is_ordered_by_discriminant() {
+        for (index, status) in StatusType::ALL.iter().enumerate() {
+            assert_eq!(usize::from(*status), index, "{status} sits at {index}");
+            assert_eq!(StatusType::from(index), *status);
+        }
     }
 }

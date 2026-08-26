@@ -17,22 +17,39 @@
 
 use zaino_source::*;
 
-/// What the finalised state asks of the validator while syncing.
+/// What the finalised state asks of the validator.
 ///
-/// Blocks come as canonical bytes rather than parsed
-/// ([`GetRawBlock`]): the finalised state builds its own indexed
-/// representation from them, and needs the exact bytes the block hash commits
-/// to rather than a shape something else has already interpreted.
+/// Derived from what the implementation calls, not from what a store might
+/// plausibly want. Blocks by height to build from; blocks by hash and
+/// transactions for the passthrough mode, which answers reads from the
+/// validator and so asks questions a building store never does; the chain tip
+/// to know how far there is to go; commitment tree roots, which a block alone
+/// does not yield.
+///
+/// Blocks are asked for parsed rather than raw. This previously named
+/// [`OneShotGetRawBlock`], on the reasoning that the finalised state wants the exact
+/// committed bytes — but it does not: it calls `get_block` and builds its index
+/// from the parsed form, so requiring raw bytes described a design that was
+/// never implemented and would have made every store parse blocks a second
+/// time.
 pub trait FinalisedSourceCaps:
-    GetBestBlockHeight + GetRawBlock + GetCommitmentTreeRoots + GetTransaction + Send + Sync + 'static
+    OneShotGetBestBlockHeight
+    + OneShotGetBlock
+    + OneShotGetBlockByHash
+    + OneShotGetCommitmentTreeRoots
+    + OneShotGetTransaction
+    + Send
+    + Sync
+    + 'static
 {
 }
 
 impl<T> FinalisedSourceCaps for T where
-    T: GetBestBlockHeight
-        + GetRawBlock
-        + GetCommitmentTreeRoots
-        + GetTransaction
+    T: OneShotGetBestBlockHeight
+        + OneShotGetBlock
+        + OneShotGetBlockByHash
+        + OneShotGetCommitmentTreeRoots
+        + OneShotGetTransaction
         + Send
         + Sync
         + 'static
@@ -44,11 +61,11 @@ impl<T> FinalisedSourceCaps for T where
 /// Needs blocks by hash as well as by height: it tracks competing branches, and
 /// a hash is the only way to name a block that is not on the best chain.
 pub trait ChainHeadSourceCaps:
-    GetChainTip
-    + GetRawBlock
-    + GetRawBlockByHash
-    + GetCommitmentTreeRoots
-    + GetChainTips
+    OneShotGetChainTip
+    + OneShotGetRawBlock
+    + OneShotGetRawBlockByHash
+    + OneShotGetCommitmentTreeRoots
+    + OneShotGetChainTips
     + Send
     + Sync
     + 'static
@@ -56,11 +73,11 @@ pub trait ChainHeadSourceCaps:
 }
 
 impl<T> ChainHeadSourceCaps for T where
-    T: GetChainTip
-        + GetRawBlock
-        + GetRawBlockByHash
-        + GetCommitmentTreeRoots
-        + GetChainTips
+    T: OneShotGetChainTip
+        + OneShotGetRawBlock
+        + OneShotGetRawBlockByHash
+        + OneShotGetCommitmentTreeRoots
+        + OneShotGetChainTips
         + Send
         + Sync
         + 'static
@@ -72,9 +89,15 @@ impl<T> ChainHeadSourceCaps for T where
 /// Deliberately narrow, and deliberately not satisfied by a state-database
 /// adapter: the mempool is reachable only over JSON-RPC, and this bound is what
 /// makes that a compile-time fact rather than a comment.
-pub trait MempoolSourceCaps: GetMempoolTxids + GetChainTip + Send + Sync + 'static {}
+pub trait MempoolSourceCaps:
+    OneShotGetMempoolTxids + OneShotGetChainTip + Send + Sync + 'static
+{
+}
 
-impl<T> MempoolSourceCaps for T where T: GetMempoolTxids + GetChainTip + Send + Sync + 'static {}
+impl<T> MempoolSourceCaps for T where
+    T: OneShotGetMempoolTxids + OneShotGetChainTip + Send + Sync + 'static
+{
+}
 
 /// What the indexer service asks of the validator.
 pub trait IndexerSourceCaps: SubscribeChainTip + Send + Sync + 'static {}
@@ -91,28 +114,28 @@ pub trait ChainIndexSourceCaps:
     FinalisedSourceCaps
     + ChainHeadSourceCaps
     + MempoolSourceCaps
-    + GetBlock
-    + GetBlockVerbose
-    + GetBlockHeader
-    + GetRawBlockHeader
-    + GetBlockDeltas
-    + GetBlockSubsidy
-    + GetBlockchainInfo
-    + GetDifficulty
-    + GetNodeInfo
-    + GetPeerInfo
-    + GetMiningInfo
-    + GetNetworkSolPs
-    + GetTxOut
-    + GetSpentInfo
-    + GetSubtreeRoots
-    + GetTreestate
-    + GetTreestateByHash
-    + GetAddressBalance
-    + GetAddressDeltas
-    + GetAddressTxids
-    + GetAddressUtxos
-    + SendRawTransaction
+    + OneShotGetBlock
+    + OneShotGetBlockVerbose
+    + OneShotGetBlockHeader
+    + OneShotGetRawBlockHeader
+    + OneShotGetBlockDeltas
+    + OneShotGetBlockSubsidy
+    + OneShotGetBlockchainInfo
+    + OneShotGetDifficulty
+    + OneShotGetNodeInfo
+    + OneShotGetPeerInfo
+    + OneShotGetMiningInfo
+    + OneShotGetNetworkSolPs
+    + OneShotGetTxOut
+    + OneShotGetSpentInfo
+    + OneShotGetSubtreeRoots
+    + OneShotGetTreestate
+    + OneShotGetTreestateByHash
+    + OneShotGetAddressBalance
+    + OneShotGetAddressDeltas
+    + OneShotGetAddressTxids
+    + OneShotGetAddressUtxos
+    + OneShotSendRawTransaction
     + SubscribeBlocks
     + SourceLifecycle
 {
@@ -122,28 +145,28 @@ impl<T> ChainIndexSourceCaps for T where
     T: FinalisedSourceCaps
         + ChainHeadSourceCaps
         + MempoolSourceCaps
-        + GetBlock
-        + GetBlockVerbose
-        + GetBlockHeader
-        + GetRawBlockHeader
-        + GetBlockDeltas
-        + GetBlockSubsidy
-        + GetBlockchainInfo
-        + GetDifficulty
-        + GetNodeInfo
-        + GetPeerInfo
-        + GetMiningInfo
-        + GetNetworkSolPs
-        + GetTxOut
-        + GetSpentInfo
-        + GetSubtreeRoots
-        + GetTreestate
-        + GetTreestateByHash
-        + GetAddressBalance
-        + GetAddressDeltas
-        + GetAddressTxids
-        + GetAddressUtxos
-        + SendRawTransaction
+        + OneShotGetBlock
+        + OneShotGetBlockVerbose
+        + OneShotGetBlockHeader
+        + OneShotGetRawBlockHeader
+        + OneShotGetBlockDeltas
+        + OneShotGetBlockSubsidy
+        + OneShotGetBlockchainInfo
+        + OneShotGetDifficulty
+        + OneShotGetNodeInfo
+        + OneShotGetPeerInfo
+        + OneShotGetMiningInfo
+        + OneShotGetNetworkSolPs
+        + OneShotGetTxOut
+        + OneShotGetSpentInfo
+        + OneShotGetSubtreeRoots
+        + OneShotGetTreestate
+        + OneShotGetTreestateByHash
+        + OneShotGetAddressBalance
+        + OneShotGetAddressDeltas
+        + OneShotGetAddressTxids
+        + OneShotGetAddressUtxos
+        + OneShotSendRawTransaction
         + SubscribeBlocks
         + SourceLifecycle
 {

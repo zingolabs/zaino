@@ -22,7 +22,8 @@ pub enum GetTreestateByHashError {
 /// [`GetBlockByHash`](super::GetBlockByHash): a height names a best-chain
 /// block, whereas a hash can name a block on a side chain, so the two are
 /// different questions that adapters may answer from different places.
-pub trait GetTreestateByHash: Send + Sync {
+#[zaino_source_macros::resilient_port]
+pub trait OneShotGetTreestateByHash: Send + Sync {
     /// Fetch treestate at a block hash.
     fn get_treestate_by_hash(
         &self,

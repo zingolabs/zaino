@@ -13,7 +13,7 @@ use crate::parse;
 ///
 /// Implements zaino-source query traits by delegating to an [`RpcClient`],
 /// deserializing via `zebra-chain`, and converting to domain types.
-/// Single-attempt — wrap with [`zaino_source::Resilient`] for retries.
+/// Single-attempt — wrap with [`zaino_source::ValidatorClient`] for retries.
 pub struct ZebraRpcAdapter {
     rpc: RpcClient,
 }
@@ -69,13 +69,13 @@ const INVALID_ADDRESS_CODE: i64 = -5;
 ///
 /// The same `-5` as [`INVALID_ADDRESS_CODE`], named separately because it says
 /// something different: on `getspentinfo` there is no address to reject, and
-/// zcashd uses this code for "unspent, unknown, or no spent index" alike.
+/// the legacy full node uses this code for "unspent, unknown, or no spent index" alike.
 const NO_SPEND_ON_RECORD: i64 = -5;
 
 /// The JSON-RPC standard code for a method the server does not implement.
 ///
-/// Not a zcashd legacy code — it comes from the envelope, not the application.
-/// Relevant because `getspentinfo` is zcashd-only, so a zebrad-backed
+/// Not a legacy full-node legacy code — it comes from the envelope, not the application.
+/// Relevant because `getspentinfo` is legacy-only, so a zebrad-backed
 /// deployment answers every call with this.
 const METHOD_NOT_FOUND: i64 = -32601;
 
@@ -94,7 +94,7 @@ fn is_not_found(error: &FetchError) -> bool {
 ///
 /// The distinction is load-bearing, not cosmetic: [`QueryError::Domain`] is an
 /// answer and is returned immediately, while [`QueryError::Fetch`] is a failure
-/// and is retried by [`Resilient`](zaino_source::Resilient) and escalated by
+/// and is retried by [`ValidatorClient`](zaino_source::ValidatorClient) and escalated by
 /// consumers. A missing block reported as a fetch failure stalls the sync loop
 /// against a healthy validator, which is exactly what it did before this
 /// existed.
@@ -129,8 +129,8 @@ fn submission_rejection(error: &FetchError) -> Option<zaino_source::SendRawTrans
 
 /// The codes `getspentinfo` answers with rather than fails with.
 ///
-/// `-5` is zcashd saying it has no spend on record; `-32601` is a validator
-/// saying it does not implement the method, which for this zcashd-only method
+/// `-5` is the legacy full node saying it has no spend on record; `-32601` is a validator
+/// saying it does not implement the method, which for this legacy-only method
 /// means the backing node is zebrad. Both are answers about the question, so a
 /// client should see the reason rather than a generic transport error — and
 /// they must stay distinct, because reading "I cannot answer" as "the output is
@@ -191,7 +191,7 @@ where
     }
 }
 
-impl zaino_source::GetBlock for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlock for ZebraRpcAdapter {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(h = u32::from(height))))]
     async fn get_block(&self, height: Height) -> Result<Block, QueryError<GetBlockError>> {
         // Fetch raw hex block via getblock(height, 0).
@@ -228,7 +228,7 @@ impl zaino_source::GetBlock for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetChainTip for ZebraRpcAdapter {
+impl zaino_source::OneShotGetChainTip for ZebraRpcAdapter {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self)))]
     async fn get_chain_tip(&self) -> Result<(BlockHash, Height), QueryError<GetChainTipError>> {
         let hash_value = self
@@ -249,7 +249,7 @@ impl zaino_source::GetChainTip for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetPreIndexCompactBlock for ZebraRpcAdapter {
+impl zaino_source::OneShotGetPreIndexCompactBlock for ZebraRpcAdapter {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(h = u32::from(height))))]
     async fn get_pre_index_compact_block(
         &self,
@@ -262,13 +262,13 @@ impl zaino_source::GetPreIndexCompactBlock for ZebraRpcAdapter {
         //
         // TODO: once compact_deserialize supports streaming (Reader instead of
         // &[u8]), we can skip the full zebra deserialize on this path too.
-        use zaino_source::GetBlock;
+        use zaino_source::OneShotGetBlock;
         let block = self.get_block(height).await?;
         Ok(zaino_primitives::types::PreIndexCompactBlock::from(&block))
     }
 }
 
-impl zaino_source::GetTreestate for ZebraRpcAdapter {
+impl zaino_source::OneShotGetTreestate for ZebraRpcAdapter {
     #[cfg_attr(feature = "tracing", tracing::instrument(skip(self), fields(h = u32::from(height))))]
     async fn get_treestate(
         &self,
@@ -319,7 +319,7 @@ impl ZebraRpcAdapter {
     /// default.
     async fn call_parsed_classified<T, E>(
         &self,
-        method: &str,
+        method: &'static str,
         params: Vec<serde_json::Value>,
         timeout: Option<std::time::Duration>,
         parse: impl FnOnce(&serde_json::Value) -> Result<T, parse::ParseError>,
@@ -340,7 +340,7 @@ impl ZebraRpcAdapter {
     /// into the caller's error type.
     async fn call_parsed<T, E>(
         &self,
-        method: &str,
+        method: &'static str,
         params: Vec<serde_json::Value>,
         parse: impl FnOnce(&serde_json::Value) -> Result<T, parse::ParseError>,
     ) -> Result<T, QueryError<E>>
@@ -360,7 +360,7 @@ impl ZebraRpcAdapter {
     /// reading those codes this way is unambiguous on exactly these methods.
     async fn call_parsed_or_absent<T, E>(
         &self,
-        method: &str,
+        method: &'static str,
         params: Vec<serde_json::Value>,
         parse: impl FnOnce(&serde_json::Value) -> Result<T, parse::ParseError>,
         absent: impl FnOnce() -> E,
@@ -379,7 +379,7 @@ impl ZebraRpcAdapter {
     /// `InvalidAddress` answer.
     async fn call_parsed_or_invalid_address<T, E>(
         &self,
-        method: &str,
+        method: &'static str,
         params: Vec<serde_json::Value>,
         parse: impl FnOnce(&serde_json::Value) -> Result<T, parse::ParseError>,
         invalid: impl FnOnce(String) -> E,
@@ -397,7 +397,7 @@ impl ZebraRpcAdapter {
     /// not-found codes as `Ok(None)`.
     ///
     /// For `gettxout`, whose *ordinary* answer is already optional: an unspent
-    /// output is a successful query with nothing to report. zcashd returns JSON
+    /// output is a successful query with nothing to report. the legacy full node returns JSON
     /// `null` and zebrad returns a not-found code; both mean absent.
     ///
     /// `getspentinfo` used to share this, and should not have: it has no null
@@ -406,7 +406,7 @@ impl ZebraRpcAdapter {
     /// [`GetSpentInfo`](zaino_source::GetSpentInfo).
     async fn call_parsed_optional<T, E>(
         &self,
-        method: &str,
+        method: &'static str,
         params: Vec<serde_json::Value>,
         parse: impl FnOnce(&serde_json::Value) -> Result<Option<T>, parse::ParseError>,
     ) -> Result<Option<T>, QueryError<E>>
@@ -427,7 +427,7 @@ impl ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetBlockByHash for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlockByHash for ZebraRpcAdapter {
     async fn get_block_by_hash(
         &self,
         hash: BlockHash,
@@ -457,7 +457,7 @@ impl zaino_source::GetBlockByHash for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetBestBlockHeight for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBestBlockHeight for ZebraRpcAdapter {
     async fn get_best_block_height(
         &self,
     ) -> Result<Height, QueryError<zaino_source::GetBestBlockHeightError>> {
@@ -466,7 +466,7 @@ impl zaino_source::GetBestBlockHeight for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetBlockVerbose for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlockVerbose for ZebraRpcAdapter {
     async fn get_block_verbose(
         &self,
         height: Height,
@@ -486,7 +486,7 @@ impl zaino_source::GetBlockVerbose for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetBlockVerboseByHash for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlockVerboseByHash for ZebraRpcAdapter {
     async fn get_block_verbose_by_hash(
         &self,
         hash: BlockHash,
@@ -503,7 +503,7 @@ impl zaino_source::GetBlockVerboseByHash for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetBlockHeader for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlockHeader for ZebraRpcAdapter {
     async fn get_block_header(
         &self,
         hash: BlockHash,
@@ -525,7 +525,7 @@ impl zaino_source::GetBlockHeader for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetRawBlockHeader for ZebraRpcAdapter {
+impl zaino_source::OneShotGetRawBlockHeader for ZebraRpcAdapter {
     async fn get_raw_block_header(
         &self,
         hash: BlockHash,
@@ -541,7 +541,7 @@ impl zaino_source::GetRawBlockHeader for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetBlockDeltas for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlockDeltas for ZebraRpcAdapter {
     async fn get_block_deltas(
         &self,
         hash: BlockHash,
@@ -559,7 +559,7 @@ impl zaino_source::GetBlockDeltas for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetChainTips for ZebraRpcAdapter {
+impl zaino_source::OneShotGetChainTips for ZebraRpcAdapter {
     async fn get_chain_tips(
         &self,
     ) -> Result<
@@ -571,7 +571,7 @@ impl zaino_source::GetChainTips for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetDifficulty for ZebraRpcAdapter {
+impl zaino_source::OneShotGetDifficulty for ZebraRpcAdapter {
     async fn get_difficulty(
         &self,
     ) -> Result<zaino_primitives::types::Difficulty, QueryError<zaino_source::GetDifficultyError>>
@@ -581,7 +581,7 @@ impl zaino_source::GetDifficulty for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetBlockchainInfo for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlockchainInfo for ZebraRpcAdapter {
     async fn get_blockchain_info(
         &self,
     ) -> Result<
@@ -593,7 +593,7 @@ impl zaino_source::GetBlockchainInfo for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetMempoolTxids for ZebraRpcAdapter {
+impl zaino_source::OneShotGetMempoolTxids for ZebraRpcAdapter {
     async fn get_mempool_txids(
         &self,
     ) -> Result<Vec<TransactionId>, QueryError<zaino_source::GetMempoolTxidsError>> {
@@ -612,7 +612,7 @@ impl zaino_source::GetMempoolTxids for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetMempoolMetadata for ZebraRpcAdapter {
+impl zaino_source::OneShotGetMempoolMetadata for ZebraRpcAdapter {
     async fn get_mempool_metadata(
         &self,
     ) -> Result<Vec<zaino_source::MempoolTxMeta>, QueryError<zaino_source::GetMempoolMetadataError>>
@@ -637,7 +637,7 @@ impl zaino_source::GetMempoolMetadata for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetRawMempoolTransaction for ZebraRpcAdapter {
+impl zaino_source::OneShotGetRawMempoolTransaction for ZebraRpcAdapter {
     async fn get_raw_mempool_transaction(
         &self,
         txid: TransactionId,
@@ -659,7 +659,7 @@ impl zaino_source::GetRawMempoolTransaction for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetMempoolSourceTip for ZebraRpcAdapter {
+impl zaino_source::OneShotGetMempoolSourceTip for ZebraRpcAdapter {
     async fn get_mempool_source_tip(
         &self,
     ) -> Result<(BlockHash, Height), QueryError<std::convert::Infallible>> {
@@ -675,7 +675,7 @@ impl zaino_source::GetMempoolSourceTip for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetAddressBalance for ZebraRpcAdapter {
+impl zaino_source::OneShotGetAddressBalance for ZebraRpcAdapter {
     async fn get_address_balance(
         &self,
         addresses: Vec<String>,
@@ -693,7 +693,7 @@ impl zaino_source::GetAddressBalance for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetAddressDeltas for ZebraRpcAdapter {
+impl zaino_source::OneShotGetAddressDeltas for ZebraRpcAdapter {
     async fn get_address_deltas(
         &self,
         addresses: Vec<String>,
@@ -718,7 +718,7 @@ impl zaino_source::GetAddressDeltas for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetAddressTxids for ZebraRpcAdapter {
+impl zaino_source::OneShotGetAddressTxids for ZebraRpcAdapter {
     async fn get_address_txids(
         &self,
         addresses: Vec<String>,
@@ -740,7 +740,7 @@ impl zaino_source::GetAddressTxids for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetAddressUtxos for ZebraRpcAdapter {
+impl zaino_source::OneShotGetAddressUtxos for ZebraRpcAdapter {
     async fn get_address_utxos(
         &self,
         addresses: Vec<String>,
@@ -756,7 +756,7 @@ impl zaino_source::GetAddressUtxos for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetTreestateByHash for ZebraRpcAdapter {
+impl zaino_source::OneShotGetTreestateByHash for ZebraRpcAdapter {
     async fn get_treestate_by_hash(
         &self,
         hash: BlockHash,
@@ -771,7 +771,7 @@ impl zaino_source::GetTreestateByHash for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetCommitmentTreeRoots for ZebraRpcAdapter {
+impl zaino_source::OneShotGetCommitmentTreeRoots for ZebraRpcAdapter {
     async fn get_commitment_tree_roots(
         &self,
         block: BlockHash,
@@ -789,7 +789,7 @@ impl zaino_source::GetCommitmentTreeRoots for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetSubtreeRoots for ZebraRpcAdapter {
+impl zaino_source::OneShotGetSubtreeRoots for ZebraRpcAdapter {
     async fn get_subtree_roots(
         &self,
         pool: zaino_primitives::types::ShieldedPool,
@@ -813,7 +813,7 @@ impl zaino_source::GetSubtreeRoots for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetSpentInfo for ZebraRpcAdapter {
+impl zaino_source::OneShotGetSpentInfo for ZebraRpcAdapter {
     async fn get_spent_info(
         &self,
         outpoint: zaino_primitives::types::rpc::SpentOutpoint,
@@ -838,7 +838,7 @@ impl zaino_source::GetSpentInfo for ZebraRpcAdapter {
                 }
             })?;
 
-        // A `null` body would be the same fact by a different route. zcashd
+        // A `null` body would be the same fact by a different route. the legacy full node
         // does not send one, but reading it as "no spend on record" keeps the
         // two spellings from producing different answers.
         parse::parse_spent_info(&value)
@@ -847,7 +847,7 @@ impl zaino_source::GetSpentInfo for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetTxOut for ZebraRpcAdapter {
+impl zaino_source::OneShotGetTxOut for ZebraRpcAdapter {
     async fn get_tx_out(
         &self,
         txid: TransactionId,
@@ -865,7 +865,7 @@ impl zaino_source::GetTxOut for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::SendRawTransaction for ZebraRpcAdapter {
+impl zaino_source::OneShotSendRawTransaction for ZebraRpcAdapter {
     async fn send_raw_transaction(
         &self,
         transaction: Vec<u8>,
@@ -887,7 +887,7 @@ impl zaino_source::SendRawTransaction for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetNodeInfo for ZebraRpcAdapter {
+impl zaino_source::OneShotGetNodeInfo for ZebraRpcAdapter {
     async fn get_node_info(
         &self,
     ) -> Result<zaino_primitives::types::rpc::NodeInfo, QueryError<zaino_source::GetNodeInfoError>>
@@ -897,7 +897,7 @@ impl zaino_source::GetNodeInfo for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetPeerInfo for ZebraRpcAdapter {
+impl zaino_source::OneShotGetPeerInfo for ZebraRpcAdapter {
     async fn get_peer_info(
         &self,
     ) -> Result<
@@ -909,7 +909,7 @@ impl zaino_source::GetPeerInfo for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetMiningInfo for ZebraRpcAdapter {
+impl zaino_source::OneShotGetMiningInfo for ZebraRpcAdapter {
     async fn get_mining_info(
         &self,
     ) -> Result<
@@ -921,7 +921,7 @@ impl zaino_source::GetMiningInfo for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetBlockSubsidy for ZebraRpcAdapter {
+impl zaino_source::OneShotGetBlockSubsidy for ZebraRpcAdapter {
     async fn get_block_subsidy(
         &self,
         height: Height,
@@ -940,7 +940,7 @@ impl zaino_source::GetBlockSubsidy for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetNetworkSolPs for ZebraRpcAdapter {
+impl zaino_source::OneShotGetNetworkSolPs for ZebraRpcAdapter {
     async fn get_network_sol_ps(
         &self,
         blocks: Option<u32>,
@@ -969,7 +969,7 @@ impl zaino_source::SourceLifecycle for ZebraRpcAdapter {}
 /// pace themselves on their own timer.
 impl zaino_source::SubscribeBlocks for ZebraRpcAdapter {}
 
-impl zaino_source::GetTransaction for ZebraRpcAdapter {
+impl zaino_source::OneShotGetTransaction for ZebraRpcAdapter {
     async fn get_transaction(
         &self,
         txid: TransactionId,
@@ -992,7 +992,7 @@ impl zaino_source::GetTransaction for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetRawBlock for ZebraRpcAdapter {
+impl zaino_source::OneShotGetRawBlock for ZebraRpcAdapter {
     async fn get_raw_block(
         &self,
         height: Height,
@@ -1008,7 +1008,7 @@ impl zaino_source::GetRawBlock for ZebraRpcAdapter {
     }
 }
 
-impl zaino_source::GetRawBlockByHash for ZebraRpcAdapter {
+impl zaino_source::OneShotGetRawBlockByHash for ZebraRpcAdapter {
     async fn get_raw_block_by_hash(
         &self,
         hash: BlockHash,
@@ -1155,7 +1155,7 @@ mod classification_tests {
         );
     }
 
-    /// `getspentinfo` is zcashd-only, so a zebrad-backed deployment answers
+    /// `getspentinfo` is legacy-only, so a zebrad-backed deployment answers
     /// every call `-32601`. That must not be read as "unspent": one says the
     /// output has no spend on record, the other says this node cannot tell you
     /// either way, and collapsing them reports spent outputs as unspent.

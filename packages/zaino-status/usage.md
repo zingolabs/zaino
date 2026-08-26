@@ -11,10 +11,9 @@ purpose is to depend on as little as possible. While this vocabulary lived in
 the logging stack, TLS and `zebra-chain` — the entire graph of a general-purpose
 crate, to publish an enum.
 
-So the dependency list here is `tracing` and nothing else, and **the crate stays
-that way**. This is vocabulary, not machinery: if a change wants a new
-dependency, the thing it is trying to express probably belongs in the crate that
-already has that dependency.
+So the dependency list is `tracing` plus `metrics`, and **the crate stays that
+way**. Both are reporting facades — tiny, graph-free. Anything heavier is out: vocabulary, not machinery,
+and a change wanting a real dependency belongs in the crate that already has it.
 
 ## Use
 
@@ -31,11 +30,20 @@ impl Status for MyService {
 // Or hold one directly. Cloning shares the cell.
 let status = NamedAtomicStatus::new("MyService", StatusType::Spawning);
 status.store(StatusType::Ready);
+
+// A transition that depends on the current status goes through `apply`,
+// which runs the closure inside one compare-and-swap loop. A `load`
+// followed by a guarded `store` leaves a window in which another writer's
+// transition is silently overwritten; `apply` closes it.
+status.apply(|current| match current {
+    StatusType::Closing => StatusType::Closing, // shutdown stays observable
+    _ => StatusType::Ready,
+});
 ```
 
-`Liveness` and `Readiness` arrive for free: they are blanket impls over
-`Status`, so a `T: Status` bound is everything a caller needs to ask both the
-questions an operator or orchestrator actually asks.
+`Liveness` and `Readiness` arrive for free: blanket impls over `Status`, so a
+`T: Status` bound is everything a caller needs to ask both of the questions an
+operator or orchestrator asks.
 
 ## `probing` cannot be split out
 
@@ -56,6 +64,19 @@ service hand read handles to consumers while its own task keeps writing.
 
 There is no unnamed variant. `AtomicStatus` existed and was deleted: an
 untraceable status transition is not worth the type.
+
+## Metrics
+
+- `NamedAtomicStatus::store` also publishes a `zaino.status` gauge, labelled by the
+  name it logs under
+- `store` = the one point every transition passes through (only place the gauge
+  lands without each component repeating it)
+- Ungated, like every library crate's emission: with no recorder installed the
+  `metrics` facade resolves to a no-op, so `zainod`'s `prometheus` feature (which
+  owns the recorder and the `/metrics` listener) is the only switch
+- Registration + help text in `zainod`, as for every metric
+- `metric_names!` and `timed!` live here too — the vocabulary other crates declare
+  their metrics with
 
 ## Related
 

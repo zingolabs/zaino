@@ -33,7 +33,7 @@
 //! `Option` here means "this validator may not report it", never "we could not
 //! be bothered to parse it". Each optional field documents which validators
 //! supply it and why it is worth keeping. Fields that only ever came from
-//! zcashd, which is being deprecated, are modelled only where they carry
+//! the legacy full node, which is being deprecated, are modelled only where they carry
 //! information a consumer can actually use.
 
 mod address_deltas;

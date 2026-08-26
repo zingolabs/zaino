@@ -30,7 +30,7 @@ let result = z_validate_address(address_string, network);
 ```
 
 Both return domain types (`ValidatedAddress`, `ZValidatedAddress`) with **no
-serde**. The zcashd-shaped JSON — including the exact field sets, which differ
+serde**. The legacy-shaped JSON — including the exact field sets, which differ
 per address kind — is `zaino-serve`'s `wire/address.rs`, per ADR-0009.
 
 ## What is deliberately not classified
@@ -49,7 +49,7 @@ variant here and in `wire/address.rs` together.
 
 ## `ismine` is never emitted
 
-zcashd's `ismine` field reports whether the *node's wallet* holds the key.
+the legacy full node's `ismine` field reports whether the *node's wallet* holds the key.
 Zaino has no wallet, so it has no answer, and inventing `false` would be a claim
 rather than an omission. `wire/address.rs` pins this with a test.
 

@@ -76,7 +76,7 @@ network = "Testnet"
 peerset_initial_target_size = 25
 
 [rpc]
-cookie_dir = "/home/cupress/.cache/zebra"
+cookie_dir = "<PATH_TO_ZEBRA>"
 debug_force_finished_sync = false
 enable_cookie_auth = false
 max_response_body_size = 52428800
@@ -85,7 +85,7 @@ listen_addr = '127.0.0.1:18231'
 indexer_listen_addr = '127.0.0.1:18232'
 
 [state]
-cache_dir = "/home/cupress/.cache/zebra"
+cache_dir = "<PATH_TO_ZEBRA>"
 delete_old_database = true
 ephemeral = false
 should_backup_non_finalized_state = true

@@ -1,0 +1,20 @@
+[package]
+name = "zaino-source-macros"
+version = "0.1.0"
+edition.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+license.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2.0", features = ["full"] }
+quote = "1.0"
+proc-macro2 = "1.0"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

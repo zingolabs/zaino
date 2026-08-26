@@ -15,7 +15,8 @@ pub enum GetBlockByHashError {
 }
 
 /// Fetch a fully parsed block identified by its hash.
-pub trait GetBlockByHash: Send + Sync {
+#[zaino_source_macros::resilient_port]
+pub trait OneShotGetBlockByHash: Send + Sync {
     /// Fetch a parsed block by hash.
     fn get_block_by_hash(
         &self,

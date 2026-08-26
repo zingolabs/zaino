@@ -9,20 +9,19 @@ use zebra_rpc::client::{GetSubtreesByIndexResponse, SubtreeRpcData};
 
 /// A pool name this interface does not accept.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("invalid pool name \"{0}\", must be \"sapling\" or \"orchard\"")]
+#[error("invalid pool name \"{0}\", must be \"sapling\", \"orchard\", or \"ironwood\"")]
 pub struct UnknownPoolName(String);
 
 /// Reads the client's pool name into the domain vocabulary.
 ///
 /// Wire → business, so this is the external-input validation step.
 ///
-/// Ironwood is deliberately not accepted, matching the interface as it stands:
-/// `z_getsubtreesbyindex` predates the pool and no client asks for it by that
-/// name. Adding it is a served-surface change, not a rewire.
+/// Accepts every shielded pool supported by the domain subtree-root service.
 pub fn pool_into_domain(pool: &str) -> Result<ShieldedPool, UnknownPoolName> {
     match pool {
         "sapling" => Ok(ShieldedPool::Sapling),
         "orchard" => Ok(ShieldedPool::Orchard),
+        "ironwood" => Ok(ShieldedPool::Ironwood),
         other => Err(UnknownPoolName(other.to_string())),
     }
 }
@@ -72,6 +71,7 @@ mod tests {
         for (name, pool) in [
             ("sapling", ShieldedPool::Sapling),
             ("orchard", ShieldedPool::Orchard),
+            ("ironwood", ShieldedPool::Ironwood),
         ] {
             assert_eq!(pool_into_domain(name), Ok(pool));
 
@@ -91,8 +91,6 @@ mod tests {
             pool_into_domain("plasma"),
             Err(UnknownPoolName("plasma".to_string()))
         );
-        // Not a typo: see `pool_into_domain`.
-        assert!(pool_into_domain("ironwood").is_err());
     }
 
     /// A commitment-tree root is not an identifier, so it is hex-encoded in its

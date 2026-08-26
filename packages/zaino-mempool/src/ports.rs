@@ -20,7 +20,7 @@
 use std::sync::Arc;
 
 use tokio::sync::broadcast;
-use zaino_primitives::types::BlockRef;
+use zaino_primitives::types::ChainStateEpoch;
 
 use crate::snapshot::MempoolSnapshot;
 use crate::update::MempoolUpdate;
@@ -62,10 +62,10 @@ use crate::update::MempoolUpdate;
 /// `Clone` is required because the core clones the source to fan out bounded,
 /// concurrent raw-transaction fetches, so implementations must be cheap to clone.
 pub trait MempoolSource:
-    zaino_source::GetMempoolTxids
-    + zaino_source::GetMempoolMetadata
-    + zaino_source::GetRawMempoolTransaction
-    + zaino_source::GetMempoolSourceTip
+    zaino_source::OneShotGetMempoolTxids
+    + zaino_source::OneShotGetMempoolMetadata
+    + zaino_source::OneShotGetRawMempoolTransaction
+    + zaino_source::OneShotGetMempoolSourceTip
     + zaino_source::SubscribeBlocks
     + Clone
     + Send
@@ -75,10 +75,10 @@ pub trait MempoolSource:
 }
 
 impl<T> MempoolSource for T where
-    T: zaino_source::GetMempoolTxids
-        + zaino_source::GetMempoolMetadata
-        + zaino_source::GetRawMempoolTransaction
-        + zaino_source::GetMempoolSourceTip
+    T: zaino_source::OneShotGetMempoolTxids
+        + zaino_source::OneShotGetMempoolMetadata
+        + zaino_source::OneShotGetRawMempoolTransaction
+        + zaino_source::OneShotGetMempoolSourceTip
         + zaino_source::SubscribeBlocks
         + Clone
         + Send
@@ -108,35 +108,16 @@ pub trait Mempool: Clone + Send + Sync + 'static {
     fn subscribe_updates(&self) -> broadcast::Receiver<MempoolUpdate>;
 }
 
-/// A stable identifier for a published non-finalized-state snapshot.
-///
-/// `generation` increments when the publisher's best tip *changes*, not on every
-/// republication: the sync loop republishes each iteration (to trim finalized
-/// blocks and so on) even when the tip has not moved, and bumping the generation
-/// on those no-op republishes would churn the epoch every cycle and defeat the
-/// coherence layer's agreement check. Keying it to tip changes gives a stable
-/// epoch for a stable tip while still distinguishing successive tips — including
-/// same-height reorgs, which change the tip hash. The coherence layer keys on
-/// the whole epoch (generation *and* tip); hash-only matching would be weaker.
-#[cfg(feature = "tip_aware_mempool")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct NonFinalizedEpoch {
-    /// Monotonic publication generation of the non-finalized snapshot.
-    pub generation: u64,
-    /// The best (tip) block of the non-finalized snapshot.
-    pub best_tip: BlockRef,
-}
-
 /// Outbound port (coherence layer): observe the current non-finalized-state epoch.
 ///
 /// The mempool must not own or publish the non-finalized state; the coherence
-/// layer only observes its epoch to gate transaction-set coherence. `zaino-state`
-/// adapts its `ArcSwapOption<NonFinalizedState<..>>` onto this port. Returns
-/// `None` while the non-finalized state does not yet exist.
+/// layer only observes its epoch to gate transaction-set coherence. In Zaino
+/// that state is the chain head subsystem, which `zaino-state` adapts onto this
+/// port. Returns `None` while there is no non-finalized state to observe.
 #[cfg(feature = "tip_aware_mempool")]
 pub trait NfsEpochObserver: Clone + Send + Sync + 'static {
     /// The epoch of the currently published non-finalized snapshot, if any.
-    fn current_epoch(&self) -> Option<NonFinalizedEpoch>;
+    fn current_epoch(&self) -> Option<ChainStateEpoch>;
 
     /// An optional wake signal that fires when a new non-finalized snapshot is
     /// published.
@@ -163,7 +144,7 @@ pub struct NoNfs;
 
 #[cfg(feature = "tip_aware_mempool")]
 impl NfsEpochObserver for NoNfs {
-    fn current_epoch(&self) -> Option<NonFinalizedEpoch> {
+    fn current_epoch(&self) -> Option<ChainStateEpoch> {
         None
     }
 }
@@ -220,6 +201,6 @@ pub trait TipAwareMempool: Clone + Send + Sync + 'static {
     /// loop; the caller just drives it with `StreamExt::next`.
     fn stream_transactions_until_tip_change(
         &self,
-        expected_epoch: Option<NonFinalizedEpoch>,
+        expected_epoch: Option<ChainStateEpoch>,
     ) -> Option<impl futures::Stream<Item = Result<bytes::Bytes, MempoolStreamError>> + Send>;
 }

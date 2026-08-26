@@ -8,10 +8,29 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- JSON-RPC serving metrics (`zaino.jsonrpc.request_duration_seconds`,
+  `zaino.jsonrpc.errors_total`) via a jsonrpsee RPC-layer middleware. The
+  zcashd-compatible surface — half of what zaino serves — had none. A middleware
+  rather than 40 per-handler timers, registered *before* `FixRpcResponseMiddleware`
+  so it records the error code the client receives.
+
 ### Changed
 ### Deprecated
 ### Removed
+- **Feature `prometheus`.** `metrics` is now a plain dependency and emission is
+  unconditional: with no recorder installed the facade is a no-op, so the gate
+  bought compile-time removal and nothing else. `zainod`'s `prometheus` feature
+  still owns the recorder and the `/metrics` listener, so no operator-visible
+  behaviour changes. Dependents forwarding to these features must drop that.
+- **Metric** `zaino.grpc.requests_total` — duplicated
+  `zaino.grpc.request_duration_seconds`'s `_count`, which carries the same
+  per-method volume. Use that instead.
 ### Fixed
+- **The JSON-RPC serving metrics labelled calls with a caller-supplied string.**
+  The middleware sits outside method dispatch, so unknown methods reached it
+  carrying whatever the caller sent — and a recorder never evicts a series, making
+  a random-method loop a remote OOM of the indexer. Labels are now interned against
+  the server's method table: registered by name, everything else `unknown`.
 
 ## [0.6.0] - 2026-08-14
 
@@ -26,6 +45,7 @@ and this library adheres to Rust's notion of
 - Interface asymmetries are now recorded and tested where they are served:
   `z_gettreestate`'s `finalRoot` is display-order, `z_getsubtreesbyindex`'s
   subtree roots are not.
+
 ### Changed
 ### Deprecated
 ### Removed
@@ -57,7 +77,9 @@ and this library adheres to Rust's notion of
 - `zcashd_support` gates the zcashd-shaped peer-info types in this crate's wire
   module and forwards nowhere — it is now the only place in the workspace the
   feature gates anything.
+
 ### Deprecated
+
 ### Removed
 ### Fixed
 - **zcashd error-code recovery was silently inert.** The error-chain downcast

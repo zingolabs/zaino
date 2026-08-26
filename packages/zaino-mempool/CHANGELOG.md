@@ -8,6 +8,9 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- `MempoolCompleteness::ALL`, every variant ordered by discriminant. `zainod`
+  numbers it into `zaino.mempool.completeness`'s help text, so the gauge's raw
+  discriminant is readable without a dashboard-side copy of the variant names.
 - New crate: `zaino-mempool`, the hexagonal *ports + foundational types* of
   Zaino's mempool subsystem — a bounded, coherent, local read model of the
   validator's mempool, separated from `zaino-state` (see
@@ -27,7 +30,7 @@ and this library adheres to Rust's notion of
     crate's, so there is one canonical type rather than a mempool-local copy.
   - Under `tip_aware_mempool`: the `NfsEpochObserver` port (with `NoNfs`), the
     `TipAwareMempool` port (`coherent_snapshot` + the ready-made
-    `stream_transactions_until_tip_change` loop), `NonFinalizedEpoch`, the
+    `stream_transactions_until_tip_change` loop), the
     coherent-view types (`CoherentSnapshot`, `MempoolMode`, `FreezeReason`,
     `ObservedTips`, `TipChange`), and the coherent-stream `MempoolEvent`.
     `ObservedTips` names the V side as a plain `BlockRef`: the field carries the
@@ -139,7 +142,7 @@ and this library adheres to Rust's notion of
   silently wrap on a narrowing cast at ingest.
 
 ### Fixed
-- `NonFinalizedEpoch::generation` documentation: it increments when the
+- `ChainStateEpoch::generation` documentation: it increments when the
   publisher's best tip *changes*, not on every republication. The code was
   already correct; the doc claimed the opposite.
 

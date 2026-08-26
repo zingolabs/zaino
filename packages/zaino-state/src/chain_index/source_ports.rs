@@ -27,38 +27,38 @@
 /// See the module documentation for why this lives here rather than in
 /// `zaino-source`.
 pub trait ChainIndexSourcePorts:
-    zaino_source::GetAddressBalance
-    + zaino_source::GetAddressDeltas
-    + zaino_source::GetAddressTxids
-    + zaino_source::GetAddressUtxos
-    + zaino_source::GetBestBlockHeight
-    + zaino_source::GetBlockDeltas
-    + zaino_source::GetBlockHeader
-    + zaino_source::GetBlockSubsidy
-    + zaino_source::GetBlockVerboseByHash
-    + zaino_source::GetBlockchainInfo
-    + zaino_source::GetChainTip
-    + zaino_source::GetChainTips
-    + zaino_source::GetCommitmentTreeRoots
-    + zaino_source::GetDifficulty
-    + zaino_source::GetMempoolMetadata
-    + zaino_source::GetMempoolSourceTip
-    + zaino_source::GetMempoolTxids
-    + zaino_source::GetMiningInfo
-    + zaino_source::GetNetworkSolPs
-    + zaino_source::GetNodeInfo
-    + zaino_source::GetPeerInfo
-    + zaino_source::GetRawBlock
-    + zaino_source::GetRawBlockByHash
-    + zaino_source::GetRawBlockHeader
-    + zaino_source::GetRawMempoolTransaction
-    + zaino_source::GetSpentInfo
-    + zaino_source::GetSubtreeRoots
-    + zaino_source::GetTransaction
-    + zaino_source::GetTreestate
-    + zaino_source::GetTreestateByHash
-    + zaino_source::GetTxOut
-    + zaino_source::SendRawTransaction
+    zaino_source::OneShotGetAddressBalance
+    + zaino_source::OneShotGetAddressDeltas
+    + zaino_source::OneShotGetAddressTxids
+    + zaino_source::OneShotGetAddressUtxos
+    + zaino_source::OneShotGetBestBlockHeight
+    + zaino_source::OneShotGetBlockDeltas
+    + zaino_source::OneShotGetBlockHeader
+    + zaino_source::OneShotGetBlockSubsidy
+    + zaino_source::OneShotGetBlockVerboseByHash
+    + zaino_source::OneShotGetBlockchainInfo
+    + zaino_source::OneShotGetChainTip
+    + zaino_source::OneShotGetChainTips
+    + zaino_source::OneShotGetCommitmentTreeRoots
+    + zaino_source::OneShotGetDifficulty
+    + zaino_source::OneShotGetMempoolMetadata
+    + zaino_source::OneShotGetMempoolSourceTip
+    + zaino_source::OneShotGetMempoolTxids
+    + zaino_source::OneShotGetMiningInfo
+    + zaino_source::OneShotGetNetworkSolPs
+    + zaino_source::OneShotGetNodeInfo
+    + zaino_source::OneShotGetPeerInfo
+    + zaino_source::OneShotGetRawBlock
+    + zaino_source::OneShotGetRawBlockByHash
+    + zaino_source::OneShotGetRawBlockHeader
+    + zaino_source::OneShotGetRawMempoolTransaction
+    + zaino_source::OneShotGetSpentInfo
+    + zaino_source::OneShotGetSubtreeRoots
+    + zaino_source::OneShotGetTransaction
+    + zaino_source::OneShotGetTreestate
+    + zaino_source::OneShotGetTreestateByHash
+    + zaino_source::OneShotGetTxOut
+    + zaino_source::OneShotSendRawTransaction
     + zaino_source::SourceLifecycle
     + zaino_source::SubscribeBlocks
     + Send
@@ -68,38 +68,38 @@ pub trait ChainIndexSourcePorts:
 }
 
 impl<T> ChainIndexSourcePorts for T where
-    T: zaino_source::GetAddressBalance
-        + zaino_source::GetAddressDeltas
-        + zaino_source::GetAddressTxids
-        + zaino_source::GetAddressUtxos
-        + zaino_source::GetBestBlockHeight
-        + zaino_source::GetBlockDeltas
-        + zaino_source::GetBlockHeader
-        + zaino_source::GetBlockSubsidy
-        + zaino_source::GetBlockVerboseByHash
-        + zaino_source::GetBlockchainInfo
-        + zaino_source::GetChainTip
-        + zaino_source::GetChainTips
-        + zaino_source::GetCommitmentTreeRoots
-        + zaino_source::GetDifficulty
-        + zaino_source::GetMempoolMetadata
-        + zaino_source::GetMempoolSourceTip
-        + zaino_source::GetMempoolTxids
-        + zaino_source::GetMiningInfo
-        + zaino_source::GetNetworkSolPs
-        + zaino_source::GetNodeInfo
-        + zaino_source::GetPeerInfo
-        + zaino_source::GetRawBlock
-        + zaino_source::GetRawBlockByHash
-        + zaino_source::GetRawBlockHeader
-        + zaino_source::GetRawMempoolTransaction
-        + zaino_source::GetSpentInfo
-        + zaino_source::GetSubtreeRoots
-        + zaino_source::GetTransaction
-        + zaino_source::GetTreestate
-        + zaino_source::GetTreestateByHash
-        + zaino_source::GetTxOut
-        + zaino_source::SendRawTransaction
+    T: zaino_source::OneShotGetAddressBalance
+        + zaino_source::OneShotGetAddressDeltas
+        + zaino_source::OneShotGetAddressTxids
+        + zaino_source::OneShotGetAddressUtxos
+        + zaino_source::OneShotGetBestBlockHeight
+        + zaino_source::OneShotGetBlockDeltas
+        + zaino_source::OneShotGetBlockHeader
+        + zaino_source::OneShotGetBlockSubsidy
+        + zaino_source::OneShotGetBlockVerboseByHash
+        + zaino_source::OneShotGetBlockchainInfo
+        + zaino_source::OneShotGetChainTip
+        + zaino_source::OneShotGetChainTips
+        + zaino_source::OneShotGetCommitmentTreeRoots
+        + zaino_source::OneShotGetDifficulty
+        + zaino_source::OneShotGetMempoolMetadata
+        + zaino_source::OneShotGetMempoolSourceTip
+        + zaino_source::OneShotGetMempoolTxids
+        + zaino_source::OneShotGetMiningInfo
+        + zaino_source::OneShotGetNetworkSolPs
+        + zaino_source::OneShotGetNodeInfo
+        + zaino_source::OneShotGetPeerInfo
+        + zaino_source::OneShotGetRawBlock
+        + zaino_source::OneShotGetRawBlockByHash
+        + zaino_source::OneShotGetRawBlockHeader
+        + zaino_source::OneShotGetRawMempoolTransaction
+        + zaino_source::OneShotGetSpentInfo
+        + zaino_source::OneShotGetSubtreeRoots
+        + zaino_source::OneShotGetTransaction
+        + zaino_source::OneShotGetTreestate
+        + zaino_source::OneShotGetTreestateByHash
+        + zaino_source::OneShotGetTxOut
+        + zaino_source::OneShotSendRawTransaction
         + zaino_source::SourceLifecycle
         + zaino_source::SubscribeBlocks
         + Send

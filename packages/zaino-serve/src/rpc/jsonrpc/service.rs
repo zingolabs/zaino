@@ -22,6 +22,7 @@ use jsonrpsee::types::ErrorObjectOwned;
 use jsonrpsee::{proc_macros::rpc, types::ErrorCode};
 
 use crate::rpc::jsonrpc::wire::address::{validate_address_from_domain, ZValidateAddressWire};
+use crate::rpc::jsonrpc::wire::address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse};
 use crate::rpc::jsonrpc::wire::chain_tips::{chain_tips_from_domain, GetChainTipsResponse};
 use crate::rpc::jsonrpc::wire::misc::{
     MempoolInfoWire, NetworkSolPsWire, SpentInfoRequestWire, SpentInfoWire, TxOutSetInfoWire,
@@ -36,30 +37,30 @@ use crate::rpc::JsonRpcClient;
 pub trait ZcashIndexerRpc {
     /// Returns software information from the RPC server, as a [`GetInfo`] JSON struct.
     ///
-    /// zcashd reference: [`getinfo`](https://zcash.github.io/rpc/getinfo.html)
+    /// Zcash RPC reference: [`getinfo`](https://zcash.github.io/rpc/getinfo.html)
     /// method: post
     /// tags: control
     ///
     /// # Notes
     ///
-    /// [The zcashd reference](https://zcash.github.io/rpc/getinfo.html) might not show some fields
+    /// [The Zcash RPC reference](https://zcash.github.io/rpc/getinfo.html) might not show some fields
     /// in Zebra's [`GetInfo`]. Zebra uses the field names and formats from the
-    /// [zcashd code](https://github.com/zcash/zcash/blob/v4.6.0-1/src/rpc/misc.cpp#L86-L87).
+    /// [the legacy full node's code](https://github.com/zcash/zcash/blob/v4.6.0-1/src/rpc/misc.cpp#L86-L87).
     ///
-    /// Some fields from the zcashd reference are missing from Zebra's [`GetInfo`]. It only contains the fields
+    /// Some fields from the Zcash RPC reference are missing from Zebra's [`GetInfo`]. It only contains the fields
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L91-L95)
     #[method(name = "getinfo")]
     async fn get_info(&self) -> Result<GetInfo, ErrorObjectOwned>;
 
     /// Returns blockchain state information, as a [`GetBlockchainInfoResponse`] JSON struct.
     ///
-    /// zcashd reference: [`getblockchaininfo`](https://zcash.github.io/rpc/getblockchaininfo.html)
+    /// Zcash RPC reference: [`getblockchaininfo`](https://zcash.github.io/rpc/getblockchaininfo.html)
     /// method: post
     /// tags: blockchain
     ///
     /// # Notes
     ///
-    /// Some fields from the zcashd reference are missing from Zebra's [`GetBlockchainInfoResponse`]. It only contains the fields
+    /// Some fields from the Zcash RPC reference are missing from Zebra's [`GetBlockchainInfoResponse`]. It only contains the fields
     /// [required for lightwalletd support.](https://github.com/zcash/lightwalletd/blob/v0.4.9/common/common.go#L72-L89)
     #[method(name = "getblockchaininfo")]
     async fn get_blockchain_info(&self) -> Result<GetBlockchainInfoResponse, ErrorObjectOwned>;
@@ -76,26 +77,26 @@ pub trait ZcashIndexerRpc {
 
     /// Returns a json object containing mining-related information.
     ///
-    /// `zcashd` reference (may be outdated): [`getmininginfo`](https://zcash.github.io/rpc/getmininginfo.html)
+    /// the legacy full node reference (may be outdated): [`getmininginfo`](https://zcash.github.io/rpc/getmininginfo.html)
     #[method(name = "getmininginfo")]
     async fn get_mining_info(&self) -> Result<GetMiningInfoWire, ErrorObjectOwned>;
 
     /// Returns statistics about the unspent transaction output set.
     ///
-    /// zcashd reference: [`gettxoutsetinfo`](https://zcash.github.io/rpc/gettxoutsetinfo.html)
+    /// Zcash RPC reference: [`gettxoutsetinfo`](https://zcash.github.io/rpc/gettxoutsetinfo.html)
     /// method: post
     /// tags: blockchain
     #[method(name = "gettxoutsetinfo")]
     async fn get_tx_out_set_info(&self) -> Result<TxOutSetInfoWire, ErrorObjectOwned>;
 
     /// Returns the hash of the best block (tip) of the longest chain.
-    /// zcashd reference: [`getbestblockhash`](https://zcash.github.io/rpc/getbestblockhash.html)
+    /// Zcash RPC reference: [`getbestblockhash`](https://zcash.github.io/rpc/getbestblockhash.html)
     /// method: post
     /// tags: blockchain
     ///
     /// # Notes
     ///
-    /// The zcashd doc reference above says there are no parameters and the result is a "hex" (string) of the block hash hex encoded.
+    /// The legacy full-node doc reference above says there are no parameters and the result is a "hex" (string) of the block hash hex encoded.
     /// The Zcash source code is considered canonical:
     /// [In the rpc definition](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/common.h#L48) there are no required params, or optional params.
     /// [The function in rpc/blockchain.cpp](https://github.com/zcash/zcash/blob/654a8be2274aa98144c80c1ac459400eaf0eacbe/src/rpc/blockchain.cpp#L325)
@@ -105,7 +106,7 @@ pub trait ZcashIndexerRpc {
 
     /// Returns the proof-of-work difficulty as a multiple of the minimum difficulty.
     ///
-    /// zcashd reference: [`getdifficulty`](https://zcash.github.io/rpc/getdifficulty.html)
+    /// Zcash RPC reference: [`getdifficulty`](https://zcash.github.io/rpc/getdifficulty.html)
     /// method: post
     /// tags: blockchain
     #[method(name = "getdifficulty")]
@@ -113,7 +114,7 @@ pub trait ZcashIndexerRpc {
 
     /// Returns information about the given block and its transactions.
     ///
-    /// zcashd reference: [`getblockdeltas`](https://zcash.github.io/rpc/getblockdeltas.html)
+    /// Zcash RPC reference: [`getblockdeltas`](https://zcash.github.io/rpc/getblockdeltas.html)
     /// method: post
     /// tags: blockchain
     #[method(name = "getblockdeltas")]
@@ -121,16 +122,16 @@ pub trait ZcashIndexerRpc {
 
     /// Returns data about each connected network node as a json array of objects.
     ///
-    /// zcashd reference: [`getpeerinfo`](https://zcash.github.io/rpc/getpeerinfo.html)
+    /// Zcash RPC reference: [`getpeerinfo`](https://zcash.github.io/rpc/getpeerinfo.html)
     /// tags: network
     ///
-    /// Current `zebrad` does not include the same fields as `zcashd`.
+    /// Current `zebrad` does not include the same fields as the legacy full node.
     #[method(name = "getpeerinfo")]
     async fn get_peer_info(&self) -> Result<GetPeerInfo, ErrorObjectOwned>;
 
     /// Returns block subsidy reward, taking into account the mining slow start and the founders reward, of block at index provided.
     ///
-    /// zcashd reference: [`getblocksubsidy`](https://zcash.github.io/rpc/getblocksubsidy.html)
+    /// Zcash RPC reference: [`getblocksubsidy`](https://zcash.github.io/rpc/getblocksubsidy.html)
     /// method: post
     /// tags: blockchain
     ///
@@ -142,7 +143,7 @@ pub trait ZcashIndexerRpc {
 
     /// Returns the current block count in the best valid block chain.
     ///
-    /// zcashd reference: [`getblockcount`](https://zcash.github.io/rpc/getblockcount.html)
+    /// Zcash RPC reference: [`getblockcount`](https://zcash.github.io/rpc/getblockcount.html)
     /// method: post
     /// tags: blockchain
     #[method(name = "getblockcount")]
@@ -150,11 +151,11 @@ pub trait ZcashIndexerRpc {
 
     /// Returns information about all known tips in the block tree.
     ///
-    /// zcashd reference: [`getchaintips`](https://zcash.github.io/rpc/getchaintips.html)
+    /// Zcash RPC reference: [`getchaintips`](https://zcash.github.io/rpc/getchaintips.html)
     /// method: post
     /// tags: blockchain
     ///
-    /// zcashd implementation details:
+    /// the legacy full node implementation details:
     /// - builds the result from block-index leaves and always includes the active tip
     /// - reports `branchlen` as `tip.height - active_chain_find_fork(tip).height`
     /// - sorts by descending height via `CompareBlocksByHeight`
@@ -166,7 +167,7 @@ pub trait ZcashIndexerRpc {
     /// # Parameters
     /// - `address`: (string, required, example="tmHMBeeYRuc2eVicLNfP15YLxbQsooCA6jb") The Zcash transparent address to validate.
     ///
-    /// zcashd reference: [`validateaddress`](https://zcash.github.io/rpc/validateaddress.html)
+    /// Zcash RPC reference: [`validateaddress`](https://zcash.github.io/rpc/validateaddress.html)
     /// method: post
     /// tags: blockchain
     #[method(name = "validateaddress")]
@@ -184,7 +185,7 @@ pub trait ZcashIndexerRpc {
     /// # Parameters
     /// - `address`: (string, required) The address to validate.
     ///
-    /// zcashd reference: [`z_validateaddress`](https://zcash.github.io/rpc/z_validateaddress.html)
+    /// Zcash RPC reference: [`z_validateaddress`](https://zcash.github.io/rpc/z_validateaddress.html)
     /// method: post
     /// tags: util
     #[method(name = "z_validateaddress")]
@@ -195,7 +196,7 @@ pub trait ZcashIndexerRpc {
 
     /// Returns the total balance of a provided `addresses` in an [`AddressBalance`] instance.
     ///
-    /// zcashd reference: [`getaddressbalance`](https://zcash.github.io/rpc/getaddressbalance.html)
+    /// Zcash RPC reference: [`getaddressbalance`](https://zcash.github.io/rpc/getaddressbalance.html)
     /// method: post
     /// tags: address
     ///
@@ -206,14 +207,14 @@ pub trait ZcashIndexerRpc {
     ///
     /// # Notes
     ///
-    /// zcashd also accepts a single string parameter instead of an array of strings, but Zebra
+    /// the legacy full node also accepts a single string parameter instead of an array of strings, but Zebra
     /// doesn't because lightwalletd always calls this RPC with an array of addresses.
     ///
-    /// zcashd also returns the total amount of Zatoshis received by the addresses, but Zebra
+    /// the legacy full node also returns the total amount of Zatoshis received by the addresses, but Zebra
     /// doesn't because lightwalletd doesn't use that information.
     ///
     /// The RPC documentation says that the returned object has a string `balance` field, but
-    /// zcashd actually [returns an
+    /// the legacy full node actually [returns an
     /// integer](https://github.com/zcash/lightwalletd/blob/bdaac63f3ee0dbef62bde04f6817a9f90d483b00/common/common.go#L128-L130).
     #[method(name = "getaddressbalance")]
     async fn z_get_address_balance(
@@ -224,7 +225,7 @@ pub trait ZcashIndexerRpc {
     /// Sends the raw bytes of a signed transaction to the local node's mempool, if the transaction is valid.
     /// Returns the [`SentTransactionHash`] for the transaction, as a JSON string.
     ///
-    /// zcashd reference: [`sendrawtransaction`](https://zcash.github.io/rpc/sendrawtransaction.html)
+    /// Zcash RPC reference: [`sendrawtransaction`](https://zcash.github.io/rpc/sendrawtransaction.html)
     /// method: post
     /// tags: transaction
     ///
@@ -234,7 +235,7 @@ pub trait ZcashIndexerRpc {
     ///
     /// # Notes
     ///
-    /// zcashd accepts an optional `allowhighfees` parameter. Zebra doesn't support this parameter,
+    /// the legacy full node accepts an optional `allowhighfees` parameter. Zebra doesn't support this parameter,
     /// because lightwalletd doesn't use it.
     #[method(name = "sendrawtransaction")]
     async fn send_raw_transaction(
@@ -247,7 +248,7 @@ pub trait ZcashIndexerRpc {
     /// [error code `-8`.](https://github.com/zcash/zcash/issues/5758) if a height was
     /// passed or -5 if a hash was passed.
     ///
-    /// zcashd reference: [`getblock`](https://zcash.github.io/rpc/getblock.html)
+    /// Zcash RPC reference: [`getblock`](https://zcash.github.io/rpc/getblock.html)
     /// method: post
     /// tags: blockchain
     ///
@@ -281,8 +282,8 @@ pub trait ZcashIndexerRpc {
     /// - hash: (string, required) The block hash
     /// - verbose: (boolean, optional, default=true) true for a json object, false for the hex encoded data
     ///
-    /// zcashd reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
-    /// zcashd implementation [here](https://github.com/zcash/zcash/blob/16ac743764a513e41dafb2cd79c2417c5bb41e81/src/rpc/blockchain.cpp#L668)
+    /// Zcash RPC reference: [`getblockheader`](https://zcash.github.io/rpc/getblockheader.html)
+    /// the legacy full node implementation [here](https://github.com/zcash/zcash/blob/16ac743764a513e41dafb2cd79c2417c5bb41e81/src/rpc/blockchain.cpp#L668)
     ///
     /// method: post
     /// tags: blockchain
@@ -295,7 +296,7 @@ pub trait ZcashIndexerRpc {
 
     /// Returns all transaction ids in the memory pool, as a JSON array.
     ///
-    /// zcashd reference: [`getrawmempool`](https://zcash.github.io/rpc/getrawmempool.html)
+    /// Zcash RPC reference: [`getrawmempool`](https://zcash.github.io/rpc/getrawmempool.html)
     /// method: post
     /// tags: blockchain
     #[method(name = "getrawmempool")]
@@ -303,7 +304,7 @@ pub trait ZcashIndexerRpc {
 
     /// Returns information about the given block's Sapling & Orchard tree state.
     ///
-    /// zcashd reference: [`z_gettreestate`](https://zcash.github.io/rpc/z_gettreestate.html)
+    /// Zcash RPC reference: [`z_gettreestate`](https://zcash.github.io/rpc/z_gettreestate.html)
     /// method: post
     /// tags: blockchain
     ///
@@ -313,7 +314,7 @@ pub trait ZcashIndexerRpc {
     ///
     /// # Notes
     ///
-    /// The zcashd doc reference above says that the parameter "`height` can be
+    /// The legacy full-node doc reference above says that the parameter "`height` can be
     /// negative where -1 is the last known valid block". On the other hand,
     /// `lightwalletd` only uses positive heights, so Zebra does not support
     /// negative heights.
@@ -323,15 +324,15 @@ pub trait ZcashIndexerRpc {
         hash_or_height: String,
     ) -> Result<GetTreestateResponse, ErrorObjectOwned>;
 
-    /// Returns information about a range of Sapling or Orchard subtrees.
+    /// Returns information about a range of Sapling, Orchard, or Ironwood subtrees.
     ///
-    /// zcashd reference: [`z_getsubtreesbyindex`](https://zcash.github.io/rpc/z_getsubtreesbyindex.html) - TODO: fix link
+    /// Zcash RPC reference: [`z_getsubtreesbyindex`](https://zcash.github.io/rpc/z_getsubtreesbyindex.html) - TODO: fix link
     /// method: post
     /// tags: blockchain
     ///
     /// # Parameters
     ///
-    /// - `pool`: (string, required) The pool from which subtrees should be returned. Either "sapling" or "orchard".
+    /// - `pool`: (string, required) The pool from which subtrees should be returned. Either "sapling", "orchard", or "ironwood".
     /// - `start_index`: (number, required) The index of the first 2^16-leaf subtree to return.
     /// - `limit`: (number, optional) The maximum number of subtree values to return.
     ///
@@ -339,8 +340,8 @@ pub trait ZcashIndexerRpc {
     ///
     /// While Zebra is doing its initial subtree index rebuild, subtrees will become available
     /// starting at the chain tip. This RPC will return an empty list if the `start_index` subtree
-    /// exists, but has not been rebuilt yet. This matches `zcashd`'s behaviour when subtrees aren't
-    /// available yet. (But `zcashd` does its rebuild before syncing any blocks.)
+    /// exists, but has not been rebuilt yet. This matches the legacy full node's behaviour when subtrees aren't
+    /// available yet. (But the legacy full node does its rebuild before syncing any blocks.)
     #[method(name = "z_getsubtreesbyindex")]
     async fn z_get_subtrees_by_index(
         &self,
@@ -351,7 +352,7 @@ pub trait ZcashIndexerRpc {
 
     /// Returns the raw transaction data, as a [`GetRawTransaction`] JSON string or structure.
     ///
-    /// zcashd reference: [`getrawtransaction`](https://zcash.github.io/rpc/getrawtransaction.html)
+    /// Zcash RPC reference: [`getrawtransaction`](https://zcash.github.io/rpc/getrawtransaction.html)
     /// method: post
     /// tags: transaction
     ///
@@ -377,7 +378,7 @@ pub trait ZcashIndexerRpc {
 
     /// Returns details about an unspent transaction output.
     ///
-    /// zcashd reference: [`gettxout`](https://zcash.github.io/rpc/gettxout.html)
+    /// Zcash RPC reference: [`gettxout`](https://zcash.github.io/rpc/gettxout.html)
     /// method: post
     /// tags: transaction
     ///
@@ -396,7 +397,7 @@ pub trait ZcashIndexerRpc {
 
     /// Returns the txid, input index, and block height where an output is spent.
     ///
-    /// zcashd reference: [`getspentinfo`](https://zcash.github.io/rpc/getspentinfo.html)
+    /// Zcash RPC reference: [`getspentinfo`](https://zcash.github.io/rpc/getspentinfo.html)
     /// method: post
     /// tags: blockchain
     ///
@@ -406,7 +407,7 @@ pub trait ZcashIndexerRpc {
     ///
     /// # Notes
     ///
-    /// zcashd 6.12.2 returns an undocumented `height` field in addition to
+    /// the legacy full node 6.12.2 returns an undocumented `height` field in addition to
     /// the documented `txid` and `index` fields.
     #[method(name = "getspentinfo")]
     async fn get_spent_info(
@@ -416,7 +417,7 @@ pub trait ZcashIndexerRpc {
 
     /// Returns the transaction ids made by the provided transparent addresses.
     ///
-    /// zcashd reference: [`getaddresstxids`](https://zcash.github.io/rpc/getaddresstxids.html)
+    /// Zcash RPC reference: [`getaddresstxids`](https://zcash.github.io/rpc/getaddresstxids.html)
     /// method: post
     /// tags: address
     ///
@@ -439,7 +440,7 @@ pub trait ZcashIndexerRpc {
 
     /// Returns all unspent outputs for a list of addresses.
     ///
-    /// zcashd reference: [`getaddressutxos`](https://zcash.github.io/rpc/getaddressutxos.html)
+    /// Zcash RPC reference: [`getaddressutxos`](https://zcash.github.io/rpc/getaddressutxos.html)
     /// method: post
     /// tags: address
     ///
@@ -457,9 +458,35 @@ pub trait ZcashIndexerRpc {
         address_strings: GetAddressBalanceRequest,
     ) -> Result<Vec<GetAddressUtxos>, ErrorObjectOwned>;
 
+    /// Returns every balance change at the given transparent addresses, within an
+    /// inclusive height range.
+    ///
+    /// zcashd reference: [`getaddressdeltas`](https://zcash.github.io/rpc/getaddressdeltas.html)
+    /// method: post
+    /// tags: address
+    ///
+    /// # Parameters
+    ///
+    /// - `params`: (string or object, required) either a single base58check address, or a struct with the following named fields:
+    ///     - `addresses`: (json array of string, required) The addresses to get deltas for.
+    ///     - `start`: (numeric, optional, default=0) The lower height to start looking from (inclusive); `0` means genesis.
+    ///     - `end`: (numeric, optional, default=0) The top height to stop looking at (inclusive); `0` means the chain tip.
+    ///     - `chainInfo`: (bool, optional, default=false) Also name the resolved range's bounding blocks.
+    ///
+    /// # Notes
+    ///
+    /// Both bounds are resolved against the tip by the answering backend, so an `end`
+    /// beyond the tip is clamped rather than rejected. `chainInfo` selects the response
+    /// shape: the bare delta array without it, the `{deltas, start, end}` object with it.
+    #[method(name = "getaddressdeltas")]
+    async fn get_address_deltas(
+        &self,
+        params: GetAddressDeltasParams,
+    ) -> Result<GetAddressDeltasResponse, ErrorObjectOwned>;
+
     /// Returns the estimated network solutions per second based on the last n blocks.
     ///
-    /// zcashd reference: [`getnetworksolps`](https://zcash.github.io/rpc/getnetworksolps.html)
+    /// Zcash RPC reference: [`getnetworksolps`](https://zcash.github.io/rpc/getnetworksolps.html)
     /// method: post
     /// tags: blockchain
     ///
@@ -490,7 +517,7 @@ fn invalid_params_error_object(error: impl std::fmt::Display) -> ErrorObjectOwne
 // get zaino working, propagating a 500 error code to "block not found". This is still not the full correct behaviour
 // but fixes the current bugs in zaino and gets tests running.
 
-/// Recovers a zcashd-compatible legacy error code from one link of an error
+/// Recovers a legacy-compatible legacy error code from one link of an error
 /// chain.
 ///
 /// Two things can carry one, and both must be caught:
@@ -503,7 +530,7 @@ fn invalid_params_error_object(error: impl std::fmt::Display) -> ErrorObjectOwne
 ///
 /// Before this PR only `zaino-fetch`'s connector type was matched. The new
 /// source stack never produced it, so this recovery was **silently inert**: a
-/// zcashd error code reached the client as a generic internal error. Catching
+/// the legacy full node error code reached the client as a generic internal error. Catching
 /// both closes that.
 fn legacy_code_from_error_source(
     error_source: &(dyn std::error::Error + 'static),
@@ -558,7 +585,7 @@ where
         // there. The source layer classifies HTTP status separately from RPC
         // error codes, so this reads the status rather than a code.
         //
-        // Reported with zcashd's `InvalidParameter`, which is what clients key
+        // Reported with the legacy full node's `InvalidParameter`, which is what clients key
         // on for a missing block — not the 500 itself.
         if let Some(zaino_source::FetchError {
             mode: zaino_source::FailureMode::HttpStatus(500),
@@ -899,6 +926,18 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
                 crate::rpc::jsonrpc::wire::address_queries::address_utxos_from_domain(utxos)
                     .map_err(invalid_params_error_object)
             })
+    }
+
+    async fn get_address_deltas(
+        &self,
+        params: GetAddressDeltasParams,
+    ) -> Result<GetAddressDeltasResponse, ErrorObjectOwned> {
+        self.service_subscriber
+            .inner_ref()
+            .get_address_deltas(params.into_domain())
+            .await
+            .map(GetAddressDeltasResponse::from_domain)
+            .map_err(invalid_params_error_object)
     }
 
     async fn get_network_sol_ps(

@@ -94,6 +94,17 @@ impl<V: ChainIndexSourcePorts> ValidatorSource<V> {
     pub fn source(&self) -> &V {
         &self.validator
     }
+
+    /// The underlying validator, shared.
+    ///
+    /// A subsystem driven by its own runtime — ChainHead, and the mempool after
+    /// it — holds the validator directly rather than through this wrapper,
+    /// because it speaks the `zaino-source` ports and does not need the
+    /// wire-typed scaffolding this type provides. Sharing rather than cloning
+    /// matters: a validator may own connections and a database handle.
+    pub(crate) fn validator(&self) -> Arc<V> {
+        Arc::clone(&self.validator)
+    }
 }
 
 #[cfg(feature = "test_dependencies")]
@@ -138,7 +149,7 @@ impl<V> std::fmt::Debug for ValidatorSource<V> {
 /// The distinction becomes usable again as consumers move onto the port errors.
 ///
 /// The transport fault is carried as the error's `source` rather than only
-/// formatted into the message. `zaino-serve` recovers zcashd-compatible RPC
+/// formatted into the message. `zaino-serve` recovers legacy-compatible RPC
 /// error codes by downcast-walking [`std::error::Error::source`] (see
 /// `getblock_error_object_from_indexer_error` in
 /// `zaino-serve/src/rpc/jsonrpc/service.rs`), so flattening a [`FetchError`] to
@@ -146,8 +157,8 @@ impl<V> std::fmt::Debug for ValidatorSource<V> {
 /// on.
 ///
 /// A domain rejection is carried the same way, as a typed
-/// [`LegacyRpcError`](crate::error::LegacyRpcError) with zcashd's
-/// `InvalidParameter`. That is the code zcashd itself answers "not found" with,
+/// [`LegacyRpcError`](crate::error::LegacyRpcError) with the legacy full node's
+/// `InvalidParameter`. That is the code the legacy full node itself answers "not found" with,
 /// and it is what reached clients before the adapters learned to tell a missing
 /// object from an unreachable node — the reclassification must not cost the
 /// served interface its error code.
@@ -172,11 +183,11 @@ where
     }
 }
 
-/// Flatten a `getspentinfo` port error, preserving zcashd's own error code.
+/// Flatten a `getspentinfo` port error, preserving the legacy full node's own error code.
 ///
 /// The generic [`err`] reports every domain rejection as `InvalidParameter`
 /// (`-8`), which is right where the interface has no more specific code to
-/// offer. `getspentinfo` does: zcashd answers "no spend on record" with `-5`
+/// offer. `getspentinfo` does: the legacy full node answers "no spend on record" with `-5`
 /// (`InvalidAddressOrKey`) and the message `Unable to get spent info`, and that
 /// is the pair a client matches on.
 ///
@@ -186,7 +197,7 @@ where
 /// rewrite of this method then reported `-8`. Both are wrong in the same
 /// direction — the code the client is looking for never reached it.
 ///
-/// `Unsupported` has no zcashd code, because zcashd always implements the
+/// `Unsupported` has no the legacy full node code, because the legacy full node always implements the
 /// method. It is reported as `-32601`, the envelope's own "method not found",
 /// which is what the client would have seen had it asked the validator
 /// directly — and is deliberately *not* `-5`: "this node cannot answer" must
@@ -215,8 +226,8 @@ fn spent_info_err(error: QueryError<zaino_source::GetSpentInfoError>) -> Blockch
 
 /// The JSON-RPC envelope's "method not found".
 ///
-/// Not a zcashd legacy code: zcashd implements every method Zaino forwards, so
-/// this only arises when the backing validator is not zcashd.
+/// Not a legacy full-node legacy code: the legacy full node implements every method Zaino forwards, so
+/// this only arises when the backing validator is not the legacy full node.
 const METHOD_NOT_FOUND: i64 = -32601;
 
 /// A domain height from a zebra one, rejecting values the protocol disallows.
@@ -301,20 +312,6 @@ fn parse_display_txid(
     Ok(zaino_primitives::types::TransactionId::from(internal))
 }
 
-/// This crate's shielded pool as the port names it.
-///
-/// The two enums share a name and their variants, but not a role: this crate's
-/// also carries activation semantics that a zero-dependency crate cannot hold.
-fn domain_pool(pool: crate::chain_index::ShieldedPool) -> zaino_primitives::types::ShieldedPool {
-    match pool {
-        crate::chain_index::ShieldedPool::Sapling => zaino_primitives::types::ShieldedPool::Sapling,
-        crate::chain_index::ShieldedPool::Orchard => zaino_primitives::types::ShieldedPool::Orchard,
-        crate::chain_index::ShieldedPool::Ironwood => {
-            zaino_primitives::types::ShieldedPool::Ironwood
-        }
-    }
-}
-
 /// A sapling tree root as zebra's own type, paired with its size.
 ///
 /// Fallible: 32 bytes that are not a point on the pool's curve cannot be a
@@ -383,7 +380,7 @@ fn pool_balance(
         "sprout" => GetBlockchainInfoBalance::sprout(value, delta),
         "sapling" => GetBlockchainInfoBalance::sapling(value, delta),
         "orchard" => GetBlockchainInfoBalance::orchard(value, delta),
-        // zebra names this pool `lockbox` on the wire; `deferred` is zcashd's
+        // zebra names this pool `lockbox` on the wire; `deferred` is the legacy full node's
         // name for the same pool, and zebra's own constructor is still called
         // `deferred`. Both spellings are accepted so the answer does not depend
         // on which validator is behind the adapter.
@@ -431,7 +428,7 @@ fn value_pool_array(
 // routes them together, and the mempool's coherence check depends on it.
 // ---------------------------------------------------------------------------
 
-impl<V: ChainIndexSourcePorts> zaino_source::GetMempoolTxids for ValidatorSource<V> {
+impl<V: ChainIndexSourcePorts> zaino_source::OneShotGetMempoolTxids for ValidatorSource<V> {
     async fn get_mempool_txids(
         &self,
     ) -> Result<
@@ -442,7 +439,7 @@ impl<V: ChainIndexSourcePorts> zaino_source::GetMempoolTxids for ValidatorSource
     }
 }
 
-impl<V: ChainIndexSourcePorts> zaino_source::GetMempoolMetadata for ValidatorSource<V> {
+impl<V: ChainIndexSourcePorts> zaino_source::OneShotGetMempoolMetadata for ValidatorSource<V> {
     async fn get_mempool_metadata(
         &self,
     ) -> Result<
@@ -453,7 +450,9 @@ impl<V: ChainIndexSourcePorts> zaino_source::GetMempoolMetadata for ValidatorSou
     }
 }
 
-impl<V: ChainIndexSourcePorts> zaino_source::GetRawMempoolTransaction for ValidatorSource<V> {
+impl<V: ChainIndexSourcePorts> zaino_source::OneShotGetRawMempoolTransaction
+    for ValidatorSource<V>
+{
     async fn get_raw_mempool_transaction(
         &self,
         txid: zaino_primitives::types::TransactionId,
@@ -463,7 +462,7 @@ impl<V: ChainIndexSourcePorts> zaino_source::GetRawMempoolTransaction for Valida
     }
 }
 
-impl<V: ChainIndexSourcePorts> zaino_source::GetMempoolSourceTip for ValidatorSource<V> {
+impl<V: ChainIndexSourcePorts> zaino_source::OneShotGetMempoolSourceTip for ValidatorSource<V> {
     async fn get_mempool_source_tip(
         &self,
     ) -> Result<
@@ -593,7 +592,7 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
 
         // The interface's range is open-ended and unvalidated; the port's is
         // neither, so the bounds are resolved against the tip here.
-        let tip = zaino_source::GetBestBlockHeight::get_best_block_height(&*self.validator)
+        let tip = zaino_source::OneShotGetBestBlockHeight::get_best_block_height(&*self.validator)
             .await
             .map_err(err)?;
         let (start, end) = clamp_deltas_range_to_tip(tip, start, end);
@@ -901,7 +900,11 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
     ) -> BlockchainSourceResult<Vec<([u8; 32], u32)>> {
         let roots = self
             .validator
-            .get_subtree_roots(domain_pool(pool), start_index, max_entries)
+            .get_subtree_roots(
+                zaino_chain_store_zainodb::pool::ShieldedPool::to_domain(pool),
+                start_index,
+                max_entries,
+            )
             .await
             .map_err(err)?;
 
@@ -1004,7 +1007,7 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
     ) -> BlockchainSourceResult<zaino_primitives::types::rpc::SpentInfo> {
         // Not `err`, which reports every domain rejection as `InvalidParameter`.
         // `getspentinfo` has two rejections that mean different things, and
-        // zcashd gives one of them a specific code that clients key on.
+        // the legacy full node gives one of them a specific code that clients key on.
         self.validator
             .get_spent_info(outpoint)
             .await
@@ -1097,18 +1100,34 @@ impl ZebraValidatorSource {
         BlockchainSourceError,
     > {
         let adapter = rpc_adapter(common)?;
-        let info = zaino_source::GetNodeInfo::get_node_info(&adapter)
+        let info = zaino_source::OneShotGetNodeInfo::get_node_info(&adapter)
             .await
             .map_err(err)?;
 
-        while let Err(e) = zaino_source::GetChainTip::get_chain_tip(&adapter).await {
+        while let Err(e) = zaino_source::OneShotGetChainTip::get_chain_tip(&adapter).await {
             tracing::info!(%e, "Waiting for validator to serve its first block");
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         }
 
         // Adopted before anything consumes a `Network`, so the index and its
         // validator cannot disagree about where an upgrade activates.
-        let network = super::network_adoption::adopt_network(common, &rpc_adapter(common)?).await?;
+        //
+        // This is the first place in Zaino that actually constructs a
+        // `ValidatorClient` (the sealed resilient client): `adopt_network`
+        // binds the canonical `GetBlockchainInfo` port, which only
+        // `ValidatorClient<V>` implements, so the adapter has to be wrapped
+        // here. Wrapping buys resilience to transient unreachability for this
+        // one boot RPC — not readiness: waiting for the validator to *become*
+        // ready is a lifecycle concern the caller owns (that is what the
+        // tip-serving wait above does), never the client's. The remaining
+        // `OneShotGet*` calls stay on the bare adapter for now; migrating
+        // every consumer onto `ValidatorClient` is follow-up work, kept out to
+        // bound this PR's size.
+        let source = zaino_source::ValidatorClient::new(
+            rpc_adapter(common)?,
+            zaino_source::RetryPolicy::default(),
+        );
+        let network = super::network_adoption::adopt_network(common, &source).await?;
 
         let validator = zaino_source_zebra::ZebraValidator::rpc_only(adapter);
 
@@ -1137,11 +1156,18 @@ impl ZebraValidatorSource {
         use zebra_state::{ReadRequest, ReadResponse};
 
         let adapter = rpc_adapter(common)?;
-        let info = zaino_source::GetNodeInfo::get_node_info(&adapter)
+        let info = zaino_source::OneShotGetNodeInfo::get_node_info(&adapter)
             .await
             .map_err(err)?;
 
-        let network = super::network_adoption::adopt_network(common, &rpc_adapter(common)?).await?;
+        // As in `spawn_rpc`: `adopt_network` needs the sealed resilient port,
+        // so wrap the adapter in a `ValidatorClient`. The `OneShotGet*` call
+        // above stays on the bare adapter for now (see the note there).
+        let source = zaino_source::ValidatorClient::new(
+            rpc_adapter(common)?,
+            zaino_source::RetryPolicy::default(),
+        );
+        let network = super::network_adoption::adopt_network(common, &source).await?;
 
         tracing::info!(
             grpc_address = %direct.validator_grpc_address,
@@ -1161,7 +1187,7 @@ impl ZebraValidatorSource {
 
         loop {
             let (validator_hash, validator_height) =
-                zaino_source::GetChainTip::get_chain_tip(&adapter)
+                zaino_source::OneShotGetChainTip::get_chain_tip(&adapter)
                     .await
                     .map_err(err)?;
 
@@ -1365,9 +1391,18 @@ mod tests {
         use crate::chain_index::ShieldedPool as Ours;
         use zaino_primitives::types::ShieldedPool as Theirs;
 
-        assert_eq!(domain_pool(Ours::Sapling), Theirs::Sapling);
-        assert_eq!(domain_pool(Ours::Orchard), Theirs::Orchard);
-        assert_eq!(domain_pool(Ours::Ironwood), Theirs::Ironwood);
+        assert_eq!(
+            zaino_chain_store_zainodb::pool::ShieldedPool::to_domain(Ours::Sapling),
+            Theirs::Sapling
+        );
+        assert_eq!(
+            zaino_chain_store_zainodb::pool::ShieldedPool::to_domain(Ours::Orchard),
+            Theirs::Orchard
+        );
+        assert_eq!(
+            zaino_chain_store_zainodb::pool::ShieldedPool::to_domain(Ours::Ironwood),
+            Theirs::Ironwood
+        );
     }
 
     /// Block identifiers arrive from the interface in display order. This is
@@ -1569,7 +1604,7 @@ mod pool_treestate_slot_tests {
 mod error_source_chain {
     use super::*;
 
-    /// `zaino-serve` recovers zcashd-compatible RPC error codes by
+    /// `zaino-serve` recovers legacy-compatible RPC error codes by
     /// downcast-walking [`std::error::Error::source`] chains (see
     /// `getblock_error_object_from_indexer_error` and
     /// `sendrawtransaction_error_object_from_indexer_error` in
@@ -1623,13 +1658,13 @@ mod error_source_chain {
         })
     }
 
-    /// zcashd answers "no spend on record" with `-5 Unable to get spent info`,
+    /// the legacy full node answers "no spend on record" with `-5 Unable to get spent info`,
     /// and that pair is what a client matches on. Neither this method's first
     /// rewrite nor the connector it replaced actually served it — the former
     /// reported `-8`, the latter consumed the code into a typed error and
     /// served a generic internal error. Both lost the only part the client uses.
     #[test]
-    fn an_unspent_output_reports_zcashds_own_code() {
+    fn an_unspent_output_reports_the_legacy_full_nodes_own_code() {
         let rejected = spent_info_err(QueryError::Domain(
             zaino_source::GetSpentInfoError::NotSpent,
         ));
@@ -1640,11 +1675,11 @@ mod error_source_chain {
         );
         assert!(
             rejected.to_string().contains("Unable to get spent info"),
-            "zcashd's message travels with its code: {rejected}"
+            "the legacy full node's message travels with its code: {rejected}"
         );
     }
 
-    /// `getspentinfo` is zcashd-only, so a zebrad-backed deployment cannot
+    /// `getspentinfo` is legacy-only, so a zebrad-backed deployment cannot
     /// answer it at all. That has to stay distinguishable from "unspent" all
     /// the way to the wire — served as `-5`, it would tell every client that
     /// every output is unspent.

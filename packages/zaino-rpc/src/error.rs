@@ -79,7 +79,7 @@ impl From<RpcError> for zaino_source::FetchError {
 mod tests {
     use super::*;
 
-    /// An oversized body must not be classified as retryable: `Resilient` would
+    /// An oversized body must not be classified as retryable: `ValidatorClient` would
     /// otherwise re-issue the request and buffer the same oversized response
     /// again, turning the cap into an amplifier rather than a bound.
     #[test]

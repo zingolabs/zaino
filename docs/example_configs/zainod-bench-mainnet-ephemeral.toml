@@ -1,0 +1,46 @@
+# Zaino mainnet benchmark configuration — ephemeral finalised state
+#
+# Identical to `zainod-bench-mainnet.toml` except for
+# `ephemeral_finalised_state`. In ephemeral mode Zaino keeps no finalised-state
+# database of its own and serves finalised reads by passthrough to the
+# validator, so `serve` and `concurrent` exercise a genuinely different path.
+# `docs/perf.md` reports both.
+#
+# There is nothing to sync in this mode, so `zaino-bench sync` does not apply:
+# the `zaino.sync.*` gauges it reads are never emitted, and it will sit waiting
+# for a metric that never arrives. Sync is a persistent-mode measurement.
+#
+#   cargo build --release -p zainod --features prometheus
+#   zainod start --config docs/example_configs/zainod-bench-mainnet-ephemeral.toml
+
+backend = 'direct'
+zebra_db_path = '<PATH_TO_ZEBRA>'
+network = 'Mainnet'
+
+# The ephemeral half of the pair — the one line that differs.
+ephemeral_finalised_state = true
+
+metrics_endpoint = '127.0.0.1:9998'
+
+[grpc_settings]
+listen_address = '127.0.0.1:8137'
+
+[validator_settings]
+validator_grpc_listen_address = '127.0.0.1:18230'
+validator_jsonrpc_listen_address = '127.0.0.1:18232'
+validator_user = 'xxxxxx'
+validator_password = 'xxxxxx'
+
+[service]
+timeout = 30
+channel_size = 32
+
+[storage.cache]
+capacity = 10000
+shard_power = 4
+
+# Still required by the config schema, and still the cache location, even though
+# no finalised-state database is written here in ephemeral mode.
+[storage.database]
+path = '<ZAINO_CACHE>'
+size = 384

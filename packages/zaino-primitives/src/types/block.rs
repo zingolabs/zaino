@@ -2,15 +2,23 @@
 
 use super::transaction::Transaction;
 use super::{
-    BlockCommitments, BlockHash, BlockTime, CompactDifficulty, EquihashNonce, Height, MerkleRoot,
+    BlockCommitments, BlockHash, BlockTime, CompactDifficulty, EquihashNonce, EquihashSolution,
+    Height, MerkleRoot,
 };
 
-/// Block header — the fields indexes need. No equihash solution
-/// (indexer doesn't validate PoW).
+/// Block header — every consensus field, plus the hash and height that name
+/// the block.
+///
+/// Zaino does not validate proof of work, but the header is carried whole
+/// rather than as the subset an index happens to read: a consumer that
+/// re-serializes a block, or persists one, needs the fields the block hash
+/// commits to. `version` and `solution` are here for that reason alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockHeader {
     /// Block hash (double-SHA256 of the serialized header).
     pub hash: BlockHash,
+    /// Block version number.
+    pub version: u32,
     /// Previous block's hash.
     pub prev_hash: BlockHash,
     /// Block height.
@@ -25,6 +33,8 @@ pub struct BlockHeader {
     pub bits: CompactDifficulty,
     /// Equihash nonce.
     pub nonce: EquihashNonce,
+    /// Equihash proof-of-work solution.
+    pub solution: EquihashSolution,
 }
 
 /// A complete block: header + transactions + chain metadata.
