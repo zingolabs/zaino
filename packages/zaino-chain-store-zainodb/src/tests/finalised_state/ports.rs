@@ -142,14 +142,10 @@ async fn compact_blocks_match_the_inherent_read() {
                 .await
                 .expect("the store holds every vector height");
 
-            let mut chunk = CompactBlockRead::compact_chunk(
-                &reader,
-                domain(height),
-                domain(height),
-                pools.clone(),
-            )
-            .await
-            .expect("the store holds every vector height");
+            let mut chunk =
+                CompactBlockRead::compact_chunk(&reader, domain(height), domain(height), pools)
+                    .await
+                    .expect("the store holds every vector height");
             assert_eq!(chunk.len(), 1);
             let through_ports = compact_block_to_wire(&chunk.pop().expect("checked above"));
 

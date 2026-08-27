@@ -36,3 +36,11 @@ pub const DB_TIP_HEIGHT: &str = "zaino.db.tip_height";
 pub const FINALISED_EPHEMERAL: &str = "zaino.db.finalised_ephemeral";
 pub const ACCUMULATOR_BUILT_HEIGHT: &str = "zaino.db.accumulator_built_height";
 pub const ACCUMULATOR_REBUILD_ACTIVE: &str = "zaino.db.accumulator_rebuild_active";
+
+// Read path. The write path has been instrumented since before the move; these
+// are the reads, which had nothing. A wallet syncing against this store spends
+// almost all of its time in `compact_chunk`, so a store that is slow or rotting
+// was invisible from a dashboard while every write metric looked healthy.
+pub const DB_BLOCK_READ_SECONDS: &str = "zaino.db.block_read_seconds";
+pub const DB_COMPACT_READ_SECONDS: &str = "zaino.db.compact_read_seconds";
+pub const DB_CORRUPT_ROWS_TOTAL: &str = "zaino.db.corrupt_rows_total";

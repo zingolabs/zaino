@@ -118,6 +118,25 @@ fn describe_metrics() {
         "Depth of chain reorganizations in blocks (0 for same-height reorgs)"
     );
 
+    // DB reads. The write path has been described since before the finalised
+    // state moved into its own crate; these are its reads, which a wallet
+    // syncing against this node spends almost all of its time in.
+    metrics::describe_histogram!(
+        DB_COMPACT_READ_SECONDS,
+        "Time to read one chunk of compact blocks from the finalized database. The wallet-sync \
+         read path: a client's sync rate is bounded by this"
+    );
+    metrics::describe_histogram!(
+        DB_BLOCK_READ_SECONDS,
+        "Time to read one chunk of stored blocks from the finalized database"
+    );
+    metrics::describe_counter!(
+        DB_CORRUPT_ROWS_TOTAL,
+        "Rows read from the finalized database that could not be decoded. Non-zero means the \
+         database is damaged rather than merely behind; reads fall through to the validator, so \
+         queries continue to be answered and nothing else surfaces it"
+    );
+
     // DB
     metrics::describe_gauge!(
         DB_TIP_HEIGHT,

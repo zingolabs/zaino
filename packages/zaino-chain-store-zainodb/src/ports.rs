@@ -104,6 +104,94 @@ fn capability_for_feature(feature: &str) -> StoreCapability {
     }
 }
 
+/// A corrupt row, reported to the operator on its way to the caller.
+///
+/// # Why the logging is here rather than at each site
+///
+/// A corrupt row is the one read failure nothing upstream can act on. The
+/// caller's recovery is to fall through to the validator, which is correct and
+/// silent — so without a log here a store that is quietly rotting is
+/// indistinguishable from one that is merely behind, for as long as the
+/// validator keeps covering. The read path has no other place this surfaces:
+/// the error is converted to a domain error, then to a status, and by then the
+/// cause naming the field is gone.
+///
+/// Centralised so every conversion in this file reports identically and no new
+/// one can be added that forgets to. `warn` rather than `error`: the request is
+/// still answered, from elsewhere.
+fn corrupt_row(expected: impl Into<String>) -> ChainStoreError {
+    let error = ChainStoreError::corrupt_row(expected);
+    report_corrupt_row(&error);
+    error
+}
+
+/// A corrupt row whose rejecting conversion had a typed error to explain it.
+fn corrupt_row_because(
+    expected: impl Into<String>,
+    cause: impl std::error::Error + Send + Sync + 'static,
+) -> ChainStoreError {
+    let error = ChainStoreError::corrupt_row_because(expected, cause);
+    report_corrupt_row(&error);
+    error
+}
+
+/// Logs and counts a corrupt row.
+fn report_corrupt_row(error: &ChainStoreError) {
+    tracing::warn!(
+        error = error as &dyn std::error::Error,
+        "chain store read a row it cannot decode"
+    );
+    #[cfg(feature = "prometheus")]
+    metrics::counter!(crate::metric_names::DB_CORRUPT_ROWS_TOTAL).increment(1);
+}
+
+/// Which chunked read a duration belongs to.
+///
+/// A marker rather than the metric name itself, because `metric_names` is
+/// behind the `prometheus` feature and naming a constant from it at the call
+/// site would put a `cfg` on every read.
+#[derive(Debug, Clone, Copy)]
+enum ChunkRead {
+    Stored,
+    Compact,
+}
+
+/// How long a chunked read took.
+///
+/// A type rather than a bare `Instant` so the `prometheus` feature is handled
+/// once: without it this compiles to nothing and no call site needs a `cfg`.
+struct ReadTimer {
+    #[cfg(feature = "prometheus")]
+    started: std::time::Instant,
+}
+
+impl ReadTimer {
+    fn start() -> Self {
+        Self {
+            #[cfg(feature = "prometheus")]
+            started: std::time::Instant::now(),
+        }
+    }
+
+    /// Records the elapsed time against `read`'s metric.
+    ///
+    /// Recorded whether the read succeeded or failed: a read that fails slowly
+    /// is the symptom worth seeing, and dropping those samples would make a
+    /// degrading store look faster as it got worse.
+    fn record(self, read: ChunkRead) {
+        #[cfg(feature = "prometheus")]
+        {
+            let metric = match read {
+                ChunkRead::Stored => crate::metric_names::DB_BLOCK_READ_SECONDS,
+                ChunkRead::Compact => crate::metric_names::DB_COMPACT_READ_SECONDS,
+            };
+            metrics::histogram!(metric).record(self.started.elapsed().as_secs_f64());
+        }
+        #[cfg(not(feature = "prometheus"))]
+        let _ = read;
+    }
+}
+
 /// A source failure, as the domain names it.
 ///
 /// A validator failure is already the domain's, so it passes through untouched.
@@ -128,10 +216,7 @@ fn chain_store_source_error(error: StoreError) -> ChainStoreSourceError {
 /// than being clamped into a height that names a different block.
 fn domain_height(height: Height) -> Result<DomainHeight, ChainStoreError> {
     DomainHeight::try_from(height.0).map_err(|error| {
-        ChainStoreError::corrupt_row_because(
-            format!("valid height for stored value {height}"),
-            error,
-        )
+        corrupt_row_because(format!("valid height for stored value {height}"), error)
     })
 }
 
@@ -223,7 +308,7 @@ pub fn stored_tx_out(output: &TxOutCompact) -> Result<StoredTxOut, ChainStoreErr
         Some(crate::types::ScriptType::P2SH) => ScriptType::P2SH,
         Some(crate::types::ScriptType::NonStandard) => ScriptType::NonStandard,
         None => {
-            return Err(ChainStoreError::corrupt_row(format!(
+            return Err(corrupt_row(format!(
                 "valid script type for stored output tag {}",
                 output.script_type()
             )))
@@ -232,7 +317,7 @@ pub fn stored_tx_out(output: &TxOutCompact) -> Result<StoredTxOut, ChainStoreErr
 
     Ok(StoredTxOut {
         value: Zatoshis::new(output.value()).map_err(|error| {
-            ChainStoreError::corrupt_row_because(
+            corrupt_row_because(
                 format!("in-range value for stored output {}", output.value()),
                 error,
             )
@@ -269,7 +354,7 @@ fn stored_block(block: IndexedBlock) -> Result<StoredBlock, ChainStoreError> {
         prev_hash: domain_hash(*context.parent_hash()),
         height: domain_height(context.height())?,
         time: u32::try_from(data.time).map_err(|error| {
-            ChainStoreError::corrupt_row_because(
+            corrupt_row_because(
                 format!("in-range block time for stored value {}", data.time),
                 error,
             )
@@ -394,7 +479,7 @@ fn orchard_action(action: &crate::types::CompactOrchardAction) -> OrchardAction 
 /// changes.
 fn transparent_output(output: &TxOutCompact) -> Result<TransparentOutput, ChainStoreError> {
     let script_type = output.script_type_enum().ok_or_else(|| {
-        ChainStoreError::corrupt_row(format!(
+        corrupt_row(format!(
             "valid script type for stored output tag {}",
             output.script_type()
         ))
@@ -405,7 +490,7 @@ fn transparent_output(output: &TxOutCompact) -> Result<TransparentOutput, ChainS
 
     Ok(TransparentOutput {
         value: Zatoshis::new(output.value()).map_err(|error| {
-            ChainStoreError::corrupt_row_because(
+            corrupt_row_because(
                 format!("in-range value for stored output {}", output.value()),
                 error,
             )
@@ -881,6 +966,7 @@ impl<T: ChainStoreSource> TxOutSetIndex for DbReader<T> {
 }
 
 impl<T: ChainStoreSource> StoredBlockRead for DbReader<T> {
+    #[tracing::instrument(skip(self), fields(start = %start, end = %end))]
     async fn blocks_chunk(
         &self,
         start: DomainHeight,
@@ -890,12 +976,21 @@ impl<T: ChainStoreSource> StoredBlockRead for DbReader<T> {
             return Ok(Vec::new());
         };
 
-        self.get_chain_block_range(start, end)
+        // Timed around the chunk rather than the block: one read transaction
+        // covers the range, so a per-block figure would divide one duration by
+        // a count rather than measure anything.
+        let read = ReadTimer::start();
+
+        let blocks: Result<Vec<_>, _> = self
+            .get_chain_block_range(start, end)
             .await
             .map_err(chain_store_error)?
             .into_iter()
             .map(stored_block)
-            .collect()
+            .collect();
+
+        read.record(ChunkRead::Stored);
+        blocks
     }
 
     async fn blocks_stream(
@@ -923,6 +1018,7 @@ impl<T: ChainStoreSource> StoredBlockRead for DbReader<T> {
 }
 
 impl<T: ChainStoreSource> CompactBlockRead for DbReader<T> {
+    #[tracing::instrument(skip(self, pools), fields(start = %start, end = %end))]
     async fn compact_chunk(
         &self,
         start: DomainHeight,
@@ -933,9 +1029,16 @@ impl<T: ChainStoreSource> CompactBlockRead for DbReader<T> {
             return Ok(Vec::new());
         };
 
-        DbReader::get_compact_block_range(self, start, end, pools)
+        // The wallet-sync hot path: a syncing wallet spends almost all of its
+        // time here, so this is the read whose latency a dashboard needs.
+        let read = ReadTimer::start();
+
+        let blocks = DbReader::get_compact_block_range(self, start, end, pools)
             .await
-            .map_err(chain_store_error)
+            .map_err(chain_store_error);
+
+        read.record(ChunkRead::Compact);
+        blocks
     }
 
     async fn compact_stream(
@@ -950,7 +1053,6 @@ impl<T: ChainStoreSource> CompactBlockRead for DbReader<T> {
         let reader = self.clone();
         Ok(chunked(self.clamped_range(start, end)?, move |from, to| {
             let reader = reader.clone();
-            let pools = pools.clone();
             async move {
                 DbReader::get_compact_block_range(&reader, from, to, pools)
                     .await
@@ -1040,10 +1142,7 @@ pub fn indexed_block_from_stored(block: &StoredBlock) -> Result<IndexedBlock, Ch
     // as the cause: it names which field was rejected and why, which is what
     // separates a corrupt row from a block this build cannot yet parse.
     let data = crate::conversion::block_data(header).map_err(|error| {
-        ChainStoreError::corrupt_row_because(
-            format!("a convertible header for block {hash}"),
-            error,
-        )
+        corrupt_row_because(format!("a convertible header for block {hash}"), error)
     })?;
 
     let transactions = block
@@ -1389,6 +1488,69 @@ mod tests {
     /// The capabilities a store on these bits advertises.
     fn advertised(capability: Capability) -> StoreCapabilities {
         store_capabilities::<Reader>(capability)
+    }
+
+    /// A corrupt row is reported to the operator, not only to the caller.
+    ///
+    /// The caller's recovery is to fall through to the validator, which is
+    /// silent by design — so this log is the only thing that distinguishes a
+    /// store that is rotting from one that is merely behind. Asserted through
+    /// a subscriber rather than by reading the code, because the reporting is
+    /// a side effect and nothing else would notice it being dropped.
+    #[test]
+    fn a_corrupt_row_is_reported_to_the_operator() {
+        use std::sync::{Arc, Mutex};
+        use tracing_subscriber::fmt::MakeWriter;
+
+        #[derive(Clone, Default)]
+        struct Captured(Arc<Mutex<Vec<u8>>>);
+
+        impl std::io::Write for Captured {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0
+                    .lock()
+                    .expect("capture buffer mutex poisoned")
+                    .extend_from_slice(buf);
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        impl<'a> MakeWriter<'a> for Captured {
+            type Writer = Self;
+
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let captured = Captured::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(captured.clone())
+            .with_ansi(false)
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            let _ = domain_height(Height(u32::MAX));
+        });
+
+        let logged = String::from_utf8(
+            captured
+                .0
+                .lock()
+                .expect("capture buffer mutex poisoned")
+                .clone(),
+        )
+        .expect("log output is utf-8");
+
+        assert!(logged.contains("WARN"), "not logged at warn: {logged:?}");
+        assert!(
+            logged.contains("cannot decode"),
+            "the corrupt row was not reported: {logged:?}"
+        );
     }
 
     /// A stored value the domain cannot express is corruption, not absence.

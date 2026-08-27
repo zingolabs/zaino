@@ -759,14 +759,11 @@ impl<T: ChainStoreSource> CompactBlockExt for EphemeralFinalisedState<T> {
         end: Height,
         pool_types: zaino_chain_store::PoolFilter,
     ) -> Result<Vec<zaino_primitives::types::CompactBlock>, StoreError> {
-        collect_block_range(start, end, |height| {
-            let pool_types = pool_types.clone();
-            async move {
-                let block = self.get_required_chain_block(height).await?;
-                crate::store::finalised_source::v1::compact_block::compact_block_from_indexed(
-                    &block, pool_types,
-                )
-            }
+        collect_block_range(start, end, |height| async move {
+            let block = self.get_required_chain_block(height).await?;
+            crate::store::finalised_source::v1::compact_block::compact_block_from_indexed(
+                &block, pool_types,
+            )
         })
         .await
     }

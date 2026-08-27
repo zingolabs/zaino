@@ -340,7 +340,6 @@ pub(crate) async fn compact_blocks_descending<R: CompactBlockRead + Clone + 'sta
     // step below `end`.
     let stream = futures::stream::try_unfold(Some(start), move |cursor| {
         let reader = reader.clone();
-        let filter = filter.clone();
         async move {
             let Some(top) = cursor else {
                 return Ok(None);

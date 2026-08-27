@@ -74,7 +74,7 @@ impl DbV1 {
         tokio::task::block_in_place(|| {
             let txn = self.env.begin_ro_txn()?;
             Height::range_inclusive(validated_start, validated_end)
-                .map(|height| self.read_compact_block_in_txn(&txn, height, pool_types.clone()))
+                .map(|height| self.read_compact_block_in_txn(&txn, height, pool_types))
                 .collect()
         })
     }
