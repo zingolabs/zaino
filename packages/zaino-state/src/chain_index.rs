@@ -2605,13 +2605,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
         let snapshot = self.snapshot_nonfinalized_state();
         let best_tip = self.best_chaintip(&snapshot).await?;
 
-        let mut accumulator = chain_store::txout_set(&self.finalized_state)
-            .await
-            .map_err(|e| {
-                ChainIndexError::internal(format!(
-                    "get_tx_out_set_info: finalised accumulator unavailable: {e}"
-                ))
-            })?;
+        let mut accumulator = chain_store::txout_set(&self.finalized_state).await?;
 
         // Outputs created inside the non-finalised state, keyed by outpoint. Lets same-NFS
         // spends resolve their prev output without touching the finalised database.
@@ -2684,12 +2678,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
                     let prev_out = match prev_out_from_nfs {
                         Some(out) => out,
                         None => chain_store::previous_output(&self.finalized_state, &outpoint)
-                            .await
-                            .map_err(|e| {
-                                ChainIndexError::internal(format!(
-                                    "get_tx_out_set_info: finalised prev output for {outpoint:?} not found: {e}"
-                                ))
-                            })?
+                            .await?
                             .ok_or_else(|| {
                                 ChainIndexError::internal(format!(
                                     "get_tx_out_set_info: finalised prev output for {outpoint:?} not found"
