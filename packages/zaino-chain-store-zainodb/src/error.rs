@@ -94,15 +94,15 @@ pub(crate) fn source_error<E: core::fmt::Debug + core::fmt::Display>(
 ) -> ChainStoreSourceError {
     match error {
         zaino_source::QueryError::Domain(error) => {
-            ChainStoreSourceError::NotReady(error.to_string())
+            ChainStoreSourceError::not_ready(error.to_string())
         }
         zaino_source::QueryError::Fetch(error) => {
-            ChainStoreSourceError::Unavailable(error.to_string())
+            ChainStoreSourceError::unavailable(error.to_string())
         }
     }
 }
 
 /// A validator answer the store cannot reconcile with what it asked for.
 pub(crate) fn inconsistent(message: impl Into<String>) -> StoreError {
-    StoreError::Source(ChainStoreSourceError::InconsistentData(message.into()))
+    StoreError::Source(ChainStoreSourceError::inconsistent_data(message))
 }

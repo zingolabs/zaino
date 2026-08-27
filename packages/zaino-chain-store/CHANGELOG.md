@@ -97,6 +97,15 @@ and this library adheres to Rust's notion of
   for a client's block range, silently truncating a sync is the worse failure.
 - No error type here is `tonic::Status`. Mapping to a transport status is
   `zaino-serve`'s job.
+- `ChainStoreError` and `ChainStoreSourceError` are no longer `Clone`,
+  `PartialEq` or `Eq`. Those derives forced every cause to be flattened into a
+  `String`, so `Error::source()` returned `None` for exactly the variants whose
+  job is telling an operator what broke. `ChainStoreError::Backend` and all four
+  `ChainStoreSourceError` variants now carry an optional boxed `#[source]`.
+  Construct them through `ChainStoreError::backend`/`backend_because` and
+  `ChainStoreSourceError::unavailable`/`not_ready`/`inconsistent_data`/`commit`/
+  `commit_because` rather than by naming the variant. Compare errors by matching
+  the variant, which is what an equality assertion on them was really doing.
 
 ### Deprecated
 - `StoreCapabilities` / `StoreCapability` are **interim**, and their own

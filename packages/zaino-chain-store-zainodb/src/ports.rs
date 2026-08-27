@@ -61,7 +61,7 @@ fn chain_store_error(error: StoreError) -> ChainStoreError {
         StoreError::FeatureUnavailable(feature) => {
             ChainStoreError::Unavailable(capability_for_feature(feature))
         }
-        other => ChainStoreError::Backend(other.to_string()),
+        other => ChainStoreError::backend(other.to_string()),
     }
 }
 
@@ -102,7 +102,7 @@ fn capability_for_feature(feature: &str) -> StoreCapability {
 fn chain_store_source_error(error: StoreError) -> ChainStoreSourceError {
     match error {
         StoreError::Source(source) => source,
-        other => ChainStoreSourceError::Commit(other.to_string()),
+        other => ChainStoreSourceError::commit(other.to_string()),
     }
 }
 
@@ -995,7 +995,7 @@ pub fn indexed_block_from_stored(block: &StoredBlock) -> Result<IndexedBlock, Ch
         merkle_root: header.merkle_root.into(),
         block_commitments: header.block_commitments.into(),
         bits: crate::types::CompactDifficulty::try_from_bits(header.bits).map_err(|error| {
-            ChainStoreError::Backend(format!("block {hash} has invalid difficulty: {error}"))
+            ChainStoreError::backend(format!("block {hash} has invalid difficulty: {error}"))
         })?,
         nonce: header.nonce,
         solution: match header.solution {
@@ -1037,7 +1037,7 @@ fn stored_chainwork(
     let (high, low) = bytes.split_at(16);
 
     if high.iter().any(|byte| *byte != 0) {
-        return Err(ChainStoreError::Backend(format!(
+        return Err(ChainStoreError::backend(format!(
             "block {hash} has chainwork above what the store records"
         )));
     }
@@ -1046,7 +1046,7 @@ fn stored_chainwork(
     value.copy_from_slice(low);
     core::num::NonZeroU128::new(u128::from_be_bytes(value))
         .map(crate::types::ChainWork::new)
-        .ok_or_else(|| ChainStoreError::Backend(format!("block {hash} has zero chainwork")))
+        .ok_or_else(|| ChainStoreError::backend(format!("block {hash} has zero chainwork")))
 }
 
 /// One domain transaction, as the shape the writer stores.
@@ -1087,7 +1087,7 @@ fn stored_compact_tx_data(
                 stored_script_tag(script_type),
             )
             .ok_or_else(|| {
-                ChainStoreError::Backend(format!(
+                ChainStoreError::backend(format!(
                     "block {block} has a transparent output that cannot be stored"
                 ))
             })
@@ -1175,7 +1175,7 @@ fn commitment_tree_data(
     hash: BlockHash,
 ) -> Result<CommitmentTreeData, ChainStoreError> {
     crate::conversion::commitment_tree_data(roots, hash).map_err(|error| {
-        ChainStoreError::Backend(format!("block {hash} has an unstorable treestate: {error}"))
+        ChainStoreError::backend(format!("block {hash} has an unstorable treestate: {error}"))
     })
 }
 
@@ -1421,7 +1421,7 @@ mod tests {
         bytes[0] = 1;
         let error = stored_chainwork(DomainChainWork::new(bytes), BlockHash([0u8; 32]))
             .expect_err("above u128 must be refused");
-        assert!(matches!(error, ChainStoreError::Backend(_)));
+        assert!(matches!(error, ChainStoreError::Backend { .. }));
     }
 
     /// A position past what the stored form can key is an answer, not an error.
@@ -1467,7 +1467,7 @@ mod tests {
 
         assert!(matches!(
             commitment_tree_data(&oversized, hash),
-            Err(ChainStoreError::Backend(_))
+            Err(ChainStoreError::Backend { .. })
         ));
 
         // The same treestate one below the boundary is accepted, so the

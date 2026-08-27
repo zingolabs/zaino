@@ -434,7 +434,7 @@ pub(crate) async fn build_to<I: ChainStoreIngest>(
     // tip, so reaching it would mean the validator reported an impossible
     // height — which is the source's inconsistency, not the store's.
     let Some(target) = domain_height(target) else {
-        return Err(ChainStoreSourceError::InconsistentData(format!(
+        return Err(ChainStoreSourceError::inconsistent_data(format!(
             "validator reported height {target}, which is above the protocol maximum"
         )));
     };
@@ -535,7 +535,7 @@ mod adapter_tests {
 
         // A backend failure is a failure. Reporting it as "no such block" would
         // make a broken database look like an empty chain.
-        assert!(absent::<u8>(Err(ChainStoreError::Backend("lmdb".into()))).is_err());
+        assert!(absent::<u8>(Err(ChainStoreError::backend("lmdb"))).is_err());
         assert!(absent::<u8>(Err(ChainStoreError::MissingRow("txid".into()))).is_err());
         assert!(absent::<u8>(Err(ChainStoreError::InvalidRange {
             start: h(2),
@@ -566,7 +566,7 @@ mod adapter_tests {
             Code::NotFound
         );
         assert_eq!(
-            wire_status(ChainStoreError::Backend("lmdb".into())).code(),
+            wire_status(ChainStoreError::backend("lmdb")).code(),
             Code::Internal
         );
     }
