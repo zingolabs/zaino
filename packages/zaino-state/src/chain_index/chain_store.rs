@@ -405,14 +405,50 @@ pub(crate) type WireCompactBlocks =
 /// an LMDB cursor desync is not a gRPC concern, and the port carries a
 /// [`ChainStoreError`] precisely so that the crate that answers gRPC is the one
 /// that decides what a client is told.
+///
+/// # Exhaustive on purpose
+///
+/// No catch-all arm. A catch-all answers for variants that do not exist yet,
+/// and its answer is always `internal` — so a variant added later is reported
+/// as a server fault whatever it means, silently and without anything failing
+/// to compile. Naming every variant makes adding one a decision taken here
+/// rather than one inherited by default.
+///
+/// The status carries only the error's own `Display`. Causes are for the
+/// operator's log, not for a client: the chain below a `Backend` names the
+/// storage engine and its errno, which tells a caller nothing it can act on.
 fn wire_status(error: ChainStoreError) -> tonic::Status {
+    // Rendered once, before the match consumes the error: the message is the
+    // same in every arm and only the code differs.
+    let message = error.to_string();
+
     match error {
+        // The caller asked outside what this half of the chain covers. Both are
+        // about the range, not about the store's health.
         ChainStoreError::AboveWatermark { .. } | ChainStoreError::InvalidRange { .. } => {
-            tonic::Status::out_of_range(error.to_string())
+            tonic::Status::out_of_range(message)
         }
-        ChainStoreError::NotReady => tonic::Status::unavailable(error.to_string()),
-        ChainStoreError::MissingRow(_) => tonic::Status::not_found(error.to_string()),
-        other => tonic::Status::internal(other.to_string()),
+
+        // Transient, and it resolves on its own once opening completes, so the
+        // caller is told to come back.
+        ChainStoreError::NotReady => tonic::Status::unavailable(message),
+
+        // The store is healthy and this row is genuinely not here.
+        ChainStoreError::MissingRow(_) => tonic::Status::not_found(message),
+
+        // The store is healthy and the request is well-formed; this deployment
+        // simply does not build that index. `internal` would tell the client
+        // the server faulted, which is untrue and invites a retry that cannot
+        // succeed. `unimplemented` says what is actually the case: not offered
+        // here, do not come back for it.
+        ChainStoreError::Unavailable(_) => tonic::Status::unimplemented(message),
+
+        // Both are the server's fault and neither is the caller's to fix: one
+        // is a broken read, the other a row that decoded into something
+        // unusable.
+        ChainStoreError::CorruptRow { .. } | ChainStoreError::Backend { .. } => {
+            tonic::Status::internal(message)
+        }
     }
 }
 
@@ -562,12 +598,62 @@ mod adapter_tests {
             Code::OutOfRange
         );
         assert_eq!(
+            wire_status(ChainStoreError::InvalidRange {
+                start: h(2),
+                end: h(1)
+            })
+            .code(),
+            Code::OutOfRange
+        );
+        assert_eq!(
             wire_status(ChainStoreError::MissingRow("txid".into())).code(),
             Code::NotFound
         );
         assert_eq!(
+            wire_status(ChainStoreError::corrupt_row("in-range height")).code(),
+            Code::Internal
+        );
+        assert_eq!(
             wire_status(ChainStoreError::backend("lmdb")).code(),
             Code::Internal
+        );
+    }
+
+    /// An index this deployment does not build is not a server fault.
+    ///
+    /// The store is healthy and the request well-formed, so `internal` would
+    /// both misinform the client and invite a retry that cannot succeed. Its
+    /// own arm rather than a line in the test above, because this is the one
+    /// the catch-all used to swallow.
+    #[test]
+    fn an_unbuilt_index_reports_as_unimplemented_not_as_a_fault() {
+        use zaino_chain_store::StoreCapability;
+
+        let status = wire_status(ChainStoreError::Unavailable(StoreCapability::TxOutSet));
+
+        assert_eq!(status.code(), tonic::Code::Unimplemented);
+    }
+
+    /// The wire status does not carry the cause.
+    ///
+    /// A `Backend` chain names the storage engine and its errno, which tells a
+    /// client nothing it can act on. That belongs in the operator's log.
+    #[test]
+    fn a_wire_status_reports_the_failure_without_its_cause() {
+        #[derive(Debug, thiserror::Error)]
+        #[error("errno 22")]
+        struct BackendFailure;
+
+        let status = wire_status(ChainStoreError::backend_because(
+            "reading block 42",
+            BackendFailure,
+        ));
+
+        assert!(status.message().contains("reading block 42"));
+        assert!(
+            !status.message().contains("errno 22"),
+            "the cause should stay in the log: {:?}",
+            status.message()
         );
     }
 }
