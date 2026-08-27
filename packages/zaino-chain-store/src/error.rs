@@ -75,8 +75,31 @@ pub enum ChainStoreError {
     /// An internal inconsistency, not a caller error: the store writes a block
     /// and its index entries in one transaction, so a dangling reference means
     /// either a bug or corruption on disk.
+    ///
+    /// Not for a row that is present but holds an unusable value — that is
+    /// [`ChainStoreError::CorruptRow`], and the two want different repairs.
     #[error("chain store is missing {0}")]
     MissingRow(String),
+
+    /// A row is present and readable, but holds a value the domain cannot
+    /// express: a height above the protocol maximum, an amount above the money
+    /// supply, a tag naming no script type.
+    ///
+    /// Distinct from [`ChainStoreError::MissingRow`], which says an index
+    /// points at a row that is not there. Here the index is intact and the row
+    /// is where it should be; what is wrong is inside it. The distinction is
+    /// the operator's, and it is the repair that differs: a dangling index
+    /// entry is rebuilt from the rows it references, while a corrupt value
+    /// means the row itself has to be refetched from a validator and rewritten.
+    /// Reporting one as the other sends that operator down the wrong path.
+    #[error("chain store holds a corrupt row: expected {expected}")]
+    CorruptRow {
+        /// What the row should have held, in the terms the reader expected it.
+        expected: String,
+        /// Why it could not be read, when the conversion had a typed error.
+        #[source]
+        cause: Option<BoxCause>,
+    },
 
     /// The storage backend failed.
     ///
@@ -100,6 +123,32 @@ pub enum ChainStoreError {
 }
 
 impl ChainStoreError {
+    /// A row holding a value the domain cannot express, with no typed cause.
+    ///
+    /// For a value that is simply absent or unrecognised, where there was no
+    /// conversion to fail — a tag matching no known variant, say.
+    pub fn corrupt_row(expected: impl Into<String>) -> Self {
+        Self::CorruptRow {
+            expected: expected.into(),
+            cause: None,
+        }
+    }
+
+    /// A row holding a value the domain cannot express, because of `cause`.
+    ///
+    /// The conversion that rejected the value knows exactly why — which bound
+    /// was exceeded, and by what — and that is the part an operator needs in
+    /// order to tell corruption from a protocol change.
+    pub fn corrupt_row_because(
+        expected: impl Into<String>,
+        cause: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::CorruptRow {
+            expected: expected.into(),
+            cause: Some(Box::new(cause)),
+        }
+    }
+
     /// A backend failure described by `message`, with no cause to hand over.
     pub fn backend(message: impl Into<String>) -> Self {
         Self::Backend {

@@ -124,11 +124,15 @@ fn chain_store_source_error(error: StoreError) -> ChainStoreSourceError {
 ///
 /// The stored height is any `u32`; the domain's is validated against the
 /// protocol maximum. A stored height that cannot be expressed is a corrupt row,
-/// not a caller error, so it surfaces as [`ChainStoreError::MissingRow`] rather
+/// not a caller error, so it surfaces as [`ChainStoreError::CorruptRow`] rather
 /// than being clamped into a height that names a different block.
 fn domain_height(height: Height) -> Result<DomainHeight, ChainStoreError> {
-    DomainHeight::try_from(height.0)
-        .map_err(|_| ChainStoreError::MissingRow(format!("valid height for stored value {height}")))
+    DomainHeight::try_from(height.0).map_err(|error| {
+        ChainStoreError::corrupt_row_because(
+            format!("valid height for stored value {height}"),
+            error,
+        )
+    })
 }
 
 /// The domain's height, as this crate names it.
@@ -219,7 +223,7 @@ pub fn stored_tx_out(output: &TxOutCompact) -> Result<StoredTxOut, ChainStoreErr
         Some(crate::types::ScriptType::P2SH) => ScriptType::P2SH,
         Some(crate::types::ScriptType::NonStandard) => ScriptType::NonStandard,
         None => {
-            return Err(ChainStoreError::MissingRow(format!(
+            return Err(ChainStoreError::corrupt_row(format!(
                 "valid script type for stored output tag {}",
                 output.script_type()
             )))
@@ -227,11 +231,11 @@ pub fn stored_tx_out(output: &TxOutCompact) -> Result<StoredTxOut, ChainStoreErr
     };
 
     Ok(StoredTxOut {
-        value: Zatoshis::new(output.value()).map_err(|_| {
-            ChainStoreError::MissingRow(format!(
-                "in-range value for stored output {}",
-                output.value()
-            ))
+        value: Zatoshis::new(output.value()).map_err(|error| {
+            ChainStoreError::corrupt_row_because(
+                format!("in-range value for stored output {}", output.value()),
+                error,
+            )
         })?,
         address: StoredAddress {
             hash: *output.script_hash(),
@@ -264,11 +268,11 @@ fn stored_block(block: IndexedBlock) -> Result<StoredBlock, ChainStoreError> {
         version: data.version,
         prev_hash: domain_hash(*context.parent_hash()),
         height: domain_height(context.height())?,
-        time: u32::try_from(data.time).map_err(|_| {
-            ChainStoreError::MissingRow(format!(
-                "in-range block time for stored value {}",
-                data.time
-            ))
+        time: u32::try_from(data.time).map_err(|error| {
+            ChainStoreError::corrupt_row_because(
+                format!("in-range block time for stored value {}", data.time),
+                error,
+            )
         })?,
         merkle_root: data.merkle_root.into(),
         block_commitments: data.block_commitments.into(),
@@ -390,7 +394,7 @@ fn orchard_action(action: &crate::types::CompactOrchardAction) -> OrchardAction 
 /// changes.
 fn transparent_output(output: &TxOutCompact) -> Result<TransparentOutput, ChainStoreError> {
     let script_type = output.script_type_enum().ok_or_else(|| {
-        ChainStoreError::MissingRow(format!(
+        ChainStoreError::corrupt_row(format!(
             "valid script type for stored output tag {}",
             output.script_type()
         ))
@@ -400,11 +404,11 @@ fn transparent_output(output: &TxOutCompact) -> Result<TransparentOutput, ChainS
         .unwrap_or_else(|| non_standard_key_script(output));
 
     Ok(TransparentOutput {
-        value: Zatoshis::new(output.value()).map_err(|_| {
-            ChainStoreError::MissingRow(format!(
-                "in-range value for stored output {}",
-                output.value()
-            ))
+        value: Zatoshis::new(output.value()).map_err(|error| {
+            ChainStoreError::corrupt_row_because(
+                format!("in-range value for stored output {}", output.value()),
+                error,
+            )
         })?,
         script: Script::new(script),
     })
@@ -1354,6 +1358,55 @@ impl<T: ChainStoreSource> DbReader<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stored value the domain cannot express is corruption, not absence.
+    ///
+    /// The row is present and readable; what is wrong is inside it. Reporting
+    /// that as `MissingRow` — which means an index points at a row that is not
+    /// there — sends an operator to rebuild an index when what they need is to
+    /// refetch and rewrite the row.
+    #[test]
+    fn an_unrepresentable_stored_value_is_a_corrupt_row() {
+        use std::error::Error as _;
+
+        let error = domain_height(Height(u32::MAX)).expect_err("above the protocol maximum");
+
+        let ChainStoreError::CorruptRow { ref cause, .. } = error else {
+            panic!("a present row holding a bad value is corrupt, not missing: {error:?}");
+        };
+        assert!(
+            cause.is_some(),
+            "the conversion knows which bound was exceeded; that should survive"
+        );
+        assert!(error.source().is_some());
+    }
+
+    /// A stored amount above the money supply is a corrupt row too.
+    ///
+    /// The other reachable shape of the same fault: `TxOutCompact` holds any
+    /// `u64`, while the domain's `Zatoshis` is bounded by the supply, so this
+    /// one is constructible where the script-type arms are not — those are
+    /// refused by both `TxOutCompact::new` and its decoder, and are defensive.
+    #[test]
+    fn a_stored_amount_above_the_supply_is_a_corrupt_row() {
+        use std::error::Error as _;
+
+        let output = TxOutCompact::new(u64::MAX, [0u8; 20], 0).expect("a valid script type");
+
+        for error in [
+            transparent_output(&output).expect_err("above the money supply"),
+            stored_tx_out(&output).expect_err("above the money supply"),
+        ] {
+            assert!(
+                matches!(error, ChainStoreError::CorruptRow { .. }),
+                "a present row holding a bad amount is corrupt, not missing: {error:?}"
+            );
+            assert!(
+                error.source().is_some(),
+                "the overflow names the bound it exceeded; that should survive"
+            );
+        }
+    }
 
     /// An untranslated backend failure reaches the domain with its cause.
     ///

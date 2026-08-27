@@ -97,6 +97,14 @@ and this library adheres to Rust's notion of
   for a client's block range, silently truncating a sync is the worse failure.
 - No error type here is `tonic::Status`. Mapping to a transport status is
   `zaino-serve`'s job.
+- `ChainStoreError::CorruptRow` names a row that is present and readable but
+  holds a value the domain cannot express — a height above the protocol
+  maximum, an amount above the money supply, a tag naming no script type. These
+  previously reported as `MissingRow`, which means an index points at a row that
+  is not there. The two want different repairs: a dangling index entry is
+  rebuilt from the rows it references, a corrupt value has to be refetched and
+  rewritten. Construct it with `ChainStoreError::corrupt_row` /
+  `corrupt_row_because`.
 - `ChainStoreError` and `ChainStoreSourceError` are no longer `Clone`,
   `PartialEq` or `Eq`. Those derives forced every cause to be flattened into a
   `String`, so `Error::source()` returned `None` for exactly the variants whose
