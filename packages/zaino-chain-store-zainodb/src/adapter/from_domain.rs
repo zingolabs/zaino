@@ -5,7 +5,7 @@
 //! to produce the same rows as one that arrived from a validator, so both
 //! directions of a pair live here together.
 //!
-//! The opposite direction is [`super::to_domain`].
+//! The opposite direction is `to_domain`.
 
 use super::error_map::corrupt_row_because;
 use zaino_chain_store::{ChainStoreError, StoredBlock, StoredTx};

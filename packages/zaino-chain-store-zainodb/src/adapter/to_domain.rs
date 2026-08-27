@@ -5,7 +5,7 @@
 //! them can fail on a value the domain cannot express, which is corruption
 //! rather than absence, and each says so.
 //!
-//! The opposite direction is [`super::from_domain`]. They are separated because
+//! The opposite direction is `from_domain`. They are separated because
 //! they fail differently: a value rejected on the way *out* is a row already
 //! written and unreadable, while one rejected on the way *in* is a block the
 //! store is refusing to write.

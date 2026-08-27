@@ -34,6 +34,28 @@ Where absence *cannot* be a compile-time fact it is a runtime one:
 `capabilities()` exists because a store on an older schema genuinely lacks an
 index until it has migrated. That is a fact about a database, not a type.
 
+The two are tied together by an associated const. Each read port names the
+capability it answers for:
+
+```rust
+const CAPABILITY: StoreCapability = StoreCapability::TxOutSet;   // on TxOutSetIndex
+```
+
+An implementation assembles its advertised set from those rather than by
+choosing variants:
+
+```rust
+// Only compiles for a capability whose port `Self` actually implements.
+StoreCapabilities::new([
+    <Self as ChainStoreReader>::CAPABILITY,
+    <Self as TxOutSetIndex>::CAPABILITY,
+])
+```
+
+Do not hand-write the variant. Naming `StoreCapability::TxOutSet` directly
+compiles whether or not you implement `TxOutSetIndex`, which is how a store ends
+up advertising an index it cannot serve.
+
 ## The watermark is the boundary, and a read past it is not a miss
 
 `ChainStoreError::AboveWatermark` means the height is not this store's to answer.
@@ -83,6 +105,52 @@ right about a settled store and wrong about a building one.
 What the watermark still tells you in that state is what the store *holds*,
 which is what a consumer deciding whether to trust it as a durable record wants.
 The two questions are different, and `provenance` is which one you are asking.
+
+## What a failure means, and what it carries
+
+`ChainStoreError` distinguishes five conditions, and the distinctions are the
+point — a caller that collapses them either retries what cannot succeed or
+reports a healthy store as broken.
+
+| Variant | Means | What a caller does |
+| --- | --- | --- |
+| `NotReady` | still opening | retry; it resolves itself |
+| `AboveWatermark` | not this half's to answer | ask the chain head |
+| `InvalidRange` | start above end | fix the request |
+| `Unavailable(capability)` | this deployment does not build that index | route elsewhere; retrying never helps |
+| `MissingRow` | an index points at a row that is not there | the store is damaged |
+| `CorruptRow` | the row *is* there, and holds a value that cannot be read | the store is damaged |
+| `Backend` | the storage engine failed | opaque; do not branch on it |
+
+`MissingRow` and `CorruptRow` are both corruption but not the same repair: a
+dangling index entry is rebuilt from the rows it references, while a corrupt
+value means that row has to be refetched and rewritten. Alert on them
+separately.
+
+`Backend` is opaque to *branching* — its message is for an operator and no
+domain logic should read it — but not to *reading*. Every failure carries its
+cause, so log the chain rather than the top line:
+
+```rust
+// `{e}` alone prints "chain store backend failed: reading block 42" and stops.
+// The LMDB errno underneath is in `source()`.
+tracing::error!(error = &error as &dyn std::error::Error, "finalised read failed");
+```
+
+Construct these through the named methods rather than the variants —
+`ChainStoreError::backend`, `backend_because`, `corrupt_row`,
+`corrupt_row_because`, and `ChainStoreSourceError::unavailable`, `not_ready`,
+`inconsistent_data`, `commit`, `commit_because`. The `_because` forms take the
+message *and* the cause, because the useful message names what the store was
+doing — which block, which height — and the cause's own `Display` does not.
+
+Neither error type is `Clone`, `PartialEq` or `Eq`. Those derives would force
+every cause back into a `String` and leave `source()` returning `None`, which is
+the opposite of what `Backend` is for. Compare by matching the variant:
+
+```rust
+assert!(matches!(error, ChainStoreError::CorruptRow { .. }));
+```
 
 ## Configuration is two halves, and the split is not arbitrary
 
@@ -258,6 +326,16 @@ sapling-only wallet skip orchard, ironwood and the commitment-tree rows
 entirely. Filtering the result afterwards costs the decode you were avoiding, on
 every block.
 
+Build one from `all()`, `none()` or `default()` — every shielded pool and no
+transparent data, which is what a light wallet asks for — then narrow or widen
+with `with_pool` and `with_transparent`. It is `Copy`, so passing it into a
+chunked walk costs nothing.
+
+Inspect it with `includes(pool)` and `includes_transparent()`. There is no
+per-pool accessor on purpose: the shielded pools are a set, and a new pool is
+one entry in `ShieldedPool::ALL` rather than a field, a constructor arm and a
+reader added everywhere.
+
 ## The spend reads are batched, and carry what you were going to look up next
 
 `outpoint_spenders`, `previous_outputs` and `transparent_outputs` take slices
@@ -352,3 +430,9 @@ trait, surfaced so `ChainIndex` keeps working until the chain view lands. It is
 storage-shaped where the layer above needs "what is answerable to height H" per
 *domain* capability. Its replacement is planned; adding a consumer adds work to
 that replacement.
+
+Mechanically it is a `Copy` bit set: `new` takes any
+`IntoIterator<Item = StoreCapability>` and absorbs duplicates, `contains` is a
+mask test, and `iter` yields ascending. `StoreCapability::ALL` enumerates the
+closed set, which is what a coherence check over the ports iterates rather than
+listing variants a second time.

@@ -19,10 +19,12 @@ use std::future::Future;
 pub trait SendFut<T>: Future<Output = T> + Send {}
 impl<T, F: Future<Output = T> + Send> SendFut<T> for F {}
 
-/// Prometheus metric names emitted by this crate; the single source of truth shared with `zainod`'s `describe_*` registrations (which carry the descriptions).
 #[cfg(feature = "prometheus")]
 #[allow(missing_docs)] // names are self-describing; descriptions live in zainod
 pub mod metric_names {
+    //! Prometheus metric names, and the single source of truth shared with
+    //! `zainod`'s `describe_*` registrations, which carry the descriptions.
+    //!
     //! Each name is defined once, in the crate that emits it.
     //!
     //! The finalised store's write-path metrics are emitted from

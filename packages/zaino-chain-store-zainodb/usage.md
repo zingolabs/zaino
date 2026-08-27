@@ -16,6 +16,20 @@ store.build_to(target).await?;
 // Everything after this should be reached through a `ChainStoreReader`.
 ```
 
+## Where things are
+
+The port implementations live in `adapter`, over four modules: `error_map` for
+this backend's failures as the domain names them, `to_domain` for reading,
+`from_domain` for writing, and `history` for the feature-gated transparent
+history. The two conversion directions are named for the direction and not for
+the types they produce — `StoredBlock` is a *domain* type, so "into stored"
+would mean conversions *out of* this crate, which is the opposite of what it
+sounds like.
+
+The module is called `adapter` rather than `ports` deliberately: the ports are
+defined in `zaino-chain-store`, and this crate only satisfies them. Read the
+contracts there.
+
 ## Spawning: two configs, and no path in this one
 
 `FinalisedState::spawn` takes `ChainStoreConfig` and `ZainoDbConfig`.
@@ -124,6 +138,40 @@ The freeze stream feeding it is **best-effort**: it has gaps (subscriber lag,
 restart, the zero-receiver window) and duplicates (a reorg that lowers the tip
 and re-advances). Ingest must be idempotent on `(height, hash)`, and the
 source-driven build stays the authority — freeze only spares it the fetch.
+
+## What the read path reports
+
+The write path has emitted metrics since before it moved here; the reads now do
+too, behind the same `prometheus` feature.
+
+| Metric | Kind | Watch it for |
+| --- | --- | --- |
+| `zaino.db.compact_read_seconds` | histogram | wallet sync rate — clients spend nearly all their time in this read |
+| `zaino.db.block_read_seconds` | histogram | stored-block reads |
+| `zaino.db.corrupt_rows_total` | counter | non-zero means the database is damaged, not behind |
+
+Both histograms are timed around the *chunk*, because one read transaction
+covers the range — a per-block figure would divide one duration by a count. They
+record whether the read succeeded or failed, so a store that is failing slowly
+shows as slow rather than dropping out of the sample.
+
+`zaino.db.corrupt_rows_total` is the one to alert on. A row that will not decode
+is reported to the caller, which falls through to the validator and answers the
+request anyway — correct, and silent. Without this counter a rotting database is
+indistinguishable from one that is merely behind, for as long as the validator
+keeps covering, which is indefinitely.
+
+The corrupt-row `warn!` is *not* behind the feature, and carries the rejecting
+conversion's own error as its cause, so an operator without Prometheus still
+learns which field failed:
+
+```
+WARN chain store read a row it cannot decode
+     error=chain store holds a corrupt row: expected in-range value for stored output 21000000000000001
+```
+
+Both come from one helper in `adapter::error_map`, so a conversion added later
+reports without being asked to.
 
 ## Testing against the vector chain
 

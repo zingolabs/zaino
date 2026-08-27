@@ -12,10 +12,14 @@
 //!
 //! # Where things are
 //!
-//! - [`error_map`] — this backend's failures, as the domain names them.
-//! - [`to_domain`] — reading: what is on disk, as the domain names it.
-//! - [`from_domain`] — writing: what the domain hands over, as this stores it.
-//! - [`history`] — the feature-gated transparent-history port.
+//! - `error_map` — this backend's failures, as the domain names them.
+//! - `to_domain` — reading: what is on disk, as the domain names it.
+//! - `from_domain` — writing: what the domain hands over, as this stores it.
+//! - `history` — the feature-gated transparent-history port.
+//!
+//! Named in code spans rather than doc links because the modules are private:
+//! an intra-doc link to one resolves only under `--document-private-items`, so
+//! linking them breaks a plain `cargo doc`.
 //!
 //! The two conversion directions are separate modules rather than one, because
 //! they are separate concerns that happen to be inverse: one is what a read
