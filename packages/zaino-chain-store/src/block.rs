@@ -116,21 +116,44 @@ impl StoredBlock {
 ///
 /// The default is every shielded pool and no transparent data, matching what a
 /// light wallet asks for.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// # A pool set, not one flag per pool
+///
+/// The shielded pools are held as a set and transparent as a single flag,
+/// because they are not four peers: transparent is a different kind of data,
+/// and the shielded three are members of a list that grows — Ironwood is the
+/// most recent, and will not be the last. With one field per pool, `all`,
+/// `none`, `Default`, `with_pool` and `includes` each enumerated every variant,
+/// so adding a pool meant finding and editing all five. The count is now
+/// structural: a new pool is one entry in [`ShieldedPool::ALL`] and nothing
+/// here changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PoolFilter {
+    /// One bit per [`ShieldedPool`], indexed by its discriminant.
+    shielded: u8,
     transparent: bool,
-    sapling: bool,
-    orchard: bool,
-    ironwood: bool,
+}
+
+/// `pool`'s bit in [`PoolFilter::shielded`].
+///
+/// Taken from the discriminant rather than a match, so a pool added to the enum
+/// is filterable without touching this.
+fn bit(pool: ShieldedPool) -> u8 {
+    1 << (pool as u8)
+}
+
+/// Every shielded pool's bit.
+fn all_shielded() -> u8 {
+    ShieldedPool::ALL
+        .into_iter()
+        .fold(0, |bits, pool| bits | bit(pool))
 }
 
 impl Default for PoolFilter {
     fn default() -> Self {
         Self {
+            shielded: all_shielded(),
             transparent: false,
-            sapling: true,
-            orchard: true,
-            ironwood: true,
         }
     }
 }
@@ -139,20 +162,16 @@ impl PoolFilter {
     /// Every pool, transparent included.
     pub fn all() -> Self {
         Self {
+            shielded: all_shielded(),
             transparent: true,
-            sapling: true,
-            orchard: true,
-            ironwood: true,
         }
     }
 
     /// No pool at all — header and txids only.
     pub fn none() -> Self {
         Self {
+            shielded: 0,
             transparent: false,
-            sapling: false,
-            orchard: false,
-            ironwood: false,
         }
     }
 
@@ -164,11 +183,7 @@ impl PoolFilter {
 
     /// The same filter, with `pool` included.
     pub fn with_pool(mut self, pool: ShieldedPool) -> Self {
-        match pool {
-            ShieldedPool::Sapling => self.sapling = true,
-            ShieldedPool::Orchard => self.orchard = true,
-            ShieldedPool::Ironwood => self.ironwood = true,
-        }
+        self.shielded |= bit(pool);
         self
     }
 
@@ -179,11 +194,7 @@ impl PoolFilter {
 
     /// Whether `pool` is included.
     pub fn includes(&self, pool: ShieldedPool) -> bool {
-        match pool {
-            ShieldedPool::Sapling => self.sapling,
-            ShieldedPool::Orchard => self.orchard,
-            ShieldedPool::Ironwood => self.ironwood,
-        }
+        self.shielded & bit(pool) != 0
     }
 }
 
@@ -212,6 +223,49 @@ mod tests {
         let all = PoolFilter::all();
         assert!(all.includes_transparent());
         assert!(all.includes(ShieldedPool::Ironwood));
+    }
+
+    /// `all` and `none` answer for every pool there is, not for three of them.
+    ///
+    /// Iterates `ShieldedPool::ALL` rather than naming the variants, so a pool
+    /// added to the enum is covered here without this test being updated —
+    /// which is the property the representation is for. Naming them would
+    /// reintroduce exactly the enumeration the fields used to have.
+    #[test]
+    fn every_pool_is_covered_by_all_and_by_none() {
+        for pool in ShieldedPool::ALL {
+            assert!(
+                PoolFilter::all().includes(pool),
+                "{pool} missing from the full filter"
+            );
+            assert!(
+                !PoolFilter::none().includes(pool),
+                "{pool} present in the empty filter"
+            );
+            assert!(
+                PoolFilter::default().includes(pool),
+                "{pool} missing from the default filter"
+            );
+        }
+    }
+
+    /// Each pool has its own bit; setting one does not set another.
+    ///
+    /// The bits come from the enum's discriminants, so a variant reordered or
+    /// inserted mid-list must still keep the pools distinct.
+    #[test]
+    fn each_pool_is_filtered_independently() {
+        for pool in ShieldedPool::ALL {
+            let filter = PoolFilter::none().with_pool(pool);
+
+            for other in ShieldedPool::ALL {
+                assert_eq!(
+                    filter.includes(other),
+                    other == pool,
+                    "adding {pool} should not have changed {other}"
+                );
+            }
+        }
     }
 
     #[test]

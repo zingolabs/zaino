@@ -97,6 +97,11 @@ and this library adheres to Rust's notion of
   for a client's block range, silently truncating a sync is the worse failure.
 - No error type here is `tonic::Status`. Mapping to a transport status is
   `zaino-serve`'s job.
+- `PoolFilter` holds the shielded pools as a set and transparent as one flag,
+  rather than four parallel bools. `all`, `none`, `Default`, `with_pool` and
+  `includes` no longer enumerate the pools, so adding one is a single entry in
+  `ShieldedPool::ALL` and no change here. The public API is unchanged; the type
+  is now `Copy`.
 - `StoreAddressEffects::net_value` returns `Option<SignedZatoshis>` rather than
   a bare `i64`. It is the domain's signed-delta quantity, and the sum is now
   checked at every addition instead of an unchecked `sum::<i64>()` over
