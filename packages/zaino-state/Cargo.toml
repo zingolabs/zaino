@@ -23,7 +23,9 @@ fast-test-seam = []
 # deprecated. See docs/adr/0001-zcashd-support-feature-gate.md.
 #
 # Prometheus metrics emission (gauge! calls in sync paths).
-prometheus = ["metrics"]
+# Enables the backend's copy too: this crate re-exports the write-path metric
+# names from `zaino-chain-store-zainodb`, which gates them on its own feature.
+prometheus = ["metrics", "zaino-chain-store-zainodb/prometheus"]
 
 # test_dependencies - Exposes internal functionality for testing.
 test_dependencies = ["zaino-source-zebra/test_dependencies"]
