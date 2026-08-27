@@ -2148,9 +2148,25 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
                     &pool_types,
                 ),
                 None => {
-                    match chain_store::compact_block(&self.finalized_state, height, &pool_types)
-                        .await
-                    {
+                    let finalised =
+                        chain_store::compact_block(&self.finalized_state, height, &pool_types)
+                            .await;
+
+                    // A failure takes the same route as a miss, but it is not
+                    // one, so it is logged rather than absorbed. Silently, the
+                    // two are indistinguishable: an LMDB cursor desync or a
+                    // corrupt row would read as "the store has not built this
+                    // height yet" for as long as the validator kept covering
+                    // for it, which is indefinitely.
+                    if let Err(error) = &finalised {
+                        tracing::warn!(
+                            error = error as &dyn std::error::Error,
+                            %height,
+                            "finalised compact-block read failed; falling back to validator"
+                        );
+                    }
+
+                    match finalised {
                         Ok(Some(block)) => block,
                         // A miss and a failure both fall through to the
                         // validator, as they did before: the store not holding
