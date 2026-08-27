@@ -14,3 +14,11 @@ pub const CHAIN_HEAD_REORG_TOTAL: &str = "zaino.sync.reorg_total";
 
 /// Depth in blocks of each reorganisation; `0` for a same-height tip swap.
 pub const CHAIN_HEAD_REORG_DEPTH: &str = "zaino.sync.reorg_depth";
+
+/// Histograms this crate emits, so `zainod` can prove its bucket-bound table
+/// covers exactly what the workspace records.
+///
+/// Declared here rather than in the table: the emitting crate is the only one
+/// that knows what it emits, and a histogram published with no declared bounds
+/// silently gets the exporter's defaults.
+pub const HISTOGRAM_METRICS: [&str; 1] = [CHAIN_HEAD_REORG_DEPTH];

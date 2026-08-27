@@ -8,6 +8,12 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- Optional `prometheus` feature publishing the set's shape and health from the
+  poll loop: `zaino.mempool.transactions`, `zaino.mempool.bytes{kind}`,
+  `zaino.mempool.unadmitted`, `zaino.mempool.completeness` (non-zero = a known
+  partial view, and the value says why), `zaino.mempool.poll_seconds`. Sampled by
+  a `Drop` guard, so the poll's six early returns are covered.
+
 - New crate: `zaino-mempool-service`, the hexagonal *adapter/implementation* layer of
   the mempool subsystem. It supplies the concrete runtime for the ports defined
   in `zaino-mempool`; dependencies point inward (it depends on `zaino-mempool`,
@@ -42,79 +48,55 @@ and this library adheres to Rust's notion of
   `Frozen{reason}` / `Closing`. Validator-only mode (`spawn_validator_only`)
   synthesizes the epoch from the validator tip (single-tip freeze/thaw).
 
-### Fixed
-- **Capacity refusals no longer loop.** Additions over `max_cost_bytes` were all
-  dropped and then rediscovered by the next diff, so refused transactions were
-  re-fetched from the validator on *every* poll, indefinitely, while the set
-  stayed capacity-limited. Additions are now admitted partially in canonical
-  order, and the refusals are remembered (with their cost) so they are fetched
-  once. They are retried only when the set has both fallen below a 90% low-water
-  mark and freed enough room for that specific transaction — hysteresis plus an
-  exact fit check, so a retry can never end in an immediate re-refusal.
-- **The metadata listing is rate-floored** by the new
-  `MempoolConfig::metadata_min_interval`. A poll that finds additions inside the
-  floor publishes *nothing* rather than a set missing them: an incomplete view
-  must never be published as complete, or the coherence layer would bless it.
-- **The coherent stream no longer ends silently on a lag.** It yields
-  `Err(MempoolStreamError::Lagged)` first; ending quietly was indistinguishable
-  from the normal tip-change close, so a client took a partial mempool for the
-  complete one.
-- **Post-block coherence blackout.** The coherence layer now selects on the
-  NS-epoch observer's wake signal, so it reconciles when the non-finalized state
-  advances rather than on its next poll tick. The tick remains a fallback.
-- **A poll no longer does all its work before discarding it.** The tag-stability
-  guard also runs *before* the metadata listing and raw fetches, and after
-  `MAX_CONSECUTIVE_DISCARDS` (5) discards in a row the set is republished as
-  `IncompleteSourceError` so consumers learn the mempool is not converging.
-
 ### Changed
-- **The runtime is instrumented, and source errors are no longer swallowed.**
-  Four `Err(_)` arms discarded the validator's error entirely — including one
-  that built a `MempoolError` and dropped it — so the mempool could degrade to
-  `IncompleteSourceError` and serve a stale set with nothing in the log. An
-  operator had no way to tell a genuinely empty mempool from a validator that
-  had been unreachable for an hour.
+- **Runtime instrumented; source errors no longer swallowed.** Four `Err(_)` arms
+  discarded the validator's error (one after building a `MempoolError`) → degraded
+  to `IncompleteSourceError` serving a stale set, nothing logged. Now
+  edge-triggered (cadence is sub-second): `warn` entering degradation with `cause`
+  (failing port / `tip_unstable`) + error, `info` on recovery closing it, `debug`
+  while degraded. Tag-stability backstop reports separately (validator answers
+  fine; the tip will not hold still).
+- One long-lived span per loop (`mempool_poll_loop`, `mempool_coherence_loop`),
+  start/stop at `debug`; no per-tick spans (would swamp any trace at this cadence).
+- Freeze/thaw carry `FreezeReason` as a structured field, previously
+  broadcast-event only → the escalation warning had no *why*, which separates a
+  routine block from a diverged validator. Both edges at `debug`: every block
+  freezes, so `info` = a line per block on a healthy node. Changed cause logs
+  distinctly from entering; an unchanged freeze stays silent.
+- `tracing` is this crate's alone — `zaino-mempool` is types, ports, pure functions
+  (sole rejection path = `debug_assert`, knobs = `NonZero`): nothing to log, not
+  nothing logged.
+- Coherence reconciles on the change feed's `Reset` batch boundary only, not every
+  per-txid `Added`/`Removed` (clearing a 1,000-tx block = ~2,001 reconciles, each
+  re-reading the core snapshot wholesale).
+- Snapshot publication maintains `cost_bytes` / `raw_bytes` incrementally, reusing
+  collections when only the tip tag moved; that path holds `mempool_generation`
+  steady (bumping it made coherence treat every re-tag as new contents).
+- Read handles use `ArcSwap::load` where the snapshot `Arc` does not escape (hot
+  read paths off the shared refcount).
+- `set_max_cost_bytes` moved `MempoolSubscriber` → `MempoolService`: an owner's
+  capacity knob, and on the cloneable handle every RPC path holds it was a
+  process-wide freeze switch.
 
-  Logging is **edge-triggered**, because the poll cadence is sub-second: `warn`
-  on the transition *into* degradation, carrying the `cause` (which validator
-  port failed, or `tip_unstable`) and the error; `info` on recovery, so every
-  warning is closed; `debug` while still degraded, for turning the level up.
-  The tag-stability backstop gets its own line rather than being reported as a
-  source failure — the validator is answering fine there, the tip just will not
-  hold still, and an operator should not be sent looking for a broken
-  connection.
-
-  The poll and reconcile loops carry one long-lived `#[instrument]` span each
-  (`mempool_poll_loop`, `mempool_coherence_loop`) with start/stop at `debug`.
-  Per-tick spans were deliberately not added: at this cadence they would swamp
-  any trace they appeared in, and the signal is in the edges.
-
-  Coherence freeze and thaw are traced with the `FreezeReason` as a structured
-  field. It was previously carried only on the broadcast event, so an operator
-  who saw the upstream freeze-escalation warning had no record of *why* the view
-  froze — and the reason is what separates a routine block from a diverged
-  validator. Both edges log at `debug`, deliberately: a freeze happens on every
-  block, so `info` would put a line per block in a default-level log for a
-  healthy node. A freeze that changes cause while still frozen logs distinctly
-  from one that is entering, and an unchanged freeze stays silent.
-
-  `tracing` is a dependency of this crate only. `zaino-mempool` is types, ports
-  and pure functions with no runtime behaviour to report — its one rejection
-  path is a `debug_assert`, and its configuration knobs are `NonZero`, so there
-  is nothing to log rather than nothing logged.
-- The coherence layer reconciles on the change feed's `Reset` batch boundary
-  only, not on every per-txid `Added`/`Removed`. Clearing a block of 1,000
-  transactions previously meant ~2,001 reconciles, each of which re-read the
-  core's snapshot wholesale anyway.
-- Snapshot publication maintains `cost_bytes` / `raw_bytes` incrementally and
-  reuses the existing collections when only the tip tag moved — that path also
-  keeps `mempool_generation` steady, where bumping it made the coherence layer
-  treat every re-tag as new contents.
-- Read handles use `ArcSwap::load` where the snapshot `Arc` does not escape,
-  keeping the hot read paths off the shared refcount.
-- `set_max_cost_bytes` moved from `MempoolSubscriber` to `MempoolService`. It is a
-  capacity-control knob for the mempool's owner; on the cloneable read handle that
-  every RPC path holds, it was effectively a process-wide freeze switch.
+### Fixed
+- **Capacity refusals no longer loop.** Additions over `max_cost_bytes` were
+  dropped, rediscovered next diff → re-fetched every poll, indefinitely. Now
+  admitted partially in canonical order, refusals remembered with their cost
+  (fetched once). Retried only below a 90% low-water mark **and** with room for
+  that exact transaction — hysteresis + fit check, so a retry cannot re-refuse.
+- **Metadata listing rate-floored** by the new
+  `MempoolConfig::metadata_min_interval`: a poll finding additions inside the floor
+  publishes *nothing*, never a set missing them (the coherence layer would bless it).
+- **Coherent stream no longer ends silently on a lag** — yields
+  `Err(MempoolStreamError::Lagged)` first (a quiet end was indistinguishable from
+  the normal tip-change close → clients took a partial mempool for a complete one).
+- **Post-block coherence blackout** — the layer now selects on the NS-epoch
+  observer's wake signal, reconciling when non-finalized state advances, not on the
+  next poll tick (kept as a fallback).
+- **A poll no longer does all its work before discarding it** — tag-stability guard
+  runs *before* the metadata listing and raw fetches; after
+  `MAX_CONSECUTIVE_DISCARDS` (5) in a row the set republishes as
+  `IncompleteSourceError` (consumers learn it is not converging).
 
 ### Notes
 - The coherent raw-transaction stream closes only when V and NS re-agree at a *new*

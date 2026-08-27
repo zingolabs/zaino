@@ -82,7 +82,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           build-args: |
-            NO_TLS=true
+            CARGO_FEATURES=no_tls_use_unencrypted_traffic
             RUST_VERSION=${{ env.RUST_VERSION }}
           context: .
           platforms: linux/amd64

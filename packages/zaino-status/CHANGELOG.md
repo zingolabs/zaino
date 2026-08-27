@@ -8,6 +8,11 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- Optional `prometheus` feature publishing `zaino.status{component}` from
+  `NamedAtomicStatus::store` / `::new` — the one point every status change already
+  passed through, so using the type at all yields a correctly-labelled series. The
+  combined status was previously computed and thrown away.
+
 - New crate. How a Zaino component reports whether it is working, moved out of
   `zaino-common` — `StatusType`, `Status`, `NamedAtomicStatus`, and the
   `Liveness` / `Readiness` / `VitalsProbe` probing traits.
@@ -25,6 +30,9 @@ and this library adheres to Rust's notion of
   transition is silently overwritten, and `apply` closes it.
 
 ### Changed
+
 ### Deprecated
+
 ### Removed
+
 ### Fixed

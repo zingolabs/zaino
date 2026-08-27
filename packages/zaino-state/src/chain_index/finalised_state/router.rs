@@ -460,6 +460,11 @@ impl<T: BlockchainSource> Router<T> {
     /// `WRITE_CORE` is intentionally routed away from primary so normal writes cannot interfere with
     /// migrations. Migration code that must mutate persistent state must use explicit maintenance
     /// accessors instead of routed writes.
+    /// ## Observability
+    ///
+    /// - Counted against `FINALISED_ROUTED_TOTAL`, by capability + backend
+    /// - The only place the distinction exists: db-served and validator-forwarded
+    ///   share a type, a call and a latency histogram
     #[inline]
     pub(crate) fn backend(
         &self,
@@ -469,14 +474,56 @@ impl<T: BlockchainSource> Router<T> {
 
         if self.ephemeral_mask.load(Ordering::Acquire) & bit != 0 {
             if let Some(ephemeral) = self.ephemeral.load().as_ref() {
+                Self::count_routed(cap, "ephemeral");
                 return Ok(Arc::clone(ephemeral));
             }
         }
         if self.primary_mask.load(Ordering::Acquire) & bit != 0 {
+            Self::count_routed(cap, "primary");
             return Ok(self.primary.load_full());
         }
 
+        Self::count_routed(cap, "unavailable");
         Err(FinalisedStateError::FeatureUnavailable(cap.name()))
+    }
+
+    /// Count one routed capability resolution.
+    ///
+    /// - `unavailable` is a backend value, not a separate counter: a capability
+    ///   neither side serves is a routing outcome, and one family sums to the total
+    #[inline]
+    fn count_routed(_cap: CapabilityRequest, _backend: &'static str) {
+        #[cfg(feature = "prometheus")]
+        metrics::counter!(
+            crate::metric_names::FINALISED_ROUTED_TOTAL,
+            crate::metric_names::READ_CAPABILITY => _cap.name(),
+            crate::metric_names::READ_BACKEND => _backend,
+        )
+        .increment(1);
+    }
+
+    /// Publish the active ephemeral routing mode.
+    ///
+    /// - Called from every path that writes the masks, so it cannot drift
+    /// - Ordered by how much has moved off the db: 0 none, 1 read-only (long sync),
+    ///   2 full (migration, writes frozen too)
+    #[cfg(feature = "prometheus")]
+    fn publish_ephemeral_mode(&self) {
+        // Read once for both gauges: `active_ephemeral_mode` loads two atomics, so
+        // calling it twice can straddle a concurrent release and publish `full`
+        // beside an inactive migration — a state that never existed
+        let active = self.active_ephemeral_mode();
+        let mode = match active {
+            None => 0.0,
+            Some(EphemeralMode::ReadOnly) => 1.0,
+            Some(EphemeralMode::Full) => 2.0,
+        };
+        metrics::gauge!(crate::metric_names::ROUTER_EPHEMERAL_MODE).set(mode);
+        // Full mode is held by migrations and nothing else, so it doubles as the
+        // in-progress signal — released by the scope guard's `Drop`, so an early
+        // return or failure cannot leave it set
+        metrics::gauge!(crate::metric_names::MIGRATION_ACTIVE)
+            .set(f64::from(u8::from(active == Some(EphemeralMode::Full))));
     }
 
     // ***** Ephemeral finalised state control *****
@@ -806,6 +853,10 @@ impl<T: BlockchainSource> Router<T> {
                 self.primary_mask.store(0, Ordering::Release);
             }
         }
+        // From the two mask-writing functions, not their callers, so a new caller
+        // cannot introduce a routing change the gauge misses
+        #[cfg(feature = "prometheus")]
+        self.publish_ephemeral_mode();
     }
 
     /// Restores steady-state routing to the primary backend and disables ephemeral routing.
@@ -813,6 +864,8 @@ impl<T: BlockchainSource> Router<T> {
         self.primary_mask
             .store(self.primary_capability().bits(), Ordering::Release);
         self.ephemeral_mask.store(0, Ordering::Release);
+        #[cfg(feature = "prometheus")]
+        self.publish_ephemeral_mode();
     }
 
     /// Decrements the ephemeral reference count for `mode`.

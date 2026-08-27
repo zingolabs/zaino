@@ -50,7 +50,6 @@ use zaino_status::{NamedAtomicStatus, StatusType};
 use crate::{chain_index::types::AddrEventBytes, AddrHistRecord, AddrScript};
 
 use zaino_proto::proto::{compact_formats::CompactBlock, utils::PoolTypeFilter};
-use zebra_chain::parameters::NetworkKind;
 use zebra_state::HashOrHeight;
 
 use super::LmdbLifecycle;
@@ -289,6 +288,23 @@ impl LmdbLifecycle for DbV1 {
     }
 }
 
+/// Directory holding this config's V1 LMDB environment.
+///
+/// - One definition: [`DbV1::open`] creates the env here and the size metric
+///   measures the file in it; a second copy would eventually report a db on a
+///   different network than the one being served
+/// - Mapping itself is [`finalised_state::network_dir`], shared with the probe
+fn db_path(config: &ChainIndexConfig) -> std::path::PathBuf {
+    config
+        .storage
+        .database
+        .path
+        .join(crate::chain_index::finalised_state::network_dir(
+            config.network.kind(),
+        ))
+        .join("v1")
+}
+
 /// Zaino’s Finalised State database V1.
 ///
 /// This type owns an LMDB [`Environment`] and a fixed set of named databases representing the V1
@@ -481,15 +497,15 @@ impl DbV1 {
 
         // Prepare database details and path.
         let db_size_bytes = config.storage.database.size.to_byte_count();
-        let db_path_dir = match config.network.kind() {
-            NetworkKind::Mainnet => "mainnet",
-            NetworkKind::Testnet => "testnet",
-            NetworkKind::Regtest => "regtest",
-        };
-        let db_path = config.storage.database.path.join(db_path_dir).join("v1");
+        let db_path = db_path(config);
         if !db_path.exists() {
             fs::create_dir_all(&db_path)?;
         }
+        // Fixed for the env's lifetime, so published here, not per commit. vs
+        // `DB_USED_BYTES` = how full; `DB_USED_BYTES` vs host RAM = where the
+        // write path's B-tree behaviour turns
+        #[cfg(feature = "prometheus")]
+        metrics::gauge!(crate::metric_names::DB_MAP_SIZE_BYTES).set(db_size_bytes as f64);
 
         // LMDB reader slots, from CPU count, clamped to [MIN_LMDB_READERS, MAX_LMDB_READERS].
         //
@@ -699,6 +715,11 @@ impl DbV1 {
                 // *** steady-state loop ***
                 let mut maintenance = interval(Duration::from_secs(60));
 
+                // Once before the loop, so the gauge is populated from startup
+                // rather than the next commit (an already-synced node has none)
+                #[cfg(feature = "prometheus")]
+                zaino_db.record_db_used_bytes();
+
                 loop {
                     // Check for closing status.
                     if zaino_db.status.load() == StatusType::Closing {
@@ -738,6 +759,23 @@ impl DbV1 {
                         }
                         // Immediately loop – maybe the chain has more blocks ready.
                         continue;
+                    }
+
+                    // Only reached with no next block to validate, i.e. about to
+                    // sleep on the maintenance tick — the sampling point for
+                    // standing-state gauges, which must stay fresh while idle
+                    #[cfg(feature = "prometheus")]
+                    {
+                        zaino_db.record_db_used_bytes();
+                        // Otherwise published only by a pass that wrote blocks, so
+                        // an already-caught-up node reports nothing until the next
+                        // block — on a quiet chain, never
+                        if let Ok(Some(built)) =
+                            zaino_db.read_tx_out_set_accumulator_built_height().await
+                        {
+                            metrics::gauge!(crate::metric_names::SYNC_ACCUMULATOR_HEIGHT)
+                                .set(built.0 as f64);
+                        }
                     }
 
                     zaino_db.zaino_db_handler_sleep(&mut maintenance).await;

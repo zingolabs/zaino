@@ -31,6 +31,11 @@ members = [
     "live-tests/clientless",
     "live-tests/e2e",
 ]
+# The chain-sync suite is its own workspace: it links no Zaino production code
+# (it drives Zaino out-of-process over gRPC/JSON-RPC via the ztest harness), so
+# resolving the harness's tree into this lockfile would burden every production
+# build with it. See `live-tests/sync/Cargo.toml`.
+exclude = ["live-tests/sync"]
 # `container-test` runs a bare `cargo nextest run`, which operates on
 # default-members — so the heavy live-test crates are built and tested only
 # when selected explicitly (`-p e2e` / `-p clientless`). See docs/adr/0002.
@@ -127,6 +132,7 @@ futures = "0.3.30"
 # Metrics
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false, features = ["http-listener"] }
+metrics-process = "2.4"
 
 # Utility
 bytes = "1.12"
@@ -219,5 +225,12 @@ arc-swap = "1.7.1"
 [profile.test]
 opt-level = 3
 debug = true
+
+# Release codegen a profiler can attribute to source lines (`release` stays lean)
+# - Frame pointers = other half, no Cargo key for them: pass
+#   `-C force-frame-pointers=yes` via RUSTFLAGS alongside `--profile profiling`
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
 
 [patch.crates-io]

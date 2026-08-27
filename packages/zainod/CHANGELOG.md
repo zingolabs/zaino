@@ -22,6 +22,39 @@ and this crate adheres to Rust's notion of
   `zaino.db.accumulator_built_height` and
   `zaino.db.accumulator_rebuild_active`. Note the `prometheus` feature is off
   by default, so these are inert unless explicitly enabled.
+- Process-level resource metrics (`process_cpu_seconds_total`,
+  `process_resident_memory_bytes`, fds, threads) via `metrics-process`, on a 10s
+  timer. CPU-bound, disk-contended and waiting-on-validator all shift the same
+  latency histograms the same way.
+- `zainod.restarts_total`, counted in the supervisor's restart loop — a restart
+  re-seeds every gauge and resets every counter, so a crash loop was invisible.
+- `zaino.status{component}` descriptions, and discriminant legends rendered into
+  `zaino.status` / `zaino.mempool.completeness` help text, so the integer is
+  readable from the scrape rather than a legend that drifts silently.
+- Liveness counters pre-registered at zero, so a just-started indexer's heartbeat
+  reads from the first scrape.
+
+- Graceful shutdown on `SIGTERM`. Zaino installed no signal handler, so k8s pod
+  teardown killed it mid-write; teardown now drives the same `close()` path as an
+  internal shutdown.
+- A check that `HISTOGRAMS` covers exactly the histograms the workspace emits,
+  against each emitting crate's `HISTOGRAM_METRICS`. The other two histogram tests
+  check the table against itself, which is how `reorg_depth` shipped wrong.
+- Explicit bucket bounds per histogram: a finer ladder for the three per-block
+  timings than for the gRPC and batch-commit ones. Matched on the **whole** name —
+  the exporter sorts matchers lexicographically and takes the first, so overlapping
+  suffixes resolve by alphabetical accident. Unbucketed histograms render as
+  summaries, silently; `histogram_quantile()` now works over these.
+- Work counters pre-registered at zero **for every `stage` label value**, so a
+  consumer can tell "nothing indexed yet" from "this build does not report it"
+  (seeding the bare family would leave the real series absent). Height gauges are
+  not — 0 is a false height, absent is honest.
+- Storage gauges `zaino.db.map_size_bytes` and `zaino.db.used_bytes`.
+- Per-pool throughput counters `zaino.sync.transparent_ops_total`,
+  `zaino.sync.sapling_ops_total` and `zaino.sync.ironwood_actions_total`.
+- Progress gauge `zaino.sync.fetched_height` and timing histograms
+  `zaino.sync.block_fetch_seconds` / `zaino.sync.batch_write_seconds`.
+
 ### Changed
 ### Deprecated
 ### Removed
@@ -47,19 +80,48 @@ and this crate adheres to Rust's notion of
   operator sees a configuration error instead. `metadata_min_interval_ms = 0` is
   deliberately still accepted — it is a `>=` floor, so zero means "no coalescing
   beyond the poll cadence".
+- `[storage.database]` config gains `sync_checkpoint_interval` (seconds, default
+  120) — the bulk-sync write-batch flush interval, which also bounds the window of
+  unflushed (`NO_SYNC`) writes at risk on a hard kill / eviction.
+- `[storage.database]` config gains `accumulator_rebuild_memory_size` (GiB,
+  default 8) — a dedicated heap budget for the txout-set accumulator rebuild,
+  separate from `sync_write_batch_size`.
+
 ### Changed
 - The daemon builds on the new source stack (`zaino-source-zebra`) via
   `zaino-state`. No configuration change: the `[validator] connection` selector
   (`rpc` / `direct`) means the same thing, and now chooses whether the composite
   is constructed with a read-state adapter alongside its RPC one.
+
 ### Deprecated
+
 ### Removed
+- **Metric descriptions for the metrics removed below.** Migrate any dashboard or
+  alert on `zaino.sync.lag_blocks`, `zaino.sync.iterations_total`,
+  `zaino.sync.iteration_duration_seconds`, `zaino.sync.errors_total`,
+  `zaino.sync.has_reached_tip`, `zaino.sync.reached_tip_at`,
+  `zaino.sync.reorg_total`, `zaino.sync.block_write_seconds`,
+  `zaino.sync.sapling_outputs_total`, `zaino.sync.last_block_written_at`,
+  `zaino.db.tip_height`, `zaino.grpc.requests_total`,
+  `zaino.mempool.transactions`, `zaino.mempool.tip_changes_total`, or the
+  `zaino.rpc.outbound.{requests_total,request_duration_seconds,errors_total}`
+  triple. Replacements are noted per metric in the `zaino-state` and
+  `zaino-serve` changelogs.
+
 - The outbound RPC metric *names* moved to `zaino-rpc`, which is the crate that
   emits them. Registration and the metric descriptions stay here, so the
   exported metrics are unchanged.
 - `zcashd_support` no longer forwards to `zaino-state`, which gates nothing
   under it; it forwards to `zaino-serve` alone.
+
 ### Fixed
+- **`zaino.sync.reorg_depth` rendered as a summary, not a histogram.** Descriptions
+  and bucket bounds were two independent lists; one `HISTOGRAMS` table now drives
+  both, making the omission inexpressible rather than merely tested for. Depth is a
+  count, not a duration, so it gets an integer ladder.
+- A configured `metrics_endpoint` on a binary built without the `prometheus`
+  feature was silently ignored — no listener, no complaint. It now warns.
+
 - The startup validator probe returns an error instead of calling
   `std::process::exit(1)` from inside a library, so the daemon controls its own
   shutdown path on an unreachable validator.

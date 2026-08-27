@@ -19,6 +19,9 @@ use std::{
 
 use tracing::debug;
 
+#[cfg(feature = "prometheus")]
+use crate::metric_names::{STATUS, STATUS_COMPONENT};
+
 use crate::probing::{Liveness, Readiness};
 
 // The `Liveness`/`Readiness` blanket impls below are why this module and
@@ -179,6 +182,10 @@ impl NamedAtomicStatus {
     /// Creates a new NamedAtomicStatus with the given component name and initial status.
     pub fn new(name: &'static str, status: StatusType) -> Self {
         debug!(component = name, status = %status, "[STATUS] initial");
+        // At construction too, so a component that never transitions still has a
+        // series (absent = indistinguishable from unsupported)
+        #[cfg(feature = "prometheus")]
+        metrics::gauge!(STATUS, STATUS_COMPONENT => name).set(status as u8 as f64);
         Self {
             name,
             inner: Arc::new(AtomicUsize::new(status.into())),
@@ -198,6 +205,10 @@ impl NamedAtomicStatus {
     /// Atomically replaces the status with `f(current)` in one
     /// compare-and-swap loop — closing the check-then-store window a
     /// `load`/`store` pair leaves open — and returns the installed status.
+    ///
+    /// - Also publishes to [`STATUS`], labelled by component name
+    /// - Gauge lives here, not at call sites: this is the single point every
+    ///   status passes through, so using the type at all yields a correct series
     pub fn apply(&self, f: impl Fn(StatusType) -> StatusType) -> StatusType {
         let old = self
             .inner
@@ -215,6 +226,10 @@ impl NamedAtomicStatus {
                 "[STATUS] transition"
             );
         }
+        // After the store, so the gauge never leads [`Self::load`]. A scrape
+        // between the two would report `ready` while readers still saw `syncing`
+        #[cfg(feature = "prometheus")]
+        metrics::gauge!(STATUS, STATUS_COMPONENT => self.name).set(new as u8 as f64);
         new
     }
 
@@ -258,5 +273,43 @@ mod apply {
 
         assert_eq!(installed, StatusType::Closing);
         assert_eq!(status.load(), StatusType::Closing);
+    }
+}
+
+#[cfg(all(test, feature = "prometheus"))]
+mod metric_tests {
+    use super::StatusType;
+    use crate::metric_names::STATUS_VALUES;
+
+    /// - Gauge publishes `StatusType as u8`; legend = [`STATUS_VALUES`], joined
+    ///   by position alone, so a mid-enum insert renumbers every state above it
+    ///   and old dashboard queries keep matching while meaning something else
+    /// - Listed explicitly, not derived → fails on a changed mapping, not a resize
+    #[test]
+    fn status_discriminants_match_their_legend_positions() {
+        for (status, expected) in [
+            (StatusType::Spawning, "spawning"),
+            (StatusType::Syncing, "syncing"),
+            (StatusType::Ready, "ready"),
+            (StatusType::Busy, "busy"),
+            (StatusType::Closing, "closing"),
+            (StatusType::Offline, "offline"),
+            (StatusType::RecoverableError, "recoverable-error"),
+            (StatusType::CriticalError, "critical-error"),
+        ] {
+            let discriminant = status as usize;
+            assert_eq!(
+                STATUS_VALUES.get(discriminant),
+                Some(&expected),
+                "{status:?} publishes as {discriminant}, but the legend calls that \
+                 position {:?}",
+                STATUS_VALUES.get(discriminant),
+            );
+        }
+        assert_eq!(
+            STATUS_VALUES.len(),
+            8,
+            "a StatusType variant was added or removed without updating STATUS_VALUES"
+        );
     }
 }

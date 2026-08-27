@@ -8,6 +8,16 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+- JSON-RPC serving metrics (`zaino.jsonrpc.request_duration_seconds`,
+  `zaino.jsonrpc.errors_total`) via a jsonrpsee RPC-layer middleware. The
+  zcashd-compatible surface — half of what zaino serves — had none. A middleware
+  rather than 40 per-handler timers, registered *before* `FixRpcResponseMiddleware`
+  so it records the error code the client receives.
+- Server-stream metrics: `zaino.grpc.stream_seconds`,
+  `zaino.grpc.stream_items_total`, `zaino.grpc.streams_active`. Handlers return at
+  stream construction, so `request_duration_seconds` timed setup alone — ~zero for
+  `GetBlockRange`. The gauge catches a stream held open forever.
+
 ### Changed
 ### Deprecated
 ### Removed
@@ -26,6 +36,7 @@ and this library adheres to Rust's notion of
 - Interface asymmetries are now recorded and tested where they are served:
   `z_gettreestate`'s `finalRoot` is display-order, `z_getsubtreesbyindex`'s
   subtree roots are not.
+
 ### Changed
 ### Deprecated
 ### Removed
@@ -57,9 +68,20 @@ and this library adheres to Rust's notion of
 - `zcashd_support` gates the zcashd-shaped peer-info types in this crate's wire
   module and forwards nowhere — it is now the only place in the workspace the
   feature gates anything.
+
 ### Deprecated
+
 ### Removed
+- **Metric** `zaino.grpc.requests_total` — duplicated
+  `zaino.grpc.request_duration_seconds`'s `_count`, which carries the same
+  per-method volume. Use that instead.
+
 ### Fixed
+- **The JSON-RPC serving metrics labelled calls with a caller-supplied string.**
+  The middleware sits outside method dispatch, so unknown methods reached it
+  carrying whatever the caller sent — and a recorder never evicts a series, making
+  a random-method loop a remote OOM of the indexer. Labels are now interned against
+  the server's method table: registered by name, everything else `unknown`.
 - **zcashd error-code recovery was silently inert.** The error-chain downcast
   matched `zaino_fetch`'s connector type, which the new source stack never
   constructs, so every validator error code reached the client as a generic
