@@ -603,7 +603,7 @@ impl<T: ChainStoreSource> Migration<T> for Migration1_1_0To1_2_0 {
         {
             let mut metadata: DbMetadata = backend.get_metadata().await?;
             if metadata.migration_status == MigrationStatus::Empty {
-                metadata.migration_status = MigrationStatus::PartialBuidInProgress;
+                metadata.migration_status = MigrationStatus::PartialBuildInProgress;
                 backend.update_metadata(metadata).await?;
             }
         }
@@ -1087,7 +1087,7 @@ impl<T: ChainStoreSource> Migration<T> for Migration1_2_1To1_3_0 {
         {
             let mut metadata: DbMetadata = backend.get_metadata().await?;
             if metadata.migration_status == MigrationStatus::Empty {
-                metadata.migration_status = MigrationStatus::PartialBuidInProgress;
+                metadata.migration_status = MigrationStatus::PartialBuildInProgress;
                 backend.update_metadata(metadata).await?;
             }
         }

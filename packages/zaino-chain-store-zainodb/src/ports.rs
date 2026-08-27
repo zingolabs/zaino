@@ -635,7 +635,7 @@ fn store_schema(metadata: &DbMetadata) -> StoreSchema {
     let version = schema_version(metadata.version());
     let migration = match metadata.migration_status() {
         MigrationStatus::Empty | MigrationStatus::Complete => MigrationState::Settled,
-        MigrationStatus::PartialBuidInProgress
+        MigrationStatus::PartialBuildInProgress
         | MigrationStatus::PartialBuildComplete
         | MigrationStatus::FinalBuildInProgress => MigrationState::InProgress {
             from: version,

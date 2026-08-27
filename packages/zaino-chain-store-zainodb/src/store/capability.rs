@@ -637,7 +637,7 @@ pub(crate) enum MigrationStatus {
     ///
     /// Some migrations split work into phases to limit disk usage (for example, deleting the old
     /// database before rebuilding the new one in full).
-    PartialBuidInProgress,
+    PartialBuildInProgress,
 
     /// The partial build phase completed successfully.
     PartialBuildComplete,
@@ -654,7 +654,7 @@ impl fmt::Display for MigrationStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let status_str = match self {
             MigrationStatus::Empty => "Empty",
-            MigrationStatus::PartialBuidInProgress => "Partial build in progress",
+            MigrationStatus::PartialBuildInProgress => "Partial build in progress",
             MigrationStatus::PartialBuildComplete => "Partial build complete",
             MigrationStatus::FinalBuildInProgress => "Final build in progress",
             MigrationStatus::Complete => "Complete",
@@ -681,7 +681,7 @@ impl ZainoVersionedSerde for MigrationStatus {
     fn encode_v1<W: Write>(&self, w: &mut W) -> io::Result<()> {
         let tag = match self {
             MigrationStatus::Empty => 0,
-            MigrationStatus::PartialBuidInProgress => 1,
+            MigrationStatus::PartialBuildInProgress => 1,
             MigrationStatus::PartialBuildComplete => 2,
             MigrationStatus::FinalBuildInProgress => 3,
             MigrationStatus::Complete => 4,
@@ -692,7 +692,7 @@ impl ZainoVersionedSerde for MigrationStatus {
     fn decode_v1<R: Read>(r: &mut R) -> io::Result<Self> {
         match read_u8(r)? {
             0 => Ok(MigrationStatus::Empty),
-            1 => Ok(MigrationStatus::PartialBuidInProgress),
+            1 => Ok(MigrationStatus::PartialBuildInProgress),
             2 => Ok(MigrationStatus::PartialBuildComplete),
             3 => Ok(MigrationStatus::FinalBuildInProgress),
             4 => Ok(MigrationStatus::Complete),
