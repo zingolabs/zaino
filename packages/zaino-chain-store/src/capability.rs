@@ -43,6 +43,36 @@ pub enum StoreCapability {
     TransparentHistory,
 }
 
+impl StoreCapability {
+    /// Every capability, ascending.
+    ///
+    /// The set is closed — one variant per index the finalised state maintains
+    /// — so it can be enumerated. A store's advertised set is a subset of this,
+    /// and a coherence check over the ports needs something to iterate.
+    pub const ALL: [Self; 7] = [
+        Self::Core,
+        Self::StoredBlocks,
+        Self::CompactBlocks,
+        Self::Transactions,
+        Self::SpentOutputs,
+        Self::TxOutSet,
+        Self::TransparentHistory,
+    ];
+
+    /// This capability's bit in a [`StoreCapabilities`] set.
+    const fn bit(self) -> u8 {
+        match self {
+            Self::Core => 1 << 0,
+            Self::StoredBlocks => 1 << 1,
+            Self::CompactBlocks => 1 << 2,
+            Self::Transactions => 1 << 3,
+            Self::SpentOutputs => 1 << 4,
+            Self::TxOutSet => 1 << 5,
+            Self::TransparentHistory => 1 << 6,
+        }
+    }
+}
+
 impl fmt::Display for StoreCapability {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
@@ -64,25 +94,37 @@ impl fmt::Display for StoreCapability {
 /// lacks indexes a newer one has, and gains them part-way through a migration,
 /// so this can change over the life of one handle. A consumer that cached it
 /// at open will be wrong later.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct StoreCapabilities(Vec<StoreCapability>);
+/// A bit set rather than a sorted `Vec`. The capability set is closed and
+/// small, so membership is a mask test; sorting, deduplicating and binary
+/// searching a seven-element vector was more machinery — and an allocation —
+/// for an answer a `u8` holds.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StoreCapabilities(u8);
 
 impl StoreCapabilities {
     /// The set offering exactly these capabilities.
-    pub fn new(mut capabilities: Vec<StoreCapability>) -> Self {
-        capabilities.sort_unstable();
-        capabilities.dedup();
-        Self(capabilities)
+    ///
+    /// Duplicates are absorbed rather than rejected: a set is a set, and the
+    /// callers assembling one are testing independent conditions that may name
+    /// the same capability twice.
+    pub fn new(capabilities: impl IntoIterator<Item = StoreCapability>) -> Self {
+        Self(
+            capabilities
+                .into_iter()
+                .fold(0, |bits, capability| bits | capability.bit()),
+        )
     }
 
     /// Whether this store currently offers `capability`.
     pub fn contains(&self, capability: StoreCapability) -> bool {
-        self.0.binary_search(&capability).is_ok()
+        self.0 & capability.bit() != 0
     }
 
     /// Every capability offered, ascending.
     pub fn iter(&self) -> impl Iterator<Item = StoreCapability> + '_ {
-        self.0.iter().copied()
+        StoreCapability::ALL
+            .into_iter()
+            .filter(|capability| self.contains(*capability))
     }
 }
 

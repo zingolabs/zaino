@@ -97,6 +97,15 @@ and this library adheres to Rust's notion of
   for a client's block range, silently truncating a sync is the worse failure.
 - No error type here is `tonic::Status`. Mapping to a transport status is
   `zaino-serve`'s job.
+- Each read port carries a `CAPABILITY` associated const naming the
+  `StoreCapability` it answers for, so a store assembles its advertised set by
+  reading it off the port rather than by choosing a variant by hand. The two
+  could previously drift in both directions — advertising an index the store
+  does not serve, or serving one it never advertises — and both compiled.
+- `StoreCapabilities` is a bit set rather than a sorted `Vec`, and `new` takes
+  any `IntoIterator<Item = StoreCapability>`. The set is closed and small, so
+  membership is a mask test and the type is now `Copy` with no allocation.
+  `StoreCapability::ALL` enumerates the closed set.
 - `ChainStoreError::CorruptRow` names a row that is present and readable but
   holds a value the domain cannot express — a height above the protocol
   maximum, an amount above the money supply, a tag naming no script type. These
