@@ -55,13 +55,19 @@ use crate::types::{
 /// not be branched on. Inventing a domain meaning for an LMDB error would give
 /// a consumer something to branch on that this backend cannot promise another
 /// one would produce.
+///
+/// Narrow is not the same as lossy, though. The untranslated error is handed
+/// over whole as the cause, so an operator reading the log still reaches the
+/// LMDB errno underneath it. Rendering it with `to_string` instead would keep
+/// only the top line and drop that error's own `source`, which is where the
+/// actual failure usually is.
 fn chain_store_error(error: StoreError) -> ChainStoreError {
     match error {
         StoreError::DataUnavailable(what) => ChainStoreError::MissingRow(what),
         StoreError::FeatureUnavailable(feature) => {
             ChainStoreError::Unavailable(capability_for_feature(feature))
         }
-        other => ChainStoreError::backend(other.to_string()),
+        other => ChainStoreError::backend_because(other.to_string(), other),
     }
 }
 
@@ -99,10 +105,14 @@ fn capability_for_feature(feature: &str) -> StoreCapability {
 }
 
 /// A source failure, as the domain names it.
+///
+/// A validator failure is already the domain's, so it passes through untouched.
+/// Anything else failed locally while committing, and is carried as the cause
+/// for the same reason as in [`chain_store_error`].
 fn chain_store_source_error(error: StoreError) -> ChainStoreSourceError {
     match error {
         StoreError::Source(source) => source,
-        other => ChainStoreSourceError::commit(other.to_string()),
+        other => ChainStoreSourceError::commit_because(other.to_string(), other),
     }
 }
 
@@ -1344,6 +1354,55 @@ impl<T: ChainStoreSource> DbReader<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An untranslated backend failure reaches the domain with its cause.
+    ///
+    /// The boundary is meant to be opaque to *branching*, not to reading. An
+    /// earlier version rendered the error with `to_string`, which kept the top
+    /// line and dropped the error's own `source` — so an operator logging the
+    /// chain got the summary and none of the LMDB detail underneath it.
+    #[test]
+    fn an_untranslated_failure_carries_its_cause() {
+        use std::error::Error as _;
+
+        let error = chain_store_error(StoreError::LmdbError(lmdb::Error::Panic));
+
+        let ChainStoreError::Backend { ref message, .. } = error else {
+            panic!("an LMDB failure has no domain meaning, so it must be Backend");
+        };
+        assert!(message.contains("LMDB"), "message was {message:?}");
+
+        let cause = error.source().expect("the backend error must be carried");
+        assert!(
+            cause.to_string().contains("MDB_PANIC"),
+            "cause was {cause:?}, which does not name the LMDB failure"
+        );
+    }
+
+    /// A commit failure carries its cause the same way.
+    #[test]
+    fn a_failed_commit_carries_its_cause() {
+        use std::error::Error as _;
+
+        let error = chain_store_source_error(StoreError::LmdbError(lmdb::Error::Panic));
+
+        assert!(matches!(error, ChainStoreSourceError::Commit { .. }));
+        assert!(error
+            .source()
+            .expect("the backend error must be carried")
+            .to_string()
+            .contains("MDB_PANIC"));
+    }
+
+    /// A validator failure is already the domain's, so it is not re-wrapped.
+    #[test]
+    fn a_validator_failure_passes_through() {
+        let error = chain_store_source_error(StoreError::Source(
+            ChainStoreSourceError::unavailable("no route to validator"),
+        ));
+
+        assert!(matches!(error, ChainStoreSourceError::Unavailable { .. }));
+    }
 
     /// Every port this backend claims to implement is actually implemented.
     ///
