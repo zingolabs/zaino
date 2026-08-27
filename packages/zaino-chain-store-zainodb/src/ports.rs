@@ -34,7 +34,7 @@ use zaino_primitives::types::{
 use zaino_status::StatusType;
 
 use crate::error::StoreError;
-use crate::store::capability::{Capability, DbMetadata, MigrationStatus};
+use crate::store::capability::{Capability, CapabilityRequest, DbMetadata, MigrationStatus};
 use crate::store::finalised_source::v1::DB_VERSION_V1;
 use crate::store::reader::DbReader;
 use crate::store::FinalisedState;
@@ -72,11 +72,28 @@ fn chain_store_error(error: StoreError) -> ChainStoreError {
 /// [`StoreCapability::Core`], which is the conservative reading: a store that
 /// cannot say which capability it lacks is reported as lacking the one every
 /// store must have, so the caller routes elsewhere rather than retrying.
+///
+/// # Why the names come from `CapabilityRequest` rather than from literals
+///
+/// A routing refusal carries [`CapabilityRequest::name`], so matching on
+/// hand-written literals lets producer and matcher drift: the two vocabularies
+/// look alike enough that a mismatch reads as correct and every refusal
+/// silently collapses to `Core`. Matching the constants the router itself
+/// produces makes the drift impossible — a rename in `capability.rs` moves both
+/// sides at once.
+///
+/// The lowercase arms are the second producer: `finalised_source` raises those
+/// names directly rather than through a [`CapabilityRequest`], so they have no
+/// constant to borrow and must be spelled out.
 fn capability_for_feature(feature: &str) -> StoreCapability {
+    const SPENT_OUTPUT_INDEX: &str = CapabilityRequest::SpentOutputIndex.name();
+    const TXOUT_SET_INDEX: &str = CapabilityRequest::TxOutSetIndex.name();
+    const TRANSPARENT_HIST_INDEX: &str = CapabilityRequest::TransparentHistIndex.name();
+
     match feature {
-        "spent_output_index" => StoreCapability::SpentOutputs,
-        "txout_set_index" => StoreCapability::TxOutSet,
-        "transparent_history" => StoreCapability::TransparentHistory,
+        SPENT_OUTPUT_INDEX | "spent_output_index" => StoreCapability::SpentOutputs,
+        TXOUT_SET_INDEX | "txout_set_index" => StoreCapability::TxOutSet,
+        TRANSPARENT_HIST_INDEX | "transparent_history" => StoreCapability::TransparentHistory,
         _ => StoreCapability::Core,
     }
 }
@@ -1468,11 +1485,35 @@ mod tests {
 
     /// A routing refusal names the capability the caller was denied.
     ///
-    /// Unrecognised names fall back to `Core` rather than to the capability
-    /// that happens to be nearest: over-claiming which index is missing would
-    /// send a consumer to reroute a query that would have worked.
+    /// Fed from [`CapabilityRequest::name`] rather than from hand-written
+    /// strings, because the router is what produces these names and a test that
+    /// invents its own cannot see the two vocabularies drift apart. An earlier
+    /// version of this test passed against literals the router never emits
+    /// while every real refusal collapsed to `Core`.
     #[test]
     fn a_routing_refusal_maps_to_the_capability_it_denied() {
+        assert_eq!(
+            capability_for_feature(CapabilityRequest::SpentOutputIndex.name()),
+            StoreCapability::SpentOutputs
+        );
+        assert_eq!(
+            capability_for_feature(CapabilityRequest::TxOutSetIndex.name()),
+            StoreCapability::TxOutSet
+        );
+        assert_eq!(
+            capability_for_feature(CapabilityRequest::TransparentHistIndex.name()),
+            StoreCapability::TransparentHistory
+        );
+    }
+
+    /// The names `finalised_source` raises directly map too.
+    ///
+    /// A second producer, which does not route through [`CapabilityRequest`]
+    /// and so spells its features in its own lowercase vocabulary. It is the
+    /// path that happened to match while the router's did not, so it gets its
+    /// own test rather than sharing one.
+    #[test]
+    fn a_direct_refusal_maps_to_the_capability_it_denied() {
         assert_eq!(
             capability_for_feature("spent_output_index"),
             StoreCapability::SpentOutputs
@@ -1481,7 +1522,28 @@ mod tests {
             capability_for_feature("txout_set_index"),
             StoreCapability::TxOutSet
         );
-        assert_eq!(capability_for_feature("READ_CORE"), StoreCapability::Core);
+        assert_eq!(
+            capability_for_feature("transparent_history"),
+            StoreCapability::TransparentHistory
+        );
+    }
+
+    /// An unrecognised name falls back to `Core`.
+    ///
+    /// Rather than to the capability that happens to be nearest: over-claiming
+    /// which index is missing would send a consumer to reroute a query that
+    /// would have worked. `READ_CORE` is a real router name that lands here
+    /// legitimately; the other is a name no producer emits.
+    #[test]
+    fn an_unrecognised_refusal_falls_back_to_core() {
+        assert_eq!(
+            capability_for_feature(CapabilityRequest::ReadCore.name()),
+            StoreCapability::Core
+        );
+        assert_eq!(
+            capability_for_feature("no_such_feature"),
+            StoreCapability::Core
+        );
     }
 
     /// A migrating store reports where it is going, not just where it is.
