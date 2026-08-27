@@ -288,7 +288,7 @@ async fn simulate_interrupted_v1_1_to_v1_2_spent_index_migration(
     let mut metadata = database_backend.get_metadata().await.unwrap();
     metadata.version = v1_1_0();
     metadata.schema_hash = [0u8; 32];
-    metadata.migration_status = MigrationStatus::PartialBuidInProgress;
+    metadata.migration_status = MigrationStatus::PartialBuildInProgress;
 
     {
         let mut transaction = environment.begin_rw_txn().unwrap();

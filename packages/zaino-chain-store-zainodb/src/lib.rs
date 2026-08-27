@@ -42,13 +42,13 @@ pub mod config;
 /// [`zaino_chain_store::ChainStoreConfig`], and the two reading at different
 /// depths would suggest one is the more important half. Neither is.
 pub use config::ZainoDbConfig;
+pub mod adapter;
 pub mod conversion;
 pub mod entry;
 pub mod error;
 #[cfg(feature = "prometheus")]
 pub mod metric_names;
 pub mod pool;
-pub mod ports;
 pub mod store;
 pub mod stream;
 pub(crate) mod support;

@@ -2657,11 +2657,11 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
                 // never saw them on the finalised side either, so they must not contribute to
                 // `transactions` or to the resolution map for later same-NFS spends.
                 for (output_index, output) in transparent.outputs().iter().enumerate() {
-                    let output = zaino_chain_store_zainodb::ports::stored_tx_out(output)?;
+                    let output = zaino_chain_store_zainodb::adapter::stored_tx_out(output)?;
                     if is_unspendable(&output) {
                         continue;
                     }
-                    let outpoint = zaino_chain_store_zainodb::ports::domain_outpoint(
+                    let outpoint = zaino_chain_store_zainodb::adapter::domain_outpoint(
                         &Outpoint::new(txid.0, output_index as u32),
                     );
                     accumulator
@@ -2688,7 +2688,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Chai
                 for outpoint in transparent.spent_outpoints() {
                     let prev_txid = TransactionHash::from(*outpoint.prev_txid());
                     let domain_outpoint =
-                        zaino_chain_store_zainodb::ports::domain_outpoint(&outpoint);
+                        zaino_chain_store_zainodb::adapter::domain_outpoint(&outpoint);
 
                     let prev_out_from_nfs = nfs_created.remove(&domain_outpoint);
                     let prev_out = match prev_out_from_nfs {

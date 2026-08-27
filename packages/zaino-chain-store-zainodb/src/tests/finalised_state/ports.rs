@@ -24,8 +24,8 @@ use zaino_primitives::types::{BlockTxPosition, Height as DomainHeight, TxIndex};
 use zaino_proto::proto::utils::PoolTypeFilter;
 
 use super::v1::load_vectors_v1db_and_reader;
+use crate::adapter::{domain_outpoint, indexed_block_from_stored, stored_tx_out};
 use crate::conversion::{compact_block_to_wire, pool_filter_from_wire};
-use crate::ports::{domain_outpoint, indexed_block_from_stored, stored_tx_out};
 use crate::tests::fixtures::indexed_block_chain;
 use crate::types::{Height, Outpoint, TxLocation};
 

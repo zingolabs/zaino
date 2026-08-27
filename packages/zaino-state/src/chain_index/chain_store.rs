@@ -187,7 +187,7 @@ pub(crate) async fn block_at<R: StoredBlockRead>(
     };
     match blocks.pop() {
         Some(block) => Ok(Some(
-            zaino_chain_store_zainodb::ports::indexed_block_from_stored(&block)?,
+            zaino_chain_store_zainodb::adapter::indexed_block_from_stored(&block)?,
         )),
         None => Ok(None),
     }
@@ -218,7 +218,7 @@ pub(crate) async fn outpoint_spenders<R: SpentOutputIndex>(
 ) -> Result<Vec<Option<TransactionHash>>, ChainIndexError> {
     let domain: Vec<zaino_primitives::types::Outpoint> = outpoints
         .iter()
-        .map(zaino_chain_store_zainodb::ports::domain_outpoint)
+        .map(zaino_chain_store_zainodb::adapter::domain_outpoint)
         .collect();
 
     Ok(reader
@@ -244,7 +244,7 @@ pub(crate) async fn previous_output<R: SpentOutputIndex>(
 ) -> Result<Option<StoredTxOut>, ChainIndexError> {
     absent(
         reader
-            .previous_outputs(&[zaino_chain_store_zainodb::ports::domain_outpoint(outpoint)])
+            .previous_outputs(&[zaino_chain_store_zainodb::adapter::domain_outpoint(outpoint)])
             .await
             .map(|mut outputs| outputs.pop()),
     )
