@@ -97,6 +97,11 @@ and this library adheres to Rust's notion of
   for a client's block range, silently truncating a sync is the worse failure.
 - No error type here is `tonic::Status`. Mapping to a transport status is
   `zaino-serve`'s job.
+- `StoreAddressEffects::net_value` returns `Option<SignedZatoshis>` rather than
+  a bare `i64`. It is the domain's signed-delta quantity, and the sum is now
+  checked at every addition instead of an unchecked `sum::<i64>()` over
+  `u64 as i64` casts, so an effect set totalling past the money supply is
+  refused rather than reported as a plausible figure.
 - Each read port carries a `CAPABILITY` associated const naming the
   `StoreCapability` it answers for, so a store assembles its advertised set by
   reading it off the port rather than by choosing a variant by hand. The two
