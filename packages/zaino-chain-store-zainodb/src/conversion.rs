@@ -166,15 +166,7 @@ pub fn indexed_block(
 ) -> Result<IndexedBlock, BlockConversionError> {
     let hash = BlockHash(block.header.hash.into());
 
-    let data = BlockData {
-        version: block.header.version,
-        time: i64::from(block.header.time),
-        merkle_root: block.header.merkle_root.into(),
-        block_commitments: block.header.block_commitments.into(),
-        bits: difficulty(block.header.bits, hash)?,
-        nonce: block.header.nonce,
-        solution: solution(&block.header.solution),
-    };
+    let data = block_data(&block.header)?;
 
     let transactions = block
         .transactions
@@ -195,6 +187,30 @@ pub fn indexed_block(
         transactions,
         commitment_tree_data(tree_roots, hash)?,
     ))
+}
+
+/// A block header's own fields, as this backend's [`BlockData`].
+///
+/// Shared with the read direction rather than restated there. Both directions
+/// start from the same [`BlockHeader`] — a block arriving from a validator and
+/// a block read back off disk carry the identical type — so a second copy of
+/// this mapping is not a parallel implementation but the same one, free to
+/// drift. It already had: the read path stringified the difficulty failure this
+/// one keeps typed.
+///
+/// `pub(crate)` for the sibling adapter, which is the only other caller.
+pub(crate) fn block_data(
+    header: &zaino_primitives::types::BlockHeader,
+) -> Result<BlockData, BlockConversionError> {
+    Ok(BlockData {
+        version: header.version,
+        time: i64::from(header.time),
+        merkle_root: header.merkle_root.into(),
+        block_commitments: header.block_commitments.into(),
+        bits: difficulty(header.bits, BlockHash(header.hash.into()))?,
+        nonce: header.nonce,
+        solution: solution(&header.solution),
+    })
 }
 
 fn difficulty(

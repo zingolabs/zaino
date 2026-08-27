@@ -1003,24 +1003,21 @@ pub fn indexed_block_from_stored(block: &StoredBlock) -> Result<IndexedBlock, Ch
         Height(u32::from(header.height)),
     );
 
-    let data = crate::types::BlockData {
-        version: header.version,
-        time: i64::from(header.time),
-        merkle_root: header.merkle_root.into(),
-        block_commitments: header.block_commitments.into(),
-        bits: crate::types::CompactDifficulty::try_from_bits(header.bits).map_err(|error| {
-            ChainStoreError::backend(format!("block {hash} has invalid difficulty: {error}"))
-        })?,
-        nonce: header.nonce,
-        solution: match header.solution {
-            zaino_primitives::types::EquihashSolution::Standard(bytes) => {
-                crate::types::EquihashSolution::Standard(bytes)
-            }
-            zaino_primitives::types::EquihashSolution::Regtest(bytes) => {
-                crate::types::EquihashSolution::Regtest(bytes)
-            }
-        },
-    };
+    // Shared with the write direction rather than restated: both start from the
+    // same `BlockHeader`, so a second copy would be the same mapping free to
+    // drift — and had already drifted, this side stringifying the difficulty
+    // failure the other keeps typed.
+    //
+    // A header that will not convert came off disk, so it is a corrupt row
+    // rather than a backend failure, and the conversion's own error is carried
+    // as the cause: it names which field was rejected and why, which is what
+    // separates a corrupt row from a block this build cannot yet parse.
+    let data = crate::conversion::block_data(header).map_err(|error| {
+        ChainStoreError::corrupt_row_because(
+            format!("a convertible header for block {hash}"),
+            error,
+        )
+    })?;
 
     let transactions = block
         .transactions
