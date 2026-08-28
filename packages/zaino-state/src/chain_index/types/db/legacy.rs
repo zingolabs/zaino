@@ -2247,7 +2247,7 @@ impl FixedEncodedLen for AddrHistRecord {
 /// [4..6]   tx_index
 /// [6..8]   vout
 /// [8]      flags
-/// [9..17]  value   (little-endian, matches Zcashd)
+/// [9..17]  value   (little-endian, matches the legacy full node)
 /// ```
 ///
 /// Note when flag is set to IS_INPUT, vout is actually the index of the input event.

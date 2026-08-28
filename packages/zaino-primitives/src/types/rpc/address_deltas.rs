@@ -1,6 +1,6 @@
 //! `getaddressdeltas` — transparent balance changes over a height range.
 //!
-//! zcashd's method, not Zebra's. The request has two shapes and the response
+//! the legacy full node's method, not Zebra's. The request has two shapes and the response
 //! shape depends on which was asked, so both are modelled here rather than
 //! being flattened into one type with optional fields.
 
@@ -10,7 +10,7 @@ use crate::types::{AddressDelta, BlockRef, TransparentAddress};
 ///
 /// # Height range
 ///
-/// The interface's range is open-ended: zcashd treats `0` as "unbounded" in
+/// The interface's range is open-ended: the legacy full node treats `0` as "unbounded" in
 /// either position, and the single-address form carries no range at all. Both
 /// arrive here unresolved. Clamping them against the chain tip is the answering
 /// adapter's job, because only it knows the tip.

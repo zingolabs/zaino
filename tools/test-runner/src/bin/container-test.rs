@@ -2,7 +2,7 @@
 //!
 //! Invoked from the `container-test` task (Makefile.toml) as
 //! `cargo run --bin container-test -- <args>`. The container's entrypoint.sh sets
-//! up the validator binaries (zcashd, zebrad, zcash-cli) by symlinking
+//! up the validator binaries (zebrad, zcash-devtool) by symlinking
 //! `$TEST_BINARIES_DIR` into the expected location.
 //!
 //! Inputs from the environment (the Makefile `[env]` block exports the first
@@ -14,9 +14,7 @@
 //! TAG is computed here via tools/scripts/get-ci-image-tag.sh (it is a shell
 //! variable in the base-script pre-script, not exported, so we recompute it).
 //!
-//! Feature selection (docs/adr/0005): `zcashd_support` is opt-in, not a default.
-//! The run is always `--no-default-features` (the zcashd-off world CI builds);
-//! passing `--with-zcashd` additionally enables `--features zcashd_support`.
+//! The run is always `--no-default-features`, matching what CI builds.
 //! Any other arguments (e.g. `-p clientless`, `--test-threads 6`) pass straight
 //! through to `cargo nextest run`.
 //!
@@ -50,28 +48,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
     let tag = String::from_utf8(tag_out.stdout)?.trim().to_string();
 
-    // Pull `--with-zcashd` out of the forwarded args; everything else (e.g.
-    // `-p clientless`) passes through to `cargo nextest run`.
-    let mut with_zcashd = false;
-    let mut forwarded: Vec<String> = Vec::new();
-    for arg in env::args().skip(1) {
-        if arg == "--with-zcashd" {
-            with_zcashd = true;
-        } else {
-            forwarded.push(arg);
-        }
-    }
+    // Everything (e.g. `-p clientless`) passes through to `cargo nextest run`.
+    let forwarded: Vec<String> = env::args().skip(1).collect();
 
-    // Always build the no-zcashd world (`--no-default-features`, matching CI);
-    // `--with-zcashd` adds the opt-in feature back (docs/adr/0005).
-    let mut feature_args: Vec<String> = vec!["--no-default-features".to_string()];
-    if with_zcashd {
-        feature_args.push("--features".to_string());
-        feature_args.push("zcashd_support".to_string());
-        info("-- zcashd_support    = ON (--features zcashd_support)");
-    } else {
-        info("-- zcashd_support    = OFF (--no-default-features)");
-    }
+    // Always build with `--no-default-features` (matching CI).
+    let feature_args: Vec<String> = vec!["--no-default-features".to_string()];
 
     info(&format!("-- IMAGE             = {image_name}"));
     info(&format!("-- TAG               = {tag}"));

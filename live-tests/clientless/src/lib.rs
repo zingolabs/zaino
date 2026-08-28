@@ -67,7 +67,7 @@ pub mod rpc {
 
         /// Decodes one of the hex test vectors into the fixed-size array the
         /// domain type carries. The vectors are hex because they were captured
-        /// from zcashd's JSON output; the domain type is bytes because hex
+        /// from the legacy full node's JSON output; the domain type is bytes because hex
         /// encoding is the wire layer's job.
         fn vector_bytes<const N: usize>(hex_vector: &str) -> [u8; N] {
             hex::decode(hex_vector)
@@ -131,7 +131,7 @@ pub mod rpc {
         /// Build the `z_validate_address` rpc-call closure from `subscriber` and
         /// run the shared validation suite. Factors the identical closure +
         /// suite-call preamble shared by the four `z_validate_address` tests
-        /// (fetch_service zcashd/zebrad, state_service, json_server).
+        /// (fetch_service and state_service).
         #[allow(deprecated)]
         pub async fn run_z_validate_for<S: ZcashIndexer>(subscriber: &S) {
             let rpc_call =

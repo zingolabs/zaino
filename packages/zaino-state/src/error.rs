@@ -9,7 +9,7 @@ use std::fmt::Display;
 
 use zaino_proto::proto::utils::GetBlockRangeError;
 
-/// A rejection carrying a zcashd-compatible legacy RPC error code.
+/// A rejection carrying a legacy-compatible legacy RPC error code.
 ///
 /// Zaino's *own* rejections — a malformed block identifier, an oversized raw
 /// transaction — that must reach a client as the specific legacy code
@@ -24,7 +24,7 @@ use zaino_proto::proto::utils::GetBlockRangeError;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{message}")]
 pub struct LegacyRpcError {
-    /// The zcashd legacy error code.
+    /// The legacy full-node legacy error code.
     pub code: i64,
     /// Human-readable description.
     pub message: String,
@@ -60,7 +60,7 @@ pub enum NodeBackedIndexerServiceError {
     #[error("Join error: {0}")]
     JoinError(#[from] tokio::task::JoinError),
 
-    /// A rejection carrying a zcashd-compatible legacy RPC error code.
+    /// A rejection carrying a legacy-compatible legacy RPC error code.
     #[error("RPC error: {0:?}")]
     RpcError(#[from] LegacyRpcError),
 

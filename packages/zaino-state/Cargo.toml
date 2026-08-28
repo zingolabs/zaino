@@ -19,9 +19,6 @@ default = []
 # excludes the live-test crates from production builds.
 fast-test-seam = []
 
-# Support for connecting to a zcashd validator node. Opt-in (default off, docs/adr/0005); being
-# deprecated. See docs/adr/0001-zcashd-support-feature-gate.md.
-#
 # Prometheus metrics emission (gauge! calls in sync paths).
 prometheus = ["metrics"]
 

@@ -18,7 +18,7 @@ We adopt this taxonomy, captured as ubiquitous language in the suite's
 `CONTEXT.md`:
 
 - **`live`** — the umbrella (directory `live-tests/`). The defining property of
-  the suite is that it requires a **live validator** process (Zebra or zcashd),
+  the suite is that it requires a **live validator** process (Zebra or the legacy full node),
   and optionally a live wallet client. That property — not "it has a `tests/`
   folder" — is what separates it from the inline unit tests `container-test`
   runs, and is the reason it is excluded from the default flow.

@@ -52,7 +52,7 @@ impl std::fmt::Display for DonationAddress {
 pub enum ValidatorConnectionType {
     /// JSON-RPC connection (formerly `Fetch`).
     ///
-    /// Compatible with Zcashd, Zebra, or another Zaino instance.
+    /// Compatible with Zebra or another Zaino instance.
     Rpc,
     /// Direct Zebra `ReadStateService` connection (formerly `State`).
     ///

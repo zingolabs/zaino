@@ -67,12 +67,6 @@ are **not** reversed — `parse.rs` has a test for each direction, and they are
 there because getting this wrong produces valid-looking hex naming something
 that does not exist.
 
-## `zcashd_support`
-
-Not gated here. The zcashd-shaped peer-info response is a *served* shape, so it
-lives in `zaino-serve`'s wire module, which is now the only place the feature
-gates anything.
-
 ## Related
 
 - ADR-0008 — the port model and the domain/fetch distinction.

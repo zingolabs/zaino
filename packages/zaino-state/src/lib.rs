@@ -2,7 +2,7 @@
 //!
 //! Built to use a configurable backend:
 //! - FetchService
-//!    - Built using the Zcash Json RPC Services for backwards compatibility with Zcashd and other JsonRPC based validators.
+//!    - Built using the Zcash Json RPC Services for backwards compatibility with JsonRPC based validators.
 //! - StateService
 //!    - Built using Zebra's ReadStateService for efficient chain access.
 

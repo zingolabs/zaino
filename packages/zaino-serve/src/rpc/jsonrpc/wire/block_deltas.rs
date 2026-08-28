@@ -265,9 +265,9 @@ mod tests {
         }
     }
 
-    /// Pins zcashd's field names and encodings. A rename here is a wire break.
+    /// Pins the legacy full node's field names and encodings. A rename here is a wire break.
     #[test]
-    fn renders_zcashd_field_names_and_encodings() {
+    fn renders_legacy_field_names_and_encodings() {
         let wire = BlockDeltas::from_domain(sample()).expect("amounts in range");
         let json = serde_json::to_value(&wire).unwrap();
 

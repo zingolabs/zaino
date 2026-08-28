@@ -126,13 +126,9 @@ podman tag "${IMAGE_NAME}:${TAG}" "${IMAGE_NAME}:verify-${TAG}" \
     2>/dev/null || true
 
 # === Tier 3: Container execution ===
-# One test per component: zcashd, zebrad, lightwallet gRPC,
-# wallet-to-validator. Tests live in the live-tests sub-workspace.
+# One test per component: zebrad, lightwallet gRPC, wallet-to-validator
+# (devtool). Tests live in the live-tests sub-workspace.
 ITESTS=(--manifest-path live-tests/Cargo.toml)
-
-run_task "container-test (zcashd)" makers container-test \
-    "${ITESTS[@]}" \
-    -E "binary(wallet_to_validator) & test(=zcashd::connect_to_node_get_info)"
 
 run_task "container-test (zebrad)" makers container-test \
     "${ITESTS[@]}" \
@@ -145,7 +141,7 @@ run_task "container-test (lightwallet)" makers container-test \
 
 run_task "container-test (wallet-to-validator)" makers container-test \
     "${ITESTS[@]}" \
-    -E "binary(wallet_to_validator) & test(=zcashd::sent_to::transparent)"
+    -E "binary(devtool) & test(=zebrad::fetch_service::receives_mining_reward)"
 
 if command -v jq &>/dev/null && command -v yq &>/dev/null; then
     run_task "validate-test-targets" makers validate-test-targets

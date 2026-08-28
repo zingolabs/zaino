@@ -151,11 +151,11 @@ async fn assert_fetch_service_difficulty_matches_rpc<V: ValidatorExt>(validator:
 /// serves.
 ///
 /// Compared key by key over the validator's own response rather than as whole
-/// objects. Zaino additionally emits the zcashd-only local-miner fields
+/// objects. Zaino additionally emits the legacy-only local-miner fields
 /// (`genproclimit`, `localsolps`, `generate`, `pooledtx`, `errorstimestamp`) as
 /// explicit JSON `null`, where zebrad omits the keys — long-standing behaviour
-/// of this response type, and a client asking a zcashd-shaped interface gets a
-/// zcashd-shaped answer. What must not differ is any value the validator
+/// of this response type, and a client asking a legacy-shaped interface gets a
+/// legacy-shaped answer. What must not differ is any value the validator
 /// actually sent.
 #[allow(deprecated)]
 async fn assert_fetch_service_mininginfo_matches_rpc<V: ValidatorExt>(validator: &ValidatorKind) {
@@ -182,69 +182,6 @@ async fn assert_fetch_service_mininginfo_matches_rpc<V: ValidatorExt>(validator:
             "`{field}` differs from the validator's own getmininginfo"
         );
     }
-}
-
-#[cfg(feature = "zcashd_support")]
-#[allow(deprecated)]
-async fn assert_fetch_service_gettxoutsetinfo_matches_rpc<V: ValidatorExt>(
-    validator: &ValidatorKind,
-) {
-    let (test_manager, fetch_service_subscriber) =
-        zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
-
-    let fetch_service_txoutset_info = fetch_service_subscriber
-        .get_tx_out_set_info()
-        .await
-        .unwrap();
-
-    let jsonrpc_client = test_manager.full_node_jsonrpc_connector().await;
-
-    let rpc_txoutset_info = jsonrpc_client.get("gettxoutsetinfo").await;
-
-    // Structural parity with zcashd: height, bestblock, transactions, txouts and total_amount
-    // must match. `bytes_serialized` and `hash_serialized` are Zaino-defined (see the
-    // `gettxoutsetinfo` spec in zaino-state) and intentionally diverge from zcashd; only
-    // Zaino-internal invariants are asserted on those fields.
-    let zaino = serde_json::to_value(fetch_service_txoutset_info).unwrap();
-    let zcashd = rpc_txoutset_info;
-    assert!(
-        zaino.get("height").is_some() && zcashd.get("height").is_some(),
-        "expected non-empty gettxoutsetinfo from both sides, got {zaino:?} / {zcashd:?}"
-    );
-
-    for field in ["height", "bestblock", "transactions", "txouts"] {
-        assert_eq!(zaino[field], zcashd[field], "`{field}` differs from zcashd");
-    }
-    let amount = |value: &serde_json::Value| {
-        value["total_amount"]
-            .as_f64()
-            .expect("gettxoutsetinfo reports total_amount as a number")
-    };
-    assert!(
-        (amount(&zaino) - amount(&zcashd)).abs() < 1e-8,
-        "`total_amount` differs from zcashd: zaino={} zcashd={}",
-        amount(&zaino),
-        amount(&zcashd)
-    );
-
-    // Zaino-only invariants on the redefined fields.
-    assert_eq!(
-        zaino["bytes_serialized"].as_u64().expect("a byte count"),
-        zaino["txouts"].as_u64().expect("a txout count") * 65,
-        "`bytes_serialized` must equal `txouts * 65` under Zaino's UTXO entry encoding"
-    );
-    let hash_serialized = zaino["hash_serialized"]
-        .as_str()
-        .expect("`hash_serialized` is a string");
-    assert_eq!(
-        hash_serialized.len(),
-        64,
-        "`hash_serialized` must be 64 lowercase hex chars"
-    );
-    assert!(
-        hash_serialized.chars().all(|c| c.is_ascii_hexdigit()),
-        "`hash_serialized` must be hex: got {hash_serialized}"
-    );
 }
 
 #[allow(deprecated)]
@@ -666,113 +603,6 @@ async fn assert_fetch_service_getnetworksols_matches_rpc<V: ValidatorExt>(
         },
     )
     .await;
-}
-
-#[cfg(feature = "zcashd_support")]
-#[allow(deprecated)]
-async fn fetch_service_get_block_deltas<V: ValidatorExt>(validator: &ValidatorKind) {
-    use zaino_serve::rpc::jsonrpc::wire::block_deltas::BlockDeltas;
-
-    let (test_manager, fetch_service_subscriber) =
-        zaino_testutils::launch_with_fetch_subscriber::<V>(validator, None).await;
-
-    let current_block = fetch_service_subscriber.get_latest_block().await.unwrap();
-
-    let block_hash_bytes: [u8; 32] = current_block.hash.as_slice().try_into().unwrap();
-
-    let block_hash = zebra_chain::block::Hash::from(block_hash_bytes);
-
-    // Note: we need an 'expected' block hash in order to query its deltas.
-    // Having a predictable or test vector chain is the way to go here.
-    let fetch_service_block_deltas = fetch_service_subscriber
-        .get_block_deltas(block_hash.to_string())
-        .await
-        .unwrap();
-
-    let jsonrpc_client = test_manager.full_node_jsonrpc_connector().await;
-
-    let rpc_block_deltas = jsonrpc_client
-        .get_block_deltas(block_hash.to_string())
-        .await
-        .unwrap();
-
-    assert_eq!(
-        serde_json::to_value(BlockDeltas::from_domain(fetch_service_block_deltas).unwrap())
-            .unwrap(),
-        serde_json::to_value(rpc_block_deltas).unwrap()
-    );
-}
-
-#[cfg(feature = "zcashd_support")]
-mod zcashd {
-
-    use super::*;
-    use zcash_local_net::validator::zcashd::Zcashd;
-
-    mod launch {
-
-        use super::*;
-
-        #[tokio::test(flavor = "multi_thread")]
-        pub(crate) async fn regtest_no_cache() {
-            launch_fetch_service::<Zcashd>(&ValidatorKind::Zcashd, None).await;
-        }
-
-        #[tokio::test(flavor = "multi_thread")]
-        #[ignore = "We no longer use chain caches. See zcashd::launch::regtest_no_cache."]
-        pub(crate) async fn regtest_with_cache() {
-            launch_fetch_service::<Zcashd>(
-                &ValidatorKind::Zcashd,
-                zaino_testutils::ZCASHD_CHAIN_CACHE_DIR.clone(),
-            )
-            .await;
-        }
-    }
-
-    mod validation {
-
-        use super::*;
-
-        #[tokio::test(flavor = "multi_thread")]
-        pub(crate) async fn validate_address() {
-            fetch_service_validate_address::<Zcashd>(&ValidatorKind::Zcashd).await;
-        }
-
-        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-        pub(crate) async fn z_validate_address() {
-            z_validate::<Zcashd>(&ValidatorKind::Zcashd).await;
-        }
-    }
-
-    mod get {
-        use super::*;
-
-        zaino_testutils::validator_tests!(
-            Zcashd,
-            ValidatorKind::Zcashd,
-            block_raw => fetch_service_get_block_raw,
-            block_object => fetch_service_get_block_object,
-            latest_block => fetch_service_get_latest_block,
-            block => fetch_service_get_block,
-            block_header => fetch_service_get_block_header,
-            difficulty => assert_fetch_service_difficulty_matches_rpc,
-            block_deltas => fetch_service_get_block_deltas,
-            mining_info => assert_fetch_service_mininginfo_matches_rpc,
-            peer_info => assert_fetch_service_peerinfo_matches_rpc,
-            block_subsidy => fetch_service_get_block_subsidy,
-            best_blockhash => fetch_service_get_best_blockhash,
-            block_count => fetch_service_get_block_count,
-            block_nullifiers => fetch_service_get_block_nullifiers,
-            block_range => fetch_service_get_block_range,
-            block_range_nullifiers => fetch_service_get_block_range_nullifiers,
-            tree_state => fetch_service_get_tree_state,
-            latest_tree_state => fetch_service_get_latest_tree_state,
-            subtree_roots => fetch_service_get_subtree_roots,
-            lightd_info => fetch_service_get_lightd_info,
-            get_network_sol_ps => assert_fetch_service_getnetworksols_matches_rpc,
-            get_tx_out_set_info => assert_fetch_service_gettxoutsetinfo_matches_rpc,
-        );
-    }
 }
 
 mod zebrad {

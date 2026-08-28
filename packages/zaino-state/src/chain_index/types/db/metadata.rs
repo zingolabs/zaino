@@ -15,7 +15,7 @@ use super::legacy::{Outpoint, ScriptType, TxOutCompact};
 
 /// Returns `true` if `out` should be excluded from the transparent UTXO set.
 ///
-/// Mirrors zcashd's `IsUnspendable()` for the purposes of `gettxoutsetinfo`:
+/// Mirrors the legacy full node's `IsUnspendable()` for the purposes of `gettxoutsetinfo`:
 /// only outputs whose script parses as P2PKH or P2SH are counted as part of
 /// the UTXO set. Everything else (OP_RETURN coinbase commitments, oversized
 /// or otherwise non-standard scripts) is treated as unspendable and excluded
@@ -121,7 +121,7 @@ impl FixedEncodedLen for MempoolInfo {
 ///
 /// `hash_serialized` is Zaino's transparent-UTXO-set multiset commitment:
 /// the XOR over all currently-unspent transparent outputs of
-/// [`tx_out_set_entry_digest`]. It is not byte-equal to zcashd's value
+/// [`tx_out_set_entry_digest`]. It is not byte-equal to the legacy full node's value
 /// and is not expected to be.
 ///
 /// `bytes_serialized` is the total canonical byte-length of the UTXO set
