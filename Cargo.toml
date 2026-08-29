@@ -66,6 +66,14 @@ repository = "https://github.com/zingolabs"
 homepage = "https://www.zingolabs.org/"
 edition = "2021"
 license = "Apache-2.0"
+# Publish metadata shared by every published crate, inherited via
+# `readme.workspace = true` etc. crates.io requires `description` + `license`;
+# `readme`/`keywords`/`categories` round out what `clippy::cargo_common_metadata`
+# checks (see the `clippy` task in tools/makefiles/lints.toml). `readme` is
+# resolved from the workspace root.
+readme = "README.md"
+keywords = ["zcash", "blockchain", "indexer", "lightwallet"]
+categories = ["cryptography::cryptocurrencies"]
 
 
 [workspace.dependencies]
