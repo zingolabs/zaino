@@ -13,6 +13,17 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.5.0] - 2026-08-28
+
+### Added
+- `ShieldedProtocol::Ironwood` (`ironwood = 2` in `service.proto`), so
+  `GetSubtreeRoots` can name the Ironwood note commitment tree. Breaking for
+  Rust consumers that match exhaustively on `ShieldedProtocol`.
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
 ## [0.4.0] - 2026-08-14
 
 ### Added

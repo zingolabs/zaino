@@ -152,7 +152,7 @@ zainod = { path = "packages/zainod" }
 # Service status and health-probe vocabulary. A leaf with one dependency
 # (`tracing`), so any subsystem can report its status without inheriting a
 # dependency graph to do it.
-zaino-status = { path = "packages/zaino-status", version = "0.1.0" }
+zaino-status = { path = "packages/zaino-status", version = "0.1.1" }
 # Consensus-derived constants (reorg bound, coinbase maturity, block size limit)
 # and the protocol-limit validation built on them. A leaf that depends on no
 # node implementation, so referencing a consensus fact costs neither a
@@ -161,30 +161,30 @@ zaino-consensus = { path = "packages/zaino-consensus", version = "0.1.0" }
 # Zero-dependency domain vocabulary. Every crate that needs chain-level types
 # (heights, hashes, blocks, transactions) depends on this rather than on
 # `zebra-chain` or on another zaino crate. See docs/adr/0010.
-zaino-primitives = { path = "packages/zaino-primitives", version = "0.1.0" }
+zaino-primitives = { path = "packages/zaino-primitives", version = "0.2.0" }
 # Zcash address parsing and classification, for the two address-validation RPCs.
 # A leaf: it isolates the librustzcash address stack from everything else.
 zaino-address = { path = "packages/zaino-address", version = "0.1.0" }
 # Driven port traits for validator access: one trait per question a consumer can
 # ask, so each consumer's bound names exactly the capabilities it uses and an
 # adapter that cannot answer a question simply does not implement it.
-zaino-source = { path = "packages/zaino-source", version = "0.1.0" }
+zaino-source = { path = "packages/zaino-source", version = "0.2.0" }
 zaino-source-macros = { path = "packages/zaino-source-macros", version = "0.1.0" }
-zaino-mempool = { path = "packages/zaino-mempool", version = "0.1.0" }
-zaino-mempool-service = { path = "packages/zaino-mempool-service", version = "0.1.0" }
+zaino-mempool = { path = "packages/zaino-mempool", version = "0.2.0" }
+zaino-mempool-service = { path = "packages/zaino-mempool-service", version = "0.2.0" }
 # JSON-RPC 2.0 transport shared by the RPC-backed source adapters.
-zaino-rpc = { path = "packages/zaino-rpc", version = "0.1.0" }
+zaino-rpc = { path = "packages/zaino-rpc", version = "0.2.0" }
 # The single place `zebra_chain` types are translated into domain types.
-zaino-convert-zebra = { path = "packages/zaino-convert-zebra", version = "0.1.0" }
+zaino-convert-zebra = { path = "packages/zaino-convert-zebra", version = "0.2.0" }
 # Source adapters. The RPC adapter answers every question over the Zcash
 # JSON-RPC interface; the ReadState adapter answers the subset zebra's
 # in-process state can serve, and simply does not implement the rest.
-zaino-source-zebra-rpc = { path = "packages/zaino-source-zebra-rpc", version = "0.1.0" }
-zaino-source-zebra-readstate = { path = "packages/zaino-source-zebra-readstate", version = "0.1.0" }
+zaino-source-zebra-rpc = { path = "packages/zaino-source-zebra-rpc", version = "0.2.0" }
+zaino-source-zebra-readstate = { path = "packages/zaino-source-zebra-readstate", version = "0.2.0" }
 # Composite over the two adapters: capability decides what each can answer,
 # this decides which to ask.
-zaino-source-zebra = { path = "packages/zaino-source-zebra", version = "0.1.0" }
-zaino-common = { path = "packages/zaino-common", version = "0.5.0" }
+zaino-source-zebra = { path = "packages/zaino-source-zebra", version = "0.2.0" }
+zaino-common = { path = "packages/zaino-common", version = "0.5.1" }
 # ChainHead: the bounded non-finalised block graph, its canonical chain, and the
 # competing branches retained alongside it. This crate is the domain half —
 # types and ports only, no runtime — so a consumer can name what ChainHead
@@ -195,9 +195,9 @@ zaino-chain-head = { path = "packages/zaino-chain-head", version = "0.1.0" }
 # crate so a consumer can name what ChainHead answers without depending on the
 # machinery that answers it.
 zaino-chain-head-service = { path = "packages/zaino-chain-head-service", version = "0.1.0" }
-zaino-proto = { path = "packages/zaino-proto", version = "0.4.0" }
-zaino-state = { path = "packages/zaino-state", version = "0.7.0", default-features = false }
-zaino-serve = { path = "packages/zaino-serve", version = "0.6.0", default-features = false }
+zaino-proto = { path = "packages/zaino-proto", version = "0.5.0" }
+zaino-state = { path = "packages/zaino-state", version = "0.8.0", default-features = false }
+zaino-serve = { path = "packages/zaino-serve", version = "0.7.0", default-features = false }
 zaino-testutils = { path = "live-tests/zaino-testutils" }
 
 # Zingo-infra (validator launcher driving the live tests; not a prod dep).

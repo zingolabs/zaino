@@ -5952,7 +5952,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-common"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "rustls",
  "serde",
@@ -5974,7 +5974,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-convert-zebra"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "thiserror 2.0.18",
  "zaino-consensus",
@@ -5984,7 +5984,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-mempool"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "futures",
@@ -5996,7 +5996,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-mempool-service"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arc-swap",
  "async-stream",
@@ -6014,14 +6014,14 @@ dependencies = [
 
 [[package]]
 name = "zaino-primitives"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "zaino-proto"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "prost",
  "tonic",
@@ -6034,7 +6034,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-rpc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "reqwest 0.13.1",
  "serde",
@@ -6048,7 +6048,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-serve"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "futures",
  "hex",
@@ -6076,7 +6076,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-source"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "thiserror 2.0.18",
  "tokio",
@@ -6095,7 +6095,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-source-zebra"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "tokio",
  "zaino-primitives",
@@ -6106,7 +6106,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-source-zebra-readstate"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "serde_json",
@@ -6123,7 +6123,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-source-zebra-rpc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hex",
  "incrementalmerkletree",
@@ -6143,7 +6143,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-state"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "arc-swap",
  "bitflags 2.13.0",
@@ -6206,7 +6206,7 @@ dependencies = [
 
 [[package]]
 name = "zaino-status"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "tracing",
 ]
@@ -6243,7 +6243,7 @@ dependencies = [
 
 [[package]]
 name = "zainod"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "clap",
  "config",

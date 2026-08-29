@@ -8,6 +8,14 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.1.0] - 2026-08-28
+
+### Added
 - New crate. The domain half of the chain head subsystem: vocabulary and ports
   for the bounded, non-finalised head of the chain, with no runtime and no data
   structures. The runtime is `zaino-chain-head-service`. See ADR-0011.
