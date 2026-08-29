@@ -8,6 +8,14 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.8.0] - 2026-08-28
+
+### Added
 - Progress logging for the from-genesis txout-set accumulator rebuild. The
   rebuild previously logged two lines up front and nothing again until it
   committed, so a multi-shard full-chain scan — tens of minutes on a
