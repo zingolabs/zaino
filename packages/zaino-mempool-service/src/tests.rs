@@ -24,7 +24,8 @@ use zaino_mempool::config::MempoolConfig;
 use zaino_primitives::types::BlockRef;
 
 #[cfg(feature = "tip_aware_mempool")]
-use zaino_mempool::ports::{NfsEpochObserver, NonFinalizedEpoch};
+use zaino_mempool::ports::NfsEpochObserver;
+use zaino_primitives::types::ChainStateEpoch;
 
 // ---- mock ports --------------------------------------------------------
 
@@ -129,7 +130,7 @@ fn outage<E: std::fmt::Debug + std::fmt::Display>(message: String) -> QueryError
     QueryError::Fetch(FetchError::new(FailureMode::Connection, message))
 }
 
-impl zaino_source::GetMempoolTxids for MockSource {
+impl zaino_source::OneShotGetMempoolTxids for MockSource {
     async fn get_mempool_txids(
         &self,
     ) -> Result<Vec<TransactionId>, QueryError<GetMempoolTxidsError>> {
@@ -142,7 +143,7 @@ impl zaino_source::GetMempoolTxids for MockSource {
     }
 }
 
-impl zaino_source::GetMempoolMetadata for MockSource {
+impl zaino_source::OneShotGetMempoolMetadata for MockSource {
     async fn get_mempool_metadata(
         &self,
     ) -> Result<Vec<MempoolTxMeta>, QueryError<GetMempoolMetadataError>> {
@@ -163,7 +164,7 @@ impl zaino_source::GetMempoolMetadata for MockSource {
     }
 }
 
-impl zaino_source::GetRawMempoolTransaction for MockSource {
+impl zaino_source::OneShotGetRawMempoolTransaction for MockSource {
     async fn get_raw_mempool_transaction(
         &self,
         txid: TransactionId,
@@ -191,7 +192,7 @@ impl zaino_source::GetRawMempoolTransaction for MockSource {
     }
 }
 
-impl zaino_source::GetMempoolSourceTip for MockSource {
+impl zaino_source::OneShotGetMempoolSourceTip for MockSource {
     async fn get_mempool_source_tip(
         &self,
     ) -> Result<(BlockHash, Height), QueryError<std::convert::Infallible>> {
@@ -217,7 +218,7 @@ impl zaino_source::SubscribeBlocks for MockSource {
 #[cfg(feature = "tip_aware_mempool")]
 #[derive(Clone)]
 struct MockNfs {
-    epoch: Arc<Mutex<Option<NonFinalizedEpoch>>>,
+    epoch: Arc<Mutex<Option<ChainStateEpoch>>>,
     /// Publication signal, as the real `zaino-state` adapter supplies.
     wake: Arc<tokio::sync::watch::Sender<()>>,
 }
@@ -231,7 +232,7 @@ impl MockNfs {
         }
     }
 
-    fn set(&self, epoch: NonFinalizedEpoch) {
+    fn set(&self, epoch: ChainStateEpoch) {
         *self.epoch.lock().expect("mock nfs poisoned") = Some(epoch);
         let _ = self.wake.send(());
     }
@@ -239,7 +240,7 @@ impl MockNfs {
 
 #[cfg(feature = "tip_aware_mempool")]
 impl NfsEpochObserver for MockNfs {
-    fn current_epoch(&self) -> Option<NonFinalizedEpoch> {
+    fn current_epoch(&self) -> Option<ChainStateEpoch> {
         *self.epoch.lock().expect("mock nfs poisoned")
     }
 
@@ -282,8 +283,8 @@ fn block_ref(at: u32, hash_byte: u8) -> BlockRef {
 }
 
 #[cfg(feature = "tip_aware_mempool")]
-fn epoch(generation: u64, height: u32, hash_byte: u8) -> NonFinalizedEpoch {
-    NonFinalizedEpoch {
+fn epoch(generation: u64, height: u32, hash_byte: u8) -> ChainStateEpoch {
+    ChainStateEpoch {
         generation,
         best_tip: block_ref(height, hash_byte),
     }

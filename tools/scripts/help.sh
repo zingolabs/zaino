@@ -58,6 +58,16 @@ workflow matrix"
 echo "  update-test-targets        Update CI workflow matrix to match \
 nextest targets"
 echo "  validate-makefile-tasks    Run minimal validation of all maker tasks"
+echo "  bench [SUB]                Benchmark a running zainod. SUB = sync | \
+concurrent | serve"
+echo "                               sync       time an initial sync via \
+zainod's /metrics endpoint"
+echo "                               concurrent load-test with N concurrent \
+block-range clients"
+echo "                               serve      single-stream block serve \
+rate + chain check"
+echo "                             See docs/perf.md for results and the \
+measured config."
 echo "  verify-all                 Exercise every task for correctness \
 (idempotent)"
 echo "  hello-rust                 Test rust-script functionality"

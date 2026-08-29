@@ -195,6 +195,17 @@ pub(crate) const ACCUMULATOR_BUILD_MAX_SHARDS: u16 = 256;
 /// budget, and over-counting only adds shards (less memory per shard), it never under-bounds.
 pub(crate) const SPENT_SET_ENTRY_BYTES_ESTIMATE: u64 = 256;
 
+/// Minimum wall-clock interval between successive progress logs emitted by a long-running
+/// finalised-state scan (bulk sync, the txout-set accumulator rebuild, and the startup `spent`
+/// integrity check).
+///
+/// Throttling on *time* rather than on a height/entry modulus keeps the output bounded no matter
+/// how the underlying work is partitioned. The accumulator rebuild in particular scans the whole
+/// chain once per shard, and the shard count scales with how little memory the host has (up to
+/// [`ACCUMULATOR_BUILD_MAX_SHARDS`]), so a per-height modulus would emit orders of magnitude more
+/// lines on exactly the constrained deployments where logs are most expensive.
+pub(super) const PROGRESS_LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Number of committed block writes / migration heights between explicit
 /// `env.sync(true)` durability checkpoints.
 ///
@@ -285,6 +296,19 @@ impl LmdbLifecycle for DbV1 {
 ///
 /// Data is stored per-height in “best chain” order and is validated (checksums and continuity)
 /// before being treated as reliable for downstream reads.
+/// Lower bound on LMDB reader slots, whatever the core count.
+///
+/// Each slot is 64 bytes, so this floor costs ~128 KiB — cheap enough that a small host should
+/// not be the reason a node stops serving concurrent readers.
+const MIN_LMDB_READERS: usize = 2048;
+
+/// Upper bound on LMDB reader slots.
+///
+/// 8192 slots is ~512 KiB of shared memory, and leaves headroom above the concurrent-client
+/// counts we benchmark (5000) for Zaino's own internal readers: the sync loop, startup
+/// validation, the chain head, and the mempool all take slots of their own.
+const MAX_LMDB_READERS: usize = 8192;
+
 #[derive(Debug)]
 pub(crate) struct DbV1 {
     /// Shared LMDB environment.
@@ -467,15 +491,28 @@ impl DbV1 {
             fs::create_dir_all(&db_path)?;
         }
 
-        // Check system rescources to set max db reeaders, clamped between 512 and 4096.
+        // LMDB reader slots, from CPU count, clamped to [MIN_LMDB_READERS, MAX_LMDB_READERS].
+        //
+        // A slot is one cache line: the measured `lock.mdb` is 32,896 bytes at 512 readers, so
+        // 64B per slot plus a small header. 8192 readers costs ~512 KiB of shared memory, which
+        // is why the ceiling is set by how many concurrent clients we intend to serve rather
+        // than by memory.
+        //
+        // The bound is a real serving limit, not a tuning hint. `NO_TLS` is set below, so a slot
+        // belongs to a read *transaction* rather than a thread: every concurrent read holds one,
+        // and exhausting the table fails reads with `MDB_READERS_FULL`. The old ceiling of 4096
+        // with a floor of 512 gave exactly 512 on any host with 16 cores or fewer — low enough
+        // that an ordinary load test exhausted it (zingolabs/zaino, benchmark run 2026-08-21).
+        //
+        // Raising this does not make exhaustion safe to hit. A client can still open more
+        // concurrent reads than there are slots, and `MDB_READERS_FULL` is currently treated as
+        // a fatal error by the startup validation in this file, which restarts the node. That
+        // classification is the actual bug; this constant only moves where it bites.
         let cpu_cnt = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4);
 
-        // Sets LMDB max_readers based on CPU count (cpu * 32), clamped between 512 and 4096.
-        // Allows high async read concurrency while keeping memory use low (~192B per slot).
-        // The 512 min ensures reasonable capacity even on low-core systems.
-        let max_readers = u32::try_from((cpu_cnt * 32).clamp(512, 4096))
+        let max_readers = u32::try_from((cpu_cnt * 32).clamp(MIN_LMDB_READERS, MAX_LMDB_READERS))
             .expect("max_readers was clamped to fit in u32");
 
         // Open LMDB environment and set environmental details.
@@ -735,7 +772,21 @@ impl DbV1 {
             // error propagates cleanly and the scan only ends on a genuine end-of-table `NotFound`.
             let mut entry_index: u64 = 0;
             let mut op = lmdb_sys::MDB_FIRST;
+            // This checksums every `spent` entry before the node serves anything, so on a
+            // mainnet-sized table it is the first long silence of every boot. Report progress so it
+            // reads as work rather than a hang.
+            let started = std::time::Instant::now();
+            let mut last_progress_log = started;
             loop {
+                if last_progress_log.elapsed() >= PROGRESS_LOG_INTERVAL {
+                    info!(
+                        verified = entry_index,
+                        elapsed = ?started.elapsed(),
+                        "finalised-state spent table integrity check in progress"
+                    );
+                    last_progress_log = std::time::Instant::now();
+                }
+
                 let (key_bytes, val_bytes) = match cursor.get(None, None, op) {
                     Ok((Some(key), value)) => (key, value),
                     // `MDB_FIRST`/`MDB_NEXT` always report the key; treat a missing key as end-of-data.
@@ -767,7 +818,11 @@ impl DbV1 {
                 entry_index += 1;
             }
 
-            info!("finalised-state spent table integrity check passed ({entry_index} entries)");
+            info!(
+                entries = entry_index,
+                elapsed = ?started.elapsed(),
+                "finalised-state spent table integrity check passed"
+            );
             Ok(())
         })
         .await

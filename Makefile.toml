@@ -206,6 +206,18 @@ esac
 
 # -------------------------------------------------------------------
 
+[tasks.bench]
+# clear = true fully replaces cargo-make's built-in `bench` task (which runs
+# `cargo bench`); without it our `script` would merge with the builtin `command`.
+clear = true
+description = "Run the zaino-bench harness against a running zainod (sync | concurrent | serve)"
+# Release, always: a debug load generator measures itself rather than the
+# server. Not a member of `default-members`, so `-p` is required to select it.
+script_runner = "bash"
+script = 'exec cargo run --release -p zaino-bench -- "$@"'
+
+# -------------------------------------------------------------------
+
 [tasks.zcashd_test]
 description = "Convenience: the whole suite with the zcashd-backed tests (`makers test all --with-zcashd`)"
 # Delegates to the `test all` front door with the explicit flag — there is no

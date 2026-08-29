@@ -134,10 +134,10 @@ pub(crate) type NonfinalizedBlockReceiver =
 /// `NodeBackedChainIndex` bound and is churn this staging exists to avoid until
 /// the ChainHead cutover does it once.
 pub trait BlockchainSource:
-    zaino_source::GetMempoolTxids
-    + zaino_source::GetMempoolMetadata
-    + zaino_source::GetRawMempoolTransaction
-    + zaino_source::GetMempoolSourceTip
+    zaino_source::OneShotGetMempoolTxids
+    + zaino_source::OneShotGetMempoolMetadata
+    + zaino_source::OneShotGetRawMempoolTransaction
+    + zaino_source::OneShotGetMempoolSourceTip
     + Clone
     + Send
     + Sync

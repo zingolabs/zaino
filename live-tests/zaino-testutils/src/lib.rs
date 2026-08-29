@@ -29,7 +29,7 @@ use zaino_serve::server::config::{GrpcServerConfig, JsonRpcServerConfig};
 use zaino_state::{
     BlockchainSource, ChainIndex, LightWalletIndexer, NodeBackedChainIndexSubscriber,
     NodeBackedIndexerService, NodeBackedIndexerServiceConfig, NodeBackedIndexerServiceSubscriber,
-    ZcashService,
+    WithChainHeadSource, ZcashService,
 };
 use zaino_status::{Liveness, Readiness, Status};
 use zainodlib::{config::BackendType, error::IndexerError, indexer::Indexer};
@@ -298,7 +298,9 @@ pub trait PollableTip: Status + Sync {
     fn tip_height(&self) -> impl std::future::Future<Output = u64>;
 }
 
-impl<Source: BlockchainSource> PollableTip for NodeBackedIndexerServiceSubscriber<Source> {
+impl<Source: BlockchainSource + WithChainHeadSource> PollableTip
+    for NodeBackedIndexerServiceSubscriber<Source>
+{
     async fn tip_height(&self) -> u64 {
         self.get_latest_block()
             .await
@@ -307,12 +309,11 @@ impl<Source: BlockchainSource> PollableTip for NodeBackedIndexerServiceSubscribe
     }
 }
 
-impl<Source: BlockchainSource> PollableTip for NodeBackedChainIndexSubscriber<Source> {
+impl<Source: BlockchainSource + WithChainHeadSource> PollableTip
+    for NodeBackedChainIndexSubscriber<Source>
+{
     async fn tip_height(&self) -> u64 {
-        let snapshot = self
-            .snapshot_nonfinalized_state()
-            .await
-            .expect("PollableTip: chain-index snapshot_nonfinalized_state failed");
+        let snapshot = self.snapshot_nonfinalized_state();
         u64::from(u32::from(
             self.best_chaintip(&snapshot)
                 .await
@@ -466,9 +467,15 @@ pub static ZEBRAD_CHAIN_CACHE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
 });
 
 /// Path for the Zebra chain cache of The Public Testnet in the user's home directory.
-pub static ZEBRAD_THE_PUB_TESTNET_CACHE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
+pub static ZEBRAD_HOME_CACHE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
     let home_path = PathBuf::from(std::env::var("HOME").unwrap());
     Some(home_path.join(".cache/zebra"))
+});
+
+/// Path for the Zebra chain cache testnet state directory of The Public Testnet in the user's home directory.
+pub static ZEBRAD_TESTNET_STATE_DIR: Lazy<Option<PathBuf>> = Lazy::new(|| {
+    let home_path = PathBuf::from(std::env::var("HOME").unwrap());
+    Some(home_path.join(".cache/zebra/state/testnet"))
 });
 
 #[derive(Debug, PartialEq, Clone, Copy)]
