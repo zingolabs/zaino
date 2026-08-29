@@ -15,10 +15,10 @@ use tokio::time::{sleep, Duration};
 use tokio_stream::StreamExt as _;
 use zaino_chain_head::ChainHeadSnapshot as _;
 use zaino_primitives::types::rpc::{AddressDeltas, AddressDeltasRequest};
+use zaino_primitives::types::HashOrHeight;
 use zebra_chain::serialization::{ZcashDeserializeInto, ZcashSerialize as _};
 use zebra_rpc::client::{GetAddressBalanceRequest, GetAddressTxIdsRequest};
 use zebra_rpc::methods::GetBlock;
-use zebra_state::HashOrHeight;
 
 /// Polls the indexer's nonfinalized-state snapshot until its best-tip height
 /// equals `expected`, or panics after a 10 s budget.
@@ -1137,7 +1137,9 @@ async fn z_get_block() {
     let active_height = mockchain.source().active_height();
 
     for height in [1u32, active_height / 2, active_height] {
-        let id = HashOrHeight::Height(zebra_chain::block::Height(height));
+        let id = HashOrHeight::Height(
+            zaino_primitives::types::Height::try_from(height).expect("test height in range"),
+        );
         let expected_block = mockchain.get_block(id).await.unwrap().unwrap();
 
         // Verbosity 0: the raw serialized block round-trips to the stored block.
@@ -1183,7 +1185,9 @@ async fn get_block_header() {
     let active_height = mockchain.source().active_height();
 
     for height in [1u32, active_height / 2, active_height] {
-        let id = HashOrHeight::Height(zebra_chain::block::Height(height));
+        let id = HashOrHeight::Height(
+            zaino_primitives::types::Height::try_from(height).expect("test height in range"),
+        );
         let block = mockchain.get_block(id).await.unwrap().unwrap();
         let hash = block.hash().to_string();
 
@@ -1220,7 +1224,9 @@ async fn get_block_deltas() {
 
     let mut saw_delta_entries = false;
     for height in [1u32, active_height / 2, active_height] {
-        let id = HashOrHeight::Height(zebra_chain::block::Height(height));
+        let id = HashOrHeight::Height(
+            zaino_primitives::types::Height::try_from(height).expect("test height in range"),
+        );
         let block = mockchain.get_block(id).await.unwrap().unwrap();
         let hash = block.hash().to_string();
 
@@ -1417,32 +1423,6 @@ async fn service_drop_survives_current_thread_runtime() {
     })
     .join()
     .expect("dropping the service on a current-thread runtime must not panic");
-}
-
-/// The `Rpc` connection has no local chain-tip-change stream, so requesting a
-/// chain-tip subscriber over such a source must yield `None` rather than
-/// panic. Before this method returned `Option`, it existed only in a
-/// panicking form (`.expect("chaintip_update_subscriber requires the Direct
-/// connection")`) reachable by any embedder configured with `backend = "rpc"`;
-/// pre-merge the misuse was a compile error because only the State-backed
-/// subscriber type had the method.
-#[tokio::test(flavor = "multi_thread")]
-async fn chaintip_update_subscriber_absent_without_tip_stream() {
-    use crate::indexer::node_backed_indexer::NodeBackedIndexerServiceSubscriber;
-    use zaino_common::network::ActivationHeights;
-
-    let (_blocks, _indexer, index_reader, _mockchain) =
-        load_test_vectors_and_sync_chain_index(MockchainMode::Static).await;
-
-    let service = NodeBackedIndexerServiceSubscriber::new_for_test(
-        index_reader,
-        ActivationHeights::default().to_regtest_network(),
-    );
-
-    assert!(
-        service.chaintip_update_subscriber().is_none(),
-        "a source with no local tip-change stream must yield no subscriber, not panic"
-    );
 }
 
 /// `sendrawtransaction` rejections must carry the legacy full node's legacy error code:

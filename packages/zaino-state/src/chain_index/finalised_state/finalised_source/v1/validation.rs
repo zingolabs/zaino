@@ -616,8 +616,7 @@ impl DbV1 {
         let height = match hash_or_height {
             // Height lookup path.
             HashOrHeight::Height(z_height) => {
-                let height = Height::try_from(z_height.0)
-                    .map_err(|_| FinalisedStateError::Custom("height out of range".into()))?;
+                let height = Height::from(z_height);
 
                 // Check if height is below validated tip,
                 // this avoids hash lookups for height based fetch under the valdated tip.
@@ -696,12 +695,11 @@ impl DbV1 {
     ) -> Result<Height, FinalisedStateError> {
         match hash_or_height {
             // Fast path: we already have the hash.
-            HashOrHeight::Height(z_height) => Ok(Height::try_from(z_height.0)
-                .map_err(|_| FinalisedStateError::DataUnavailable("height out of range".into()))?),
+            HashOrHeight::Height(z_height) => Ok(Height::from(z_height)),
 
             // Height lookup path.
             HashOrHeight::Hash(z_hash) => {
-                let hash = BlockHash::from(z_hash.0);
+                let hash = BlockHash::from(z_hash);
                 let hkey = hash.to_bytes()?;
 
                 let height: Height = tokio::task::block_in_place(|| {

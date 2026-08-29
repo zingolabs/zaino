@@ -339,8 +339,9 @@ pub(crate) async fn fetch_block_for_indexing<S: BlockchainSource>(
     height_int: u32,
 ) -> Result<FetchedBlock, FinalisedStateError> {
     let block = match source
-        .get_block(zebra_state::HashOrHeight::Height(
-            zebra_chain::block::Height(height_int),
+        .get_block(zaino_primitives::types::HashOrHeight::Height(
+            zaino_primitives::types::Height::try_from(height_int)
+                .map_err(|e| FinalisedStateError::Custom(e.to_string()))?,
         ))
         .await?
     {
@@ -1289,8 +1290,9 @@ impl<T: BlockchainSource> FinalisedState<T> {
 
         for height in crate::chain_index::types::GENESIS_HEIGHT.0..=tip.0 {
             let block = source
-                .get_block(zebra_state::HashOrHeight::Height(
-                    zebra_chain::block::Height(height),
+                .get_block(zaino_primitives::types::HashOrHeight::Height(
+                    zaino_primitives::types::Height::try_from(height)
+                        .map_err(|e| FinalisedStateError::Custom(e.to_string()))?,
                 ))
                 .await?
                 .ok_or_else(|| {

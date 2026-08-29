@@ -60,9 +60,6 @@ zaino-state = { workspace = true }
 zaino-chain-head-service = { workspace = true }
 zaino-serve = { workspace = true }
 
-# Zebra
-zebra-state = { workspace = true }
-
 # Runtime
 tokio = { workspace = true, features = ["full"] }
 

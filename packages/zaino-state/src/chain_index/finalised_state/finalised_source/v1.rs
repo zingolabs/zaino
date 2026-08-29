@@ -49,9 +49,9 @@ use zaino_status::{NamedAtomicStatus, StatusType};
 #[cfg(feature = "transparent_address_history_experimental")]
 use crate::{chain_index::types::AddrEventBytes, AddrHistRecord, AddrScript};
 
+use zaino_primitives::types::HashOrHeight;
 use zaino_proto::proto::{compact_formats::CompactBlock, utils::PoolTypeFilter};
 use zebra_chain::parameters::NetworkKind;
-use zebra_state::HashOrHeight;
 
 use super::LmdbLifecycle;
 

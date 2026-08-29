@@ -1,5 +1,5 @@
 use zaino_common::network::ActivationHeights;
-use zaino_testutils::{Direct, Rpc, TestManager, ValidatorExt, ValidatorKind};
+use zaino_testutils::{Rpc, TestManager, ValidatorExt, ValidatorKind};
 
 /// The validator's own `z_getsubtreesbyindex` answer, as `(root, end_height)`
 /// pairs.
@@ -77,7 +77,7 @@ mod chain_query_interface {
     use std::time::Duration;
 
     use futures::TryStreamExt as _;
-    use zaino_common::{CacheConfig, DatabaseConfig, ServiceConfig, StorageConfig};
+    use zaino_common::{DatabaseConfig, StorageConfig};
     use zaino_state::{
         chain_index::{
             validator_source::ZebraValidatorSource, NodeBackedChainIndex,
@@ -87,16 +87,10 @@ mod chain_query_interface {
             chain_index::{ChainIndex, ChainIndexRpcExt},
             ChainIndexConfig,
         },
-        Height, NodeBackedIndexerService, NodeBackedIndexerServiceConfig, ZcashService,
+        Height,
     };
     use zcash_local_net::validator::zebrad::Zebrad;
-    use zebra_chain::{
-        parameters::{
-            testnet::{ConfiguredActivationHeights, RegtestParameters},
-            NetworkKind,
-        },
-        serialization::ZcashDeserializeInto,
-    };
+    use zebra_chain::serialization::ZcashDeserializeInto;
 
     use super::*;
 
@@ -110,7 +104,6 @@ mod chain_query_interface {
     ) -> (
         TestManager<C, Conn>,
         zaino_testutils::ValidatorOracle,
-        Option<NodeBackedIndexerService>,
         NodeBackedChainIndex,
         NodeBackedChainIndexSubscriber,
     )
@@ -127,128 +120,45 @@ mod chain_query_interface {
         )
         .await;
 
-        match validator {
-            ValidatorKind::Zebrad => {
-                let state_chain_cache_dir = match chain_cache {
-                    Some(dir) => dir,
-                    None => test_manager.data_dir.clone(),
-                };
-                let network = match test_manager.network {
-                    NetworkKind::Regtest => {
-                        let local_net_activation_heights =
-                            test_manager.local_net.get_activation_heights().await;
+        let config = ChainIndexConfig {
+            storage: StorageConfig {
+                database: DatabaseConfig {
+                    path: test_manager
+                        .data_dir
+                        .as_path()
+                        .to_path_buf()
+                        .join("chain-index-zaino"),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ephemeral,
+            mempool: Default::default(),
+            db_version: 1,
+            // This fixture derives its runtime network from the
+            // heights the harness launched the validator with.
+            network: zaino_testutils::from_local_net_activation_heights(
+                &test_manager.local_net.get_activation_heights().await,
+            )
+            .to_regtest_network(),
+        };
+        let source = ZebraValidatorSource::rpc_only(
+            &test_manager.full_node_rpc_listen_address.to_string(),
+            Some(("xxxxxx".to_string(), "xxxxxx".to_string())),
+            config.network.clone(),
+        )
+        .unwrap();
+        let chain_index = NodeBackedChainIndex::new(source, config).await.unwrap();
+        let index_reader = chain_index.subscriber();
+        tokio::time::sleep(Duration::from_secs(3)).await;
 
-                        zebra_chain::parameters::Network::new_regtest(RegtestParameters::from(
-                            ConfiguredActivationHeights {
-                                before_overwinter: local_net_activation_heights.overwinter(),
-                                overwinter: local_net_activation_heights.overwinter(),
-                                sapling: local_net_activation_heights.sapling(),
-                                blossom: local_net_activation_heights.blossom(),
-                                heartwood: local_net_activation_heights.heartwood(),
-                                canopy: local_net_activation_heights.canopy(),
-                                nu5: local_net_activation_heights.nu5(),
-                                nu6: local_net_activation_heights.nu6(),
-                                nu6_1: local_net_activation_heights.nu6_1(),
-                                nu6_2: local_net_activation_heights.nu6_2(),
-                                nu6_3: local_net_activation_heights.nu6_3(),
-                                nu7: local_net_activation_heights.nu7(),
-                            },
-                        ))
-                    }
-
-                    NetworkKind::Testnet => zebra_chain::parameters::Network::new_default_testnet(),
-                    NetworkKind::Mainnet => zebra_chain::parameters::Network::Mainnet,
-                };
-                // FIXME: when the direct connection is integrated into chain index this initialization must change
-                let state_service =
-                    NodeBackedIndexerService::spawn(NodeBackedIndexerServiceConfig::new_direct(
-                        zebra_state::Config {
-                            cache_dir: state_chain_cache_dir,
-                            ephemeral: false,
-                            delete_old_database: true,
-                            debug_stop_at_height: None,
-                            debug_validity_check_interval: None,
-                            // todo: does this matter?
-                            should_backup_non_finalized_state: true,
-                            debug_skip_non_finalized_state_backup_task: false,
-                        },
-                        test_manager.full_node_rpc_listen_address.to_string(),
-                        test_manager.full_node_grpc_listen_address,
-                        false,
-                        None,
-                        None,
-                        None,
-                        ServiceConfig::default(),
-                        StorageConfig {
-                            cache: CacheConfig::default(),
-                            database: DatabaseConfig {
-                                path: test_manager
-                                    .data_dir
-                                    .as_path()
-                                    .to_path_buf()
-                                    .join("state-service-zaino"),
-                                ..Default::default()
-                            },
-                        },
-                        false,
-                        network.into(),
-                        None,
-                    ))
-                    .await
-                    .unwrap();
-                let config = ChainIndexConfig {
-                    storage: StorageConfig {
-                        database: DatabaseConfig {
-                            path: test_manager
-                                .data_dir
-                                .as_path()
-                                .to_path_buf()
-                                .join("chain-index-zaino"),
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    },
-                    ephemeral,
-                    mempool: Default::default(),
-                    db_version: 1,
-                    // This fixture derives its runtime network from the
-                    // heights the harness launched the validator with.
-                    network: zaino_testutils::from_local_net_activation_heights(
-                        &test_manager.local_net.get_activation_heights().await,
-                    )
-                    .to_regtest_network(),
-                };
-
-                // **NOTE** The "fetch" backend is currently the backend used in the wild, and
-                // by zallet, although we want to push the community to transition to the
-                // "state" backend these tests using the "fetch" backend is currently useful
-                // for debugging bugs raised byt zallet devs.
-                let source = ZebraValidatorSource::rpc_only(
-                    &test_manager.full_node_rpc_listen_address.to_string(),
-                    Some(("xxxxxx".to_string(), "xxxxxx".to_string())),
-                    config.network.clone(),
-                )
-                .unwrap();
-                let chain_index = NodeBackedChainIndex::new(source, config).await.unwrap();
-
-                let index_reader = chain_index.subscriber();
-                tokio::time::sleep(Duration::from_secs(3)).await;
-
-                (
-                    test_manager,
-                    json_service,
-                    Some(state_service),
-                    chain_index,
-                    index_reader,
-                )
-            }
-        }
+        (test_manager, json_service, chain_index, index_reader)
     }
 
     // #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_block_range_zebrad() {
-        get_block_range::<Zebrad, Direct>(&ValidatorKind::Zebrad).await
+        get_block_range::<Zebrad, Rpc>(&ValidatorKind::Zebrad).await
     }
 
     async fn get_block_range<C, Conn>(validator: &ValidatorKind)
@@ -256,7 +166,7 @@ mod chain_query_interface {
         C: ValidatorExt,
         Conn: zaino_testutils::ValidatorConnectionMarker,
     {
-        let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
+        let (test_manager, _json_service, _chain_index, indexer) =
             create_test_manager_and_chain_index::<C, Conn>(validator, None, false, false, false)
                 .await;
 
@@ -279,7 +189,7 @@ mod chain_query_interface {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn ephemeral_serves_finalised_blocks_zebrad() {
-        ephemeral_serves_finalised_blocks::<Zebrad, Direct>(&ValidatorKind::Zebrad).await
+        ephemeral_serves_finalised_blocks::<Zebrad, Rpc>(&ValidatorKind::Zebrad).await
     }
 
     /// Ephemeral mode on regtest: the chain index opens no persistent
@@ -302,7 +212,7 @@ mod chain_query_interface {
     {
         use zaino_proto::proto::utils::PoolTypeFilter;
 
-        let (test_manager, json_service, _option_state_service, _chain_index, indexer) =
+        let (test_manager, json_service, _chain_index, indexer) =
             create_test_manager_and_chain_index::<C, Conn>(validator, None, false, false, true)
                 .await;
 
@@ -378,7 +288,7 @@ mod chain_query_interface {
     #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn sync_large_chain_zebrad() {
-        sync_large_chain::<Zebrad, Direct>(&ValidatorKind::Zebrad).await
+        sync_large_chain::<Zebrad, Rpc>(&ValidatorKind::Zebrad).await
     }
 
     async fn sync_large_chain<C, Conn>(validator: &ValidatorKind)
@@ -386,27 +296,17 @@ mod chain_query_interface {
         C: ValidatorExt,
         Conn: zaino_testutils::ValidatorConnectionMarker,
     {
-        let (test_manager, json_service, option_state_service, _chain_index, indexer) =
+        let (test_manager, json_service, _chain_index, indexer) =
             create_test_manager_and_chain_index::<C, Conn>(validator, None, false, false, false)
                 .await;
 
         test_manager
             .generate_blocks_and_wait_for_tip(5, &indexer)
             .await;
-        if let Some(state_service) = option_state_service.as_ref() {
-            test_manager
-                .generate_blocks_and_wait_for_tip(0, state_service.get_subscriber().inner_ref())
-                .await
-        }
 
         test_manager
             .generate_blocks_and_wait_for_tip(150, &indexer)
             .await;
-        if let Some(state_service) = option_state_service.as_ref() {
-            test_manager
-                .generate_blocks_and_wait_for_tip(0, state_service.get_subscriber().inner_ref())
-                .await;
-        }
 
         tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
 
@@ -449,7 +349,7 @@ mod chain_query_interface {
     // #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
     #[tokio::test(flavor = "multi_thread")]
     async fn get_subtree_roots_zebrad() {
-        get_subtree_roots::<Zebrad, Direct>(&ValidatorKind::Zebrad).await
+        get_subtree_roots::<Zebrad, Rpc>(&ValidatorKind::Zebrad).await
     }
 
     async fn get_subtree_roots<C, Conn>(validator: &ValidatorKind)
@@ -457,7 +357,7 @@ mod chain_query_interface {
         C: ValidatorExt,
         Conn: zaino_testutils::ValidatorConnectionMarker,
     {
-        let (test_manager, json_service, _option_state_service, _chain_index, indexer) =
+        let (test_manager, json_service, _chain_index, indexer) =
             create_test_manager_and_chain_index::<C, Conn>(validator, None, false, false, false)
                 .await;
 
@@ -528,7 +428,7 @@ mod chain_query_interface {
         use futures::StreamExt as _;
         use tokio::time::{timeout, Duration};
 
-        let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
+        let (test_manager, _json_service, _chain_index, indexer) =
             create_test_manager_and_chain_index::<C, Conn>(validator, None, false, false, false)
                 .await;
 
@@ -576,7 +476,7 @@ mod chain_query_interface {
         use futures::{StreamExt as _, TryStreamExt as _};
         use tokio::time::{timeout, Duration};
 
-        let (test_manager, _json_service, _option_state_service, _chain_index, indexer) =
+        let (test_manager, _json_service, _chain_index, indexer) =
             create_test_manager_and_chain_index::<C, Conn>(validator, None, false, false, false)
                 .await;
 

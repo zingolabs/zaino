@@ -10,8 +10,6 @@ members = [
     "packages/zaino-rpc",
     "packages/zaino-convert-zebra",
     "packages/zaino-source-zebra-rpc",
-    "packages/zaino-source-zebra-readstate",
-    "packages/zaino-source-zebra",
     "packages/zaino-mempool",
     "packages/zaino-mempool-service",
     "packages/zaino-common",
@@ -44,8 +42,6 @@ default-members = [
     "packages/zaino-rpc",
     "packages/zaino-convert-zebra",
     "packages/zaino-source-zebra-rpc",
-    "packages/zaino-source-zebra-readstate",
-    "packages/zaino-source-zebra",
     "packages/zaino-mempool",
     "packages/zaino-mempool-service",
     "packages/zaino-common",
@@ -173,14 +169,8 @@ zaino-mempool-service = { path = "packages/zaino-mempool-service", version = "0.
 zaino-rpc = { path = "packages/zaino-rpc", version = "0.1.0" }
 # The single place `zebra_chain` types are translated into domain types.
 zaino-convert-zebra = { path = "packages/zaino-convert-zebra", version = "0.1.0" }
-# Source adapters. The RPC adapter answers every question over the Zcash
-# JSON-RPC interface; the ReadState adapter answers the subset zebra's
-# in-process state can serve, and simply does not implement the rest.
+# Source adapter: answers every question over the Zcash JSON-RPC interface.
 zaino-source-zebra-rpc = { path = "packages/zaino-source-zebra-rpc", version = "0.1.0" }
-zaino-source-zebra-readstate = { path = "packages/zaino-source-zebra-readstate", version = "0.1.0" }
-# Composite over the two adapters: capability decides what each can answer,
-# this decides which to ask.
-zaino-source-zebra = { path = "packages/zaino-source-zebra", version = "0.1.0" }
 zaino-common = { path = "packages/zaino-common", version = "0.5.0" }
 # ChainHead: the bounded non-finalised block graph, its canonical chain, and the
 # competing branches retained alongside it. This crate is the domain half —

@@ -449,36 +449,4 @@ mod zebrad {
             crate::shield_deposits_to_orchard_before_boundary::<Rpc>().await;
         }
     }
-
-    mod state_service {
-        use zaino_testutils::Direct;
-
-        /// multi_thread required: the test manager spawns the validator and
-        /// indexer services.
-        #[tokio::test(flavor = "multi_thread")]
-        async fn unified_receipt_lands_in_orchard_before_boundary() {
-            crate::unified_receipt_lands_in_orchard_before_boundary::<Direct>().await;
-        }
-
-        /// multi_thread required: the test manager spawns the validator and
-        /// indexer services.
-        #[tokio::test(flavor = "multi_thread")]
-        async fn orchard_note_spends_to_ironwood_across_boundary() {
-            crate::orchard_note_spends_to_ironwood_across_boundary::<Direct>().await;
-        }
-
-        /// multi_thread required: the test manager spawns the validator and
-        /// indexer services.
-        #[tokio::test(flavor = "multi_thread")]
-        async fn receipts_flip_pools_exactly_at_the_boundary() {
-            crate::receipts_flip_pools_exactly_at_the_boundary::<Direct>().await;
-        }
-
-        /// multi_thread required: the test manager spawns the validator and
-        /// indexer services.
-        #[tokio::test(flavor = "multi_thread")]
-        async fn shield_deposits_to_orchard_before_boundary() {
-            crate::shield_deposits_to_orchard_before_boundary::<Direct>().await;
-        }
-    }
 }

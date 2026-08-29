@@ -35,11 +35,10 @@ line:
 
 Three things about them matter:
 
-- **`backend = 'direct'`** — the Direct backend reads Zebra's `ReadStateService`
-  in-process, which is the fastest path Zaino has. It requires zainod and zebrad
-  on the same host. Measuring `'rpc'` instead answers a different question (what
-  Zaino can do against a *remote* validator), so say which one you measured.
-  `'state'` is the legacy spelling of `'direct'`; either parses.
+- **`backend = 'rpc'`** — the validator is reached over JSON-RPC; the direct
+  `ReadStateService` backend was removed, so this is the only connection and
+  the one the published numbers measure. `'fetch'` is the legacy spelling;
+  either parses.
 - **`ephemeral_finalised_state`** — in persistent mode a finalised read is
   answered from Zaino's own index; in ephemeral mode Zaino keeps no index and
   passes the read through to the validator. Those are different machinery, so

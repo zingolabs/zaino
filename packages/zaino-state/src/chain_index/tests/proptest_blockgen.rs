@@ -1042,9 +1042,7 @@ fn wrap_proptest_mockchain(
     source: ProptestMockchain,
     network: zebra_chain::parameters::Network,
 ) -> ValidatorSource<ProptestMockchain> {
-    // No zebra state service behind a generated chain, so no `ChainTipChange`
-    // stream — the same as an RPC-only deployment.
-    ValidatorSource::new(source, network, None)
+    ValidatorSource::new(source, network)
 }
 
 // ***** zaino-source port implementations *****

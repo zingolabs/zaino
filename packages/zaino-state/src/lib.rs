@@ -61,7 +61,7 @@ pub use indexer::{
 };
 
 pub use indexer::node_backed_indexer::{
-    ChainTipSubscriber, NodeBackedIndexerService, NodeBackedIndexerServiceSubscriber,
+    NodeBackedIndexerService, NodeBackedIndexerServiceSubscriber,
 };
 
 pub mod chain_index;
@@ -114,8 +114,7 @@ pub mod test_dependencies {
 pub(crate) mod config;
 
 pub use config::{
-    ChainIndexConfig, CommonBackendConfig, DirectConnectionConfig, DonationAddress,
-    NodeBackedIndexerServiceConfig, ValidatorConnectionType,
+    ChainIndexConfig, CommonBackendConfig, DonationAddress, NodeBackedIndexerServiceConfig,
 };
 
 pub(crate) mod error;

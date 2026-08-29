@@ -42,39 +42,6 @@ impl std::fmt::Display for DonationAddress {
     }
 }
 
-/// How the [`NodeBackedIndexerService`](crate::NodeBackedIndexerService) connects to its
-/// validator to source blockchain data.
-///
-/// Carries the connection-specific configuration inline: the `Direct` variant owns the
-/// Zebra `ReadStateService` settings, while `Rpc` needs only the JSON-RPC connection bits
-/// already held in [`CommonBackendConfig`].
-#[derive(Debug, Clone)]
-pub enum ValidatorConnectionType {
-    /// JSON-RPC connection (formerly `Fetch`).
-    ///
-    /// Compatible with Zebra or another Zaino instance.
-    Rpc,
-    /// Direct Zebra `ReadStateService` connection (formerly `State`).
-    ///
-    /// More efficient but requires running alongside a Zebra whose state DB and gRPC
-    /// sync endpoint we own.
-    Direct(DirectConnectionConfig),
-}
-
-/// Connection parameters for the [`ValidatorConnectionType::Direct`] backend.
-///
-/// Bundles the Zebra `ReadStateService` DB config with the gRPC sync endpoint used to
-/// drive it, so the whole "direct connection" description travels as one value.
-#[derive(Debug, Clone)]
-pub struct DirectConnectionConfig {
-    /// Zebra [`zebra_state::ReadStateService`] config data (DB cache dir etc.).
-    pub validator_state_config: zebra_state::Config,
-    /// Validator gRPC address (requires ip:port format for Zebra state sync).
-    pub validator_grpc_address: std::net::SocketAddr,
-    /// Whether validator cookie authentication is enabled.
-    pub validator_cookie_auth: bool,
-}
-
 /// Configuration shared by every backend variant.
 ///
 /// Carries the validator-RPC connection bits plus the runtime indexer
@@ -162,19 +129,16 @@ impl CommonBackendConfig {
 
 /// Holds config data for [`crate::NodeBackedIndexerService`].
 ///
-/// Replaces the former per-backend `FetchServiceConfig` / `StateServiceConfig`: the
-/// shared bits live in [`CommonBackendConfig`] and the backend-specific bits (only the
-/// `Direct` backend has any) live in [`ValidatorConnectionType`].
+/// Wraps [`CommonBackendConfig`] as the service's named config type; the
+/// validator is always reached over JSON-RPC.
 #[derive(Debug, Clone)]
 pub struct NodeBackedIndexerServiceConfig {
     /// Connection-independent settings (validator RPC, storage, network, ...).
     pub common: CommonBackendConfig,
-    /// Which validator connection to use, and its connection-specific config.
-    pub connection: ValidatorConnectionType,
 }
 
 impl NodeBackedIndexerServiceConfig {
-    /// Returns a JSON-RPC (`Rpc`) service config (formerly `FetchServiceConfig::new`).
+    /// Returns a JSON-RPC service config (formerly `FetchServiceConfig::new`).
     #[allow(clippy::too_many_arguments)]
     pub fn new_rpc(
         validator_rpc_address: String,
@@ -199,46 +163,6 @@ impl NodeBackedIndexerServiceConfig {
                 network,
                 donation_address,
             ),
-            connection: ValidatorConnectionType::Rpc,
-        }
-    }
-
-    /// Returns a direct-`ReadStateService` (`Direct`) service config
-    /// (formerly `StateServiceConfig::new`).
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_direct(
-        validator_state_config: zebra_state::Config,
-        validator_rpc_address: String,
-        validator_grpc_address: std::net::SocketAddr,
-        validator_cookie_auth: bool,
-        validator_cookie_path: Option<PathBuf>,
-        validator_rpc_user: Option<String>,
-        validator_rpc_password: Option<String>,
-        service: ServiceConfig,
-        storage: StorageConfig,
-        ephemeral_finalised_state: bool,
-        network: Network,
-        donation_address: Option<DonationAddress>,
-    ) -> Self {
-        // The config carries only the network kind; the activation schedule
-        // is adopted from the validator at spawn and logged there (#1076).
-        NodeBackedIndexerServiceConfig {
-            common: CommonBackendConfig::new(
-                validator_rpc_address,
-                validator_cookie_path,
-                validator_rpc_user,
-                validator_rpc_password,
-                service,
-                storage,
-                ephemeral_finalised_state,
-                network,
-                donation_address,
-            ),
-            connection: ValidatorConnectionType::Direct(DirectConnectionConfig {
-                validator_state_config,
-                validator_grpc_address,
-                validator_cookie_auth,
-            }),
         }
     }
 }

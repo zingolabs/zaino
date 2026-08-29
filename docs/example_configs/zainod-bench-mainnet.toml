@@ -4,7 +4,7 @@
 # the measuring host; change them for yours, but keep the two choices that make
 # the numbers mean what they claim:
 #
-#   backend = 'direct'                  the fastest path Zaino has
+#   backend = 'rpc'                     the only validator connection
 #   ephemeral_finalised_state = false   Zaino answers from its own index
 #
 # Pair it with `zainod-bench-mainnet-ephemeral.toml`, which flips the second.
@@ -18,13 +18,9 @@
 #
 # See `packages/zaino-bench/usage.md` for the full run procedure.
 
-# "direct" reads Zebra's ReadStateService in-process; requires zainod and zebrad
-# on the same host. ("state" is the legacy spelling of the same value.) The
-# alternative, "rpc" ("fetch"), goes over JSON-RPC — a different question.
-backend = 'direct'
-
-# Zebra's `[state] cache_dir`, verbatim.
-zebra_db_path = '<PATH_TO_ZEBRA>'
+# "rpc" ("fetch" is the legacy spelling) reaches the validator over JSON-RPC —
+# the only connection since the direct ReadStateService backend was removed.
+backend = 'rpc'
 
 network = 'Mainnet'
 
@@ -40,16 +36,7 @@ metrics_endpoint = '127.0.0.1:9998'
 listen_address = '127.0.0.1:8137'
 
 [validator_settings]
-# Must match zebrad.toml's `[rpc]`, and the two must differ from each other
-# (zainod rejects a config where they collide):
-#
-#   [rpc]
-#   listen_addr         = '127.0.0.1:18232'   -> validator_jsonrpc_listen_address
-#   indexer_listen_addr = '127.0.0.1:18230'   -> validator_grpc_listen_address
-#
-# The gRPC address is required by the Direct backend; zainod refuses to start on
-# Direct without it.
-validator_grpc_listen_address = '127.0.0.1:18230'
+# Must match zebrad.toml's `[rpc] listen_addr`.
 validator_jsonrpc_listen_address = '127.0.0.1:18232'
 validator_user = 'xxxxxx'
 validator_password = 'xxxxxx'
