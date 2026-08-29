@@ -6,10 +6,10 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use tokio::sync::Mutex;
+use zaino_primitives::types::HashOrHeight;
 use zaino_proto::proto::compact_formats::CompactBlock;
 use zaino_status::{NamedAtomicStatus, StatusType};
 use zcash_protocol::consensus::Parameters as _;
-use zebra_state::HashOrHeight;
 
 use crate::chain_index::finalised_state::capability::{DbCore, DbWrite};
 use crate::chain_index::finalised_state::DbMetadata;

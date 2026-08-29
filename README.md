@@ -39,8 +39,6 @@ packages/                          Cargo workspace member crates, in dependency 
   zaino-rpc/                         JSON-RPC transport (no parsing)
   zaino-convert-zebra/               zebra-chain -> domain conversions
   zaino-source-zebra-rpc/            JSON-RPC adapter + response parsing
-  zaino-source-zebra-readstate/      Zebra ReadStateService adapter
-  zaino-source-zebra/                ZebraValidator composite + routing
   zaino-mempool/                     Mempool domain types and ports (no node library)
   zaino-mempool-service/             The mempool runtime: poll loop, read handles, coherence
   zaino-common/                      Shared utilities and configuration
@@ -158,8 +156,6 @@ mistakes its design is trying to prevent.
 - [`zaino-rpc`](./packages/zaino-rpc/usage.md): JSON-RPC transport, and what it deliberately does not do.
 - [`zaino-convert-zebra`](./packages/zaino-convert-zebra/usage.md): `zebra-chain` → domain conversions.
 - [`zaino-source-zebra-rpc`](./packages/zaino-source-zebra-rpc/usage.md): the JSON-RPC adapter and its error classification.
-- [`zaino-source-zebra-readstate`](./packages/zaino-source-zebra-readstate/usage.md): the read-state adapter, and what it deliberately cannot answer.
-- [`zaino-source-zebra`](./packages/zaino-source-zebra/usage.md): the composite and its three routing rules.
 - [`zaino-address`](./packages/zaino-address/usage.md): address classification, and what is not classified.
 - [`zaino-mempool`](./packages/zaino-mempool/usage.md): the two-layer model, the ports, and the bounds.
 - [`zaino-mempool-service`](./packages/zaino-mempool-service/usage.md): spawning and consuming the mempool.

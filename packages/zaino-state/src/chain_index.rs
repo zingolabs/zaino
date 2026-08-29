@@ -47,6 +47,7 @@ use zaino_primitives::types::rpc::{
     AddressDeltas, AddressDeltasRequest, BlockDeltas, BlockHeaderVerbose, BlockSubsidy, MiningInfo,
     NodeInfo, PeerInfo,
 };
+use zaino_primitives::types::HashOrHeight;
 use zaino_proto::proto::utils::{prune_compact_block, PoolTypeFilter};
 use zebra_chain::parameters::ConsensusBranchId;
 pub use zebra_chain::parameters::Network as ZebraNetwork;
@@ -55,7 +56,6 @@ use zebra_rpc::{
     client::{GetAddressBalanceRequest, GetAddressTxIdsRequest},
     methods::GetBlock,
 };
-use zebra_state::HashOrHeight;
 
 /// ChainIndex's side of the ChainHead boundary: handing ChainHead a validator,
 /// and re-expressing its blocks in this crate's vocabulary.
@@ -1180,7 +1180,7 @@ async fn compact_block_from_source<Source: BlockchainSource>(
     pool_types: &PoolTypeFilter,
 ) -> Result<Option<zaino_proto::proto::compact_formats::CompactBlock>, ChainIndexError> {
     let Some(block) = source
-        .get_block(HashOrHeight::Height(zebra_chain::block::Height(height.0)))
+        .get_block(HashOrHeight::Height(height.into()))
         .await
         .map_err(ChainIndexError::backing_validator)?
     else {
@@ -1654,7 +1654,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> ChainIndex
                                 None => self
                                     // usually getting by height is not reorg-safe, but here, height is known to be below or equal to validator_finalized_height.
                                     .get_fullblock_bytes_from_node(HashOrHeight::Height(
-                                        zebra_chain::block::Height(height),
+                                        types::Height(height).into(),
                                     ))
                                     .await?
                                     .ok_or(ChainIndexError::database_hole(height, None)),
@@ -2403,12 +2403,14 @@ impl<Source: BlockchainSource + WithChainHeadSource> ChainIndexRpcExt
         // downcast-walking the error chain.
         let snapshot = self.snapshot_nonfinalized_state();
         let tip = self.best_chaintip(&snapshot).await?;
-        let id = HashOrHeight::new(&hash_or_height, Some(tip.height.into())).map_err(|error| {
-            ChainIndexError::internal_from(crate::error::LegacyRpcError::new(
-                zebra_rpc::server::error::LegacyCode::InvalidParameter,
-                error,
-            ))
-        })?;
+        let id = HashOrHeight::parse_with_tip(&hash_or_height, Some(tip.height.into())).map_err(
+            |error| {
+                ChainIndexError::internal_from(crate::error::LegacyRpcError::new(
+                    zebra_rpc::server::error::LegacyCode::InvalidParameter,
+                    error.to_string(),
+                ))
+            },
+        )?;
         self.source()
             .get_block_verbose(id, verbosity)
             .await

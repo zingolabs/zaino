@@ -41,7 +41,6 @@ zcash_protocol = { workspace = true, features = ["local-consensus"] }
 
 # Zebra
 zebra-chain = { workspace = true }
-zebra-state = { workspace = true }
 zebra-rpc = { workspace = true }
 
 # Zingo-infra

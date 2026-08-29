@@ -327,7 +327,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> PollableTip
 ///
 /// Replaces the former `FetchService` / `StateService` `Service` type parameters:
 /// there is now one service, parameterized by connection. Implementors are the
-/// zero-sized markers [`Rpc`] and [`Direct`].
+/// zero-sized marker [`Rpc`].
 pub trait ValidatorConnectionMarker: Send + Sync + 'static {
     /// The on-disk backend selector this connection maps to.
     const BACKEND: BackendType;
@@ -339,14 +339,6 @@ pub struct Rpc;
 
 impl ValidatorConnectionMarker for Rpc {
     const BACKEND: BackendType = BackendType::Rpc;
-}
-
-/// Direct Zebra `ReadStateService` validator connection (formerly `StateService`).
-#[derive(Debug, Clone, Copy)]
-pub struct Direct;
-
-impl ValidatorConnectionMarker for Direct {
-    const BACKEND: BackendType = BackendType::Direct;
 }
 
 // temporary until activation heights are unified to zebra-chain type.
@@ -499,8 +491,6 @@ pub struct TestManager<C: Validator, Conn: ValidatorConnectionMarker> {
     pub network: NetworkKind,
     /// Validator JsonRpc listen address.
     pub full_node_rpc_listen_address: SocketAddr,
-    /// Validator gRpc listen address.
-    pub full_node_grpc_listen_address: SocketAddr,
     /// Zaino Indexer JoinHandle.
     pub zaino_handle: Option<tokio::task::JoinHandle<Result<(), IndexerError>>>,
     /// Zaino JsonRPC listen address.
@@ -538,11 +528,6 @@ impl ValidatorExt for Zebrad {
                 Ipv4Addr::LOCALHOST,
                 zebrad.rpc_listen_port()
             ),
-            validator_grpc_listen_address: Some(format!(
-                "{}:{}",
-                Ipv4Addr::LOCALHOST,
-                zebrad.indexer_listen_port()
-            )),
             validator_cookie_path: None,
             validator_user: Some("xxxxxx".to_string()),
             validator_password: Some("xxxxxx".to_string()),
@@ -712,11 +697,6 @@ where
         let data_dir = local_net.data_dir().path().to_path_buf();
         let zaino_db_path = data_dir.join("zaino");
 
-        let zebra_db_path = match chain_cache {
-            Some(cache) => cache,
-            None => data_dir.clone(),
-        };
-
         // Launch Zaino:
         let (
             zaino_handle,
@@ -780,7 +760,6 @@ where
                 // that wants different ones sets them on its own config.
                 mempool: Default::default(),
                 ephemeral_finalised_state: false,
-                zebra_db_path,
                 network: zaino_network_kind,
                 donation_address: None,
                 metrics_endpoint: None,
@@ -822,11 +801,6 @@ where
             data_dir,
             network: network_kind,
             full_node_rpc_listen_address,
-            full_node_grpc_listen_address: validator_settings
-                .validator_grpc_listen_address
-                .as_ref()
-                .and_then(|addr| addr.parse().ok())
-                .unwrap_or(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0)),
             zaino_handle,
             zaino_json_rpc_listen_address: zaino_json_listen_address,
             zaino_grpc_listen_address,
@@ -1009,52 +983,43 @@ where
     }
 }
 
-/// Handles from [`launch_state_and_fetch_services`]: a direct-connection
-/// [`TestManager`] plus standalone `Rpc`- and `Direct`-connection
-/// [`NodeBackedIndexerService`]s pointed at the same validator. The owned services
-/// exist only to keep their subscribers alive — tests interact through the manager and
-/// the subscribers.
-///
-/// The `fetch_*` fields carry the `Rpc` (JSON-RPC) connection; the `state_*` fields carry
-/// the `Direct` (`ReadStateService`) connection.
-pub struct StateAndFetchServices<V: Validator> {
-    /// The launched validator + Zaino test manager (direct connection).
-    pub test_manager: TestManager<V, Direct>,
-    /// Owned `Rpc`-connection service; keeps `fetch_subscriber` alive.
+/// Handles from [`launch_fetch_services`]: an `Rpc`-connection
+/// [`TestManager`] plus a standalone `Rpc`-connection
+/// [`NodeBackedIndexerService`] pointed at the same validator. The owned
+/// service exists only to keep its subscriber alive — tests interact through
+/// the manager and the subscriber.
+pub struct FetchServices<V: Validator> {
+    /// The launched validator + Zaino test manager.
+    pub test_manager: TestManager<V, Rpc>,
+    /// Owned service; keeps `fetch_subscriber` alive.
     pub fetch_service: NodeBackedIndexerService,
-    /// Subscriber to the standalone `Rpc`-connection service's chain index.
+    /// Subscriber to the standalone service's chain index.
     pub fetch_subscriber: NodeBackedIndexerServiceSubscriber,
-    /// Owned `Direct`-connection service; keeps `state_subscriber` alive.
-    pub state_service: NodeBackedIndexerService,
-    /// Subscriber to the standalone `Direct`-connection service's chain index.
-    pub state_subscriber: NodeBackedIndexerServiceSubscriber,
 }
 
-impl<V: ValidatorExt> StateAndFetchServices<V> {
-    /// Mine `n` blocks and wait for both the fetch and state subscribers to
-    /// observe the new tip.
-    pub async fn generate_blocks_and_wait_for_tips(&self, n: u32) {
+impl<V: ValidatorExt> FetchServices<V> {
+    /// Mine `n` blocks and wait for the fetch subscriber to observe the new tip.
+    pub async fn generate_blocks_and_wait_for_tip(&self, n: u32) {
         self.test_manager
-            .generate_blocks_and_wait_for_tips(n, &self.fetch_subscriber, &self.state_subscriber)
+            .generate_blocks_and_wait_for_tip(n, &self.fetch_subscriber)
             .await;
     }
 }
 
-/// Launch a state-backend [`TestManager`] alongside standalone [`FetchService`]
-/// and [`StateService`] instances pointed at the same validator, returning the
-/// services and their subscribers as a [`StateAndFetchServices`] bundle.
+/// Launch an `Rpc`-backend [`TestManager`] alongside a standalone
+/// [`NodeBackedIndexerService`] pointed at the same validator, returning the
+/// service and its subscriber as a [`FetchServices`] bundle.
 ///
-/// This is the shared core of the `create_test_manager_and_services` test
-/// harness used by both the clientless and e2e live-test partitions.
-/// Wallet callers wrap this and additionally build lightclients from the
-/// returned manager's gRPC address.
-pub async fn launch_state_and_fetch_services<V: ValidatorExt>(
+/// This is the shared core of the live-test harnesses in the clientless and
+/// e2e partitions. Wallet callers wrap this and additionally build
+/// lightclients from the returned manager's gRPC address.
+pub async fn launch_fetch_services<V: ValidatorExt>(
     validator: &ValidatorKind,
     chain_cache: Option<PathBuf>,
     enable_zaino: bool,
     network: Option<NetworkKind>,
-) -> StateAndFetchServices<V> {
-    launch_state_and_fetch_services_mining_to(
+) -> FetchServices<V> {
+    launch_fetch_services_mining_to(
         default_mining_pool(validator),
         validator,
         chain_cache,
@@ -1064,18 +1029,18 @@ pub async fn launch_state_and_fetch_services<V: ValidatorExt>(
     .await
 }
 
-/// [`launch_state_and_fetch_services`] with the miner's pool chosen by the
+/// [`launch_fetch_services`] with the miner's pool chosen by the
 /// caller instead of [`default_mining_pool`]: [`SHIELDED_FUNDING_POOL`] for
 /// sessions funding wallets from coinbase, or a pinned pool for tests whose
 /// subject is the miner's coinbase footprint.
-pub async fn launch_state_and_fetch_services_mining_to<V: ValidatorExt>(
+pub async fn launch_fetch_services_mining_to<V: ValidatorExt>(
     mine_to_pool: MinerPool,
     validator: &ValidatorKind,
     chain_cache: Option<PathBuf>,
     enable_zaino: bool,
     network: Option<NetworkKind>,
-) -> StateAndFetchServices<V> {
-    let test_manager = TestManager::<V, Direct>::launch_mining_to(
+) -> FetchServices<V> {
+    let test_manager = TestManager::<V, Rpc>::launch_mining_to(
         mine_to_pool,
         validator,
         network,
@@ -1120,58 +1085,10 @@ pub async fn launch_state_and_fetch_services_mining_to<V: ValidatorExt>(
 
     let fetch_subscriber = fetch_service.get_subscriber().inner();
 
-    let state_chain_cache_dir = match chain_cache {
-        Some(dir) => dir,
-        None => test_manager.data_dir.clone(),
-    };
-
-    let state_service =
-        NodeBackedIndexerService::spawn(NodeBackedIndexerServiceConfig::new_direct(
-            zebra_state::Config {
-                cache_dir: state_chain_cache_dir,
-                ephemeral: false,
-                delete_old_database: true,
-                debug_stop_at_height: None,
-                debug_validity_check_interval: None,
-                should_backup_non_finalized_state: false,
-                debug_skip_non_finalized_state_backup_task: false,
-            },
-            test_manager.full_node_rpc_listen_address.to_string(),
-            test_manager.full_node_grpc_listen_address,
-            false,
-            None,
-            None,
-            None,
-            ServiceConfig::default(),
-            StorageConfig {
-                database: DatabaseConfig {
-                    path: test_manager
-                        .local_net
-                        .data_dir()
-                        .path()
-                        .to_path_buf()
-                        .join("state-srvice-zaino"),
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-            false, // ephemeral_finalised_state: tests use a persistent finalised DB
-            network_type,
-            None,
-        ))
-        .await
-        .unwrap();
-
-    let state_subscriber = state_service.get_subscriber().inner();
-
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-    StateAndFetchServices {
+    FetchServices {
         test_manager,
         fetch_service,
         fetch_subscriber,
-        state_service,
-        state_subscriber,
     }
 }
 
@@ -1354,55 +1271,6 @@ mod launch_testmanager {
             pub(crate) async fn zaino() {
                 let mut test_manager =
                     launch_minimal::<Zebrad, Rpc>(&ValidatorKind::Zebrad, None, true).await;
-                let _grpc_client = build_client(test_manager.grpc_socket_to_uri())
-                    .await
-                    .unwrap();
-                test_manager.close().await;
-            }
-        }
-
-        mod state_service {
-            use super::*;
-
-            #[tokio::test(flavor = "multi_thread")]
-            #[allow(deprecated)]
-            pub(crate) async fn basic() {
-                let mut test_manager =
-                    launch_minimal::<Zebrad, Direct>(&ValidatorKind::Zebrad, None, false).await;
-                assert_eq!(2, (test_manager.local_net.get_chain_height().await));
-                test_manager.close().await;
-            }
-
-            #[tokio::test(flavor = "multi_thread")]
-            #[allow(deprecated)]
-            pub(crate) async fn generate_blocks() {
-                let mut test_manager =
-                    launch_minimal::<Zebrad, Direct>(&ValidatorKind::Zebrad, None, false).await;
-                assert_eq!(2, (test_manager.local_net.get_chain_height().await));
-                test_manager.local_net.generate_blocks(1).await.unwrap();
-                assert_eq!(3, (test_manager.local_net.get_chain_height().await));
-                test_manager.close().await;
-            }
-
-            #[ignore = "chain cache needs development"]
-            #[tokio::test(flavor = "multi_thread")]
-            #[allow(deprecated)]
-            pub(crate) async fn with_chain() {
-                let mut test_manager = launch_minimal::<Zebrad, Direct>(
-                    &ValidatorKind::Zebrad,
-                    ZEBRAD_CHAIN_CACHE_DIR.clone(),
-                    false,
-                )
-                .await;
-                assert_eq!(52, (test_manager.local_net.get_chain_height().await));
-                test_manager.close().await;
-            }
-
-            #[tokio::test(flavor = "multi_thread")]
-            #[allow(deprecated)]
-            pub(crate) async fn zaino() {
-                let mut test_manager =
-                    launch_minimal::<Zebrad, Direct>(&ValidatorKind::Zebrad, None, true).await;
                 let _grpc_client = build_client(test_manager.grpc_socket_to_uri())
                     .await
                     .unwrap();

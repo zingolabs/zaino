@@ -13,8 +13,7 @@
 #   cargo build --release -p zainod --features prometheus
 #   zainod start --config docs/example_configs/zainod-bench-mainnet-ephemeral.toml
 
-backend = 'direct'
-zebra_db_path = '<PATH_TO_ZEBRA>'
+backend = 'rpc'
 network = 'Mainnet'
 
 # The ephemeral half of the pair — the one line that differs.
@@ -26,7 +25,6 @@ metrics_endpoint = '127.0.0.1:9998'
 listen_address = '127.0.0.1:8137'
 
 [validator_settings]
-validator_grpc_listen_address = '127.0.0.1:18230'
 validator_jsonrpc_listen_address = '127.0.0.1:18232'
 validator_user = 'xxxxxx'
 validator_password = 'xxxxxx'

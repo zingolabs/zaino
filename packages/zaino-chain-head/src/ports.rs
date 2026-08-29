@@ -57,8 +57,8 @@ use crate::{block::ChainHeadBlock, snapshot::ChainHeadSnapshot};
 ///
 /// Deliberately not `Clone`: a source may own connections and a database handle
 /// that must not be duplicated. The runtime shares one behind an `Arc` instead,
-/// which is why `zaino_source_zebra::ZebraValidator` — which is not `Clone` —
-/// satisfies this bound directly rather than through a wrapper.
+/// so a non-`Clone` source satisfies this bound directly rather than through a
+/// wrapper.
 pub trait ChainHeadBlockSource:
     zaino_source::OneShotGetChainTip
     + zaino_source::OneShotGetBlock
@@ -141,12 +141,12 @@ pub trait ChainHeadFreezeEvents: Clone + Send + Sync + 'static {
 mod tests {
     use super::ChainHeadBlockSource;
 
-    /// The production composite must satisfy the driven port. A compile-time
+    /// The production adapter must satisfy the driven port. A compile-time
     /// check: if a question is added to ChainHead's requirements that
-    /// `ZebraValidator` cannot answer, this stops building.
+    /// `ZebraRpcAdapter` cannot answer, this stops building.
     #[test]
-    fn zebra_validator_satisfies_the_bound() {
+    fn zebra_rpc_adapter_satisfies_the_bound() {
         fn assert_satisfied<T: ChainHeadBlockSource>() {}
-        assert_satisfied::<zaino_source_zebra::ZebraValidator>();
+        assert_satisfied::<zaino_source_zebra_rpc::ZebraRpcAdapter>();
     }
 }

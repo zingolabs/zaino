@@ -112,12 +112,12 @@ impl<T> ChainIndexSourcePorts for T where
 mod tests {
     use super::ChainIndexSourcePorts;
 
-    /// The production composite must satisfy the bound. A compile-time check:
-    /// if a port is added to ChainIndex's requirements that `ZebraValidator`
+    /// The production adapter must satisfy the bound. A compile-time check:
+    /// if a port is added to ChainIndex's requirements that `ZebraRpcAdapter`
     /// cannot answer, this stops building.
     #[test]
-    fn zebra_validator_satisfies_the_bound() {
+    fn zebra_rpc_adapter_satisfies_the_bound() {
         fn assert_satisfied<T: ChainIndexSourcePorts>() {}
-        assert_satisfied::<zaino_source_zebra::ZebraValidator>();
+        assert_satisfied::<zaino_source_zebra_rpc::ZebraRpcAdapter>();
     }
 }

@@ -8,13 +8,8 @@ use std::path::PathBuf;
 ///
 /// Configures how Zaino connects to the backing validator (Zebra).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
-#[serde(default)]
+#[serde(deny_unknown_fields, default)]
 pub struct ValidatorConfig {
-    /// Validator gRPC listen address (Zebra only).
-    ///
-    /// Must be a "private" address as defined in IETF RFC 1918 (IPv4) or RFC 4193 (IPv6).
-    /// Cookie or user/password authentication is recommended for non-localhost addresses.
-    pub validator_grpc_listen_address: Option<String>,
     /// Validator JSON-RPC listen address.
     ///
     /// Supports hostname:port or ip:port format.
@@ -34,7 +29,6 @@ pub struct ValidatorConfig {
 impl Default for ValidatorConfig {
     fn default() -> Self {
         Self {
-            validator_grpc_listen_address: Some("127.0.0.1:18230".to_string()),
             validator_jsonrpc_listen_address: "127.0.0.1:18232".to_string(),
             validator_cookie_path: None,
             validator_user: Some("xxxxxx".to_string()),

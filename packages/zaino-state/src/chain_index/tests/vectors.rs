@@ -303,9 +303,6 @@ fn wrap(source: MockchainSource) -> MockSource {
     ValidatorSource::new(
         source,
         crate::chain_index::source::mockchain_source::mockchain_network(),
-        // The mock has no zebra state service, so no `ChainTipChange` stream —
-        // the same as an RPC-only deployment.
-        None,
     )
 }
 

@@ -5,9 +5,7 @@ use crate::proto::{
     service::{BlockId, BlockRange, PoolType},
 };
 #[cfg(feature = "heavy")]
-use zebra_chain::block::Height;
-#[cfg(feature = "heavy")]
-use zebra_state::HashOrHeight;
+use zaino_primitives::types::{BlockHash, HashOrHeight, Height};
 
 /// Every pool a request may name — the `PoolType` variants minus `Invalid`.
 const KNOWN_POOLS: [PoolType; 4] = [
@@ -265,18 +263,15 @@ impl PoolTypeFilter {
 }
 
 #[cfg(feature = "heavy")]
-/// Converts [`BlockId`] into [`HashOrHeight`] Zebra type
+/// Converts a wire [`BlockId`] into a domain [`HashOrHeight`] lookup key.
 pub fn blockid_to_hashorheight(block_id: BlockId) -> Option<HashOrHeight> {
-    <[u8; 32]>::try_from(block_id.hash)
-        .map(zebra_chain::block::Hash)
-        .map(HashOrHeight::from)
-        .or_else(|_| {
-            block_id
-                .height
-                .try_into()
-                .map(|height| HashOrHeight::Height(Height(height)))
-        })
+    if let Ok(bytes) = <[u8; 32]>::try_from(block_id.hash) {
+        return Some(HashOrHeight::Hash(BlockHash::from(bytes)));
+    }
+    u32::try_from(block_id.height)
         .ok()
+        .and_then(|height| Height::try_from(height).ok())
+        .map(HashOrHeight::Height)
 }
 
 impl CompactTx {

@@ -167,6 +167,18 @@ impl From<zebra_chain::block::Hash> for BlockHash {
     }
 }
 
+impl From<BlockHash> for zaino_primitives::types::BlockHash {
+    fn from(hash: BlockHash) -> Self {
+        zaino_primitives::types::BlockHash::from(hash.0)
+    }
+}
+
+impl From<zaino_primitives::types::BlockHash> for BlockHash {
+    fn from(hash: zaino_primitives::types::BlockHash) -> Self {
+        BlockHash(<[u8; 32]>::from(hash))
+    }
+}
+
 impl From<BlockHash> for zcash_primitives::block::BlockHash {
     fn from(hash: BlockHash) -> Self {
         zcash_primitives::block::BlockHash(hash.0)
@@ -463,6 +475,20 @@ impl From<zebra_chain::block::Height> for Height {
     // to be valid
     fn from(h: zebra_chain::block::Height) -> Self {
         Height(h.0)
+    }
+}
+
+impl From<Height> for zaino_primitives::types::Height {
+    fn from(h: Height) -> Self {
+        zaino_primitives::types::Height::try_from(h.0)
+            .expect("legacy Height enforces the same 2^31 - 1 bound at construction")
+    }
+}
+
+impl From<zaino_primitives::types::Height> for Height {
+    // Both types enforce the 2^31 - 1 protocol bound at construction.
+    fn from(h: zaino_primitives::types::Height) -> Self {
+        Height(u32::from(h))
     }
 }
 

@@ -10,12 +10,10 @@ version = "0.4.0"
 
 [features]
 default = ["heavy"]
-heavy = ["dep:zebra-state", "dep:zebra-chain", "dep:which"]
+heavy = ["dep:zaino-primitives", "dep:which"]
 grpc_proxy_server = []
 
 [dependencies]
-zebra-state = { workspace = true, optional = true }
-zebra-chain = { workspace = true, optional = true }
 
 # Miscellaneous Workspace
 tonic = { workspace = true }
@@ -23,6 +21,7 @@ tonic = { workspace = true }
 # Miscellaneous Crate
 prost = { workspace = true }
 tonic-prost = "0.14"
+zaino-primitives = { workspace = true, optional = true }
 
 [build-dependencies]
 which = { workspace = true, optional = true }

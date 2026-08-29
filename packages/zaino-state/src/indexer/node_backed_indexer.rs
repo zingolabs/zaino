@@ -7,7 +7,7 @@ use std::{io::Cursor, str::FromStr, time};
 use tokio::{sync::mpsc, time::timeout};
 use tracing::{info, instrument, warn};
 use zaino_chain_head::ChainHeadSnapshot as _;
-use zebra_state::HashOrHeight;
+use zaino_primitives::types::HashOrHeight;
 
 use zebra_chain::{
     block::Height, serialization::ZcashDeserialize as _, subtree::NoteCommitmentSubtreeIndex,
@@ -46,7 +46,6 @@ use crate::{
     chain_index::{source::BlockchainSource, types, validator_source::ZebraValidatorSource},
     config::{
         ChainIndexConfig, CommonBackendConfig, DonationAddress, NodeBackedIndexerServiceConfig,
-        ValidatorConnectionType,
     },
     error::NodeBackedIndexerServiceError,
     indexer::{
@@ -138,16 +137,12 @@ impl ZcashService for NodeBackedIndexerService<ZebraValidatorSource> {
             "Launching NodeBackedIndexerService"
         );
 
-        // Select the validator connection from config; both arms return the built source,
-        // the validator `getinfo` used for service metadata, and the runtime network
-        // (activation schedule adopted from the validator at first contact, zaino#1076).
-        let (source, zebra_build_data, network) = match &config.connection {
-            ValidatorConnectionType::Rpc => ZebraValidatorSource::spawn_rpc(&config.common).await,
-            ValidatorConnectionType::Direct(direct) => {
-                ZebraValidatorSource::spawn_direct(&config.common, direct).await
-            }
-        }
-        .map_err(|error| NodeBackedIndexerServiceError::Critical(error.to_string()))?;
+        // The spawn returns the built source, the validator `getinfo` used for
+        // service metadata, and the runtime network (activation schedule
+        // adopted from the validator at first contact, zaino#1076).
+        let (source, zebra_build_data, network) = ZebraValidatorSource::spawn_rpc(&config.common)
+            .await
+            .map_err(|error| NodeBackedIndexerServiceError::Critical(error.to_string()))?;
 
         let data = ServiceMetadata::new(
             get_build_info(config.common.indexer_version.clone()),
@@ -403,36 +398,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedIndexerServiceSub
     }
 }
 
-/// A subscriber to any chaintip updates.
-#[derive(Clone)]
-pub struct ChainTipSubscriber {
-    monitor: zebra_state::ChainTipChange,
-}
-
-impl ChainTipSubscriber {
-    /// Waits until the tip hash has changed (relative to the last time this method
-    /// was called), then returns the best tip's block hash.
-    pub async fn next_tip_hash(
-        &mut self,
-    ) -> Result<zebra_chain::block::Hash, tokio::sync::watch::error::RecvError> {
-        self.monitor
-            .wait_for_tip_change()
-            .await
-            .map(|tip| tip.best_tip_hash())
-    }
-}
-
 impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedIndexerServiceSubscriber<Source> {
-    /// A subscriber to chain-tip updates, when the backing source exposes a
-    /// local tip-change stream. `Some` only on the `Direct` connection; the
-    /// `Rpc` connection (and any other stream-less source) observes tips by
-    /// polling the validator and yields `None`.
-    pub fn chaintip_update_subscriber(&self) -> Option<ChainTipSubscriber> {
-        Some(ChainTipSubscriber {
-            monitor: self.indexer.source().chain_tip_change()?,
-        })
-    }
-
     /// Shared body of `get_block_range` and `get_block_range_nullifiers`: streams the
     /// requested compact-block range through a channel, applying `map_block` to every
     /// block before it is sent. `rpc_name` labels log lines and nothing else.
@@ -536,23 +502,8 @@ impl<Source: BlockchainSource + WithChainHeadSource> NodeBackedIndexerServiceSub
     }
 }
 
-/// Methods available only on the production (`ZebraValidatorSource`-backed) subscriber:
-/// the `Direct` connection owns a `ReadStateService` that the generic source
-/// abstraction does not expose.
+/// Methods available only on the production (`ZebraValidatorSource`-backed) subscriber.
 impl NodeBackedIndexerServiceSubscriber<ZebraValidatorSource> {
-    /// The backing Zebra [`zebra_state::ReadStateService`] (`Direct` connection only).
-    ///
-    /// Test-only escape hatch: live tests recompute expected chain data directly off the
-    /// `ReadStateService`. Production code goes through the `ChainIndex` API.
-    #[cfg(feature = "test_dependencies")]
-    pub fn read_state_service(&self) -> zebra_state::ReadStateService {
-        self.indexer
-            .source()
-            .read_state_service()
-            .expect("read_state_service requires the Direct connection")
-            .clone()
-    }
-
     /// The indexer's mempool subscriber.
     ///
     /// Test-only escape hatch: live tests recompute expected `getmempoolinfo` values
@@ -1251,7 +1202,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> LightWalletIndexer
 
         let snapshot = self.indexer.snapshot_nonfinalized_state();
         let height = match hash_or_height {
-            HashOrHeight::Height(height) => height.0,
+            HashOrHeight::Height(height) => u32::from(height),
             HashOrHeight::Hash(hash) => {
                 match self.indexer.get_block_height(&snapshot, hash.into()).await {
                     Ok(Some(height)) => height.0,
@@ -1284,7 +1235,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> LightWalletIndexer
             Ok(None) => {
                 let chain_height = u32::from(non_finalized_snapshot.best_tip().height);
                 match hash_or_height {
-                    HashOrHeight::Height(Height(height)) if height >= chain_height => {
+                    HashOrHeight::Height(height) if u32::from(height) >= chain_height => {
                         Err(NodeBackedIndexerServiceError::TonicStatusError(
                             tonic::Status::out_of_range(format!(
                                 "Error: Height out of range [{hash_or_height}]. Height requested \
@@ -1300,7 +1251,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> LightWalletIndexer
             Err(e) => {
                 let chain_height = u32::from(non_finalized_snapshot.best_tip().height);
                 match hash_or_height {
-                    HashOrHeight::Height(Height(height)) if height >= chain_height => {
+                    HashOrHeight::Height(height) if u32::from(height) >= chain_height => {
                         Err(NodeBackedIndexerServiceError::TonicStatusError(
                             tonic::Status::out_of_range(format!(
                                 "Error: Height out of range [{hash_or_height}]. Height requested \
@@ -1333,7 +1284,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> LightWalletIndexer
         )?;
         let snapshot = self.indexer.snapshot_nonfinalized_state();
         let height = match hash_or_height {
-            HashOrHeight::Height(height) => height.0,
+            HashOrHeight::Height(height) => u32::from(height),
             HashOrHeight::Hash(hash) => {
                 match self.indexer.get_block_height(&snapshot, hash.into()).await {
                     Ok(Some(height)) => height.0,
@@ -1364,7 +1315,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> LightWalletIndexer
             Ok(None) => {
                 let chain_height = u32::from(non_finalized_snapshot.best_tip().height);
                 match hash_or_height {
-                    HashOrHeight::Height(Height(height)) if height >= chain_height => {
+                    HashOrHeight::Height(height) if u32::from(height) >= chain_height => {
                         Err(NodeBackedIndexerServiceError::TonicStatusError(
                             tonic::Status::out_of_range(format!(
                                 "Error: Height out of range [{hash_or_height}]. Height requested \
@@ -1373,7 +1324,8 @@ impl<Source: BlockchainSource + WithChainHeadSource> LightWalletIndexer
                         ))
                     }
                     HashOrHeight::Height(height)
-                        if height > self.data.network().sapling_activation_height() =>
+                        if u32::from(height)
+                            > self.data.network().sapling_activation_height().0 =>
                     {
                         Err(NodeBackedIndexerServiceError::TonicStatusError(
                             tonic::Status::out_of_range(format!(
@@ -1390,7 +1342,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> LightWalletIndexer
             Err(e) => {
                 let chain_height = u32::from(non_finalized_snapshot.best_tip().height);
                 match hash_or_height {
-                    HashOrHeight::Height(Height(height)) if height >= chain_height => {
+                    HashOrHeight::Height(height) if u32::from(height) >= chain_height => {
                         Err(NodeBackedIndexerServiceError::TonicStatusError(
                             tonic::Status::out_of_range(format!(
                                 "Error: Height out of range [{hash_or_height}]. Height requested \
@@ -1399,7 +1351,8 @@ impl<Source: BlockchainSource + WithChainHeadSource> LightWalletIndexer
                         ))
                     }
                     HashOrHeight::Height(height)
-                        if height > self.data.network().sapling_activation_height() =>
+                        if u32::from(height)
+                            > self.data.network().sapling_activation_height().0 =>
                     {
                         Err(NodeBackedIndexerServiceError::TonicStatusError(
                             tonic::Status::out_of_range(format!(

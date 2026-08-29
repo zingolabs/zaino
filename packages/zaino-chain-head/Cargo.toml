@@ -26,9 +26,9 @@ zaino-source = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 thiserror = { workspace = true }
 
-[dev-dependencies]
-zaino-source-zebra = { workspace = true }
-
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
+
+[dev-dependencies]
+zaino-source-zebra-rpc = { workspace = true }

@@ -1,14 +1,11 @@
 //! Holds code used to build test vector data for unit tests. These tests should not be run by default or in CI.
 
 use corez::io::{self, Read, Write};
-use futures::TryFutureExt as _;
 use std::fs;
 use std::fs::File;
 use std::io::BufReader;
 use std::io::BufWriter;
 use std::path::Path;
-use std::sync::Arc;
-use tower::{Service, ServiceExt as _};
 use zaino_state::read_u32_le;
 use zaino_state::read_u64_le;
 use zaino_state::write_u32_le;
@@ -16,23 +13,32 @@ use zaino_state::write_u64_le;
 use zaino_state::ChainWork;
 use zaino_state::CompactSize;
 use zaino_state::ZcashIndexer;
-use zaino_testutils::{Direct, TestManager, ValidatorKind};
+use zaino_testutils::{Rpc, TestManager, ValidatorKind};
 use zcash_local_net::validator::zebrad::Zebrad;
 use zebra_chain::serialization::{ZcashDeserialize, ZcashSerialize};
 use zebra_rpc::methods::GetAddressUtxos;
 use zebra_rpc::methods::{GetAddressBalanceRequest, GetAddressTxIdsRequest, GetBlockTransaction};
-use zebra_state::HashOrHeight;
-use zebra_state::{ReadRequest, ReadResponse};
 
-macro_rules! expected_read_response {
-    ($response:ident, $expected_variant:ident) => {
-        match $response {
-            ReadResponse::$expected_variant(inner) => inner,
-            unexpected => {
-                unreachable!("Unexpected response from state service: {unexpected:?}")
-            }
-        }
-    };
+/// The per-height tree oracle the deleted `ReadStateService` used to answer.
+// Regenerating vectors needs a validator-sourced replacement: zebra's
+// `z_gettreestate` serves `finalState` but leaves `finalRoot` unset, so the
+// roots must be derived by parsing the returned frontiers. Until that is
+// built, regeneration fails here rather than silently sourcing the trees from
+// the serving path the vectors exist to test.
+#[allow(clippy::type_complexity)]
+fn treestate_oracle(
+    _height: u32,
+) -> (
+    (
+        (zebra_chain::sapling::tree::Root, u64),
+        (zebra_chain::orchard::tree::Root, u64),
+    ),
+    (Vec<u8>, Vec<u8>),
+) {
+    unimplemented!(
+        "the ReadStateService treestate oracle was removed with the direct backend; \
+         derive per-height roots and treestates from the validator's z_gettreestate"
+    )
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -45,7 +51,7 @@ async fn create_200_block_regtest_chain_vectors() {
     // The committed unit-test vectors encode a mixed-pool chain built by
     // repeatedly shielding transparent coinbase — mining must stay transparent
     // so regenerated vectors keep that shape.
-    let mut test_manager = TestManager::<Zebrad, Direct>::launch_mining_to(
+    let mut test_manager = TestManager::<Zebrad, Rpc>::launch_mining_to(
         zaino_testutils::MinerPool::Transparent,
         &ValidatorKind::Zebrad,
         None,
@@ -282,87 +288,8 @@ async fn create_200_block_regtest_chain_vectors() {
                     })
                     .unwrap();
 
-                let mut state = state_service_subscriber.read_state_service();
-                let (sapling_root, orchard_root) = {
-                    let (sapling_tree_response, orchard_tree_response) = futures::future::join(
-                        state.clone().call(zebra_state::ReadRequest::SaplingTree(
-                            HashOrHeight::Height(zebra_chain::block::Height(height)),
-                        )),
-                        state.clone().call(zebra_state::ReadRequest::OrchardTree(
-                            HashOrHeight::Height(zebra_chain::block::Height(height)),
-                        )),
-                    )
-                    .await;
-                    let (sapling_tree, orchard_tree) = match (
-                        //TODO: Better readstateservice error handling
-                        sapling_tree_response.unwrap(),
-                        orchard_tree_response.unwrap(),
-                    ) {
-                        (
-                            zebra_state::ReadResponse::SaplingTree(saptree),
-                            zebra_state::ReadResponse::OrchardTree(orctree),
-                        ) => (saptree, orctree),
-                        (_, _) => panic!("Bad response"),
-                    };
-
-                    (
-                        sapling_tree
-                            .as_deref()
-                            .map(|tree| (tree.root(), tree.count()))
-                            .unwrap(),
-                        orchard_tree
-                            .as_deref()
-                            .map(|tree| (tree.root(), tree.count()))
-                            .unwrap(),
-                    )
-                };
-
-                let sapling_treestate = match zebra_chain::parameters::NetworkUpgrade::Sapling
-                    .activation_height(&state_service_subscriber.network())
-                {
-                    Some(activation_height) if height >= activation_height.0 => Some(
-                        state
-                            .ready()
-                            .and_then(|service| {
-                                service.call(ReadRequest::SaplingTree(HashOrHeight::Height(
-                                    zebra_chain::block::Height(height),
-                                )))
-                            })
-                            .await
-                            .unwrap(),
-                    ),
-                    _ => Some(zebra_state::ReadResponse::SaplingTree(Some(Arc::new(
-                        zebra_chain::sapling::tree::NoteCommitmentTree::default(),
-                    )))),
-                }
-                .and_then(|sap_response| {
-                    expected_read_response!(sap_response, SaplingTree)
-                        .map(|tree| tree.to_rpc_bytes())
-                })
-                .unwrap();
-                let orchard_treestate = match zebra_chain::parameters::NetworkUpgrade::Nu5
-                    .activation_height(&state_service_subscriber.network())
-                {
-                    Some(activation_height) if height >= activation_height.0 => Some(
-                        state
-                            .ready()
-                            .and_then(|service| {
-                                service.call(ReadRequest::OrchardTree(HashOrHeight::Height(
-                                    zebra_chain::block::Height(height),
-                                )))
-                            })
-                            .await
-                            .unwrap(),
-                    ),
-                    _ => Some(zebra_state::ReadResponse::OrchardTree(Some(Arc::new(
-                        zebra_chain::orchard::tree::NoteCommitmentTree::default(),
-                    )))),
-                }
-                .and_then(|orch_response| {
-                    expected_read_response!(orch_response, OrchardTree)
-                        .map(|tree| tree.to_rpc_bytes())
-                })
-                .unwrap();
+                let ((sapling_root, orchard_root), (sapling_treestate, orchard_treestate)) =
+                    treestate_oracle(height);
 
                 // Build block data
                 let full_block = zaino_testutils::legacy_parser::block::FullBlock::parse_from_hex(

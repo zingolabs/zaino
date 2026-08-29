@@ -21,22 +21,19 @@ use zaino_common::{
     try_resolve_address, AddressResolution, Network, ServiceConfig, StorageConfig, ValidatorConfig,
 };
 use zaino_serve::server::config::{GrpcServerConfig, JsonRpcServerConfig};
-use zaino_state::{
-    CommonBackendConfig, DirectConnectionConfig, DonationAddress, NodeBackedIndexerServiceConfig,
-    ValidatorConnectionType,
-};
+use zaino_state::{CommonBackendConfig, DonationAddress, NodeBackedIndexerServiceConfig};
 
-/// On-disk selector for the validator connection (`backend = "direct" | "rpc"` in the
-/// config file), mapped to [`zaino_state::ValidatorConnectionType`] at spawn.
+/// On-disk selector for the validator connection (`backend = "rpc"` in the config file).
 ///
-/// The legacy values `"state"` / `"fetch"` remain accepted as aliases for backward
-/// compatibility with existing `zainod.toml` files.
+/// The legacy value `"fetch"` remains accepted as an alias for backward compatibility
+/// with existing `zainod.toml` files. `Direct` (legacy `"state"`) is a tombstone: it
+/// still parses so an operator gets a self-describing error at spawn instead of an
+/// opaque unknown-variant rejection, and it is scheduled for deletion one release
+/// after the direct backend's removal.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BackendType {
-    /// Direct Zebra `ReadStateService` access (formerly `state`).
-    ///
-    /// More efficient but requires running on the same machine as Zebra.
+    /// Removed direct Zebra `ReadStateService` access (formerly `state`), rejected at spawn.
     #[serde(alias = "state")]
     Direct,
     /// JSON-RPC access (formerly `fetch`).
@@ -158,10 +155,6 @@ pub struct ZainodConfig {
     // Simple values first (TOML requirement)
     /// Backend type for fetching blockchain data.
     pub backend: BackendType,
-    /// Path to Zebra's state database.
-    ///
-    /// Required when using the `state` backend.
-    pub zebra_db_path: PathBuf,
     /// Run the finalised-state database in ephemeral/stateless mode.
     ///
     /// When enabled, Zaino does not use a persistent on-disk finalised-state database. Finalised
@@ -355,7 +348,6 @@ impl Default for ZainodConfig {
                 tls: None,
             },
             validator_settings: ValidatorConfig {
-                validator_grpc_listen_address: Some("127.0.0.1:18230".to_string()),
                 validator_jsonrpc_listen_address: "127.0.0.1:18232".to_string(),
                 validator_cookie_path: None,
                 validator_user: Some("xxxxxx".to_string()),
@@ -365,7 +357,6 @@ impl Default for ZainodConfig {
             storage: StorageConfig::default(),
             mempool: MempoolSettings::default(),
             ephemeral_finalised_state: false,
-            zebra_db_path: default_zebra_db_path(),
             network: Network::PubTestnet,
             donation_address: None,
         }
@@ -375,11 +366,6 @@ impl Default for ZainodConfig {
 /// Returns the default path for Zaino's ephemeral authentication cookie.
 pub fn default_ephemeral_cookie_path() -> PathBuf {
     zaino_common::xdg::resolve_path_with_xdg_runtime_defaults("zaino/.cookie")
-}
-
-/// Loads the default file path for zebra's local db.
-pub fn default_zebra_db_path() -> PathBuf {
-    zaino_common::xdg::resolve_path_with_xdg_cache_defaults("zebra")
 }
 
 /// Resolves a hostname to a SocketAddr.
@@ -483,52 +469,19 @@ impl TryFrom<ZainodConfig> for NodeBackedIndexerServiceConfig {
     type Error = IndexerError;
 
     fn try_from(cfg: ZainodConfig) -> Result<Self, Self::Error> {
-        let connection = match cfg.backend {
-            BackendType::Rpc => ValidatorConnectionType::Rpc,
+        match cfg.backend {
+            BackendType::Rpc => {}
             BackendType::Direct => {
-                let grpc_listen_address = cfg
-                    .validator_settings
-                    .validator_grpc_listen_address
-                    .as_ref()
-                    .ok_or_else(|| {
-                        IndexerError::ConfigError(
-                            "Missing validator_grpc_listen_address in configuration".to_string(),
-                        )
-                    })?;
-
-                let validator_grpc_address = fetch_socket_addr_from_hostname(grpc_listen_address)
-                    .map_err(|e| {
-                    let msg = match e {
-                        IndexerError::ConfigError(msg) => msg,
-                        other => other.to_string(),
-                    };
-                    IndexerError::ConfigError(format!(
-                        "Invalid validator_grpc_listen_address '{grpc_listen_address}': {msg}"
-                    ))
-                })?;
-
-                let validator_state_config = zebra_state::Config {
-                    cache_dir: cfg.zebra_db_path.clone(),
-                    ephemeral: false,
-                    delete_old_database: true,
-                    debug_stop_at_height: None,
-                    debug_validity_check_interval: None,
-                    should_backup_non_finalized_state: true,
-                    debug_skip_non_finalized_state_backup_task: false,
-                };
-                let validator_cookie_auth = cfg.validator_settings.validator_cookie_path.is_some();
-
-                ValidatorConnectionType::Direct(DirectConnectionConfig {
-                    validator_state_config,
-                    validator_grpc_address,
-                    validator_cookie_auth,
-                })
+                return Err(IndexerError::ConfigError(
+                    "the direct ReadStateService backend was removed; \
+                     set `backend = \"rpc\"`"
+                        .to_string(),
+                ));
             }
-        };
+        }
 
         Ok(NodeBackedIndexerServiceConfig {
             common: build_common(cfg),
-            connection,
         })
     }
 }
@@ -623,19 +576,16 @@ mod tests {
         let validator_cookie_file = temp_dir.path().join("validator.cookie");
         let zaino_cookie_dir = temp_dir.path().join("zaino_cookies_dir");
         let zaino_db_dir = temp_dir.path().join("zaino_db_dir");
-        let zebra_db_dir = temp_dir.path().join("zebra_db_dir");
 
         std::fs::write(&cert_file, "mock cert content").unwrap();
         std::fs::write(&key_file, "mock key content").unwrap();
         std::fs::write(&validator_cookie_file, "mock validator cookie content").unwrap();
         std::fs::create_dir_all(&zaino_cookie_dir).unwrap();
         std::fs::create_dir_all(&zaino_db_dir).unwrap();
-        std::fs::create_dir_all(&zebra_db_dir).unwrap();
 
         let toml_content = format!(
             r#"
 backend = "fetch"
-zebra_db_path = "{}"
 network = "Mainnet"
 
 [storage.database]
@@ -658,7 +608,6 @@ listen_address = "0.0.0.0:9000"
 cert_path = "{}"
 key_path = "{}"
 "#,
-            zebra_db_dir.display(),
             zaino_db_dir.display(),
             validator_cookie_file.display(),
             zaino_cookie_dir.display(),
@@ -704,7 +653,6 @@ key_path = "{}"
         let toml_content = r#"
 backend = "state"
 network = "PubTestnet"
-zebra_db_path = "/opt/zebra/data"
 
 [storage.database]
 path = "/opt/zaino/data"
@@ -744,7 +692,6 @@ listen_address = "127.0.0.1:8137"
         let toml_content = r#"
 backend = "state"
 network = "Testnet"
-zebra_db_path = "/opt/zebra/data"
 
 [storage.database]
 path = "/opt/zaino/data"
@@ -770,7 +717,6 @@ listen_address = "127.0.0.1:8137"
         let toml_content = r#"
 backend = "fetch"
 network = "PubTestnet"
-zebra_db_path = "/zebra/db"
 
 [storage.database]
 path = "/zaino/db"
@@ -800,7 +746,6 @@ listen_address = "127.0.0.1:8137"
         let toml_content2 = r#"
 backend = "fetch"
 network = "PubTestnet"
-zebra_db_path = "/zebra/db"
 
 [storage.database]
 path = "/zaino/db"
@@ -827,7 +772,6 @@ listen_address = "127.0.0.1:8137"
         let toml_content3 = r#"
 backend = "fetch"
 network = "PubTestnet"
-zebra_db_path = "/zebra/db"
 
 [storage.database]
 path = "/zaino/db"
@@ -1244,6 +1188,44 @@ listen_address = "127.0.0.1:8137"
         );
     }
 
+    /// Regression guard: the keys that configured the removed direct
+    /// (`ReadStateService`) backend must now fail loudly rather than be
+    /// silently ignored.
+    #[test]
+    fn stale_direct_backend_keys_are_rejected() {
+        let _guard = EnvGuard::new();
+        let temp_dir = TempDir::new().unwrap();
+
+        let stale_grpc_key = r#"
+[validator_settings]
+validator_jsonrpc_listen_address = "127.0.0.1:18232"
+validator_grpc_listen_address = "127.0.0.1:18230"
+
+[grpc_settings]
+listen_address = "127.0.0.1:8137"
+"#;
+        let config_path = create_test_config_file(&temp_dir, stale_grpc_key, "stale_grpc_key.toml");
+        assert!(
+            load_config(&config_path).is_err(),
+            "stale `validator_grpc_listen_address` key must be rejected by deny_unknown_fields"
+        );
+
+        let stale_db_key = r#"
+zebra_db_path = "/zebra/db"
+
+[validator_settings]
+validator_jsonrpc_listen_address = "127.0.0.1:18232"
+
+[grpc_settings]
+listen_address = "127.0.0.1:8137"
+"#;
+        let config_path = create_test_config_file(&temp_dir, stale_db_key, "stale_db_key.toml");
+        assert!(
+            load_config(&config_path).is_err(),
+            "stale `zebra_db_path` key must be rejected by deny_unknown_fields"
+        );
+    }
+
     /// The current `[storage.database]` budget keys parse and bind as expected.
     #[test]
     fn current_database_budget_keys_parse() {
@@ -1370,30 +1352,14 @@ listen_address = "127.0.0.1:8137"
     /// of `CommonBackendConfig` derives `PartialEq`, and a single stringified compare
     /// future-proofs the test against fields added later.
     #[test]
-    fn common_payload_is_connection_independent() {
+    fn common_payload_carries_ephemeral_finalised_state() {
         let _guard = EnvGuard::new();
 
-        let rpc_cfg = NodeBackedIndexerServiceConfig::try_from(ZainodConfig {
+        NodeBackedIndexerServiceConfig::try_from(ZainodConfig {
             backend: BackendType::Rpc,
             ..ZainodConfig::default()
         })
         .expect("Rpc conversion should succeed for default ZainodConfig");
-        let direct_cfg = NodeBackedIndexerServiceConfig::try_from(ZainodConfig {
-            backend: BackendType::Direct,
-            ..ZainodConfig::default()
-        })
-        .expect("Direct conversion should succeed for default ZainodConfig");
-
-        assert!(matches!(rpc_cfg.connection, ValidatorConnectionType::Rpc));
-        assert!(matches!(
-            direct_cfg.connection,
-            ValidatorConnectionType::Direct(_)
-        ));
-
-        assert_eq!(
-            format!("{:#?}", rpc_cfg.common),
-            format!("{:#?}", direct_cfg.common),
-        );
 
         let ephemeral_cfg = NodeBackedIndexerServiceConfig::try_from(ZainodConfig {
             ephemeral_finalised_state: true,
@@ -1401,6 +1367,25 @@ listen_address = "127.0.0.1:8137"
         })
         .expect("conversion should succeed for ephemeral finalised state");
         assert!(ephemeral_cfg.common.ephemeral_finalised_state);
+    }
+
+    /// The removed direct backend still parses but must be rejected with a
+    /// self-describing error when the config is converted for spawn.
+    #[test]
+    fn direct_backend_tombstone_is_rejected_at_conversion() {
+        let _guard = EnvGuard::new();
+
+        let error = NodeBackedIndexerServiceConfig::try_from(ZainodConfig {
+            backend: BackendType::Direct,
+            ..ZainodConfig::default()
+        })
+        .expect_err("the removed direct backend must not convert");
+        assert!(
+            error
+                .to_string()
+                .contains("the direct ReadStateService backend was removed"),
+            "error must name the removal: {error}"
+        );
     }
 
     /// Builds a default config with the JSON-RPC server bound to `addr`.
