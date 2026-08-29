@@ -8,6 +8,24 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.2.0] - 2026-08-28
+
+### Added
+### Changed
+- `ZebraReadStateAdapter` implements `zaino-source` 0.2.0's renamed
+  single-attempt ports (`OneShotGetBlock` and peers); behaviour is unchanged.
+### Deprecated
+### Removed
+### Fixed
+
+## [0.1.0] - 2026-08-14
+
+### Added
 - New crate. `ZebraReadStateAdapter` implements 22 `zaino-source` ports by
   reading Zebra's state database directly, with no RPC round trip. Carries over
   the ~1,100 lines of `ReadStateService` query logic from the deleted

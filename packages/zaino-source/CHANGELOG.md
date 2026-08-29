@@ -8,6 +8,42 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.2.0] - 2026-08-28
+
+### Added
+- Two port layers. Each question is both a single-attempt `OneShot*` port
+  (returning `QueryError`, implemented by adapters) and a canonical resilient
+  port under the unqualified name (`GetBlock`, `GetChainTip`, … returning
+  `SourceError`, bound by consumers). The resilient port is the default name
+  because resilience is the default; reaching the single-attempt contract means
+  naming the awkward `OneShot*`. The resilient ports are sealed, so only
+  `ValidatorClient` implements them: a value satisfying a canonical port has
+  provably been through the retry ladder.
+- `#[resilient_port]` (in the new `zaino-source-macros` crate) — an attribute
+  on a `OneShot*` trait that derives its resilient twin and the
+  `ValidatorClient<V>` blanket impl, rewriting `QueryError<E>` ->
+  `SourceError<E>`. The twin's signature is never restated and the
+  retry/translation lives once in `ValidatorClient::with_retry`.
+### Changed
+- Every one-shot query port is renamed `GetX` -> `OneShotGetX`, freeing the
+  canonical names for the resilient twins.
+- `Resilient<V>` is renamed `ValidatorClient<V>`. It now implements the
+  canonical resilient ports rather than carrying its own inherent methods, and
+  forwards `SubscribeBlocks` / `SubscribeChainTip` unchanged.
+  `SendRawTransaction` gets no resilient port — retrying a non-idempotent send
+  risks a double-submit.
+### Deprecated
+### Removed
+### Fixed
+
+## [0.1.0] - 2026-08-14
+
+### Added
 - New crate. The driven ports for validator access: 36 single-method traits,
   one per question a consumer can ask about the chain, declared in
   `zaino-primitives` vocabulary with a per-question error type.
@@ -18,21 +54,11 @@ and this library adheres to Rust's notion of
   (`Connection | Timeout | HttpStatus(u16) | RpcError(i64) | Parse | Auth`),
   so retry policy is a function of the type and a zcashd legacy code can
   survive from the validator to the served response.
-- Two port layers. Each question is both a single-attempt `OneShot*` port
-  (returning `QueryError`, implemented by adapters) and a canonical resilient
-  port under the unqualified name (`GetBlock`, `GetChainTip`, … returning
-  `SourceError`, bound by consumers). The resilient port is the default name
-  because resilience is the default; reaching the single-attempt contract means
-  naming the awkward `OneShot*`.
-- `#[resilient_port]` (in `zaino-source-macros`) — an attribute on a `OneShot*`
-  trait that derives its resilient twin and the `ValidatorClient<V>` blanket impl,
-  rewriting `QueryError<E>` -> `SourceError<E>`. The twin's signature is never
-  restated and the retry/translation lives once in `ValidatorClient::with_retry`.
-- `ValidatorClient<V>` / `RetryPolicy` — retry with exponential backoff, replacing
+- `Resilient<V>` / `RetryPolicy` — retry with exponential backoff, replacing
   the hand-rolled consecutive-failure ladder in the ChainIndex sync loop.
-  Implements the canonical resilient ports (sealed, so only `ValidatorClient` can),
-  and forwards subscriptions unchanged. `SendRawTransaction` gets no resilient
-  port — retrying a non-idempotent send risks a double-submit.
+  Deliberately does *not* implement the port traits: it has its own methods
+  returning `SourceError`, so a consumer cannot be handed a bare adapter by
+  mistake.
 - `SourceLifecycle` (shutdown), `SubscribeChainTip` / `SubscribeBlocks`, and
   `PolledChainTip` (built and tested; not yet wired to a consumer).
 - `mock::MockChain` behind the `testing` feature — an in-memory chain with

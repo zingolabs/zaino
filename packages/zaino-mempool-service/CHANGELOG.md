@@ -8,6 +8,25 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.2.0] - 2026-08-28
+
+### Added
+### Changed
+- The coherence layer keys on `zaino_primitives::types::ChainStateEpoch` — the
+  chain head subsystem's epoch — following `zaino-mempool` 0.2.0's
+  `NfsEpochObserver` port.
+### Deprecated
+### Removed
+### Fixed
+
+## [0.1.0] - 2026-08-14
+
+### Added
 - New crate: `zaino-mempool-service`, the hexagonal *adapter/implementation* layer of
   the mempool subsystem. It supplies the concrete runtime for the ports defined
   in `zaino-mempool`; dependencies point inward (it depends on `zaino-mempool`,

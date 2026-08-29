@@ -13,6 +13,17 @@ and this library adheres to Rust's notion of
 ### Removed
 ### Fixed
 
+## [0.7.0] - 2026-08-28
+
+### Added
+### Changed
+- `z_getsubtreesbyindex` accepts the pool name `"ironwood"`; previously the
+  interface deliberately rejected it. `GetSubtreeRoots` serves the same pool
+  over gRPC through `zaino-proto` 0.5.0's `ShieldedProtocol::Ironwood`.
+### Deprecated
+### Removed
+### Fixed
+
 ## [0.6.0] - 2026-08-14
 
 ### Added

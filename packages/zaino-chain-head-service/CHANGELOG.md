@@ -8,6 +8,14 @@ and this library adheres to Rust's notion of
 ## [Unreleased]
 
 ### Added
+### Changed
+### Deprecated
+### Removed
+### Fixed
+
+## [0.1.0] - 2026-08-28
+
+### Added
 - New crate. The chain head runtime: carries over the synchronisation, reorg
   handling and retention logic from `zaino-state`'s
   `chain_index/non_finalised_state.rs`, now owning its own writer task. See
