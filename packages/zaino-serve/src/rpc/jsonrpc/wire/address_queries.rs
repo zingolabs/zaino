@@ -93,7 +93,7 @@ mod tests {
     }
 
     #[test]
-    fn utxo_renders_zcashd_field_names_and_a_display_order_txid() {
+    fn utxo_renders_legacy_field_names_and_a_display_order_txid() {
         let rendered = address_utxos_from_domain(vec![utxo()]).expect("address is valid");
         let json = serde_json::to_value(&rendered).unwrap();
 

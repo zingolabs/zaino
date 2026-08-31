@@ -149,7 +149,7 @@ impl<V> std::fmt::Debug for ValidatorSource<V> {
 /// The distinction becomes usable again as consumers move onto the port errors.
 ///
 /// The transport fault is carried as the error's `source` rather than only
-/// formatted into the message. `zaino-serve` recovers zcashd-compatible RPC
+/// formatted into the message. `zaino-serve` recovers legacy-compatible RPC
 /// error codes by downcast-walking [`std::error::Error::source`] (see
 /// `getblock_error_object_from_indexer_error` in
 /// `zaino-serve/src/rpc/jsonrpc/service.rs`), so flattening a [`FetchError`] to
@@ -157,8 +157,8 @@ impl<V> std::fmt::Debug for ValidatorSource<V> {
 /// on.
 ///
 /// A domain rejection is carried the same way, as a typed
-/// [`LegacyRpcError`](crate::error::LegacyRpcError) with zcashd's
-/// `InvalidParameter`. That is the code zcashd itself answers "not found" with,
+/// [`LegacyRpcError`](crate::error::LegacyRpcError) with the legacy full node's
+/// `InvalidParameter`. That is the code the legacy full node itself answers "not found" with,
 /// and it is what reached clients before the adapters learned to tell a missing
 /// object from an unreachable node — the reclassification must not cost the
 /// served interface its error code.
@@ -183,11 +183,11 @@ where
     }
 }
 
-/// Flatten a `getspentinfo` port error, preserving zcashd's own error code.
+/// Flatten a `getspentinfo` port error, preserving the legacy full node's own error code.
 ///
 /// The generic [`err`] reports every domain rejection as `InvalidParameter`
 /// (`-8`), which is right where the interface has no more specific code to
-/// offer. `getspentinfo` does: zcashd answers "no spend on record" with `-5`
+/// offer. `getspentinfo` does: the legacy full node answers "no spend on record" with `-5`
 /// (`InvalidAddressOrKey`) and the message `Unable to get spent info`, and that
 /// is the pair a client matches on.
 ///
@@ -197,7 +197,7 @@ where
 /// rewrite of this method then reported `-8`. Both are wrong in the same
 /// direction — the code the client is looking for never reached it.
 ///
-/// `Unsupported` has no zcashd code, because zcashd always implements the
+/// `Unsupported` has no the legacy full node code, because the legacy full node always implements the
 /// method. It is reported as `-32601`, the envelope's own "method not found",
 /// which is what the client would have seen had it asked the validator
 /// directly — and is deliberately *not* `-5`: "this node cannot answer" must
@@ -226,8 +226,8 @@ fn spent_info_err(error: QueryError<zaino_source::GetSpentInfoError>) -> Blockch
 
 /// The JSON-RPC envelope's "method not found".
 ///
-/// Not a zcashd legacy code: zcashd implements every method Zaino forwards, so
-/// this only arises when the backing validator is not zcashd.
+/// Not a legacy full-node legacy code: the legacy full node implements every method Zaino forwards, so
+/// this only arises when the backing validator is not the legacy full node.
 const METHOD_NOT_FOUND: i64 = -32601;
 
 /// A domain height from a zebra one, rejecting values the protocol disallows.
@@ -380,7 +380,7 @@ fn pool_balance(
         "sprout" => GetBlockchainInfoBalance::sprout(value, delta),
         "sapling" => GetBlockchainInfoBalance::sapling(value, delta),
         "orchard" => GetBlockchainInfoBalance::orchard(value, delta),
-        // zebra names this pool `lockbox` on the wire; `deferred` is zcashd's
+        // zebra names this pool `lockbox` on the wire; `deferred` is the legacy full node's
         // name for the same pool, and zebra's own constructor is still called
         // `deferred`. Both spellings are accepted so the answer does not depend
         // on which validator is behind the adapter.
@@ -1007,7 +1007,7 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
     ) -> BlockchainSourceResult<zaino_primitives::types::rpc::SpentInfo> {
         // Not `err`, which reports every domain rejection as `InvalidParameter`.
         // `getspentinfo` has two rejections that mean different things, and
-        // zcashd gives one of them a specific code that clients key on.
+        // the legacy full node gives one of them a specific code that clients key on.
         self.validator
             .get_spent_info(outpoint)
             .await
@@ -1604,7 +1604,7 @@ mod pool_treestate_slot_tests {
 mod error_source_chain {
     use super::*;
 
-    /// `zaino-serve` recovers zcashd-compatible RPC error codes by
+    /// `zaino-serve` recovers legacy-compatible RPC error codes by
     /// downcast-walking [`std::error::Error::source`] chains (see
     /// `getblock_error_object_from_indexer_error` and
     /// `sendrawtransaction_error_object_from_indexer_error` in
@@ -1658,13 +1658,13 @@ mod error_source_chain {
         })
     }
 
-    /// zcashd answers "no spend on record" with `-5 Unable to get spent info`,
+    /// the legacy full node answers "no spend on record" with `-5 Unable to get spent info`,
     /// and that pair is what a client matches on. Neither this method's first
     /// rewrite nor the connector it replaced actually served it — the former
     /// reported `-8`, the latter consumed the code into a typed error and
     /// served a generic internal error. Both lost the only part the client uses.
     #[test]
-    fn an_unspent_output_reports_zcashds_own_code() {
+    fn an_unspent_output_reports_the_legacy_full_nodes_own_code() {
         let rejected = spent_info_err(QueryError::Domain(
             zaino_source::GetSpentInfoError::NotSpent,
         ));
@@ -1675,11 +1675,11 @@ mod error_source_chain {
         );
         assert!(
             rejected.to_string().contains("Unable to get spent info"),
-            "zcashd's message travels with its code: {rejected}"
+            "the legacy full node's message travels with its code: {rejected}"
         );
     }
 
-    /// `getspentinfo` is zcashd-only, so a zebrad-backed deployment cannot
+    /// `getspentinfo` is legacy-only, so a zebrad-backed deployment cannot
     /// answer it at all. That has to stay distinguishable from "unspent" all
     /// the way to the wire — served as `-5`, it would tell every client that
     /// every output is unspent.

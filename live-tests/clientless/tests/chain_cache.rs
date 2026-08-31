@@ -92,8 +92,6 @@ mod chain_query_interface {
     // The store's own height type, named directly: `zaino-state` no longer
     // passes the backend's on-disk vocabulary through its public API.
     use zaino_chain_store_zainodb::types::Height;
-    #[cfg(feature = "zcashd_support")]
-    use zcash_local_net::validator::zcashd::Zcashd;
     use zcash_local_net::validator::zebrad::Zebrad;
     use zebra_chain::{
         parameters::{
@@ -247,42 +245,6 @@ mod chain_query_interface {
                     index_reader,
                 )
             }
-            #[cfg(feature = "zcashd_support")]
-            ValidatorKind::Zcashd => {
-                let config = ChainIndexConfig {
-                    storage: StorageConfig {
-                        database: DatabaseConfig {
-                            path: test_manager
-                                .data_dir
-                                .as_path()
-                                .to_path_buf()
-                                .join("chain-index-zaino"),
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    },
-                    ephemeral,
-                    mempool: Default::default(),
-                    db_version: 1,
-                    // This fixture derives its runtime network from the
-                    // heights the harness launched the validator with.
-                    network: zaino_testutils::from_local_net_activation_heights(
-                        &test_manager.local_net.get_activation_heights().await,
-                    )
-                    .to_regtest_network(),
-                };
-                let source = ZebraValidatorSource::rpc_only(
-                    &test_manager.full_node_rpc_listen_address.to_string(),
-                    Some(("xxxxxx".to_string(), "xxxxxx".to_string())),
-                    config.network.clone(),
-                )
-                .unwrap();
-                let chain_index = NodeBackedChainIndex::new(source, config).await.unwrap();
-                let index_reader = chain_index.subscriber();
-                tokio::time::sleep(Duration::from_secs(3)).await;
-
-                (test_manager, json_service, None, chain_index, index_reader)
-            }
         }
     }
 
@@ -290,13 +252,6 @@ mod chain_query_interface {
     #[tokio::test(flavor = "multi_thread")]
     async fn get_block_range_zebrad() {
         get_block_range::<Zebrad, Direct>(&ValidatorKind::Zebrad).await
-    }
-
-    #[cfg(feature = "zcashd_support")]
-    #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn get_block_range_zcashd() {
-        get_block_range::<Zcashd, Rpc>(&ValidatorKind::Zcashd).await
     }
 
     async fn get_block_range<C, Conn>(validator: &ValidatorKind)
@@ -429,13 +384,6 @@ mod chain_query_interface {
         sync_large_chain::<Zebrad, Direct>(&ValidatorKind::Zebrad).await
     }
 
-    #[cfg(feature = "zcashd_support")]
-    #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn sync_large_chain_zcashd() {
-        sync_large_chain::<Zcashd, Rpc>(&ValidatorKind::Zcashd).await
-    }
-
     async fn sync_large_chain<C, Conn>(validator: &ValidatorKind)
     where
         C: ValidatorExt,
@@ -507,13 +455,6 @@ mod chain_query_interface {
         get_subtree_roots::<Zebrad, Direct>(&ValidatorKind::Zebrad).await
     }
 
-    #[cfg(feature = "zcashd_support")]
-    #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn get_subtree_roots_zcashd() {
-        get_subtree_roots::<Zcashd, Rpc>(&ValidatorKind::Zcashd).await
-    }
-
     async fn get_subtree_roots<C, Conn>(validator: &ValidatorKind)
     where
         C: ValidatorExt,
@@ -582,13 +523,6 @@ mod chain_query_interface {
         get_mempool_stream_fresh_snapshot_repeated::<Zebrad, Rpc>(&ValidatorKind::Zebrad).await
     }
 
-    #[cfg(feature = "zcashd_support")]
-    #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn get_mempool_stream_fresh_snapshot_repeated_zcashd() {
-        get_mempool_stream_fresh_snapshot_repeated::<Zcashd, Rpc>(&ValidatorKind::Zcashd).await
-    }
-
     async fn get_mempool_stream_fresh_snapshot_repeated<C, Conn>(validator: &ValidatorKind)
     where
         C: ValidatorExt,
@@ -635,13 +569,6 @@ mod chain_query_interface {
     #[tokio::test(flavor = "multi_thread")]
     async fn zallet_like_steady_state_loop_zebrad() {
         zallet_like_steady_state_loop::<Zebrad, Rpc>(&ValidatorKind::Zebrad).await
-    }
-
-    #[cfg(feature = "zcashd_support")]
-    #[ignore = "prone to timeouts and hangs, to be fixed in chain index integration"]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn zallet_like_steady_state_loop_zcashd() {
-        zallet_like_steady_state_loop::<Zcashd, Rpc>(&ValidatorKind::Zcashd).await
     }
 
     async fn zallet_like_steady_state_loop<C, Conn>(validator: &ValidatorKind)

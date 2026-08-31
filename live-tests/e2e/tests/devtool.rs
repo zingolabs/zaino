@@ -4,8 +4,6 @@
 //! `Clients`, the matching tests in `wallet_to_validator.rs` migrate here and
 //! the zingolib versions are eventually retired (zingolabs/infrastructure#269).
 //!
-//! Zebrad only: the zcashd matrix is deferred (see below).
-//!
 //! Covered (the full zebrad fetch + state query/send surface):
 //! - sends to each pool, `send_to_all`, shielding, mining-reward receipt;
 //! - `get_transaction` (mined / mempool), `get_raw_transaction`;
@@ -17,6 +15,7 @@
 //! - block range: default/all pools and the out-of-range edge cases;
 //! - compact-block transparent data;
 //! - `connect_to_node_get_info` (wallet `get_info` smoke).
+//!
 //! Dual `*_fetch_vs_state` tests assert the fetch and state backends agree.
 //!
 //! Deferred, with the capability each waits on:
@@ -27,10 +26,6 @@
 //! - `monitor_unverified_mempool` — unconfirmed (mempool) wallet balances;
 //!   devtool sync is block-based (likely stays on zingolib, the indexer-side
 //!   mempool views above already cover the surface).
-//! - the zcashd matrix (`json_server`, zcashd send/query) — the devtool wallet
-//!   rejects zcashd's default regtest activation heights at construction;
-//!   `json_server` is additionally zcashd-bound (its reference subscriber *is*
-//!   zcashd).
 //! - the `test_vectors` chain builder — devtool transparent-coinbase shielding.
 //! - `get_mempool_info` — recomputes expected sizes from
 //!   `FetchServiceSubscriber` internals; low value over the mempool surfaces

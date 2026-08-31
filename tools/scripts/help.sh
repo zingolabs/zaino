@@ -95,7 +95,7 @@ echo "  set-worktree-parent-tools  Copy .cargo/config.toml to common \
 worktree parent"
 echo ""
 echo "Environment:"
-echo "  ZCASH_VERSION, ZEBRA_VERSION  Defined by: .env.testing-artifacts"
+echo "  ZEBRA_VERSION  Defined by: .env.testing-artifacts"
 echo "  RUST_VERSION                  Derived from rust-toolchain.toml"
 echo "                                via the workbench get-rust-version bin"
 echo ""

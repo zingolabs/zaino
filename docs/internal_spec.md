@@ -132,8 +132,8 @@ Full documentation for `ZainoD` can be found [here](https://zingolabs.github.io/
   - Communicates with `zaino-state` to retrieve data.
 
 - The served JSON-RPC schema (`rpc/jsonrpc/wire/`):
-  - Owns the JSON shape Zaino emits for its zcashd-compatible RPC surface —
-    serde structs with zcashd's exact field names, one `from_domain` conversion
+  - Owns the JSON shape Zaino emits for its legacy-compatible RPC surface —
+    serde structs with the legacy full node's exact field names, one `from_domain` conversion
     per type, and golden serialization tests beside each.
   - This is deliberately *not* shared with the shape Zaino accepts from a
     validator, which is `zaino-source-zebra-rpc`'s. The two interfaces
@@ -142,7 +142,7 @@ Full documentation for `ZainoD` can be found [here](https://zingolabs.github.io/
 
 - Error Handling:
   - Maps internal errors to appropriate gRPC status codes.
-  - Recovers zcashd-compatible legacy error codes by walking the error chain for
+  - Recovers legacy-compatible legacy error codes by walking the error chain for
     `zaino_source::FetchError` (a code the *validator* returned) or
     `zaino_state::LegacyRpcError` (Zaino's own rejection).
   - Provides meaningful error messages to clients.
@@ -210,7 +210,7 @@ and each crate's `usage.md` for practical guidance.
   - One trait per question a consumer can ask, each with its own error type.
   - `QueryError` separates a *domain answer* (the validator replied; not
     retried) from a *transport failure* (retried by `Resilient`, according to a
-    machine-readable `FailureMode`). This is what lets a zcashd legacy error
+    machine-readable `FailureMode`). This is what lets a legacy full-node legacy error
     code survive from the validator to the served response.
   - Capability is structural: an adapter that cannot answer a question does not
     implement its port, so mis-routing is a compile error.

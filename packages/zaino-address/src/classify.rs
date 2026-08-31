@@ -55,7 +55,7 @@ pub fn z_validate_address<P: Parameters>(raw_address: String, params: &P) -> ZVa
 
     // The transparent arms echo the caller's string; the shielded arms
     // re-encode, because `convert_if_network` has already proved the address
-    // belongs to this network and the canonical encoding is what zcashd
+    // belongs to this network and the canonical encoding is what the legacy full node
     // reports.
     match parse_for_network(&raw_address, params) {
         Some(Address::Transparent(TransparentAddress::PublicKeyHash(_))) => {
@@ -180,7 +180,7 @@ mod tests {
     }
 
     /// `validateaddress` describes transparent addresses only. A well-formed
-    /// shielded address is reported invalid, matching zcashd.
+    /// shielded address is reported invalid, matching the legacy full node.
     #[test]
     fn validate_address_rejects_shielded() {
         assert_eq!(

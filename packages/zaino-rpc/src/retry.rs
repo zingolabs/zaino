@@ -2,7 +2,7 @@
 //!
 //! Pure decision logic: no IO, no sleep. The client owns the delay.
 
-/// Work-queue-full error code from Zebra/zcashd.
+/// Work-queue-full error code from Zebra/the legacy full node.
 const WORK_QUEUE_FULL_CODE: i64 = -1;
 
 /// Should this RPC error be retried?

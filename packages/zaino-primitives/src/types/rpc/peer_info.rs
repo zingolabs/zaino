@@ -9,7 +9,7 @@
 ///
 /// Zebra reports exactly these two fields. Richer per-peer data — protocol
 /// version, user agent, byte counters, sync progress, ban score — is reported
-/// only by zcashd, which is being deprecated. Modelling those here would mean
+/// only by the legacy full node, which is being deprecated. Modelling those here would mean
 /// carrying roughly twenty fields that are permanently `None` against the
 /// supported validator, and encoding a deprecated implementation's internals
 /// into Zaino's vocabulary.
@@ -23,10 +23,10 @@
 ///
 /// # Why this is not an enum over response shapes
 ///
-/// The previous wire type discriminated zcashd from zebrad responses by trying
+/// The previous wire type discriminated the legacy full node from zebrad responses by trying
 /// each strict (`deny_unknown_fields`) struct in turn and falling back to
 /// untyped JSON. Strictness *was* the discriminator, which made it fail in
-/// three ways: a real zcashd response carrying one unrecognised field silently
+/// three ways: a real the legacy full node response carrying one unrecognised field silently
 /// degraded to untyped passthrough, Zebra adding a third field would do the
 /// same to the primary supported validator, and richness is a property of the
 /// validator yet was encoded per response. A single lenient shape has no

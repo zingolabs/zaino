@@ -151,9 +151,6 @@ bitflags = "2.9"
 
 # Test
 tempfile = "3.2"
-# `zcashd_support` is opt-in, not a default (docs/adr/0005), so these path deps
-# no longer need `default-features = false` to drop it: their default feature
-# set is already empty. Enable zcashd end-to-end with `--features zcashd_support`.
 zainod = { path = "packages/zainod" }
 # Service status and health-probe vocabulary. A leaf with one dependency
 # (`tracing`), so any subsystem can report its status without inheriting a

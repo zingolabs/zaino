@@ -19,17 +19,12 @@ is_tag() {
 }
 
 resolve_build_target() {
-  local zcash="$1"
-  local zebra="$2"
+  local zebra="$1"
 
-  if is_tag "$zcash" && is_tag "$zebra"; then
+  if is_tag "$zebra"; then
     echo "final-prebuilt"
-  elif ! is_tag "$zcash" && is_tag "$zebra"; then
-    echo "final-zcashd-source"
-  elif is_tag "$zcash" && ! is_tag "$zebra"; then
-    echo "final-zebrad-source"
   else
-    echo "final-all-source"
+    echo "final-zebrad-source"
   fi
 }
 

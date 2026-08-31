@@ -16,8 +16,8 @@ main() {
   devtool_rev=$(resolve_devtool_rev "$DEVTOOL_VERSION")
 
   local tag_vars
-  tag_vars="RUST_$RUST_VERSION-ZCASH_$ZCASH_VERSION"
-  tag_vars+="-ZEBRA_$ZEBRA_VERSION-DEVTOOL_${devtool_rev:0:12}"
+  tag_vars="RUST_$RUST_VERSION-ZEBRA_$ZEBRA_VERSION"
+  tag_vars+="-DEVTOOL_${devtool_rev:0:12}"
   tag_vars+="-CONTAINER_$container_hash"
   echo "$tag_vars"
 }

@@ -532,7 +532,7 @@ impl zaino_source::OneShotGetAddressTxids for ZebraReadStateAdapter {
 
 /// Deltas are synthesised from the address index rather than fetched.
 ///
-/// Zebra has no `getaddressdeltas` RPC — the method is zcashd's — so on a Zebra
+/// Zebra has no `getaddressdeltas` RPC — the method is the legacy full node's — so on a Zebra
 /// validator this is the only implementation there is. It rebuilds the answer
 /// from two things the state service does have: the transparent address index,
 /// which maps an address and height range to the transactions touching it, and
@@ -543,7 +543,7 @@ impl zaino_source::OneShotGetAddressTxids for ZebraReadStateAdapter {
 /// Only *receives* (outputs paying a requested address) are reported. A spend
 /// is an input naming a previous output, and the state service does not resolve
 /// that outpoint back to the address and value it paid; recovering spends would
-/// mean fetching every spent transaction as well. zcashd reports both, so a
+/// mean fetching every spent transaction as well. the legacy full node reports both, so a
 /// caller comparing against it sees the receive half of each address's history.
 /// This matches the behaviour of the connector this replaced, which built the
 /// same answer through a verbose-transaction shape whose inputs likewise
@@ -629,7 +629,7 @@ impl zaino_source::OneShotGetAddressDeltas for ZebraReadStateAdapter {
             }
         }
 
-        // zcashd orders deltas by (height, position in block, index within the
+        // the legacy full node orders deltas by (height, position in block, index within the
         // transaction). The address index carries each transaction's real
         // location, so this is the documented order rather than an
         // approximation of it.
@@ -982,7 +982,7 @@ impl zaino_source::OneShotGetBlockchainInfo for ZebraReadStateAdapter {
         // Zebra's activation list is the schedule this node is actually
         // enforcing, which is the point of reading it from the validator rather
         // than compiling one in. Upgrades without a consensus branch id are
-        // zebra-internal rule changes with no zcashd equivalent, so they are
+        // zebra-internal rule changes with no the legacy full node equivalent, so they are
         // not part of the schedule a client can act on.
         let upgrades = self
             .network
@@ -1054,7 +1054,7 @@ impl zaino_source::OneShotGetBlockchainInfo for ZebraReadStateAdapter {
             chain_work: None,
             pruned: false,
             size_on_disk,
-            // Not tracked by the read-state; zcashd counts sprout commitments
+            // Not tracked by the read-state; the legacy full node counts sprout commitments
             // only, which has no meaning for a modern chain.
             commitments: 0,
             chain_supply: ValuePoolBalance {
@@ -1235,7 +1235,7 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
     ///
     /// # Why this is derived rather than proxied
     ///
-    /// `getblockdeltas` is a zcashd method. **zebrad does not implement it** —
+    /// `getblockdeltas` is a legacy full-node method. **zebrad does not implement it** —
     /// it answers `-32601 Method not found` — so on a zebrad-backed deployment
     /// this derivation is the only implementation there is, not a second copy
     /// of one the validator already has.
@@ -1243,8 +1243,8 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
     /// # What is attributed, and what is not
     ///
     /// Only inputs and outputs with exactly one derivable transparent address
-    /// are reported, matching zcashd. A nonstandard script has no address to
-    /// credit, and a bare multisig has no single owner; zcashd omits both
+    /// are reported, matching the legacy full node. A nonstandard script has no address to
+    /// credit, and a bare multisig has no single owner; the legacy full node omits both
     /// rather than crediting the first address. So the deltas do not sum to a
     /// transaction's transparent balance and must not be used to derive one.
     async fn get_block_deltas(

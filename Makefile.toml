@@ -93,9 +93,9 @@ script.main = 'source "./tools/scripts/push-image.sh"'
 
 [tasks.container-test]
 clear = true
-description = "Engine: run nextest in the local CI container, forwarding args (zcashd_support OFF by default; --with-zcashd adds --features zcashd_support). Devs use `makers test [packages|e2e|clientless|live|all]`; live-clientless / live-e2e and the `test` front door call this."
+description = "Engine: run nextest in the local CI container, forwarding args. Devs use `makers test [packages|e2e|clientless|live|all]`; live-clientless / live-e2e and the `test` front door call this."
 # This task runs tests inside the container built from live-tests/test_environment.
-# The entrypoint.sh script in the container sets up test binaries (zcashd, zebrad, zcash-cli)
+# The entrypoint.sh script in the container sets up test binaries (zebrad, zcash-devtool)
 # by creating symlinks from /home/container_user/artifacts to the expected live-tests/test_binaries/bins location.
 dependencies = ["init-podman-volumes", "ensure-image-exists"]
 script_runner = "bash"
@@ -142,15 +142,14 @@ script.main = 'source "./tools/scripts/container-nextest-workspace.sh"'
 # SET names mirror the crate/dir names (`e2e`, `clientless`); `packages`,
 # `live`, and `all` are the groupings. `live` = all non-packages tests; `all`
 # = `packages` + `live` (see live-tests/CONTEXT.md). Each set delegates to an
-# existing engine rather than re-implementing a run. `--with-zcashd` (handled
-# by the engines) adds the zcashd-backed tests to any set.
+# existing engine rather than re-implementing a run.
 # ===================================================================
 
 [tasks.test]
 # clear = true fully replaces cargo-make's built-in `test` task (which runs
 # `cargo test`); without it our `script` would merge with the builtin `command`.
 clear = true
-description = "Run a test set: `makers test [packages|e2e|clientless|live|all|ironwood]` (default: packages). Pass --with-zcashd for the zcashd-backed tests."
+description = "Run a test set: `makers test [packages|e2e|clientless|live|all|ironwood]` (default: packages)."
 script_runner = "bash"
 script = '''
 set -uo pipefail
@@ -165,9 +164,8 @@ usage() {
 }
 
 # A non-flag first arg selects the set and must be a known name; a flag first
-# arg (or none) keeps the default `packages` and is forwarded to nextest. So
-# `makers test --with-zcashd` runs packages with the flag, while a mistyped set
-# name errors instead of silently running the default.
+# arg (or none) keeps the default `packages` and is forwarded to nextest, while
+# a mistyped set name errors instead of silently running the default.
 set="packages"
 if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then
   case "$1" in
@@ -215,15 +213,6 @@ description = "Run the zaino-bench harness against a running zainod (sync | conc
 # server. Not a member of `default-members`, so `-p` is required to select it.
 script_runner = "bash"
 script = 'exec cargo run --release -p zaino-bench -- "$@"'
-
-# -------------------------------------------------------------------
-
-[tasks.zcashd_test]
-description = "Convenience: the whole suite with the zcashd-backed tests (`makers test all --with-zcashd`)"
-# Delegates to the `test all` front door with the explicit flag — there is no
-# implicit/env-var path to enable zcashd (docs/adr/0005).
-script_runner = "bash"
-script = 'exec makers test all --with-zcashd'
 
 # -------------------------------------------------------------------
 
@@ -284,26 +273,14 @@ script = 'source "./tools/scripts/verify-all.sh"'
 
 # -------------------------------------------------------------------
 
-# Verify the no-zcashd build compiles: `zcashd_support` is opt-in and being
-# deprecated (docs/adr/0001, 0005), so the default --no-default-features build
-# must stay green or it bit-rots. The reunified workspace (production +
-# live-test crates) is checked in a single pass.
-[tasks.check-no-zcashd-packages]
-description = "cargo check --no-default-features across the whole workspace (zcashd_support off)"
-command = "cargo"
-args = ["check", "--workspace", "--all-targets", "--no-default-features"]
-
+# The workspace test archive is built with `--no-default-features`, so
+# `zaino-proto`'s separate `heavy` default feature must survive that build.
 [tasks.check-zaino-proto-heavy]
-description = "Guard: zaino-proto `heavy` must stay enabled under --no-default-features (else the no-zcashd test build silently loses zebra-state/zebra-chain/which)"
+description = "Guard: zaino-proto `heavy` must stay enabled under --no-default-features (else the test build silently loses zebra-state/zebra-chain/which)"
 script_runner = "@rust"
 script = { file = "tools/scripts/check-zaino-proto-heavy.rs" }
 
-[tasks.check-no-zcashd]
-description = "Verify the no-zcashd (--no-default-features) build compiles across the workspace, and that zaino-proto `heavy` survives it"
-dependencies = [
-  "check-zaino-proto-heavy",
-  "check-no-zcashd-packages",
-]
+# -------------------------------------------------------------------
 
 # The experimental/alpha feature set is off by default and is therefore never
 # built by the normal CI path, which is exactly how it bit-rots: two `#[cfg]`
@@ -340,3 +317,6 @@ dependencies = [
   "check-experimental-features-packages",
   "test-experimental-features",
 ]
+
+# -------------------------------------------------------------------
+
