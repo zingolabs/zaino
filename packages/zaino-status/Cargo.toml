@@ -9,8 +9,15 @@ license = { workspace = true }
 version = "0.1.0"
 
 [dependencies]
+metrics = { workspace = true, optional = true }
 tracing = { workspace = true }
 
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"
+
+[features]
+# Publish every component's status as a Prometheus gauge from
+# `NamedAtomicStatus::store`. Named to match the `prometheus` feature the rest of
+# the workspace forwards, so an operator build turns it on everywhere at once.
+prometheus = ["dep:metrics"]

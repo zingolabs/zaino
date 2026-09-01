@@ -95,6 +95,14 @@ impl DbV1 {
                 break;
             }
         }
+
+        // Second progress frontier, and the only place it moves (background
+        // validator and write path both arrive here), so publishing here misses
+        // no path. Reads above it pay a synchronous `validate_block_blocking` on
+        // the serving path — a latency cliff with no other symptom
+        #[cfg(feature = "prometheus")]
+        metrics::gauge!(crate::metric_names::DB_VALIDATED_HEIGHT)
+            .set(self.validated_tip.load(Ordering::Acquire) as f64);
     }
 
     /// Lightweight per-block validation.
@@ -141,6 +149,13 @@ impl DbV1 {
         if self.is_validated(height.into()) {
             return Ok(());
         }
+
+        // After the already-validated fast path, which is the common call and does
+        // no work: timing it buries the real re-reads under near-zero samples (the
+        // mistake that made `block_fetch_seconds` describe its own terminator)
+        let _timer = crate::chain_index::ingest::ScopedTimer::start(
+            crate::metric_names::DB_VALIDATION_SECONDS,
+        );
 
         let height_key = height
             .to_bytes()
@@ -625,6 +640,12 @@ impl DbV1 {
                     return Ok(height);
                 }
 
+                // Past the fast path: a full re-validation, synchronously, on the
+                // serving path. Rising rate = the visible half of a lagging
+                // validated tip, charged to whichever client asked
+                #[cfg(feature = "prometheus")]
+                metrics::counter!(crate::metric_names::DB_ON_DEMAND_VALIDATIONS_TOTAL).increment(1);
+
                 let hkey = height.to_bytes()?;
 
                 tokio::task::block_in_place(|| {
@@ -664,6 +685,12 @@ impl DbV1 {
             HashOrHeight::Hash(z_hash) => {
                 let height = self.resolve_hash_or_height(hash_or_height).await?;
                 let hash = BlockHash::from(z_hash);
+                // As the height branch above. No fast path here (a hash lookup
+                // always reaches `validate_block_blocking`, which returns at once
+                // if already validated), so this counts attempts and
+                // `validation_seconds` counts the ones that worked
+                #[cfg(feature = "prometheus")]
+                metrics::counter!(crate::metric_names::DB_ON_DEMAND_VALIDATIONS_TOTAL).increment(1);
                 tokio::task::block_in_place(|| {
                     match self.validate_block_blocking(height, hash) {
                         Ok(()) => {}

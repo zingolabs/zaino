@@ -42,13 +42,16 @@ macro_rules! client_method_helper {
     // invocation of Box::pin
     (streaming $self:ident $input:ident $method_name:ident) => {
         // extra Box::pin here
-        tonic::Response::new(Box::pin(
-            $self
-                .service_subscriber
-                .inner_ref()
-                .$method_name($input.into_inner())
-                .await
-                .map_err(Into::into)?,
+        tonic::Response::new(observe_stream(
+            Box::pin(
+                $self
+                    .service_subscriber
+                    .inner_ref()
+                    .$method_name($input.into_inner())
+                    .await
+                    .map_err(Into::into)?,
+            ),
+            stringify!($method_name),
         ))
     };
     // for the no-input variant
@@ -65,13 +68,16 @@ macro_rules! client_method_helper {
     // WOMBO-COMBO!!
     (streamingempty $self:ident $input:ident $method_name:ident) => {
         // extra Box::pin here
-        tonic::Response::new(Box::pin(
-            $self
-                .service_subscriber
-                .inner_ref()
-                .$method_name()
-                .await
-                .map_err(Into::into)?,
+        tonic::Response::new(observe_stream(
+            Box::pin(
+                $self
+                    .service_subscriber
+                    .inner_ref()
+                    .$method_name()
+                    .await
+                    .map_err(Into::into)?,
+            ),
+            stringify!($method_name),
         ))
     };
 }
@@ -132,6 +138,76 @@ macro_rules! implement_client_methods {
     };
 }
 
+/// Times one server stream's lifetime and delivery.
+///
+/// - Handlers return at stream construction, so `request_duration_seconds` times
+///   setup only — ~zero for `GetBlockRange`, the priciest client request
+/// - `Drop` as the completion hook: a stream ends on last item *or* client
+///   hangup; recording on last item misses the hangup and leaks the active gauge
+#[cfg(feature = "prometheus")]
+#[derive(Debug)]
+struct StreamMetrics {
+    method: &'static str,
+    started: std::time::Instant,
+    items: u64,
+}
+
+#[cfg(feature = "prometheus")]
+impl StreamMetrics {
+    fn new(method: &'static str) -> Self {
+        use crate::metric_names::*;
+        metrics::gauge!(GRPC_STREAMS_ACTIVE, SERVE_METHOD => method).increment(1.0);
+        Self {
+            method,
+            started: std::time::Instant::now(),
+            items: 0,
+        }
+    }
+}
+
+#[cfg(feature = "prometheus")]
+impl zaino_state::StreamObserver for StreamMetrics {
+    fn item(&mut self) {
+        // Local, flushed once on drop: a registry lookup per item is real cost on
+        // every block of every range request
+        self.items += 1;
+    }
+}
+
+#[cfg(feature = "prometheus")]
+impl Drop for StreamMetrics {
+    fn drop(&mut self) {
+        use crate::metric_names::*;
+        metrics::gauge!(GRPC_STREAMS_ACTIVE, SERVE_METHOD => self.method).decrement(1.0);
+        metrics::histogram!(GRPC_STREAM_SECONDS, SERVE_METHOD => self.method)
+            .record(self.started.elapsed().as_secs_f64());
+        metrics::counter!(GRPC_STREAM_ITEMS_TOTAL, SERVE_METHOD => self.method)
+            .increment(self.items);
+    }
+}
+
+/// Attach stream metrics to a boxed stream; identity without `prometheus`.
+///
+/// - Takes the already-pinned stream so the macro arms stay one expression and
+///   need no `cfg` of their own
+#[allow(unused_variables)]
+fn observe_stream<T: 'static>(
+    stream: std::pin::Pin<Box<zaino_state::ChannelStream<T>>>,
+    method: &'static str,
+) -> std::pin::Pin<Box<zaino_state::ChannelStream<T>>> {
+    #[cfg(feature = "prometheus")]
+    {
+        // Unpin -> attach -> re-pin. `ChannelStream` is `Unpin` (`ReceiverStream`
+        // + `Option<Box<_>>`), so this is checked, not assumed
+        let stream = std::pin::Pin::into_inner(stream);
+        Box::pin((*stream).observed(Box::new(StreamMetrics::new(method))))
+    }
+    #[cfg(not(feature = "prometheus"))]
+    {
+        stream
+    }
+}
+
 /// Emit the standard inbound-gRPC metric triple for one handler invocation:
 /// request count, request duration, and — on error — an error count keyed by
 /// status code. Shared by `implement_client_methods!` and the hand-written
@@ -143,13 +219,12 @@ fn record_grpc_metrics<T>(
     result: &Result<tonic::Response<T>, tonic::Status>,
 ) {
     use crate::metric_names::*;
-    metrics::counter!(GRPC_REQUESTS_TOTAL, "method" => method).increment(1);
-    metrics::histogram!(GRPC_REQUEST_DURATION_SECONDS, "method" => method)
+    metrics::histogram!(GRPC_REQUEST_DURATION_SECONDS, SERVE_METHOD => method)
         .record(start.elapsed().as_secs_f64());
     if let Err(status) = result {
         metrics::counter!(
             GRPC_ERRORS_TOTAL,
-            "method" => method,
+            SERVE_METHOD => method,
             "code" => status.code().description(),
         )
         .increment(1);

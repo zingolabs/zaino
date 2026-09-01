@@ -223,6 +223,10 @@ zaino_grpc_request_duration_seconds{method=\"get_block_range\",quantile=\"0.5\"}
     /// Pins this crate's copy of the metric names to the ones `zaino-state`
     /// actually emits, so a rename there fails the build rather than silently
     /// producing a harness that waits forever for a metric nobody publishes.
+    ///
+    /// Pins names, not emission — `lag_blocks`, `has_reached_tip` and `db_tip_height` were
+    /// retired upstream, and `Sample` still reads all three into fields that can only be
+    /// `None`. Removing those fields is the reconciliation this test cannot express
     #[test]
     fn metric_names_match_zaino_state() {
         use zaino_state::metric_names as upstream;
@@ -232,13 +236,10 @@ zaino_grpc_request_duration_seconds{method=\"get_block_range\",quantile=\"0.5\"}
             upstream::SYNC_FINALIZED_HEIGHT
         );
         assert_eq!(names::SYNC_TARGET_HEIGHT, upstream::SYNC_TARGET_HEIGHT);
-        assert_eq!(names::SYNC_LAG_BLOCKS, upstream::SYNC_LAG_BLOCKS);
-        assert_eq!(names::SYNC_HAS_REACHED_TIP, upstream::SYNC_HAS_REACHED_TIP);
         assert_eq!(
             names::SYNC_TRANSACTIONS_TOTAL,
             upstream::SYNC_TRANSACTIONS_TOTAL
         );
-        assert_eq!(names::DB_TIP_HEIGHT, upstream::DB_TIP_HEIGHT);
         assert_eq!(names::CHAIN_TIP_HEIGHT, upstream::CHAIN_TIP_HEIGHT);
     }
 }

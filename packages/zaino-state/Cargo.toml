@@ -20,7 +20,12 @@ default = []
 fast-test-seam = []
 
 # Prometheus metrics emission (gauge! calls in sync paths).
-prometheus = ["metrics"]
+#
+# Forwards to `zaino-status`, which emits the per-component status gauge from
+# `NamedAtomicStatus::store`. Without the forward, every component's status —
+# including this crate's own finalised-state and sync status — silently stops
+# being published while the rest of the metrics work.
+prometheus = ["metrics", "zaino-status/prometheus", "zaino-mempool-service/prometheus"]
 
 # test_dependencies - Exposes internal functionality for testing.
 test_dependencies = ["zaino-source-zebra/test_dependencies"]

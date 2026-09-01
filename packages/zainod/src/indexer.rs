@@ -174,6 +174,8 @@ where
         let log_interval = tokio::time::Duration::from_secs(10);
 
         let serve_task = tokio::task::spawn(async move {
+            let shutdown = shutdown_signal();
+            tokio::pin!(shutdown);
             loop {
                 // Log the servers status.
                 if last_log_time.elapsed() >= log_interval {
@@ -193,7 +195,16 @@ where
                     return Ok(());
                 }
 
-                server_interval.tick().await;
+                tokio::select! {
+                    _ = server_interval.tick() => {}
+                    // Pod teardown = SIGTERM; drive the same graceful close so the
+                    // db and mempool are not killed mid-write
+                    _ = &mut shutdown => {
+                        info!("received shutdown signal; closing Zaino gracefully");
+                        indexer.close().await;
+                        return Ok(());
+                    }
+                }
             }
         });
 
@@ -314,6 +325,32 @@ where
             grpc = %grpc_server_status,
             "Zaino status check"
         );
+    }
+}
+
+/// Resolves on shutdown: SIGTERM (pod teardown) or ctrl-c on unix, ctrl-c else.
+///
+/// - No signal handling before, so a k8s SIGTERM killed zaino mid-write
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+            }
+            Err(e) => {
+                tracing::warn!(%e, "could not install SIGTERM handler; falling back to ctrl-c only");
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
     }
 }
 

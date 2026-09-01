@@ -5,26 +5,7 @@ use super::*;
 #[cfg(feature = "prometheus")]
 use crate::metric_names::*;
 
-/// Cheap heap-size estimate for a buffered [`IndexedBlock`], used only to bound the bulk-sync write
-/// batch in [`DbV1::write_blocks_to_height`]. Exactness is not required — it just keeps the batch's
-/// peak memory roughly within the configured budget.
-#[cfg(not(feature = "transparent_address_history_experimental"))]
-fn approx_indexed_block_bytes(block: &IndexedBlock) -> u64 {
-    block
-        .transactions()
-        .iter()
-        .map(|tx| {
-            let transparent = tx.transparent();
-            let items = transparent.inputs().len()
-                + transparent.outputs().len()
-                + tx.sapling().spends().len()
-                + tx.sapling().outputs().len()
-                + tx.orchard().actions().len()
-                + tx.ironwood().actions().len();
-            256 + items as u64 * 128
-        })
-        .sum()
-}
+use crate::chain_index::ingest::{BlockWork, IngestStage};
 
 /// Maximum number of blocks buffered in a single bulk-sync write batch, regardless of the byte
 /// budget. Early-chain blocks are tiny, so the byte budget alone could buffer an enormous number of
@@ -122,20 +103,17 @@ async fn fill_sync_batch<S: crate::chain_index::source::BlockchainSource>(
         // so the fold below still sees blocks in the order the chain has them.
         let fetches = futures::StreamExt::map(
             futures::stream::iter(heights.iter().copied()),
+            // Timed inside `fetch_block_for_indexing`, as two disjoint spans
+            // (`block_fetch` / `treestate_fetch`) rather than one enclosing total: with N
+            // fetches in flight the sum of either approaches N x wall-clock, so compare it
+            // against wall-clock only after dividing by the concurrency in force.
             |height_int| async move {
-                #[cfg(feature = "prometheus")]
-                let build_start = std::time::Instant::now();
-                let fetched = crate::chain_index::finalised_state::fetch_block_for_indexing(
-                    source, height_int,
+                crate::chain_index::finalised_state::fetch_block_for_indexing(
+                    source,
+                    height_int,
+                    IngestStage::Finalised,
                 )
-                .await;
-                // Per-block cost, so it stays comparable across concurrency settings. With N
-                // fetches in flight the sum of this histogram approaches N x wall-clock; compare
-                // it against wall-clock only after dividing by the concurrency in force.
-                #[cfg(feature = "prometheus")]
-                metrics::histogram!(SYNC_BLOCK_BUILD_SECONDS)
-                    .record(build_start.elapsed().as_secs_f64());
-                fetched
+                .await
             },
         );
         let fetched: Vec<_> = futures::TryStreamExt::try_collect(futures::StreamExt::buffered(
@@ -183,6 +161,7 @@ async fn fill_sync_batch<S: crate::chain_index::source::BlockchainSource>(
                             nu6_3_activation_height,
                             height_int,
                             parent_chainwork,
+                            IngestStage::Finalised,
                         )
                     })
                     .await
@@ -198,20 +177,26 @@ async fn fill_sync_batch<S: crate::chain_index::source::BlockchainSource>(
         .await?;
 
         for block in assembled {
-            batch_bytes = batch_bytes.saturating_add(approx_indexed_block_bytes(&block));
+            // One walk, feeding both the byte budget and the throughput counters.
+            let work = BlockWork::tally(&block);
+            work.record(IngestStage::Finalised);
+            batch_bytes = batch_bytes.saturating_add(work.approx_bytes());
             batch.push(block);
             cursor.next += 1;
+            // In-memory build frontier, per block → moves between the per-batch commits that
+            // step `finalized_height`
+            #[cfg(feature = "prometheus")]
+            metrics::gauge!(SYNC_FETCHED_HEIGHT).set((cursor.next - 1) as f64);
         }
 
         // In-flight progress: the last block built, throttled by time. The committed tip is
         // reported separately by `note_sync_batch_committed`, and the two now differ by up to a
         // full batch while the pipeline is running.
         if cursor.last_progress_log.elapsed() >= SYNC_PROGRESS_LOG_INTERVAL {
+            // The cursor is the *builder's* position, which runs ahead of the committed tip
+            // by up to a batch; `finalized_height` is stepped by the commit instead.
             #[cfg(feature = "prometheus")]
-            {
-                metrics::gauge!(SYNC_FINALIZED_HEIGHT).set((cursor.next - 1) as f64);
-                metrics::gauge!(SYNC_TARGET_HEIGHT).set(build.target as f64);
-            }
+            metrics::gauge!(SYNC_TARGET_HEIGHT).set(build.target as f64);
             info!(
                 current = cursor.next - 1,
                 target = build.target,
@@ -220,6 +205,27 @@ async fn fill_sync_batch<S: crate::chain_index::source::BlockchainSource>(
             );
             cursor.last_progress_log = std::time::Instant::now();
         }
+    }
+
+    // Which cap ended the batch, re-evaluated in the loop's test order so the answer matches
+    // the branch that fired. Says whether `sync_write_batch_size` suits the writer's chain
+    // position — without it a batch-size change is unfalsifiable. Skipped for the empty batch
+    // that ends the run: nothing was flushed.
+    #[cfg(feature = "prometheus")]
+    if !batch.is_empty() {
+        let flush_reason = if cursor.next > build.target {
+            "target"
+        } else if batch_bytes >= build.budget_bytes {
+            "bytes"
+        } else if batch.len() >= SYNC_WRITE_BATCH_MAX_BLOCKS {
+            "blocks"
+        } else {
+            "interval"
+        };
+        metrics::counter!(SYNC_BATCH_FLUSH_TOTAL, BATCH_FLUSH_REASON => flush_reason).increment(1);
+        // Normalises `batch_write_seconds` to seconds-per-block; 8 early-chain blocks vs 800
+        // are otherwise incomparable.
+        metrics::histogram!(SYNC_BATCH_BLOCKS).record(batch.len() as f64);
     }
 
     Ok(batch)
@@ -465,6 +471,19 @@ impl DbWrite for DbV1 {
                 }
             };
 
+        // Every pass, before the early return below. Set only on work → absent
+        // for the whole life of an already-synced node, so `tip - finalized`
+        // (the documented lag) was unavailable at startup and at steady state
+        #[cfg(feature = "prometheus")]
+        {
+            metrics::gauge!(SYNC_TARGET_HEIGHT).set(height.0 as f64);
+            // `start_height` = committed tip + 1; 0 only on an empty db, where
+            // publishing 0 would be a false reading rather than a missing one
+            if start_height > 0 {
+                metrics::gauge!(SYNC_FINALIZED_HEIGHT).set((start_height - 1) as f64);
+            }
+        }
+
         // Nothing to do when the tip already meets the target. Importantly, this means a steady-state
         // poll (the indexer calls `sync_to_height` repeatedly) does *not* trigger the bulk accumulator
         // rebuild below when no new blocks finalised.
@@ -564,6 +583,12 @@ impl DbWrite for DbV1 {
         }
         #[cfg(feature = "transparent_address_history_experimental")]
         {
+            // Uninstrumented: this path does not compile (`network`, `pool_lists`
+            // out of scope — predates this work), so nothing added here is
+            // buildable. Instrument it with the commit that fixes it.
+            //
+            // `stage` below is not instrumentation — forced by
+            // `build_indexed_block_from_source`'s signature
             for height_int in start_height..=height.0 {
                 let block = build_indexed_block_from_source(
                     source,
@@ -573,6 +598,7 @@ impl DbWrite for DbV1 {
                     nu6_3_activation_height,
                     height_int,
                     parent_chainwork,
+                    IngestStage::Finalised,
                 )
                 .await?;
                 parent_chainwork = Some(block.context.chainwork);
@@ -586,6 +612,11 @@ impl DbWrite for DbV1 {
         // once the chain is large. Use it only for the first build or an unusually large gap (e.g. a
         // sync interrupted far behind the on-disk tip); in steady state apply just the delta for the
         // blocks we wrote — O(range) work — which produces the identical accumulator at the tip.
+        //
+        // Timed inside `advance_tx_out_set_accumulator_to_tip` — the only scope
+        // that knows the delta-vs-rebuild branch. Last thing every pass does and
+        // the likeliest to stall it, so untimed left "fetched_height frozen, no
+        // commit, no error" unattributable
         self.advance_tx_out_set_accumulator_to_tip(height).await?;
 
         Ok(())
@@ -617,14 +648,22 @@ impl DbV1 {
         &self,
         batch: &[IndexedBlock],
     ) -> Result<(), FinalisedStateError> {
+        // Insert & flush timed apart: B-tree work (working-set vs RAM) and the device saturate
+        // for unrelated reasons; one histogram spanning both could only say "the write path got
+        // slower".
         #[cfg(feature = "prometheus")]
         let write_start = std::time::Instant::now();
         self.write_block_batch_blocking(batch)?;
+        #[cfg(feature = "prometheus")]
+        let fsync_start = std::time::Instant::now();
+        #[cfg(feature = "prometheus")]
+        metrics::histogram!(SYNC_BATCH_WRITE_SECONDS)
+            .record((fsync_start - write_start).as_secs_f64());
         self.env.sync(true).map_err(|e| {
             FinalisedStateError::Custom(format!("LMDB checkpoint sync failed: {e}"))
         })?;
         #[cfg(feature = "prometheus")]
-        metrics::histogram!(SYNC_BLOCK_WRITE_SECONDS).record(write_start.elapsed().as_secs_f64());
+        metrics::histogram!(SYNC_FSYNC_SECONDS).record(fsync_start.elapsed().as_secs_f64());
         Ok(())
     }
 
@@ -632,12 +671,13 @@ impl DbV1 {
     ///
     /// Only ever called after [`Self::commit_sync_batch_blocking`] has returned `Ok`, so the
     /// on-disk `headers` tip never runs ahead of the indexes and resume stays gap-free.
+    ///
+    /// Throughput is not counted here — it is tallied once per block as the batch is built (see
+    /// `fill_sync_batch`), from the same walk that bounds the batch's size.
     #[cfg(not(feature = "transparent_address_history_experimental"))]
     fn note_sync_batch_committed(&self, batch: &[IndexedBlock]) {
         for block in batch {
             self.mark_validated(block.context.index.height.0);
-            #[cfg(feature = "prometheus")]
-            record_block_throughput(block);
         }
         self.status.store(StatusType::Ready);
 
@@ -652,10 +692,23 @@ impl DbV1 {
             blocks = batch.len(),
             "write_blocks_to_height: committed batch"
         );
+        // The committed frontier, stepped only by a durable batch — `fetched_height` reports
+        // where the builder has reached, and the two differ by up to a batch while running.
         #[cfg(feature = "prometheus")]
-        {
-            metrics::gauge!(DB_TIP_HEIGHT).set(height as f64);
-            metrics::gauge!(SYNC_LAST_BLOCK_WRITTEN_AT).set(crate::chain_index::unix_now_secs());
+        metrics::gauge!(SYNC_FINALIZED_HEIGHT).set(height as f64);
+    }
+
+    /// Publish LMDB map usage.
+    ///
+    /// - Marks where the db outgrows RAM and write throughput turns
+    /// - Off `data.mdb`'s length: `me_last_pgno` is raw FFI (crate forbids unsafe)
+    ///   and safe [`lmdb::Stat`] covers only the main tree, missing 16 sub-dbs
+    /// - On the maintenance timer, not per commit: per-commit froze while idle and
+    ///   missed accumulator & migration growth. Unreadable file = missing sample
+    #[cfg(feature = "prometheus")]
+    pub(super) fn record_db_used_bytes(&self) {
+        if let Ok(meta) = std::fs::metadata(super::db_path(&self.config).join("data.mdb")) {
+            metrics::gauge!(DB_USED_BYTES).set(meta.len() as f64);
         }
     }
 
@@ -2192,22 +2245,6 @@ impl DbV1 {
         self.status.store(StatusType::Ready);
         Ok(())
     }
-}
-
-/// Increments per-block throughput counters (transactions, Sapling outputs,
-/// Orchard actions). Only compiled when the `prometheus` feature is enabled.
-#[cfg(feature = "prometheus")]
-fn record_block_throughput(block: &IndexedBlock) {
-    let transactions = block.transactions().len() as u64;
-    let mut sapling_outputs: u64 = 0;
-    let mut orchard_actions: u64 = 0;
-    for tx in block.transactions() {
-        sapling_outputs = sapling_outputs.saturating_add(tx.sapling().outputs().len() as u64);
-        orchard_actions = orchard_actions.saturating_add(tx.orchard().actions().len() as u64);
-    }
-    metrics::counter!(SYNC_TRANSACTIONS_TOTAL).increment(transactions);
-    metrics::counter!(SYNC_SAPLING_OUTPUTS_TOTAL).increment(sapling_outputs);
-    metrics::counter!(SYNC_ORCHARD_ACTIONS_TOTAL).increment(orchard_actions);
 }
 
 #[cfg(test)]

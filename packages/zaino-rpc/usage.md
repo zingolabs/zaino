@@ -62,11 +62,19 @@ let info = probe_node(&addr, auth).await?;   // 6 attempts, 3s apart
 `std::process::exit(1)`, which made the startup path untestable and gave an
 embedding process no say in its own shutdown.
 
-## Metrics
+## Metrics (feature `prometheus`)
 
-`metric_names` holds the outbound RPC metric names, moved here from `zainod`
-because this crate is what emits them. Registration (and the descriptions) stay
-with the daemon.
+Names live here (this crate emits them); registration and descriptions in `zainod`.
+
+- `requests_total{method,outcome}` — one increment per *attempt*, so family total =
+  attempt count, each outcome (`ok`, `rpc_error`, `retried`, `transport_error`) a
+  computable fraction
+- Rising `retried` share = validator work queue filling (refused, not served
+  slowly → never appears as latency)
+- `duration_seconds{method}` — per attempt that got a response, retry sleeps excluded
+
+`method` is a label → `call` / `call_with_timeout` take `&'static str`: cardinality
+capped at the compiled-in method set as a type error (the recorder never evicts).
 
 ## Related
 
