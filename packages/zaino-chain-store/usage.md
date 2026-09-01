@@ -34,11 +34,14 @@ Where absence *cannot* be a compile-time fact it is a runtime one:
 `capabilities()` exists because a store on an older schema genuinely lacks an
 index until it has migrated. That is a fact about a database, not a type.
 
-The two are tied together by an associated const. Each read port names the
-capability it answers for:
+The two are tied together by a per-port capability *carrier* trait. Each read
+port `X` has a sibling `XCapability: X` — `TxOutSetIndexCapability`,
+`SpentOutputIndexCapability`, and so on — carrying the one capability that port
+answers for:
 
 ```rust
-const CAPABILITY: StoreCapability = StoreCapability::TxOutSet;   // on TxOutSetIndex
+// The value lives on the carrier, fixed by its sole blanket impl.
+<Self as TxOutSetIndexCapability>::CAPABILITY   // == StoreCapability::TxOutSet
 ```
 
 An implementation assembles its advertised set from those rather than by
@@ -47,14 +50,22 @@ choosing variants:
 ```rust
 // Only compiles for a capability whose port `Self` actually implements.
 StoreCapabilities::new([
-    <Self as ChainStoreReader>::CAPABILITY,
-    <Self as TxOutSetIndex>::CAPABILITY,
+    <Self as ChainStoreReaderCapability>::CAPABILITY,
+    <Self as TxOutSetIndexCapability>::CAPABILITY,
 ])
 ```
 
-Do not hand-write the variant. Naming `StoreCapability::TxOutSet` directly
-compiles whether or not you implement `TxOutSetIndex`, which is how a store ends
-up advertising an index it cannot serve.
+The value cannot be restated by a backend. The carrier's `CAPABILITY` is set by
+one blanket impl over every `T: X`, and because `X` is a supertrait of the
+carrier the blanket impl is the *only* impl that can exist: a manual
+`impl TxOutSetIndexCapability for MyStore` overlaps it (coherence rejects it,
+E0119), and one for a type that does not implement the port fails the supertrait
+bound. So the port↔capability pairing is a sealed fact, not a defaulted const an
+implementor can override with the wrong variant.
+
+Do not hand-write the variant either. Naming `StoreCapability::TxOutSet`
+directly compiles whether or not you implement `TxOutSetIndex`, which is how a
+store ends up advertising an index it cannot serve.
 
 ## The watermark is the boundary, and a read past it is not a miss
 
