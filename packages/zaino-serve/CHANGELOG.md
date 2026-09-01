@@ -81,7 +81,16 @@ and this library adheres to Rust's notion of
 ### Deprecated
 
 ### Removed
+- **Metric** `zaino.grpc.requests_total` — duplicated
+  `zaino.grpc.request_duration_seconds`'s `_count`, which carries the same
+  per-method volume. Use that instead.
+
 ### Fixed
+- **The JSON-RPC serving metrics labelled calls with a caller-supplied string.**
+  The middleware sits outside method dispatch, so unknown methods reached it
+  carrying whatever the caller sent — and a recorder never evicts a series, making
+  a random-method loop a remote OOM of the indexer. Labels are now interned against
+  the server's method table: registered by name, everything else `unknown`.
 - **zcashd error-code recovery was silently inert.** The error-chain downcast
   matched `zaino_fetch`'s connector type, which the new source stack never
   constructs, so every validator error code reached the client as a generic
