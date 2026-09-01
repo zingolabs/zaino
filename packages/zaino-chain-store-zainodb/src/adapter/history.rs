@@ -8,6 +8,7 @@
 use super::error_map::chain_store_error;
 use super::from_domain::stored_script_tag;
 use super::to_domain::{block_tx_position, domain_txid, stored_tx_out};
+use super::ReadTimer;
 use zaino_chain_store::{ChainStoreError, ChainStoreSource, StoredAddress};
 use zaino_primitives::types::{Outpoint as DomainOutpoint, TransactionId};
 
@@ -26,6 +27,10 @@ use crate::types::{Outpoint, TxOutCompact};
 /// result over costs nothing and saves the consumer a second round trip.
 #[cfg(feature = "transparent_address_history_experimental")]
 impl<T: ChainStoreSource> zaino_chain_store::TransparentHistoryIndex for DbReader<T> {
+    #[tracing::instrument(
+        skip(self, query),
+        fields(start = %query.start, end = %query.end, addresses = query.addresses.len())
+    )]
     async fn address_effects(
         &self,
         query: &zaino_chain_store::TransparentHistoryQuery,
@@ -41,6 +46,8 @@ impl<T: ChainStoreSource> zaino_chain_store::TransparentHistoryIndex for DbReade
         let Some((start, end)) = self.clamped_range(query.start, query.end)? else {
             return Ok(StoreAddressEffects::default());
         };
+
+        let _timer = ReadTimer::start("address_effects");
 
         let mut effects = StoreAddressEffects::default();
 

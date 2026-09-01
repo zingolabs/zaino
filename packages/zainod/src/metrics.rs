@@ -120,15 +120,14 @@ fn describe_metrics() {
 
     // DB reads. The write path has been described since before the finalised
     // state moved into its own crate; these are its reads, which a wallet
-    // syncing against this node spends almost all of its time in.
+    // syncing against this node spends almost all of its time in. One histogram
+    // covers the whole read surface, split by an `op` label naming the read
+    // (`compact_chunk`, `block_hash`, `txout_set`, ...); the wallet-sync hot
+    // path is `op="compact_chunk"`, which a client's sync rate is bounded by.
     metrics::describe_histogram!(
-        DB_COMPACT_READ_SECONDS,
-        "Time to read one chunk of compact blocks from the finalized database. The wallet-sync \
-         read path: a client's sync rate is bounded by this"
-    );
-    metrics::describe_histogram!(
-        DB_BLOCK_READ_SECONDS,
-        "Time to read one chunk of stored blocks from the finalized database"
+        DB_READ_SECONDS,
+        "Time to serve one finalized-database read, labelled by `op` (the read operation). The \
+         wallet-sync read path is `op=\"compact_chunk\"`: a client's sync rate is bounded by it"
     );
     metrics::describe_counter!(
         DB_CORRUPT_ROWS_TOTAL,
