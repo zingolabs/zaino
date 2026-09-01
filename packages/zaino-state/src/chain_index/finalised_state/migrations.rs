@@ -661,6 +661,14 @@ impl<T: BlockchainSource> Migration<T> for Migration1_1_0To1_2_0 {
             let stage_a_started = std::time::Instant::now();
 
             while next_height <= db_tip {
+                // A migration rewrites every block, holds full ephemeral routing
+                // (so every read proxies to the validator) and can take hours. The
+                // frontier turns an unexplained outage into a visible remaining
+                // distance, and both backfill passes are resumable
+                #[cfg(feature = "prometheus")]
+                metrics::gauge!(crate::metric_names::MIGRATION_PROGRESS_HEIGHT)
+                    .set(next_height as f64);
+
                 let height = Height::try_from(next_height)
                     .map_err(|error| FinalisedStateError::Custom(error.to_string()))?;
                 let height_bytes = height.to_bytes()?;
@@ -1147,6 +1155,15 @@ impl<T: BlockchainSource> Migration<T> for Migration1_2_1To1_3_0 {
             let started = std::time::Instant::now();
 
             while next_height <= db_tip {
+                // A migration rewrites every stored block, holds full ephemeral routing
+                // throughout — so every read is being proxied to the validator — and can
+                // take hours. Publishing the frontier makes it an operation with a visible
+                // remaining distance rather than an unexplained outage; both backfill
+                // passes are resumable, so the number also survives a restart mid-migration.
+                #[cfg(feature = "prometheus")]
+                metrics::gauge!(crate::metric_names::MIGRATION_PROGRESS_HEIGHT)
+                    .set(next_height as f64);
+
                 let height = Height::try_from(next_height)
                     .map_err(|error| FinalisedStateError::Custom(error.to_string()))?;
                 let height_bytes = height.to_bytes()?;
@@ -1178,6 +1195,11 @@ impl<T: BlockchainSource> Migration<T> for Migration1_2_1To1_3_0 {
                         // Chainwork is irrelevant here: only the commitment-tree and ironwood rows
                         // are extracted, and neither depends on it.
                         None,
+                        // Its own stage: same read cost as the writer's, so the same
+                        // histograms — but it re-reads already-indexed blocks, and
+                        // charging `finalised` would inflate that stage's block rate
+                        // and read as a burst of sync progress
+                        crate::chain_index::ingest::IngestStage::Migration,
                     )
                     .await
                     .map_err(|error| {

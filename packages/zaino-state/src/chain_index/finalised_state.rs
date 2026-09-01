@@ -264,6 +264,18 @@ struct PoolActivationHeights {
     nu6_3: Option<zebra_chain::block::Height>,
 }
 
+/// Directory a network's versioned (v1+) databases live under.
+///
+/// - Shared by the version probe and the backend that opens one; two copies drift,
+///   and the failure (a db opened on one network reported under another) is silent
+pub(super) fn network_dir(kind: NetworkKind) -> &'static str {
+    match kind {
+        NetworkKind::Mainnet => "mainnet",
+        NetworkKind::Testnet => "testnet",
+        NetworkKind::Regtest => "regtest",
+    }
+}
+
 impl PoolActivationHeights {
     /// Resolves the Sapling, NU5 (Orchard), and NU6.3 (Ironwood) activation heights on
     /// `zebra_network`.
@@ -284,6 +296,12 @@ impl PoolActivationHeights {
 /// Shared by every backend's [`capability::DbWrite::write_blocks_to_height`] ingestion loop so the
 /// fetch + commitment-tree-root + metadata assembly lives in one place regardless of which backend
 /// owns the loop.
+// 8 params, one past clippy's threshold. Folding the three heights into the
+// `PoolActivationHeights` they come from would move each caller's own assertion
+// on `sapling: Option` (an `expect`, a descriptive `Err`) into the shared helper,
+// turning "no Sapling activation" from an error into a zero-sized tree.
+// Consensus-adjacent; not an observability change
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
     source: &S,
     network: zebra_chain::parameters::Network,
@@ -292,8 +310,9 @@ pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
     nu6_3_activation_height: Option<zebra_chain::block::Height>,
     height_int: u32,
     parent_chainwork: Option<ChainWork>,
+    stage: crate::chain_index::ingest::IngestStage,
 ) -> Result<IndexedBlock, FinalisedStateError> {
-    let fetched = fetch_block_for_indexing(source, height_int).await?;
+    let fetched = fetch_block_for_indexing(source, height_int, stage).await?;
     assemble_indexed_block(
         fetched,
         network,
@@ -302,6 +321,7 @@ pub(crate) async fn build_indexed_block_from_source<S: BlockchainSource>(
         nu6_3_activation_height,
         height_int,
         parent_chainwork,
+        stage,
     )
 }
 
@@ -337,12 +357,19 @@ impl FetchedBlock {
 pub(crate) async fn fetch_block_for_indexing<S: BlockchainSource>(
     source: &S,
     height_int: u32,
+    stage: crate::chain_index::ingest::IngestStage,
 ) -> Result<FetchedBlock, FinalisedStateError> {
-    let block = match source
-        .get_block(zebra_state::HashOrHeight::Height(
+    // Exactly one source read: request issued -> deserialized block in memory.
+    // `rpc` = round trip + decode, `direct` = RocksDB read + zebra deserialize
+    // (CPU spent here). Treestate inside this would make the two indistinguishable
+    let block = match crate::chain_index::ingest::observe(
+        crate::chain_index::ingest::BLOCK_READ,
+        stage,
+        source.get_block(zebra_state::HashOrHeight::Height(
             zebra_chain::block::Height(height_int),
-        ))
-        .await?
+        )),
+    )
+    .await?
     {
         Some(block) => block,
         None => {
@@ -357,7 +384,15 @@ pub(crate) async fn fetch_block_for_indexing<S: BlockchainSource>(
     let block_hash = BlockHash::from(block.hash().0);
 
     // Fetch sapling / orchard commitment tree data if above the relevant network upgrade.
-    let tree_roots = source.get_commitment_tree_roots(block_hash).await?;
+    //
+    // Second source read, timed apart: a separate round trip under `rpc`, and
+    // folded into `block_fetch` a slow treestate query hides behind the block read
+    let tree_roots = crate::chain_index::ingest::observe(
+        crate::chain_index::ingest::TREESTATE_READ,
+        stage,
+        source.get_commitment_tree_roots(block_hash),
+    )
+    .await?;
 
     Ok(FetchedBlock { block, tree_roots })
 }
@@ -376,7 +411,17 @@ pub(crate) fn assemble_indexed_block(
     nu6_3_activation_height: Option<zebra_chain::block::Height>,
     height_int: u32,
     parent_chainwork: Option<ChainWork>,
+    stage: crate::chain_index::ingest::IngestStage,
 ) -> Result<IndexedBlock, FinalisedStateError> {
+    // This function issues no source read, so its scope *is* the assembly span,
+    // disjoint from the two reads by construction. At the top rather than around
+    // the conversion alone is the design: an enclosing timer needs subtraction to
+    // correct, which is the shape that was silently wrong before
+    let _assembling = crate::chain_index::ingest::ScopedTimer::staged(
+        crate::metric_names::SYNC_BLOCK_ASSEMBLE_SECONDS,
+        stage,
+    );
+
     let FetchedBlock { block, tree_roots } = fetched;
     let (sapling_opt, orchard_opt, ironwood_opt) = tree_roots;
     let block_hash = BlockHash::from(block.hash().0);
@@ -836,12 +881,11 @@ impl<T: BlockchainSource> FinalisedState<T> {
             return Some(0);
         }
 
-        let net_dir = match cfg.network.kind() {
-            NetworkKind::Mainnet => "mainnet",
-            NetworkKind::Testnet => "testnet",
-            NetworkKind::Regtest => "regtest",
-        };
-        let net_path = cfg.storage.database.path.join(net_dir);
+        let net_path = cfg
+            .storage
+            .database
+            .path
+            .join(network_dir(cfg.network.kind()));
         if net_path.exists() && net_path.is_dir() {
             for (i, version_dir) in VERSION_DIRS.iter().enumerate() {
                 let db_path = net_path.join(version_dir);

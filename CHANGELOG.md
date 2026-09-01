@@ -74,6 +74,14 @@ and this library adheres to Rust's notion of
   must route to the same transport as `GetMempoolTxids`.
 - `[mempool]` config section in `zainod`, making the mempool memory bound, poll
   cadence and exclude-list caps operator-configurable.
+- **Prometheus metrics across the indexer** (feature `prometheus`): sync progress
+  + per-stage ingest cost, read routing, non-finalised window health, inbound
+  gRPC/JSON-RPC, outbound validator RPC, mempool shape, process CPU/RSS/fds.
+  Names live with the emitting crates, registration/help/buckets in `zainod`, a
+  test pinning the two sets together (unbucketed histogram → scrapes as a summary).
+- `profiling` Cargo profile — release codegen + line tables, via
+  `--build-arg CARGO_PROFILE=profiling` (also sets frame pointers; no Cargo key
+  for them). `release` untouched → attested image unchanged.
 
 ### Changed
 - **LMDB reader slots raised from 512 to 2048–8192.** The clamp was
@@ -210,6 +218,10 @@ and this library adheres to Rust's notion of
   first-install-wins: an embedder that installs a provider before zaino
   keeps its choice.
 
+- **Breaking (image builds)** — `NO_TLS=true` →
+  `CARGO_FEATURES=no_tls_use_unencrypted_traffic`. One arg per image
+  (`Dockerfile` had two overlapping knobs + a precedence rule).
+
 ### Deprecated
 - Classical TLS key exchange (X25519, SECP256R1, SECP384R1) is deprecated:
   still offered and accepted for wallet compatibility, slated for refusal
@@ -237,6 +249,9 @@ and this library adheres to Rust's notion of
   gates code (ADR-0001, ADR-0005).
 
 ### Fixed
+- `Dockerfile.deterministic` healthcheck probed `/usr/local/bin/zainod` — a
+  builder-stage path only (runtime installs to `/`) → failed every interval since
+  it was added.
 - JSON-RPC responses are read against a 32 MiB cap, chunk-wise. Every response
   is deserialized into memory, so an uncapped read let a compromised,
   misconfigured or impersonated validator exhaust Zaino's memory with one reply.

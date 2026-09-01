@@ -112,7 +112,10 @@ impl RpcClient {
     ///
     /// Returns the `result` field from the response as a raw `Value`.
     /// Retries on work-queue-full errors (code -1) up to `max_retries`.
-    pub async fn call(&self, method: &str, params: Vec<Value>) -> Result<Value, RpcError> {
+    ///
+    /// - `method` is `&'static str` because it is also a metric label: bounds
+    ///   cardinality to the compiled-in method set and drops the per-request alloc
+    pub async fn call(&self, method: &'static str, params: Vec<Value>) -> Result<Value, RpcError> {
         self.call_with_timeout(method, params, None).await
     }
 
@@ -126,7 +129,7 @@ impl RpcClient {
     /// default everywhere else.
     pub async fn call_with_timeout(
         &self,
-        method: &str,
+        method: &'static str,
         params: Vec<Value>,
         timeout: Option<Duration>,
     ) -> Result<Value, RpcError> {
@@ -137,20 +140,75 @@ impl RpcClient {
             let id = self.id_counter.fetch_add(1, Ordering::Relaxed);
 
             let body = envelope::build_request(method, params.clone(), id);
-            let response_bytes = self.send_http(&body, timeout).await?;
-            let outcome = envelope::parse_response(&response_bytes)?;
+
+            // Per attempt: three retries = three observations, not one including
+            // the sleeps. Sleeps are policy, and folding them in makes a saturated
+            // validator look like a slow one
+            #[cfg(feature = "prometheus")]
+            let started = std::time::Instant::now();
+
+            let response_bytes = match self.send_http(&body, timeout).await {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    // Hole left by the retry-only counter: HTTP failure, refused
+                    // connection & timeout all return here and moved no metric, so
+                    // a fully-offline validator was visible only as silence
+                    Self::record_outcome(method, "transport_error");
+                    return Err(error);
+                }
+            };
+            let outcome = match envelope::parse_response(&response_bytes) {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    // Malformed envelope = transport failure too (the validator
+                    // did not answer the question asked)
+                    Self::record_outcome(method, "transport_error");
+                    return Err(error);
+                }
+            };
+
+            #[cfg(feature = "prometheus")]
+            metrics::histogram!(
+                crate::metric_names::RPC_OUTBOUND_DURATION_SECONDS,
+                crate::metric_names::RPC_METHOD => method,
+            )
+            .record(started.elapsed().as_secs_f64());
 
             match outcome {
-                ResponseOutcome::Success(value) => return Ok(value),
+                ResponseOutcome::Success(value) => {
+                    Self::record_outcome(method, "ok");
+                    return Ok(value);
+                }
                 ResponseOutcome::RpcError { code, message } => {
                     if retry::is_retryable(code) && retry::should_retry(attempt, self.max_retries) {
+                        // Rising ratio vs the family total = a full validator work
+                        // queue: refused, not served slowly, so it never reaches
+                        // the timing histograms. The saturation signal, and more
+                        // concurrency makes it worse
+                        Self::record_outcome(method, "retried");
                         tokio::time::sleep(self.retry_delay).await;
                         continue;
                     }
+                    Self::record_outcome(method, "rpc_error");
                     return Err(RpcError::Rpc { code, message });
                 }
             }
         }
+    }
+
+    /// Count one outbound attempt under `outcome`.
+    ///
+    /// - Exactly one per exit from [`Self::call_with_timeout`]'s loop body, so the
+    ///   family total is the attempt count and each outcome a computable fraction
+    #[inline]
+    fn record_outcome(_method: &'static str, _outcome: &'static str) {
+        #[cfg(feature = "prometheus")]
+        metrics::counter!(
+            crate::metric_names::RPC_OUTBOUND_REQUESTS_TOTAL,
+            crate::metric_names::RPC_METHOD => _method,
+            crate::metric_names::RPC_OUTCOME => _outcome,
+        )
+        .increment(1);
     }
 
     /// Send an HTTP POST with the JSON body, return raw response bytes.

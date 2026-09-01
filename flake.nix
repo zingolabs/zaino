@@ -28,7 +28,7 @@
         (crane.mkLib pkgs).overrideToolchain (p:
           fenix.packages.${p.stdenv.buildPlatform.system}.fromToolchainFile {
             file = ./rust-toolchain.toml;
-            sha256 = "sha256-gh/xTkxKHL4eiRXzWv8KP7vfjSk61Iq48x47BEDFgfk=";
+            sha256 = "sha256-mvUGEOHYJpn3ikC5hckneuGixaC+yGrkMM/liDIDgoU=";
           });
 
       overlay = final: _prev: {
@@ -83,6 +83,10 @@
             cargo-deny
             cargo-make
             rust-analyzer
+
+            # Ztest & k8s
+            kubectl
+            kind
           ];
 
           inherit (commonArgs) env;
