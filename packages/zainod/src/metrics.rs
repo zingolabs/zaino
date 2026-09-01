@@ -195,14 +195,6 @@ fn describe_metrics() {
 
     // Mempool
     metrics::describe_gauge!(
-        MEMPOOL_TRANSACTIONS,
-        "Current number of transactions in the mempool"
-    );
-    metrics::describe_counter!(
-        MEMPOOL_TIP_CHANGES_TOTAL,
-        "Total mempool resets due to chain tip changes"
-    );
-    metrics::describe_gauge!(
         MEMPOOL_COHERENCE_FROZEN_SECONDS,
         "How long tip-coherent mempool reads have been frozen; 0 when live. \
          Brief spikes are normal tip transitions — a sustained non-zero value \
