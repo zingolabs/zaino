@@ -1,0 +1,124 @@
+name: Live suite (ztest)
+
+# Runs the wallet-driven chain-sync live suite (live-tests/sync) against the
+# real cluster, with ztest as the orchestrator: given cluster API access it
+# compiles + builds the runner image on-cluster, deploys the system under test
+# as sibling pods, drives the sync profile, and tears everything down.
+#
+# The runner reaches the cluster over Tailscale, joining the tailnet as an
+# ephemeral tag:ztest-runner node via GitHub OIDC workload-identity federation
+# (NO stored secret — GitHub mints a short-lived token per run, mirroring how
+# zingolabs/machines' deploy-node.yaml joins as tag:ci). It then talks to the
+# Kubernetes API through the Tailscale operator's API-server proxy, which
+# impersonates the k8s group `ztest-ci` (bound to the `ztest-remote`
+# ClusterRole). RBAC is self-checked by `ztest cluster check` before any work.
+#
+# Prerequisites that live OUTSIDE this PR (see the PR description):
+#   - zingolabs/machines: the tag:ztest-runner ACL + a Tailscale OAuth client
+#     federated to repo:zingolabs/zaino with the auth_keys scope.
+#   - Repo variables: TS_OIDC_CLIENT_ID, TS_OIDC_AUDIENCE (non-secret),
+#     ZTEST_CLUSTER_CONFIG_URL (https:// TOML of non-secret cluster facts:
+#     registry + storage classes).
+#   - On the cluster: `ztest cluster setup` has created the ztest-remote
+#     ClusterRole, and the ztest-ci ClusterRoleBinding (devops PR #9) binds it
+#     to the impersonated group.
+#   - The suite itself: zaino PR #1458 (feat/add_sync_tests) introduces
+#     live-tests/sync and the `zaino_index_construction` profile. This workflow
+#     is inert until #1458 lands on dev.
+
+on:
+  pull_request:
+    # `labeled` fires the run when a maintainer applies the trigger label;
+    # `synchronize` re-runs it on every push to an already-labeled PR;
+    # `reopened` covers a PR reopened while still labeled.
+    types: [labeled, synchronize, reopened]
+
+concurrency:
+  group: ztest-live-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read # checkout
+  id-token: write # mint the GitHub OIDC token for the tailnet join
+  checks: write # the job status is reported as a native check run
+  pull-requests: write # post the result summary as a PR comment
+
+jobs:
+  live-sync:
+    name: Live sync suite (ztest)
+    # Gate on the dedicated label. `labeled` carries the just-added label in the
+    # event payload; on `synchronize`/`reopened` this re-reads the current set,
+    # so removing the label stops future pushes from running the suite.
+    if: contains(github.event.pull_request.labels.*.name, 'ztest-live')
+    runs-on: ubuntu-latest
+    # A full-history mainnet index build is long-running; cap it so a stuck run
+    # cannot hold the cluster's sync tier indefinitely.
+    timeout-minutes: 120
+    # Protected environment = the fork-PR trust boundary. A fork PR cannot
+    # self-authorize a cluster run: GitHub requires a maintainer to approve the
+    # deployment before this job starts, and the label alone grants nothing.
+    # Configure `ztest-cluster` with required reviewers in repo settings.
+    environment: ztest-cluster
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Join tailnet (tag:ztest-runner, OIDC — no stored secret)
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ vars.TS_OIDC_CLIENT_ID }}
+          audience: ${{ vars.TS_OIDC_AUDIENCE }}
+          tags: tag:ztest-runner
+
+      - name: Point kubeconfig at the Tailscale API-server proxy
+        run: tailscale configure kubeconfig tailscale-operator
+
+      - name: Install ztest CLI
+        # The `ztest` binary ships from the `ztest_cli` crate on crates.io.
+        # Pinned for reproducibility; keep in lockstep with the harness pinned by
+        # live-tests/sync/Cargo.toml (`ztest = "0.1"`, currently resolving 0.1.x).
+        run: cargo install ztest_cli --version 0.1.10 --locked
+
+      - name: Register the remote cluster profile
+        # Remote class → on-cluster BuildKit compile + build. Identity is the
+        # kube-context the Tailscale proxy just wrote (`tailscale-operator`); the
+        # cluster facts (registry, storage classes) come from a non-secret TOML
+        # in the devops repo. `--yes` accepts the fetched config non-interactively.
+        run: >
+          ztest cluster add zingo-infra
+          --kube-context tailscale-operator
+          --extra-config "${{ vars.ZTEST_CLUSTER_CONFIG_URL }}"
+          --set-default
+          --yes
+
+      - name: Check cluster access (RBAC self-check)
+        # SelfSubjectAccessReview over the whole ztest-remote role — fails fast
+        # and by name if the ztest-ci ClusterRoleBinding is missing or the proxy
+        # is impersonating the wrong group.
+        run: ztest cluster check
+
+      - name: Run live sync suite
+        working-directory: live-tests/sync
+        # Launches the detached `zaino_index_construction` profile and tails it to
+        # its terminal verdict. Profiling is left off for a gating run (eBPF is a
+        # manual investigation tool via `ztest sync perf`).
+        #
+        # Depends on zaino PR #1458 (feat/add_sync_tests) for the suite to exist.
+        #
+        # TODO(ztest-cli-provisional): the `sync` CLI is documented as provisional
+        # (ztest docs/design-sync.md). This gates on the exit status of
+        # `sync start --watch`. If that proves to be a pure read-only tail that
+        # does not propagate the profile verdict as its exit code, capture the
+        # sync id from the start output and gate on `ztest sync status <id> --json`.
+        run: ztest sync start zaino_index_construction --watch --profile false
+
+      - name: Report result to the PR
+        if: always() && github.event.pull_request.number
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ job.status }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh pr comment "${PR_NUMBER}" \
+            --body "Live sync suite (ztest): **${RESULT}** — [run log](${RUN_URL})"
