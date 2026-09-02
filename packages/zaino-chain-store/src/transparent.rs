@@ -1,10 +1,9 @@
 //! Transparent address history, as the finalised range can report it.
 //!
-//! **Declared, not implemented.** Nothing here has an implementation and no
-//! consumer is wired to it. The module states the boundary while the
-//! capability is built, and is shaped to mirror
-//! `zaino_chain_head::transparent`, so a consumer merging the two halves meets
-//! one shape rather than two.
+//! These are the port and effect types; `zaino-chain-store-zainodb` implements
+//! [`TransparentHistoryIndex`](crate::TransparentHistoryIndex) against them.
+//! The module is shaped to mirror `zaino_chain_head::transparent`, so a
+//! consumer merging the two halves meets one shape rather than two.
 //!
 //! The store contributes the *effects* it can see below the finalised
 //! watermark. It never constructs a complete history: an address's full
@@ -84,36 +83,41 @@ pub struct StoreAddressEffects {
 }
 
 impl StoreAddressEffects {
-    /// The net value change these effects describe, or `None` if either side
-    /// sums past the money supply.
+    /// The net value change these effects describe, or `None` if it is not a
+    /// representable delta.
     ///
     /// A convenience for a consumer that has already merged both halves and
     /// wants a figure. Meaningless on one half alone, which is why it is a
     /// method here rather than a field: a field would invite reading it off an
     /// unmerged contribution.
     ///
-    /// # Why it is typed and fallible
+    /// # What is bounded and what is not
+    ///
+    /// The gross sides — total received and total spent — are *flow*, not a
+    /// balance: every output paying the address and every input spending its
+    /// prior outputs across the range is counted, and the same coins can move
+    /// through the address many times. Gross flow is therefore not bounded by
+    /// the money supply, so the sides are accumulated in a wide integer with
+    /// [`checked_add`](i128::checked_add), which fails loud only on machine
+    /// overflow. Each element is a supply-bounded [`Zatoshis`] and the count is
+    /// a `Vec` length, so that failure is unreachable in practice; it stays
+    /// checked so a future change fails loud rather than wrapping silently.
+    ///
+    /// The *net* — received minus spent — is the change in the addresses'
+    /// aggregate balance over the range. An aggregate balance lives in
+    /// `[0, supply]`, so its change lives in `[-supply, +supply]`. That is the
+    /// real invariant, and [`SignedZatoshis::try_from_i128`] enforces it: a net
+    /// whose magnitude exceeds the supply is not a representable delta and
+    /// yields `None` rather than a truncated figure.
     ///
     /// A [`SignedZatoshis`] rather than a bare `i64`, because this is the
     /// domain's signed-delta quantity and a raw integer invites the arithmetic
     /// that produced it to be redone somewhere else with different rules.
-    ///
-    /// `None` rather than a wrapped total, because the individual values come
-    /// off disk. Each is bounded by the supply on its own, so no single one can
-    /// overflow the accumulator — but a corrupt or adversarial effect set can
-    /// hold enough of them to sum past it, and an unchecked `sum::<i64>()`
-    /// would report that as a plausible figure rather than as the corruption it
-    /// is. Checking each addition is what makes the bound the type claims
-    /// actually hold across the fold.
-    ///
-    /// The subtraction needs no check: both sides are bounded by the supply,
-    /// which is three orders of magnitude below `i64::MAX`, so their difference
-    /// is always representable.
     pub fn net_value(&self) -> Option<SignedZatoshis> {
         let received = total(self.outputs.iter().map(|output| output.output.value))?;
         let spent = total(self.spends.iter().map(|spend| spend.output.value))?;
 
-        Some(SignedZatoshis::new(signed(received) - signed(spent)))
+        SignedZatoshis::try_from_i128(received - spent).ok()
     }
 
     /// Whether the store observed nothing at all.
@@ -122,22 +126,17 @@ impl StoreAddressEffects {
     }
 }
 
-/// Sums amounts, refusing a total the supply cannot hold.
+/// Sums gross flow into a wide integer, failing loud only on machine overflow.
 ///
-/// `Zatoshis::checked_add` bounds every step, so the running total is a valid
-/// amount at each addition rather than only at the end.
-fn total(mut values: impl Iterator<Item = Zatoshis>) -> Option<Zatoshis> {
-    values.try_fold(Zatoshis::ZERO, Zatoshis::checked_add)
-}
-
-/// An amount as a signed integer.
-///
-/// Infallible in practice — every [`Zatoshis`] is bounded by the supply, which
-/// is far below `i64::MAX` — but written as a checked conversion rather than an
-/// `as` cast so the bound is enforced rather than assumed. `as` would wrap
-/// silently if that ever stopped being true.
-fn signed(amount: Zatoshis) -> i64 {
-    i64::try_from(u64::from(amount)).unwrap_or(i64::MAX)
+/// Accumulates in `i128` via [`checked_add`](i128::checked_add): gross flow is
+/// not bounded by the money supply, so the supply cap does not belong on the
+/// running total. Each element is a supply-bounded [`Zatoshis`] and the count
+/// is a `Vec` length, so the `None` branch is unreachable in practice; it stays
+/// checked so a future change fails loud rather than wrapping silently.
+fn total(mut values: impl Iterator<Item = Zatoshis>) -> Option<i128> {
+    values.try_fold(0i128, |sum, value| {
+        sum.checked_add(i128::from(u64::from(value)))
+    })
 }
 
 #[cfg(test)]
@@ -145,7 +144,8 @@ mod tests {
     use super::*;
     use zaino_primitives::types::ScriptType;
 
-    /// The largest amount the protocol allows, so two of them overflow a sum.
+    /// The largest amount the protocol allows, so two of them on one side
+    /// exceed the supply magnitude a net delta may hold.
     const MAX: u64 = 21_000_000 * 100_000_000;
 
     fn amount(value: u64) -> StoredTxOut {
@@ -229,24 +229,42 @@ mod tests {
         );
     }
 
-    /// A total past the money supply is refused rather than wrapped.
+    /// Gross flow past the money supply is a legitimate answer, not corruption.
     ///
-    /// No single amount can do this — `Zatoshis` bounds each one — but a
-    /// corrupt or adversarial effect set can hold enough of them that the sum
-    /// does. The previous `sum::<i64>()` would have reported a plausible
-    /// figure instead of refusing.
+    /// `outputs`/`spends` are cumulative movements, so the same coins can pass
+    /// through an address enough times to sum past the supply on either side.
+    /// Here each gross side is twice the supply, yet they net to a
+    /// within-supply delta, which is reported rather than refused.
     #[test]
-    fn a_total_past_the_supply_is_refused() {
+    fn gross_flow_past_the_supply_is_allowed() {
+        let net = effects(&[MAX, MAX], &[MAX])
+            .net_value()
+            .expect("gross flow is not supply-bounded");
+
+        assert_eq!(
+            i64::from(net),
+            i64::try_from(MAX).expect("the supply fits in an i64")
+        );
+    }
+
+    /// A net whose magnitude exceeds the supply is refused rather than wrapped.
+    ///
+    /// The net is a change in aggregate balance, which lives in
+    /// `[-supply, +supply]`. A received/spent pairing that lands outside it is
+    /// not a representable delta, so it fails loud instead of saturating to a
+    /// plausible figure.
+    #[test]
+    fn a_net_past_the_supply_is_refused() {
         assert_eq!(effects(&[MAX, MAX], &[]).net_value(), None);
         assert_eq!(effects(&[], &[MAX, MAX]).net_value(), None);
     }
 
-    /// A total at exactly the supply is still an answer.
+    /// A net at exactly the supply is still an answer.
     ///
-    /// The bound is inclusive, so the largest representable set is not
+    /// The bound is inclusive, so the largest representable delta is not
     /// mistaken for corruption.
     #[test]
-    fn a_total_at_the_supply_is_allowed() {
+    fn a_net_at_the_supply_is_allowed() {
         let net = effects(&[MAX], &[])
             .net_value()
             .expect("exactly the maximum");
