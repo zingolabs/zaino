@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::{io::Cursor, str::FromStr, time};
 use tokio::{sync::mpsc, time::timeout};
 use tracing::{info, instrument, warn};
-use zaino_chain_head::ChainHeadSnapshot as _;
+use zaino_chain_head::ChainHeadSnapshot;
 use zebra_state::HashOrHeight;
 
 use zebra_chain::{
@@ -38,7 +38,7 @@ use zaino_proto::proto::{
 };
 
 use crate::{
-    chain_index::chain_head::WithChainHeadSource, ChainIndex, ChainIndexRpcExt, MapBackedSnapshot,
+    chain_index::chain_head::WithChainHeadSource, ChainIndex, ChainIndexRpcExt,
     NodeBackedChainIndex, NodeBackedChainIndexSubscriber,
 };
 #[allow(deprecated)]
@@ -332,7 +332,7 @@ fn compact_tx_to_proto(
 /// is what makes the answer consistent with every other query served from the
 /// same snapshot.
 pub(crate) fn chain_tips_for_snapshot(
-    snapshot: &Arc<MapBackedSnapshot>,
+    snapshot: &Arc<impl ChainHeadSnapshot>,
 ) -> Vec<zaino_primitives::types::rpc::ChainTip> {
     snapshot.chain_tips()
 }
