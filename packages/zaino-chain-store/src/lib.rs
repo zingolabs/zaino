@@ -67,8 +67,10 @@ pub use config::ChainStoreConfig;
 pub use error::{ChainStoreError, ChainStoreSourceError};
 pub use output::{SpenderRef, StoredAddress, StoredTxOut};
 pub use ports::{
-    ChainStoreFreezeSink, ChainStoreIngest, ChainStoreReader, ChainStoreService, ChainStoreSource,
-    CompactBlockRead, SpentOutputIndex, StoredBlockRead, TransactionIndex, TxOutSetIndex,
+    ChainStoreFreezeSink, ChainStoreIngest, ChainStoreReader, ChainStoreReaderCapability,
+    ChainStoreService, ChainStoreSource, CompactBlockRead, CompactBlockReadCapability,
+    SpentOutputIndex, SpentOutputIndexCapability, StoredBlockRead, StoredBlockReadCapability,
+    TransactionIndex, TransactionIndexCapability, TxOutSetIndex, TxOutSetIndexCapability,
 };
 pub use txout_set::{
     canonical_entry, canonical_entry_parts, entry_digest, entry_digest_parts, is_unspendable,
@@ -77,6 +79,6 @@ pub use txout_set::{
 };
 
 #[cfg(feature = "transparent_address_history_experimental")]
-pub use ports::TransparentHistoryIndex;
+pub use ports::{TransparentHistoryIndex, TransparentHistoryIndexCapability};
 #[cfg(feature = "transparent_address_history_experimental")]
 pub use transparent::{LocatedOutput, LocatedSpend, StoreAddressEffects, TransparentHistoryQuery};

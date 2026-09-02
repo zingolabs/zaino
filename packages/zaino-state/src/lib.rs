@@ -48,11 +48,6 @@ pub mod metric_names {
     pub const SYNC_HAS_REACHED_TIP: &str = "zaino.sync.has_reached_tip";
     pub const SYNC_REACHED_TIP_AT: &str = "zaino.sync.reached_tip_at";
 
-    // Emitted by no crate yet, and described by `zainod`. They name the
-    // mempool's intended surface and are kept here, with the subsystem that
-    // would emit them, rather than in the storage backend that never will.
-    pub const MEMPOOL_TRANSACTIONS: &str = "zaino.mempool.transactions";
-    pub const MEMPOOL_TIP_CHANGES_TOTAL: &str = "zaino.mempool.tip_changes_total";
     pub const MEMPOOL_COHERENCE_FROZEN_SECONDS: &str = "zaino.mempool.coherence_frozen_seconds";
 }
 

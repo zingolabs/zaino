@@ -123,15 +123,6 @@ pub trait ChainStoreService: Clone + Send + Sync + 'static {
 /// beyond this is an index a deployment may or may not build, and is a
 /// separate trait so that a bound names exactly what its holder uses.
 pub trait ChainStoreReader: Clone + Send + Sync + core::fmt::Debug + 'static {
-    /// The capability this port answers for.
-    ///
-    /// Always `Core`: a store that cannot answer heights, hashes and the
-    /// watermark is not a store.
-    ///
-    /// Stated on the trait so the port and the capability that names it cannot
-    /// drift; see the note on the other read ports.
-    const CAPABILITY: StoreCapability = StoreCapability::Core;
-
     /// The highest block this store can answer for.
     ///
     /// Infallible and synchronous: it is held in memory and updated on commit,
@@ -181,15 +172,6 @@ pub trait ChainStoreReader: Clone + Send + Sync + core::fmt::Debug + 'static {
 /// Optional: a deployment serving only wallet sync builds compact blocks and
 /// never materialises these.
 pub trait StoredBlockRead: ChainStoreReader {
-    /// The capability this port answers for.
-    ///
-    /// Stated on the trait so the port and the capability that names it cannot
-    /// drift: a store assembling its runtime set reads this rather than
-    /// choosing a variant by hand, which is what made it possible to advertise
-    /// one index while implementing another. Defaulted because it is a fact
-    /// about the port, not a choice an implementor makes.
-    const CAPABILITY: StoreCapability = StoreCapability::StoredBlocks;
-
     /// The blocks in `start..=end`, inclusive and ascending.
     ///
     /// One transaction, one batch. This is the primitive: a single block is
@@ -231,15 +213,6 @@ pub trait StoredBlockRead: ChainStoreReader {
 /// wallet pay to decode orchard and ironwood data, and the commitment tree
 /// roots, for every block of its sync.
 pub trait CompactBlockRead: ChainStoreReader {
-    /// The capability this port answers for.
-    ///
-    /// Stated on the trait so the port and the capability that names it cannot
-    /// drift: a store assembling its runtime set reads this rather than
-    /// choosing a variant by hand, which is what made it possible to advertise
-    /// one index while implementing another. Defaulted because it is a fact
-    /// about the port, not a choice an implementor makes.
-    const CAPABILITY: StoreCapability = StoreCapability::CompactBlocks;
-
     /// The compact blocks in `start..=end`, inclusive and ascending.
     ///
     /// One transaction, one batch. A single block is
@@ -269,15 +242,6 @@ pub trait CompactBlockRead: ChainStoreReader {
 
 /// Finding transactions, and finding what is at a position.
 pub trait TransactionIndex: ChainStoreReader {
-    /// The capability this port answers for.
-    ///
-    /// Stated on the trait so the port and the capability that names it cannot
-    /// drift: a store assembling its runtime set reads this rather than
-    /// choosing a variant by hand, which is what made it possible to advertise
-    /// one index while implementing another. Defaulted because it is a fact
-    /// about the port, not a choice an implementor makes.
-    const CAPABILITY: StoreCapability = StoreCapability::Transactions;
-
     /// Where `txid` was mined, if the store holds it.
     ///
     /// One position, not many: the store indexes the best chain only, and a
@@ -301,15 +265,6 @@ pub trait TransactionIndex: ChainStoreReader {
 
 /// Transparent outputs and what became of them.
 pub trait SpentOutputIndex: ChainStoreReader {
-    /// The capability this port answers for.
-    ///
-    /// Stated on the trait so the port and the capability that names it cannot
-    /// drift: a store assembling its runtime set reads this rather than
-    /// choosing a variant by hand, which is what made it possible to advertise
-    /// one index while implementing another. Defaulted because it is a fact
-    /// about the port, not a choice an implementor makes.
-    const CAPABILITY: StoreCapability = StoreCapability::SpentOutputs;
-
     /// Who spent each outpoint, in the order asked.
     ///
     /// Batched because every caller asks about many at once and the store
@@ -362,15 +317,6 @@ pub trait SpentOutputIndex: ChainStoreReader {
 
 /// The store's running totals over the unspent transparent output set.
 pub trait TxOutSetIndex: ChainStoreReader {
-    /// The capability this port answers for.
-    ///
-    /// Stated on the trait so the port and the capability that names it cannot
-    /// drift: a store assembling its runtime set reads this rather than
-    /// choosing a variant by hand, which is what made it possible to advertise
-    /// one index while implementing another. Defaulted because it is a fact
-    /// about the port, not a choice an implementor makes.
-    const CAPABILITY: StoreCapability = StoreCapability::TxOutSet;
-
     /// The accumulator as of the watermark.
     ///
     /// A partial fold, not an answer: it describes the set up to the finalised
@@ -390,15 +336,6 @@ pub trait TxOutSetIndex: ChainStoreReader {
 /// merged — neither alone is an address's history.
 #[cfg(feature = "transparent_address_history_experimental")]
 pub trait TransparentHistoryIndex: ChainStoreReader {
-    /// The capability this port answers for.
-    ///
-    /// Stated on the trait so the port and the capability that names it cannot
-    /// drift: a store assembling its runtime set reads this rather than
-    /// choosing a variant by hand, which is what made it possible to advertise
-    /// one index while implementing another. Defaulted because it is a fact
-    /// about the port, not a choice an implementor makes.
-    const CAPABILITY: StoreCapability = StoreCapability::TransparentHistory;
-
     /// What happened to `query`'s addresses within its height range.
     ///
     /// Range-bounded, always. The store answers for heights up to the
@@ -410,6 +347,87 @@ pub trait TransparentHistoryIndex: ChainStoreReader {
         query: &crate::transparent::TransparentHistoryQuery,
     ) -> impl Future<Output = Result<crate::transparent::StoreAddressEffects, ChainStoreError>> + Send;
 }
+
+/// The capability a read port answers for, as a sealed fact no backend can set.
+///
+/// Each read port has one capability, and that pairing must never disagree with
+/// what a store advertises — a store answering [`SpentOutputIndex`] but naming
+/// [`StoreCapability::CompactBlocks`] would over-promise silently, and a defaulted
+/// associated const on the port let exactly that compile: an implementor could
+/// override it with the wrong variant.
+///
+/// This lifts the pairing off the implementable port onto a carrier trait whose
+/// value no implementor can restate. For a port `$port` answering `$cap`, the
+/// macro declares a carrier `$carrier: $port` whose `CAPABILITY` is fixed by the
+/// *sole* blanket impl over every `T: $port`. No second impl of the carrier can
+/// exist:
+///
+/// - one for some `T: $port` overlaps the blanket impl, which coherence rejects
+///   (E0119, conflicting implementations);
+/// - one for a `T` that does not implement the port fails the `$port` supertrait
+///   bound.
+///
+/// So every type reaches its carrier only through the blanket impl, and the value
+/// is a fixed fact of the port rather than a choice — which is also the seal: the
+/// port supertrait means the only implementors are those the blanket impl already
+/// covers, so downstream cannot hand-write the carrier at all.
+///
+/// The `$port` supertrait is load-bearing twice over: it seals the carrier, and it
+/// lets a consumer bound on the carrier alone and still call the port's methods and
+/// name `<R as $carrier>::CAPABILITY` — a bare `T: $port` bound would not resolve
+/// the carrier's const.
+macro_rules! sealed_capability {
+    ($(#[$meta:meta])* $carrier:ident, $port:path, $cap:expr) => {
+        $(#[$meta])*
+        /// The capability its port answers for, identical for every implementor.
+        pub trait $carrier: $port {
+            /// The one capability every implementor of the port advertises.
+            const CAPABILITY: StoreCapability;
+        }
+
+        $(#[$meta])*
+        impl<T: $port> $carrier for T {
+            const CAPABILITY: StoreCapability = $cap;
+        }
+    };
+}
+
+sealed_capability!(
+    ChainStoreReaderCapability,
+    ChainStoreReader,
+    StoreCapability::Core
+);
+sealed_capability!(
+    StoredBlockReadCapability,
+    StoredBlockRead,
+    StoreCapability::StoredBlocks
+);
+sealed_capability!(
+    CompactBlockReadCapability,
+    CompactBlockRead,
+    StoreCapability::CompactBlocks
+);
+sealed_capability!(
+    TransactionIndexCapability,
+    TransactionIndex,
+    StoreCapability::Transactions
+);
+sealed_capability!(
+    SpentOutputIndexCapability,
+    SpentOutputIndex,
+    StoreCapability::SpentOutputs
+);
+sealed_capability!(
+    TxOutSetIndexCapability,
+    TxOutSetIndex,
+    StoreCapability::TxOutSet
+);
+sealed_capability!(
+    #[cfg(feature = "transparent_address_history_experimental")]
+    TransparentHistoryIndexCapability,
+    TransparentHistoryIndex,
+    StoreCapability::TransparentHistory
+);
 
 /// Driving a chain store forward.
 ///

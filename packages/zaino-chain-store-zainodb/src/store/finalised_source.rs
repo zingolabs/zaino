@@ -100,7 +100,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
-use super::capability::Capability;
+use super::capability::{Capability, CapabilityRequest};
 
 /// Lifecycle scaffolding shared by every `DbVx` finalised-state backend.
 ///
@@ -328,15 +328,18 @@ impl<T: ChainStoreSource> FinalisedSource<T> {
         }
     }
 
-    /// Borrow the underlying v1 backend, or return `FeatureUnavailable(feature)` for the ephemeral
+    /// Borrow the underlying v1 backend, or return `V1BackendUnavailable(feature)` for the ephemeral
     /// passthrough.
     ///
-    /// Shared by the v1-only accessors below so each call site is a single line that names the
-    /// feature it requires; `feature` is the message used when the backend is ephemeral.
+    /// Shared by the v1-only maintenance accessors below so each call site is a single line that
+    /// names the handle it requires; `feature` names that handle in the error when the backend is
+    /// ephemeral. This is a backend-state refusal, not a capability refusal: the concrete v1 backend
+    /// is temporarily absent while a migration runs, so it maps to a transient error rather than to
+    /// [`StoreError::FeatureUnavailable`].
     fn require_v1(&self, feature: &'static str) -> Result<&DbV1, StoreError> {
         match self {
             Self::V1(db) => Ok(db.as_ref()),
-            Self::Ephemeral(_) => Err(StoreError::FeatureUnavailable(feature)),
+            Self::Ephemeral(_) => Err(StoreError::V1BackendUnavailable(feature)),
         }
     }
 
@@ -528,9 +531,10 @@ impl<T: ChainStoreSource> DbWrite for FinalisedSource<T> {
 //
 // Each extension trait corresponds to a distinct capability group. The dispatch rules are:
 // - If the backend supports the capability, delegate to the concrete implementation.
-// - If unsupported, return `StoreError::FeatureUnavailable("<capability_name>")`.
+// - If unsupported, return `StoreError::FeatureUnavailable(CapabilityRequest::<Variant>)`.
 //
-// These names must remain consistent with the capability wiring in `capability.rs`.
+// The refusal carries the `CapabilityRequest` variant itself, so it stays in step with the
+// capability wiring in `capability.rs` by construction rather than by matching names.
 
 impl<T: ChainStoreSource> BlockCoreExt for FinalisedSource<T> {
     async fn get_block_header(&self, height: Height) -> Result<BlockHeaderData, StoreError> {
@@ -807,7 +811,9 @@ impl<T: ChainStoreSource> TransparentHistExt for FinalisedSource<T> {
     ) -> Result<Option<Vec<crate::types::AddrEventBytes>>, StoreError> {
         match self {
             Self::V1(db) => db.addr_records(script).await,
-            _ => Err(StoreError::FeatureUnavailable("transparent_history")),
+            _ => Err(StoreError::FeatureUnavailable(
+                CapabilityRequest::TransparentHistIndex,
+            )),
         }
     }
 
@@ -818,7 +824,9 @@ impl<T: ChainStoreSource> TransparentHistExt for FinalisedSource<T> {
     ) -> Result<Option<Vec<crate::types::AddrEventBytes>>, StoreError> {
         match self {
             Self::V1(db) => db.addr_and_index_records(script, tx_location).await,
-            _ => Err(StoreError::FeatureUnavailable("transparent_history")),
+            _ => Err(StoreError::FeatureUnavailable(
+                CapabilityRequest::TransparentHistIndex,
+            )),
         }
     }
 
@@ -830,7 +838,9 @@ impl<T: ChainStoreSource> TransparentHistExt for FinalisedSource<T> {
     ) -> Result<Option<Vec<TxLocation>>, StoreError> {
         match self {
             Self::V1(db) => db.addr_tx_locations_by_range(script, start, end).await,
-            _ => Err(StoreError::FeatureUnavailable("transparent_history")),
+            _ => Err(StoreError::FeatureUnavailable(
+                CapabilityRequest::TransparentHistIndex,
+            )),
         }
     }
 
@@ -842,7 +852,9 @@ impl<T: ChainStoreSource> TransparentHistExt for FinalisedSource<T> {
     ) -> Result<Option<Vec<AddrUtxo>>, StoreError> {
         match self {
             Self::V1(db) => db.addr_utxos_by_range(script, start, end).await,
-            _ => Err(StoreError::FeatureUnavailable("transparent_history")),
+            _ => Err(StoreError::FeatureUnavailable(
+                CapabilityRequest::TransparentHistIndex,
+            )),
         }
     }
 
@@ -854,7 +866,9 @@ impl<T: ChainStoreSource> TransparentHistExt for FinalisedSource<T> {
     ) -> Result<i64, StoreError> {
         match self {
             Self::V1(db) => db.addr_balance_by_range(script, start, end).await,
-            _ => Err(StoreError::FeatureUnavailable("transparent_history")),
+            _ => Err(StoreError::FeatureUnavailable(
+                CapabilityRequest::TransparentHistIndex,
+            )),
         }
     }
 }
@@ -866,7 +880,9 @@ impl<T: ChainStoreSource> SpentOutputExt for FinalisedSource<T> {
     ) -> Result<Option<TxLocation>, StoreError> {
         match self {
             Self::V1(db) => db.get_outpoint_spender(outpoint).await,
-            _ => Err(StoreError::FeatureUnavailable("spent_output_index")),
+            _ => Err(StoreError::FeatureUnavailable(
+                CapabilityRequest::SpentOutputIndex,
+            )),
         }
     }
 
@@ -876,7 +892,9 @@ impl<T: ChainStoreSource> SpentOutputExt for FinalisedSource<T> {
     ) -> Result<Vec<Option<TxLocation>>, StoreError> {
         match self {
             Self::V1(db) => db.get_outpoint_spenders(outpoints).await,
-            _ => Err(StoreError::FeatureUnavailable("spent_output_index")),
+            _ => Err(StoreError::FeatureUnavailable(
+                CapabilityRequest::SpentOutputIndex,
+            )),
         }
     }
 }
@@ -887,7 +905,9 @@ impl<T: ChainStoreSource> TxOutSetExt for FinalisedSource<T> {
     ) -> Result<FinalisedTxOutSetInfoAccumulator, StoreError> {
         match self {
             Self::V1(database) => database.get_tx_out_set_info_accumulator().await,
-            _ => Err(StoreError::FeatureUnavailable("txout_set_index")),
+            _ => Err(StoreError::FeatureUnavailable(
+                CapabilityRequest::TxOutSetIndex,
+            )),
         }
     }
 }

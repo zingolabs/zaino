@@ -10,6 +10,7 @@
 
 use zaino_chain_store::ChainStoreSourceError;
 
+use crate::store::capability::CapabilityRequest;
 use crate::types::BlockHash;
 
 /// Something went wrong inside the store.
@@ -48,8 +49,22 @@ pub enum StoreError {
 
     /// Returned when a caller asks for a feature that the
     /// currently-opened database version does not advertise.
+    ///
+    /// Carries the [`CapabilityRequest`] that was refused, not a name for it, so
+    /// the producer and any consumer that classifies the refusal share one
+    /// vocabulary and cannot drift apart.
     #[error("feature unavailable: {0}")]
-    FeatureUnavailable(&'static str),
+    FeatureUnavailable(CapabilityRequest),
+
+    /// A maintenance accessor needed the concrete v1 backend, but the store is
+    /// in an ephemeral/migration state and has no live v1 backend to hand out.
+    ///
+    /// Distinct from [`StoreError::FeatureUnavailable`]: that names a capability
+    /// this deployment does not build, whereas this is a backend that is
+    /// temporarily absent while a migration runs and returns once it completes.
+    /// The string names the handle the caller asked for, for the operator's log.
+    #[error("v1 backend unavailable: {0}")]
+    V1BackendUnavailable(&'static str),
 
     /// Critical Errors, Restart Zaino.
     #[error("Critical error: {0}")]

@@ -237,8 +237,13 @@ impl Capability {
 /// The router uses the request to select a backend that advertises the requested capability.
 /// If no backend advertises the capability, the call must fail with
 /// [`StoreError::FeatureUnavailable`].
+// `pub` (not `pub(crate)`) for the same reason as [`DbMetadata`]: it is carried
+// by [`StoreError::FeatureUnavailable`], and `error` is a `pub` module, so the
+// rustc `private_interfaces` check requires the variant's type to be at least as
+// visible as the variant. The `capability` module is itself `pub(crate)`, so
+// this does not widen the type beyond the crate; it only satisfies that check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum CapabilityRequest {
+pub enum CapabilityRequest {
     /// Request the [`DbRead`] core surface.
     ReadCore,
 
@@ -310,6 +315,14 @@ impl CapabilityRequest {
             CapabilityRequest::SpentOutputIndex => "SPENT_OUTPUT_INDEX",
             CapabilityRequest::TxOutSetIndex => "TXOUT_SET_INDEX",
         }
+    }
+}
+
+/// Renders the stable feature name, so [`StoreError::FeatureUnavailable`] and
+/// logs share the vocabulary routing uses.
+impl fmt::Display for CapabilityRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
     }
 }
 

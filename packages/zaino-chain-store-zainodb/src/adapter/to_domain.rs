@@ -12,9 +12,10 @@
 
 use super::error_map::{corrupt_row, corrupt_row_because};
 use zaino_chain_store::{
-    ChainStoreError, ChainStoreReader, CompactBlockRead, MigrationState, SchemaVersion,
-    SpentOutputIndex, StoreCapabilities, StoreCapability, StoreSchema, StoredAddress, StoredBlock,
-    StoredBlockRead, StoredTx, StoredTxOut, TransactionIndex, TxOutSetIndex,
+    ChainStoreError, ChainStoreReaderCapability, CompactBlockReadCapability, MigrationState,
+    SchemaVersion, SpentOutputIndexCapability, StoreCapabilities, StoreCapability, StoreSchema,
+    StoredAddress, StoredBlock, StoredBlockReadCapability, StoredTx, StoredTxOut,
+    TransactionIndexCapability, TxOutSetIndexCapability,
 };
 use zaino_primitives::types::{
     BlockHash as DomainBlockHash, BlockHeader, BlockRef, BlockTxPosition,
@@ -351,13 +352,17 @@ pub(super) fn tree_roots(data: &CommitmentTreeData) -> TreeRoots {
 ///
 /// # Why this is generic over the reader
 ///
-/// Every capability is named as `<R as SomePort>::CAPABILITY` rather than as a
-/// [`StoreCapability`] variant, so the advertisement is tied to the port that
-/// answers it. Choosing variants by hand let the two drift in both directions:
-/// a store could advertise an index it does not serve, or serve one it never
-/// advertises, and both compile. Now a capability can only be advertised for a
-/// port `R` actually implements — drop one of these impls and this stops
-/// compiling instead of quietly over-promising.
+/// Every capability is named as `<R as SomePortCapability>::CAPABILITY` rather
+/// than as a [`StoreCapability`] variant, so the advertisement is tied to the
+/// port that answers it. Choosing variants by hand let the two drift in both
+/// directions: a store could advertise an index it does not serve, or serve one
+/// it never advertises, and both compile. Now a capability can only be
+/// advertised for a port `R` actually implements — drop one of these impls and
+/// this stops compiling instead of quietly over-promising.
+///
+/// The `CAPABILITY` comes from the sealed carrier trait, not the port, so the
+/// pairing cannot be restated by an implementor even by accident; see
+/// [`sealed_capability`](zaino_chain_store::ChainStoreReaderCapability).
 ///
 /// It does not make the runtime bits agree with the compile-time impls; that
 /// is what the bits are for, since this backend implements every port and
@@ -365,14 +370,14 @@ pub(super) fn tree_roots(data: &CommitmentTreeData) -> TreeRoots {
 /// the two being restated here rather than read from the port.
 pub(super) fn store_capabilities<R>(capability: Capability) -> StoreCapabilities
 where
-    R: ChainStoreReader
-        + StoredBlockRead
-        + CompactBlockRead
-        + TransactionIndex
-        + SpentOutputIndex
-        + TxOutSetIndex,
+    R: ChainStoreReaderCapability
+        + StoredBlockReadCapability
+        + CompactBlockReadCapability
+        + TransactionIndexCapability
+        + SpentOutputIndexCapability
+        + TxOutSetIndexCapability,
 {
-    let mut capabilities = vec![<R as ChainStoreReader>::CAPABILITY];
+    let mut capabilities = vec![<R as ChainStoreReaderCapability>::CAPABILITY];
 
     // Stored blocks need the header, the txids and every per-pool surface: a
     // block missing one of them is not a block this store can hand over.
@@ -382,22 +387,22 @@ where
             .union(Capability::BLOCK_TRANSPARENT_EXT)
             .union(Capability::BLOCK_SHIELDED_EXT),
     ) {
-        capabilities.push(<R as StoredBlockRead>::CAPABILITY);
+        capabilities.push(<R as StoredBlockReadCapability>::CAPABILITY);
     }
     if capability.has(Capability::COMPACT_BLOCK_EXT) {
-        capabilities.push(<R as CompactBlockRead>::CAPABILITY);
+        capabilities.push(<R as CompactBlockReadCapability>::CAPABILITY);
     }
     if capability.has(Capability::BLOCK_CORE_EXT) {
-        capabilities.push(<R as TransactionIndex>::CAPABILITY);
+        capabilities.push(<R as TransactionIndexCapability>::CAPABILITY);
     }
     // Both halves: the domain's spent-output surface answers "what did this
     // outpoint hold" from the transparent rows as well as "who spent it" from
     // the spent index, and a store with only one of them cannot serve it.
     if capability.has(Capability::SPENT_OUTPUT_INDEX.union(Capability::BLOCK_TRANSPARENT_EXT)) {
-        capabilities.push(<R as SpentOutputIndex>::CAPABILITY);
+        capabilities.push(<R as SpentOutputIndexCapability>::CAPABILITY);
     }
     if capability.has(Capability::TXOUT_SET_INDEX) {
-        capabilities.push(<R as TxOutSetIndex>::CAPABILITY);
+        capabilities.push(<R as TxOutSetIndexCapability>::CAPABILITY);
     }
     // The one capability still named directly rather than read off its port.
     // `TransparentHistoryIndex` is implemented behind a feature, so it cannot
@@ -445,8 +450,8 @@ mod tests {
     use super::*;
     use crate::store::reader::DbReader;
     use zaino_chain_store::{
-        ChainStoreReader, CompactBlockRead, SpentOutputIndex, StoredBlockRead, TransactionIndex,
-        TxOutSetIndex,
+        ChainStoreReaderCapability, CompactBlockReadCapability, SpentOutputIndexCapability,
+        StoredBlockReadCapability, TransactionIndexCapability, TxOutSetIndexCapability,
     };
 
     /// The concrete reader whose ports the capability mapping is read from.
@@ -546,12 +551,12 @@ mod tests {
         let everything = advertised(Capability::all());
 
         let ports = [
-            <Reader as ChainStoreReader>::CAPABILITY,
-            <Reader as StoredBlockRead>::CAPABILITY,
-            <Reader as CompactBlockRead>::CAPABILITY,
-            <Reader as TransactionIndex>::CAPABILITY,
-            <Reader as SpentOutputIndex>::CAPABILITY,
-            <Reader as TxOutSetIndex>::CAPABILITY,
+            <Reader as ChainStoreReaderCapability>::CAPABILITY,
+            <Reader as StoredBlockReadCapability>::CAPABILITY,
+            <Reader as CompactBlockReadCapability>::CAPABILITY,
+            <Reader as TransactionIndexCapability>::CAPABILITY,
+            <Reader as SpentOutputIndexCapability>::CAPABILITY,
+            <Reader as TxOutSetIndexCapability>::CAPABILITY,
         ];
 
         for capability in everything.iter() {
@@ -564,7 +569,7 @@ mod tests {
             assert!(
                 ports.contains(&capability)
                     || capability
-                        == <Reader as zaino_chain_store::TransparentHistoryIndex>::CAPABILITY,
+                        == <Reader as zaino_chain_store::TransparentHistoryIndexCapability>::CAPABILITY,
                 "{capability} is advertised but answered by no port"
             );
         }

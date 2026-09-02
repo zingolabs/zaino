@@ -28,43 +28,38 @@ use crate::store::capability::CapabilityRequest;
 pub(super) fn chain_store_error(error: StoreError) -> ChainStoreError {
     match error {
         StoreError::DataUnavailable(what) => ChainStoreError::MissingRow(what),
-        StoreError::FeatureUnavailable(feature) => {
-            ChainStoreError::Unavailable(capability_for_feature(feature))
+        StoreError::FeatureUnavailable(request) => {
+            ChainStoreError::Unavailable(capability_for_feature(request))
         }
+        StoreError::V1BackendUnavailable(_) => ChainStoreError::NotReady,
         other => ChainStoreError::backend_because(other.to_string(), other),
     }
 }
 
-/// Which domain capability a routing refusal was about.
+/// Which domain capability a refusal was about.
 ///
-/// The router refuses with a static feature name, which is this crate's
-/// vocabulary; the domain's is coarser. Anything unrecognised maps to
-/// [`StoreCapability::Core`], which is the conservative reading: a store that
-/// cannot say which capability it lacks is reported as lacking the one every
-/// store must have, so the caller routes elsewhere rather than retrying.
+/// The refusal carries the [`CapabilityRequest`] itself, so producer and matcher
+/// cannot drift: the crate's finer request vocabulary is folded onto the
+/// domain's coarser one here, and the match is total. The three index requests
+/// name their own domain capability; every core and block-extension request
+/// folds to [`StoreCapability::Core`], the one capability every store must
+/// have, so a caller routes elsewhere rather than retrying.
 ///
-/// # Why the names come from `CapabilityRequest` rather than from literals
-///
-/// A routing refusal carries [`CapabilityRequest::name`], so matching on
-/// hand-written literals lets producer and matcher drift: the two vocabularies
-/// look alike enough that a mismatch reads as correct and every refusal
-/// silently collapses to `Core`. Matching the constants the router itself
-/// produces makes the drift impossible — a rename in `capability.rs` moves both
-/// sides at once.
-///
-/// The lowercase arms are the second producer: `finalised_source` raises those
-/// names directly rather than through a [`CapabilityRequest`], so they have no
-/// constant to borrow and must be spelled out.
-fn capability_for_feature(feature: &str) -> StoreCapability {
-    const SPENT_OUTPUT_INDEX: &str = CapabilityRequest::SpentOutputIndex.name();
-    const TXOUT_SET_INDEX: &str = CapabilityRequest::TxOutSetIndex.name();
-    const TRANSPARENT_HIST_INDEX: &str = CapabilityRequest::TransparentHistIndex.name();
-
-    match feature {
-        SPENT_OUTPUT_INDEX | "spent_output_index" => StoreCapability::SpentOutputs,
-        TXOUT_SET_INDEX | "txout_set_index" => StoreCapability::TxOutSet,
-        TRANSPARENT_HIST_INDEX | "transparent_history" => StoreCapability::TransparentHistory,
-        _ => StoreCapability::Core,
+/// The grouping is explicit rather than a `_` catch-all so that adding a
+/// [`CapabilityRequest`] variant is a compile error here until it is classified,
+/// rather than silently collapsing to `Core`.
+fn capability_for_feature(request: CapabilityRequest) -> StoreCapability {
+    match request {
+        CapabilityRequest::SpentOutputIndex => StoreCapability::SpentOutputs,
+        CapabilityRequest::TxOutSetIndex => StoreCapability::TxOutSet,
+        CapabilityRequest::TransparentHistIndex => StoreCapability::TransparentHistory,
+        CapabilityRequest::ReadCore
+        | CapabilityRequest::WriteCore
+        | CapabilityRequest::BlockCoreExt
+        | CapabilityRequest::BlockTransparentExt
+        | CapabilityRequest::BlockShieldedExt
+        | CapabilityRequest::CompactBlockExt
+        | CapabilityRequest::IndexedBlockExt => StoreCapability::Core,
     }
 }
 
@@ -239,66 +234,60 @@ mod tests {
         assert!(matches!(error, ChainStoreSourceError::Unavailable { .. }));
     }
 
-    /// A routing refusal names the capability the caller was denied.
+    /// Each index request names the capability the caller was denied.
     ///
-    /// Fed from [`CapabilityRequest::name`] rather than from hand-written
-    /// strings, because the router is what produces these names and a test that
-    /// invents its own cannot see the two vocabularies drift apart. An earlier
-    /// version of this test passed against literals the router never emits
-    /// while every real refusal collapsed to `Core`.
+    /// The refusal carries the [`CapabilityRequest`] itself, so producer and
+    /// matcher share one vocabulary and cannot drift — the failure an earlier,
+    /// string-matching version had, where literals the producer never emitted
+    /// read as correct while every real refusal collapsed to `Core`.
     #[test]
-    fn a_routing_refusal_maps_to_the_capability_it_denied() {
+    fn an_index_refusal_maps_to_the_capability_it_denied() {
         assert_eq!(
-            capability_for_feature(CapabilityRequest::SpentOutputIndex.name()),
+            capability_for_feature(CapabilityRequest::SpentOutputIndex),
             StoreCapability::SpentOutputs
         );
         assert_eq!(
-            capability_for_feature(CapabilityRequest::TxOutSetIndex.name()),
+            capability_for_feature(CapabilityRequest::TxOutSetIndex),
             StoreCapability::TxOutSet
         );
         assert_eq!(
-            capability_for_feature(CapabilityRequest::TransparentHistIndex.name()),
+            capability_for_feature(CapabilityRequest::TransparentHistIndex),
             StoreCapability::TransparentHistory
         );
     }
 
-    /// The names `finalised_source` raises directly map too.
+    /// Every core and block-extension request folds to `Core`.
     ///
-    /// A second producer, which does not route through [`CapabilityRequest`]
-    /// and so spells its features in its own lowercase vocabulary. It is the
-    /// path that happened to match while the router's did not, so it gets its
-    /// own test rather than sharing one.
+    /// The domain does not distinguish these, so a refusal of any of them is
+    /// reported as the one capability every store must have; the caller routes
+    /// elsewhere rather than over-claiming which index is missing. The typed,
+    /// total match replaces the old catch-all — there is no longer an
+    /// "unrecognised name" case, because there is no name.
     #[test]
-    fn a_direct_refusal_maps_to_the_capability_it_denied() {
-        assert_eq!(
-            capability_for_feature("spent_output_index"),
-            StoreCapability::SpentOutputs
-        );
-        assert_eq!(
-            capability_for_feature("txout_set_index"),
-            StoreCapability::TxOutSet
-        );
-        assert_eq!(
-            capability_for_feature("transparent_history"),
-            StoreCapability::TransparentHistory
-        );
+    fn a_core_or_block_refusal_maps_to_core() {
+        for request in [
+            CapabilityRequest::ReadCore,
+            CapabilityRequest::WriteCore,
+            CapabilityRequest::BlockCoreExt,
+            CapabilityRequest::BlockTransparentExt,
+            CapabilityRequest::BlockShieldedExt,
+            CapabilityRequest::CompactBlockExt,
+            CapabilityRequest::IndexedBlockExt,
+        ] {
+            assert_eq!(capability_for_feature(request), StoreCapability::Core);
+        }
     }
 
-    /// An unrecognised name falls back to `Core`.
+    /// A missing v1 backend is transient, so it reaches the domain as `NotReady`.
     ///
-    /// Rather than to the capability that happens to be nearest: over-claiming
-    /// which index is missing would send a consumer to reroute a query that
-    /// would have worked. `READ_CORE` is a real router name that lands here
-    /// legitimately; the other is a name no producer emits.
+    /// It is a backend-state refusal, not a capability one: the concrete v1
+    /// backend is absent only while a migration runs and returns once it
+    /// completes, which is exactly what [`ChainStoreError::NotReady`] means.
     #[test]
-    fn an_unrecognised_refusal_falls_back_to_core() {
-        assert_eq!(
-            capability_for_feature(CapabilityRequest::ReadCore.name()),
-            StoreCapability::Core
-        );
-        assert_eq!(
-            capability_for_feature("no_such_feature"),
-            StoreCapability::Core
-        );
+    fn a_missing_v1_backend_maps_to_not_ready() {
+        let error = chain_store_error(StoreError::V1BackendUnavailable(
+            "v1 spent db not available",
+        ));
+        assert!(matches!(error, ChainStoreError::NotReady));
     }
 }
