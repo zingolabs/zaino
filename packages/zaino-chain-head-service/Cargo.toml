@@ -42,6 +42,7 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 
 metrics = { workspace = true, optional = true }
+imbl = "7.0.1"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "test-util"] }
