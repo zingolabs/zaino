@@ -28,6 +28,12 @@ transparent_address_history_experimental = [
 [dependencies]
 # Zaino
 zaino-state = { workspace = true }
+
+# The finalised store's on-disk types, for the legacy parser that rebuilds an
+# `IndexedBlock` independently and compares. Named directly rather than through
+# `zaino-state`, which no longer passes them through: they belong to the backend
+# that writes them.
+zaino-chain-store-zainodb = { workspace = true }
 zaino-serve.workspace = true
 zaino-common.workspace = true
 zaino-proto = { workspace = true }

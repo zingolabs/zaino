@@ -312,20 +312,6 @@ fn parse_display_txid(
     Ok(zaino_primitives::types::TransactionId::from(internal))
 }
 
-/// This crate's shielded pool as the port names it.
-///
-/// The two enums share a name and their variants, but not a role: this crate's
-/// also carries activation semantics that a zero-dependency crate cannot hold.
-fn domain_pool(pool: crate::chain_index::ShieldedPool) -> zaino_primitives::types::ShieldedPool {
-    match pool {
-        crate::chain_index::ShieldedPool::Sapling => zaino_primitives::types::ShieldedPool::Sapling,
-        crate::chain_index::ShieldedPool::Orchard => zaino_primitives::types::ShieldedPool::Orchard,
-        crate::chain_index::ShieldedPool::Ironwood => {
-            zaino_primitives::types::ShieldedPool::Ironwood
-        }
-    }
-}
-
 /// A sapling tree root as zebra's own type, paired with its size.
 ///
 /// Fallible: 32 bytes that are not a point on the pool's curve cannot be a
@@ -914,7 +900,11 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
     ) -> BlockchainSourceResult<Vec<([u8; 32], u32)>> {
         let roots = self
             .validator
-            .get_subtree_roots(domain_pool(pool), start_index, max_entries)
+            .get_subtree_roots(
+                zaino_chain_store_zainodb::pool::ShieldedPool::to_domain(pool),
+                start_index,
+                max_entries,
+            )
             .await
             .map_err(err)?;
 
@@ -1401,9 +1391,18 @@ mod tests {
         use crate::chain_index::ShieldedPool as Ours;
         use zaino_primitives::types::ShieldedPool as Theirs;
 
-        assert_eq!(domain_pool(Ours::Sapling), Theirs::Sapling);
-        assert_eq!(domain_pool(Ours::Orchard), Theirs::Orchard);
-        assert_eq!(domain_pool(Ours::Ironwood), Theirs::Ironwood);
+        assert_eq!(
+            zaino_chain_store_zainodb::pool::ShieldedPool::to_domain(Ours::Sapling),
+            Theirs::Sapling
+        );
+        assert_eq!(
+            zaino_chain_store_zainodb::pool::ShieldedPool::to_domain(Ours::Orchard),
+            Theirs::Orchard
+        );
+        assert_eq!(
+            zaino_chain_store_zainodb::pool::ShieldedPool::to_domain(Ours::Ironwood),
+            Theirs::Ironwood
+        );
     }
 
     /// Block identifiers arrive from the interface in display order. This is

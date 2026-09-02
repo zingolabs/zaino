@@ -1904,7 +1904,7 @@ async fn get_block_deltas_coinbase_only_block_has_no_inputs() {
 async fn sole_recipient_outpoint(
     indexer: &zaino_state::NodeBackedChainIndexSubscriber,
     recipient_taddr: &str,
-) -> zaino_state::chain_index::types::Outpoint {
+) -> zaino_chain_store_zainodb::types::Outpoint {
     use zaino_state::ChainIndex as _;
 
     let utxos = indexer
@@ -1919,7 +1919,7 @@ async fn sole_recipient_outpoint(
         "recipient taddr should hold exactly one funding UTXO"
     );
     let (txid, output_index) = (utxos[0].txid, utxos[0].output_index);
-    zaino_state::chain_index::types::Outpoint::new(<[u8; 32]>::from(txid), output_index)
+    zaino_chain_store_zainodb::types::Outpoint::new(<[u8; 32]>::from(txid), output_index)
 }
 
 /// The single transaction touching `recipient_taddr` at `height` — the shield
@@ -1932,7 +1932,7 @@ async fn sole_spender_at(
     indexer: &zaino_state::NodeBackedChainIndexSubscriber,
     recipient_taddr: &str,
     height: u32,
-) -> zaino_state::chain_index::types::TransactionHash {
+) -> zaino_chain_store_zainodb::types::TransactionHash {
     use zaino_state::ChainIndex as _;
 
     let txids = indexer
@@ -1959,7 +1959,7 @@ async fn fund_recipient(
     clients: &mut e2e::devtool::DevtoolClients,
     recipient_taddr: &str,
     amount: u64,
-) -> zaino_state::chain_index::types::Outpoint {
+) -> zaino_chain_store_zainodb::types::Outpoint {
     clients.sync_faucet().await;
     clients.send_from_faucet(recipient_taddr, amount).await;
     svc.generate_blocks_and_wait_for_tips(1).await;
@@ -1973,7 +1973,7 @@ async fn spend_and_record(
     svc: &mut zaino_testutils::StateAndFetchServices<Zebrad>,
     clients: &mut e2e::devtool::DevtoolClients,
     recipient_taddr: &str,
-) -> zaino_state::chain_index::types::TransactionHash {
+) -> zaino_chain_store_zainodb::types::TransactionHash {
     clients.shield_recipient().await;
     svc.generate_blocks_and_wait_for_tips(1).await;
     let spend_height = svc.fetch_subscriber.tip_height().await as u32;
@@ -2001,7 +2001,7 @@ async fn spend_and_record(
 /// `address_deltas`. The shield drains all transparent funds, so the recipient
 /// holds exactly one UTXO per phase and the spent outpoint is unambiguous.
 async fn get_outpoint_spenders_fetch_vs_state() {
-    use zaino_state::chain_index::types::ChainScope;
+    use zaino_chain_store_zainodb::types::ChainScope;
     use zaino_state::ChainIndex as _;
 
     // Bury a spend this many blocks past its block to push it below the finalised

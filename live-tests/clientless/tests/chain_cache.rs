@@ -87,8 +87,11 @@ mod chain_query_interface {
             chain_index::{ChainIndex, ChainIndexRpcExt},
             ChainIndexConfig,
         },
-        Height, NodeBackedIndexerService, NodeBackedIndexerServiceConfig, ZcashService,
+        NodeBackedIndexerService, NodeBackedIndexerServiceConfig, ZcashService,
     };
+    // The store's own height type, named directly: `zaino-state` no longer
+    // passes the backend's on-disk vocabulary through its public API.
+    use zaino_chain_store_zainodb::types::Height;
     use zcash_local_net::validator::zebrad::Zebrad;
     use zebra_chain::{
         parameters::{

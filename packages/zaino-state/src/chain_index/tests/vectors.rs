@@ -1,22 +1,14 @@
 //! Test vector creation and validity tests, MockchainSource creation.
 
-use corez::io::{self, Read};
-use std::collections::HashMap;
-use std::fs;
-use std::io::BufReader;
-use std::path::Path;
+use std::fs::File;
+use std::io;
 use std::sync::Arc;
-use std::{fs::File, path::PathBuf};
-use zebra_chain::serialization::ZcashDeserialize as _;
 
 use zebra_rpc::methods::GetAddressUtxos;
 
 use crate::chain_index::source::mockchain_source::MockchainSource;
+use crate::chain_index::types::BlockHash;
 use crate::chain_index::validator_source::ValidatorSource;
-use crate::{
-    read_u32_le, read_u64_le, BlockHash, BlockMetadata, BlockWithMetadata, ChainWork, CompactSize,
-    CompactTxData, IndexedBlock,
-};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TestVectorData {
@@ -25,17 +17,12 @@ pub struct TestVectorData {
     pub recipient: TestVectorClientData,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TestVectorBlockData {
-    pub height: u32,
-    pub zebra_block: zebra_chain::block::Block,
-    pub sapling_root: zebra_chain::sapling::tree::Root,
-    pub sapling_tree_size: u64,
-    pub sapling_tree_state: Vec<u8>,
-    pub orchard_root: zebra_chain::orchard::tree::Root,
-    pub orchard_tree_size: u64,
-    pub orchard_tree_state: Vec<u8>,
-}
+/// One block of the vector chain.
+///
+/// The backend's type under this crate's old name, not a copy of it: two
+/// structs with the same fields would be two things to keep in step, and the
+/// suites here compare against blocks the backend built.
+pub type TestVectorBlockData = zaino_chain_store_zainodb::tests::vectors::VectorBlock;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TestVectorClientData {
@@ -44,237 +31,44 @@ pub struct TestVectorClientData {
     pub balance: u64,
 }
 
-pub async fn sync_db_with_blockdata(
-    db: &impl crate::chain_index::finalised_state::capability::DbWrite,
-    vector_data: Vec<TestVectorBlockData>,
-    height_limit: Option<u32>,
-) {
-    for chain_block in indexed_block_chain(&vector_data) {
-        if let Some(h) = height_limit {
-            if chain_block.context.index.height.0 > h {
-                break;
-            }
-        }
-        db.write_block(chain_block).await.unwrap();
-    }
-}
-
-/// Recursively copies `src` into `dst`, creating `dst` if it does not exist.
-/// Used by tests to seed a fresh tempdir from a pre-built fixture DB so each
-/// test gets an isolated, writable copy without paying for a fresh ingest.
-pub(in crate::chain_index::tests) fn copy_dir_recursive(
-    src: &Path,
-    dst: &Path,
-) -> std::io::Result<()> {
-    fs::create_dir_all(dst)?;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let file_type = entry.file_type()?;
-        let dst_path = dst.join(entry.file_name());
-
-        if file_type.is_dir() {
-            copy_dir_recursive(&entry.path(), &dst_path)?;
-        } else {
-            fs::copy(entry.path(), dst_path)?;
-        }
-    }
-    Ok(())
-}
-
-/// Sole source of truth for materialising the regtest `IndexedBlock` chain
-/// from a sequence of test-vector blocks: builds each block's `BlockMetadata`
-/// (regtest activation heights, all NUs through NU6 active at height 1) and
-/// threads cumulative chainwork between successive blocks. Returned lazily so
-/// each call site picks its own consumption strategy (by-value iteration,
-/// collection, accumulator updates, etc.) without duplicating the metadata
-/// boilerplate.
-pub(crate) fn indexed_block_chain(
-    blocks: &[TestVectorBlockData],
-) -> impl Iterator<Item = IndexedBlock> + '_ {
-    let mut parent_chain_work: Option<ChainWork> = None;
-    blocks.iter().map(move |vector| {
-        let metadata = BlockMetadata {
-            sapling_root: vector.sapling_root,
-            sapling_size: vector.sapling_tree_size as u32,
-            orchard_root: vector.orchard_root,
-            orchard_size: vector.orchard_tree_size as u32,
-            ironwood: None,
-            parent_chainwork: parent_chain_work,
-            network: zebra_chain::parameters::Network::new_regtest(
-                zebra_chain::parameters::testnet::ConfiguredActivationHeights {
-                    before_overwinter: Some(1),
-                    overwinter: Some(1),
-                    sapling: Some(1),
-                    blossom: Some(1),
-                    heartwood: Some(1),
-                    canopy: Some(1),
-                    nu5: Some(1),
-                    nu6: Some(1),
-                    // see https://zips.z.cash/#nu6-1-candidate-zips for info on NU6.1
-                    nu6_1: None,
-                    nu6_2: None,
-                    nu6_3: None,
-                    nu7: None,
-                }
-                .into(),
-            ),
-        };
-        let chain_block =
-            IndexedBlock::try_from(BlockWithMetadata::new(&vector.zebra_block, metadata)).unwrap();
-        parent_chain_work = Some(chain_block.context.chainwork);
-        chain_block
-    })
-}
-
-/// Materialises the `IndexedBlock` chain into a `Vec` and a flat
-/// `(block_height, tx_index) → CompactTxData` lookup, so a spender-symmetry
-/// test can walk the chain once for its outpoint scan and then resolve
-/// `(height, tx_index)` spender references in O(1).
-pub(in crate::chain_index::tests) fn index_test_vector_blocks(
-    blocks: &[TestVectorBlockData],
-) -> (Vec<IndexedBlock>, HashMap<(u32, u64), CompactTxData>) {
-    let mut indexed_blocks = Vec::with_capacity(blocks.len());
-    let mut tx_by_index: HashMap<(u32, u64), CompactTxData> = HashMap::new();
-    for chain_block in indexed_block_chain(blocks) {
-        let block_height = chain_block.context.index.height.0;
-        for tx in chain_block.transactions() {
-            tx_by_index.insert((block_height, tx.index()), tx.clone());
-        }
-        indexed_blocks.push(chain_block);
-    }
-    (indexed_blocks, tx_by_index)
-}
+/// The vector chain as `IndexedBlock`s.
+///
+/// Re-exported from `zaino-chain-store-zainodb`, which is where the vectors and
+/// the block builder now live. Kept under this name so the suites that use it
+/// read as they did — and shared rather than copied, because it is the oracle
+/// the chain-head conversion is compared against, and two oracles is one too
+/// many.
+pub(crate) use zaino_chain_store_zainodb::tests::fixtures::{
+    copy_dir_recursive, indexed_block_chain,
+};
 
 // TODO: Add custom MockChain block data structs to simplify unit test interface
 // and add getter methods for comonly used types.
-pub fn read_vectors_from_file<P: AsRef<Path>>(base_dir: P) -> io::Result<TestVectorData> {
-    let base = base_dir.as_ref();
+/// Reads the vector chain and the two wallets' expected data.
+///
+/// The chain itself is read by `zaino-chain-store-zainodb`, which is where the
+/// files live: its finalised-state and migration suites are their heaviest
+/// consumers. This adds the two wallet JSON files, which need `zebra-rpc` types
+/// that a storage crate has no reason to depend on.
+pub(crate) fn read_vectors_from_file() -> io::Result<TestVectorData> {
+    let base = zaino_chain_store_zainodb::tests::vectors::vectors_dir();
 
-    // zebra_blocks.dat
-    let mut zebra_blocks = Vec::<(u32, zebra_chain::block::Block)>::new();
-    {
-        let mut r = BufReader::new(File::open(base.join("zcash_blocks.dat"))?);
-        loop {
-            let height = match read_u32_le(&mut r) {
-                Ok(h) => h,
-                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => break,
-                Err(e) => return Err(e),
-            };
+    let blocks = zaino_chain_store_zainodb::tests::vectors::load_vector_blocks()?;
 
-            let len: usize = CompactSize::read_t(&mut r)?;
-            let mut buf = vec![0u8; len];
-            r.read_exact(&mut buf)?;
-
-            let zcash_block = zebra_chain::block::Block::zcash_deserialize(&*buf)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-            zebra_blocks.push((height, zcash_block));
-        }
-    }
-
-    // tree_roots.dat
-    let mut blocks_and_roots = Vec::with_capacity(zebra_blocks.len());
-    {
-        let mut r = BufReader::new(File::open(base.join("tree_roots.dat"))?);
-        for (height, zebra_block) in zebra_blocks {
-            let h2 = read_u32_le(&mut r)?;
-            if height != h2 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "height mismatch in tree_roots.dat",
-                ));
-            }
-            let mut sapling_bytes = [0u8; 32];
-            r.read_exact(&mut sapling_bytes)?;
-            let sapling_root = zebra_chain::sapling::tree::Root::try_from(sapling_bytes)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-            let sapling_size = read_u64_le(&mut r)?;
-
-            let mut orchard_bytes = [0u8; 32];
-            r.read_exact(&mut orchard_bytes)?;
-            let orchard_root = zebra_chain::orchard::tree::Root::try_from(orchard_bytes)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-            let orchard_size = read_u64_le(&mut r)?;
-
-            blocks_and_roots.push((
-                height,
-                zebra_block,
-                (sapling_root, sapling_size, orchard_root, orchard_size),
-            ));
-        }
-    }
-
-    // tree_states.dat
-    let mut blocks = Vec::with_capacity(blocks_and_roots.len());
-    {
-        let mut r = BufReader::new(File::open(base.join("tree_states.dat"))?);
-        for (
-            height,
-            zebra_block,
-            (sapling_root, sapling_tree_size, orchard_root, orchard_tree_size),
-        ) in blocks_and_roots
-        {
-            let h2 = read_u32_le(&mut r)?;
-            if height != h2 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "height mismatch in tree_states.dat",
-                ));
-            }
-
-            let sapling_len: usize = CompactSize::read_t(&mut r)?;
-            let mut sapling_tree_state = vec![0u8; sapling_len];
-            r.read_exact(&mut sapling_tree_state)?;
-
-            let orchard_len: usize = CompactSize::read_t(&mut r)?;
-            let mut orchard_tree_state = vec![0u8; orchard_len];
-            r.read_exact(&mut orchard_tree_state)?;
-
-            blocks.push(TestVectorBlockData {
-                height,
-                zebra_block,
-                sapling_root,
-                sapling_tree_size,
-                sapling_tree_state,
-                orchard_root,
-                orchard_tree_size,
-                orchard_tree_state,
-            });
-        }
-    }
-
-    // faucet_data.json
-    let faucet = {
-        let (txids, utxos, balance) =
-            serde_json::from_reader(File::open(base.join("faucet_data.json"))?)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-        TestVectorClientData {
+    let client_data = |file: &str| -> io::Result<TestVectorClientData> {
+        let (txids, utxos, balance) = serde_json::from_reader(File::open(base.join(file))?)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        Ok(TestVectorClientData {
             txids,
             utxos,
             balance,
-        }
-    };
-
-    // recipient_data.json
-    let recipient = {
-        let (txids, utxos, balance) =
-            serde_json::from_reader(File::open(base.join("recipient_data.json"))?)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-        TestVectorClientData {
-            txids,
-            utxos,
-            balance,
-        }
+        })
     };
 
     Ok(TestVectorData {
         blocks,
-        faucet,
-        recipient,
+        faucet: client_data("faucet_data.json")?,
+        recipient: client_data("recipient_data.json")?,
     })
 }
 
@@ -284,13 +78,7 @@ pub fn read_vectors_from_file<P: AsRef<Path>>(base_dir: P) -> io::Result<TestVec
 // TODO: Create seperate load methods for block_data and transparent_wallet_data.
 #[allow(clippy::type_complexity)]
 pub(crate) fn load_test_vectors() -> io::Result<TestVectorData> {
-    // <repo>/zaino-state/src/chain_index/tests/vectors
-    let base_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("src")
-        .join("chain_index")
-        .join("tests")
-        .join("vectors");
-    read_vectors_from_file(&base_dir)
+    read_vectors_from_file()
 }
 
 /// The mock as ChainIndex consumes it.

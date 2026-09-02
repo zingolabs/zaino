@@ -29,7 +29,7 @@ use zaino_serve::server::config::{GrpcServerConfig, JsonRpcServerConfig};
 use zaino_state::{
     BlockchainSource, ChainIndex, LightWalletIndexer, NodeBackedChainIndexSubscriber,
     NodeBackedIndexerService, NodeBackedIndexerServiceConfig, NodeBackedIndexerServiceSubscriber,
-    WithChainHeadSource, ZcashService,
+    WithChainHeadSource, WithChainStoreSource, ZcashService,
 };
 use zaino_status::{Liveness, Readiness, Status};
 use zainodlib::{config::BackendType, error::IndexerError, indexer::Indexer};
@@ -296,7 +296,7 @@ pub trait PollableTip: Status + Sync {
     fn tip_height(&self) -> impl std::future::Future<Output = u64>;
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource> PollableTip
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> PollableTip
     for NodeBackedIndexerServiceSubscriber<Source>
 {
     async fn tip_height(&self) -> u64 {
@@ -307,7 +307,7 @@ impl<Source: BlockchainSource + WithChainHeadSource> PollableTip
     }
 }
 
-impl<Source: BlockchainSource + WithChainHeadSource> PollableTip
+impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> PollableTip
     for NodeBackedChainIndexSubscriber<Source>
 {
     async fn tip_height(&self) -> u64 {
@@ -658,6 +658,12 @@ where
         skip(activation_heights, chain_cache),
         fields(validator = ?validator, network = ?network, mine_to_pool = ?mine_to_pool, enable_zaino, enable_clients)
     )]
+    // Eight knobs, each an independent choice a test makes about the harness it
+    // wants. Grouping them into a struct would mean every call site names a type
+    // and most fields it does not care about. Newly visible rather than newly
+    // true: this crate did not compile while the finalised state was mid-move,
+    // so it was not being linted.
+    #[allow(clippy::too_many_arguments)]
     pub async fn launch_mining_to(
         mine_to_pool: MinerPool,
         validator: &ValidatorKind,

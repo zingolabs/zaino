@@ -20,7 +20,9 @@ default = []
 fast-test-seam = []
 
 # Prometheus metrics emission (gauge! calls in sync paths).
-prometheus = ["metrics"]
+# Enables the backend's copy too: this crate re-exports the write-path metric
+# names from `zaino-chain-store-zainodb`, which gates them on its own feature.
+prometheus = ["metrics", "zaino-chain-store-zainodb/prometheus"]
 
 # test_dependencies - Exposes internal functionality for testing.
 test_dependencies = ["zaino-source-zebra/test_dependencies"]
@@ -42,7 +44,6 @@ zaino-proto = { workspace = true }
 incrementalmerkletree = { workspace = true }
 zcash_address = { workspace = true }
 zcash_keys = { workspace = true, features = ["sapling"] }
-zcash_primitives = { workspace = true }
 zcash_protocol = { workspace = true }
 zcash_transparent = { workspace = true }
 sapling-crypto = "0.7"
@@ -73,16 +74,20 @@ tokio-util = { workspace = true }
 futures = { workspace = true }
 tonic = { workspace = true }
 dashmap = { workspace = true }
-lmdb = { workspace = true }
-lmdb-sys = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
 blake2 = { workspace = true }
 sha2 = { workspace = true }
 corez = { workspace = true }
+zaino-encoding = { workspace = true }
 arc-swap = { workspace = true }
+
+# The finalised store: the ports it is driven through, and the backend that
+# implements them. Both, because ChainIndex still reads the backend's own
+# vocabulary while it is being moved onto the ports.
+zaino-chain-store = { workspace = true }
+zaino-chain-store-zainodb = { workspace = true }
 reqwest.workspace = true
-bitflags = { workspace = true }
 zaino-source.workspace = true
 zaino-source-zebra.workspace = true
 zaino-primitives.workspace = true
@@ -100,6 +105,7 @@ zaino-chain-head = { workspace = true }
 zaino-chain-head-service = { workspace = true }
 
 [dev-dependencies]
+zaino-chain-store-zainodb = { workspace = true, features = ["testing"] }
 tempfile = { workspace = true }
 tracing-subscriber = { workspace = true }
 primitive-types = { workspace = true }

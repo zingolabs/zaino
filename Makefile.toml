@@ -282,3 +282,41 @@ script = { file = "tools/scripts/check-zaino-proto-heavy.rs" }
 
 # -------------------------------------------------------------------
 
+# The experimental/alpha feature set is off by default and is therefore never
+# built by the normal CI path, which is exactly how it bit-rots: two `#[cfg]`
+# blocks in the finalised state's address-history writer went on referencing
+# bindings that the non-gated path had renamed away, and nothing noticed
+# because nothing compiled them.
+#
+# Gated on the `experimental_features` umbrella rather than on
+# `transparent_address_history_experimental` directly, so a feature added to
+# that set is covered the day it lands rather than the day someone remembers
+# to extend this list.
+[tasks.check-experimental-features-packages]
+description = "cargo check --features experimental_features across the whole workspace"
+command = "cargo"
+args = [
+  "check",
+  "--workspace",
+  "--all-targets",
+  "--features",
+  "zaino-state/experimental_features",
+]
+
+# Compiling the gated code is what catches the rot; running its tests is what
+# catches a behavioural regression in it. Scoped to zaino-state because that is
+# the only crate the umbrella currently reaches.
+[tasks.test-experimental-features]
+description = "Run the zaino-state suite with the experimental/alpha features enabled"
+command = "cargo"
+args = ["nextest", "run", "-p", "zaino-state", "--features", "experimental_features"]
+
+[tasks.check-experimental-features]
+description = "Verify the experimental/alpha feature set compiles workspace-wide and its tests pass"
+dependencies = [
+  "check-experimental-features-packages",
+  "test-experimental-features",
+]
+
+# -------------------------------------------------------------------
+
