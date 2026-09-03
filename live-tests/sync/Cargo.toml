@@ -55,3 +55,9 @@ version.workspace = true
 ztest = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }
+
+# Local ztest while the QoS rework is unreleased: `qos = sync` carries no default reserve
+# now, so each profile declares its own `footprint = ".."` and only a local build enforces
+# that. Drop this for a version bump once the harness ships it.
+[patch.crates-io]
+ztest = { path = "../../../ztest" }

@@ -1,15 +1,9 @@
-//! **A differential between zaino's two ingest paths**: two zaino pods index
-//! the same pinned *mainnet* chain from the same validator — one reading
-//! zebra's state DB directly off local disk, one pulling every block over
-//! JSON-RPC — and the indexes they construct must be identical the whole way
-//! up.
+//! Differential across zaino's two ingest paths: two pods index one pinned mainnet chain from one
+//! validator — direct off zebra's state DB, rpc over JSON-RPC — and their indexes must match all
+//! the way up.
 //!
-//! ## Why this is a sharp test
-//!
-//! `backend = "direct" | "rpc"` (`state` / `fetch` are its legacy aliases)
-//! selects **only how zaino reaches its validator**. Both are served by the
-//! single `NodeBackedIndexerService`, which builds the same chain index from
-//! whichever `BlockchainSource` the connection yields:
+//! Sharp because `backend = "direct" | "rpc"` (`state`/`fetch` = legacy aliases) picks *only* how
+//! zaino reaches its validator; one `NodeBackedIndexerService` builds the index either way:
 //!
 //! ```text
 //! Rpc    → ValidatorConnector::spawn_fetch ─┐
@@ -17,54 +11,31 @@
 //! Direct → ValidatorConnector::spawn_state ─┘
 //! ```
 //!
-//! So the indexing code under both pods is *the same code*, and the two indexes
-//! are two independent constructions of one function over one chain. Anything
-//! they disagree about is attributable to the source layer — a block decoded
-//! differently, an ordering the two paths do not share, something one path can
-//! see and the other cannot — with none of the "is this an index bug or an RPC
-//! translation difference?" ambiguity a zaino-vs-zebra comparison carries.
+//! - Same indexing code both sides → two independent constructions of one function over one chain
+//! - Disagreement therefore lands on the source layer (block decoded differently, ordering not
+//!   shared, something one path sees) — none of a zaino-vs-zebra comparison's index-bug-or-RPC-
+//!   translation ambiguity
+//! - NOT an authority check: two sources wrong the same way agree. `zaino_index_construction`
+//!   holds the index to external truth; this asks whether the ingest path changes the answer
 //!
-//! It is deliberately **not** an authority check: two sources that are wrong the
-//! same way agree with each other. `zaino_index_construction` is where zebra
-//! holds the indexes to an external truth; this profile asks the question that
-//! one cannot, which is whether the ingest path changes the answer.
+//! Fixture = mainnet pinned 3,434,143 (NU6.3/Ironwood rung, deepest artifact either network ships):
 //!
-//! ## The fixture
+//! - Mainnet load-bearing: a differential is only as sharp as its corpus, and the source layer
+//!   diverges most on dense irregular blocks (testnet's sparse history = where paths agree easiest)
+//! - Spans every mainnet activation → v5 txs, funded Orchard pool, NU6.3 rules on both sides, so
+//!   `z_gettreestate` has trees to disagree about (the old Blossom rung had none)
+//! - Spans both density regimes: sandblast onset derived, not cited (ECC says only "June 2022")
+//!   = first 500-block window above 3x baseline @ 1,704,323, permanent from 1,706,605; this pin
+//!   sits ~1.7M above it
+//! - Heights all read off the manifest → repointing = the handle alone
 //!
-//! Mainnet, pinned at 3,434,143 — the NU6.3/Ironwood rung, and the deepest
-//! artifact either network ships. Mainnet matters more here than it might appear:
-//! a differential is only as sharp as the corpus it runs over, and the source
-//! layer this profile is trying to catch differs most on dense, irregular
-//! blocks. Testnet's sparse history is where two ingest paths agree most easily.
+//! Volumes:
 //!
-//! Spanning every activation mainnet has had puts v5 transactions, a funded
-//! Orchard pool, and NU6.3's rules on both sides of the comparison — so
-//! `z_gettreestate` has every tree to disagree about, where the Blossom rung this
-//! profile once rode had none.
+//! - Seed PVC = extracted chain archive, sized by `seed_size_for` off its manifest
+//! - Neither index seeded (both from empty) → each declares its own `INDEX_DISK_GIB` PVC, and only
+//!   the direct pod's CoW clone touches the seed
 //!
-//! **Where it stops now spans both density regimes, by choice.** In June 2022 the
-//! sandblasting spam attack begins, and within two days mainnet's median block
-//! goes from 2.5 kB to over 100 kB and stays there. The onset is derived rather
-//! than cited — no published source gives a height, ECC's retrospective says only
-//! "June 2022" — and measures out as the first 500-block window above 3x baseline
-//! at **1,704,323** (2022-06-15 18:18 UTC), permanent from **1,706,605**. The
-//! Orchard rung this profile used to ride stopped below that to hold the pre-spam
-//! regime fixed; this pin sits ~1.7M blocks above it, so both indexes are built
-//! across the transition and over the regime an operator runs against today.
-//!
-//! For a differential that is the better corpus either way: the source layer is
-//! most likely to diverge on the dense, irregular blocks the spam era produced.
-//!
-//! Every height this profile queries comes from the artifact's manifest, so
-//! repointing it at a deeper rung needs no change but the handle.
-//!
-//! The seed PVC holding the extracted chain archive is sized from its own
-//! manifest: 257.85 GiB extracted, and `seed_size_for` requests that plus
-//! headroom. Neither indexer's own DB is seeded — both build from empty — so each
-//! declares its own index PVC (`INDEX_DISK_GIB`), and only the `direct` pod's CoW
-//! clone of the archive touches the seed at all.
-//!
-//! Launched detached via `ztest sync start zaino_state_fetch_parity`.
+//! Launched detached: `ztest sync start zaino_state_fetch_parity`
 
 use serde_json::{json, Value};
 use ztest::prelude::*;
@@ -73,41 +44,32 @@ use ztest::sync::{
     hours, mins, secs, Severity, Snapshot, SyncCtx, SyncOutcome, SyncRunner, Verdict, Violation,
 };
 
-/// Snapshot cadence. Two indexers over 3,434,143 dense mainnet blocks is an
-/// hours-long run; the frontier does not need resolving finer than this, and
-/// every tick costs two exporter scrapes.
+/// Snapshot cadence. Two indexers over 3.4M dense blocks = an hours-long run; every tick costs
+/// two exporter scrapes and the frontier needs no finer resolution
 const TICK: std::time::Duration = secs(15);
 
-/// The run cap. Set here because `#[ztest::sync_test(timeout = ..)]` records the
-/// declared cap in the inventory but does not reach `SyncEngine`.
+/// Run cap, set here — `sync_test(timeout = ..)` records the inventory's declared cap but never
+/// reaches `SyncEngine`
 const RUN_CAP: std::time::Duration = hours(48);
 
-/// How long the bound subject's frontier may sit still before the run is called
-/// stalled. Wider than the direct path's equivalent: this profile binds the
-/// JSON-RPC indexer, whose progress comes in whole batches pulled over the wire.
+/// Bound subject's frontier may sit this long before the run is called stalled. Wider than the
+/// direct path's: this binds the JSON-RPC indexer, whose progress arrives in whole wire batches
 const STALL_WINDOW: std::time::Duration = mins(30);
 
-/// Full parity sweeps per run — the profile's coverage/cost dial, and the thing
-/// actually held fixed across rungs.
+/// Full parity sweeps per run — the coverage/cost dial, held fixed across rungs.
 ///
-/// The sweep is the expensive probe (several RPC round trips against both pods),
-/// so it is paced by chain progress rather than the clock, spreading the sweeps
-/// evenly across the whole of history. What that pacing must not do is scale
-/// with the fixture: a fixed *stride* was 66 sweeps over the Blossom rung's
-/// 659,600 and would be 169 over this one, taxing the throughput of a deeper
-/// run precisely because it is deeper. Fixing the count and deriving the stride
-/// from the manifest keeps the cost of a sweep pass constant, and holds it
-/// constant on whatever rung this profile is repointed at next.
+/// - Sweep = the expensive probe (several RPC round trips against both pods) → paced by chain
+///   progress, not the clock, spreading evenly across history
+/// - Count fixed + stride derived from the manifest, never the reverse: a fixed stride was 66
+///   sweeps over Blossom's 659,600 and would be 169 here, taxing a deeper run for being deeper
 const SWEEPS_PER_RUN: u32 = 66;
 
-/// How long the unbound indexer gets to finish after the subject has, before the
-/// terminal sweep gives up on comparing two complete indexes.
-///
-/// The engine completes on the *subject*, and the two pods do not finish
-/// together. This is the allowance for the gap, not for the build.
+/// Unbound indexer's grace after the subject finishes, before the terminal sweep gives up on
+/// comparing two complete indexes. Engine completes on the *subject* and the pods do not finish
+/// together — this covers the gap, not the build
 const CONVERGE_BUDGET: std::time::Duration = hours(4);
 
-/// Re-probe interval while waiting for that convergence.
+/// Re-probe interval inside [`CONVERGE_BUDGET`]
 const CONVERGE_POLL: std::time::Duration = secs(30);
 
 /// Per-pod index reservation. Two full indexes over 3.4M mainnet blocks, each in its own
@@ -115,41 +77,54 @@ const CONVERGE_POLL: std::time::Duration = secs(30);
 /// DiskPressure costs the whole run. Unmeasured; revisit off `zaino_db_used_bytes`
 const INDEX_DISK_GIB: u64 = 325;
 
-/// The JSON-RPC error a *proxied* call comes back with.
+/// Per-indexer memory, both pods alike.
 ///
-/// Matched on the wire text because ztest's `RpcError` keeps the JSON-RPC code
-/// inside its transport source rather than as a field. Brittle in principle; the
-/// code is the stable half of that string.
+/// - Same as `zaino_sync`'s indexer on this fixture, unmeasured there too
+/// - Covers the open LMDB write txn's dirty pages (the run's real memory cost)
+/// - Fetch = State: it builds its own index over the same chain, so the write txn is the same
+///   shape whatever fed it. First number to revisit once a run reports
+const INDEX_MEM_GIB: u64 = 20;
+
+/// JSON-RPC error a *proxied* call returns. Matched on wire text (ztest's `RpcError` keeps the
+/// code inside its transport source, not as a field) — brittle, but the code is its stable half
 const PROXY_METHOD_NOT_FOUND: &str = "-32601";
 
 #[ztest::needs(IRONWOOD_MAINNET)]
 #[ztest::sync_test(
     name = "zaino_state_fetch_parity",
-    description = "two zaino pods index the pinned NU6.3 mainnet snapshot over different ingest paths; their indexes must agree",
+    description = "two ingest paths index one pinned NU6.3 mainnet snapshot; their indexes must agree",
     subject = indexer,
     timeout = "48h",
     qos = sync,
+    footprint = "10c/44Gi",
     tags = ["mainnet", "zaino", "index", "differential", "ironwood", "nu6.3"],
 )]
 async fn zaino_state_fetch_parity(mut run: SyncRunner) -> SyncOutcome {
-    // One validator, two indexers over it. The direct pod gets its own CoW clone
-    // of the archive (it reads a zebra state DB); the rpc pod is given none —
-    // `materialize_opts` withholds it deliberately, because that pod sources its
-    // blocks from the validator and would never open the mount.
+    // One validator, two indexers over it.
+    // - Direct pod gets its own CoW clone of the archive (it reads a zebra state DB)
+    // - Rpc pod gets none: `materialize_opts` withholds it (that pod sources blocks from the
+    //   validator and would never open the mount)
+    // - Pods sized as `zaino_sync`'s, two indexers not one; must sum inside `footprint`
     let (zaino_state, zaino_fetch) = match run
         .topology(|t| {
-            t.add_validator(Validator::zebrad("6.2.3").snapshot(IRONWOOD_MAINNET));
+            t.add_validator(
+                Validator::zebrad("6.2.3")
+                    .snapshot(IRONWOOD_MAINNET)
+                    .resources(Cpu::cores(2), Mem::gib(4)),
+            );
             let zaino_state = t.add_indexer(
                 zaino()
                     .snapshot(IRONWOOD_MAINNET)
                     .tuning(ZainoTuning::State)
-                    .disk(Disk::gib(INDEX_DISK_GIB)),
+                    .disk(Disk::gib(INDEX_DISK_GIB))
+                    .resources(Cpu::cores(4), Mem::gib(INDEX_MEM_GIB)),
             );
             let zaino_fetch = t.add_indexer(
                 zaino()
                     .snapshot(IRONWOOD_MAINNET)
                     .tuning(ZainoTuning::Fetch)
-                    .disk(Disk::gib(INDEX_DISK_GIB)),
+                    .disk(Disk::gib(INDEX_DISK_GIB))
+                    .resources(Cpu::cores(4), Mem::gib(INDEX_MEM_GIB)),
             );
             (zaino_state, zaino_fetch)
         })
@@ -161,17 +136,14 @@ async fn zaino_state_fetch_parity(mut run: SyncRunner) -> SyncOutcome {
 
     let chain = run.chain();
 
-    // The **rpc** pod is the bound subject, and which one that is matters. The
-    // engine's completion predicate is the subject's, and the two pods do not
-    // finish together: the direct path reads blocks from a local RocksDB while
-    // this one pulls all 3,434,143 over JSON-RPC, so it is the long pole by a wide
-    // margin. Binding the laggard means completion is very nearly "both are
-    // done" — and `indexes_converged` covers the remainder rather than assuming
-    // it away.
+    // Rpc pod = the bound subject, and which one matters (completion predicate is the subject's).
+    // - Pods do not finish together: direct reads a local RocksDB, rpc pulls all 3,434,143 over
+    //   JSON-RPC → rpc = long pole by a wide margin
+    // - Binding the laggard makes completion nearly "both done"; `indexes_converged` covers the gap
     run.sync(zaino_fetch);
     run.tick(TICK).timeout(RUN_CAP);
 
-    // ── safety: neither index may misbehave, and they may never disagree ──
+    // ── safety: neither index misbehaves, and they never disagree ──
     run.always(Severity::Fatal)
         .named("subject_index_append_only")
         .every(secs(30))
@@ -252,14 +224,12 @@ async fn zaino_state_fetch_parity(mut run: SyncRunner) -> SyncOutcome {
     run.run().await
 }
 
-/// Both indexers are the same image, built from this repo with the metrics
-/// feature — which is load-bearing rather than decorative here: the frontier
-/// gauge it publishes is the only surface either pod's index progress can be
-/// read from, and this profile reads both.
+/// One image for both indexers, built from this repo with metrics.
 ///
-/// A function rather than a `let` binding because `dev!` bakes a build spec and
-/// the two pods must differ in nothing but their tuning; sharing one builder
-/// would mean cloning a half-configured component and hoping.
+/// - Metrics feature load-bearing: its frontier gauge = the only surface either pod's index
+///   progress reads from, and this profile reads both
+/// - Function, not a `let`: `dev!` bakes a build spec, and the two pods must differ in nothing
+///   but tuning (sharing one builder = cloning a half-configured component and hoping)
 fn zaino() -> ztest::component::Indexer<ztest::backends::zainod::ZainoBackend> {
     dev!(
         Indexer::Zainod,
@@ -274,11 +244,8 @@ fn zaino() -> ztest::component::Indexer<ztest::backends::zainod::ZainoBackend> {
 
 // ── safety ───────────────────────────────────────────────────────────────
 
-/// The subject's finalised index never rolls back.
-///
-/// The snapshot's zebrad runs with no peers, so the chain is frozen and no reorg
-/// can have asked for a rollback: any backwards motion is the index losing
-/// ground it had already written.
+/// Subject's finalised index never rolls back. Peerless zebrad → frozen chain → no reorg can
+/// have asked for one, so backwards motion = the index losing ground it had written
 fn subject_index_append_only(s: &Snapshot) -> Verdict {
     ztest::sync_ensure!(
         s.height() >= s.prev_height(),
@@ -291,10 +258,9 @@ fn subject_index_append_only(s: &Snapshot) -> Verdict {
 
 /// Neither index claims more chain than the artifact pins.
 ///
-/// Against the manifest rather than against either pod: this is a differential,
-/// so the two indexers are each other's reference for *content*, and a shared
-/// misreading of where the chain ends is exactly what a differential cannot see.
-/// The pin was written by the producer before either pod existed.
+/// - Against the manifest, not either pod: the two indexers are each other's reference for
+///   *content*, and a shared misreading of where the chain ends is what a differential cannot see
+/// - Pin written by the producer before either pod existed
 async fn frontiers_within_pin(
     s: &Snapshot,
     direct: &ZainoIndexer,
@@ -316,13 +282,12 @@ async fn frontiers_within_pin(
     Verdict::Satisfied
 }
 
-/// **The spine: the two indexes agree over everything both have built.**
+/// Spine of the profile: the two indexes agree over everything both have built.
 ///
-/// The comparison window is `min(frontier_rpc, frontier_direct)` — the height up
-/// to which *both* pods have written their index. Above it one pod is answering
-/// from its index while the other is still proxying the validator, so a
-/// difference there is a scheduling artifact rather than a disagreement. The
-/// window widens as the run proceeds, and the sweep re-reads it every time.
+/// - Window = `min(frontier_rpc, frontier_direct)`, the height both have written
+/// - Above it one pod answers from its index while the other still proxies the validator → a
+///   difference there is a scheduling artifact, not a disagreement
+/// - Window widens as the run proceeds; every sweep re-reads it
 async fn indexes_agree_over_common_window(
     s: &Snapshot,
     cx: &SyncCtx,
@@ -352,11 +317,9 @@ fn subject_index_advances(s: &Snapshot) -> Verdict {
 
 // ── coverage ─────────────────────────────────────────────────────────────
 
-/// At least one tick caught **both** pods with a partial index.
-///
-/// The anti-vacuity latch for the differential. A run that attached after both
-/// indexes were already built would compare two finished artifacts and never
-/// witness a construction — which is a fine end-state test and is not this one.
+/// At least one tick caught both pods mid-build. Anti-vacuity latch for the differential:
+/// attaching after both indexes exist compares two finished artifacts and witnesses no
+/// construction (a fine end-state test, and not this one)
 async fn observed_both_mid_build(s: &Snapshot, direct: &ZainoIndexer) -> Verdict {
     let Some(target) = s.target() else {
         return Verdict::Pending;
@@ -373,23 +336,18 @@ async fn observed_both_mid_build(s: &Snapshot, direct: &ZainoIndexer) -> Verdict
     }
 }
 
-/// At least one tick caught **both** pods answering from their own index rather
-/// than forwarding to the validator.
+/// At least one tick caught both pods answering from their own index, not forwarding to the
+/// validator. Load-bearing coverage probe here.
 ///
-/// The load-bearing coverage probe of this profile. While its finalised state is
-/// building, zaino forwards queries to its validator instead of erroring — and
-/// `chain_tips_for_snapshot` is generic over the source, so *both* connection
-/// types do it. Two proxying pods agree perfectly: every sweep above would be
-/// the validator compared against itself, twice, and would pass having measured
-/// nothing.
-///
-/// `getaddressdeltas` is the discriminator, and it is **one-sided**. Zebra implements
-/// no such method, and `ChainIndex::get_address_deltas` forwards to the source rather
-/// than synthesizing — so only the pod holding a read-state (`direct`) can ever answer
-/// it. The `rpc` pod returns `-32601` for the life of the run, by construction.
-///
-/// So the pair that proves the two pods are distinct implementations is: `direct`
-/// answers, `rpc` refuses. Requiring *both* to answer would latch `Pending` forever.
+/// - Mid-build zaino forwards rather than errors, and `chain_tips_for_snapshot` is generic over
+///   the source → both connection types do it
+/// - Two proxying pods agree perfectly → every sweep above = the validator vs itself, twice,
+///   passing having measured nothing
+/// - `getaddressdeltas` = the discriminator, one-sided: zebra implements no such method and
+///   `ChainIndex::get_address_deltas` forwards rather than synthesizes, so only a read-state pod
+///   (`direct`) can answer and `rpc` returns `-32601` for the run's life, by construction
+/// - Distinctness therefore = `direct` answers ∧ `rpc` refuses (requiring both to answer latches
+///   `Pending` forever)
 async fn both_answered_from_their_own_index(
     s: &Snapshot,
     cx: &SyncCtx,
@@ -426,10 +384,9 @@ async fn both_answered_from_their_own_index(
 
 /// Both indexes reached the pinned tip.
 ///
-/// The engine completes on the subject, so the direct pod may still be finishing
-/// when it does. This waits out that gap — bounded, because a pod that never
-/// converges is a finding and not something to wait on forever — so the sweep
-/// after it compares two *complete* indexes rather than one against a prefix.
+/// - Engine completes on the subject → direct may still be finishing
+/// - Waits that gap out, bounded (a pod that never converges = a finding, not a wait)
+/// - So the sweep after compares two *complete* indexes, not one against a prefix
 async fn indexes_converged(s: &Snapshot, direct: &ZainoIndexer, chain: ChainSnapshot) -> Verdict {
     let pinned = chain.tip_height;
     ztest::sync_ensure!(
@@ -474,13 +431,13 @@ async fn indexes_agree_at_the_pinned_tip(
     compare_indexes(cx, direct, tip, boundary_heights(tip)).await
 }
 
-/// The heights a finished index is worth comparing at.
+/// Heights a finished index is worth comparing at.
 ///
-/// Straddles the activation on both sides, because that is the boundary the fixture
-/// exists for and where a rule change could make two implementations diverge. Plus a
-/// height whose coinbase is certainly spendable, and `tip - 1` rather than the tip
-/// itself — at the exact tip an off-by-one pin surfaces as an RPC error, not the
-/// disagreement a differential test exists to catch.
+/// - Straddles the activation both sides (the boundary the fixture exists for, and where a rule
+///   change could make two implementations diverge)
+/// - Plus a height whose coinbase is certainly spendable
+/// - `tip - 1`, not the tip: at the exact tip an off-by-one pin surfaces as an RPC error, not the
+///   disagreement a differential exists to catch
 fn boundary_heights(tip: u32) -> Vec<u32> {
     let mut heights = vec![
         STRADDLED_ACTIVATION - 1,
@@ -637,11 +594,11 @@ fn violated(height: u32, detail: String) -> Verdict {
     })
 }
 
-/// The sampling ladder is this profile's coverage policy — how much of two
-/// full-chain indexes each sweep actually compares — so it is pinned here
-/// rather than left to be read off the arithmetic. The windows below span the
-/// current fixture (3,434,143) and a rung deeper still, because
-/// the ladder's properties must hold wherever the profile is repointed.
+/// Sampling ladder = this profile's coverage policy (how much of two full-chain indexes a sweep
+/// compares), pinned here rather than read off the arithmetic.
+///
+/// - Windows below span the current fixture (3,434,143) and a deeper rung: the ladder's
+///   properties must hold wherever the profile is repointed
 #[cfg(test)]
 mod tests {
     use super::sweep_heights;
@@ -693,9 +650,8 @@ mod tests {
         }
     }
 
-    /// Weighted towards the frontier: over half the ladder sits in the newest
-    /// tenth of the window. Sampling uniformly would spend a sweep re-reading
-    /// history that every previous sweep already agreed about.
+    /// Weighted to the frontier — over half the ladder in the newest tenth (uniform sampling
+    /// would spend a sweep re-reading history every previous sweep already agreed about)
     #[test]
     fn most_samples_sit_near_the_frontier() {
         for window in [3_434_143u32, 4_140_000] {
