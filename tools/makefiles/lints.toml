@@ -4,7 +4,13 @@ args = ["fmt", "--all", "--", "--check"]
 
 [tasks.clippy]
 command = "cargo"
-args = ["clippy", "--all-targets", "--all-features", "--", "-D", "warnings"]
+# `clippy::cargo_common_metadata` (a clippy `cargo`-group lint, off by default)
+# fails the build when a published crate is missing the manifest metadata
+# crates.io needs — description, license, repository, readme, keywords,
+# categories. It skips `publish = false` crates. This stops an unreleasable crate
+# from reaching a release cut, where the gap would otherwise surface only as a
+# 400 from crates.io mid-publish.
+args = ["clippy", "--all-targets", "--all-features", "--", "-D", "warnings", "-D", "clippy::cargo_common_metadata"]
 
 [tasks.doc]
 env = { RUSTDOCFLAGS = "-D warnings" }
