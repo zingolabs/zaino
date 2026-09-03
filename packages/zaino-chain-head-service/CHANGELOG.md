@@ -37,7 +37,12 @@ and this library adheres to Rust's notion of
   graph is rebuilt from a single block and starts at zero.
 - `ChainHeadAdvanceError` (`SourceUnavailable` / `InconsistentSource` /
   `ReorgFailure`) and `ChainHeadInitError`, for a chain head that could not
-  anchor.
+  anchor. `SourceUnavailable` carries the transport `FetchError` as its
+  `#[source]`, so `Error::source()` yields the underlying cause — and its
+  machine-readable `FailureMode` — instead of a flattened string; a source
+  `QueryError` is classified at the boundary, transport failures becoming
+  `SourceUnavailable` and domain rejections staying message-only under
+  `InconsistentSource`.
 - Reorg metrics, moved here from `zaino-state` with their existing metric
   strings unchanged, behind the `prometheus` feature.
 - `spawn_without_writer` and `advance_once`, behind `#[cfg(any(test, feature =
