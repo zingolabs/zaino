@@ -57,6 +57,18 @@ impl MapBackedSnapshot {
         self.blocks.len()
     }
 
+    /// The block this snapshot names as its own tip, if the graph retains it.
+    ///
+    /// The tip is stored as a [`BlockRef`] alongside the block set, not within
+    /// it, so nothing at the type level guarantees the referenced block is
+    /// present: "the graph contains its own tip" is an invariant, not a
+    /// structural fact. This accessor is the single home of that lookup — a
+    /// `None` here means the invariant has been violated — so the check lives
+    /// in one place rather than being re-asserted at every call site.
+    pub(crate) fn tip_block(&self) -> Option<&ChainHeadBlock> {
+        self.blocks.get(&self.best_tip.hash)
+    }
+
     /// Stamp the generation this publication carries.
     ///
     /// The rule lives here rather than at the call site because it is an
