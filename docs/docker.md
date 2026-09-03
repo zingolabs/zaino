@@ -133,6 +133,46 @@ The image includes a health check:
 docker inspect --format='{{.State.Health.Status}}' <container>
 ```
 
+## Building the image
+
+```bash
+makers build-zainod-image
+```
+
+This is the only invocation that works out of the box. The Dockerfile declares
+`ARG RUST_VERSION` with no default — deliberately, so a literal cannot drift
+from `rust-toolchain.toml`'s `channel` — and the task supplies the pin from that
+single source of truth, exactly as the release workflow does.
+
+A bare `docker buildx build .` therefore **fails**, expanding the builder stage
+to `rust:-bookworm`:
+
+```
+ERROR: failed to solve: failed to parse stage name
+       "docker.io/library/rust:-bookworm": invalid reference format
+```
+
+The error does not mention the missing argument, so it is easy to misread as a
+broken Dockerfile. To build with `docker` directly, pass the pin yourself:
+
+```bash
+docker buildx build \
+  --build-arg "RUST_VERSION=$(cargo run -q --manifest-path tools/workbench/Cargo.toml --bin get-rust-version)" \
+  --tag zaino:latest .
+```
+
+Extra arguments are forwarded, so the no-TLS variant is:
+
+```bash
+makers build-zainod-image -- --build-arg NO_TLS=true
+```
+
+Override the tag with `ZAINOD_IMAGE`, e.g. `ZAINOD_IMAGE=zaino:dev makers
+build-zainod-image`.
+
+Note this is distinct from `makers build-image`, which builds the **CI/test**
+image from `live-tests/test_environment`, not the shipped zainod image.
+
 ## Local Testing
 
 Permission handling can be tested locally:

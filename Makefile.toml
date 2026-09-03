@@ -81,6 +81,18 @@ script.main = 'source "./tools/scripts/build-image.sh"'
 
 # -------------------------------------------------------------------
 
+[tasks.build-zainod-image]
+description = "Build the zainod production image (repo-root Dockerfile), supplying the pinned RUST_VERSION"
+# Distinct from `build-image`, which builds the CI/test image from
+# live-tests/test_environment. This builds the shipped zainod image and is the
+# documented local equivalent of the release workflow's docker/build-push-action
+# step, which passes the same RUST_VERSION build arg. Without it a bare
+# `docker buildx build .` fails on the argument-less ARG (issue #468).
+script_runner = "bash"
+script = { file = "tools/scripts/build-zainod-image.sh" }
+
+# -------------------------------------------------------------------
+
 [tasks.push-image]
 description = "Push image if running in CI"
 # condition = { env_set = ["CI"] }

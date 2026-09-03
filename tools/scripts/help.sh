@@ -40,8 +40,10 @@ echo "  container-test-save-failures    Run tests, save failures to \
 .failed-tests"
 echo "  container-test-retry-failures   Rerun only the previously failed \
 tests"
-echo "  build-image                Build the container image with current \
-artifact versions"
+echo "  build-image                Build the CI/test container image with \
+current artifact versions"
+echo "  build-zainod-image         Build the zainod production image \
+(repo-root Dockerfile; see docs/docker.md)"
 echo "  push-image                 Push the image (used in CI, can be used \
 manually)"
 echo "  compute-image-tag          Compute the tag for the container image \
