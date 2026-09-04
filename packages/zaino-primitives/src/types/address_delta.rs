@@ -1,12 +1,12 @@
 //! Transparent address balance delta.
 
-use super::{Height, OutputIndex, SignedZatoshis, TransactionId, TransparentAddress};
+use super::{Height, OutputIndex, TransactionId, TransparentAddress, ZatoshisDelta};
 
 /// A single balance change for a transparent address.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddressDelta {
     /// Change in zatoshis (negative for spends, positive for receives).
-    pub satoshis: SignedZatoshis,
+    pub satoshis: ZatoshisDelta,
     /// The transaction that caused this delta.
     pub txid: TransactionId,
     /// Input or output index within the transaction.

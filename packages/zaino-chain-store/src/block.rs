@@ -1,7 +1,7 @@
 //! Blocks as the store holds and serves them.
 
 use zaino_primitives::types::{
-    BlockHeader, BlockRef, ChainWork, PreIndexCompactTx, ShieldedPool, SignedZatoshis, TreeRoots,
+    BlockHeader, BlockRef, ChainWork, PreIndexCompactTx, ShieldedPool, TreeRoots, ZatoshisDelta,
 };
 
 /// A finalised block, as the store indexed it.
@@ -73,13 +73,13 @@ pub struct StoredTx {
     ///
     /// `Option` rather than a zero, because the two are distinguishable on disk
     /// and a store that conflated them would rewrite rows it only meant to read.
-    pub sapling_value: Option<SignedZatoshis>,
+    pub sapling_value: Option<ZatoshisDelta>,
     /// Net Orchard value balance, or `None` where there is no Orchard
     /// component.
-    pub orchard_value: Option<SignedZatoshis>,
+    pub orchard_value: Option<ZatoshisDelta>,
     /// Net Ironwood value balance, or `None` where there is no Ironwood
     /// component.
-    pub ironwood_value: Option<SignedZatoshis>,
+    pub ironwood_value: Option<ZatoshisDelta>,
 }
 
 impl StoredTx {

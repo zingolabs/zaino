@@ -1246,7 +1246,7 @@ impl zaino_source::OneShotGetBlockDeltas for MockchainSource {
                 inputs.push(domain::rpc::InputDelta {
                     address,
                     // Inputs are debits, so the amount leaves the address.
-                    satoshis: domain::SignedZatoshis::new(-(value as i64)),
+                    satoshis: domain::ZatoshisDelta::new(-(value as i64)),
                     index: input_index as u32,
                     prev_txid: domain::TransactionId::from(outpoint.hash.0),
                     prev_output: outpoint.index,
@@ -1348,7 +1348,7 @@ impl zaino_source::OneShotGetAddressDeltas for MockchainSource {
                     continue;
                 }
                 deltas.push(domain::AddressDelta {
-                    satoshis: domain::SignedZatoshis::new(i64::from(output.value())),
+                    satoshis: domain::ZatoshisDelta::new(i64::from(output.value())),
                     txid,
                     index: output_index as u32,
                     height: domain::Height::try_from(height.0)

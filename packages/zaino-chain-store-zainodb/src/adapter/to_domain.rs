@@ -20,8 +20,8 @@ use zaino_primitives::types::{
     BlockHash as DomainBlockHash, BlockHeader, BlockRef, BlockTxPosition,
     ChainWork as DomainChainWork, EncryptedCiphertext, Height as DomainHeight, Nullifier,
     OrchardAction, Outpoint as DomainOutpoint, PreIndexCompactTx, SaplingOutput, Script,
-    ScriptType, SignedZatoshis, TransactionId, TransparentInput, TransparentOutput, TreeRootInfo,
-    TreeRoots, TxIndex, Zatoshis,
+    ScriptType, TransactionId, TransparentInput, TransparentOutput, TreeRootInfo, TreeRoots,
+    TxIndex, Zatoshis, ZatoshisDelta,
 };
 
 use crate::store::capability::{Capability, DbMetadata, MigrationStatus};
@@ -185,9 +185,9 @@ fn stored_compact_tx(tx: &CompactTxData) -> Result<StoredTx, ChainStoreError> {
     let (sapling_value, orchard_value) = tx.balances();
 
     Ok(StoredTx {
-        sapling_value: sapling_value.map(SignedZatoshis::new),
-        orchard_value: orchard_value.map(SignedZatoshis::new),
-        ironwood_value: tx.ironwood().value().map(SignedZatoshis::new),
+        sapling_value: sapling_value.map(ZatoshisDelta::new),
+        orchard_value: orchard_value.map(ZatoshisDelta::new),
+        ironwood_value: tx.ironwood().value().map(ZatoshisDelta::new),
         compact: stored_compact_tx_body(tx)?,
     })
 }

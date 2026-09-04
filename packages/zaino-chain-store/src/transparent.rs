@@ -11,7 +11,7 @@
 //! neither half alone is an answer.
 
 use zaino_primitives::types::{
-    BlockTxPosition, Height, Outpoint, SignedZatoshis, TransactionId, Zatoshis,
+    BlockTxPosition, Height, Outpoint, TransactionId, Zatoshis, ZatoshisDelta,
 };
 
 use crate::output::{StoredAddress, StoredTxOut};
@@ -106,18 +106,18 @@ impl StoreAddressEffects {
     /// The *net* — received minus spent — is the change in the addresses'
     /// aggregate balance over the range. An aggregate balance lives in
     /// `[0, supply]`, so its change lives in `[-supply, +supply]`. That is the
-    /// real invariant, and [`SignedZatoshis::try_from_i128`] enforces it: a net
+    /// real invariant, and [`ZatoshisDelta::try_from_i128`] enforces it: a net
     /// whose magnitude exceeds the supply is not a representable delta and
     /// yields `None` rather than a truncated figure.
     ///
-    /// A [`SignedZatoshis`] rather than a bare `i64`, because this is the
+    /// A [`ZatoshisDelta`] rather than a bare `i64`, because this is the
     /// domain's signed-delta quantity and a raw integer invites the arithmetic
     /// that produced it to be redone somewhere else with different rules.
-    pub fn net_value(&self) -> Option<SignedZatoshis> {
+    pub fn net_value(&self) -> Option<ZatoshisDelta> {
         let received = total(self.outputs.iter().map(|output| output.output.value))?;
         let spent = total(self.spends.iter().map(|spend| spend.output.value))?;
 
-        SignedZatoshis::try_from_i128(received - spent).ok()
+        ZatoshisDelta::try_from_i128(received - spent).ok()
     }
 
     /// Whether the store observed nothing at all.
@@ -225,7 +225,7 @@ mod tests {
     fn no_effects_net_to_zero() {
         assert_eq!(
             StoreAddressEffects::default().net_value(),
-            Some(SignedZatoshis::new(0))
+            Some(ZatoshisDelta::new(0))
         );
     }
 

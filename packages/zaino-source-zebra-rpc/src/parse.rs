@@ -33,9 +33,9 @@ use zaino_primitives::types::{
     },
     AddressBalance, AddressDelta, BlockCommitments, BlockHash, BlockTreeSizes, BlockVerbose,
     BlockchainInfo, ChainWork, ConsensusBranchId, ConsensusBranchIds, Height, MerkleRoot,
-    NetworkUpgradeInfo, NetworkUpgradeStatus, Script, SignedZatoshis, SubtreeRoot, TransactionId,
+    NetworkUpgradeInfo, NetworkUpgradeStatus, Script, SubtreeRoot, TransactionId,
     TransactionLocation, TransparentAddress, TreeRoot, TreeRootInfo, TreeRoots, Treestate, Utxo,
-    ValuePoolBalance, Zatoshis,
+    ValuePoolBalance, Zatoshis, ZatoshisDelta,
 };
 use zaino_source::{MempoolTxMeta, TransactionResponse};
 
@@ -629,7 +629,7 @@ pub(crate) fn parse_address_deltas(
         .iter()
         .map(|d| {
             Ok(AddressDelta {
-                satoshis: SignedZatoshis::new(as_i64(field(d, "satoshis")?)?),
+                satoshis: ZatoshisDelta::new(as_i64(field(d, "satoshis")?)?),
                 txid: as_txid(field(d, "txid")?)?,
                 index: as_u32(field(d, "index")?)?,
                 height: as_height(field(d, "height")?)?,
@@ -948,7 +948,7 @@ fn parse_value_pool(value: &serde_json::Value) -> Result<ValuePoolBalance, Parse
         value_delta: opt_field(value, "valueDeltaZat")
             .map(as_i64)
             .transpose()?
-            .map(SignedZatoshis::new),
+            .map(ZatoshisDelta::new),
     })
 }
 
@@ -1061,7 +1061,7 @@ pub(crate) fn parse_block_deltas(value: &serde_json::Value) -> Result<BlockDelta
                 inputs: parse_optional_list(d, "inputs", |i| {
                     Ok(InputDelta {
                         address: TransparentAddress::new(as_str(field(i, "address")?)?.to_owned()),
-                        satoshis: SignedZatoshis::new(as_i64(field(i, "satoshis")?)?),
+                        satoshis: ZatoshisDelta::new(as_i64(field(i, "satoshis")?)?),
                         index: as_u32(field(i, "index")?)?,
                         prev_txid: as_txid(field(i, "prevtxid")?)?,
                         prev_output: as_u32(field(i, "prevout")?)?,

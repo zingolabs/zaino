@@ -83,4 +83,4 @@ pub use tree_roots::{TreeRootInfo, TreeRoots};
 pub use treestate::{PoolTreestate, TreeBytes, Treestate};
 pub use tx_out_set_info::TxOutSetInfo;
 pub use utxo::Utxo;
-pub use zatoshis::{SignedZatoshis, SignedZatoshisOverflow, Zatoshis, ZatoshisOverflow};
+pub use zatoshis::{Zatoshis, ZatoshisDelta, ZatoshisDeltaOverflow, ZatoshisOverflow};

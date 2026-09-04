@@ -218,7 +218,7 @@ impl BlockInfo {
 #[cfg(test)]
 mod domain_tests {
     use super::*;
-    use zaino_primitives::types::{self as domain, Height, SignedZatoshis, TransparentAddress};
+    use zaino_primitives::types::{self as domain, Height, TransparentAddress, ZatoshisDelta};
 
     /// Asymmetric under reversal, so a missing or doubled byte-reversal shows up.
     const ASYMMETRIC: [u8; 32] = [
@@ -229,7 +229,7 @@ mod domain_tests {
 
     fn delta() -> domain::AddressDelta {
         domain::AddressDelta {
-            satoshis: SignedZatoshis::new(-1_000),
+            satoshis: ZatoshisDelta::new(-1_000),
             txid: domain::TransactionId::from(ASYMMETRIC),
             index: 2,
             height: Height::try_from(99u32).unwrap(),

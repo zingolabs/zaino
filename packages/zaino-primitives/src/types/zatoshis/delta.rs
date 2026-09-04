@@ -6,7 +6,7 @@ use super::MAX_ZATOSHIS;
 
 /// A signed zatoshi delta (balance change: positive = receive, negative = spend).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SignedZatoshis(i64);
+pub struct ZatoshisDelta(i64);
 
 /// Error when a signed zatoshi delta's magnitude exceeds the money supply.
 ///
@@ -15,18 +15,18 @@ pub struct SignedZatoshis(i64);
 /// claims to be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("signed zatoshi delta {got} exceeds supply magnitude {MAX_ZATOSHIS}")]
-pub struct SignedZatoshisOverflow {
+pub struct ZatoshisDeltaOverflow {
     /// The value that was rejected.
     pub got: i128,
 }
 
-impl SignedZatoshis {
+impl ZatoshisDelta {
     /// Create a signed zatoshi amount from an already-in-range `i64`.
     ///
     /// Does not bound its input: a raw delta can carry any `i64` the caller
     /// already holds (a pool value balance, a wire-supplied figure). Callers
     /// that derive a delta and need the money-supply invariant enforced use
-    /// [`SignedZatoshis::try_from_i128`] instead.
+    /// [`ZatoshisDelta::try_from_i128`] instead.
     pub fn new(amount: i64) -> Self {
         Self(amount)
     }
@@ -44,12 +44,12 @@ impl SignedZatoshis {
     /// Takes an `i128` because the caller accumulates gross flow in a wide
     /// integer before differencing it; the returned type then re-establishes
     /// the narrower invariant.
-    pub fn try_from_i128(value: i128) -> Result<Self, SignedZatoshisOverflow> {
+    pub fn try_from_i128(value: i128) -> Result<Self, ZatoshisDeltaOverflow> {
         i64::try_from(value)
             .ok()
             .filter(|inner| inner.unsigned_abs() <= MAX_ZATOSHIS)
             .map(Self)
-            .ok_or(SignedZatoshisOverflow { got: value })
+            .ok_or(ZatoshisDeltaOverflow { got: value })
     }
 
     /// Whether this is a spend (negative).
@@ -63,13 +63,13 @@ impl SignedZatoshis {
     }
 }
 
-impl From<SignedZatoshis> for i64 {
-    fn from(z: SignedZatoshis) -> Self {
+impl From<ZatoshisDelta> for i64 {
+    fn from(z: ZatoshisDelta) -> Self {
         z.0
     }
 }
 
-impl fmt::Display for SignedZatoshis {
+impl fmt::Display for ZatoshisDelta {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
@@ -81,21 +81,21 @@ mod tests {
 
     #[test]
     fn signed_spend_receive() {
-        assert!(SignedZatoshis::new(-100).is_spend());
-        assert!(SignedZatoshis::new(100).is_receive());
-        assert!(!SignedZatoshis::new(0).is_spend());
-        assert!(!SignedZatoshis::new(0).is_receive());
+        assert!(ZatoshisDelta::new(-100).is_spend());
+        assert!(ZatoshisDelta::new(100).is_receive());
+        assert!(!ZatoshisDelta::new(0).is_spend());
+        assert!(!ZatoshisDelta::new(0).is_receive());
     }
 
     #[test]
     fn try_from_i128_accepts_supply_magnitude() {
         let max = i128::from(MAX_ZATOSHIS);
         assert_eq!(
-            SignedZatoshis::try_from_i128(max).map(i64::from),
+            ZatoshisDelta::try_from_i128(max).map(i64::from),
             Ok(i64::try_from(MAX_ZATOSHIS).expect("supply fits in i64"))
         );
         assert_eq!(
-            SignedZatoshis::try_from_i128(-max).map(i64::from),
+            ZatoshisDelta::try_from_i128(-max).map(i64::from),
             Ok(-i64::try_from(MAX_ZATOSHIS).expect("supply fits in i64"))
         );
     }
@@ -104,12 +104,12 @@ mod tests {
     fn try_from_i128_rejects_magnitude_past_supply() {
         let over = i128::from(MAX_ZATOSHIS) + 1;
         assert_eq!(
-            SignedZatoshis::try_from_i128(over),
-            Err(SignedZatoshisOverflow { got: over })
+            ZatoshisDelta::try_from_i128(over),
+            Err(ZatoshisDeltaOverflow { got: over })
         );
         assert_eq!(
-            SignedZatoshis::try_from_i128(-over),
-            Err(SignedZatoshisOverflow { got: -over })
+            ZatoshisDelta::try_from_i128(-over),
+            Err(ZatoshisDeltaOverflow { got: -over })
         );
     }
 
@@ -117,8 +117,8 @@ mod tests {
     fn try_from_i128_rejects_beyond_i64() {
         let huge = i128::from(i64::MAX) + 1;
         assert_eq!(
-            SignedZatoshis::try_from_i128(huge),
-            Err(SignedZatoshisOverflow { got: huge })
+            ZatoshisDelta::try_from_i128(huge),
+            Err(ZatoshisDeltaOverflow { got: huge })
         );
     }
 }

@@ -12,7 +12,7 @@ use zaino_chain_store::{ChainStoreError, StoredBlock, StoredTx};
 use zaino_primitives::types::{
     BlockHash as DomainBlockHash, BlockTxPosition, ChainWork as DomainChainWork,
     EncryptedCiphertext, Height as DomainHeight, OrchardAction, Outpoint as DomainOutpoint,
-    ScriptType, SignedZatoshis, TreeRoots,
+    ScriptType, TreeRoots, ZatoshisDelta,
 };
 
 use crate::types::{
@@ -204,7 +204,7 @@ fn stored_compact_tx_data(
 /// and a `None` written where the row held a balance is a row this store
 /// rewrote while only meaning to read it.
 fn stored_orchard(
-    value: Option<SignedZatoshis>,
+    value: Option<ZatoshisDelta>,
     actions: &[OrchardAction],
 ) -> crate::types::OrchardCompactTx {
     crate::types::OrchardCompactTx::new(

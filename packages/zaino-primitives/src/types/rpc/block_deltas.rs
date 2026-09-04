@@ -2,7 +2,7 @@
 
 use crate::types::{
     BlockHash, BlockTime, CompactDifficulty, Confirmations, Difficulty, EquihashNonce, Height,
-    MerkleRoot, OutputIndex, SignedZatoshis, TransactionId, TransparentAddress, TxIndex, Zatoshis,
+    MerkleRoot, OutputIndex, TransactionId, TransparentAddress, TxIndex, Zatoshis, ZatoshisDelta,
 };
 
 /// Transparent value movements for every transaction in a block.
@@ -68,7 +68,7 @@ pub struct InputDelta {
     /// Address the spent output paid to.
     pub address: TransparentAddress,
     /// Value moved. Always negative — this is value leaving the address.
-    pub satoshis: SignedZatoshis,
+    pub satoshis: ZatoshisDelta,
     /// Position of this input within the transaction's inputs.
     pub index: OutputIndex,
     /// Transaction containing the output being spent.

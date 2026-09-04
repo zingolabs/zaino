@@ -6,8 +6,8 @@
 use zaino_primitives::types::{
     Block, BlockCommitments, BlockHash, BlockHeader, ChainMetadata, EncryptedCiphertext,
     EphemeralKey, EquihashSolution, Height, MerkleRoot, NoteCommitment, Nullifier, OrchardAction,
-    OrchardData, SaplingData, SaplingOutput, SaplingSpend, Script, SignedZatoshis, Transaction,
-    TransactionId, TransparentData, TransparentInput, TransparentOutput, Zatoshis,
+    OrchardData, SaplingData, SaplingOutput, SaplingSpend, Script, Transaction, TransactionId,
+    TransparentData, TransparentInput, TransparentOutput, Zatoshis, ZatoshisDelta,
 };
 
 /// Errors during conversion from zebra types.
@@ -169,7 +169,7 @@ fn sapling_from_zebra(tx: &zebra_chain::transaction::Transaction) -> SaplingData
                 }
             })
             .collect(),
-        value_balance: SignedZatoshis::new(i64::from(tx.sapling_value_balance().sapling_amount())),
+        value_balance: ZatoshisDelta::new(i64::from(tx.sapling_value_balance().sapling_amount())),
     }
 }
 
@@ -211,7 +211,7 @@ fn orchard_shaped_from_zebra<'a>(
                 }
             })
             .collect(),
-        value_balance: SignedZatoshis::new(value_balance),
+        value_balance: ZatoshisDelta::new(value_balance),
     }
 }
 
@@ -229,7 +229,7 @@ mod tests {
         let pool = orchard_shaped_from_zebra(empty.into_iter(), -42);
 
         assert!(pool.actions.is_empty());
-        assert_eq!(pool.value_balance, SignedZatoshis::new(-42));
+        assert_eq!(pool.value_balance, ZatoshisDelta::new(-42));
     }
 }
 

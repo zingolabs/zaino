@@ -10,14 +10,14 @@ use crate::rpc::jsonrpc::wire::display_hex;
 ///
 /// Response rendering is otherwise infallible: a domain value is already valid,
 /// so emitting it cannot fail. That does not quite hold here.
-/// [`SignedZatoshis`](zaino_primitives::types::SignedZatoshis) is an unbounded
+/// [`ZatoshisDelta`](zaino_primitives::types::ZatoshisDelta) is an unbounded
 /// `i64`, while the wire's `Amount` enforces the money range — so the domain
 /// type is strictly wider than what can be rendered, and the gap has to be
 /// reported rather than papered over.
 ///
 /// The old conversion in the source layer was fallible for exactly this reason;
 /// keeping it fallible preserves that behaviour rather than trading it for a
-/// panic or a silent clamp. Bounding `SignedZatoshis` at construction would
+/// panic or a silent clamp. Bounding `ZatoshisDelta` at construction would
 /// close the gap in the domain instead and let this become infallible, but that
 /// is a change to the primitive's contract and belongs in its own commit.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -221,7 +221,7 @@ pub struct OutputDelta {
 mod tests {
     use super::*;
     use zaino_primitives::types::{
-        self as domain, Height, SignedZatoshis, TransparentAddress, Zatoshis,
+        self as domain, Height, TransparentAddress, Zatoshis, ZatoshisDelta,
     };
 
     /// Asymmetric under reversal, so a missing or doubled byte-reversal shows up.
@@ -244,7 +244,7 @@ mod tests {
                 index: 1,
                 inputs: vec![domain::rpc::InputDelta {
                     address: TransparentAddress::new("t1spender".to_string()),
-                    satoshis: SignedZatoshis::new(-5_000),
+                    satoshis: ZatoshisDelta::new(-5_000),
                     index: 0,
                     prev_txid: domain::TransactionId::from([0xbb; 32]),
                     prev_output: 3,
@@ -296,7 +296,7 @@ mod tests {
     #[test]
     fn rejects_an_input_amount_outside_the_money_range() {
         let mut deltas = sample();
-        deltas.deltas[0].inputs[0].satoshis = SignedZatoshis::new(i64::MIN);
+        deltas.deltas[0].inputs[0].satoshis = ZatoshisDelta::new(i64::MIN);
 
         assert!(
             BlockDeltas::from_domain(deltas).is_err(),
