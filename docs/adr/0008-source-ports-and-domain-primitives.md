@@ -13,7 +13,7 @@ port was declared in the transport's vocabulary rather than Zaino's, and three
 consequences followed.
 
 **Errors were unclassifiable.** `BlockchainSourceError` had two variants, both
-"Unrecoverable". `zaino-serve` recovered zcashd RPC error codes by
+"Unrecoverable". `zaino-serve` recovered the legacy full node RPC error codes by
 downcast-walking `source()` chains for a `zaino-fetch` connector type, and the
 ChainIndex sync loop hand-rolled a retry ladder that counted consecutive
 failures, because nothing in the type told retryable from fatal. Worse, the

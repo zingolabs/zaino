@@ -55,7 +55,7 @@ pub const FAST_TEST_MAX_NONFINALISED_DEPTH: u32 = MAX_NONFINALISED_DEPTH / 10;
 ///
 /// A local rejection: nothing here needs the chain, only the protocol's size
 /// limit and hex encoding. Callers map it onto whatever their interface's error
-/// vocabulary is — the zcashd legacy codes live in the serving layer, not here.
+/// vocabulary is — the legacy full-node legacy codes live in the serving layer, not here.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RawTransactionError {
     /// The submitted string is not valid hex.

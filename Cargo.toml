@@ -3,6 +3,7 @@
 members = [
     "packages/zaino-status",
     "packages/zaino-consensus",
+    "packages/zaino-encoding",
     "packages/zaino-primitives",
     "packages/zaino-address",
     "packages/zaino-source-macros",
@@ -17,6 +18,8 @@ members = [
     "packages/zaino-common",
     "packages/zaino-chain-head",
     "packages/zaino-chain-head-service",
+    "packages/zaino-chain-store",
+    "packages/zaino-chain-store-zainodb",
     "packages/zainod",
     "packages/zaino-serve",
     "packages/zaino-state",
@@ -37,6 +40,7 @@ members = [
 default-members = [
     "packages/zaino-status",
     "packages/zaino-consensus",
+    "packages/zaino-encoding",
     "packages/zaino-primitives",
     "packages/zaino-address",
     "packages/zaino-source-macros",
@@ -51,6 +55,8 @@ default-members = [
     "packages/zaino-common",
     "packages/zaino-chain-head",
     "packages/zaino-chain-head-service",
+    "packages/zaino-chain-store",
+    "packages/zaino-chain-store-zainodb",
     "packages/zainod",
     "packages/zaino-serve",
     "packages/zaino-state",
@@ -145,9 +151,6 @@ bitflags = "2.9"
 
 # Test
 tempfile = "3.2"
-# `zcashd_support` is opt-in, not a default (docs/adr/0005), so these path deps
-# no longer need `default-features = false` to drop it: their default feature
-# set is already empty. Enable zcashd end-to-end with `--features zcashd_support`.
 zainod = { path = "packages/zainod" }
 # Service status and health-probe vocabulary. A leaf with one dependency
 # (`tracing`), so any subsystem can report its status without inheriting a
@@ -158,6 +161,14 @@ zaino-status = { path = "packages/zaino-status", version = "0.1.0" }
 # node implementation, so referencing a consensus fact costs neither a
 # general-purpose dependency nor a peer's reading of the specification.
 zaino-consensus = { path = "packages/zaino-consensus", version = "0.1.0" }
+# Zaino's versioned encoding: the `ZainoVersionedSerde` / `FixedEncodedLen`
+# traits, `CompactSize`, and the little/big-endian byte helpers the on-disk
+# formats are written in. A leaf over `corez` alone, so a storage backend and a
+# wire codec can share one encoding vocabulary without either depending on the
+# other. Holds no impl for any domain type: those live with the type whose
+# bytes they describe, which is what keeps a schema out of the vocabulary
+# crates. See docs/adr/0012.
+zaino-encoding = { path = "packages/zaino-encoding", version = "0.1.0" }
 # Zero-dependency domain vocabulary. Every crate that needs chain-level types
 # (heights, hashes, blocks, transactions) depends on this rather than on
 # `zebra-chain` or on another zaino crate. See docs/adr/0010.
@@ -195,6 +206,19 @@ zaino-chain-head = { path = "packages/zaino-chain-head", version = "0.1.0" }
 # crate so a consumer can name what ChainHead answers without depending on the
 # machinery that answers it.
 zaino-chain-head-service = { path = "packages/zaino-chain-head-service", version = "0.1.0" }
+# ChainStore: the finalised half of the chain — everything below the reorg
+# seam, and the indexes built over it. This crate is the domain half: types and
+# ports only, no storage, so a consumer can name what a store answers without
+# depending on the implementation that answers it, and a second implementation
+# is a matter of satisfying the traits. It also owns Zaino's UTXO-set
+# commitment, which is a contract between implementations rather than any one
+# implementation's business. See docs/adr/0012.
+zaino-chain-store = { path = "packages/zaino-chain-store", version = "0.1.0" }
+# The LMDB implementation of those ports, and the on-disk vocabulary it is
+# built from. Named for the backend rather than for the role: a second
+# implementation is expected, and neither should be able to claim to be *the*
+# chain store. Consumers depend on the ports; this is what a deployment picks.
+zaino-chain-store-zainodb = { path = "packages/zaino-chain-store-zainodb", version = "0.1.0" }
 zaino-proto = { path = "packages/zaino-proto", version = "0.4.0" }
 zaino-state = { path = "packages/zaino-state", version = "0.7.0", default-features = false }
 zaino-serve = { path = "packages/zaino-serve", version = "0.6.0", default-features = false }

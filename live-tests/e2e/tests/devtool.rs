@@ -4,8 +4,6 @@
 //! `Clients`, the matching tests in `wallet_to_validator.rs` migrate here and
 //! the zingolib versions are eventually retired (zingolabs/infrastructure#269).
 //!
-//! Zebrad only: the zcashd matrix is deferred (see below).
-//!
 //! Covered (the full zebrad fetch + state query/send surface):
 //! - sends to each pool, `send_to_all`, shielding, mining-reward receipt;
 //! - `get_transaction` (mined / mempool), `get_raw_transaction`;
@@ -17,6 +15,7 @@
 //! - block range: default/all pools and the out-of-range edge cases;
 //! - compact-block transparent data;
 //! - `connect_to_node_get_info` (wallet `get_info` smoke).
+//!
 //! Dual `*_fetch_vs_state` tests assert the fetch and state backends agree.
 //!
 //! Deferred, with the capability each waits on:
@@ -27,10 +26,6 @@
 //! - `monitor_unverified_mempool` — unconfirmed (mempool) wallet balances;
 //!   devtool sync is block-based (likely stays on zingolib, the indexer-side
 //!   mempool views above already cover the surface).
-//! - the zcashd matrix (`json_server`, zcashd send/query) — the devtool wallet
-//!   rejects zcashd's default regtest activation heights at construction;
-//!   `json_server` is additionally zcashd-bound (its reference subscriber *is*
-//!   zcashd).
 //! - the `test_vectors` chain builder — devtool transparent-coinbase shielding.
 //! - `get_mempool_info` — recomputes expected sizes from
 //!   `FetchServiceSubscriber` internals; low value over the mempool surfaces
@@ -1909,7 +1904,7 @@ async fn get_block_deltas_coinbase_only_block_has_no_inputs() {
 async fn sole_recipient_outpoint(
     indexer: &zaino_state::NodeBackedChainIndexSubscriber,
     recipient_taddr: &str,
-) -> zaino_state::chain_index::types::Outpoint {
+) -> zaino_chain_store_zainodb::types::Outpoint {
     use zaino_state::ChainIndex as _;
 
     let utxos = indexer
@@ -1924,7 +1919,7 @@ async fn sole_recipient_outpoint(
         "recipient taddr should hold exactly one funding UTXO"
     );
     let (txid, output_index) = (utxos[0].txid, utxos[0].output_index);
-    zaino_state::chain_index::types::Outpoint::new(<[u8; 32]>::from(txid), output_index)
+    zaino_chain_store_zainodb::types::Outpoint::new(<[u8; 32]>::from(txid), output_index)
 }
 
 /// The single transaction touching `recipient_taddr` at `height` — the shield
@@ -1937,7 +1932,7 @@ async fn sole_spender_at(
     indexer: &zaino_state::NodeBackedChainIndexSubscriber,
     recipient_taddr: &str,
     height: u32,
-) -> zaino_state::chain_index::types::TransactionHash {
+) -> zaino_chain_store_zainodb::types::TransactionHash {
     use zaino_state::ChainIndex as _;
 
     let txids = indexer
@@ -1964,7 +1959,7 @@ async fn fund_recipient(
     clients: &mut e2e::devtool::DevtoolClients,
     recipient_taddr: &str,
     amount: u64,
-) -> zaino_state::chain_index::types::Outpoint {
+) -> zaino_chain_store_zainodb::types::Outpoint {
     clients.sync_faucet().await;
     clients.send_from_faucet(recipient_taddr, amount).await;
     svc.generate_blocks_and_wait_for_tips(1).await;
@@ -1978,7 +1973,7 @@ async fn spend_and_record(
     svc: &mut zaino_testutils::StateAndFetchServices<Zebrad>,
     clients: &mut e2e::devtool::DevtoolClients,
     recipient_taddr: &str,
-) -> zaino_state::chain_index::types::TransactionHash {
+) -> zaino_chain_store_zainodb::types::TransactionHash {
     clients.shield_recipient().await;
     svc.generate_blocks_and_wait_for_tips(1).await;
     let spend_height = svc.fetch_subscriber.tip_height().await as u32;
@@ -2006,7 +2001,7 @@ async fn spend_and_record(
 /// `address_deltas`. The shield drains all transparent funds, so the recipient
 /// holds exactly one UTXO per phase and the spent outpoint is unambiguous.
 async fn get_outpoint_spenders_fetch_vs_state() {
-    use zaino_state::chain_index::types::ChainScope;
+    use zaino_chain_store_zainodb::types::ChainScope;
     use zaino_state::ChainIndex as _;
 
     // Bury a spend this many blocks past its block to push it below the finalised

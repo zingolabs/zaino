@@ -171,7 +171,7 @@ where
         get_block_range(BlockRange) -> Self::GetBlockRangeStream as streaming,
         "Same as GetBlockRange except actions contain only nullifiers."
         get_block_range_nullifiers(BlockRange) -> Self::GetBlockRangeStream as streaming,
-        "Return the requested full (not compact) transaction (as from zcashd)."
+        "Return the requested full (not compact) transaction (as from the legacy full node)."
         get_transaction(TxFilter) -> RawTransaction,
         "submit the given transaction to the zcash network."
         send_transaction(RawTransaction) -> SendResponse,

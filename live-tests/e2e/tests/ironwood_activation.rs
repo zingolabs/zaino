@@ -101,7 +101,7 @@ where
 
 /// The chain value (in zatoshis) of the pool named `pool_id` as of
 /// `height`, read from the served verbosity-1 block object — the same
-/// per-height `valuePools` a zcashd `getblock` reports. Verbosity 1, not 2:
+/// per-height `valuePools` a legacy full-node `getblock` reports. Verbosity 1, not 2:
 /// the fetch backend cannot deserialize a verbosity-2 block object (its
 /// `tx` entries are maps where the caller expects txid strings — a
 /// `zaino-fetch` limitation originally, preserved here because the

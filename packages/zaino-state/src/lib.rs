@@ -2,7 +2,7 @@
 //!
 //! Built to use a configurable backend:
 //! - FetchService
-//!    - Built using the Zcash Json RPC Services for backwards compatibility with Zcashd and other JsonRPC based validators.
+//!    - Built using the Zcash Json RPC Services for backwards compatibility with JsonRPC based validators.
 //! - StateService
 //!    - Built using Zebra's ReadStateService for efficient chain access.
 
@@ -19,36 +19,35 @@ use std::future::Future;
 pub trait SendFut<T>: Future<Output = T> + Send {}
 impl<T, F: Future<Output = T> + Send> SendFut<T> for F {}
 
-/// Prometheus metric names emitted by this crate; the single source of truth shared with `zainod`'s `describe_*` registrations (which carry the descriptions).
 #[cfg(feature = "prometheus")]
 #[allow(missing_docs)] // names are self-describing; descriptions live in zainod
 pub mod metric_names {
+    //! Prometheus metric names, and the single source of truth shared with
+    //! `zainod`'s `describe_*` registrations, which carry the descriptions.
+    //!
+    //! Each name is defined once, in the crate that emits it.
+    //!
+    //! The finalised store's write-path metrics are emitted from
+    //! `zaino-chain-store-zainodb` and so are defined there and re-exported
+    //! here. Restating them would put the live string and the pinned string in
+    //! different crates: a rename where the metric is emitted would break every
+    //! dashboard built on it while the pin test — which reads this module —
+    //! went on comparing a copy nothing publishes. A re-export cannot drift.
+    //!
+    //! This module remains the single import site, so `zainod`'s `describe_*`
+    //! registrations and the bench harness are unaffected by where a given
+    //! name lives.
+    pub use zaino_chain_store_zainodb::metric_names::*;
+
     pub const CHAIN_TIP_HEIGHT: &str = "zaino.chain.tip_height";
 
-    pub const SYNC_FINALIZED_HEIGHT: &str = "zaino.sync.finalized_height";
-    pub const SYNC_TARGET_HEIGHT: &str = "zaino.sync.target_height";
     pub const SYNC_LAG_BLOCKS: &str = "zaino.sync.lag_blocks";
     pub const SYNC_ITERATIONS_TOTAL: &str = "zaino.sync.iterations_total";
     pub const SYNC_ITERATION_DURATION_SECONDS: &str = "zaino.sync.iteration_duration_seconds";
     pub const SYNC_ERRORS_TOTAL: &str = "zaino.sync.errors_total";
     pub const SYNC_HAS_REACHED_TIP: &str = "zaino.sync.has_reached_tip";
     pub const SYNC_REACHED_TIP_AT: &str = "zaino.sync.reached_tip_at";
-    // Reorg metrics moved to `zaino-chain-head-service`, which is where the
-    // reorg is now observed. Their strings are unchanged.
-    pub const SYNC_BLOCK_BUILD_SECONDS: &str = "zaino.sync.block_build_seconds";
-    pub const SYNC_BLOCK_WRITE_SECONDS: &str = "zaino.sync.block_write_seconds";
-    pub const SYNC_TRANSACTIONS_TOTAL: &str = "zaino.sync.transactions_total";
-    pub const SYNC_SAPLING_OUTPUTS_TOTAL: &str = "zaino.sync.sapling_outputs_total";
-    pub const SYNC_ORCHARD_ACTIONS_TOTAL: &str = "zaino.sync.orchard_actions_total";
-    pub const SYNC_LAST_BLOCK_WRITTEN_AT: &str = "zaino.sync.last_block_written_at";
 
-    pub const DB_TIP_HEIGHT: &str = "zaino.db.tip_height";
-    pub const FINALISED_EPHEMERAL: &str = "zaino.db.finalised_ephemeral";
-    pub const ACCUMULATOR_BUILT_HEIGHT: &str = "zaino.db.accumulator_built_height";
-    pub const ACCUMULATOR_REBUILD_ACTIVE: &str = "zaino.db.accumulator_rebuild_active";
-
-    pub const MEMPOOL_TRANSACTIONS: &str = "zaino.mempool.transactions";
-    pub const MEMPOOL_TIP_CHANGES_TOTAL: &str = "zaino.mempool.tip_changes_total";
     pub const MEMPOOL_COHERENCE_FROZEN_SECONDS: &str = "zaino.mempool.coherence_frozen_seconds";
 }
 
@@ -66,7 +65,7 @@ pub use indexer::node_backed_indexer::{
 
 pub mod chain_index;
 
-pub use chain_index::finalised_state::router::FinalisedStateMode;
+pub use zaino_chain_store_zainodb::store::FinalisedStateMode;
 
 // Core ChainIndex trait and implementations
 pub use chain_index::{
@@ -74,31 +73,41 @@ pub use chain_index::{
 };
 // Source types for ChainIndex backends
 pub use chain_index::chain_head::WithChainHeadSource;
+pub use chain_index::chain_store::WithChainStoreSource;
 pub use chain_index::source::BlockchainSource;
 pub use chain_index::source_ports::ChainIndexSourcePorts;
 pub use chain_index::validator_source::{ValidatorSource, ZebraValidatorSource};
 // Supporting types
-pub use chain_index::encoding::*;
-// Mempool statistics for `getmempoolinfo`. Currently an on-disk shape in
-// `types/db/metadata.rs`; moving it into `zaino-primitives` belongs with the
-// persistence rework.
+// Zaino's versioned encoding now lives in `zaino-encoding`, so a storage
+// backend and a wire codec can share it. Re-exported unchanged: every consumer
+// of these names is mid-migration and should not have to move at the same time.
+pub use zaino_encoding::*;
+// Mempool statistics for `getmempoolinfo`, now `zaino-primitives` vocabulary.
+// Re-exported so a consumer wiring a ChainIndex need not name that crate.
 // The non-finalised chain head is `zaino-chain-head`; its runtime is
 // `zaino-chain-head-service`. Re-exported here so a consumer wiring a
 // ChainIndex does not need to name those crates directly.
-pub use chain_index::types::db::metadata::MempoolInfo;
 pub use error::{InitError, SyncError};
 pub use zaino_chain_head::{ChainHeadBlock, ChainHeadSnapshot};
 pub use zaino_chain_head_service::MapBackedSnapshot;
-// NOTE: Should these be pub at all?
-pub use chain_index::types::{
-    AddrHistRecord, AddrScript, BlockContext, BlockData, BlockHash, BlockHeaderData, BlockMetadata,
-    BlockWithMetadata, ChainWork, ChainWorkError, CommitmentTreeData, CommitmentTreeRoots,
-    CommitmentTreeSizes, CompactDifficulty, CompactDifficultyError, CompactOrchardAction,
-    CompactSaplingOutput, CompactSaplingSpend, CompactTxData, Height, IndexedBlock,
-    OrchardCompactTx, OrchardTxList, Outpoint, SaplingCompactTx, SaplingTxList, ScriptType,
-    ShardIndex, ShardRoot, TransactionHash, TransparentCompactTx, TransparentTxList, TreeRootData,
-    TxInCompact, TxLocation, TxOutCompact, TxidList,
-};
+pub use zaino_primitives::types::MempoolInfo;
+
+/// The finalised store's on-disk types, for this crate's own use only.
+///
+/// These were `pub`, with a note asking whether they should be. They should
+/// not: they are `zaino-chain-store-zainodb`'s persisted shapes, and a consumer
+/// written against them is written against one backend's disk layout. A
+/// consumer that genuinely needs them — the live-test legacy parser, which
+/// rebuilds a block independently and compares — names that crate directly.
+///
+/// `pub(crate)` rather than deleted because this crate still reads both halves
+/// of the chain through `IndexedBlock`. The re-export goes when it stops.
+///
+/// `TxOutCompact` has already gone: the finalised reads now come back as
+/// `zaino_chain_store::StoredTxOut` through the ports, so the one place that
+/// held a stored output — the cross-seam UTXO fold — folds domain outputs
+/// instead. The rest of this list shrinks the same way.
+pub(crate) use chain_index::types::{BlockHash, Height, IndexedBlock, Outpoint, TransactionHash};
 
 #[cfg(feature = "test_dependencies")]
 /// allow public access to additional APIs, for testing

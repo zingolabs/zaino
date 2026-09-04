@@ -697,6 +697,7 @@ dependencies = [
  "tokio",
  "wire_serialized_transaction_test_data",
  "zaino-address",
+ "zaino-chain-store-zainodb",
  "zaino-common",
  "zaino-consensus",
  "zaino-primitives",
@@ -1194,8 +1195,10 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower 0.4.13",
+ "zaino-chain-store-zainodb",
  "zaino-common",
  "zaino-consensus",
+ "zaino-encoding",
  "zaino-primitives",
  "zaino-proto",
  "zaino-serve",
@@ -3307,7 +3310,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03da047801ff44bb6a4d407d4860c05fd70bb81714e6b2f3812603d5b145b042"
 dependencies = [
  "heck",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "log",
  "multimap",
  "petgraph",
@@ -3328,7 +3331,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.118",
@@ -4224,6 +4227,15 @@ name = "serde-big-array"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11fc7cc2c76d73e0f27ee52abbd64eec84d46f370c88371120433196934e4b7f"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "serde_arrays"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "94a16b99c5ea4fe3daccd14853ad260ec00ea043b2708d1fd1da3106dcd8d9df"
 dependencies = [
  "serde",
 ]
@@ -5951,6 +5963,64 @@ dependencies = [
 ]
 
 [[package]]
+name = "zaino-chain-store"
+version = "0.1.0"
+dependencies = [
+ "blake2",
+ "futures",
+ "thiserror 2.0.18",
+ "tokio",
+ "zaino-primitives",
+ "zaino-source",
+ "zaino-source-zebra",
+ "zaino-status",
+]
+
+[[package]]
+name = "zaino-chain-store-zainodb"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "bitflags 2.13.0",
+ "blake2",
+ "corez",
+ "dashmap",
+ "futures",
+ "hex",
+ "lmdb",
+ "lmdb-sys",
+ "metrics",
+ "primitive-types 0.14.0",
+ "proptest",
+ "serde",
+ "serde_arrays",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tonic",
+ "tracing",
+ "tracing-subscriber",
+ "zaino-chain-store",
+ "zaino-common",
+ "zaino-consensus",
+ "zaino-convert-zebra",
+ "zaino-encoding",
+ "zaino-primitives",
+ "zaino-proto",
+ "zaino-source",
+ "zaino-source-zebra",
+ "zaino-status",
+ "zcash_primitives",
+ "zcash_protocol",
+ "zebra-chain",
+ "zebra-rpc",
+]
+
+[[package]]
 name = "zaino-common"
 version = "0.5.0"
 dependencies = [
@@ -5980,6 +6050,13 @@ dependencies = [
  "zaino-consensus",
  "zaino-primitives",
  "zebra-chain",
+]
+
+[[package]]
+name = "zaino-encoding"
+version = "0.1.0"
+dependencies = [
+ "corez",
 ]
 
 [[package]]
@@ -6146,7 +6223,6 @@ name = "zaino-state"
 version = "0.7.0"
 dependencies = [
  "arc-swap",
- "bitflags 2.13.0",
  "blake2",
  "bytes",
  "chrono",
@@ -6156,8 +6232,6 @@ dependencies = [
  "hex",
  "incrementalmerkletree",
  "indexmap 2.14.0",
- "lmdb",
- "lmdb-sys",
  "metrics",
  "primitive-types 0.14.0",
  "proptest",
@@ -6181,9 +6255,12 @@ dependencies = [
  "zaino-address",
  "zaino-chain-head",
  "zaino-chain-head-service",
+ "zaino-chain-store",
+ "zaino-chain-store-zainodb",
  "zaino-common",
  "zaino-consensus",
  "zaino-convert-zebra",
+ "zaino-encoding",
  "zaino-mempool",
  "zaino-mempool-service",
  "zaino-primitives",
@@ -6196,7 +6273,6 @@ dependencies = [
  "zaino-status",
  "zcash_address",
  "zcash_keys",
- "zcash_primitives",
  "zcash_protocol",
  "zcash_transparent",
  "zebra-chain",
@@ -6226,6 +6302,7 @@ dependencies = [
  "tonic",
  "tracing",
  "wire_serialized_transaction_test_data",
+ "zaino-chain-store-zainodb",
  "zaino-common",
  "zaino-primitives",
  "zaino-proto",

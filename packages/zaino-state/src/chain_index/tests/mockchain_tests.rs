@@ -851,10 +851,10 @@ async fn get_address_deltas() {
             assert_eq!(u32::from(start.height), 0);
             assert_eq!(u32::from(end.height), active_height);
 
-            // zcashd reports each delta's `blockindex` and documents the
+            // the legacy full node reports each delta's `blockindex` and documents the
             // ordering as `(height, blockindex, index)`. A source that knows the
             // transaction's position in its block must report it: dropping it
-            // both omits a field zcashd sends and makes the documented order
+            // both omits a field the legacy full node sends and makes the documented order
             // unverifiable.
             assert!(
                 deltas.iter().all(|delta| delta.block_index.is_some()),
@@ -1333,7 +1333,7 @@ async fn z_get_block_resolves_negative_heights_against_the_tip() {
     assert_eq!(by_negative_height, by_tip_height);
 }
 
-/// An unparsable `getblock` identifier must carry zcashd's legacy
+/// An unparsable `getblock` identifier must carry the legacy full node's legacy
 /// InvalidParameter code (-8) as a typed `RpcError` in the `source()` chain,
 /// not be flattened into an internal-error string: the serve layer recovers
 /// legacy codes by downcast-walking the chain.
@@ -1445,7 +1445,7 @@ async fn chaintip_update_subscriber_absent_without_tip_stream() {
     );
 }
 
-/// `sendrawtransaction` rejections must carry zcashd's legacy error code:
+/// `sendrawtransaction` rejections must carry the legacy full node's legacy error code:
 /// zaino-serve forwards the code by downcast-walking the `source()` chain for
 /// the typed `RpcError` (`sendrawtransaction_error_object_from_indexer_error`),
 /// so stringifying it downgrades the legacy `-8` "invalid hex" rejection to a

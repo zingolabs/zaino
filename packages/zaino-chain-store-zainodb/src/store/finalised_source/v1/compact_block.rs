@@ -1,0 +1,1723 @@
+//! FinalisedState::V1 compact block indexing functionality.
+
+use super::*;
+use zaino_chain_store::PoolFilter;
+use zaino_primitives::types::ShieldedPool;
+
+/// [`CompactBlockExt`] capability implementation for [`DbV1`].
+///
+/// Exposes `zcash_client_backend`-compatible compact blocks derived from stored header + shielded
+/// transaction data.
+impl CompactBlockExt for DbV1 {
+    async fn get_compact_block(
+        &self,
+        height: Height,
+        pool_types: PoolFilter,
+    ) -> Result<zaino_primitives::types::CompactBlock, StoreError> {
+        self.get_compact_block(height, pool_types).await
+    }
+
+    async fn get_compact_block_range(
+        &self,
+        start: Height,
+        end: Height,
+        pool_types: PoolFilter,
+    ) -> Result<Vec<zaino_primitives::types::CompactBlock>, StoreError> {
+        self.get_compact_block_range(start, end, pool_types).await
+    }
+
+    async fn get_compact_block_stream(
+        &self,
+        start_height: Height,
+        end_height: Height,
+        pool_types: PoolTypeFilter,
+    ) -> Result<CompactBlockStream, StoreError> {
+        self.get_compact_block_stream(start_height, end_height, pool_types)
+            .await
+    }
+}
+
+impl DbV1 {
+    // *** Public fetcher methods - Used by DbReader ***
+
+    /// Returns the compact block at `height`.
+    async fn get_compact_block(
+        &self,
+        height: Height,
+        pool_types: PoolFilter,
+    ) -> Result<zaino_primitives::types::CompactBlock, StoreError> {
+        let validated_height = self
+            .resolve_validated_hash_or_height(HashOrHeight::Height(height.into()))
+            .await?;
+
+        tokio::task::block_in_place(|| {
+            let txn = self.env.begin_ro_txn()?;
+            self.read_compact_block_in_txn(&txn, validated_height, pool_types)
+        })
+    }
+
+    /// Returns every compact block in `start..=end`, ascending.
+    ///
+    /// One read transaction for the range, for the same reasons as
+    /// [`DbV1::get_chain_block_range`]: coherence between the blocks, and the
+    /// per-block transaction cost paid once. A hole is an error — a wallet
+    /// syncing a range must not be handed a short one and left to infer that
+    /// the chain ended.
+    async fn get_compact_block_range(
+        &self,
+        start: Height,
+        end: Height,
+        pool_types: PoolFilter,
+    ) -> Result<Vec<zaino_primitives::types::CompactBlock>, StoreError> {
+        let (validated_start, validated_end) = self.validate_block_range(start, end).await?;
+
+        tokio::task::block_in_place(|| {
+            let txn = self.env.begin_ro_txn()?;
+            Height::range_inclusive(validated_start, validated_end)
+                .map(|height| self.read_compact_block_in_txn(&txn, height, pool_types))
+                .collect()
+        })
+    }
+
+    /// Reads one block's rows under an already-open transaction.
+    ///
+    /// Split out so the single read and the range walk cannot drift: they
+    /// assemble the same block from the same rows under the same filter, and
+    /// differ only in how many transactions they open to do it.
+    fn read_compact_block_in_txn(
+        &self,
+        txn: &lmdb::RoTransaction<'_>,
+        height: Height,
+        pool_types: PoolFilter,
+    ) -> Result<zaino_primitives::types::CompactBlock, StoreError> {
+        use lmdb::Transaction as _;
+
+        let height_bytes = height.to_bytes()?;
+
+        {
+            // ----- Fetch Header -----
+            let raw = match txn.get(self.headers, &height_bytes) {
+                Ok(val) => val,
+                Err(lmdb::Error::NotFound) => {
+                    return Err(StoreError::DataUnavailable(
+                        "block data missing from db".into(),
+                    ));
+                }
+                Err(e) => return Err(StoreError::LmdbError(e)),
+            };
+            let header: BlockHeaderData = *StoredEntryVar::from_bytes(raw)
+                .map_err(|e| StoreError::Custom(format!("header decode error: {e}")))?
+                .inner();
+
+            // ----- Fetch Txids -----
+            let raw = match txn.get(self.txids, &height_bytes) {
+                Ok(val) => val,
+                Err(lmdb::Error::NotFound) => {
+                    return Err(StoreError::DataUnavailable(
+                        "block data missing from db".into(),
+                    ));
+                }
+                Err(e) => return Err(StoreError::LmdbError(e)),
+            };
+            let txids_stored_entry_var = StoredEntryVar::<TxidList>::from_bytes(raw)
+                .map_err(|e| StoreError::Custom(format!("txids decode error: {e}")))?;
+            let txids = txids_stored_entry_var.inner().txids();
+
+            // ----- Fetch Transparent Tx Data -----
+            let transparent_stored_entry_var = if pool_types.includes_transparent() {
+                let raw = match txn.get(self.transparent, &height_bytes) {
+                    Ok(val) => val,
+                    Err(lmdb::Error::NotFound) => {
+                        return Err(StoreError::DataUnavailable(
+                            "block data missing from db".into(),
+                        ));
+                    }
+                    Err(e) => return Err(StoreError::LmdbError(e)),
+                };
+
+                Some(
+                    StoredEntryVar::<TransparentTxList>::from_bytes(raw).map_err(|e| {
+                        StoreError::Custom(format!("transparent decode error: {e}"))
+                    })?,
+                )
+            } else {
+                None
+            };
+            let transparent = match transparent_stored_entry_var.as_ref() {
+                Some(stored_entry_var) => stored_entry_var.inner().tx(),
+                None => &[],
+            };
+
+            // ----- Fetch Sapling Tx Data -----
+            let sapling_stored_entry_var = if pool_types.includes(ShieldedPool::Sapling) {
+                let raw = match txn.get(self.sapling, &height_bytes) {
+                    Ok(val) => val,
+                    Err(lmdb::Error::NotFound) => {
+                        return Err(StoreError::DataUnavailable(
+                            "block data missing from db".into(),
+                        ));
+                    }
+                    Err(e) => return Err(StoreError::LmdbError(e)),
+                };
+
+                Some(
+                    StoredEntryVar::<SaplingTxList>::from_bytes(raw)
+                        .map_err(|e| StoreError::Custom(format!("sapling decode error: {e}")))?,
+                )
+            } else {
+                None
+            };
+            let sapling = match sapling_stored_entry_var.as_ref() {
+                Some(stored_entry_var) => stored_entry_var.inner().tx(),
+                None => &[],
+            };
+
+            // ----- Fetch Orchard Tx Data -----
+            let orchard_stored_entry_var = if pool_types.includes(ShieldedPool::Orchard) {
+                let raw = match txn.get(self.orchard, &height_bytes) {
+                    Ok(val) => val,
+                    Err(lmdb::Error::NotFound) => {
+                        return Err(StoreError::DataUnavailable(
+                            "block data missing from db".into(),
+                        ));
+                    }
+                    Err(e) => return Err(StoreError::LmdbError(e)),
+                };
+
+                Some(
+                    StoredEntryVar::<OrchardTxList>::from_bytes(raw)
+                        .map_err(|e| StoreError::Custom(format!("orchard decode error: {e}")))?,
+                )
+            } else {
+                None
+            };
+            let orchard = match orchard_stored_entry_var.as_ref() {
+                Some(stored_entry_var) => stored_entry_var.inner().tx(),
+                None => &[],
+            };
+
+            // ----- Fetch Ironwood Tx Data -----
+            //
+            // Ironwood rows exist only from schema v1.3.0 (NU6.3) onward, so a missing row is not an
+            // error — it just means the block has no ironwood data.
+            let ironwood_stored_entry_var =
+                if pool_types.includes(ShieldedPool::Ironwood) {
+                    match txn.get(self.ironwood, &height_bytes) {
+                        Ok(raw) => Some(StoredEntryVar::<OrchardTxList>::from_bytes(raw).map_err(
+                            |e| StoreError::Custom(format!("ironwood decode error: {e}")),
+                        )?),
+                        Err(lmdb::Error::NotFound) => None,
+                        Err(e) => return Err(StoreError::LmdbError(e)),
+                    }
+                } else {
+                    None
+                };
+            let ironwood = match ironwood_stored_entry_var.as_ref() {
+                Some(stored_entry_var) => stored_entry_var.inner().tx(),
+                None => &[],
+            };
+
+            // ----- Fetch Commitment Tree Data -----
+            let raw = match txn.get(self.commitment_tree_data, &height_bytes) {
+                Ok(val) => val,
+                Err(lmdb::Error::NotFound) => {
+                    return Err(StoreError::DataUnavailable(
+                        "block data missing from db".into(),
+                    ));
+                }
+                Err(e) => return Err(StoreError::LmdbError(e)),
+            };
+            let commitment_tree_data: CommitmentTreeData =
+                *StoredEntryVar::<CommitmentTreeData>::from_bytes(raw)
+                    .map_err(|e| StoreError::Custom(format!("commitment_tree decode error: {e}")))?
+                    .inner();
+
+            assemble_compact_block(
+                &header,
+                txids,
+                transparent,
+                sapling,
+                orchard,
+                ironwood,
+                &commitment_tree_data,
+            )
+        }
+    }
+
+    /// Streams `CompactBlock` messages for an inclusive height range.
+    ///
+    /// This implementation is designed for high-throughput lightclient serving:
+    /// - It performs a single cursor-walk over the headers database and keeps all other databases
+    ///   (txids + optional pool-specific tx data + commitment tree data) strictly aligned to the
+    ///   same LMDB key.
+    /// - It uses *short-lived* read transactions and periodically re-seeks by key, which:
+    ///   - reduces the lifetime of LMDB reader slots,
+    ///   - bounds the amount of data held in the same read snapshot,
+    ///   - and prevents a single long stream from monopolising the environment’s read resources.
+    ///
+    /// Ordering / range semantics:
+    /// - The stream covers the inclusive range `[start_height, end_height]`.
+    /// - If `start_height <= end_height` the stream is ascending; otherwise it is descending.
+    /// - This function enforces *contiguous heights* in the headers database. Missing heights, key
+    ///   ordering problems, or cursor desynchronisation are treated as internal errors because they
+    ///   indicate database corruption or a violated storage invariant.
+    ///
+    /// Pool filtering:
+    /// - `pool_types` controls which per-transaction components are populated.
+    /// - Transactions that contain no elements in any requested pool are omitted from `vtx`.
+    ///   The original transaction index is preserved in `CompactTx.index`.
+    ///
+    /// Concurrency model:
+    /// - Spawns a dedicated blocking task (`spawn_blocking`) which performs LMDB reads and decoding.
+    /// - Results are pushed into a bounded `mpsc` channel; backpressure is applied if the consumer
+    ///   is slow.
+    ///
+    /// Errors:
+    /// - Database-missing conditions are sent downstream as `tonic::Status::not_found`.
+    /// - Decode failures, cursor desynchronisation, and invariant violations are sent as
+    ///   `tonic::Status::internal`.
+    async fn get_compact_block_stream(
+        &self,
+        start_height: Height,
+        end_height: Height,
+        pool_types: PoolTypeFilter,
+    ) -> Result<CompactBlockStream, StoreError> {
+        // Do NOT validate the whole requested range up-front here.
+        // Validate heights on-demand inside the blocking task so we can return
+        // the stream handle immediately and start sending blocks as they become ready.
+        //
+        // Preserve caller ordering: direction is derived from the caller-supplied heights.
+        let validated_start_height = start_height;
+        let validated_end_height = end_height;
+
+        let start_key_bytes = validated_start_height.to_bytes()?;
+
+        // Direction is derived from the validated heights. This relies on `validate_block_range`
+        // preserving input ordering (i.e. not normalising to (min, max)).
+        let is_ascending = validated_start_height <= validated_end_height;
+
+        // Bounded channel provides backpressure so the blocking task cannot run unbounded ahead of
+        // the gRPC consumer.
+        //
+        // TODO: Investigate whether channel size should be changed, added to config, or set dynamically base on resources.
+        let (sender, receiver) =
+            tokio::sync::mpsc::channel::<Result<CompactBlock, tonic::Status>>(128);
+
+        // Clone everything the blocking task needs so we can move it into the blocking closure.
+        let zaino_db = self.detached_handle();
+
+        tokio::task::spawn_blocking(move || {
+            /// Maximum number of blocks to stream per LMDB read transaction.
+            ///
+            /// The cursor-walk is resumed by re-seeking to the next expected height key. This keeps
+            /// read transactions short-lived and reduces pressure on LMDB reader slots.
+            const BLOCKS_PER_READ_TRANSACTION: usize = 1024;
+
+            // =====================================================================================
+            // Helper functions
+            // =====================================================================================
+            //
+            // These helpers keep the main streaming loop readable and ensure that any failure:
+            // - emits exactly one `tonic::Status` into the stream (best-effort), and then
+            // - terminates the blocking task.
+            //
+            // They intentionally return `Option`/`Result` to allow early-exit with minimal boilerplate.
+
+            /// Send a `tonic::Status` downstream and ignore send errors.
+            ///
+            /// A send error means the receiver side has been dropped (e.g. client cancelled the RPC),
+            /// so the producer should terminate promptly.
+            fn send_status(
+                sender: &tokio::sync::mpsc::Sender<Result<CompactBlock, tonic::Status>>,
+                status: tonic::Status,
+            ) {
+                let _ = sender.blocking_send(Err(status));
+            }
+
+            /// Open a read-only cursor for `database` inside `txn`.
+            ///
+            /// On failure, emits an internal status and returns `None`.
+            fn open_ro_cursor_or_send<'txn>(
+                sender: &tokio::sync::mpsc::Sender<Result<CompactBlock, tonic::Status>>,
+                txn: &'txn lmdb::RoTransaction<'txn>,
+                database: lmdb::Database,
+                database_name: &'static str,
+            ) -> Option<lmdb::RoCursor<'txn>> {
+                match txn.open_ro_cursor(database) {
+                    Ok(cursor) => Some(cursor),
+                    Err(error) => {
+                        send_status(
+                            sender,
+                            tonic::Status::internal(format!(
+                                "lmdb open_ro_cursor({database_name}) failed: {error}"
+                            )),
+                        );
+                        None
+                    }
+                }
+            }
+
+            /// Position `cursor` exactly at `requested_key` using `MDB_SET_KEY`.
+            ///
+            /// Returns the `(key, value)` pair at that key. The returned `key` is expected to equal
+            /// `requested_key` (the function enforces this).
+            ///
+            /// Some LMDB bindings occasionally return `Ok((None, value))` for cursor operations. When
+            /// that happens:
+            /// - If `verify_on_none_key` is true, we call `MDB_GET_CURRENT` once to recover and verify
+            ///   the current key.
+            /// - Otherwise we assume the cursor is correctly positioned and return `(requested_key, value)`.
+            ///
+            /// On `NotFound`, emits `not_found_status`. On other failures or verification failure, emits
+            /// `internal(...)`. In all error cases it returns `None`.
+            fn cursor_set_key_or_send<'txn>(
+                sender: &tokio::sync::mpsc::Sender<Result<CompactBlock, tonic::Status>>,
+                cursor: &lmdb::RoCursor<'txn>,
+                requested_key: &'txn [u8],
+                cursor_name: &'static str,
+                not_found_status: tonic::Status,
+                verify_on_none_key: bool,
+            ) -> Option<(&'txn [u8], &'txn [u8])> {
+                match cursor.get(Some(requested_key), None, lmdb_sys::MDB_SET_KEY) {
+                    Ok((Some(found_key), found_val)) => {
+                        if found_key != requested_key {
+                            send_status(
+                                sender,
+                                tonic::Status::internal(format!(
+                                    "lmdb SET_KEY({cursor_name}) returned non-matching key"
+                                )),
+                            );
+                            None
+                        } else {
+                            Some((found_key, found_val))
+                        }
+                    }
+                    Ok((None, found_val)) => {
+                        // Some builds / bindings can return None for the key for certain ops. If requested,
+                        // verify the cursor actually landed on the requested key via GET_CURRENT.
+                        if verify_on_none_key {
+                            let (recovered_key_opt, recovered_val) =
+                                match cursor.get(None, None, lmdb_sys::MDB_GET_CURRENT) {
+                                    Ok(pair) => pair,
+                                    Err(error) => {
+                                        send_status(
+                                            sender,
+                                            tonic::Status::internal(format!(
+                                            "lmdb cursor GET_CURRENT({cursor_name}) failed: {error}"
+                                        )),
+                                        );
+                                        return None;
+                                    }
+                                };
+
+                            let recovered_key = match recovered_key_opt {
+                                Some(key) => key,
+                                None => {
+                                    send_status(
+                                        sender,
+                                        tonic::Status::internal(format!(
+                                            "lmdb GET_CURRENT({cursor_name}) returned no key"
+                                        )),
+                                    );
+                                    return None;
+                                }
+                            };
+
+                            if recovered_key != requested_key {
+                                send_status(
+                                sender,
+                                tonic::Status::internal(format!(
+                                    "lmdb SET_KEY({cursor_name}) landed on unexpected key: expected {:?}, got {:?}",
+                                    requested_key,
+                                    recovered_key,
+                                )),
+                            );
+                                return None;
+                            }
+
+                            Some((recovered_key, recovered_val))
+                        } else {
+                            // Assume SET_KEY success implies match; return the requested key + value.
+                            Some((requested_key, found_val))
+                        }
+                    }
+                    Err(lmdb::Error::NotFound) => {
+                        send_status(sender, not_found_status);
+                        None
+                    }
+                    Err(error) => {
+                        send_status(
+                            sender,
+                            tonic::Status::internal(format!(
+                                "lmdb cursor SET_KEY({cursor_name}) failed: {error}"
+                            )),
+                        );
+                        None
+                    }
+                }
+            }
+
+            /// Step the headers cursor using `step_op` and return the next `(key, value)` pair.
+            ///
+            /// This is special-cased because the headers cursor is the *driving cursor*; all other
+            /// cursors must remain aligned to whatever key the headers cursor moves to.
+            ///
+            /// Returns:
+            /// - `Ok(Some((k, v)))` when the cursor moved successfully.
+            /// - `Ok(None)` when the cursor reached the end (`NotFound`).
+            /// - `Err(())` when an error status has been emitted and streaming must stop.
+            #[allow(clippy::complexity)]
+            fn headers_step_or_send<'txn>(
+                sender: &tokio::sync::mpsc::Sender<Result<CompactBlock, tonic::Status>>,
+                headers_cursor: &lmdb::RoCursor<'txn>,
+                step_op: lmdb_sys::MDB_cursor_op,
+            ) -> Result<Option<(&'txn [u8], &'txn [u8])>, ()> {
+                match headers_cursor.get(None, None, step_op) {
+                    Ok((Some(found_key), found_val)) => Ok(Some((found_key, found_val))),
+                    Ok((None, _found_val)) => {
+                        // Some bindings can return None for the key; recover via GET_CURRENT.
+                        let (recovered_key_opt, recovered_val) =
+                            match headers_cursor.get(None, None, lmdb_sys::MDB_GET_CURRENT) {
+                                Ok(pair) => pair,
+                                Err(error) => {
+                                    send_status(
+                                        sender,
+                                        tonic::Status::internal(format!(
+                                            "lmdb cursor GET_CURRENT(headers) failed: {error}"
+                                        )),
+                                    );
+                                    return Err(());
+                                }
+                            };
+                        let recovered_key = match recovered_key_opt {
+                            Some(key) => key,
+                            None => {
+                                send_status(
+                                    sender,
+                                    tonic::Status::internal(
+                                        "lmdb GET_CURRENT(headers) returned no key".to_string(),
+                                    ),
+                                );
+                                return Err(());
+                            }
+                        };
+                        Ok(Some((recovered_key, recovered_val)))
+                    }
+                    Err(lmdb::Error::NotFound) => Ok(None),
+                    Err(error) => {
+                        send_status(
+                            sender,
+                            tonic::Status::internal(format!(
+                                "lmdb cursor step(headers) failed: {error}"
+                            )),
+                        );
+                        Err(())
+                    }
+                }
+            }
+
+            /// Step a non-header cursor and enforce that it remains aligned to `expected_key`.
+            ///
+            /// The design invariant for this streamer is:
+            /// - the headers cursor chooses the next key
+            /// - every other cursor must produce a value at that *same* key (otherwise the per-height
+            ///   databases are inconsistent or a cursor has desynchronised).
+            ///
+            /// Returns the value slice for `expected_key` on success.
+            /// On `NotFound`, emits `not_found_status`.
+            /// On key mismatch or other errors, emits an internal error.
+            fn cursor_step_expect_key_or_send<'txn>(
+                sender: &tokio::sync::mpsc::Sender<Result<CompactBlock, tonic::Status>>,
+                cursor: &lmdb::RoCursor<'txn>,
+                step_op: lmdb_sys::MDB_cursor_op,
+                expected_key: &[u8],
+                cursor_name: &'static str,
+                not_found_status: tonic::Status,
+            ) -> Option<&'txn [u8]> {
+                match cursor.get(None, None, step_op) {
+                    Ok((Some(found_key), found_val)) => {
+                        if found_key != expected_key {
+                            send_status(
+                                sender,
+                                tonic::Status::internal(format!(
+                                "lmdb cursor desync({cursor_name}): expected key {:?}, got {:?}",
+                                expected_key, found_key
+                            )),
+                            );
+                            None
+                        } else {
+                            Some(found_val)
+                        }
+                    }
+                    Ok((None, _found_val)) => {
+                        // Some bindings can return None for the key; recover via GET_CURRENT.
+                        let (recovered_key_opt, recovered_val) =
+                            match cursor.get(None, None, lmdb_sys::MDB_GET_CURRENT) {
+                                Ok(pair) => pair,
+                                Err(error) => {
+                                    send_status(
+                                        sender,
+                                        tonic::Status::internal(format!(
+                                        "lmdb cursor GET_CURRENT({cursor_name}) failed: {error}"
+                                    )),
+                                    );
+                                    return None;
+                                }
+                            };
+
+                        let recovered_key = match recovered_key_opt {
+                            Some(key) => key,
+                            None => {
+                                send_status(
+                                    sender,
+                                    tonic::Status::internal(format!(
+                                        "lmdb GET_CURRENT({cursor_name}) returned no key"
+                                    )),
+                                );
+                                return None;
+                            }
+                        };
+
+                        if recovered_key != expected_key {
+                            send_status(
+                                sender,
+                                tonic::Status::internal(format!(
+                                "lmdb cursor desync({cursor_name}): expected key {:?}, got {:?}",
+                                expected_key, recovered_key
+                            )),
+                            );
+                            None
+                        } else {
+                            Some(recovered_val)
+                        }
+                    }
+                    Err(lmdb::Error::NotFound) => {
+                        send_status(sender, not_found_status);
+                        None
+                    }
+                    Err(error) => {
+                        send_status(
+                            sender,
+                            tonic::Status::internal(format!(
+                                "lmdb cursor step({cursor_name}) failed: {error}"
+                            )),
+                        );
+                        None
+                    }
+                }
+            }
+
+            // =====================================================================================
+            // Blocking streaming loop
+            // =====================================================================================
+
+            let step_op = if is_ascending {
+                lmdb_sys::MDB_NEXT
+            } else {
+                lmdb_sys::MDB_PREV
+            };
+
+            // Contiguous-height enforcement: we expect every emitted block to have exactly this height.
+            // This catches missing heights and cursor ordering/key-encoding problems early.
+            let mut expected_height = validated_start_height;
+
+            // Key used to re-seek at the start of each transaction chunk.
+            // This begins at the start height and advances by exactly one height per emitted block.
+            let mut next_start_key_bytes: Vec<u8> = start_key_bytes;
+
+            loop {
+                // Stop once we have emitted the inclusive end height.
+                if is_ascending {
+                    if expected_height > validated_end_height {
+                        return;
+                    }
+                } else if expected_height < validated_end_height {
+                    return;
+                }
+
+                // Open a short-lived read transaction for this chunk.
+                //
+                // We intentionally drop the transaction regularly to keep reader slots available and
+                // to avoid holding a single snapshot for very large streams.
+                let txn = match zaino_db.env.begin_ro_txn() {
+                    Ok(txn) => txn,
+                    Err(error) => {
+                        send_status(
+                            &sender,
+                            tonic::Status::internal(format!("lmdb begin_ro_txn failed: {error}")),
+                        );
+                        return;
+                    }
+                };
+
+                // Open cursors. Headers is the driving cursor; all others must remain key-aligned.
+                let headers_cursor =
+                    match open_ro_cursor_or_send(&sender, &txn, zaino_db.headers, "headers") {
+                        Some(cursor) => cursor,
+                        None => return,
+                    };
+
+                let txids_cursor =
+                    match open_ro_cursor_or_send(&sender, &txn, zaino_db.txids, "txids") {
+                        Some(cursor) => cursor,
+                        None => return,
+                    };
+
+                let transparent_cursor = if pool_types.includes_transparent() {
+                    match open_ro_cursor_or_send(&sender, &txn, zaino_db.transparent, "transparent")
+                    {
+                        Some(cursor) => Some(cursor),
+                        None => return,
+                    }
+                } else {
+                    None
+                };
+
+                let sapling_cursor = if pool_types.includes_sapling() {
+                    match open_ro_cursor_or_send(&sender, &txn, zaino_db.sapling, "sapling") {
+                        Some(cursor) => Some(cursor),
+                        None => return,
+                    }
+                } else {
+                    None
+                };
+
+                let orchard_cursor = if pool_types.includes_orchard() {
+                    match open_ro_cursor_or_send(&sender, &txn, zaino_db.orchard, "orchard") {
+                        Some(cursor) => Some(cursor),
+                        None => return,
+                    }
+                } else {
+                    None
+                };
+
+                let commitment_tree_cursor = match open_ro_cursor_or_send(
+                    &sender,
+                    &txn,
+                    zaino_db.commitment_tree_data,
+                    "commitment_tree_data",
+                ) {
+                    Some(cursor) => cursor,
+                    None => return,
+                };
+
+                // Position headers cursor at the start key for this chunk. This is the authoritative key
+                // that all other cursors must align to.
+                let (current_key, mut raw_header_bytes) = match cursor_set_key_or_send(
+                    &sender,
+                    &headers_cursor,
+                    next_start_key_bytes.as_slice(),
+                    "headers",
+                    tonic::Status::not_found(format!(
+                        "missing header at requested start height key {:?}",
+                        next_start_key_bytes
+                    )),
+                    true, // verify-on-none-key
+                ) {
+                    Some(pair) => pair,
+                    None => return,
+                };
+
+                // Align all other cursors to the exact same key.
+                let (_txids_key, mut raw_txids_bytes) = match cursor_set_key_or_send(
+                    &sender,
+                    &txids_cursor,
+                    current_key,
+                    "txids",
+                    tonic::Status::not_found("block data missing from db (txids)"),
+                    true,
+                ) {
+                    Some(pair) => pair,
+                    None => return,
+                };
+
+                let mut raw_transparent_bytes: Option<&[u8]> =
+                    if let Some(cursor) = transparent_cursor.as_ref() {
+                        let (_key, val) = match cursor_set_key_or_send(
+                            &sender,
+                            cursor,
+                            current_key,
+                            "transparent",
+                            tonic::Status::not_found("block data missing from db (transparent)"),
+                            true,
+                        ) {
+                            Some(pair) => pair,
+                            None => return,
+                        };
+                        Some(val)
+                    } else {
+                        None
+                    };
+
+                let mut raw_sapling_bytes: Option<&[u8]> =
+                    if let Some(cursor) = sapling_cursor.as_ref() {
+                        let (_key, val) = match cursor_set_key_or_send(
+                            &sender,
+                            cursor,
+                            current_key,
+                            "sapling",
+                            tonic::Status::not_found("block data missing from db (sapling)"),
+                            true,
+                        ) {
+                            Some(pair) => pair,
+                            None => return,
+                        };
+                        Some(val)
+                    } else {
+                        None
+                    };
+
+                let mut raw_orchard_bytes: Option<&[u8]> =
+                    if let Some(cursor) = orchard_cursor.as_ref() {
+                        let (_key, val) = match cursor_set_key_or_send(
+                            &sender,
+                            cursor,
+                            current_key,
+                            "orchard",
+                            tonic::Status::not_found("block data missing from db (orchard)"),
+                            true,
+                        ) {
+                            Some(pair) => pair,
+                            None => return,
+                        };
+                        Some(val)
+                    } else {
+                        None
+                    };
+
+                let (_commitment_key, mut raw_commitment_tree_bytes) = match cursor_set_key_or_send(
+                    &sender,
+                    &commitment_tree_cursor,
+                    current_key,
+                    "commitment_tree_data",
+                    tonic::Status::not_found("block data missing from db (commitment_tree_data)"),
+                    true,
+                ) {
+                    Some(pair) => pair,
+                    None => return,
+                };
+
+                let mut blocks_streamed_in_transaction: usize = 0;
+
+                loop {
+                    // ----- Decode and validate block header -----
+                    let header: BlockHeaderData = match StoredEntryVar::from_bytes(raw_header_bytes)
+                        .map_err(|error| format!("header decode error: {error}"))
+                    {
+                        Ok(entry) => *entry.inner(),
+                        Err(message) => {
+                            send_status(&sender, tonic::Status::internal(message));
+                            return;
+                        }
+                    };
+
+                    // Contiguous-height check: ensures cursor ordering and storage invariants are intact.
+                    let current_height = header.context.height();
+                    if current_height != expected_height {
+                        send_status(
+                            &sender,
+                            tonic::Status::internal(format!(
+                                "missing height or out-of-order headers: expected {}, got {}",
+                                expected_height.0, current_height.0
+                            )),
+                        );
+                        return;
+                    }
+
+                    // ----- Ensure the block is validated (on-demand) -----
+                    // We are in a blocking task; call validate_block_blocking directly but only when needed.
+                    if !zaino_db.is_validated(current_height.into()) {
+                        // header.context.hash() is the block hash we just read from DB; call validator.
+                        let block_hash = *header.context.hash();
+
+                        match zaino_db.validate_block_blocking(current_height, block_hash) {
+                            Ok(()) => {
+                                // validation succeeded and mark_validated has been called inside the validator.
+                            }
+                            Err(StoreError::LmdbError(lmdb::Error::NotFound)) => {
+                                // missing data that was expected: emit DataUnavailable -> translate to not_found
+                                send_status(
+                                    &sender,
+                                    tonic::Status::internal(format!(
+                                        "block data unavailable during validation at height {}",
+                                        current_height.0
+                                    )),
+                                );
+                                return;
+                            }
+                            Err(e) => {
+                                send_status(
+                                    &sender,
+                                    tonic::Status::internal(format!(
+                                        "validation failed for height {}: {e:?}",
+                                        current_height.0
+                                    )),
+                                );
+                                return;
+                            }
+                        }
+                    }
+
+                    // ----- Decode txids and optional pool data -----
+                    let txids_stored_entry_var =
+                        match StoredEntryVar::<TxidList>::from_bytes(raw_txids_bytes)
+                            .map_err(|error| format!("txids decode error: {error}"))
+                        {
+                            Ok(entry) => entry,
+                            Err(message) => {
+                                send_status(&sender, tonic::Status::internal(message));
+                                return;
+                            }
+                        };
+                    let txids = txids_stored_entry_var.inner().txids();
+
+                    // Each pool database stores a per-height vector aligned to the txids list:
+                    // one entry per transaction index (typically `Option<T>` per tx).
+                    let transparent_entries: Option<StoredEntryVar<TransparentTxList>> =
+                        if let Some(raw) = raw_transparent_bytes {
+                            match StoredEntryVar::<TransparentTxList>::from_bytes(raw)
+                                .map_err(|error| format!("transparent decode error: {error}"))
+                            {
+                                Ok(entry) => Some(entry),
+                                Err(message) => {
+                                    send_status(&sender, tonic::Status::internal(message));
+                                    return;
+                                }
+                            }
+                        } else {
+                            None
+                        };
+
+                    let sapling_entries: Option<StoredEntryVar<SaplingTxList>> =
+                        if let Some(raw) = raw_sapling_bytes {
+                            match StoredEntryVar::<SaplingTxList>::from_bytes(raw)
+                                .map_err(|error| format!("sapling decode error: {error}"))
+                            {
+                                Ok(entry) => Some(entry),
+                                Err(message) => {
+                                    send_status(&sender, tonic::Status::internal(message));
+                                    return;
+                                }
+                            }
+                        } else {
+                            None
+                        };
+
+                    let orchard_entries: Option<StoredEntryVar<OrchardTxList>> =
+                        if let Some(raw) = raw_orchard_bytes {
+                            match StoredEntryVar::<OrchardTxList>::from_bytes(raw)
+                                .map_err(|error| format!("orchard decode error: {error}"))
+                            {
+                                Ok(entry) => Some(entry),
+                                Err(message) => {
+                                    send_status(&sender, tonic::Status::internal(message));
+                                    return;
+                                }
+                            }
+                        } else {
+                            None
+                        };
+
+                    let transparent = match transparent_entries.as_ref() {
+                        Some(entry) => entry.inner().tx(),
+                        None => &[],
+                    };
+                    let sapling = match sapling_entries.as_ref() {
+                        Some(entry) => entry.inner().tx(),
+                        None => &[],
+                    };
+                    let orchard = match orchard_entries.as_ref() {
+                        Some(entry) => entry.inner().tx(),
+                        None => &[],
+                    };
+
+                    // Ironwood is fetched with a tolerant point lookup rather than a lockstep cursor:
+                    // rows are sparse (present only from schema v1.3.0 / NU6.3), so a missing row must
+                    // not desync a height-aligned cursor. `NotFound` simply means "no ironwood here".
+                    let ironwood_entries: Option<StoredEntryVar<OrchardTxList>> =
+                        if pool_types.includes_ironwood() {
+                            let ironwood_key = match current_height.to_bytes() {
+                                Ok(key) => key,
+                                Err(error) => {
+                                    send_status(
+                                        &sender,
+                                        tonic::Status::internal(format!(
+                                            "ironwood height to_bytes failed: {error}"
+                                        )),
+                                    );
+                                    return;
+                                }
+                            };
+                            match txn.get(zaino_db.ironwood, &ironwood_key) {
+                                Ok(raw) => match StoredEntryVar::<OrchardTxList>::from_bytes(raw)
+                                    .map_err(|error| format!("ironwood decode error: {error}"))
+                                {
+                                    Ok(entry) => Some(entry),
+                                    Err(message) => {
+                                        send_status(&sender, tonic::Status::internal(message));
+                                        return;
+                                    }
+                                },
+                                Err(lmdb::Error::NotFound) => None,
+                                Err(error) => {
+                                    send_status(
+                                        &sender,
+                                        tonic::Status::internal(format!(
+                                            "lmdb get(ironwood) failed: {error}"
+                                        )),
+                                    );
+                                    return;
+                                }
+                            }
+                        } else {
+                            None
+                        };
+                    let ironwood = match ironwood_entries.as_ref() {
+                        Some(entry) => entry.inner().tx(),
+                        None => &[],
+                    };
+
+                    // Invariant: if a pool is requested, its per-height vector length must match txids.
+                    if pool_types.includes_transparent() && transparent.len() != txids.len() {
+                        send_status(
+                        &sender,
+                        tonic::Status::internal(format!(
+                            "transparent list length mismatch at height {}: txids={}, transparent={}",
+                            current_height.0,
+                            txids.len(),
+                            transparent.len(),
+                        )),
+                    );
+                        return;
+                    }
+                    if pool_types.includes_sapling() && sapling.len() != txids.len() {
+                        send_status(
+                            &sender,
+                            tonic::Status::internal(format!(
+                                "sapling list length mismatch at height {}: txids={}, sapling={}",
+                                current_height.0,
+                                txids.len(),
+                                sapling.len(),
+                            )),
+                        );
+                        return;
+                    }
+                    if pool_types.includes_orchard() && orchard.len() != txids.len() {
+                        send_status(
+                            &sender,
+                            tonic::Status::internal(format!(
+                                "orchard list length mismatch at height {}: txids={}, orchard={}",
+                                current_height.0,
+                                txids.len(),
+                                orchard.len(),
+                            )),
+                        );
+                        return;
+                    }
+                    // Ironwood rows are optional; only enforce alignment when a row is present.
+                    if pool_types.includes_ironwood()
+                        && !ironwood.is_empty()
+                        && ironwood.len() != txids.len()
+                    {
+                        send_status(
+                            &sender,
+                            tonic::Status::internal(format!(
+                                "ironwood list length mismatch at height {}: txids={}, ironwood={}",
+                                current_height.0,
+                                txids.len(),
+                                ironwood.len(),
+                            )),
+                        );
+                        return;
+                    }
+
+                    // ----- Build CompactTx list -----
+                    //
+                    // `CompactTx.index` is the original transaction index within the block.
+                    // This implementation omits transactions that contain no elements in any requested pool type,
+                    // which means:
+                    // - `vtx.len()` may be smaller than the number of txids in the block, and
+                    // - indices in `vtx` may be non-contiguous.
+                    // Consumers must interpret `CompactTx.index` as authoritative.
+                    //
+                    // TODO: Re-evaluate whether omitting "empty-for-filter" transactions is the desired API behaviour.
+                    //       Some clients may expect a position-preserving representation (one entry per txid), even if
+                    //       the per-pool fields are empty for a given filter.
+                    let mut vtx: Vec<zaino_proto::proto::compact_formats::CompactTx> =
+                        Vec::with_capacity(txids.len());
+
+                    for (i, txid) in txids.iter().enumerate() {
+                        let spends = sapling
+                            .get(i)
+                            .and_then(|opt| opt.as_ref())
+                            .map(|s| {
+                                s.spends()
+                                    .iter()
+                                    .map(|sp| sp.into_compact())
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+
+                        let outputs = sapling
+                            .get(i)
+                            .and_then(|opt| opt.as_ref())
+                            .map(|s| {
+                                s.outputs()
+                                    .iter()
+                                    .map(|o| o.into_compact())
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+
+                        let actions = orchard
+                            .get(i)
+                            .and_then(|opt| opt.as_ref())
+                            .map(|o| {
+                                o.actions()
+                                    .iter()
+                                    .map(|a| a.into_compact())
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+
+                        let ironwood_actions = ironwood
+                            .get(i)
+                            .and_then(|opt| opt.as_ref())
+                            .map(|o| {
+                                o.actions()
+                                    .iter()
+                                    .map(|a| a.into_compact())
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+
+                        let (vin, vout) = transparent
+                            .get(i)
+                            .and_then(|opt| opt.as_ref())
+                            .map(|t| (t.compact_vin(), t.compact_vout()))
+                            .unwrap_or_default();
+
+                        // Omit transactions that have no elements in any requested pool type.
+                        //
+                        // Note that omission produces a sparse `vtx` (by original transaction index). Clients must use
+                        // `CompactTx.index` rather than assuming contiguous ordering.
+                        //
+                        // TODO: Re-evaluate whether omission is the desired API behaviour for all consumers.
+                        let compact_tx = zaino_proto::proto::compact_formats::CompactTx {
+                            index: i as u64,
+                            txid: txid.0.to_vec(),
+                            fee: 0,
+                            spends,
+                            outputs,
+                            actions,
+                            ironwood_actions,
+                            vin,
+                            vout,
+                        };
+                        if !compact_tx.has_pool_data() {
+                            continue;
+                        }
+
+                        vtx.push(compact_tx);
+                    }
+
+                    // ----- Decode commitment tree data and construct block -----
+                    let commitment_tree_data: CommitmentTreeData =
+                        match StoredEntryVar::<CommitmentTreeData>::from_bytes(
+                            raw_commitment_tree_bytes,
+                        )
+                        .map_err(|error| format!("commitment_tree decode error: {error}"))
+                        {
+                            Ok(entry) => *entry.inner(),
+                            Err(message) => {
+                                send_status(&sender, tonic::Status::internal(message));
+                                return;
+                            }
+                        };
+
+                    let chain_metadata = zaino_proto::proto::compact_formats::ChainMetadata {
+                        sapling_commitment_tree_size: commitment_tree_data.sizes().sapling(),
+                        orchard_commitment_tree_size: commitment_tree_data.sizes().orchard(),
+                        ironwood_commitment_tree_size: commitment_tree_data.sizes().ironwood(),
+                    };
+
+                    let compact_block = zaino_proto::proto::compact_formats::CompactBlock {
+                        proto_version: 0,
+                        height: header.context.height().0 as u64,
+                        hash: header.context.hash().0.to_vec(),
+                        prev_hash: header.context.parent_hash().0.to_vec(),
+                        // NOTE: `time()` is stored in the DB as a wider integer; this cast assumes it is
+                        // always representable in `u32` for the protobuf.
+                        time: header.data().time() as u32,
+                        header: Vec::new(),
+                        vtx,
+                        chain_metadata: Some(chain_metadata),
+                    };
+
+                    // Send the block downstream; if the receiver is gone, stop immediately.
+                    if sender.blocking_send(Ok(compact_block)).is_err() {
+                        return;
+                    }
+
+                    // If we just emitted the inclusive end height, stop without stepping cursors further.
+                    if current_height == validated_end_height {
+                        return;
+                    }
+
+                    blocks_streamed_in_transaction += 1;
+
+                    // Compute the next expected height (used both for contiguity checking and chunk re-seek).
+                    let next_expected_height = if is_ascending {
+                        match expected_height.0.checked_add(1) {
+                            Some(value) => Height(value),
+                            None => {
+                                send_status(
+                                    &sender,
+                                    tonic::Status::internal(
+                                        "expected_height overflow while iterating ascending"
+                                            .to_string(),
+                                    ),
+                                );
+                                return;
+                            }
+                        }
+                    } else {
+                        match expected_height.0.checked_sub(1) {
+                            Some(value) => Height(value),
+                            None => {
+                                send_status(
+                                    &sender,
+                                    tonic::Status::internal(
+                                        "expected_height underflow while iterating descending"
+                                            .to_string(),
+                                    ),
+                                );
+                                return;
+                            }
+                        }
+                    };
+
+                    // Chunk boundary: drop the current read transaction after N blocks and re-seek in a new
+                    // transaction on the next loop iteration. This avoids a single long-lived snapshot.
+                    if blocks_streamed_in_transaction >= BLOCKS_PER_READ_TRANSACTION {
+                        match next_expected_height.to_bytes() {
+                            Ok(bytes) => {
+                                next_start_key_bytes = bytes;
+                                expected_height = next_expected_height;
+                                break;
+                            }
+                            Err(error) => {
+                                send_status(
+                                    &sender,
+                                    tonic::Status::internal(format!(
+                                        "height to_bytes failed at chunk boundary: {error}"
+                                    )),
+                                );
+                                return;
+                            }
+                        }
+                    }
+
+                    // Advance all cursors in lockstep. Headers drives the next key; all others must match it.
+                    let next_headers = match headers_step_or_send(&sender, &headers_cursor, step_op)
+                    {
+                        Ok(value) => value,
+                        Err(()) => return,
+                    };
+
+                    let (next_key, next_header_val) = match next_headers {
+                        Some(pair) => pair,
+                        None => {
+                            // Headers ended early; if we have not reached the requested end height, the
+                            // database no longer satisfies the contiguous-height invariant for this range.
+                            if current_height != validated_end_height {
+                                send_status(
+                                    &sender,
+                                    tonic::Status::internal(format!(
+                                    "headers cursor ended early at height {}; expected to reach {}",
+                                    current_height.0, validated_end_height.0
+                                )),
+                                );
+                            }
+                            return;
+                        }
+                    };
+
+                    let next_txids_val = match cursor_step_expect_key_or_send(
+                        &sender,
+                        &txids_cursor,
+                        step_op,
+                        next_key,
+                        "txids",
+                        tonic::Status::not_found("block data missing from db (txids)"),
+                    ) {
+                        Some(val) => val,
+                        None => return,
+                    };
+
+                    let next_transparent_val: Option<&[u8]> = if let Some(cursor) =
+                        transparent_cursor.as_ref()
+                    {
+                        match cursor_step_expect_key_or_send(
+                            &sender,
+                            cursor,
+                            step_op,
+                            next_key,
+                            "transparent",
+                            tonic::Status::not_found("block data missing from db (transparent)"),
+                        ) {
+                            Some(val) => Some(val),
+                            None => return,
+                        }
+                    } else {
+                        None
+                    };
+
+                    let next_sapling_val: Option<&[u8]> =
+                        if let Some(cursor) = sapling_cursor.as_ref() {
+                            match cursor_step_expect_key_or_send(
+                                &sender,
+                                cursor,
+                                step_op,
+                                next_key,
+                                "sapling",
+                                tonic::Status::not_found("block data missing from db (sapling)"),
+                            ) {
+                                Some(val) => Some(val),
+                                None => return,
+                            }
+                        } else {
+                            None
+                        };
+
+                    let next_orchard_val: Option<&[u8]> =
+                        if let Some(cursor) = orchard_cursor.as_ref() {
+                            match cursor_step_expect_key_or_send(
+                                &sender,
+                                cursor,
+                                step_op,
+                                next_key,
+                                "orchard",
+                                tonic::Status::not_found("block data missing from db (orchard)"),
+                            ) {
+                                Some(val) => Some(val),
+                                None => return,
+                            }
+                        } else {
+                            None
+                        };
+
+                    let next_commitment_tree_val = match cursor_step_expect_key_or_send(
+                        &sender,
+                        &commitment_tree_cursor,
+                        step_op,
+                        next_key,
+                        "commitment_tree_data",
+                        tonic::Status::not_found(
+                            "block data missing from db (commitment_tree_data)",
+                        ),
+                    ) {
+                        Some(val) => val,
+                        None => return,
+                    };
+
+                    raw_header_bytes = next_header_val;
+                    raw_txids_bytes = next_txids_val;
+                    raw_transparent_bytes = next_transparent_val;
+                    raw_sapling_bytes = next_sapling_val;
+                    raw_orchard_bytes = next_orchard_val;
+                    raw_commitment_tree_bytes = next_commitment_tree_val;
+
+                    expected_height = next_expected_height;
+                }
+            }
+        });
+
+        Ok(CompactBlockStream::new(receiver))
+    }
+
+    // *** Internal DB methods ***
+}
+
+/// Builds a domain compact block from one block's decoded rows.
+///
+/// Shared by the single-block read and the range walk, which decode the same
+/// rows and differ only in how they get at them. It was duplicated: two copies
+/// of the per-transaction assembly, each of which had to be kept in step with
+/// the pool filter's meaning.
+///
+/// Produces `zaino-primitives` rather than proto messages. A storage crate
+/// building wire messages is the wrong direction — and it forced the read to
+/// commit to one serving format, so the domain port could not be given the
+/// same data without a second conversion.
+fn assemble_compact_block(
+    header: &BlockHeaderData,
+    txids: &[TransactionHash],
+    transparent: &[Option<TransparentCompactTx>],
+    sapling: &[Option<SaplingCompactTx>],
+    orchard: &[Option<OrchardCompactTx>],
+    ironwood: &[Option<OrchardCompactTx>],
+    commitment_tree_data: &CommitmentTreeData,
+) -> Result<zaino_primitives::types::CompactBlock, StoreError> {
+    // One entry per transaction, in block order, including transactions with
+    // nothing in any requested pool.
+    //
+    // The wire format omits those, and this used to omit them here — which made
+    // the result non-dense, so a transaction's position in the block could only
+    // be recovered from an index field carried alongside it. The domain block
+    // has no such field and does not need one: dense means position *is* the
+    // index. The omission now happens where it belongs, in the conversion to
+    // the wire message, which knows each transaction's position because it is
+    // reading a dense block.
+    //
+    // This costs nothing that matters. The saving was never in the empty
+    // entries — a txid and six empty vectors — but in not reading and decoding
+    // the excluded pools' rows at all, and that is untouched: a pool the filter
+    // excludes arrives here as `None` because its table was never opened.
+    let transactions = txids
+        .iter()
+        .enumerate()
+        .map(|(index, txid)| {
+            compact_tx(
+                *txid,
+                at(transparent, index),
+                at(sapling, index),
+                at(orchard, index),
+                at(ironwood, index),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(zaino_primitives::types::CompactBlock {
+        hash: zaino_primitives::types::BlockHash::from(header.context.hash().0),
+        prev_hash: zaino_primitives::types::BlockHash::from(header.context.parent_hash().0),
+        height: header.context.height().0,
+        time: u32::try_from(header.data().time()).map_err(|_| {
+            StoreError::Custom(format!(
+                "stored block time {} does not fit a compact block",
+                header.data().time()
+            ))
+        })?,
+        bits: header.data().bits().as_bits(),
+        transactions,
+        chain_metadata: zaino_primitives::types::ChainMetadata {
+            sapling_tree_size: commitment_tree_data.sizes().sapling(),
+            orchard_tree_size: commitment_tree_data.sizes().orchard(),
+            ironwood_tree_size: commitment_tree_data.sizes().ironwood(),
+        },
+    })
+}
+
+/// The entry at `index`, where a pool the filter excluded has no entries at all.
+///
+/// Generic over the pool type so the four lookups read identically; a closure
+/// cannot be, and four near-identical closures is how the two copies of this
+/// assembly drifted in the first place.
+fn at<T>(list: &[Option<T>], index: usize) -> Option<&T> {
+    list.get(index).and_then(|entry| entry.as_ref())
+}
+
+/// One transaction's per-pool data, as the domain names it.
+///
+/// A pool absent from the filter arrives here as `None` and contributes
+/// nothing, which is how the filter's pushdown reaches the result: the rows
+/// were never read, so there is nothing to drop afterwards.
+fn compact_tx(
+    txid: TransactionHash,
+    transparent: Option<&TransparentCompactTx>,
+    sapling: Option<&SaplingCompactTx>,
+    orchard: Option<&OrchardCompactTx>,
+    ironwood: Option<&OrchardCompactTx>,
+) -> Result<zaino_primitives::types::PreIndexCompactTx, StoreError> {
+    Ok(zaino_primitives::types::PreIndexCompactTx {
+        txid: zaino_primitives::types::TransactionId::from(txid.0),
+        // The coinbase's null prevout is dropped, as it is everywhere on the
+        // serving side: the light-wallet protocol omits it and identifies a
+        // coinbase by position instead, and `zaino-primitives` blocks never
+        // carry one because `zaino-convert-zebra` drops it too.
+        //
+        // Deliberately the opposite of the stored-block path, which keeps it.
+        // That one is describing rows on disk, where the input is a persisted
+        // field; this one is describing a block to a wallet.
+        transparent_inputs: transparent
+            .map(|tx| {
+                tx.inputs()
+                    .iter()
+                    .filter(|input| !input.is_null_prevout())
+                    .map(|input| zaino_primitives::types::TransparentInput {
+                        prev_txid: zaino_primitives::types::TransactionId::from(
+                            *input.prevout_txid(),
+                        ),
+                        prev_index: input.prevout_index(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        transparent_outputs: transparent
+            .map(|tx| tx.outputs().iter().map(domain_tx_out).collect())
+            .transpose()?
+            .unwrap_or_default(),
+        sapling_nullifiers: sapling
+            .map(|tx| {
+                tx.spends()
+                    .iter()
+                    .map(|spend| zaino_primitives::types::Nullifier::from(*spend.nullifier()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        sapling_outputs: sapling
+            .map(|tx| {
+                tx.outputs()
+                    .iter()
+                    .map(|output| zaino_primitives::types::SaplingOutput {
+                        cmu: (*output.cmu()).into(),
+                        ephemeral_key: (*output.ephemeral_key()).into(),
+                        enc_ciphertext: zaino_primitives::types::EncryptedCiphertext::new(
+                            output.ciphertext().to_vec(),
+                        ),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        orchard_actions: orchard.map(domain_actions).unwrap_or_default(),
+        ironwood_actions: ironwood.map(domain_actions).unwrap_or_default(),
+    })
+}
+
+fn domain_actions(pool: &OrchardCompactTx) -> Vec<zaino_primitives::types::OrchardAction> {
+    pool.actions()
+        .iter()
+        .map(|action| zaino_primitives::types::OrchardAction {
+            nullifier: (*action.nullifier()).into(),
+            cmx: (*action.cmx()).into(),
+            ephemeral_key: (*action.ephemeral_key()).into(),
+            enc_ciphertext: zaino_primitives::types::EncryptedCiphertext::new(
+                action.ciphertext().to_vec(),
+            ),
+        })
+        .collect()
+}
+
+/// A stored output, as a domain transparent output.
+///
+/// Rebuilds the locking script from the address key: exact for P2PKH and P2SH,
+/// empty for a non-standard output, which is what this reader has always served
+/// on the wire.
+fn domain_tx_out(
+    output: &TxOutCompact,
+) -> Result<zaino_primitives::types::TransparentOutput, StoreError> {
+    let script = output
+        .script_type_enum()
+        .and_then(|script_type| {
+            crate::types::build_standard_script(*output.script_hash(), script_type)
+        })
+        .unwrap_or_default();
+
+    Ok(zaino_primitives::types::TransparentOutput {
+        // Out of range means a corrupt row, not a caller error: a value beyond
+        // the money supply cannot have been written by a valid block.
+        value: zaino_primitives::types::Zatoshis::new(output.value()).map_err(|error| {
+            StoreError::Custom(format!(
+                "stored output value {} is out of range: {error}",
+                output.value()
+            ))
+        })?,
+        script: zaino_primitives::types::Script::new(script),
+    })
+}
+
+/// Whether a transaction has anything in any pool the caller asked for.
+///
+/// Only the wire conversion asks: the domain block keeps every transaction so
+/// that position and index coincide.
+fn has_pool_data(tx: &zaino_primitives::types::PreIndexCompactTx) -> bool {
+    !tx.transparent_inputs.is_empty()
+        || !tx.transparent_outputs.is_empty()
+        || !tx.sapling_nullifiers.is_empty()
+        || !tx.sapling_outputs.is_empty()
+        || !tx.orchard_actions.is_empty()
+        || !tx.ironwood_actions.is_empty()
+}
+
+/// A domain compact block, as the light-wallet protocol carries it.
+///
+/// Transactions with nothing in any requested pool are dropped here, which is
+/// what the protocol expects and what this reader has always emitted. Because
+/// the domain block is dense, each surviving transaction's index is its
+/// position in it — so dropping the others cannot lose the mapping.
+///
+/// # Temporary
+///
+/// The store has no business building wire messages. This exists because the
+/// legacy inherent reads still return proto blocks to consumers that have not
+/// moved onto the ports; it goes with them, along with this crate's dependency
+/// on `zaino-proto`.
+pub fn compact_block_to_wire(
+    block: &zaino_primitives::types::CompactBlock,
+) -> zaino_proto::proto::compact_formats::CompactBlock {
+    zaino_proto::proto::compact_formats::CompactBlock {
+        proto_version: 0,
+        height: u64::from(block.height),
+        hash: <[u8; 32]>::from(block.hash).to_vec(),
+        prev_hash: <[u8; 32]>::from(block.prev_hash).to_vec(),
+        time: block.time,
+        header: Vec::new(),
+        vtx: block
+            .transactions
+            .iter()
+            .enumerate()
+            .filter(|(_, tx)| has_pool_data(tx))
+            .map(|(index, tx)| compact_tx_to_proto(index, tx))
+            .collect(),
+        chain_metadata: Some(zaino_proto::proto::compact_formats::ChainMetadata {
+            sapling_commitment_tree_size: block.chain_metadata.sapling_tree_size,
+            orchard_commitment_tree_size: block.chain_metadata.orchard_tree_size,
+            ironwood_commitment_tree_size: block.chain_metadata.ironwood_tree_size,
+        }),
+    }
+}
+
+fn compact_tx_to_proto(
+    index: usize,
+    tx: &zaino_primitives::types::PreIndexCompactTx,
+) -> zaino_proto::proto::compact_formats::CompactTx {
+    use zaino_proto::proto::compact_formats as proto;
+
+    proto::CompactTx {
+        // The transaction's position in the block it came from. Load-bearing:
+        // the wire block omits transactions, so a client cannot recover this by
+        // counting, and it tests `index == 0` to identify the coinbase.
+        index: index as u64,
+        txid: <[u8; 32]>::from(tx.txid).to_vec(),
+        fee: 0,
+        spends: tx
+            .sapling_nullifiers
+            .iter()
+            .map(|nullifier| proto::CompactSaplingSpend {
+                nf: <[u8; 32]>::from(*nullifier).to_vec(),
+            })
+            .collect(),
+        outputs: tx
+            .sapling_outputs
+            .iter()
+            .map(|output| proto::CompactSaplingOutput {
+                cmu: <[u8; 32]>::from(output.cmu).to_vec(),
+                ephemeral_key: <[u8; 32]>::from(output.ephemeral_key).to_vec(),
+                ciphertext: Vec::<u8>::from(output.enc_ciphertext.clone()),
+            })
+            .collect(),
+        actions: tx.orchard_actions.iter().map(action_to_proto).collect(),
+        ironwood_actions: tx.ironwood_actions.iter().map(action_to_proto).collect(),
+        vin: tx
+            .transparent_inputs
+            .iter()
+            .map(|input| proto::CompactTxIn {
+                prevout_txid: <[u8; 32]>::from(input.prev_txid).to_vec(),
+                prevout_index: input.prev_index,
+            })
+            .collect(),
+        vout: tx
+            .transparent_outputs
+            .iter()
+            .map(|output| proto::TxOut {
+                value: u64::from(output.value),
+                script_pub_key: Vec::<u8>::from(output.script.clone()),
+            })
+            .collect(),
+    }
+}
+
+fn action_to_proto(
+    action: &zaino_primitives::types::OrchardAction,
+) -> zaino_proto::proto::compact_formats::CompactOrchardAction {
+    zaino_proto::proto::compact_formats::CompactOrchardAction {
+        nullifier: <[u8; 32]>::from(action.nullifier).to_vec(),
+        cmx: <[u8; 32]>::from(action.cmx).to_vec(),
+        ephemeral_key: <[u8; 32]>::from(action.ephemeral_key).to_vec(),
+        ciphertext: Vec::<u8>::from(action.enc_ciphertext.clone()),
+    }
+}
+
+/// A compact block from an already-materialised [`IndexedBlock`].
+///
+/// For the passthrough backend, which has no rows to filter at read time: it
+/// builds a whole block from the validator and then drops what the filter
+/// excludes. The dropping still happens per pool rather than per transaction,
+/// so the result is dense in the same way the on-disk read's is.
+pub(crate) fn compact_block_from_indexed(
+    block: &IndexedBlock,
+    pool_types: PoolFilter,
+) -> Result<zaino_primitives::types::CompactBlock, StoreError> {
+    let transactions = block
+        .transactions
+        .iter()
+        .map(|tx| {
+            compact_tx(
+                *tx.txid(),
+                pool_types.includes_transparent().then(|| tx.transparent()),
+                pool_types
+                    .includes(ShieldedPool::Sapling)
+                    .then(|| tx.sapling()),
+                pool_types
+                    .includes(ShieldedPool::Orchard)
+                    .then(|| tx.orchard()),
+                pool_types
+                    .includes(ShieldedPool::Ironwood)
+                    .then(|| tx.ironwood()),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let sizes = block.commitment_tree_data.sizes();
+
+    Ok(zaino_primitives::types::CompactBlock {
+        hash: zaino_primitives::types::BlockHash::from(block.context.hash().0),
+        prev_hash: zaino_primitives::types::BlockHash::from(block.context.parent_hash().0),
+        height: block.context.height().0,
+        time: u32::try_from(block.data.time()).map_err(|_| {
+            StoreError::Custom(format!(
+                "block time {} does not fit a compact block",
+                block.data.time()
+            ))
+        })?,
+        bits: block.data.bits().as_bits(),
+        transactions,
+        chain_metadata: zaino_primitives::types::ChainMetadata {
+            sapling_tree_size: sizes.sapling(),
+            orchard_tree_size: sizes.orchard(),
+            ironwood_tree_size: sizes.ironwood(),
+        },
+    })
+}
+
+/// The wire pool filter, as the domain names it.
+///
+/// Total, and only in this direction. The wire filter cannot express "no pools
+/// at all" — an empty set means the default, every shielded pool — where the
+/// domain filter can. So a domain filter converted to the wire form and back
+/// would silently gain three pools, and this conversion exists only for the
+/// legacy reads that still arrive with a wire filter.
+pub fn pool_filter_from_wire(filter: &PoolTypeFilter) -> PoolFilter {
+    let mut domain = PoolFilter::none();
+    if filter.includes_transparent() {
+        domain = domain.with_transparent();
+    }
+    for pool in [
+        ShieldedPool::Sapling,
+        ShieldedPool::Orchard,
+        ShieldedPool::Ironwood,
+    ] {
+        if includes_shielded(filter, pool) {
+            domain = domain.with_pool(pool);
+        }
+    }
+    domain
+}
+
+fn includes_shielded(filter: &PoolTypeFilter, pool: ShieldedPool) -> bool {
+    match pool {
+        ShieldedPool::Sapling => filter.includes_sapling(),
+        ShieldedPool::Orchard => filter.includes_orchard(),
+        ShieldedPool::Ironwood => filter.includes_ironwood(),
+    }
+}

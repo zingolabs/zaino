@@ -1,6 +1,6 @@
 # Indexer Live Service
 ### Dependencies
-1) [Zebrad](https://github.com/ZcashFoundation/zebra.git) or [Zcashd, Zcash-Cli](https://github.com/zcash/zcash.git)
+1) [Zebrad](https://github.com/ZcashFoundation/zebra.git)
 2) [Zingolib](https://github.com/zingolabs/zingolib.git) [if running Zingo-Cli]
 
 ### Running ZainoD
@@ -35,7 +35,7 @@ Zaino-State serves as Zaino's chain fetch and transaction submission library. Th
 The use of a `Service` and `ServiceSubscriber` separates the core chainstate maintainer processes from fetch fuctionality, enabling zaino to serve a large number of concurrent clients efficiently. In the future we will also be adding a lightweight tonic backend option for clients that do not want to run any chainstate processes locally.
 
 Currently 2 `Service's` are being implemented, with plans for several more:
-- FetchService: Zcash JsonRPC powered backend service enabling compatibility with a large number of validator options (zcashd, zebrad).
+- FetchService: Zcash JsonRPC powered backend service enabling compatibility with JsonRPC validator options (zebrad).
 - StateService: Highly efficient chain fetch service tailored to run with ZebraD.
 
 Future Planned backend Services:

@@ -12,14 +12,6 @@ publish = false
 [features]
 default = []
 
-# Support for the zcashd test validator. Opt-in (default off, docs/adr/0005); being deprecated. Gates
-# the zcashd-backed wallet tests and forwards to the zaino crates. See
-# docs/adr/0001-zcashd-support-feature-gate.md.
-zcashd_support = [
-    "zaino-testutils/zcashd_support",
-    "zainod/zcashd_support",
-]
-
 # Single non-default gate for every devtool-incompatible / heavy test (the
 # finalization heavies, send_to_all, monitor_unverified_mempool, the
 # test-vector builder, address_deltas). They compile by default but are
@@ -30,10 +22,13 @@ devtool-incompatible = []
 
 [dependencies]
 # Zaino test harness + packages, sourced from the root workspace manifest.
-# default-features = false (carried by the workspace entries) propagates the
-# zcashd_support drop; re-enabled by forwarding above. See docs/adr/0001.
 zaino-testutils = { workspace = true }
 zaino-state = { workspace = true, features = ["test_dependencies"] }
+
+# Zaino's versioned encoding, and the store types the vector tests decode into.
+# Named directly: `zaino-state` no longer re-exports either.
+zaino-encoding = { workspace = true }
+zaino-chain-store-zainodb = { workspace = true }
 zaino-common = { workspace = true }
 zaino-proto = { workspace = true }
 zainod = { workspace = true }

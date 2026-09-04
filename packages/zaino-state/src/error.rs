@@ -9,7 +9,7 @@ use std::fmt::Display;
 
 use zaino_proto::proto::utils::GetBlockRangeError;
 
-/// A rejection carrying a zcashd-compatible legacy RPC error code.
+/// A rejection carrying a legacy-compatible legacy RPC error code.
 ///
 /// Zaino's *own* rejections — a malformed block identifier, an oversized raw
 /// transaction — that must reach a client as the specific legacy code
@@ -24,7 +24,7 @@ use zaino_proto::proto::utils::GetBlockRangeError;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{message}")]
 pub struct LegacyRpcError {
-    /// The zcashd legacy error code.
+    /// The legacy full-node legacy error code.
     pub code: i64,
     /// Human-readable description.
     pub message: String,
@@ -60,7 +60,7 @@ pub enum NodeBackedIndexerServiceError {
     #[error("Join error: {0}")]
     JoinError(#[from] tokio::task::JoinError),
 
-    /// A rejection carrying a zcashd-compatible legacy RPC error code.
+    /// A rejection carrying a legacy-compatible legacy RPC error code.
     #[error("RPC error: {0:?}")]
     RpcError(#[from] LegacyRpcError),
 
@@ -163,6 +163,11 @@ impl From<NodeBackedIndexerServiceError> for tonic::Status {
                 ChainIndexErrorKind::InvalidArgument => {
                     tonic::Status::invalid_argument(err.message)
                 }
+                // `unimplemented` rather than `unavailable`: this deployment
+                // does not build the index, so there is no later attempt that
+                // succeeds and a retryable status would only cost the caller
+                // one.
+                ChainIndexErrorKind::Unimplemented => tonic::Status::unimplemented(err.message),
             },
             NodeBackedIndexerServiceError::BlockCacheError(err) => {
                 tonic::Status::internal(format!("BlockCache error: {err:?}"))
@@ -257,73 +262,14 @@ pub enum BlockCacheError {
     TryFromIntError(#[from] std::num::TryFromIntError),
 }
 
-/// Errors related to the `FinalisedState`.
-// TODO: Update name to DbError when FinalisedState replaces legacy finalised state.
-#[derive(Debug, thiserror::Error)]
-pub enum FinalisedStateError {
-    /// Custom Errors.
-    // TODO: Remove before production
-    #[error("Custom error: {0}")]
-    Custom(String),
-
-    /// Requested data is missing from the finalised state.
-    ///
-    /// This could be due to the databae not yet being synced or due to a bad request input.
-    ///
-    /// We could split this into 2 distinct types if needed.
-    #[error("Missing data: {0}")]
-    DataUnavailable(String),
-
-    /// A block is present on disk but failed internal validation.
-    ///
-    /// *Typically means: checksum mismatch, corrupt CBOR, Merkle check
-    /// failed, etc.*  The caller should fetch the correct data and
-    /// overwrite the faulty block.
-    #[error("invalid block @ height {height} (hash {hash}): {reason}")]
-    InvalidBlock {
-        height: u32,
-        hash: BlockHash,
-        reason: String,
-    },
-
-    /// Returned when a caller asks for a feature that the
-    /// currently-opened database version does not advertise.
-    #[error("feature unavailable: {0}")]
-    FeatureUnavailable(&'static str),
-
-    /// Errors originating from the BlockchainSource in use.
-    #[error("blockchain source error: {0}")]
-    BlockchainSourceError(#[from] crate::chain_index::source::BlockchainSourceError),
-
-    /// Critical Errors, Restart Zaino.
-    #[error("Critical error: {0}")]
-    Critical(String),
-
-    /// Error from the LMDB database.
-    // NOTE: Should this error type be here or should we handle all LMDB errors internally?
-    #[error("LMDB database error: {0}")]
-    LmdbError(#[from] lmdb::Error),
-
-    /// Serde Json serialisation / deserialisation errors.
-    // TODO: Remove when FinalisedState replaces legacy finalised state.
-    #[error("LMDB database error: {0}")]
-    SerdeJsonError(#[from] serde_json::Error),
-
-    /// Unexpected status-related error.
-    #[error("Status error: {0:?}")]
-    StatusError(StatusError),
-
-    /// std::io::Error
-    #[error("IO error: {0}")]
-    IoError(#[from] std::io::Error),
-}
-
-/// A general error type to represent error StatusTypes.
-#[derive(Debug, Clone, thiserror::Error)]
-#[error("Unexpected status error: {server_status:?}")]
-pub struct StatusError {
-    pub server_status: zaino_status::StatusType,
-}
+/// Errors from the finalised chain store.
+///
+/// Not defined here: it belongs to the backend that produces it, and is
+/// re-exported under its old name so this crate's callers do not have to be
+/// rewritten while they are being moved onto
+/// [`zaino_chain_store::ChainStoreError`], which is what the ports return and
+/// what a consumer should eventually see.
+pub use zaino_chain_store_zainodb::error::{StatusError, StoreError as FinalisedStateError};
 
 #[derive(Debug, thiserror::Error)]
 #[error("{kind}: {message}")]
@@ -335,7 +281,7 @@ pub struct ChainIndexError {
     pub(crate) source: Option<Box<dyn std::error::Error + Send + Sync + 'static>>,
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 /// The high-level kinds of thing that can fail
 pub enum ChainIndexErrorKind {
@@ -361,6 +307,14 @@ pub enum ChainIndexErrorKind {
     /// suffix too short to identify anything. Retrying it unchanged will fail
     /// the same way.
     InvalidArgument,
+    /// The caller asked for something this deployment does not offer at all —
+    /// a query needing an index it is not configured to build.
+    ///
+    /// Distinct from `Unavailable`, which says "not right now": there is no
+    /// later attempt that succeeds, so telling the caller to retry wastes it.
+    /// Distinct from `InternalServerError`: nothing is broken, and the request
+    /// was well-formed.
+    Unimplemented,
 }
 
 impl Display for ChainIndexErrorKind {
@@ -370,6 +324,7 @@ impl Display for ChainIndexErrorKind {
             ChainIndexErrorKind::InvalidSnapshot => "invalid snapshot",
             ChainIndexErrorKind::Unavailable => "unavailable",
             ChainIndexErrorKind::InvalidArgument => "invalid argument",
+            ChainIndexErrorKind::Unimplemented => "unimplemented",
         })
     }
 }
@@ -501,6 +456,9 @@ impl From<FinalisedStateError> for ChainIndexError {
             FinalisedStateError::FeatureUnavailable(err) => {
                 format!("unhandled missing feature: {err}")
             }
+            FinalisedStateError::V1BackendUnavailable(handle) => {
+                format!("v1 backend unavailable: {handle}")
+            }
             FinalisedStateError::InvalidBlock {
                 height,
                 hash: _,
@@ -511,13 +469,65 @@ impl From<FinalisedStateError> for ChainIndexError {
             FinalisedStateError::SerdeJsonError(error) => error.to_string(),
             FinalisedStateError::StatusError(status_error) => status_error.to_string(),
             FinalisedStateError::IoError(error) => error.to_string(),
-            FinalisedStateError::BlockchainSourceError(blockchain_source_error) => {
-                blockchain_source_error.to_string()
-            }
+            FinalisedStateError::Source(source_error) => source_error.to_string(),
         };
         ChainIndexError {
             kind: ChainIndexErrorKind::InternalServerError,
             message,
+            source: Some(Box::new(value)),
+        }
+    }
+}
+
+/// A chain-store query that could not be answered.
+///
+/// Each variant is named, and the match is exhaustive on purpose. Routing by
+/// exclusion — one arm for the retryable case and a catch-all for everything
+/// else — reads as a decision but is the absence of one: every variant the
+/// author did not think about becomes an internal server error, and so does
+/// every variant added afterwards, without anything failing to compile. A
+/// caller fault and a broken database are not the same answer, and the type
+/// already distinguishes them.
+///
+/// [`ChainStoreError::AboveWatermark`] maps to internal deliberately. It is not
+/// an error a caller should ever see — it means the finalised half was asked
+/// about a height the recent half owns, which is a routing mistake in
+/// ChainIndex rather than anything the caller did. The read helpers in
+/// [`chain_store`](crate::chain_index::chain_store) turn it into "not here"
+/// before it reaches this conversion; reaching it means one did not.
+impl From<zaino_chain_store::ChainStoreError> for ChainIndexError {
+    fn from(value: zaino_chain_store::ChainStoreError) -> Self {
+        use zaino_chain_store::ChainStoreError as Error;
+
+        let kind = match &value {
+            // Transient. It resolves once the store finishes opening, so the
+            // caller is told to come back.
+            Error::NotReady => ChainIndexErrorKind::Unavailable,
+
+            // The caller handed over a range that runs backwards. Nothing is
+            // broken and retrying it unchanged fails identically.
+            Error::InvalidRange { .. } => ChainIndexErrorKind::InvalidArgument,
+
+            // The store is healthy and the request well-formed; this
+            // deployment does not build that index. Not a fault, and not
+            // something a later attempt fixes.
+            Error::Unavailable(_) => ChainIndexErrorKind::Unimplemented,
+
+            // ChainIndex's own routing mistake, as the note above explains.
+            Error::AboveWatermark { .. } => ChainIndexErrorKind::InternalServerError,
+
+            // A broken store. Neither is the caller's to fix.
+            Error::MissingRow(_) | Error::CorruptRow { .. } | Error::Backend { .. } => {
+                ChainIndexErrorKind::InternalServerError
+            }
+        };
+
+        ChainIndexError {
+            kind,
+            message: value.to_string(),
+            // Kept in every arm: the typed store error is what an operator
+            // needs, and the kind above says nothing about which LMDB failure
+            // produced it.
             source: Some(Box::new(value)),
         }
     }
@@ -549,6 +559,89 @@ impl From<MempoolError> for ChainIndexError {
             kind: ChainIndexErrorKind::InternalServerError,
             message,
             source: Some(Box::new(value)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ChainIndexError, ChainIndexErrorKind};
+    use zaino_chain_store::{ChainStoreError, StoreCapability};
+    use zaino_primitives::types::Height;
+
+    fn h(height: u32) -> Height {
+        Height::try_from(height).expect("a valid height")
+    }
+
+    fn kind_of(error: ChainStoreError) -> ChainIndexErrorKind {
+        ChainIndexError::from(error).kind()
+    }
+
+    /// A caller fault is reported as one, not as a server fault.
+    ///
+    /// A backwards range is the caller's doing and retrying it unchanged fails
+    /// identically. The catch-all this replaces called it an internal server
+    /// error, which tells the caller Zaino is broken and invites exactly that
+    /// futile retry.
+    #[test]
+    fn a_backwards_range_is_the_callers_fault() {
+        assert_eq!(
+            kind_of(ChainStoreError::InvalidRange {
+                start: h(2),
+                end: h(1)
+            }),
+            ChainIndexErrorKind::InvalidArgument
+        );
+    }
+
+    /// An index this deployment does not build is not a fault and not retryable.
+    #[test]
+    fn an_unbuilt_index_is_neither_a_fault_nor_retryable() {
+        assert_eq!(
+            kind_of(ChainStoreError::Unavailable(StoreCapability::TxOutSet)),
+            ChainIndexErrorKind::Unimplemented
+        );
+    }
+
+    /// A store that has not opened yet is retryable.
+    #[test]
+    fn a_store_still_opening_is_retryable() {
+        assert_eq!(
+            kind_of(ChainStoreError::NotReady),
+            ChainIndexErrorKind::Unavailable
+        );
+    }
+
+    /// A broken store is a server fault, and so is a routing mistake.
+    #[test]
+    fn a_broken_store_is_a_server_fault() {
+        for error in [
+            ChainStoreError::MissingRow("txid".into()),
+            ChainStoreError::corrupt_row("in-range height"),
+            ChainStoreError::backend("lmdb"),
+            ChainStoreError::AboveWatermark {
+                requested: h(2),
+                watermark: h(1),
+            },
+        ] {
+            assert_eq!(kind_of(error), ChainIndexErrorKind::InternalServerError);
+        }
+    }
+
+    /// Every conversion keeps the store's typed error as its source.
+    ///
+    /// The kind says how to respond; it says nothing about which failure
+    /// produced it, and that is the part an operator needs.
+    #[test]
+    fn a_converted_store_error_keeps_its_source() {
+        use std::error::Error as _;
+
+        for error in [
+            ChainStoreError::NotReady,
+            ChainStoreError::Unavailable(StoreCapability::TxOutSet),
+            ChainStoreError::backend("lmdb"),
+        ] {
+            assert!(ChainIndexError::from(error).source().is_some());
         }
     }
 }

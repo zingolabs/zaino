@@ -1,4 +1,4 @@
-//! Wire shapes for the zcashd-only methods too small to warrant their own file.
+//! Wire shapes for the legacy-only methods too small to warrant their own file.
 //!
 //! `getmempoolinfo`, `getnetworksolps`, `getspentinfo`, `gettxout` and
 //! `gettxoutsetinfo`.
@@ -26,10 +26,9 @@ pub struct MempoolInfoWire {
 impl MempoolInfoWire {
     /// Renders Zaino's mempool statistics.
     ///
-    /// The domain type is `chain_index::types::db::metadata::MempoolInfo`, which
-    /// is an on-disk shape rather than one of `zaino-primitives`' types. That is
-    /// deliberate for now: it carries a `ZainoVersionedSerde` impl, so moving it
-    /// belongs with the persistence rework rather than here.
+    /// The domain type is [`zaino_primitives::types::MempoolInfo`], re-exported
+    /// by `zaino-state`. A plain field copy: the wire shape and the domain shape
+    /// agree, and the mempool is live state with no on-disk form to translate.
     pub fn from_domain(info: zaino_state::MempoolInfo) -> Self {
         Self {
             size: info.size,
@@ -95,7 +94,7 @@ pub struct SpentInfoWire {
     pub index: u32,
     /// Height of the block containing the spending transaction.
     ///
-    /// Returned by zcashd 6.12.2, though absent from the published 6.2.0 RPC
+    /// Returned by the legacy full node 6.12.2, though absent from the published 6.2.0 RPC
     /// page.
     pub height: u32,
 }
@@ -193,7 +192,7 @@ impl TxOutWire {
 pub enum TxOutSetInfoWire {
     /// UTXO set statistics.
     Info(TxOutSetInfoStats),
-    /// An empty object. zcashd answers this way when it cannot collect the
+    /// An empty object. the legacy full node answers this way when it cannot collect the
     /// statistics; Zaino does the same while its accumulator is still syncing.
     Empty(EmptyTxOutSetInfo),
 }
@@ -349,7 +348,7 @@ mod tests {
         }
     }
 
-    /// zcashd's empty answer is `{}`, not `null` and not zeroed statistics.
+    /// the legacy full node's empty answer is `{}`, not `null` and not zeroed statistics.
     #[test]
     fn tx_out_set_info_empty_is_an_empty_object() {
         let wire = TxOutSetInfoWire::from_domain(None);

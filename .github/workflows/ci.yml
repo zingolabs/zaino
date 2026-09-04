@@ -110,13 +110,19 @@ jobs:
   compute-tag:
     uses: ./.github/workflows/compute-tag.yml
 
-  no-zcashd-build:
-    name: No-zcashd build (--no-default-features)
-    # The default-on `zcashd_support` feature is being deprecated; its OFF
-    # state must keep compiling or the deprecation path bit-rots. Runs in the
-    # CI container (toolchain + git deps + cargo cache) like the build job, so
-    # it is skipped on PRs until a self-hosted runner is available — same as the
-    # other compiling jobs. See docs/adr/0001-zcashd-support-feature-gate.md.
+  experimental-features-build:
+    name: Experimental-features build (--features experimental_features)
+    # The experimental/alpha feature set is off by default, so the normal build
+    # never compiles it and it bit-rots unwatched: two `#[cfg]` blocks in the
+    # finalised state's address-history writer kept referencing bindings the
+    # non-gated path had renamed away, and the feature had not compiled for some
+    # time before anyone tried it. This job is the thing that notices.
+    #
+    # Gated on the `experimental_features` umbrella rather than on a single
+    # feature, so anything added to that set is covered the day it lands.
+    # Deliberately separate from the main test archive, which stays on the
+    # shipped feature set — CI should not gate release testing on a
+    # non-release combo (see the note on the archive step below).
     needs: compute-tag
     container:
       image: docker.io/zingodevops/zaino-ci:${{ needs.compute-tag.outputs.image-tag }}
@@ -139,8 +145,8 @@ jobs:
             ~/.cargo
             target/debug/deps
 
-      - name: Check no-zcashd build across all three workspaces
-        run: makers check-no-zcashd
+      - name: Check the experimental feature set compiles and its tests pass
+        run: makers check-experimental-features
 
   build-test-artifacts:
     name: Build test artifacts
@@ -168,6 +174,11 @@ jobs:
             ~/.cargo
             target/debug/deps
 
+      - name: Check zaino-proto `heavy` survives --no-default-features
+        # The archive below is built --no-default-features; this guard fails the
+        # job if a `default-features = false` edge silently strips `heavy`.
+        run: makers check-zaino-proto-heavy
+
       - name: Build and archive tests
         # --no-default-features, NOT --all-features: enable only what the CI test
         # machinery needs. `test_dependencies` (the launch_inner_with_listeners
@@ -175,10 +186,10 @@ jobs:
         # test crates' own dependency declarations and survive feature
         # unification, so the harness still functions. This deliberately omits
         # the product features `--all-features` was speculatively enabling:
-        #   - zcashd_support (opt-in; docs/adr/0001, 0005): zcashd is being
-        #     deprecated; zcashd-backed tests cfg out and are not executed in CI.
         #   - experimental_features / transparent_address_history_experimental:
         #     not shipped on by default; CI should not gate on a non-release combo.
+        #     Compiled and tested separately by `experimental-features-build`, so
+        #     omitting it here no longer means it goes unbuilt.
         #   - prometheus.
         # This also matches what local `makers container-test` runs by default, so
         # CI and local exercise the same feature set.
@@ -232,11 +243,6 @@ jobs:
           # unified --workspace archive and are compiled every run, but running
           # the validator-heavy suite here is a CI-capacity decision tracked in
           # https://github.com/zingolabs/zaino/issues/1308.
-          #
-          # `clientless::json_server` and `e2e::devtool_zcashd` are absent for a
-          # different reason: both are `#![cfg(feature = "zcashd_support")]` and
-          # the archive is built --no-default-features, so their partitions hold
-          # zero tests and `--no-tests fail` would fail the job.
           - "clientless::compact_block_consistency"
           - "clientless::fetch_service"
           - "clientless::state_service"
@@ -246,12 +252,15 @@ jobs:
           - "zaino-address"
           - "zaino-chain-head"
           - "zaino-chain-head-service"
+          - "zaino-chain-store"
+          - "zaino-chain-store-zainodb"
           - "zaino-common"
           - "zaino-consensus"
           - "zaino-convert-zebra"
           - "zaino-mempool"
           - "zaino-mempool-service"
           - "zainod"
+          - "zaino-encoding"
           - "zaino-primitives"
           - "zaino-proto"
           - "zaino-rpc"

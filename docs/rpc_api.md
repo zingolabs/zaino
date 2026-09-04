@@ -24,6 +24,6 @@ Zaino Currently Serves the following gRPC services as defined in the [LightWalle
   - GetLightdInfo (Empty) returns (LightdInfo)
 
 ## Zcash RPC Services
-Zaino has also committed to taking over responsibility for serving all [Zcash RPC Services](https://zcash.github.io/rpc/) required by non-validator (miner) clients from Zcashd.
+Zaino has also committed to taking over responsibility for serving all [Zcash RPC Services](https://zcash.github.io/rpc/) required by non-validator (miner) clients from the legacy Zcash full node.
 A full specification of the Zcash RPC services served by Zaino, and their current state of development, can be seen [here](./Zaino-zcash-rpcs.pdf).
 
