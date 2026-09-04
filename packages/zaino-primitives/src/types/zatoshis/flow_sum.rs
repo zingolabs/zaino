@@ -15,7 +15,7 @@
 /// arbitrary integer. Differencing two flow sums lands the result in a
 /// [`ZatoshisDelta`](super::ZatoshisDelta) via
 /// [`delta`](ZatoshisFlowSum::delta). Both operations, and the algebra that
-/// relates the quantities, live in the [`arithmetic`](super::arithmetic) module.
+/// relates the quantities, live in the `arithmetic` module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ZatoshisFlowSum(u128);
 

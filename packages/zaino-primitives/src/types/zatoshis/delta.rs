@@ -10,7 +10,7 @@ pub struct ZatoshisDelta(i64);
 
 /// Error when a signed zatoshi delta's magnitude exceeds the money supply.
 ///
-/// A delta whose absolute value is larger than [`MAX_ZATOSHIS`] cannot be the
+/// A delta whose absolute value is larger than the money supply cannot be the
 /// change in an aggregate transparent balance, which is what a checked delta
 /// claims to be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
