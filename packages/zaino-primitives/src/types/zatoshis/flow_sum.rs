@@ -36,3 +36,25 @@ impl ZatoshisFlowSum {
         self.0
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The difference guard fails loud, not silent, when a flow sum is too large
+    /// to be a signed integer at all.
+    ///
+    /// This is the machine-representability check beneath the supply bound: a
+    /// difference is refused for being unrepresentable before it is ever asked
+    /// whether it fits the supply. It is unreachable with real amounts — a flow
+    /// sum cannot approach `u128::MAX` — so it is constructed here through the
+    /// module-internal raw door purely to prove the guard refuses rather than
+    /// wraps to a plausible figure.
+    #[test]
+    fn a_difference_too_large_for_a_signed_integer_is_refused() {
+        let unrepresentable = ZatoshisFlowSum::from_raw(u128::MAX);
+
+        assert_eq!(unrepresentable.delta(ZatoshisFlowSum::ZERO), None);
+        assert_eq!(ZatoshisFlowSum::ZERO.delta(unrepresentable), None);
+    }
+}
