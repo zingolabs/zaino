@@ -26,7 +26,9 @@ pub struct TxOut {
     pub script_pub_key: ::prost::alloc::vec::Vec<u8>,
 }
 /// A BlockID message contains identifiers to select a block: a height or a
-/// hash. Specification by hash is not implemented, but may be in the future.
+/// hash. Support for specification by hash is not mandatory. (If `hash` is
+/// non-empty, the rpc may return an error.) This field is present to support
+/// a possible future upgrade.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct BlockId {
     #[prost(uint64, tag = "1")]
@@ -38,9 +40,9 @@ pub struct BlockId {
 /// Both BlockIDs must be heights; specification by hash is not yet supported.
 ///
 /// If no pool types are specified, the server should default to the legacy
-/// behavior of returning only data relevant to the shielded (Sapling and
-/// Orchard) pools; otherwise, the server should prune `CompactBlocks` returned
-/// to include only data relevant to the requested pool types. Clients MUST
+/// behavior of returning only data relevant to the shielded (Sapling, Orchard,
+/// and Ironwood) pools; otherwise, the server should prune `CompactBlock`s
+/// returned to include only data relevant to the requested pool types. Clients MUST
 /// verify that the version of the server they are connected to are capable
 /// of returning pruned and/or transparent data before setting `poolTypes`
 /// to a non-empty value.
@@ -232,7 +234,7 @@ pub struct GetMempoolTxRequest {
     /// The server must prune `CompactTx`s returned to include only data
     /// relevant to the requested pool types. If no pool types are specified,
     /// the server should default to the legacy behavior of returning only data
-    /// relevant to the shielded (Sapling and Orchard) pools.
+    /// relevant to the shielded (Sapling, Orchard, and Ironwood) pools.
     #[prost(enumeration = "PoolType", repeated, tag = "3")]
     pub pool_types: ::prost::alloc::vec::Vec<i32>,
 }
@@ -500,7 +502,18 @@ pub mod compact_tx_streamer_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Return the compact block corresponding to the given block identifier
+        /// Return the compact block corresponding to the given block identifier.
+        ///
+        /// The returned `CompactBlock` includes transaction data for all value
+        /// pools, including transparent inputs (`vin`) and outputs (`vout`). This
+        /// differs from `GetBlockRange`, which supports filtering by pool type and
+        /// defaults to returning only shielded (Sapling, Orchard, and Ironwood)
+        /// data. Clients that require only data for specific pools should use
+        /// `GetBlockRange` with the appropriate `poolTypes` set.
+        ///
+        /// Note: the single null-outpoint input for coinbase transactions is
+        /// omitted from the `vin` field of the corresponding `CompactTx`. See the
+        /// documentation of the `CompactTx` message for details.
         pub async fn get_block(
             &mut self,
             request: impl tonic::IntoRequest<super::BlockId>,
@@ -530,11 +543,15 @@ pub mod compact_tx_streamer_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Same as GetBlock except the returned CompactBlock value contains only
-        /// nullifiers.
+        /// Return a compact block containing only nullifier information for the
+        /// shielded pools (Sapling spend nullifiers, Orchard action nullifiers, and
+        /// Ironwood action nullifiers). Transparent transaction data, Sapling
+        /// outputs, full Orchard/Ironwood action data, and commitment tree sizes are
+        /// not included.
         ///
-        /// Note: this method is deprecated. Implementations should ignore any
-        /// `PoolType::TRANSPARENT` member of the `poolTypes` argument.
+        /// Note: this method is deprecated; use `GetBlockRange` with the
+        /// appropriate `poolTypes` instead.
+        #[deprecated]
         pub async fn get_block_nullifiers(
             &mut self,
             request: impl tonic::IntoRequest<super::BlockId>,
@@ -600,11 +617,17 @@ pub mod compact_tx_streamer_client {
                 );
             self.inner.server_streaming(req, path, codec).await
         }
-        /// Same as GetBlockRange except the returned CompactBlock values contain
-        /// only nullifiers.
+        /// Return a stream of compact blocks for the specified range, where each
+        /// block contains only nullifier information for the shielded pools
+        /// (Sapling spend nullifiers, Orchard action nullifiers, and Ironwood action
+        /// nullifiers). Transparent transaction data, Sapling outputs, full
+        /// Orchard/Ironwood action data, and commitment tree sizes are not included.
+        /// Implementations MUST ignore any
+        /// `PoolType::TRANSPARENT` member of the `poolTypes` field of the request.
         ///
-        /// Note: this method is deprecated. Implementations should ignore any
-        /// `PoolType::TRANSPARENT` member of the `poolTypes` argument.
+        /// Note: this method is deprecated; use `GetBlockRange` with the
+        /// appropriate `poolTypes` instead.
+        #[deprecated]
         pub async fn get_block_range_nullifiers(
             &mut self,
             request: impl tonic::IntoRequest<super::BlockRange>,
@@ -1096,7 +1119,18 @@ pub mod compact_tx_streamer_server {
             &self,
             request: tonic::Request<super::ChainSpec>,
         ) -> std::result::Result<tonic::Response<super::BlockId>, tonic::Status>;
-        /// Return the compact block corresponding to the given block identifier
+        /// Return the compact block corresponding to the given block identifier.
+        ///
+        /// The returned `CompactBlock` includes transaction data for all value
+        /// pools, including transparent inputs (`vin`) and outputs (`vout`). This
+        /// differs from `GetBlockRange`, which supports filtering by pool type and
+        /// defaults to returning only shielded (Sapling, Orchard, and Ironwood)
+        /// data. Clients that require only data for specific pools should use
+        /// `GetBlockRange` with the appropriate `poolTypes` set.
+        ///
+        /// Note: the single null-outpoint input for coinbase transactions is
+        /// omitted from the `vin` field of the corresponding `CompactTx`. See the
+        /// documentation of the `CompactTx` message for details.
         async fn get_block(
             &self,
             request: tonic::Request<super::BlockId>,
@@ -1104,11 +1138,14 @@ pub mod compact_tx_streamer_server {
             tonic::Response<crate::proto::compact_formats::CompactBlock>,
             tonic::Status,
         >;
-        /// Same as GetBlock except the returned CompactBlock value contains only
-        /// nullifiers.
+        /// Return a compact block containing only nullifier information for the
+        /// shielded pools (Sapling spend nullifiers, Orchard action nullifiers, and
+        /// Ironwood action nullifiers). Transparent transaction data, Sapling
+        /// outputs, full Orchard/Ironwood action data, and commitment tree sizes are
+        /// not included.
         ///
-        /// Note: this method is deprecated. Implementations should ignore any
-        /// `PoolType::TRANSPARENT` member of the `poolTypes` argument.
+        /// Note: this method is deprecated; use `GetBlockRange` with the
+        /// appropriate `poolTypes` instead.
         async fn get_block_nullifiers(
             &self,
             request: tonic::Request<super::BlockId>,
@@ -1146,11 +1183,16 @@ pub mod compact_tx_streamer_server {
             >
             + std::marker::Send
             + 'static;
-        /// Same as GetBlockRange except the returned CompactBlock values contain
-        /// only nullifiers.
+        /// Return a stream of compact blocks for the specified range, where each
+        /// block contains only nullifier information for the shielded pools
+        /// (Sapling spend nullifiers, Orchard action nullifiers, and Ironwood action
+        /// nullifiers). Transparent transaction data, Sapling outputs, full
+        /// Orchard/Ironwood action data, and commitment tree sizes are not included.
+        /// Implementations MUST ignore any
+        /// `PoolType::TRANSPARENT` member of the `poolTypes` field of the request.
         ///
-        /// Note: this method is deprecated. Implementations should ignore any
-        /// `PoolType::TRANSPARENT` member of the `poolTypes` argument.
+        /// Note: this method is deprecated; use `GetBlockRange` with the
+        /// appropriate `poolTypes` instead.
         async fn get_block_range_nullifiers(
             &self,
             request: tonic::Request<super::BlockRange>,

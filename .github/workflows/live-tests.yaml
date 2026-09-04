@@ -1,0 +1,105 @@
+name: Live tests
+
+on:
+  workflow_dispatch:
+  pull_request:
+
+# One live run at a time, cluster-wide. The cluster is shared and ztest refuses to
+# schedule when capacity is short, so a second concurrent run fails rather than
+# waits. Queue instead of cancelling: a cancelled run leaves its namespaces behind.
+concurrency:
+  group: live-tests
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Cluster-free: compiles the live suite without standing up a cluster.
+  compile:
+    name: Compile check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            live-tests/target
+          key: live-tests-compile-${{ hashFiles('live-tests/Cargo.lock') }}
+          restore-keys: live-tests-compile-
+
+      - name: Format
+        run: cargo fmt --manifest-path live-tests/Cargo.toml --all --check
+
+      - name: Clippy (all features)
+        run: >
+          cargo clippy --manifest-path live-tests/Cargo.toml
+          --all-targets --all-features --locked -- -D warnings
+
+  run:
+    name: Run on cluster
+    needs: compile
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write # mints the GitHub OIDC token Tailscale federates on
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+          key: live-tests-run-${{ hashFiles('live-tests/Cargo.lock') }}
+          restore-keys: live-tests-run-
+
+      # CLI and library must be the same version: ztest verifies a hash of the
+      # ClusterRole it renders against the applied one at run start.
+      - name: Resolve ztest version from the lockfile
+        id: ztest
+        run: |
+          v=$(awk '/^name = "ztest"$/ { getline; print $3 }' live-tests/Cargo.lock | tr -d '"')
+          [ -n "$v" ] || { echo "no ztest version in live-tests/Cargo.lock"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Install ztest CLI
+        run: cargo install ztest_cli --locked --version '${{ steps.ztest.outputs.version }}'
+
+      - uses: azure/setup-kubectl@v4
+
+      # Workload identity federation (GitHub OIDC) — no stored secret. Client ID and
+      # audience are non-secret repo *variables*. tag:ztest-runner reaches
+      # tag:k8s-operator:443 only — no node, no SSH.
+      - name: Join tailnet (ephemeral tag:ztest-runner, OIDC — no secret)
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ vars.TS_OIDC_CLIENT_ID }}
+          audience: ${{ vars.TS_OIDC_AUDIENCE }}
+          tags: tag:ztest-runner
+
+      # Authenticates as the tailnet identity; no kube token exists to leak.
+      # The tailnet grant impersonates tag:ztest-runner into the k8s group `ztest-ci`.
+      - name: Configure kubeconfig via the operator proxy
+        run: tailscale configure kubeconfig tailscale-operator
+
+      - name: Register the cluster
+        run: |
+          ztest cluster add zingo-infra \
+            --kube-context "$(kubectl config current-context)" \
+            --extra-config '${{ vars.ZTEST_CLUSTER_CONFIG_URL }}' \
+            --set-default --yes
+
+      # Probes every (resource, verb) pair the run role grants, so a permission gap
+      # is named here rather than 403-ing twenty minutes into a run.
+      - name: Check the cluster
+        run: ztest cluster check
+
+      - name: Run the live suite
+        working-directory: live-tests
+        run: ztest run

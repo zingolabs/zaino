@@ -1,4 +1,4 @@
-use super::{load_test_vectors_and_sync_chain_index, MockchainMode};
+use super::{load_test_vectors_and_sync_chain_index, MockchainMode, DEEP_FINALISED_SEED_TIP};
 use crate::{
     chain_index::{
         tests::vectors::MockSource,
@@ -1020,18 +1020,19 @@ async fn get_address_utxos() {
 }
 
 /// Walks zaino's own indexed view of the test-vector chain and derives, for every
-/// non-coinbase transparent input, the `(outpoint, spending txid)` it represents, plus
-/// every transparent outpoint created on the chain.
+/// non-coinbase transparent input, the `(spend height, outpoint, spending txid)` it
+/// represents, plus every transparent outpoint created on the chain.
 ///
 /// Ground truth is built from `CompactTxData` — the exact representation
 /// `get_outpoint_spenders` scans — so the assertions also confirm the outpoint byte order
 /// matches between an indexed input and the looked-up key.
 fn outpoint_spend_ground_truth(
     blocks: &[TestVectorBlockData],
-) -> (Vec<(Outpoint, TransactionHash)>, Vec<Outpoint>) {
+) -> (Vec<(u32, Outpoint, TransactionHash)>, Vec<Outpoint>) {
     let mut spends = Vec::new();
     let mut created = Vec::new();
     for block in indexed_block_chain(blocks) {
+        let height = u32::from(block.height());
         for tx in block.transactions() {
             let txid = *tx.txid();
             let transparent = tx.transparent();
@@ -1042,7 +1043,7 @@ fn outpoint_spend_ground_truth(
             // whose null-prevout filtering and outpoint construction are pinned by its own
             // unit tests; here we only pair each spent outpoint with its spending txid.
             for outpoint in transparent.spent_outpoints() {
-                spends.push((outpoint, txid));
+                spends.push((height, outpoint, txid));
             }
         }
     }
@@ -1062,18 +1063,19 @@ async fn get_outpoint_spenders() {
     );
 
     // Every spent outpoint resolves to its spending txid, index-aligned with the input.
-    let outpoints: Vec<Outpoint> = spends.iter().map(|(op, _)| *op).collect();
+    let outpoints: Vec<Outpoint> = spends.iter().map(|(_, op, _)| *op).collect();
     let result = index_reader
         .get_outpoint_spenders(&snapshot, outpoints, ChainScope::FullChain)
         .await
         .unwrap();
     assert_eq!(result.len(), spends.len());
-    for ((outpoint, expected_txid), got) in spends.iter().zip(result) {
+    for ((_, outpoint, expected_txid), got) in spends.iter().zip(result) {
         assert_eq!(got, Some(*expected_txid), "wrong spender for {outpoint:?}");
     }
 
     // Outpoints that were created but never spent must report `None`.
-    let spent_set: std::collections::HashSet<Outpoint> = spends.iter().map(|(op, _)| *op).collect();
+    let spent_set: std::collections::HashSet<Outpoint> =
+        spends.iter().map(|(_, op, _)| *op).collect();
     let unspent: Vec<Outpoint> = created
         .into_iter()
         .filter(|op| !spent_set.contains(op))
@@ -1085,6 +1087,56 @@ async fn get_outpoint_spenders() {
         .unwrap();
     assert_eq!(unspent_result.len(), unspent.len());
     assert!(unspent_result.iter().all(Option::is_none));
+}
+
+/// `ChainScope` decides how deep a spend lookup reaches. Under
+/// [`MockchainMode::StaticDeepFinalised`] the finalised index holds the chain up to
+/// [`DEEP_FINALISED_SEED_TIP`] while the non-finalised state holds everything above the
+/// seam, so one spend sits in both stores and one in the non-finalised state alone —
+/// `Finalised` must see only the first. This is the only exercise of the finalised
+/// `TxLocation -> txid` resolution through the `ChainIndex`.
+#[tokio::test(flavor = "multi_thread")]
+async fn get_outpoint_spenders_chain_scope() {
+    let (blocks, _indexer, index_reader, _mockchain) =
+        load_test_vectors_and_sync_chain_index(MockchainMode::StaticDeepFinalised).await;
+    let snapshot = index_reader.snapshot_nonfinalized_state();
+
+    let (spends, created) = outpoint_spend_ground_truth(&blocks);
+    let (finalised_outpoint, finalised_spender) = spends
+        .iter()
+        .find(|(height, ..)| *height <= DEEP_FINALISED_SEED_TIP)
+        .map(|(_, outpoint, txid)| (*outpoint, *txid))
+        .expect("the corpus must spend a transparent output inside the finalised range");
+    let (nonfinalised_outpoint, nonfinalised_spender) = spends
+        .iter()
+        .find(|(height, ..)| *height > DEEP_FINALISED_SEED_TIP)
+        .map(|(_, outpoint, txid)| (*outpoint, *txid))
+        .expect("the corpus must spend a transparent output above the finalised range");
+    let spent: std::collections::HashSet<Outpoint> =
+        spends.iter().map(|(_, outpoint, _)| *outpoint).collect();
+    let unspent = created
+        .into_iter()
+        .find(|outpoint| !spent.contains(outpoint))
+        .expect("the corpus must leave a transparent output unspent");
+
+    let outpoints = vec![finalised_outpoint, nonfinalised_outpoint, unspent];
+
+    assert_eq!(
+        index_reader
+            .get_outpoint_spenders(&snapshot, outpoints.clone(), ChainScope::FullChain)
+            .await
+            .unwrap(),
+        vec![Some(finalised_spender), Some(nonfinalised_spender), None],
+        "FullChain resolves both spends and leaves the unspent outpoint as None"
+    );
+    assert_eq!(
+        index_reader
+            .get_outpoint_spenders(&snapshot, outpoints, ChainScope::Finalised)
+            .await
+            .unwrap(),
+        vec![Some(finalised_spender), None, None],
+        "Finalised never reads the non-finalised state, so only the buried spend resolves"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1103,7 +1155,7 @@ async fn get_outpoint_spenders_empty_and_single() {
     let (spends, created) = outpoint_spend_ground_truth(&blocks);
 
     // Length-1 query (the "single request" path) returns the expected spender.
-    let (op, txid) = spends.first().unwrap();
+    let (_, op, txid) = spends.first().unwrap();
     assert_eq!(
         index_reader
             .get_outpoint_spenders(&snapshot, vec![*op], ChainScope::FullChain)
@@ -1113,7 +1165,8 @@ async fn get_outpoint_spenders_empty_and_single() {
     );
 
     // ...and a length-1 query for an unspent outpoint returns `None`.
-    let spent_set: std::collections::HashSet<Outpoint> = spends.iter().map(|(op, _)| *op).collect();
+    let spent_set: std::collections::HashSet<Outpoint> =
+        spends.iter().map(|(_, op, _)| *op).collect();
     let unspent = created
         .into_iter()
         .find(|op| !spent_set.contains(op))

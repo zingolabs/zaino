@@ -22,6 +22,7 @@ use jsonrpsee::types::ErrorObjectOwned;
 use jsonrpsee::{proc_macros::rpc, types::ErrorCode};
 
 use crate::rpc::jsonrpc::wire::address::{validate_address_from_domain, ZValidateAddressWire};
+use crate::rpc::jsonrpc::wire::address_deltas::{GetAddressDeltasParams, GetAddressDeltasResponse};
 use crate::rpc::jsonrpc::wire::chain_tips::{chain_tips_from_domain, GetChainTipsResponse};
 use crate::rpc::jsonrpc::wire::misc::{
     MempoolInfoWire, NetworkSolPsWire, SpentInfoRequestWire, SpentInfoWire, TxOutSetInfoWire,
@@ -456,6 +457,32 @@ pub trait ZcashIndexerRpc {
         &self,
         address_strings: GetAddressBalanceRequest,
     ) -> Result<Vec<GetAddressUtxos>, ErrorObjectOwned>;
+
+    /// Returns every balance change at the given transparent addresses, within an
+    /// inclusive height range.
+    ///
+    /// zcashd reference: [`getaddressdeltas`](https://zcash.github.io/rpc/getaddressdeltas.html)
+    /// method: post
+    /// tags: address
+    ///
+    /// # Parameters
+    ///
+    /// - `params`: (string or object, required) either a single base58check address, or a struct with the following named fields:
+    ///     - `addresses`: (json array of string, required) The addresses to get deltas for.
+    ///     - `start`: (numeric, optional, default=0) The lower height to start looking from (inclusive); `0` means genesis.
+    ///     - `end`: (numeric, optional, default=0) The top height to stop looking at (inclusive); `0` means the chain tip.
+    ///     - `chainInfo`: (bool, optional, default=false) Also name the resolved range's bounding blocks.
+    ///
+    /// # Notes
+    ///
+    /// Both bounds are resolved against the tip by the answering backend, so an `end`
+    /// beyond the tip is clamped rather than rejected. `chainInfo` selects the response
+    /// shape: the bare delta array without it, the `{deltas, start, end}` object with it.
+    #[method(name = "getaddressdeltas")]
+    async fn get_address_deltas(
+        &self,
+        params: GetAddressDeltasParams,
+    ) -> Result<GetAddressDeltasResponse, ErrorObjectOwned>;
 
     /// Returns the estimated network solutions per second based on the last n blocks.
     ///
@@ -899,6 +926,18 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
                 crate::rpc::jsonrpc::wire::address_queries::address_utxos_from_domain(utxos)
                     .map_err(invalid_params_error_object)
             })
+    }
+
+    async fn get_address_deltas(
+        &self,
+        params: GetAddressDeltasParams,
+    ) -> Result<GetAddressDeltasResponse, ErrorObjectOwned> {
+        self.service_subscriber
+            .inner_ref()
+            .get_address_deltas(params.into_domain())
+            .await
+            .map(GetAddressDeltasResponse::from_domain)
+            .map_err(invalid_params_error_object)
     }
 
     async fn get_network_sol_ps(

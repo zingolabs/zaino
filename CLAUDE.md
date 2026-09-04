@@ -18,9 +18,9 @@ most restrictive visibility that compiles. Start with no visibility qualifier
 scope that works:
 
 1. `(private)` — default, no qualifier
-2. `pub(super)` — visible to the parent module
-3. `pub(crate)` — visible within the crate
-4. `pub` — visible to external consumers
+1. `pub(super)` — visible to the parent module
+1. `pub(crate)` — visible within the crate
+1. `pub` — visible to external consumers
 
 Never preemptively make something `pub`. If a test needs access to an internal,
 prefer `pub(crate)` or a `#[cfg(test)]` helper over `pub`. If an item is only
@@ -40,8 +40,8 @@ Every test starts at `#[test]`. Escalate only when the test body demands
 it, and pick the narrowest escalation that works:
 
 1. `#[test]` — default. Synchronous tests.
-2. `#[tokio::test]` (current-thread) — the test body actually uses `.await`.
-3. `#[tokio::test(flavor = "multi_thread")]` — the test genuinely requires
+1. `#[tokio::test]` (current-thread) — the test body actually uses `.await`.
+1. `#[tokio::test(flavor = "multi_thread")]` — the test genuinely requires
    multiple OS threads (a race under test, `spawn_blocking` that must run
    concurrently with the test future, code that would deadlock on
    current-thread).
@@ -78,9 +78,9 @@ in the same directory need access.
 1. The `PersistentX → X` direction *is* the validation step for bytes
    coming off disk. A named method puts that contract in the API; a
    `TryFrom` leaves it implicit.
-2. `TryFrom` forces one `Error` type per impl; separate methods give
+1. `TryFrom` forces one `Error` type per impl; separate methods give
    per-conversion error granularity.
-3. Named methods are grep-friendly and disambiguate direction at every
+1. Named methods are grep-friendly and disambiguate direction at every
    call site (`pbc.into_business()` reads direction and boundary; `.into()`
    hides both).
 
@@ -126,14 +126,14 @@ TransactionHash, etc.).
   1. No `impl From<&X> for PersistentY` / `impl From<PersistentX> for Y`;
      no `impl From<X> for proto::Y` / `impl TryFrom<proto::X> for Y`.
      (The lint catches these, but read for them anyway.)
-  2. Persistence methods are named `from_business` / `into_business`
+  1. Persistence methods are named `from_business` / `into_business`
      (fallible variants `into_business*`). Wire methods are named
      `to_wire` / `try_from_wire`. Any deviation has an in-file comment
      explaining why.
-  3. `Persistent*` types are `pub(super)`. Wire methods are `pub`
+  1. `Persistent*` types are `pub(super)`. Wire methods are `pub`
      (they're part of the business type's public API). Don't widen
      `Persistent*` speculatively.
-  4. `Persistent*` types do *nothing else* — no business logic, no
+  1. `Persistent*` types do *nothing else* — no business logic, no
      accessors — they only cross the serde boundary. Round-trip tests
      for the pair live in the same file under `#[cfg(test)] mod tests`.
      Wire conversions get the same treatment: a golden / round-trip
@@ -154,10 +154,10 @@ constraints:
    encoded in the type system or recovered from at runtime (e.g. a
    `Mutex` that is only ever held for a non-panicking swap, so
    `PoisonError` indicates an already-crashed thread).
-2. The message names the invariant being asserted, so a panic message
+1. The message names the invariant being asserted, so a panic message
    is self-describing (e.g. `.expect("db_handler mutex poisoned")`, not
    `.expect("unwrap")`).
-3. Propagation via `?` or a typed error is not cleaner at the call
+1. Propagation via `?` or a typed error is not cleaner at the call
    site. If the surrounding function already returns a `Result`, prefer
    `?`.
 
@@ -181,18 +181,6 @@ cannot, and it is not fooled by comments, strings, or shadowed names.
 Reach for `grep` only as a fallback — when the server is genuinely
 unavailable, still indexing, or the target isn't code it understands — and
 say so when you do.
-
-**Single-workspace note (this repo):** the tree is one Cargo workspace. The
-root `Cargo.toml` holds the `packages/*` production crates **and** the live-test
-crates (`live-tests/{e2e,clientless,zaino-testutils}`) as members (see
-docs/adr/0002, docs/adr/0003, docs/adr/0004). `default-members` is the
-production set, so a bare `cargo` / `cargo nextest run` builds and tests only
-those and excludes the heavy live-test crates; the live suite is selected
-explicitly with `-p e2e` / `-p clientless` (the `makers test` front door).
-rust-analyzer indexes the
-single workspace, so go-to-def / find-references resolve across production and
-test code in one pass — no linked-project swapping, and an empty result means
-"no references," not "the other workspace isn't loaded."
 
 ## Crate usage guides: keep them current
 
