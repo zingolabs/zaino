@@ -18,7 +18,8 @@ reproduced verbatim under [Cross References](#cross-references).
   [Design Rationale & Gotchas](#design-rationale--gotchas) so the *why*
   travels with the *what*.
 - **(prior) — periodic release flow.** Resolved ADR 003's deferred cadence and
-  RC-validation TODOs. Renamed from `periodic.md`; superseded here.
+  RC-validation TODOs. Superseded; kept as
+  [ADR-0015](../adr/0015-periodic-release-flow.md).
 
 ## Framing Principle
 
