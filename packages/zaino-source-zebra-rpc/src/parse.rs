@@ -629,7 +629,8 @@ pub(crate) fn parse_address_deltas(
         .iter()
         .map(|d| {
             Ok(AddressDelta {
-                satoshis: SignedZatoshis::new(as_i64(field(d, "satoshis")?)?),
+                satoshis: SignedZatoshis::try_new(as_i64(field(d, "satoshis")?)?)
+                    .map_err(|e| ParseError::Amount(e.to_string()))?,
                 txid: as_txid(field(d, "txid")?)?,
                 index: as_u32(field(d, "index")?)?,
                 height: as_height(field(d, "height")?)?,
@@ -948,7 +949,9 @@ fn parse_value_pool(value: &serde_json::Value) -> Result<ValuePoolBalance, Parse
         value_delta: opt_field(value, "valueDeltaZat")
             .map(as_i64)
             .transpose()?
-            .map(SignedZatoshis::new),
+            .map(SignedZatoshis::try_new)
+            .transpose()
+            .map_err(|e| ParseError::Amount(e.to_string()))?,
     })
 }
 
@@ -1061,7 +1064,8 @@ pub(crate) fn parse_block_deltas(value: &serde_json::Value) -> Result<BlockDelta
                 inputs: parse_optional_list(d, "inputs", |i| {
                     Ok(InputDelta {
                         address: TransparentAddress::new(as_str(field(i, "address")?)?.to_owned()),
-                        satoshis: SignedZatoshis::new(as_i64(field(i, "satoshis")?)?),
+                        satoshis: SignedZatoshis::try_new(as_i64(field(i, "satoshis")?)?)
+                            .map_err(|e| ParseError::Amount(e.to_string()))?,
                         index: as_u32(field(i, "index")?)?,
                         prev_txid: as_txid(field(i, "prevtxid")?)?,
                         prev_output: as_u32(field(i, "prevout")?)?,

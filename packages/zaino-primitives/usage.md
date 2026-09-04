@@ -32,7 +32,8 @@ use zaino_primitives::types::rpc::{BlockDeltas, MiningInfo, NodeInfo, PeerInfo};
 
 - `types` — the chain itself: `Block`, `BlockHeader`, `Transaction`,
   `BlockHash`, `TransactionHash`, `Height`, `BlockRef`, `TreeRoot`,
-  `Treestate`, `ShieldedPool`, `ChainMetadata`, `Zatoshis`, `SignedZatoshis`.
+  `Treestate`, `ShieldedPool`, `ChainMetadata`, and the zatoshi quantity
+  family `Zatoshis` / `ZatoshisFlowSum` / `SignedZatoshis` (see below).
 - `types::rpc` — the response shapes for passthrough RPCs, in domain
   vocabulary rather than any interface's: `BlockDeltas`, `BlockchainInfo`,
   `ChainTip`, `MiningInfo`, `NodeInfo`, `PeerInfo`, `SpentInfo`, `TxOut`,
@@ -61,6 +62,49 @@ let z = Zatoshis::new(21_000_000)?;      // rejects out-of-range amounts
 expressing an invariant in the type over asserting it at a call site — the
 no-`unwrap` rule in CLAUDE.md is much easier to follow when the type has
 already done the work.
+
+## The zatoshi quantity family
+
+Three types share the zatoshi unit but carry different invariants, so summing
+and differencing amounts is done through them rather than a bare integer. See
+ADR-0013 for the doctrine.
+
+| type | range | is |
+|---|---|---|
+| `Zatoshis` | `0 ..= supply` | an amount held — a balance, a UTXO value |
+| `ZatoshisFlowSum` | `0 ..= u128::MAX` | an accumulation of movements, **not** supply-bounded |
+| `SignedZatoshis` | `-supply ..= supply` | a signed value: a movement or a difference |
+
+A sum of *movements* — every output paying an address, every input it spent —
+counts the same coins each time they move, so it is not bounded by the supply;
+that is why it is its own type and not another `Zatoshis`. A sum of *coexisting*
+balances would be supply-bounded, and is a real fourth member of this family,
+but has no consumer yet and is not built (it is named in the arithmetic
+module's docs).
+
+The operations relate the types and live beside them:
+
+```rust
+use zaino_primitives::types::{Zatoshis, ZatoshisFlowSum, SignedZatoshis};
+
+// Sum amounts as flow. `None` only on machine overflow (unreachable in
+// practice), never on passing the supply — gross flow legitimately can.
+let received = ZatoshisFlowSum::try_accumulate(outputs.iter().copied())?;
+let spent = ZatoshisFlowSum::try_accumulate(spends.iter().copied())?;
+
+// Net of a received flow minus a spent flow for one balance, as a signed
+// value. `None` if the two flows don't describe a coherent balance.
+let net: Option<SignedZatoshis> = received.net(spent);
+```
+
+`ZatoshisFlowSum` has no other constructor: a flow sum is only ever the checked
+sum of some amounts. `SignedZatoshis` has two validated doors and no unchecked
+one — `ZatoshisFlowSum::net` for a value *derived* in the domain, and
+`SignedZatoshis::try_new` for one *parsed at a boundary* (a movement read off the
+wire or disk). `try_new` is the external-input validation step for a signed
+value, the
+same discipline the crate applies at every wire and persistence boundary,
+pushed down to the primitive.
 
 ## Byte order
 

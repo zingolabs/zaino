@@ -619,7 +619,8 @@ impl zaino_source::OneShotGetAddressDeltas for ZebraReadStateAdapter {
                 }
 
                 deltas.push(AddressDelta {
-                    satoshis: SignedZatoshis::new(output.value.zatoshis()),
+                    satoshis: SignedZatoshis::try_new(output.value.zatoshis())
+                        .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?,
                     txid: delta_txid,
                     index: index as u32,
                     height,
@@ -1335,7 +1336,8 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
                 inputs.push(InputDelta {
                     address: TransparentAddress::new(address.to_string()),
                     // A spend debits the address, so the value leaves it.
-                    satoshis: SignedZatoshis::new(-output.value.zatoshis()),
+                    satoshis: SignedZatoshis::try_new(-output.value.zatoshis())
+                        .map_err(|e| parse(e.to_string()))?,
                     index: index as u32,
                     prev_txid: TransactionId::from(outpoint.hash.0),
                     prev_output: outpoint.index,
