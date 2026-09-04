@@ -1103,7 +1103,6 @@ impl IndexedBlock {
         let ironwood_commitment_tree_size = self.commitment_tree_data().sizes().ironwood();
 
         zaino_proto::proto::compact_formats::CompactBlock {
-            proto_version: 0,
             height,
             hash,
             prev_hash,

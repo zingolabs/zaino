@@ -17,15 +17,12 @@ use std::process::Command;
 
 // Manifests whose test suites run with --no-default-features.
 //
-// The tree is a single workspace (docs/adr/0002, 0003, 0004): the root manifest
-// covers the production members, and the live-test crates are members of it too.
-// `e2e` is checked through its own manifest as well, because it is the live
-// crate with the deepest `zaino-proto` dependency edges and is selected
-// explicitly (`-p e2e`) rather than by a bare workspace build.
-const MANIFESTS: &[(&str, &str)] = &[
-    ("production", "Cargo.toml"),
-    ("e2e", "live-tests/e2e/Cargo.toml"),
-];
+// Only the root manifest: it covers every production member, and those are the
+// only crates whose `zaino-proto` edges this guard is about. The live-test
+// crates are a separate standalone workspace (live-tests/Cargo.toml) that runs
+// against deployed images and links no production crate, so there is no edge
+// there to strip.
+const MANIFESTS: &[(&str, &str)] = &[("production", "Cargo.toml")];
 
 // The feature node `cargo tree -e features` prints when `heavy` is enabled.
 const HEAVY_NODE: &str = "zaino-proto feature \"heavy\"";
@@ -65,8 +62,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             eprintln!(
                 "[{label}] FAIL: zaino-proto `heavy` is NOT enabled under --no-default-features.\n\
                  A `zaino-proto` dependency likely sets `default-features = false`, which strips\n\
-                 `heavy` (zebra-state / zebra-chain / which) from the test build that\n\
-                 `makers container-test` / `live` use. Remove that\n\
+                 `heavy` (zebra-state / zebra-chain / which) from the test build.\n\
+                 Remove that\n\
                  `default-features = false`.\n\
                  --- cargo tree output ---\n{stdout}"
             );

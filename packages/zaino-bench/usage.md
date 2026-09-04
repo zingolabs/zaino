@@ -9,9 +9,8 @@ interfaces a real client uses:
 | How many concurrent connections can it support? | `zaino-bench concurrent --sweep …` |
 | How fast can it serve blocks? | `zaino-bench serve`, and the sweep's throughput column |
 
-The harness is a workspace member but **not** a `default-member`, for the same
-reason as the live-test crates (docs/adr/0002): it is an operator tool, not part
-of the fast test loop. A bare `cargo nextest run` never builds it. Select it
+The harness is a workspace member but **not** a `default-member`: it is an
+operator tool, not part of the fast test loop. A bare `cargo nextest run` never builds it. Select it
 explicitly:
 
 ```sh

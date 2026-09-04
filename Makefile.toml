@@ -3,18 +3,13 @@ extend = [
     { path = "tools/makefiles/notify.toml" },
     { path = "tools/makefiles/rocksdb.toml" },
 ]
-env_files = [".env.testing-artifacts"]
-
 [config]
 default_to_workspace = false
 
 [env]
 IMAGE_NAME = "zingodevops/zaino-ci"
-TEST_BINARIES_DIR = "/home/container_user/artifacts"
-CONTAINERS_CONF_OVERRIDE = "${CARGO_MAKE_WORKING_DIRECTORY}/.config/containers.conf"
 # Single source of truth: rust-toolchain.toml's `channel`, extracted via the
-# workbench `get-rust-version` binary. Replaces RUST_VERSION in
-# .env.testing-artifacts.
+# workbench `get-rust-version` binary.
 RUST_VERSION = { script = ["cargo run -q --manifest-path tools/workbench/Cargo.toml --bin get-rust-version"] }
 
 [tasks.help]
@@ -36,13 +31,6 @@ script.post = ""
 
 # -------------------------------------------------------------------
 
-[tasks.init-podman-volumes]
-description = "Initialize named podman volumes for container builds"
-script_runner = "bash"
-script = 'source "./tools/scripts/init-podman-volumes.sh"'
-
-# -------------------------------------------------------------------
-
 [tasks.compute-image-tag]
 description = "Compute image tag from version vars"
 script_runner = "bash"
@@ -57,7 +45,6 @@ script = 'source "./tools/scripts/get-podman-hash.sh"'
 
 [tasks.ensure-image-exists]
 description = "Ensure the image exists locally, building if needed"
-dependencies = ["init-podman-volumes"]
 script_runner = "bash"
 extend = "base-script"
 script.main = 'source "./tools/scripts/ensure-image-exists.sh"'
@@ -72,9 +59,10 @@ script.main = 'source "./tools/scripts/pull-ci-image.sh"'
 # -------------------------------------------------------------------
 
 [tasks.build-image]
-description = "Build the container image for testing artifacts"
-# Note: This task builds the container image from the live-tests/test_environment
-# directory, which contains the Containerfile and entrypoint.sh for the CI/test environment.
+description = "Build the CI container image (Rust build environment)"
+# Note: builds from live-tests/test_environment/, which holds the Containerfile
+# for the CI build-environment image (Rust toolchain + protoc + RocksDB +
+# cargo-nextest; no validator binaries — see docs/testing.md).
 script_runner = "bash"
 extend = "base-script"
 script.main = 'source "./tools/scripts/build-image.sh"'
@@ -91,116 +79,24 @@ script.main = 'source "./tools/scripts/push-image.sh"'
 
 # -------------------------------------------------------------------
 
-[tasks.container-test]
-clear = true
-description = "Engine: run nextest in the local CI container, forwarding args. Devs use `makers test [packages|e2e|clientless|live|all]`; live-clientless / live-e2e and the `test` front door call this."
-# This task runs tests inside the container built from live-tests/test_environment.
-# The entrypoint.sh script in the container sets up test binaries (zebrad, zcash-devtool)
-# by creating symlinks from /home/container_user/artifacts to the expected live-tests/test_binaries/bins location.
-dependencies = ["init-podman-volumes", "ensure-image-exists"]
-script_runner = "bash"
-extend = "base-script"
-# The container-test binary (tools/test-runner, a std-only cargo crate — no
-# rust-script needed) owns the podman run; `set -e` makes a test failure abort
-# the script (so `script.post = notify` is skipped on failure, as before).
-script.main = '''
-set -euo pipefail
-cargo run -q --manifest-path tools/test-runner/Cargo.toml --bin container-test -- "${@}"
-'''
-script.post = "makers notify"
-
-# -------------------------------------------------------------------
-
-[tasks.live-clientless]
-description = "Run the `clientless` live-test partition inside the CI container (forwards extra args to `cargo nextest run`)"
-env = { PACKAGE = "clientless", PACKAGE_DESC = "clientless partition" }
-script_runner = "bash"
-extend = "base-script"
-script.main = 'source "./tools/scripts/container-nextest-workspace.sh"'
-
-# -------------------------------------------------------------------
-
-[tasks.live-e2e]
-description = "Run the `e2e` live-test partition inside the CI container (forwards extra args to `cargo nextest run`)"
-env = { PACKAGE = "e2e", PACKAGE_DESC = "e2e partition" }
-script_runner = "bash"
-extend = "base-script"
-script.main = 'source "./tools/scripts/container-nextest-workspace.sh"'
-
-# -------------------------------------------------------------------
-
 # ===================================================================
-# Developer-facing test front door: a single `makers test [SET]` task.
-#
-#   makers test                packages (the default)
-#   makers test packages       packages/* production-crate tests (no validator)
-#   makers test e2e            the e2e live partition
-#   makers test clientless     the clientless live partition
-#   makers test live           both live partitions + combined summary
-#   makers test all            packages then live (everything)
-#
-# SET names mirror the crate/dir names (`e2e`, `clientless`); `packages`,
-# `live`, and `all` are the groupings. `live` = all non-packages tests; `all`
-# = `packages` + `live` (see live-tests/CONTEXT.md). Each set delegates to an
-# existing engine rather than re-implementing a run.
+# Tripwire, not a front door. `makers test` used to route both suites; it was
+# removed. Without this override cargo-make's *builtin* `test`
+# task takes the name and silently runs `cargo test`, which skips the live
+# suites entirely — a false pass. Fail loudly and name the real commands.
 # ===================================================================
 
 [tasks.test]
-# clear = true fully replaces cargo-make's built-in `test` task (which runs
-# `cargo test`); without it our `script` would merge with the builtin `command`.
 clear = true
-description = "Run a test set: `makers test [packages|e2e|clientless|live|all|ironwood]` (default: packages)."
+description = "Removed. Use cargo nextest run / ztest run — see docs/testing.md."
 script_runner = "bash"
-script = '''
-set -uo pipefail
-
-usage() {
-  echo "usage: makers test [packages|e2e|clientless|live|all|ironwood] [-- nextest args]" >&2
-  echo "  packages (default) packages/* tests, no live validator" >&2
-  echo "  e2e | clientless   that single live partition" >&2
-  echo "  live               both live partitions + combined summary" >&2
-  echo "  all                packages then live (everything)" >&2
-  echo "  ironwood           the ironwood tests of every set, packages then clientless then e2e" >&2
-}
-
-# A non-flag first arg selects the set and must be a known name; a flag first
-# arg (or none) keeps the default `packages` and is forwarded to nextest, while
-# a mistyped set name errors instead of silently running the default.
-set="packages"
-if [ "$#" -gt 0 ] && [ "${1#-}" = "$1" ]; then
-  case "$1" in
-    packages|e2e|clientless|live|all|ironwood) set="$1"; shift ;;
-    *) echo "makers test: unknown set '$1'" >&2; usage; exit 2 ;;
-  esac
-fi
-
-case "$set" in
-  packages)   exec makers container-test "$@" ;;
-  e2e)        exec makers live-e2e "$@" ;;
-  clientless) exec makers live-clientless "$@" ;;
-  live)       exec cargo run -q --manifest-path tools/test-runner/Cargo.toml --bin live-summary -- "$@" ;;
-  all)
-    # The summary runner's --all mode runs the packages set and both live
-    # partitions (each set runs even when an earlier one fails, and the exit
-    # code reflects any failure), so the combined table covers everything.
-    exec cargo run -q --manifest-path tools/test-runner/Cargo.toml --bin live-summary -- --all "$@" ;;
-  ironwood)
-    # The one definition of the ironwood selection: the two dedicated test
-    # binaries, plus every test whose name carries the pool's name (the
-    # CONTEXT.md era-naming convention keeps new ironwood tests inside this
-    # net). The same expression serves every engine — a selector naming a
-    # binary a partition lacks simply matches nothing there. The engines are
-    # invoked directly rather than through the `live` summary runner, which
-    # forwards no nextest args. Run every set even if an earlier one fails,
-    # as in `all`.
-    ironwood_filter='binary(ironwood_activation) | binary(the_pub_testnet_ironwood_boundary) | test(ironwood)'
-    rc=0
-    makers container-test -E "$ironwood_filter" "$@" || rc=1
-    makers live-clientless -E "$ironwood_filter" "$@" || rc=1
-    makers live-e2e -E "$ironwood_filter" "$@" || rc=1
-    exit "$rc" ;;
-esac
-'''
+script = """
+echo 'makers test was removed. Run the suites directly:' >&2
+echo '  cargo nextest run                                # packages/*' >&2
+echo '  cd live-tests && ztest run -p clientless -p e2e  # live (k8s)' >&2
+echo 'See docs/testing.md for ztest CLI and cluster setup.' >&2
+exit 2
+"""
 
 # -------------------------------------------------------------------
 
@@ -213,56 +109,6 @@ description = "Run the zaino-bench harness against a running zainod (sync | conc
 # server. Not a member of `default-members`, so `-p` is required to select it.
 script_runner = "bash"
 script = 'exec cargo run --release -p zaino-bench -- "$@"'
-
-# -------------------------------------------------------------------
-
-[tasks.check-matching-zebras]
-description = "Check that zebra versions in .env.testing-artifacts match what's in Cargo.toml"
-extend = "base-script"
-script_runner = "bash"
-script.main = 'source "./tools/scripts/check-matching-zebras.sh"'
-
-# -------------------------------------------------------------------
-
-[tasks.validate-makefile-tasks]
-description = "Validate all tasks work correctly with minimal execution"
-dependencies = ["init-podman-volumes"]
-script_runner = "@rust"
-script = { file = "tools/scripts/validate-makefile-tasks.rs" }
-
-# -------------------------------------------------------------------
-
-[tasks.validate-test-targets]
-description = "Validate that nextest targets match CI workflow matrix"
-script_runner = "bash"
-extend = "base-script"
-script.main = 'source "./tools/scripts/validate-test-targets.sh"'
-
-# -------------------------------------------------------------------
-
-[tasks.update-test-targets]
-description = "Update CI workflow matrix to match nextest targets"
-script_runner = "bash"
-extend = "base-script"
-script.main = 'source "./tools/scripts/update-test-targets.sh"'
-
-# -------------------------------------------------------------------
-
-[tasks.container-test-save-failures]
-description = "Run container-test and save failed test names for later retry"
-script_runner = "bash"
-extend = "base-script"
-script.main = 'source "./tools/scripts/container-test-save-failures.sh"'
-script.post = "makers notify"
-
-# -------------------------------------------------------------------
-
-[tasks.container-test-retry-failures]
-description = "Rerun only failed tests from previous container-test-save-failures"
-script_runner = "bash"
-extend = "base-script"
-script.main = 'source "./tools/scripts/container-test-retry-failures.sh"'
-script.post = "makers notify"
 
 # -------------------------------------------------------------------
 

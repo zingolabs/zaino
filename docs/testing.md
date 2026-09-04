@@ -1,51 +1,73 @@
 # Testing
-### Dependencies
-1) [Zebrad](https://github.com/ZcashFoundation/zebra.git)
-2) [Lightwalletd](https://github.com/zcash/lightwalletd.git)
 
-### Tests
-1) Symlink or copy compiled `zebrad` binaries to `zaino/live-tests/test_binaries/bins/*`
-2) Add `zaino/live-tests/test_binaries/bins` to `$PATH` or to `$TEST_BINARIES_DIR`
-3) Run `cargo nextest run`
+Zaino has two kinds of tests, run by two different commands:
 
-The expected versions of these binaries is detailed in the file ``.env.testing-artifacts`.
+- **Unit tests** — the unit and crate-level integration tests of the
+  `packages/*` crates (the root workspace `default-members`). They need no live
+  validator and run on your host with a plain `cargo nextest run`.
+- **Integration/Live tests** — tests that stand up a real validator, wallet against
+  regtest or testnet and exercise the assembled, running system.
+  They live in the standalone `live-tests/` workspace and run on the **ztest**
+  Kubernetes harness
 
-## Cargo Make
-Another method to work with tests is using `cargo make`, a Rust task runner and build tool.
-This can be installed by running `cargo install --force cargo-make` which will install cargo-make in your ~/.cargo/bin.
-From that point you will have two executables available: `cargo-make` (invoked with `cargo make`) and `makers` which is invoked directly and not as a cargo plugin.
+## Quick start
 
-`cargo make help`
-will print a help output.
-`Makefile.toml` holds a configuration file.
+```sh
 
-## Containerized test tasks (podman)
+# Production crates, from the repo root.
+cargo nextest run
 
-The `makers` tasks below build and run the test suites inside a **podman**
-container, so you don't need the validator binaries on your host `$PATH`. The
-container image is built or pulled automatically on first run.
+cd live-tests
+ztest run
 
-The single front door is `makers test [SET]`, where `SET` defaults to `packages`:
+# Run just the clientless tests (no wallet)
+ztest run -p clientless
 
-- `makers test` (or `makers test packages`) — the **packages** set: the
-  `packages/*` production-crate tests that need no live validator.
-- `makers test e2e` / `makers test clientless` — one live partition.
-- `makers test live` — both live partitions (`clientless` then `e2e`) against a
-  live validator, with a combined pass/fail summary.
-- `makers test all` — the whole suite: packages then live.
+# Run just the tests that failed last run
+ztest run -p clientless --rerun latest
 
-(`container-test`, `live-clientless`, and `live-e2e` are the internal engines
-the `test` front door delegates to; invoke them directly only when you need to
-forward engine flags.)
+```
 
-### Test contention on lower-resource machines
+## The test sets
 
-The suites run at full parallelism (one test thread per CPU), and each
-live test can spawn its own validator. On machines with fewer cores or
-less RAM this can surface as occasional flaky failures caused by contention
-rather than real regressions — re-running usually passes. To make runs more
-reliable, lower the parallelism by reducing `test-threads` in the single root
-nextest config (`.config/nextest.toml`; the live tests are additionally capped
-to 6 concurrent validators via the `live-validators` test-group). For a one-off
-run you can instead forward a nextest flag through the front door, e.g.
-`makers test --test-threads 6`.
+| Set          | Where it runs          | What it covers                                                                                                                                                                                            |
+| ------------ | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/*` | host (`cargo nextest`) | The production crates. No live validator — but *not* network-free: e.g. `zaino-serve`'s gRPC regression test binds a loopback socket and stands up a tonic server.                                        |
+| `e2e`        | ztest / k8s            | The partition driven end-to-end by a real wallet client through Zaino's gRPC surface to a live validator — a wallet's full-stack view of the indexer.                                                     |
+| `clientless` | ztest / k8s            | The partition that drives a deployed Zaino over its served gRPC and JSON-RPC surfaces against a live validator, with no wallet client — fetch-vs-state backend parity, and validator-vs-Zaino oracle checks. |
+
+## Local Ztest Cluster Setup
+
+```sh
+# 1. The CLI. It is not a workspace member; it is expected on PATH.
+cargo install ztest_cli --version '^0.1' --locked
+
+# 2. A cluster. Any reachable cluster works; kind is the usual local one.
+# https://kind.sigs.k8s.io/docs/user/quick-start/#installation
+kind create cluster --name ztest
+
+# 3. Register it with ztest and provision what the harness needs.
+ztest cluster add kind --kind ztest --set-default
+ztest cluster setup
+# This ztest cluster setup can take a few minutes, and creates k8s namespaces, monitoring, etc.
+
+# Check if the cluster is ready/healthy
+ztest cluster check
+```
+
+### Cluster storage
+
+ztest can load validator chaindata snapshots for integration or sync tests. For Sync
+tests it is much faster to use a k8s storage driver that supports CoW `VolumeSnapshot`
+operations. You can skip this if just running integration tests, or accept the
+performance hit of copying the 40-200GB chaindata snapshots when starting a mainnet
+validator
+
+```sh
+
+# TopoLVM is good option when backed by lvm thin-pools
+ztest cluster add kind --kind ztest --storage-driver topolvm.io --set-default
+
+# Rook-ceph is the preferred central-cluster option
+ztest cluster add kind --kind ztest --storage-driver rook-ceph.cephfs.csi.ceph.com --set-default
+```

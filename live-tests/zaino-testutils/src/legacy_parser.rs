@@ -5,17 +5,26 @@
 //!
 //! # Why keep a second parser at all
 //!
-//! Production parses blocks through `zebra-chain`. The live-test vectors
-//! (`e2e/tests/test_vectors.rs`, `clientless/tests/test_vectors.rs`) exist to
-//! catch the class of bug where a parser is subtly wrong — a field read at the
-//! wrong offset, a byte order flipped — and they catch it by parsing the same
-//! bytes a second, independent way and comparing. Rewriting these vectors
-//! against `zebra-chain` would collapse the oracle onto the parser under test
-//! and remove the reason the vectors are there.
+//! Production parses blocks through `zebra-chain`. The transaction vectors in
+//! `clientless/tests/test_vectors.rs` exist to catch the class of bug where a
+//! parser is subtly wrong — a field read at the wrong offset, a byte order
+//! flipped — and they catch it by parsing the same bytes a second, independent
+//! way and comparing. Rewriting those vectors against `zebra-chain` would
+//! collapse the oracle onto the parser under test and remove the reason the
+//! vectors are there.
 //!
 //! So it stays, and it stays *here*: the cost is a few hundred lines living in
 //! the test tree, and in exchange no production crate carries a parser it does
 //! not use.
+//!
+//! # Scope
+//!
+//! Only the parse side survives the ztest migration. The `indexed_block`
+//! bridge — which rendered a parsed block as `zaino-state`'s indexed types —
+//! served the in-process vector generator that the migration replaced, and it
+//! was the sole reason this crate linked `zaino-state`. Dropping it keeps the
+//! live-test workspace off the production dependency graph. Restore it from
+//! history if vector generation is ever re-homed to a `zaino-state` unit test.
 //!
 //! # Not a maintained implementation
 //!
@@ -28,7 +37,3 @@ pub mod block;
 pub mod error;
 pub mod transaction;
 pub mod utils;
-
-mod indexed_block;
-
-pub use indexed_block::{compact_tx_data_from_full_transaction, indexed_block_from_full_block};

@@ -9,37 +9,12 @@ echo ""
 echo "Zaino CI Image Tasks"
 echo "---------------------"
 echo ""
-echo "Common usage:"
-echo "  makers test            # packages/* tests, no live validator (default)"
-echo "  makers test live       # both live partitions + combined summary"
-echo "  makers test all        # everything: packages then live"
-echo ""
-echo "If you modify '.env.testing-artifacts', the test command will \
-automatically:"
-echo "  - Recompute the image tag"
-echo "  - Build a new local container image if needed"
+echo "  cargo nextest run                             # packages/*, no validator"
+echo "  cd live-tests && ztest run -p clientless -p e2e  # live, on the k8s harness"
+echo "  See docs/testing.md for ztest CLI and cluster setup."
 echo ""
 echo "Available commands:"
 echo ""
-echo "  test [SET]                 Front door. SET = packages (default) | e2e | \
-clientless | live | all"
-echo "                               packages   packages/* tests, no live \
-validator"
-echo "                               e2e        the e2e live partition"
-echo "                               clientless the clientless live partition"
-echo "                               live       both live partitions + \
-combined summary"
-echo "                               all        packages then live (everything)"
-echo "  container-test             Engine: run nextest in the container \
-(used by the front door; invoke directly to forward engine flags)"
-echo "  live-clientless            Engine: run the clientless live-test \
-partition (forwards flags to nextest)"
-echo "  live-e2e                   Engine: run the e2e live-test partition \
-(forwards flags to nextest)"
-echo "  container-test-save-failures    Run tests, save failures to \
-.failed-tests"
-echo "  container-test-retry-failures   Rerun only the previously failed \
-tests"
 echo "  build-image                Build the container image with current \
 artifact versions"
 echo "  push-image                 Push the image (used in CI, can be used \
@@ -51,13 +26,6 @@ the image defining files)"
 echo "  ensure-image-exists        Check if the required image exists \
 locally, build if not"
 echo "  pull-ci-image              Pull the CI image from the registry"
-echo "  check-matching-zebras      Verify Zebra versions match between \
-Cargo.toml and .env"
-echo "  validate-test-targets      Check if nextest targets match CI \
-workflow matrix"
-echo "  update-test-targets        Update CI workflow matrix to match \
-nextest targets"
-echo "  validate-makefile-tasks    Run minimal validation of all maker tasks"
 echo "  bench [SUB]                Benchmark a running zainod. SUB = sync | \
 concurrent | serve"
 echo "                               sync       time an initial sync via \
@@ -95,17 +63,14 @@ echo "  set-worktree-parent-tools  Copy .cargo/config.toml to common \
 worktree parent"
 echo ""
 echo "Environment:"
-echo "  ZEBRA_VERSION  Defined by: .env.testing-artifacts"
 echo "  RUST_VERSION                  Derived from rust-toolchain.toml"
 echo "                                via the workbench get-rust-version bin"
 echo ""
 echo "Build Context:"
 echo "  live-tests/test_environment/   Directory containing the \
-container build environment"
-echo "    ├── Containerfile                 Containerfile for CI/test \
-container"
-echo "    └── entrypoint.sh                Entrypoint script that sets up \
-test binaries"
+CI build-environment image"
+echo "    └── Containerfile                 Rust toolchain + protoc + RocksDB \
++ cargo-nextest (no validators)"
 echo ""
 echo "Helpers:"
 echo "  - tools/scripts/get-ci-image-tag.sh: computes the version-based \

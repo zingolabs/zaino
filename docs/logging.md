@@ -58,22 +58,22 @@ RUST_LOG="zaino_state=debug,zaino_serve=info,zebra_state=warn" zainod start
 ZAINOLOG_COLOR=false zainod start 2>&1 | tee zainod.log
 ```
 
-### Makefile / Container Tests
+### Tests
 
-The test environment passes logging variables through to containers:
+The test environment passes logging variables through:
 
 ```bash
 # Default (stream format)
-makers test
+cargo nextest run
 
 # Tree format in tests
-ZAINOLOG_FORMAT=tree makers test
+ZAINOLOG_FORMAT=tree cargo nextest run
 
 # Debug logging in tests
-RUST_LOG=debug ZAINOLOG_FORMAT=tree makers test
+RUST_LOG=debug ZAINOLOG_FORMAT=tree cargo nextest run
 
 # JSON output for parsing test logs
-ZAINOLOG_FORMAT=json makers test 2>&1 | jq .
+ZAINOLOG_FORMAT=json cargo nextest run 2>&1 | jq .
 ```
 
 ### Production

@@ -132,11 +132,3 @@ The image includes a health check:
 ```bash
 docker inspect --format='{{.State.Health.Status}}' <container>
 ```
-
-## Local Testing
-
-Permission handling can be tested locally:
-
-```bash
-./live-tests/test_environment/test-container-permissions.sh zaino:latest
-```

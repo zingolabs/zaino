@@ -1142,7 +1142,6 @@ impl DbV1 {
                     };
 
                     let compact_block = zaino_proto::proto::compact_formats::CompactBlock {
-                        proto_version: 0,
                         height: header.context.height().0 as u64,
                         hash: header.context.hash().0.to_vec(),
                         prev_hash: header.context.parent_hash().0.to_vec(),
@@ -1556,7 +1555,6 @@ pub fn compact_block_to_wire(
     block: &zaino_primitives::types::CompactBlock,
 ) -> zaino_proto::proto::compact_formats::CompactBlock {
     zaino_proto::proto::compact_formats::CompactBlock {
-        proto_version: 0,
         height: u64::from(block.height),
         hash: <[u8; 32]>::from(block.hash).to_vec(),
         prev_hash: <[u8; 32]>::from(block.prev_hash).to_vec(),

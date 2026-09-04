@@ -2,10 +2,6 @@ name: CI - PR
 
 on:
   workflow_call:
-    inputs:
-      nextest-profile:
-        type: string
-        default: 'default'
   workflow_dispatch:
   push:
     tags:
@@ -174,19 +170,20 @@ jobs:
         run: makers check-zaino-proto-heavy
 
       - name: Build and archive tests
-        # --no-default-features, NOT --all-features: enable only what the CI test
-        # machinery needs. `test_dependencies` (the launch_inner_with_listeners
-        # harness path) and zcash_protocol/local-consensus are pulled in by the
-        # test crates' own dependency declarations and survive feature
-        # unification, so the harness still functions. This deliberately omits
-        # the product features `--all-features` was speculatively enabling:
+        # `--workspace` now resolves to the production crates only: the live-test
+        # suite (e2e / clientless / zaino-testutils) is a separate standalone
+        # workspace under live-tests/, driven by the ztest k8s harness, and is not
+        # a member here. So this archives and runs the packages/* unit + crate
+        # integration tests.
+        #
+        # --no-default-features, NOT --all-features: enable only what the tests
+        # need. This deliberately omits the product features `--all-features` was
+        # speculatively enabling:
         #   - experimental_features / transparent_address_history_experimental:
         #     not shipped on by default; CI should not gate on a non-release combo.
         #     Compiled and tested separately by `experimental-features-build`, so
         #     omitting it here no longer means it goes unbuilt.
         #   - prometheus.
-        # This also matches what local `makers container-test` runs by default, so
-        # CI and local exercise the same feature set.
         run: cargo nextest archive --verbose --workspace --no-default-features --archive-file nextest-archive.tar.zst
 
       - name: Save cargo dependencies
@@ -222,27 +219,13 @@ jobs:
       fail-fast: false
       matrix:
         partition:
-          # Regenerated with `makers update-test-targets`, then edited by hand
-          # for the two exclusions below. The generator cannot express them: its
-          # sed range stops at the first comment inside this array, so re-running
-          # it appends rather than replaces. Diff its output against this list
-          # rather than pasting over it.
+          # Production crates only. The live-test suite (clientless / e2e /
+          # zaino-testutils) is a separate standalone workspace under
+          # live-tests/ and runs on the ztest k8s harness, so it is not in this
+          # job's `--workspace` archive.
           #
-          # `clientless::chain_cache` is excluded: timeouts/hangs pending
-          # chain-index integration, re-enable per
-          # https://github.com/zingolabs/zaino/issues/1312.
-          #
-          # The e2e partitions (e2e::{compact_block_wire, devtool,
-          # ironwood_activation, test_vectors}) are excluded: they live in the
-          # unified --workspace archive and are compiled every run, but running
-          # the validator-heavy suite here is a CI-capacity decision tracked in
-          # https://github.com/zingolabs/zaino/issues/1308.
-          - "clientless::compact_block_consistency"
-          - "clientless::fetch_service"
-          - "clientless::state_service"
-          - "clientless::test_vectors"
-          - "clientless::the_pub_testnet_ironwood_boundary"
-          - "clientless::validator_heights"
+          # Maintained by hand: add a line when a crate gains its first test,
+          # or a `crate::target` line when it gains a second test binary.
           - "zaino-address"
           - "zaino-chain-head"
           - "zaino-chain-head-service"
@@ -266,7 +249,6 @@ jobs:
           - "zaino-source-zebra-rpc::block_parity"
           - "zaino-state"
           - "zaino-state::source_capabilities"
-          - "zaino-testutils"
     steps:
       - uses: actions/checkout@v7
 
@@ -283,11 +265,6 @@ jobs:
             ~/.cargo
             target/debug/deps
 
-      - name: Setup test binaries
-        run: |
-          # Run the entrypoint script with the actual working directory
-          /usr/local/bin/entrypoint.sh "$(pwd)"
-
       - name: Restore nextest archive from S3
         uses: tespkg/actions-cache/restore@v1
         with:
@@ -299,19 +276,8 @@ jobs:
           path: nextest-archive.tar.zst
 
       - name: Run Tests (Nextest)
-        env:
-          TEST_BINARIES_DIR: ${{ github.workspace }}/live-tests/test_binaries/bins
         run: |
-          # Retries are NOT set here: the `default` profile scopes retries = 2 to
-          # the live packages (e2e/clientless) and keeps production unit partitions
-          # at retries = 0. A global `--retries` flag would blanket the unit tests too.
-          #
-          # `--no-tests fail` guards against a mistyped partition (binary_id matching
-          # nothing).
-          cargo nextest run --verbose --profile ${{ inputs.nextest-profile || 'default' }} --no-tests fail --archive-file nextest-archive.tar.zst \
+          # `--no-tests fail` guards against a mistyped partition (binary_id
+          # matching nothing).
+          cargo nextest run --verbose --no-tests fail --archive-file nextest-archive.tar.zst \
             --workspace-remap ./ --filterset "binary_id(${{ matrix.partition }})"
-
-      - name: Test Summary
-        uses: test-summary/action@v2
-        with:
-          paths: "target/nextest/${{ inputs.nextest-profile || 'default' }}/junit.xml"

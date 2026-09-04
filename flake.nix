@@ -2,7 +2,7 @@
   description = "Zaino — indexer and proxy server for the Zcash protocol";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
     flake-utils.url = "github:numtide/flake-utils";
 
     crane.url = "github:ipetkov/crane";
@@ -28,7 +28,7 @@
         (crane.mkLib pkgs).overrideToolchain (p:
           fenix.packages.${p.stdenv.buildPlatform.system}.fromToolchainFile {
             file = ./rust-toolchain.toml;
-            sha256 = "sha256-gh/xTkxKHL4eiRXzWv8KP7vfjSk61Iq48x47BEDFgfk=";
+            sha256 = "sha256-mvUGEOHYJpn3ikC5hckneuGixaC+yGrkMM/liDIDgoU=";
           });
 
       overlay = final: _prev: {
@@ -83,9 +83,17 @@
             cargo-deny
             cargo-make
             rust-analyzer
+
+            # Integration tests
+            kind
+            kubectl
+            openshift
           ];
 
-          inherit (commonArgs) env;
+          env = commonArgs.env // {
+            # Needed for librocksdb-sys
+            LD_LIBRARY_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
+          };
         };
 
         checks = {

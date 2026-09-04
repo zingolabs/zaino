@@ -1290,7 +1290,10 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Ligh
             .get_compact_block(
                 &snapshot,
                 types::Height(height),
-                PoolTypeFilter::includes_all(),
+                // `BlockID` has no `poolTypes`; unfiltered is served the legacy set, as
+                // `GetBlockRange` serves an empty one. `includes_all` here would make a
+                // height's content depend on which RPC asked.
+                PoolTypeFilter::default(),
             )
             .await
         {
@@ -1370,7 +1373,9 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Ligh
             .get_compact_block(
                 &snapshot,
                 types::Height(height),
-                PoolTypeFilter::includes_all(),
+                // As `get_block`. `includes_all` here leaks transparent-only txs as
+                // nullifier-less husks the range form never emits.
+                PoolTypeFilter::default(),
             )
             .await
         {

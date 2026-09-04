@@ -22,10 +22,6 @@ This baseline will tell you which tests are currently passing, failing
 and their performance. This will help you identify regressions when
 updating these or any other dependencies.
 
-## update `.env.testing-artifacts` to the corresponding version of Zebra
-Instructions on how to do this can be found in [testing](./testing.md)
-documentation.
-
 ## Finding out which crates depend on Zebra crates.
 Find out which dependencies use `zebra-*` crates by running
 `cargo tree` and spotting the usage of Zebra crates.
@@ -38,7 +34,7 @@ order to catch any posible compile errors early.
 ## Keep the zebra pin in the single root workspace
 
 This repo is **one Cargo workspace** with a single `Cargo.lock`: the live-test
-crates were folded into the root workspace (see docs/adr/0002, docs/adr/0003).
+crates live in the standalone live-tests/ workspace.
 The zebra version requirements live once in the root `Cargo.toml`
 `[workspace.dependencies]`, and any unreleased pin lives once in the root
 `[patch.crates-io]`. Every member — the `packages/*` production crates and the
