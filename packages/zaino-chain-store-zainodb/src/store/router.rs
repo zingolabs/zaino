@@ -559,7 +559,7 @@ impl<T: ChainStoreSource> Router<T> {
             return Ok(self.primary.load_full());
         }
 
-        Err(StoreError::FeatureUnavailable(cap.name()))
+        Err(StoreError::FeatureUnavailable(cap))
     }
 
     // ***** Ephemeral finalised state control *****

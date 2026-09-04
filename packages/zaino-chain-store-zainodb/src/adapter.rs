@@ -74,50 +74,45 @@ use crate::store::reader::DbReader;
 use crate::store::FinalisedState;
 use crate::types::{Height, Outpoint, TransactionHash};
 
-/// Which chunked read a duration belongs to.
-///
-/// A marker rather than the metric name itself, because `metric_names` is
-/// behind the `prometheus` feature and naming a constant from it at the call
-/// site would put a `cfg` on every read.
-#[derive(Debug, Clone, Copy)]
-enum ChunkRead {
-    Stored,
-    Compact,
-}
-
-/// How long a chunked read took.
+/// How long a read took, recorded against `DB_READ_SECONDS` under its `op`.
 ///
 /// A type rather than a bare `Instant` so the `prometheus` feature is handled
 /// once: without it this compiles to nothing and no call site needs a `cfg`.
+///
+/// The whole read surface shares one histogram, split by an `op` label naming
+/// the read. The label is the port method's own name, so a new read is
+/// instrumented by starting a timer with its name rather than by minting a
+/// metric.
+///
+/// Recorded on drop, so a read that returns early through `?` still records: a
+/// read that fails slowly is the symptom worth seeing, and dropping those
+/// samples would make a degrading store look faster as it got worse.
 struct ReadTimer {
+    #[cfg(feature = "prometheus")]
+    op: &'static str,
     #[cfg(feature = "prometheus")]
     started: std::time::Instant,
 }
 
 impl ReadTimer {
-    fn start() -> Self {
+    /// Starts timing a read labelled `op` — the port method's own name.
+    fn start(op: &'static str) -> Self {
+        #[cfg(not(feature = "prometheus"))]
+        let _ = op;
         Self {
+            #[cfg(feature = "prometheus")]
+            op,
             #[cfg(feature = "prometheus")]
             started: std::time::Instant::now(),
         }
     }
+}
 
-    /// Records the elapsed time against `read`'s metric.
-    ///
-    /// Recorded whether the read succeeded or failed: a read that fails slowly
-    /// is the symptom worth seeing, and dropping those samples would make a
-    /// degrading store look faster as it got worse.
-    fn record(self, read: ChunkRead) {
-        #[cfg(feature = "prometheus")]
-        {
-            let metric = match read {
-                ChunkRead::Stored => crate::metric_names::DB_BLOCK_READ_SECONDS,
-                ChunkRead::Compact => crate::metric_names::DB_COMPACT_READ_SECONDS,
-            };
-            metrics::histogram!(metric).record(self.started.elapsed().as_secs_f64());
-        }
-        #[cfg(not(feature = "prometheus"))]
-        let _ = read;
+#[cfg(feature = "prometheus")]
+impl Drop for ReadTimer {
+    fn drop(&mut self) {
+        metrics::histogram!(crate::metric_names::DB_READ_SECONDS, "op" => self.op)
+            .record(self.started.elapsed().as_secs_f64());
     }
 }
 
@@ -135,21 +130,25 @@ impl<T: ChainStoreSource> ChainStoreReader for DbReader<T> {
         Ok(store_schema(&metadata))
     }
 
+    #[tracing::instrument(skip(self), fields(height = %height))]
     async fn block_hash(
         &self,
         height: DomainHeight,
     ) -> Result<Option<DomainBlockHash>, ChainStoreError> {
         self.bounded(height)?;
+        let _timer = ReadTimer::start("block_hash");
         Ok(DbReader::get_block_hash(self, stored_height(height))
             .await
             .map_err(chain_store_error)?
             .map(domain_hash))
     }
 
+    #[tracing::instrument(skip(self), fields(hash = %hash))]
     async fn block_height(
         &self,
         hash: DomainBlockHash,
     ) -> Result<Option<DomainHeight>, ChainStoreError> {
+        let _timer = ReadTimer::start("block_height");
         match DbReader::get_block_height(self, stored_hash(hash))
             .await
             .map_err(chain_store_error)?
@@ -290,10 +289,12 @@ impl<T: ChainStoreSource> DbReader<T> {
 }
 
 impl<T: ChainStoreSource> TransactionIndex for DbReader<T> {
+    #[tracing::instrument(skip(self), fields(txid = %txid))]
     async fn tx_position(
         &self,
         txid: &TransactionId,
     ) -> Result<Option<BlockTxPosition>, ChainStoreError> {
+        let _timer = ReadTimer::start("tx_position");
         match self
             .get_tx_location(&TransactionHash((*txid).into()))
             .await
@@ -304,6 +305,7 @@ impl<T: ChainStoreSource> TransactionIndex for DbReader<T> {
         }
     }
 
+    #[tracing::instrument(skip(self), fields(position = ?position))]
     async fn txid_at(
         &self,
         position: BlockTxPosition,
@@ -312,6 +314,7 @@ impl<T: ChainStoreSource> TransactionIndex for DbReader<T> {
         let Some(location) = tx_location(position) else {
             return Ok(None);
         };
+        let _timer = ReadTimer::start("txid_at");
         // The backend errors on a miss where the domain answers `None`: asking
         // about a position past the end of a block is a reasonable question.
         match self.get_txid(location).await {
@@ -323,10 +326,12 @@ impl<T: ChainStoreSource> TransactionIndex for DbReader<T> {
 }
 
 impl<T: ChainStoreSource> SpentOutputIndex for DbReader<T> {
+    #[tracing::instrument(skip(self, outpoints), fields(outpoints = outpoints.len()))]
     async fn outpoint_spenders(
         &self,
         outpoints: &[DomainOutpoint],
     ) -> Result<Vec<Option<SpenderRef>>, ChainStoreError> {
+        let _timer = ReadTimer::start("outpoint_spenders");
         let stored: Vec<Outpoint> = outpoints.iter().map(stored_outpoint).collect();
         let locations = DbReader::get_outpoint_spenders(self, stored)
             .await
@@ -350,10 +355,12 @@ impl<T: ChainStoreSource> SpentOutputIndex for DbReader<T> {
         Ok(spenders)
     }
 
+    #[tracing::instrument(skip(self, outpoints), fields(outpoints = outpoints.len()))]
     async fn previous_outputs(
         &self,
         outpoints: &[DomainOutpoint],
     ) -> Result<Vec<Option<StoredTxOut>>, ChainStoreError> {
+        let _timer = ReadTimer::start("previous_outputs");
         let mut outputs = Vec::with_capacity(outpoints.len());
         for outpoint in outpoints {
             outputs.push(self.previous_output(outpoint).await?);
@@ -361,10 +368,12 @@ impl<T: ChainStoreSource> SpentOutputIndex for DbReader<T> {
         Ok(outputs)
     }
 
+    #[tracing::instrument(skip(self), fields(outpoint = ?outpoint))]
     async fn unspent_output(
         &self,
         outpoint: DomainOutpoint,
     ) -> Result<Option<StoredTxOut>, ChainStoreError> {
+        let _timer = ReadTimer::start("unspent_output");
         let Some(output) = self.previous_output(&outpoint).await? else {
             return Ok(None);
         };
@@ -376,6 +385,7 @@ impl<T: ChainStoreSource> SpentOutputIndex for DbReader<T> {
         Ok((!spent).then_some(output))
     }
 
+    #[tracing::instrument(skip(self), fields(position = ?position))]
     async fn transparent_outputs(
         &self,
         position: BlockTxPosition,
@@ -384,6 +394,7 @@ impl<T: ChainStoreSource> SpentOutputIndex for DbReader<T> {
         let Some(location) = tx_location(position) else {
             return Ok(None);
         };
+        let _timer = ReadTimer::start("transparent_outputs");
         match DbReader::get_transparent(self, location)
             .await
             .map_err(chain_store_error)?
@@ -414,7 +425,9 @@ impl<T: ChainStoreSource> DbReader<T> {
 }
 
 impl<T: ChainStoreSource> TxOutSetIndex for DbReader<T> {
+    #[tracing::instrument(skip(self))]
     async fn txout_set(&self) -> Result<TxOutSetAccumulator, ChainStoreError> {
+        let _timer = ReadTimer::start("txout_set");
         let accumulator = self
             .get_tx_out_set_info_accumulator()
             .await
@@ -442,18 +455,14 @@ impl<T: ChainStoreSource> StoredBlockRead for DbReader<T> {
         // Timed around the chunk rather than the block: one read transaction
         // covers the range, so a per-block figure would divide one duration by
         // a count rather than measure anything.
-        let read = ReadTimer::start();
+        let _timer = ReadTimer::start("blocks_chunk");
 
-        let blocks: Result<Vec<_>, _> = self
-            .get_chain_block_range(start, end)
+        self.get_chain_block_range(start, end)
             .await
             .map_err(chain_store_error)?
             .into_iter()
             .map(stored_block)
-            .collect();
-
-        read.record(ChunkRead::Stored);
-        blocks
+            .collect()
     }
 
     async fn blocks_stream(
@@ -494,14 +503,11 @@ impl<T: ChainStoreSource> CompactBlockRead for DbReader<T> {
 
         // The wallet-sync hot path: a syncing wallet spends almost all of its
         // time here, so this is the read whose latency a dashboard needs.
-        let read = ReadTimer::start();
+        let _timer = ReadTimer::start("compact_chunk");
 
-        let blocks = DbReader::get_compact_block_range(self, start, end, pools)
+        DbReader::get_compact_block_range(self, start, end, pools)
             .await
-            .map_err(chain_store_error);
-
-        read.record(ChunkRead::Compact);
-        blocks
+            .map_err(chain_store_error)
     }
 
     async fn compact_stream(

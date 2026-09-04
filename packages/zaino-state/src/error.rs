@@ -456,6 +456,9 @@ impl From<FinalisedStateError> for ChainIndexError {
             FinalisedStateError::FeatureUnavailable(err) => {
                 format!("unhandled missing feature: {err}")
             }
+            FinalisedStateError::V1BackendUnavailable(handle) => {
+                format!("v1 backend unavailable: {handle}")
+            }
             FinalisedStateError::InvalidBlock {
                 height,
                 hash: _,

@@ -249,8 +249,11 @@ impl<T: ChainStoreSource> EphemeralFinalisedState<T> {
         self.status.store(status);
     }
 
-    fn feature_unavailable(feature_name: &'static str) -> StoreError {
-        StoreError::FeatureUnavailable(feature_name)
+    /// The concrete v1 backend a read needs is absent because this backend is
+    /// the ephemeral migration passthrough. A backend-state refusal, not a
+    /// capability one; `handle` names what was asked for, for the operator's log.
+    fn v1_backend_unavailable(handle: &'static str) -> StoreError {
+        StoreError::V1BackendUnavailable(handle)
     }
 
     /// The block at `height`, or `None` when the validator has no such block.
@@ -452,8 +455,8 @@ impl<T: ChainStoreSource> DbRead for EphemeralFinalisedState<T> {
     }
 
     async fn get_metadata(&self) -> Result<DbMetadata, StoreError> {
-        Err(Self::feature_unavailable(
-            "READ_CORE:metadata requires an active DB",
+        Err(Self::v1_backend_unavailable(
+            "metadata read requires an active v1 backend",
         ))
     }
 }
