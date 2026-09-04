@@ -92,14 +92,14 @@ use zaino_primitives::types::{Zatoshis, ZatoshisFlowSum, SignedZatoshis};
 let received = ZatoshisFlowSum::try_accumulate(outputs.iter().copied())?;
 let spent = ZatoshisFlowSum::try_accumulate(spends.iter().copied())?;
 
-// Subtract one flow sum from another into a signed value, enforcing +/- supply.
-// `None` if the net is not a representable signed value.
-let net: Option<SignedZatoshis> = received.minus(spent);
+// Net of a received flow minus a spent flow for one balance, as a signed
+// value. `None` if the two flows don't describe a coherent balance.
+let net: Option<SignedZatoshis> = received.net(spent);
 ```
 
 `ZatoshisFlowSum` has no other constructor: a flow sum is only ever the checked
 sum of some amounts. `SignedZatoshis` has two validated doors and no unchecked
-one — `ZatoshisFlowSum::minus` for a value *derived* in the domain, and
+one — `ZatoshisFlowSum::net` for a value *derived* in the domain, and
 `SignedZatoshis::try_new` for one *parsed at a boundary* (a movement read off the
 wire or disk). `try_new` is the external-input validation step for a signed
 value, the

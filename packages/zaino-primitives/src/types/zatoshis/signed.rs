@@ -10,7 +10,7 @@ use super::MAX_ZATOSHIS;
 /// type: a directional movement parsed at a boundary — a single input or output
 /// value, via [`try_new`](SignedZatoshis::try_new) — and the difference of two
 /// totals derived in the domain, via
-/// [`ZatoshisFlowSum::minus`](super::ZatoshisFlowSum::minus). Both are bounded by
+/// [`ZatoshisFlowSum::net`](super::ZatoshisFlowSum::net). Both are bounded by
 /// the supply: a single amount cannot exceed it, and a change in an aggregate
 /// balance (which lives in `[0, supply]`) cannot either.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -38,7 +38,7 @@ impl SignedZatoshis {
     /// single directional movement. A single amount cannot exceed the supply, so
     /// a magnitude that does signals corrupt input and is rejected rather than
     /// truncated. A value *derived* inside the domain reaches the same bound
-    /// through [`ZatoshisFlowSum::minus`](super::ZatoshisFlowSum::minus).
+    /// through [`ZatoshisFlowSum::net`](super::ZatoshisFlowSum::net).
     pub fn try_new(value: i64) -> Result<Self, SignedZatoshisOverflow> {
         Self::try_from_i128(i128::from(value))
     }
@@ -52,7 +52,7 @@ impl SignedZatoshis {
     /// because the caller accumulates gross flow in a wide integer before
     /// subtracting; the returned type re-establishes the narrower bound.
     /// Module-internal: the derived-value door is
-    /// [`ZatoshisFlowSum::minus`](super::ZatoshisFlowSum::minus), and the
+    /// [`ZatoshisFlowSum::net`](super::ZatoshisFlowSum::net), and the
     /// boundary door is [`try_new`](Self::try_new).
     pub(super) fn try_from_i128(value: i128) -> Result<Self, SignedZatoshisOverflow> {
         i64::try_from(value)

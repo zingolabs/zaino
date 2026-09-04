@@ -106,7 +106,7 @@ impl StoreAddressEffects {
     /// The *net* — received minus spent — is the change in the addresses'
     /// aggregate balance over the range. An aggregate balance lives in
     /// `[0, supply]`, so its change lives in `[-supply, +supply]`. That is the
-    /// real invariant, and [`ZatoshisFlowSum::minus`] enforces it as it lands
+    /// real invariant, and [`ZatoshisFlowSum::net`] enforces it as it lands
     /// the difference in a [`SignedZatoshis`]: a net whose magnitude exceeds the
     /// supply is not a representable signed value and yields `None` rather than a
     /// truncated figure.
@@ -116,7 +116,7 @@ impl StoreAddressEffects {
         let spent =
             ZatoshisFlowSum::try_accumulate(self.spends.iter().map(|spend| spend.output.value))?;
 
-        received.minus(spent)
+        received.net(spent)
     }
 
     /// Whether the store observed nothing at all.

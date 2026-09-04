@@ -42,7 +42,7 @@ The correction is a doctrine about primitive quantity types, illustrated here on
    and a single amount cannot exceed the supply either — so both are the same
    quantity, a *signed* zatoshi value, genuinely distinct from an (unsigned)
    amount. It is its own type, `SignedZatoshis`. "Difference" is then an
-   *operation* on flow sums (`ZatoshisFlowSum::minus`), not the type: a delta is
+   *operation* on flow sums (`ZatoshisFlowSum::net`), not the type: a delta is
    a signed value obtained by subtracting, a movement one obtained by parsing.
    The type names what it is; the provenance names how it was obtained.
 
@@ -57,12 +57,17 @@ The correction is a doctrine about primitive quantity types, illustrated here on
    primitive.
 
 5. **Operations that relate several types are relations, not methods of one
-   type.** Summing lands `Zatoshis` in an accumulator; subtracting one
-   accumulator from another lands the result in a signed value. These belong
-   together in an arithmetic module beside
-   the types, which is also where the allowed operations — the algebra — are
-   written down as the specification. A new summation site inherits that algebra
-   instead of reinventing a raw wide integer.
+   type.** Summing lands `Zatoshis` in an accumulator; the `net` relation
+   subtracts a spent flow from a received one and lands the result in a signed
+   value. These belong together in an arithmetic module beside the types, which
+   is also where the allowed operations — the algebra — are written down as the
+   specification. A new summation site inherits that algebra instead of
+   reinventing a raw wide integer. `net` also shows that an operation can carry a
+   precondition, not just a bound: its ±supply result holds only because the two
+   sums are the received and spent flow of one balance, so their difference is a
+   balance change. A generic subtraction of unrelated flow sums is not
+   supply-bounded and is deliberately not offered — no `impl Sub` — so the bound
+   is never claimed where it does not hold.
 
 6. **Name by intent, not representation.** A checked constructor is `try_new`,
    not `try_from_i64`: the input width is incidental and would date the name; the

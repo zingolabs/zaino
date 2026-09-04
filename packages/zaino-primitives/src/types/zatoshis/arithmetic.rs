@@ -20,15 +20,17 @@
 //!
 //! ```text
 //! accumulate : [A] → F            Σ aᵢ, counting each movement
-//! minus      : F × F → D          f₁ − f₂, landing in [−S, S] or refused
+//! net        : F × F → D          received − spent, landing in [−S, S] or refused
 //! ```
 //!
 //! `accumulate` carries amounts into the unbounded flow sum: a total of
 //! movements is not a balance, so the supply cap does not apply to it, and it
-//! fails only if the machine integer overflows. `minus` subtracts one flow sum
-//! from another into a signed value: a change in an aggregate balance lives in
-//! `[−S, S]`, so a result outside that range is not representable and is refused
-//! rather than truncated.
+//! fails only if the machine integer overflows. `net` subtracts a spent flow
+//! from a received one and admits the result only as a signed value: a balance
+//! change lives in `[−S, S]`, so a result outside it is refused. That bound is a
+//! property of a balance change, which the two sums are only when they are the
+//! received and spent flow of one balance — `net`'s contract. A difference of
+//! unrelated flow sums is not a balance change and is deliberately not offered.
 //!
 //! # A member left unbuilt
 //!
@@ -70,16 +72,27 @@ impl ZatoshisFlowSum {
             .map(Self::from_raw)
     }
 
-    /// Subtract one flow sum from another, as a signed value.
+    /// The net balance change of a received flow minus a spent flow.
     ///
-    /// The `minus` relation: `F × F → D`. Computes `self - other` and lands it
-    /// in a [`SignedZatoshis`], enforcing the `[-S, S]` bound. Returns `None` if
-    /// the result is not representable — its magnitude exceeds the money supply,
-    /// or (unreachably, for real flow sums) it exceeds a wide signed integer.
-    pub fn minus(self, other: Self) -> Option<SignedZatoshis> {
-        let (this, that) = (self.into_raw(), other.into_raw());
-        let magnitude = i128::try_from(this.abs_diff(that)).ok()?;
-        let difference = if this >= that { magnitude } else { -magnitude };
+    /// The `net` relation: `F × F → D`. Computes `self - spent` and admits the
+    /// result only as a [`SignedZatoshis`] (±supply), returning `None` otherwise.
+    ///
+    /// Contract: `self` is the received flow and `spent` the spent flow of the
+    /// *same* balance over the *same* range. Only then is the difference that
+    /// balance's change, which an aggregate balance — living in `[0, supply]` —
+    /// keeps within `[-supply, supply]`. So `None` means the two flows do not
+    /// describe a coherent balance (partial or corrupt data), not merely a large
+    /// number. A difference of unrelated flow sums is not a balance change, is
+    /// bounded only by the machine, and is deliberately not offered: there is no
+    /// generic subtraction nor `impl Sub` that would return an unbounded result.
+    pub fn net(self, spent: Self) -> Option<SignedZatoshis> {
+        let (received, spent) = (self.into_raw(), spent.into_raw());
+        let magnitude = i128::try_from(received.abs_diff(spent)).ok()?;
+        let difference = if received >= spent {
+            magnitude
+        } else {
+            -magnitude
+        };
         SignedZatoshis::try_from_i128(difference).ok()
     }
 }
@@ -101,7 +114,7 @@ mod tests {
             .expect("an empty sum does not overflow");
 
         assert_eq!(empty, ZatoshisFlowSum::ZERO);
-        assert_eq!(empty.minus(ZatoshisFlowSum::ZERO).map(i64::from), Some(0));
+        assert_eq!(empty.net(ZatoshisFlowSum::ZERO).map(i64::from), Some(0));
     }
 
     /// `accumulate` sums its amounts.
@@ -112,7 +125,7 @@ mod tests {
         let spent = ZatoshisFlowSum::try_accumulate([60].map(zatoshis).into_iter())
             .expect("well within the machine bound");
 
-        assert_eq!(received.minus(spent).map(i64::from), Some(120));
+        assert_eq!(received.net(spent).map(i64::from), Some(120));
     }
 
     /// Differencing a smaller sum from a larger is a receive; the reverse a
@@ -122,11 +135,11 @@ mod tests {
         let more = ZatoshisFlowSum::try_accumulate([70].map(zatoshis).into_iter()).expect("valid");
         let less = ZatoshisFlowSum::try_accumulate([10].map(zatoshis).into_iter()).expect("valid");
 
-        let receive = more.minus(less).expect("within the supply");
+        let receive = more.net(less).expect("within the supply");
         assert!(receive.is_receive());
         assert_eq!(i64::from(receive), 60);
 
-        let spend = less.minus(more).expect("within the supply");
+        let spend = less.net(more).expect("within the supply");
         assert!(spend.is_spend());
         assert_eq!(i64::from(spend), -60);
     }
@@ -143,7 +156,7 @@ mod tests {
 
         // Twice the supply less once the supply nets to exactly the supply.
         assert_eq!(
-            gross.minus(one).map(i64::from),
+            gross.net(one).map(i64::from),
             Some(i64::try_from(MAX_ZATOSHIS).expect("the supply fits in an i64"))
         );
     }
@@ -156,8 +169,8 @@ mod tests {
             ZatoshisFlowSum::try_accumulate([MAX_ZATOSHIS, MAX_ZATOSHIS].map(zatoshis).into_iter())
                 .expect("valid flow sum");
 
-        assert_eq!(two_supplies.minus(ZatoshisFlowSum::ZERO), None);
-        assert_eq!(ZatoshisFlowSum::ZERO.minus(two_supplies), None);
+        assert_eq!(two_supplies.net(ZatoshisFlowSum::ZERO), None);
+        assert_eq!(ZatoshisFlowSum::ZERO.net(two_supplies), None);
     }
 
     /// A difference at exactly the supply is still a representable signed value.
@@ -167,7 +180,7 @@ mod tests {
             .expect("valid flow sum");
 
         assert_eq!(
-            one_supply.minus(ZatoshisFlowSum::ZERO).map(i64::from),
+            one_supply.net(ZatoshisFlowSum::ZERO).map(i64::from),
             Some(i64::try_from(MAX_ZATOSHIS).expect("the supply fits in an i64"))
         );
     }
