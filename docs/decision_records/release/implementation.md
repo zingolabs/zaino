@@ -229,6 +229,50 @@ The contract is a **Deployment event schema** (commit sha, image ref, cycle id)
 and the `deployment_status` callback. Either side can evolve independently as
 long as that schema holds.
 
+## Trust model
+
+One place for "what credentials exist, who can reach them, and what can cause a
+release". The workflows carry per-step comments; this section is the inventory.
+
+### Credentials
+
+| Secret | What it is | Where it is used |
+| --- | --- | --- |
+| `RELEASE_APP_ID` / `RELEASE_APP_PRIVATE_KEY` | GitHub App. Its pushes bypass protected-branch rules and trigger downstream workflows (a `GITHUB_TOKEN` push does neither). | `rc-gate`, `blessing`, `deployment-advance`, `changeset-rename`, `backport-sentinel`, `release-pr-body` |
+| `CARGO_REGISTRY_TOKEN` | Stored long-lived crates.io publish token for every publishable crate. | `blessing` only (pre-flight check + publish) |
+| `DISPATCH_APP_ID` / `DISPATCH_APP_PRIVATE_KEY` | Pre-existing App for cross-repo test dispatch. Not part of this pipeline. | `trigger-integration-tests` |
+
+Open item: replace the stored `CARGO_REGISTRY_TOKEN` with crates.io Trusted
+Publishing (per-run OIDC federation, no stored credential) — under evaluation
+in the PR discussion. If the stored token stays, the reason gets recorded here.
+
+### Exposure
+
+Workflows that mint an App token on `pull_request` (`changeset-rename`) run
+the PR branch's copy of the workflow file with secrets available. A same-repo
+PR can therefore modify the workflow and reach the App key. This is the
+trusted-writer posture: write access to this repo means release-credential
+access. Fork PRs receive no secrets. `changeset-check` is the one ungated
+workflow and holds no credentials — it only reads the diff.
+
+### What can cause a release to advance
+
+Every path below is inert until the repo variable `RELMAN_PIPELINE_ACTIVE`
+is `true`; `RELMAN_PUBLISH_DRY_RUN` additionally downgrades publishing to
+advisory.
+
+1. **Merge/push to `stable`** → `blessing` publishes to crates.io, tags, cuts
+   the GitHub Release. `stable` is protected; the release App bypasses the
+   protection by design.
+2. **`rc-gate` nightly cron** advances the rc frontier when the gate condition
+   holds. Its `workflow_dispatch` input `force=true` bypasses the gate and is
+   available to any write-access user; until the nightly green precondition is
+   wired, `force` is the only advance path (flagged in the workflow header as
+   the draft escape hatch — do not activate the pipeline before closing it).
+3. **Any `deployment_status: success` event** on a gated Deployment →
+   `deployment-advance` moves `release-ready`. The event's authenticity is not
+   verified beyond repo write access to post it.
+
 ## Dependency: deployment pass/fail needs metrics
 
 "Did the deployment gate pass" is a metrics question — sync completed, no crash, performance
