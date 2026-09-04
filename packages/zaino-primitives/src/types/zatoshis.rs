@@ -1,7 +1,13 @@
 //! Zcash monetary quantities in zatoshis.
 //!
-//! Three quantities share the zatoshi unit but not their invariants, so each is
-//! its own type:
+//! A zatoshi is one unit, but *summing* zatoshis is not one operation. What the
+//! same amounts mean depends on what is being summed: a set of balances that
+//! coexist on chain at one moment cannot total more than the money supply, while
+//! the movements through an address over history — every receipt and every
+//! spend — count the same coins each time they move and have no such bound. The
+//! invariant of a sum is a property of what is summed, not of the zatoshi or of
+//! `+`. So each quantity is its own type, and each summation lands in the type
+//! whose invariant it satisfies:
 //!
 //! - [`Zatoshis`] — an amount held, in `0 ..= supply`.
 //! - [`ZatoshisFlowSum`] — an accumulation of movements, bounded only by machine
