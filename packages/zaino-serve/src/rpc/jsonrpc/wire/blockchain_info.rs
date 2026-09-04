@@ -16,10 +16,6 @@ pub enum BlockchainInfoWireError {
     #[error("unknown value pool `{0}`")]
     UnknownValuePool(String),
 
-    /// A pool balance outside the range the interface's amount type allows.
-    #[error("value pool balance out of range: {0}")]
-    PoolBalanceOutOfRange(String),
-
     /// A consensus branch id this build does not recognise.
     ///
     /// Rejected rather than guessed: Zaino adopts the validator's activation
@@ -38,21 +34,23 @@ fn pool_balance(
 ) -> Result<zebra_rpc::client::GetBlockchainInfoBalance, BlockchainInfoWireError> {
     use zebra_rpc::client::GetBlockchainInfoBalance;
 
-    fn amount<C: zebra_chain::amount::Constraint>(
-        zats: i64,
-    ) -> Result<zebra_chain::amount::Amount<C>, BlockchainInfoWireError> {
+    // Both amounts come from domain quantities already bounded to the money
+    // range: `chain_value` is a `Zatoshis` (unsigned, so non-negative and within
+    // the supply) rendered as an `Amount<NonNegative>`, and `value_delta` is a
+    // `ZatoshisDelta` (a magnitude within the supply, sign unconstrained)
+    // rendered as an `Amount<NegativeAllowed>`. Both bounds hold at
+    // construction, so the range check on the wire's `Amount` cannot reject a
+    // well-formed value and the rendering is infallible.
+    fn amount<C: zebra_chain::amount::Constraint>(zats: i64) -> zebra_chain::amount::Amount<C> {
         zebra_chain::amount::Amount::try_from(zats)
-            .map_err(|e| BlockchainInfoWireError::PoolBalanceOutOfRange(e.to_string()))
+            .expect("domain zatoshi quantities are bounded to the money range")
     }
 
     let value = amount(
         i64::try_from(u64::from(balance.chain_value))
-            .map_err(|e| BlockchainInfoWireError::PoolBalanceOutOfRange(e.to_string()))?,
-    )?;
-    let delta = balance
-        .value_delta
-        .map(|d| amount(i64::from(d)))
-        .transpose()?;
+            .expect("Zatoshis is bounded to the money range, which fits i64"),
+    );
+    let delta = balance.value_delta.map(|d| amount(i64::from(d)));
 
     Ok(match balance.id.as_str() {
         "transparent" => GetBlockchainInfoBalance::transparent(value, delta),
