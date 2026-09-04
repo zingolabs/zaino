@@ -11,5 +11,5 @@ This is an **isolated Cargo workspace** (its own `[workspace]` root, like
 every crate is `publish = false`. Build and test from within `tools/relman/`.
 
 Design and intended crate topology: see
-[`docs/decision_records/release/implementation.md`](../../docs/decision_records/release/implementation.md)
+[`docs/release/implementation.md`](../../docs/release/implementation.md)
 (section "`relman` internal structure (hexagonal)").

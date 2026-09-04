@@ -14,7 +14,7 @@
 # `deployment_status` events run the workflow from the DEFAULT branch, so this
 # file must be on the default branch at cutover. `tools/scripts/mark-deployment.sh`
 # posts the same signal to exercise this reaction in seconds instead of days.
-# See docs/decision_records/release/implementation.md § "The deployment-gate bridge".
+# See docs/release/implementation.md § "The deployment-gate bridge".
 # ============================================================================
 
 name: Deployment advance

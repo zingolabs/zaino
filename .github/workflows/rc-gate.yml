@@ -5,7 +5,7 @@
 # HEAD and cuts a `cycle-<N>-rc.<M>` prerelease tag at the new rc HEAD, which is
 # what the deployment gate (release-gate) is pinned to. This is CI glue: relman prints the
 # tag name, the workflow applies it. See
-# docs/decision_records/release/pipeline.md § "The rc-gate" and "Promotion Flow".
+# docs/release/pipeline.md § "The rc-gate" and "Promotion Flow".
 #
 # NOTE ON THE NIGHTLY-GREEN PRECONDITION: this draft does NOT run the full e2e
 # `rc-gate` suite. See the TODO(cutover) step below — do not treat scheduled

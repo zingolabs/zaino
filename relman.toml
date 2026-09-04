@@ -6,7 +6,7 @@
 # and the publish plan covers exactly this set. No `cargo metadata` heuristic
 # decides governance — this file does.
 #
-# Target set: the 17 crates.io-published packages (docs/decision_records/release/
+# Target set: the 17 crates.io-published packages (docs/release/
 # pipeline.md § Context). The internal-only crates
 # (live-tests/{e2e,clientless,zaino-testutils}) are deliberately absent.
 

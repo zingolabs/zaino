@@ -7,7 +7,7 @@ Zaino provides all necessary functionality for "light" clients (wallets and othe
 
 Zaino ships through a gated pipeline (`dev → rc → release-ready → stable`); the
 gates, tags, and blessing flow are specified in the
-[release decision record](./docs/decision_records/release/pipeline.md).
+[release decision record](./docs/release/pipeline.md).
 
 | Gate | Workflow |
 | ---- | -------- |

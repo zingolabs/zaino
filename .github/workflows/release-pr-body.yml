@@ -4,7 +4,7 @@
 # Keep the standing Release PR (`release-ready` -> `stable`) current. On every
 # push to `release-ready` (deployment-pass advance), re-render the PR body from the
 # derived version table + changelog and update the open PR — creating it if none
-# exists. See docs/decision_records/release/pipeline.md § "Blessing" and
+# exists. See docs/release/pipeline.md § "Blessing" and
 # implementation.md (`relman pr-body`).
 
 name: Release PR body
@@ -77,7 +77,7 @@ jobs:
           set -euo pipefail
           # relman renders; this step gathers the live git facts it renders
           # from, keeping relman a pure function of a TOML file. See
-          # relman-core `CycleStatus` and docs/decision_records/release/pipeline.md
+          # relman-core `CycleStatus` and docs/release/pipeline.md
           # § "Blessing".
           status="$RUNNER_TEMP/status.toml"
           N="${{ steps.cycle.outputs.n }}"
@@ -144,7 +144,7 @@ jobs:
       # copy, so the derived version table excludes everything already shipped
       # without waiting for the `stable -> dev` backport to land. relman reads the
       # ledger from this path. `stable` was fetched in "Gather cycle status" above.
-      # See docs/decision_records/release/changeset-format.md § "The consumed-UID ledger".
+      # See docs/release/changeset-format.md § "The consumed-UID ledger".
       - name: Refresh consumed-ledger from stable
         run: |
           set -euo pipefail

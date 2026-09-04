@@ -6,7 +6,7 @@
 # release-ready, refresh the release PR, enable blessing) in seconds instead of
 # days. The real endurance run is a separate, infra-side concern.
 #
-# See docs/decision_records/release/implementation.md
+# See docs/release/implementation.md
 # § "Testability: never wait days to test the pipeline".
 #
 # Usage:

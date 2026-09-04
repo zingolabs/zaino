@@ -16,7 +16,7 @@
 # RELMAN_PIPELINE_ACTIVE gate is exactly what keeps this from firing on it
 # before cutover.
 #
-# See docs/decision_records/release/pipeline.md § "Blessing" and
+# See docs/release/pipeline.md § "Blessing" and
 # implementation.md (bump / changelog / tags / publish-plan responsibilities).
 # ============================================================================
 
@@ -97,7 +97,7 @@ jobs:
       # the ledger from this path to exclude already-shipped changesets by `id`
       # (backport-independent dedup) during the derive below; `consume` (step 2)
       # appends this cycle's ids and the release commit carries it forward on
-      # `stable`. See docs/decision_records/release/changeset-format.md
+      # `stable`. See docs/release/changeset-format.md
       # § "The consumed-UID ledger".
       - name: Restore authoritative consumed-ledger
         run: |
@@ -141,7 +141,7 @@ jobs:
       # delete): derivation filters consumed changesets out, so the next cycle sees
       # an empty set while `.changesets/` keeps the provenance ledger. The stamp is
       # delivered to `dev` by the stable->dev backport, same as the bump/changelog
-      # edits. See docs/decision_records/release/changeset-format.md § Lifecycle.
+      # edits. See docs/release/changeset-format.md § Lifecycle.
       - name: Apply bump, changelog, consume changesets
         run: |
           set -euo pipefail

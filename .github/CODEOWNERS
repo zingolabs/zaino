@@ -6,7 +6,7 @@
 # release ADR —
 #   * 1 CODEOWNER approval to merge into `dev`
 #   * 2 CODEOWNER approvals to merge into `stable`
-# (see docs/decision_records/release/pipeline.md § "Branching and approvals").
+# (see docs/release/pipeline.md § "Branching and approvals").
 #
 # The team handles below are PLACEHOLDERS. Replace every `@zingolabs/PLACEHOLDER-*`
 # with a real GitHub team (or user) slug before this file is relied upon; an
@@ -19,4 +19,4 @@
 # structure firms up — more specific paths win over the default above.
 # /tools/relman/                    @zingolabs/PLACEHOLDER-release-tooling
 # /.github/workflows/               @zingolabs/PLACEHOLDER-ci
-# /docs/decision_records/release/   @zingolabs/PLACEHOLDER-maintainers
+# /docs/release/   @zingolabs/PLACEHOLDER-maintainers

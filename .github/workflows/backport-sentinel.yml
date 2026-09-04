@@ -11,7 +11,7 @@
 # ordinary PR into `dev` from a disposable `sync/stable-to-dev` branch cut at
 # stable's tip, so any conflict resolution happens off to the side and never
 # blocks `stable`. This is the reverse of the forward desync sentinel (the
-# standing release PR). See docs/decision_records/release/pipeline.md
+# standing release PR). See docs/release/pipeline.md
 # § "Reverse: the Backport Sentinel".
 #
 # No self-trigger: it pushes `sync/stable-to-dev` and opens a PR into `dev` —
@@ -111,7 +111,7 @@ jobs:
               printf '%s\n' '```'
               git log --oneline origin/dev..origin/stable
               printf '%s\n\n' '```'
-              printf '%s\n' 'See docs/decision_records/release/pipeline.md § "Reverse: the Backport Sentinel".'
+              printf '%s\n' 'See docs/release/pipeline.md § "Reverse: the Backport Sentinel".'
             } > body.md
 
             num="$(gh pr create --base dev --head "$branch" \

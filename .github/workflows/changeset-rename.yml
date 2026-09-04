@@ -5,7 +5,7 @@
 # renames the author's changeset file(s) to the canonical `pr-<N>.toml` name and
 # pushes the rename back onto the PR head branch, so changeset filenames are
 # deterministic. relman does the working-tree rename; the workflow is only the
-# imperative git shell around it. See docs/decision_records/release/pipeline.md
+# imperative git shell around it. See docs/release/pipeline.md
 # § Changesets and implementation.md (`relman changeset rename`).
 
 name: Changeset rename

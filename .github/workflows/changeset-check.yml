@@ -1,7 +1,7 @@
 name: Changeset check
 
 # dev-gate enforcement: a PR that changes a governed crate's source must carry a
-# covering changeset. See docs/decision_records/release/changeset-format.md.
+# covering changeset. See docs/release/changeset-format.md.
 #
 # Rollout: ADVISORY by default — a missing changeset is reported as a warning and
 # does NOT fail the check, so this can land before the team has adopted
@@ -22,7 +22,7 @@ jobs:
     # release commit (Cargo.toml bumps, CHANGELOGs, and `.changesets/`
     # consumed marks) back into `dev` and by design introduces no *new*
     # changeset — same spirit as an RC-cut PR of already-reviewed work. See
-    # docs/decision_records/release/pipeline.md § "Reverse: the Backport
+    # docs/release/pipeline.md § "Reverse: the Backport
     # Sentinel".
     if: >-
       github.event.pull_request.draft == false &&
