@@ -13,8 +13,8 @@
 /// [`try_accumulate`](ZatoshisFlowSum::try_accumulate): the inner value is
 /// private, so a flow sum can only be the sum of some amounts, never an
 /// arbitrary integer. Differencing two flow sums lands the result in a
-/// [`ZatoshisDelta`](super::ZatoshisDelta) via
-/// [`delta`](ZatoshisFlowSum::delta). Both operations, and the algebra that
+/// [`SignedZatoshis`](super::SignedZatoshis) via
+/// [`minus`](ZatoshisFlowSum::minus). Both operations, and the algebra that
 /// relates the quantities, live in the `arithmetic` module.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ZatoshisFlowSum(u128);
@@ -54,7 +54,7 @@ mod tests {
     fn a_difference_too_large_for_a_signed_integer_is_refused() {
         let unrepresentable = ZatoshisFlowSum::from_raw(u128::MAX);
 
-        assert_eq!(unrepresentable.delta(ZatoshisFlowSum::ZERO), None);
-        assert_eq!(ZatoshisFlowSum::ZERO.delta(unrepresentable), None);
+        assert_eq!(unrepresentable.minus(ZatoshisFlowSum::ZERO), None);
+        assert_eq!(ZatoshisFlowSum::ZERO.minus(unrepresentable), None);
     }
 }

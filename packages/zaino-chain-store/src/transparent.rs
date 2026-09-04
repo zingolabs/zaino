@@ -11,7 +11,7 @@
 //! neither half alone is an answer.
 
 use zaino_primitives::types::{
-    BlockTxPosition, Height, Outpoint, TransactionId, ZatoshisDelta, ZatoshisFlowSum,
+    BlockTxPosition, Height, Outpoint, SignedZatoshis, TransactionId, ZatoshisFlowSum,
 };
 
 use crate::output::{StoredAddress, StoredTxOut};
@@ -84,7 +84,7 @@ pub struct StoreAddressEffects {
 
 impl StoreAddressEffects {
     /// The net value change these effects describe, or `None` if it is not a
-    /// representable delta.
+    /// representable signed value.
     ///
     /// A convenience for a consumer that has already merged both halves and
     /// wants a figure. Meaningless on one half alone, which is why it is a
@@ -106,17 +106,17 @@ impl StoreAddressEffects {
     /// The *net* — received minus spent — is the change in the addresses'
     /// aggregate balance over the range. An aggregate balance lives in
     /// `[0, supply]`, so its change lives in `[-supply, +supply]`. That is the
-    /// real invariant, and [`ZatoshisFlowSum::delta`] enforces it as it lands
-    /// the difference in a [`ZatoshisDelta`]: a net whose magnitude exceeds the
-    /// supply is not a representable delta and yields `None` rather than a
+    /// real invariant, and [`ZatoshisFlowSum::minus`] enforces it as it lands
+    /// the difference in a [`SignedZatoshis`]: a net whose magnitude exceeds the
+    /// supply is not a representable signed value and yields `None` rather than a
     /// truncated figure.
-    pub fn net_value(&self) -> Option<ZatoshisDelta> {
+    pub fn net_value(&self) -> Option<SignedZatoshis> {
         let received =
             ZatoshisFlowSum::try_accumulate(self.outputs.iter().map(|output| output.output.value))?;
         let spent =
             ZatoshisFlowSum::try_accumulate(self.spends.iter().map(|spend| spend.output.value))?;
 
-        received.delta(spent)
+        received.minus(spent)
     }
 
     /// Whether the store observed nothing at all.
@@ -211,7 +211,7 @@ mod tests {
     fn no_effects_net_to_zero() {
         assert_eq!(
             StoreAddressEffects::default().net_value(),
-            Some(ZatoshisDelta::try_new(0).expect("zero is in range"))
+            Some(SignedZatoshis::try_new(0).expect("zero is in range"))
         );
     }
 
@@ -237,7 +237,7 @@ mod tests {
     ///
     /// The net is a change in aggregate balance, which lives in
     /// `[-supply, +supply]`. A received/spent pairing that lands outside it is
-    /// not a representable delta, so it fails loud instead of saturating to a
+    /// not a representable signed value, so it fails loud instead of saturating to a
     /// plausible figure.
     #[test]
     fn a_net_past_the_supply_is_refused() {
@@ -247,7 +247,7 @@ mod tests {
 
     /// A net at exactly the supply is still an answer.
     ///
-    /// The bound is inclusive, so the largest representable delta is not
+    /// The bound is inclusive, so the largest representable signed value is not
     /// mistaken for corruption.
     #[test]
     fn a_net_at_the_supply_is_allowed() {

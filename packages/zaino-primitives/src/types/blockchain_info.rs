@@ -1,8 +1,8 @@
 //! Validator chain state, including the network upgrade schedule Zaino adopts.
 
 use super::{
-    BlockHash, ChainWork, ConsensusBranchIds, Difficulty, Height, NetworkUpgradeInfo, Zatoshis,
-    ZatoshisDelta,
+    BlockHash, ChainWork, ConsensusBranchIds, Difficulty, Height, NetworkUpgradeInfo,
+    SignedZatoshis, Zatoshis,
 };
 
 /// The backing validator's view of the chain.
@@ -101,5 +101,5 @@ pub struct ValuePoolBalance {
     ///
     /// `None` when the validator does not report a delta. Signed: value leaves
     /// a pool as well as entering it.
-    pub value_delta: Option<ZatoshisDelta>,
+    pub value_delta: Option<SignedZatoshis>,
 }

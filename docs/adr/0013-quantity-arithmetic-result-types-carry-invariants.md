@@ -36,10 +36,15 @@ The correction is a doctrine about primitive quantity types, illustrated here on
    landing type, and that choice is where the bound is declared and enforced —
    once, in the type, not re-derived at each call site.
 
-3. **The signed change of a balance is its own type, bounded by ±supply.** A
-   balance moves within `[0, supply]`, so its change lives in
-   `[-supply, supply]`. This is a genuinely different quantity from an amount,
-   and it is named for what it is — a delta — not "a signed amount".
+3. **A signed zatoshi value is its own type, bounded by ±supply.** A single
+   movement is one amount; a change in a balance is a difference of two. A
+   balance moves within `[0, supply]`, so its change lives in `[-supply, supply]`,
+   and a single amount cannot exceed the supply either — so both are the same
+   quantity, a *signed* zatoshi value, genuinely distinct from an (unsigned)
+   amount. It is its own type, `SignedZatoshis`. "Difference" is then an
+   *operation* on flow sums (`ZatoshisFlowSum::minus`), not the type: a delta is
+   a signed value obtained by subtracting, a movement one obtained by parsing.
+   The type names what it is; the provenance names how it was obtained.
 
 4. **No unchecked door.** A result type's guarantee comes from the absence of any
    constructor that skips its check, not from having a single constructor. Two
@@ -52,8 +57,9 @@ The correction is a doctrine about primitive quantity types, illustrated here on
    primitive.
 
 5. **Operations that relate several types are relations, not methods of one
-   type.** Summing lands `Zatoshis` in an accumulator; differencing lands the
-   accumulator in a delta. These belong together in an arithmetic module beside
+   type.** Summing lands `Zatoshis` in an accumulator; subtracting one
+   accumulator from another lands the result in a signed value. These belong
+   together in an arithmetic module beside
    the types, which is also where the allowed operations — the algebra — are
    written down as the specification. A new summation site inherits that algebra
    instead of reinventing a raw wide integer.
@@ -69,11 +75,11 @@ The correction is a doctrine about primitive quantity types, illustrated here on
 - `Zatoshis` — an amount held. `0 ..= supply`.
 - `ZatoshisFlowSum` — an accumulation of movements. Bounded only by machine
   representability; deliberately not by the supply.
-- `ZatoshisDelta` — a change in a balance (formerly `SignedZatoshis`).
-  `-supply ..= supply`.
+- `SignedZatoshis` — a signed value: a directional movement, or the difference
+  of two totals. `-supply ..= supply`.
 
 `ZatoshisFlowSum` earns a distinct type by carrying a new invariant.
-`ZatoshisDelta` earns one by being a different quantity. A fourth member — a
+`SignedZatoshis` earns one by being a different quantity. A fourth member — a
 supply-bounded sum of coexisting balances — is a real part of the algebra but
 has no consumer today; it is named here and left unbuilt until one exists,
 rather than added speculatively.

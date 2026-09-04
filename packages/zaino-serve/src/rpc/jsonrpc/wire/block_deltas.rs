@@ -10,7 +10,7 @@ impl BlockDeltas {
     /// The wire's `Amount` enforces the money range `[-MAX_MONEY, MAX_MONEY]`.
     /// Every amount rendered here comes from a domain quantity already bounded to
     /// that same range — a
-    /// [`ZatoshisDelta`](zaino_primitives::types::ZatoshisDelta) for an input (a
+    /// [`SignedZatoshis`](zaino_primitives::types::SignedZatoshis) for an input (a
     /// magnitude within the supply, sign unconstrained) rendered as an
     /// `Amount<NegativeAllowed>`, and a
     /// [`Zatoshis`](zaino_primitives::types::Zatoshis) for an output (unsigned,
@@ -197,7 +197,7 @@ pub struct OutputDelta {
 mod tests {
     use super::*;
     use zaino_primitives::types::{
-        self as domain, Height, TransparentAddress, Zatoshis, ZatoshisDelta,
+        self as domain, Height, SignedZatoshis, TransparentAddress, Zatoshis,
     };
 
     /// Asymmetric under reversal, so a missing or doubled byte-reversal shows up.
@@ -220,7 +220,7 @@ mod tests {
                 index: 1,
                 inputs: vec![domain::rpc::InputDelta {
                     address: TransparentAddress::new("t1spender".to_string()),
-                    satoshis: ZatoshisDelta::try_new(-5_000).expect("within the supply"),
+                    satoshis: SignedZatoshis::try_new(-5_000).expect("within the supply"),
                     index: 0,
                     prev_txid: domain::TransactionId::from([0xbb; 32]),
                     prev_output: 3,
@@ -269,17 +269,17 @@ mod tests {
         assert_eq!(json["deltas"][0]["outputs"][0]["satoshis"], 5_000i64);
     }
 
-    /// The largest-magnitude delta a [`ZatoshisDelta`] can hold renders on the
+    /// The largest-magnitude delta a [`SignedZatoshis`] can hold renders on the
     /// wire. The wire's money range and the delta's supply bound coincide, so a
     /// value beyond the wire's range cannot reach this conversion:
-    /// [`ZatoshisDelta::try_new`] refuses it upstream when the delta is built.
+    /// [`SignedZatoshis::try_new`] refuses it upstream when the delta is built.
     #[test]
     fn an_input_at_the_supply_extreme_renders() {
         const MAX: i64 = 21_000_000 * 100_000_000;
 
         let mut deltas = sample();
         deltas.deltas[0].inputs[0].satoshis =
-            ZatoshisDelta::try_new(-MAX).expect("the supply extreme is a valid delta");
+            SignedZatoshis::try_new(-MAX).expect("the supply extreme is a valid delta");
 
         let wire = BlockDeltas::from_domain(deltas);
         let json = serde_json::to_value(&wire).unwrap();

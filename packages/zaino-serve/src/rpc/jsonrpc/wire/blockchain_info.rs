@@ -37,7 +37,7 @@ fn pool_balance(
     // Both amounts come from domain quantities already bounded to the money
     // range: `chain_value` is a `Zatoshis` (unsigned, so non-negative and within
     // the supply) rendered as an `Amount<NonNegative>`, and `value_delta` is a
-    // `ZatoshisDelta` (a magnitude within the supply, sign unconstrained)
+    // `SignedZatoshis` (a magnitude within the supply, sign unconstrained)
     // rendered as an `Amount<NegativeAllowed>`. Both bounds hold at
     // construction, so the range check on the wire's `Amount` cannot reject a
     // well-formed value and the rendering is infallible.

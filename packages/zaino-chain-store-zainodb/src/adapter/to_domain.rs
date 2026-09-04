@@ -20,8 +20,8 @@ use zaino_primitives::types::{
     BlockHash as DomainBlockHash, BlockHeader, BlockRef, BlockTxPosition,
     ChainWork as DomainChainWork, EncryptedCiphertext, Height as DomainHeight, Nullifier,
     OrchardAction, Outpoint as DomainOutpoint, PreIndexCompactTx, SaplingOutput, Script,
-    ScriptType, TransactionId, TransparentInput, TransparentOutput, TreeRootInfo, TreeRoots,
-    TxIndex, Zatoshis, ZatoshisDelta,
+    ScriptType, SignedZatoshis, TransactionId, TransparentInput, TransparentOutput, TreeRootInfo,
+    TreeRoots, TxIndex, Zatoshis,
 };
 
 use crate::store::capability::{Capability, DbMetadata, MigrationStatus};
@@ -201,8 +201,8 @@ fn stored_compact_tx(tx: &CompactTxData) -> Result<StoredTx, ChainStoreError> {
 fn stored_value_balance(
     raw: Option<i64>,
     pool: &str,
-) -> Result<Option<ZatoshisDelta>, ChainStoreError> {
-    raw.map(ZatoshisDelta::try_new).transpose().map_err(|e| {
+) -> Result<Option<SignedZatoshis>, ChainStoreError> {
+    raw.map(SignedZatoshis::try_new).transpose().map_err(|e| {
         corrupt_row_because(format!("a {pool} value balance within the money supply"), e)
     })
 }

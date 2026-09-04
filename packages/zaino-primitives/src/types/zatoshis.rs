@@ -12,19 +12,20 @@
 //! - [`Zatoshis`] — an amount held, in `0 ..= supply`.
 //! - [`ZatoshisFlowSum`] — an accumulation of movements, bounded only by machine
 //!   representability and deliberately not by the supply.
-//! - [`ZatoshisDelta`] — a change in a balance, in `-supply ..= supply`.
+//! - [`SignedZatoshis`] — a signed value (a movement or a difference), in
+//!   `-supply ..= supply`.
 //!
-//! Summing amounts as flow and differencing the totals into a delta are
+//! Summing amounts as flow and subtracting one flow total from another are
 //! relations between these types; they live in the [`arithmetic`] module
 //! alongside the algebra that governs them. See ADR-0013.
 
 mod amount;
 mod arithmetic;
-mod delta;
 mod flow_sum;
+mod signed;
 
 pub use amount::{Zatoshis, ZatoshisOverflow};
-pub use delta::{ZatoshisDelta, ZatoshisDeltaOverflow};
 pub use flow_sum::ZatoshisFlowSum;
+pub use signed::{SignedZatoshis, SignedZatoshisOverflow};
 
 use amount::MAX_ZATOSHIS;

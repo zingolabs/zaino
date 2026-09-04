@@ -2,7 +2,7 @@
 
 use super::{
     EncryptedCiphertext, EphemeralKey, NoteCommitment, Nullifier, OutputIndex, Script,
-    TransactionId, TxIndex, Zatoshis, ZatoshisDelta,
+    SignedZatoshis, TransactionId, TxIndex, Zatoshis,
 };
 
 /// A transaction within a block.
@@ -67,7 +67,7 @@ pub struct SaplingData {
     /// Sapling outputs.
     pub outputs: Vec<SaplingOutput>,
     /// Net value balance (positive = value flows out of the pool).
-    pub value_balance: ZatoshisDelta,
+    pub value_balance: SignedZatoshis,
 }
 
 /// A Sapling spend: the nullifier that marks a note as consumed.
@@ -94,7 +94,7 @@ pub struct OrchardData {
     /// Orchard actions (each is both a spend and an output).
     pub actions: Vec<OrchardAction>,
     /// Net value balance (positive = value flows out of the pool).
-    pub value_balance: ZatoshisDelta,
+    pub value_balance: SignedZatoshis,
 }
 
 /// An Orchard action: nullifier + commitment + detection material.

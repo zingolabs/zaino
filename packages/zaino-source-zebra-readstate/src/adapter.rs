@@ -559,7 +559,7 @@ impl zaino_source::OneShotGetAddressDeltas for ZebraReadStateAdapter {
         QueryError<zaino_source::GetAddressDeltasError>,
     > {
         use zaino_primitives::types::{
-            AddressDelta, TransactionId, TransparentAddress, ZatoshisDelta,
+            AddressDelta, SignedZatoshis, TransactionId, TransparentAddress,
         };
 
         if start > end {
@@ -619,7 +619,7 @@ impl zaino_source::OneShotGetAddressDeltas for ZebraReadStateAdapter {
                 }
 
                 deltas.push(AddressDelta {
-                    satoshis: ZatoshisDelta::try_new(output.value.zatoshis())
+                    satoshis: SignedZatoshis::try_new(output.value.zatoshis())
                         .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))?,
                     txid: delta_txid,
                     index: index as u32,
@@ -1257,7 +1257,7 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
     > {
         use zaino_primitives::types::{
             rpc::{BlockDelta, BlockDeltas, InputDelta, OutputDelta},
-            MerkleRoot, TransactionId, TransparentAddress, Zatoshis, ZatoshisDelta,
+            MerkleRoot, SignedZatoshis, TransactionId, TransparentAddress, Zatoshis,
         };
         use zebra_chain::serialization::ZcashSerialize as _;
 
@@ -1336,7 +1336,7 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
                 inputs.push(InputDelta {
                     address: TransparentAddress::new(address.to_string()),
                     // A spend debits the address, so the value leaves it.
-                    satoshis: ZatoshisDelta::try_new(-output.value.zatoshis())
+                    satoshis: SignedZatoshis::try_new(-output.value.zatoshis())
                         .map_err(|e| parse(e.to_string()))?,
                     index: index as u32,
                     prev_txid: TransactionId::from(outpoint.hash.0),

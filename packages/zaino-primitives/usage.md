@@ -33,7 +33,7 @@ use zaino_primitives::types::rpc::{BlockDeltas, MiningInfo, NodeInfo, PeerInfo};
 - `types` — the chain itself: `Block`, `BlockHeader`, `Transaction`,
   `BlockHash`, `TransactionHash`, `Height`, `BlockRef`, `TreeRoot`,
   `Treestate`, `ShieldedPool`, `ChainMetadata`, and the zatoshi quantity
-  family `Zatoshis` / `ZatoshisFlowSum` / `ZatoshisDelta` (see below).
+  family `Zatoshis` / `ZatoshisFlowSum` / `SignedZatoshis` (see below).
 - `types::rpc` — the response shapes for passthrough RPCs, in domain
   vocabulary rather than any interface's: `BlockDeltas`, `BlockchainInfo`,
   `ChainTip`, `MiningInfo`, `NodeInfo`, `PeerInfo`, `SpentInfo`, `TxOut`,
@@ -73,7 +73,7 @@ ADR-0013 for the doctrine.
 |---|---|---|
 | `Zatoshis` | `0 ..= supply` | an amount held — a balance, a UTXO value |
 | `ZatoshisFlowSum` | `0 ..= u128::MAX` | an accumulation of movements, **not** supply-bounded |
-| `ZatoshisDelta` | `-supply ..= supply` | a change in a balance |
+| `SignedZatoshis` | `-supply ..= supply` | a signed value: a movement or a difference |
 
 A sum of *movements* — every output paying an address, every input it spent —
 counts the same coins each time they move, so it is not bounded by the supply;
@@ -85,23 +85,24 @@ module's docs).
 The operations relate the types and live beside them:
 
 ```rust
-use zaino_primitives::types::{Zatoshis, ZatoshisFlowSum, ZatoshisDelta};
+use zaino_primitives::types::{Zatoshis, ZatoshisFlowSum, SignedZatoshis};
 
 // Sum amounts as flow. `None` only on machine overflow (unreachable in
 // practice), never on passing the supply — gross flow legitimately can.
 let received = ZatoshisFlowSum::try_accumulate(outputs.iter().copied())?;
 let spent = ZatoshisFlowSum::try_accumulate(spends.iter().copied())?;
 
-// Difference two flow sums into a balance change, enforcing +/- supply.
-// `None` if the net is not a representable delta.
-let net: Option<ZatoshisDelta> = received.delta(spent);
+// Subtract one flow sum from another into a signed value, enforcing +/- supply.
+// `None` if the net is not a representable signed value.
+let net: Option<SignedZatoshis> = received.minus(spent);
 ```
 
 `ZatoshisFlowSum` has no other constructor: a flow sum is only ever the checked
-sum of some amounts. `ZatoshisDelta` has two validated doors and no unchecked
-one — `ZatoshisFlowSum::delta` for a value *derived* in the domain, and
-`ZatoshisDelta::try_new` for one *parsed at a boundary* (a delta read off the
-wire or disk). `try_new` is the external-input validation step for a delta, the
+sum of some amounts. `SignedZatoshis` has two validated doors and no unchecked
+one — `ZatoshisFlowSum::minus` for a value *derived* in the domain, and
+`SignedZatoshis::try_new` for one *parsed at a boundary* (a movement read off the
+wire or disk). `try_new` is the external-input validation step for a signed
+value, the
 same discipline the crate applies at every wire and persistence boundary,
 pushed down to the primitive.
 
