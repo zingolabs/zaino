@@ -11,7 +11,7 @@
 //! neither half alone is an answer.
 
 use zaino_primitives::types::{
-    BlockTxPosition, Height, Outpoint, TransactionId, Zatoshis, ZatoshisDelta,
+    BlockTxPosition, Height, Outpoint, TransactionId, ZatoshisDelta, ZatoshisFlowSum,
 };
 
 use crate::output::{StoredAddress, StoredTxOut};
@@ -97,27 +97,26 @@ impl StoreAddressEffects {
     /// balance: every output paying the address and every input spending its
     /// prior outputs across the range is counted, and the same coins can move
     /// through the address many times. Gross flow is therefore not bounded by
-    /// the money supply, so the sides are accumulated in a wide integer with
-    /// [`checked_add`](i128::checked_add), which fails loud only on machine
-    /// overflow. Each element is a supply-bounded [`Zatoshis`] and the count is
-    /// a `Vec` length, so that failure is unreachable in practice; it stays
-    /// checked so a future change fails loud rather than wrapping silently.
+    /// the money supply, so each side accumulates into a [`ZatoshisFlowSum`],
+    /// which is bounded only by machine representability and fails loud only on
+    /// that overflow — unreachable here, where each element is a supply-bounded
+    /// [`Zatoshis`](zaino_primitives::types::Zatoshis) and the count is a `Vec`
+    /// length.
     ///
     /// The *net* — received minus spent — is the change in the addresses'
     /// aggregate balance over the range. An aggregate balance lives in
     /// `[0, supply]`, so its change lives in `[-supply, +supply]`. That is the
-    /// real invariant, and [`ZatoshisDelta::try_from_i128`] enforces it: a net
-    /// whose magnitude exceeds the supply is not a representable delta and
-    /// yields `None` rather than a truncated figure.
-    ///
-    /// A [`ZatoshisDelta`] rather than a bare `i64`, because this is the
-    /// domain's signed-delta quantity and a raw integer invites the arithmetic
-    /// that produced it to be redone somewhere else with different rules.
+    /// real invariant, and [`ZatoshisFlowSum::delta`] enforces it as it lands
+    /// the difference in a [`ZatoshisDelta`]: a net whose magnitude exceeds the
+    /// supply is not a representable delta and yields `None` rather than a
+    /// truncated figure.
     pub fn net_value(&self) -> Option<ZatoshisDelta> {
-        let received = total(self.outputs.iter().map(|output| output.output.value))?;
-        let spent = total(self.spends.iter().map(|spend| spend.output.value))?;
+        let received =
+            ZatoshisFlowSum::try_accumulate(self.outputs.iter().map(|output| output.output.value))?;
+        let spent =
+            ZatoshisFlowSum::try_accumulate(self.spends.iter().map(|spend| spend.output.value))?;
 
-        ZatoshisDelta::try_from_i128(received - spent).ok()
+        received.delta(spent)
     }
 
     /// Whether the store observed nothing at all.
@@ -126,23 +125,10 @@ impl StoreAddressEffects {
     }
 }
 
-/// Sums gross flow into a wide integer, failing loud only on machine overflow.
-///
-/// Accumulates in `i128` via [`checked_add`](i128::checked_add): gross flow is
-/// not bounded by the money supply, so the supply cap does not belong on the
-/// running total. Each element is a supply-bounded [`Zatoshis`] and the count
-/// is a `Vec` length, so the `None` branch is unreachable in practice; it stays
-/// checked so a future change fails loud rather than wrapping silently.
-fn total(mut values: impl Iterator<Item = Zatoshis>) -> Option<i128> {
-    values.try_fold(0i128, |sum, value| {
-        sum.checked_add(i128::from(u64::from(value)))
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zaino_primitives::types::ScriptType;
+    use zaino_primitives::types::{ScriptType, Zatoshis};
 
     /// The largest amount the protocol allows, so two of them on one side
     /// exceed the supply magnitude a net delta may hold.

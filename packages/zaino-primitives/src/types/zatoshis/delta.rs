@@ -51,8 +51,10 @@ impl ZatoshisDelta {
     ///
     /// Takes an `i128` because the caller accumulates gross flow in a wide
     /// integer before differencing it; the returned type then re-establishes
-    /// the narrower invariant.
-    pub fn try_from_i128(value: i128) -> Result<Self, ZatoshisDeltaOverflow> {
+    /// the narrower invariant. Module-internal: the derived-value door is
+    /// [`ZatoshisFlowSum::delta`](super::ZatoshisFlowSum::delta), and the
+    /// boundary door is [`try_new`](Self::try_new).
+    pub(super) fn try_from_i128(value: i128) -> Result<Self, ZatoshisDeltaOverflow> {
         i64::try_from(value)
             .ok()
             .filter(|inner| inner.unsigned_abs() <= MAX_ZATOSHIS)
