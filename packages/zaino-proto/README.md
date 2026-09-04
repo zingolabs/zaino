@@ -3,6 +3,37 @@
 This module encapsulates the lightclient-protocol functionality and imports the canonicals files
 using `git subtree`.
 
+<!-- TODO: this is a mess. fix later and vendor ourself?
+
+Current state, for whoever picks this up:
+
+- `lightwallet-protocol/` is a `git subtree` of https://github.com/zcash/lightwallet-protocol,
+  currently at upstream tag **v0.5.0** (`git-subtree-split: ac7cee05`).
+- It drifted badly before this: the subtree was recorded against the prefix
+  `zaino-proto/lightwallet-protocol`, the crate then moved under `packages/`, and
+  `git subtree pull` could no longer find its ancestry. Two years of upstream releases
+  were hand-copied into the vendored files instead of pulled, including a partial
+  re-implementation of upstream v0.5.0 filed under a hand-written changelog heading.
+  Missing `ShieldedProtocol.ironwood` is what that cost us.
+- We vendor rather than depend because Zaino is a *server*: `zcash_client_backend`
+  generates only `compact_tx_streamer_client`, and the zcash org publishes protos, not
+  Rust bindings. `zcash_client_backend` vendors this same directory for the same reason.
+- zingolabs also publishes `lightwallet-protocol` (from `zingolabs/lightwallet_protocols`),
+  which *does* generate the server. It is stale — no Ironwood, last released 2026-03-27 —
+  so today it is not usable, and the org is maintaining two overlapping proto crates.
+
+The open question is whether to own this properly (one zingolabs crate tracking upstream on
+a real cadence, with `zaino-proto` reduced to `utils.rs` + `proposal.proto`), or to keep
+vendoring and add a repo guard that fails when the subtree drifts from the tracked upstream
+tag. Nothing here notices when upstream releases, which is the actual defect.
+
+To pull upstream again:
+
+    git subtree pull --prefix=packages/zaino-proto/lightwallet-protocol \
+        https://github.com/zcash/lightwallet-protocol.git <tag> --squash
+
+-->
+
 
 Below you can see the structure of the module
 

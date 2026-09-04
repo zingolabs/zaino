@@ -111,7 +111,7 @@ mod tests {
     const REGTEST: Net = Net(NetworkType::Regtest);
     const MAIN: Net = Net(NetworkType::Main);
 
-    // Canonical source: live-tests/clientless/src/lib.rs::rpc::json_rpc
+    // Canonical source: zaino-serve wire::address::tests::served_vectors
     // Tracked for DRY consolidation: https://github.com/zingolabs/zaino/issues/988
     const TESTNET_P2PKH: &str = "tmVqEASZxBNKFTbmASZikGa5fPLkd68iJyx";
     const TESTNET_P2SH: &str = "t2MjoXQ2iDrjG9QXNZNCY9io8ecN4FJYK1u";

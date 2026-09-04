@@ -24,6 +24,10 @@ default = []
 # zaino-serve.
 test_dependencies = ["zaino-serve/test_dependencies"]
 
+# TEST-ONLY seam: non-finalised depth 1001 -> 100 (NFS tests mine no 1k-block chain)
+# - forwards to zaino-state (owns the depth constant)
+fast-test-seam = ["zaino-state/fast-test-seam"]
+
 # Removes network restrictions.
 no_tls_use_unencrypted_traffic = ["zaino-serve/no_tls_use_unencrypted_traffic"]
 

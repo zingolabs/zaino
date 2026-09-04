@@ -1,0 +1,32 @@
+[workspace]
+members = [
+    "zaino-testutils",
+    "clientless",
+    "e2e",
+]
+resolver = "2"
+
+[workspace.package]
+authors = ["Zingo Lab Cyan"]
+repository = "https://github.com/zingolabs"
+homepage = "https://www.zingolabs.org/"
+edition = "2021"
+license = "Apache-2.0"
+version = "0.2.0"
+
+[workspace.dependencies]
+zaino-testutils = { path = "zaino-testutils" }
+ztest = "0.1"
+tokio = { version = "1.38", features = ["full"] }
+anyhow = "1.0"
+serde_json = { version = "1.0", features = ["preserve_order"] }
+rstest = "0.23"
+
+# `legacy_parser` (the independent second parser the transaction vectors compare
+# against) and the vectors it parses. Path deps into packages/ are limited to
+# `zaino-proto`, whose generated compact-format types the parser renders into.
+zaino-proto = { path = "../packages/zaino-proto", default-features = false }
+zebra-chain = "12.0"
+prost = "0.14"
+thiserror = "2.0"
+wire_serialized_transaction_test_data = "1.0.0"

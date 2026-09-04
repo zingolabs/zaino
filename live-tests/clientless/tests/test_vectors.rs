@@ -1,12 +1,18 @@
-//! Holds code used to build test vector data for unit tests. These tests should not be run by default or in CI.
+//! Parses committed pre-v4 transaction vectors through `legacy_parser`, the
+//! independent second parser, and asserts the fields it recovers.
+//!
+//! Offline: no validator, no cluster. It sits in `clientless` because that is
+//! where the vectors have always lived, not because it needs the harness.
 
 use anyhow::Context;
 use wire_serialized_transaction_test_data::transactions::get_test_vectors;
 use zaino_testutils::legacy_parser::transaction::FullTransaction;
 use zaino_testutils::legacy_parser::utils::ParseFromSlice;
 
-#[tokio::test(flavor = "multi_thread")]
-async fn pre_v4_txs_parsing() -> anyhow::Result<()> {
+// Synchronous: nothing here awaits. The parser is offline, so this test needs
+// neither a runtime nor the ztest cluster.
+#[test]
+fn pre_v4_txs_parsing() -> anyhow::Result<()> {
     let test_vectors = get_test_vectors();
 
     for (i, test_vector) in test_vectors.iter().filter(|v| v.version < 4).enumerate() {

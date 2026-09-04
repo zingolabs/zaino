@@ -1,6 +1,6 @@
 [package]
 name = "clientless"
-description = "Clientless live tests: exercise Zaino's service layer directly against a live validator (no wallet client)."
+description = "Clientless live tests: exercise Zaino's service layer over its gRPC/JSON-RPC surface against a live validator, on the ztest k8s harness (no wallet client)."
 publish = false
 
 authors.workspace = true
@@ -13,66 +13,18 @@ version = "0.2.0"
 [features]
 default = []
 
-# **Experimental and alpha features**
-# Exposes the **complete** set of experimental / alpha features currently implemented in Zaino.
-experimental_features = ["transparent_address_history_experimental"]
-
-# Activates transparent address history capability in zaino
-#
-# NOTE: currently this is only implemented in the finalised state.
-transparent_address_history_experimental = [
-    "zaino-state/transparent_address_history_experimental",
-    "zainod/transparent_address_history_experimental",
-    "zaino-testutils/transparent_address_history_experimental",
-]
-
 [dependencies]
-zaino-testutils = { workspace = true }
-# The lib's z_validate helper calls `ZcashIndexer::z_validate_address`.
-# The finalised store's heights, for the chain-cache suite.
-zaino-chain-store-zainodb = { workspace = true }
-zaino-state = { workspace = true, features = ["test_dependencies"] }
-# The lib's get_block_header oracle helper matches on `zebra_rpc::methods::GetBlock`.
-zebra-rpc = { workspace = true }
-# The lib's z_validate helper asserts on `zaino_address::ZValidatedAddress`.
-zaino-address = { workspace = true }
-# Decodes the hex z_validateaddress test vectors into the domain type's byte arrays.
-hex = { workspace = true }
+ztest = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
-anyhow = { workspace = true }
-# Enable the tractable seam depth (fast-test-seam) so the chain_cache tests exercise
-# finalisation/eviction at small chain heights. Dev-dependency only — the feature
-# must never reach a shipped build (see the zaino-state feature comment).
-zaino-state = { workspace = true, features = ["fast-test-seam"] }
-
-# Test utility
-# Not imported by any test source; present so the
-# transparent_address_history_experimental feature can forward to
-# zainod/transparent_address_history_experimental in the spawned daemon.
-zainod = { workspace = true }
 zaino-testutils = { workspace = true }
-zaino-proto = { workspace = true }
-zaino-common = { workspace = true }
-wire_serialized_transaction_test_data = { workspace = true }
-zebra-chain = { workspace = true }
-zebra-state = { workspace = true }
-zebra-rpc = { workspace = true }
-
-futures = { workspace = true }
-hex = { workspace = true }
-
-# Runtime
+ztest = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true }
-
-# Zingo-infra
-zcash_local_net = { workspace = true }
-# The served JSON schema. These tests compare Zaino's domain answers against a
-# raw JSON-RPC oracle, so they render the domain side through the same wire
-# types the server uses.
-zaino-serve = { workspace = true }
-serde_json.workspace = true
-zaino-primitives.workspace = true
-zaino-rpc.workspace = true
-zaino-consensus.workspace = true
-zaino-status.workspace = true
+rstest.workspace = true
+# `test_vectors.rs` parses committed transaction vectors through the
+# independent `legacy_parser`; no validator, no cluster.
+wire_serialized_transaction_test_data = { workspace = true }
