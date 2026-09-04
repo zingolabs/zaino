@@ -1,3 +1,13 @@
+# TODO(cutover): this builds+pushes the Docker images and fires on the OLD
+# version-tag format (`X.Y.Z`, `X.Y.Z-rc.N`). The release pipeline tags releases
+# as `cycle-<N>` (period), `cycle-<N>-rc.<M>` (prerelease), and
+# `<crate>-vX.Y.Z` (per-crate provenance) — NONE of which match the patterns
+# below, so this workflow no longer fires on a pipeline release and the images
+# are not built. Rework at cutover: decide the image-tag scheme for the new
+# model (likely build+push the zainod/zaino images on the `zainod-v*` tag, or
+# trigger image builds from `blessing`) and update the trigger + metadata-action
+# `type=semver` extraction accordingly. Blessing already owns the GitHub Release
+# + git tags; this file's remaining job is only the container images.
 name: Zaino Release
 
 on:
@@ -33,7 +43,7 @@ jobs:
 
       - name: Determine Rust version from rust-toolchain.toml
         run: |
-          echo "RUST_VERSION=$(cargo run -q --manifest-path tools/workbench/Cargo.toml --bin get-rust-version)" >> $GITHUB_ENV
+          echo "RUST_VERSION=$(cargo run -q --manifest-path tools/workbench/Cargo.toml --bin get-rust-version)" >> "$GITHUB_ENV"
 
       - name: Extract metadata for Docker (default image)
         id: meta-default
@@ -115,7 +125,7 @@ jobs:
           if [ -z "$PREVIOUS_TAG" ]; then
             git log --pretty=format:"* %s" > CHANGELOG.md
           else
-            git log --pretty=format:"* %s" $PREVIOUS_TAG..HEAD > CHANGELOG.md
+            git log --pretty=format:"* %s" "$PREVIOUS_TAG"..HEAD > CHANGELOG.md
           fi
 
       - name: Create Release

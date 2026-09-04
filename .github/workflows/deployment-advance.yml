@@ -1,0 +1,80 @@
+# ============================================================================
+# DEPLOYMENT ADVANCE — the reaction half of the deployment-gate bridge.
+#
+# INERT until the repo variable RELMAN_PIPELINE_ACTIVE=true.
+#
+# The cluster (Argo) runs the live-chain deployment validation for an RC commit
+# (warm-tip fixtures in minutes–hours, or a fresh full-index sync over days) and, on
+# completion, posts a `deployment_status` back to that commit's GitHub Deployment
+# (environment `deployment`, created by rc-gate). This workflow reacts: on a
+# SUCCESS it fast-forwards `release-ready` to the deployed commit — the automated
+# equivalent of the manual `deploy-pass`. A failed soak advances nothing; `rc`
+# keeps moving and a later RC gets its own deployment run (coalesce-to-latest).
+#
+# `deployment_status` events run the workflow from the DEFAULT branch, so this
+# file must be on the default branch at cutover. `tools/scripts/mark-deployment.sh`
+# posts the same signal to exercise this reaction in seconds instead of days.
+# See docs/release/implementation.md § "The deployment-gate bridge".
+# ============================================================================
+
+name: Deployment advance
+
+on:
+  deployment_status:
+
+# Fast-forwarding the protected `release-ready` branch is done with the App
+# token minted below; the workflow-level permission is the least that is needed.
+permissions:
+  contents: read
+
+jobs:
+  advance:
+    name: Advance release-ready on a passed deployment
+    # Gate + react only to a SUCCESSFUL soak in the `deployment` environment.
+    if: >-
+      vars.RELMAN_PIPELINE_ACTIVE == 'true' &&
+      github.event.deployment_status.state == 'success' &&
+      github.event.deployment.environment == 'deployment'
+    runs-on: ubuntu-latest
+    steps:
+      # App token: the ff push to the protected `release-ready` branch cannot be
+      # done with GITHUB_TOKEN, and an App-token push (unlike GITHUB_TOKEN) also
+      # re-triggers `release-pr-body` on `release-ready` to refresh the release PR.
+      - name: Mint GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Fast-forward release-ready to the deployed commit
+        env:
+          DEPLOYED_SHA: ${{ github.event.deployment.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --quiet origin release-ready rc || true
+
+          # Only ADVANCE, never rewind: the deployed commit must be a descendant
+          # of the current release-ready tip. An out-of-order / older deployment
+          # success is ignored — a newer RC that also passes moves it forward.
+          rr="$(git rev-parse origin/release-ready 2>/dev/null || echo '')"
+          if [ -n "$rr" ] && ! git merge-base --is-ancestor "$rr" "$DEPLOYED_SHA"; then
+            echo "::notice::deployed ${DEPLOYED_SHA} is not ahead of release-ready (${rr}); nothing to advance."
+            exit 0
+          fi
+
+          # Only graduate a commit that actually came through the candidate line:
+          # the deployed sha must be on `rc`'s history, never an arbitrary sha.
+          if ! git merge-base --is-ancestor "$DEPLOYED_SHA" origin/rc; then
+            echo "::warning::deployed ${DEPLOYED_SHA} is not on rc's history; refusing to graduate it."
+            exit 0
+          fi
+
+          git push origin "${DEPLOYED_SHA}:refs/heads/release-ready"
+          echo "release-ready advanced to ${DEPLOYED_SHA} (deployment passed) — release-pr-body will refresh the release PR."

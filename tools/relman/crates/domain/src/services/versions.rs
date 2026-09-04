@@ -1,0 +1,758 @@
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use relman_config::ReleaseConfig;
+use relman_core::ports::{ChangesetStore, DeriveError, Versions, Workspace};
+use relman_core::types::{
+    Bump, BumpTable, ChangeKind, Changeset, ChangesetError, ConsumedLedger, CrateBump, CrateName,
+    StoredChangeset, Version,
+};
+
+/// Derives the per-crate version [`BumpTable`] from the accumulated changesets
+/// and the workspace crate graph. Implements the [`Versions`] driving port over
+/// the [`ChangesetStore`] and [`Workspace`] driven ports and the loaded
+/// [`ReleaseConfig`].
+///
+/// The derivation is deterministic and read-only over the *whole* `.changesets/`
+/// set (it never consumes or clears):
+///
+/// 1. **Direct bumps** — group every `[[changes]]` entry by crate, take the
+///    highest [`ChangeKind`], and map it to a [`Bump`] against the crate's
+///    current version (applying the pre-1.0 relaxation).
+/// 2. **Transitive bumps** — to a fixpoint, any governed dependent whose
+///    declared requirement no longer matches a bumped dependency's *new*
+///    version needs its `Cargo.toml` updated, forcing at least a `Patch` bump.
+///    [`semver::VersionReq::matches`] handles 0.x and 1.x boundaries uniformly.
+pub struct VersionService {
+    config: ReleaseConfig,
+    store: Arc<dyn ChangesetStore>,
+    workspace: Arc<dyn Workspace>,
+    /// The already-shipped changeset ids to exclude, on top of the per-file
+    /// `consumed_in` mark. A pure derivation input, loaded once at the CLI
+    /// boundary and held here so the service stays unit-testable in memory.
+    ledger: ConsumedLedger,
+}
+
+/// The direct-bump inputs collected from the changeset set, per crate: the
+/// highest kind seen, and the descriptions (in encounter order) that become
+/// changelog reasons.
+#[derive(Default)]
+struct DirectInputs {
+    highest_kind: BTreeMap<CrateName, ChangeKind>,
+    reasons: BTreeMap<CrateName, Vec<String>>,
+}
+
+impl VersionService {
+    pub fn new(
+        config: ReleaseConfig,
+        store: Arc<dyn ChangesetStore>,
+        workspace: Arc<dyn Workspace>,
+        ledger: ConsumedLedger,
+    ) -> Self {
+        Self {
+            config,
+            store,
+            workspace,
+            ledger,
+        }
+    }
+
+    /// Whether `name` is a governed target declared in `relman.toml`.
+    fn is_target(&self, name: &CrateName) -> bool {
+        self.config.target_by_name(name).is_some()
+    }
+
+    /// Whether a parsed changeset has already shipped — either by its per-file
+    /// `consumed_in` mark or by its id appearing in the consumed-UID ledger. The
+    /// ledger closes the window where a released changeset's mark hasn't yet
+    /// backported from `stable` to `dev`.
+    fn is_shipped(&self, stored: &StoredChangeset) -> bool {
+        stored.consumed_in().is_some() || stored.id().is_some_and(|id| self.ledger.contains(id))
+    }
+
+    /// Read and parse the whole changeset set, folding each `WithChanges` entry
+    /// into the per-crate highest kind + reasons. `Empty` changesets, unfilled
+    /// templates, and already-consumed changesets contribute nothing (all are
+    /// skipped); an entry naming a non-target crate is a hard error, as is a
+    /// malformed changeset.
+    fn collect_direct(&self) -> Result<DirectInputs, DeriveError> {
+        let mut slugs = self.store.list()?;
+        // Deterministic traversal order regardless of the store's backing.
+        slugs.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+
+        let mut inputs = DirectInputs::default();
+        for slug in &slugs {
+            let raw = self.store.read(slug)?;
+            let stored = match StoredChangeset::parse_toml(&raw) {
+                Ok(stored) => stored,
+                // An unfilled template is not yet a changeset: skip it, as the
+                // caller's `unfilled_templates` scan is what surfaces the warning.
+                Err(ChangesetError::Unfilled) => continue,
+                Err(error) => {
+                    return Err(DeriveError::ChangesetParse {
+                        slug: slug.as_str().to_owned(),
+                        error: error.to_string(),
+                    });
+                }
+            };
+            // A shipped changeset was folded into a past release; it is left on
+            // disk as provenance and must not bump anything again. Skipping it
+            // makes aggregation self-defending against a released changeset that
+            // lingers in `.changesets/` — whether marked in-file or only known
+            // shipped through the ledger.
+            if self.is_shipped(&stored) {
+                continue;
+            }
+            let Changeset::WithChanges(entries) = stored.into_body() else {
+                continue;
+            };
+            for entry in entries {
+                let name = entry.crate_name();
+                if !self.is_target(name) {
+                    return Err(DeriveError::UnknownTarget {
+                        crate_name: name.as_str().to_owned(),
+                    });
+                }
+                inputs
+                    .highest_kind
+                    .entry(name.clone())
+                    .and_modify(|k| *k = (*k).max(entry.kind()))
+                    .or_insert(entry.kind());
+                inputs
+                    .reasons
+                    .entry(name.clone())
+                    .or_default()
+                    .push(entry.description().as_str().to_owned());
+            }
+        }
+        Ok(inputs)
+    }
+
+    /// The current version of `name`, or a typed error if the workspace has none.
+    fn current<'v>(
+        &self,
+        name: &CrateName,
+        versions: &'v BTreeMap<CrateName, Version>,
+    ) -> Result<&'v Version, DeriveError> {
+        versions
+            .get(name)
+            .ok_or_else(|| DeriveError::MissingVersion {
+                crate_name: name.as_str().to_owned(),
+            })
+    }
+
+    /// The next version `name` would take under `chosen`, if it bumps at all.
+    fn next_version(
+        &self,
+        name: &CrateName,
+        chosen: &BTreeMap<CrateName, Bump>,
+        versions: &BTreeMap<CrateName, Version>,
+    ) -> Result<Option<Version>, DeriveError> {
+        match chosen.get(name) {
+            Some(bump) => Ok(Some(bump.apply(self.current(name, versions)?))),
+            None => Ok(None),
+        }
+    }
+
+    /// Grow `chosen` to a fixpoint: every governed dependent whose requirement
+    /// fails to match a bumped dependency's new version gains at least a
+    /// `Patch`. Since `Patch` is the minimum bump, this only ever *adds* crates
+    /// — it never lowers an existing (possibly larger) bump.
+    fn apply_transitive(
+        &self,
+        chosen: &mut BTreeMap<CrateName, Bump>,
+        internal_deps: &BTreeMap<CrateName, Vec<(CrateName, semver::VersionReq)>>,
+        versions: &BTreeMap<CrateName, Version>,
+    ) -> Result<(), DeriveError> {
+        loop {
+            let mut changed = false;
+            for (dependent, edges) in internal_deps {
+                if chosen.contains_key(dependent) {
+                    continue; // Already bumping; a crossing cannot lower it.
+                }
+                for (dependency, req) in edges {
+                    let Some(dep_next) = self.next_version(dependency, chosen, versions)? else {
+                        continue; // Dependency does not bump.
+                    };
+                    if !req.matches(dep_next.as_semver()) {
+                        chosen.insert(dependent.clone(), Bump::Patch);
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+            if !changed {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Explain each transitive crossing: for every bumping dependent, the
+    /// bumped dependencies whose new version escaped its declared requirement.
+    /// Runs after the fixpoint so every referenced `next` version is final.
+    fn transitive_reasons(
+        &self,
+        chosen: &BTreeMap<CrateName, Bump>,
+        internal_deps: &BTreeMap<CrateName, Vec<(CrateName, semver::VersionReq)>>,
+        versions: &BTreeMap<CrateName, Version>,
+    ) -> Result<BTreeMap<CrateName, Vec<String>>, DeriveError> {
+        let mut reasons: BTreeMap<CrateName, Vec<String>> = BTreeMap::new();
+        for (dependent, edges) in internal_deps {
+            if !chosen.contains_key(dependent) {
+                continue;
+            }
+            for (dependency, req) in edges {
+                let Some(dep_next) = self.next_version(dependency, chosen, versions)? else {
+                    continue;
+                };
+                if !req.matches(dep_next.as_semver()) {
+                    let dep_current = self.current(dependency, versions)?;
+                    reasons.entry(dependent.clone()).or_default().push(format!(
+                        "dependency `{dependency}` {dep_current}→{dep_next} crossed the requirement `{req}`"
+                    ));
+                }
+            }
+        }
+        Ok(reasons)
+    }
+}
+
+impl Versions for VersionService {
+    fn derive(&self) -> Result<BumpTable, DeriveError> {
+        let versions = self.workspace.versions()?;
+        let internal_deps = self.workspace.internal_deps()?;
+        let direct = self.collect_direct()?;
+
+        // Direct bumps: highest kind → bump against the crate's current version.
+        let mut chosen: BTreeMap<CrateName, Bump> = BTreeMap::new();
+        for (name, kind) in &direct.highest_kind {
+            let current = self.current(name, &versions)?;
+            chosen.insert(name.clone(), Bump::from_kind(*kind, current));
+        }
+
+        self.apply_transitive(&mut chosen, &internal_deps, &versions)?;
+        let transitive = self.transitive_reasons(&chosen, &internal_deps, &versions)?;
+
+        // Assemble in config-target order, only crates that bump. Reasons are
+        // direct descriptions first, then transitive explanations.
+        let mut bumps = Vec::new();
+        for target in self.config.targets() {
+            let name = target.name();
+            let Some(bump) = chosen.get(name) else {
+                continue;
+            };
+            let current = self.current(name, &versions)?.clone();
+            let next = bump.apply(&current);
+            let mut reasons = direct.reasons.get(name).cloned().unwrap_or_default();
+            if let Some(extra) = transitive.get(name) {
+                reasons.extend(extra.iter().cloned());
+            }
+            bumps.push(CrateBump::new(name.clone(), current, next, *bump, reasons));
+        }
+        Ok(BumpTable::new(bumps))
+    }
+
+    fn unfilled_templates(&self) -> Result<Vec<PathBuf>, DeriveError> {
+        let mut slugs = self.store.list()?;
+        slugs.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+
+        let changesets_dir = self.config.options().changesets_dir().as_path();
+        let mut unfilled = Vec::new();
+        for slug in &slugs {
+            let raw = self.store.read(slug)?;
+            // A shipped changeset is historical provenance, never a "you left a
+            // template unfilled" warning — even if consume stamped a still-empty
+            // template. Both the in-file mark and the id read without validating
+            // the body, so a ledgered-but-unmarked template is skipped too.
+            if matches!(StoredChangeset::consumed_marker(&raw), Ok(Some(_))) {
+                continue;
+            }
+            if let Ok(Some(id)) = StoredChangeset::id_marker(&raw)
+                && self.ledger.contains(&id)
+            {
+                continue;
+            }
+            // Only the genuine empty-document state counts. A malformed
+            // changeset is deliberately excluded here: it is `derive`'s hard
+            // error to raise, not a skippable template.
+            if matches!(Changeset::parse_toml(&raw), Err(ChangesetError::Unfilled)) {
+                unfilled.push(changesets_dir.join(slug.file_name()));
+            }
+        }
+        Ok(unfilled)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use relman_core::mocks::{MapChangesetStore, MapWorkspace};
+    use relman_core::ports::ChangesetStore;
+    use relman_core::types::{
+        ConsumedLedger, CycleId, ReleaseOptions, Slug, Target, Uid, WorkspacePath,
+    };
+
+    fn name(raw: &str) -> CrateName {
+        CrateName::parse(raw).expect("valid crate name")
+    }
+
+    fn version(raw: &str) -> Version {
+        Version::parse(raw).expect("valid version")
+    }
+
+    fn req(raw: &str) -> semver::VersionReq {
+        semver::VersionReq::parse(raw).expect("valid version req")
+    }
+
+    fn path(raw: &str) -> WorkspacePath {
+        WorkspacePath::parse(raw).expect("valid path")
+    }
+
+    fn target(crate_name: &str) -> Target {
+        Target::new(
+            name(crate_name),
+            path(&format!("packages/{crate_name}")),
+            path(&format!("packages/{crate_name}/CHANGELOG.md")),
+            true,
+        )
+    }
+
+    /// A config governing exactly `names`, in the given order.
+    fn config(names: &[&str]) -> ReleaseConfig {
+        let options = ReleaseOptions::new(
+            path(".changesets"),
+            path("Cargo.toml"),
+            path("CHANGELOG.md"),
+            path(".release/consumed-ledger.toml"),
+        );
+        ReleaseConfig::for_test(options, names.iter().map(|n| target(n)).collect())
+    }
+
+    fn store_with(entries: &[(&str, &str)]) -> Arc<MapChangesetStore> {
+        let store = MapChangesetStore::new();
+        for (slug, toml) in entries {
+            store
+                .write(&Slug::parse(slug).expect("valid slug"), toml)
+                .expect("seed store");
+        }
+        Arc::new(store)
+    }
+
+    fn service(
+        names: &[&str],
+        store: Arc<dyn ChangesetStore>,
+        workspace: MapWorkspace,
+    ) -> VersionService {
+        VersionService::new(
+            config(names),
+            store,
+            Arc::new(workspace),
+            ConsumedLedger::default(),
+        )
+    }
+
+    /// As [`service`], but with a pre-populated consumed-UID ledger.
+    fn service_with_ledger(
+        names: &[&str],
+        store: Arc<dyn ChangesetStore>,
+        workspace: MapWorkspace,
+        ledger: ConsumedLedger,
+    ) -> VersionService {
+        VersionService::new(config(names), store, Arc::new(workspace), ledger)
+    }
+
+    fn uid(raw: &str) -> Uid {
+        Uid::parse(raw).expect("valid test uid")
+    }
+
+    fn cycle(raw: &str) -> CycleId {
+        CycleId::parse(raw).expect("valid test cycle id")
+    }
+
+    /// A workspace with the given `(crate, current-version)` pairs and no edges.
+    fn workspace(versions: &[(&str, &str)]) -> MapWorkspace {
+        MapWorkspace::new(
+            versions
+                .iter()
+                .map(|(n, v)| (name(n), version(v)))
+                .collect(),
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn pre_1_0_breaking_bumps_minor() {
+        let store = store_with(&[(
+            "a",
+            "[[changes]]\ncrate=\"zaino-state\"\nkind=\"breaking\"\ndescription=\"x\"\n",
+        )]);
+        let svc = service(
+            &["zaino-state"],
+            store,
+            workspace(&[("zaino-state", "0.3.1")]),
+        );
+        let table = svc.derive().expect("derives");
+
+        let bump = table.get(&name("zaino-state")).expect("bumps");
+        assert_eq!(bump.current(), &version("0.3.1"));
+        assert_eq!(bump.next(), &version("0.4.0"));
+        assert_eq!(bump.bump(), Bump::Minor);
+        assert_eq!(bump.reasons(), ["x"]);
+    }
+
+    #[test]
+    fn pre_1_0_feature_and_fix_and_internal_bump_patch() {
+        for kind in ["feature", "fix", "internal"] {
+            let toml =
+                format!("[[changes]]\ncrate=\"zaino-state\"\nkind=\"{kind}\"\ndescription=\"x\"\n");
+            let store = store_with(&[("a", &toml)]);
+            let svc = service(
+                &["zaino-state"],
+                store,
+                workspace(&[("zaino-state", "0.3.1")]),
+            );
+            let table = svc.derive().expect("derives");
+            let bump = table.get(&name("zaino-state")).expect("bumps");
+            assert_eq!(bump.next(), &version("0.3.2"), "kind {kind}");
+            assert_eq!(bump.bump(), Bump::Patch, "kind {kind}");
+        }
+    }
+
+    #[test]
+    fn post_1_0_breaking_and_feature() {
+        let breaking = store_with(&[(
+            "a",
+            "[[changes]]\ncrate=\"zainod\"\nkind=\"breaking\"\ndescription=\"x\"\n",
+        )]);
+        let svc = service(&["zainod"], breaking, workspace(&[("zainod", "1.2.0")]));
+        assert_eq!(
+            svc.derive()
+                .expect("derives")
+                .get(&name("zainod"))
+                .expect("bumps")
+                .next(),
+            &version("2.0.0")
+        );
+
+        let feature = store_with(&[(
+            "a",
+            "[[changes]]\ncrate=\"zainod\"\nkind=\"feature\"\ndescription=\"x\"\n",
+        )]);
+        let svc = service(&["zainod"], feature, workspace(&[("zainod", "1.2.0")]));
+        assert_eq!(
+            svc.derive()
+                .expect("derives")
+                .get(&name("zainod"))
+                .expect("bumps")
+                .next(),
+            &version("1.3.0")
+        );
+    }
+
+    #[test]
+    fn highest_kind_wins_across_entries() {
+        // A fix and a breaking on the same crate resolve to the breaking bump.
+        let toml = "\
+[[changes]]
+crate=\"zaino-state\"
+kind=\"fix\"
+description=\"a fix\"
+
+[[changes]]
+crate=\"zaino-state\"
+kind=\"breaking\"
+description=\"a break\"
+";
+        let store = store_with(&[("a", toml)]);
+        let svc = service(
+            &["zaino-state"],
+            store,
+            workspace(&[("zaino-state", "0.3.1")]),
+        );
+        let table = svc.derive().expect("derives");
+        let bump = table.get(&name("zaino-state")).expect("bumps");
+        assert_eq!(bump.bump(), Bump::Minor);
+        assert_eq!(bump.next(), &version("0.4.0"));
+        // Both descriptions are kept as reasons.
+        assert_eq!(bump.reasons(), ["a fix", "a break"]);
+    }
+
+    #[test]
+    fn empty_changeset_contributes_nothing() {
+        let store = store_with(&[("a", "[empty]\nreason=\"comment-only\"\n")]);
+        let svc = service(
+            &["zaino-state"],
+            store,
+            workspace(&[("zaino-state", "0.3.1")]),
+        );
+        let table = svc.derive().expect("derives");
+        assert!(table.is_empty(), "empty changeset should not bump anything");
+    }
+
+    #[test]
+    fn consumed_changeset_contributes_nothing() {
+        // A released changeset lingering in `.changesets/` (stamped `consumed_in`)
+        // must not bump anything, while a pending sibling still does. This is the
+        // self-defending property: aggregation filters the consumed set out.
+        let store = store_with(&[
+            (
+                "consumed",
+                "consumed_in = \"cycle-0\"\n[[changes]]\ncrate=\"zaino-state\"\nkind=\"breaking\"\ndescription=\"already released\"\n",
+            ),
+            (
+                "pending",
+                "[[changes]]\ncrate=\"zaino-state\"\nkind=\"fix\"\ndescription=\"new fix\"\n",
+            ),
+        ]);
+        let svc = service(
+            &["zaino-state"],
+            store,
+            workspace(&[("zaino-state", "0.3.1")]),
+        );
+        let table = svc.derive().expect("derives");
+        let bump = table.get(&name("zaino-state")).expect("bumps");
+        // Only the pending fix counts: a patch, not the consumed breaking's minor.
+        assert_eq!(bump.bump(), Bump::Patch);
+        assert_eq!(bump.next(), &version("0.3.2"));
+        assert_eq!(bump.reasons(), ["new fix"]);
+    }
+
+    #[test]
+    fn ledgered_changeset_contributes_nothing_even_without_an_in_file_mark() {
+        // A changeset that is *not* stamped `consumed_in` but whose id the ledger
+        // records as already-shipped must be excluded exactly as a consumed one —
+        // this is the backport-independent dedup. A pending sibling still bumps.
+        const SHIPPED_UID: &str = "018f4e0a-7b2c-7c3d-8e4f-1a2b3c4d5e6f";
+        let store = store_with(&[
+            (
+                "shipped",
+                &format!(
+                    "id = \"{SHIPPED_UID}\"\n[[changes]]\ncrate=\"zaino-state\"\nkind=\"breaking\"\ndescription=\"already shipped\"\n"
+                ),
+            ),
+            (
+                "pending",
+                "[[changes]]\ncrate=\"zaino-state\"\nkind=\"fix\"\ndescription=\"new fix\"\n",
+            ),
+        ]);
+        let mut ledger = ConsumedLedger::default();
+        ledger.insert(
+            uid(SHIPPED_UID),
+            cycle("cycle-0"),
+            Some("shipped".to_owned()),
+        );
+
+        let svc = service_with_ledger(
+            &["zaino-state"],
+            store,
+            workspace(&[("zaino-state", "0.3.1")]),
+            ledger,
+        );
+        let table = svc.derive().expect("derives");
+        let bump = table.get(&name("zaino-state")).expect("bumps");
+        // Only the pending fix counts: a patch, not the ledgered breaking's minor.
+        assert_eq!(bump.bump(), Bump::Patch);
+        assert_eq!(bump.next(), &version("0.3.2"));
+        assert_eq!(bump.reasons(), ["new fix"]);
+    }
+
+    #[test]
+    fn a_fully_consumed_set_bumps_nothing_and_reports_no_unfilled() {
+        let store = store_with(&[(
+            "consumed",
+            "consumed_in = \"cycle-0\"\n[[changes]]\ncrate=\"zaino-state\"\nkind=\"breaking\"\ndescription=\"released\"\n",
+        )]);
+        let svc = service(
+            &["zaino-state"],
+            store,
+            workspace(&[("zaino-state", "0.3.1")]),
+        );
+        assert!(svc.derive().expect("derives").is_empty());
+        assert!(svc.unfilled_templates().expect("scan").is_empty());
+    }
+
+    #[test]
+    fn unfilled_template_is_skipped_and_reported() {
+        // A comments-only file: the scaffold `changeset new` writes, left
+        // unedited. It must not fail the derivation, must contribute no bump,
+        // and must be reported by `unfilled_templates` (by its `.changesets`
+        // path) so the CLI can warn.
+        let store = store_with(&[("velvet-pebble", "# just a comment, not yet filled in\n")]);
+        let svc = service(
+            &["zaino-state"],
+            store,
+            workspace(&[("zaino-state", "0.3.1")]),
+        );
+
+        let table = svc.derive().expect("derive tolerates an unfilled template");
+        assert!(table.is_empty(), "an unfilled template contributes no bump");
+
+        let unfilled = svc.unfilled_templates().expect("scan succeeds");
+        assert_eq!(
+            unfilled,
+            vec![std::path::PathBuf::from(".changesets/velvet-pebble.toml")]
+        );
+    }
+
+    #[test]
+    fn malformed_changeset_still_errors_and_is_not_reported_unfilled() {
+        // Both [[changes]] and [empty] present: malformed, not unfilled. It must
+        // still hard-error through derive, and must NOT appear in the unfilled
+        // scan.
+        let store = store_with(&[(
+            "broken",
+            "[[changes]]\ncrate=\"zaino-state\"\nkind=\"fix\"\ndescription=\"x\"\n[empty]\nreason=\"y\"\n",
+        )]);
+        let svc = service(
+            &["zaino-state"],
+            store,
+            workspace(&[("zaino-state", "0.3.1")]),
+        );
+
+        assert!(matches!(
+            svc.derive(),
+            Err(DeriveError::ChangesetParse { .. })
+        ));
+        assert!(
+            svc.unfilled_templates().expect("scan succeeds").is_empty(),
+            "a malformed changeset is not an unfilled template"
+        );
+    }
+
+    #[test]
+    fn no_changesets_bumps_nothing() {
+        let store: Arc<dyn ChangesetStore> = Arc::new(MapChangesetStore::new());
+        let svc = service(
+            &["zaino-state"],
+            store,
+            workspace(&[("zaino-state", "0.3.1")]),
+        );
+        assert!(svc.derive().expect("derives").is_empty());
+    }
+
+    #[test]
+    fn transitive_patch_flows_to_dependents_but_stops_at_a_matching_req() {
+        // A(0.3.1) breaking -> 0.4.0. B --^0.3--> A crosses (0.4.0 !~ ^0.3) -> B patches.
+        // C --^0.3--> B (second order): B 0.5.0 -> 0.5.1 patch. C's req ^0.5 still
+        // matches 0.5.1, so C does NOT bump from B... instead give C a req on B
+        // that DOES cross to exercise the second-order flow, and a fourth crate D
+        // whose req still matches A and does NOT bump.
+        let store = store_with(&[(
+            "a",
+            "[[changes]]\ncrate=\"zaino-state\"\nkind=\"breaking\"\ndescription=\"break A\"\n",
+        )]);
+        let edges = vec![
+            // B depends on A with ^0.3 (breaks on 0.4.0).
+            (name("b"), name("zaino-state"), req("^0.3")),
+            // C depends on B with ^0.5 (breaks on 0.6.0). B is 0.5.0 -> ... wait
+            // B only patches, so use a req that crosses B's patch. Instead make C
+            // depend on A too, second order via B below.
+            (name("c"), name("b"), req("=0.5.0")),
+            // D depends on A but tolerates the whole 0.x line up to <0.5.
+            (name("d"), name("zaino-state"), req(">=0.3, <0.5")),
+        ];
+        let workspace = MapWorkspace::new(
+            vec![
+                (name("zaino-state"), version("0.3.1")),
+                (name("b"), version("0.5.0")),
+                (name("c"), version("0.2.0")),
+                (name("d"), version("0.1.0")),
+            ],
+            edges,
+        );
+        let svc = service(&["zaino-state", "b", "c", "d"], store, workspace);
+        let table = svc.derive().expect("derives");
+
+        // A: direct breaking -> minor.
+        let a = table.get(&name("zaino-state")).expect("A bumps");
+        assert_eq!(a.next(), &version("0.4.0"));
+
+        // B: transitive patch (0.4.0 escaped ^0.3).
+        let b = table.get(&name("b")).expect("B bumps");
+        assert_eq!(b.bump(), Bump::Patch);
+        assert_eq!(b.next(), &version("0.5.1"));
+        assert_eq!(b.reasons().len(), 1);
+        assert!(b.reasons()[0].contains("`zaino-state` 0.3.1→0.4.0"));
+        assert!(b.reasons()[0].contains("`^0.3`"));
+
+        // C: second-order transitive patch (B 0.5.0 -> 0.5.1 escaped C's =0.5.0).
+        let c = table.get(&name("c")).expect("C bumps");
+        assert_eq!(c.bump(), Bump::Patch);
+        assert_eq!(c.next(), &version("0.2.1"));
+        assert!(c.reasons()[0].contains("`b` 0.5.0→0.5.1"));
+
+        // D: req still matches 0.4.0, so no bump.
+        assert!(table.get(&name("d")).is_none(), "D should not bump");
+    }
+
+    #[test]
+    fn transitive_does_not_downgrade_a_larger_direct_bump() {
+        // B directly breaks (pre-1.0 minor) AND depends on A which also bumps and
+        // crosses B's req. B must stay minor, not drop to patch.
+        let store = store_with(&[
+            (
+                "a",
+                "[[changes]]\ncrate=\"zaino-state\"\nkind=\"breaking\"\ndescription=\"break A\"\n",
+            ),
+            (
+                "b",
+                "[[changes]]\ncrate=\"b\"\nkind=\"breaking\"\ndescription=\"break B\"\n",
+            ),
+        ]);
+        let workspace = MapWorkspace::new(
+            vec![
+                (name("zaino-state"), version("0.3.1")),
+                (name("b"), version("0.2.0")),
+            ],
+            vec![(name("b"), name("zaino-state"), req("^0.3"))],
+        );
+        let svc = service(&["zaino-state", "b"], store, workspace);
+        let table = svc.derive().expect("derives");
+
+        let b = table.get(&name("b")).expect("B bumps");
+        assert_eq!(
+            b.bump(),
+            Bump::Minor,
+            "direct minor must win over transitive patch"
+        );
+        assert_eq!(b.next(), &version("0.3.0"));
+        // Direct description first, then the transitive crossing.
+        assert_eq!(b.reasons()[0], "break B");
+        assert!(b.reasons()[1].contains("`zaino-state` 0.3.1→0.4.0"));
+    }
+
+    #[test]
+    fn entry_naming_a_non_target_crate_is_an_error() {
+        let store = store_with(&[(
+            "a",
+            "[[changes]]\ncrate=\"zaino-testutils\"\nkind=\"fix\"\ndescription=\"x\"\n",
+        )]);
+        let svc = service(
+            &["zaino-state"],
+            store,
+            workspace(&[("zaino-state", "0.3.1")]),
+        );
+        let err = svc.derive().expect_err("non-target entry should error");
+        assert!(matches!(
+            err,
+            DeriveError::UnknownTarget { crate_name } if crate_name == "zaino-testutils"
+        ));
+    }
+
+    #[test]
+    fn missing_workspace_version_is_an_error() {
+        let store = store_with(&[(
+            "a",
+            "[[changes]]\ncrate=\"zaino-state\"\nkind=\"fix\"\ndescription=\"x\"\n",
+        )]);
+        // Workspace knows no version for the bumping crate.
+        let svc = service(&["zaino-state"], store, workspace(&[]));
+        let err = svc.derive().expect_err("missing version should error");
+        assert!(matches!(
+            err,
+            DeriveError::MissingVersion { crate_name } if crate_name == "zaino-state"
+        ));
+    }
+}

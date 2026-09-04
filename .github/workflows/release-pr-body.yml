@@ -1,0 +1,191 @@
+# INERT until the repo variable RELMAN_PIPELINE_ACTIVE=true. Activated only at
+# the coordinated pipeline cutover; until then this workflow does nothing.
+#
+# Keep the standing Release PR (`release-ready` -> `stable`) current. On every
+# push to `release-ready` (deployment-pass advance), re-render the PR body from the
+# derived version table + changelog and update the open PR — creating it if none
+# exists. See docs/release/pipeline.md § "Blessing" and
+# implementation.md (`relman pr-body`).
+
+name: Release PR body
+
+on:
+  push:
+    branches: [release-ready]
+  workflow_dispatch:
+
+# Least privilege: read the tree, write the PR (create/edit).
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  release-pr-body:
+    name: Keep release PR current
+    if: vars.RELMAN_PIPELINE_ACTIVE == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # Full history + tags so the cycle-numbering helper can read them.
+          fetch-depth: 0
+
+      # Create/edit the PR with a GitHub App token: GITHUB_TOKEN cannot create
+      # pull requests unless the repo enables "Allow GitHub Actions to create and
+      # approve pull requests" (off by default). An App with pull_requests:write
+      # is not subject to that restriction, so this is setting-independent.
+      - name: Mint GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - name: Compute open cycle N
+        id: cycle
+        run: |
+          set -euo pipefail
+
+          # --- shared cycle tag-numbering (see rc-gate.yml for the full doc) ---
+          # Cycle identity is derived purely from existing git tags:
+          #   cycle-<N>        final (blessed) cycle tag
+          #   cycle-<N>-rc.<M> deployment prerelease tag within cycle N
+          highest_cycle() {
+            git tag --list 'cycle-*' \
+              | sed -n 's/^cycle-\([0-9][0-9]*\)\(-rc\.[0-9][0-9]*\)\{0,1\}$/\1/p' \
+              | sort -n | tail -1
+          }
+          open_cycle() {
+            hi="$(highest_cycle)"
+            if [ -z "$hi" ]; then
+              echo 1
+            elif git rev-parse -q --verify "refs/tags/cycle-${hi}" >/dev/null; then
+              echo $((hi + 1))
+            else
+              echo "$hi"
+            fi
+          }
+
+          N="$(open_cycle)"
+          echo "Open cycle: $N"
+          echo "n=$N" >> "$GITHUB_OUTPUT"
+
+      - name: Gather cycle status
+        id: status
+        run: |
+          set -euo pipefail
+          # relman renders; this step gathers the live git facts it renders
+          # from, keeping relman a pure function of a TOML file. See
+          # relman-core `CycleStatus` and docs/release/pipeline.md
+          # § "Blessing".
+          status="$RUNNER_TEMP/status.toml"
+          N="${{ steps.cycle.outputs.n }}"
+
+          # Fetch the four gate branches so their tips are readable; each may be
+          # missing in an early cycle, so never fail on a branch that is absent.
+          for b in dev rc release-ready stable; do
+            git fetch --no-tags --quiet origin "$b" || true
+          done
+
+          # Top-level scalars must precede the [[rc]] array-of-tables (a bare key
+          # after an array-of-tables header binds to that table in TOML), so
+          # `released_cycle` is written first, then [watermarks], then the RCs.
+          : > "$status"
+
+          # released_cycle: the highest final `cycle-<K>` tag (no -rc suffix)
+          # reachable on stable, if any.
+          if git rev-parse -q --verify origin/stable >/dev/null 2>&1; then
+            released="$(git tag --merged origin/stable --list 'cycle-*' \
+              | sed -n 's/^cycle-\([0-9][0-9]*\)$/\1/p' \
+              | sort -n | tail -1)"
+            if [ -n "$released" ]; then
+              printf 'released_cycle = "cycle-%s"\n\n' "$released" >> "$status"
+            fi
+          fi
+
+          # [watermarks]: the short sha at each gate branch tip; a missing
+          # branch simply contributes no row.
+          echo "[watermarks]" >> "$status"
+          wm() {
+            local sha
+            sha="$(git rev-parse --short "$2" 2>/dev/null || true)"
+            [ -n "$sha" ] && printf '%s = "%s"\n' "$1" "$sha" >> "$status" || true
+          }
+          wm dev           origin/dev
+          wm rc            origin/rc
+          wm release_ready origin/release-ready
+          wm stable        origin/stable
+
+          # [[rc]]: every cycle-<N>-rc.<M> prerelease tag for the open cycle,
+          # sorted by M, each with the short sha it points at.
+          # TODO: populate deployment from the GitHub Deployments deployment-gate bridge
+          #       (the Argo side is out of scope here); until then, `pending`.
+          rc_nums="$(git tag --list "cycle-${N}-rc.*" \
+            | sed -n "s/^cycle-${N}-rc\.\([0-9][0-9]*\)$/\1/p" \
+            | sort -n)"
+          for m in $rc_nums; do
+            tag="cycle-${N}-rc.${m}"
+            sha="$(git rev-parse --short "refs/tags/$tag" 2>/dev/null || true)"
+            [ -n "$sha" ] || continue
+            {
+              printf '\n[[rc]]\n'
+              printf 'tag = "%s"\n' "$tag"
+              printf 'sha = "%s"\n' "$sha"
+              printf 'deployment = "pending"\n'
+            } >> "$status"
+          done
+
+          echo "Gathered $status:"
+          cat "$status"
+          echo "path=$status" >> "$GITHUB_OUTPUT"
+
+      # Overwrite the working-tree consumed-UID ledger with `stable`'s authoritative
+      # copy, so the derived version table excludes everything already shipped
+      # without waiting for the `stable -> dev` backport to land. relman reads the
+      # ledger from this path. `stable` was fetched in "Gather cycle status" above.
+      # See docs/release/changeset-format.md § "The consumed-UID ledger".
+      - name: Refresh consumed-ledger from stable
+        run: |
+          set -euo pipefail
+          ledger=".release/consumed-ledger.toml"
+          if git cat-file -e "origin/stable:${ledger}" 2>/dev/null; then
+            mkdir -p "$(dirname "$ledger")"
+            git show "origin/stable:${ledger}" > "$ledger"
+            echo "Refreshed ${ledger} from origin/stable."
+          else
+            rm -f "$ledger" 2>/dev/null || true
+            echo "stable has no ledger yet; treating as empty."
+          fi
+
+      - name: Render release PR body
+        run: |
+          set -euo pipefail
+          # relman runs from the repo root and writes markdown to stdout.
+          cargo run -q --manifest-path tools/relman/Cargo.toml -- \
+            pr-body --cycle "${{ steps.cycle.outputs.n }}" \
+            --status "${{ steps.status.outputs.path }}" > body.md
+
+      - name: Create or update the release PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          num="$(gh pr list --base stable --head release-ready --state open \
+            --json number --jq '.[0].number // empty')"
+          if [ -n "$num" ]; then
+            gh pr edit "$num" --body-file body.md
+            echo "Updated release PR #$num"
+          elif [ "$(git rev-list --count origin/stable..origin/release-ready)" -eq 0 ]; then
+            # release-ready has not advanced past stable yet, so there is no diff
+            # to open a PR from (a re-render triggered by an early rc cut lands
+            # here). Nothing to do — the cut is recorded by its tag.
+            echo "::notice::release-ready is not ahead of stable; no release PR to open yet."
+          else
+            new="$(gh pr create --base stable --head release-ready \
+              --title "Release cycle-${{ steps.cycle.outputs.n }}" \
+              --body-file body.md | sed 's#.*/##')"
+            gh pr edit "$new" --add-label "automated,release" \
+              || echo "::warning::labels 'automated'/'release' not applied (create them once on the repo)."
+            echo "Opened release PR #$new (release-ready -> stable)"
+          fi

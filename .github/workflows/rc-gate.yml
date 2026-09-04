@@ -1,0 +1,261 @@
+# INERT until the repo variable RELMAN_PIPELINE_ACTIVE=true. Activated only at
+# the coordinated pipeline cutover; until then this workflow does nothing.
+#
+# rc-gate: nightly RC advancement + prerelease tag. Fast-forwards `rc` to `dev`
+# HEAD and cuts a `cycle-<N>-rc.<M>` prerelease tag at the new rc HEAD, which is
+# what the deployment gate (release-gate) is pinned to. This is CI glue: relman prints the
+# tag name, the workflow applies it. See
+# docs/release/pipeline.md § "The rc-gate" and "Promotion Flow".
+#
+# NOTE ON THE NIGHTLY-GREEN PRECONDITION: this draft does NOT run the full e2e
+# `rc-gate` suite. See the TODO(cutover) step below — do not treat scheduled
+# advancement as gated until that condition is wired.
+
+name: RC gate
+
+on:
+  schedule:
+    - cron: '30 4 * * *' # nightly at 04:30 UTC
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Advance rc even though the nightly rc-gate green condition is not wired yet (draft escape hatch)."
+        type: boolean
+        default: false
+
+# rc advancement pushes the protected `rc` branch and a prerelease tag; it also
+# notes the cut on the standing release PR (comment) and re-renders its body,
+# and dispatches the cut RC to the deployment gate via a GitHub Deployment.
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+  deployments: write
+
+jobs:
+  rc-gate:
+    name: Advance rc and cut prerelease tag
+    if: vars.RELMAN_PIPELINE_ACTIVE == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      # Mint a short-lived GitHub App installation token (no PATs). The App must
+      # be installed on this repo with `contents: write`, and added to the `rc`
+      # branch-protection bypass list so it can fast-forward protected `rc`.
+      # Store its credentials as the RELEASE_APP_ID / RELEASE_APP_PRIVATE_KEY
+      # secrets.
+      - name: Mint GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - name: Checkout dev
+        uses: actions/checkout@v7
+        with:
+          ref: dev
+          # Full history + all tags: needed for fast-forward checks and the
+          # cycle-numbering helper.
+          fetch-depth: 0
+          # Use the App token so the push step below can advance the *protected*
+          # `rc` branch (GITHUB_TOKEN cannot push a protected branch).
+          token: ${{ steps.app-token.outputs.token }}
+
+      # TODO(cutover): gate advancement on the nightly full-e2e `rc-gate` suite
+      # being GREEN on dev HEAD (e.g. query a required workflow_run conclusion, or
+      # a commit status). This draft runs NO e2e here — doing so would duplicate
+      # the suite runner. Until the green signal is wired, scheduled runs advance
+      # unconditionally and workflow_dispatch `force` is the manual override. DO
+      # NOT set RELMAN_PIPELINE_ACTIVE=true until this precondition is real, or
+      # un-vetted dev HEAD will flow straight to `rc`.
+      # Gate 2 (the rc-gate suite) must be green for the EXACT dev commit rc is
+      # about to advance to. The gate is DECOUPLED from what runs the suite: it
+      # requires a NAMED SIGNAL — a check-run or commit status whose context is
+      # `vars.RELMAN_RC_GATE_CHECK` (default `rc-gate`) — to be `success` on dev
+      # HEAD. Whatever publishes that signal (a nextest e2e workflow, an external
+      # runner, a manual sign-off) is the swappable membership; this gate never
+      # names a specific workflow or test mode. A `force` dispatch bypasses
+      # (recovery, or before the suite has run for a fresh commit).
+      - name: Require the rc-gate suite green on dev HEAD
+        if: ${{ ! inputs.force }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE: ${{ vars.RELMAN_RC_GATE_CHECK || 'rc-gate' }}
+        run: |
+          set -euo pipefail
+          head="$(git rev-parse HEAD)"   # the checked-out dev tip
+          # Accept either a check-run (Actions/App) or a commit status (external)
+          # with this context = success — suite-type-agnostic.
+          cr="$(gh api "repos/${{ github.repository }}/commits/${head}/check-runs" \
+                 --jq '[.check_runs[] | select(.name == env.GATE and .conclusion == "success")] | length')"
+          st="$(gh api "repos/${{ github.repository }}/commits/${head}/status" \
+                 --jq '[.statuses[] | select(.context == env.GATE and .state == "success")] | length')"
+          if [ "$(( ${cr:-0} + ${st:-0} ))" -ge 1 ]; then
+            echo "rc-gate suite signal '${GATE}' is green for dev HEAD ${head:0:9}; advancing rc."
+          else
+            echo "::error::rc-gate suite signal '${GATE}' is not green for dev HEAD ${head:0:9}. Whatever runs the rc-gate suite must publish a '${GATE}' check-run/status; refusing to advance (dispatch force=true to override)."
+            exit 1
+          fi
+
+      - name: Fetch dev and rc
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin dev rc || git fetch --no-tags origin dev
+
+      - name: Fast-forward rc to dev HEAD
+        id: ff
+        run: |
+          set -euo pipefail
+          dev_head="$(git rev-parse origin/dev)"
+
+          # rc may not exist yet on the very first run; treat that as "create rc at dev".
+          if git rev-parse -q --verify origin/rc >/dev/null; then
+            rc_head="$(git rev-parse origin/rc)"
+          else
+            rc_head=""
+          fi
+
+          if [ "$rc_head" = "$dev_head" ]; then
+            echo "rc already at dev HEAD ($dev_head); nothing to advance."
+          elif [ -n "$rc_head" ] && ! git merge-base --is-ancestor "$rc_head" "$dev_head"; then
+            # rc has commit(s) dev lacks (e.g. an un-backported hotfix). A pure
+            # fast-forward is impossible; NEVER force. A human must backport the
+            # rc-only commits to dev first (see the hotfix/backport protocol).
+            echo "::error::rc ($rc_head) is not an ancestor of dev HEAD ($dev_head); refusing non-fast-forward advance. Backport rc-only commits to dev first (hotfix protocol)."
+            exit 1
+          else
+            echo "Fast-forwarding rc -> $dev_head"
+            git push origin "${dev_head}:refs/heads/rc"
+          fi
+
+          # The prerelease tag is applied at rc HEAD, which is now dev_head.
+          echo "rc_sha=$dev_head" >> "$GITHUB_OUTPUT"
+
+      - name: Compute cycle N and next rc M
+        id: ids
+        run: |
+          set -euo pipefail
+
+          # --- shared cycle tag-numbering scheme (canonical documentation) ---
+          # Identity is derived purely from existing git tags (checkout fetched
+          # them via fetch-depth: 0). Two tag shapes carry the numbers:
+          #   cycle-<N>          final (blessed) cycle tag
+          #   cycle-<N>-rc.<M>   deployment prerelease tag number M within cycle N
+          #
+          # highest_cycle(): the max integer N seen across BOTH shapes (empty if
+          #   no cycle tags exist). The sed matches `cycle-<N>` and
+          #   `cycle-<N>-rc.<M>` exactly and prints N; date-style ids like
+          #   `cycle-2026-08-15` do not match and are ignored (this scheme is
+          #   integer-numbered per the pipeline draft).
+          highest_cycle() {
+            git tag --list 'cycle-*' \
+              | sed -n 's/^cycle-\([0-9][0-9]*\)\(-rc\.[0-9][0-9]*\)\{0,1\}$/\1/p' \
+              | sort -n | tail -1
+          }
+          # open_cycle(): the cycle a NEW rc (or a blessing) belongs to.
+          #   - no cycle tags yet            -> 1
+          #   - a final `cycle-<hi>` exists  -> hi+1 (that cycle already released)
+          #   - otherwise                    -> hi   (cycle hi still open/deploying)
+          open_cycle() {
+            hi="$(highest_cycle)"
+            if [ -z "$hi" ]; then
+              echo 1
+            elif git rev-parse -q --verify "refs/tags/cycle-${hi}" >/dev/null; then
+              echo $((hi + 1))
+            else
+              echo "$hi"
+            fi
+          }
+          # next_rc(N): the next prerelease number M within cycle N (max existing
+          #   `cycle-<N>-rc.<M>` + 1, or 1 if none).
+          next_rc() {
+            n="$1"
+            last="$(git tag --list "cycle-${n}-rc.*" \
+              | sed -n "s/^cycle-${n}-rc\.\([0-9][0-9]*\)$/\1/p" \
+              | sort -n | tail -1)"
+            if [ -z "$last" ]; then echo 1; else echo $((last + 1)); fi
+          }
+
+          N="$(open_cycle)"
+          M="$(next_rc "$N")"
+          echo "Open cycle N=$N, next rc M=$M"
+          echo "n=$N" >> "$GITHUB_OUTPUT"
+          echo "m=$M" >> "$GITHUB_OUTPUT"
+
+      - name: Create and push prerelease tag
+        id: tag
+        run: |
+          set -euo pipefail
+          # relman prints the single prerelease tag name for cycle N, rc M.
+          tag="$(cargo run -q --manifest-path tools/relman/Cargo.toml -- \
+            tags --cycle "${{ steps.ids.outputs.n }}" --rc "${{ steps.ids.outputs.m }}" \
+            | tr -d '[:space:]')"
+          echo "Prerelease tag: $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "Tag $tag already exists; skipping (rc HEAD unchanged since last cut)."
+            echo "cut=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "$tag" "${{ steps.ff.outputs.rc_sha }}"
+          git push origin "$tag"
+          echo "cut=true" >> "$GITHUB_OUTPUT"
+
+      # Record the cut on the standing release PR: an append-only comment (the
+      # event timeline) plus a re-render of the body (the live snapshot). The
+      # release PR only exists once `release-ready` is ahead of `stable`, so an
+      # early rc (before the first deployment-pass) has nowhere to post — the tag
+      # is its record until the PR opens. GITHUB_TOKEN suffices to comment and to
+      # dispatch the renderer.
+      - name: Note the RC cut on the release PR
+        if: steps.tag.outputs.cut == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          pr="$(gh pr list --base stable --head release-ready --state open \
+            --json number --jq '.[0].number // empty')"
+          if [ -z "$pr" ]; then
+            echo "::notice::No open release PR yet; the ${{ steps.tag.outputs.tag }} tag is its own record."
+            exit 0
+          fi
+          repo="${{ github.server_url }}/${{ github.repository }}"
+          tag="${{ steps.tag.outputs.tag }}"
+          sha="${{ steps.ff.outputs.rc_sha }}"
+          # Markdown links (backtick-wrapped SHAs/tags don't autolink on their own).
+          gh pr comment "$pr" --body \
+            "🔖 Cut [\`${tag}\`](${repo}/tree/${tag}) at [\`${sha:0:9}\`](${repo}/commit/${sha}) — deployment: pending."
+          # Re-render the body snapshot (RC list / watermarks) via the sole
+          # renderer, keeping the description current without duplicating it here.
+          gh workflow run release-pr-body.yml --ref release-ready || \
+            echo "::warning::could not dispatch release-pr-body to refresh the body."
+
+      # Dispatch the freshly-cut RC to the deployment gate: create a GitHub
+      # Deployment for its commit in the `deployment` environment. On the cluster,
+      # Argo Events catches this and runs the live-chain deployment validation; on
+      # completion it posts a `deployment_status` back, which the
+      # `deployment-advance` workflow reacts to by advancing `release-ready`.
+      # `required_contexts:[]` so the Deployment is not gated on status checks —
+      # the soak itself IS the gate. See implementation.md § "The deployment-gate
+      # bridge". (`tools/scripts/mark-deployment.sh` injects the same signal for
+      # testing without waiting days.)
+      - name: Dispatch the RC to the deployment gate
+        if: steps.tag.outputs.cut == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if jq -n --arg ref "${{ steps.ff.outputs.rc_sha }}" --arg tag "${{ steps.tag.outputs.tag }}" \
+               '{ref:$ref, environment:"deployment", auto_merge:false,
+                 required_contexts:[], production_environment:false,
+                 description:("deployment-gate soak for "+$tag)}' \
+             | gh api "repos/${{ github.repository }}/deployments" -X POST --input - \
+                 --jq '"dispatched deployment "+(.id|tostring)+" for "+.sha[0:9]'; then
+            :
+          else
+            echo "::warning::could not create the GitHub Deployment; the soak was not dispatched for ${{ steps.tag.outputs.tag }}."
+          fi

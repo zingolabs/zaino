@@ -1,0 +1,91 @@
+# relman.toml — the repo-committed versioning-target manifest.
+#
+# The single source of truth for what relman governs: each versioning target,
+# its location, and per-target options. Changeset enforcement validates a
+# change's `crate` against these targets, versions/bumps apply only to them,
+# and the publish plan covers exactly this set. No `cargo metadata` heuristic
+# decides governance — this file does.
+#
+# Target set: the 17 crates.io-published packages (docs/release/
+# pipeline.md § Context). The internal-only crates
+# (live-tests/{e2e,clientless,zaino-testutils}) are deliberately absent.
+
+[options]
+changesets_dir      = ".changesets"
+root_manifest       = "Cargo.toml"
+workspace_changelog = "CHANGELOG.md"
+# The consumed-UID ledger: one file listing every already-shipped changeset id.
+# CI refreshes it from `origin/stable` before deriving, so a released changeset
+# is excluded by id even when its per-file `consumed_in` mark hasn't yet
+# backported to `dev`. relman reads it as a pure input; it never edits it here.
+consumed_ledger     = ".release/consumed-ledger.toml"
+
+# Per target: `changelog` defaults to `<path>/CHANGELOG.md`; `publish` to true.
+
+[[target]]
+name = "zainod"
+path = "packages/zainod"
+
+[[target]]
+name = "zaino-serve"
+path = "packages/zaino-serve"
+
+[[target]]
+name = "zaino-state"
+path = "packages/zaino-state"
+
+[[target]]
+name = "zaino-proto"
+path = "packages/zaino-proto"
+
+[[target]]
+name = "zaino-common"
+path = "packages/zaino-common"
+
+[[target]]
+name = "zaino-primitives"
+path = "packages/zaino-primitives"
+
+[[target]]
+name = "zaino-address"
+path = "packages/zaino-address"
+
+[[target]]
+name = "zaino-source"
+path = "packages/zaino-source"
+
+[[target]]
+name = "zaino-rpc"
+path = "packages/zaino-rpc"
+
+[[target]]
+name = "zaino-convert-zebra"
+path = "packages/zaino-convert-zebra"
+
+[[target]]
+name = "zaino-source-zebra-rpc"
+path = "packages/zaino-source-zebra-rpc"
+
+[[target]]
+name = "zaino-source-zebra-readstate"
+path = "packages/zaino-source-zebra-readstate"
+
+[[target]]
+name = "zaino-source-zebra"
+path = "packages/zaino-source-zebra"
+
+[[target]]
+name = "zaino-consensus"
+path = "packages/zaino-consensus"
+
+[[target]]
+name = "zaino-mempool"
+path = "packages/zaino-mempool"
+
+[[target]]
+name = "zaino-mempool-service"
+path = "packages/zaino-mempool-service"
+
+[[target]]
+name = "zaino-status"
+path = "packages/zaino-status"

@@ -1,0 +1,20 @@
+[package]
+name = "relman-adapters"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Concrete driven-port adapters (filesystem changeset store, random slug source)"
+
+[dependencies]
+cargo_metadata = { workspace = true }
+rand = "0.10.2"
+relman-core = { workspace = true }
+semver = { workspace = true }
+toml_edit = { workspace = true }
+uuid = { version = "1.24.1", features = ["v7"] }
+
+[dev-dependencies]
+relman-core = { workspace = true, features = ["test-support"] }
+tempfile = "3.27.0"
