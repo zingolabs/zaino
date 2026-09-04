@@ -4,22 +4,18 @@ use zebra_chain::amount::{Amount, NonNegative};
 
 use crate::rpc::jsonrpc::wire::display_hex;
 
-/// A delta amount that does not fit the wire's amount type.
+/// A delta amount that does not fit the wire's `Amount` type.
 ///
-/// # Why this is the one fallible `from_domain` in the module
+/// The wire's `Amount` enforces the money range `[-MAX_MONEY, MAX_MONEY]`. The
+/// domain quantities rendered here — a
+/// [`ZatoshisDelta`](zaino_primitives::types::ZatoshisDelta) for an input, a
+/// [`Zatoshis`](zaino_primitives::types::Zatoshis) for an output — are already
+/// bounded to that same range, so a well-formed domain value always fits and an
+/// out-of-range delta is refused upstream when it is constructed.
 ///
-/// Response rendering is otherwise infallible: a domain value is already valid,
-/// so emitting it cannot fail. That does not quite hold here.
-/// [`ZatoshisDelta`](zaino_primitives::types::ZatoshisDelta) is an unbounded
-/// `i64`, while the wire's `Amount` enforces the money range — so the domain
-/// type is strictly wider than what can be rendered, and the gap has to be
-/// reported rather than papered over.
-///
-/// The old conversion in the source layer was fallible for exactly this reason;
-/// keeping it fallible preserves that behaviour rather than trading it for a
-/// panic or a silent clamp. Bounding `ZatoshisDelta` at construction would
-/// close the gap in the domain instead and let this become infallible, but that
-/// is a change to the primitive's contract and belongs in its own commit.
+/// The conversion is nonetheless checked rather than asserted infallible: were
+/// either bound relaxed, the mismatch would surface here as a reported error
+/// instead of a panic or a silent clamp.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("block delta amount out of range: {0}")]
 pub struct DeltaAmountOutOfRange(String);
@@ -244,7 +240,7 @@ mod tests {
                 index: 1,
                 inputs: vec![domain::rpc::InputDelta {
                     address: TransparentAddress::new("t1spender".to_string()),
-                    satoshis: ZatoshisDelta::new(-5_000),
+                    satoshis: ZatoshisDelta::try_new(-5_000).expect("within the supply"),
                     index: 0,
                     prev_txid: domain::TransactionId::from([0xbb; 32]),
                     prev_output: 3,
@@ -293,14 +289,22 @@ mod tests {
         assert_eq!(json["deltas"][0]["outputs"][0]["satoshis"], 5_000i64);
     }
 
+    /// The largest-magnitude delta a [`ZatoshisDelta`] can hold renders on the
+    /// wire. The wire's money range and the delta's supply bound coincide, so a
+    /// value beyond the wire's range cannot reach this conversion:
+    /// [`ZatoshisDelta::try_new`] refuses it upstream when the delta is built.
     #[test]
-    fn rejects_an_input_amount_outside_the_money_range() {
-        let mut deltas = sample();
-        deltas.deltas[0].inputs[0].satoshis = ZatoshisDelta::new(i64::MIN);
+    fn an_input_at_the_supply_extreme_renders() {
+        const MAX: i64 = 21_000_000 * 100_000_000;
 
-        assert!(
-            BlockDeltas::from_domain(deltas).is_err(),
-            "an unrepresentable amount must be reported, not clamped or panicked on"
-        );
+        let mut deltas = sample();
+        deltas.deltas[0].inputs[0].satoshis =
+            ZatoshisDelta::try_new(-MAX).expect("the supply extreme is a valid delta");
+
+        let wire =
+            BlockDeltas::from_domain(deltas).expect("the supply extreme is within the wire range");
+        let json = serde_json::to_value(&wire).unwrap();
+
+        assert_eq!(json["deltas"][0]["inputs"][0]["satoshis"], -MAX);
     }
 }

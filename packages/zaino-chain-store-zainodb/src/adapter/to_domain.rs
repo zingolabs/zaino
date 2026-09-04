@@ -185,10 +185,25 @@ fn stored_compact_tx(tx: &CompactTxData) -> Result<StoredTx, ChainStoreError> {
     let (sapling_value, orchard_value) = tx.balances();
 
     Ok(StoredTx {
-        sapling_value: sapling_value.map(ZatoshisDelta::new),
-        orchard_value: orchard_value.map(ZatoshisDelta::new),
-        ironwood_value: tx.ironwood().value().map(ZatoshisDelta::new),
+        sapling_value: stored_value_balance(sapling_value, "sapling")?,
+        orchard_value: stored_value_balance(orchard_value, "orchard")?,
+        ironwood_value: stored_value_balance(tx.ironwood().value(), "ironwood")?,
         compact: stored_compact_tx_body(tx)?,
+    })
+}
+
+/// Read a stored per-pool value balance, or `None` where the pool is absent.
+///
+/// The on-disk `i64` is the boundary the delta's invariant is enforced at: a
+/// value whose magnitude exceeds the money supply is not a representable balance
+/// change, so it surfaces as a corrupt row rather than being carried into the
+/// domain.
+fn stored_value_balance(
+    raw: Option<i64>,
+    pool: &str,
+) -> Result<Option<ZatoshisDelta>, ChainStoreError> {
+    raw.map(ZatoshisDelta::try_new).transpose().map_err(|e| {
+        corrupt_row_because(format!("a {pool} value balance within the money supply"), e)
     })
 }
 

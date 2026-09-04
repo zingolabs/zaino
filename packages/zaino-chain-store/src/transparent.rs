@@ -225,7 +225,7 @@ mod tests {
     fn no_effects_net_to_zero() {
         assert_eq!(
             StoreAddressEffects::default().net_value(),
-            Some(ZatoshisDelta::new(0))
+            Some(ZatoshisDelta::try_new(0).expect("zero is in range"))
         );
     }
 

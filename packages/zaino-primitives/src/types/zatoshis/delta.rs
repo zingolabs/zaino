@@ -21,14 +21,22 @@ pub struct ZatoshisDeltaOverflow {
 }
 
 impl ZatoshisDelta {
-    /// Create a signed zatoshi amount from an already-in-range `i64`.
+    /// Create a delta from a value read at a boundary, enforcing that its
+    /// magnitude fits the money supply.
     ///
-    /// Does not bound its input: a raw delta can carry any `i64` the caller
-    /// already holds (a pool value balance, a wire-supplied figure). Callers
-    /// that derive a delta and need the money-supply invariant enforced use
-    /// [`ZatoshisDelta::try_from_i128`] instead.
-    pub fn new(amount: i64) -> Self {
-        Self(amount)
+    /// A delta is the change in an aggregate balance, which lives in
+    /// `[0, MAX_ZATOSHIS]`, so its change lives in
+    /// `[-MAX_ZATOSHIS, MAX_ZATOSHIS]`. A value outside that range is not a
+    /// representable delta and is rejected rather than truncated: a figure off
+    /// the wire or disk that lands there signals corrupt input, not a large but
+    /// legitimate balance change.
+    ///
+    /// This is the boundary door — the external-input validation step for a
+    /// delta parsed from a source or read from storage. A delta *derived* inside
+    /// the domain reaches the same invariant through
+    /// [`ZatoshisFlowSum::delta`](super::ZatoshisFlowSum::delta).
+    pub fn try_new(value: i64) -> Result<Self, ZatoshisDeltaOverflow> {
+        Self::try_from_i128(i128::from(value))
     }
 
     /// Create a signed zatoshi delta from a wide integer, enforcing that its
@@ -79,12 +87,31 @@ impl fmt::Display for ZatoshisDelta {
 mod tests {
     use super::*;
 
+    fn delta(value: i64) -> ZatoshisDelta {
+        ZatoshisDelta::try_new(value).expect("within the supply")
+    }
+
     #[test]
-    fn signed_spend_receive() {
-        assert!(ZatoshisDelta::new(-100).is_spend());
-        assert!(ZatoshisDelta::new(100).is_receive());
-        assert!(!ZatoshisDelta::new(0).is_spend());
-        assert!(!ZatoshisDelta::new(0).is_receive());
+    fn spend_receive() {
+        assert!(delta(-100).is_spend());
+        assert!(delta(100).is_receive());
+        assert!(!delta(0).is_spend());
+        assert!(!delta(0).is_receive());
+    }
+
+    #[test]
+    fn try_new_accepts_supply_magnitude() {
+        let max = i64::try_from(MAX_ZATOSHIS).expect("supply fits in i64");
+        assert_eq!(ZatoshisDelta::try_new(max).map(i64::from), Ok(max));
+        assert_eq!(ZatoshisDelta::try_new(-max).map(i64::from), Ok(-max));
+    }
+
+    #[test]
+    fn try_new_rejects_magnitude_past_supply() {
+        let over = i64::try_from(MAX_ZATOSHIS).expect("supply fits in i64") + 1;
+        assert!(ZatoshisDelta::try_new(over).is_err());
+        assert!(ZatoshisDelta::try_new(-over).is_err());
+        assert!(ZatoshisDelta::try_new(i64::MIN).is_err());
     }
 
     #[test]

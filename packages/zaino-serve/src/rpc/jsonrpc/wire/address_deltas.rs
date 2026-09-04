@@ -229,7 +229,7 @@ mod domain_tests {
 
     fn delta() -> domain::AddressDelta {
         domain::AddressDelta {
-            satoshis: ZatoshisDelta::new(-1_000),
+            satoshis: ZatoshisDelta::try_new(-1_000).expect("within the supply"),
             txid: domain::TransactionId::from(ASYMMETRIC),
             index: 2,
             height: Height::try_from(99u32).unwrap(),
