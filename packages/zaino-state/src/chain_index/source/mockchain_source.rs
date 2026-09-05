@@ -1043,17 +1043,14 @@ impl zaino_source::OneShotGetAddressBalance for MockchainSource {
         let matching = self.matching_transparent_outputs(&valid, &network);
         let spent = self.spent_transparent_outpoints();
 
+        let mut received_values = Vec::new();
         let mut balance = 0_u64;
-        let mut received = 0_u64;
         for (outpoint, output) in matching {
-            let value = u64::from(output.output.value());
-            received = received.checked_add(value).ok_or_else(|| {
-                port_fault::<zaino_source::GetAddressBalanceError>(
-                    "address received amount overflowed u64",
-                )
-            })?;
+            let value = domain::Zatoshis::new(u64::from(output.output.value()))
+                .map_err(|e| port_fault::<zaino_source::GetAddressBalanceError>(e.to_string()))?;
+            received_values.push(value);
             if !spent.contains(&outpoint) {
-                balance = balance.checked_add(value).ok_or_else(|| {
+                balance = balance.checked_add(u64::from(value)).ok_or_else(|| {
                     port_fault::<zaino_source::GetAddressBalanceError>(
                         "address balance amount overflowed u64",
                     )
@@ -1061,11 +1058,20 @@ impl zaino_source::OneShotGetAddressBalance for MockchainSource {
             }
         }
 
+        // Every matching output is a receipt, so the lifetime received total
+        // is a flow: it is derived here by the flow accumulate, not bounded by
+        // the supply.
+        let received = domain::ZatoshisFlowSum::try_accumulate(received_values.into_iter())
+            .ok_or_else(|| {
+                port_fault::<zaino_source::GetAddressBalanceError>(
+                    "address received flow overflowed its accumulator",
+                )
+            })?;
+
         Ok(domain::AddressBalance {
             balance: domain::Zatoshis::new(balance)
                 .map_err(|e| port_fault::<zaino_source::GetAddressBalanceError>(e.to_string()))?,
-            received: domain::Zatoshis::new(received)
-                .map_err(|e| port_fault::<zaino_source::GetAddressBalanceError>(e.to_string()))?,
+            received,
         })
     }
 }

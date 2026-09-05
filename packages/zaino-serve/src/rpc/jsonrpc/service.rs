@@ -737,8 +737,11 @@ impl<Indexer: ZcashIndexer + LightWalletIndexer> ZcashIndexerRpcServer for JsonR
             .inner_ref()
             .z_get_address_balance(address_strings)
             .await
-            .map(crate::rpc::jsonrpc::wire::address_queries::address_balance_from_domain)
             .map_err(invalid_params_error_object)
+            .and_then(|balance| {
+                crate::rpc::jsonrpc::wire::address_queries::address_balance_from_domain(balance)
+                    .map_err(invalid_params_error_object)
+            })
     }
 
     async fn send_raw_transaction(
