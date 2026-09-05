@@ -4,10 +4,11 @@
 //! The `block_from_zebra` entry point composes them.
 
 use zaino_primitives::types::{
-    Block, BlockCommitments, BlockHash, BlockHeader, ChainMetadata, EncryptedCiphertext,
-    EphemeralKey, EquihashSolution, Height, MerkleRoot, NoteCommitment, Nullifier, OrchardAction,
-    OrchardData, SaplingData, SaplingOutput, SaplingSpend, Script, SignedZatoshis, Transaction,
-    TransactionId, TransparentData, TransparentInput, TransparentOutput, Zatoshis,
+    Block, BlockCommitments, BlockHash, BlockHeader, ChainMetadata, CompactDifficulty,
+    CompactDifficultyError, EncryptedCiphertext, EphemeralKey, EquihashSolution, Height,
+    MerkleRoot, NoteCommitment, Nullifier, OrchardAction, OrchardData, SaplingData, SaplingOutput,
+    SaplingSpend, Script, SignedZatoshis, Transaction, TransactionId, TransparentData,
+    TransparentInput, TransparentOutput, Zatoshis,
 };
 
 /// Errors during conversion from zebra types.
@@ -19,6 +20,13 @@ pub enum ConvertError {
     /// A value exceeded protocol limits.
     #[error("value overflow: {0}")]
     Value(String),
+    /// The header's difficulty threshold failed the domain's validation.
+    ///
+    /// A zebra header holds an already-validated difficulty, so this only
+    /// fires if the two implementations disagree about the acceptance set —
+    /// exactly what this crate's differential tests pin down.
+    #[error("difficulty: {0}")]
+    Difficulty(#[from] CompactDifficultyError),
 }
 
 /// Convert a zebra block into a domain [`Block`].
@@ -59,9 +67,11 @@ pub fn header_from_zebra(zb: &zebra_chain::block::Block) -> Result<BlockHeader, 
         time: h.time.timestamp() as u32,
         merkle_root: MerkleRoot::from(h.merkle_root.0),
         block_commitments: BlockCommitments::from(*h.commitment_bytes),
-        // TODO: upstream PR to zebra adding CompactDifficulty::to_bits() -> u32.
-        // Workaround: round-trip through display-order bytes.
-        bits: u32::from_be_bytes(h.difficulty_threshold.bytes_in_display_order()),
+        // Zebra exposes no raw-bits accessor, so the value crosses as its
+        // display-order bytes, through the primitives door of the same shape.
+        bits: CompactDifficulty::try_from_be_bytes(
+            h.difficulty_threshold.bytes_in_display_order(),
+        )?,
         nonce: *h.nonce,
         solution: solution_from_zebra(h.solution),
     })
@@ -90,7 +100,9 @@ pub fn header_from_parts(
         time: header.time.timestamp() as u32,
         merkle_root: MerkleRoot::from(header.merkle_root.0),
         block_commitments: BlockCommitments::from(*header.commitment_bytes),
-        bits: u32::from_be_bytes(header.difficulty_threshold.bytes_in_display_order()),
+        bits: CompactDifficulty::try_from_be_bytes(
+            header.difficulty_threshold.bytes_in_display_order(),
+        )?,
         nonce: *header.nonce,
         solution: solution_from_zebra(header.solution),
     })
