@@ -22,10 +22,6 @@
 //! becomes a test failure rather than a silent behaviour change, without
 //! anything having to depend on zebra to obtain a number.
 
-pub mod work;
-
-pub use work::{work_from_bits, WorkError};
-
 /// Number of confirmations before a coinbase output becomes spendable.
 ///
 /// Zcash protocol specification §3.10: a coinbase output cannot be spent until
