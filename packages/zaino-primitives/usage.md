@@ -152,6 +152,45 @@ trips `WorkOverWidth`; a value that does did not come from one. The expanded
 256-bit target itself never leaves the type: no consumer reasons about
 targets, only about validity and work.
 
+## Confirmation state
+
+Tip-relative confirmation state is an enum pair, not an integer. The RPC
+interface flattens it into one signed number (`-1` not on the best chain, `0`
+mempool, `n ≥ 1` depth + 1); in the domain that integer exists only at the
+wire.
+
+| type | states | subject |
+|---|---|---|
+| `BlockConfirmations` | `NotInBestChain` \| `Confirmed(NonZeroU32)` | a block |
+| `TxConfirmations` | `Mempool` \| `Mined(BlockConfirmations)` | a transaction and its outputs |
+
+Two types because the state spaces differ: a block is never in the mempool,
+and a single three-state enum would force a dead `Mempool` arm on every
+block-side consumer. The sharing is vertical — a mined transaction's state
+*is* its block's — so `TxConfirmations` embeds the block type and forwards
+`count()` / `is_in_best_chain()` through `Mined`. There is deliberately no
+trait over the two; if a consumer generic over both ever appears, extract one
+then.
+
+```rust
+use zaino_primitives::types::{BlockConfirmations, Height, TxConfirmations};
+
+// The off-by-one lives here and nowhere else: the tip is Confirmed(1).
+// A height above the tip (a caller racing a tip update) clamps to
+// Confirmed(1) — the contract is on the constructor's docs.
+let state = BlockConfirmations::of_best_chain_block(height, tip);
+
+// The wire codec pair on each type. Parsing is the external-input
+// validation step: 0 on the block door, anything below -1, and counts
+// past u32 are rejected with a typed ConfirmationsCodecError.
+let n = state.to_rpc_i64();
+let back = BlockConfirmations::try_from_rpc_i64(n)?;
+let tx = TxConfirmations::try_from_rpc_i64(0)?; // Mempool
+```
+
+`Height::depth_from(tip)` is the single home for the underlying "tip − height"
+subtraction (`None` when the height is above the tip).
+
 ## Byte order
 
 Internal order throughout. `BlockHash` and `TransactionHash` hold bytes in the
