@@ -151,7 +151,7 @@ pub(super) fn stored_block(block: IndexedBlock) -> Result<StoredBlock, ChainStor
         })?,
         merkle_root: data.merkle_root.into(),
         block_commitments: data.block_commitments.into(),
-        bits: data.bits.as_bits(),
+        bits: data.bits,
         nonce: data.nonce,
         solution: match data.solution {
             crate::types::EquihashSolution::Standard(bytes) => {

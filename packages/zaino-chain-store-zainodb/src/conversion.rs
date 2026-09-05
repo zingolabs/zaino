@@ -68,13 +68,19 @@ use crate::types::{
 /// A domain block could not be expressed as an [`IndexedBlock`].
 #[derive(Debug, thiserror::Error)]
 pub enum BlockConversionError {
-    /// The header's difficulty does not decode to a valid target.
-    #[error("block {hash} has invalid difficulty: {reason}")]
-    InvalidDifficulty {
+    /// The header's difficulty is a valid encoding whose work does not fit
+    /// the domain's recorded 128 bits.
+    ///
+    /// Encoding validity is already carried by the
+    /// [`CompactDifficulty`] type; the width of its work is not, and no block
+    /// from a real chain trips it — see
+    /// [`WorkOverWidth`](zaino_primitives::types::WorkOverWidth).
+    #[error("block {hash}: {source}")]
+    WorkOverWidth {
         /// The block that could not be converted.
         hash: BlockHash,
-        /// Why the difficulty was rejected.
-        reason: String,
+        /// The over-width work derivation.
+        source: zaino_primitives::types::WorkOverWidth,
     },
 
     /// A transparent output's value exceeds what the compact form can hold.
@@ -117,10 +123,12 @@ pub enum BlockConversionError {
 /// is pure integer arithmetic, so it must not be held behind the expensive
 /// conversion.
 pub fn block_work(
-    header_bits: zaino_primitives::types::CompactDifficulty,
+    header_bits: CompactDifficulty,
     hash: BlockHash,
 ) -> Result<BlockWork, BlockConversionError> {
-    Ok(difficulty(header_bits, hash)?.to_work())
+    header_bits
+        .to_work()
+        .map_err(|source| BlockConversionError::WorkOverWidth { hash, source })
 }
 
 /// This block's chainwork, accumulated onto its parent's.
@@ -132,7 +140,7 @@ pub fn block_work(
 ///
 /// `None` for the parent means genesis, whose chainwork is its own work.
 pub fn chainwork_from_parent(
-    header_bits: zaino_primitives::types::CompactDifficulty,
+    header_bits: CompactDifficulty,
     hash: BlockHash,
     parent_chainwork: Option<ChainWork>,
 ) -> Result<ChainWork, BlockConversionError> {
@@ -166,7 +174,7 @@ pub fn indexed_block(
 ) -> Result<IndexedBlock, BlockConversionError> {
     let hash = BlockHash(block.header.hash.into());
 
-    let data = block_data(&block.header)?;
+    let data = block_data(&block.header);
 
     let transactions = block
         .transactions
@@ -195,34 +203,20 @@ pub fn indexed_block(
 /// start from the same [`BlockHeader`] — a block arriving from a validator and
 /// a block read back off disk carry the identical type — so a second copy of
 /// this mapping is not a parallel implementation but the same one, free to
-/// drift. It already had: the read path stringified the difficulty failure this
-/// one keeps typed.
+/// drift. Total: every fallible field, difficulty included, is already
+/// validated by the types the header carries.
 ///
 /// `pub(crate)` for the sibling adapter, which is the only other caller.
-pub(crate) fn block_data(
-    header: &zaino_primitives::types::BlockHeader,
-) -> Result<BlockData, BlockConversionError> {
-    Ok(BlockData {
+pub(crate) fn block_data(header: &zaino_primitives::types::BlockHeader) -> BlockData {
+    BlockData {
         version: header.version,
         time: i64::from(header.time),
         merkle_root: header.merkle_root.into(),
         block_commitments: header.block_commitments.into(),
-        bits: difficulty(header.bits, BlockHash(header.hash.into()))?,
+        bits: header.bits,
         nonce: header.nonce,
         solution: solution(&header.solution),
-    })
-}
-
-fn difficulty(
-    bits: zaino_primitives::types::CompactDifficulty,
-    hash: BlockHash,
-) -> Result<CompactDifficulty, BlockConversionError> {
-    CompactDifficulty::try_from_bits(bits).map_err(|error| {
-        BlockConversionError::InvalidDifficulty {
-            hash,
-            reason: error.to_string(),
-        }
-    })
+    }
 }
 
 fn solution(solution: &zaino_primitives::types::EquihashSolution) -> EquihashSolution {

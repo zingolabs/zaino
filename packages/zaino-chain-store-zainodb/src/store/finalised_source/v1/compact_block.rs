@@ -1398,7 +1398,7 @@ fn assemble_compact_block(
                 header.data().time()
             ))
         })?,
-        bits: header.data().bits().as_bits(),
+        bits: *header.data().bits(),
         transactions,
         chain_metadata: zaino_primitives::types::ChainMetadata {
             sapling_tree_size: commitment_tree_data.sizes().sapling(),
@@ -1680,7 +1680,7 @@ pub(crate) fn compact_block_from_indexed(
                 block.data.time()
             ))
         })?,
-        bits: block.data.bits().as_bits(),
+        bits: *block.data.bits(),
         transactions,
         chain_metadata: zaino_primitives::types::ChainMetadata {
             sapling_tree_size: sizes.sapling(),
