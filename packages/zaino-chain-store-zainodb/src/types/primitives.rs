@@ -6,11 +6,11 @@
 //! in-memory / business-logic vocabulary.
 
 mod block_index;
-mod compact_difficulty;
 
 pub use block_index::BlockIndex;
-pub use compact_difficulty::{CompactDifficulty, CompactDifficultyError};
-// The work family is the vocabulary primitive: this store folds and persists
-// the same quantity every other layer compares, so there is nothing
-// store-specific to add to it.
-pub use zaino_primitives::types::{BlockWork, ChainWork};
+// These are the vocabulary primitives: this store validates, folds and
+// persists the same quantities every other layer reads, so there is nothing
+// store-specific to add to them.
+pub use zaino_primitives::types::{
+    BlockWork, ChainWork, CompactDifficulty, CompactDifficultyError,
+};

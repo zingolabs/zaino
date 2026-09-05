@@ -779,7 +779,6 @@ impl FixedEncodedLen for Outpoint {
 /// - hashLightClientRoot (FlyClient proofs)
 /// - hashAuthDataRoot (ZIP-244 witness commitments)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(test, derive(serde::Serialize, serde::Deserialize))]
 pub struct BlockData {
     /// Version number of the block format (protocol upgrades).
     pub version: u32,
@@ -1076,7 +1075,12 @@ impl IndexedBlock {
     }
 
     /// Returns the single-block proof-of-work contribution.
-    pub fn work(&self) -> crate::types::BlockWork {
+    ///
+    /// Fallible with the difficulty pipeline itself: a stored difficulty is a
+    /// valid encoding, but the encoding admits targets whose work exceeds the
+    /// recorded 128 bits — see
+    /// [`WorkOverWidth`](zaino_primitives::types::WorkOverWidth).
+    pub fn work(&self) -> Result<crate::types::BlockWork, zaino_primitives::types::WorkOverWidth> {
         self.data.bits.to_work()
     }
 
