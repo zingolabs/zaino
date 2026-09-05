@@ -16,10 +16,11 @@
 //! types; they live in the [`arithmetic`] module alongside the algebra that
 //! governs them. See ADR-0013 for the doctrine.
 //!
-//! Deriving a [`BlockWork`] from a difficulty target is deliberately *not*
-//! here: the nBits → target → work conversion is consensus logic and belongs to
-//! the crates that hold a consensus implementation. They construct the value
-//! and enter through [`BlockWork::try_new`].
+//! Deriving a [`BlockWork`] from a difficulty target lives on
+//! [`CompactDifficulty`](super::CompactDifficulty), whose
+//! [`to_work`](super::CompactDifficulty::to_work) runs the native
+//! nBits → target → work pipeline and lands here. [`BlockWork::try_new`]
+//! remains the door for a work integer computed elsewhere.
 
 mod arithmetic;
 mod block_work;
