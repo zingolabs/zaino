@@ -252,9 +252,9 @@ pub fn indexed_block_from_full_block(
     let block_work = block_data.bits.to_work();
     let chainwork = match parent_chainwork {
         Some(parent) => parent
-            .add(&block_work)
+            .accumulate(block_work)
             .map_err(|e| format!("chainwork overflow: {e}"))?,
-        None => block_work,
+        None => ChainWork::genesis(block_work),
     };
 
     let context = BlockContext::new(

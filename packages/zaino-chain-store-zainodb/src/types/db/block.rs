@@ -15,8 +15,6 @@
 //! The `From` conversions between `BlockContext` and
 //! `PersistentBlockContext` are defined here, alongside PBC.
 
-use std::num::NonZeroU128;
-
 use corez::io::{self, Read, Write};
 
 use crate::types::{BlockContext, BlockHash, BlockIndex, ChainWork, CompactDifficulty, Height};
@@ -35,30 +33,24 @@ use zaino_encoding::{
 /// Coming back to the business layer the value must fit in `u128`, so the
 /// **high-order** 16 bytes (`[..16]`, big-endian most-significant) must be zero
 /// and the **low-order** 16 bytes (`[16..]`) hold the nonzero `u128`.
+///
+/// Both directions go through the primitive's own byte doors — the on-disk
+/// format is the same 32-byte big-endian form the wire reports, so the width
+/// and non-zero checks live on the type, not here. The one boundary-specific
+/// judgement is what absence means: off the wire an all-zero value is "not
+/// reported", but a block row always has a chainwork, so a zero row is a
+/// corrupt row, not an absent value.
 #[derive(Debug)]
 pub(super) struct PersistentChainWork([u8; 32]);
 
 impl PersistentChainWork {
     pub(super) fn from_business(cw: &ChainWork) -> Self {
-        let mut buf = [0u8; 32];
-        // Big-endian: the value occupies the low-order (last) 16 bytes.
-        buf[16..].copy_from_slice(&cw.as_non_zero_u128().get().to_be_bytes());
-        Self(buf)
+        Self(cw.to_be_bytes())
     }
 
     pub(super) fn into_business(self) -> io::Result<ChainWork> {
-        // Big-endian: the high-order 16 bytes must be zero for the value to fit u128.
-        if self.0[..16] != [0u8; 16] {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "chainwork exceeds u128 range",
-            ));
-        }
-        let mut be_bytes = [0u8; 16];
-        be_bytes.copy_from_slice(&self.0[16..]);
-        let value = u128::from_be_bytes(be_bytes);
-        NonZeroU128::new(value)
-            .map(ChainWork::new)
+        ChainWork::try_from_reported(self.0)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "chainwork is zero"))
     }
 }
@@ -273,7 +265,7 @@ mod tests {
         let bctx = BlockContext::new(
             BlockHash::from([0x11; 32]),
             BlockHash::from([0x22; 32]),
-            ChainWork::new(NonZeroU128::new(0x0123_4567u128).expect("nonzero")),
+            ChainWork::try_new(0x0123_4567).expect("nonzero"),
             Height(0x0dec_0de0),
         );
         let persisted = PersistentBlockContext::from_business(&bctx);
@@ -296,7 +288,7 @@ mod tests {
         let cw = PersistentChainWork(on_disk)
             .into_business()
             .expect("big-endian on-disk chainwork must decode");
-        assert_eq!(cw.as_non_zero_u128().get(), 17);
+        assert_eq!(NonZeroU128::from(cw).get(), 17);
     }
 
     /// Verbatim recovery of the pre-#1313 on-disk `ChainWork` encoder — the
@@ -342,7 +334,7 @@ mod tests {
     /// bytes, and the current decoder reads those original bytes back to the
     /// same value.
     fn assert_encoders_agree(value: u128) {
-        let cw = ChainWork::new(NonZeroU128::new(value).expect("nonzero"));
+        let cw = ChainWork::try_new(value).expect("nonzero");
         let original =
             legacy_chainwork_reference::ChainWork::from_u256(primitive_types::U256::from(value));
         let original_bytes = *original.as_bytes();

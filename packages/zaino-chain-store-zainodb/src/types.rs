@@ -46,9 +46,7 @@ pub use db::{CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes};
 
 // Re-export business-layer primitives and containers
 pub use block_context::BlockContext;
-pub use primitives::{
-    BlockIndex, ChainWork, ChainWorkError, CompactDifficulty, CompactDifficultyError,
-};
+pub use primitives::{BlockIndex, BlockWork, ChainWork, CompactDifficulty, CompactDifficultyError};
 
 // Re-export helper types
 pub use helpers::{

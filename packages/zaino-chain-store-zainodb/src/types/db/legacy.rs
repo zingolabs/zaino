@@ -1076,7 +1076,7 @@ impl IndexedBlock {
     }
 
     /// Returns the single-block proof-of-work contribution.
-    pub fn work(&self) -> ChainWork {
+    pub fn work(&self) -> crate::types::BlockWork {
         self.data.bits.to_work()
     }
 
