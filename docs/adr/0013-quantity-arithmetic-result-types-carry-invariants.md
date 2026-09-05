@@ -25,9 +25,11 @@ The correction is a doctrine about primitive quantity types, illustrated here on
 `Zatoshis` and meant to generalise:
 
 1. **A quantity is not always closed under its own operation.** Two supply-sized
-   amounts can sum past the supply, so no honest operation returns the same
-   type; the result of summing `Zatoshis` is a *different* type. We do not give
-   `Zatoshis` an addition that pretends otherwise.
+   amounts can sum past the supply, so summing amounts as flow cannot honestly
+   return the same type; that result is a *different* type. We do not give
+   `Zatoshis` an unconditional addition that pretends otherwise. Whether a sum
+   is closed is decided by the meaning of the total, not by the `+` sign — the
+   type family below has one sum that is.
 
 2. **The invariant belongs to the result type, chosen by provenance — not to the
    operator or the element.** The same `Zatoshis` values summed as flow yield an
@@ -84,10 +86,15 @@ The correction is a doctrine about primitive quantity types, illustrated here on
   of two totals. `-supply ..= supply`.
 
 `ZatoshisFlowSum` earns a distinct type by carrying a new invariant.
-`SignedZatoshis` earns one by being a different quantity. A fourth member — a
-supply-bounded sum of coexisting balances — is a real part of the algebra but
-has no consumer today; it is named here and left unbuilt until one exists,
-rather than added speculatively.
+`SignedZatoshis` earns one by being a different quantity. A sum of coexisting
+balances earns neither: balances that coexist at one moment cannot total more
+than the coins that exist, so the total is itself in `[0, supply]` and
+`Zatoshis` is closed under that sum. A distinct type is warranted only when a
+result escapes the element's invariant; this one does not. What the algebra
+gains is its second accumulate as an *operation* — `Zatoshis::sum_balances`, a
+supply-capped checked fold landing back in `Zatoshis`. Under its coexistence
+contract a total past the supply is not a large number but evidence that the
+operands overlap or double-count, so the fold refuses it.
 
 ## Considered options
 

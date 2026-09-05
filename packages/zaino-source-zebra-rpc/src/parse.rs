@@ -35,7 +35,7 @@ use zaino_primitives::types::{
     BlockchainInfo, ChainWork, ConsensusBranchId, ConsensusBranchIds, Height, MerkleRoot,
     NetworkUpgradeInfo, NetworkUpgradeStatus, Script, SignedZatoshis, SubtreeRoot, TransactionId,
     TransactionLocation, TransparentAddress, TreeRoot, TreeRootInfo, TreeRoots, Treestate, Utxo,
-    ValuePoolBalance, Zatoshis,
+    ValuePoolBalance, Zatoshis, ZatoshisFlowSum,
 };
 use zaino_source::{MempoolTxMeta, TransactionResponse};
 
@@ -614,9 +614,12 @@ pub(crate) fn parse_address_balance(
     Ok(AddressBalance {
         balance: Zatoshis::new(as_u64(field(value, "balance")?)?)
             .map_err(|e| ParseError::Amount(e.to_string()))?,
+        // A lifetime receipts flow, delivered pre-summed by the validator; not
+        // supply-bounded, so it lands in the flow-sum type through its
+        // boundary door rather than being rejected by the amount bound.
         received: match opt_field(value, "received") {
-            Some(v) => Zatoshis::new(as_u64(v)?).map_err(|e| ParseError::Amount(e.to_string()))?,
-            None => Zatoshis::ZERO,
+            Some(v) => ZatoshisFlowSum::from_summed(as_u64(v)?),
+            None => ZatoshisFlowSum::from_summed(0),
         },
     })
 }
