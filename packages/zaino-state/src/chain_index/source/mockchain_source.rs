@@ -1044,17 +1044,13 @@ impl zaino_source::OneShotGetAddressBalance for MockchainSource {
         let spent = self.spent_transparent_outpoints();
 
         let mut received_values = Vec::new();
-        let mut balance = 0_u64;
+        let mut balance_values = Vec::new();
         for (outpoint, output) in matching {
             let value = domain::Zatoshis::new(u64::from(output.output.value()))
                 .map_err(|e| port_fault::<zaino_source::GetAddressBalanceError>(e.to_string()))?;
             received_values.push(value);
             if !spent.contains(&outpoint) {
-                balance = balance.checked_add(u64::from(value)).ok_or_else(|| {
-                    port_fault::<zaino_source::GetAddressBalanceError>(
-                        "address balance amount overflowed u64",
-                    )
-                })?;
+                balance_values.push(value);
             }
         }
 
@@ -1068,11 +1064,18 @@ impl zaino_source::OneShotGetAddressBalance for MockchainSource {
                 )
             })?;
 
-        Ok(domain::AddressBalance {
-            balance: domain::Zatoshis::new(balance)
-                .map_err(|e| port_fault::<zaino_source::GetAddressBalanceError>(e.to_string()))?,
-            received,
-        })
+        // The unspent outputs coexist on the chain, so their total is a
+        // supply-bounded balance; a total past the supply means the UTXO set
+        // overlaps or double-counts, and is refused rather than wrapped.
+        let balance =
+            domain::Zatoshis::sum_balances(balance_values.into_iter()).ok_or_else(|| {
+                port_fault::<zaino_source::GetAddressBalanceError>(
+                    "unspent output values total past the money supply: \
+                     overlapping or corrupt UTXO set",
+                )
+            })?;
+
+        Ok(domain::AddressBalance { balance, received })
     }
 }
 

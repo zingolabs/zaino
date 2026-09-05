@@ -16,37 +16,54 @@
 //! D ∈ [−S, S]         a signed value (a movement or a difference)
 //! ```
 //!
-//! Two relations are defined, and only these two:
+//! Three relations are defined, and only these three:
 //!
 //! ```text
-//! accumulate : [A] → F            Σ aᵢ, counting each movement
-//! net        : F × F → D          received − spent, landing in [−S, S] or refused
+//! accumulate          : [A] → F   Σ aᵢ, counting each movement
+//! accumulate_balances : [A] → A?  Σ aᵢ, of balances that coexist
+//!                                 (supply-capped; closed — lands back in A)
+//! net                 : F × F → D received − spent, landing in [−S, S] or refused
 //! ```
 //!
 //! `accumulate` carries amounts into the unbounded flow sum: a total of
 //! movements is not a balance, so the supply cap does not apply to it, and it
-//! fails only if the machine integer overflows. `net` subtracts a spent flow
-//! from a received one and admits the result only as a signed value: a balance
-//! change lives in `[−S, S]`, so a result outside it is refused. That bound is a
-//! property of a balance change, which the two sums are only when they are the
-//! received and spent flow of one balance — `net`'s contract. A difference of
-//! unrelated flow sums is not a balance change and is deliberately not offered.
-//!
-//! # A member left unbuilt
-//!
-//! A fourth quantity belongs to this algebra: a **supply-bounded sum of
-//! coexisting balances**, `ZatoshisBalanceSum ∈ [0, S]`, with its own relation
-//!
-//! ```text
-//! accumulate_balances : [A] → B   Σ aᵢ, of balances that exist at one moment
-//! ```
-//!
-//! It differs from a flow sum precisely in its bound: balances that coexist
-//! cannot sum past the supply, whereas movements can. It is a real member of
-//! the algebra, but no consumer needs it today, so it is named here and left
-//! unbuilt rather than added speculatively. See ADR-0013.
+//! fails only if the machine integer overflows. `accumulate_balances` is the
+//! second accumulate — the same fold shape with a different landing: balances
+//! that coexist at one moment cannot total more than the coins that exist, so
+//! the sum is itself in `[0, S]` and `A` is closed under it; the fold lands
+//! back in [`Zatoshis`] rather than a new type, refusing a total past the
+//! supply. `net` subtracts a spent flow from a received one and admits the
+//! result only as a signed value: a balance change lives in `[−S, S]`, so a
+//! result outside it is refused. That bound is a property of a balance change,
+//! which the two sums are only when they are the received and spent flow of
+//! one balance — `net`'s contract. A difference of unrelated flow sums is not
+//! a balance change and is deliberately not offered. See ADR-0013.
 
 use super::{SignedZatoshis, Zatoshis, ZatoshisFlowSum};
+
+impl Zatoshis {
+    /// Sum a set of coexisting balances.
+    ///
+    /// The `accumulate_balances` relation: `[A] → A?`. Folds the balances with
+    /// the supply-capped [`checked_add`](Self::checked_add), returning `None`
+    /// if the running total passes the supply; an empty sequence sums to
+    /// [`ZERO`](Self::ZERO).
+    ///
+    /// Contract: the operands are balances that coexist at one moment. Coins
+    /// that coexist cannot total more than the coins that exist, so under that
+    /// contract a total past the supply is not a large number — it is evidence
+    /// the inputs overlap or double-count (corruption), hence `None`, failing
+    /// loud rather than wrapping.
+    ///
+    /// This is the second accumulate of the algebra: the same fold shape as
+    /// [`ZatoshisFlowSum::try_accumulate`], with a different landing and
+    /// bound. Because a sum of coexisting balances stays within `[0, supply]`,
+    /// [`Zatoshis`] is closed under it — so this is deliberately an operation
+    /// returning [`Zatoshis`], not a new quantity type.
+    pub fn sum_balances(mut values: impl Iterator<Item = Zatoshis>) -> Option<Zatoshis> {
+        values.try_fold(Zatoshis::ZERO, Zatoshis::checked_add)
+    }
+}
 
 impl ZatoshisFlowSum {
     /// Sum a sequence of amounts as flow.
@@ -171,6 +188,43 @@ mod tests {
 
         assert_eq!(two_supplies.net(ZatoshisFlowSum::ZERO), None);
         assert_eq!(ZatoshisFlowSum::ZERO.net(two_supplies), None);
+    }
+
+    /// `accumulate_balances` of nothing is zero held.
+    #[test]
+    fn sum_balances_of_nothing_is_zero() {
+        assert_eq!(
+            Zatoshis::sum_balances(core::iter::empty()),
+            Some(Zatoshis::ZERO)
+        );
+    }
+
+    /// `accumulate_balances` sums balances within the supply.
+    #[test]
+    fn sum_balances_within_the_supply_sums() {
+        let total = Zatoshis::sum_balances([100, 50, 30].map(zatoshis).into_iter());
+
+        assert_eq!(total.map(u64::from), Some(180));
+    }
+
+    /// A set of balances totalling exactly the supply is the extreme legitimate
+    /// case — all coins in the summed set — and is admitted.
+    #[test]
+    fn sum_balances_at_the_supply_is_allowed() {
+        let half = MAX_ZATOSHIS / 2;
+        let total = Zatoshis::sum_balances([half, MAX_ZATOSHIS - half].map(zatoshis).into_iter());
+
+        assert_eq!(total.map(u64::from), Some(MAX_ZATOSHIS));
+    }
+
+    /// Coexisting balances cannot total past the supply, so such a total is
+    /// evidence of overlapping or double-counted inputs and is refused.
+    #[test]
+    fn sum_balances_past_the_supply_is_refused() {
+        assert_eq!(
+            Zatoshis::sum_balances([MAX_ZATOSHIS, 1].map(zatoshis).into_iter()),
+            None
+        );
     }
 
     /// A difference at exactly the supply is still a representable signed value.
