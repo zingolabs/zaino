@@ -1,7 +1,7 @@
 //! `getblockdeltas` — per-transaction transparent value movements in a block.
 
 use crate::types::{
-    BlockHash, BlockTime, CompactDifficulty, Confirmations, Difficulty, EquihashNonce, Height,
+    BlockConfirmations, BlockHash, BlockTime, CompactDifficulty, Difficulty, EquihashNonce, Height,
     MerkleRoot, OutputIndex, SignedZatoshis, TransactionId, TransparentAddress, TxIndex, Zatoshis,
 };
 
@@ -10,8 +10,8 @@ use crate::types::{
 pub struct BlockDeltas {
     /// Hash of this block.
     pub hash: BlockHash,
-    /// Depth of this block in the best chain, or `-1` if it is not on it.
-    pub confirmations: Confirmations,
+    /// This block's confirmation state against the current best chain.
+    pub confirmations: BlockConfirmations,
     /// Serialised size of the block, in bytes.
     pub size: u64,
     /// Height of this block.

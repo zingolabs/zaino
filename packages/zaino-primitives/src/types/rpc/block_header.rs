@@ -1,7 +1,7 @@
 //! `getblockheader` — block header plus cumulative chain state.
 
 use crate::types::{
-    BlockCommitments, BlockHash, BlockTime, ChainWork, CompactDifficulty, Confirmations,
+    BlockCommitments, BlockConfirmations, BlockHash, BlockTime, ChainWork, CompactDifficulty,
     Difficulty, EquihashNonce, Height, MerkleRoot, TreeRoot,
 };
 
@@ -22,9 +22,8 @@ pub struct BlockHeaderVerbose {
     /// Hash of this block.
     pub hash: BlockHash,
 
-    /// Depth of this block in the best chain, or `-1` if it is not on the best
-    /// chain. Signed for exactly that reason.
-    pub confirmations: Confirmations,
+    /// This block's confirmation state against the current best chain.
+    pub confirmations: BlockConfirmations,
 
     /// Height of this block.
     pub height: Height,

@@ -1,6 +1,6 @@
 //! `gettxout` — an unspent transparent output.
 
-use crate::types::{BlockHash, Confirmations, Script, TransparentAddress, Zatoshis};
+use crate::types::{BlockHash, Script, TransparentAddress, TxConfirmations, Zatoshis};
 
 /// An unspent transparent output, as reported by `gettxout`.
 ///
@@ -19,8 +19,9 @@ pub struct TxOut {
     /// consumer can tell whether two answers were computed at the same height.
     pub best_block: BlockHash,
 
-    /// Depth of the containing block, or `0` when the output is in the mempool.
-    pub confirmations: Confirmations,
+    /// The containing transaction's confirmation state against the current
+    /// best chain — mempool, or mined with its block's state.
+    pub confirmations: TxConfirmations,
 
     /// Value held by the output.
     ///

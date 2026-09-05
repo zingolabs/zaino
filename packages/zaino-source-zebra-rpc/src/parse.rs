@@ -31,11 +31,11 @@ use zaino_primitives::types::{
         FundingStream, InputDelta, LockboxStream, MiningInfo, NodeInfo, OutputDelta, PeerInfo,
         ScriptPubKey, SpentInfo, TxOut,
     },
-    AddressBalance, AddressDelta, BlockCommitments, BlockHash, BlockTreeSizes, BlockVerbose,
-    BlockchainInfo, ChainWork, CompactDifficulty, ConsensusBranchId, ConsensusBranchIds, Height,
-    MerkleRoot, NetworkUpgradeInfo, NetworkUpgradeStatus, Script, SignedZatoshis, SubtreeRoot,
-    TransactionId, TransactionLocation, TransparentAddress, TreeRoot, TreeRootInfo, TreeRoots,
-    Treestate, Utxo, ValuePoolBalance, Zatoshis,
+    AddressBalance, AddressDelta, BlockCommitments, BlockConfirmations, BlockHash, BlockTreeSizes,
+    BlockVerbose, BlockchainInfo, ChainWork, CompactDifficulty, ConsensusBranchId,
+    ConsensusBranchIds, Height, MerkleRoot, NetworkUpgradeInfo, NetworkUpgradeStatus, Script,
+    SignedZatoshis, SubtreeRoot, TransactionId, TransactionLocation, TransparentAddress, TreeRoot,
+    TreeRootInfo, TreeRoots, Treestate, TxConfirmations, Utxo, ValuePoolBalance, Zatoshis,
 };
 use zaino_source::{MempoolTxMeta, TransactionResponse};
 
@@ -102,6 +102,22 @@ pub(crate) fn as_bool(value: &serde_json::Value) -> Result<bool, ParseError> {
 pub(crate) fn as_height(value: &serde_json::Value) -> Result<Height, ParseError> {
     let h = as_u32(value)?;
     Height::try_from(h).map_err(|e| ParseError::Height(e.to_string()))
+}
+
+/// Parse a `confirmations` field reported for a block.
+///
+/// The primitives door is the validation: an integer that encodes no block
+/// state — `0` (the mempool state, which a block does not have), anything
+/// below `-1`, a count past `u32` — fails the parse rather than flowing
+/// through as a number downstream code would misread.
+fn as_block_confirmations(value: &serde_json::Value) -> Result<BlockConfirmations, ParseError> {
+    BlockConfirmations::try_from_rpc_i64(as_i64(value)?).map_err(ParseError::Confirmations)
+}
+
+/// Parse a `confirmations` field reported for a transaction or its outputs,
+/// where `0` is the mempool. Same discipline as [`as_block_confirmations`].
+fn as_tx_confirmations(value: &serde_json::Value) -> Result<TxConfirmations, ParseError> {
+    TxConfirmations::try_from_rpc_i64(as_i64(value)?).map_err(ParseError::Confirmations)
 }
 
 // ---------------------------------------------------------------------------
@@ -303,6 +319,10 @@ pub(crate) enum ParseError {
     #[error("nBits: {0}")]
     CompactDifficulty(zaino_primitives::types::CompactDifficultyError),
 
+    /// A reported `confirmations` integer encodes no state in the wire scheme.
+    #[error("confirmations: {0}")]
+    Confirmations(zaino_primitives::types::ConfirmationsCodecError),
+
     /// Height validation failed.
     #[error("invalid height: {0}")]
     Height(String),
@@ -383,7 +403,7 @@ pub(crate) fn parse_block_header_verbose(
 ) -> Result<BlockHeaderVerbose, ParseError> {
     Ok(BlockHeaderVerbose {
         hash: parse_block_hash(field(value, "hash")?)?,
-        confirmations: as_i64(field(value, "confirmations")?)?,
+        confirmations: as_block_confirmations(field(value, "confirmations")?)?,
         height: as_height(field(value, "height")?)?,
         version: as_u32(field(value, "version")?)?,
         merkle_root: as_merkle_root(field(value, "merkleroot")?)?,
@@ -582,7 +602,7 @@ pub(crate) fn parse_tx_out(value: &serde_json::Value) -> Result<Option<TxOut>, P
     let script = field(value, "scriptPubKey")?;
     Ok(Some(TxOut {
         best_block: parse_block_hash(field(value, "bestblock")?)?,
-        confirmations: as_i64(field(value, "confirmations")?)?,
+        confirmations: as_tx_confirmations(field(value, "confirmations")?)?,
         value: zatoshis_field(value, "valueZat", "value")?,
         coinbase: opt_field(value, "coinbase")
             .map(as_bool)
@@ -1010,7 +1030,7 @@ fn parse_upgrades(
 pub(crate) fn parse_block_verbose(value: &serde_json::Value) -> Result<BlockVerbose, ParseError> {
     let trees = opt_field(value, "trees");
     Ok(BlockVerbose {
-        confirmations: as_i64(field(value, "confirmations")?)?,
+        confirmations: as_block_confirmations(field(value, "confirmations")?)?,
         difficulty: as_f64(field(value, "difficulty")?)?,
         chainwork: opt_field(value, "chainwork")
             .map(parse_reported_chain_work)
@@ -1049,7 +1069,7 @@ fn pool_tree_size(trees: Option<&serde_json::Value>, pool: &str) -> Result<u64, 
 pub(crate) fn parse_block_deltas(value: &serde_json::Value) -> Result<BlockDeltas, ParseError> {
     Ok(BlockDeltas {
         hash: parse_block_hash(field(value, "hash")?)?,
-        confirmations: as_i64(field(value, "confirmations")?)?,
+        confirmations: as_block_confirmations(field(value, "confirmations")?)?,
         size: as_u64(field(value, "size")?)?,
         height: as_height(field(value, "height")?)?,
         version: as_u32(field(value, "version")?)?,

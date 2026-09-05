@@ -167,7 +167,7 @@ impl TxOutWire {
         );
         object.insert(
             "confirmations".to_string(),
-            serde_json::Value::from(out.confirmations),
+            serde_json::Value::from(out.confirmations.to_rpc_i64()),
         );
         object.insert(
             "value".to_string(),
@@ -244,7 +244,8 @@ mod tests {
     use super::*;
     use serde_json::json;
     use zaino_primitives::types::{
-        rpc::ScriptPubKey, Height, Script, TransparentAddress, Zatoshis,
+        rpc::ScriptPubKey, BlockConfirmations, Height, Script, TransparentAddress, TxConfirmations,
+        Zatoshis,
     };
 
     fn zats(value: u64) -> Zatoshis {
@@ -293,7 +294,9 @@ mod tests {
     fn tx_out_shape() {
         let wire = TxOutWire::from_domain(Some(TxOut {
             best_block: [0xaa; 32].into(),
-            confirmations: 7,
+            confirmations: TxConfirmations::Mined(BlockConfirmations::Confirmed(
+                std::num::NonZeroU32::new(7).expect("non-zero"),
+            )),
             value: zats(150_000_000),
             script_pub_key: ScriptPubKey {
                 script: Script::new(vec![0x76, 0xa9]),
@@ -329,7 +332,7 @@ mod tests {
     fn tx_out_omits_absent_script_details() {
         let wire = TxOutWire::from_domain(Some(TxOut {
             best_block: [0; 32].into(),
-            confirmations: 0,
+            confirmations: TxConfirmations::Mempool,
             value: Zatoshis::ZERO,
             script_pub_key: ScriptPubKey {
                 script: Script::new(vec![0x6a]),

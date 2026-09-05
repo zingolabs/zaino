@@ -732,11 +732,11 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
                         zebra_rpc::client::TransactionObject::from_transaction(
                             transaction.clone(),
                             Some(block_height),
-                            Some(verbose.confirmations),
+                            Some(verbose.confirmations.to_rpc_i64()),
                             &self.network,
                             Some(block_time),
                             Some(block_hash),
-                            Some(verbose.confirmations >= 0),
+                            Some(verbose.confirmations.is_in_best_chain()),
                             transaction.hash(),
                         ),
                     ))
@@ -753,7 +753,7 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
         Ok(GetBlock::Object(Box::new(
             zebra_rpc::methods::BlockObject::new(
                 block_hash,
-                verbose.confirmations,
+                verbose.confirmations.to_rpc_i64(),
                 Some(raw.len() as i64),
                 Some(block_height),
                 Some(block.header.version),
