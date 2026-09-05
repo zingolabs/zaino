@@ -106,6 +106,31 @@ value, the
 same discipline the crate applies at every wire and persistence boundary,
 pushed down to the primitive.
 
+## The work quantity family
+
+The same doctrine, applied to proof-of-work. Two quantities share the unit and
+are not interchangeable:
+
+| type | is |
+|---|---|
+| `BlockWork` | the expected work of **one** block, from its difficulty target |
+| `ChainWork` | **cumulative** work at a block — the fold of block works along its chain; `Ord`, because comparing it *is* chain selection |
+
+Both are strictly positive. The fold is the algebra, in the `work::arithmetic`
+module: `ChainWork::genesis(block_work)` seeds it (genesis's cumulative work is
+its own block work), `accumulate` extends it, `rollback` unwinds it on reorg —
+each checked, with a typed error. There is deliberately no
+`ChainWork + ChainWork`: no chain is the concatenation of two chains.
+
+Boundary doors on `ChainWork`: `try_from_reported` reads the 32 big-endian
+bytes a validator reports — all-zero is `Ok(None)` ("not reported"; absence is
+`Option`, never a zero sentinel) and a value past the recorded 128 bits is
+refused rather than truncated — and `to_be_bytes` renders back for the wire.
+`try_new` / `BlockWork::try_new` take an already-computed integer and enforce
+only the non-zero bound. The difficulty → work derivation itself is consensus
+logic and deliberately lives outside this crate, next to the consensus
+implementation that owns it.
+
 ## Byte order
 
 Internal order throughout. `BlockHash` and `TransactionHash` hold bytes in the
