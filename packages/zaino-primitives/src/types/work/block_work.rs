@@ -14,10 +14,11 @@ use core::num::NonZeroU128;
 /// the `arithmetic` module: seeding at genesis, accumulating forward, rolling
 /// back on reorg.
 ///
-/// The value itself comes from a consensus implementation's
-/// difficulty-to-work conversion; this crate takes the already-computed
-/// integer through [`try_new`](Self::try_new) and only enforces the
-/// strictly-positive bound.
+/// The value comes from the difficulty pipeline —
+/// [`CompactDifficulty::to_work`](crate::types::CompactDifficulty::to_work) —
+/// or, for a work integer computed elsewhere, through
+/// [`try_new`](Self::try_new), which enforces only the strictly-positive
+/// bound.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct BlockWork(NonZeroU128);
 
@@ -35,10 +36,10 @@ pub struct ZeroWork;
 impl BlockWork {
     /// Create a block work value, rejecting zero.
     ///
-    /// The boundary door for an already-computed work integer — typically the
-    /// output of a consensus implementation's difficulty-to-work conversion,
-    /// which never yields zero for a valid target. A zero therefore signals a
-    /// value that is not work at all, and is refused rather than wrapped.
+    /// The boundary door for an already-computed work integer. A
+    /// difficulty-to-work conversion never yields zero for a valid target, so
+    /// a zero signals a value that is not work at all, and is refused rather
+    /// than wrapped.
     pub fn try_new(value: u128) -> Result<Self, ZeroWork> {
         NonZeroU128::new(value).map(Self).ok_or(ZeroWork)
     }
@@ -52,6 +53,15 @@ impl BlockWork {
 impl From<BlockWork> for NonZeroU128 {
     fn from(work: BlockWork) -> Self {
         work.0
+    }
+}
+
+impl From<NonZeroU128> for BlockWork {
+    /// A non-zero integer already carries this type's whole invariant — work
+    /// is strictly positive and nothing more — so the conversion is total.
+    /// The difficulty pipeline lands its result here without a runtime check.
+    fn from(value: NonZeroU128) -> Self {
+        Self(value)
     }
 }
 

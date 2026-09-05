@@ -12,6 +12,7 @@ mod block_verbose;
 mod blockchain_info;
 mod chain_state_epoch;
 mod compact_block;
+mod compact_difficulty;
 mod encrypted_ciphertext;
 mod ephemeral_key;
 mod equihash_solution;
@@ -42,8 +43,8 @@ mod zatoshis;
 pub use address_balance::AddressBalance;
 pub use address_delta::AddressDelta;
 pub use aliases::{
-    BlockTime, CompactDifficulty, Confirmations, Difficulty, EquihashNonce, OutputIndex,
-    SubtreeIndex, TreeSize, TxIndex,
+    BlockTime, Confirmations, Difficulty, EquihashNonce, OutputIndex, SubtreeIndex, TreeSize,
+    TxIndex,
 };
 pub use block::{Block, BlockHeader, ChainMetadata};
 pub use block_commitments::BlockCommitments;
@@ -54,6 +55,7 @@ pub use block_verbose::{BlockTreeSizes, BlockVerbose};
 pub use blockchain_info::{BlockchainInfo, ValuePoolBalance};
 pub use chain_state_epoch::ChainStateEpoch;
 pub use compact_block::{CompactBlock, PreIndexCompactBlock, PreIndexCompactTx};
+pub use compact_difficulty::{CompactDifficulty, CompactDifficultyError, WorkOverWidth};
 pub use encrypted_ciphertext::EncryptedCiphertext;
 pub use ephemeral_key::EphemeralKey;
 pub use equihash_solution::EquihashSolution;

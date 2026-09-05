@@ -29,7 +29,6 @@ testing = []
 
 [dependencies]
 zaino-chain-head = { workspace = true }
-zaino-consensus = { workspace = true }
 zaino-primitives = { workspace = true }
 zaino-source = { workspace = true }
 zaino-status = { workspace = true }

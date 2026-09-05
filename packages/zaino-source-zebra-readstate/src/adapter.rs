@@ -1381,9 +1381,12 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
             median_time: self.median_time_past(&block).await?,
             nonce: *block.header.nonce,
             // Same conversion `zaino-convert-zebra` uses for a block header:
-            // zebra has no `CompactDifficulty::to_bits()`, so the nBits value
-            // is recovered from its display-order bytes.
-            bits: u32::from_be_bytes(block.header.difficulty_threshold.bytes_in_display_order()),
+            // zebra exposes no raw-bits accessor, so the nBits value crosses
+            // as its display-order bytes, revalidated at the primitives door.
+            bits: zaino_primitives::types::CompactDifficulty::try_from_be_bytes(
+                block.header.difficulty_threshold.bytes_in_display_order(),
+            )
+            .map_err(|e| parse(e.to_string()))?,
             difficulty: block_difficulty(block.header.difficulty_threshold, &self.network),
             previous_block_hash: Some(BlockHash::from(block.header.previous_block_hash.0)),
             next_block_hash,

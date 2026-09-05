@@ -5956,7 +5956,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "zaino-chain-head",
- "zaino-consensus",
  "zaino-primitives",
  "zaino-source",
  "zaino-status",
@@ -6038,7 +6037,6 @@ name = "zaino-consensus"
 version = "0.1.0"
 dependencies = [
  "hex",
- "primitive-types 0.14.0",
  "thiserror 2.0.18",
 ]
 
@@ -6046,6 +6044,7 @@ dependencies = [
 name = "zaino-convert-zebra"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "thiserror 2.0.18",
  "zaino-consensus",
  "zaino-primitives",

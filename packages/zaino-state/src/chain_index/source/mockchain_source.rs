@@ -988,7 +988,10 @@ impl zaino_source::OneShotGetBlockHeader for MockchainSource {
             nonce: *header.nonce,
             solution: equihash_solution_bytes(&header.solution)
                 .map_err(port_fault::<zaino_source::GetBlockHeaderError>)?,
-            bits: u32::from_be_bytes(header.difficulty_threshold.bytes_in_display_order()),
+            bits: domain::CompactDifficulty::try_from_be_bytes(
+                header.difficulty_threshold.bytes_in_display_order(),
+            )
+            .map_err(|e| port_fault(e.to_string()))?,
             difficulty: header.difficulty_threshold.relative_to_network(&network),
             block_commitments: Some(domain::BlockCommitments::from(*header.commitment_bytes)),
             final_sapling_root: self.roots[index]
@@ -1292,7 +1295,10 @@ impl zaino_source::OneShotGetBlockDeltas for MockchainSource {
             time: header.time.timestamp() as u32,
             median_time: self.median_time_at(index) as u32,
             nonce: *header.nonce,
-            bits: u32::from_be_bytes(header.difficulty_threshold.bytes_in_display_order()),
+            bits: domain::CompactDifficulty::try_from_be_bytes(
+                header.difficulty_threshold.bytes_in_display_order(),
+            )
+            .map_err(|e| port_fault(e.to_string()))?,
             difficulty: header.difficulty_threshold.relative_to_network(&network),
             previous_block_hash: Some(domain::BlockHash::from(header.previous_block_hash.0)),
             next_block_hash: self

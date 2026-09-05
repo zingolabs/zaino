@@ -127,9 +127,30 @@ bytes a validator reports — all-zero is `Ok(None)` ("not reported"; absence is
 `Option`, never a zero sentinel) and a value past the recorded 128 bits is
 refused rather than truncated — and `to_be_bytes` renders back for the wire.
 `try_new` / `BlockWork::try_new` take an already-computed integer and enforce
-only the non-zero bound. The difficulty → work derivation itself is consensus
-logic and deliberately lives outside this crate, next to the consensus
-implementation that owns it.
+only the non-zero bound.
+
+### Where `BlockWork` comes from: `CompactDifficulty`
+
+The nBits encoding from the block header is its own validated type,
+`CompactDifficulty`, and the whole bits → target → work conversion is native
+to this crate — the domain owns its arithmetic, and consensus implementations
+serve as *differential-test oracles* (`zaino-convert-zebra` sweeps the
+pipeline against zebra across the encoding space) rather than as dependencies.
+
+Construction is only through checked doors — `try_from_bits(u32)` for a value
+carried numerically, `try_from_be_bytes([u8; 4])` for one carried as its
+display-order bytes. Both apply the acceptance set a validator enforces before
+comparing a hash (clear sign bit, target within 256 bits, non-zero target),
+with one typed `CompactDifficultyError` variant per rejected rule. `as_bits`
+reads the raw `u32` back out for wire and persistence renders.
+
+`to_work()` derives the block's `BlockWork` — `floor(2^256 / (target + 1))` —
+and stays fallible on a *valid* encoding: validity is a property of the
+256-bit target, but work is recorded in 128 bits, and the encoding admits
+targets below `2^128` whose work does not fit. No block from a real chain
+trips `WorkOverWidth`; a value that does did not come from one. The expanded
+256-bit target itself never leaves the type: no consumer reasons about
+targets, only about validity and work.
 
 ## Byte order
 

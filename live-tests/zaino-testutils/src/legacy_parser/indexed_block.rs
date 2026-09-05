@@ -249,7 +249,10 @@ pub fn indexed_block_from_full_block(
     };
 
     // Chainwork is cumulative too: this block's work added to its parent's.
-    let block_work = block_data.bits.to_work();
+    let block_work = block_data
+        .bits
+        .to_work()
+        .map_err(|e| format!("difficulty yields no recordable work: {e}"))?;
     let chainwork = match parent_chainwork {
         Some(parent) => parent
             .accumulate(block_work)
