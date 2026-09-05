@@ -30,7 +30,7 @@ use tower::ServiceExt;
 use zebra_chain::parameters::Network;
 use zebra_state::{ReadRequest, ReadResponse, ReadStateService};
 
-use zaino_primitives::types::{Block, BlockHash, ChainMetadata, Height};
+use zaino_primitives::types::{Block, BlockConfirmations, BlockHash, ChainMetadata, Height};
 use zaino_source::{FailureMode, FetchError, GetBlockError, GetChainTipError, QueryError};
 
 /// Ask the state service one question.
@@ -1289,6 +1289,7 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
             }
             _ => return Err(unexpected_response("Tip").into()),
         };
+        let domain_tip = Height::try_from(tip.0).map_err(|e| parse(e.to_string()))?;
 
         let next_block_hash = match read(
             &self.state,
@@ -1367,7 +1368,10 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
 
         Ok(BlockDeltas {
             hash,
-            confirmations: i64::from(tip.0.saturating_sub(height.0)) + 1,
+            // A best-chain answer by construction: the block was looked up on
+            // the best chain above. The constructor owns the depth + 1
+            // off-by-one and the height-above-tip clamp.
+            confirmations: BlockConfirmations::of_best_chain_block(domain_height, domain_tip),
             size: block
                 .zcash_serialized_size()
                 .try_into()

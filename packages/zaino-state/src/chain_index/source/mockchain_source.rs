@@ -416,13 +416,23 @@ impl MockchainSource {
 // build.
 // ---------------------------------------------------------------------------
 
-/// Confirmations are one more than the depth, or -1 when the block is not on the best
-/// chain. Depth is limited by height, so it never overflows an `i64`.
-fn confirmations_from_depth(depth: Option<u32>) -> i64 {
-    const NOT_IN_BEST_CHAIN_CONFIRMATIONS: i64 = -1;
-    depth
-        .map(|depth| i64::from(depth) + 1)
-        .unwrap_or(NOT_IN_BEST_CHAIN_CONFIRMATIONS)
+/// Tip-relative confirmation state of the block at `height` against the mock's
+/// active chain height.
+///
+/// The mock's best chain is its vector up to the active height, so a block is
+/// on the best chain exactly when it has a depth below that tip; above it, the
+/// block exists in the vector but is not active. Errs only on a height past
+/// the protocol maximum, which the mock's vectors never carry.
+fn block_confirmations(
+    active_height: u32,
+    height: u32,
+) -> Result<domain::BlockConfirmations, domain::HeightOverflow> {
+    let tip = domain::Height::try_from(active_height)?;
+    let height = domain::Height::try_from(height)?;
+    Ok(match height.depth_from(tip) {
+        Some(_) => domain::BlockConfirmations::of_best_chain_block(height, tip),
+        None => domain::BlockConfirmations::NotInBestChain,
+    })
 }
 
 // ***** zaino-source port implementations *****
@@ -808,7 +818,8 @@ impl zaino_source::OneShotGetBlockVerboseByHash for MockchainSource {
         );
 
         Ok(domain::BlockVerbose {
-            confirmations: confirmations_from_depth(self.active_height().checked_sub(height.0)),
+            confirmations: block_confirmations(self.active_height(), height.0)
+                .map_err(|e| port_fault(e.to_string()))?,
             difficulty: block
                 .header
                 .difficulty_threshold
@@ -980,7 +991,8 @@ impl zaino_source::OneShotGetBlockHeader for MockchainSource {
 
         Ok(domain::rpc::BlockHeaderVerbose {
             hash,
-            confirmations: confirmations_from_depth(self.active_height().checked_sub(height.0)),
+            confirmations: block_confirmations(self.active_height(), height.0)
+                .map_err(|e| port_fault(e.to_string()))?,
             height: domain::Height::try_from(height.0).map_err(|e| port_fault(e.to_string()))?,
             version: header.version,
             merkle_root: domain::MerkleRoot::from(header.merkle_root.0),
@@ -1286,7 +1298,8 @@ impl zaino_source::OneShotGetBlockDeltas for MockchainSource {
 
         Ok(domain::rpc::BlockDeltas {
             hash,
-            confirmations: confirmations_from_depth(self.active_height().checked_sub(height.0)),
+            confirmations: block_confirmations(self.active_height(), height.0)
+                .map_err(|e| port_fault(e.to_string()))?,
             size,
             height: domain::Height::try_from(height.0).map_err(|e| port_fault(e.to_string()))?,
             version: header.version,
