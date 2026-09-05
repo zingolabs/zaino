@@ -12,7 +12,7 @@
 //! - BlockWithMetadata - Block with associated metadata
 
 use super::db::legacy::*;
-use crate::types::{BlockContext, ChainWork, CompactDifficulty};
+use crate::types::{BlockContext, BlockWork, ChainWork, CompactDifficulty};
 
 /// Selects how far [`ChainIndex::get_outpoint_spenders`] searches for a spend.
 ///
@@ -313,9 +313,9 @@ impl<'a> BlockWithMetadata<'a> {
         let block_work = block_work(&block.header)?;
         let chainwork = match self.metadata.parent_chainwork {
             Some(parent) => parent
-                .add(&block_work)
+                .accumulate(block_work)
                 .map_err(|e| format!("chainwork overflow: {e}"))?,
-            None => block_work,
+            None => ChainWork::genesis(block_work),
         };
 
         Ok(BlockContext::new(hash, parent_hash, chainwork, height))
@@ -327,7 +327,7 @@ impl<'a> BlockWithMetadata<'a> {
 /// Depends on nothing but this one header, which is what makes the cumulative chainwork a running
 /// sum that can be folded over already-fetched blocks in a separate pass from assembling them.
 /// Shared so the fold and [`BlockWithMetadata`]'s own assembly cannot drift apart.
-pub(crate) fn block_work(header: &zebra_chain::block::Header) -> Result<ChainWork, String> {
+pub(crate) fn block_work(header: &zebra_chain::block::Header) -> Result<BlockWork, String> {
     let bits =
         CompactDifficulty::try_from_be_bytes(header.difficulty_threshold.bytes_in_display_order())
             .map_err(|e| format!("invalid nBits: {e}"))?;

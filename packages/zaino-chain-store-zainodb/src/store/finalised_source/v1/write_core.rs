@@ -151,9 +151,9 @@ async fn fill_sync_batch<S: zaino_chain_store::ChainStoreSource>(
             let block_work = parts.block_work()?;
             cursor.parent_chainwork = Some(match parent_chainwork {
                 Some(parent) => parent
-                    .add(&block_work)
+                    .accumulate(block_work)
                     .map_err(|e| StoreError::Custom(format!("chainwork overflow: {e}")))?,
-                None => block_work,
+                None => crate::types::ChainWork::genesis(block_work),
             });
             prepared.push((height_int, parts, parent_chainwork));
         }
