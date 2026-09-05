@@ -6,9 +6,6 @@
 /// Output index within a transaction.
 pub type OutputIndex = u32;
 
-/// Number of confirmations (depth from tip). Ephemeral, query-time only.
-pub type Confirmations = i64;
-
 /// Difficulty target. Protocol-specific float representation.
 pub type Difficulty = f64;
 
