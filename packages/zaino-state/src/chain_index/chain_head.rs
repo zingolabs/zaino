@@ -175,8 +175,14 @@ mod tests {
             )
             .expect("vector block converts to the domain shape");
 
-            let block_work = zaino_consensus::work_from_bits(block.header.bits)
-                .expect("vector block has valid difficulty");
+            let block_work = std::num::NonZeroU128::from(
+                block
+                    .header
+                    .bits
+                    .to_work()
+                    .expect("vector block work fits 128 bits"),
+            )
+            .get();
             let accumulated = match work {
                 Some(parent) => parent.checked_add(block_work).expect("no overflow"),
                 None => ChainHeadWork::anchored_at(block_work),

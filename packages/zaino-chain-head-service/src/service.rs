@@ -774,12 +774,17 @@ fn chain_head_block(
     tree_roots: &TreeRoots,
     parent_work: Option<ChainHeadWork>,
 ) -> Result<ChainHeadBlock, ChainHeadAdvanceError> {
-    let block_work = zaino_consensus::work_from_bits(block.header.bits).map_err(|error| {
-        ChainHeadAdvanceError::InconsistentSource(format!(
-            "block {} has invalid difficulty: {error}",
-            block.header.hash
-        ))
-    })?;
+    let block_work = block
+        .header
+        .bits
+        .to_work()
+        .map(|work| std::num::NonZeroU128::from(work).get())
+        .map_err(|error| {
+            ChainHeadAdvanceError::InconsistentSource(format!(
+                "block {} difficulty: {error}",
+                block.header.hash
+            ))
+        })?;
 
     let work = match parent_work {
         Some(parent) => parent.checked_add(block_work).ok_or_else(|| {
