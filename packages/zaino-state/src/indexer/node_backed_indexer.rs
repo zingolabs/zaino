@@ -281,7 +281,7 @@ fn compact_tx_to_proto(
         nullifier: <[u8; 32]>::from(action.nullifier).to_vec(),
         cmx: <[u8; 32]>::from(action.cmx).to_vec(),
         ephemeral_key: <[u8; 32]>::from(action.ephemeral_key).to_vec(),
-        ciphertext: Vec::<u8>::from(action.enc_ciphertext.clone()),
+        ciphertext: <[u8; 52]>::from(action.enc_ciphertext).to_vec(),
     };
 
     CompactTx {
@@ -307,7 +307,7 @@ fn compact_tx_to_proto(
                 ephemeral_key: <[u8; 32]>::from(output.ephemeral_key).to_vec(),
                 // Already truncated to the compact head at the domain
                 // boundary, so there is no second truncation here.
-                ciphertext: Vec::<u8>::from(output.enc_ciphertext.clone()),
+                ciphertext: <[u8; 52]>::from(output.enc_ciphertext).to_vec(),
             })
             .collect(),
         actions: tx.orchard_actions.iter().map(orchard_action).collect(),
@@ -2137,7 +2137,7 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Ligh
 mod compact_tx_to_proto_tests {
     use super::compact_tx_to_proto;
     use zaino_primitives::types::{
-        EncryptedCiphertext, OrchardAction, PreIndexCompactTx, Script, TransactionId,
+        CompactCiphertext, OrchardAction, PreIndexCompactTx, Script, TransactionId,
         TransparentInput, TransparentOutput, Zatoshis,
     };
 
@@ -2146,7 +2146,7 @@ mod compact_tx_to_proto_tests {
             nullifier: [tag; 32].into(),
             cmx: [tag.wrapping_add(1); 32].into(),
             ephemeral_key: [tag.wrapping_add(2); 32].into(),
-            enc_ciphertext: EncryptedCiphertext::new(vec![tag; 52]),
+            enc_ciphertext: CompactCiphertext::from([tag; 52]),
         }
     }
 

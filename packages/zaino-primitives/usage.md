@@ -56,7 +56,13 @@ Types enforce what they claim:
 ```rust
 let h = Height::try_from(800_000u32)?;   // rejects above 2^31 - 1
 let z = Zatoshis::new(21_000_000)?;      // rejects out-of-range amounts
+let c = CompactCiphertext::try_new(&bytes)?; // rejects anything but exactly 52 bytes
 ```
+
+`CompactCiphertext` is the 52-byte compact head of a note ciphertext — the
+form a compact transaction serves to light clients, not the full 580-byte
+encryption output. Once constructed it converts infallibly to `[u8; 52]`, so
+no consumer re-checks the width.
 
 `Height::checked_add` / `checked_sub` are checked, not wrapping. Prefer
 expressing an invariant in the type over asserting it at a call site — the

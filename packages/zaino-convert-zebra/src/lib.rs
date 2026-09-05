@@ -4,11 +4,11 @@
 //! The `block_from_zebra` entry point composes them.
 
 use zaino_primitives::types::{
-    Block, BlockCommitments, BlockHash, BlockHeader, ChainMetadata, CompactDifficulty,
-    CompactDifficultyError, EncryptedCiphertext, EphemeralKey, EquihashSolution, Height,
-    MerkleRoot, NoteCommitment, Nullifier, OrchardAction, OrchardData, SaplingData, SaplingOutput,
-    SaplingSpend, Script, SignedZatoshis, Transaction, TransactionId, TransparentData,
-    TransparentInput, TransparentOutput, Zatoshis,
+    Block, BlockCommitments, BlockHash, BlockHeader, ChainMetadata, CompactCiphertext,
+    CompactCiphertextLength, CompactDifficulty, CompactDifficultyError, EphemeralKey,
+    EquihashSolution, Height, MerkleRoot, NoteCommitment, Nullifier, OrchardAction, OrchardData,
+    SaplingData, SaplingOutput, SaplingSpend, Script, SignedZatoshis, Transaction, TransactionId,
+    TransparentData, TransparentInput, TransparentOutput, Zatoshis,
 };
 
 /// Errors during conversion from zebra types.
@@ -27,6 +27,23 @@ pub enum ConvertError {
     /// exactly what this crate's differential tests pin down.
     #[error("difficulty: {0}")]
     Difficulty(#[from] CompactDifficultyError),
+    /// A note ciphertext too short to contain the compact scanning prefix.
+    ///
+    /// Zebra hands over full 580-byte ciphertexts, so this only fires on
+    /// corrupt data. A short ciphertext is failed loud rather than padded or
+    /// sliced into a panic: no wallet could scan the block regardless, and
+    /// inventing bytes would hide the corruption.
+    #[error("ciphertext too short for the compact prefix: {0}")]
+    Ciphertext(#[from] CompactCiphertextLength),
+}
+
+/// Take the 52-byte compact scanning prefix off a full note ciphertext.
+///
+/// Rejects a source shorter than the prefix with the length actually seen;
+/// bytes past the prefix are the rest of the full ciphertext and are dropped.
+fn compact_prefix(enc: &[u8]) -> Result<CompactCiphertext, ConvertError> {
+    let head = enc.len().min(CompactCiphertext::LENGTH);
+    Ok(CompactCiphertext::try_new(&enc[..head])?)
 }
 
 /// Convert a zebra block into a domain [`Block`].
@@ -176,13 +193,13 @@ fn sapling_from_zebra(
             .map(|out| {
                 let epk_bytes: [u8; 32] = (&out.ephemeral_key).into();
                 let enc_bytes: [u8; 580] = out.enc_ciphertext.into();
-                SaplingOutput {
+                Ok(SaplingOutput {
                     cmu: NoteCommitment::from(out.cm_u.to_bytes()),
                     ephemeral_key: EphemeralKey::from(epk_bytes),
-                    enc_ciphertext: EncryptedCiphertext::new(enc_bytes[..52].to_vec()),
-                }
+                    enc_ciphertext: compact_prefix(&enc_bytes)?,
+                })
             })
-            .collect(),
+            .collect::<Result<Vec<_>, ConvertError>>()?,
         value_balance: SignedZatoshis::try_new(i64::from(
             tx.sapling_value_balance().sapling_amount(),
         ))
@@ -224,14 +241,14 @@ fn orchard_shaped_from_zebra<'a>(
                 let nf_bytes: [u8; 32] = act.nullifier.into();
                 let epk_bytes: [u8; 32] = (&act.ephemeral_key).into();
                 let enc_bytes: [u8; 580] = act.enc_ciphertext.into();
-                OrchardAction {
+                Ok(OrchardAction {
                     nullifier: Nullifier::from(nf_bytes),
                     cmx: NoteCommitment::from(<[u8; 32]>::from(act.cm_x)),
                     ephemeral_key: EphemeralKey::from(epk_bytes),
-                    enc_ciphertext: EncryptedCiphertext::new(enc_bytes[..52].to_vec()),
-                }
+                    enc_ciphertext: compact_prefix(&enc_bytes)?,
+                })
             })
-            .collect(),
+            .collect::<Result<Vec<_>, ConvertError>>()?,
         value_balance: SignedZatoshis::try_new(value_balance)
             .map_err(|e| ConvertError::Value(e.to_string()))?,
     })
@@ -255,6 +272,32 @@ mod tests {
             pool.value_balance,
             SignedZatoshis::try_new(-42).expect("a valid balance")
         );
+    }
+
+    /// A source ciphertext shorter than the compact prefix is a typed error.
+    ///
+    /// Regression test. The prefix take used to be an unchecked `[..52]`
+    /// slice, which panics on short input; corrupt source data must instead
+    /// surface as a `ConvertError` naming the length seen.
+    #[test]
+    fn a_short_ciphertext_is_a_typed_error_not_a_panic() {
+        let err = compact_prefix(&[0u8; 51]).expect_err("51 bytes cannot fill the prefix");
+
+        assert!(matches!(
+            err,
+            ConvertError::Ciphertext(CompactCiphertextLength { got: 51 })
+        ));
+    }
+
+    /// A full-length ciphertext yields its 52-byte head, dropping the rest.
+    #[test]
+    fn a_full_ciphertext_yields_its_head() {
+        let mut full = [0u8; 580];
+        full[..52].copy_from_slice(&[0xcd; 52]);
+
+        let prefix = compact_prefix(&full).expect("a full ciphertext always has a head");
+
+        assert_eq!(<[u8; 52]>::from(prefix), [0xcd; 52]);
     }
 }
 
