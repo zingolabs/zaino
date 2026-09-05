@@ -26,7 +26,7 @@ impl BlockDeltas {
 
         Self {
             hash: display_hex(deltas.hash.into()),
-            confirmations: deltas.confirmations,
+            confirmations: deltas.confirmations.to_rpc_i64(),
             size: deltas.size as i64,
             height: deltas.height.into(),
             version: deltas.version,
@@ -210,7 +210,9 @@ mod tests {
     fn sample() -> domain::rpc::BlockDeltas {
         domain::rpc::BlockDeltas {
             hash: domain::BlockHash::from(ASYMMETRIC),
-            confirmations: 7,
+            confirmations: domain::BlockConfirmations::Confirmed(
+                std::num::NonZeroU32::new(7).expect("non-zero"),
+            ),
             size: 1_234,
             height: Height::try_from(42u32).unwrap(),
             version: 4,

@@ -125,7 +125,7 @@ impl VerboseBlockHeader {
     pub fn from_domain(header: zaino_primitives::types::rpc::BlockHeaderVerbose) -> Self {
         Self {
             hash: zebra_chain::block::Hash(header.hash.into()),
-            confirmations: header.confirmations,
+            confirmations: header.confirmations.to_rpc_i64(),
             height: header.height.into(),
             version: header.version,
             merkle_root: zebra_chain::block::merkle::Root(header.merkle_root.into()),
@@ -160,7 +160,9 @@ mod from_domain_tests {
     fn sample() -> domain::rpc::BlockHeaderVerbose {
         domain::rpc::BlockHeaderVerbose {
             hash: domain::BlockHash::from(ASYMMETRIC),
-            confirmations: 10,
+            confirmations: domain::BlockConfirmations::Confirmed(
+                std::num::NonZeroU32::new(10).expect("non-zero"),
+            ),
             height: Height::try_from(123_456u32).unwrap(),
             version: 4,
             merkle_root: domain::MerkleRoot::from([0xaa; 32]),
