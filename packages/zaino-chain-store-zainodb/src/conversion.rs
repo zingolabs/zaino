@@ -361,7 +361,7 @@ fn sapling(transaction: &Transaction) -> SaplingCompactTx {
                 CompactSaplingOutput::new(
                     output.cmu.into(),
                     output.ephemeral_key.into(),
-                    ciphertext_prefix(&output.enc_ciphertext),
+                    output.enc_ciphertext.into(),
                 )
             })
             .collect(),
@@ -381,24 +381,9 @@ fn orchard_shaped(pool: &zaino_primitives::types::OrchardData) -> OrchardCompact
                     action.nullifier.into(),
                     action.cmx.into(),
                     action.ephemeral_key.into(),
-                    ciphertext_prefix(&action.enc_ciphertext),
+                    action.enc_ciphertext.into(),
                 )
             })
             .collect(),
     )
-}
-
-/// The 52-byte scanning prefix.
-///
-/// The domain type already holds exactly this prefix rather than the full
-/// 580-byte ciphertext, so this is a reshape and not a truncation. A shorter
-/// value is zero-padded rather than rejected: the stored form is a fixed-width
-/// field, and a source that supplied less has produced a block no wallet can
-/// scan regardless.
-fn ciphertext_prefix(ciphertext: &zaino_primitives::types::EncryptedCiphertext) -> [u8; 52] {
-    let bytes: Vec<u8> = ciphertext.clone().into();
-    let mut prefix = [0u8; 52];
-    let usable = bytes.len().min(52);
-    prefix[..usable].copy_from_slice(&bytes[..usable]);
-    prefix
 }
