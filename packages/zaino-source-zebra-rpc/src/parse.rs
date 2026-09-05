@@ -295,6 +295,10 @@ pub(crate) enum ParseError {
     #[error("value {0} overflows target type")]
     Overflow(u64),
 
+    /// Reported chainwork does not fit the domain's recorded width.
+    #[error("chainwork: {0}")]
+    ChainWork(zaino_primitives::types::ChainWorkOverWidth),
+
     /// Height validation failed.
     #[error("invalid height: {0}")]
     Height(String),
@@ -394,8 +398,9 @@ pub(crate) fn parse_block_header_verbose(
             .map(as_tree_root)
             .transpose()?,
         chainwork: opt_field(value, "chainwork")
-            .map(as_chain_work_natural)
-            .transpose()?,
+            .map(parse_reported_chain_work)
+            .transpose()?
+            .flatten(),
         previous_block_hash: opt_field(value, "previousblockhash")
             .map(parse_block_hash)
             .transpose()?,
@@ -883,49 +888,43 @@ pub(crate) fn parse_blockchain_info(
     })
 }
 
-/// Parse cumulative chainwork, which crosses the wire as a hex string.
-///
-/// Accepts fewer than 32 bytes and left-pads: the value is a big-endian integer
-/// and validators trim leading zeroes, so an early-chain response is genuinely
-/// short rather than malformed. Anything longer than 32 bytes is out of range
-/// for the protocol and is rejected.
-/// Chainwork as reported in `getblockchaininfo`, where the two validators
+/// Parse chainwork as a validator reports it, where the two validators
 /// disagree on both the encoding and whether they track it at all.
 ///
-/// the legacy full node sends a hex string. Zebra types the field as a 64-bit integer, so it
-/// arrives as a JSON number, and hardcodes it to zero because it does not store
-/// cumulative work per height. Zero is not a possible amount of work for a real
-/// chain, so it is read as "not reported" rather than as a value a consumer
-/// could compare.
+/// The legacy full node sends a hex string. Zebra types the field as a 64-bit
+/// integer, so it arrives as a JSON number, and hardcodes it to zero because
+/// it does not store cumulative work per height. Both encodings land on the
+/// same door, [`ChainWork::try_from_reported`], which owns the reported-value
+/// semantics: all-zero reads as `None` — "not reported", never a zero a
+/// consumer could compare — and a value past the domain's 128-bit width is
+/// refused rather than truncated.
 fn parse_reported_chain_work(value: &serde_json::Value) -> Result<Option<ChainWork>, ParseError> {
-    if let Some(number) = value.as_u64() {
-        if number == 0 {
-            return Ok(None);
-        }
+    let be = if let Some(number) = value.as_u64() {
         let mut be = [0u8; 32];
         be[24..].copy_from_slice(&number.to_be_bytes());
-        return Ok(Some(ChainWork::new(be)));
-    }
-
-    let work = as_chain_work_natural(value)?;
-    Ok((work != ChainWork::new([0u8; 32])).then_some(work))
+        be
+    } else {
+        chain_work_be_bytes(value)?
+    };
+    ChainWork::try_from_reported(be).map_err(ParseError::ChainWork)
 }
 
-/// Cumulative chainwork as a hex string. Natural order, and left-padded rather
-/// than fixed width: it is a big-endian integer, so validators trim leading
-/// zeroes and an early-chain response is genuinely short rather than malformed.
-fn as_chain_work_natural(value: &serde_json::Value) -> Result<ChainWork, ParseError> {
+/// Cumulative chainwork as a hex string, decoded to the wire's 32 big-endian
+/// bytes. Natural order, and left-padded rather than fixed width: it is a
+/// big-endian integer, so validators trim leading zeroes and an early-chain
+/// response is genuinely short rather than malformed. Anything longer than 32
+/// bytes is out of range for the protocol and is rejected.
+fn chain_work_be_bytes(value: &serde_json::Value) -> Result<[u8; 32], ParseError> {
     let s = as_str(value)?;
     let s = s.strip_prefix("0x").unwrap_or(s);
     let padded = format!("{s:0>64}");
     let bytes = hex::decode(&padded).map_err(|e| ParseError::Hex(e.to_string()))?;
-    let be: [u8; 32] = bytes
+    bytes
         .try_into()
         .map_err(|b: Vec<u8>| ParseError::WrongLength {
             expected: 32,
             got: b.len(),
-        })?;
-    Ok(ChainWork::new(be))
+        })
 }
 
 fn parse_branch_id(value: &serde_json::Value) -> Result<ConsensusBranchId, ParseError> {
@@ -1193,11 +1192,31 @@ mod tests {
     /// right-aligned into a different one.
     #[test]
     fn chainwork_left_pads_a_trimmed_value() {
-        let trimmed = as_chain_work_natural(&json!("ff")).expect("short chainwork");
+        let trimmed = parse_reported_chain_work(&json!("ff")).expect("short chainwork");
 
-        let mut expected = [0u8; 32];
-        expected[31] = 0xff;
-        assert_eq!(trimmed, ChainWork::new(expected));
+        assert_eq!(trimmed, Some(ChainWork::try_new(0xff).expect("nonzero")));
+    }
+
+    /// Zero off the wire — either validator's encoding — is "not reported",
+    /// not a comparable amount of work.
+    #[test]
+    fn chainwork_zero_reads_as_not_reported() {
+        assert_eq!(
+            parse_reported_chain_work(&json!("00")).expect("valid"),
+            None
+        );
+        assert_eq!(parse_reported_chain_work(&json!(0)).expect("valid"), None);
+    }
+
+    /// Chainwork past the domain's 128-bit width is refused at parse rather
+    /// than truncated into a lower — and wrongly ordered — value.
+    #[test]
+    fn chainwork_over_width_is_refused() {
+        let over = format!("01{}", "00".repeat(31));
+        assert!(matches!(
+            parse_reported_chain_work(&json!(over)),
+            Err(ParseError::ChainWork(_))
+        ));
     }
 
     /// The health sentinels differ per method, and both must read as "healthy"
