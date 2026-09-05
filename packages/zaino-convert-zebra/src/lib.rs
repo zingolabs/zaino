@@ -294,19 +294,58 @@ mod consensus_agreement {
             zebra_chain::block::MAX_BLOCK_BYTES
         );
     }
+}
 
-    /// `work_from_bits` is implemented against the specification rather than by
-    /// delegating, so it is swept against zebra's implementation across the
-    /// whole encoding space — every exponent, and mantissas chosen to sit on
-    /// the boundaries where the two could plausibly disagree: zero, one, the
-    /// byte and half-word limits the overflow rules key off, the sign bit that
-    /// makes a target negative, and the largest valid magnitude.
-    ///
-    /// Agreement on rejection matters as much as agreement on value. A
-    /// disagreement about *which* encodings are valid would let a block through
-    /// that a validator refuses, or refuse one it accepts.
+/// The primitives difficulty pipeline against zebra's, as differential oracle.
+///
+/// `zaino_primitives::types::CompactDifficulty` implements the whole
+/// nBits → target → work conversion natively, against the specification. The
+/// safety net for that independence is equality with a consensus
+/// implementation on both of the pipeline's judgements:
+///
+/// - **the acceptance set** — which `u32` values are valid encodings. A
+///   disagreement here would let a block through that a validator refuses, or
+///   refuse one it accepts;
+/// - **the work value** — including *when there is none*: our typed
+///   over-width refusal must land exactly where zebra's `to_work` declines.
+///
+/// A failure does not say which side is wrong, only that the two readings of
+/// the specification diverge and the answer needs looking up rather than
+/// copied across.
+#[cfg(test)]
+mod difficulty_agreement {
+    use core::num::NonZeroU128;
+
+    use proptest::prelude::*;
+
+    use zaino_primitives::types::CompactDifficulty;
+
+    /// Both pipeline judgements at once: `None` for a rejected encoding,
+    /// `Some(None)` for a valid encoding whose work does not fit `u128`,
+    /// `Some(Some(work))` otherwise.
+    fn primitives_view(bits: u32) -> Option<Option<u128>> {
+        CompactDifficulty::try_from_bits(bits)
+            .ok()
+            .map(|cd| cd.to_work().ok().map(|work| NonZeroU128::from(work).get()))
+    }
+
+    /// Zebra's judgements in the same shape. Construction succeeds exactly
+    /// when `to_expanded` accepts, and `to_work` is `None` on over-width.
+    fn zebra_view(bits: u32) -> Option<Option<u128>> {
+        zebra_chain::work::difficulty::CompactDifficulty::from_bytes_in_display_order(
+            &bits.to_be_bytes(),
+        )
+        .ok()
+        .map(|compact| compact.to_work().map(|work| work.as_u128()))
+    }
+
+    /// Sweeps the encoding space: every exponent, with mantissas chosen to sit
+    /// on the boundaries where the two implementations could plausibly
+    /// disagree — zero, one, the byte and half-word limits the overflow rules
+    /// key off, the sign bit that makes a target negative, and the largest
+    /// valid magnitude.
     #[test]
-    fn work_from_bits_agrees_across_the_encoding_space() {
+    fn pipeline_agrees_across_the_encoding_space() {
         const MANTISSAS: [u32; 8] = [
             0x00_0000, 0x00_0001, 0x00_00ff, 0x00_0100, 0x00_ffff, 0x01_0000, 0x7f_ffff, 0x80_0000,
         ];
@@ -315,21 +354,73 @@ mod consensus_agreement {
         for exponent in 0u32..=0xff {
             for mantissa in MANTISSAS {
                 let bits = (exponent << 24) | mantissa;
-
-                let ours = zaino_consensus::work_from_bits(bits).ok();
-                let theirs =
-                    zebra_chain::work::difficulty::CompactDifficulty::from_bytes_in_display_order(
-                        &bits.to_be_bytes(),
-                    )
-                    .ok()
-                    .and_then(|compact| compact.to_work())
-                    .map(|work| work.as_u128());
-
-                assert_eq!(ours, theirs, "disagreement at nBits {bits:#010x}");
+                assert_eq!(
+                    primitives_view(bits),
+                    zebra_view(bits),
+                    "disagreement at nBits {bits:#010x}"
+                );
                 compared += 1;
             }
         }
 
         assert_eq!(compared, 256 * MANTISSAS.len());
+    }
+
+    /// The specific edges the sweep's grid could miss, plus the rejection
+    /// vectors the store's validated type historically pinned: all-zero, the
+    /// sign bit, all-ones, the boundary exponents on both sides of their
+    /// mantissa limits, an underflow to zero, and a valid-but-tiny target
+    /// whose work exceeds 128 bits.
+    #[test]
+    fn pipeline_agrees_on_the_edge_vectors() {
+        const EDGES: [u32; 14] = [
+            0x0000_0000, // zero: no target
+            0x0180_0000, // sign bit set: negative target
+            u32::MAX,    // all ones
+            0x0100_0100, // exponent underflow shifts the mantissa away
+            0x0101_0000, // valid target of 1: work over 128 bits
+            0x0300_0001, // unscaled target of 1: work over 128 bits
+            0x2200_00ff, // boundary exponent, mantissa within a byte
+            0x2200_0100, // boundary exponent, mantissa a bit too wide
+            0x2100_ffff, // boundary exponent, mantissa within two bytes
+            0x2101_0000, // boundary exponent, mantissa a bit too wide
+            0x2300_0001, // exponent past every mantissa
+            0x1f07_ffff, // mainnet proof-of-work limit (and genesis)
+            0x2007_ffff, // testnet/regtest proof-of-work limit
+            0x1d00_ffff, // classic minimum-difficulty encoding
+        ];
+
+        for bits in EDGES {
+            assert_eq!(
+                primitives_view(bits),
+                zebra_view(bits),
+                "disagreement at nBits {bits:#010x}"
+            );
+        }
+    }
+
+    /// Real header bits with their known work, pinned as literals so this
+    /// suite still means something if both implementations drifted together.
+    #[test]
+    fn known_work_vectors() {
+        // Zcash mainnet genesis (also the mainnet proof-of-work limit):
+        // target 0x07ffff·256^28, work exactly 2^13.
+        assert_eq!(primitives_view(0x1f07_ffff), Some(Some(8192)));
+        // The testnet/regtest proof-of-work limit: target 0x07ffff·256^29.
+        assert_eq!(primitives_view(0x2007_ffff), Some(Some(32)));
+        // The Bitcoin-family minimum-difficulty encoding: target 0xffff·256^26.
+        assert_eq!(primitives_view(0x1d00_ffff), Some(Some(0x1_0001_0001)));
+    }
+
+    proptest! {
+        /// Acceptance-set and work equality over arbitrary bit patterns.
+        #[test]
+        fn pipeline_agrees_on_arbitrary_bits(bits in any::<u32>()) {
+            prop_assert_eq!(
+                primitives_view(bits),
+                zebra_view(bits),
+                "disagreement at nBits {:#010x}", bits
+            );
+        }
     }
 }
