@@ -300,7 +300,10 @@ mod tests {
                 asm: Some("OP_DUP OP_HASH160".to_string()),
                 script_type: Some("pubkeyhash".to_string()),
                 required_signatures: Some(1),
-                addresses: vec![TransparentAddress::new("t1abc".to_string())],
+                addresses: vec![
+                    TransparentAddress::try_new("t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs")
+                        .expect("valid mainnet t1"),
+                ],
             },
             coinbase: true,
         }));
@@ -316,7 +319,7 @@ mod tests {
                     "asm": "OP_DUP OP_HASH160",
                     "type": "pubkeyhash",
                     "reqSigs": 1,
-                    "addresses": ["t1abc"],
+                    "addresses": ["t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs"],
                 },
                 "coinbase": true,
             })

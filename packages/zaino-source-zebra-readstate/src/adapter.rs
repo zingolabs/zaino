@@ -60,6 +60,18 @@ fn unexpected_response(request: &'static str) -> FetchError {
     )
 }
 
+/// Validate a transparent address string from the state service.
+///
+/// Zebra derives these from outputs in its own validated indexes, so the string
+/// is expected to parse; a rejection is corrupt state-service data, surfaced as
+/// a parse failure rather than swallowed.
+fn transparent_address(
+    encoded: String,
+) -> Result<zaino_primitives::types::TransparentAddress, FetchError> {
+    zaino_primitives::types::TransparentAddress::try_new(encoded)
+        .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()))
+}
+
 /// The state service returned rows out of order.
 ///
 /// Zebra's address indexes are documented as ordered, and Zaino relies on that
@@ -423,7 +435,7 @@ impl zaino_source::OneShotGetAddressUtxos for ZebraReadStateAdapter {
         addresses: Vec<String>,
     ) -> Result<Vec<zaino_primitives::types::Utxo>, QueryError<zaino_source::GetAddressUtxosError>>
     {
-        use zaino_primitives::types::{Script, TransparentAddress, Utxo, Zatoshis};
+        use zaino_primitives::types::{Script, Utxo, Zatoshis};
 
         let valid = parse_addresses(addresses)?;
 
@@ -454,7 +466,7 @@ impl zaino_source::OneShotGetAddressUtxos for ZebraReadStateAdapter {
             previous = *location;
 
             result.push(Utxo {
-                address: TransparentAddress::new(address.to_string()),
+                address: transparent_address(address.to_string())?,
                 txid: zaino_primitives::types::TransactionId::from(txid.0),
                 output_index: location.output_index().index(),
                 script: Script::new(output.lock_script.as_raw_bytes().to_vec()),
@@ -561,9 +573,7 @@ impl zaino_source::OneShotGetAddressDeltas for ZebraReadStateAdapter {
         Vec<zaino_primitives::types::AddressDelta>,
         QueryError<zaino_source::GetAddressDeltasError>,
     > {
-        use zaino_primitives::types::{
-            AddressDelta, SignedZatoshis, TransactionId, TransparentAddress,
-        };
+        use zaino_primitives::types::{AddressDelta, SignedZatoshis, TransactionId};
 
         if start > end {
             return Err(QueryError::Domain(
@@ -627,7 +637,7 @@ impl zaino_source::OneShotGetAddressDeltas for ZebraReadStateAdapter {
                     txid: delta_txid,
                     index: index as u32,
                     height,
-                    address: TransparentAddress::new(address),
+                    address: transparent_address(address)?,
                     block_index: Some(u32::from(location.index.index())),
                 });
             }
@@ -1260,7 +1270,7 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
     > {
         use zaino_primitives::types::{
             rpc::{BlockDelta, BlockDeltas, InputDelta, OutputDelta},
-            MerkleRoot, SignedZatoshis, TransactionId, TransparentAddress, Zatoshis,
+            MerkleRoot, SignedZatoshis, TransactionId, Zatoshis,
         };
         use zebra_chain::serialization::ZcashSerialize as _;
 
@@ -1337,7 +1347,7 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
                 };
 
                 inputs.push(InputDelta {
-                    address: TransparentAddress::new(address.to_string()),
+                    address: transparent_address(address.to_string())?,
                     // A spend debits the address, so the value leaves it.
                     satoshis: SignedZatoshis::try_new(-output.value.zatoshis())
                         .map_err(|e| parse(e.to_string()))?,
@@ -1353,7 +1363,7 @@ impl zaino_source::OneShotGetBlockDeltas for ZebraReadStateAdapter {
                     continue;
                 };
                 outputs.push(OutputDelta {
-                    address: TransparentAddress::new(address.to_string()),
+                    address: transparent_address(address.to_string())?,
                     satoshis: Zatoshis::new(u64::from(output.value))
                         .map_err(|e| parse(e.to_string()))?,
                     index: index as u32,

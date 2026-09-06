@@ -3,7 +3,8 @@ use zaino_primitives::types::{rpc::AddressDeltasRequest, TransparentAddress};
 /// A `getaddressdeltas` request over a height range, from a plain address string.
 fn deltas_request(address: &str, start: u32, end: u32, chain_info: bool) -> AddressDeltasRequest {
     AddressDeltasRequest::Filtered {
-        addresses: vec![TransparentAddress::new(address.to_string())],
+        addresses: vec![TransparentAddress::try_new(address)
+            .expect("test address is a valid transparent address")],
         start,
         end,
         chain_info,

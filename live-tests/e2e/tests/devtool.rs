@@ -1579,7 +1579,10 @@ async fn address_deltas() {
     fn taddrs(addresses: &[String]) -> Vec<TransparentAddress> {
         addresses
             .iter()
-            .map(|address| TransparentAddress::new(address.clone()))
+            .map(|address| {
+                TransparentAddress::try_new(address.clone())
+                    .expect("live-test address is a valid transparent address")
+            })
             .collect()
     }
 
@@ -1630,9 +1633,10 @@ async fn address_deltas() {
     // 1) Simple query (single address) -> Simple variant with the send delta.
     let response = svc
         .state_subscriber
-        .get_address_deltas(AddressDeltasRequest::Address(TransparentAddress::new(
-            recipient_taddr.clone(),
-        )))
+        .get_address_deltas(AddressDeltasRequest::Address(
+            TransparentAddress::try_new(recipient_taddr.clone())
+                .expect("live-test address is a valid transparent address"),
+        ))
         .await
         .unwrap();
     let AddressDeltas::Simple(deltas) = response else {
