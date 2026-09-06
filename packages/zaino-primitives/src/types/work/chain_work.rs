@@ -9,10 +9,11 @@ use super::ZeroWork;
 /// chain.
 ///
 /// The ordering is the point. Chain selection compares cumulative work —
-/// the heaviest chain wins — so this type derives [`Ord`], and that comparison
-/// is the only operation cumulative values share: there is deliberately no
-/// `ChainWork + ChainWork`, because no chain is the concatenation of two
-/// chains. Growing or shrinking a cumulative value takes a
+/// the heaviest chain wins — so this type derives [`Ord`]. There is
+/// deliberately no `ChainWork + ChainWork`, because no chain is the
+/// concatenation of two chains; the one relation between two cumulative
+/// values, `since`, lands in [`RelativeWork`](super::RelativeWork), never
+/// back in this type. Growing or shrinking a cumulative value takes a
 /// [`BlockWork`](super::BlockWork), through the relations in the `arithmetic`
 /// module.
 ///
