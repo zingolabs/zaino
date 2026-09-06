@@ -1,8 +1,6 @@
 //! Zaino's gRPC Server Implementation.
 
-use std::time::Duration;
-
-use tokio::time::interval;
+use tokio::sync::watch;
 use tonic::{
     service::Routes,
     transport::{server::TcpIncoming, Server},
@@ -18,6 +16,7 @@ pub struct TonicServer {
     pub status: NamedAtomicStatus,
     /// JoinHandle for the servers `serve` task.
     pub server_handle: Option<tokio::task::JoinHandle<Result<(), ServerError>>>,
+    shutdown: watch::Sender<()>,
 }
 
 impl TonicServer {
@@ -34,12 +33,23 @@ impl TonicServer {
         routes: Routes,
         server_config: GrpcServerConfig,
     ) -> Result<Self, ServerError> {
+        Self::spawn_with_routes(|_| routes, server_config).await
+    }
+
+    /// Starts the gRPC service and gives its routes the server shutdown signal.
+    pub async fn spawn_with_routes<BuildRoutes>(
+        build_routes: BuildRoutes,
+        server_config: GrpcServerConfig,
+    ) -> Result<Self, ServerError>
+    where
+        BuildRoutes: FnOnce(watch::Receiver<()>) -> Routes,
+    {
         // Bind synchronously so EADDRINUSE / EACCES propagate to the caller
         // instead of being swallowed inside the spawned serve task. See
         // zingolabs/zaino#1081.
         let tcp_incoming = TcpIncoming::bind(server_config.listen_address)
             .map_err(|e| ServerError::ServerConfigError(format!("gRPC bind failed: {e}")))?;
-        Self::spawn_inner(routes, server_config, tcp_incoming).await
+        Self::spawn_inner(build_routes, server_config, tcp_incoming).await
     }
 
     /// Starts the gRPC service on a pre-bound listener.
@@ -49,12 +59,25 @@ impl TonicServer {
     /// race. `TcpIncoming::from` applies the same nodelay/keepalive defaults as
     /// `TcpIncoming::bind`, so the served socket is identical to the production
     /// path.
-    #[cfg(feature = "test_dependencies")]
+    #[cfg(any(test, feature = "test_dependencies"))]
     pub async fn spawn_from_listener(
         routes: Routes,
         server_config: GrpcServerConfig,
         listener: std::net::TcpListener,
     ) -> Result<Self, ServerError> {
+        Self::spawn_from_listener_with_routes(|_| routes, server_config, listener).await
+    }
+
+    /// Starts the gRPC service on a pre-bound listener and shares its shutdown signal.
+    #[cfg(any(test, feature = "test_dependencies"))]
+    pub async fn spawn_from_listener_with_routes<BuildRoutes>(
+        build_routes: BuildRoutes,
+        server_config: GrpcServerConfig,
+        listener: std::net::TcpListener,
+    ) -> Result<Self, ServerError>
+    where
+        BuildRoutes: FnOnce(watch::Receiver<()>) -> Routes,
+    {
         listener.set_nonblocking(true).map_err(|e| {
             ServerError::ServerConfigError(format!("gRPC listener set_nonblocking failed: {e}"))
         })?;
@@ -62,15 +85,20 @@ impl TonicServer {
             TcpIncoming::from(tokio::net::TcpListener::from_std(listener).map_err(|e| {
                 ServerError::ServerConfigError(format!("gRPC from_std failed: {e}"))
             })?);
-        Self::spawn_inner(routes, server_config, tcp_incoming).await
+        Self::spawn_inner(build_routes, server_config, tcp_incoming).await
     }
 
-    async fn spawn_inner(
-        routes: Routes,
+    async fn spawn_inner<BuildRoutes>(
+        build_routes: BuildRoutes,
         server_config: GrpcServerConfig,
         tcp_incoming: TcpIncoming,
-    ) -> Result<Self, ServerError> {
+    ) -> Result<Self, ServerError>
+    where
+        BuildRoutes: FnOnce(watch::Receiver<()>) -> Routes,
+    {
         let status = NamedAtomicStatus::new("gRPC", StatusType::Spawning);
+        let (shutdown, mut shutdown_signal) = watch::channel(());
+        let routes = build_routes(shutdown.subscribe());
 
         let mut server_builder = Server::builder();
         if let Some(tls_config) = server_config.get_valid_tls().await? {
@@ -82,15 +110,8 @@ impl TonicServer {
             })?;
         }
 
-        let shutdown_check_status = status.clone();
-        let mut shutdown_check_interval = interval(Duration::from_millis(100));
         let shutdown_signal = async move {
-            loop {
-                shutdown_check_interval.tick().await;
-                if shutdown_check_status.load() == StatusType::Closing {
-                    break;
-                }
-            }
+            let _ = shutdown_signal.changed().await;
         };
         let server_future = server_builder
             .add_routes(routes)
@@ -107,12 +128,14 @@ impl TonicServer {
         Ok(TonicServer {
             status,
             server_handle: Some(server_handle),
+            shutdown,
         })
     }
 
     /// Sets the servers to close gracefully.
     pub async fn close(&mut self) {
         self.status.store(StatusType::Closing);
+        self.shutdown.send_replace(());
 
         if let Some(handle) = self.server_handle.take() {
             let _ = handle.await;

@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package zaino.index.v1;
+
+// An empty request for the indexed-tip subscription.
+message SubscribeIndexedTipsRequest {}
+
+// The canonical chain tip currently readable through Zaino's local index.
+message IndexedTip {
+  uint32 height = 1;
+  // The 32-byte block hash in Zcash protocol (internal) byte order.
+  bytes hash = 2;
+}
+
+// Zaino-specific index notifications, separate from the lightwalletd protocol.
+service IndexedTipService {
+  // Emits one current readable tip immediately, then each observed tip change.
+  //
+  // The stream has latest-state semantics: an update that is superseded before
+  // the client receives it may be coalesced. Reorganizations are observable as
+  // a hash change, including when the height does not change. The service is
+  // registered only after the chain index has constructed its first readable
+  // snapshot, so an accepted subscription always starts with a tip. Client
+  // cancellation drops the subscription; index shutdown ends the stream.
+  rpc SubscribeIndexedTips(SubscribeIndexedTipsRequest) returns (stream IndexedTip);
+}
