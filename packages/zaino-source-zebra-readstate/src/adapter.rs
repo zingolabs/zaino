@@ -30,7 +30,7 @@ use tower::ServiceExt;
 use zebra_chain::parameters::Network;
 use zebra_state::{ReadRequest, ReadResponse, ReadStateService};
 
-use zaino_primitives::types::{Block, BlockHash, ChainMetadata, Height};
+use zaino_primitives::types::{Block, BlockHash, ChainMetadata, Height, TreeSize};
 use zaino_source::{FailureMode, FetchError, GetBlockError, GetChainTipError, QueryError};
 
 /// Ask the state service one question.
@@ -204,9 +204,9 @@ impl zaino_source::OneShotGetBlock for ZebraReadStateAdapter {
                 // data, so they are zero here and filled in by whatever tracks
                 // them. Zero is a placeholder, not a measurement.
                 let chain_metadata = ChainMetadata {
-                    sapling_tree_size: 0,
-                    orchard_tree_size: 0,
-                    ironwood_tree_size: 0,
+                    sapling_tree_size: TreeSize::ZERO,
+                    orchard_tree_size: TreeSize::ZERO,
+                    ironwood_tree_size: TreeSize::ZERO,
                 };
                 zaino_convert_zebra::block_from_zebra(&arc_block, chain_metadata)
                     .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()).into())
@@ -260,9 +260,9 @@ impl zaino_source::OneShotGetBlockByHash for ZebraReadStateAdapter {
             ReadResponse::Block(Some(arc_block)) => {
                 // Tree sizes are indexed state, not block data — see `GetBlock`.
                 let chain_metadata = ChainMetadata {
-                    sapling_tree_size: 0,
-                    orchard_tree_size: 0,
-                    ironwood_tree_size: 0,
+                    sapling_tree_size: TreeSize::ZERO,
+                    orchard_tree_size: TreeSize::ZERO,
+                    ironwood_tree_size: TreeSize::ZERO,
                 };
                 zaino_convert_zebra::block_from_zebra(&arc_block, chain_metadata)
                     .map_err(|e| FetchError::new(FailureMode::Parse, e.to_string()).into())
@@ -704,21 +704,21 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for ZebraReadStateAdapter {
         let sapling = match sapling? {
             ReadResponse::SaplingTree(tree) => tree.as_deref().map(|tree| TreeRootInfo {
                 root: zaino_primitives::types::TreeRoot::new(tree.root().into()),
-                size: tree.count(),
+                size: TreeSize::new(tree.count()),
             }),
             _ => return Err(unexpected_response("SaplingTree").into()),
         };
         let orchard = match orchard? {
             ReadResponse::OrchardTree(tree) => tree.as_deref().map(|tree| TreeRootInfo {
                 root: zaino_primitives::types::TreeRoot::new(tree.root().into()),
-                size: tree.count(),
+                size: TreeSize::new(tree.count()),
             }),
             _ => return Err(unexpected_response("OrchardTree").into()),
         };
         let ironwood = match ironwood? {
             ReadResponse::IronwoodTree(tree) => tree.as_deref().map(|tree| TreeRootInfo {
                 root: zaino_primitives::types::TreeRoot::new(tree.root().into()),
-                size: tree.count(),
+                size: TreeSize::new(tree.count()),
             }),
             _ => return Err(unexpected_response("IronwoodTree").into()),
         };

@@ -259,11 +259,13 @@ pub fn commitment_tree_data(
      -> Result<u32, BlockConversionError> {
         match root.as_ref() {
             Some(info) => {
-                u32::try_from(info.size).map_err(|_| BlockConversionError::TreeSizeOverflow {
-                    hash,
-                    pool,
-                    size: info.size,
-                })
+                info.size
+                    .try_to_u32()
+                    .map_err(|_| BlockConversionError::TreeSizeOverflow {
+                        hash,
+                        pool,
+                        size: info.size.get(),
+                    })
             }
             None => Ok(0),
         }

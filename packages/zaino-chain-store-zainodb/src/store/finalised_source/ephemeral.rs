@@ -804,12 +804,13 @@ impl<T: ChainStoreSource> CompactBlockExt for EphemeralFinalisedState<T> {
                         ),
                     )
                     .await
-                    .map(|block| {
+                    .map_err(|error| tonic::Status::internal(error.to_string()))
+                    .and_then(|block| {
                         crate::store::finalised_source::v1::compact_block::compact_block_to_wire(
                             &block,
                         )
-                    })
-                    .map_err(|error| tonic::Status::internal(error.to_string()));
+                        .map_err(|error| tonic::Status::internal(error.to_string()))
+                    });
 
                 if compact_block_sender
                     .send(compact_block_result)

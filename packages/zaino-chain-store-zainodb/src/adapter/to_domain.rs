@@ -22,7 +22,7 @@ use zaino_primitives::types::{
     ChainWork as DomainChainWork, EncryptedCiphertext, Height as DomainHeight, Nullifier,
     OrchardAction, Outpoint as DomainOutpoint, PreIndexCompactTx, SaplingOutput, Script,
     ScriptType, SignedZatoshis, TransactionId, TransparentInput, TransparentOutput, TreeRootInfo,
-    TreeRoots, TxIndex, Zatoshis,
+    TreeRoots, TreeSize, TxIndex, Zatoshis,
 };
 
 use crate::store::capability::{Capability, DbMetadata, MigrationStatus};
@@ -344,15 +344,15 @@ pub(super) fn tree_roots(data: &CommitmentTreeData) -> TreeRoots {
     TreeRoots {
         sapling: Some(TreeRootInfo {
             root: (*roots.sapling()).into(),
-            size: u64::from(sizes.sapling()),
+            size: TreeSize::new(u64::from(sizes.sapling())),
         }),
         orchard: Some(TreeRootInfo {
             root: (*roots.orchard()).into(),
-            size: u64::from(sizes.orchard()),
+            size: TreeSize::new(u64::from(sizes.orchard())),
         }),
         ironwood: roots.ironwood().map(|root| TreeRootInfo {
             root: root.into(),
-            size: u64::from(sizes.ironwood()),
+            size: TreeSize::new(u64::from(sizes.ironwood())),
         }),
     }
 }

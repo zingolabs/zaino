@@ -34,8 +34,8 @@ use zaino_primitives::types::{
     AddressBalance, AddressDelta, BlockCommitments, BlockHash, BlockTreeSizes, BlockVerbose,
     BlockchainInfo, ChainWork, ConsensusBranchId, ConsensusBranchIds, Height, MerkleRoot,
     NetworkUpgradeInfo, NetworkUpgradeStatus, Script, SignedZatoshis, SubtreeRoot, TransactionId,
-    TransactionLocation, TransparentAddress, TreeRoot, TreeRootInfo, TreeRoots, Treestate, Utxo,
-    ValuePoolBalance, Zatoshis,
+    TransactionLocation, TransparentAddress, TreeRoot, TreeRootInfo, TreeRoots, TreeSize,
+    Treestate, Utxo, ValuePoolBalance, Zatoshis,
 };
 use zaino_source::{MempoolTxMeta, TransactionResponse};
 
@@ -811,7 +811,7 @@ fn sapling_pool_root(pool: Option<&serde_json::Value>) -> Result<Option<TreeRoot
     let tree = read_tree::<sapling_crypto::Node>(&bytes)?;
     Ok(Some(TreeRootInfo {
         root: TreeRoot::new(tree.root().to_bytes()),
-        size: tree.size() as u64,
+        size: TreeSize::new(tree.size() as u64),
     }))
 }
 
@@ -826,7 +826,7 @@ fn orchard_shaped_pool_root(
     let tree = read_tree::<zebra_chain::orchard::tree::Node>(&bytes)?;
     Ok(Some(TreeRootInfo {
         root: TreeRoot::new(tree.root().to_repr()),
-        size: tree.size() as u64,
+        size: TreeSize::new(tree.size() as u64),
     }))
 }
 
@@ -1027,14 +1027,14 @@ pub(crate) fn parse_block_verbose(value: &serde_json::Value) -> Result<BlockVerb
 ///
 /// Absent means the pool is not active at this block, which is a size of zero
 /// rather than unknown — a pool with no activation has committed no notes.
-fn pool_tree_size(trees: Option<&serde_json::Value>, pool: &str) -> Result<u64, ParseError> {
+fn pool_tree_size(trees: Option<&serde_json::Value>, pool: &str) -> Result<TreeSize, ParseError> {
     let Some(size) = trees
         .and_then(|t| t.get(pool))
         .and_then(|p| opt_field(p, "size"))
     else {
-        return Ok(0);
+        return Ok(TreeSize::ZERO);
     };
-    as_u64(size)
+    as_u64(size).map(TreeSize::new)
 }
 
 /// Parse a `getblockdeltas` response.
@@ -1284,9 +1284,13 @@ mod tests {
         let roots = parse_tree_roots(&empty_pools).expect("empty trees are valid");
 
         let sapling = roots.sapling.expect("sapling pool present");
-        assert_eq!(sapling.size, 0, "an empty tree holds no commitments");
+        assert_eq!(
+            sapling.size,
+            TreeSize::ZERO,
+            "an empty tree holds no commitments"
+        );
         let orchard = roots.orchard.expect("orchard pool present");
-        assert_eq!(orchard.size, 0);
+        assert_eq!(orchard.size, TreeSize::ZERO);
         assert!(
             roots.ironwood.is_none(),
             "a pool absent from the response stays absent"
@@ -1305,7 +1309,8 @@ mod tests {
         let sapling = roots.sapling.expect("pool present");
 
         assert_eq!(
-            sapling.size, 0,
+            sapling.size,
+            TreeSize::ZERO,
             "size comes from the tree, and there is no tree here"
         );
     }

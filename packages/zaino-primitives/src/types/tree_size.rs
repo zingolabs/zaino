@@ -121,7 +121,10 @@ mod tests {
     fn rejects_the_off_by_one_at_two_to_the_32() {
         // The exact #549 boundary: 2^32 is the first value a u32 cannot hold.
         let over = u64::from(u32::MAX) + 1;
-        assert_eq!(TreeSize::new(over).try_to_u32(), Err(TreeSizeOverflow { got: over }));
+        assert_eq!(
+            TreeSize::new(over).try_to_u32(),
+            Err(TreeSizeOverflow { got: over })
+        );
     }
 
     #[test]

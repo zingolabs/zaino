@@ -320,13 +320,13 @@ mod tests {
     /// the one mapping that rejects, and this pins that it still does.
     #[test]
     fn a_treestate_the_store_cannot_hold_is_refused() {
-        use zaino_primitives::types::TreeRoot;
+        use zaino_primitives::types::{TreeRoot, TreeSize};
 
         let hash = BlockHash([7u8; 32]);
         let oversized = TreeRoots {
             sapling: Some(TreeRootInfo {
                 root: TreeRoot::from([0u8; 32]),
-                size: u64::from(u32::MAX) + 1,
+                size: TreeSize::new(u64::from(u32::MAX) + 1),
             }),
             orchard: None,
             ironwood: None,
@@ -342,7 +342,7 @@ mod tests {
         let representable = TreeRoots {
             sapling: Some(TreeRootInfo {
                 root: TreeRoot::from([0u8; 32]),
-                size: u64::from(u32::MAX),
+                size: TreeSize::new(u64::from(u32::MAX)),
             }),
             orchard: None,
             ironwood: None,
