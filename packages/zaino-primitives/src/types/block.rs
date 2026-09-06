@@ -185,7 +185,10 @@ mod tests {
             .expect("a non-empty block is valid");
 
         assert_eq!(
-            block.coinbase().expect("a non-empty block has a coinbase").txid,
+            block
+                .coinbase()
+                .expect("a non-empty block has a coinbase")
+                .txid,
             coinbase_txid
         );
     }
