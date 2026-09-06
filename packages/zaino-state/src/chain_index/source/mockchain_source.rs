@@ -510,10 +510,14 @@ impl MockchainSource {
     fn domain_block_at(&self, index: usize) -> Result<domain::Block, String> {
         let (sapling, orchard) = self.roots[index];
         let chain_metadata = domain::ChainMetadata {
-            sapling_tree_size: sapling.map_or(0, |(_, size)| size as u32),
-            orchard_tree_size: orchard.map_or(0, |(_, size)| size as u32),
+            sapling_tree_size: sapling.map_or(domain::TreeSize::ZERO, |(_, size)| {
+                domain::TreeSize::new(size)
+            }),
+            orchard_tree_size: orchard.map_or(domain::TreeSize::ZERO, |(_, size)| {
+                domain::TreeSize::new(size)
+            }),
             // The test vectors carry no ironwood tree.
-            ironwood_tree_size: 0,
+            ironwood_tree_size: domain::TreeSize::ZERO,
         };
 
         zaino_convert_zebra::block_from_zebra(&self.blocks[index], chain_metadata)
@@ -776,7 +780,7 @@ impl zaino_source::OneShotGetCommitmentTreeRoots for MockchainSource {
         let (sapling, orchard) = self.roots[index];
         let info = |root: [u8; 32], size: u64| domain::TreeRootInfo {
             root: domain::TreeRoot::from(root),
-            size,
+            size: domain::TreeSize::new(size),
         };
 
         Ok(domain::TreeRoots {
@@ -803,8 +807,13 @@ impl zaino_source::OneShotGetBlockVerboseByHash for MockchainSource {
 
         let (_, orchard) = self.roots[index];
         let (sapling_size, orchard_size) = (
-            self.roots[index].0.map(|(_, size)| size).unwrap_or(0),
-            orchard.map(|(_, size)| size).unwrap_or(0),
+            self.roots[index]
+                .0
+                .map(|(_, size)| domain::TreeSize::new(size))
+                .unwrap_or(domain::TreeSize::ZERO),
+            orchard
+                .map(|(_, size)| domain::TreeSize::new(size))
+                .unwrap_or(domain::TreeSize::ZERO),
         );
 
         Ok(domain::BlockVerbose {
@@ -820,7 +829,7 @@ impl zaino_source::OneShotGetBlockVerboseByHash for MockchainSource {
             tree_sizes: domain::BlockTreeSizes {
                 sapling: sapling_size,
                 orchard: orchard_size,
-                ironwood: 0,
+                ironwood: domain::TreeSize::ZERO,
             },
             next_block_hash: self
                 .next_block_hash(index)

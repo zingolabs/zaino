@@ -323,7 +323,7 @@ fn sapling_root(
     let bytes: [u8; 32] = info.root.into();
     let root = zebra_chain::sapling::tree::Root::try_from(bytes)
         .map_err(|_| invalid("sapling tree root is not a valid curve point".to_string()))?;
-    Ok((root, info.size))
+    Ok((root, info.size.get()))
 }
 
 /// Orchard and Ironwood share a root type, as they share an action shape.
@@ -333,7 +333,7 @@ fn orchard_root(
     let bytes: [u8; 32] = info.root.into();
     let root = zebra_chain::orchard::tree::Root::try_from(bytes)
         .map_err(|_| invalid("orchard tree root is not a valid curve point".to_string()))?;
-    Ok((root, info.size))
+    Ok((root, info.size.get()))
 }
 
 /// Parse a 32-byte identifier written in RPC display order.
@@ -778,9 +778,9 @@ impl<V: ChainIndexSourcePorts> BlockchainSource for ValidatorSource<V> {
                     Some(value_pool_array(&verbose.value_pools)?)
                 },
                 GetBlockTrees::new(
-                    verbose.tree_sizes.sapling,
-                    verbose.tree_sizes.orchard,
-                    verbose.tree_sizes.ironwood,
+                    verbose.tree_sizes.sapling.get(),
+                    verbose.tree_sizes.orchard.get(),
+                    verbose.tree_sizes.ironwood.get(),
                 ),
                 Some(block.header.previous_block_hash),
                 verbose
@@ -1432,7 +1432,7 @@ mod tests {
     fn a_tree_root_that_is_not_a_curve_point_is_rejected() {
         let impossible = zaino_primitives::types::TreeRootInfo {
             root: zaino_primitives::types::TreeRoot::new([0xff; 32]),
-            size: 1,
+            size: zaino_primitives::types::TreeSize::new(1),
         };
 
         assert!(sapling_root(impossible.clone()).is_err());
@@ -1506,12 +1506,12 @@ fn pool_treestate_slot(
 #[cfg(test)]
 mod pool_treestate_slot_tests {
     use super::pool_treestate_slot;
-    use zaino_primitives::types::{TreeRoot, TreeRootInfo};
+    use zaino_primitives::types::{TreeRoot, TreeRootInfo, TreeSize};
 
     fn root_info(byte: u8) -> TreeRootInfo {
         TreeRootInfo {
             root: TreeRoot::from([byte; 32]),
-            size: 1,
+            size: TreeSize::new(1),
         }
     }
 
@@ -1559,7 +1559,7 @@ mod pool_treestate_slot_tests {
             }),
             Some(TreeRootInfo {
                 root: TreeRoot::from(internal),
-                size: 1,
+                size: TreeSize::new(1),
             }),
         )
         .expect("a reported tree maps to a populated slot");
