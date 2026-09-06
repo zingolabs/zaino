@@ -93,6 +93,23 @@ pub enum BlockConversionError {
         reason: String,
     },
 
+    /// A transaction's position in the block does not fit the stored index
+    /// width.
+    ///
+    /// The block-order position is a `usize`; the stored compact form records
+    /// it as `u64`. Rejected rather than truncated for the same reason as the
+    /// tree sizes: a wrapped position would put a wrong index on disk. This
+    /// cannot happen for any real block — the block size limit bounds the
+    /// transaction count far below `u64::MAX` — but the conversion refuses it
+    /// rather than assert it away.
+    #[error("block {hash} has a transaction position that does not fit into u64: {position}")]
+    TxPositionOverflow {
+        /// The block that could not be converted.
+        hash: BlockHash,
+        /// The position that did not fit.
+        position: usize,
+    },
+
     /// A commitment tree has grown past what the stored form can record.
     ///
     /// The domain counts tree sizes in `u64` where the stored form uses `u32`.
@@ -171,7 +188,8 @@ pub fn indexed_block(
     let transactions = block
         .transactions
         .iter()
-        .map(|transaction| compact_transaction(transaction, hash))
+        .enumerate()
+        .map(|(position, transaction)| compact_transaction(position, transaction, hash))
         .collect::<Result<Vec<_>, _>>()?;
 
     let context = BlockContext::new(
@@ -283,14 +301,23 @@ pub fn commitment_tree_data(
     ))
 }
 
+/// `position` is the transaction's slot in block order, the sole authority for
+/// both its served index and its coinbase-ness. It is threaded in from the
+/// caller's `enumerate` rather than read off the transaction, which no longer
+/// stores it.
 fn compact_transaction(
+    position: usize,
     transaction: &Transaction,
     block: BlockHash,
 ) -> Result<CompactTxData, BlockConversionError> {
+    let index = u64::try_from(position).map_err(|_| BlockConversionError::TxPositionOverflow {
+        hash: block,
+        position,
+    })?;
     Ok(CompactTxData::new(
-        u64::from(transaction.index),
+        index,
         TransactionHash(transaction.txid.into()),
-        transparent(transaction, block)?,
+        transparent(position, transaction, block)?,
         sapling(transaction),
         orchard_shaped(&transaction.orchard),
         orchard_shaped(&transaction.ironwood),
@@ -299,13 +326,16 @@ fn compact_transaction(
 
 /// The transparent inputs and outputs, in stored compact form.
 ///
-/// The transaction at index 0 gets its null prevout back — see this module's
-/// header. Every other transaction's inputs are already complete.
+/// The transaction at position 0 — the coinbase — gets its null prevout back;
+/// see this module's header. Coinbase-ness is decided by block-order position,
+/// not by any field on the transaction. Every other transaction's inputs are
+/// already complete.
 fn transparent(
+    position: usize,
     transaction: &Transaction,
     block: BlockHash,
 ) -> Result<TransparentCompactTx, BlockConversionError> {
-    let is_coinbase = u64::from(transaction.index) == 0;
+    let is_coinbase = position == 0;
 
     let mut inputs: Vec<TxInCompact> =
         Vec::with_capacity(transaction.transparent.inputs.len() + usize::from(is_coinbase));
@@ -407,4 +437,72 @@ fn ciphertext_prefix(ciphertext: &zaino_primitives::types::EncryptedCiphertext) 
     let usable = bytes.len().min(52);
     prefix[..usable].copy_from_slice(&bytes[..usable]);
     prefix
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zaino_primitives::types::{TransactionId, TransparentData, TransparentInput};
+
+    fn tx_with_one_real_input() -> Transaction {
+        Transaction {
+            txid: TransactionId::from([7u8; 32]),
+            transparent: TransparentData {
+                inputs: vec![TransparentInput {
+                    prev_txid: TransactionId::from([9u8; 32]),
+                    prev_index: 3,
+                }],
+                outputs: Vec::new(),
+            },
+            sapling: Default::default(),
+            orchard: Default::default(),
+            ironwood: Default::default(),
+        }
+    }
+
+    /// The coinbase's synthesised null prevout keys on block-order position,
+    /// nothing on the transaction. The *same* transaction gets the null prevout
+    /// prepended at position 0 and does not at any other position — proof that
+    /// position is the sole coinbase authority now that the transaction stores
+    /// no index that could disagree.
+    #[test]
+    fn null_prevout_is_synthesised_by_position_not_by_a_field() {
+        let hash = BlockHash([0u8; 32]);
+        let transaction = tx_with_one_real_input();
+
+        let at_zero = transparent(0, &transaction, hash).expect("a compactable tx");
+        assert!(
+            at_zero.inputs()[0].is_null_prevout(),
+            "position 0 is the coinbase, so it gets the null prevout"
+        );
+        assert_eq!(
+            at_zero.inputs().len(),
+            2,
+            "null prevout precedes the one real input"
+        );
+        assert!(!at_zero.inputs()[1].is_null_prevout());
+
+        let at_one = transparent(1, &transaction, hash).expect("a compactable tx");
+        assert_eq!(
+            at_one.inputs().len(),
+            1,
+            "a non-coinbase keeps only its real inputs"
+        );
+        assert!(!at_one.inputs()[0].is_null_prevout());
+    }
+
+    /// The served compact index is the block-order position handed in, so a
+    /// block converted transaction-by-transaction reports each transaction's
+    /// slot as its index.
+    #[test]
+    fn served_index_is_the_position() {
+        let hash = BlockHash([0u8; 32]);
+        let transaction = tx_with_one_real_input();
+
+        for (position, expected) in [(0usize, 0u64), (1, 1), (42, 42)] {
+            let compact =
+                compact_transaction(position, &transaction, hash).expect("a compactable tx");
+            assert_eq!(compact.index(), expected);
+        }
+    }
 }

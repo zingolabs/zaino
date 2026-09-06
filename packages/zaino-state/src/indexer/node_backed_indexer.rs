@@ -1741,10 +1741,12 @@ impl<Source: BlockchainSource + WithChainHeadSource + WithChainStoreSource> Ligh
                                         ))
                                     })
                                     .and_then(|transaction| {
-                                        // Index 0: a mempool transaction is in no
-                                        // block, and this field is its position
-                                        // within one.
-                                        zaino_convert_zebra::transaction_from_zebra(&transaction, 0)
+                                        // A mempool transaction is in no block, so
+                                        // it carries no position. The served
+                                        // `CompactTx.index` is set to 0 at the
+                                        // proto boundary (`compact_tx_to_proto`),
+                                        // not on the domain type.
+                                        zaino_convert_zebra::transaction_from_zebra(&transaction)
                                             .map_err(|e| tonic::Status::unknown(e.to_string()))
                                     })
                                     .map(|transaction| {
