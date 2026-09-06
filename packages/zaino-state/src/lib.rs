@@ -55,9 +55,10 @@ pub mod metric_names {
 pub(crate) mod indexer;
 
 pub use indexer::{
-    IndexerService, IndexerSubscriber, LightWalletIndexer, LightWalletService, ZcashIndexer,
-    ZcashService,
+    IndexedTipIndexer, IndexerService, IndexerSubscriber, LightWalletIndexer, LightWalletService,
+    ZcashIndexer, ZcashService,
 };
+pub use stream::IndexedTipStream;
 
 pub use indexer::node_backed_indexer::{
     ChainTipSubscriber, NodeBackedIndexerService, NodeBackedIndexerServiceSubscriber,

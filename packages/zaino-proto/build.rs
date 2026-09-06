@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use tonic_prost_build::{compile_protos, configure};
 
 const COMPACT_FORMATS_PROTO: &str = "proto/compact_formats.proto";
+const INDEXED_TIP_PROTO: &str = "proto/indexed_tip.proto";
 const PROPOSAL_PROTO: &str = "proto/proposal.proto";
 const SERVICE_PROTO: &str = "proto/service.proto";
 
@@ -45,6 +46,7 @@ fn main() -> io::Result<()> {
     // writes, which produces a self-perpetuating recompile loop.
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed={COMPACT_FORMATS_PROTO}");
+    println!("cargo:rerun-if-changed={INDEXED_TIP_PROTO}");
     println!("cargo:rerun-if-changed={PROPOSAL_PROTO}");
     println!("cargo:rerun-if-changed={SERVICE_PROTO}");
 
@@ -106,6 +108,10 @@ fn build() -> io::Result<()> {
         )
         .compile_protos(&[SERVICE_PROTO], &["proto/"])?;
 
+    configure()
+        .build_server(true)
+        .compile_protos(&[INDEXED_TIP_PROTO], &["proto/"])?;
+
     // Build the proposal types.
     compile_protos(PROPOSAL_PROTO)?;
 
@@ -114,6 +120,7 @@ fn build() -> io::Result<()> {
         &out.join("cash.z.wallet.sdk.ffi.rs"),
         "src/proto/proposal.rs",
     )?;
+    copy_generated(&out.join("zaino.index.v1.rs"), "src/proto/indexed_tip.rs")?;
 
     // Copy the generated types into the source tree so changes can be committed. The
     // file has the same name as for the compact format types because they have the

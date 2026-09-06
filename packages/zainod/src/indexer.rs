@@ -150,17 +150,25 @@ where
             None => None,
         };
 
-        let routes = grpc_routes(service.inner_ref().get_subscriber());
         let grpc_config = GrpcServerConfig {
             listen_address: indexer_config.grpc_settings.listen_address,
             tls: indexer_config.grpc_settings.tls,
         };
         let grpc_server = match grpc_listener {
             #[cfg(feature = "test_dependencies")]
-            Some(listener) => TonicServer::spawn_from_listener(routes, grpc_config, listener)
-                .await
-                .unwrap(),
-            _ => TonicServer::spawn(routes, grpc_config).await.unwrap(),
+            Some(listener) => TonicServer::spawn_from_listener_with_routes(
+                |shutdown| grpc_routes(service.inner_ref().get_subscriber(), shutdown),
+                grpc_config,
+                listener,
+            )
+            .await
+            .unwrap(),
+            _ => TonicServer::spawn_with_routes(
+                |shutdown| grpc_routes(service.inner_ref().get_subscriber(), shutdown),
+                grpc_config,
+            )
+            .await
+            .unwrap(),
         };
 
         let mut indexer = Self {
