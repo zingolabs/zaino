@@ -10,6 +10,8 @@ license.workspace = true
 
 [dependencies]
 thiserror = { workspace = true }
+zcash_address.workspace = true
+zcash_protocol.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"
