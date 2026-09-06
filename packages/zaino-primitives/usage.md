@@ -56,7 +56,13 @@ Types enforce what they claim:
 ```rust
 let h = Height::try_from(800_000u32)?;   // rejects above 2^31 - 1
 let z = Zatoshis::new(21_000_000)?;      // rejects out-of-range amounts
+let b = Block::try_new(header, txs, chain_metadata)?; // rejects an empty tx list
 ```
+
+A transaction's position is the block's to know, not the transaction's:
+`Transaction` stores no index, and coinbase-ness is read from block order via
+`Block::coinbase()` (position 0), never from a per-transaction field that could
+disagree with the container.
 
 `Height::checked_add` / `checked_sub` are checked, not wrapping. Prefer
 expressing an invariant in the type over asserting it at a call site — the
