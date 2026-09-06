@@ -147,7 +147,8 @@ async fn compact_blocks_match_the_inherent_read() {
                     .await
                     .expect("the store holds every vector height");
             assert_eq!(chunk.len(), 1);
-            let through_ports = compact_block_to_wire(&chunk.pop().expect("checked above"));
+            let through_ports = compact_block_to_wire(&chunk.pop().expect("checked above"))
+                .expect("vector tree sizes fit the wire");
 
             assert_eq!(
                 through_ports, expected,
@@ -191,7 +192,8 @@ async fn the_compact_stream_matches_the_inherent_stream() {
     let mut through_ports = Vec::new();
     while let Some(chunk) = chunks.next().await {
         for block in chunk.expect("no chunk fails over the vector range") {
-            through_ports.push(compact_block_to_wire(&block));
+            through_ports
+                .push(compact_block_to_wire(&block).expect("vector tree sizes fit the wire"));
         }
     }
 

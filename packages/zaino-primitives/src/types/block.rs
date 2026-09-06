@@ -140,9 +140,9 @@ mod tests {
 
     fn chain_metadata() -> ChainMetadata {
         ChainMetadata {
-            sapling_tree_size: 0,
-            orchard_tree_size: 0,
-            ironwood_tree_size: 0,
+            sapling_tree_size: TreeSize::ZERO,
+            orchard_tree_size: TreeSize::ZERO,
+            ironwood_tree_size: TreeSize::ZERO,
         }
     }
 
