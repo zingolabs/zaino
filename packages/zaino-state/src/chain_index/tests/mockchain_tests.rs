@@ -807,7 +807,10 @@ fn filtered_deltas_request(
     AddressDeltasRequest::Filtered {
         addresses: addresses
             .into_iter()
-            .map(zaino_primitives::types::TransparentAddress::new)
+            .map(|address| {
+                zaino_primitives::types::TransparentAddress::try_new(address)
+                    .expect("test address is a valid transparent address")
+            })
             .collect(),
         start,
         end,
@@ -881,15 +884,14 @@ async fn get_address_deltas() {
         }
     }
 
-    let invalid_address_result = index_reader
-        .get_address_deltas(AddressDeltasRequest::Address(
-            zaino_primitives::types::TransparentAddress::new(
-                "not_a_valid_transparent_address".to_string(),
-            ),
-        ))
-        .await;
-
-    assert!(invalid_address_result.is_err());
+    // An invalid address is now rejected when the request is built — a
+    // `TransparentAddress` cannot hold a non-address — so a bogus filter string
+    // never reaches the index. The rejection this test used to observe at the
+    // query has moved down to the type's constructor, where it is asserted.
+    assert!(zaino_primitives::types::TransparentAddress::try_new(
+        "not_a_valid_transparent_address"
+    )
+    .is_err());
 
     assert!(
         active_height > 0,
