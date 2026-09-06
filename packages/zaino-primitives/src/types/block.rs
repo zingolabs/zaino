@@ -3,7 +3,7 @@
 use super::transaction::Transaction;
 use super::{
     BlockCommitments, BlockHash, BlockTime, CompactDifficulty, EquihashNonce, EquihashSolution,
-    Height, MerkleRoot,
+    Height, MerkleRoot, TreeSize,
 };
 
 /// Block header — every consensus field, plus the hash and height that name
@@ -61,9 +61,9 @@ pub struct Block {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChainMetadata {
     /// Cumulative Sapling note commitment tree size after this block.
-    pub sapling_tree_size: u32,
+    pub sapling_tree_size: TreeSize,
     /// Cumulative Orchard note commitment tree size after this block.
-    pub orchard_tree_size: u32,
+    pub orchard_tree_size: TreeSize,
     /// Cumulative Ironwood note commitment tree size after this block (NU6.3).
-    pub ironwood_tree_size: u32,
+    pub ironwood_tree_size: TreeSize,
 }
