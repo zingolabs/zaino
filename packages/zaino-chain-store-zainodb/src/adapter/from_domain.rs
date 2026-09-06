@@ -10,9 +10,8 @@
 use super::error_map::corrupt_row_because;
 use zaino_chain_store::{ChainStoreError, StoredBlock, StoredTx};
 use zaino_primitives::types::{
-    BlockHash as DomainBlockHash, BlockTxPosition, ChainWork as DomainChainWork,
-    EncryptedCiphertext, Height as DomainHeight, OrchardAction, Outpoint as DomainOutpoint,
-    ScriptType, SignedZatoshis, TreeRoots,
+    BlockHash as DomainBlockHash, BlockTxPosition, EncryptedCiphertext, Height as DomainHeight,
+    OrchardAction, Outpoint as DomainOutpoint, ScriptType, SignedZatoshis, TreeRoots,
 };
 
 use crate::types::{
@@ -69,7 +68,10 @@ pub fn indexed_block_from_stored(block: &StoredBlock) -> Result<IndexedBlock, Ch
     let context = crate::types::BlockContext::new(
         hash,
         stored_hash(header.prev_hash),
-        stored_chainwork(block.chainwork, hash)?,
+        // The primitives type already carries the non-zero and width
+        // invariants this bridge used to re-derive by hand, so a stored
+        // block's chainwork passes through unchanged.
+        block.chainwork,
         Height(u32::from(header.height)),
     );
 
@@ -99,32 +101,6 @@ pub fn indexed_block_from_stored(block: &StoredBlock) -> Result<IndexedBlock, Ch
         transactions,
         commitment_tree_data(&block.tree_roots, hash)?,
     ))
-}
-
-/// The domain's 256-bit chainwork, as the width the store records.
-///
-/// Rejects anything above 2^128 rather than truncating. Zcash's cumulative work
-/// is nowhere near that, so a value that does not fit did not come from this
-/// chain, and a truncated one would put a lower chainwork on disk than the
-/// block actually has — which reorders the chain.
-fn stored_chainwork(
-    chainwork: DomainChainWork,
-    hash: BlockHash,
-) -> Result<crate::types::ChainWork, ChainStoreError> {
-    let bytes = <[u8; 32]>::from(chainwork);
-    let (high, low) = bytes.split_at(16);
-
-    if high.iter().any(|byte| *byte != 0) {
-        return Err(ChainStoreError::backend(format!(
-            "block {hash} has chainwork above what the store records"
-        )));
-    }
-
-    let mut value = [0u8; 16];
-    value.copy_from_slice(low);
-    core::num::NonZeroU128::new(u128::from_be_bytes(value))
-        .map(crate::types::ChainWork::new)
-        .ok_or_else(|| ChainStoreError::backend(format!("block {hash} has zero chainwork")))
 }
 
 /// One domain transaction, as the shape the writer stores.
@@ -259,37 +235,8 @@ pub(super) fn commitment_tree_data(
 
 #[cfg(test)]
 mod tests {
-    use super::super::to_domain::domain_chainwork;
     use super::*;
     use zaino_primitives::types::TreeRootInfo;
-
-    /// Chainwork survives the round trip through the domain's wider form.
-    ///
-    /// The store records work as a `u128` and the domain as 256 bits. Widening
-    /// is padding, and narrowing rejects rather than truncates — a truncated
-    /// chainwork would be *lower* than the block's real work, which reorders
-    /// the chain rather than failing.
-    #[test]
-    fn chainwork_widens_and_narrows_without_loss() {
-        let hash = BlockHash([0u8; 32]);
-        for raw in [1u128, 42, u64::MAX as u128, u128::MAX] {
-            let stored =
-                crate::types::ChainWork::new(core::num::NonZeroU128::new(raw).expect("non-zero"));
-            let widened = domain_chainwork(&stored);
-            let narrowed = stored_chainwork(widened, hash).expect("round trip");
-            assert_eq!(narrowed.as_non_zero_u128().get(), raw);
-        }
-    }
-
-    /// Chainwork the store cannot record is refused, not truncated.
-    #[test]
-    fn chainwork_above_the_stored_width_is_refused() {
-        let mut bytes = [0u8; 32];
-        bytes[0] = 1;
-        let error = stored_chainwork(DomainChainWork::new(bytes), BlockHash([0u8; 32]))
-            .expect_err("above u128 must be refused");
-        assert!(matches!(error, ChainStoreError::Backend { .. }));
-    }
 
     /// A position past what the stored form can key is an answer, not an error.
     ///

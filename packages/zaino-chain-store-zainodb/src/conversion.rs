@@ -59,10 +59,10 @@ use zaino_primitives::types::{classify_script, Block, Transaction, TreeRoots};
 
 use crate::types::{
     db::{CommitmentTreeData, CommitmentTreeRoots, CommitmentTreeSizes},
-    BlockContext, BlockData, BlockHash, ChainWork, CompactDifficulty, CompactOrchardAction,
-    CompactSaplingOutput, CompactSaplingSpend, CompactTxData, EquihashSolution, Height,
-    IndexedBlock, OrchardCompactTx, SaplingCompactTx, ScriptType, TransactionHash,
-    TransparentCompactTx, TxInCompact, TxOutCompact,
+    BlockContext, BlockData, BlockHash, BlockWork, ChainWork, CompactDifficulty,
+    CompactOrchardAction, CompactSaplingOutput, CompactSaplingSpend, CompactTxData,
+    EquihashSolution, Height, IndexedBlock, OrchardCompactTx, SaplingCompactTx, ScriptType,
+    TransactionHash, TransparentCompactTx, TxInCompact, TxOutCompact,
 };
 
 /// A domain block could not be expressed as an [`IndexedBlock`].
@@ -119,7 +119,7 @@ pub enum BlockConversionError {
 pub fn block_work(
     header_bits: zaino_primitives::types::CompactDifficulty,
     hash: BlockHash,
-) -> Result<ChainWork, BlockConversionError> {
+) -> Result<BlockWork, BlockConversionError> {
     Ok(difficulty(header_bits, hash)?.to_work())
 }
 
@@ -140,13 +140,13 @@ pub fn chainwork_from_parent(
     match parent_chainwork {
         Some(parent) => {
             parent
-                .add(&block_work)
+                .accumulate(block_work)
                 .map_err(|error| BlockConversionError::ChainWorkOverflow {
                     hash,
                     reason: error.to_string(),
                 })
         }
-        None => Ok(block_work),
+        None => Ok(ChainWork::genesis(block_work)),
     }
 }
 

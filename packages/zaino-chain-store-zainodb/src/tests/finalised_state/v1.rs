@@ -218,9 +218,9 @@ async fn sync_to_height_across_many_write_batches() {
         let block_work = header.data().bits.to_work();
         let expected = match previous_chainwork {
             Some(previous) => previous
-                .add(&block_work)
+                .accumulate(block_work)
                 .expect("no overflow in test vectors"),
-            None => block_work,
+            None => crate::types::ChainWork::genesis(block_work),
         };
         assert_eq!(
             chainwork, expected,
