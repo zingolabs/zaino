@@ -5,16 +5,38 @@ own terms, independent of how any of it is transported or stored.
 
 ## The one rule
 
-**This crate's entire dependency list is `thiserror`.** That is not an
-accident of the current implementation — it is the property that makes every
-other crate able to depend on it. Adding a dependency here adds it to
-`zaino-source`, both adapters, `zaino-state`, `zaino-serve` and `zainod` at
-once.
+**This crate depends only on `thiserror` and the librustzcash
+protocol-specification crates (`zcash_address`, `zcash_protocol`).** Keeping the
+list this short is not an accident of the current implementation — it is the
+property that makes every other crate able to depend on it. Adding a dependency
+here adds it to `zaino-source`, both adapters, `zaino-state`, `zaino-serve` and
+`zainod` at once, so each addition has to earn its place.
 
-In particular there is **no serde**. A serde derive in this crate would let the
-wire format and the domain model start deciding each other, which is exactly
-what ADR-0009 exists to prevent. Serialization lives at the boundary that owns
-the format:
+The rule is about *what a dependency lets in*, not a fixed name list. Two things
+must never enter through it, because both would let some other layer's decisions
+leak into the domain vocabulary:
+
+- **No serialization framework.** In particular there is **no serde**. A serde
+  derive in this crate would let the wire format and the domain model start
+  deciding each other, which is exactly what ADR-0009 exists to prevent.
+- **No node, transport, or storage implementation.** A validator client, a gRPC
+  or JSON-RPC stack, a database — these belong at the boundaries that own them,
+  never in the vocabulary every boundary shares.
+
+A **protocol-specification** library is admissible, on one condition: its API is
+**fully contained** — no type of its own appears in any public signature,
+re-export, or public error of this crate. Validation happens inside; everything
+exposed is ours. `zcash_address` is the first such dependency, used by
+[`TransparentAddress`](src/types/transparent_address.rs) to decide whether a
+string is a valid transparent address. The alternative was to hand-roll
+Base58Check and SHA-256 here, which buys risk, not ownership: the address
+encoding *is* the protocol, and the spec-steward's parser is the spec artifact,
+so re-implementing it would mean maintaining a second, drift-prone copy of a
+consensus rule. We take the parser and keep its types off our surface — the
+containment condition is what makes that a domain decision expressed in our own
+vocabulary rather than a leak of theirs.
+
+Serialization, by contrast, lives at the boundary that owns the format:
 
 | direction | who owns the format |
 |---|---|
@@ -56,7 +78,14 @@ Types enforce what they claim:
 ```rust
 let h = Height::try_from(800_000u32)?;   // rejects above 2^31 - 1
 let z = Zatoshis::new(21_000_000)?;      // rejects out-of-range amounts
+let a = TransparentAddress::try_new(s)?; // rejects non-transparent / undecodable
 ```
+
+`TransparentAddress` is network-blind on construction: it accepts a valid
+transparent address for any network and reports which one via `network()` (an
+`AddressNetwork`) and the script form via `script_type()`. The primitive states
+what the address *is*; whether that network is the one a query should act on is
+the consumer's policy, not the address's invariant.
 
 `Height::checked_add` / `checked_sub` are checked, not wrapping. Prefer
 expressing an invariant in the type over asserting it at a call site — the
