@@ -512,27 +512,35 @@ exactly what ships, right now."* Blessing is merging it (see below).
 Guarantees no commit that reached `stable` is ever stranded outside `dev` (a
 released hotfix, or the release merge itself). Modeled event-driven: a bot
 watches for `stable \ dev ≠ ∅` and, when non-empty, prepares the backport and
-opens a PR into `dev` with **auto-merge enabled**, so it self-dissolves once
-reconciled.
+opens a PR into `dev` from a disposable `sync/stable-to-dev` branch cut at
+stable's tip.
 
-**The PR self-dissolves; it is not manual ceremony.** The backport carries only
-already-vetted content (the blessing's release commit, or a hotfix that already
-cleared the `rc`- and deployment-gates), so it needs no *review*. The PR exists
-for two reasons: to run the `dev`-gate on the **merged result** — catching a
-*semantic* conflict a textually-clean merge would hide — and to be a **visible
-desync signal** exactly when one is needed. Auto-merge (with a **merge commit**,
-never squash/rebase — only a true merge makes `stable \ dev` empty and stops the
-sentinel re-firing) delivers both:
+**The PR carries only already-vetted content** (the blessing's release commit, or
+a hotfix that already cleared the `rc`- and deployment-gates), so it needs no
+*review*. It exists for two reasons: to run the `dev`-gate on the **merged
+result** — catching a *semantic* conflict a textually-clean merge would hide — and
+to be a **visible desync signal** exactly when one is needed.
 
-- **clean + gate-green** → merges instantly, no human touch, `dev` catches up,
-  the sentinel goes quiet;
-- **textual conflict *or* red gate** → the PR stays open as the signal a human
-  must act on (resolve on the aux branch, or fix the breakage).
+**Merging it — human by default, auto-merge opt-in.** Whichever path, the merge is
+a **merge commit**, never squash/rebase — only a true merge makes `stable \ dev`
+empty and stops the sentinel re-firing.
 
-So a no-conflict backport is *not* left as a manual PR to click, and it is *not*
-direct-pushed past the gate either — it auto-merges through the gate. Choosing
-auto-merge over a direct push also avoids putting the App on `dev`'s
-protection-bypass list.
+- **Default (`RELMAN_BACKPORT_AUTOMERGE` unset/false): a maintainer merges it.**
+  The sentinel still guarantees the PR exists and runs the gate on the merged
+  result; a human clicks merge. The conservative default — the automation opens
+  and signals, a person commits the backport into `dev`.
+- **Opt-in (`RELMAN_BACKPORT_AUTOMERGE=true`): it self-dissolves.** The bot enables
+  auto-merge, and the step is idempotent + self-healing (re-asserts auto-merge on
+  an already-open PR, past GitHub's post-create mergeability race, without touching
+  the branch). Then **clean + gate-green** → merges instantly, no human touch,
+  `dev` catches up, the sentinel goes quiet; **textual conflict *or* red gate** →
+  the PR stays open as the signal a human must act on. Enabling this later — after
+  watching a few backports land by hand — needs no code change: the next `stable`
+  push re-asserts auto-merge on the standing PR.
+
+Either way a no-conflict backport is *not* direct-pushed past the gate — it goes
+through the PR, which also avoids putting the App on `dev`'s protection-bypass
+list.
 
 **Why not a direct `stable → dev` PR:** keeping such a PR mergeable would mean
 rebasing/"update branch"-ing its head — which is `stable`, a protected branch —

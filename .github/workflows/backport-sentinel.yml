@@ -14,6 +14,10 @@
 # standing release PR). See docs/release/pipeline.md
 # § "Reverse: the Backport Sentinel".
 #
+# Auto-merging that PR is OPT-IN (repo var RELMAN_BACKPORT_AUTOMERGE=true). By
+# default the sync PR is opened for a maintainer to review and merge; enabling
+# auto-merge lets it self-dissolve once clean + gate-green.
+#
 # No self-trigger: it pushes `sync/stable-to-dev` and opens a PR into `dev` —
 # neither writes to `stable` — so it never re-fires itself.
 #
@@ -69,18 +73,22 @@ jobs:
           echo "stable is $ahead commit(s) ahead of dev"
           echo "ahead=$ahead" >> "$GITHUB_OUTPUT"
 
-      # Ensure exactly one sync PR is open AND carries auto-merge. This is
-      # idempotent and SELF-HEALING: if a sync PR is already open we re-assert
-      # auto-merge on it (rather than skip), so a PR that never got auto-merge —
-      # e.g. a transient failure, or the post-create mergeability race below —
-      # is not left stuck blocking every future backport. Re-asserting never
-      # touches the branch, so any in-flight human conflict resolution is safe,
-      # and a genuinely conflicting PR just stays open (auto-merge pending) as
-      # the signal for a human.
-      - name: Ensure a backport PR with auto-merge
+      # Ensure exactly one sync PR is open into `dev`. Auto-merge is OPT-IN
+      # (RELMAN_BACKPORT_AUTOMERGE=true); when enabled this step is idempotent and
+      # SELF-HEALING — if a sync PR is already open we re-assert auto-merge on it
+      # (rather than skip), so a PR that never got auto-merge (a transient failure
+      # or the post-create mergeability race below) is not left stuck blocking
+      # every future backport. Re-asserting never touches the branch, so in-flight
+      # human conflict resolution is safe. When auto-merge is off (the default),
+      # the PR is simply opened/kept open for a maintainer to review and merge.
+      - name: Ensure a backport PR (auto-merge opt-in)
         if: steps.delta.outputs.ahead != '0'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          # Opt-in accelerator: unset/≠'true' leaves the PR for a maintainer to
+          # merge. Enable later, once the backport behaviour has been observed —
+          # the next `stable` push re-asserts auto-merge on the standing PR.
+          AUTOMERGE: ${{ vars.RELMAN_BACKPORT_AUTOMERGE }}
         run: |
           set -euo pipefail
           branch="sync/stable-to-dev"
@@ -111,6 +119,7 @@ jobs:
               printf '%s\n' '```'
               git log --oneline origin/dev..origin/stable
               printf '%s\n\n' '```'
+              printf '%s\n\n' 'Merge with a **merge commit** (not squash or rebase): only a true merge empties `stable \ dev` and stops the sentinel re-opening this PR.'
               printf '%s\n' 'See docs/release/pipeline.md § "Reverse: the Backport Sentinel".'
             } > body.md
 
@@ -123,7 +132,17 @@ jobs:
               || echo "::warning::labels 'automated'/'backport' not applied (create them once on the repo)."
             echo "Opened backport PR #$num"
           else
-            echo "::notice::Backport PR #$num already open; re-asserting auto-merge (branch untouched)."
+            echo "::notice::Backport PR #$num already open (branch untouched)."
+          fi
+
+          # Auto-merge is OPT-IN. By default the sync PR is opened/kept open for a
+          # maintainer to review and merge — the sentinel's guarantee (the PR
+          # exists as the desync signal, the dev-gate runs on the merged result)
+          # is already met. Set RELMAN_BACKPORT_AUTOMERGE=true to let it merge on
+          # its own once the behaviour has been observed in practice.
+          if [ "${AUTOMERGE:-}" != "true" ]; then
+            echo "::notice::Auto-merge disabled (RELMAN_BACKPORT_AUTOMERGE != 'true'); leaving #$num for a maintainer to merge."
+            exit 0
           fi
 
           # Already enabled? Nothing to do.
