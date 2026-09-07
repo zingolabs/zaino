@@ -14,8 +14,8 @@ hard-coded list.
 _Avoid_: crate list, publish list
 
 **Blocking context**:
-A CI context in which release checks must pass: pushes to `rc/**` or
-`stable`, and pull requests targeting them.
+A CI context in which release checks must pass: pushes to `stable`, whose
+tip is the release commit.
 _Avoid_: strict mode, release mode
 
 **Advisory context**:

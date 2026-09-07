@@ -7,11 +7,14 @@
 # Guarantees no commit that reached `stable` is ever stranded outside `dev`:
 # the release (blessing) commit — version bumps, CHANGELOGs, and `.changesets/`
 # consumed marks — plus any emergency hotfix pushed straight to `stable`. It
-# fires on every push to `stable`; when `stable \ dev` is non-empty it opens an
-# ordinary PR into `dev` from a disposable `sync/stable-to-dev` branch cut at
-# stable's tip, so any conflict resolution happens off to the side and never
-# blocks `stable`. This is the reverse of the forward desync sentinel (the
-# standing release PR). See docs/release/pipeline.md
+# fires on every push to `stable` and again when a sync PR merges; when
+# `stable \ dev` is non-empty it opens an ordinary PR into `dev` from a
+# disposable `sync/stable-to-dev` branch cut at stable's tip, so any conflict
+# resolution happens off to the side and never blocks `stable`. While a sync PR
+# is open, each new `stable` push is MERGED into its branch (never force-pushed
+# over it), so in-flight conflict resolution survives and the PR always carries
+# the whole of `stable \ dev`. This is the reverse of the forward desync
+# sentinel (the standing release PR). See docs/release/pipeline.md
 # § "Reverse: the Backport Sentinel".
 #
 # Auto-merging that PR is OPT-IN (repo var RELMAN_BACKPORT_AUTOMERGE=true). By
@@ -19,12 +22,14 @@
 # auto-merge lets it self-dissolve once clean + gate-green.
 #
 # No self-trigger: it pushes `sync/stable-to-dev` and opens a PR into `dev` —
-# neither writes to `stable` — so it never re-fires itself.
+# neither writes to `stable` — so it never re-fires itself from a push.
 #
 # Requires the GitHub App (RELEASE_APP_ID / RELEASE_APP_PRIVATE_KEY): a
 # GITHUB_TOKEN cannot create pull requests (setting-dependent) and any PR it
 # opens does not trigger the dev-gate checks. An App with pull_requests:write
-# is subject to neither limit.
+# is subject to neither limit. The sync PR is therefore App-authored, which is
+# how `changeset-check` recognises it (author type Bot + the `backport` label
+# + the branch name), so the label is applied before the PR is left alone.
 # ============================================================================
 
 name: Backport sentinel
@@ -32,6 +37,12 @@ name: Backport sentinel
 on:
   push:
     branches: [stable]
+  # A merged sync PR may have been cut before a later `stable` push; re-check
+  # the set difference once it lands so nothing stays stranded until the next
+  # release.
+  pull_request:
+    types: [closed]
+    branches: [dev]
   workflow_dispatch:
 
 # Least privilege: create/update the disposable sync branch, and open the PR.
@@ -42,12 +53,16 @@ permissions:
 jobs:
   backport:
     name: Carry stable into dev
-    if: vars.RELMAN_PIPELINE_ACTIVE == 'true'
+    if: >-
+      vars.RELMAN_PIPELINE_ACTIVE == 'true' &&
+      (github.event_name != 'pull_request' ||
+       (github.event.pull_request.merged == true &&
+        github.event.pull_request.head.ref == 'sync/stable-to-dev'))
     runs-on: ubuntu-latest
     steps:
       - name: Mint GitHub App token
         id: app-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -56,9 +71,9 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: stable
-          # Full history so `origin/dev..origin/stable` is computable and the
-          # sync branch carries real ancestry. Token so `git push` (below)
-          # authenticates as the App.
+          # Full history and every branch, so `origin/dev..origin/stable` is
+          # computable without a separate fetch and the sync branch carries real
+          # ancestry. Token so `git push` (below) authenticates as the App.
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
 
@@ -66,21 +81,16 @@ jobs:
         id: delta
         run: |
           set -euo pipefail
-          # `origin/dev` is not fetched by a single-ref checkout; fetch it (and
-          # stable) so the set difference is readable.
-          git fetch --no-tags --quiet origin dev stable
           ahead="$(git rev-list --count origin/dev..origin/stable)"
           echo "stable is $ahead commit(s) ahead of dev"
           echo "ahead=$ahead" >> "$GITHUB_OUTPUT"
 
-      # Ensure exactly one sync PR is open into `dev`. Auto-merge is OPT-IN
-      # (RELMAN_BACKPORT_AUTOMERGE=true); when enabled this step is idempotent and
-      # SELF-HEALING — if a sync PR is already open we re-assert auto-merge on it
-      # (rather than skip), so a PR that never got auto-merge (a transient failure
-      # or the post-create mergeability race below) is not left stuck blocking
-      # every future backport. Re-asserting never touches the branch, so in-flight
-      # human conflict resolution is safe. When auto-merge is off (the default),
-      # the PR is simply opened/kept open for a maintainer to review and merge.
+      # Ensure exactly one sync PR is open into `dev`, carrying all of
+      # `stable \ dev`. With no open PR, cut a fresh snapshot of stable's tip.
+      # With one open, MERGE stable's tip into its branch: a force-push would
+      # discard a human's conflict resolution, and leaving the branch untouched
+      # would strand every later `stable` push until the PR merged. Auto-merge is
+      # OPT-IN (RELMAN_BACKPORT_AUTOMERGE=true) and re-asserted idempotently.
       - name: Ensure a backport PR (auto-merge opt-in)
         if: steps.delta.outputs.ahead != '0'
         env:
@@ -92,6 +102,8 @@ jobs:
         run: |
           set -euo pipefail
           branch="sync/stable-to-dev"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           num="$(gh pr list --base dev --head "$branch" --state open \
             --json number --jq '.[0].number // empty')"
@@ -99,8 +111,6 @@ jobs:
           if [ -z "$num" ]; then
             # No open sync PR: cut a fresh snapshot of stable's tip and open one.
             # Force is safe — with no open PR there is no resolution to lose.
-            git config user.name  "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git branch -f "$branch" origin/stable
             git push -f origin "$branch"
 
@@ -126,13 +136,27 @@ jobs:
             num="$(gh pr create --base dev --head "$branch" \
               --title "sync: backport stable → dev" --body-file body.md \
               | sed 's#.*/##')"
-            # Scannability labels; tolerate their absence (a fresh repo may not
-            # have them until the one-time label setup runs).
+            # The `backport` label is one of the three signals changeset-check
+            # uses to exempt this PR; without it the dev-gate runs on the sync PR.
             gh pr edit "$num" --add-label "automated,backport" \
-              || echo "::warning::labels 'automated'/'backport' not applied (create them once on the repo)."
+              || echo "::warning::labels 'automated'/'backport' not applied (create them once on the repo); changeset-check will NOT exempt #$num until the 'backport' label is present."
             echo "Opened backport PR #$num"
           else
-            echo "::notice::Backport PR #$num already open (branch untouched)."
+            # A sync PR is open: bring its branch up to stable's tip by merging,
+            # so the PR carries this push too and any resolution already on the
+            # branch is kept. A merge conflict here is left for the human on the
+            # branch — the PR is still the signal, and its body lists the delta.
+            git fetch --no-tags --quiet origin "$branch"
+            git checkout -q -B "$branch" "origin/$branch"
+            if git merge-base --is-ancestor origin/stable HEAD; then
+              echo "Backport PR #$num already carries stable's tip; branch untouched."
+            elif git merge --no-edit origin/stable; then
+              git push origin "$branch"
+              echo "Merged stable's tip into $branch; backport PR #$num now carries it."
+            else
+              git merge --abort
+              echo "::warning::stable's tip conflicts with the open backport PR #$num's branch; resolve on $branch (merge origin/stable into it) so the PR carries the newest stable."
+            fi
           fi
 
           # Auto-merge is OPT-IN. By default the sync PR is opened/kept open for a

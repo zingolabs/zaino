@@ -17,17 +17,8 @@
 # merges protected branches. Safe only because the sandbox is a throwaway fork.
 set -euo pipefail
 
-REMOTE="${REMOTE:-sandbox}"
-REPO="${REPO:-nachog00/zaino-pipeline-sandbox}"
-DEV_RULESET="${DEV_RULESET:-21067396}"
-RC_RULESET="${RC_RULESET:-21067398}"
-RR_RULESET="${RR_RULESET:-21067399}"
-STABLE_RULESET="${STABLE_RULESET:-21067400}"
-
-set_enforcement() { # <ruleset-id> <active|disabled>
-  gh api -X PUT "repos/${REPO}/rulesets/${1}" -f "enforcement=${2}" \
-    --jq '.name + " -> " + .enforcement'
-}
+# shellcheck source=tools/scripts/sandbox-common.sh
+source "$(dirname "${BASH_SOURCE[0]}")/sandbox-common.sh"
 
 cmd_reset() { # [base-ref]  — pristine slate: all 4 branches := base, no changesets/tags
   local base; base="$(git rev-parse "${1:-HEAD}")"
@@ -40,14 +31,7 @@ cmd_reset() { # [base-ref]  — pristine slate: all 4 branches := base, no chang
   local r b
   for r in "$DEV_RULESET" "$RC_RULESET" "$RR_RULESET" "$STABLE_RULESET"; do set_enforcement "$r" disabled; done
   for b in dev rc release-ready stable; do git push -f "$REMOTE" "${base}:refs/heads/${b}"; done
-  local tags t
-  mapfile -t tags < <(git ls-remote --tags "$REMOTE" \
-    | sed -n 's#.*refs/tags/\([^^]*\)$#\1#p' | grep -E '^cycle-|-v[0-9]' | sort -u)
-  for t in "${tags[@]}"; do echo "  del tag $t"; git push --quiet "$REMOTE" ":refs/tags/$t" || true; done
-  local id
-  for id in $(gh api "repos/${REPO}/releases" --jq '.[].id'); do
-    echo "  del release $id"; gh api -X DELETE "repos/${REPO}/releases/${id}" || true
-  done
+  delete_pipeline_tags_and_releases
   for r in "$DEV_RULESET" "$RC_RULESET" "$RR_RULESET" "$STABLE_RULESET"; do set_enforcement "$r" active; done
   echo "Pristine. All branches at ${base:0:12}; no cycle tags; next bless = cycle-1."
 }
@@ -150,8 +134,7 @@ cmd_status() {
     printf '  %-14s %s\n' "$b" "$(git rev-parse --short "${REMOTE}/${b}" 2>/dev/null || echo '-')"
   done
   echo "tags:"
-  git ls-remote --tags "$REMOTE" \
-    | sed -n 's#.*refs/tags/\([^^]*\)$#\1#p' | grep -E '^cycle|-v[0-9]' | sort -u | sed 's/^/  /' || true
+  list_pipeline_tags | sed 's/^/  /'
   echo "open PRs:"
   gh pr list -R "$REPO" --state open \
     --json number,headRefName,baseRefName --jq '.[] | "  #\(.number) \(.headRefName)->\(.baseRefName)"'

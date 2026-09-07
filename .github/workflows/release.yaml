@@ -1,13 +1,11 @@
-# TODO(cutover): this builds+pushes the Docker images and fires on the OLD
-# version-tag format (`X.Y.Z`, `X.Y.Z-rc.N`). The release pipeline tags releases
-# as `cycle-<N>` (period), `cycle-<N>-rc.<M>` (prerelease), and
-# `<crate>-vX.Y.Z` (per-crate provenance) — NONE of which match the patterns
-# below, so this workflow no longer fires on a pipeline release and the images
-# are not built. Rework at cutover: decide the image-tag scheme for the new
-# model (likely build+push the zainod/zaino images on the `zainod-v*` tag, or
-# trigger image builds from `blessing`) and update the trigger + metadata-action
-# `type=semver` extraction accordingly. Blessing already owns the GitHub Release
-# + git tags; this file's remaining job is only the container images.
+# Builds and pushes the Docker images. It fires on the legacy version tags
+# (`X.Y.Z`, `X.Y.Z-rc.N`, cut by auto-tag-rc / final-tag-on-stable until the
+# pipeline cutover) and on the per-crate `zainod-X.Y.Z` provenance tag the
+# release pipeline's blessing pushes, from which the image version is taken.
+# The pipeline's `cycle-<N>` and other `<crate>-X.Y.Z` tags carry no zainod
+# image and are ignored here. Blessing owns the GitHub Release for pipeline
+# tags, so the `create-release` job below runs only for the legacy tags.
+# TODO(cutover): gh-pages doc publish.
 name: Zaino Release
 
 on:
@@ -15,6 +13,7 @@ on:
     tags:
       - '[0-9]+.[0-9]+.[0-9]+'
       - '[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+'
+      - 'zainod-[0-9]+.[0-9]+.[0-9]+'
   workflow_dispatch:
     inputs:
       push:
@@ -54,6 +53,7 @@ jobs:
             ${{ secrets.DOCKERHUB_USERNAME }}/zainod
           tags: |
             type=semver,pattern={{version}}
+            type=match,pattern=zainod-(.*),group=1
             type=ref,event=branch
             type=sha,prefix=,format=short
 
@@ -85,6 +85,7 @@ jobs:
             suffix=-no-tls
           tags: |
             type=semver,pattern={{version}}
+            type=match,pattern=zainod-(.*),group=1
             type=ref,event=branch
             type=sha,prefix=,format=short
 
@@ -110,9 +111,11 @@ jobs:
     needs: docker
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    # Only create a GitHub release when triggered by a real semver tag push.
-    # workflow_dispatch (e.g. for verification on a feature branch) skips this.
-    if: startsWith(github.ref, 'refs/tags/')
+    # Only create a GitHub release when triggered by a legacy semver tag push.
+    # workflow_dispatch (e.g. for verification on a feature branch) skips this,
+    # and so does a pipeline `zainod-X.Y.Z` tag: blessing already created the
+    # cycle's GitHub Release.
+    if: startsWith(github.ref, 'refs/tags/') && !startsWith(github.ref, 'refs/tags/zainod-')
     steps:
       - uses: actions/checkout@v7
         with:

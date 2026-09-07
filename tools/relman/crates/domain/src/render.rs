@@ -257,7 +257,7 @@ pub(crate) fn render_rc_table(cycle: &CycleId, status: &CycleStatus) -> String {
 /// trailing newline.
 ///
 /// With `with_tags`, a per-target `Tag` column carries each bumping crate's
-/// `<crate>-v<next>` provenance tag (the tag CI applies at blessing); without
+/// `<crate>-<next>` provenance tag (the tag CI applies at blessing); without
 /// it, the classic four-column table.
 pub(crate) fn render_version_table(table: &BumpTable, with_tags: bool) -> String {
     let mut out = String::from("## Version bumps (derived, since last stable)\n\n");

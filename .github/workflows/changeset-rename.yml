@@ -65,7 +65,7 @@ jobs:
       - name: Mint GitHub App token
         id: app-token
         if: steps.guard.outputs.same_repo == 'true'
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -88,6 +88,10 @@ jobs:
         if: steps.guard.outputs.same_repo == 'true'
         run: git fetch --no-tags origin "${{ github.event.pull_request.base.ref }}"
 
+      - name: Set up relman
+        if: steps.guard.outputs.same_repo == 'true'
+        uses: ./.github/actions/setup-relman
+
       - name: Rename changeset(s) to pr-<N> and push if changed
         if: steps.guard.outputs.same_repo == 'true'
         env:
@@ -102,8 +106,7 @@ jobs:
           # edits the working tree; committing/pushing is this workflow's job. It
           # renames only the author changesets in this PR's diff against the
           # base, never files inherited from it or already shipped.
-          cargo run -q --manifest-path tools/relman/Cargo.toml -- \
-            changeset rename --pr "${{ github.event.number }}" --base "origin/${BASE_REF}"
+          relman changeset rename --pr "${{ github.event.number }}" --base "origin/${BASE_REF}"
 
           if [ -z "$(git status --porcelain .changesets/)" ]; then
             echo "Changesets already canonically named; nothing to commit."

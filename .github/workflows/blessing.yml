@@ -5,8 +5,8 @@
 # INERT until the repo variable RELMAN_PIPELINE_ACTIVE=true. Activated only at
 # the coordinated pipeline cutover; until then this workflow does nothing.
 #
-# WARNING: step 4 publishes to crates.io, which CANNOT be undone. This workflow
-# stays dormant until RELMAN_PIPELINE_ACTIVE=true AND it requires:
+# WARNING: the publish step uploads to crates.io, which CANNOT be undone. This
+# workflow stays dormant until RELMAN_PIPELINE_ACTIVE=true AND it requires:
 #   - a GitHub App (RELEASE_APP_ID + RELEASE_APP_PRIVATE_KEY secrets) installed
 #     with `contents: write` and on the `stable` branch-protection bypass list,
 #     to push the release commit + tags to protected `stable`
@@ -15,6 +15,13 @@
 # already exists and is pushed by the current live release process — the
 # RELMAN_PIPELINE_ACTIVE gate is exactly what keeps this from firing on it
 # before cutover.
+#
+# PROVENANCE: a release is blessed only when the push to `stable` is the merge
+# of the standing release PR (`release-ready` -> `stable`). Any other push —
+# an emergency hotfix pushed straight to `stable`, or this workflow's own
+# release commit — is recorded by the backport sentinel but never released
+# from here, so content that skipped the rc-gate and the deployment gate cannot
+# reach crates.io.
 #
 # See docs/release/pipeline.md § "Blessing" and
 # implementation.md (bump / changelog / tags / publish-plan responsibilities).
@@ -32,14 +39,56 @@ permissions:
   contents: write
 
 jobs:
+  guard:
+    name: Check release provenance
+    # Master safety switch. Every job in every pipeline workflow carries this
+    # gate so these files can land dormant.
+    if: vars.RELMAN_PIPELINE_ACTIVE == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      proceed: ${{ steps.provenance.outputs.proceed }}
+    steps:
+      - name: Mint GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      # Two identity checks, neither of which a commit message can forge:
+      #   1. self-trigger: the pusher is this pipeline's own App (the release
+      #      commit it pushed below), so there is nothing new to release;
+      #   2. provenance: the pushed commit is the merge of a pull request from
+      #      `release-ready` into `stable` — the standing release PR — so the
+      #      content cleared every gate before it arrived here.
+      - name: Decide whether this push is a release to bless
+        id: provenance
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ACTOR: ${{ github.actor }}
+          APP_LOGIN: ${{ steps.app-token.outputs.app-slug }}[bot]
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "${ACTOR}" = "${APP_LOGIN}" ]; then
+            echo "::notice::push to stable by ${APP_LOGIN} is this pipeline's own release commit; nothing to bless."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          release_prs="$(gh api "repos/${{ github.repository }}/commits/${SHA}/pulls" \
+            --jq '[.[] | select(.merged_at != null and .base.ref == "stable" and .head.ref == "release-ready")] | length')"
+          if [ "${release_prs:-0}" -ge 1 ]; then
+            echo "stable ${SHA:0:9} is the merge of the release PR (release-ready -> stable); blessing."
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::stable ${SHA:0:9} did not arrive through the release PR (release-ready -> stable); it is NOT blessed. The backport sentinel carries it into dev; release it through the normal rc-gate -> deployment -> release-ready path."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          fi
+
   bless:
     name: Bump, tag, publish
-    # Master safety switch AND a self-trigger guard: this job pushes a
-    # `chore(release): ...` commit to `stable`, which would re-fire this
-    # push-triggered workflow. Skipping our own release commit breaks the loop.
-    if: >-
-      vars.RELMAN_PIPELINE_ACTIVE == 'true' &&
-      !startsWith(github.event.head_commit.message, 'chore(release): ')
+    needs: guard
+    if: needs.guard.outputs.proceed == 'true'
     runs-on: ubuntu-latest
     steps:
       # Mint a short-lived GitHub App installation token (no PATs). The App must
@@ -48,7 +97,7 @@ jobs:
       # + tags. Store its credentials as RELEASE_APP_ID / RELEASE_APP_PRIVATE_KEY.
       - name: Mint GitHub App token
         id: app-token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -63,33 +112,14 @@ jobs:
           # *protected* `stable` branch (GITHUB_TOKEN cannot).
           token: ${{ steps.app-token.outputs.token }}
 
+      - name: Set up relman
+        uses: ./.github/actions/setup-relman
+
+      # The open cycle is the one being blessed: it has rc tags but no final
+      # `cycle-<N>` tag yet (we create that below).
       - name: Compute cycle N being released
         id: cycle
-        run: |
-          set -euo pipefail
-
-          # --- shared cycle tag-numbering (see rc-gate.yml for full doc) ---
-          # The open cycle is the one being blessed: it has rc tags but no final
-          # `cycle-<N>` tag yet (we create that below).
-          highest_cycle() {
-            git tag --list 'cycle-*' \
-              | sed -n 's/^cycle-\([0-9][0-9]*\)\(-rc\.[0-9][0-9]*\)\{0,1\}$/\1/p' \
-              | sort -n | tail -1
-          }
-          open_cycle() {
-            hi="$(highest_cycle)"
-            if [ -z "$hi" ]; then
-              echo 1
-            elif git rev-parse -q --verify "refs/tags/cycle-${hi}" >/dev/null; then
-              echo $((hi + 1))
-            else
-              echo "$hi"
-            fi
-          }
-
-          N="$(open_cycle)"
-          echo "Releasing cycle: $N"
-          echo "n=$N" >> "$GITHUB_OUTPUT"
+        uses: ./.github/actions/cycle-ids
 
       # Restore the authoritative consumed-UID ledger from the LAST released
       # cycle tag, so the accumulation is a clean function of past releases and
@@ -124,19 +154,24 @@ jobs:
       # AFTER the bump (new versions) and consume (changesets marked, filtered out)
       # yields an EMPTY per-crate tag set and publish plan (the cycle tag is still
       # emitted, which is why a naive order produces `cycle-N` but no
-      # `<crate>-vX.Y.Z`). Written to RUNNER_TEMP so they are never swept into the
-      # release commit by `git add -A`.
+      # `<crate>-X.Y.Z`). Written to RUNNER_TEMP so they are never swept into the
+      # release commit by `git add -A`. An empty publish plan is an empty file:
+      # relman keeps stdout machine-readable and puts its note on stderr.
       - name: Derive tag + publish plans and release notes (before consuming changesets)
         run: |
           set -euo pipefail
-          root="tools/relman/Cargo.toml"
-          cargo run -q --manifest-path "$root" -- tags --cycle "${{ steps.cycle.outputs.n }}" > "$RUNNER_TEMP/tags.txt"
-          cargo run -q --manifest-path "$root" -- publish-plan > "$RUNNER_TEMP/plan.txt"
-          cargo run -q --manifest-path "$root" -- pr-body --cycle "${{ steps.cycle.outputs.n }}" > "$RUNNER_TEMP/notes.md"
+          relman tags --cycle "${{ steps.cycle.outputs.open }}" > "$RUNNER_TEMP/tags.txt"
+          relman publish-plan > "$RUNNER_TEMP/plan.txt"
+          relman pr-body --cycle "${{ steps.cycle.outputs.open }}" > "$RUNNER_TEMP/notes.md"
           echo "--- tag plan ---"; cat "$RUNNER_TEMP/tags.txt"
           echo "--- publish plan ---"; cat "$RUNNER_TEMP/plan.txt"
+          if [ ! -s "$RUNNER_TEMP/plan.txt" ]; then
+            echo "::error::No crate publishes this cycle (no unconsumed changeset affects a governed target) — nothing to bless."
+            exit 1
+          fi
 
       # 2. Apply versions + changelogs, consume changesets. All working-tree edits.
+      # `bump` also refreshes Cargo.lock so the `--locked` steps below pass.
       # `consume` MARKS each changeset with `consumed_in = "cycle-N"` (it does not
       # delete): derivation filters consumed changesets out, so the next cycle sees
       # an empty set while `.changesets/` keeps the provenance ledger. The stamp is
@@ -145,19 +180,35 @@ jobs:
       - name: Apply bump, changelog, consume changesets
         run: |
           set -euo pipefail
-          root="tools/relman/Cargo.toml"
-          cargo run -q --manifest-path "$root" -- bump              # edit manifests + root pins
-          cargo run -q --manifest-path "$root" -- changelog         # write CHANGELOGs
+          relman bump              # edit manifests + root pins + Cargo.lock
+          relman changelog         # write CHANGELOGs
           # `consume` stores its --cycle verbatim as the on-disk audit stamp, so
           # we pass the fully-rendered period id `cycle-N` (matching the git tag)
           # for a clean cross-reference — unlike `tags`/`pr-body`, which take the
           # bare ordinal N and render the `cycle-` prefix themselves.
-          cargo run -q --manifest-path "$root" -- \
-            changeset consume --cycle "cycle-${{ steps.cycle.outputs.n }}" --yes  # mark consumed
+          relman changeset consume --cycle "cycle-${{ steps.cycle.outputs.open }}" --yes  # mark consumed
 
-      # 3. Pre-flight publishability check — validate the ENTIRE publish plan is
+      # 3. Commit the release edits to the working tree FIRST: `cargo publish`
+      # refuses a dirty package directory, and the per-crate CHANGELOG.md and
+      # Cargo.toml edits above live inside the packages. Nothing is pushed until
+      # pre-flight passes.
+      - name: Commit release (local)
+        id: commit
+        run: |
+          set -euo pipefail
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "::error::No release edits produced by bump/changelog/consume — nothing to bless (were there any changesets?)."
+            exit 1
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "chore(release): cycle-${{ steps.cycle.outputs.open }}"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # 4. Pre-flight publishability check — validate the ENTIRE publish plan is
       # actually publishable (no version-reuse, no yanked/unresolvable deps)
-      # BEFORE any commit/tag/Release, so a real release fails fast and leaves
+      # BEFORE any push/tag/Release, so a real release fails fast and leaves
       # nothing orphaned on stable. BLOCKING for a real release; ADVISORY under
       # RELMAN_PUBLISH_DRY_RUN (a fork can't truly publish — crate names are a
       # global namespace — so it warns and proceeds to exercise the rest).
@@ -185,31 +236,25 @@ jobs:
             fi
           done < "$RUNNER_TEMP/plan.txt"
 
-      # 4. Commit the release edits back to `stable`.
-      - name: Commit release
-        id: commit
+      # 5. Push the release commit to `stable`. The push is made by the App, so
+      # the `guard` job above recognises it as this pipeline's own commit and
+      # does not re-run the release.
+      - name: Push release commit
         run: |
           set -euo pipefail
-          if [ -z "$(git status --porcelain)" ]; then
-            echo "::error::No release edits produced by bump/changelog/clear — nothing to bless (were there any changesets?)."
-            exit 1
-          fi
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          # The `chore(release): ` prefix is matched by this job's `if` guard so the
-          # resulting push to `stable` does not re-trigger the workflow.
-          git commit -m "chore(release): cycle-${{ steps.cycle.outputs.n }}"
           git push origin "HEAD:refs/heads/stable"
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      # 4. Tags: final `cycle-<N>` + per-crate `<crate>-vX.Y.Z`, all at the release
-      # commit. tags.txt was derived in step 1, before the changesets were consumed.
+      # 6. Tags: final `cycle-<N>` + per-crate `<crate>-X.Y.Z`, all at the release
+      # commit. tags.txt was derived in step 1, before the changesets were
+      # consumed. All tags go in ONE push: `ci.yml` excludes these tag shapes from
+      # its `push.tags` trigger, and a single push keeps the release atomic on the
+      # remote (no half-tagged release if the runner dies mid-loop).
       - name: Create and push release tags
         run: |
           set -euo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          refs=()
           while IFS= read -r tag; do
             [ -z "$tag" ] && continue
             if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
@@ -217,12 +262,15 @@ jobs:
               continue
             fi
             git tag "$tag" "${{ steps.commit.outputs.sha }}"
-            git push origin "$tag"
+            refs+=("refs/tags/$tag")
           done < "$RUNNER_TEMP/tags.txt"
+          if [ "${#refs[@]}" -gt 0 ]; then
+            git push origin "${refs[@]}"
+          fi
 
-      # 5. A GitHub Release for the cycle — the visible UI entry. Body = the
+      # 7. A GitHub Release for the cycle — the visible UI entry. Body = the
       # derived per-crate version table + changelog (rendered in step 1). Anchored
-      # on the `cycle-<N>` tag; the per-crate `<crate>-vX.Y.Z` tags are pushed
+      # on the `cycle-<N>` tag; the per-crate `<crate>-X.Y.Z` tags are pushed
       # above and referenced in the notes. Marked prerelease iff RC-only (never
       # here — blessing is the final release).
       - name: Create GitHub Release
@@ -230,7 +278,7 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
-          tag="cycle-${{ steps.cycle.outputs.n }}"
+          tag="cycle-${{ steps.cycle.outputs.open }}"
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release edit "$tag" --notes-file "$RUNNER_TEMP/notes.md" --title "Release $tag"
             echo "Updated release $tag"
@@ -239,7 +287,7 @@ jobs:
             echo "Created release $tag"
           fi
 
-      # 4. Publish to crates.io in dependency order.
+      # 8. Publish to crates.io in dependency order.
       # IRREVERSIBLE unless RELMAN_PUBLISH_DRY_RUN=true (fork/sandbox testing),
       # which runs `cargo publish --dry-run --no-verify` — packages each crate and
       # exercises the orchestration WITHOUT uploading. (`--no-verify` is required
@@ -272,7 +320,7 @@ jobs:
           # step 1, before the changesets were consumed.
           while read -r crate version; do
             [ -z "${crate:-}" ] && continue
-            echo "::group::Publish ${crate} ${version}${DRY_RUN:+ (dry-run)}"
+            echo "::group::Publish ${crate} ${version}"
             # shellcheck disable=SC2086 # publish_flags is intentionally word-split
             if out="$(cargo publish -p "${crate}" ${publish_flags} 2>&1)"; then
               echo "${out}"
@@ -290,16 +338,14 @@ jobs:
             echo "::endgroup::"
             # cargo (>= 1.66, sparse index) already blocks until the new version is
             # visible in the index; this pause is extra margin before dependents
-            # publish. Skipped in dry-run (nothing was uploaded).
-            [ "${DRY_RUN:-}" = "true" ] || sleep 15
+            # publish.
+            sleep 15
           done < "$RUNNER_TEMP/plan.txt"
 
-      # 5. TODO(cutover): Docker image (zainod version + cycle handle), GitHub
-      # Release, and gh-pages doc publish follow from the pushed tags, via a
-      # reworked release.yaml (see pipeline.md "Existing-workflow teardown":
-      # release.yaml is retargeted to cycle-*/<crate>-vX.Y.Z tags). Not built in
-      # this draft — wire it at cutover.
-      - name: Post-publish artifacts (TODO)
+      # 9. Container images follow from the pushed tags: `release.yaml` builds
+      # and pushes the zainod images on the `zainod-X.Y.Z` tag push above.
+      # gh-pages doc publish is a cutover TODO.
+      - name: Post-publish artifacts
         run: |
           set -euo pipefail
-          echo "::notice::Docker image + GitHub Release + gh-pages are a cutover TODO (reworked release.yaml); not performed here."
+          echo "::notice::Container images are built by release.yaml on the zainod-X.Y.Z tag; gh-pages publish is a cutover TODO."

@@ -21,12 +21,16 @@ jobs:
     # backport sentinel's `sync/stable-to-dev` PR: it mechanically carries a
     # release commit (Cargo.toml bumps, CHANGELOGs, and `.changesets/`
     # consumed marks) back into `dev` and by design introduces no *new*
-    # changeset — same spirit as an RC-cut PR of already-reviewed work. See
-    # docs/release/pipeline.md § "Reverse: the Backport
-    # Sentinel".
+    # changeset — same spirit as an RC-cut PR of already-reviewed work. The
+    # exemption needs all three signals — the branch name, a Bot author (the
+    # sentinel's App), and the `backport` label only a writer can apply — so a
+    # contributor cannot claim it by naming a fork branch. See
+    # docs/release/pipeline.md § "Reverse: the Backport Sentinel".
     if: >-
       github.event.pull_request.draft == false &&
-      github.head_ref != 'sync/stable-to-dev'
+      !(github.head_ref == 'sync/stable-to-dev' &&
+        github.event.pull_request.user.type == 'Bot' &&
+        contains(github.event.pull_request.labels.*.name, 'backport'))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout PR
@@ -36,6 +40,8 @@ jobs:
           # for relman's `git diff base...HEAD`.
           fetch-depth: 0
 
+      # `fetch-depth: 0` already brought every branch; this only refreshes the
+      # base ref in case it moved since the checkout resolved.
       - name: Fetch base branch
         run: git fetch --no-tags origin "${{ github.event.pull_request.base.ref }}"
 

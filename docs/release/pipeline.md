@@ -676,7 +676,7 @@ were already cleared by the commit being promoted. "Whatever cleared all gates
 by Friday" is exactly whatever is on `release-ready` on Friday; work that only
 cleared the deployment gate after the cut simply ships the next cycle — *easy as that*.
 
-At blessing, CI: finalizes the derived versions, applies the `<crate>-vX.Y.Z`
+At blessing, CI: finalizes the derived versions, applies the `<crate>-X.Y.Z`
 and `cycle-<id>` tags, publishes (Docker, GitHub Release, crates.io in
 dependency order), **marks the shipped changesets consumed** (stamps each
 `consumed_in`, rather than deleting — see
@@ -713,6 +713,9 @@ fast-forward and nothing is lost. Version-agnostic branches make this safe:
 there is no version-named branch to reconcile.
 
 **Nuclear option.** A true emergency may go straight to `stable`. Both
+Such a push is **not blessed**: blessing releases only the merge of the
+release PR, so the hotfix reaches users through the next cycle after the
+sentinel carries it back to `dev`.
 sentinels then catch the fallout: the forward Release PR flags `release-ready`
 as behind `stable` (forcing the fix into `rc`/`release-ready`), and the reverse
 sentinel forces it into `dev`.
@@ -757,10 +760,10 @@ replacement):
 
 | Workflow | Verdict |
 | -------- | ------- |
-| `auto-tag-rc.yml` | **delete** — derives version from the `rc/<version>` branch name; obsolete under version-agnostic branches |
-| `final-tag-on-stable.yml` | **delete** — same branch-name→version coupling; replaced by blessing-time tagging from changesets |
-| `release.yaml` | **rework** — retarget to `cycle-*` + `<crate>-vX.Y.Z` tags; Docker image = `zainod` version + cycle handle |
-| `publish-dry-run.yml` + `check-published-versions` | **keep / rework** — the Rust guard is reusable; fold into the new publish flow |
+| `auto-tag-rc.yml` | **keep until cutover** — derives version from the `rc/<version>` branch name; gated off by `RELMAN_PIPELINE_ACTIVE=true`, delete afterwards |
+| `final-tag-on-stable.yml` | **keep until cutover** — same branch-name→version coupling; gated off by `RELMAN_PIPELINE_ACTIVE=true`, replaced by blessing-time tagging from changesets |
+| `release.yaml` | **reworked** — also fires on the `zainod-X.Y.Z` provenance tag and takes the image version from it; the GitHub Release job runs only for legacy tags |
+| `publish-dry-run.yml` + `check-published-versions` | **kept** — blocking on `stable` pushes, advisory elsewhere (`rc` is version-agnostic); the Rust guard also runs in blessing's pre-flight |
 | `ci.yml`, `ci-nightly.yaml` | **rework** into the `dev`-gate and `rc`-gate suite runners |
 | `compute-tag.yml`, `build-n-push-ci-image.yaml`, `trigger-integration-tests.yml`, `shellcheck.yaml` | **keep** — orthogonal to release versioning |
 

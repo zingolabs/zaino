@@ -474,7 +474,7 @@ pub trait ReleaseArtifacts: Send + Sync {
     /// - `rc = Some(n)` (a soak/prerelease cut): a single `cycle-<id>-rc.<n>`
     ///   prerelease tag.
     /// - `rc = None` (a blessing): the `cycle-<id>` period tag followed by one
-    ///   `<crate>-v<next>` provenance tag per bumping crate, in config order.
+    ///   `<crate>-<next>` provenance tag per bumping crate, in config order.
     fn tags(&self, cycle: &CycleId, rc: Option<u32>) -> Result<TagPlan, ArtifactError>;
 
     /// The rendered release-PR body for `cycle`.
