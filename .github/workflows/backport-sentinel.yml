@@ -133,13 +133,22 @@ jobs:
               printf '%s\n' 'See docs/release/pipeline.md § "Reverse: the Backport Sentinel".'
             } > body.md
 
-            num="$(gh pr create --base dev --head "$branch" \
-              --title "sync: backport stable → dev" --body-file body.md \
-              | sed 's#.*/##')"
             # The `backport` label is one of the three signals changeset-check
-            # uses to exempt this PR; without it the dev-gate runs on the sync PR.
-            gh pr edit "$num" --add-label "automated,backport" \
-              || echo "::warning::labels 'automated'/'backport' not applied (create them once on the repo); changeset-check will NOT exempt #$num until the 'backport' label is present."
+            # and changeset-rename use to exempt this PR, and only labels present
+            # on the `opened` event count — a label added afterwards misses that
+            # first run. So the PR is created WITH its labels; the unlabelled
+            # fallback covers a fresh repo where the labels do not exist yet.
+            if num="$(gh pr create --base dev --head "$branch" \
+                  --title "sync: backport stable → dev" --body-file body.md \
+                  --label automated --label backport \
+                  | sed 's#.*/##')"; then
+              :
+            else
+              echo "::warning::labels 'automated'/'backport' not applied (create them once on the repo); the dev-gate will run on the sync PR."
+              num="$(gh pr create --base dev --head "$branch" \
+                --title "sync: backport stable → dev" --body-file body.md \
+                | sed 's#.*/##')"
+            fi
             echo "Opened backport PR #$num"
           else
             # A sync PR is open: bring its branch up to stable's tip by merging,

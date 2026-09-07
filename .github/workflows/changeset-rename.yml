@@ -25,8 +25,15 @@ jobs:
   changeset-rename:
     name: Name changeset for PR
     # Master safety switch (see file header). Every job in every pipeline
-    # workflow carries this gate so these files can land dormant.
-    if: vars.RELMAN_PIPELINE_ACTIVE == 'true'
+    # workflow carries this gate so these files can land dormant. The backport
+    # sentinel's `sync/stable-to-dev` PR is exempt on the same three signals
+    # changeset-check uses: its changesets are shipped provenance whose slugs
+    # the consumed ledger records, so renaming them would orphan the ledger.
+    if: >-
+      vars.RELMAN_PIPELINE_ACTIVE == 'true' &&
+      !(github.head_ref == 'sync/stable-to-dev' &&
+        github.event.pull_request.user.type == 'Bot' &&
+        contains(github.event.pull_request.labels.*.name, 'backport'))
     runs-on: ubuntu-latest
     steps:
       # A PR opened against `rc` is a hotfix (the normal path advances rc by a

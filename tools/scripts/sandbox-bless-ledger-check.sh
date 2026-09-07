@@ -63,10 +63,17 @@ rr_tip="$(git commit-tree "$newtree" -p "$tip" \
 git push -f "$REMOTE" "${tip}:refs/heads/dev"
 git push -f "$REMOTE" "${tip}:refs/heads/stable"
 git push -f "$REMOTE" "${rr_tip}:refs/heads/release-ready"
-pr="$(gh pr create -R "$REPO" --base stable --head release-ready \
-  --title "Release cycle-1 (sandbox ledger check)" \
-  --body "Sandbox: merge to exercise consume -> ledger -> bless -> sentinel." \
-  | sed 's#.*/##')"
+# A release PR between these two branches may already be open from an earlier
+# cycle on the fork; GitHub allows one per branch pair, so reuse it.
+pr="$(gh pr list -R "$REPO" --base stable --head release-ready --state open \
+  --json number --jq '.[0].number // empty')"
+if [ -z "$pr" ]; then
+  pr="$(gh pr create -R "$REPO" --base stable --head release-ready \
+    --title "Release cycle-1 (sandbox ledger check)" \
+    --body "Sandbox: merge to exercise consume -> ledger -> bless -> sentinel." \
+    | sed 's#.*/##')"
+fi
+echo "Merging release PR #${pr} (release-ready -> stable)"
 gh pr merge "$pr" -R "$REPO" --merge
 
 # 5. Restore protection.
